@@ -66,6 +66,11 @@ async function setupJellyfin(url) {
     item = result.Items?.[0];
     return !!item;
   });
+  await waitFor(async () => {
+    const libraries = await request(url, '/Library/VirtualFolders', { token });
+    const movies = libraries.find((library) => library.Name === 'Movies');
+    return movies?.RefreshStatus === 'Idle';
+  });
   return { token, aliceId: alice.Id, bobId: bob.Id, itemId: item.Id };
 }
 
