@@ -1,0 +1,22 @@
+{
+  "name": "jellyseerr-jellyfin-access",
+  "version": "0.1.0",
+  "private": false,
+  "description": "Grant Jellyfin media access to the Seerr/Jellyseerr users who requested it.",
+  "type": "module",
+  "packageManager": "pnpm@11.18.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/index.js",
+    "test": "pnpm build && node --test test/*.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.9.0"
+  },
+  "license": "MIT"
+}
