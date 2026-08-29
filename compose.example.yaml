@@ -6,7 +6,9 @@ services:
       JELLYFIN_URL: http://jellyfin:8096
       JELLYFIN_API_KEY: ${JELLYFIN_API_KEY}
       WEBHOOK_TOKEN: ${WEBHOOK_TOKEN}
+      ADMIN_TOKEN: ${ADMIN_TOKEN}
       STATE_FILE: /app/data/grants.json
+      RECONCILE_INTERVAL_SECONDS: 300
     volumes:
       - ./data:/app/data
     ports:

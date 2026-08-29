@@ -4,9 +4,11 @@ export interface Config {
   host: string;
   port: number;
   webhookToken: string;
+  adminToken: string;
   jellyfinUrl: string;
   jellyfinApiKey: string;
   stateFile: string;
+  reconcileIntervalSeconds: number;
 }
 
 function required(name: string): string {
@@ -22,13 +24,21 @@ export function loadConfig(): Config {
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error('PORT must be an integer between 1 and 65535');
   }
+  const reconcileIntervalSeconds = Number.parseInt(process.env.RECONCILE_INTERVAL_SECONDS ?? '300', 10);
+  if (!Number.isInteger(reconcileIntervalSeconds) || reconcileIntervalSeconds < 0 || reconcileIntervalSeconds > 86_400) {
+    throw new Error('RECONCILE_INTERVAL_SECONDS must be an integer between 0 and 86400');
+  }
+
+  const webhookToken = required('WEBHOOK_TOKEN');
 
   return {
     host: process.env.HOST?.trim() || '0.0.0.0',
     port,
-    webhookToken: required('WEBHOOK_TOKEN'),
+    webhookToken,
+    adminToken: process.env.ADMIN_TOKEN?.trim() || webhookToken,
     jellyfinUrl: required('JELLYFIN_URL').replace(/\/+$/, ''),
     jellyfinApiKey: required('JELLYFIN_API_KEY'),
     stateFile: path.resolve(process.env.STATE_FILE?.trim() || './data/grants.json'),
+    reconcileIntervalSeconds,
   };
 }

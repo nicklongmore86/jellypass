@@ -23,3 +23,31 @@ jobs:
       - run: pnpm test
       - run: pnpm build
       - run: docker build .
+
+  jellyfin-integration:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm build
+      - name: Start Jellyfin 10.11.3
+        run: >-
+          docker run -d --name jfa-jellyfin -p 127.0.0.1:18096:8096
+          --tmpfs /config --tmpfs /cache
+          -v "$PWD/test/fixtures:/media:ro"
+          jellyfin/jellyfin:10.11.3
+      - name: Test against Jellyfin
+        env:
+          JELLYFIN_REAL_URL: http://127.0.0.1:18096
+        run: node --test test/real-jellyfin.test.mjs
+      - name: Show Jellyfin logs on failure
+        if: failure()
+        run: docker logs jfa-jellyfin
+      - name: Stop Jellyfin
+        if: always()
+        run: docker rm -f jfa-jellyfin
