@@ -10,7 +10,7 @@ export async function createFakeJellyfin() {
   const server = createServer(async (request, response) => {
     if (request.headers['x-emby-token'] !== 'test-key') return send(response, 401, {});
     if (request.method === 'GET' && request.url === '/Users') return send(response, 200, users);
-    if (request.method === 'GET' && request.url === '/Items/item-1') return send(response, 200, state.item);
+    if (request.method === 'GET' && request.url === '/Users/admin-id/Items/item-1') return send(response, 200, state.item);
     if (request.method === 'POST' && request.url === '/Items/item-1') {
       state.item = await body(request);
       return send(response, 204);

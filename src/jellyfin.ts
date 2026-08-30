@@ -22,8 +22,13 @@ export class JellyfinClient {
     return this.#request<JellyfinUser[]>('/Users');
   }
 
-  public getItem(itemId: string): Promise<JellyfinItem> {
-    return this.#request<JellyfinItem>(`/Items/${encodeURIComponent(itemId)}`);
+  public async getItem(itemId: string): Promise<JellyfinItem> {
+    const users = await this.getUsers();
+    const administrator = users.find((user) => user.Policy.IsAdministrator);
+    if (!administrator) throw new Error('Jellyfin administrator user not found');
+    return this.#request<JellyfinItem>(
+      `/Users/${encodeURIComponent(administrator.Id)}/Items/${encodeURIComponent(itemId)}`,
+    );
   }
 
   public async updateItem(item: JellyfinItem): Promise<void> {
