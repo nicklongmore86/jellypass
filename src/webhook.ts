@@ -5,27 +5,28 @@ const ID_PATTERN = /^[a-zA-Z0-9-]{1,128}$/;
 export function parseWebhook(value: unknown): SeerrWebhook {
   if (!value || typeof value !== 'object') throw new Error('body must be a JSON object');
   const body = value as Record<string, unknown>;
-  const media = objectAt(body, 'media');
   const request = objectAt(body, 'request');
-  const requestedBy = objectAt(request, 'requestedBy');
-  const mediaType = optionalStringAt(media, 'mediaType');
-  const username = optionalStringAt(requestedBy, 'username');
+  const media = optionalObjectAt(body, 'media');
+  const requestedBy = optionalObjectAt(request, 'requestedBy');
+  const mediaType = media ? optionalStringAt(media, 'mediaType') : undefined;
+  const mediaId = media ? optionalIdAt(media, 'jellyfinMediaId') : undefined;
+  const username = requestedBy ? optionalStringAt(requestedBy, 'username') : undefined;
+  const userId = requestedBy ? optionalIdAt(requestedBy, 'jellyfinUserId') : undefined;
 
   const event: SeerrWebhook = {
     notificationType: stringAt(body, 'notificationType'),
-    media: {
-      jellyfinMediaId: idAt(media, 'jellyfinMediaId'),
-      ...(mediaType ? { mediaType } : {}),
-    },
+    ...(media ? { media: { ...(mediaId ? { jellyfinMediaId: mediaId } : {}), ...(mediaType ? { mediaType } : {}) } } : {}),
     request: {
       id: idAt(request, 'id'),
-      requestedBy: {
-        jellyfinUserId: idAt(requestedBy, 'jellyfinUserId'),
-        ...(username ? { username } : {}),
-      },
+      ...(requestedBy ? { requestedBy: { ...(userId ? { jellyfinUserId: userId } : {}), ...(username ? { username } : {}) } } : {}),
     },
   };
   return event;
+}
+
+function optionalObjectAt(parent: Record<string, unknown>, key: string): Record<string, unknown> | undefined {
+  if (parent[key] === undefined || parent[key] === null) return undefined;
+  return objectAt(parent, key);
 }
 
 function objectAt(parent: Record<string, unknown>, key: string): Record<string, unknown> {
@@ -51,4 +52,9 @@ function idAt(parent: Record<string, unknown>, key: string): string {
   const value = stringAt(parent, key);
   if (!ID_PATTERN.test(value) || value.includes('{{')) throw new Error(`${key} is invalid`);
   return value;
+}
+
+function optionalIdAt(parent: Record<string, unknown>, key: string): string | undefined {
+  if (parent[key] === undefined || parent[key] === null || parent[key] === '') return undefined;
+  return idAt(parent, key);
 }

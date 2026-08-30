@@ -21,7 +21,9 @@ export function makeServer(service: AccessService, tokens: ServerTokens) {
         return json(response, 200, { status: 'ok' });
       }
       if (request.method === 'POST' && url.pathname === '/webhooks/seerr') {
-        if (!authorized(request, tokens.webhook)) return json(response, 401, { error: 'unauthorized' });
+        if (!authorized(request, tokens.webhook) && !sameToken(url.searchParams.get('token') ?? '', tokens.webhook)) {
+          return json(response, 401, { error: 'unauthorized' });
+        }
         const result = await service.processWebhook(parseWebhook(await readJson(request)));
         return json(response, result ? 200 : 202, result ? { status: 'granted', grant: result } : { status: 'ignored' });
       }
@@ -79,6 +81,10 @@ export function makeServer(service: AccessService, tokens: ServerTokens) {
 
 function authorized(request: IncomingMessage, expectedToken: string): boolean {
   const supplied = request.headers.authorization?.replace(/^Bearer\s+/i, '') ?? '';
+  return sameToken(supplied, expectedToken);
+}
+
+function sameToken(supplied: string, expectedToken: string): boolean {
   const left = createHash('sha256').update(supplied).digest();
   const right = createHash('sha256').update(expectedToken).digest();
   return timingSafeEqual(left, right);

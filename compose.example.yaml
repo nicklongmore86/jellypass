@@ -5,6 +5,8 @@ services:
     environment:
       JELLYFIN_URL: http://jellyfin:8096
       JELLYFIN_API_KEY: ${JELLYFIN_API_KEY}
+      SEERR_URL: http://jellyseerr:5055
+      SEERR_API_KEY: ${SEERR_API_KEY}
       WEBHOOK_TOKEN: ${WEBHOOK_TOKEN}
       ADMIN_TOKEN: ${ADMIN_TOKEN}
       STATE_FILE: /app/data/grants.json

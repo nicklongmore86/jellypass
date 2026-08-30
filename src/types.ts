@@ -1,15 +1,29 @@
 export interface SeerrWebhook {
   notificationType: string;
-  media: {
-    jellyfinMediaId: string;
+  media?: {
+    jellyfinMediaId?: string;
     mediaType?: string;
   };
   request: {
     id: string;
-    requestedBy: {
-      jellyfinUserId: string;
+    requestedBy?: {
+      jellyfinUserId?: string;
       username?: string;
     };
+  };
+}
+
+export interface SeerrRequest {
+  id: number;
+  type?: string;
+  is4k?: boolean;
+  requestedBy?: {
+    jellyfinUserId?: string;
+  };
+  media?: {
+    mediaType?: string;
+    jellyfinMediaId?: string;
+    jellyfinMediaId4k?: string;
   };
 }
 

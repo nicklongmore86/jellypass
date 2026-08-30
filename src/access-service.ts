@@ -1,5 +1,6 @@
 import type { JellyfinClient } from './jellyfin.js';
 import { Metrics } from './metrics.js';
+import type { SeerrClient } from './seerr.js';
 import { normalizeId, type GrantStore } from './store.js';
 import type {
   AccessGroup,
@@ -23,12 +24,14 @@ export class AccessService {
   readonly #jellyfin: JellyfinClient;
   readonly #store: GrantStore;
   readonly #metrics: Metrics;
+  readonly #seerr: SeerrClient | undefined;
   #queue: Promise<void> = Promise.resolve();
 
-  public constructor(jellyfin: JellyfinClient, store: GrantStore, metrics = new Metrics()) {
+  public constructor(jellyfin: JellyfinClient, store: GrantStore, metrics = new Metrics(), seerr?: SeerrClient) {
     this.#jellyfin = jellyfin;
     this.#store = store;
     this.#metrics = metrics;
+    this.#seerr = seerr;
     this.#refreshGauges();
   }
 
@@ -51,11 +54,12 @@ export class AccessService {
         this.#metrics.increment('jfa_webhooks_total', { result: 'ignored' });
         return null;
       }
+      const resolved = await this.#resolveWebhook(event);
       const grant = await this.#store.grant({
-        itemId: event.media.jellyfinMediaId,
+        itemId: resolved.itemId,
         requestId: event.request.id,
-        userId: event.request.requestedBy.jellyfinUserId,
-        ...(event.media.mediaType ? { mediaType: event.media.mediaType } : {}),
+        userId: resolved.userId,
+        ...(resolved.mediaType ? { mediaType: resolved.mediaType } : {}),
       });
       try {
         await this.#reconcileGrant(grant);
@@ -66,6 +70,26 @@ export class AccessService {
       }
       return this.#store.get(grant.itemId) ?? grant;
     });
+  }
+
+  async #resolveWebhook(event: SeerrWebhook): Promise<{ itemId: string; userId: string; mediaType?: string }> {
+    let itemId = event.media?.jellyfinMediaId;
+    let userId = event.request.requestedBy?.jellyfinUserId;
+    let mediaType = event.media?.mediaType;
+
+    if (!itemId || !userId) {
+      if (!this.#seerr) throw new Error('webhook is missing Jellyfin IDs and Seerr lookup is not configured');
+      const request = await this.#seerr.getRequest(event.request.id);
+      itemId = request.is4k
+        ? request.media?.jellyfinMediaId4k ?? request.media?.jellyfinMediaId
+        : request.media?.jellyfinMediaId;
+      userId = request.requestedBy?.jellyfinUserId;
+      mediaType ??= request.media?.mediaType ?? request.type;
+    }
+
+    if (!itemId) throw new Error(`Seerr request ${event.request.id} is missing a Jellyfin media ID`);
+    if (!userId) throw new Error(`Seerr request ${event.request.id} is missing a Jellyfin user ID`);
+    return { itemId, userId, ...(mediaType ? { mediaType } : {}) };
   }
 
   public reconcileAll(options: { dryRun?: boolean; dueOnly?: boolean } = {}): Promise<ChangePlan[]> {

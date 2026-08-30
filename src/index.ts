@@ -2,6 +2,7 @@ import { AccessService } from './access-service.js';
 import { loadConfig } from './config.js';
 import { JellyfinClient } from './jellyfin.js';
 import { makeServer } from './server.js';
+import { SeerrClient } from './seerr.js';
 import { GrantStore } from './store.js';
 
 async function main(): Promise<void> {
@@ -10,7 +11,10 @@ async function main(): Promise<void> {
   await store.load();
 
   const jellyfin = new JellyfinClient(config.jellyfinUrl, config.jellyfinApiKey);
-  const service = new AccessService(jellyfin, store);
+  const seerr = config.seerrUrl && config.seerrApiKey
+    ? new SeerrClient(config.seerrUrl, config.seerrApiKey)
+    : undefined;
+  const service = new AccessService(jellyfin, store, undefined, seerr);
   const server = makeServer(service, { webhook: config.webhookToken, admin: config.adminToken });
   const reconcileTimer = config.reconcileIntervalSeconds > 0
     ? setInterval(() => {

@@ -7,6 +7,8 @@ export interface Config {
   adminToken: string;
   jellyfinUrl: string;
   jellyfinApiKey: string;
+  seerrUrl?: string;
+  seerrApiKey?: string;
   stateFile: string;
   reconcileIntervalSeconds: number;
 }
@@ -30,6 +32,11 @@ export function loadConfig(): Config {
   }
 
   const webhookToken = required('WEBHOOK_TOKEN');
+  const seerrUrl = process.env.SEERR_URL?.trim().replace(/\/+$/, '');
+  const seerrApiKey = process.env.SEERR_API_KEY?.trim();
+  if (!!seerrUrl !== !!seerrApiKey) {
+    throw new Error('SEERR_URL and SEERR_API_KEY must be configured together');
+  }
 
   return {
     host: process.env.HOST?.trim() || '0.0.0.0',
@@ -38,6 +45,7 @@ export function loadConfig(): Config {
     adminToken: process.env.ADMIN_TOKEN?.trim() || webhookToken,
     jellyfinUrl: required('JELLYFIN_URL').replace(/\/+$/, ''),
     jellyfinApiKey: required('JELLYFIN_API_KEY'),
+    ...(seerrUrl && seerrApiKey ? { seerrUrl, seerrApiKey } : {}),
     stateFile: path.resolve(process.env.STATE_FILE?.trim() || './data/grants.json'),
     reconcileIntervalSeconds,
   };

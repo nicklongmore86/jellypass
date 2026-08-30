@@ -2,7 +2,7 @@
 
 Restrict requested media in Jellyfin to the Seerr/Jellyseerr users who requested it.
 
-This small companion service receives Seerr's **Request Available** webhook, reads the requester and Jellyfin media IDs already present in the webhook, and applies Jellyfin's native tag-based access policy.
+This small companion service receives Seerr's **Request Available** webhook and applies Jellyfin's native tag-based access policy. It can read the requester and media IDs directly from newer webhook payloads or look them up from the request ID on older Jellyseerr releases.
 
 > [!CAUTION]
 > Test with non-critical users and media first. Jellyfin does not expose transactional policy updates, so a failed sync can temporarily leave an item visible until reconciliation succeeds.
@@ -21,7 +21,7 @@ Existing untagged media stays public. Multiple people can request the same title
 
 ## Requirements
 
-- Seerr/Jellyseerr with webhook variables `media_jellyfinMediaId` and `requestedBy_jellyfinUserId`
+- Seerr/Jellyseerr with webhook support and linked Jellyfin users
 - Jellyfin 10.11 or newer
 - Node.js 22+ or Docker
 - A Jellyfin administrator API key
@@ -30,7 +30,7 @@ Existing untagged media stays public. Multiple people can request the same title
 
 ```sh
 cp .env.example .env
-# Fill in JELLYFIN_API_KEY and generate different long WEBHOOK_TOKEN and ADMIN_TOKEN values.
+# Fill in the API keys and generate different long WEBHOOK_TOKEN and ADMIN_TOKEN values.
 docker compose -f compose.example.yaml up --build -d
 ```
 
@@ -63,6 +63,17 @@ In **Settings → Notifications → Webhook**:
 ```
 
 The requesting Seerr account must be linked to/imported from Jellyfin. A local-only Seerr account has no Jellyfin user ID and will be rejected.
+
+Jellyseerr 2.7.x does not expose the Jellyfin IDs as webhook template variables. Set `SEERR_URL` and `SEERR_API_KEY`, then use its request ID payload instead:
+
+```json
+{
+  "notificationType": "{{notification_type}}",
+  "request": { "id": "{{request_id}}" }
+}
+```
+
+If that Jellyseerr release cannot add an authorization header, append `?token=YOUR_WEBHOOK_TOKEN` to the webhook URL. Keep the bridge on a private Docker network because URLs can appear in proxy logs. Prefer the bearer header whenever the notification UI supports it.
 
 ## Operations
 
@@ -163,7 +174,7 @@ JELLYFIN_REAL_URL=http://127.0.0.1:18096 pnpm test:real
 
 ## Project status
 
-Implemented today: idempotent request grants, explicit revocation and cleanup, shared household groups, dry-run change plans, persistent sync failures, scheduled reconciliation, Prometheus metrics, state-v1 migration tests, full HTTP integration tests, and container-backed tests against Jellyfin 10.11.3.
+Implemented today: idempotent request grants, legacy Jellyseerr request lookups, explicit revocation and cleanup, shared household groups, dry-run change plans, persistent sync failures, scheduled reconciliation, Prometheus metrics, state-v1 migration tests, full HTTP integration tests, and container-backed tests against Jellyfin 10.11.3.
 
 Potential follow-ups include a browser-based administration UI, automatic revocation when Seerr exposes a suitable lifecycle webhook, grant expiration, signed webhooks, orphan discovery, and release images published to GHCR.
 

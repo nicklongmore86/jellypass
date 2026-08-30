@@ -39,6 +39,14 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.equal(unauthorized.status, 401);
     await unauthorized.json();
 
+    const queryAuthenticated = await fetch(`${bridgeUrl}/webhooks/seerr?token=webhook-secret`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notificationType: 'TEST_NOTIFICATION', request: { id: '1' } }),
+    });
+    assert.equal(queryAuthenticated.status, 202);
+    await queryAuthenticated.json();
+
     const response = await fetch(`${bridgeUrl}/webhooks/seerr`, {
       method: 'POST',
       headers: { Authorization: 'Bearer webhook-secret', 'Content-Type': 'application/json' },

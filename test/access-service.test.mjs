@@ -18,6 +18,10 @@ describe('access tags and webhook validation', () => {
     const event = parseWebhook(webhook());
     assert.equal(event.request.requestedBy.jellyfinUserId, 'alice-id');
     assert.throws(() => parseWebhook(webhook({ mediaId: '{{media_jellyfinMediaId}}' })), /invalid/);
+    assert.deepEqual(parseWebhook({ notificationType: 'MEDIA_AVAILABLE', request: { id: '136' } }), {
+      notificationType: 'MEDIA_AVAILABLE',
+      request: { id: '136' },
+    });
   });
 });
 
@@ -89,6 +93,28 @@ describe('grant lifecycle', () => {
     assert.equal(grant.sync.attempts, 1);
     assert.match(grant.sync.lastError, /unavailable/);
     assert.ok(grant.sync.nextRetryAt);
+  });
+
+  it('resolves legacy Jellyseerr webhooks through the request API', async () => {
+    const store = new GrantStore(await stateFile());
+    await store.load();
+    const fake = fakeJellyfin();
+    const seerr = {
+      async getRequest(requestId) {
+        assert.equal(requestId, '136');
+        return {
+          id: 136,
+          is4k: false,
+          requestedBy: { jellyfinUserId: 'alice-id' },
+          media: { jellyfinMediaId: 'item-1', mediaType: 'movie' },
+        };
+      },
+    };
+    const service = new AccessService(fake, store, undefined, seerr);
+
+    const grant = await service.processWebhook(parseWebhook({ notificationType: 'MEDIA_AVAILABLE', request: { id: '136' } }));
+    assert.equal(grant.requests['136'], 'alice-id');
+    assert.deepEqual(fake.item.Tags, ['keep-me', 'jfa:private:item-1']);
   });
 });
 
