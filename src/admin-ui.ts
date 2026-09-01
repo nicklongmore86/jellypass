@@ -61,8 +61,8 @@ export const ADMIN_HTML = `<!doctype html>
       </section>
       <section id="library-panel" class="tab-panel" hidden>
         <div class="section-tools"><div><h2>Synchronized library</h2><p id="library-sync-status">Not synchronized yet</p></div><button id="sync-library" class="button primary">Sync with Jellyfin</button></div>
-        <div class="catalog-toolbar"><label class="search"><span>⌕</span><input id="library-filter" type="search" placeholder="Search title or year"></label><select id="library-name-filter" aria-label="Filter by Jellyfin library"><option value="">All Jellyfin libraries</option></select><select id="library-sort" aria-label="Sort library results"><option value="title-asc">Title A–Z</option><option value="title-desc">Title Z–A</option><option value="date-desc">Date added · newest</option><option value="date-asc">Date added · oldest</option><option value="year-desc">Release year · newest</option><option value="year-asc">Release year · oldest</option><option value="access-desc">Request/access · recent</option><option value="managed-first">Protected first</option><option value="unmanaged-first">Unmanaged first</option></select></div>
-        <div class="selection-bar"><label><input id="select-visible" type="checkbox"> Select visible</label><span id="selection-count">0 selected</span><button id="clear-selection" class="button quiet" type="button">Clear</button><button id="bulk-access" class="button primary" type="button" disabled>Assign access</button></div>
+        <div class="catalog-toolbar"><div class="catalog-search"><label class="search"><span>⌕</span><input id="library-filter" type="search" placeholder="Search title or year"></label><button id="clear-library-search" class="button quiet" type="button" disabled>Clear search</button></div><select id="library-name-filter" aria-label="Filter by Jellyfin library"><option value="">All Jellyfin libraries</option></select><select id="library-sort" aria-label="Sort library results"><option value="title-asc">Title A–Z</option><option value="title-desc">Title Z–A</option><option value="date-desc">Date added · newest</option><option value="date-asc">Date added · oldest</option><option value="year-desc">Release year · newest</option><option value="year-asc">Release year · oldest</option><option value="access-desc">Request/access · recent</option><option value="managed-first">Protected first</option><option value="unmanaged-first">Unmanaged first</option></select></div>
+        <div class="selection-bar"><label><input id="select-visible" type="checkbox"> Select visible</label><span id="selection-count">0 selected</span><button id="clear-selection" class="button quiet" type="button">Clear selection</button><button id="bulk-access" class="button primary" type="button" disabled>Assign access</button></div>
         <div id="catalog-list" class="catalog-list"></div>
         <div class="catalog-footer"><label>Results per page <select id="library-page-size"><option value="25">25</option><option value="50">50</option><option value="100">100</option></select></label><span id="library-page-info">Page 1 of 1</span><div><button id="library-previous" class="button quiet" type="button">Previous</button><button id="library-next" class="button quiet" type="button">Next</button></div></div>
       </section>
@@ -89,7 +89,7 @@ export const ADMIN_STYLES = `
 .request-list{display:grid;gap:8px}.request-row{display:flex;align-items:center;justify-content:space-between;gap:16px;background:#0a111b;border:1px solid var(--line);border-radius:10px;padding:12px}.request-row strong,.request-row small{display:block}.request-row small{color:var(--muted);font:10px ui-monospace,monospace;margin-top:3px}.credentials{display:grid;grid-template-columns:1fr 1fr;gap:12px}.login-button{width:100%;margin-top:12px;padding:12px}
 .grant-tools{display:flex;align-items:center;gap:10px}
 dialog select{width:100%;color:var(--text);background:#080e17;border:1px solid var(--line);border-radius:10px;padding:12px 14px;outline:none;font:inherit}dialog select:focus{border-color:var(--jelly-blue);box-shadow:0 0 0 3px rgba(0,164,220,.13)}
-.catalog-toolbar{display:grid;grid-template-columns:minmax(240px,1fr) repeat(2,minmax(190px,auto));gap:10px;margin-bottom:12px}.catalog-toolbar .search input{width:100%}.catalog-toolbar select,.catalog-footer select{color:var(--text);background:#080e17;border:1px solid var(--line);border-radius:10px;padding:11px 13px;outline:none}.selection-bar{display:flex;align-items:center;gap:12px;padding:12px 14px;margin-bottom:12px;background:rgba(16,29,56,.8);border:1px solid var(--line);border-radius:11px}.selection-bar label{display:flex;align-items:center;gap:8px}.selection-bar input,.catalog-check{width:auto;accent-color:var(--jelly-blue)}.selection-bar #selection-count{color:var(--muted);margin-right:auto}.catalog-list{display:grid;gap:7px}.catalog-row{display:grid;grid-template-columns:auto 44px minmax(220px,1.4fr) minmax(140px,.7fr) minmax(100px,.5fr);gap:14px;align-items:center;padding:12px 15px;background:linear-gradient(145deg,rgba(16,29,56,.82),rgba(6,14,33,.86));border:1px solid var(--line);border-radius:11px}.catalog-row.selected{border-color:rgba(0,164,220,.65);background:linear-gradient(145deg,rgba(22,47,83,.9),rgba(8,22,47,.92))}.media-glyph{width:40px;height:48px;display:grid;place-items:center;border-radius:7px;color:#d9e9ff;font-weight:800;background:linear-gradient(145deg,var(--jelly-purple),var(--jelly-blue))}.catalog-title strong,.catalog-title small{display:block}.catalog-title small,.catalog-library,.catalog-year{color:var(--muted);font-size:12px}.catalog-status{justify-self:end}.catalog-footer{display:flex;align-items:center;gap:16px;margin-top:14px;color:var(--muted)}.catalog-footer label{display:flex;align-items:center;gap:9px}.catalog-footer>span{margin-left:auto}.catalog-footer>div{display:flex;gap:8px}
+.catalog-toolbar{display:grid;grid-template-columns:minmax(320px,1fr) repeat(2,minmax(190px,auto));gap:10px;margin-bottom:12px}.catalog-search{display:flex;gap:8px}.catalog-search .search{flex:1}.catalog-toolbar .search input{width:100%}.catalog-toolbar select,.catalog-footer select{color:var(--text);background:#080e17;border:1px solid var(--line);border-radius:10px;padding:11px 13px;outline:none}.selection-bar{display:flex;align-items:center;gap:12px;padding:12px 14px;margin-bottom:12px;background:rgba(16,29,56,.8);border:1px solid var(--line);border-radius:11px}.selection-bar label{display:flex;align-items:center;gap:8px}.selection-bar input,.catalog-check{width:auto;accent-color:var(--jelly-blue)}.selection-bar #selection-count{color:var(--muted);margin-right:auto}.catalog-list{display:grid;gap:7px}.catalog-row{display:grid;grid-template-columns:auto 44px minmax(220px,1.4fr) minmax(140px,.7fr) minmax(100px,.5fr);gap:14px;align-items:center;padding:12px 15px;background:linear-gradient(145deg,rgba(16,29,56,.82),rgba(6,14,33,.86));border:1px solid var(--line);border-radius:11px}.catalog-row.selected{border-color:rgba(0,164,220,.65);background:linear-gradient(145deg,rgba(22,47,83,.9),rgba(8,22,47,.92))}.media-glyph{width:40px;height:48px;display:grid;place-items:center;border-radius:7px;color:#d9e9ff;font-weight:800;background:linear-gradient(145deg,var(--jelly-purple),var(--jelly-blue))}.catalog-title strong,.catalog-title small{display:block}.catalog-title small,.catalog-library,.catalog-year{color:var(--muted);font-size:12px}.catalog-status{justify-self:end}.catalog-footer{display:flex;align-items:center;gap:16px;margin-top:14px;color:var(--muted)}.catalog-footer label{display:flex;align-items:center;gap:9px}.catalog-footer>span{margin-left:auto}.catalog-footer>div{display:flex;gap:8px}
 body{background:radial-gradient(circle at 14% 4%,rgba(170,92,195,.2) 0,transparent 30%),radial-gradient(circle at 86% 18%,rgba(0,164,220,.16) 0,transparent 28%),linear-gradient(145deg,#000b25 0%,#050a18 72%)}.ambient-one{background:var(--jelly-purple);opacity:.16}.ambient-two{background:var(--jelly-blue);opacity:.14}.topbar{border-color:rgba(170,92,195,.22)}.brand-mark{width:42px;height:42px;border:0;border-radius:0;transform:none;display:grid;place-items:center;box-shadow:none}.brand-mark svg{width:42px;height:42px;filter:drop-shadow(0 8px 18px rgba(0,164,220,.22))}.brand strong{font-size:17px;letter-spacing:-.01em}.panel{background:linear-gradient(145deg,rgba(16,29,56,.97),rgba(5,12,31,.98));border-color:rgba(170,92,195,.34)}.login-card{position:relative;overflow:hidden}.login-card:before{content:"";position:absolute;inset:0 0 auto;height:3px;background:linear-gradient(90deg,var(--jelly-purple),var(--jelly-blue))}.login-card h1 em{color:transparent;-webkit-text-stroke:0;background:linear-gradient(105deg,var(--jelly-purple),var(--jelly-blue));background-clip:text;-webkit-background-clip:text}.eyebrow{color:#6fdcff}.button.primary{color:#000b25;background:linear-gradient(120deg,var(--jelly-purple),var(--jelly-blue));box-shadow:0 8px 24px rgba(78,112,219,.2)}.button.primary:hover{border-color:transparent;box-shadow:0 10px 30px rgba(78,112,219,.32)}button:focus-visible,a:focus-visible,input:focus-visible{outline:2px solid var(--jelly-blue);outline-offset:3px}input:focus{border-color:var(--jelly-blue);box-shadow:0 0 0 3px rgba(0,164,220,.13)}.stats article,.grant-card,.group-card{background:linear-gradient(145deg,rgba(16,29,56,.88),rgba(6,14,33,.9))}.stats article:after,.tabs button.active:after{background:linear-gradient(90deg,var(--jelly-purple),var(--jelly-blue))}.pill{background:rgba(64,88,137,.24)}dialog{background:linear-gradient(145deg,#101d38,#060e21);border-color:rgba(170,92,195,.38)}.connection.online span{background:var(--jelly-blue);box-shadow:0 0 0 4px rgba(0,164,220,.12)}.connection.online b{color:#a9e9ff}
 .topbar{height:76px}.topbar-actions{display:flex;align-items:center;gap:16px}.button.compact{padding:7px 11px;font-size:12px}.connection span{width:8px;height:8px}.connection.healthy span{background:var(--green);box-shadow:0 0 0 4px rgba(69,214,154,.12)}.connection.healthy b{color:#bdebd8}.connection.warning span{background:var(--amber);box-shadow:0 0 0 4px rgba(246,185,77,.12)}.connection.warning b{color:#ffe0a7}.connection.disconnected span{background:var(--red);box-shadow:0 0 0 4px rgba(255,109,118,.12)}.connection.disconnected b{color:#ffc7cb}.hero-row{padding:34px 0 24px}.hero-row h1{font-size:36px}.stats{margin-bottom:0}
 .stats{grid-template-columns:repeat(3,1fr)}
@@ -108,7 +108,7 @@ body{background:radial-gradient(circle at 14% 4%,rgba(170,92,195,.2) 0,transpare
 export const ADMIN_APP_JS = `
 (() => {
   'use strict';
-  const state = { grants: [], groups: [], users: [], jellyseerrImportAvailable: false, catalog: [], catalogSyncedAt: null, recentRequests: [], recentRequestsUnavailable: false, selectedItems: new Set(), catalogPage: 1, catalogPageSize: 25 };
+  const state = { grants: [], groups: [], users: [], jellyseerrImportAvailable: false, catalog: [], catalogSyncedAt: null, recentRequests: [], recentRequestsUnavailable: false, selectedItems: new Set(), catalogPage: 1, catalogPageSize: 25, activeTab: 'dashboard' };
   const byId = (id) => document.getElementById(id);
   const loginView = byId('login-view');
   const appView = byId('app-view');
@@ -328,6 +328,7 @@ export const ADMIN_APP_JS = `
     byId('select-visible').indeterminate = visible.some((item) => state.selectedItems.has(item.id)) && !byId('select-visible').checked;
     byId('selection-count').textContent = state.selectedItems.size + ' selected';
     byId('bulk-access').disabled = state.selectedItems.size === 0;
+    byId('clear-library-search').disabled = !byId('library-filter').value && !byId('library-name-filter').value;
     byId('library-page-size').value = String(state.catalogPageSize);
     byId('library-page-info').textContent = 'Page ' + state.catalogPage + ' of ' + pageCount + ' · ' + filtered.length + ' result' + (filtered.length === 1 ? '' : 's');
     byId('library-previous').disabled = state.catalogPage <= 1;
@@ -500,6 +501,22 @@ export const ADMIN_APP_JS = `
   }
 
   function clearSelection() {
+    state.selectedItems.clear();
+    renderCatalog();
+  }
+
+  function clearLibrarySearch() {
+    byId('library-filter').value = '';
+    byId('library-name-filter').value = '';
+    state.catalogPage = 1;
+    renderCatalog();
+    byId('library-filter').focus();
+  }
+
+  function resetLibraryView() {
+    byId('library-filter').value = '';
+    byId('library-name-filter').value = '';
+    state.catalogPage = 1;
     state.selectedItems.clear();
     renderCatalog();
   }
@@ -723,6 +740,7 @@ export const ADMIN_APP_JS = `
   byId('reconcile-policies').addEventListener('click', reconcilePolicies);
   byId('sync-library').addEventListener('click', syncCatalog);
   byId('library-filter').addEventListener('input', () => { state.catalogPage = 1; renderCatalog(); });
+  byId('clear-library-search').addEventListener('click', clearLibrarySearch);
   byId('library-name-filter').addEventListener('change', () => { state.catalogPage = 1; renderCatalog(); });
   byId('library-sort').addEventListener('change', () => { state.catalogPage = 1; renderCatalog(); });
   byId('library-page-size').addEventListener('change', () => { state.catalogPageSize = Number(byId('library-page-size').value); state.catalogPage = 1; renderCatalog(); });
@@ -739,6 +757,8 @@ export const ADMIN_APP_JS = `
   byId('access-form').addEventListener('submit', previewAccess);
   document.querySelectorAll('.dialog-close').forEach((button) => button.addEventListener('click', () => button.closest('dialog').close()));
   function activateTab(tab) {
+    if (state.activeTab === 'library' && tab !== 'library') resetLibraryView();
+    state.activeTab = tab;
     document.querySelectorAll('.tabs button').forEach((entry) => entry.classList.toggle('active', entry.dataset.tab === tab));
     const copy = heroCopy[tab];
     byId('hero-eyebrow').textContent = copy[0];

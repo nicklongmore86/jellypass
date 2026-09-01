@@ -45,6 +45,7 @@ Filtering public discovery is a usability and privacy boundary. It is not author
 ### Remove legacy login paths
 
 - Quick Connect is disabled globally in Jellyfin (`QuickConnectAvailable=false`).
+- Household origins independently return a non-cacheable `false` from `GET /QuickConnect/Enabled` so stale or accidental global configuration cannot advertise Quick Connect there.
 - Household login pages do not expose Manual Login, Forgot Password, or Quick Connect actions. This is implemented by augmenting Jellyfin's branding response for household hosts.
 - Hiding controls is not sufficient enforcement. When SSO replaces local login, household entry points must also reject unauthenticated password-login and password-recovery routes, including `POST /Users/AuthenticateByName`, `POST /Users/ForgotPassword`, and `POST /Users/ForgotPassword/Pin`.
 - Existing authenticated Jellyfin API traffic must continue to work; changing a password from an authenticated account is a separate policy decision.

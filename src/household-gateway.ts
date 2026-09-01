@@ -4,11 +4,15 @@ import type { Duplex } from 'node:stream';
 
 const PUBLIC_USERS_PATH = '/users/public';
 const BRANDING_CONFIGURATION_PATH = '/branding/configuration';
+const QUICK_CONNECT_ENABLED_PATH = '/quickconnect/enabled';
 const MAX_TRANSFORMED_JSON_BYTES = 2 * 1024 * 1024;
 const HOUSEHOLD_LOGIN_CSS = `
 /* JellyPass household profile picker */
 #loginPage .manualLoginForm,
-#loginPage .readOnlyContent {
+#loginPage .readOnlyContent,
+#loginPage .btnManual,
+#loginPage .btnQuick,
+#loginPage .btnForgotPassword {
   display: none !important;
 }
 #loginPage .visualLoginForm {
@@ -78,6 +82,10 @@ export class HouseholdGateway {
     }
     if (request.method === 'GET' && pathname === BRANDING_CONFIGURATION_PATH) {
       await this.#proxyBrandingConfiguration(request, response);
+      return;
+    }
+    if (request.method === 'GET' && pathname === QUICK_CONNECT_ENABLED_PATH) {
+      writeJson(response, 200, false);
       return;
     }
     await this.#proxy(request, response);

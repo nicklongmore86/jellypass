@@ -77,8 +77,15 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.match(householdBrandingBody.CustomCss, /existing-branding/);
     assert.match(householdBrandingBody.CustomCss, /#loginPage \.manualLoginForm/);
     assert.match(householdBrandingBody.CustomCss, /#loginPage \.readOnlyContent/);
+    assert.match(householdBrandingBody.CustomCss, /#loginPage \.btnManual/);
+    assert.match(householdBrandingBody.CustomCss, /#loginPage \.btnQuick/);
+    assert.match(householdBrandingBody.CustomCss, /#loginPage \.btnForgotPassword/);
     assert.match(householdBrandingBody.LoginDisclaimer, /<style id="jellypass-household-profile-picker">/);
     assert.match(householdBrandingBody.LoginDisclaimer, /#loginPage \.readOnlyContent/);
+    const householdQuickConnect = await fetchWithHost(bridgeUrl, '/QuickConnect/Enabled', 'jelly-farmhouse.example.test');
+    assert.equal(householdQuickConnect.status, 200);
+    assert.equal(await householdQuickConnect.json(), false);
+    assert.equal(householdQuickConnect.headers.get('cache-control'), 'no-store');
     const householdLogin = await fetchWithHost(bridgeUrl, '/Users/AuthenticateByName', 'jelly-farmhouse.example.test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -103,6 +110,8 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.match(adminMarkup, /<section id="dashboard-panel" class="tab-panel">/);
     assert.match(adminMarkup, /id="hero-title">JellyPass dashboard/);
     assert.match(adminMarkup, /id="recent-requests"/);
+    assert.match(adminMarkup, /id="clear-library-search"[^>]*>Clear search</);
+    assert.match(adminMarkup, /id="clear-selection"[^>]*>Clear selection</);
     assert.match(adminMarkup, /<section id="grants-panel" class="tab-panel" hidden>/);
     assert.match(adminMarkup, /<section id="library-panel" class="tab-panel" hidden>/);
     assert.match(adminMarkup, /id="connection" class="connection disconnected"/);
@@ -135,6 +144,9 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.match(adminScriptText, /Edit library access/);
     assert.match(adminScriptText, /dateStyle: 'short'/);
     assert.match(adminScriptText, /sortingByDateAdded/);
+    assert.match(adminScriptText, /function clearLibrarySearch/);
+    assert.match(adminScriptText, /function resetLibraryView/);
+    assert.match(adminScriptText, /state\.activeTab === 'library' && tab !== 'library'/);
     assert.match(adminScriptText, /importOption\.checked = false/);
     assert.match(adminScriptText, /POST.*\/v1\/users|\/v1\/users.*method: 'POST'/s);
     assert.doesNotThrow(() => new Function(adminScriptText));
