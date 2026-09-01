@@ -6,6 +6,8 @@ JellyPass receives Seerr's **Request Available** webhook and applies Jellyfin's 
 
 JellyPass is an independent third-party project compatible with Jellyfin. It is not affiliated with or endorsed by the Jellyfin project.
 
+The companion [JellyPass for Tizen](https://github.com/nicklongmore86/jellypass-tizen) client provides a household-scoped Samsung TV build with a locked JellyPass hostname and an app-owned login experience.
+
 > [!CAUTION]
 > Test with non-critical users and media first. Jellyfin does not expose transactional policy updates, so a failed sync can temporarily leave an item visible until reconciliation succeeds.
 
