@@ -11,6 +11,8 @@ services:
       ADMIN_TOKEN: ${ADMIN_TOKEN}
       STATE_FILE: /app/data/grants.json
       RECONCILE_INTERVAL_SECONDS: 300
+      HOUSEHOLD_DOMAIN: ${HOUSEHOLD_DOMAIN:-}
+      HOUSEHOLD_HOST_PREFIX: ${HOUSEHOLD_HOST_PREFIX:-jelly-}
     volumes:
       - ./data:/app/data
     ports:

@@ -1,15 +1,17 @@
-# Jellyseerr → Jellyfin Access
+# JellyPass
 
-Restrict requested media in Jellyfin to the Seerr/Jellyseerr users who requested it.
+**Control who can watch what.** JellyPass provides personalized library access for Jellyfin.
 
-This small companion service receives Seerr's **Request Available** webhook and applies Jellyfin's native tag-based access policy. It can read the requester and media IDs directly from newer webhook payloads or look them up from the request ID on older Jellyseerr releases.
+JellyPass receives Seerr's **Request Available** webhook and applies Jellyfin's native tag-based access policy. It can read the requester and media IDs directly from newer webhook payloads or look them up from the request ID on older Jellyseerr releases.
+
+JellyPass is an independent third-party project compatible with Jellyfin. It is not affiliated with or endorsed by the Jellyfin project.
 
 > [!CAUTION]
 > Test with non-critical users and media first. Jellyfin does not expose transactional policy updates, so a failed sync can temporarily leave an item visible until reconciliation succeeds.
 
-## How it works
+## How JellyPass works
 
-For each private title, the bridge:
+For each private title, JellyPass:
 
 1. Adds one stable tag such as `jfa:private:8f…` to the movie or series.
 2. Adds that tag to `BlockedTags` for every non-administrator Jellyfin user except its requester(s).
@@ -79,6 +81,10 @@ If that Jellyseerr release cannot add an authorization header, append `?token=YO
 
 The webhook uses `WEBHOOK_TOKEN`. Administrative endpoints use `ADMIN_TOKEN`. Health is public.
 
+Open `/admin/` in a browser and sign in with an enabled Jellyfin administrator account. JellyPass validates the credentials with Jellyfin, immediately closes the temporary Jellyfin session, and retains only its own 12-hour, HttpOnly, SameSite session cookie. Non-administrator Jellyfin accounts cannot sign in. Bearer-token API access remains available for automation. The UI supports grant inspection, dry-run plans, request revocation, shared-access groups, retroactive Jellyfin library search and imports, and global reconciliation.
+
+The default **Dashboard** tab keeps access metrics together without crowding the working views and presents the eight newest Jellyseerr requests that have media IDs in the synchronized Jellyfin catalog. JellyPass scans past newer processing-only requests so every displayed card links to a real library item. Poster cards include requester, age, media type, and availability status; images are proxied through authenticated JellyPass routes, so the Jellyseerr API key and internal service URL never reach the browser. The header shows live sync health: green when the catalog and policies are current, orange when synchronization or policy attention is required, and red when disconnected. The **Library** tab maintains a synchronized catalog of Jellyfin movies and series. Search by title or year, filter by Jellyfin library, sort by title, date added, release year, request/access activity, or protection state, and paginate at 25, 50, or 100 results. Select up to 500 titles across pages, assign one audience of individual users and/or access groups, preview the complete change plan, then apply it in bulk. JellyPass updates each selected item once and consolidates the final blocked-tag set into at most one policy write per affected user. Manual users are stored separately from Jellyseerr request owners, so request lifecycle changes do not remove retroactively assigned access. The **Grants** tab tracks automated and manual grants and provides a preview-first policy reconciliation tool, while **Groups** manages shared audiences.
+
 ```sh
 # Liveness
 curl http://127.0.0.1:8787/health
@@ -106,9 +112,26 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" \
 
 The service also reconciles on `RECONCILE_INTERVAL_SECONDS` (default: 300). Set it to `0` to disable scheduled reconciliation. Run a manual reconciliation immediately after adding or importing a Jellyfin user.
 
-### Household and shared-access groups
+The Jellyfin catalog synchronizes on startup when empty and every `CATALOG_SYNC_INTERVAL_SECONDS` (default: 3600). Set it to `0` to disable scheduled catalog sync; manual synchronization remains available from the Library tab and API.
 
-Groups grant access in addition to the original requester. Group IDs are stable URL-safe names chosen by the administrator.
+### Household Jellyfin URLs and shared-access groups
+
+Groups grant access in addition to the original requester. They can also act as households: each DNS-safe group ID receives a dedicated Jellyfin server URL whose login screen shows only that group's users. Jellyfin still performs authentication and authorization; the household URL changes profile discovery only and does not let one household member sign in as another.
+
+Enable the household gateway with a base domain and host prefix:
+
+```dotenv
+HOUSEHOLD_DOMAIN=example.com
+HOUSEHOLD_HOST_PREFIX=jelly-
+```
+
+With those settings, group `household` is available at `https://jelly-household.example.com`. The URL is shown on the group's card in the JellyPass UI. Point each household hostname (or suitable wildcard DNS record) at your reverse proxy, then proxy HTTP and WebSocket traffic to JellyPass on port `8787`. The reverse proxy must preserve the original `Host` header. Its TLS certificate must cover the generated hostname; a wildcard for `*.example.com` covers this single-label format.
+
+Keep the normal Jellyfin URL available for administrators and devices that should see the complete public-user list. Unknown household hostnames fail closed with `404` instead of exposing that list. A household URL is a convenience and privacy boundary for the login screen, not a replacement for Jellyfin user passwords, Jellyfin policy enforcement, or JellyPass library grants.
+
+Group IDs are stable names chosen by the administrator. Use lowercase letters, numbers, and hyphens (maximum 63 characters) for groups that need a household hostname.
+
+The operational Farmhouse origin and the path toward household-bound passwordless SSO are documented in [Household access and passwordless sign-in](docs/household-access.md).
 
 ```sh
 # Create or replace a group. User IDs are Jellyfin IDs.
@@ -129,7 +152,11 @@ curl -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \
   http://127.0.0.1:8787/v1/groups/household
 ```
 
-Changing a group's membership immediately reconciles every item that references it. Removing the last request and last group cleans the private tag from the item and every user's block list.
+Changing a group's membership immediately reconciles every item that references it and updates the household login screen on the next request. Removing the last request and last group cleans the private tag from the item and every user's block list.
+
+Administrators can also create a real non-administrator Jellyfin account from the Groups tab and assign it to a household in the same workflow. Passwords are optional: leaving both fields blank creates a passwordless Jellyfin account, while a supplied password must contain 8–256 characters. JellyPass sends a supplied password directly to Jellyfin and never persists or returns it. Until household SSO is implemented, a passwordless account can be used by anyone who can reach Jellyfin and knows its username. When `SEERR_URL` and `SEERR_API_KEY` are configured, the form offers an opt-in option to import the new Jellyfin identity into Jellyseerr so it can own requests. The option is unchecked by default. Jellyseerr assigns its configured default permissions to imported accounts.
+
+Provisioning is intentionally phased: Jellyfin account creation, household assignment, then optional Jellyseerr import. A later failure never rolls back an earlier successful phase. JellyPass reports whether Jellyseerr imported the user, already had it, or failed after the Jellyfin account and household membership were created, leaving the valid account intact for review.
 
 ## Access semantics and limitations
 
@@ -138,7 +165,7 @@ Changing a group's membership immediately reconciles every item that references 
 - Seerr does not currently emit a request-deleted webhook with all fields needed for automatic revocation, so revocation uses the administrative API.
 - Direct filesystem, DLNA, administrator, and other out-of-band access are outside this service's scope.
 - The bridge merges only its own `jfa:private:*` tag and preserves unrelated item tags and blocked tags.
-- A Jellyfin user policy is updated as a whole because that is how Jellyfin's API is shaped. Changes made concurrently in another admin UI can race; reconciliation restores the bridge-owned portion.
+- A Jellyfin user policy is updated as a whole because that is how Jellyfin's API is shaped. Changes made concurrently in another admin UI can race; reconciliation restores the JellyPass-owned portion.
 - Metrics intentionally contain counts and result labels only; they do not expose usernames, item names, API keys, or tokens.
 
 ## Administrative API
@@ -149,7 +176,14 @@ Changing a group's membership immediately reconciles every item that references 
 | `GET` | `/v1/grants/{itemId}/plan` | Dry-run plan for one grant |
 | `DELETE` | `/v1/grants/{itemId}/requests/{requestId}` | Revoke a requester; supports `?dryRun=true` |
 | `PUT` | `/v1/grants/{itemId}/groups` | Replace shared groups; supports `?dryRun=true` |
+| `PUT` | `/v1/grants/{itemId}/manual` | Create or update retroactive user/group access; supports `?dryRun=true` |
 | `GET` | `/v1/groups` | List access groups |
+| `GET` | `/v1/users` | List Jellyfin users for group management |
+| `POST` | `/v1/users` | Create a non-administrator Jellyfin user and assign it to a group |
+| `GET` | `/v1/library/search?q={title}` | Search Jellyfin movies and series for retroactive import |
+| `GET` | `/v1/library` | Read the synchronized movie and series catalog |
+| `POST` | `/v1/library/sync` | Synchronize the catalog from Jellyfin |
+| `PUT` | `/v1/library/access` | Assign one audience to up to 500 catalog items; supports `?dryRun=true` |
 | `PUT` | `/v1/groups/{groupId}` | Create or replace an access group |
 | `DELETE` | `/v1/groups/{groupId}` | Delete a group and reconcile affected items |
 | `POST` | `/v1/reconcile` | Reconcile all grants; supports `?dryRun=true` |
@@ -174,9 +208,9 @@ JELLYFIN_REAL_URL=http://127.0.0.1:18096 pnpm test:real
 
 ## Project status
 
-Implemented today: idempotent request grants, legacy Jellyseerr request lookups, explicit revocation and cleanup, shared household groups, dry-run change plans, persistent sync failures, scheduled reconciliation, Prometheus metrics, state-v1 migration tests, full HTTP integration tests, and container-backed tests against Jellyfin 10.11.3.
+Implemented today: the JellyPass browser administration UI with Jellyfin administrator authentication, a synchronized and filterable Jellyfin catalog, optimized bulk audience assignment, single-title imports, idempotent request grants, legacy Jellyseerr request lookups, explicit revocation and cleanup, shared household groups, household-specific Jellyfin URLs, dry-run change plans, persistent sync failures, scheduled reconciliation, Prometheus metrics, state migrations, full HTTP integration tests, and container-backed tests against Jellyfin 10.11.3.
 
-Potential follow-ups include a browser-based administration UI, automatic revocation when Seerr exposes a suitable lifecycle webhook, grant expiration, signed webhooks, orphan discovery, and release images published to GHCR.
+The next planned milestone is household-bound passwordless SSO; see [Household access and passwordless sign-in](docs/household-access.md). Other potential follow-ups include automatic revocation when Seerr exposes a suitable lifecycle webhook, grant expiration, signed webhooks, orphan discovery, and release images published to GHCR.
 
 ## License
 

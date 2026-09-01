@@ -26,7 +26,7 @@ describe('access tags and webhook validation', () => {
 });
 
 describe('state migration', () => {
-  it('migrates v1 grants to active, pending v2 records', async () => {
+  it('migrates v1 grants to active, pending v4 records', async () => {
     const file = await stateFile();
     await writeFile(file, JSON.stringify({
       version: 1,
@@ -45,11 +45,93 @@ describe('state migration', () => {
     assert.equal(grant.active, true);
     assert.deepEqual(grant.groupIds, []);
     assert.equal(grant.sync.state, 'pending');
-    assert.equal(JSON.parse(await readFile(file, 'utf8')).version, 2);
+    assert.deepEqual(grant.manualUserIds, []);
+    assert.equal(JSON.parse(await readFile(file, 'utf8')).version, 4);
+  });
+
+  it('adds manual audiences and an empty catalog while migrating v2 state to v4', async () => {
+    const file = await stateFile();
+    await writeFile(file, JSON.stringify({
+      version: 2,
+      grants: {
+        'item-1': {
+          itemId: 'item-1', active: true, owners: ['alice-id'], requests: { '17': 'alice-id' },
+          groupIds: [], sync: { state: 'synced', attempts: 0 }, updatedAt: '2026-01-01T00:00:00.000Z',
+        },
+      },
+      groups: {},
+    }));
+    const store = new GrantStore(file);
+    await store.load();
+    assert.deepEqual(store.get('item-1').manualUserIds, []);
+    const migrated = JSON.parse(await readFile(file, 'utf8'));
+    assert.equal(migrated.version, 4);
+    assert.deepEqual(migrated.catalog.items, {});
+  });
+
+  it('preserves v3 grants while adding the v4 catalog', async () => {
+    const file = await stateFile();
+    await writeFile(file, JSON.stringify({
+      version: 3,
+      grants: {
+        'item-1': {
+          itemId: 'item-1', active: true, owners: ['bob-id'], requests: {}, manualUserIds: ['bob-id'],
+          groupIds: [], sync: { state: 'synced', attempts: 0 }, updatedAt: '2026-01-01T00:00:00.000Z',
+        },
+      },
+      groups: {},
+    }));
+    const store = new GrantStore(file);
+    await store.load();
+    assert.deepEqual(store.get('item-1').manualUserIds, ['bob-id']);
+    const migrated = JSON.parse(await readFile(file, 'utf8'));
+    assert.equal(migrated.version, 4);
+    assert.deepEqual(migrated.catalog, { items: {} });
   });
 });
 
 describe('grant lifecycle', () => {
+  it('syncs the catalog and consolidates bulk access into one policy write per user', async () => {
+    const store = new GrantStore(await stateFile());
+    await store.load();
+    const fake = fakeJellyfin();
+    const service = new AccessService(fake, store);
+
+    const catalog = await service.syncLibraryCatalog();
+    assert.equal(catalog.items.length, 2);
+    assert.equal(service.getLibraryCatalog().items.every((item) => !item.managed), true);
+    const preview = await service.setBulkManualAccess({ itemIds: ['item-1', 'item-2'], userIds: ['bob-id'], groupIds: [] }, true);
+    assert.equal(preview.plans.length, 2);
+    assert.equal(store.list().length, 0);
+
+    await service.setBulkManualAccess({ itemIds: ['item-1', 'item-2'], userIds: ['bob-id'], groupIds: [] });
+    assert.equal(fake.policyUpdates, 1);
+    assert.deepEqual(fake.user('alice-id').Policy.BlockedTags, ['other', 'jfa:private:item-1', 'jfa:private:item-2']);
+    assert.deepEqual(fake.item.Tags, ['keep-me', 'jfa:private:item-1']);
+    assert.deepEqual(fake.item2.Tags, ['jfa:private:item-2']);
+    assert.equal(service.getLibraryCatalog().items.every((item) => item.managed), true);
+  });
+
+  it('searches and retroactively protects library media for selected users', async () => {
+    const store = new GrantStore(await stateFile());
+    await store.load();
+    const fake = fakeJellyfin();
+    const service = new AccessService(fake, store);
+
+    assert.deepEqual(await service.searchLibrary('mov'), [{ id: 'item-1', name: 'Movie', mediaType: 'movie', productionYear: 2026 }]);
+    const preview = await service.setManualAccess({ itemId: 'item-1', mediaType: 'movie', userIds: ['bob-id'], groupIds: [] }, true);
+    assert.equal(store.get('item-1'), undefined);
+    assert.deepEqual(preview.plan.owners, ['bob-id']);
+    assert.equal(preview.plan.item.action, 'add_tag');
+    assert.equal(preview.plan.users.find((change) => change.userId === 'alice-id').action, 'block');
+
+    await service.setManualAccess({ itemId: 'item-1', mediaType: 'movie', userIds: ['bob-id'], groupIds: [] });
+    assert.deepEqual(store.get('item-1').manualUserIds, ['bob-id']);
+    assert.deepEqual(fake.item.Tags, ['keep-me', 'jfa:private:item-1']);
+    assert.deepEqual(fake.user('alice-id').Policy.BlockedTags, ['other', 'jfa:private:item-1']);
+    assert.deepEqual(fake.user('bob-id').Policy.BlockedTags, ['other']);
+  });
+
   it('supports household sharing, dry runs, revocation, and last-owner cleanup', async () => {
     const store = new GrantStore(await stateFile());
     await store.load();
@@ -135,21 +217,38 @@ function fakeJellyfin() {
     { Id: 'bob-id', Name: 'Bob', Policy: { BlockedTags: ['other'] } },
     { Id: 'admin-id', Name: 'Admin', Policy: { IsAdministrator: true, BlockedTags: [] } },
   ];
+  let policyUpdates = 0;
   return {
     item: { Id: 'item-1', Name: 'Movie', Tags: ['keep-me'] },
+    item2: { Id: 'item-2', Name: 'Series', Tags: [] },
+    get policyUpdates() { return policyUpdates; },
     user(id) {
       return users.find((user) => user.Id === id);
     },
-    async getItem() {
-      return structuredClone(this.item);
+    async searchLibrary() {
+      return [{ id: 'item-1', name: 'Movie', mediaType: 'movie', productionYear: 2026 }];
+    },
+    async fetchLibraryCatalog() {
+      return [
+        { id: 'item-1', name: 'Movie', mediaType: 'movie', productionYear: 2026, libraryId: 'movies', libraryName: 'Movies' },
+        { id: 'item-2', name: 'Series', mediaType: 'series', productionYear: 2025, libraryId: 'shows', libraryName: 'TV Shows' },
+      ];
+    },
+    async getItem(itemId = 'item-1') {
+      return structuredClone(itemId === 'item-2' ? this.item2 : this.item);
+    },
+    async getItems(itemIds) {
+      return Promise.all(itemIds.map((itemId) => this.getItem(itemId)));
     },
     async getUsers() {
       return structuredClone(users);
     },
     async updateItem(item) {
-      this.item = structuredClone(item);
+      if (item.Id === 'item-2') this.item2 = structuredClone(item);
+      else this.item = structuredClone(item);
     },
     async updatePolicy(userId, policy) {
+      policyUpdates += 1;
       const user = users.find((entry) => entry.Id === userId);
       user.Policy = structuredClone(policy);
     },

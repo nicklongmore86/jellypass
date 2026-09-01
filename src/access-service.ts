@@ -8,6 +8,9 @@ import type {
   GrantRecord,
   JellyfinItem,
   JellyfinUser,
+  LibraryCatalogItem,
+  LibraryItemSummary,
+  RecentSeerrRequest,
   RevokeResult,
   SeerrWebhook,
 } from './types.js';
@@ -18,6 +21,20 @@ interface PlanContext {
   plan: ChangePlan;
   item: JellyfinItem;
   users: JellyfinUser[];
+}
+
+export class UserProvisioningError extends Error {
+  public constructor(
+    public readonly user: { id: string; name: string },
+    public readonly stage: 'household' | 'jellyseerr',
+    public readonly group: AccessGroup | undefined,
+    cause: unknown,
+  ) {
+    super(stage === 'household'
+      ? 'Jellyfin user was created, but household assignment did not finish. Refresh the group and review its membership.'
+      : 'Jellyfin user was created and assigned to the household, but Jellyseerr import failed. Import the user from Jellyseerr or try again there.');
+    this.cause = cause;
+  }
 }
 
 export class AccessService {
@@ -41,6 +58,114 @@ export class AccessService {
 
   public listGroups(): AccessGroup[] {
     return this.#store.listGroups();
+  }
+
+  public getHouseholdMemberIds(groupId: string): string[] | undefined {
+    return this.#store.getGroup(groupId)?.userIds;
+  }
+
+  public async listUsers(): Promise<Array<{ id: string; name: string; isAdministrator: boolean }>> {
+    const users = await this.#jellyfin.getUsers();
+    return users
+      .map((user) => ({
+        id: user.Id,
+        name: user.Name,
+        isAdministrator: user.Policy.IsAdministrator === true,
+      }))
+      .sort((left, right) => left.name.localeCompare(right.name));
+  }
+
+  public canImportJellyfinUsersToSeerr(): boolean {
+    return Boolean(this.#seerr);
+  }
+
+  public createUserInGroup(input: { username: string; password: string; groupId: string; importToJellyseerr?: boolean }): Promise<{
+    user: { id: string; name: string; isAdministrator: false };
+    group: AccessGroup;
+    jellyseerr: { status: 'not_requested' | 'imported' | 'already_imported'; userId?: number };
+  }> {
+    return this.#exclusive(async () => {
+      if (input.importToJellyseerr && !this.#seerr) throw new Error('Jellyseerr user import is not configured');
+      const group = this.#store.getGroup(input.groupId);
+      if (!group) throw new Error(`group not found: ${input.groupId}`);
+      const users = await this.#jellyfin.getUsers();
+      if (users.some((user) => user.Name.localeCompare(input.username, undefined, { sensitivity: 'accent' }) === 0)) {
+        throw new Error('username is already in use');
+      }
+
+      const created = await this.#jellyfin.createUser(input.username, input.password);
+      const user = { id: created.Id, name: created.Name, isAdministrator: false as const };
+      if (!created.Id || !created.Name || created.Policy?.IsAdministrator === true) {
+        throw new UserProvisioningError(user, 'household', undefined, new Error('Jellyfin returned an invalid non-administrator user'));
+      }
+      let updatedGroup: AccessGroup;
+      try {
+        if (created.Policy.IsHidden !== false) {
+          created.Policy = { ...created.Policy, IsHidden: false };
+          await this.#jellyfin.updatePolicy(created.Id, created.Policy);
+        }
+        updatedGroup = await this.#store.upsertGroup({
+          id: group.id,
+          name: group.name,
+          userIds: [...group.userIds, created.Id],
+        });
+        await this.#reconcileReferencingGroup(updatedGroup.id);
+      } catch (error) {
+        throw new UserProvisioningError(user, 'household', undefined, error);
+      }
+
+      if (!input.importToJellyseerr) return { user, group: updatedGroup, jellyseerr: { status: 'not_requested' } };
+      try {
+        const imported = await this.#seerr!.importJellyfinUser(created.Id);
+        return {
+          user,
+          group: updatedGroup,
+          jellyseerr: {
+            status: imported.status,
+            ...(imported.user?.id !== undefined ? { userId: imported.user.id } : {}),
+          },
+        };
+      } catch (error) {
+        throw new UserProvisioningError(user, 'jellyseerr', updatedGroup, error);
+      }
+    });
+  }
+
+  public searchLibrary(query: string): Promise<LibraryItemSummary[]> {
+    return this.#jellyfin.searchLibrary(query);
+  }
+
+  public listRecentRequests(take = 8): Promise<RecentSeerrRequest[]> {
+    const catalogIds = new Set(this.#store.getCatalog().items.map((item) => normalizeId(item.id)));
+    return this.#seerr?.getRecentRequests(take, catalogIds) ?? Promise.resolve([]);
+  }
+
+  public getRequestPoster(posterPath: string): Promise<{ body: Uint8Array; contentType: string }> {
+    if (!this.#seerr) throw new Error('Seerr lookup is not configured');
+    return this.#seerr.getPoster(posterPath);
+  }
+
+  public getLibraryCatalog(): { lastSyncedAt?: string; items: Array<LibraryCatalogItem & { managed: boolean; managedAt?: string }> } {
+    const catalog = this.#store.getCatalog();
+    const grants = new Map(this.#store.list().filter((grant) => grant.active).map((grant) => [normalizeId(grant.itemId), grant]));
+    return {
+      ...(catalog.lastSyncedAt ? { lastSyncedAt: catalog.lastSyncedAt } : {}),
+      items: catalog.items.map((item) => {
+        const grant = grants.get(normalizeId(item.id));
+        return { ...item, managed: Boolean(grant), ...(grant ? { managedAt: grant.updatedAt } : {}) };
+      }),
+    };
+  }
+
+  public syncLibraryCatalog(): Promise<{ lastSyncedAt: string; items: Array<LibraryCatalogItem & { managed: boolean; managedAt?: string }> }> {
+    return this.#exclusive(async () => {
+      const catalog = await this.#store.replaceCatalog(await this.#jellyfin.fetchLibraryCatalog());
+      const grants = new Map(this.#store.list().filter((grant) => grant.active).map((grant) => [normalizeId(grant.itemId), grant]));
+      return { ...catalog, items: catalog.items.map((item) => {
+        const grant = grants.get(normalizeId(item.id));
+        return { ...item, managed: Boolean(grant), ...(grant ? { managedAt: grant.updatedAt } : {}) };
+      }) };
+    });
   }
 
   public renderMetrics(): string {
@@ -147,12 +272,96 @@ export class AccessService {
         if (missing.length > 0) throw new Error(`group not found: ${missing.join(', ')}`);
         const hypothetical = { ...existing, groupIds: [...new Set(groupIds.map(normalizeId))] };
         hypothetical.owners = this.#store.resolveOwners(hypothetical);
-        hypothetical.active = Object.keys(hypothetical.requests).length > 0 || hypothetical.groupIds.length > 0;
+        hypothetical.active = Object.keys(hypothetical.requests).length > 0 || hypothetical.manualUserIds.length > 0 || hypothetical.groupIds.length > 0;
         return { previous: existing, current: hypothetical, plan: (await this.#buildPlan(hypothetical)).plan };
       }
       const result = await this.#store.setGrantGroups(itemId, groupIds);
       const plan = await this.#reconcileGrant(result.current);
       return { ...result, plan };
+    });
+  }
+
+  public setManualAccess(input: {
+    itemId: string;
+    mediaType?: string;
+    userIds: string[];
+    groupIds: string[];
+  }, dryRun = false): Promise<{ previous?: GrantRecord; current: GrantRecord; plan: ChangePlan }> {
+    return this.#exclusive(async () => {
+      const userIds = [...new Set(input.userIds.map(normalizeId))].sort();
+      const groupIds = [...new Set(input.groupIds.map(normalizeId))].sort();
+      await this.#validateManualAudience(userIds, groupIds);
+      const previous = this.#store.get(input.itemId);
+      const mediaType = input.mediaType ?? previous?.mediaType;
+      const current: GrantRecord = {
+        itemId: normalizeId(input.itemId),
+        active: Object.keys(previous?.requests ?? {}).length > 0 || userIds.length > 0 || groupIds.length > 0,
+        owners: [],
+        requests: previous?.requests ?? {},
+        manualUserIds: userIds,
+        groupIds,
+        sync: { state: 'pending', attempts: previous?.sync.attempts ?? 0 },
+        updatedAt: new Date().toISOString(),
+        ...(mediaType ? { mediaType } : {}),
+      };
+      current.owners = this.#store.resolveOwners(current);
+      const plan = (await this.#buildPlan(current)).plan;
+      if (dryRun) return { ...(previous ? { previous } : {}), current, plan };
+      const stored = await this.#store.setManualAccess(input);
+      const appliedPlan = await this.#reconcileGrant(stored.current);
+      return { ...stored, plan: appliedPlan };
+    });
+  }
+
+  public setBulkManualAccess(input: {
+    itemIds: string[];
+    userIds: string[];
+    groupIds: string[];
+  }, dryRun = false): Promise<{ currents: GrantRecord[]; plans: ChangePlan[] }> {
+    return this.#exclusive(async () => {
+      const itemIds = [...new Set(input.itemIds.map(normalizeId))];
+      if (itemIds.length === 0) throw new Error('select at least one library item');
+      if (itemIds.length > 500) throw new Error('bulk changes are limited to 500 items');
+      const userIds = [...new Set(input.userIds.map(normalizeId))].sort();
+      const groupIds = [...new Set(input.groupIds.map(normalizeId))].sort();
+      const users = await this.#validateManualAudience(userIds, groupIds);
+      const catalogById = new Map(this.#store.getCatalog().items.map((item) => [normalizeId(item.id), item]));
+      const missingCatalogItems = itemIds.filter((id) => !catalogById.has(id));
+      if (missingCatalogItems.length > 0) throw new Error(`library item not found in catalog: ${missingCatalogItems.join(', ')}`);
+      const items = await this.#jellyfin.getItems(itemIds);
+      const currents = itemIds.map((itemId) => this.#makeManualGrant(
+        itemId,
+        catalogById.get(itemId)?.mediaType,
+        userIds,
+        groupIds,
+      ));
+      const contexts = currents.map((grant, index) => this.#buildPlanContext(grant, items[index] as JellyfinItem, users));
+      const plans = contexts.map((context) => context.plan);
+      if (dryRun) return { currents, plans };
+
+      const stored = await this.#store.setManualAccessBatch(currents.map((grant) => ({
+        itemId: grant.itemId,
+        userIds: grant.manualUserIds,
+        groupIds: grant.groupIds,
+        ...(grant.mediaType ? { mediaType: grant.mediaType } : {}),
+      })));
+      try {
+        await this.#applyBatch(contexts, users);
+        await this.#store.markSyncSuccessBatch(stored.map((result) => result.current.itemId));
+        for (const _ of stored) {
+          this.#metrics.increment('jfa_reconciliations_total', { result: 'success' });
+        }
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        await this.#store.markSyncErrorBatch(stored.map((result) => result.current.itemId), message);
+        for (const _ of stored) {
+          this.#metrics.increment('jfa_reconciliations_total', { result: 'error' });
+        }
+        throw error;
+      } finally {
+        this.#refreshGauges();
+      }
+      return { currents: stored.map((result) => result.current), plans };
     });
   }
 
@@ -186,6 +395,37 @@ export class AccessService {
     if (missing.length > 0) throw new Error(`Jellyfin user not found: ${missing.join(', ')}`);
   }
 
+  async #validateManualAudience(userIds: string[], groupIds: string[]): Promise<JellyfinUser[]> {
+    if (userIds.length === 0 && groupIds.length === 0) throw new Error('select at least one user or group');
+    const missingGroups = groupIds.filter((id) => !this.#store.getGroup(id));
+    if (missingGroups.length > 0) throw new Error(`group not found: ${missingGroups.join(', ')}`);
+    const users = await this.#jellyfin.getUsers();
+    const byId = new Map(users.map((user) => [normalizeId(user.Id), user]));
+    const missingUsers = userIds.filter((id) => !byId.has(id));
+    if (missingUsers.length > 0) throw new Error(`Jellyfin user not found: ${missingUsers.join(', ')}`);
+    const administrators = userIds.filter((id) => byId.get(id)?.Policy.IsAdministrator);
+    if (administrators.length > 0) throw new Error('Jellyfin administrators already have unrestricted access');
+    return users;
+  }
+
+  #makeManualGrant(itemId: string, mediaType: string | undefined, userIds: string[], groupIds: string[]): GrantRecord {
+    const previous = this.#store.get(itemId);
+    const resolvedMediaType = mediaType ?? previous?.mediaType;
+    const current: GrantRecord = {
+      itemId: normalizeId(itemId),
+      active: Object.keys(previous?.requests ?? {}).length > 0 || userIds.length > 0 || groupIds.length > 0,
+      owners: [],
+      requests: previous?.requests ?? {},
+      manualUserIds: userIds,
+      groupIds,
+      sync: { state: 'pending', attempts: previous?.sync.attempts ?? 0 },
+      updatedAt: new Date().toISOString(),
+      ...(resolvedMediaType ? { mediaType: resolvedMediaType } : {}),
+    };
+    current.owners = this.#store.resolveOwners(current);
+    return current;
+  }
+
   async #reconcileGrant(grant: GrantRecord): Promise<ChangePlan> {
     try {
       const context = await this.#buildPlan(grant);
@@ -209,6 +449,10 @@ export class AccessService {
       this.#jellyfin.getItem(grant.itemId),
       this.#jellyfin.getUsers(),
     ]);
+    return this.#buildPlanContext(grant, item, users);
+  }
+
+  #buildPlanContext(grant: GrantRecord, item: JellyfinItem, users: JellyfinUser[]): PlanContext {
     const owners = grant.active ? this.#store.resolveOwners(grant) : [];
     const knownUserIds = new Set(users.map((user) => normalizeId(user.Id)));
     const missingOwners = owners.filter((owner) => !knownUserIds.has(owner));
@@ -263,6 +507,28 @@ export class AccessService {
     }
   }
 
+  async #applyBatch(contexts: PlanContext[], users: JellyfinUser[]): Promise<void> {
+    for (const context of contexts) {
+      if (context.plan.item.action === 'none') continue;
+      await this.#jellyfin.updateItem({ ...context.item, Tags: context.plan.item.after });
+      this.#metrics.increment('jfa_item_updates_total');
+    }
+    for (const user of users) {
+      let after = [...(user.Policy.BlockedTags ?? [])];
+      for (const context of contexts) {
+        const change = context.plan.users.find((entry) => entry.userId === user.Id);
+        if (!change) continue;
+        const withoutTag = after.filter((tag) => tag.toLowerCase() !== context.plan.tag.toLowerCase());
+        after = change.after.some((tag) => tag.toLowerCase() === context.plan.tag.toLowerCase())
+          ? uniqueCaseInsensitive([...withoutTag, context.plan.tag])
+          : withoutTag;
+      }
+      if (sameStringSet(user.Policy.BlockedTags ?? [], after)) continue;
+      await this.#jellyfin.updatePolicy(user.Id, { ...user.Policy, BlockedTags: after });
+      this.#metrics.increment('jfa_policy_updates_total');
+    }
+  }
+
   #refreshGauges(): void {
     const grants = this.#store.list();
     this.#metrics.gauge('jfa_grants', grants.filter((grant) => grant.active).length);
@@ -307,6 +573,6 @@ function hypotheticalRevocation(grant: GrantRecord, requestId: string, store: Gr
   delete requests[requestId];
   const next = { ...grant, requests, updatedAt: new Date().toISOString() };
   next.owners = store.resolveOwners(next);
-  next.active = Object.keys(requests).length > 0 || next.groupIds.length > 0;
+  next.active = Object.keys(requests).length > 0 || next.manualUserIds.length > 0 || next.groupIds.length > 0;
   return next;
 }

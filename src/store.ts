@@ -1,8 +1,8 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { AccessGroup, GrantRecord, GrantState, RevokeResult, SyncStatus } from './types.js';
+import type { AccessGroup, GrantRecord, GrantState, LibraryCatalogItem, RevokeResult, SyncStatus } from './types.js';
 
-const EMPTY_STATE: GrantState = { version: 2, grants: {}, groups: {} };
+const EMPTY_STATE: GrantState = { version: 4, grants: {}, groups: {}, catalog: { items: {} } };
 
 export class GrantStore {
   readonly #file: string;
@@ -42,9 +42,26 @@ export class GrantStore {
     return group ? clone(group) : undefined;
   }
 
+  public getCatalog(): { lastSyncedAt?: string; items: LibraryCatalogItem[] } {
+    return {
+      ...(this.#state.catalog.lastSyncedAt ? { lastSyncedAt: this.#state.catalog.lastSyncedAt } : {}),
+      items: Object.values(this.#state.catalog.items).map(clone),
+    };
+  }
+
+  public async replaceCatalog(items: LibraryCatalogItem[]): Promise<{ lastSyncedAt: string; items: LibraryCatalogItem[] }> {
+    const lastSyncedAt = new Date().toISOString();
+    this.#state.catalog = {
+      lastSyncedAt,
+      items: Object.fromEntries(items.map((item) => [normalizeId(item.id), clone(item)])),
+    };
+    await this.#save();
+    return { lastSyncedAt, items: items.map(clone) };
+  }
+
   public resolveOwners(grant: GrantRecord): string[] {
     const groupUsers = grant.groupIds.flatMap((id) => this.#state.groups[id]?.userIds ?? []);
-    return [...new Set([...Object.values(grant.requests), ...groupUsers].map(normalizeId))].sort();
+    return [...new Set([...Object.values(grant.requests), ...grant.manualUserIds, ...groupUsers].map(normalizeId))].sort();
   }
 
   public async grant(input: {
@@ -57,7 +74,7 @@ export class GrantStore {
     const userId = normalizeId(input.userId);
     const previous = this.#state.grants[itemId];
     const requests = { ...(previous?.requests ?? {}), [input.requestId]: userId };
-    const next = this.#makeGrant(itemId, requests, previous?.groupIds ?? [], previous, input.mediaType);
+    const next = this.#makeGrant(itemId, requests, previous?.manualUserIds ?? [], previous?.groupIds ?? [], previous, input.mediaType);
     this.#state.grants[itemId] = next;
     await this.#save();
     return clone(next);
@@ -69,7 +86,7 @@ export class GrantStore {
     if (!previous || !(requestId in previous.requests)) return undefined;
     const requests = { ...previous.requests };
     delete requests[requestId];
-    return this.#replaceOrDelete(previous, requests, previous.groupIds);
+    return this.#replaceOrDelete(previous, requests, previous.manualUserIds, previous.groupIds);
   }
 
   public async setGrantGroups(itemIdInput: string, groupIdsInput: string[]): Promise<RevokeResult> {
@@ -79,7 +96,38 @@ export class GrantStore {
     const groupIds = [...new Set(groupIdsInput.map(normalizeId))].sort();
     const missing = groupIds.filter((id) => !this.#state.groups[id]);
     if (missing.length > 0) throw new Error(`group not found: ${missing.join(', ')}`);
-    return this.#replaceOrDelete(previous, previous.requests, groupIds);
+    return this.#replaceOrDelete(previous, previous.requests, previous.manualUserIds, groupIds);
+  }
+
+  public async setManualAccess(input: {
+    itemId: string;
+    mediaType?: string;
+    userIds: string[];
+    groupIds: string[];
+  }): Promise<{ previous?: GrantRecord; current: GrantRecord }> {
+    return (await this.setManualAccessBatch([input]))[0] as { previous?: GrantRecord; current: GrantRecord };
+  }
+
+  public async setManualAccessBatch(inputs: Array<{
+    itemId: string;
+    mediaType?: string;
+    userIds: string[];
+    groupIds: string[];
+  }>): Promise<Array<{ previous?: GrantRecord; current: GrantRecord }>> {
+    const results: Array<{ previous?: GrantRecord; current: GrantRecord }> = [];
+    for (const input of inputs) {
+    const itemId = normalizeId(input.itemId);
+    const previous = this.#state.grants[itemId];
+    const manualUserIds = [...new Set(input.userIds.map(normalizeId))].sort();
+    const groupIds = [...new Set(input.groupIds.map(normalizeId))].sort();
+    const missing = groupIds.filter((id) => !this.#state.groups[id]);
+    if (missing.length > 0) throw new Error(`group not found: ${missing.join(', ')}`);
+    const current = this.#makeGrant(itemId, previous?.requests ?? {}, manualUserIds, groupIds, previous, input.mediaType);
+    this.#state.grants[itemId] = current;
+      results.push({ ...(previous ? { previous: clone(previous) } : {}), current: clone(current) });
+    }
+    await this.#save();
+    return results;
   }
 
   public async upsertGroup(input: { id: string; name: string; userIds: string[] }): Promise<AccessGroup> {
@@ -112,34 +160,52 @@ export class GrantStore {
     const results: RevokeResult[] = [];
     for (const previous of Object.values({ ...this.#state.grants })) {
       if (!previous.groupIds.includes(groupId)) continue;
-      results.push(await this.#replaceOrDelete(previous, previous.requests, previous.groupIds.filter((id) => id !== groupId), false));
+      results.push(await this.#replaceOrDelete(previous, previous.requests, previous.manualUserIds, previous.groupIds.filter((id) => id !== groupId), false));
     }
     await this.#save();
     return results;
   }
 
   public async markSyncSuccess(itemIdInput: string): Promise<void> {
-    const grant = this.#state.grants[normalizeId(itemIdInput)];
-    if (!grant) return;
+    await this.markSyncSuccessBatch([itemIdInput]);
+  }
+
+  public async markSyncSuccessBatch(itemIds: string[]): Promise<void> {
     const now = new Date().toISOString();
-    grant.sync = { state: 'synced', attempts: 0, lastAttemptAt: now, lastSuccessAt: now };
+    let changed = false;
+    for (const itemId of itemIds) {
+      const grant = this.#state.grants[normalizeId(itemId)];
+      if (!grant) continue;
+      grant.sync = { state: 'synced', attempts: 0, lastAttemptAt: now, lastSuccessAt: now };
+      changed = true;
+    }
+    if (!changed) return;
     await this.#save();
   }
 
   public async markSyncError(itemIdInput: string, error: string): Promise<void> {
-    const grant = this.#state.grants[normalizeId(itemIdInput)];
-    if (!grant) return;
-    const attempts = grant.sync.attempts + 1;
-    const delaySeconds = Math.min(3600, 2 ** Math.min(attempts, 10) * 15);
+    await this.markSyncErrorBatch([itemIdInput], error);
+  }
+
+  public async markSyncErrorBatch(itemIds: string[], error: string): Promise<void> {
     const now = new Date();
-    grant.sync = {
-      state: 'error',
-      attempts,
-      lastAttemptAt: now.toISOString(),
-      nextRetryAt: new Date(now.getTime() + delaySeconds * 1000).toISOString(),
-      lastError: error.slice(0, 1000),
-      ...(grant.sync.lastSuccessAt ? { lastSuccessAt: grant.sync.lastSuccessAt } : {}),
-    };
+    let changed = false;
+    for (const itemId of itemIds) {
+      const grant = this.#state.grants[normalizeId(itemId)];
+      if (!grant) continue;
+      const attempts = grant.sync.attempts + 1;
+      const delaySeconds = Math.min(3600, 2 ** Math.min(attempts, 10) * 15);
+      grant.sync = {
+        state: 'error',
+        attempts,
+        lastAttemptAt: now.toISOString(),
+        nextRetryAt: new Date(now.getTime() + delaySeconds * 1000).toISOString(),
+        lastError: error.slice(0, 1000),
+        ...(grant.sync.lastSuccessAt ? { lastSuccessAt: grant.sync.lastSuccessAt } : {}),
+      };
+      changed = true;
+    }
+    if (!changed) return;
     await this.#save();
   }
 
@@ -154,6 +220,7 @@ export class GrantStore {
   #makeGrant(
     itemId: string,
     requests: Record<string, string>,
+    manualUserIds: string[],
     groupIds: string[],
     previous?: GrantRecord,
     mediaType?: string,
@@ -161,9 +228,10 @@ export class GrantStore {
     const resolvedMediaType = mediaType ?? previous?.mediaType;
     const placeholder: GrantRecord = {
       itemId,
-      active: Object.keys(requests).length > 0 || groupIds.length > 0,
+      active: Object.keys(requests).length > 0 || manualUserIds.length > 0 || groupIds.length > 0,
       owners: [],
       requests,
+      manualUserIds: [...manualUserIds],
       groupIds: [...groupIds],
       sync: pendingSync(previous?.sync),
       updatedAt: new Date().toISOString(),
@@ -176,10 +244,11 @@ export class GrantStore {
   async #replaceOrDelete(
     previous: GrantRecord,
     requests: Record<string, string>,
+    manualUserIds: string[],
     groupIds: string[],
     save = true,
   ): Promise<RevokeResult> {
-    const next = this.#makeGrant(previous.itemId, requests, groupIds, previous, previous.mediaType);
+    const next = this.#makeGrant(previous.itemId, requests, manualUserIds, groupIds, previous, previous.mediaType);
     this.#state.grants[previous.itemId] = next;
     if (save) await this.#save();
     return { previous: clone(previous), current: clone(next) };
@@ -211,11 +280,32 @@ function clone<T>(value: T): T {
 
 function migrateState(value: unknown): { state: GrantState; changed: boolean } {
   if (!value || typeof value !== 'object') throw new Error('state file must be a JSON object');
-  const candidate = value as { version?: unknown; grants?: unknown; groups?: unknown };
+  const candidate = value as { version?: unknown; grants?: unknown; groups?: unknown; catalog?: unknown };
   if (!candidate.grants || typeof candidate.grants !== 'object') throw new Error('state file is missing grants');
+  if (candidate.version === 4) {
+    if (!candidate.groups || typeof candidate.groups !== 'object') throw new Error('state file is missing groups');
+    if (!candidate.catalog || typeof candidate.catalog !== 'object') throw new Error('state file is missing catalog');
+    return { state: value as GrantState, changed: false };
+  }
+  if (candidate.version === 3) {
+    if (!candidate.groups || typeof candidate.groups !== 'object') throw new Error('state file is missing groups');
+    return {
+      state: {
+        version: 4,
+        grants: candidate.grants as Record<string, GrantRecord>,
+        groups: candidate.groups as Record<string, AccessGroup>,
+        catalog: { items: {} },
+      },
+      changed: true,
+    };
+  }
   if (candidate.version === 2) {
     if (!candidate.groups || typeof candidate.groups !== 'object') throw new Error('state file is missing groups');
-    return { state: value as GrantState, changed: false };
+    const grants = Object.fromEntries(Object.entries(candidate.grants as Record<string, GrantRecord>).map(([itemId, grant]) => [
+      itemId,
+      { ...grant, manualUserIds: [] },
+    ]));
+    return { state: { version: 4, grants, groups: candidate.groups as Record<string, AccessGroup>, catalog: { items: {} } }, changed: true };
   }
   if (candidate.version !== 1) throw new Error('unsupported state schema version');
   const now = new Date().toISOString();
@@ -224,10 +314,11 @@ function migrateState(value: unknown): { state: GrantState; changed: boolean } {
     grants[itemId] = {
       ...raw,
       active: true,
+      manualUserIds: [],
       groupIds: [],
       sync: { state: 'pending', attempts: 0 },
       updatedAt: raw.updatedAt || now,
     };
   }
-  return { state: { version: 2, grants, groups: {} }, changed: true };
+  return { state: { version: 4, grants, groups: {}, catalog: { items: {} } }, changed: true };
 }

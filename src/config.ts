@@ -11,6 +11,9 @@ export interface Config {
   seerrApiKey?: string;
   stateFile: string;
   reconcileIntervalSeconds: number;
+  catalogSyncIntervalSeconds: number;
+  householdDomain?: string;
+  householdHostPrefix: string;
 }
 
 function required(name: string): string {
@@ -30,6 +33,10 @@ export function loadConfig(): Config {
   if (!Number.isInteger(reconcileIntervalSeconds) || reconcileIntervalSeconds < 0 || reconcileIntervalSeconds > 86_400) {
     throw new Error('RECONCILE_INTERVAL_SECONDS must be an integer between 0 and 86400');
   }
+  const catalogSyncIntervalSeconds = Number.parseInt(process.env.CATALOG_SYNC_INTERVAL_SECONDS ?? '3600', 10);
+  if (!Number.isInteger(catalogSyncIntervalSeconds) || catalogSyncIntervalSeconds < 0 || catalogSyncIntervalSeconds > 604_800) {
+    throw new Error('CATALOG_SYNC_INTERVAL_SECONDS must be an integer between 0 and 604800');
+  }
 
   const webhookToken = required('WEBHOOK_TOKEN');
   const seerrUrl = process.env.SEERR_URL?.trim().replace(/\/+$/, '');
@@ -37,7 +44,14 @@ export function loadConfig(): Config {
   if (!!seerrUrl !== !!seerrApiKey) {
     throw new Error('SEERR_URL and SEERR_API_KEY must be configured together');
   }
-
+  const householdDomain = process.env.HOUSEHOLD_DOMAIN?.trim().toLowerCase().replace(/^\.+|\.+$/g, '');
+  if (householdDomain && !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(householdDomain)) {
+    throw new Error('HOUSEHOLD_DOMAIN must be a valid DNS domain');
+  }
+  const householdHostPrefix = process.env.HOUSEHOLD_HOST_PREFIX?.trim().toLowerCase() || 'jelly-';
+  if (!/^[a-z0-9-]{1,32}$/.test(householdHostPrefix)) {
+    throw new Error('HOUSEHOLD_HOST_PREFIX must contain only lowercase letters, numbers, and hyphens');
+  }
   return {
     host: process.env.HOST?.trim() || '0.0.0.0',
     port,
@@ -48,5 +62,8 @@ export function loadConfig(): Config {
     ...(seerrUrl && seerrApiKey ? { seerrUrl, seerrApiKey } : {}),
     stateFile: path.resolve(process.env.STATE_FILE?.trim() || './data/grants.json'),
     reconcileIntervalSeconds,
+    catalogSyncIntervalSeconds,
+    ...(householdDomain ? { householdDomain } : {}),
+    householdHostPrefix,
   };
 }

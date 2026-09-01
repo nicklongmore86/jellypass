@@ -1,8 +1,8 @@
 {
-  "name": "jellyseerr-jellyfin-access",
+  "name": "jellypass",
   "version": "0.2.0",
   "private": false,
-  "description": "Grant Jellyfin media access to the Seerr/Jellyseerr users who requested it.",
+  "description": "Personalized library access for Jellyfin.",
   "type": "module",
   "packageManager": "pnpm@11.18.0",
   "engines": {

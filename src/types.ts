@@ -27,8 +27,24 @@ export interface SeerrRequest {
   };
 }
 
+export interface RecentSeerrRequest {
+  id: number;
+  mediaType: 'movie' | 'tv';
+  title: string;
+  year?: number;
+  posterPath?: string;
+  jellyfinItemId?: string;
+  requestStatus: 'pending' | 'approved' | 'declined' | 'failed' | 'completed' | 'unknown';
+  mediaStatus: 'unknown' | 'pending' | 'processing' | 'partially_available' | 'available' | 'deleted';
+  requestedBy: string;
+  createdAt: string;
+  seasonCount?: number;
+}
+
 export interface JellyfinPolicy {
   IsAdministrator?: boolean;
+  IsDisabled?: boolean;
+  IsHidden?: boolean;
   BlockedTags?: string[];
   [key: string]: unknown;
 }
@@ -42,8 +58,35 @@ export interface JellyfinUser {
 export interface JellyfinItem {
   Id: string;
   Name: string;
+  Type?: string;
+  CollectionType?: string;
+  ProductionYear?: number;
+  DateCreated?: string;
   Tags?: string[];
   [key: string]: unknown;
+}
+
+export interface JellyfinItemQueryResult {
+  Items?: JellyfinItem[];
+  TotalRecordCount?: number;
+}
+
+export interface LibraryItemSummary {
+  id: string;
+  name: string;
+  mediaType: string;
+  productionYear?: number;
+}
+
+export interface LibraryCatalogItem extends LibraryItemSummary {
+  libraryId: string;
+  libraryName: string;
+  dateCreated?: string;
+}
+
+export interface LibraryCatalog {
+  lastSyncedAt?: string;
+  items: Record<string, LibraryCatalogItem>;
 }
 
 export interface GrantRecord {
@@ -52,15 +95,17 @@ export interface GrantRecord {
   mediaType?: string;
   owners: string[];
   requests: Record<string, string>;
+  manualUserIds: string[];
   groupIds: string[];
   sync: SyncStatus;
   updatedAt: string;
 }
 
 export interface GrantState {
-  version: 2;
+  version: 4;
   grants: Record<string, GrantRecord>;
   groups: Record<string, AccessGroup>;
+  catalog: LibraryCatalog;
 }
 
 export interface AccessGroup {
