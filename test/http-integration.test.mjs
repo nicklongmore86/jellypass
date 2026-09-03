@@ -150,6 +150,11 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.match(adminScriptText, /\/v1\/library\/access/);
     assert.match(adminScriptText, /Your media library/);
     assert.match(adminScriptText, /Access grants/);
+    assert.match(adminScriptText, /function catalogItem/);
+    assert.match(adminScriptText, /v1\/library\/poster\?itemId=/);
+    assert.match(adminScriptText, /text: displayTitle/);
+    assert.match(adminScriptText, /function scrollToTop/);
+    assert.match(adminScriptText, /window\.scrollTo\(0, 0\)/);
     assert.match(adminScriptText, /Access groups/);
     assert.match(adminScriptText, /\/v1\/requests\/recent/);
     assert.match(adminScriptText, /Edit library access/);
@@ -300,6 +305,10 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     const catalog = await fetch(`${bridgeUrl}/v1/library`, { headers: { Cookie: sessionCookie } });
     assert.equal(catalog.status, 200);
     assert.equal((await catalog.json()).items.length, 2);
+    const libraryPoster = await fetch(`${bridgeUrl}/v1/library/poster?itemId=item-1`, { headers: { Cookie: sessionCookie } });
+    assert.equal(libraryPoster.status, 200);
+    assert.equal(libraryPoster.headers.get('content-type'), 'image/jpeg');
+    assert.deepEqual(new Uint8Array(await libraryPoster.arrayBuffer()), new Uint8Array([255, 216, 255, 217]));
 
     const recentRequests = await fetch(`${bridgeUrl}/v1/requests/recent`, { headers: { Cookie: sessionCookie } });
     assert.equal(recentRequests.status, 200);

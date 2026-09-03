@@ -150,6 +150,20 @@ export class JellyfinClient {
     )));
   }
 
+  public async getItemPoster(itemId: string): Promise<{ body: Uint8Array; contentType: string }> {
+    const response = await fetch(`${this.#baseUrl}/Items/${encodeURIComponent(itemId)}/Images/Primary?maxHeight=360&quality=85`, {
+      signal: AbortSignal.timeout(15_000),
+      headers: { Accept: 'image/avif,image/webp,image/png,image/jpeg', 'X-Emby-Token': this.#apiKey },
+    });
+    if (!response.ok) {
+      throw new JellyfinError(`Jellyfin poster for item ${itemId} returned ${response.status}`, response.status);
+    }
+    return {
+      body: new Uint8Array(await response.arrayBuffer()),
+      contentType: response.headers.get('content-type') || 'image/jpeg',
+    };
+  }
+
   public async updateItem(item: JellyfinItem): Promise<void> {
     await this.#request(`/Items/${encodeURIComponent(item.Id)}`, {
       method: 'POST',

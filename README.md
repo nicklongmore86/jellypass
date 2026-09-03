@@ -197,6 +197,7 @@ Provisioning is intentionally phased: Jellyfin account creation, household assig
 | `GET` | `/v1/users` | List Jellyfin users for group management |
 | `POST` | `/v1/users` | Create a non-administrator Jellyfin user and assign it to a group |
 | `GET` | `/v1/library/search?q={title}` | Search Jellyfin movies and series for retroactive import |
+| `GET` | `/v1/library/poster?itemId={itemId}` | Proxy poster artwork for a synchronized catalog item |
 | `GET` | `/v1/library` | Read the synchronized movie and series catalog |
 | `POST` | `/v1/library/sync` | Synchronize the catalog from Jellyfin |
 | `PUT` | `/v1/library/access` | Assign one audience to up to 500 catalog items; supports `?dryRun=true` |

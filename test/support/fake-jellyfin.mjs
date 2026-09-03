@@ -60,6 +60,12 @@ export async function createFakeJellyfin() {
       const items = Object.values(state.items).filter((item) => item.Name.toLowerCase().includes(query));
       return send(response, 200, { Items: items, TotalRecordCount: items.length });
     }
+    if (request.method === 'GET' && request.url?.startsWith('/Items/item-1/Images/Primary?')) {
+      const poster = Buffer.from([255, 216, 255, 217]);
+      response.writeHead(200, { 'Content-Type': 'image/jpeg', 'Content-Length': poster.length });
+      response.end(poster);
+      return;
+    }
     const userRecord = request.url?.match(/^\/Users\/([^/]+)$/);
     if (request.method === 'GET' && userRecord) {
       const user = users.find((entry) => entry.Id === userRecord[1]);

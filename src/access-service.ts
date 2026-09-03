@@ -145,6 +145,12 @@ export class AccessService {
     return this.#seerr.getPoster(posterPath);
   }
 
+  public getLibraryPoster(itemId: string): Promise<{ body: Uint8Array; contentType: string }> {
+    const exists = this.#store.getCatalog().items.some((item) => normalizeId(item.id) === normalizeId(itemId));
+    if (!exists) throw new Error(`catalog item not found: ${normalizeId(itemId)}`);
+    return this.#jellyfin.getItemPoster(itemId);
+  }
+
   public getLibraryCatalog(): { lastSyncedAt?: string; items: Array<LibraryCatalogItem & { managed: boolean; managedAt?: string }> } {
     const catalog = this.#store.getCatalog();
     const grants = new Map(this.#store.list().filter((grant) => grant.active).map((grant) => [normalizeId(grant.itemId), grant]));

@@ -138,6 +138,10 @@ export function makeServer(service: AccessService, tokens: ServerTokens, webAuth
         if (query.length < 2) return json(response, 400, { error: 'q must contain at least 2 characters' });
         return json(response, 200, { items: await service.searchLibrary(query) });
       }
+      if (request.method === 'GET' && url.pathname === '/v1/library/poster') {
+        const poster = await service.getLibraryPoster(validId(url.searchParams.get('itemId') ?? undefined, 'itemId'));
+        return image(response, poster.body, poster.contentType);
+      }
       if (request.method === 'GET' && url.pathname === '/v1/library') {
         return json(response, 200, service.getLibraryCatalog());
       }
