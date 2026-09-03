@@ -9,6 +9,7 @@ export interface Config {
   jellyfinApiKey: string;
   seerrUrl?: string;
   seerrApiKey?: string;
+  jellyquestBridgeEnabled: boolean;
   stateFile: string;
   reconcileIntervalSeconds: number;
   catalogSyncIntervalSeconds: number;
@@ -44,6 +45,10 @@ export function loadConfig(): Config {
   if (!!seerrUrl !== !!seerrApiKey) {
     throw new Error('SEERR_URL and SEERR_API_KEY must be configured together');
   }
+  const jellyquestBridgeEnabled = booleanEnvironment('JELLYQUEST_BRIDGE_ENABLED', false);
+  if (jellyquestBridgeEnabled && !seerrUrl) {
+    throw new Error('SEERR_URL and SEERR_API_KEY are required when JELLYQUEST_BRIDGE_ENABLED is true');
+  }
   const householdDomain = process.env.HOUSEHOLD_DOMAIN?.trim().toLowerCase().replace(/^\.+|\.+$/g, '');
   if (householdDomain && !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(householdDomain)) {
     throw new Error('HOUSEHOLD_DOMAIN must be a valid DNS domain');
@@ -60,10 +65,19 @@ export function loadConfig(): Config {
     jellyfinUrl: required('JELLYFIN_URL').replace(/\/+$/, ''),
     jellyfinApiKey: required('JELLYFIN_API_KEY'),
     ...(seerrUrl && seerrApiKey ? { seerrUrl, seerrApiKey } : {}),
+    jellyquestBridgeEnabled,
     stateFile: path.resolve(process.env.STATE_FILE?.trim() || './data/grants.json'),
     reconcileIntervalSeconds,
     catalogSyncIntervalSeconds,
     ...(householdDomain ? { householdDomain } : {}),
     householdHostPrefix,
   };
+}
+
+function booleanEnvironment(name: string, fallback: boolean): boolean {
+  const value = process.env[name]?.trim().toLowerCase();
+  if (!value) return fallback;
+  if (value === 'true' || value === '1') return true;
+  if (value === 'false' || value === '0') return false;
+  throw new Error(`${name} must be true, false, 1, or 0`);
 }

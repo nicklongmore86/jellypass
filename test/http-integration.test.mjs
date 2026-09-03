@@ -46,6 +46,14 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     const webAuth = new WebAuth(jellyfinClient);
     bridge = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' }, webAuth, {
       householdGateway: { jellyfinUrl: jellyfin.url, domain: 'example.test', hostPrefix: 'jelly-' },
+      requestBridge: {
+        async handle(_request, response, url) {
+          if (url.pathname !== '/jellyquest-bridge/route-order') return false;
+          response.writeHead(200, { 'Content-Type': 'application/json' });
+          response.end(JSON.stringify({ route: 'request-bridge' }));
+          return true;
+        },
+      },
     });
     await new Promise((resolve) => bridge.listen(0, '127.0.0.1', resolve));
     const address = bridge.address();
@@ -68,6 +76,9 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     const householdUsers = await fetchWithHost(bridgeUrl, '/Users/Public', 'jelly-farmhouse.example.test');
     assert.equal(householdUsers.status, 200);
     assert.deepEqual((await householdUsers.json()).map((user) => user.Name), ['Alice', 'Bob']);
+    const requestBridgeRoute = await fetchWithHost(bridgeUrl, '/jellyquest-bridge/route-order', 'jelly-farmhouse.example.test');
+    assert.equal(requestBridgeRoute.status, 200);
+    assert.equal((await requestBridgeRoute.json()).route, 'request-bridge');
     const householdInfo = await fetchWithHost(bridgeUrl, '/System/Info/Public', 'jelly-farmhouse.example.test');
     assert.equal(householdInfo.status, 200);
     assert.equal((await householdInfo.json()).ServerName, 'Test Jellyfin');

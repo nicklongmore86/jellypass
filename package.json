@@ -12,7 +12,7 @@
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/index.js",
-    "test": "pnpm build && node --test test/access-service.test.mjs test/http-integration.test.mjs",
+    "test": "pnpm build && node --test test/access-service.test.mjs test/http-integration.test.mjs test/request-bridge.test.mjs",
     "test:real": "pnpm build && node --test test/real-jellyfin.test.mjs"
   },
   "devDependencies": {

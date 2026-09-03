@@ -6,7 +6,7 @@ JellyPass receives Seerr's **Request Available** webhook and applies Jellyfin's 
 
 JellyPass is an independent third-party project compatible with Jellyfin. It is not affiliated with or endorsed by the Jellyfin project.
 
-The companion [JellyPass for Tizen](https://github.com/nicklongmore86/jellypass-tizen) client provides a household-scoped Samsung TV build with a locked JellyPass hostname and an app-owned login experience.
+The companion [JellyQuest for Tizen](https://github.com/nicklongmore86/jellyquest-tizen) client provides a household-scoped Samsung TV build with a locked JellyPass hostname and an app-owned login experience.
 
 > [!CAUTION]
 > Test with non-critical users and media first. Jellyfin does not expose transactional policy updates, so a failed sync can temporarily leave an item visible until reconciliation succeeds.
@@ -134,6 +134,20 @@ Keep the normal Jellyfin URL available for administrators and devices that shoul
 Group IDs are stable names chosen by the administrator. Use lowercase letters, numbers, and hyphens (maximum 63 characters) for groups that need a household hostname.
 
 The operational Farmhouse origin and the path toward household-bound passwordless SSO are documented in [Household access and passwordless sign-in](docs/household-access.md).
+
+### Optional JellyQuest request bridge
+
+JellyPass can provide JellyQuest's passwordless Jellyseerr request session from the same household hostname. Enable it alongside the existing Jellyseerr configuration:
+
+```dotenv
+SEERR_URL=http://jellyseerr:5055
+SEERR_API_KEY=replace-with-a-seerr-api-key
+JELLYQUEST_BRIDGE_ENABLED=true
+```
+
+The Tizen package then uses `https://jelly-household.example.com/jellyquest-bridge/bridge.html`. No Jellyseerr files or reverse-proxy locations are required: JellyPass handles this prefix before forwarding other household traffic to Jellyfin.
+
+The module signs the selected passwordless Jellyfin profile into Jellyseerr, verifies that Jellyseerr returns the same Jellyfin user ID, and stores Jellyseerr's session cookie only in JellyPass memory for 12 hours. The random browser token grants access only to the discovery, search, media-status, title-detail, and request-creation endpoints used by JellyQuest. Jellyseerr continues to own request data, permissions, approvals, and processing. Restarting JellyPass clears all bridge sessions.
 
 ```sh
 # Create or replace a group. User IDs are Jellyfin IDs.

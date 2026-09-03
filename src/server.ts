@@ -4,6 +4,7 @@ import { UserProvisioningError, type AccessService } from './access-service.js';
 import { ADMIN_APP_JS, ADMIN_FAVICON_SVG, ADMIN_HTML, ADMIN_STYLES } from './admin-ui.js';
 import { expiredSessionCookie, sessionCookie, type WebAuth } from './auth.js';
 import { HouseholdGateway } from './household-gateway.js';
+import type { RequestBridge } from './request-bridge.js';
 import { parseWebhook } from './webhook.js';
 
 const BODY_LIMIT = 64 * 1024;
@@ -15,6 +16,7 @@ export interface ServerTokens {
 }
 
 export interface ServerOptions {
+  requestBridge?: RequestBridge;
   householdGateway?: {
     jellyfinUrl: string;
     domain: string;
@@ -31,12 +33,13 @@ export function makeServer(service: AccessService, tokens: ServerTokens, webAuth
     : undefined;
   const server = createServer(async (request, response) => {
     try {
+      const url = new URL(request.url ?? '/', 'http://localhost');
+      if (await options?.requestBridge?.handle(request, response, url)) return;
       const householdId = householdGateway?.householdId(request.headers.host);
       if (householdId) {
         await householdGateway?.handle(request, response, householdId);
         return;
       }
-      const url = new URL(request.url ?? '/', 'http://localhost');
       const segments = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
 
       if (request.method === 'GET' && url.pathname === '/health') {

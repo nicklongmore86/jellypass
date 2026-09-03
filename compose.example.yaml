@@ -7,6 +7,7 @@ services:
       JELLYFIN_API_KEY: ${JELLYFIN_API_KEY}
       SEERR_URL: http://jellyseerr:5055
       SEERR_API_KEY: ${SEERR_API_KEY}
+      JELLYQUEST_BRIDGE_ENABLED: ${JELLYQUEST_BRIDGE_ENABLED:-false}
       WEBHOOK_TOKEN: ${WEBHOOK_TOKEN}
       ADMIN_TOKEN: ${ADMIN_TOKEN}
       STATE_FILE: /app/data/grants.json

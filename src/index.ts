@@ -3,6 +3,7 @@ import { WebAuth } from './auth.js';
 import { loadConfig } from './config.js';
 import { JellyfinClient } from './jellyfin.js';
 import { makeServer } from './server.js';
+import { RequestBridge } from './request-bridge.js';
 import { SeerrClient } from './seerr.js';
 import { GrantStore } from './store.js';
 
@@ -18,6 +19,9 @@ async function main(): Promise<void> {
   const service = new AccessService(jellyfin, store, undefined, seerr);
   const webAuth = new WebAuth(jellyfin);
   const server = makeServer(service, { webhook: config.webhookToken, admin: config.adminToken }, webAuth, {
+    ...(config.jellyquestBridgeEnabled && config.seerrUrl ? {
+      requestBridge: new RequestBridge(config.seerrUrl),
+    } : {}),
     ...(config.householdDomain ? {
       householdGateway: {
         jellyfinUrl: config.jellyfinUrl,
