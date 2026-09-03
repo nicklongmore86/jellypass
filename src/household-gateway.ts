@@ -75,7 +75,8 @@ export class HouseholdGateway {
       writeJson(response, 404, { error: 'household_not_found' });
       return;
     }
-    const pathname = new URL(request.url ?? '/', 'http://localhost').pathname.toLowerCase();
+    const requestUrl = new URL(request.url ?? '/', 'http://localhost');
+    const pathname = requestUrl.pathname.toLowerCase();
     if (request.method === 'GET' && pathname === PUBLIC_USERS_PATH) {
       await this.#proxyPublicUsers(request, response, memberIds);
       return;
@@ -87,6 +88,18 @@ export class HouseholdGateway {
     if (request.method === 'GET' && pathname === QUICK_CONNECT_ENABLED_PATH) {
       writeJson(response, 200, false);
       return;
+    }
+    const streamedItemId = protectedResourceItemId(requestUrl.pathname);
+    if (streamedItemId) {
+      try {
+        if (!await this.#canAccessItem(request, requestUrl, streamedItemId)) {
+          writeJson(response, 404, { error: 'item_not_found' });
+          return;
+        }
+      } catch {
+        writeJson(response, 502, { error: 'jellyfin_unavailable' });
+        return;
+      }
     }
     await this.#proxy(request, response);
   }
@@ -163,6 +176,38 @@ export class HouseholdGateway {
     });
   }
 
+  async #canAccessItem(request: IncomingMessage, requestUrl: URL, itemId: string): Promise<boolean> {
+    const headers = new Headers({ Accept: 'application/json' });
+    for (const name of ['authorization', 'x-emby-authorization', 'x-emby-token']) {
+      const value = request.headers[name];
+      if (typeof value === 'string') headers.set(name, value);
+    }
+    const authenticationQuery = new URLSearchParams();
+    for (const name of ['api_key', 'access_token']) {
+      const value = requestUrl.searchParams.get(name);
+      if (value) authenticationQuery.set(name, value);
+    }
+    const suffix = authenticationQuery.size ? `?${authenticationQuery}` : '';
+    const currentUserResponse = await fetch(this.#targetUrl(`/Users/Me${suffix}`), {
+      headers,
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!currentUserResponse.ok) {
+      await currentUserResponse.body?.cancel();
+      return false;
+    }
+    const currentUser = await currentUserResponse.json() as { Id?: unknown };
+    if (typeof currentUser.Id !== 'string' || !currentUser.Id) return false;
+    const itemResponse = await fetch(this.#targetUrl(
+      `/Users/${encodeURIComponent(currentUser.Id)}/Items/${encodeURIComponent(itemId)}${suffix}`,
+    ), {
+      headers,
+      signal: AbortSignal.timeout(15_000),
+    });
+    await itemResponse.body?.cancel();
+    return itemResponse.ok;
+  }
+
   async #proxyJson(
     request: IncomingMessage,
     response: ServerResponse,
@@ -226,6 +271,21 @@ export class HouseholdGateway {
   #transport(): typeof http | typeof https {
     return this.#target.protocol === 'https:' ? https : http;
   }
+
+  #targetUrl(pathname: string): URL {
+    const url = new URL(this.#target.origin);
+    const [path, query = ''] = targetPath(this.#target, pathname).split('?', 2);
+    url.pathname = path as string;
+    url.search = query;
+    return url;
+  }
+}
+
+function protectedResourceItemId(pathname: string): string | undefined {
+  const media = pathname.match(/^\/(?:videos|audio)\/([^/]+)\/(?:stream(?:\.[^/]*)?|master\.m3u8|main\.m3u8)$/i);
+  if (media) return decodeURIComponent(media[1] as string);
+  const download = pathname.match(/^\/items\/([^/]+)\/download$/i);
+  return download ? decodeURIComponent(download[1] as string) : undefined;
 }
 
 function targetPath(target: URL, requestUrl: string): string {

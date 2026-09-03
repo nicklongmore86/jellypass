@@ -103,7 +103,8 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
       body: JSON.stringify({ Username: 'Alice', Pw: 'user-password' }),
     });
     assert.equal(householdLogin.status, 200);
-    assert.equal((await householdLogin.json()).User.Name, 'Alice');
+    const householdAuthentication = await householdLogin.json();
+    assert.equal(householdAuthentication.User.Name, 'Alice');
     assert.match(await upgradeWithHost(bridgeUrl, '/socket', 'jelly-farmhouse.example.test'), /^HTTP\/1\.1 101/);
     const missingHousehold = await fetchWithHost(bridgeUrl, '/Users/Public', 'jelly-missing.example.test');
     assert.equal(missingHousehold.status, 404);
@@ -362,7 +363,23 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.equal(response.status, 200);
     await response.json();
     assert.deepEqual(jellyfin.item.Tags, ['existing', 'jfa:private:item-1']);
+    assert.deepEqual(jellyfin.itemById('trailer-1').Tags, ['jfa:private:item-1']);
     assert.deepEqual(jellyfin.user('bob-id').Policy.BlockedTags, ['jfa:private:item-1']);
+
+    const ownerStream = await fetchWithHost(bridgeUrl, '/Videos/trailer-1/stream?Static=true', 'jelly-farmhouse.example.test', {
+      headers: { 'X-Emby-Token': householdAuthentication.AccessToken, Range: 'bytes=0-0' },
+    });
+    assert.equal(ownerStream.status, 206, await ownerStream.text());
+    const blockedLogin = await fetchWithHost(bridgeUrl, '/Users/AuthenticateByName', 'jelly-farmhouse.example.test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ Username: 'Bob', Pw: 'user-password' }),
+    });
+    const blockedAuthentication = await blockedLogin.json();
+    const blockedStream = await fetchWithHost(bridgeUrl, '/Videos/trailer-1/stream?Static=true', 'jelly-farmhouse.example.test', {
+      headers: { 'X-Emby-Token': blockedAuthentication.AccessToken, Range: 'bytes=0-0' },
+    });
+    assert.equal(blockedStream.status, 404);
 
     const metrics = await fetch(`${bridgeUrl}/metrics`, { headers: { Authorization: 'Bearer admin-secret' } });
     assert.equal(metrics.status, 200);
@@ -383,6 +400,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.equal(revoke.status, 200);
     await revoke.json();
     assert.deepEqual(jellyfin.item.Tags, ['existing']);
+    assert.deepEqual(jellyfin.itemById('trailer-1').Tags, []);
     assert.deepEqual(jellyfin.user('bob-id').Policy.BlockedTags, []);
   });
 });

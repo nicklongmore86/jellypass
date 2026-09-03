@@ -7,13 +7,16 @@ export async function createFakeJellyfin() {
     { Id: 'admin-id', Name: 'Admin', Policy: { IsAdministrator: true, BlockedTags: [] } },
   ];
   const passwords = new Map();
+  const sessions = new Map();
   const state = {
     items: {
       'item-1': { Id: 'item-1', Name: 'Movie', Type: 'Movie', ProductionYear: 2025, Tags: ['existing'] },
       'item-2': { Id: 'item-2', Name: 'Second Movie', Type: 'Movie', ProductionYear: 2026, Tags: [] },
+      'trailer-1': { Id: 'trailer-1', Name: 'Movie Trailer', Type: 'Trailer', Tags: [] },
     },
   };
   let logoutCount = 0;
+  let sessionSequence = 0;
   const upgradeSockets = new Set();
   const server = createServer(async (request, response) => {
     if (request.method === 'GET' && request.url === '/Users/Public') {
@@ -33,14 +36,21 @@ export async function createFakeJellyfin() {
         return send(response, 401, {});
       }
       // Jellyfin's login payload does not reliably include the full user policy.
-      return send(response, 200, { User: { Id: user.Id, Name: user.Name }, AccessToken: 'temporary-login-token' });
+      const token = `temporary-login-token-${user.Id}-${++sessionSequence}`;
+      sessions.set(token, user.Id);
+      return send(response, 200, { User: { Id: user.Id, Name: user.Name }, AccessToken: token });
     }
     if (request.method === 'POST' && request.url === '/Sessions/Logout') {
-      if (request.headers['x-emby-token'] !== 'temporary-login-token') return send(response, 401, {});
+      if (!sessions.delete(request.headers['x-emby-token'])) return send(response, 401, {});
       logoutCount += 1;
       return send(response, 204);
     }
-    if (request.headers['x-emby-token'] !== 'test-key') return send(response, 401, {});
+    const sessionUserId = sessions.get(request.headers['x-emby-token']);
+    if (request.headers['x-emby-token'] !== 'test-key' && !sessionUserId) return send(response, 401, {});
+    if (request.method === 'GET' && request.url === '/Users/Me') {
+      const user = users.find((entry) => entry.Id === sessionUserId);
+      return user ? send(response, 200, user) : send(response, 401, {});
+    }
     if (request.method === 'POST' && request.url === '/Users/New') {
       const input = await body(request);
       if (users.some((user) => user.Name.toLowerCase() === input.Name.toLowerCase())) return send(response, 400, { error: 'duplicate' });
@@ -57,7 +67,7 @@ export async function createFakeJellyfin() {
     if (request.method === 'GET' && request.url?.startsWith('/Items?')) {
       const parameters = new URL(request.url, 'http://localhost').searchParams;
       const query = parameters.get('SearchTerm')?.toLowerCase() ?? '';
-      const items = Object.values(state.items).filter((item) => item.Name.toLowerCase().includes(query));
+      const items = Object.values(state.items).filter((item) => item.Type !== 'Trailer' && item.Name.toLowerCase().includes(query));
       return send(response, 200, { Items: items, TotalRecordCount: items.length });
     }
     if (request.method === 'GET' && request.url?.startsWith('/Items/item-1/Images/Primary?')) {
@@ -67,16 +77,25 @@ export async function createFakeJellyfin() {
       return;
     }
     const localTrailers = request.url?.match(/^\/Items\/([^/]+)\/LocalTrailers\?userId=([^&]+)$/);
-    if (request.method === 'GET' && localTrailers) return send(response, 200, []);
+    if (request.method === 'GET' && localTrailers) {
+      return send(response, 200, localTrailers[1] === 'item-1' ? [state.items['trailer-1']] : []);
+    }
     const userRecord = request.url?.match(/^\/Users\/([^/]+)$/);
     if (request.method === 'GET' && userRecord) {
       const user = users.find((entry) => entry.Id === userRecord[1]);
       return user ? send(response, 200, user) : send(response, 404, {});
     }
-    const userItem = request.url?.match(/^\/Users\/admin-id\/Items\/([^/]+)$/);
+    const userItem = request.url?.match(/^\/Users\/([^/]+)\/Items\/([^/]+)$/);
     if (request.method === 'GET' && userItem) {
-      const item = state.items[userItem[1]];
-      return item ? send(response, 200, item) : send(response, 404, {});
+      const user = users.find((entry) => entry.Id === userItem[1]);
+      const item = state.items[userItem[2]];
+      const blocked = item?.Tags?.some((tag) => user?.Policy.BlockedTags?.some((blockedTag) => blockedTag.toLowerCase() === tag.toLowerCase()));
+      return item && user && !blocked ? send(response, 200, item) : send(response, 404, {});
+    }
+    if (request.method === 'GET' && request.url?.startsWith('/Videos/trailer-1/stream')) {
+      response.writeHead(206, { 'Content-Type': 'video/mp4', 'Content-Length': 1, 'Content-Range': 'bytes 0-0/1' });
+      response.end(Buffer.from([0]));
+      return;
     }
     const itemUpdate = request.url?.match(/^\/Items\/([^/]+)$/);
     if (request.method === 'POST' && itemUpdate && state.items[itemUpdate[1]]) {

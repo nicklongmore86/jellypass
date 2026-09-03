@@ -129,7 +129,7 @@ HOUSEHOLD_HOST_PREFIX=jelly-
 
 With those settings, group `household` is available at `https://jelly-household.example.com`. The URL is shown on the group's card in the JellyPass UI. Point each household hostname (or suitable wildcard DNS record) at your reverse proxy, then proxy HTTP and WebSocket traffic to JellyPass on port `8787`. The reverse proxy must preserve the original `Host` header. Its TLS certificate must cover the generated hostname; a wildcard for `*.example.com` covers this single-label format.
 
-Keep the normal Jellyfin URL available for administrators and devices that should see the complete public-user list. Unknown household hostnames fail closed with `404` instead of exposing that list. A household URL is a convenience and privacy boundary for the login screen, not a replacement for Jellyfin user passwords, Jellyfin policy enforcement, or JellyPass library grants.
+Keep the normal Jellyfin URL available for administrators and devices that should see the complete public-user list. Unknown household hostnames fail closed with `404` instead of exposing that list. The household gateway also authorizes raw stream, playlist, and download paths against Jellyfin item visibility before proxying them, closing Jellyfin's direct-ID stream bypass for blocked items. A household URL is a convenience and privacy boundary for the login screen, not a replacement for Jellyfin user passwords, Jellyfin policy enforcement, or JellyPass library grants.
 
 Group IDs are stable names chosen by the administrator. Use lowercase letters, numbers, and hyphens (maximum 63 characters) for groups that need a household hostname.
 
