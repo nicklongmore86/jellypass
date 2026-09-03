@@ -20,6 +20,7 @@ export const TAG_PREFIX = 'jfa:private:';
 interface PlanContext {
   plan: ChangePlan;
   item: JellyfinItem;
+  relatedItems: JellyfinItem[];
   users: JellyfinUser[];
 }
 
@@ -335,13 +336,22 @@ export class AccessService {
       const missingCatalogItems = itemIds.filter((id) => !catalogById.has(id));
       if (missingCatalogItems.length > 0) throw new Error(`library item not found in catalog: ${missingCatalogItems.join(', ')}`);
       const items = await this.#jellyfin.getItems(itemIds);
+      const administrator = users.find((user) => user.Policy.IsAdministrator);
+      if (!administrator) throw new Error('Jellyfin administrator user not found');
+      const relatedItems = await Promise.all(itemIds.map((itemId) =>
+        this.#jellyfin.getLocalTrailers(itemId, administrator.Id)));
       const currents = itemIds.map((itemId) => this.#makeManualGrant(
         itemId,
         catalogById.get(itemId)?.mediaType,
         userIds,
         groupIds,
       ));
-      const contexts = currents.map((grant, index) => this.#buildPlanContext(grant, items[index] as JellyfinItem, users));
+      const contexts = currents.map((grant, index) => this.#buildPlanContext(
+        grant,
+        items[index] as JellyfinItem,
+        users,
+        relatedItems[index] ?? [],
+      ));
       const plans = contexts.map((context) => context.plan);
       if (dryRun) return { currents, plans };
 
@@ -455,10 +465,18 @@ export class AccessService {
       this.#jellyfin.getItem(grant.itemId),
       this.#jellyfin.getUsers(),
     ]);
-    return this.#buildPlanContext(grant, item, users);
+    const administrator = users.find((user) => user.Policy.IsAdministrator);
+    if (!administrator) throw new Error('Jellyfin administrator user not found');
+    const relatedItems = await this.#jellyfin.getLocalTrailers(grant.itemId, administrator.Id);
+    return this.#buildPlanContext(grant, item, users, relatedItems);
   }
 
-  #buildPlanContext(grant: GrantRecord, item: JellyfinItem, users: JellyfinUser[]): PlanContext {
+  #buildPlanContext(
+    grant: GrantRecord,
+    item: JellyfinItem,
+    users: JellyfinUser[],
+    relatedItems: JellyfinItem[],
+  ): PlanContext {
     const owners = grant.active ? this.#store.resolveOwners(grant) : [];
     const knownUserIds = new Set(users.map((user) => normalizeId(user.Id)));
     const missingOwners = owners.filter((owner) => !knownUserIds.has(owner));
@@ -470,6 +488,20 @@ export class AccessService {
       ? uniqueCaseInsensitive([...beforeTags, tag])
       : beforeTags.filter((entry) => entry.toLowerCase() !== tag.toLowerCase());
     const itemAction = sameStringSet(beforeTags, afterTags) ? 'none' : grant.active ? 'add_tag' : 'remove_tag';
+    const relatedItemChanges = relatedItems.map((relatedItem) => {
+      const before = relatedItem.Tags ?? [];
+      const after = grant.active
+        ? uniqueCaseInsensitive([...before, tag])
+        : before.filter((entry) => entry.toLowerCase() !== tag.toLowerCase());
+      return {
+        itemId: relatedItem.Id,
+        itemName: relatedItem.Name,
+        ...(relatedItem.Type ? { itemType: relatedItem.Type } : {}),
+        action: sameStringSet(before, after) ? 'none' as const : grant.active ? 'add_tag' as const : 'remove_tag' as const,
+        before,
+        after,
+      };
+    });
     const userChanges = users.map((user) => {
       const before = user.Policy.BlockedTags ?? [];
       const withoutTag = before.filter((entry) => entry.toLowerCase() !== tag.toLowerCase());
@@ -486,6 +518,7 @@ export class AccessService {
     });
     return {
       item,
+      relatedItems,
       users,
       plan: {
         itemId: grant.itemId,
@@ -494,6 +527,7 @@ export class AccessService {
         active: grant.active,
         owners,
         item: { action: itemAction, before: beforeTags, after: afterTags },
+        relatedItems: relatedItemChanges,
         users: userChanges,
       },
     };
@@ -502,6 +536,13 @@ export class AccessService {
   async #applyPlan(context: PlanContext): Promise<void> {
     if (context.plan.item.action !== 'none') {
       await this.#jellyfin.updateItem({ ...context.item, Tags: context.plan.item.after });
+      this.#metrics.increment('jfa_item_updates_total');
+    }
+    for (const change of context.plan.relatedItems) {
+      if (change.action === 'none') continue;
+      const relatedItem = context.relatedItems.find((entry) => entry.Id === change.itemId);
+      if (!relatedItem) throw new Error(`Jellyfin related item disappeared during reconciliation: ${change.itemId}`);
+      await this.#jellyfin.updateItem({ ...relatedItem, Tags: change.after });
       this.#metrics.increment('jfa_item_updates_total');
     }
     for (const change of context.plan.users) {
@@ -515,9 +556,17 @@ export class AccessService {
 
   async #applyBatch(contexts: PlanContext[], users: JellyfinUser[]): Promise<void> {
     for (const context of contexts) {
-      if (context.plan.item.action === 'none') continue;
-      await this.#jellyfin.updateItem({ ...context.item, Tags: context.plan.item.after });
-      this.#metrics.increment('jfa_item_updates_total');
+      if (context.plan.item.action !== 'none') {
+        await this.#jellyfin.updateItem({ ...context.item, Tags: context.plan.item.after });
+        this.#metrics.increment('jfa_item_updates_total');
+      }
+      for (const change of context.plan.relatedItems) {
+        if (change.action === 'none') continue;
+        const relatedItem = context.relatedItems.find((entry) => entry.Id === change.itemId);
+        if (!relatedItem) throw new Error(`Jellyfin related item disappeared during reconciliation: ${change.itemId}`);
+        await this.#jellyfin.updateItem({ ...relatedItem, Tags: change.after });
+        this.#metrics.increment('jfa_item_updates_total');
+      }
     }
     for (const user of users) {
       let after = [...(user.Policy.BlockedTags ?? [])];

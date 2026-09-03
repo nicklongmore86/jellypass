@@ -150,6 +150,12 @@ export class JellyfinClient {
     )));
   }
 
+  public async getLocalTrailers(itemId: string, userId: string): Promise<JellyfinItem[]> {
+    return this.#request<JellyfinItem[]>(
+      `/Items/${encodeURIComponent(itemId)}/LocalTrailers?userId=${encodeURIComponent(userId)}`,
+    );
+  }
+
   public async getItemPoster(itemId: string): Promise<{ body: Uint8Array; contentType: string }> {
     const response = await fetch(`${this.#baseUrl}/Items/${encodeURIComponent(itemId)}/Images/Primary?maxHeight=360&quality=85`, {
       signal: AbortSignal.timeout(15_000),

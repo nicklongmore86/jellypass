@@ -132,6 +132,27 @@ describe('grant lifecycle', () => {
     assert.deepEqual(fake.user('bob-id').Policy.BlockedTags, ['other']);
   });
 
+  it('protects local trailers and discovers trailers added after the original grant', async () => {
+    const store = new GrantStore(await stateFile());
+    await store.load();
+    const fake = fakeJellyfin();
+    fake.addLocalTrailer('item-1', { Id: 'trailer-1', Name: 'Movie Trailer', Type: 'Trailer', Tags: ['keep-trailer'] });
+    const service = new AccessService(fake, store);
+
+    const grant = await service.processWebhook(parseWebhook(webhook()));
+    assert.equal(grant.sync.state, 'synced');
+    assert.deepEqual(fake.trailer('trailer-1').Tags, ['keep-trailer', 'jfa:private:item-1']);
+
+    fake.addLocalTrailer('item-1', { Id: 'trailer-2', Name: 'New Trailer', Type: 'Trailer', Tags: [] });
+    const plans = await service.reconcileAll();
+    assert.equal(plans[0].relatedItems.find((item) => item.itemId === 'trailer-2').action, 'add_tag');
+    assert.deepEqual(fake.trailer('trailer-2').Tags, ['jfa:private:item-1']);
+
+    await service.revokeRequest('item-1', '17');
+    assert.deepEqual(fake.trailer('trailer-1').Tags, ['keep-trailer']);
+    assert.deepEqual(fake.trailer('trailer-2').Tags, []);
+  });
+
   it('supports household sharing, dry runs, revocation, and last-owner cleanup', async () => {
     const store = new GrantStore(await stateFile());
     await store.load();
@@ -217,6 +238,7 @@ function fakeJellyfin() {
     { Id: 'bob-id', Name: 'Bob', Policy: { BlockedTags: ['other'] } },
     { Id: 'admin-id', Name: 'Admin', Policy: { IsAdministrator: true, BlockedTags: [] } },
   ];
+  const localTrailers = new Map();
   let policyUpdates = 0;
   return {
     item: { Id: 'item-1', Name: 'Movie', Tags: ['keep-me'] },
@@ -224,6 +246,12 @@ function fakeJellyfin() {
     get policyUpdates() { return policyUpdates; },
     user(id) {
       return users.find((user) => user.Id === id);
+    },
+    trailer(id) {
+      return [...localTrailers.values()].flat().find((trailer) => trailer.Id === id);
+    },
+    addLocalTrailer(itemId, trailer) {
+      localTrailers.set(itemId, [...(localTrailers.get(itemId) ?? []), structuredClone(trailer)]);
     },
     async searchLibrary() {
       return [{ id: 'item-1', name: 'Movie', mediaType: 'movie', productionYear: 2026 }];
@@ -243,9 +271,22 @@ function fakeJellyfin() {
     async getUsers() {
       return structuredClone(users);
     },
+    async getLocalTrailers(itemId) {
+      return structuredClone(localTrailers.get(itemId) ?? []);
+    },
     async updateItem(item) {
-      if (item.Id === 'item-2') this.item2 = structuredClone(item);
-      else this.item = structuredClone(item);
+      if (item.Id === 'item-1') this.item = structuredClone(item);
+      else if (item.Id === 'item-2') this.item2 = structuredClone(item);
+      else {
+        for (const [parentId, trailers] of localTrailers) {
+          const index = trailers.findIndex((trailer) => trailer.Id === item.Id);
+          if (index === -1) continue;
+          trailers[index] = structuredClone(item);
+          localTrailers.set(parentId, trailers);
+          return;
+        }
+        throw new Error(`item not found: ${item.Id}`);
+      }
     },
     async updatePolicy(userId, policy) {
       policyUpdates += 1;

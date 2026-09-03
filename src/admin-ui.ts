@@ -433,13 +433,15 @@ export const ADMIN_APP_JS = `
     content.replaceChildren();
     const list = Array.isArray(plans) ? plans : [plans];
     const changes = list.flatMap((plan) => plan.users).filter((entry) => entry.action !== 'none');
-    const itemChanges = list.filter((plan) => plan.item.action !== 'none').length;
+    const itemChanges = list.reduce((total, plan) => total + (plan.item.action !== 'none' ? 1 : 0) + (plan.relatedItems || []).filter((item) => item.action !== 'none').length, 0);
     content.append(node('div', { class: 'plan-summary' }, [summary('Titles checked', list.length), summary('Item changes', itemChanges), summary('User policy changes', changes.length)]));
     if (!itemChanges && !changes.length) content.append(node('div', { class: 'empty' }, [node('strong', { text: 'Everything is already in sync' }), node('span', { text: 'No Jellyfin tags or user policies need to change.' })]));
     list.forEach((plan) => {
       const affected = plan.users.filter((entry) => entry.action !== 'none');
-      if (plan.item.action === 'none' && !affected.length && list.length > 1) return;
-      content.append(node('div', { class: 'plan-item' }, [node('strong', { text: plan.itemName || plan.itemId }), node('span', { text: plan.itemId }), node('span', { class: 'change', text: 'Item: ' + plan.item.action + ' · Policies: ' + (affected.map((entry) => entry.action + ' ' + entry.userName).join(', ') || 'none') })]));
+      const related = (plan.relatedItems || []).filter((entry) => entry.action !== 'none');
+      if (plan.item.action === 'none' && !related.length && !affected.length && list.length > 1) return;
+      const relatedText = related.length ? ' · Related: ' + related.map((entry) => entry.action + ' ' + entry.itemName).join(', ') : '';
+      content.append(node('div', { class: 'plan-item' }, [node('strong', { text: plan.itemName || plan.itemId }), node('span', { text: plan.itemId }), node('span', { class: 'change', text: 'Item: ' + plan.item.action + relatedText + ' · Policies: ' + (affected.map((entry) => entry.action + ' ' + entry.userName).join(', ') || 'none') })]));
     });
     byId('plan-dialog').showModal();
   }
@@ -701,7 +703,7 @@ export const ADMIN_APP_JS = `
     await busy(async () => {
       const preview = await api('/v1/reconcile?dryRun=true', { method: 'POST' });
       showPlan('Reconciliation plan', preview.plans);
-      const changes = preview.plans.reduce((total, plan) => total + (plan.item.action !== 'none' ? 1 : 0) + plan.users.filter((user) => user.action !== 'none').length, 0);
+      const changes = preview.plans.reduce((total, plan) => total + (plan.item.action !== 'none' ? 1 : 0) + (plan.relatedItems || []).filter((item) => item.action !== 'none').length + plan.users.filter((user) => user.action !== 'none').length, 0);
       if (!changes) return;
       if (confirm('Apply ' + changes + ' previewed reconciliation change' + (changes === 1 ? '' : 's') + '?')) {
         await api('/v1/reconcile', { method: 'POST' });

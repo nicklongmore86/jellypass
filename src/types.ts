@@ -136,6 +136,12 @@ export interface ItemChange {
   after: string[];
 }
 
+export interface RelatedItemChange extends ItemChange {
+  itemId: string;
+  itemName: string;
+  itemType?: string;
+}
+
 export interface UserPolicyChange {
   userId: string;
   userName: string;
@@ -151,5 +157,6 @@ export interface ChangePlan {
   active: boolean;
   owners: string[];
   item: ItemChange;
+  relatedItems: RelatedItemChange[];
   users: UserPolicyChange[];
 }

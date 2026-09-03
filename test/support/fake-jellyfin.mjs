@@ -66,6 +66,8 @@ export async function createFakeJellyfin() {
       response.end(poster);
       return;
     }
+    const localTrailers = request.url?.match(/^\/Items\/([^/]+)\/LocalTrailers\?userId=([^&]+)$/);
+    if (request.method === 'GET' && localTrailers) return send(response, 200, []);
     const userRecord = request.url?.match(/^\/Users\/([^/]+)$/);
     if (request.method === 'GET' && userRecord) {
       const user = users.find((entry) => entry.Id === userRecord[1]);

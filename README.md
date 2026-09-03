@@ -15,13 +15,13 @@ The companion [JellyQuest for Tizen](https://github.com/nicklongmore86/jellyques
 
 For each private title, JellyPass:
 
-1. Adds one stable tag such as `jfa:private:8f…` to the movie or series.
+1. Adds one stable tag such as `jfa:private:8f…` to the movie or series and each local trailer Jellyfin associates with it.
 2. Adds that tag to `BlockedTags` for every non-administrator Jellyfin user except its requester(s).
-3. Persists the grant and can reapply it with the reconciliation endpoint.
+3. Persists the grant and can reapply it with the reconciliation endpoint, including trailers downloaded after the original grant.
 
 Revocations are persisted as cleanup jobs before Jellyfin is changed. The record is removed only after the item tag and every user policy have been cleaned successfully. Failed synchronization state is retained with attempt count, error details, and the next retry time.
 
-Existing untagged media stays public. Multiple people can request the same title: the item has one tag, and every requester becomes an owner. Administrator accounts remain unrestricted. For series, Jellyfin inherits the series tag when checking child visibility.
+Existing untagged media stays public. Multiple people can request the same title: the item has one tag, and every requester becomes an owner. Administrator accounts remain unrestricted. For series, Jellyfin inherits the series tag when checking child visibility. Local trailers are tagged directly because Jellyfin can authorize their opaque item IDs independently of the parent title.
 
 ## Requirements
 
@@ -112,7 +112,7 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" \
   http://127.0.0.1:8787/metrics
 ```
 
-The service also reconciles on `RECONCILE_INTERVAL_SECONDS` (default: 300). Set it to `0` to disable scheduled reconciliation. Run a manual reconciliation immediately after adding or importing a Jellyfin user.
+The service also reconciles on `RECONCILE_INTERVAL_SECONDS` (default: 300). Set it to `0` to disable scheduled reconciliation. This periodic pass protects local trailers that Jellyfin discovers after the title was granted. Run a manual reconciliation immediately after adding or importing a Jellyfin user.
 
 The Jellyfin catalog synchronizes on startup when empty and every `CATALOG_SYNC_INTERVAL_SECONDS` (default: 3600). Set it to `0` to disable scheduled catalog sync; manual synchronization remains available from the Library tab and API.
 
@@ -176,7 +176,7 @@ Provisioning is intentionally phased: Jellyfin account creation, household assig
 
 ## Access semantics and limitations
 
-- Enforcement is performed by Jellyfin itself through inherited item tags and each user's `BlockedTags` policy.
+- Enforcement is performed by Jellyfin itself through item tags and each user's `BlockedTags` policy. JellyPass tags local trailer items explicitly because direct trailer playback is authorized separately from the parent title.
 - Availability notifications occur after Jellyfin discovers the item. There is a small fail-open window before the webhook is processed.
 - Seerr does not currently emit a request-deleted webhook with all fields needed for automatic revocation, so revocation uses the administrative API.
 - Direct filesystem, DLNA, administrator, and other out-of-band access are outside this service's scope.
