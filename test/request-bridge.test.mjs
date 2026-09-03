@@ -32,11 +32,31 @@ test('keeps the Jellyseerr session server-side and limits relayed operations', a
       response.end(JSON.stringify({ results: [{ id: 1, title: 'Verified' }] }));
       return;
     }
+    if (request.url === '/api/v1/movie/101' && request.headers.cookie === 'connect.sid=test-session') {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({ id: 101, mediaInfo: { jellyfinMediaId: 'a1b2c3', status: 5 } }));
+      return;
+    }
     response.writeHead(401, { 'Content-Type': 'application/json' });
     response.end(JSON.stringify({ message: 'Unauthorized' }));
   });
   const fakePort = await listen(fakeSeerr);
-  const bridge = new RequestBridge(`http://127.0.0.1:${fakePort}`);
+  const accessCalls = [];
+  const access = {
+    getMediaAccess(userId, mediaType, tmdbId, jellyfinItemId) {
+      accessCalls.push({ operation: 'get', userId, mediaType, tmdbId, jellyfinItemId });
+      return { mediaType, tmdbId, claimed: false, managed: true, owned: false, public: false, jellyfinItemId };
+    },
+    listMediaClaims(userId) {
+      accessCalls.push({ operation: 'list', userId });
+      return [{ mediaType: 'movie', tmdbId: 101, userIds: [userId], updatedAt: '2026-09-03T00:00:00.000Z' }];
+    },
+    async claimMediaAccess(userId, mediaType, tmdbId, jellyfinItemId) {
+      accessCalls.push({ operation: 'claim', userId, mediaType, tmdbId, jellyfinItemId });
+      return { mediaType, tmdbId, claimed: true, managed: true, owned: true, public: false, jellyfinItemId };
+    },
+  };
+  const bridge = new RequestBridge(`http://127.0.0.1:${fakePort}`, access);
   const app = http.createServer(async (request, response) => {
     const handled = await bridge.handle(request, response, new URL(request.url ?? '/', 'http://localhost'));
     if (!handled) {
@@ -77,6 +97,38 @@ test('keeps the Jellyseerr session server-side and limits relayed operations', a
     });
     assert.equal(proxyResponse.status, 200);
     assert.equal((await proxyResponse.json()).data.results[0].title, 'Verified');
+
+    const accessStatus = await fetch(`${origin}/jellyquest-bridge/proxy`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: '/jellyquest/access?mediaType=movie&tmdbId=101', options: {} }),
+    });
+    assert.equal(accessStatus.status, 200);
+    assert.equal((await accessStatus.json()).data.jellyfinItemId, 'a1b2c3');
+
+    const claimed = await fetch(`${origin}/jellyquest-bridge/proxy`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        path: '/jellyquest/access',
+        options: { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mediaType: 'movie', tmdbId: 101 }) },
+      }),
+    });
+    assert.equal(claimed.status, 200);
+    assert.equal((await claimed.json()).data.owned, true);
+
+    const claims = await fetch(`${origin}/jellyquest-bridge/proxy`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: '/jellyquest/access/claims', options: {} }),
+    });
+    assert.equal(claims.status, 200);
+    assert.equal((await claims.json()).data.claims[0].tmdbId, 101);
+    assert.deepEqual(accessCalls, [
+      { operation: 'get', userId: 'abc123', mediaType: 'movie', tmdbId: 101, jellyfinItemId: 'a1b2c3' },
+      { operation: 'claim', userId: 'abc123', mediaType: 'movie', tmdbId: 101, jellyfinItemId: 'a1b2c3' },
+      { operation: 'list', userId: 'abc123' },
+    ]);
 
     const blocked = await fetch(`${origin}/jellyquest-bridge/proxy`, {
       method: 'POST',

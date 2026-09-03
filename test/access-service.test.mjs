@@ -26,7 +26,7 @@ describe('access tags and webhook validation', () => {
 });
 
 describe('state migration', () => {
-  it('migrates v1 grants to active, pending v4 records', async () => {
+  it('migrates v1 grants to active, pending v5 records', async () => {
     const file = await stateFile();
     await writeFile(file, JSON.stringify({
       version: 1,
@@ -46,10 +46,10 @@ describe('state migration', () => {
     assert.deepEqual(grant.groupIds, []);
     assert.equal(grant.sync.state, 'pending');
     assert.deepEqual(grant.manualUserIds, []);
-    assert.equal(JSON.parse(await readFile(file, 'utf8')).version, 4);
+    assert.equal(JSON.parse(await readFile(file, 'utf8')).version, 5);
   });
 
-  it('adds manual audiences and an empty catalog while migrating v2 state to v4', async () => {
+  it('adds manual audiences, catalog, and claims while migrating v2 state to v5', async () => {
     const file = await stateFile();
     await writeFile(file, JSON.stringify({
       version: 2,
@@ -65,11 +65,12 @@ describe('state migration', () => {
     await store.load();
     assert.deepEqual(store.get('item-1').manualUserIds, []);
     const migrated = JSON.parse(await readFile(file, 'utf8'));
-    assert.equal(migrated.version, 4);
+    assert.equal(migrated.version, 5);
     assert.deepEqual(migrated.catalog.items, {});
+    assert.deepEqual(migrated.claims, {});
   });
 
-  it('preserves v3 grants while adding the v4 catalog', async () => {
+  it('preserves v3 grants while adding the v5 catalog and claims', async () => {
     const file = await stateFile();
     await writeFile(file, JSON.stringify({
       version: 3,
@@ -85,12 +86,53 @@ describe('state migration', () => {
     await store.load();
     assert.deepEqual(store.get('item-1').manualUserIds, ['bob-id']);
     const migrated = JSON.parse(await readFile(file, 'utf8'));
-    assert.equal(migrated.version, 4);
+    assert.equal(migrated.version, 5);
     assert.deepEqual(migrated.catalog, { items: {} });
+    assert.deepEqual(migrated.claims, {});
+  });
+
+  it('preserves v4 state while adding an empty claim registry', async () => {
+    const file = await stateFile();
+    await writeFile(file, JSON.stringify({ version: 4, grants: {}, groups: {}, catalog: { items: {} } }));
+    const store = new GrantStore(file);
+    await store.load();
+    const migrated = JSON.parse(await readFile(file, 'utf8'));
+    assert.equal(migrated.version, 5);
+    assert.deepEqual(migrated.claims, {});
   });
 });
 
 describe('grant lifecycle', () => {
+  it('joins pending requests and grants the whole title to every claimant when available', async () => {
+    const store = new GrantStore(await stateFile());
+    await store.load();
+    const fake = fakeJellyfin();
+    const service = new AccessService(fake, store);
+
+    const pending = await service.claimMediaAccess('bob-id', 'tv', 1399);
+    assert.equal(pending.claimed, true);
+    assert.equal(pending.jellyfinItemId, undefined);
+    assert.deepEqual(service.listMediaClaims('bob-id').map((claim) => claim.tmdbId), [1399]);
+
+    const grant = await service.processWebhook(parseWebhook(webhook({ mediaType: 'tv', tmdbId: 1399 })));
+    assert.deepEqual(grant.owners, ['alice-id', 'bob-id']);
+    assert.equal(service.getMediaAccess('bob-id', 'tv', 1399).owned, true);
+    assert.equal(service.listMediaClaims('bob-id')[0].jellyfinItemId, 'item-1');
+  });
+
+  it('adds a user to an existing private title without creating another request', async () => {
+    const store = new GrantStore(await stateFile());
+    await store.load();
+    const fake = fakeJellyfin();
+    const service = new AccessService(fake, store);
+
+    await service.processWebhook(parseWebhook(webhook({ tmdbId: 101 })));
+    const access = await service.claimMediaAccess('bob-id', 'movie', 101, 'item-1');
+    assert.equal(access.owned, true);
+    assert.deepEqual(store.get('item-1').manualUserIds, ['bob-id']);
+    assert.equal(Object.keys(store.get('item-1').requests).length, 1);
+    assert.deepEqual(fake.user('bob-id').Policy.BlockedTags, ['other']);
+  });
   it('syncs the catalog and consolidates bulk access into one policy write per user', async () => {
     const store = new GrantStore(await stateFile());
     await store.load();
@@ -209,14 +251,16 @@ describe('grant lifecycle', () => {
           id: 136,
           is4k: false,
           requestedBy: { jellyfinUserId: 'alice-id' },
-          media: { jellyfinMediaId: 'item-1', mediaType: 'movie' },
+          media: { jellyfinMediaId: 'item-1', mediaType: 'movie', tmdbId: 101 },
         };
       },
     };
     const service = new AccessService(fake, store, undefined, seerr);
 
+    await service.claimMediaAccess('bob-id', 'movie', 101);
     const grant = await service.processWebhook(parseWebhook({ notificationType: 'MEDIA_AVAILABLE', request: { id: '136' } }));
     assert.equal(grant.requests['136'], 'alice-id');
+    assert.deepEqual(grant.owners, ['alice-id', 'bob-id']);
     assert.deepEqual(fake.item.Tags, ['keep-me', 'jfa:private:item-1']);
   });
 });
@@ -224,7 +268,11 @@ describe('grant lifecycle', () => {
 function webhook(overrides = {}) {
   return {
     notificationType: 'MEDIA_AVAILABLE',
-    media: { jellyfinMediaId: overrides.mediaId ?? 'item-1', mediaType: 'movie' },
+    media: {
+      jellyfinMediaId: overrides.mediaId ?? 'item-1',
+      mediaType: overrides.mediaType ?? 'movie',
+      ...(overrides.tmdbId ? { tmdbId: overrides.tmdbId } : {}),
+    },
     request: {
       id: overrides.requestId ?? '17',
       requestedBy: { jellyfinUserId: overrides.userId ?? 'alice-id', username: 'Alice' },

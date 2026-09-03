@@ -3,6 +3,7 @@ export interface SeerrWebhook {
   media?: {
     jellyfinMediaId?: string;
     mediaType?: string;
+    tmdbId?: number;
   };
   request: {
     id: string;
@@ -24,6 +25,7 @@ export interface SeerrRequest {
     mediaType?: string;
     jellyfinMediaId?: string;
     jellyfinMediaId4k?: string;
+    tmdbId?: number;
   };
 }
 
@@ -102,10 +104,29 @@ export interface GrantRecord {
 }
 
 export interface GrantState {
-  version: 4;
+  version: 5;
   grants: Record<string, GrantRecord>;
   groups: Record<string, AccessGroup>;
   catalog: LibraryCatalog;
+  claims: Record<string, MediaClaim>;
+}
+
+export interface MediaClaim {
+  mediaType: 'movie' | 'tv';
+  tmdbId: number;
+  userIds: string[];
+  jellyfinItemId?: string;
+  updatedAt: string;
+}
+
+export interface MediaAccessStatus {
+  mediaType: 'movie' | 'tv';
+  tmdbId: number;
+  claimed: boolean;
+  managed: boolean;
+  owned: boolean;
+  public: boolean;
+  jellyfinItemId?: string;
 }
 
 export interface AccessGroup {

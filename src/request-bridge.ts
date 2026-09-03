@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import type { MediaAccessStatus, MediaClaim } from './types.js';
 
 const BRIDGE_PREFIX = '/jellyquest-bridge';
 const BODY_LIMIT = 64 * 1024;
@@ -9,6 +10,13 @@ const PROFILE_ID_PATTERN = /^[a-fA-F0-9-]{1,64}$/;
 interface BridgeSession {
   cookie: string;
   expires: number;
+  userId: string;
+}
+
+export interface RequestBridgeAccess {
+  getMediaAccess(userId: string, mediaType: 'movie' | 'tv', tmdbId: number, jellyfinItemId?: string): MediaAccessStatus;
+  listMediaClaims(userId: string): MediaClaim[];
+  claimMediaAccess(userId: string, mediaType: 'movie' | 'tv', tmdbId: number, jellyfinItemId?: string): Promise<MediaAccessStatus>;
 }
 
 interface RelayOptions {
@@ -25,10 +33,12 @@ interface SeerrResult {
 
 export class RequestBridge {
   private readonly seerrUrl: URL;
+  private readonly access: RequestBridgeAccess | undefined;
   private readonly sessions = new Map<string, BridgeSession>();
 
-  constructor(seerrUrl: string) {
+  constructor(seerrUrl: string, access?: RequestBridgeAccess) {
     this.seerrUrl = new URL(`${seerrUrl.replace(/\/+$/, '')}/`);
+    this.access = access;
   }
 
   async handle(request: IncomingMessage, response: ServerResponse, url: URL): Promise<boolean> {
@@ -55,7 +65,7 @@ export class RequestBridge {
         return json(response, 401, { error: 'Jellyseerr rejected this Jellyfin profile.' });
       }
       const token = randomBytes(32).toString('hex');
-      this.sessions.set(token, { cookie: auth.cookie, expires: Date.now() + SESSION_LIFETIME_MS });
+      this.sessions.set(token, { cookie: auth.cookie, expires: Date.now() + SESSION_LIFETIME_MS, userId: input.id });
       this.pruneSessions();
       return json(response, 200, { token });
     }
@@ -71,6 +81,12 @@ export class RequestBridge {
       if (typeof input.path !== 'string' || !allowedRequest(input.path, options)) {
         return json(response, 403, { error: 'That Jellyseerr operation is not allowed.' });
       }
+      if (input.path.startsWith('/jellyquest/access')) {
+        if (!this.access) return json(response, 503, { error: 'JellyPass access claims are not configured.' });
+        const data = await this.handleAccess(input.path, options, session);
+        session.expires = Date.now() + SESSION_LIFETIME_MS;
+        return json(response, 200, { data });
+      }
       const result = await this.seerr(input.path, options, session.cookie);
       session.cookie = result.cookie;
       session.expires = Date.now() + SESSION_LIFETIME_MS;
@@ -84,6 +100,35 @@ export class RequestBridge {
       return json(response, 200, { data: result.data });
     }
     return json(response, 404, { error: 'Not found.' });
+  }
+
+  private async handleAccess(pathname: string, options: RelayOptions, session: BridgeSession): Promise<unknown> {
+    const url = new URL(pathname, 'http://jellyquest.local');
+    const method = (options.method ?? 'GET').toUpperCase();
+    if (url.pathname === '/jellyquest/access/claims' && method === 'GET') {
+      return { claims: this.access!.listMediaClaims(session.userId) };
+    }
+    if (url.pathname !== '/jellyquest/access' || (method !== 'GET' && method !== 'POST')) {
+      throw new Error('That JellyPass access operation is not allowed.');
+    }
+    const input = method === 'POST' ? recordBody(JSON.parse(options.body ?? '{}') as unknown) : Object.fromEntries(url.searchParams);
+    const mediaType = input.mediaType;
+    const tmdbId = Number(input.tmdbId);
+    if ((mediaType !== 'movie' && mediaType !== 'tv') || !Number.isSafeInteger(tmdbId) || tmdbId <= 0) {
+      throw new Error('A valid movie or TV TMDB ID is required.');
+    }
+    const details = await this.seerr(`/api/v1/${mediaType}/${tmdbId}`, {}, session.cookie);
+    if (!details.response.ok) throw new Error(`Jellyseerr could not resolve ${mediaType} ${tmdbId}.`);
+    session.cookie = details.cookie;
+    const mediaInfo = details.data.mediaInfo && typeof details.data.mediaInfo === 'object' && !Array.isArray(details.data.mediaInfo)
+      ? details.data.mediaInfo as Record<string, unknown>
+      : undefined;
+    const jellyfinItemId = typeof mediaInfo?.jellyfinMediaId === 'string' && PROFILE_ID_PATTERN.test(mediaInfo.jellyfinMediaId)
+      ? mediaInfo.jellyfinMediaId
+      : undefined;
+    return method === 'POST'
+      ? this.access!.claimMediaAccess(session.userId, mediaType, tmdbId, jellyfinItemId)
+      : this.access!.getMediaAccess(session.userId, mediaType, tmdbId, jellyfinItemId);
   }
 
   private async seerr(pathname: string, options: RelayOptions = {}, cookie = ''): Promise<SeerrResult> {
@@ -128,6 +173,9 @@ function relayOptions(value: unknown): RelayOptions {
 
 function allowedRequest(pathname: string, options: RelayOptions): boolean {
   const method = (options.method ?? 'GET').toUpperCase();
+  if (/^\/jellyquest\/access(?:\/claims)?(?:\?|$)/.test(pathname)) {
+    return method === 'GET' || (method === 'POST' && pathname === '/jellyquest/access');
+  }
   const allowedPath = /^\/api\/v1\/(?:media(?:\?|$)|request(?:\?|$)|search\?|movie\/\d+(?:\?|$)|tv\/\d+(?:\?|$)|discover\/)/.test(pathname);
   return allowedPath && (method === 'GET' || (method === 'POST' && pathname === '/api/v1/request'));
 }

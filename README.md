@@ -21,7 +21,7 @@ For each private title, JellyPass:
 
 Revocations are persisted as cleanup jobs before Jellyfin is changed. The record is removed only after the item tag and every user policy have been cleaned successfully. Failed synchronization state is retained with attempt count, error details, and the next retry time.
 
-Existing untagged media stays public. Multiple people can request the same title: the item has one tag, and every requester becomes an owner. Administrator accounts remain unrestricted. For series, Jellyfin inherits the series tag when checking child visibility. Local trailers are tagged directly because Jellyfin can authorize their opaque item IDs independently of the parent title.
+Existing untagged media stays public. JellyQuest users can join an existing request without asking Jellyseerr to acquire the title again. JellyPass stores that movie- or series-level claim by TMDB ID and grants every claimant when the title becomes available. An already-available private title is granted immediately. The item still has one tag, and every requester or claimant becomes an owner. Administrator accounts remain unrestricted. Series claims always grant the complete series; they do not track individual seasons. Local trailers are tagged directly because Jellyfin can authorize their opaque item IDs independently of the parent title.
 
 ## Requirements
 
@@ -147,7 +147,7 @@ JELLYQUEST_BRIDGE_ENABLED=true
 
 The Tizen package then uses `https://jelly-household.example.com/jellyquest-bridge/bridge.html`. No Jellyseerr files or reverse-proxy locations are required: JellyPass handles this prefix before forwarding other household traffic to Jellyfin.
 
-The module signs the selected passwordless Jellyfin profile into Jellyseerr, verifies that Jellyseerr returns the same Jellyfin user ID, and stores Jellyseerr's session cookie only in JellyPass memory for 12 hours. The random browser token grants access only to the discovery, search, media-status, title-detail, and request-creation endpoints used by JellyQuest. Jellyseerr continues to own request data, permissions, approvals, and processing. Restarting JellyPass clears all bridge sessions.
+The module signs the selected passwordless Jellyfin profile into Jellyseerr, verifies that Jellyseerr returns the same Jellyfin user ID, and stores Jellyseerr's session cookie only in JellyPass memory for 12 hours. The random browser token grants access only to the discovery, search, media-status, title-detail, request-creation, and authenticated self-service claim operations used by JellyQuest. Jellyseerr continues to own acquisition requests, permissions, approvals, and processing; JellyPass owns per-user visibility claims. Restarting JellyPass clears bridge sessions but persisted claims remain.
 
 ```sh
 # Create or replace a group. User IDs are Jellyfin IDs.
@@ -178,6 +178,7 @@ Provisioning is intentionally phased: Jellyfin account creation, household assig
 
 - Enforcement is performed by Jellyfin itself through item tags and each user's `BlockedTags` policy. JellyPass tags local trailer items explicitly because direct trailer playback is authorized separately from the parent title.
 - Availability notifications occur after Jellyfin discovers the item. There is a small fail-open window before the webhook is processed.
+- Pending claims are keyed by media type and TMDB ID. JellyPass resolves them to the Jellyfin movie or series when the availability webhook arrives; season-level visibility is intentionally unsupported.
 - Seerr does not currently emit a request-deleted webhook with all fields needed for automatic revocation, so revocation uses the administrative API.
 - Direct filesystem, DLNA, administrator, and other out-of-band access are outside this service's scope.
 - The bridge merges only its own `jfa:private:*` tag and preserves unrelated item tags and blocked tags.

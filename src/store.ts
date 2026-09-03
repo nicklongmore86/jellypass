@@ -1,8 +1,8 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { AccessGroup, GrantRecord, GrantState, LibraryCatalogItem, RevokeResult, SyncStatus } from './types.js';
+import type { AccessGroup, GrantRecord, GrantState, LibraryCatalogItem, MediaClaim, RevokeResult, SyncStatus } from './types.js';
 
-const EMPTY_STATE: GrantState = { version: 4, grants: {}, groups: {}, catalog: { items: {} } };
+const EMPTY_STATE: GrantState = { version: 5, grants: {}, groups: {}, catalog: { items: {} }, claims: {} };
 
 export class GrantStore {
   readonly #file: string;
@@ -49,6 +49,40 @@ export class GrantStore {
     };
   }
 
+  public getClaim(mediaType: 'movie' | 'tv', tmdbId: number): MediaClaim | undefined {
+    const claim = this.#state.claims[claimKey(mediaType, tmdbId)];
+    return claim ? clone(claim) : undefined;
+  }
+
+  public listClaims(userId?: string): MediaClaim[] {
+    const normalizedUserId = userId ? normalizeId(userId) : undefined;
+    return Object.values(this.#state.claims)
+      .filter((claim) => !normalizedUserId || claim.userIds.includes(normalizedUserId))
+      .map(clone);
+  }
+
+  public async addClaim(input: {
+    mediaType: 'movie' | 'tv';
+    tmdbId: number;
+    userId: string;
+    jellyfinItemId?: string;
+  }): Promise<MediaClaim> {
+    const key = claimKey(input.mediaType, input.tmdbId);
+    const previous = this.#state.claims[key];
+    const claim: MediaClaim = {
+      mediaType: input.mediaType,
+      tmdbId: input.tmdbId,
+      userIds: [...new Set([...(previous?.userIds ?? []), normalizeId(input.userId)])].sort(),
+      ...(input.jellyfinItemId || previous?.jellyfinItemId
+        ? { jellyfinItemId: normalizeId(input.jellyfinItemId ?? previous!.jellyfinItemId!) }
+        : {}),
+      updatedAt: new Date().toISOString(),
+    };
+    this.#state.claims[key] = claim;
+    await this.#save();
+    return clone(claim);
+  }
+
   public async replaceCatalog(items: LibraryCatalogItem[]): Promise<{ lastSyncedAt: string; items: LibraryCatalogItem[] }> {
     const lastSyncedAt = new Date().toISOString();
     this.#state.catalog = {
@@ -67,6 +101,7 @@ export class GrantStore {
   public async grant(input: {
     itemId: string;
     mediaType?: string;
+    tmdbId?: number;
     requestId: string;
     userId: string;
   }): Promise<GrantRecord> {
@@ -74,8 +109,16 @@ export class GrantStore {
     const userId = normalizeId(input.userId);
     const previous = this.#state.grants[itemId];
     const requests = { ...(previous?.requests ?? {}), [input.requestId]: userId };
-    const next = this.#makeGrant(itemId, requests, previous?.manualUserIds ?? [], previous?.groupIds ?? [], previous, input.mediaType);
+    const claim = input.tmdbId !== undefined && (input.mediaType === 'movie' || input.mediaType === 'tv')
+      ? this.#state.claims[claimKey(input.mediaType, input.tmdbId)]
+      : undefined;
+    const manualUserIds = [...new Set([...(previous?.manualUserIds ?? []), ...(claim?.userIds ?? [])])].sort();
+    const next = this.#makeGrant(itemId, requests, manualUserIds, previous?.groupIds ?? [], previous, input.mediaType);
     this.#state.grants[itemId] = next;
+    if (claim) {
+      claim.jellyfinItemId = itemId;
+      claim.updatedAt = new Date().toISOString();
+    }
     await this.#save();
     return clone(next);
   }
@@ -280,21 +323,37 @@ function clone<T>(value: T): T {
 
 function migrateState(value: unknown): { state: GrantState; changed: boolean } {
   if (!value || typeof value !== 'object') throw new Error('state file must be a JSON object');
-  const candidate = value as { version?: unknown; grants?: unknown; groups?: unknown; catalog?: unknown };
+  const candidate = value as { version?: unknown; grants?: unknown; groups?: unknown; catalog?: unknown; claims?: unknown };
   if (!candidate.grants || typeof candidate.grants !== 'object') throw new Error('state file is missing grants');
+  if (candidate.version === 5) {
+    if (!candidate.groups || typeof candidate.groups !== 'object') throw new Error('state file is missing groups');
+    if (!candidate.catalog || typeof candidate.catalog !== 'object') throw new Error('state file is missing catalog');
+    if (!candidate.claims || typeof candidate.claims !== 'object') throw new Error('state file is missing claims');
+    return { state: value as GrantState, changed: false };
+  }
   if (candidate.version === 4) {
     if (!candidate.groups || typeof candidate.groups !== 'object') throw new Error('state file is missing groups');
     if (!candidate.catalog || typeof candidate.catalog !== 'object') throw new Error('state file is missing catalog');
-    return { state: value as GrantState, changed: false };
+    return {
+      state: {
+        version: 5,
+        grants: candidate.grants as Record<string, GrantRecord>,
+        groups: candidate.groups as Record<string, AccessGroup>,
+        catalog: candidate.catalog as GrantState['catalog'],
+        claims: {},
+      },
+      changed: true,
+    };
   }
   if (candidate.version === 3) {
     if (!candidate.groups || typeof candidate.groups !== 'object') throw new Error('state file is missing groups');
     return {
       state: {
-        version: 4,
+        version: 5,
         grants: candidate.grants as Record<string, GrantRecord>,
         groups: candidate.groups as Record<string, AccessGroup>,
         catalog: { items: {} },
+        claims: {},
       },
       changed: true,
     };
@@ -305,7 +364,7 @@ function migrateState(value: unknown): { state: GrantState; changed: boolean } {
       itemId,
       { ...grant, manualUserIds: [] },
     ]));
-    return { state: { version: 4, grants, groups: candidate.groups as Record<string, AccessGroup>, catalog: { items: {} } }, changed: true };
+    return { state: { version: 5, grants, groups: candidate.groups as Record<string, AccessGroup>, catalog: { items: {} }, claims: {} }, changed: true };
   }
   if (candidate.version !== 1) throw new Error('unsupported state schema version');
   const now = new Date().toISOString();
@@ -320,5 +379,9 @@ function migrateState(value: unknown): { state: GrantState; changed: boolean } {
       updatedAt: raw.updatedAt || now,
     };
   }
-  return { state: { version: 4, grants, groups: {}, catalog: { items: {} } }, changed: true };
+  return { state: { version: 5, grants, groups: {}, catalog: { items: {} }, claims: {} }, changed: true };
+}
+
+function claimKey(mediaType: 'movie' | 'tv', tmdbId: number): string {
+  return `${mediaType}:${tmdbId}`;
 }

@@ -10,6 +10,8 @@ import type {
   JellyfinUser,
   LibraryCatalogItem,
   LibraryItemSummary,
+  MediaAccessStatus,
+  MediaClaim,
   RecentSeerrRequest,
   RevokeResult,
   SeerrWebhook,
@@ -141,6 +143,60 @@ export class AccessService {
     return this.#seerr?.getRecentRequests(take, catalogIds) ?? Promise.resolve([]);
   }
 
+  public getMediaAccess(
+    userIdInput: string,
+    mediaType: 'movie' | 'tv',
+    tmdbId: number,
+    jellyfinItemId?: string,
+  ): MediaAccessStatus {
+    const userId = normalizeId(userIdInput);
+    const claim = this.#store.getClaim(mediaType, tmdbId);
+    const itemId = jellyfinItemId ? normalizeId(jellyfinItemId) : claim?.jellyfinItemId;
+    const grant = itemId ? this.#store.get(itemId) : undefined;
+    const managed = grant?.active === true;
+    return {
+      mediaType,
+      tmdbId,
+      claimed: claim?.userIds.includes(userId) === true,
+      managed,
+      owned: managed && grant!.owners.includes(userId),
+      public: Boolean(itemId) && !managed,
+      ...(itemId ? { jellyfinItemId: itemId } : {}),
+    };
+  }
+
+  public listMediaClaims(userId: string): MediaClaim[] {
+    return this.#store.listClaims(userId);
+  }
+
+  public claimMediaAccess(
+    userIdInput: string,
+    mediaType: 'movie' | 'tv',
+    tmdbId: number,
+    jellyfinItemId?: string,
+  ): Promise<MediaAccessStatus> {
+    return this.#exclusive(async () => {
+      const userId = normalizeId(userIdInput);
+      const users = await this.#jellyfin.getUsers();
+      if (!users.some((user) => normalizeId(user.Id) === userId && !user.Policy.IsAdministrator)) {
+        throw new Error('Jellyfin user is not eligible for self-service access');
+      }
+      const claim = await this.#store.addClaim({ mediaType, tmdbId, userId, ...(jellyfinItemId ? { jellyfinItemId } : {}) });
+      const itemId = jellyfinItemId ? normalizeId(jellyfinItemId) : claim.jellyfinItemId;
+      const grant = itemId ? this.#store.get(itemId) : undefined;
+      if (itemId && grant?.active && !grant.owners.includes(userId)) {
+        const updated = await this.#store.setManualAccess({
+          itemId,
+          mediaType: grant.mediaType ?? mediaType,
+          userIds: [...grant.manualUserIds, userId],
+          groupIds: grant.groupIds,
+        });
+        await this.#reconcileGrant(updated.current);
+      }
+      return this.getMediaAccess(userId, mediaType, tmdbId, itemId);
+    });
+  }
+
   public getRequestPoster(posterPath: string): Promise<{ body: Uint8Array; contentType: string }> {
     if (!this.#seerr) throw new Error('Seerr lookup is not configured');
     return this.#seerr.getPoster(posterPath);
@@ -192,6 +248,7 @@ export class AccessService {
         requestId: event.request.id,
         userId: resolved.userId,
         ...(resolved.mediaType ? { mediaType: resolved.mediaType } : {}),
+        ...(resolved.tmdbId !== undefined ? { tmdbId: resolved.tmdbId } : {}),
       });
       try {
         await this.#reconcileGrant(grant);
@@ -204,24 +261,28 @@ export class AccessService {
     });
   }
 
-  async #resolveWebhook(event: SeerrWebhook): Promise<{ itemId: string; userId: string; mediaType?: string }> {
+  async #resolveWebhook(event: SeerrWebhook): Promise<{ itemId: string; userId: string; mediaType?: string; tmdbId?: number }> {
     let itemId = event.media?.jellyfinMediaId;
     let userId = event.request.requestedBy?.jellyfinUserId;
     let mediaType = event.media?.mediaType;
+    let tmdbId = event.media?.tmdbId;
 
-    if (!itemId || !userId) {
-      if (!this.#seerr) throw new Error('webhook is missing Jellyfin IDs and Seerr lookup is not configured');
+    if ((!itemId || !userId || tmdbId === undefined) && this.#seerr) {
       const request = await this.#seerr.getRequest(event.request.id);
       itemId = request.is4k
         ? request.media?.jellyfinMediaId4k ?? request.media?.jellyfinMediaId
         : request.media?.jellyfinMediaId;
       userId = request.requestedBy?.jellyfinUserId;
       mediaType ??= request.media?.mediaType ?? request.type;
+      tmdbId ??= request.media?.tmdbId;
     }
 
+    if ((!itemId || !userId) && !this.#seerr) {
+      throw new Error('webhook is missing Jellyfin IDs and Seerr lookup is not configured');
+    }
     if (!itemId) throw new Error(`Seerr request ${event.request.id} is missing a Jellyfin media ID`);
     if (!userId) throw new Error(`Seerr request ${event.request.id} is missing a Jellyfin user ID`);
-    return { itemId, userId, ...(mediaType ? { mediaType } : {}) };
+    return { itemId, userId, ...(mediaType ? { mediaType } : {}), ...(tmdbId !== undefined ? { tmdbId } : {}) };
   }
 
   public reconcileAll(options: { dryRun?: boolean; dueOnly?: boolean } = {}): Promise<ChangePlan[]> {

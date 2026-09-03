@@ -10,12 +10,17 @@ export function parseWebhook(value: unknown): SeerrWebhook {
   const requestedBy = optionalObjectAt(request, 'requestedBy');
   const mediaType = media ? optionalStringAt(media, 'mediaType') : undefined;
   const mediaId = media ? optionalIdAt(media, 'jellyfinMediaId') : undefined;
+  const tmdbId = media ? optionalPositiveIntegerAt(media, 'tmdbId') : undefined;
   const username = requestedBy ? optionalStringAt(requestedBy, 'username') : undefined;
   const userId = requestedBy ? optionalIdAt(requestedBy, 'jellyfinUserId') : undefined;
 
   const event: SeerrWebhook = {
     notificationType: stringAt(body, 'notificationType'),
-    ...(media ? { media: { ...(mediaId ? { jellyfinMediaId: mediaId } : {}), ...(mediaType ? { mediaType } : {}) } } : {}),
+    ...(media ? { media: {
+      ...(mediaId ? { jellyfinMediaId: mediaId } : {}),
+      ...(mediaType ? { mediaType } : {}),
+      ...(tmdbId !== undefined ? { tmdbId } : {}),
+    } } : {}),
     request: {
       id: idAt(request, 'id'),
       ...(requestedBy ? { requestedBy: { ...(userId ? { jellyfinUserId: userId } : {}), ...(username ? { username } : {}) } } : {}),
@@ -57,4 +62,12 @@ function idAt(parent: Record<string, unknown>, key: string): string {
 function optionalIdAt(parent: Record<string, unknown>, key: string): string | undefined {
   if (parent[key] === undefined || parent[key] === null || parent[key] === '') return undefined;
   return idAt(parent, key);
+}
+
+function optionalPositiveIntegerAt(parent: Record<string, unknown>, key: string): number | undefined {
+  const value = parent[key];
+  if (value === undefined || value === null || value === '') return undefined;
+  const number = typeof value === 'string' ? Number(value) : value;
+  if (!Number.isSafeInteger(number) || Number(number) <= 0) throw new Error(`${key} must be a positive integer`);
+  return Number(number);
 }
