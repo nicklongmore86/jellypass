@@ -370,6 +370,12 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
       headers: { 'X-Emby-Token': householdAuthentication.AccessToken, Range: 'bytes=0-0' },
     });
     assert.equal(ownerStream.status, 206, await ownerStream.text());
+    const ownerPlaylist = await fetchWithHost(
+      bridgeUrl,
+      `/Videos/trailer-1/master.m3u8?ApiKey=${encodeURIComponent(householdAuthentication.AccessToken)}`,
+      'jelly-farmhouse.example.test',
+    );
+    assert.equal(ownerPlaylist.status, 200, await ownerPlaylist.text());
     const blockedLogin = await fetchWithHost(bridgeUrl, '/Users/AuthenticateByName', 'jelly-farmhouse.example.test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },

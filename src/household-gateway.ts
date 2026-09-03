@@ -183,9 +183,10 @@ export class HouseholdGateway {
       if (typeof value === 'string') headers.set(name, value);
     }
     const authenticationQuery = new URLSearchParams();
-    for (const name of ['api_key', 'access_token']) {
-      const value = requestUrl.searchParams.get(name);
-      if (value) authenticationQuery.set(name, value);
+    for (const [name, value] of requestUrl.searchParams) {
+      if (['apikey', 'api_key', 'access_token'].includes(name.toLowerCase()) && value) {
+        authenticationQuery.append(name, value);
+      }
     }
     const suffix = authenticationQuery.size ? `?${authenticationQuery}` : '';
     const currentUserResponse = await fetch(this.#targetUrl(`/Users/Me${suffix}`), {

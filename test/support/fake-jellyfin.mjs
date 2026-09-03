@@ -19,6 +19,7 @@ export async function createFakeJellyfin() {
   let sessionSequence = 0;
   const upgradeSockets = new Set();
   const server = createServer(async (request, response) => {
+    const requestUrl = new URL(request.url ?? '/', 'http://localhost');
     if (request.method === 'GET' && request.url === '/Users/Public') {
       return send(response, 200, users.map((user) => ({ Id: user.Id, Name: user.Name, HasPassword: false })));
     }
@@ -45,9 +46,13 @@ export async function createFakeJellyfin() {
       logoutCount += 1;
       return send(response, 204);
     }
-    const sessionUserId = sessions.get(request.headers['x-emby-token']);
-    if (request.headers['x-emby-token'] !== 'test-key' && !sessionUserId) return send(response, 401, {});
-    if (request.method === 'GET' && request.url === '/Users/Me') {
+    const suppliedToken = request.headers['x-emby-token']
+      ?? requestUrl.searchParams.get('ApiKey')
+      ?? requestUrl.searchParams.get('api_key')
+      ?? requestUrl.searchParams.get('access_token');
+    const sessionUserId = sessions.get(suppliedToken);
+    if (suppliedToken !== 'test-key' && !sessionUserId) return send(response, 401, {});
+    if (request.method === 'GET' && requestUrl.pathname === '/Users/Me') {
       const user = users.find((entry) => entry.Id === sessionUserId);
       return user ? send(response, 200, user) : send(response, 401, {});
     }
@@ -85,7 +90,7 @@ export async function createFakeJellyfin() {
       const user = users.find((entry) => entry.Id === userRecord[1]);
       return user ? send(response, 200, user) : send(response, 404, {});
     }
-    const userItem = request.url?.match(/^\/Users\/([^/]+)\/Items\/([^/]+)$/);
+    const userItem = requestUrl.pathname.match(/^\/Users\/([^/]+)\/Items\/([^/]+)$/);
     if (request.method === 'GET' && userItem) {
       const user = users.find((entry) => entry.Id === userItem[1]);
       const item = state.items[userItem[2]];
@@ -95,6 +100,12 @@ export async function createFakeJellyfin() {
     if (request.method === 'GET' && request.url?.startsWith('/Videos/trailer-1/stream')) {
       response.writeHead(206, { 'Content-Type': 'video/mp4', 'Content-Length': 1, 'Content-Range': 'bytes 0-0/1' });
       response.end(Buffer.from([0]));
+      return;
+    }
+    if (request.method === 'GET' && requestUrl.pathname === '/Videos/trailer-1/master.m3u8') {
+      const playlist = '#EXTM3U\n';
+      response.writeHead(200, { 'Content-Type': 'application/vnd.apple.mpegurl', 'Content-Length': playlist.length });
+      response.end(playlist);
       return;
     }
     const itemUpdate = request.url?.match(/^\/Items\/([^/]+)$/);
