@@ -87,6 +87,10 @@ test('keeps the Jellyseerr session server-side and limits relayed operations', a
   try {
     const page = await fetch(`${origin}/jellyquest-bridge/bridge.html`);
     assert.equal(page.status, 200);
+    assert.equal(
+      page.headers.get('content-security-policy'),
+      "default-src 'self'; script-src 'unsafe-inline'; connect-src 'self'; frame-ancestors * file: tizen-app:",
+    );
     assert.match(await page.text(), /jellyquest-bridge/);
     assert.equal((await fetch(`${origin}/jellyquest-bridge/health`)).status, 200);
     assert.equal((await fetch(`${origin}/outside`)).status, 418);

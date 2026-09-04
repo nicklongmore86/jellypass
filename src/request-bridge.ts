@@ -232,7 +232,7 @@ function json(response: ServerResponse, status: number, value: unknown): true {
 function asset(response: ServerResponse, body: string): true {
   response.writeHead(200, {
     'Cache-Control': 'no-store',
-    'Content-Security-Policy': "default-src 'self'; script-src 'unsafe-inline'; connect-src 'self'; frame-ancestors *",
+    'Content-Security-Policy': "default-src 'self'; script-src 'unsafe-inline'; connect-src 'self'; frame-ancestors * file: tizen-app:",
     'Content-Type': 'text/html; charset=utf-8',
     'Content-Length': Buffer.byteLength(body),
   });
