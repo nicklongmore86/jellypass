@@ -6,6 +6,8 @@ const BRIDGE_PREFIX = '/jellyquest-bridge';
 const BODY_LIMIT = 64 * 1024;
 const SESSION_LIFETIME_MS = 12 * 60 * 60 * 1000;
 const PROFILE_ID_PATTERN = /^[a-fA-F0-9-]{1,64}$/;
+const PROBE_ATTEMPT_WINDOW_MS = 5 * 60 * 1000;
+const MAX_PROBE_ATTEMPTS = 30;
 
 interface BridgeSession {
   cookie: string;
@@ -36,6 +38,7 @@ export class RequestBridge {
   private readonly seerrUrl: URL;
   private readonly access: RequestBridgeAccess | undefined;
   private readonly sessions = new Map<string, BridgeSession>();
+  private readonly probeAttempts = new Map<string, { attempts: number; resetsAt: number }>();
 
   constructor(seerrUrl: string, access?: RequestBridgeAccess) {
     this.seerrUrl = new URL(`${seerrUrl.replace(/\/+$/, '')}/`);
@@ -52,6 +55,9 @@ export class RequestBridge {
       return json(response, 200, { ok: true });
     }
     if (request.method === 'POST' && url.pathname === `${BRIDGE_PREFIX}/eligibility`) {
+      if (!this.allowProbeAttempt(clientId(request))) {
+        return json(response, 429, { error: 'Too many requests.' });
+      }
       const input = recordBody(await readJson(request));
       if (typeof input.id !== 'string' || !PROFILE_ID_PATTERN.test(input.id)) {
         return json(response, 400, { error: 'Invalid Jellyfin profile.' });
@@ -60,6 +66,9 @@ export class RequestBridge {
       return json(response, 200, { eligible: await this.access.hasJellyseerrUser(input.id) });
     }
     if (request.method === 'POST' && url.pathname === `${BRIDGE_PREFIX}/session`) {
+      if (!this.allowProbeAttempt(clientId(request))) {
+        return json(response, 429, { error: 'Too many requests.' });
+      }
       const input = recordBody(await readJson(request));
       if (typeof input.user !== 'string' || input.user.length < 1 || input.user.length > 128
           || typeof input.id !== 'string' || !PROFILE_ID_PATTERN.test(input.id)) {
@@ -163,6 +172,25 @@ export class RequestBridge {
       if (session.expires < now) this.sessions.delete(token);
     }
   }
+
+  private allowProbeAttempt(clientId: string): boolean {
+    const now = Date.now();
+    const bucket = this.probeAttempts.get(clientId);
+    if (bucket && bucket.resetsAt > now) {
+      if (bucket.attempts >= MAX_PROBE_ATTEMPTS) return false;
+      bucket.attempts += 1;
+    } else {
+      this.probeAttempts.set(clientId, { attempts: 1, resetsAt: now + PROBE_ATTEMPT_WINDOW_MS });
+    }
+    for (const [key, entry] of this.probeAttempts) {
+      if (entry.resetsAt <= now) this.probeAttempts.delete(key);
+    }
+    return true;
+  }
+}
+
+function clientId(request: IncomingMessage): string {
+  return request.socket.remoteAddress ?? 'unknown';
 }
 
 function relayOptions(value: unknown): RelayOptions {
@@ -232,7 +260,7 @@ function json(response: ServerResponse, status: number, value: unknown): true {
 function asset(response: ServerResponse, body: string): true {
   response.writeHead(200, {
     'Cache-Control': 'no-store',
-    'Content-Security-Policy': "default-src 'self'; script-src 'unsafe-inline'; connect-src 'self'; frame-ancestors * file: tizen-app:",
+    'Content-Security-Policy': "default-src 'self'; script-src 'unsafe-inline'; connect-src 'self'; frame-ancestors file: tizen-app:",
     'Content-Type': 'text/html; charset=utf-8',
     'Content-Length': Buffer.byteLength(body),
   });

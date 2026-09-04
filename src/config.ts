@@ -57,11 +57,18 @@ export function loadConfig(): Config {
   if (!/^[a-z0-9-]{1,32}$/.test(householdHostPrefix)) {
     throw new Error('HOUSEHOLD_HOST_PREFIX must contain only lowercase letters, numbers, and hyphens');
   }
+  const adminToken = process.env.ADMIN_TOKEN?.trim();
+  if (!adminToken) {
+    console.warn(JSON.stringify({
+      level: 'warn',
+      message: 'ADMIN_TOKEN is not set; falling back to WEBHOOK_TOKEN, which also grants full admin API access',
+    }));
+  }
   return {
     host: process.env.HOST?.trim() || '0.0.0.0',
     port,
     webhookToken,
-    adminToken: process.env.ADMIN_TOKEN?.trim() || webhookToken,
+    adminToken: adminToken || webhookToken,
     jellyfinUrl: required('JELLYFIN_URL').replace(/\/+$/, ''),
     jellyfinApiKey: required('JELLYFIN_API_KEY'),
     ...(seerrUrl && seerrApiKey ? { seerrUrl, seerrApiKey } : {}),

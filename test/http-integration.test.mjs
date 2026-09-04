@@ -105,6 +105,19 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.equal(householdLogin.status, 200);
     const householdAuthentication = await householdLogin.json();
     assert.equal(householdAuthentication.User.Name, 'Alice');
+    const forgotPassword = await fetchWithHost(bridgeUrl, '/Users/ForgotPassword', 'jelly-farmhouse.example.test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ EnteredUsername: 'Alice' }),
+    });
+    assert.equal(forgotPassword.status, 403);
+    assert.equal((await forgotPassword.json()).error, 'household_password_recovery_disabled');
+    const forgotPasswordPin = await fetchWithHost(bridgeUrl, '/Users/ForgotPassword/Pin', 'jelly-farmhouse.example.test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ Pin: '000000' }),
+    });
+    assert.equal(forgotPasswordPin.status, 403);
     assert.match(await upgradeWithHost(bridgeUrl, '/socket', 'jelly-farmhouse.example.test'), /^HTTP\/1\.1 101/);
     const missingHousehold = await fetchWithHost(bridgeUrl, '/Users/Public', 'jelly-missing.example.test');
     assert.equal(missingHousehold.status, 404);

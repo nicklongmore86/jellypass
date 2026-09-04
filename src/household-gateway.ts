@@ -5,7 +5,11 @@ import type { Duplex } from 'node:stream';
 const PUBLIC_USERS_PATH = '/users/public';
 const BRANDING_CONFIGURATION_PATH = '/branding/configuration';
 const QUICK_CONNECT_ENABLED_PATH = '/quickconnect/enabled';
+const AUTHENTICATE_BY_NAME_PATH = '/users/authenticatebyname';
+const FORGOT_PASSWORD_PATHS = new Set(['/users/forgotpassword', '/users/forgotpassword/pin']);
 const MAX_TRANSFORMED_JSON_BYTES = 2 * 1024 * 1024;
+const LOGIN_ATTEMPT_WINDOW_MS = 5 * 60 * 1000;
+const MAX_LOGIN_ATTEMPTS = 20;
 const HOUSEHOLD_LOGIN_CSS = `
 /* JellyPass household profile picker */
 #loginPage .manualLoginForm,
@@ -37,6 +41,7 @@ export class HouseholdGateway {
   readonly #domain: string;
   readonly #hostPrefix: string;
   readonly #memberIds: HouseholdGatewayOptions['memberIds'];
+  readonly #loginAttempts = new Map<string, { attempts: number; resetsAt: number }>();
 
   public constructor(options: HouseholdGatewayOptions) {
     this.#target = new URL(options.jellyfinUrl);
@@ -89,6 +94,15 @@ export class HouseholdGateway {
       writeJson(response, 200, false);
       return;
     }
+    if (request.method === 'POST' && FORGOT_PASSWORD_PATHS.has(pathname)) {
+      writeJson(response, 403, { error: 'household_password_recovery_disabled' });
+      return;
+    }
+    if (request.method === 'POST' && pathname === AUTHENTICATE_BY_NAME_PATH
+        && !this.#allowLoginAttempt(request.socket.remoteAddress ?? 'unknown')) {
+      writeJson(response, 429, { error: 'too_many_login_attempts' });
+      return;
+    }
     const streamedItemId = protectedResourceItemId(requestUrl.pathname);
     if (streamedItemId) {
       try {
@@ -128,6 +142,21 @@ export class HouseholdGateway {
     });
     upstream.on('error', () => socket.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n'));
     upstream.end();
+  }
+
+  #allowLoginAttempt(clientId: string): boolean {
+    const now = Date.now();
+    const bucket = this.#loginAttempts.get(clientId);
+    if (bucket && bucket.resetsAt > now) {
+      if (bucket.attempts >= MAX_LOGIN_ATTEMPTS) return false;
+      bucket.attempts += 1;
+    } else {
+      this.#loginAttempts.set(clientId, { attempts: 1, resetsAt: now + LOGIN_ATTEMPT_WINDOW_MS });
+    }
+    for (const [key, entry] of this.#loginAttempts) {
+      if (entry.resetsAt <= now) this.#loginAttempts.delete(key);
+    }
+    return true;
   }
 
   async #proxy(request: IncomingMessage, response: ServerResponse): Promise<void> {

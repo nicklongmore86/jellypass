@@ -89,7 +89,7 @@ test('keeps the Jellyseerr session server-side and limits relayed operations', a
     assert.equal(page.status, 200);
     assert.equal(
       page.headers.get('content-security-policy'),
-      "default-src 'self'; script-src 'unsafe-inline'; connect-src 'self'; frame-ancestors * file: tizen-app:",
+      "default-src 'self'; script-src 'unsafe-inline'; connect-src 'self'; frame-ancestors file: tizen-app:",
     );
     assert.match(await page.text(), /jellyquest-bridge/);
     assert.equal((await fetch(`${origin}/jellyquest-bridge/health`)).status, 200);
@@ -187,6 +187,34 @@ test('keeps the Jellyseerr session server-side and limits relayed operations', a
   } finally {
     await close(app);
     await close(fakeSeerr);
+  }
+});
+
+test('rate limits repeated eligibility probes from the same client', async () => {
+  const access = {
+    hasJellyseerrUser() { return Promise.resolve(false); },
+  };
+  const bridge = new RequestBridge('http://127.0.0.1:1', access);
+  const app = http.createServer(async (request, response) => {
+    await bridge.handle(request, response, new URL(request.url ?? '/', 'http://localhost'));
+  });
+  const appPort = await listen(app);
+  const origin = `http://127.0.0.1:${appPort}`;
+
+  try {
+    let lastStatus;
+    for (let attempt = 0; attempt < 31; attempt += 1) {
+      const probe = await fetch(`${origin}/jellyquest-bridge/eligibility`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: 'abc123' }),
+      });
+      lastStatus = probe.status;
+      await probe.json();
+    }
+    assert.equal(lastStatus, 429);
+  } finally {
+    await close(app);
   }
 });
 
