@@ -98,14 +98,6 @@ export class GrantStore {
     return [...new Set([...Object.values(grant.requests), ...grant.manualUserIds, ...groupUsers].map(normalizeId))].sort();
   }
 
-  /** Whether two Jellyfin users are the same user or share membership in at least one access group. */
-  public shareHousehold(userIdA: string, userIdB: string): boolean {
-    const a = normalizeId(userIdA);
-    const b = normalizeId(userIdB);
-    if (a === b) return true;
-    return Object.values(this.#state.groups).some((group) => group.userIds.includes(a) && group.userIds.includes(b));
-  }
-
   public async grant(input: {
     itemId: string;
     mediaType?: string;
@@ -120,10 +112,7 @@ export class GrantStore {
     const claim = input.tmdbId !== undefined && (input.mediaType === 'movie' || input.mediaType === 'tv')
       ? this.#state.claims[claimKey(input.mediaType, input.tmdbId)]
       : undefined;
-    // Only join in claimants who share a household with the verified requester; an unrelated
-    // household's earlier claim for the same title must not silently ride along on this grant.
-    const householdClaimants = (claim?.userIds ?? []).filter((claimant) => this.shareHousehold(claimant, userId));
-    const manualUserIds = [...new Set([...(previous?.manualUserIds ?? []), ...householdClaimants])].sort();
+    const manualUserIds = [...new Set([...(previous?.manualUserIds ?? []), ...(claim?.userIds ?? [])])].sort();
     const next = this.#makeGrant(itemId, requests, manualUserIds, previous?.groupIds ?? [], previous, input.mediaType);
     this.#state.grants[itemId] = next;
     if (claim) {
