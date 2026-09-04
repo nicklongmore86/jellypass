@@ -8,6 +8,7 @@ const QUICK_CONNECT_ENABLED_PATH = '/quickconnect/enabled';
 const AUTHENTICATE_BY_NAME_PATH = '/users/authenticatebyname';
 const FORGOT_PASSWORD_PATHS = new Set(['/users/forgotpassword', '/users/forgotpassword/pin']);
 const MAX_TRANSFORMED_JSON_BYTES = 2 * 1024 * 1024;
+const MAX_LOGIN_BODY_BYTES = 8 * 1024;
 const LOGIN_ATTEMPT_WINDOW_MS = 5 * 60 * 1000;
 const MAX_LOGIN_ATTEMPTS = 20;
 const HOUSEHOLD_LOGIN_CSS = `
@@ -98,9 +99,8 @@ export class HouseholdGateway {
       writeJson(response, 403, { error: 'household_password_recovery_disabled' });
       return;
     }
-    if (request.method === 'POST' && pathname === AUTHENTICATE_BY_NAME_PATH
-        && !this.#allowLoginAttempt(request.socket.remoteAddress ?? 'unknown')) {
-      writeJson(response, 429, { error: 'too_many_login_attempts' });
+    if (request.method === 'POST' && pathname === AUTHENTICATE_BY_NAME_PATH) {
+      await this.#proxyHouseholdLogin(request, response, memberIds);
       return;
     }
     const streamedItemId = protectedResourceItemId(requestUrl.pathname);
@@ -157,6 +157,79 @@ export class HouseholdGateway {
       if (entry.resetsAt <= now) this.#loginAttempts.delete(key);
     }
     return true;
+  }
+
+  async #proxyHouseholdLogin(request: IncomingMessage, response: ServerResponse, memberIds: string[]): Promise<void> {
+    if (!this.#allowLoginAttempt(request.socket.remoteAddress ?? 'unknown')) {
+      writeJson(response, 429, { error: 'too_many_login_attempts' });
+      return;
+    }
+    let body: Buffer;
+    try {
+      body = await readLimitedBody(request, MAX_LOGIN_BODY_BYTES);
+    } catch {
+      writeJson(response, 400, { error: 'invalid_request_body' });
+      return;
+    }
+    let username: unknown;
+    try {
+      username = (JSON.parse(body.toString('utf8')) as Record<string, unknown>).Username;
+    } catch {
+      username = undefined;
+    }
+    // Jellyfin's own AuthenticateByName is not scoped to a household; without this check the
+    // household hostname would be a generic login proxy for every Jellyfin user, including
+    // administrators, rather than just that household's visible members.
+    if (typeof username !== 'string' || !(await this.#householdHasUsername(memberIds, username))) {
+      writeJson(response, 401, { error: 'invalid_credentials' });
+      return;
+    }
+    await this.#proxyBuffered(request, response, body);
+  }
+
+  async #householdHasUsername(memberIds: string[], username: string): Promise<boolean> {
+    const allowed = new Set(memberIds.map((id) => id.toLowerCase()));
+    const target = username.toLowerCase();
+    let response: Response;
+    try {
+      response = await fetch(this.#targetUrl('/Users/Public'), { signal: AbortSignal.timeout(15_000) });
+    } catch {
+      return false;
+    }
+    if (!response.ok) {
+      await response.body?.cancel();
+      return false;
+    }
+    let users: unknown;
+    try {
+      users = await response.json();
+    } catch {
+      return false;
+    }
+    if (!Array.isArray(users)) return false;
+    return users.some((user) => {
+      if (!user || typeof user !== 'object' || Array.isArray(user)) return false;
+      const record = user as Record<string, unknown>;
+      return typeof record.Id === 'string' && allowed.has(record.Id.toLowerCase())
+        && typeof record.Name === 'string' && record.Name.toLowerCase() === target;
+    });
+  }
+
+  async #proxyBuffered(request: IncomingMessage, response: ServerResponse, body: Buffer): Promise<void> {
+    await new Promise<void>((resolve) => {
+      const headers: IncomingHttpHeaders = { ...request.headers, 'content-length': String(body.length) };
+      const upstream = this.#transport().request(this.#requestOptions(request, headers), (upstreamResponse) => {
+        response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
+        upstreamResponse.pipe(response);
+        upstreamResponse.once('end', resolve);
+      });
+      upstream.once('error', () => {
+        if (!response.headersSent) writeJson(response, 502, { error: 'jellyfin_unavailable' });
+        else response.destroy();
+        resolve();
+      });
+      upstream.end(body);
+    });
   }
 
   async #proxy(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -309,6 +382,18 @@ export class HouseholdGateway {
     url.search = query;
     return url;
   }
+}
+
+async function readLimitedBody(request: IncomingMessage, limit: number): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
+    size += buffer.length;
+    if (size > limit) throw new Error('request body too large');
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
 }
 
 function protectedResourceItemId(pathname: string): string | undefined {

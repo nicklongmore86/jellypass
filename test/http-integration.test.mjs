@@ -118,6 +118,13 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
       body: JSON.stringify({ Pin: '000000' }),
     });
     assert.equal(forgotPasswordPin.status, 403);
+    const nonHouseholdLogin = await fetchWithHost(bridgeUrl, '/Users/AuthenticateByName', 'jelly-farmhouse.example.test', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ Username: 'Admin', Pw: 'admin-password' }),
+    });
+    assert.equal(nonHouseholdLogin.status, 401, 'a household hostname must not proxy logins for users outside that household');
+    assert.equal((await nonHouseholdLogin.json()).error, 'invalid_credentials');
     assert.match(await upgradeWithHost(bridgeUrl, '/socket', 'jelly-farmhouse.example.test'), /^HTTP\/1\.1 101/);
     const missingHousehold = await fetchWithHost(bridgeUrl, '/Users/Public', 'jelly-missing.example.test');
     assert.equal(missingHousehold.status, 404);
