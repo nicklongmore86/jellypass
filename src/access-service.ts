@@ -189,7 +189,13 @@ export class AccessService {
       const claim = await this.#store.addClaim({ mediaType, tmdbId, userId, ...(jellyfinItemId ? { jellyfinItemId } : {}) });
       const itemId = jellyfinItemId ? normalizeId(jellyfinItemId) : claim.jellyfinItemId;
       const grant = itemId ? this.#store.get(itemId) : undefined;
-      if (itemId && grant?.active && !grant.owners.includes(userId)) {
+      // A claim only auto-joins an already-managed title when the claimant shares a household
+      // with an existing owner; otherwise this would let any Jellyfin user unlock media another
+      // household privately restricted just by knowing it's already been requested. With no
+      // existing owners there is nothing to protect yet, so a first claim is always recorded.
+      const eligibleToJoin = grant?.owners.length === 0
+        || grant?.owners.some((owner) => this.#store.shareHousehold(userId, owner));
+      if (itemId && grant?.active && !grant.owners.includes(userId) && eligibleToJoin) {
         const updated = await this.#store.setManualAccess({
           itemId,
           mediaType: grant.mediaType ?? mediaType,
