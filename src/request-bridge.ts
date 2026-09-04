@@ -14,6 +14,7 @@ interface BridgeSession {
 }
 
 export interface RequestBridgeAccess {
+  hasJellyseerrUser(jellyfinUserId: string): Promise<boolean>;
   getMediaAccess(userId: string, mediaType: 'movie' | 'tv', tmdbId: number, jellyfinItemId?: string): MediaAccessStatus;
   listMediaClaims(userId: string): MediaClaim[];
   claimMediaAccess(userId: string, mediaType: 'movie' | 'tv', tmdbId: number, jellyfinItemId?: string): Promise<MediaAccessStatus>;
@@ -49,6 +50,14 @@ export class RequestBridge {
     }
     if (request.method === 'GET' && url.pathname === `${BRIDGE_PREFIX}/health`) {
       return json(response, 200, { ok: true });
+    }
+    if (request.method === 'POST' && url.pathname === `${BRIDGE_PREFIX}/eligibility`) {
+      const input = recordBody(await readJson(request));
+      if (typeof input.id !== 'string' || !PROFILE_ID_PATTERN.test(input.id)) {
+        return json(response, 400, { error: 'Invalid Jellyfin profile.' });
+      }
+      if (!this.access) return json(response, 503, { error: 'Jellyseerr user lookup is not configured.' });
+      return json(response, 200, { eligible: await this.access.hasJellyseerrUser(input.id) });
     }
     if (request.method === 'POST' && url.pathname === `${BRIDGE_PREFIX}/session`) {
       const input = recordBody(await readJson(request));
@@ -245,6 +254,15 @@ const BRIDGE_HTML = String.raw`<!doctype html>
   function reply(message) {
     message.source = 'jellyquest-bridge'; message.nonce = params.nonce; window.parent.postMessage(message, '*');
   }
+  function checkEligibility() {
+    return fetch('/jellyquest-bridge/eligibility', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: params.id })
+    }).then(function (response) { return response.json().then(function (data) {
+      if (!response.ok) throw new Error(data.error || 'Request eligibility check failed.');
+      reply({ type: 'eligibility', eligible: data.eligible === true });
+    }); });
+  }
   function createSession() {
     return fetch('/jellyquest-bridge/session', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -265,6 +283,7 @@ const BRIDGE_HTML = String.raw`<!doctype html>
       reply({ type: 'response', id: data.id, ok: response.ok, data: result.data, error: result.error });
     }); }).catch(function (error) { reply({ type: 'response', id: data.id, ok: false, error: error.message }); });
   });
-  createSession().catch(function (error) { reply({ type: 'error', error: error.message }); });
+  (params.mode === 'eligibility' ? checkEligibility() : createSession())
+    .catch(function (error) { reply({ type: 'error', error: error.message }); });
 })();
 </script></body></html>`;

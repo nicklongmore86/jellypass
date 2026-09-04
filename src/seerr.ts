@@ -22,6 +22,11 @@ interface SeerrMediaDetails {
   posterPath?: string;
 }
 
+interface SeerrUserList {
+  pageInfo?: { results?: number };
+  results?: ImportedSeerrUser[];
+}
+
 export interface ImportedSeerrUser {
   id?: number;
   username?: string;
@@ -49,6 +54,21 @@ export class SeerrClient {
     });
     const user = users.find((entry) => entry.jellyfinUserId?.toLowerCase() === jellyfinUserId.toLowerCase()) ?? users[0];
     return user ? { status: 'imported', user } : { status: 'already_imported' };
+  }
+
+  public async hasJellyfinUser(jellyfinUserId: string): Promise<boolean> {
+    const pageSize = 50;
+    let skip = 0;
+    let total = Number.POSITIVE_INFINITY;
+    while (skip < total) {
+      const list = await this.#getJson<SeerrUserList>(`/api/v1/user?take=${pageSize}&skip=${skip}`);
+      const users = list.results ?? [];
+      if (users.some((user) => user.jellyfinUserId?.toLowerCase() === jellyfinUserId.toLowerCase())) return true;
+      total = list.pageInfo?.results ?? skip + users.length;
+      if (!users.length) break;
+      skip += users.length;
+    }
+    return false;
   }
 
   public async getRecentRequests(take = 8, jellyfinItemIds?: ReadonlySet<string>): Promise<RecentSeerrRequest[]> {

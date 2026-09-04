@@ -82,6 +82,11 @@ export class AccessService {
     return Boolean(this.#seerr);
   }
 
+  public async hasJellyseerrUser(jellyfinUserId: string): Promise<boolean> {
+    if (!this.#seerr) throw new Error('Jellyseerr user lookup is not configured');
+    return this.#seerr.hasJellyfinUser(jellyfinUserId);
+  }
+
   public createUserInGroup(input: { username: string; password: string; groupId: string; importToJellyseerr?: boolean }): Promise<{
     user: { id: string; name: string; isAdministrator: false };
     group: AccessGroup;

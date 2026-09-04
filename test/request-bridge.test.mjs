@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import test from 'node:test';
 import { RequestBridge } from '../dist/request-bridge.js';
+import { SeerrClient } from '../dist/seerr.js';
 
 function listen(server) {
   return new Promise((resolve, reject) => {
@@ -17,8 +18,21 @@ function close(server) {
 
 test('keeps the Jellyseerr session server-side and limits relayed operations', async () => {
   let loginBody;
+  let loginCalls = 0;
+  let userListCalls = 0;
   const fakeSeerr = http.createServer(async (request, response) => {
+    if (request.url?.startsWith('/api/v1/user?') && request.method === 'GET') {
+      userListCalls += 1;
+      assert.equal(request.headers['x-api-key'], 'test-api-key');
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({
+        pageInfo: { results: 1 },
+        results: [{ id: 7, username: 'Alex', jellyfinUserId: 'abc123' }],
+      }));
+      return;
+    }
     if (request.url === '/api/v1/auth/jellyfin' && request.method === 'POST') {
+      loginCalls += 1;
       loginBody = JSON.parse(await requestBody(request));
       response.writeHead(200, {
         'Content-Type': 'application/json',
@@ -41,8 +55,12 @@ test('keeps the Jellyseerr session server-side and limits relayed operations', a
     response.end(JSON.stringify({ message: 'Unauthorized' }));
   });
   const fakePort = await listen(fakeSeerr);
+  const seerr = new SeerrClient(`http://127.0.0.1:${fakePort}`, 'test-api-key');
   const accessCalls = [];
   const access = {
+    hasJellyseerrUser(userId) {
+      return seerr.hasJellyfinUser(userId);
+    },
     getMediaAccess(userId, mediaType, tmdbId, jellyfinItemId) {
       accessCalls.push({ operation: 'get', userId, mediaType, tmdbId, jellyfinItemId });
       return { mediaType, tmdbId, claimed: false, managed: true, owned: false, public: false, jellyfinItemId };
@@ -73,6 +91,24 @@ test('keeps the Jellyseerr session server-side and limits relayed operations', a
     assert.equal((await fetch(`${origin}/jellyquest-bridge/health`)).status, 200);
     assert.equal((await fetch(`${origin}/outside`)).status, 418);
 
+    const eligibleProfile = await fetch(`${origin}/jellyquest-bridge/eligibility`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: 'abc123' }),
+    });
+    assert.equal(eligibleProfile.status, 200);
+    assert.deepEqual(await eligibleProfile.json(), { eligible: true });
+
+    const ineligibleProfile = await fetch(`${origin}/jellyquest-bridge/eligibility`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: 'deadbeef' }),
+    });
+    assert.equal(ineligibleProfile.status, 200);
+    assert.deepEqual(await ineligibleProfile.json(), { eligible: false });
+    assert.equal(userListCalls, 2);
+    assert.equal(loginCalls, 0, 'eligibility checks must not authenticate or create a Jellyseerr user');
+
     const rejectedProfile = await fetch(`${origin}/jellyquest-bridge/session`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -89,6 +125,7 @@ test('keeps the Jellyseerr session server-side and limits relayed operations', a
     const { token } = await sessionResponse.json();
     assert.match(token, /^[a-f0-9]{64}$/);
     assert.deepEqual(loginBody, { username: 'Alex', password: '', email: 'Alex' });
+    assert.equal(loginCalls, 2);
 
     const proxyResponse = await fetch(`${origin}/jellyquest-bridge/proxy`, {
       method: 'POST',
