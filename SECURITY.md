@@ -2,6 +2,11 @@
 
 Please report vulnerabilities privately through GitHub's **Security → Report a vulnerability** flow. Do not open a public issue for an unpatched vulnerability.
 
+Security fixes are applied to the latest release line and `main`. This project
+does not currently promise security maintenance for older container tags. Avoid
+the rolling `latest` tag when your deployment requires controlled updates; pin a
+version and review new releases before upgrading.
+
 The bridge requires a Jellyfin administrator API key because Jellyfin restricts item metadata and user policy updates to administrators. Keep the service on a trusted network, use different long random values for `WEBHOOK_TOKEN` and `ADMIN_TOKEN`, and expose only the webhook endpoint through a TLS reverse proxy if Seerr is on another network. `ADMIN_TOKEN` protects grant inspection, dry runs, group management, revocation, reconciliation, and metrics. It falls back to `WEBHOOK_TOKEN` only for backward compatibility.
 
 Browser administration accepts only enabled Jellyfin administrator accounts. Credentials are sent directly to the configured Jellyfin server, are never stored or logged, and the temporary Jellyfin access token is logged out immediately after authentication. JellyPass then uses a random in-memory session. Session cookies are HttpOnly and SameSite=Strict, and are marked Secure when the request arrives through an HTTPS reverse proxy. Failed web logins are rate-limited by direct client address. The service never logs passwords, Jellyfin access tokens, the Jellyfin API key, or webhook tokens. Its state file contains Jellyfin user identifiers and a catalog of media names and identifiers, and is created with owner-only permissions where the host filesystem supports them.

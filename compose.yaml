@@ -1,6 +1,6 @@
 services:
-  access-bridge:
-    build: .
+  jellypass:
+    image: ${JELLYPASS_IMAGE:-ghcr.io/nicklongmore86/jellypass:latest}
     restart: unless-stopped
     env_file:
       - ${JELLYPASS_ENV_FILE:-.env}

@@ -1,53 +1,210 @@
 # JellyPass
 
-**Control who can watch what.** JellyPass provides personalized library access for Jellyfin.
+[![CI](https://github.com/nicklongmore86/jellypass/actions/workflows/ci.yaml/badge.svg)](https://github.com/nicklongmore86/jellypass/actions/workflows/ci.yaml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Container](https://img.shields.io/badge/container-ghcr.io-2496ED?logo=docker&logoColor=white)](https://github.com/nicklongmore86/jellypass/pkgs/container/jellypass)
 
-JellyPass receives Seerr's **Request Available** webhook and applies Jellyfin's native tag-based access policy. It can read the requester and media IDs directly from newer webhook payloads or look them up from the request ID on older Jellyseerr releases.
+**Private media access for shared Jellyfin servers.**
 
-JellyPass is an independent third-party project compatible with Jellyfin. It is not affiliated with or endorsed by the Jellyfin project.
+JellyPass connects Jellyseerr requests to Jellyfin's native tag-based access
+policies. When requested media becomes available, JellyPass keeps it visible to
+the requester and blocks it for other non-administrator users. It also provides
+an administrator UI for retroactive access assignment, reusable household
+groups, household-specific Jellyfin hostnames, and an optional request bridge
+for [JellyQuest for Tizen](https://github.com/nicklongmore86/jellyquest-tizen).
 
-The companion [JellyQuest for Tizen](https://github.com/nicklongmore86/jellyquest-tizen) client provides a household-scoped Samsung TV build with a locked JellyPass hostname and an app-owned login experience.
+JellyPass is independent, community-maintained software. It is not affiliated
+with or endorsed by Jellyfin, Seerr, or Jellyseerr.
 
 > [!CAUTION]
-> Test with non-critical users and media first. Jellyfin does not expose transactional policy updates, so a failed sync can temporarily leave an item visible until reconciliation succeeds.
+> JellyPass changes Jellyfin item tags and complete user-policy documents. Test
+> with non-critical users and media first, keep a backup of the state file, and
+> retain a separate Jellyfin administrator recovery path.
 
-## How JellyPass works
+## What it does
 
-For each private title, JellyPass:
+- Converts Jellyseerr `MEDIA_AVAILABLE` webhooks into durable access grants.
+- Protects movies, complete series, and locally associated trailers.
+- Preserves unrelated Jellyfin tags and blocked tags.
+- Lets administrators assign users or reusable groups to existing library
+  items, individually or in batches of up to 500.
+- Reconciles tags and policies after transient failures or user changes.
+- Maintains a searchable Jellyfin catalog without automatically making every
+  catalog item private.
+- Provides household URLs whose login picker exposes only that household's
+  public users.
+- Proxies household media requests, byte ranges, HLS requests, and WebSockets.
+- Optionally gives JellyQuest a narrowly scoped, server-side Jellyseerr session.
+- Exposes health and Prometheus metrics endpoints.
 
-1. Adds one stable tag such as `jfa:private:8f…` to the movie or series and each local trailer Jellyfin associates with it.
-2. Adds that tag to `BlockedTags` for every non-administrator Jellyfin user except its requester(s).
-3. Persists the grant and can reapply it with the reconciliation endpoint, including trailers downloaded after the original grant.
+JellyPass does **not** replace Jellyfin authentication, manage downloads, or
+decide whether a Jellyseerr request should be approved. Jellyseerr remains the
+request and acquisition authority; Jellyfin remains the playback authorization
+authority.
 
-Revocations are persisted as cleanup jobs before Jellyfin is changed. The record is removed only after the item tag and every user policy have been cleaned successfully. Failed synchronization state is retained with attempt count, error details, and the next retry time.
+## How access enforcement works
 
-Existing untagged media stays public. JellyQuest users can join an existing request without asking Jellyseerr to acquire the title again. JellyPass stores that movie- or series-level claim by TMDB ID and grants every claimant when the title becomes available. An already-available private title is granted immediately. The item still has one tag, and every requester or claimant becomes an owner. Administrator accounts remain unrestricted. Series claims always grant the complete series; they do not track individual seasons. Local trailers are tagged directly because Jellyfin can authorize their opaque item IDs independently of the parent title.
+```mermaid
+flowchart LR
+  S[Jellyseerr] -->|MEDIA_AVAILABLE webhook| P[JellyPass]
+  P -->|private item tag| I[Jellyfin item]
+  P -->|BlockedTags policy| U[Jellyfin users]
+  A[Administrator UI] -->|manual users and groups| P
+  J[JellyQuest] -->|optional scoped bridge| P
+  P -->|catalog and policy API| F[Jellyfin]
+```
+
+For each protected title, JellyPass:
+
+1. Creates one stable tag derived from the Jellyfin item ID, such as
+   `jfa:private:8f...`.
+2. Adds that tag to the movie or series and its known local trailers.
+3. Adds the tag to `BlockedTags` for every non-administrator Jellyfin user except
+   the request owner, manually assigned users, and members of assigned groups.
+4. Persists the desired grant in `grants.json` and periodically reconciles it.
+
+Administrator accounts are never blocked. Existing, unmanaged media remains
+public to users whose normal Jellyfin policy allows it.
+
+### Catalog items are not grants
+
+The **Library** tab is an inventory of movies and series discovered during a
+Jellyfin catalog sync. The **Grants** tab contains only titles that JellyPass is
+actively protecting.
+
+A newly downloaded or newly scanned item does not become a grant merely because
+it appears in the catalog. A grant is created by one of these events:
+
+- JellyPass receives Jellyseerr's `MEDIA_AVAILABLE` webhook for a request.
+- A JellyQuest user makes a self-service access claim.
+- An administrator assigns access from the Library tab or API.
+
+Library upgrades, replacements, manual downloads, and titles that Jellyseerr
+already considered available before JellyPass was installed may not produce a
+new webhook. Assign those items from the Library tab if they should be private.
 
 ## Requirements
 
-- Seerr/Jellyseerr with webhook support and linked Jellyfin users
-- Jellyfin 10.11 or newer
-- Node.js 22+ or Docker
-- A Jellyfin administrator API key
+- Jellyfin 10.11 or newer.
+- Seerr or Jellyseerr with webhook support and Jellyfin-linked users.
+- A Jellyfin administrator API key.
+- Docker with Compose v2 for the recommended installation, or Node.js 22+ and
+  pnpm for a source installation.
+- A persistent, private location for `grants.json`.
 
-## Quick start
+Jellyseerr is optional only if every webhook includes the Jellyfin media and user
+IDs and the JellyQuest bridge, recent-request cards, and Jellyseerr user import
+are not needed.
+
+## Quick start with Docker Compose
+
+Create a directory and download the public deployment files:
 
 ```sh
+mkdir jellypass && cd jellypass
+curl -LO https://raw.githubusercontent.com/nicklongmore86/jellypass/main/compose.yaml
+curl -Lo .env https://raw.githubusercontent.com/nicklongmore86/jellypass/main/.env.example
+mkdir -m 700 data
+```
+
+Edit `.env` and replace every placeholder. Generate two different secrets, for
+example:
+
+```sh
+openssl rand -hex 32
+openssl rand -hex 32
+```
+
+Start JellyPass:
+
+```sh
+docker compose up -d
+docker compose ps
+curl http://127.0.0.1:8787/health
+```
+
+The default Compose file binds JellyPass only to `127.0.0.1:8787`. Keep that
+default when a reverse proxy runs on the same machine. Change the published
+address deliberately if Jellyseerr or a reverse proxy must reach it over a
+private network.
+
+The container image is published from `main` as `latest` and from release tags
+as semantic-version tags. For predictable production upgrades, set
+`JELLYPASS_IMAGE` in `.env` to a versioned image such as:
+
+```dotenv
+JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:0.2.0
+```
+
+Until the first versioned release is published, use `latest` or build from
+source.
+
+### Build locally instead
+
+Clone the repository, create `.env`, and use the source-build example:
+
+```sh
+git clone https://github.com/nicklongmore86/jellypass.git
+cd jellypass
 cp .env.example .env
-# Fill in the API keys and generate different long WEBHOOK_TOKEN and ADMIN_TOKEN values.
+# Edit .env.
 docker compose -f compose.example.yaml up --build -d
 ```
 
-The example binds the service to localhost at port `8787`. If Seerr is in the same Compose network, remove `ports` and address it by service name instead.
+## Configuration
 
-### Configure the Seerr webhook
+JellyPass reads configuration from environment variables at startup.
+
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `JELLYFIN_URL` | Yes | — | Base URL reachable from JellyPass, without a trailing slash. |
+| `JELLYFIN_API_KEY` | Yes | — | Jellyfin administrator API key used for catalog, tag, and policy operations. |
+| `WEBHOOK_TOKEN` | Yes | — | Secret accepted by `/webhooks/seerr`. Use a long random value. |
+| `ADMIN_TOKEN` | Recommended | `WEBHOOK_TOKEN` | Separate bearer token for administrative APIs and metrics. |
+| `SEERR_URL` | Conditional | — | Seerr/Jellyseerr base URL reachable from JellyPass. Configure with `SEERR_API_KEY`. |
+| `SEERR_API_KEY` | Conditional | — | Seerr/Jellyseerr API key. Configure with `SEERR_URL`. |
+| `JELLYQUEST_BRIDGE_ENABLED` | No | `false` | Enables the scoped JellyQuest bridge. Requires Seerr/Jellyseerr configuration. |
+| `STATE_FILE` | No | `./data/grants.json` | Durable state-file path. The container uses `/app/data/grants.json`. |
+| `HOST` | No | `0.0.0.0` | HTTP listen address inside the process/container. |
+| `PORT` | No | `8787` | HTTP listen port. |
+| `RECONCILE_INTERVAL_SECONDS` | No | `300` | Retry/reconciliation interval; `0` disables scheduling. Maximum `86400`. |
+| `CATALOG_SYNC_INTERVAL_SECONDS` | No | `3600` | Jellyfin catalog refresh interval; `0` disables scheduling. Maximum `604800`. |
+| `HOUSEHOLD_DOMAIN` | No | — | Enables household hostnames below this DNS domain. |
+| `HOUSEHOLD_HOST_PREFIX` | No | `jelly-` | Prefix placed before each DNS-safe group ID. |
+| `JELLYPASS_IMAGE` | Compose only | `ghcr.io/nicklongmore86/jellypass:latest` | Container tag used by `compose.yaml`. |
+| `JELLYPASS_ENV_FILE` | Compose only | `.env` | Alternate environment-file path used by either Compose file. |
+
+`SEERR_URL` and `SEERR_API_KEY` must be set together. `ADMIN_TOKEN` falls back
+to `WEBHOOK_TOKEN` for backward compatibility, but using different values limits
+the impact of a leaked webhook URL or notification configuration.
+
+### Network addresses
+
+Container-local `localhost` refers to the JellyPass container itself. Use a
+shared Docker network and service names such as `http://jellyfin:8096`, a private
+LAN address, or `host.docker.internal` where your Docker setup supports it.
+
+JellyPass must be able to reach Jellyfin and, when configured, Jellyseerr. Those
+services need to reach JellyPass only as follows:
+
+- Jellyseerr needs `/webhooks/seerr`.
+- Administrators need `/admin/` and the administrative API.
+- Household and JellyQuest clients need the full household origin.
+
+## Configure Jellyseerr
+
+The requesting Jellyseerr account must be imported from or linked to Jellyfin.
+A local-only account without a Jellyfin user ID cannot receive a Jellyfin grant.
 
 In **Settings → Notifications → Webhook**:
 
-- Enable the agent and select only **Request Available**.
-- Set the URL to `http://access-bridge:8787/webhooks/seerr` (adjust for your network).
-- Set the authorization header to `Bearer YOUR_WEBHOOK_TOKEN`.
-- Use this JSON payload:
+1. Enable the webhook agent.
+2. Select only **Request Available**.
+3. Set the URL to `http://jellypass:8787/webhooks/seerr` for a shared Docker
+   network, adjusting the host for your installation.
+4. Set the authorization header to `Bearer YOUR_WEBHOOK_TOKEN` when the
+   Jellyseerr version supports it.
+5. Use the payload below.
 
 ```json
 {
@@ -66,9 +223,9 @@ In **Settings → Notifications → Webhook**:
 }
 ```
 
-The requesting Seerr account must be linked to/imported from Jellyfin. A local-only Seerr account has no Jellyfin user ID and will be rejected.
-
-Jellyseerr 2.7.x does not expose the Jellyfin IDs as webhook template variables. Set `SEERR_URL` and `SEERR_API_KEY`, then use its request ID payload instead:
+Some Jellyseerr releases do not expose Jellyfin IDs as webhook template
+variables. When `SEERR_URL` and `SEERR_API_KEY` are configured, this smaller
+payload is sufficient because JellyPass resolves the request through the API:
 
 ```json
 {
@@ -77,67 +234,74 @@ Jellyseerr 2.7.x does not expose the Jellyfin IDs as webhook template variables.
 }
 ```
 
-If that Jellyseerr release cannot add an authorization header, append `?token=YOUR_WEBHOOK_TOKEN` to the webhook URL. Keep the bridge on a private Docker network because URLs can appear in proxy logs. Prefer the bearer header whenever the notification UI supports it.
+If the notification UI cannot add an authorization header, append
+`?token=YOUR_WEBHOOK_TOKEN` to the webhook URL. Query strings can appear in
+proxy logs, browser history, and diagnostics, so keep this route private and
+prefer the bearer header whenever possible.
 
-## Operations
+After configuration, use Jellyseerr's test function if available. A test event
+that is not `MEDIA_AVAILABLE` is expected to return `202` with an ignored status.
 
-The webhook uses `WEBHOOK_TOKEN`. Administrative endpoints use `ADMIN_TOKEN`. Health is public.
+## Administrator UI
 
-Open `/admin/` in a browser and sign in with an enabled Jellyfin administrator account. JellyPass validates the credentials with Jellyfin, immediately closes the temporary Jellyfin session, and retains only its own 12-hour, HttpOnly, SameSite session cookie. Non-administrator Jellyfin accounts cannot sign in. Bearer-token API access remains available for automation. The UI supports grant inspection, dry-run plans, request revocation, shared-access groups, retroactive Jellyfin library search and imports, and global reconciliation.
+Open `http://127.0.0.1:8787/admin/` or the protected HTTPS URL exposed by your
+reverse proxy. Sign in with an enabled Jellyfin administrator account.
 
-The default **Dashboard** tab keeps access metrics together without crowding the working views and presents the eight newest Jellyseerr requests that have media IDs in the synchronized Jellyfin catalog. JellyPass scans past newer processing-only requests so every displayed card links to a real library item. Poster cards include requester, age, media type, and availability status; images are proxied through authenticated JellyPass routes, so the Jellyseerr API key and internal service URL never reach the browser. The header shows live sync health: green when the catalog and policies are current, orange when synchronization or policy attention is required, and red when disconnected. The **Library** tab maintains a synchronized catalog of Jellyfin movies and series. Search by title or year, filter by Jellyfin library, sort by title, date added, release year, request/access activity, or protection state, and paginate at 25, 50, or 100 results. Select up to 500 titles across pages, assign one audience of individual users and/or access groups, preview the complete change plan, then apply it in bulk. JellyPass updates each selected item once and consolidates the final blocked-tag set into at most one policy write per affected user. Manual users are stored separately from Jellyseerr request owners, so request lifecycle changes do not remove retroactively assigned access. The **Grants** tab tracks automated and manual grants and provides a preview-first policy reconciliation tool, while **Groups** manages shared audiences.
+JellyPass sends credentials directly to Jellyfin, immediately closes the
+temporary Jellyfin session, and stores only an in-memory JellyPass session for
+12 hours. Restarting JellyPass signs browser sessions out.
 
-```sh
-# Liveness
-curl http://127.0.0.1:8787/health
+The UI contains four views:
 
-# Inspect persisted grants
-curl -H "Authorization: Bearer $ADMIN_TOKEN" \
-  http://127.0.0.1:8787/v1/grants
+- **Dashboard** — grant counts, synchronization health, and recent Jellyseerr
+  requests linked to the synchronized catalog.
+- **Library** — catalog search, filters, sorting, pagination, and bulk access
+  assignment for up to 500 selected items.
+- **Grants** — active automated and manual grants, owners, groups, sync status,
+  dry-run plans, and revocation.
+- **Groups** — reusable audiences, household URLs, and optional Jellyfin user
+  creation/import.
 
-# Preview every change without mutating Jellyfin
-curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
-  'http://127.0.0.1:8787/v1/reconcile?dryRun=true'
+Run a catalog sync after first installation. Assigning access from the Library
+tab creates a manual grant; catalog synchronization alone does not.
 
-# Reapply item tags and user policies
-curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
-  http://127.0.0.1:8787/v1/reconcile
+## Household Jellyfin URLs
 
-# Revoke one request; add ?dryRun=true to preview it first
-curl -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \
-  http://127.0.0.1:8787/v1/grants/JELLYFIN_ITEM_ID/requests/SEERR_REQUEST_ID
-
-# Prometheus metrics
-curl -H "Authorization: Bearer $ADMIN_TOKEN" \
-  http://127.0.0.1:8787/metrics
-```
-
-The service also reconciles on `RECONCILE_INTERVAL_SECONDS` (default: 300). Set it to `0` to disable scheduled reconciliation. This periodic pass protects local trailers that Jellyfin discovers after the title was granted. Run a manual reconciliation immediately after adding or importing a Jellyfin user.
-
-The Jellyfin catalog synchronizes on startup when empty and every `CATALOG_SYNC_INTERVAL_SECONDS` (default: 3600). Set it to `0` to disable scheduled catalog sync; manual synchronization remains available from the Library tab and API.
-
-### Household Jellyfin URLs and shared-access groups
-
-Groups grant access in addition to the original requester. They can also act as households: each DNS-safe group ID receives a dedicated Jellyfin server URL whose login screen shows only that group's users. Jellyfin still performs authentication and authorization; the household URL changes profile discovery only and does not let one household member sign in as another.
-
-Enable the household gateway with a base domain and host prefix:
+Access groups can also act as households. With:
 
 ```dotenv
 HOUSEHOLD_DOMAIN=example.com
 HOUSEHOLD_HOST_PREFIX=jelly-
 ```
 
-With those settings, group `household` is available at `https://jelly-household.example.com`. The URL is shown on the group's card in the JellyPass UI. Point each household hostname (or suitable wildcard DNS record) at your reverse proxy, then proxy HTTP and WebSocket traffic to JellyPass on port `8787`. The reverse proxy must preserve the original `Host` header. Its TLS certificate must cover the generated hostname; a wildcard for `*.example.com` covers this single-label format.
+the group ID `farmhouse` receives the URL
+`https://jelly-farmhouse.example.com`. On that hostname, JellyPass filters
+Jellyfin's public-user response to the group's members and proxies supported
+Jellyfin HTTP, streaming, byte-range, HLS, and WebSocket traffic.
 
-Keep the normal Jellyfin URL available for administrators and devices that should see the complete public-user list. Unknown household hostnames fail closed with `404` instead of exposing that list. The household gateway also authorizes raw stream, playlist, and download paths against Jellyfin item visibility before proxying them, closing Jellyfin's direct-ID stream bypass for blocked items. A household URL is a convenience and privacy boundary for the login screen, not a replacement for Jellyfin user passwords, Jellyfin policy enforcement, or JellyPass library grants.
+Deployment requirements:
 
-Group IDs are stable names chosen by the administrator. Use lowercase letters, numbers, and hyphens (maximum 63 characters) for groups that need a household hostname.
+- Point each hostname, or a suitable wildcard DNS record, at the reverse proxy.
+- Use a TLS certificate covering each hostname; `*.example.com` covers the
+  single-label format above.
+- Preserve the original `Host` header.
+- Forward WebSocket upgrades and byte-range requests.
+- Avoid proxy buffering for large media responses.
+- Do not expose the JellyPass listener directly to untrusted clients.
+- Keep a separate normal Jellyfin administrator/recovery origin.
 
-The operational Farmhouse origin and the path toward household-bound passwordless SSO are documented in [Household access and passwordless sign-in](docs/household-access.md).
+Unknown household hostnames fail closed with `404`. Group IDs used as household
+IDs must contain lowercase letters, numbers, and hyphens and be no longer than
+63 characters.
 
-### Optional JellyQuest request bridge
+Filtering the login picker is a privacy and usability boundary, not
+authentication. Users still authenticate with Jellyfin, and Jellyfin policies
+remain authoritative. Quick Connect and legacy-login restrictions are described
+in [the household access design](docs/household-access.md).
 
-JellyPass can provide JellyQuest's passwordless Jellyseerr request session from the same household hostname. Enable it alongside the existing Jellyseerr configuration:
+## Optional JellyQuest request bridge
+
+Enable the bridge only with valid Jellyseerr configuration:
 
 ```dotenv
 SEERR_URL=http://jellyseerr:5055
@@ -145,91 +309,253 @@ SEERR_API_KEY=replace-with-a-seerr-api-key
 JELLYQUEST_BRIDGE_ENABLED=true
 ```
 
-The Tizen package then uses `https://jelly-household.example.com/jellyquest-bridge/bridge.html`. No Jellyseerr files or reverse-proxy locations are required: JellyPass handles this prefix before forwarding other household traffic to Jellyfin.
+JellyQuest loads:
 
-The module signs the selected passwordless Jellyfin profile into Jellyseerr, verifies that Jellyseerr returns the same Jellyfin user ID, and stores Jellyseerr's session cookie only in JellyPass memory for 12 hours. The random browser token grants access only to the discovery, search, media-status, title-detail, request-creation, and authenticated self-service claim operations used by JellyQuest. Jellyseerr continues to own acquisition requests, permissions, approvals, and processing; JellyPass owns per-user visibility claims. Restarting JellyPass clears bridge sessions but persisted claims remain.
-
-```sh
-# Create or replace a group. User IDs are Jellyfin IDs.
-curl -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"name":"Household","userIds":["USER_ID_1","USER_ID_2"]}' \
-  http://127.0.0.1:8787/v1/groups/household
-
-# Attach groups to an existing item grant. Use ?dryRun=true to preview.
-curl -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" \
-  -H 'Content-Type: application/json' \
-  -d '{"groupIds":["household"]}' \
-  http://127.0.0.1:8787/v1/grants/JELLYFIN_ITEM_ID/groups
-
-# List or remove groups
-curl -H "Authorization: Bearer $ADMIN_TOKEN" http://127.0.0.1:8787/v1/groups
-curl -X DELETE -H "Authorization: Bearer $ADMIN_TOKEN" \
-  http://127.0.0.1:8787/v1/groups/household
+```text
+https://jelly-household.example.com/jellyquest-bridge/bridge.html
 ```
 
-Changing a group's membership immediately reconciles every item that references it and updates the household login screen on the next request. Removing the last request and last group cleans the private tag from the item and every user's block list.
+JellyPass verifies that the selected Jellyfin profile maps to a Jellyseerr user,
+signs that profile into Jellyseerr server-side, and stores the Jellyseerr cookie
+only in memory for 12 hours. The random browser token is limited to discovery,
+search, media status, title details, request creation, and authenticated
+self-service access claims. Restarting JellyPass clears bridge sessions but not
+persisted claims.
 
-Administrators can also create a real non-administrator Jellyfin account from the Groups tab and assign it to a household in the same workflow. Passwords are optional: leaving both fields blank creates a passwordless Jellyfin account, while a supplied password must contain 8–256 characters. JellyPass sends a supplied password directly to Jellyfin and never persists or returns it. Until household SSO is implemented, a passwordless account can be used by anyone who can reach Jellyfin and knows its username. When `SEERR_URL` and `SEERR_API_KEY` are configured, the form offers an opt-in option to import the new Jellyfin identity into Jellyseerr so it can own requests. The option is unchecked by default. Jellyseerr assigns its configured default permissions to imported accounts.
+The bridge applies per-client rate limits to eligibility checks and session
+creation. Place it behind the same trusted TLS reverse proxy as the household
+origin.
 
-Provisioning is intentionally phased: Jellyfin account creation, household assignment, then optional Jellyseerr import. A later failure never rolls back an earlier successful phase. JellyPass reports whether Jellyseerr imported the user, already had it, or failed after the Jellyfin account and household membership were created, leaving the valid account intact for review.
+## Operations
 
-## Access semantics and limitations
+### Health and logs
 
-- Enforcement is performed by Jellyfin itself through item tags and each user's `BlockedTags` policy. JellyPass tags local trailer items explicitly because direct trailer playback is authorized separately from the parent title.
-- Availability notifications occur after Jellyfin discovers the item. There is a small fail-open window before the webhook is processed.
-- Pending claims are keyed by media type and TMDB ID. JellyPass resolves them to the Jellyfin movie or series when the availability webhook arrives; season-level visibility is intentionally unsupported.
-- Seerr does not currently emit a request-deleted webhook with all fields needed for automatic revocation, so revocation uses the administrative API.
-- Direct filesystem, DLNA, administrator, and other out-of-band access are outside this service's scope.
-- The bridge merges only its own `jfa:private:*` tag and preserves unrelated item tags and blocked tags.
-- A Jellyfin user policy is updated as a whole because that is how Jellyfin's API is shaped. Changes made concurrently in another admin UI can race; reconciliation restores the JellyPass-owned portion.
-- Metrics intentionally contain counts and result labels only; they do not expose usernames, item names, API keys, or tokens.
+```sh
+curl http://127.0.0.1:8787/health
+curl http://127.0.0.1:8787/jellyquest-bridge/health # when enabled
+docker compose logs --tail=100 jellypass
+```
 
-## Administrative API
+`/health` reports process liveness. It does not guarantee that Jellyfin or
+Jellyseerr is reachable; use the UI synchronization status and logs for that.
+
+### Administrative API examples
+
+All examples except health require `Authorization: Bearer $ADMIN_TOKEN`.
+
+```sh
+# Inspect grants.
+curl -H "Authorization: Bearer $ADMIN_TOKEN" \
+  http://127.0.0.1:8787/v1/grants
+
+# Preview reconciliation without changing Jellyfin.
+curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
+  'http://127.0.0.1:8787/v1/reconcile?dryRun=true'
+
+# Reapply desired tags and policies.
+curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
+  http://127.0.0.1:8787/v1/reconcile
+
+# Prometheus metrics.
+curl -H "Authorization: Bearer $ADMIN_TOKEN" \
+  http://127.0.0.1:8787/metrics
+```
+
+### Backup and restore
+
+The state file is the only JellyPass application data that must persist. It
+contains grants, access groups, claims, synchronization status, Jellyfin user
+IDs, and a catalog containing media names and IDs. Protect it as private data.
+
+For a consistent filesystem backup:
+
+```sh
+docker compose stop jellypass
+cp -p data/grants.json data/grants.json.backup
+docker compose start jellypass
+```
+
+Also back up Jellyfin independently. JellyPass can reconcile its desired state,
+but it is not a backup of Jellyfin users, metadata, or policies.
+
+To restore, stop JellyPass, replace `data/grants.json` with the backup, ensure
+the container user can read and write it, start JellyPass, preview a global
+reconciliation, and then apply it.
+
+### Upgrade
+
+For the prebuilt image:
+
+```sh
+docker compose pull
+docker compose up -d
+curl http://127.0.0.1:8787/health
+```
+
+Back up the state file first. Read release notes before changing between
+versioned tags. Pinning `JELLYPASS_IMAGE` makes rollback explicit:
+
+```sh
+JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:PREVIOUS_VERSION docker compose up -d
+```
+
+For a source build, fast-forward the repository and rebuild:
+
+```sh
+git pull --ff-only
+docker compose -f compose.example.yaml up --build -d
+```
+
+## Troubleshooting
+
+### A new download appears in Library but not Grants
+
+This is expected when no grant-creating event occurred. Common causes are:
+
+- The file was downloaded manually or outside Jellyseerr.
+- It replaced or upgraded media Jellyseerr already considered available.
+- The request became available before JellyPass or its webhook was configured.
+- The Jellyseerr account is not linked to a Jellyfin user.
+- The webhook is disabled, uses the wrong event type, cannot reach JellyPass, or
+  has the wrong token.
+
+Catalog sync does not backfill grants from historical requests. Assign the item
+from Library for immediate protection.
+
+### Webhook returns `401`
+
+The bearer header or `token` query value does not exactly match
+`WEBHOOK_TOKEN`. Confirm that whitespace was not copied into either value.
+
+### Webhook reports missing Jellyfin IDs
+
+Configure `SEERR_URL` and `SEERR_API_KEY` and use the request-ID-only payload.
+Also confirm that the requester was imported from Jellyfin.
+
+### Library is empty or stale
+
+Check Jellyfin reachability and API-key privileges, then run **Sync library** in
+the UI. Confirm that `CATALOG_SYNC_INTERVAL_SECONDS` is not `0` if automatic
+refreshes are expected.
+
+### A household hostname returns `404`
+
+Confirm the group exists, its ID is DNS-safe, `HOUSEHOLD_DOMAIN` and
+`HOUSEHOLD_HOST_PREFIX` match the hostname, and the reverse proxy preserves the
+original `Host` header.
+
+### Changes do not reach every user
+
+Open Grants, preview reconciliation, inspect the reported changes, and apply
+them. Check logs for a failed Jellyfin policy update. Adding a new Jellyfin user
+requires reconciliation so existing private tags are added to that user's
+blocked-tag policy.
+
+## API reference
 
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/v1/grants` | Grants and persisted synchronization health |
-| `GET` | `/v1/grants/{itemId}/plan` | Dry-run plan for one grant |
-| `DELETE` | `/v1/grants/{itemId}/requests/{requestId}` | Revoke a requester; supports `?dryRun=true` |
-| `PUT` | `/v1/grants/{itemId}/groups` | Replace shared groups; supports `?dryRun=true` |
-| `PUT` | `/v1/grants/{itemId}/manual` | Create or update retroactive user/group access; supports `?dryRun=true` |
-| `GET` | `/v1/groups` | List access groups |
-| `GET` | `/v1/users` | List Jellyfin users for group management |
-| `POST` | `/v1/users` | Create a non-administrator Jellyfin user and assign it to a group |
-| `GET` | `/v1/library/search?q={title}` | Search Jellyfin movies and series for retroactive import |
-| `GET` | `/v1/library/poster?itemId={itemId}` | Proxy poster artwork for a synchronized catalog item |
-| `GET` | `/v1/library` | Read the synchronized movie and series catalog |
-| `POST` | `/v1/library/sync` | Synchronize the catalog from Jellyfin |
-| `PUT` | `/v1/library/access` | Assign one audience to up to 500 catalog items; supports `?dryRun=true` |
-| `PUT` | `/v1/groups/{groupId}` | Create or replace an access group |
-| `DELETE` | `/v1/groups/{groupId}` | Delete a group and reconcile affected items |
-| `POST` | `/v1/reconcile` | Reconcile all grants; supports `?dryRun=true` |
-| `GET` | `/metrics` | Prometheus text metrics |
+| `GET` | `/health` | Public process liveness. |
+| `POST` | `/webhooks/seerr` | Authenticated Jellyseerr availability webhook. |
+| `GET` | `/v1/grants` | List grants and synchronization state. |
+| `GET` | `/v1/grants/{itemId}/plan` | Preview changes for one grant. |
+| `DELETE` | `/v1/grants/{itemId}/requests/{requestId}` | Revoke one request owner; supports `?dryRun=true`. |
+| `PUT` | `/v1/grants/{itemId}/groups` | Replace assigned groups; supports `?dryRun=true`. |
+| `PUT` | `/v1/grants/{itemId}/manual` | Set manual users/groups; supports `?dryRun=true`. |
+| `GET` | `/v1/groups` | List groups and generated household URLs. |
+| `PUT` | `/v1/groups/{groupId}` | Create or replace a group. |
+| `DELETE` | `/v1/groups/{groupId}` | Delete a group and reconcile affected grants. |
+| `GET` | `/v1/users` | List Jellyfin users. |
+| `POST` | `/v1/users` | Create a non-administrator Jellyfin user and assign a group. |
+| `GET` | `/v1/requests/recent` | List recent Jellyseerr requests linked to the catalog. |
+| `GET` | `/v1/requests/poster` | Authenticated Jellyseerr poster proxy. |
+| `GET` | `/v1/library` | Read the synchronized catalog. |
+| `POST` | `/v1/library/sync` | Refresh the catalog from Jellyfin. |
+| `GET` | `/v1/library/search?q=...` | Search Jellyfin directly. |
+| `GET` | `/v1/library/poster?itemId=...` | Authenticated Jellyfin poster proxy. |
+| `PUT` | `/v1/library/access` | Assign one audience to up to 500 items; supports `?dryRun=true`. |
+| `POST` | `/v1/reconcile` | Reconcile all grants; supports `?dryRun=true`. |
+| `GET` | `/metrics` | Prometheus metrics. |
+
+Administrative routes accept `ADMIN_TOKEN` bearer authentication or a valid
+administrator browser session. Request bodies are limited to 64 KiB.
+
+## Security and privacy
+
+- Keep Jellyfin and Jellyseerr API keys out of Git, logs, screenshots, and
+  support requests.
+- Use different random webhook and administrator tokens.
+- Put browser, household, and remote webhook traffic behind TLS.
+- Expose only the routes each network needs; the admin bearer token grants full
+  administrative API access.
+- Preserve `Host` only through a reverse proxy you control. Household routing
+  relies on the HTTP host authority.
+- Restrict state-file and backup permissions; they contain media names and
+  Jellyfin user identifiers.
+- Maintain a separate Jellyfin administrator recovery origin.
+- Review [SECURITY.md](SECURITY.md) and report vulnerabilities privately through
+  GitHub Security Advisories.
+
+JellyPass stores no Jellyfin passwords, supplied new-user passwords, Jellyfin
+access tokens, or Jellyseerr API responses containing credentials. Browser and
+JellyQuest sessions are held in memory and disappear on restart.
+
+## Limitations
+
+- Jellyfin exposes no transaction spanning item tags and multiple user policies.
+  A partial failure can temporarily leave an item visible until reconciliation
+  succeeds.
+- There is a small fail-open window between Jellyfin discovering media and
+  JellyPass processing the availability webhook.
+- Series access applies to the complete series, not individual seasons.
+- Direct filesystem, DLNA, administrator, and other out-of-band access is
+  outside JellyPass's scope.
+- Jellyseerr does not currently emit a deletion event containing everything
+  JellyPass needs for automatic revocation; use the UI or API.
+- Concurrent policy edits in another administrator interface can race with a
+  JellyPass update. Reconciliation restores JellyPass-owned blocked tags.
+- Historical Jellyseerr requests are not automatically imported as grants.
+- Household profile filtering is not passwordless SSO. See
+  [docs/household-access.md](docs/household-access.md) for the design boundary.
 
 ## Development
 
 ```sh
-pnpm install
+corepack enable
+pnpm install --frozen-lockfile
 pnpm check
 pnpm test
 pnpm build
 ```
 
-The runtime uses only Node's standard library. TypeScript and Node type definitions are development-only dependencies.
+The runtime uses only Node.js standard-library modules. TypeScript and Node type
+definitions are development dependencies.
 
-CI also starts `jellyfin/jellyfin:10.11.3`, completes its setup wizard, creates users, scans the committed `.strm` fixture, and verifies grant and revoke behavior against the real server. To run that test manually, start an equivalent fresh container with the fixture mounted at `/media`, then run:
+CI performs type checking, unit and HTTP integration tests, a production
+container build, and an integration test against Jellyfin 10.11.3. To run the
+real-Jellyfin test locally, start an equivalent fresh Jellyfin container with
+`test/fixtures` mounted at `/media`, then run:
 
 ```sh
 JELLYFIN_REAL_URL=http://127.0.0.1:18096 pnpm test:real
 ```
 
-## Project status
+See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
 
-Implemented today: the JellyPass browser administration UI with Jellyfin administrator authentication, a synchronized and filterable Jellyfin catalog, optimized bulk audience assignment, single-title imports, idempotent request grants, legacy Jellyseerr request lookups, explicit revocation and cleanup, shared household groups, household-specific Jellyfin URLs, dry-run change plans, persistent sync failures, scheduled reconciliation, Prometheus metrics, state migrations, full HTTP integration tests, and container-backed tests against Jellyfin 10.11.3.
+## Releases and free distribution
 
-The next planned milestone is household-bound passwordless SSO; see [Household access and passwordless sign-in](docs/household-access.md). Other potential follow-ups include automatic revocation when Seerr exposes a suitable lifecycle webhook, grant expiration, signed webhooks, orphan discovery, and release images published to GHCR.
+JellyPass is free and open-source software under the [MIT License](LICENSE). You
+may use, copy, modify, and redistribute it subject to that license.
+
+Every push to `main` publishes a multi-architecture `latest` container to GitHub
+Container Registry. A tag such as `v0.3.0` publishes `0.3.0`, `0.3`, `0`, and
+`latest` container tags and creates a GitHub Release with generated notes.
+Images target `linux/amd64` and `linux/arm64`.
+
+Maintainers must make the GHCR package public after its first publication:
+**GitHub profile → Packages → jellypass → Package settings → Change visibility
+→ Public**. Public GHCR images can then be pulled without authentication.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE) © 2026 JellyPass contributors.

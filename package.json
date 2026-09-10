@@ -3,6 +3,21 @@
   "version": "0.2.0",
   "private": false,
   "description": "Personalized library access for Jellyfin.",
+  "keywords": [
+    "jellyfin",
+    "jellyseerr",
+    "seerr",
+    "media-server",
+    "access-control"
+  ],
+  "homepage": "https://github.com/nicklongmore86/jellypass#readme",
+  "bugs": {
+    "url": "https://github.com/nicklongmore86/jellypass/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/nicklongmore86/jellypass.git"
+  },
   "type": "module",
   "packageManager": "pnpm@11.18.0",
   "engines": {
