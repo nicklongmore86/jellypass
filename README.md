@@ -133,7 +133,7 @@ as semantic-version tags. For predictable production upgrades, set
 `JELLYPASS_IMAGE` in `.env` to a versioned image such as:
 
 ```dotenv
-JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:0.2.0
+JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:1.0.0
 ```
 
 Until the first versioned release is published, use `latest` or build from
