@@ -69,6 +69,12 @@ export async function createFakeJellyfin() {
     }
     if (request.method === 'GET' && request.url?.startsWith('/Items?')) {
       const parameters = new URL(request.url, 'http://localhost').searchParams;
+      if (parameters.get('CollapseBoxSetItems') !== 'false') {
+        return send(response, 200, {
+          Items: [{ Id: 'collection-1', Name: 'Movie Collection', Type: 'BoxSet' }],
+          TotalRecordCount: 1,
+        });
+      }
       const query = parameters.get('SearchTerm')?.toLowerCase() ?? '';
       const items = Object.values(state.items).filter((item) => item.Type !== 'Trailer' && item.Name.toLowerCase().includes(query));
       return send(response, 200, { Items: items, TotalRecordCount: items.length });

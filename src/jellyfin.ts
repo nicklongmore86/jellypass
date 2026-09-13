@@ -44,6 +44,7 @@ export class JellyfinClient {
       SearchTerm: query,
       IncludeItemTypes: 'Movie,Series',
       Fields: 'ProductionYear',
+      CollapseBoxSetItems: 'false',
       SortBy: 'SortName',
       SortOrder: 'Ascending',
       Limit: String(limit),
@@ -69,6 +70,7 @@ export class JellyfinClient {
           Recursive: 'true',
           IncludeItemTypes: 'Movie,Series',
           Fields: 'ProductionYear,DateCreated',
+          CollapseBoxSetItems: 'false',
           SortBy: 'SortName',
           SortOrder: 'Ascending',
           StartIndex: String(startIndex),
@@ -77,6 +79,7 @@ export class JellyfinClient {
         const page = await this.#request<JellyfinItemQueryResult>(`/Items?${parameters.toString()}`);
         const items = page.Items ?? [];
         for (const item of items) {
+          if (item.Type !== 'Movie' && item.Type !== 'Series') continue;
           catalog.set(item.Id, {
             id: item.Id,
             name: item.Name,
