@@ -11,7 +11,7 @@ import { parseWebhook } from '../dist/webhook.js';
 const baseUrl = process.env.JELLYFIN_REAL_URL;
 
 describe('real Jellyfin integration', { timeout: 90_000 }, () => {
-  it('grants and revokes access on Jellyfin 10.11', { skip: !baseUrl }, async () => {
+  it('grants and revokes access on Jellyfin', { skip: !baseUrl }, async () => {
     const fixture = await setupJellyfin(baseUrl);
     const stateFile = path.join(await mkdtemp(path.join(tmpdir(), 'jfa-real-')), 'grants.json');
     const store = new GrantStore(stateFile);
@@ -77,7 +77,9 @@ async function setupJellyfin(url) {
 async function request(url, pathname, options = {}) {
   const headers = { Accept: 'application/json' };
   if (options.body) headers['Content-Type'] = 'application/json';
-  if (options.token) headers['X-Emby-Token'] = options.token;
+  if (options.token) {
+    headers.Authorization = `MediaBrowser Client="jfa-test", Device="ci", DeviceId="jfa-real-ci", Version="1.0", Token="${encodeURIComponent(options.token)}"`;
+  }
   if (options.authorization) headers.Authorization = options.authorization;
   const response = await fetch(`${url}${pathname}`, {
     method: options.method ?? 'GET',

@@ -30,6 +30,7 @@ export async function createFakeJellyfin() {
       return send(response, 200, { LoginDisclaimer: '', CustomCss: '.existing-branding { color: white; }' });
     }
     if (request.method === 'POST' && request.url === '/Users/AuthenticateByName') {
+      if (!validAuthorization(request)) return send(response, 400, { error: 'request.App is required' });
       const credentials = await body(request);
       const user = users.find((entry) => entry.Name === credentials.Username);
       const expectedPassword = user && (passwords.get(user.Id) ?? (user.Policy.IsAdministrator ? 'admin-password' : 'user-password'));
@@ -42,14 +43,11 @@ export async function createFakeJellyfin() {
       return send(response, 200, { User: { Id: user.Id, Name: user.Name }, AccessToken: token });
     }
     if (request.method === 'POST' && request.url === '/Sessions/Logout') {
-      if (!sessions.delete(request.headers['x-emby-token'])) return send(response, 401, {});
+      if (!sessions.delete(authorizationToken(request))) return send(response, 401, {});
       logoutCount += 1;
       return send(response, 204);
     }
-    const suppliedToken = request.headers['x-emby-token']
-      ?? requestUrl.searchParams.get('ApiKey')
-      ?? requestUrl.searchParams.get('api_key')
-      ?? requestUrl.searchParams.get('access_token');
+    const suppliedToken = authorizationToken(request) ?? requestUrl.searchParams.get('ApiKey');
     const sessionUserId = sessions.get(suppliedToken);
     if (suppliedToken !== 'test-key' && !sessionUserId) return send(response, 401, {});
     if (request.method === 'GET' && requestUrl.pathname === '/Users/Me') {
@@ -141,6 +139,19 @@ export async function createFakeJellyfin() {
       return new Promise((resolve) => server.close(resolve));
     },
   };
+}
+
+function validAuthorization(request) {
+  const value = request.headers.authorization;
+  return typeof value === 'string'
+    && /^MediaBrowser\s/.test(value)
+    && /(?:^|,\s*)Client="[^"]+"/.test(value.slice('MediaBrowser '.length))
+    && /(?:^|,\s*)DeviceId="[^"]+"/.test(value.slice('MediaBrowser '.length));
+}
+
+function authorizationToken(request) {
+  if (!validAuthorization(request)) return undefined;
+  return request.headers.authorization.match(/(?:^|,\s*)Token="([^"]+)"/)?.[1];
 }
 
 async function body(request) {

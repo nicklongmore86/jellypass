@@ -20,11 +20,11 @@ export class JellyfinError extends Error {
 
 export class JellyfinClient {
   readonly #baseUrl: string;
-  readonly #apiKey: string;
+  readonly #authorization: string;
 
   public constructor(baseUrl: string, apiKey: string) {
     this.#baseUrl = baseUrl;
-    this.#apiKey = apiKey;
+    this.#authorization = authorizationHeader('Server', 'jellypass-server', apiKey);
   }
 
   public getUsers(): Promise<JellyfinUser[]> {
@@ -95,7 +95,8 @@ export class JellyfinClient {
   }
 
   public async authenticateAdministrator(username: string, password: string): Promise<JellyfinUser | null> {
-    const authorization = `MediaBrowser Client="JellyPass", Device="Web", DeviceId="${randomUUID()}", Version="0.2.0"`;
+    const deviceId = randomUUID();
+    const authorization = authorizationHeader('Web', deviceId);
     const response = await fetch(`${this.#baseUrl}/Users/AuthenticateByName`, {
       method: 'POST',
       signal: AbortSignal.timeout(15_000),
@@ -124,8 +125,7 @@ export class JellyfinClient {
       signal: AbortSignal.timeout(15_000),
       headers: {
         Accept: 'application/json',
-        Authorization: authorization,
-        'X-Emby-Token': authentication.AccessToken,
+        Authorization: authorizationHeader('Web', deviceId, authentication.AccessToken),
       },
     });
     if (!logout.ok) {
@@ -159,7 +159,7 @@ export class JellyfinClient {
   public async getItemPoster(itemId: string): Promise<{ body: Uint8Array; contentType: string }> {
     const response = await fetch(`${this.#baseUrl}/Items/${encodeURIComponent(itemId)}/Images/Primary?maxHeight=360&quality=85`, {
       signal: AbortSignal.timeout(15_000),
-      headers: { Accept: 'image/avif,image/webp,image/png,image/jpeg', 'X-Emby-Token': this.#apiKey },
+      headers: { Accept: 'image/avif,image/webp,image/png,image/jpeg', Authorization: this.#authorization },
     });
     if (!response.ok) {
       throw new JellyfinError(`Jellyfin poster for item ${itemId} returned ${response.status}`, response.status);
@@ -190,8 +190,8 @@ export class JellyfinClient {
       signal: AbortSignal.timeout(15_000),
       headers: {
         Accept: 'application/json',
+        Authorization: this.#authorization,
         'Content-Type': 'application/json',
-        'X-Emby-Token': this.#apiKey,
         ...init.headers,
       },
     });
@@ -209,4 +209,15 @@ export class JellyfinClient {
     }
     return (await response.json()) as T;
   }
+}
+
+function authorizationHeader(device: string, deviceId: string, token?: string): string {
+  const parameters: Array<[string, string]> = [
+    ['Client', 'JellyPass'],
+    ['Device', device],
+    ['DeviceId', deviceId],
+    ['Version', '1.0.0'],
+  ];
+  if (token) parameters.push(['Token', token]);
+  return `MediaBrowser ${parameters.map(([name, value]) => `${name}="${encodeURIComponent(value)}"`).join(', ')}`;
 }

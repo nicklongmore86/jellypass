@@ -99,7 +99,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.equal(householdQuickConnect.headers.get('cache-control'), 'no-store');
     const householdLogin = await fetchWithHost(bridgeUrl, '/Users/AuthenticateByName', 'jelly-farmhouse.example.test', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { Authorization: jellyfinAuthorization(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ Username: 'Alice', Pw: 'user-password' }),
     });
     assert.equal(householdLogin.status, 200);
@@ -289,7 +289,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.deepEqual(importedUserIds, ['dana-id']);
     const protectedUserLogin = await fetchWithHost(bridgeUrl, '/Users/AuthenticateByName', 'jelly-farmhouse.example.test', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { Authorization: jellyfinAuthorization(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ Username: 'Dana', Pw: 'dana-password' }),
     });
     assert.equal(protectedUserLogin.status, 200);
@@ -310,7 +310,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.deepEqual((await updatedHouseholdUsers.json()).map((user) => user.Name), ['Alice', 'Bob', 'Charlie', 'Dana', 'Import Failure']);
     const newUserLogin = await fetchWithHost(bridgeUrl, '/Users/AuthenticateByName', 'jelly-farmhouse.example.test', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { Authorization: jellyfinAuthorization(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ Username: 'Charlie', Pw: '' }),
     });
     assert.equal(newUserLogin.status, 200);
@@ -387,7 +387,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.deepEqual(jellyfin.user('bob-id').Policy.BlockedTags, ['jfa:private:item-1']);
 
     const ownerStream = await fetchWithHost(bridgeUrl, '/Videos/trailer-1/stream?Static=true', 'jelly-farmhouse.example.test', {
-      headers: { 'X-Emby-Token': householdAuthentication.AccessToken, Range: 'bytes=0-0' },
+      headers: { Authorization: jellyfinAuthorization(householdAuthentication.AccessToken), Range: 'bytes=0-0' },
     });
     assert.equal(ownerStream.status, 206, await ownerStream.text());
     const ownerPlaylist = await fetchWithHost(
@@ -398,12 +398,12 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.equal(ownerPlaylist.status, 200, await ownerPlaylist.text());
     const blockedLogin = await fetchWithHost(bridgeUrl, '/Users/AuthenticateByName', 'jelly-farmhouse.example.test', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { Authorization: jellyfinAuthorization(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ Username: 'Bob', Pw: 'user-password' }),
     });
     const blockedAuthentication = await blockedLogin.json();
     const blockedStream = await fetchWithHost(bridgeUrl, '/Videos/trailer-1/stream?Static=true', 'jelly-farmhouse.example.test', {
-      headers: { 'X-Emby-Token': blockedAuthentication.AccessToken, Range: 'bytes=0-0' },
+      headers: { Authorization: jellyfinAuthorization(blockedAuthentication.AccessToken), Range: 'bytes=0-0' },
     });
     assert.equal(blockedStream.status, 404);
 
@@ -442,6 +442,10 @@ function fetchWithHost(baseUrl, pathname, host, options = {}) {
     request.once('error', reject);
     request.end(options.body);
   });
+}
+
+function jellyfinAuthorization(token) {
+  return `MediaBrowser Client="JellyPass Test", Device="Test", DeviceId="jellypass-http-test", Version="1.0.0"${token ? `, Token="${encodeURIComponent(token)}"` : ''}`;
 }
 
 function upgradeWithHost(baseUrl, pathname, host) {
