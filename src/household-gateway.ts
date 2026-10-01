@@ -34,6 +34,7 @@ export interface HouseholdGatewayOptions {
   domain: string;
   hostPrefix: string;
   memberIds: (householdId: string) => string[] | undefined;
+  isPasswordless?: (userId: string) => boolean;
 }
 
 export class HouseholdGateway {
@@ -41,6 +42,7 @@ export class HouseholdGateway {
   readonly #domain: string;
   readonly #hostPrefix: string;
   readonly #memberIds: HouseholdGatewayOptions['memberIds'];
+  readonly #isPasswordless: NonNullable<HouseholdGatewayOptions['isPasswordless']>;
   readonly #loginAttempts = new Map<string, { attempts: number; resetsAt: number }>();
 
   public constructor(options: HouseholdGatewayOptions) {
@@ -51,6 +53,7 @@ export class HouseholdGateway {
     this.#domain = options.domain.toLowerCase();
     this.#hostPrefix = options.hostPrefix.toLowerCase();
     this.#memberIds = options.memberIds;
+    this.#isPasswordless = options.isPasswordless ?? (() => false);
   }
 
   public householdId(hostHeader: string | undefined): string | undefined {
@@ -256,6 +259,10 @@ export class HouseholdGateway {
         Boolean(user) && typeof user === 'object' && !Array.isArray(user) &&
         typeof (user as Record<string, unknown>).Id === 'string' &&
         allowed.has(((user as Record<string, unknown>).Id as string).toLowerCase())
+      ).map((user) =>
+        // Jellyfin reports HasPassword=true even for empty passwords, which makes its web client
+        // prompt for a password. Members marked passwordless in JellyPass sign in with one tap.
+        this.#isPasswordless(user.Id as string) ? { ...user, HasPassword: false, HasConfiguredPassword: false } : user
       );
     });
   }

@@ -29,6 +29,7 @@ export function makeServer(service: AccessService, tokens: ServerTokens, webAuth
     ? new HouseholdGateway({
         ...options.householdGateway,
         memberIds: (householdId) => service.getHouseholdMemberIds(householdId),
+        isPasswordless: (userId) => service.isPasswordless(userId),
       })
     : undefined;
   const server = createServer(async (request, response) => {
@@ -125,6 +126,12 @@ export function makeServer(service: AccessService, tokens: ServerTokens, webAuth
         const importToJellyseerr = optionalBoolean(body.importToJellyseerr, 'importToJellyseerr');
         const result = await service.createUserInGroup({ username, password, groupId, importToJellyseerr });
         return json(response, 201, { status: 'created', ...result });
+      }
+      if (request.method === 'PUT' && segments.length === 4 && segments[0] === 'v1' && segments[1] === 'users' && segments[3] === 'sign-in') {
+        const body = recordBody(await readJson(request));
+        if (typeof body.passwordless !== 'boolean') throw new Error('passwordless must be a boolean');
+        const user = await service.setUserPasswordless(validId(segments[2], 'userId'), body.passwordless);
+        return json(response, 200, { status: 'saved', user });
       }
       if (request.method === 'GET' && url.pathname === '/v1/requests/recent') {
         return json(response, 200, { requests: await service.listRecentRequests(8) });

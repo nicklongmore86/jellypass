@@ -32,7 +32,8 @@ with or endorsed by Jellyfin, Seerr, or Jellyseerr.
 - Maintains a searchable Jellyfin catalog without automatically making every
   catalog item private.
 - Provides household URLs whose login picker exposes only that household's
-  public users and preserves their password prompt after profile selection.
+  public users, signs passwordless members in with one tap, and preserves the
+  password prompt for everyone else.
 - Proxies household media requests, byte ranges, HLS requests, and WebSockets.
 - Optionally gives JellyQuest a narrowly scoped, server-side Jellyseerr session.
 - Exposes health and Prometheus metrics endpoints.
@@ -467,6 +468,7 @@ blocked-tag policy.
 | `DELETE` | `/v1/groups/{groupId}` | Delete a group and reconcile affected grants. |
 | `GET` | `/v1/users` | List Jellyfin users. |
 | `POST` | `/v1/users` | Create a non-administrator Jellyfin user and assign a group. |
+| `PUT` | `/v1/users/{userId}/sign-in` | Mark a non-administrator user passwordless (`{"passwordless": true}`) for one-tap household sign-in. |
 | `GET` | `/v1/requests/recent` | List recent Jellyseerr requests linked to the catalog. |
 | `GET` | `/v1/requests/poster` | Authenticated Jellyseerr poster proxy. |
 | `GET` | `/v1/library` | Read the synchronized catalog. |

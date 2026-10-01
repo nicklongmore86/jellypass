@@ -21,7 +21,7 @@ export async function createFakeJellyfin() {
   const server = createServer(async (request, response) => {
     const requestUrl = new URL(request.url ?? '/', 'http://localhost');
     if (request.method === 'GET' && request.url === '/Users/Public') {
-      return send(response, 200, users.map((user) => ({ Id: user.Id, Name: user.Name, HasPassword: false })));
+      return send(response, 200, users.map((user) => ({ Id: user.Id, Name: user.Name, HasPassword: true, HasConfiguredPassword: true })));
     }
     if (request.method === 'GET' && request.url === '/System/Info/Public') {
       return send(response, 200, { ServerName: 'Test Jellyfin', Version: '10.11.0', Id: 'test-server' });

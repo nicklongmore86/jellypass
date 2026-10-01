@@ -2,7 +2,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { AccessGroup, GrantRecord, GrantState, LibraryCatalogItem, MediaClaim, RevokeResult, SyncStatus } from './types.js';
 
-const EMPTY_STATE: GrantState = { version: 5, grants: {}, groups: {}, catalog: { items: {} }, claims: {} };
+const EMPTY_STATE: GrantState = { version: 6, grants: {}, groups: {}, catalog: { items: {} }, claims: {}, passwordlessUserIds: [] };
 
 export class GrantStore {
   readonly #file: string;
@@ -40,6 +40,20 @@ export class GrantStore {
   public getGroup(groupId: string): AccessGroup | undefined {
     const group = this.#state.groups[normalizeId(groupId)];
     return group ? clone(group) : undefined;
+  }
+
+  public listPasswordlessUserIds(): string[] {
+    return [...this.#state.passwordlessUserIds];
+  }
+
+  public async setUserPasswordless(userIdInput: string, passwordless: boolean): Promise<string[]> {
+    const userId = normalizeId(userIdInput);
+    const current = new Set(this.#state.passwordlessUserIds);
+    if (passwordless) current.add(userId);
+    else current.delete(userId);
+    this.#state.passwordlessUserIds = [...current].sort();
+    await this.#save();
+    return [...this.#state.passwordlessUserIds];
   }
 
   public getCatalog(): { lastSyncedAt?: string; items: LibraryCatalogItem[] } {
@@ -323,24 +337,29 @@ function clone<T>(value: T): T {
 
 function migrateState(value: unknown): { state: GrantState; changed: boolean } {
   if (!value || typeof value !== 'object') throw new Error('state file must be a JSON object');
-  const candidate = value as { version?: unknown; grants?: unknown; groups?: unknown; catalog?: unknown; claims?: unknown };
+  const candidate = value as { version?: unknown; grants?: unknown; groups?: unknown; catalog?: unknown; claims?: unknown; passwordlessUserIds?: unknown };
   if (!candidate.grants || typeof candidate.grants !== 'object') throw new Error('state file is missing grants');
-  if (candidate.version === 5) {
+  if (candidate.version === 6 || candidate.version === 5) {
     if (!candidate.groups || typeof candidate.groups !== 'object') throw new Error('state file is missing groups');
     if (!candidate.catalog || typeof candidate.catalog !== 'object') throw new Error('state file is missing catalog');
     if (!candidate.claims || typeof candidate.claims !== 'object') throw new Error('state file is missing claims');
-    return { state: value as GrantState, changed: false };
+    if (candidate.version === 6) {
+      if (!Array.isArray(candidate.passwordlessUserIds)) throw new Error('state file is missing passwordlessUserIds');
+      return { state: value as GrantState, changed: false };
+    }
+    return { state: { ...(value as Omit<GrantState, 'version' | 'passwordlessUserIds'>), version: 6, passwordlessUserIds: [] }, changed: true };
   }
   if (candidate.version === 4) {
     if (!candidate.groups || typeof candidate.groups !== 'object') throw new Error('state file is missing groups');
     if (!candidate.catalog || typeof candidate.catalog !== 'object') throw new Error('state file is missing catalog');
     return {
       state: {
-        version: 5,
+        version: 6,
         grants: candidate.grants as Record<string, GrantRecord>,
         groups: candidate.groups as Record<string, AccessGroup>,
         catalog: candidate.catalog as GrantState['catalog'],
         claims: {},
+        passwordlessUserIds: [],
       },
       changed: true,
     };
@@ -349,11 +368,12 @@ function migrateState(value: unknown): { state: GrantState; changed: boolean } {
     if (!candidate.groups || typeof candidate.groups !== 'object') throw new Error('state file is missing groups');
     return {
       state: {
-        version: 5,
+        version: 6,
         grants: candidate.grants as Record<string, GrantRecord>,
         groups: candidate.groups as Record<string, AccessGroup>,
         catalog: { items: {} },
         claims: {},
+        passwordlessUserIds: [],
       },
       changed: true,
     };
@@ -364,7 +384,7 @@ function migrateState(value: unknown): { state: GrantState; changed: boolean } {
       itemId,
       { ...grant, manualUserIds: [] },
     ]));
-    return { state: { version: 5, grants, groups: candidate.groups as Record<string, AccessGroup>, catalog: { items: {} }, claims: {} }, changed: true };
+    return { state: { version: 6, grants, groups: candidate.groups as Record<string, AccessGroup>, catalog: { items: {} }, claims: {}, passwordlessUserIds: [] }, changed: true };
   }
   if (candidate.version !== 1) throw new Error('unsupported state schema version');
   const now = new Date().toISOString();
@@ -379,7 +399,7 @@ function migrateState(value: unknown): { state: GrantState; changed: boolean } {
       updatedAt: raw.updatedAt || now,
     };
   }
-  return { state: { version: 5, grants, groups: {}, catalog: { items: {} }, claims: {} }, changed: true };
+  return { state: { version: 6, grants, groups: {}, catalog: { items: {} }, claims: {}, passwordlessUserIds: [] }, changed: true };
 }
 
 function claimKey(mediaType: 'movie' | 'tv', tmdbId: number): string {

@@ -26,7 +26,7 @@ describe('access tags and webhook validation', () => {
 });
 
 describe('state migration', () => {
-  it('migrates v1 grants to active, pending v5 records', async () => {
+  it('migrates v1 grants to active, pending v6 records', async () => {
     const file = await stateFile();
     await writeFile(file, JSON.stringify({
       version: 1,
@@ -46,10 +46,10 @@ describe('state migration', () => {
     assert.deepEqual(grant.groupIds, []);
     assert.equal(grant.sync.state, 'pending');
     assert.deepEqual(grant.manualUserIds, []);
-    assert.equal(JSON.parse(await readFile(file, 'utf8')).version, 5);
+    assert.equal(JSON.parse(await readFile(file, 'utf8')).version, 6);
   });
 
-  it('adds manual audiences, catalog, and claims while migrating v2 state to v5', async () => {
+  it('adds manual audiences, catalog, and claims while migrating v2 state to v6', async () => {
     const file = await stateFile();
     await writeFile(file, JSON.stringify({
       version: 2,
@@ -65,12 +65,12 @@ describe('state migration', () => {
     await store.load();
     assert.deepEqual(store.get('item-1').manualUserIds, []);
     const migrated = JSON.parse(await readFile(file, 'utf8'));
-    assert.equal(migrated.version, 5);
+    assert.equal(migrated.version, 6);
     assert.deepEqual(migrated.catalog.items, {});
     assert.deepEqual(migrated.claims, {});
   });
 
-  it('preserves v3 grants while adding the v5 catalog and claims', async () => {
+  it('preserves v3 grants while adding the v6 catalog, claims, and passwordless list', async () => {
     const file = await stateFile();
     await writeFile(file, JSON.stringify({
       version: 3,
@@ -86,9 +86,10 @@ describe('state migration', () => {
     await store.load();
     assert.deepEqual(store.get('item-1').manualUserIds, ['bob-id']);
     const migrated = JSON.parse(await readFile(file, 'utf8'));
-    assert.equal(migrated.version, 5);
+    assert.equal(migrated.version, 6);
     assert.deepEqual(migrated.catalog, { items: {} });
     assert.deepEqual(migrated.claims, {});
+    assert.deepEqual(migrated.passwordlessUserIds, []);
   });
 
   it('preserves v4 state while adding an empty claim registry', async () => {
@@ -97,8 +98,28 @@ describe('state migration', () => {
     const store = new GrantStore(file);
     await store.load();
     const migrated = JSON.parse(await readFile(file, 'utf8'));
-    assert.equal(migrated.version, 5);
+    assert.equal(migrated.version, 6);
     assert.deepEqual(migrated.claims, {});
+    assert.deepEqual(migrated.passwordlessUserIds, []);
+  });
+
+  it('preserves v5 state while adding an empty passwordless user list', async () => {
+    const file = await stateFile();
+    const claims = { 'movie:1': { mediaType: 'movie', tmdbId: 1, userIds: ['alice-id'], updatedAt: '2026-01-01T00:00:00.000Z' } };
+    await writeFile(file, JSON.stringify({ version: 5, grants: {}, groups: {}, catalog: { items: {} }, claims }));
+    const store = new GrantStore(file);
+    await store.load();
+    const migrated = JSON.parse(await readFile(file, 'utf8'));
+    assert.equal(migrated.version, 6);
+    assert.deepEqual(migrated.claims, claims);
+    assert.deepEqual(migrated.passwordlessUserIds, []);
+    await store.setUserPasswordless('Alice-ID', true);
+    await store.setUserPasswordless('bob-id', true);
+    await store.setUserPasswordless('bob-id', false);
+    assert.deepEqual(store.listPasswordlessUserIds(), ['alice-id']);
+    const reloaded = new GrantStore(file);
+    await reloaded.load();
+    assert.deepEqual(reloaded.listPasswordlessUserIds(), ['alice-id']);
   });
 });
 

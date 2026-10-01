@@ -67,13 +67,28 @@ export class AccessService {
     return this.#store.getGroup(groupId)?.userIds;
   }
 
-  public async listUsers(): Promise<Array<{ id: string; name: string; isAdministrator: boolean }>> {
+  public isPasswordless(userId: string): boolean {
+    return this.#store.listPasswordlessUserIds().includes(userId.toLowerCase());
+  }
+
+  public async setUserPasswordless(userId: string, passwordless: boolean): Promise<{ id: string; passwordless: boolean }> {
     const users = await this.#jellyfin.getUsers();
+    const user = users.find((entry) => entry.Id.toLowerCase() === userId.toLowerCase());
+    if (!user) throw new Error(`user not found: ${userId}`);
+    if (passwordless && user.Policy.IsAdministrator === true) throw new Error('passwordless sign-in is invalid for administrators');
+    await this.#store.setUserPasswordless(user.Id, passwordless);
+    return { id: user.Id, passwordless };
+  }
+
+  public async listUsers(): Promise<Array<{ id: string; name: string; isAdministrator: boolean; passwordless: boolean }>> {
+    const users = await this.#jellyfin.getUsers();
+    const passwordless = new Set(this.#store.listPasswordlessUserIds());
     return users
       .map((user) => ({
         id: user.Id,
         name: user.Name,
         isAdministrator: user.Policy.IsAdministrator === true,
+        passwordless: user.Policy.IsAdministrator !== true && passwordless.has(user.Id.toLowerCase()),
       }))
       .sort((left, right) => left.name.localeCompare(right.name));
   }
@@ -112,6 +127,7 @@ export class AccessService {
           created.Policy = { ...created.Policy, IsHidden: false };
           await this.#jellyfin.updatePolicy(created.Id, created.Policy);
         }
+        if (!input.password) await this.#store.setUserPasswordless(created.Id, true);
         updatedGroup = await this.#store.upsertGroup({
           id: group.id,
           name: group.name,

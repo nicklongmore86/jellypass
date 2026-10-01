@@ -70,7 +70,7 @@ export const ADMIN_HTML = `<!doctype html>
   </main>
 
   <dialog id="plan-dialog"><div class="dialog-head"><div><div class="eyebrow">Dry-run</div><h2 id="plan-title">Change plan</h2></div><button class="dialog-close icon button" aria-label="Close">×</button></div><div id="plan-content" class="plan-content"></div></dialog>
-  <dialog id="group-dialog"><form id="group-form"><div class="dialog-head"><div><div class="eyebrow">Shared access</div><h2 id="group-title">New group</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><label>Group ID<input id="group-id" required pattern="[a-zA-Z0-9_-]{1,128}" placeholder="household"></label><label>Display name<input id="group-name" required placeholder="Household"></label><fieldset><legend>Jellyfin users</legend><div id="user-options" class="check-list"></div></fieldset><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button class="button primary" type="submit">Save group</button></div></form></dialog>
+  <dialog id="group-dialog"><form id="group-form"><div class="dialog-head"><div><div class="eyebrow">Shared access</div><h2 id="group-title">New group</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><label>Group ID<input id="group-id" required pattern="[a-zA-Z0-9_-]{1,128}" placeholder="household"></label><label>Display name<input id="group-name" required placeholder="Household"></label><fieldset><legend>Jellyfin users</legend><div id="user-options" class="check-list"></div></fieldset><fieldset><legend>One-tap sign-in</legend><p class="hint">Mark users whose Jellyfin account has no password. Their household login skips the password prompt. A marked user who does have a password will be unable to sign in from the household URL.</p><div id="passwordless-options" class="check-list"></div></fieldset><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button class="button primary" type="submit">Save group</button></div></form></dialog>
   <dialog id="user-dialog"><form id="user-form"><div class="dialog-head"><div><div class="eyebrow">Household member</div><h2>Create Jellyfin user</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><label>Username<input id="new-username" name="new-username" maxlength="128" autocomplete="off" required></label><label>Password · optional<input id="new-password" name="new-password" type="password" maxlength="256" autocomplete="new-password"></label><label>Confirm password<input id="confirm-password" name="confirm-password" type="password" maxlength="256" autocomplete="new-password"></label><p class="hint">Leave both password fields blank to create a passwordless Jellyfin account. Until household SSO is implemented, anyone who can reach Jellyfin and knows the username can sign in to that account.</p><label>Household or access group<select id="new-user-group" required></select></label><label class="check"><input id="import-to-jellyseerr" type="checkbox"><span><strong>Import into Jellyseerr</strong><small id="jellyseerr-import-help">Link this Jellyfin identity so the user can own requests.</small></span></label><p class="hint">This creates a real non-administrator Jellyfin account and adds it to the selected group. Jellyseerr applies its configured default permissions to imported users.</p><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button class="button primary" type="submit">Create user</button></div></form></dialog>
   <dialog id="access-dialog"><form id="access-form"><div class="dialog-head"><div><div class="eyebrow">Grant access</div><h2>Shared groups</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><p id="access-item" class="mono"></p><fieldset><legend>Groups with access</legend><div id="group-options" class="check-list"></div></fieldset><input id="access-item-id" type="hidden"><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button class="button primary" type="submit">Preview changes</button></div></form></dialog>
   <dialog id="requests-dialog"><div class="dialog-head"><div><div class="eyebrow">Direct access</div><h2>Jellyseerr requests</h2></div><button class="dialog-close icon button" aria-label="Close">×</button></div><p id="requests-item" class="mono"></p><div id="requests-list" class="request-list"></div></dialog>
@@ -465,6 +465,9 @@ export const ADMIN_APP_JS = `
     const options = byId('user-options');
     options.replaceChildren();
     state.users.filter((user) => !user.isAdministrator).forEach((user) => options.append(checkOption('group-user', user.id, user.name, user.id, selected.has(user.id.toLowerCase()))));
+    const passwordless = byId('passwordless-options');
+    passwordless.replaceChildren();
+    state.users.filter((user) => !user.isAdministrator).forEach((user) => passwordless.append(checkOption('passwordless-user', user.id, user.name, 'No password', Boolean(user.passwordless))));
     byId('group-dialog').showModal();
   }
 
@@ -628,6 +631,11 @@ export const ADMIN_APP_JS = `
     const body = { name: byId('group-name').value.trim(), userIds: checkedValues('group-user') };
     await busy(async () => {
       await api('/v1/groups/' + encodeURIComponent(id), { method: 'PUT', body: JSON.stringify(body) });
+      const passwordless = new Set(checkedValues('passwordless-user').map((userId) => userId.toLowerCase()));
+      const changed = state.users.filter((user) => !user.isAdministrator && Boolean(user.passwordless) !== passwordless.has(user.id.toLowerCase()));
+      for (const user of changed) {
+        await api('/v1/users/' + encodeURIComponent(user.id) + '/sign-in', { method: 'PUT', body: JSON.stringify({ passwordless: !user.passwordless }) });
+      }
       byId('group-dialog').close();
       await load();
       toast('Group saved');

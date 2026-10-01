@@ -104,11 +104,12 @@ export interface GrantRecord {
 }
 
 export interface GrantState {
-  version: 5;
+  version: 6;
   grants: Record<string, GrantRecord>;
   groups: Record<string, AccessGroup>;
   catalog: LibraryCatalog;
   claims: Record<string, MediaClaim>;
+  passwordlessUserIds: string[];
 }
 
 export interface MediaClaim {
