@@ -86,12 +86,13 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.equal(householdBranding.status, 200);
     const householdBrandingBody = await householdBranding.json();
     assert.match(householdBrandingBody.CustomCss, /existing-branding/);
-    assert.match(householdBrandingBody.CustomCss, /#loginPage \.manualLoginForm/);
+    assert.doesNotMatch(householdBrandingBody.CustomCss, /#loginPage \.manualLoginForm/);
     assert.match(householdBrandingBody.CustomCss, /#loginPage \.readOnlyContent/);
     assert.match(householdBrandingBody.CustomCss, /#loginPage \.btnManual/);
     assert.match(householdBrandingBody.CustomCss, /#loginPage \.btnQuick/);
     assert.match(householdBrandingBody.CustomCss, /#loginPage \.btnForgotPassword/);
     assert.match(householdBrandingBody.LoginDisclaimer, /<style id="jellypass-household-profile-picker">/);
+    assert.doesNotMatch(householdBrandingBody.LoginDisclaimer, /#loginPage \.manualLoginForm/);
     assert.match(householdBrandingBody.LoginDisclaimer, /#loginPage \.readOnlyContent/);
     const householdQuickConnect = await fetchWithHost(bridgeUrl, '/QuickConnect/Enabled', 'jelly-farmhouse.example.test');
     assert.equal(householdQuickConnect.status, 200);

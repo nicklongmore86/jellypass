@@ -11,7 +11,9 @@ Read-only verification on 2026-09-01 confirmed:
 - the household origin returns four public Jellyfin profiles, exactly matching the four user IDs in the `farmhouse` access group;
 - Quick Connect is globally disabled;
 - Jellyfin branding includes a `JellyPass household profile picker` rule;
-- the manual-login form and the secondary login action area are hidden, removing Manual Login, Forgot Password, and Quick Connect from the page.
+- the direct Manual Login action and secondary login controls are hidden,
+  removing arbitrary username entry, Forgot Password, and Quick Connect while
+  preserving the password prompt after an allowed profile is selected.
 
 The recovered integration suite confirms that password authentication is still deliberately proxied through the household origin. The controls are hidden, but the corresponding API endpoints are not blocked. Household SSO is not implemented yet.
 
@@ -46,7 +48,7 @@ Filtering public discovery is a usability and privacy boundary. It is not author
 
 - Quick Connect is disabled globally in Jellyfin (`QuickConnectAvailable=false`).
 - Household origins independently return a non-cacheable `false` from `GET /QuickConnect/Enabled` so stale or accidental global configuration cannot advertise Quick Connect there.
-- Household login pages do not expose Manual Login, Forgot Password, or Quick Connect actions. This is implemented by augmenting Jellyfin's branding response for household hosts.
+- Household login pages do not expose Manual Login, Forgot Password, or Quick Connect actions. The password form itself remains available after an allowed profile is selected. This is implemented by augmenting Jellyfin's branding response for household hosts.
 - Hiding controls is not sufficient enforcement. When SSO replaces local login, household entry points must also reject unauthenticated password-login and password-recovery routes, including `POST /Users/AuthenticateByName`, `POST /Users/ForgotPassword`, and `POST /Users/ForgotPassword/Pin`.
 - Existing authenticated Jellyfin API traffic must continue to work; changing a password from an authenticated account is a separate policy decision.
 - An administrator-only recovery origin remains available for emergencies and must not share a household hostname.

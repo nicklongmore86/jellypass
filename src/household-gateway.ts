@@ -13,7 +13,6 @@ const LOGIN_ATTEMPT_WINDOW_MS = 5 * 60 * 1000;
 const MAX_LOGIN_ATTEMPTS = 20;
 const HOUSEHOLD_LOGIN_CSS = `
 /* JellyPass household profile picker */
-#loginPage .manualLoginForm,
 #loginPage .readOnlyContent,
 #loginPage .btnManual,
 #loginPage .btnQuick,

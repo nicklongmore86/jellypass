@@ -32,7 +32,7 @@ with or endorsed by Jellyfin, Seerr, or Jellyseerr.
 - Maintains a searchable Jellyfin catalog without automatically making every
   catalog item private.
 - Provides household URLs whose login picker exposes only that household's
-  public users.
+  public users and preserves their password prompt after profile selection.
 - Proxies household media requests, byte ranges, HLS requests, and WebSockets.
 - Optionally gives JellyQuest a narrowly scoped, server-side Jellyseerr session.
 - Exposes health and Prometheus metrics endpoints.
