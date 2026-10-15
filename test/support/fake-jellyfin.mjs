@@ -18,7 +18,9 @@ export async function createFakeJellyfin() {
   let logoutCount = 0;
   let sessionSequence = 0;
   const upgradeSockets = new Set();
+  const requestedPaths = [];
   const server = createServer(async (request, response) => {
+    requestedPaths.push(request.url);
     const requestUrl = new URL(request.url ?? '/', 'http://localhost');
     if (request.method === 'GET' && request.url === '/Users/Public') {
       return send(response, 200, users.map((user) => ({ Id: user.Id, Name: user.Name, HasPassword: true, HasConfiguredPassword: true })));
@@ -138,6 +140,7 @@ export async function createFakeJellyfin() {
     get item() { return state.items['item-1']; },
     itemById: (id) => state.items[id],
     get logoutCount() { return logoutCount; },
+    requestedPaths,
     user: (id) => users.find((user) => user.Id === id),
     close: () => {
       upgradeSockets.forEach((socket) => socket.destroy());

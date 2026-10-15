@@ -12,8 +12,6 @@ import type {
   JellyfinUser,
   LibraryCatalogItem,
   LibraryItemSummary,
-  CallerMediaClaim,
-  MediaAccessStatus,
   RecentSeerrRequest,
   RequestBackfillResult,
   RevokeResult,
@@ -113,11 +111,6 @@ export class AccessService {
     return Boolean(this.#seerr);
   }
 
-  public async hasJellyseerrUser(jellyfinUserId: string): Promise<boolean> {
-    if (!this.#seerr) throw new Error('Jellyseerr user lookup is not configured');
-    return this.#seerr.hasJellyfinUser(jellyfinUserId);
-  }
-
   public createUserInGroup(input: { username: string; password: string; groupId: string; importToJellyseerr?: boolean }): Promise<{
     user: { id: string; name: string; isAdministrator: false };
     group: AccessGroup;
@@ -178,74 +171,6 @@ export class AccessService {
   public listRecentRequests(take = 8): Promise<RecentSeerrRequest[]> {
     const catalogIds = new Set(this.#store.getCatalog().items.map((item) => normalizeId(item.id)));
     return this.#seerr?.getRecentRequests(take, catalogIds) ?? Promise.resolve([]);
-  }
-
-  public getMediaAccess(
-    userIdInput: string,
-    mediaType: 'movie' | 'tv',
-    tmdbId: number,
-    jellyfinItemId?: string,
-  ): MediaAccessStatus {
-    const userId = normalizeId(userIdInput);
-    const claim = this.#store.getClaim(mediaType, tmdbId);
-    const itemId = jellyfinItemId ? normalizeId(jellyfinItemId) : claim?.jellyfinItemId;
-    const grant = itemId ? this.#store.get(itemId) : undefined;
-    const managed = grant?.active === true;
-    const owned = managed && grant!.owners.includes(userId);
-    const isPublic = Boolean(itemId) && !managed;
-    return {
-      mediaType,
-      tmdbId,
-      claimed: claim?.userIds.includes(userId) === true,
-      managed,
-      owned,
-      public: isPublic,
-      // A private item ID is only disclosed to users who can already open the item.
-      ...(itemId && (owned || isPublic) ? { jellyfinItemId: itemId } : {}),
-    };
-  }
-
-  /** Whether the user can already open the item in Jellyfin: it is public or they are among its owners. */
-  public canAccessItem(userIdInput: string, jellyfinItemId: string): boolean {
-    const grant = this.#store.get(normalizeId(jellyfinItemId));
-    return grant?.active !== true || grant.owners.includes(normalizeId(userIdInput));
-  }
-
-  /** Lists only the caller's own claims, projected so no other claimant is revealed. */
-  public listMediaClaims(userIdInput: string): CallerMediaClaim[] {
-    const userId = normalizeId(userIdInput);
-    return this.#store.listClaims(userId).map((claim) => {
-      const claimedAt = claim.claimedAt?.[userId];
-      return { ...this.getMediaAccess(userId, claim.mediaType, claim.tmdbId), ...(claimedAt ? { claimedAt } : {}) };
-    });
-  }
-
-  public claimMediaAccess(
-    userIdInput: string,
-    mediaType: 'movie' | 'tv',
-    tmdbId: number,
-    jellyfinItemId?: string,
-  ): Promise<MediaAccessStatus> {
-    return this.#exclusive(async () => {
-      const userId = normalizeId(userIdInput);
-      const users = await this.#jellyfin.getUsers();
-      if (!users.some((user) => normalizeId(user.Id) === userId && !user.Policy.IsAdministrator)) {
-        throw new Error('Jellyfin user is not eligible for self-service access');
-      }
-      const claim = await this.#store.addClaim({ mediaType, tmdbId, userId, ...(jellyfinItemId ? { jellyfinItemId } : {}) });
-      const itemId = jellyfinItemId ? normalizeId(jellyfinItemId) : claim.jellyfinItemId;
-      const grant = itemId ? this.#store.get(itemId) : undefined;
-      if (itemId && grant?.active && !grant.owners.includes(userId)) {
-        const updated = await this.#store.setManualAccess({
-          itemId,
-          mediaType: grant.mediaType ?? mediaType,
-          userIds: [...grant.manualUserIds, userId],
-          groupIds: grant.groupIds,
-        });
-        await this.#reconcileGrant(updated.current);
-      }
-      return this.getMediaAccess(userId, mediaType, tmdbId, itemId);
-    });
   }
 
   public getRequestPoster(posterPath: string): Promise<{ body: Uint8Array; contentType: string }> {
@@ -309,7 +234,6 @@ export class AccessService {
         userId: resolved.userId,
         groupIds: this.#store.listGroupIdsForUser(resolved.userId),
         ...(resolved.mediaType ? { mediaType: resolved.mediaType } : {}),
-        ...(resolved.tmdbId !== undefined ? { tmdbId: resolved.tmdbId } : {}),
       });
       try {
         await this.#reconcileGrant(grant);
@@ -322,18 +246,21 @@ export class AccessService {
     });
   }
 
-  async #resolveWebhook(event: SeerrWebhook): Promise<{ itemId: string; userId: string; mediaType?: string; tmdbId?: number }> {
+  async #resolveWebhook(event: SeerrWebhook): Promise<{ itemId: string; userId: string; mediaType?: string }> {
     let itemId = event.media?.jellyfinMediaId;
     let userId = event.request.requestedBy?.jellyfinUserId;
     let mediaType = event.media?.mediaType;
-    let tmdbId = event.media?.tmdbId;
+    const tmdbId = event.media?.tmdbId;
 
+    // A webhook without a TMDB ID still triggers a Seerr lookup, as in 1.1.0, even though the ID
+    // itself is no longer used. The lookup replaces the payload's item and user IDs with Seerr's
+    // (including the 4K media ID via requestItemId), so dropping this trigger would change which
+    // item a webhook grants. Removing it is a separate follow-up, not part of the JellyQuest removal.
     if ((!itemId || !userId || tmdbId === undefined) && this.#seerr) {
       const request = await this.#seerr.getRequest(event.request.id);
       itemId = requestItemId(request);
       userId = request.requestedBy?.jellyfinUserId;
       mediaType ??= request.media?.mediaType ?? request.type;
-      tmdbId ??= request.media?.tmdbId;
     }
 
     if ((!itemId || !userId) && !this.#seerr) {
@@ -341,7 +268,7 @@ export class AccessService {
     }
     if (!itemId) throw new Error(`Seerr request ${event.request.id} is missing a Jellyfin media ID`);
     if (!userId) throw new Error(`Seerr request ${event.request.id} is missing a Jellyfin user ID`);
-    return { itemId, userId, ...(mediaType ? { mediaType } : {}), ...(tmdbId !== undefined ? { tmdbId } : {}) };
+    return { itemId, userId, ...(mediaType ? { mediaType } : {}) };
   }
 
   /**
@@ -394,14 +321,12 @@ export class AccessService {
             continue;
           }
           const mediaType = request.media?.mediaType ?? request.type;
-          const tmdbId = request.media?.tmdbId;
           const grant = await this.#store.grant({
             itemId,
             requestId,
             userId,
             groupIds: this.#store.listGroupIdsForUser(userId),
             ...(mediaType ? { mediaType } : {}),
-            ...(tmdbId !== undefined ? { tmdbId } : {}),
           });
           await this.#reconcileGrant(grant);
           result.granted.push(grant.itemId);

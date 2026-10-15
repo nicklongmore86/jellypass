@@ -34,7 +34,6 @@ export interface Config {
   jellyfinApiKey: string;
   seerrUrl?: string;
   seerrApiKey?: string;
-  jellyquestBridgeEnabled: boolean;
   stateFile: string;
   reconcileIntervalSeconds: number;
   catalogSyncIntervalSeconds: number;
@@ -75,9 +74,11 @@ export function loadConfig(): Config {
   if (!!seerrUrl !== !!seerrApiKey) {
     throw new Error('SEERR_URL and SEERR_API_KEY must be configured together');
   }
-  const jellyquestBridgeEnabled = booleanEnvironment('JELLYQUEST_BRIDGE_ENABLED', false);
-  if (jellyquestBridgeEnabled && !seerrUrl) {
-    throw new Error('SEERR_URL and SEERR_API_KEY are required when JELLYQUEST_BRIDGE_ENABLED is true');
+  if (process.env.JELLYQUEST_BRIDGE_ENABLED?.trim()) {
+    console.warn(JSON.stringify({
+      level: 'warn',
+      message: 'JELLYQUEST_BRIDGE_ENABLED is no longer supported and is ignored; JellyQuest support was removed',
+    }));
   }
   const backfillSinceInput = process.env.REQUEST_BACKFILL_SINCE?.trim();
   const requestBackfillSince = backfillSinceInput ? parseBackfillSince(backfillSinceInput) : undefined;
@@ -114,7 +115,6 @@ export function loadConfig(): Config {
     jellyfinUrl: required('JELLYFIN_URL').replace(/\/+$/, ''),
     jellyfinApiKey: required('JELLYFIN_API_KEY'),
     ...(seerrUrl && seerrApiKey ? { seerrUrl, seerrApiKey } : {}),
-    jellyquestBridgeEnabled,
     stateFile: path.resolve(process.env.STATE_FILE?.trim() || './data/grants.json'),
     reconcileIntervalSeconds,
     catalogSyncIntervalSeconds,

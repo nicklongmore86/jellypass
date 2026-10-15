@@ -5,6 +5,52 @@ All notable changes to JellyPass are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+JellyPass no longer supports JellyQuest for Tizen. Read
+[Upgrading from 1.1.0](#upgrading-from-110) before you deploy this release:
+the state file moves to schema v7, which 1.1.0 cannot read.
+
+### Removed
+
+- **JellyQuest request bridge.** `bridge.html`, `/jellyquest-bridge/health`,
+  `/jellyquest-bridge/session` and `/jellyquest-bridge/proxy` are gone, along
+  with the in-memory Jellyseerr bridge sessions, the Jellyseerr relay and its
+  response scrubbing.
+- **Eligibility checks.** `POST /jellyquest-bridge/eligibility` is gone.
+- **Self-service access claims ("Add to My Library").** The
+  `GET`/`POST /jellyquest/access` and `GET /jellyquest/access/claims` paths,
+  relayed through `POST /jellyquest-bridge/proxy`, are gone with the bridge.
+  They were never HTTP routes on JellyPass itself.
+  JellyPass no longer stores claims or adds claimants to a grant when a claimed
+  title becomes available.
+- **Configuration.** `JELLYQUEST_BRIDGE_ENABLED` is no longer read. If it is
+  still set, JellyPass logs a warning at startup and starts normally.
+
+Household grants, the Seerr webhook, the request backfill, household hostnames,
+passwordless sign-in, the admin UI and API, and metrics are unchanged.
+
+### Upgrading from 1.1.0
+
+1. **Breaking (rollback): back up the state file before upgrading.** On first
+   start the state file is migrated to schema v7 and the stored claims are
+   dropped. 1.1.0 refuses to start on a v7 file
+   (`unsupported state schema version`). To roll back, either:
+   - restore the backup taken before the upgrade. This loses grants, groups and
+     other changes made after the upgrade; or
+   - downgrade the state file by hand: stop JellyPass, edit the state file to
+     set `"version": 6` and add `"claims": {}` at the top level, then start
+     1.1.0. Grants, groups, passwordless users and handled request IDs are
+     kept. Claims dropped by the upgrade are not restored.
+2. **Grants are kept.** Users who were added to a grant through a claim are
+   ordinary manual users on that grant and keep their access. Claims for titles
+   that never became available are discarded.
+3. **Removed endpoints return `404`.** Any client still calling
+   `/jellyquest-bridge/*` gets `404` from JellyPass. On a household hostname
+   the path is passed to Jellyfin like any other unknown path.
+4. **Remove `JELLYQUEST_BRIDGE_ENABLED`** from your `.env` or compose file to
+   silence the startup warning.
+
 ## [1.1.0] - 2026-10-15
 
 This release has three breaking changes. Read
@@ -201,6 +247,7 @@ This release has three breaking changes. Read
 
 First versioned release.
 
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v1.1.0...HEAD
 [1.1.0]: https://github.com/nicklongmore86/jellypass/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/nicklongmore86/jellypass/releases/tag/v1.0.0
 [#1]: https://github.com/nicklongmore86/jellypass/pull/1
