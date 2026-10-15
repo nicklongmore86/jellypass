@@ -189,6 +189,12 @@ export class AccessService {
     };
   }
 
+  /** Whether the user can already open the item in Jellyfin: it is public or they are among its owners. */
+  public canAccessItem(userIdInput: string, jellyfinItemId: string): boolean {
+    const grant = this.#store.get(normalizeId(jellyfinItemId));
+    return grant?.active !== true || grant.owners.includes(normalizeId(userIdInput));
+  }
+
   /** Lists only the caller's own claims, projected so no other claimant is revealed. */
   public listMediaClaims(userIdInput: string): CallerMediaClaim[] {
     const userId = normalizeId(userIdInput);

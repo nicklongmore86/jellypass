@@ -166,6 +166,26 @@ describe('grant lifecycle', () => {
     assert.equal(service.listMediaClaims('alice-id').find((claim) => claim.tmdbId === 1399).claimedAt, aliceClaimedAt);
   });
 
+  it('lists legacy claims recorded before per-user claim times without other claimants', async () => {
+    const file = await stateFile();
+    const claims = {
+      'movie:7': { mediaType: 'movie', tmdbId: 7, userIds: ['alice-id', 'bob-id'], updatedAt: '2026-01-02T00:00:00.000Z' },
+      'movie:8': { mediaType: 'movie', tmdbId: 8, userIds: ['alice-id'], updatedAt: '2026-01-03T00:00:00.000Z' },
+    };
+    await writeFile(file, JSON.stringify({ version: 6, grants: {}, groups: {}, catalog: { items: {} }, claims, passwordlessUserIds: [] }));
+    const store = new GrantStore(file);
+    await store.load();
+    const service = new AccessService(fakeJellyfin(), store);
+
+    assert.deepEqual(service.listMediaClaims('bob-id'), [
+      { mediaType: 'movie', tmdbId: 7, claimed: true, managed: false, owned: false, public: false },
+    ]);
+    await service.claimMediaAccess('bob-id', 'movie', 7);
+    const [claim] = service.listMediaClaims('bob-id');
+    assert.equal(typeof claim.claimedAt, 'string', 'claiming again records the caller\'s own time');
+    assert.equal(store.getClaim('movie', 7).claimedAt['alice-id'], undefined, 'no time is invented for other claimants');
+  });
+
   it('withholds a private item ID from users who cannot open the item', async () => {
     const store = new GrantStore(await stateFile());
     await store.load();
@@ -181,9 +201,14 @@ describe('grant lifecycle', () => {
     assert.doesNotMatch(JSON.stringify(outsider), /alice-id/i);
     assert.equal(service.getMediaAccess('alice-id', 'movie', 101, 'item-1').jellyfinItemId, 'item-1');
 
+    assert.equal(service.canAccessItem('bob-id', 'ITEM-1'), false);
+    assert.equal(service.canAccessItem('alice-id', 'item-1'), true);
+    assert.equal(service.canAccessItem('bob-id', 'unmanaged-item'), true, 'public items are visible to everyone');
+
     const claimed = await service.claimMediaAccess('bob-id', 'movie', 101, 'item-1');
     assert.equal(claimed.owned, true);
     assert.equal(claimed.jellyfinItemId, 'item-1');
+    assert.equal(service.canAccessItem('bob-id', 'item-1'), true);
     assert.doesNotMatch(JSON.stringify([claimed, service.listMediaClaims('bob-id')]), /alice-id|"userIds"/i);
   });
 

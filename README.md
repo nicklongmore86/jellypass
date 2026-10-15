@@ -350,14 +350,32 @@ open across households, but each caller sees only their own:
 
 - `GET /jellyquest/access?mediaType=…&tmdbId=…` and `POST /jellyquest/access`
   return the caller's status only: `mediaType`, `tmdbId`, `claimed`,
-  `managed`, `owned`, `public`, and `jellyfinItemId` when the caller can
+  `managed`, `owned`, `public`, and `jellyfinItemId` only when the caller can
   already open the item (owned or public).
 - `GET /jellyquest/access/claims` returns `{ "claims": [...] }` containing only
   the caller's claims, each with the same fields plus `claimedAt`, the time
-  this caller first claimed the title. Other claimants' IDs, claimant counts,
-  and shared update timestamps are never included.
-- Relayed Jellyseerr responses drop requests, watchlist entries, and issues
-  made by other users, and omit any other user record (such as `modifiedBy`).
+  this caller first claimed the title. Claims recorded before `claimedAt`
+  existed omit it. Other claimants' IDs, claimant counts, and shared update
+  timestamps are never included.
+- `GET /api/v1/request` is always sent to Jellyseerr with `requestedBy` set to
+  the caller's Jellyseerr user ID, so results and `pageInfo` only cover the
+  caller's own requests. The bridge refuses to open a session when that ID
+  cannot be resolved for the verified Jellyfin profile.
+- Other relayed Jellyseerr responses are filtered the same way:
+  - Requests, watchlist entries, issues, and comments made by other users are
+    dropped. When that removes rows from `results`, `pageInfo` and totals are
+    recomputed from the visible rows, and the response becomes a single page.
+  - Other users' records and IDs are removed under any key, including unknown
+    `…user`, `…UserId`, and `…ById` fields. `modifiedBy`/`updatedBy` are
+    always removed, even on the caller's own requests, because they name the
+    staff member who acted.
+  - `createdAt`, `updatedAt`, `mediaAddedAt`, and `lastSeasonChange` are kept
+    only on records the caller owns, so other households' activity timing is
+    not shown.
+  - `mediaInfo.jellyfinMediaId` and `jellyfinMediaId4k` are removed for items
+    the caller cannot open, matching the `jellyfinItemId` rule above.
+- Jellyseerr error messages are not relayed. The bridge keeps the status code
+  and returns a fixed message for it.
 
 The bridge applies per-client rate limits to eligibility checks and session
 creation. Place it behind the same trusted TLS reverse proxy as the household
