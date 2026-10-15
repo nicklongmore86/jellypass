@@ -62,11 +62,6 @@ This release has three breaking changes. Read
     half-closes (FIN) during a WebSocket handshake.
   - Upstream requests are released when the client leaves mid-response.
   - Upstream resets close the client response instead of leaving it open.
-- Revoking a request no longer removes the household groups the request
-  attached ([#2]). The title stays visible to those households instead of
-  becoming public. To make it public, clear the grant's groups (UI or
-  `PUT /v1/grants/{itemId}/groups`). The title becomes public only once no
-  other requests or manual users remain on the grant.
 - Seerr test notifications, and any other event that is not
   `MEDIA_AVAILABLE`, return `202 {"status":"ignored"}` once the token is
   accepted. They no longer require request or media IDs ([#2]).
@@ -110,7 +105,8 @@ This release has three breaking changes. Read
   case-insensitive. The aliases `trace`, `verbose`, `information`, `warning`
   and `err` are accepted. An unrecognised value logs a warning and falls back
   to `info`. Only `debug` changes output today: it also logs routine client
-  disconnects and idle closes.
+  disconnects, idle closes, and backfill requests skipped because their
+  Jellyfin item was deleted.
 - **One-tap household sign-in** for passwordless members (fec84b1):
   - `PUT /v1/users/{userId}/sign-in` turns it on or off for a user.
   - The group dialog has a "One-tap sign-in" checklist.
@@ -125,6 +121,12 @@ This release has three breaking changes. Read
   counts it as invalid ([#2]).
 - The bridge refuses to open a session (`502`) when it cannot find the
   caller's Jellyseerr user ID ([#6]).
+- Revoking a request leaves the household groups it attached ([#2]), so the
+  title stays visible to those households instead of becoming public. To make
+  it public, clear the grant's groups (UI or `PUT /v1/grants/{itemId}/groups`);
+  it becomes public once no other requests or manual users remain. A requester
+  in no household still gets a user-only grant, which becomes public when its
+  last request is revoked, as before.
 
 ### Not included
 
@@ -187,11 +189,13 @@ This release has three breaking changes. Read
    not at all. A test notification should now return `202 {"status":"ignored"}`.
    After that, check `jfa_last_webhook_received_timestamp_seconds` and
    `jfa_webhooks_total{result="invalid"}` in `/metrics`.
-8. **Revoking a request no longer makes a title public.** It no longer removes
-   the household groups the request attached, so the title stays visible to
-   those households. To make it public, clear the grant's groups in the UI or
-   with `PUT /v1/grants/{itemId}/groups`. That works only once no other requests
-   or manual users remain on the grant.
+8. **Revoking a request keeps its household groups.** Revoking a request
+   leaves the household groups it attached, so the title stays visible to those
+   households instead of becoming public. To make it public, clear the grant's
+   groups (UI or `PUT /v1/grants/{itemId}/groups`); it becomes public once no
+   other requests or manual users remain. A requester in no household still
+   gets a user-only grant, which becomes public when its last request is
+   revoked, as before.
 
 ## [1.0.0] - 2026-09-10
 
