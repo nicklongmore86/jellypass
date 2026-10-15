@@ -142,6 +142,36 @@ describe('state migration', () => {
     assert.deepEqual(reloaded.listPasswordlessUserIds(), ['alice-id']);
   });
 
+  it('loads v5 and v6 state that has no claim registry', async () => {
+    for (const version of [5, 6]) {
+      const file = await stateFile();
+      await writeFile(file, JSON.stringify({
+        version,
+        grants: {
+          'item-1': {
+            itemId: 'item-1', active: true, owners: ['alice-id'], requests: { '17': 'alice-id' }, manualUserIds: [],
+            groupIds: [], sync: { state: 'synced', attempts: 0 }, updatedAt: '2026-01-01T00:00:00.000Z',
+          },
+        },
+        groups: {},
+        catalog: { items: {} },
+        ...(version === 6 ? { passwordlessUserIds: [] } : {}),
+      }));
+      const store = new GrantStore(file);
+      await store.load();
+      assert.deepEqual(store.get('item-1').owners, ['alice-id'], `v${version}`);
+      assert.equal(JSON.parse(await readFile(file, 'utf8')).version, 7);
+    }
+  });
+
+  it('rejects a newer state schema and leaves the file untouched', async () => {
+    const file = await stateFile();
+    const contents = JSON.stringify({ version: 8, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], future: true });
+    await writeFile(file, contents);
+    await assert.rejects(new GrantStore(file).load(), /unsupported state schema version/);
+    assert.equal(await readFile(file, 'utf8'), contents);
+  });
+
   it('migrates v6 state to v7 by dropping claims and keeping grants that came from claims', async () => {
     const file = await stateFile();
     // Bob claimed item-1 before it became available, so 1.1.0 added him as a manual user.

@@ -252,7 +252,10 @@ export class AccessService {
     let mediaType = event.media?.mediaType;
     const tmdbId = event.media?.tmdbId;
 
-    // Webhooks without a TMDB ID still trigger a Seerr lookup, as in 1.1.0; the ID itself is unused.
+    // A webhook without a TMDB ID still triggers a Seerr lookup, as in 1.1.0, even though the ID
+    // itself is no longer used. The lookup replaces the payload's item and user IDs with Seerr's
+    // (including the 4K media ID via requestItemId), so dropping this trigger would change which
+    // item a webhook grants. Removing it is a separate follow-up, not part of the JellyQuest removal.
     if ((!itemId || !userId || tmdbId === undefined) && this.#seerr) {
       const request = await this.#seerr.getRequest(event.request.id);
       itemId = requestItemId(request);

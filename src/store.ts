@@ -342,12 +342,12 @@ function migrateState(value: unknown): { state: GrantState; changed: boolean } {
       if (!Array.isArray(candidate.passwordlessUserIds)) throw new Error('state file is missing passwordlessUserIds');
       return { state: value as GrantState, changed: false };
     }
-    if (!candidate.claims || typeof candidate.claims !== 'object') throw new Error('state file is missing claims');
     if (candidate.version === 6 && !Array.isArray(candidate.passwordlessUserIds)) {
       throw new Error('state file is missing passwordlessUserIds');
     }
-    // v5/v6 held per-user media claims. Claimants that already received access are ordinary
-    // manual users on their grants, so dropping the claim registry keeps every grant intact.
+    // v5/v6 held per-user media claims (a missing registry is fine, it is discarded). Claimants
+    // that already received access are ordinary manual users on their grants, so dropping the
+    // claim registry keeps every grant intact.
     return {
       state: {
         version: 7,
