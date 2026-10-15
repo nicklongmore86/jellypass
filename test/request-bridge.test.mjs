@@ -407,6 +407,60 @@ test('relays only the caller\'s own Jellyseerr activity', async () => {
       mediaInfo: { status: 3, requests: [{ id: 5, requestedBy: BLAIR_MINIMAL }, { id: 6, createdBy: BLAIR_MINIMAL }] },
     },
     '/api/v1/discover/top-level-user': BLAIR_MINIMAL,
+    // Credit-shaped user references must not pass as TMDB creators outside a show's `createdBy`.
+    '/api/v1/tv/303': {
+      id: 303,
+      name: 'Other Show',
+      createdBy: [
+        { id: 11, name: 'Creator', profilePath: '/c.png', creditId: 'credit-1' },
+        { id: 8, username: 'Blair', profilePath: '/b.png', creditId: 'credit-2' },
+        8,
+      ],
+      requestedBy: { id: 8, name: 'Blair', profilePath: '/b.png', creditId: 'credit-3' },
+      requestedByIds: [{ id: 8, profilePath: '/b.png', creditId: 'credit-4' }],
+      mediaInfo: {
+        status: 3,
+        requests: [
+          { id: 7, requestedBy: { id: 8, profilePath: '/b.png', creditId: 'credit-5' } },
+          { id: 8, requestedBy: ALEX_MINIMAL },
+        ],
+        issues: [{ id: 12, createdBy: [{ id: 8, profilePath: '/b.png', creditId: 'credit-6' }] }],
+      },
+    },
+    '/api/v1/movie/404': {
+      id: 404,
+      createdBy: [{ id: 8, name: 'Blair', profilePath: '/b.png', creditId: 'credit-7' }],
+      mediaInfo: { status: 3, requests: [{ id: 9, createdBy: { id: 8, profile_path: '/b.png', credit_id: 'credit-8' } }] },
+    },
+    '/api/v1/discover/mixed-case': {
+      id: 2,
+      UserId: 8,
+      USER_ID: 8,
+      user_ID: 8,
+      USERID: 8,
+      RequestedById: 8,
+      REQUESTED_BY: BLAIR_MINIMAL,
+      ApprovedByID: 8,
+      UserIDs: [8, 7],
+      USERS: [BLAIR_MINIMAL, ALEX_MINIMAL],
+      Owner_User: 'DEF456',
+      ViewerUserId: 7,
+      ModifiedBy: ALEX_MINIMAL,
+      UPDATED_BY_ID: 7,
+      hobbyId: 3,
+      HobbyId: 4,
+      HOBBY_ID: 5,
+      lobbyId: 'lobby-1',
+      sortBy: 'popularity.desc',
+      SORT_BY: 'title.asc',
+      UserType: 3,
+      results: [
+        { id: 1, USER_ID: 7 },
+        { id: 2, RequestedBy: BLAIR_MINIMAL },
+        { id: 3, Requested_By_Id: 8 },
+        { id: 4, CREATEDBY: 8 },
+      ],
+    },
   };
   const fakeSeerr = http.createServer(async (request, response) => {
     const send = (status, value) => {
@@ -503,6 +557,34 @@ test('relays only the caller\'s own Jellyseerr activity', async () => {
       createdBy: [{ id: 11, name: 'Creator', gender: 1, profilePath: '/c.png', creditId: 'credit-1' }],
       mediaInfo: { status: 3, requests: [] },
     }, 'TMDB show creators are kept while Jellyseerr users are still removed');
+
+    assert.deepEqual((await proxy('/api/v1/tv/303')).body.data, {
+      id: 303,
+      name: 'Other Show',
+      createdBy: [{ id: 11, name: 'Creator', profilePath: '/c.png', creditId: 'credit-1' }],
+      requestedByIds: [],
+      mediaInfo: { status: 3, requests: [{ id: 8, requestedBy: ALEX_MINIMAL }], issues: [{ id: 12, createdBy: [] }] },
+    }, 'only a show\'s top-level createdBy keeps TMDB credits; credit-shaped requesters are removed');
+    assert.deepEqual((await proxy('/api/v1/movie/404')).body.data, {
+      id: 404,
+      createdBy: [],
+      mediaInfo: { status: 3, requests: [] },
+    }, 'the creator exception does not apply outside TV details');
+
+    assert.deepEqual((await proxy('/api/v1/discover/mixed-case')).body.data, {
+      id: 2,
+      UserIDs: [7],
+      USERS: [ALEX_MINIMAL],
+      ViewerUserId: 7,
+      hobbyId: 3,
+      HobbyId: 4,
+      HOBBY_ID: 5,
+      lobbyId: 'lobby-1',
+      sortBy: 'popularity.desc',
+      SORT_BY: 'title.asc',
+      UserType: 3,
+      results: [{ id: 1, USER_ID: 7 }],
+    }, 'identity keys match in any case, other users\' rows are dropped, staff keys are always removed, unrelated keys survive');
 
     const details = (await proxy('/api/v1/movie/101')).body.data;
     assert.deepEqual(details, {

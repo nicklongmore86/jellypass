@@ -11,20 +11,25 @@ const PROBE_ATTEMPT_WINDOW_MS = 5 * 60 * 1000;
 const MAX_PROBE_ATTEMPTS = 30;
 const IDENTITY_RECHECK_MS = 5 * 60 * 1000;
 const JELLYFIN_TOKEN_PATTERN = /^[A-Za-z0-9._~-]{16,256}$/;
+// Keys are compared as lower-case words split on camel case and `_`/`-`, so `UserId`, `USER_ID`
+// and `user_id` all read as `user_id` (all-caps `USERID` as `userid`). Whole words matter:
+// `hobbyId`, `lobbyId` and `sortBy` are not identities.
 // Keys that hold a user, user ID, or list of users. Unknown keys of this shape fail closed.
-// Case-sensitive so camel-case boundaries matter: `reviewerUserId` and `approvedById` match, `hobbyId` does not.
 const IDENTITY_KEY_PATTERN = new RegExp([
-  '^(?:\\w+_)?(?:users?|requestedBy|modifiedBy|createdBy|updatedBy)(?:Ids?)?$',
-  '(?:^|_)(?:users?|requested_by|modified_by|created_by|updated_by)(?:_ids?)?$',
-  '[a-z0-9](?:User|By)Ids?$',
-  '[a-z0-9]Users?$',
+  '(?:^|_)users?(?:_?ids?)?$',
+  '(?:^|_)(?:requested|modified|created|updated)_?by(?:_?ids?)?$',
+  '[a-z0-9]_by_ids?$',
 ].join('|'));
-// TMDB credits (such as a show's `createdBy` creators) are public media data, not Jellyseerr users.
+// TMDB credits (a show's `createdBy` creators) are public media data, not Jellyseerr users.
 const TMDB_CREDIT_FIELDS = ['creditId', 'credit_id', 'profilePath', 'profile_path'];
+const TV_DETAILS_PATH = /^\/api\/v1\/tv\/\d+(?:\?|$)/;
 // Staff actions on a request are never relayed, even on the caller's own request.
-const ALWAYS_STRIPPED_KEYS = new Set(['modifiedBy', 'modifiedById', 'updatedBy', 'updatedById']);
+const ALWAYS_STRIPPED_KEY_PATTERN = /^(?:modified|updated)_?by(?:_?id)?$/;
 // Keys that make an array entry (request, watchlist entry, issue, comment) belong to that user.
-const OWNER_KEYS = ['requestedBy', 'requestedById', 'createdBy', 'createdById', 'user', 'userId'];
+const OWNER_KEYS = new Set([
+  'requested_by', 'requested_by_id', 'requestedby', 'requestedby_id',
+  'created_by', 'created_by_id', 'createdby', 'createdby_id', 'user', 'user_id',
+]);
 // Activity timing is only relayed on records the caller owns.
 const TIMESTAMP_KEYS = new Set(['createdAt', 'updatedAt', 'mediaAddedAt', 'lastSeasonChange']);
 const ITEM_ID_KEYS = new Set(['jellyfinMediaId', 'jellyfinMediaId4k']);
@@ -46,6 +51,8 @@ interface BridgeSession {
 interface ScrubContext {
   session: BridgeSession;
   canAccessItem(itemId: string): boolean;
+  /** True for `GET /api/v1/tv/:id`, the only response whose top-level `createdBy` lists TMDB creators. */
+  tvDetails: boolean;
 }
 
 interface JellyfinIdentity {
@@ -189,6 +196,7 @@ export class RequestBridge {
         data: scrubPayload(result.data, {
           session,
           canAccessItem: (itemId) => access?.canAccessItem(session.userId, itemId) === true,
+          tvDetails: TV_DETAILS_PATH.test(input.path),
         }),
       });
     }
@@ -373,10 +381,10 @@ function seerrErrorMessage(status: number, upstreamMessage: unknown): string {
  * activity timestamp, or inaccessible Jellyfin item ID is omitted.
  */
 function scrubPayload(value: unknown, context: ScrubContext): unknown {
-  return isOtherUser(value, context.session) ? {} : scrubValue(value, context);
+  return isOtherUser(value, context.session) ? {} : scrubValue(value, context, true);
 }
 
-function scrubValue(value: unknown, context: ScrubContext): unknown {
+function scrubValue(value: unknown, context: ScrubContext, root = false): unknown {
   const { session } = context;
   if (Array.isArray(value)) {
     return value
@@ -387,18 +395,24 @@ function scrubValue(value: unknown, context: ScrubContext): unknown {
   const ownRecord = ownedByCaller(value, session) || (isUserRecord(value) && isCallerRef(value, session));
   const result: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value)) {
-    if (ALWAYS_STRIPPED_KEYS.has(key)) continue;
+    const words = keyWords(key);
+    if (ALWAYS_STRIPPED_KEY_PATTERN.test(words)) continue;
     if (TIMESTAMP_KEYS.has(key) && !ownRecord) continue;
     if (ITEM_ID_KEYS.has(key) && entry !== null && entry !== undefined
         && (typeof entry !== 'string' || !context.canAccessItem(entry))) continue;
-    if (IDENTITY_KEY_PATTERN.test(key) && entry !== null && entry !== undefined) {
+    if (root && context.tvDetails && key === 'createdBy' && Array.isArray(entry)) {
+      // A TV show's creators: keep TMDB credits only, never anything that looks like a user.
+      result[key] = entry.filter(isTmdbCredit).map((item) => scrubValue(item, context));
+      continue;
+    }
+    if (IDENTITY_KEY_PATTERN.test(words) && entry !== null && entry !== undefined) {
       if (Array.isArray(entry)) {
         result[key] = entry
-          .filter((item) => isTmdbCredit(item) || isCallerValue(item, session))
+          .filter((item) => isCallerValue(item, session))
           .map((item) => scrubValue(item, context));
         continue;
       }
-      if (!isTmdbCredit(entry) && !isCallerValue(entry, session)) continue;
+      if (!isCallerValue(entry, session)) continue;
     } else if (isOtherUser(entry, session)) {
       continue;
     }
@@ -419,10 +433,23 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+/** Normalizes a key to lower-case words joined by `_`: `RequestedById` and `REQUESTED_BY_ID` become `requested_by_id`. */
+function keyWords(key: string): string {
+  return key
+    .replace(/ID([sS]?)(?=$|[A-Z_-])/g, (_match, plural: string) => `Id${plural.toLowerCase()}`)
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+    .toLowerCase()
+    .split(/[_\-\s]+/)
+    .filter(Boolean)
+    .join('_');
+}
+
 function ownerValues(record: Record<string, unknown>): unknown[] {
   // An owner is a single user reference; lists such as TMDB `createdBy` creators do not own the record.
-  return OWNER_KEYS.map((key) => record[key])
-    .filter((owner) => owner !== null && owner !== undefined && !Array.isArray(owner) && !isTmdbCredit(owner));
+  return Object.entries(record)
+    .filter(([key, owner]) => OWNER_KEYS.has(keyWords(key)) && owner !== null && owner !== undefined && !Array.isArray(owner))
+    .map(([, owner]) => owner);
 }
 
 function isTmdbCredit(value: unknown): boolean {
