@@ -169,7 +169,7 @@ test('keeps the Jellyseerr session server-side and limits relayed operations', a
 
     const eligibleProfile = await fetch(`${origin}/jellyquest-bridge/eligibility`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'X-Emby-Token': ALEX_TOKEN },
       body: JSON.stringify({ id: 'abc123' }),
     });
     assert.equal(eligibleProfile.status, 200);
@@ -177,13 +177,15 @@ test('keeps the Jellyseerr session server-side and limits relayed operations', a
 
     const ineligibleProfile = await fetch(`${origin}/jellyquest-bridge/eligibility`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ id: 'deadbeef' }),
+      headers: { 'Content-Type': 'application/json', 'X-Emby-Token': BLAIR_TOKEN },
+      body: '{}',
     });
     assert.equal(ineligibleProfile.status, 200);
-    assert.deepEqual(await ineligibleProfile.json(), { eligible: false });
+    assert.deepEqual(await ineligibleProfile.json(), { eligible: false }, 'Blair has no Jellyseerr account');
     assert.equal(userListCalls, 2);
     assert.equal(loginCalls, 0, 'eligibility checks must not authenticate or create a Jellyseerr user');
+    jellyfin.state.meCalls = 0;
+    jellyfin.state.authorizations.length = 0;
 
     const missingJellyfinToken = await fetch(`${origin}/jellyquest-bridge/session`, {
       method: 'POST',
@@ -636,11 +638,112 @@ test('reports an unreachable Jellyfin without creating a session', async () => {
   }
 });
 
-test('rate limits repeated eligibility probes from the same client', async () => {
+test('eligibility requires a Jellyfin token and only answers for its own profile', async () => {
+  const lookups = [];
+  const eligibleUsers = new Set(['abc123']);
   const access = {
-    hasJellyseerrUser() { return Promise.resolve(false); },
+    hasJellyseerrUser(userId) {
+      lookups.push(userId);
+      return Promise.resolve(eligibleUsers.has(userId));
+    },
+  };
+  const jellyfin = await createFakeJellyfin();
+  const bridge = new RequestBridge('http://127.0.0.1:1', jellyfin.url, access);
+  const app = http.createServer(async (request, response) => {
+    await bridge.handle(request, response, new URL(request.url ?? '/', 'http://localhost'));
+  });
+  const appPort = await listen(app);
+  const origin = `http://127.0.0.1:${appPort}`;
+  const logged = [];
+  for (const method of ['log', 'info', 'warn', 'error']) {
+    mock.method(console, method, (...args) => { logged.push(args.map(String).join(' ')); });
+  }
+  const eligibility = async (headers, body) => {
+    const response = await fetch(`${origin}/jellyquest-bridge/eligibility`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', ...headers },
+      body: JSON.stringify(body),
+    });
+    return { status: response.status, body: await response.json() };
+  };
+
+  try {
+    // Before this change any caller could ask about any profile ID without a token.
+    const anonymous = await eligibility({}, { id: 'abc123' });
+    assert.equal(anonymous.status, 401, 'an unauthenticated probe for another profile is refused');
+    assert.equal(anonymous.body.eligible, undefined);
+    assert.equal(jellyfin.state.meCalls, 0);
+
+    assert.equal((await eligibility({ 'X-Emby-Token': 'forged000000000000000000000000000' }, { id: 'abc123' })).status, 401);
+    assert.equal((await eligibility({ 'X-Emby-Token': 'short' }, {})).status, 401, 'malformed tokens are rejected');
+    assert.equal(jellyfin.state.meCalls, 1, 'malformed tokens never reach Jellyfin');
+
+    const probeOther = await eligibility({ 'X-Emby-Token': BLAIR_TOKEN }, { id: 'abc123' });
+    assert.equal(probeOther.status, 401, 'a token for Blair cannot ask about Alex');
+    assert.equal(probeOther.body.eligible, undefined);
+    assert.deepEqual(lookups, [], 'no Jellyseerr lookup happens for rejected or mismatched callers');
+
+    assert.deepEqual(await eligibility({ 'X-Emby-Token': ALEX_TOKEN }, {}), { status: 200, body: { eligible: true } });
+    assert.deepEqual(await eligibility({ 'X-Emby-Token': ALEX_TOKEN }, { id: 'ABC-123' }), { status: 200, body: { eligible: true } });
+    assert.deepEqual(
+      await eligibility({ Authorization: `MediaBrowser Client="JellyQuest", Token="${BLAIR_TOKEN}"` }, {}),
+      { status: 200, body: { eligible: false } },
+    );
+    assert.deepEqual(lookups, ['abc123', 'abc123', 'def456'], 'the lookup uses the verified Jellyfin user ID');
+    assert.equal(jellyfin.state.authorizations.at(-1), `MediaBrowser Token="${BLAIR_TOKEN}"`);
+
+    for (const line of logged) {
+      assert.doesNotMatch(line, new RegExp(`${ALEX_TOKEN}|${BLAIR_TOKEN}`), 'access tokens are never logged');
+    }
+
+    const page = await (await fetch(`${origin}/jellyquest-bridge/bridge.html`)).text();
+    const checkEligibility = page.slice(page.indexOf('function checkEligibility'), page.indexOf('function createSession'));
+    assert.match(checkEligibility, /'X-Emby-Token': params\.token \|\| ''/, 'the bridge page sends the Jellyfin token for eligibility checks');
+  } finally {
+    mock.restoreAll();
+    await close(app);
+    await close(jellyfin.server);
+  }
+});
+
+test('eligibility fails closed when Jellyfin is unreachable', async () => {
+  const lookups = [];
+  const access = {
+    hasJellyseerrUser(userId) {
+      lookups.push(userId);
+      return Promise.resolve(true);
+    },
   };
   const bridge = new RequestBridge('http://127.0.0.1:1', 'http://127.0.0.1:1', access);
+  const app = http.createServer(async (request, response) => {
+    await bridge.handle(request, response, new URL(request.url ?? '/', 'http://localhost'));
+  });
+  const appPort = await listen(app);
+
+  try {
+    const response = await fetch(`http://127.0.0.1:${appPort}/jellyquest-bridge/eligibility`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Emby-Token': ALEX_TOKEN },
+      body: JSON.stringify({ id: 'abc123' }),
+    });
+    assert.equal(response.status, 502);
+    assert.deepEqual(await response.json(), { error: 'Jellyfin is unavailable.' });
+    assert.deepEqual(lookups, [], 'the ID in the body is never used as a fallback');
+  } finally {
+    await close(app);
+  }
+});
+
+test('rate limits repeated eligibility probes from the same client', async () => {
+  let lookups = 0;
+  const access = {
+    hasJellyseerrUser() {
+      lookups += 1;
+      return Promise.resolve(false);
+    },
+  };
+  const jellyfin = await createFakeJellyfin();
+  const bridge = new RequestBridge('http://127.0.0.1:1', jellyfin.url, access);
   const app = http.createServer(async (request, response) => {
     await bridge.handle(request, response, new URL(request.url ?? '/', 'http://localhost'));
   });
@@ -648,19 +751,23 @@ test('rate limits repeated eligibility probes from the same client', async () =>
   const origin = `http://127.0.0.1:${appPort}`;
 
   try {
-    let lastStatus;
+    const statuses = [];
     for (let attempt = 0; attempt < 31; attempt += 1) {
       const probe = await fetch(`${origin}/jellyquest-bridge/eligibility`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ id: 'abc123' }),
+        headers: { 'Content-Type': 'application/json', 'X-Emby-Token': ALEX_TOKEN },
+        body: '{}',
       });
-      lastStatus = probe.status;
+      statuses.push(probe.status);
       await probe.json();
     }
-    assert.equal(lastStatus, 429);
+    assert.deepEqual(statuses.slice(0, 30), Array(30).fill(200));
+    assert.equal(statuses[30], 429);
+    assert.equal(lookups, 30);
+    assert.equal(jellyfin.state.meCalls, 30, 'rate-limited probes do not reach Jellyfin');
   } finally {
     await close(app);
+    await close(jellyfin.server);
   }
 });
 

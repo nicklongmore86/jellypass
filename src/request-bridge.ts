@@ -55,6 +55,15 @@ interface JellyfinIdentity {
 
 type IdentityResult = JellyfinIdentity | 'invalid' | 'unavailable';
 
+interface CallerIdentity extends JellyfinIdentity {
+  jellyfinToken: string;
+}
+
+interface CallerRejection {
+  status: number;
+  error: string;
+}
+
 export interface RequestBridgeAccess {
   hasJellyseerrUser(jellyfinUserId: string): Promise<boolean>;
   getMediaAccess(userId: string, mediaType: 'movie' | 'tv', tmdbId: number, jellyfinItemId?: string): MediaAccessStatus;
@@ -102,26 +111,21 @@ export class RequestBridge {
         return json(response, 429, { error: 'Too many requests.' });
       }
       const input = recordBody(await readJson(request));
-      if (typeof input.id !== 'string' || !PROFILE_ID_PATTERN.test(input.id)) {
-        return json(response, 400, { error: 'Invalid Jellyfin profile.' });
-      }
+      // Eligibility is only answered for the token's own profile, so it cannot be used to
+      // learn whether another household member has a Jellyseerr account.
+      const identity = await this.callerIdentity(request, input);
+      if (!('id' in identity)) return json(response, identity.status, { error: identity.error });
       if (!this.access) return json(response, 503, { error: 'Jellyseerr user lookup is not configured.' });
-      return json(response, 200, { eligible: await this.access.hasJellyseerrUser(input.id) });
+      return json(response, 200, { eligible: await this.access.hasJellyseerrUser(identity.id) });
     }
     if (request.method === 'POST' && url.pathname === `${BRIDGE_PREFIX}/session`) {
       if (!this.allowProbeAttempt(clientId(request))) {
         return json(response, 429, { error: 'Too many requests.' });
       }
       const input = recordBody(await readJson(request));
-      const jellyfinToken = jellyfinAccessToken(request, input);
-      if (!jellyfinToken) return json(response, 401, { error: 'A Jellyfin access token is required.' });
-      // Identity comes only from Jellyfin; client-supplied user fields are never trusted.
-      const identity = await this.verifyJellyfinToken(jellyfinToken);
-      if (identity === 'unavailable') return json(response, 502, { error: 'Jellyfin is unavailable.' });
-      if (identity === 'invalid') return json(response, 401, { error: 'Jellyfin rejected this access token.' });
-      if (input.id !== undefined && (typeof input.id !== 'string' || !sameId(input.id, identity.id))) {
-        return json(response, 401, { error: 'The Jellyfin access token belongs to a different profile.' });
-      }
+      const identity = await this.callerIdentity(request, input);
+      if (!('id' in identity)) return json(response, identity.status, { error: identity.error });
+      const { jellyfinToken } = identity;
       const auth = await this.seerr('/api/v1/auth/jellyfin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -218,6 +222,22 @@ export class RequestBridge {
     return accessStatus(method === 'POST'
       ? await this.access!.claimMediaAccess(session.userId, mediaType, tmdbId, jellyfinItemId)
       : this.access!.getMediaAccess(session.userId, mediaType, tmdbId, jellyfinItemId));
+  }
+
+  /**
+   * Resolves the caller from their Jellyfin access token via `/Users/Me`. Client-supplied
+   * user fields are never trusted; an `id`, if sent, must match the verified profile.
+   */
+  private async callerIdentity(request: IncomingMessage, input: Record<string, unknown>): Promise<CallerIdentity | CallerRejection> {
+    const jellyfinToken = jellyfinAccessToken(request, input);
+    if (!jellyfinToken) return { status: 401, error: 'A Jellyfin access token is required.' };
+    const identity = await this.verifyJellyfinToken(jellyfinToken);
+    if (identity === 'unavailable') return { status: 502, error: 'Jellyfin is unavailable.' };
+    if (identity === 'invalid') return { status: 401, error: 'Jellyfin rejected this access token.' };
+    if (input.id !== undefined && (typeof input.id !== 'string' || !sameId(input.id, identity.id))) {
+      return { status: 401, error: 'The Jellyfin access token belongs to a different profile.' };
+    }
+    return { ...identity, jellyfinToken };
   }
 
   private async verifyJellyfinToken(jellyfinToken: string): Promise<IdentityResult> {
@@ -553,7 +573,7 @@ const BRIDGE_HTML = String.raw`<!doctype html>
   }
   function checkEligibility() {
     return fetch('/jellyquest-bridge/eligibility', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Emby-Token': params.token || '' },
       body: JSON.stringify({ id: params.id })
     }).then(function (response) { return response.json().then(function (data) {
       if (!response.ok) throw new Error(data.error || 'Request eligibility check failed.');
