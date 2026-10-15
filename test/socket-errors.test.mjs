@@ -5,6 +5,8 @@ import { after, before, describe, it } from 'node:test';
 import { makeServer } from '../dist/server.js';
 
 const HOUSEHOLD_HOST = 'jelly-farmhouse.example.test';
+const uncaughtErrors = [];
+process.on('uncaughtException', (error) => uncaughtErrors.push(error));
 
 describe('socket error handling', { timeout: 10_000 }, () => {
   let upstream;
@@ -12,7 +14,9 @@ describe('socket error handling', { timeout: 10_000 }, () => {
   let gatewayPort;
   const upstreamUpgradeSockets = new Set();
   const heldResponses = new Set();
+  const heldBeforeHeaders = new Set();
   const upgradeSeen = [];
+  let holdPublicUsers = false;
 
   before(async () => {
     upstream = createServer((request, response) => {
@@ -25,6 +29,11 @@ describe('socket error handling', { timeout: 10_000 }, () => {
         response.writeHead(200, { 'Content-Type': 'application/octet-stream' });
         response.write(Buffer.alloc(1024));
         setTimeout(() => request.socket.resetAndDestroy(), 20);
+        return;
+      }
+      if (request.url === '/hold-headers' || (request.url === '/Users/Public' && holdPublicUsers)) {
+        heldBeforeHeaders.add(response);
+        response.once('close', () => heldBeforeHeaders.delete(response));
         return;
       }
       if (request.url === '/stream-hold') {
@@ -60,6 +69,7 @@ describe('socket error handling', { timeout: 10_000 }, () => {
   after(async () => {
     upstreamUpgradeSockets.forEach((socket) => socket.destroy());
     heldResponses.forEach((response) => response.destroy());
+    heldBeforeHeaders.forEach((response) => response.destroy());
     gateway.closeAllConnections();
     upstream.closeAllConnections();
     await Promise.all([close(gateway), close(upstream)]);
@@ -91,6 +101,18 @@ describe('socket error handling', { timeout: 10_000 }, () => {
     const pending = [...upstreamUpgradeSockets];
     socket.resetAndDestroy();
     await Promise.all(pending.map((entry) => once(entry, 'close')));
+    await assertStillServing(gatewayPort);
+  });
+
+  it('aborts the pending upstream upgrade when the client half-closes', async () => {
+    const seen = upgradeSeen.length;
+    const socket = await rawUpgradeRequest(gatewayPort, '/socket-hold');
+    await waitFor(() => upgradeSeen.length > seen);
+    const pending = [...upstreamUpgradeSockets];
+    const clientClosed = once(socket, 'close');
+    socket.end();
+    await Promise.all(pending.map((entry) => once(entry, 'close')));
+    await clientClosed;
     await assertStillServing(gatewayPort);
   });
 
@@ -129,6 +151,26 @@ describe('socket error handling', { timeout: 10_000 }, () => {
     await upstreamClosed;
     await assertStillServing(gatewayPort);
   });
+
+  for (const [name, pathname] of [['a proxied GET', '/hold-headers'], ['a transformed JSON proxy', '/Users/Public']]) {
+    it(`releases the upstream when the client disconnects before response headers on ${name}`, async () => {
+      holdPublicUsers = true;
+      try {
+        const socket = connectSocket(gatewayPort, '127.0.0.1');
+        socket.on('error', () => {});
+        await once(socket, 'connect');
+        socket.write(`GET ${pathname} HTTP/1.1\r\nHost: ${HOUSEHOLD_HOST}\r\n\r\n`);
+        await waitFor(() => heldBeforeHeaders.size === 1);
+        const upstreamClosed = once([...heldBeforeHeaders][0], 'close');
+        socket.resetAndDestroy();
+        await upstreamClosed;
+        assert.equal(heldBeforeHeaders.size, 0);
+      } finally {
+        holdPublicUsers = false;
+      }
+      await assertStillServing(gatewayPort);
+    });
+  }
 });
 
 function stubService() {
@@ -139,6 +181,7 @@ function stubService() {
 }
 
 async function assertStillServing(port) {
+  assert.deepEqual(uncaughtErrors, []);
   const response = await get(port, '/System/Info/Public');
   assert.equal(response.status, 200);
   assert.equal(JSON.parse(response.body).ServerName, 'Test Jellyfin');

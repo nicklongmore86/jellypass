@@ -172,6 +172,7 @@ JellyPass reads configuration from environment variables at startup.
 | `CATALOG_SYNC_INTERVAL_SECONDS` | No | `3600` | Jellyfin catalog refresh interval; `0` disables scheduling. Maximum `604800`. |
 | `HOUSEHOLD_DOMAIN` | No | — | Enables household hostnames below this DNS domain. |
 | `HOUSEHOLD_HOST_PREFIX` | No | `jelly-` | Prefix placed before each DNS-safe group ID. |
+| `LOG_LEVEL` | No | — | Set to `debug` to also log expected client/Jellyfin disconnects (`ECONNRESET`, `EPIPE`, aborted streams) on the household proxy. Unexpected proxy errors are always logged as warnings. |
 | `JELLYPASS_IMAGE` | Compose only | `ghcr.io/nicklongmore86/jellypass:latest` | Container tag used by `compose.yaml`. |
 | `JELLYPASS_ENV_FILE` | Compose only | `.env` | Alternate environment-file path used by either Compose file. |
 
