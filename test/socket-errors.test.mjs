@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer, request as httpRequest } from 'node:http';
 import { connect as connectSocket, createServer as createNetServer } from 'node:net';
-import { after, before, describe, it } from 'node:test';
+import { after, before, beforeEach, describe, it, mock } from 'node:test';
 import { makeServer } from '../dist/server.js';
 
 const HOUSEHOLD_HOST = 'jelly-farmhouse.example.test';
@@ -17,8 +17,18 @@ describe('socket error handling', { timeout: 10_000 }, () => {
   const heldBeforeHeaders = new Set();
   const upgradeSeen = [];
   let holdPublicUsers = false;
+  const warnings = [];
+  const debugLines = [];
+  const upstreamWarnings = () => warnings.filter((entry) => / upstream /.test(entry.message));
+
+  beforeEach(() => {
+    warnings.length = 0;
+    debugLines.length = 0;
+  });
 
   before(async () => {
+    mock.method(console, 'warn', (line) => warnings.push(JSON.parse(line)));
+    mock.method(console, 'debug', (line) => debugLines.push(JSON.parse(line)));
     upstream = createServer((request, response) => {
       if (request.url === '/System/Info/Public') {
         response.writeHead(200, { 'Content-Type': 'application/json' });
@@ -73,6 +83,7 @@ describe('socket error handling', { timeout: 10_000 }, () => {
     gateway.closeAllConnections();
     upstream.closeAllConnections();
     await Promise.all([close(gateway), close(upstream)]);
+    mock.restoreAll();
   });
 
   it('survives a client reset after a WebSocket upgrade', async () => {
@@ -84,14 +95,18 @@ describe('socket error handling', { timeout: 10_000 }, () => {
     socket.resetAndDestroy();
     await upstreamClosed;
     await assertStillServing(gatewayPort);
+    assert.deepEqual(warnings, []);
   });
 
-  it('survives an upstream reset after a WebSocket upgrade and closes the client', async () => {
+  it('survives an upstream reset after a WebSocket upgrade, closes the client, and warns', async () => {
     const { socket, response } = await upgrade(gatewayPort, '/socket-reset');
     assert.match(response, /^HTTP\/1\.1 101/);
     socket.on('error', () => {});
     await once(socket, 'close');
     await assertStillServing(gatewayPort);
+    assert.deepEqual(warnings.map(({ message, code }) => ({ message, code })), [
+      { message: 'household gateway websocket upstream socket error', code: 'ECONNRESET' },
+    ]);
   });
 
   it('survives a client reset while the upstream upgrade is still pending', async () => {
@@ -102,6 +117,7 @@ describe('socket error handling', { timeout: 10_000 }, () => {
     socket.resetAndDestroy();
     await Promise.all(pending.map((entry) => once(entry, 'close')));
     await assertStillServing(gatewayPort);
+    assert.deepEqual(warnings, []);
   });
 
   it('aborts the pending upstream upgrade when the client half-closes', async () => {
@@ -114,6 +130,7 @@ describe('socket error handling', { timeout: 10_000 }, () => {
     await Promise.all(pending.map((entry) => once(entry, 'close')));
     await clientClosed;
     await assertStillServing(gatewayPort);
+    assert.deepEqual(warnings, []);
   });
 
   it('answers 502 when the upstream refuses the upgrade connection', async () => {
@@ -128,15 +145,18 @@ describe('socket error handling', { timeout: 10_000 }, () => {
       socket.on('data', (chunk) => { received += chunk.toString('utf8'); });
       await once(socket, 'close');
       assert.match(received, /^HTTP\/1\.1 502 Bad Gateway/);
+      assert.deepEqual(warnings.map(({ code }) => code), ['ECONNREFUSED']);
     } finally {
       isolated.closeAllConnections();
       await close(isolated);
     }
   });
 
-  it('survives an upstream reset in the middle of a proxied response', async () => {
+  it('survives an upstream reset in the middle of a proxied response and warns', async () => {
     await assert.rejects(get(gatewayPort, '/stream-reset'));
     await assertStillServing(gatewayPort);
+    // The reset is reported once at warn; its follow-on "aborted" response error is only a debug detail.
+    assert.deepEqual(upstreamWarnings().map(({ code }) => code), ['ECONNRESET']);
   });
 
   it('survives a client reset in the middle of a proxied response and releases the upstream', async () => {
@@ -150,6 +170,7 @@ describe('socket error handling', { timeout: 10_000 }, () => {
     socket.resetAndDestroy();
     await upstreamClosed;
     await assertStillServing(gatewayPort);
+    assert.deepEqual(warnings, []);
   });
 
   for (const [name, pathname] of [['a proxied GET', '/hold-headers'], ['a transformed JSON proxy', '/Users/Public']]) {
@@ -169,8 +190,38 @@ describe('socket error handling', { timeout: 10_000 }, () => {
         holdPublicUsers = false;
       }
       await assertStillServing(gatewayPort);
+      assert.deepEqual(warnings, []);
     });
   }
+
+  it('logs routine client disconnects only when LOG_LEVEL is debug', async () => {
+    const debugGateway = makeServer(stubService(), { webhook: 'w', admin: 'a' }, undefined, {
+      householdGateway: {
+        jellyfinUrl: `http://127.0.0.1:${upstream.address().port}`, domain: 'example.test', hostPrefix: 'jelly-', logLevel: 'debug',
+      },
+    });
+    await listen(debugGateway);
+    try {
+      for (const [port, expectedDebugLines] of [[gatewayPort, 0], [debugGateway.address().port, 1]]) {
+        debugLines.length = 0;
+        const { socket } = await upgrade(port, '/socket');
+        const upstreamSocket = [...upstreamUpgradeSockets].at(-1);
+        const upstreamClosed = once(upstreamSocket, 'close');
+        socket.resetAndDestroy();
+        await upstreamClosed;
+        await waitFor(() => debugLines.length >= expectedDebugLines);
+        assert.equal(debugLines.length, expectedDebugLines);
+        if (expectedDebugLines) {
+          assert.equal(debugLines[0].message, 'household gateway websocket client socket error');
+          assert.equal(debugLines[0].code, 'ECONNRESET');
+        }
+      }
+      assert.deepEqual(warnings, []);
+    } finally {
+      debugGateway.closeAllConnections();
+      await close(debugGateway);
+    }
+  });
 });
 
 function stubService() {

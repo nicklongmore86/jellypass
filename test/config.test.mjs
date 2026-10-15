@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { afterEach, describe, it } from 'node:test';
+import { afterEach, describe, it, mock } from 'node:test';
 import { loadConfig } from '../dist/config.js';
 
 const BASE = {
@@ -10,7 +10,7 @@ const BASE = {
   SEERR_URL: 'http://seerr.test',
   SEERR_API_KEY: 'seerr-key',
 };
-const KEYS = [...Object.keys(BASE), 'REQUEST_BACKFILL_SINCE', 'REQUEST_BACKFILL_ENABLED'];
+const KEYS = [...Object.keys(BASE), 'REQUEST_BACKFILL_SINCE', 'REQUEST_BACKFILL_ENABLED', 'LOG_LEVEL', 'WS_IDLE_TIMEOUT_MS'];
 const saved = Object.fromEntries(KEYS.map((key) => [key, process.env[key]]));
 
 function load(overrides = {}) {
@@ -21,13 +21,15 @@ function load(overrides = {}) {
   return loadConfig();
 }
 
+function restoreEnvironment() {
+  for (const key of KEYS) {
+    if (saved[key] === undefined) delete process.env[key];
+    else process.env[key] = saved[key];
+  }
+}
+
 describe('request backfill configuration', () => {
-  afterEach(() => {
-    for (const key of KEYS) {
-      if (saved[key] === undefined) delete process.env[key];
-      else process.env[key] = saved[key];
-    }
-  });
+  afterEach(restoreEnvironment);
 
   it('is enabled by default only when REQUEST_BACKFILL_SINCE is set', () => {
     const off = load();
@@ -73,5 +75,49 @@ describe('request backfill configuration', () => {
     ]) {
       assert.throws(() => load({ REQUEST_BACKFILL_SINCE: value }), /REQUEST_BACKFILL_SINCE must be/, value);
     }
+  });
+});
+
+describe('logging and WebSocket configuration', () => {
+  afterEach(() => {
+    restoreEnvironment();
+    mock.restoreAll();
+  });
+
+  it('defaults LOG_LEVEL to info and accepts known levels case-insensitively', () => {
+    assert.equal(load().logLevel, 'info');
+    assert.equal(load({ LOG_LEVEL: '' }).logLevel, 'info');
+    assert.equal(load({ LOG_LEVEL: ' DEBUG ' }).logLevel, 'debug');
+    for (const level of ['info', 'warn', 'error']) assert.equal(load({ LOG_LEVEL: level }).logLevel, level);
+  });
+
+  it('rejects unknown LOG_LEVEL values', () => {
+    for (const value of ['verbose', 'trace', '1']) {
+      assert.throws(() => load({ LOG_LEVEL: value }), /LOG_LEVEL must be one of debug, info, warn, error/, value);
+    }
+  });
+
+  it('defaults WS_IDLE_TIMEOUT_MS to five minutes and allows 0 to disable it', () => {
+    assert.equal(load().webSocketIdleTimeoutMs, 300_000);
+    assert.equal(load({ WS_IDLE_TIMEOUT_MS: '' }).webSocketIdleTimeoutMs, 300_000);
+    assert.equal(load({ WS_IDLE_TIMEOUT_MS: '0' }).webSocketIdleTimeoutMs, 0);
+    assert.equal(load({ WS_IDLE_TIMEOUT_MS: '600000' }).webSocketIdleTimeoutMs, 600_000);
+    assert.equal(load({ WS_IDLE_TIMEOUT_MS: '86400000' }).webSocketIdleTimeoutMs, 86_400_000);
+  });
+
+  it('rejects negative, non-numeric, fractional, and oversized WS_IDLE_TIMEOUT_MS values', () => {
+    for (const value of ['-1', '-300000', 'abc', '300s', '1e5', '1.5', '0x10', '86400001']) {
+      assert.throws(() => load({ WS_IDLE_TIMEOUT_MS: value }), /WS_IDLE_TIMEOUT_MS must be an integer between 0 and 86400000/, value);
+    }
+  });
+
+  it('warns when WS_IDLE_TIMEOUT_MS would cut off healthy Jellyfin clients', () => {
+    const warn = mock.method(console, 'warn', () => {});
+    load({ WS_IDLE_TIMEOUT_MS: '30000' });
+    assert.equal(warn.mock.calls.filter((call) => String(call.arguments[0]).includes('WS_IDLE_TIMEOUT_MS')).length, 1);
+    warn.mock.resetCalls();
+    load({ WS_IDLE_TIMEOUT_MS: '0' });
+    load({ WS_IDLE_TIMEOUT_MS: '300000' });
+    assert.equal(warn.mock.calls.filter((call) => String(call.arguments[0]).includes('WS_IDLE_TIMEOUT_MS')).length, 0);
   });
 });
