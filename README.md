@@ -419,6 +419,14 @@ is attempted. Only then does JellyPass sign the verified user into Jellyseerr
 server-side. It stores the Jellyseerr cookie only in memory, with a 12-hour idle
 lifetime.
 
+`POST /jellyquest-bridge/eligibility` (`#mode=eligibility&nonce=…&token=…` on the
+bridge page) uses the same token check. It answers `{ "eligible": true|false }`
+only for the token's own Jellyfin user, so it cannot be used to find out whether
+another profile has a Jellyseerr account. A missing, malformed, or rejected
+token, or an `id` that differs from the verified user, returns `401`. If
+Jellyfin cannot be reached the check returns `502`; it never falls back to an ID
+supplied by the client.
+
 Each bridge session is bound to the verified Jellyfin user and that user's
 access token. The token is held in memory and checked again against Jellyfin at
 most every five minutes while the session is in use. When a user signs out of
@@ -432,6 +440,9 @@ and sort orders reveal other households' request activity. Restarting JellyPass 
 > and `id` to the bridge can no longer open request sessions. JellyQuest must add
 > `token=<AccessToken>` to the bridge URL fragment, using the access token it
 > already uses with Jellyfin.
+> The same applies to `mode=eligibility`: without `token` in the fragment the
+> eligibility check now fails with `401`, which the bridge page reports to
+> JellyQuest as an `error` message instead of an `eligibility` message.
 
 Bridge responses never reveal who else has or requested a title. Claims stay
 open across households, but each caller sees only their own:
@@ -457,16 +468,22 @@ open across households, but each caller sees only their own:
     recomputed from the visible rows, and the response becomes a single page
     (`page` and `pageInfo.page` are reset to `1`).
   - Other users' records and IDs are removed under any key, including unknown
-    `…user`, `…Users`, `…UserId`, and `…ById` fields. Matching is case-sensitive,
-    so keys such as `hobbyId` are left alone. TMDB credits, such as a show's
-    `createdBy` creators, are media data and are kept. `modifiedBy`/`updatedBy` are
-    always removed, even on the caller's own requests, because they name the
-    staff member who acted.
-  - `createdAt`, `updatedAt`, `mediaAddedAt`, and `lastSeasonChange` are kept
-    only on records the caller owns, so other households' activity timing is
-    not shown.
-  - `mediaInfo.jellyfinMediaId` and `jellyfinMediaId4k` are removed for items
-    the caller cannot open, matching the `jellyfinItemId` rule above.
+    `…user`, `…Users`, `…UserId`, and `…ById` fields. Keys are compared as whole
+    words in any case, so `UserId`, `USER_ID`, `user_id`, and `RequestedById`
+    all match, as do run-together forms such as `userid` and `requestedbyid`,
+    while `hobbyId`, `lobbyId`, and `sortBy` are left alone. The only
+    exception is a TV show's top-level `createdBy` list in `GET /api/v1/tv/:id`:
+    entries there that are TMDB credits are media data and are kept. A user
+    reference shaped like a credit anywhere else, such as under `requestedBy`,
+    is still removed. `modifiedBy`/`updatedBy` (in any case) are always removed,
+    even on the caller's own requests, because they name the staff member who
+    acted.
+  - `createdAt`, `updatedAt`, `mediaAddedAt`, and `lastSeasonChange` (in any
+    case, such as `CreatedAt` or `UPDATED_AT`) are kept only on records the
+    caller owns, so other households' activity timing is not shown.
+  - `mediaInfo.jellyfinMediaId` and `jellyfinMediaId4k` (in any case) are
+    removed for items the caller cannot open, matching the `jellyfinItemId`
+    rule above.
 - Jellyseerr error messages are not relayed. The bridge keeps the status code
   and returns a fixed message for it. Two known messages that only concern the
   caller get their own fixed JellyPass wording: an exceeded request quota, and

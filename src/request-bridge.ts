@@ -11,23 +11,26 @@ const PROBE_ATTEMPT_WINDOW_MS = 5 * 60 * 1000;
 const MAX_PROBE_ATTEMPTS = 30;
 const IDENTITY_RECHECK_MS = 5 * 60 * 1000;
 const JELLYFIN_TOKEN_PATTERN = /^[A-Za-z0-9._~-]{16,256}$/;
+// Keys are compared as lower-case words split on camel case and `_`/`-`, so `UserId`, `USER_ID`
+// and `user_id` all read as `user_id` (so does all-caps `USERID`; run-together `userid` stays
+// `userid`). Whole words matter: `hobbyId`, `lobbyId` and `sortBy` are not identities.
+// Fixed key sets below are compared with `_` removed too, so `userid` and `user_id` both match.
 // Keys that hold a user, user ID, or list of users. Unknown keys of this shape fail closed.
-// Case-sensitive so camel-case boundaries matter: `reviewerUserId` and `approvedById` match, `hobbyId` does not.
 const IDENTITY_KEY_PATTERN = new RegExp([
-  '^(?:\\w+_)?(?:users?|requestedBy|modifiedBy|createdBy|updatedBy)(?:Ids?)?$',
-  '(?:^|_)(?:users?|requested_by|modified_by|created_by|updated_by)(?:_ids?)?$',
-  '[a-z0-9](?:User|By)Ids?$',
-  '[a-z0-9]Users?$',
+  '(?:^|_)users?(?:_?ids?)?$',
+  '(?:^|_)(?:requested|modified|created|updated)_?by(?:_?ids?)?$',
+  '[a-z0-9]_by_ids?$',
 ].join('|'));
-// TMDB credits (such as a show's `createdBy` creators) are public media data, not Jellyseerr users.
+// TMDB credits (a show's `createdBy` creators) are public media data, not Jellyseerr users.
 const TMDB_CREDIT_FIELDS = ['creditId', 'credit_id', 'profilePath', 'profile_path'];
+const TV_DETAILS_PATH = /^\/api\/v1\/tv\/\d+(?:\?|$)/;
 // Staff actions on a request are never relayed, even on the caller's own request.
-const ALWAYS_STRIPPED_KEYS = new Set(['modifiedBy', 'modifiedById', 'updatedBy', 'updatedById']);
+const ALWAYS_STRIPPED_KEY_PATTERN = /^(?:modified|updated)_?by(?:_?id)?$/;
 // Keys that make an array entry (request, watchlist entry, issue, comment) belong to that user.
-const OWNER_KEYS = ['requestedBy', 'requestedById', 'createdBy', 'createdById', 'user', 'userId'];
+const OWNER_KEYS = new Set(['requestedby', 'requestedbyid', 'createdby', 'createdbyid', 'user', 'userid']);
 // Activity timing is only relayed on records the caller owns.
-const TIMESTAMP_KEYS = new Set(['createdAt', 'updatedAt', 'mediaAddedAt', 'lastSeasonChange']);
-const ITEM_ID_KEYS = new Set(['jellyfinMediaId', 'jellyfinMediaId4k']);
+const TIMESTAMP_KEYS = new Set(['createdat', 'updatedat', 'mediaaddedat', 'lastseasonchange']);
+const ITEM_ID_KEYS = new Set(['jellyfinmediaid', 'jellyfinmediaid4k']);
 // Any one of these marks an object as a Jellyseerr user record.
 const USER_FIELDS = [
   'email', 'username', 'jellyfinUserId', 'jellyfinUsername', 'plexUsername', 'plexId', 'displayName',
@@ -46,6 +49,8 @@ interface BridgeSession {
 interface ScrubContext {
   session: BridgeSession;
   canAccessItem(itemId: string): boolean;
+  /** True for `GET /api/v1/tv/:id`, the only response whose top-level `createdBy` lists TMDB creators. */
+  tvDetails: boolean;
 }
 
 interface JellyfinIdentity {
@@ -54,6 +59,15 @@ interface JellyfinIdentity {
 }
 
 type IdentityResult = JellyfinIdentity | 'invalid' | 'unavailable';
+
+interface CallerIdentity extends JellyfinIdentity {
+  jellyfinToken: string;
+}
+
+interface CallerRejection {
+  status: number;
+  error: string;
+}
 
 export interface RequestBridgeAccess {
   hasJellyseerrUser(jellyfinUserId: string): Promise<boolean>;
@@ -102,26 +116,21 @@ export class RequestBridge {
         return json(response, 429, { error: 'Too many requests.' });
       }
       const input = recordBody(await readJson(request));
-      if (typeof input.id !== 'string' || !PROFILE_ID_PATTERN.test(input.id)) {
-        return json(response, 400, { error: 'Invalid Jellyfin profile.' });
-      }
+      // Eligibility is only answered for the token's own profile, so it cannot be used to
+      // learn whether another household member has a Jellyseerr account.
+      const identity = await this.callerIdentity(request, input);
+      if (!('id' in identity)) return json(response, identity.status, { error: identity.error });
       if (!this.access) return json(response, 503, { error: 'Jellyseerr user lookup is not configured.' });
-      return json(response, 200, { eligible: await this.access.hasJellyseerrUser(input.id) });
+      return json(response, 200, { eligible: await this.access.hasJellyseerrUser(identity.id) });
     }
     if (request.method === 'POST' && url.pathname === `${BRIDGE_PREFIX}/session`) {
       if (!this.allowProbeAttempt(clientId(request))) {
         return json(response, 429, { error: 'Too many requests.' });
       }
       const input = recordBody(await readJson(request));
-      const jellyfinToken = jellyfinAccessToken(request, input);
-      if (!jellyfinToken) return json(response, 401, { error: 'A Jellyfin access token is required.' });
-      // Identity comes only from Jellyfin; client-supplied user fields are never trusted.
-      const identity = await this.verifyJellyfinToken(jellyfinToken);
-      if (identity === 'unavailable') return json(response, 502, { error: 'Jellyfin is unavailable.' });
-      if (identity === 'invalid') return json(response, 401, { error: 'Jellyfin rejected this access token.' });
-      if (input.id !== undefined && (typeof input.id !== 'string' || !sameId(input.id, identity.id))) {
-        return json(response, 401, { error: 'The Jellyfin access token belongs to a different profile.' });
-      }
+      const identity = await this.callerIdentity(request, input);
+      if (!('id' in identity)) return json(response, identity.status, { error: identity.error });
+      const { jellyfinToken } = identity;
       const auth = await this.seerr('/api/v1/auth/jellyfin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -185,6 +194,7 @@ export class RequestBridge {
         data: scrubPayload(result.data, {
           session,
           canAccessItem: (itemId) => access?.canAccessItem(session.userId, itemId) === true,
+          tvDetails: TV_DETAILS_PATH.test(input.path),
         }),
       });
     }
@@ -218,6 +228,22 @@ export class RequestBridge {
     return accessStatus(method === 'POST'
       ? await this.access!.claimMediaAccess(session.userId, mediaType, tmdbId, jellyfinItemId)
       : this.access!.getMediaAccess(session.userId, mediaType, tmdbId, jellyfinItemId));
+  }
+
+  /**
+   * Resolves the caller from their Jellyfin access token via `/Users/Me`. Client-supplied
+   * user fields are never trusted; an `id`, if sent, must match the verified profile.
+   */
+  private async callerIdentity(request: IncomingMessage, input: Record<string, unknown>): Promise<CallerIdentity | CallerRejection> {
+    const jellyfinToken = jellyfinAccessToken(request, input);
+    if (!jellyfinToken) return { status: 401, error: 'A Jellyfin access token is required.' };
+    const identity = await this.verifyJellyfinToken(jellyfinToken);
+    if (identity === 'unavailable') return { status: 502, error: 'Jellyfin is unavailable.' };
+    if (identity === 'invalid') return { status: 401, error: 'Jellyfin rejected this access token.' };
+    if (input.id !== undefined && (typeof input.id !== 'string' || !sameId(input.id, identity.id))) {
+      return { status: 401, error: 'The Jellyfin access token belongs to a different profile.' };
+    }
+    return { ...identity, jellyfinToken };
   }
 
   private async verifyJellyfinToken(jellyfinToken: string): Promise<IdentityResult> {
@@ -353,10 +379,10 @@ function seerrErrorMessage(status: number, upstreamMessage: unknown): string {
  * activity timestamp, or inaccessible Jellyfin item ID is omitted.
  */
 function scrubPayload(value: unknown, context: ScrubContext): unknown {
-  return isOtherUser(value, context.session) ? {} : scrubValue(value, context);
+  return isOtherUser(value, context.session) ? {} : scrubValue(value, context, true);
 }
 
-function scrubValue(value: unknown, context: ScrubContext): unknown {
+function scrubValue(value: unknown, context: ScrubContext, root = false): unknown {
   const { session } = context;
   if (Array.isArray(value)) {
     return value
@@ -367,18 +393,25 @@ function scrubValue(value: unknown, context: ScrubContext): unknown {
   const ownRecord = ownedByCaller(value, session) || (isUserRecord(value) && isCallerRef(value, session));
   const result: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value)) {
-    if (ALWAYS_STRIPPED_KEYS.has(key)) continue;
-    if (TIMESTAMP_KEYS.has(key) && !ownRecord) continue;
-    if (ITEM_ID_KEYS.has(key) && entry !== null && entry !== undefined
+    const words = keyWords(key);
+    const compact = compactKey(key);
+    if (ALWAYS_STRIPPED_KEY_PATTERN.test(words)) continue;
+    if (TIMESTAMP_KEYS.has(compact) && !ownRecord) continue;
+    if (ITEM_ID_KEYS.has(compact) && entry !== null && entry !== undefined
         && (typeof entry !== 'string' || !context.canAccessItem(entry))) continue;
-    if (IDENTITY_KEY_PATTERN.test(key) && entry !== null && entry !== undefined) {
+    if (root && context.tvDetails && key === 'createdBy' && Array.isArray(entry)) {
+      // A TV show's creators: keep TMDB credits only, never anything that looks like a user.
+      result[key] = entry.filter(isTmdbCredit).map((item) => scrubValue(item, context));
+      continue;
+    }
+    if (IDENTITY_KEY_PATTERN.test(words) && entry !== null && entry !== undefined) {
       if (Array.isArray(entry)) {
         result[key] = entry
-          .filter((item) => isTmdbCredit(item) || isCallerValue(item, session))
+          .filter((item) => isCallerValue(item, session))
           .map((item) => scrubValue(item, context));
         continue;
       }
-      if (!isTmdbCredit(entry) && !isCallerValue(entry, session)) continue;
+      if (!isCallerValue(entry, session)) continue;
     } else if (isOtherUser(entry, session)) {
       continue;
     }
@@ -399,10 +432,28 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
 }
 
+/** Normalizes a key to lower-case words joined by `_`: `RequestedById` and `REQUESTED_BY_ID` become `requested_by_id`. */
+function keyWords(key: string): string {
+  return key
+    .replace(/ID([sS]?)(?=$|[A-Z_-])/g, (_match, plural: string) => `Id${plural.toLowerCase()}`)
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/([A-Z]+)([A-Z][a-z])/g, '$1_$2')
+    .toLowerCase()
+    .split(/[_\-\s]+/)
+    .filter(Boolean)
+    .join('_');
+}
+
+/** `keyWords` without separators, for fixed key sets: `USER_ID`, `userId` and `userid` all become `userid`. */
+function compactKey(key: string): string {
+  return keyWords(key).replace(/_/g, '');
+}
+
 function ownerValues(record: Record<string, unknown>): unknown[] {
   // An owner is a single user reference; lists such as TMDB `createdBy` creators do not own the record.
-  return OWNER_KEYS.map((key) => record[key])
-    .filter((owner) => owner !== null && owner !== undefined && !Array.isArray(owner) && !isTmdbCredit(owner));
+  return Object.entries(record)
+    .filter(([key, owner]) => OWNER_KEYS.has(compactKey(key)) && owner !== null && owner !== undefined && !Array.isArray(owner))
+    .map(([, owner]) => owner);
 }
 
 function isTmdbCredit(value: unknown): boolean {
@@ -553,7 +604,7 @@ const BRIDGE_HTML = String.raw`<!doctype html>
   }
   function checkEligibility() {
     return fetch('/jellyquest-bridge/eligibility', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Emby-Token': params.token || '' },
       body: JSON.stringify({ id: params.id })
     }).then(function (response) { return response.json().then(function (data) {
       if (!response.ok) throw new Error(data.error || 'Request eligibility check failed.');
