@@ -59,8 +59,9 @@ changes as described under [Changed](#changed).
 - **A 4K request is never granted on the HD item.** A 4K event without
   `SEERR_URL` and `SEERR_API_KEY` configured is rejected with `502`. A 4K
   request whose 4K item Seerr does not know yet is rejected by the webhook with
-  `400` and granted by the request backfill once the 4K item exists (when the request
-  backfill is enabled). Before, the webhook granted the HD item in both cases.
+  `400` and granted by the request backfill once the 4K item exists (when the
+  request backfill is enabled). Before, the webhook granted the HD item in both
+  cases.
 - **Failed webhook resolution counts as an error.** A failed Seerr lookup, a
   webhook missing Jellyfin IDs without Seerr configured, and a rejected 4K
   event now count as `jfa_webhooks_total{result="error"}`. Before, they were
@@ -81,9 +82,10 @@ changes as described under [Changed](#changed).
 2. **Grants are kept.** Users who were added to a grant through a claim are
    ordinary manual users on that grant and keep their access. Claims for titles
    that never became available are discarded.
-3. **Removed endpoints return `404`.** Any client still calling
-   `/jellyquest-bridge/*` gets `404` from JellyPass. On a household hostname
-   the path is passed to Jellyfin like any other unknown path.
+3. **Removed endpoints are no longer handled.** On the JellyPass origin, calls
+   to `/jellyquest-bridge/*` or `/jellyquest/access*` return `401` without admin
+   credentials (`404` with them). On a household hostname the path is passed to
+   Jellyfin like any other unknown path.
 4. **Remove `JELLYQUEST_BRIDGE_ENABLED`** from your `.env` or compose file to
    silence the startup warning.
 5. **Optional: add `"event": "{{event}}"` to the Seerr webhook payload** (see

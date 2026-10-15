@@ -473,9 +473,9 @@ curl http://127.0.0.1:8787/health
 Back up the state file first. Read the [changelog](CHANGELOG.md) before
 changing between versioned tags. Upgrading from 1.1.0 to 2.0.0 is a breaking
 upgrade; follow [Upgrading from 1.1.0](CHANGELOG.md#upgrading-from-110) in the
-2.0.0 notes. Upgrades can migrate the state file to a newer
-schema that older versions cannot read, so rolling back requires the backup taken
-before the upgrade. Pinning `JELLYPASS_IMAGE` makes rollback explicit:
+2.0.0 notes. Upgrades can migrate the state file to a newer schema that older
+versions cannot read, so rolling back requires the backup taken before the
+upgrade. Pinning `JELLYPASS_IMAGE` makes rollback explicit:
 
 ```sh
 JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:PREVIOUS_VERSION docker compose up -d
