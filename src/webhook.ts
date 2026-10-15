@@ -1,10 +1,17 @@
-import type { SeerrWebhook } from './types.js';
+import type { IgnoredWebhook, SeerrWebhook } from './types.js';
 
 const ID_PATTERN = /^[a-zA-Z0-9-]{1,128}$/;
+const NOTIFICATION_TYPE_PATTERN = /^[A-Z_]{1,64}$/;
 
-export function parseWebhook(value: unknown): SeerrWebhook {
+export function parseWebhook(value: unknown): SeerrWebhook | IgnoredWebhook {
   if (!value || typeof value !== 'object') throw new Error('body must be a JSON object');
   const body = value as Record<string, unknown>;
+  const notificationType = stringAt(body, 'notificationType');
+  // An unfilled `{{notification_type}}` means the template is broken, not that the event is ignorable.
+  if (!NOTIFICATION_TYPE_PATTERN.test(notificationType)) throw new Error('notificationType is invalid');
+  // Only availability events grant access. Others, such as Seerr's TEST_NOTIFICATION, are
+  // acknowledged without validating IDs that Seerr leaves empty for them.
+  if (notificationType !== 'MEDIA_AVAILABLE') return { notificationType };
   const request = objectAt(body, 'request');
   const media = optionalObjectAt(body, 'media');
   const requestedBy = optionalObjectAt(request, 'requestedBy');
@@ -15,7 +22,7 @@ export function parseWebhook(value: unknown): SeerrWebhook {
   const userId = requestedBy ? optionalIdAt(requestedBy, 'jellyfinUserId') : undefined;
 
   const event: SeerrWebhook = {
-    notificationType: stringAt(body, 'notificationType'),
+    notificationType,
     ...(media ? { media: {
       ...(mediaId ? { jellyfinMediaId: mediaId } : {}),
       ...(mediaType ? { mediaType } : {}),

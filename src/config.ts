@@ -15,6 +15,8 @@ export interface Config {
   catalogSyncIntervalSeconds: number;
   householdDomain?: string;
   householdHostPrefix: string;
+  requestBackfillEnabled: boolean;
+  requestBackfillSince?: Date;
 }
 
 function required(name: string): string {
@@ -49,6 +51,15 @@ export function loadConfig(): Config {
   if (jellyquestBridgeEnabled && !seerrUrl) {
     throw new Error('SEERR_URL and SEERR_API_KEY are required when JELLYQUEST_BRIDGE_ENABLED is true');
   }
+  const backfillSinceInput = process.env.REQUEST_BACKFILL_SINCE?.trim();
+  const requestBackfillSince = backfillSinceInput ? parseBackfillSince(backfillSinceInput) : undefined;
+  const requestBackfillEnabled = booleanEnvironment('REQUEST_BACKFILL_ENABLED', Boolean(requestBackfillSince));
+  if (requestBackfillEnabled && !requestBackfillSince) {
+    throw new Error('REQUEST_BACKFILL_SINCE is required when REQUEST_BACKFILL_ENABLED is true');
+  }
+  if (requestBackfillEnabled && !seerrUrl) {
+    throw new Error('SEERR_URL and SEERR_API_KEY are required when REQUEST_BACKFILL_ENABLED is true');
+  }
   const householdDomain = process.env.HOUSEHOLD_DOMAIN?.trim().toLowerCase().replace(/^\.+|\.+$/g, '');
   if (householdDomain && !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(householdDomain)) {
     throw new Error('HOUSEHOLD_DOMAIN must be a valid DNS domain');
@@ -78,7 +89,30 @@ export function loadConfig(): Config {
     catalogSyncIntervalSeconds,
     ...(householdDomain ? { householdDomain } : {}),
     householdHostPrefix,
+    requestBackfillEnabled,
+    ...(requestBackfillSince ? { requestBackfillSince } : {}),
   };
+}
+
+/**
+ * Accepts `YYYY-MM-DD` (UTC midnight) or an ISO 8601 date-time with seconds optional and an
+ * explicit `Z` or `±HH:MM` offset. Impossible calendar dates such as 2026-02-30 are rejected.
+ */
+function parseBackfillSince(value: string): Date {
+  const match = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,3})?)?(Z|[+-](\d{2}):(\d{2})))?$/.exec(value);
+  const invalid = () => new Error('REQUEST_BACKFILL_SINCE must be YYYY-MM-DD or an ISO 8601 date-time with Z or an offset');
+  if (!match) throw invalid();
+  const [, year, month, day, hour, minute, second, , offsetHour, offsetMinute] = match;
+  const calendar = new Date(Date.UTC(Number(year), Number(month) - 1, Number(day)));
+  if (calendar.getUTCFullYear() !== Number(year) || calendar.getUTCMonth() !== Number(month) - 1 || calendar.getUTCDate() !== Number(day)) {
+    throw invalid();
+  }
+  if (hour === undefined) return calendar;
+  if (Number(hour) > 23 || Number(minute) > 59 || Number(second ?? 0) > 59) throw invalid();
+  if (offsetHour !== undefined && (Number(offsetHour) > 14 || Number(offsetMinute) > 59)) throw invalid();
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) throw invalid();
+  return date;
 }
 
 function booleanEnvironment(name: string, fallback: boolean): boolean {

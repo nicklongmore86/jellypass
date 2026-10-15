@@ -30,9 +30,25 @@ async function main(): Promise<void> {
       },
     } : {}),
   });
+  const backfillSince = config.requestBackfillEnabled ? config.requestBackfillSince : undefined;
+  const backfillRequests = async () => {
+    if (!backfillSince) return;
+    try {
+      const result = await service.backfillRequests(backfillSince);
+      if (result.granted.length > 0 || result.failed > 0) {
+        console.log(JSON.stringify({ level: 'info', message: 'request backfill finished', ...result }));
+      }
+    } catch (error) {
+      console.error(JSON.stringify({
+        level: 'error',
+        message: 'request backfill failed',
+        detail: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  };
   const reconcileTimer = config.reconcileIntervalSeconds > 0
     ? setInterval(() => {
-        service.reconcileAll({ dueOnly: true }).catch((error: unknown) => {
+        void backfillRequests().then(() => service.reconcileAll({ dueOnly: true })).catch((error: unknown) => {
           console.error(JSON.stringify({
             level: 'error',
             message: 'scheduled reconciliation failed',
@@ -61,8 +77,11 @@ async function main(): Promise<void> {
       port: config.port,
       reconcileIntervalSeconds: config.reconcileIntervalSeconds,
       catalogSyncIntervalSeconds: config.catalogSyncIntervalSeconds,
+      requestBackfillSince: backfillSince?.toISOString() ?? null,
     }));
     if (service.getLibraryCatalog().items.length === 0) void syncCatalog();
+    // Catch up on missed webhooks now rather than one reconcile interval after startup.
+    if (backfillSince) setTimeout(() => void backfillRequests(), 5_000).unref();
   });
 
   const shutdown = () => {

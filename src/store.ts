@@ -2,7 +2,7 @@ import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { AccessGroup, GrantRecord, GrantState, LibraryCatalogItem, MediaClaim, RevokeResult, SyncStatus } from './types.js';
 
-const EMPTY_STATE: GrantState = { version: 6, grants: {}, groups: {}, catalog: { items: {} }, claims: {}, passwordlessUserIds: [] };
+const EMPTY_STATE: GrantState = { version: 6, grants: {}, groups: {}, catalog: { items: {} }, claims: {}, passwordlessUserIds: [], handledRequestIds: [] };
 
 export class GrantStore {
   readonly #file: string;
@@ -17,7 +17,14 @@ export class GrantStore {
       const parsed = JSON.parse(await readFile(this.#file, 'utf8')) as unknown;
       const migrated = migrateState(parsed);
       this.#state = migrated.state;
-      if (migrated.changed) await this.#save();
+      // Requests already on grants (including ones recorded before handledRequestIds existed)
+      // count as handled, so the backfill never re-imports one an administrator later removed.
+      const handled = new Set(this.#state.handledRequestIds ?? []);
+      const before = handled.size;
+      for (const grant of Object.values(this.#state.grants)) Object.keys(grant.requests).forEach((id) => handled.add(id));
+      const seeded = this.#state.handledRequestIds === undefined || handled.size !== before;
+      if (seeded) this.#state.handledRequestIds = [...handled];
+      if (migrated.changed || seeded) await this.#save();
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       await this.#save();
@@ -112,12 +119,29 @@ export class GrantStore {
     return [...new Set([...Object.values(grant.requests), ...grant.manualUserIds, ...groupUsers].map(normalizeId))].sort();
   }
 
+  public listGroupIdsForUser(userIdInput: string): string[] {
+    const userId = normalizeId(userIdInput);
+    return Object.values(this.#state.groups)
+      .filter((group) => group.userIds.includes(userId))
+      .map((group) => group.id)
+      .sort();
+  }
+
+  public hasHandledRequest(requestId: string): boolean {
+    return (this.#state.handledRequestIds ?? []).includes(requestId);
+  }
+
+  /**
+   * Adds a request to an item's grant. `groupIds` (the requester's households) are merged
+   * into the grant's existing groups; groups and manual users already on the grant are kept.
+   */
   public async grant(input: {
     itemId: string;
     mediaType?: string;
     tmdbId?: number;
     requestId: string;
     userId: string;
+    groupIds?: string[];
   }): Promise<GrantRecord> {
     const itemId = normalizeId(input.itemId);
     const userId = normalizeId(input.userId);
@@ -127,12 +151,15 @@ export class GrantStore {
       ? this.#state.claims[claimKey(input.mediaType, input.tmdbId)]
       : undefined;
     const manualUserIds = [...new Set([...(previous?.manualUserIds ?? []), ...(claim?.userIds ?? [])])].sort();
-    const next = this.#makeGrant(itemId, requests, manualUserIds, previous?.groupIds ?? [], previous, input.mediaType);
+    const requesterGroupIds = (input.groupIds ?? []).map(normalizeId).filter((id) => this.#state.groups[id]);
+    const groupIds = [...new Set([...(previous?.groupIds ?? []), ...requesterGroupIds])].sort();
+    const next = this.#makeGrant(itemId, requests, manualUserIds, groupIds, previous, input.mediaType);
     this.#state.grants[itemId] = next;
     if (claim) {
       claim.jellyfinItemId = itemId;
       claim.updatedAt = new Date().toISOString();
     }
+    this.#state.handledRequestIds = [...new Set([...(this.#state.handledRequestIds ?? []), input.requestId])];
     await this.#save();
     return clone(next);
   }

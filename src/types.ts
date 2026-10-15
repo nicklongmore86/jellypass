@@ -14,19 +14,34 @@ export interface SeerrWebhook {
   };
 }
 
+/** A webhook whose notificationType is not MEDIA_AVAILABLE; it carries nothing to grant. */
+export interface IgnoredWebhook {
+  notificationType: string;
+}
+
 export interface SeerrRequest {
   id: number;
   type?: string;
   is4k?: boolean;
+  createdAt?: string;
   requestedBy?: {
     jellyfinUserId?: string;
   };
   media?: {
     mediaType?: string;
+    status?: number;
+    status4k?: number;
     jellyfinMediaId?: string;
     jellyfinMediaId4k?: string;
     tmdbId?: number;
   };
+}
+
+export interface RequestBackfillResult {
+  scanned: number;
+  granted: string[];
+  skipped: number;
+  failed: number;
 }
 
 export interface RecentSeerrRequest {
@@ -110,6 +125,8 @@ export interface GrantState {
   catalog: LibraryCatalog;
   claims: Record<string, MediaClaim>;
   passwordlessUserIds: string[];
+  /** Seerr request IDs that already produced a grant; the backfill never re-imports them. */
+  handledRequestIds?: string[];
 }
 
 export interface MediaClaim {

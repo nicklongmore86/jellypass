@@ -62,6 +62,8 @@ For each protected title, JellyPass:
 2. Adds that tag to the movie or series and its known local trailers.
 3. Adds the tag to `BlockedTags` for every non-administrator Jellyfin user except
    the request owner, manually assigned users, and members of assigned groups.
+   A request grant is assigned to the requester's household automatically (see
+   [Household-scoped request grants](#household-scoped-request-grants)).
 4. Persists the desired grant in `grants.json` and periodically reconciles it.
 
 Administrator accounts are never blocked. Existing, unmanaged media remains
@@ -77,12 +79,31 @@ A newly downloaded or newly scanned item does not become a grant merely because
 it appears in the catalog. A grant is created by one of these events:
 
 - JellyPass receives Jellyseerr's `MEDIA_AVAILABLE` webhook for a request.
+- The optional request backfill finds an available request created after
+  `REQUEST_BACKFILL_SINCE` that the webhook missed.
 - A JellyQuest user makes a self-service access claim.
 - An administrator assigns access from the Library tab or API.
 
 Library upgrades, replacements, manual downloads, and titles that Jellyseerr
 already considered available before JellyPass was installed may not produce a
 new webhook. Assign those items from the Library tab if they should be private.
+
+### Household-scoped request grants
+
+When a request produces a grant, whether through the webhook or the request
+backfill, JellyPass records the requester and also assigns every group
+(household) the requester belongs to at that moment. Everyone in the
+requester's household can see the title; members of other households cannot.
+
+- A requester who belongs to no group gets a user-only grant, as before.
+- A requester who belongs to several groups shares the title with all of them.
+- Groups and users already on the grant, including ones an administrator
+  assigned manually, are always kept; requests only add groups.
+- Revoking a request does not remove the households it added. Remove them from
+  the grant's groups (UI or `PUT /v1/grants/{itemId}/groups`) to make the title
+  public again.
+- Joining a household later does not change older grants. Add the group to
+  those grants, or add the user to a household that is already assigned.
 
 ## Requirements
 
@@ -172,12 +193,60 @@ JellyPass reads configuration from environment variables at startup.
 | `CATALOG_SYNC_INTERVAL_SECONDS` | No | `3600` | Jellyfin catalog refresh interval; `0` disables scheduling. Maximum `604800`. |
 | `HOUSEHOLD_DOMAIN` | No | — | Enables household hostnames below this DNS domain. |
 | `HOUSEHOLD_HOST_PREFIX` | No | `jelly-` | Prefix placed before each DNS-safe group ID. |
+| `REQUEST_BACKFILL_SINCE` | No | — | `YYYY-MM-DD` (UTC midnight) or an ISO 8601 date-time with `Z` or an offset, such as `2026-10-15T08:00:00+02:00`. Impossible dates are rejected. Requests created before it are never imported by the backfill. |
+| `REQUEST_BACKFILL_ENABLED` | No | `true` when `REQUEST_BACKFILL_SINCE` is set, otherwise `false` | Grants available Seerr requests that the webhook missed. Requires Seerr/Jellyseerr configuration and `REQUEST_BACKFILL_SINCE`. |
 | `JELLYPASS_IMAGE` | Compose only | `ghcr.io/nicklongmore86/jellypass:latest` | Container tag used by `compose.yaml`. |
 | `JELLYPASS_ENV_FILE` | Compose only | `.env` | Alternate environment-file path used by either Compose file. |
 
 `SEERR_URL` and `SEERR_API_KEY` must be set together. `ADMIN_TOKEN` falls back
 to `WEBHOOK_TOKEN` for backward compatibility, but using different values limits
 the impact of a leaked webhook URL or notification configuration.
+
+### Request backfill
+
+The `MEDIA_AVAILABLE` webhook is the fast path, but some Seerr releases fail to
+deliver it or do not expose webhook settings at all. With the request backfill
+enabled, JellyPass runs it once about five seconds after startup and then before
+every reconciliation cycle (`RECONCILE_INTERVAL_SECONDS`; with `0` it runs only
+at startup). It pages `GET /api/v1/request` and records each request that:
+
+- was created at or after `REQUEST_BACKFILL_SINCE`,
+- has media that is available or partially available,
+- has a Jellyfin media ID and a requester linked to an existing Jellyfin user,
+- targets a Jellyfin item that still exists, and
+- has not already been recorded by a webhook or an earlier backfill run.
+
+If the item has no grant, the request creates a household-scoped one. If the
+item already has a grant that came from other requests, for example another
+household requesting a different season, the request is added to it along with
+the requester's households. Nothing already on the grant is removed. Items with
+a manual-only grant (no requests) are left exactly as the administrator set
+them.
+
+For 4K requests, the backfill uses the 4K availability status and
+`jellyfinMediaId4k` only. A 4K request without a 4K item is skipped rather than
+falling back to the HD item, so it cannot privatize an HD title that was public
+before the cutoff. The webhook path still falls back to the HD item.
+
+The cutoff exists so that titles that were already public before JellyPass
+managed them stay public. Set it to the date you start relying on JellyPass,
+never to an early date that would make a whole back catalogue private.
+
+The backfill is idempotent. Every request recorded on a grant is remembered,
+including requests on grants that existed before this feature (seeded when the
+state file loads), so a grant an administrator later revokes or clears is not
+recreated. Each request is counted as exactly one outcome:
+
+- **granted** (`jfa_request_backfill_total{result="granted"}`): the grant was
+  stored and applied to Jellyfin.
+- **error** (`{result="error"}`): the lookup failed, or the grant was stored but
+  could not be applied yet. Such a grant stays in an error state and the regular
+  reconciliation retries it; it is not also counted as granted.
+- **skipped** (not exported): not available, before the cutoff, already
+  recorded, unresolvable, or the Jellyfin item was deleted. A deleted item is
+  logged once at `debug`, not as an error on every cycle.
+
+A failure on one request never stops the rest of the run.
 
 ### Network addresses
 
@@ -240,8 +309,25 @@ If the notification UI cannot add an authorization header, append
 proxy logs, browser history, and diagnostics, so keep this route private and
 prefer the bearer header whenever possible.
 
-After configuration, use Jellyseerr's test function if available. A test event
-that is not `MEDIA_AVAILABLE` is expected to return `202` with an ignored status.
+After configuration, use Jellyseerr's test function if available. Every event
+other than `MEDIA_AVAILABLE`, including Seerr's `TEST_NOTIFICATION`, returns
+`202` with `{"status":"ignored"}` once the token is accepted, even though Seerr
+sends an empty request ID for test events. The `notificationType` itself must
+still be a real value made of uppercase letters and underscores; an unfilled
+`{{notification_type}}` returns `400` and is counted as invalid. A `202` therefore proves only that
+JellyPass is reachable and the token is correct, not that the payload works:
+`MEDIA_AVAILABLE` events are validated strictly, and a missing, empty, or
+unfilled `{{...}}` ID returns `400` and is counted as
+`jfa_webhooks_total{result="invalid"}`.
+
+> [!WARNING]
+> Enter the payload in Seerr's own webhook form and let Seerr save it. Seerr
+> stores `jsonPayload` in its own encoding; a value hand-written into
+> `settings.json` (for example, base64 of the raw JSON) is not decoded the way
+> Seerr expects, and webhooks then arrive malformed or not at all. Check
+> `jfa_last_webhook_received_timestamp_seconds` and
+> `jfa_webhooks_total{result="invalid"}` in `/metrics` after a test, and enable
+> the [request backfill](#request-backfill) so a broken webhook is not fatal.
 
 ## Administrator UI
 
@@ -442,8 +528,19 @@ This is expected when no grant-creating event occurred. Common causes are:
 - The webhook is disabled, uses the wrong event type, cannot reach JellyPass, or
   has the wrong token.
 
-Catalog sync does not backfill grants from historical requests. Assign the item
-from Library for immediate protection.
+Catalog sync does not backfill grants from historical requests. The
+[request backfill](#request-backfill) picks up requests the webhook missed, but
+only those created after `REQUEST_BACKFILL_SINCE`. Assign anything older from
+Library for immediate protection.
+
+### Webhooks never arrive
+
+If `jfa_last_webhook_received_timestamp_seconds` is absent from `/metrics`, no
+authenticated webhook has reached JellyPass since it started. If
+`jfa_webhooks_total{result="invalid"}` grows, webhooks arrive but their body is
+malformed; re-save the payload through Seerr's webhook form. In either case,
+`jfa_request_backfill_total{result="granted"}` shows requests the backfill
+applied instead, and `{result="error"}` counts requests it could not process.
 
 ### Webhook returns `401`
 
@@ -540,7 +637,8 @@ identity also stays in memory so that it can be checked again.
   JellyPass needs for automatic revocation; use the UI or API.
 - Concurrent policy edits in another administrator interface can race with a
   JellyPass update. Reconciliation restores JellyPass-owned blocked tags.
-- Historical Jellyseerr requests are not automatically imported as grants.
+- Jellyseerr requests created before `REQUEST_BACKFILL_SINCE`, or all of them
+  when the backfill is disabled, are not automatically imported as grants.
 - Household profile filtering is not passwordless SSO. See
   [docs/household-access.md](docs/household-access.md) for the design boundary.
 

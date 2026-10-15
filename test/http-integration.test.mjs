@@ -420,6 +420,54 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.equal(queryAuthenticated.status, 202);
     await queryAuthenticated.json();
 
+    const seerrTest = await fetch(`${bridgeUrl}/webhooks/seerr`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer webhook-secret', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notificationType: 'TEST_NOTIFICATION', request: { id: '' } }),
+    });
+    assert.equal(seerrTest.status, 202);
+    assert.deepEqual(await seerrTest.json(), { status: 'ignored' });
+
+    const unknownType = await fetch(`${bridgeUrl}/webhooks/seerr`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer webhook-secret', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notificationType: 'MEDIA_PENDING' }),
+    });
+    assert.equal(unknownType.status, 202);
+    assert.deepEqual(await unknownType.json(), { status: 'ignored' });
+
+    const unauthorizedTest = await fetch(`${bridgeUrl}/webhooks/seerr`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notificationType: 'TEST_NOTIFICATION' }),
+    });
+    assert.equal(unauthorizedTest.status, 401);
+    await unauthorizedTest.json();
+
+    const emptyAvailableId = await fetch(`${bridgeUrl}/webhooks/seerr`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer webhook-secret', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notificationType: 'MEDIA_AVAILABLE', request: { id: '' } }),
+    });
+    assert.equal(emptyAvailableId.status, 400);
+    assert.deepEqual(await emptyAvailableId.json(), { error: 'id must be a non-empty string' });
+
+    const unfilledType = await fetch(`${bridgeUrl}/webhooks/seerr`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer webhook-secret', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notificationType: '{{notification_type}}', request: { id: '' } }),
+    });
+    assert.equal(unfilledType.status, 400);
+    assert.deepEqual(await unfilledType.json(), { error: 'notificationType is invalid' });
+
+    const malformed = await fetch(`${bridgeUrl}/webhooks/seerr`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer webhook-secret', 'Content-Type': 'application/json' },
+      body: 'eyJub3RpZmljYXRpb25UeXBlIjoi',
+    });
+    assert.equal(malformed.status, 400);
+    await malformed.json();
+
     const response = await fetch(`${bridgeUrl}/webhooks/seerr`, {
       method: 'POST',
       headers: { Authorization: 'Bearer webhook-secret', 'Content-Type': 'application/json' },
@@ -433,7 +481,8 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     await response.json();
     assert.deepEqual(jellyfin.item.Tags, ['existing', 'jfa:private:item-1']);
     assert.deepEqual(jellyfin.itemById('trailer-1').Tags, ['jfa:private:item-1']);
-    assert.deepEqual(jellyfin.user('bob-id').Policy.BlockedTags, ['jfa:private:item-1']);
+    // Bob shares Alice's household, so Alice's request is visible to him too.
+    assert.deepEqual(jellyfin.user('bob-id').Policy.BlockedTags, []);
 
     const ownerStream = await fetchWithHost(bridgeUrl, '/Videos/trailer-1/stream?Static=true', 'jelly-farmhouse.example.test', {
       headers: { Authorization: jellyfinAuthorization(householdAuthentication.AccessToken), Range: 'bytes=0-0' },
@@ -445,20 +494,24 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
       'jelly-farmhouse.example.test',
     );
     assert.equal(ownerPlaylist.status, 200, await ownerPlaylist.text());
-    const blockedLogin = await fetchWithHost(bridgeUrl, '/Users/AuthenticateByName', 'jelly-farmhouse.example.test', {
+    const memberLogin = await fetchWithHost(bridgeUrl, '/Users/AuthenticateByName', 'jelly-farmhouse.example.test', {
       method: 'POST',
       headers: { Authorization: jellyfinAuthorization(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ Username: 'Bob', Pw: 'user-password' }),
     });
-    const blockedAuthentication = await blockedLogin.json();
-    const blockedStream = await fetchWithHost(bridgeUrl, '/Videos/trailer-1/stream?Static=true', 'jelly-farmhouse.example.test', {
-      headers: { Authorization: jellyfinAuthorization(blockedAuthentication.AccessToken), Range: 'bytes=0-0' },
+    const memberAuthentication = await memberLogin.json();
+    const memberStream = await fetchWithHost(bridgeUrl, '/Videos/trailer-1/stream?Static=true', 'jelly-farmhouse.example.test', {
+      headers: { Authorization: jellyfinAuthorization(memberAuthentication.AccessToken), Range: 'bytes=0-0' },
     });
-    assert.equal(blockedStream.status, 404);
+    assert.equal(memberStream.status, 206, await memberStream.text());
 
     const metrics = await fetch(`${bridgeUrl}/metrics`, { headers: { Authorization: 'Bearer admin-secret' } });
     assert.equal(metrics.status, 200);
-    assert.match(await metrics.text(), /jfa_webhooks_total\{result="granted"\} 1/);
+    const metricsText = await metrics.text();
+    assert.match(metricsText, /jfa_webhooks_total\{result="granted"\} 1/);
+    assert.match(metricsText, /jfa_webhooks_total\{result="ignored"\} 3/);
+    assert.match(metricsText, /jfa_webhooks_total\{result="invalid"\} 3/);
+    assert.match(metricsText, /jfa_last_webhook_received_timestamp_seconds \d{10}/);
 
     const plan = await fetch(`${bridgeUrl}/v1/grants/item-1/plan`, { headers: { Authorization: 'Bearer admin-secret' } });
     assert.equal(plan.status, 200);
@@ -474,6 +527,15 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     });
     assert.equal(revoke.status, 200);
     await revoke.json();
+    // The household attached by the request stays until an administrator removes it.
+    assert.deepEqual(jellyfin.item.Tags, ['existing', 'jfa:private:item-1']);
+    const clearGroups = await fetch(`${bridgeUrl}/v1/grants/item-1/groups`, {
+      method: 'PUT',
+      headers: { Authorization: 'Bearer admin-secret', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ groupIds: [] }),
+    });
+    assert.equal(clearGroups.status, 200);
+    await clearGroups.json();
     assert.deepEqual(jellyfin.item.Tags, ['existing']);
     assert.deepEqual(jellyfin.itemById('trailer-1').Tags, []);
     assert.deepEqual(jellyfin.user('bob-id').Policy.BlockedTags, []);
