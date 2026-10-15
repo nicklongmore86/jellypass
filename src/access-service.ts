@@ -1,3 +1,4 @@
+import type { LogLevel } from './config.js';
 import type { JellyfinClient } from './jellyfin.js';
 import { Metrics } from './metrics.js';
 import type { SeerrClient } from './seerr.js';
@@ -53,12 +54,20 @@ export class AccessService {
   readonly #seerr: SeerrClient | undefined;
   #queue: Promise<void> = Promise.resolve();
   readonly #backfillMissingItems = new Set<string>();
+  readonly #debug: boolean;
 
-  public constructor(jellyfin: JellyfinClient, store: GrantStore, metrics = new Metrics(), seerr?: SeerrClient) {
+  public constructor(
+    jellyfin: JellyfinClient,
+    store: GrantStore,
+    metrics = new Metrics(),
+    seerr?: SeerrClient,
+    options: { logLevel?: LogLevel } = {},
+  ) {
     this.#jellyfin = jellyfin;
     this.#store = store;
     this.#metrics = metrics;
     this.#seerr = seerr;
+    this.#debug = options.logLevel === 'debug';
     this.#refreshGauges();
   }
 
@@ -380,7 +389,7 @@ export class AccessService {
             result.skipped += 1;
             if (!this.#backfillMissingItems.has(requestId)) {
               this.#backfillMissingItems.add(requestId);
-              console.log(JSON.stringify({ level: 'debug', message: 'request backfill skipped missing Jellyfin item', requestId, itemId }));
+              this.#logDebug('request backfill skipped missing Jellyfin item', { requestId, itemId });
             }
             continue;
           }
@@ -772,6 +781,10 @@ export class AccessService {
       await this.#jellyfin.updatePolicy(user.Id, { ...user.Policy, BlockedTags: after });
       this.#metrics.increment('jfa_policy_updates_total');
     }
+  }
+
+  #logDebug(message: string, fields: Record<string, unknown>): void {
+    if (this.#debug) console.debug(JSON.stringify({ level: 'debug', message, ...fields }));
   }
 
   #refreshGauges(): void {

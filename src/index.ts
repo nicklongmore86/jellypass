@@ -16,7 +16,7 @@ async function main(): Promise<void> {
   const seerr = config.seerrUrl && config.seerrApiKey
     ? new SeerrClient(config.seerrUrl, config.seerrApiKey)
     : undefined;
-  const service = new AccessService(jellyfin, store, undefined, seerr);
+  const service = new AccessService(jellyfin, store, undefined, seerr, { logLevel: config.logLevel });
   const webAuth = new WebAuth(jellyfin);
   const server = makeServer(service, { webhook: config.webhookToken, admin: config.adminToken }, webAuth, {
     ...(config.jellyquestBridgeEnabled && config.seerrUrl ? {
