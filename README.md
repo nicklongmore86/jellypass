@@ -99,9 +99,11 @@ requester's household can see the title; members of other households cannot.
 - A requester who belongs to several groups shares the title with all of them.
 - Groups and users already on the grant, including ones an administrator
   assigned manually, are always kept; requests only add groups.
-- Revoking a request does not remove the households it added. Remove them from
-  the grant's groups (UI or `PUT /v1/grants/{itemId}/groups`) to make the title
-  public again.
+- Revoking a request does not remove the households it added, so the title
+  stays visible to those households instead of becoming public. To make it
+  public, clear the grant's groups (UI or `PUT /v1/grants/{itemId}/groups`).
+  The title becomes public only once no other requests or manual users remain
+  on the grant.
 - Joining a household later does not change older grants. Add the group to
   those grants, or add the user to a household that is already assigned.
 
@@ -155,11 +157,14 @@ as semantic-version tags. For predictable production upgrades, set
 `JELLYPASS_IMAGE` in `.env` to a versioned image such as:
 
 ```dotenv
-JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:1.0.0
+JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:1.1.0
 ```
 
-Until the first versioned release is published, use `latest` or build from
-source.
+Each release is published as a semantic-version image tag, such as `1.1.0`,
+plus floating `1.1` and `1` tags that move to the newest release in that minor
+or major line; see [CHANGELOG.md](CHANGELOG.md) for what each one contains. `latest` is rebuilt on
+every push to `main` and may include unreleased changes, so use it, or build
+from source, only to test ahead of a release.
 
 ### Build locally instead
 
@@ -561,8 +566,10 @@ docker compose up -d
 curl http://127.0.0.1:8787/health
 ```
 
-Back up the state file first. Read release notes before changing between
-versioned tags. Pinning `JELLYPASS_IMAGE` makes rollback explicit:
+Back up the state file first. Read the [changelog](CHANGELOG.md) before
+changing between versioned tags. Upgrading from 1.0.0 requires a JellyQuest app
+update and new settings; see
+[Upgrading from 1.0.0](CHANGELOG.md#upgrading-from-100). Pinning `JELLYPASS_IMAGE` makes rollback explicit:
 
 ```sh
 JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:PREVIOUS_VERSION docker compose up -d
@@ -590,7 +597,7 @@ This is expected when no grant-creating event occurred. Common causes are:
 
 Catalog sync does not backfill grants from historical requests. The
 [request backfill](#request-backfill) picks up requests the webhook missed, but
-only those created after `REQUEST_BACKFILL_SINCE`. Assign anything older from
+only those created at or after `REQUEST_BACKFILL_SINCE`. Assign anything older from
 Library for immediate protection.
 
 ### Webhooks never arrive

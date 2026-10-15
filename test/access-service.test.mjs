@@ -448,7 +448,7 @@ describe('Seerr request backfill', () => {
     };
   }
 
-  async function withSeerr(listed, details, run, existingStore) {
+  async function withSeerr(listed, details, run, existingStore, serviceOptions) {
     const originalFetch = globalThis.fetch;
     const calls = [];
     globalThis.fetch = async (input) => {
@@ -467,7 +467,7 @@ describe('Seerr request backfill', () => {
       const store = existingStore ?? new GrantStore(await stateFile());
       if (!existingStore) await store.load();
       const fake = fakeJellyfin({ extraUsers: [{ Id: 'carol-id', Name: 'Carol' }] });
-      const service = new AccessService(fake, store, undefined, new SeerrClient('http://seerr.test', 'key'));
+      const service = new AccessService(fake, store, undefined, new SeerrClient('http://seerr.test', 'key'), serviceOptions);
       if (!existingStore) {
         await service.upsertGroup({ id: 'house-a', name: 'House A', userIds: ['alice-id', 'bob-id'] });
         await service.upsertGroup({ id: 'house-b', name: 'House B', userIds: ['carol-id'] });
@@ -618,27 +618,46 @@ describe('Seerr request backfill', () => {
     });
   });
 
-  it('skips a request whose Jellyfin item was deleted and logs it once', async () => {
+  async function backfillMissingItemLogs(serviceOptions) {
     const listed = [seerrRequest(1101, { media: { mediaType: 'movie', tmdbId: 2101, status: 5, jellyfinMediaId: 'item-gone' } })];
+    const logged = [];
     await withSeerr(listed, {}, async ({ store, fake, service }) => {
       const getItem = fake.getItem.bind(fake);
       fake.getItem = async (itemId) => {
         if (itemId === 'item-gone') throw Object.assign(new Error('Jellyfin GET /Items/item-gone returned 404'), { status: 404 });
         return getItem(itemId);
       };
-      const logged = [];
       const originalLog = console.log;
+      const originalDebug = console.debug;
       console.log = (line) => logged.push(line);
+      console.debug = (line) => logged.push(line);
       try {
         for (let run = 0; run < 2; run += 1) {
           assert.deepEqual(await service.backfillRequests(since), { scanned: 1, granted: [], skipped: 1, failed: 0 });
         }
       } finally {
         console.log = originalLog;
+        console.debug = originalDebug;
       }
-      assert.equal(logged.filter((line) => line.includes('missing Jellyfin item')).length, 1);
       assert.equal(store.get('item-gone'), undefined);
       assert.doesNotMatch(service.renderMetrics(), /jfa_request_backfill_total\{result="error"\}/);
+    }, undefined, serviceOptions);
+    return logged.filter((line) => line.includes('missing Jellyfin item'));
+  }
+
+  it('skips a request whose Jellyfin item was deleted without logging at the default level', async () => {
+    assert.deepEqual(await backfillMissingItemLogs(), []);
+    assert.deepEqual(await backfillMissingItemLogs({ logLevel: 'info' }), []);
+  });
+
+  it('logs a deleted Jellyfin item once at LOG_LEVEL=debug', async () => {
+    const lines = await backfillMissingItemLogs({ logLevel: 'debug' });
+    assert.equal(lines.length, 1);
+    assert.deepEqual(JSON.parse(lines[0]), {
+      level: 'debug',
+      message: 'request backfill skipped missing Jellyfin item',
+      requestId: '1101',
+      itemId: 'item-gone',
     });
   });
 
