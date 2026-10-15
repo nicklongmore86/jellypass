@@ -1,41 +1,65 @@
 #!/usr/bin/env node
-// Prints the CHANGELOG.md section for one version, for use as GitHub release notes.
+// Prints the CHANGELOG.md notes for one version, for use as GitHub release notes.
 //
 //   node scripts/changelog-section.mjs <version|vX.Y.Z> [path/to/CHANGELOG.md]
 //
-// The section runs from its "## [X.Y.Z]" heading up to the next "## [" heading.
-// The link reference definitions at the bottom of the changelog are left out,
-// except those the section itself uses (such as [X.Y.Z] or [#1]), so its links
-// still resolve on the release page. Exits with 1 if the section is missing or
-// empty.
+// The notes are the lines after the "## [X.Y.Z]" heading, up to the next
+// "## [" heading outside a fenced code block. The heading itself is left out
+// (the release title shows the version). The link reference definitions at
+// the bottom of the changelog are left out too, except those the notes use as
+// reference-style links (such as [#1]), so they still resolve on the release
+// page. Exits with 1 if the section is missing or empty.
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const LINK_DEFINITION = /^\[([^\]]+)\]:\s*\S/;
+const FENCE = /^ {0,3}(`{3,}|~{3,})/;
+
+// Returns, for each line, whether it is a fence line or inside a fenced code block.
+function fencedLines(lines) {
+  let fence = null;
+  return lines.map((line) => {
+    const marker = FENCE.exec(line)?.[1];
+    if (fence === null) {
+      fence = marker ?? null;
+      return fence !== null;
+    }
+    if (marker && marker[0] === fence[0] && marker.length >= fence.length && line.trim() === marker) fence = null;
+    return true;
+  });
+}
 
 export function changelogSection(changelog, version) {
   const wanted = version.trim().replace(/^v/, '');
   if (!wanted) throw new Error('no version given');
   const lines = changelog.replace(/\r\n/g, '\n').split('\n');
   const heading = `## [${wanted}]`;
-  const start = lines.findIndex((line) => line.startsWith(heading));
+
+  const fenced = fencedLines(lines);
+  const start = lines.findIndex((line, index) => !fenced[index] && line.startsWith(heading));
   if (start === -1) throw new Error(`CHANGELOG.md has no "${heading}" section`);
-  let end = lines.findIndex((line, index) => index > start && line.startsWith('## ['));
+  let end = lines.findIndex((line, index) => index > start && !fenced[index] && line.startsWith('## ['));
   if (end === -1) end = lines.length;
 
-  const body = lines.slice(start, end).filter((line) => !LINK_DEFINITION.test(line));
-  while (body.length > 0 && body.at(-1).trim() === '') body.pop();
-  if (body.slice(1).every((line) => line.trim() === '')) {
-    throw new Error(`CHANGELOG.md section "${heading}" is empty`);
+  const body = [];
+  const used = new Set();
+  for (let index = start + 1; index < end; index++) {
+    const line = lines[index];
+    if (!fenced[index] && LINK_DEFINITION.test(line)) continue;
+    body.push(line);
+    if (fenced[index]) continue;
+    for (const match of line.matchAll(/\[([^\]]+)\](?!\()/g)) used.add(match[1].toLowerCase());
   }
+  while (body.length > 0 && body[0].trim() === '') body.shift();
+  while (body.length > 0 && body.at(-1).trim() === '') body.pop();
+  if (body.length === 0) throw new Error(`CHANGELOG.md section "${heading}" is empty`);
 
-  const text = body.join('\n');
-  const used = new Set([...text.matchAll(/\[([^\]]+)\]/g)].map((match) => match[1].toLowerCase()));
-  const definitions = lines.filter((line) => {
-    const match = LINK_DEFINITION.exec(line);
+  const definitions = lines.filter((line, index) => {
+    const match = fenced[index] ? null : LINK_DEFINITION.exec(line);
     return match !== null && used.has(match[1].toLowerCase());
   });
+  const text = body.join('\n');
   return definitions.length > 0 ? `${text}\n\n${definitions.join('\n')}\n` : `${text}\n`;
 }
 
