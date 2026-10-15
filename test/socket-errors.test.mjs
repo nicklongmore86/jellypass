@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer, request as httpRequest } from 'node:http';
-import { connect as connectSocket, createServer as createNetServer } from 'node:net';
+import { connect as connectSocket, createServer as createNetServer, Socket } from 'node:net';
 import { after, before, beforeEach, describe, it, mock } from 'node:test';
 import { makeServer } from '../dist/server.js';
 
@@ -191,6 +191,40 @@ describe('socket error handling', { timeout: 10_000 }, () => {
       }
       await assertStillServing(gatewayPort);
       assert.deepEqual(warnings, []);
+    });
+  }
+
+  for (const code of ['ETIMEDOUT', 'EHOSTUNREACH']) {
+    it(`treats a client-side ${code} as a routine disconnect but warns on a Jellyfin-side ${code}`, async () => {
+      // TCP keepalive surfaces a vanished peer as ETIMEDOUT/EHOSTUNREACH on the gateway's own socket; inject that
+      // error into the gateway-owned sockets, which are the ones it enables keepalive on.
+      const setKeepAlive = mock.method(Socket.prototype, 'setKeepAlive');
+      try {
+        for (const side of ['client', 'upstream']) {
+          setKeepAlive.mock.resetCalls();
+          warnings.length = 0;
+          const { socket } = await upgrade(gatewayPort, '/socket');
+          socket.on('error', () => {});
+          await waitFor(() => setKeepAlive.mock.calls.length >= 2);
+          const owned = setKeepAlive.mock.calls.map((call) => call.this);
+          const target = side === 'client'
+            ? owned.find((entry) => entry.localPort === gatewayPort)
+            : owned.find((entry) => entry.remotePort === upstream.address().port);
+          assert.ok(target, `gateway ${side} socket`);
+          const clientClosed = once(socket, 'close');
+          target.destroy(Object.assign(new Error(`read ${code}`), { code }));
+          await clientClosed;
+          if (side === 'client') assert.deepEqual(warnings, []);
+          else {
+            assert.deepEqual(warnings.map(({ message, code: warned }) => ({ message, code: warned })), [
+              { message: 'household gateway websocket upstream socket error', code },
+            ]);
+          }
+        }
+      } finally {
+        setKeepAlive.mock.restore();
+      }
+      await assertStillServing(gatewayPort);
     });
   }
 

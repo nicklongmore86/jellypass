@@ -41,13 +41,14 @@ describe('WebSocket idle timeout', { timeout: 10_000 }, () => {
     assert.deepEqual(uncaughtErrors, []);
   });
 
-  async function startGateway(webSocketIdleTimeoutMs) {
+  async function startGateway(webSocketIdleTimeoutMs, options = {}) {
     const gateway = makeServer(stubService(), { webhook: 'w', admin: 'a' }, undefined, {
       householdGateway: {
         jellyfinUrl: `http://127.0.0.1:${upstream.address().port}`,
         domain: 'example.test',
         hostPrefix: 'jelly-',
         webSocketIdleTimeoutMs,
+        ...options,
       },
     });
     gateways.push(gateway);
@@ -70,10 +71,12 @@ describe('WebSocket idle timeout', { timeout: 10_000 }, () => {
 
   it('closes both sides of an idle connection after the timeout', async () => {
     const port = await startGateway(IDLE_TIMEOUT_MS);
-    const openedAt = Date.now();
     const { client, server } = await openSocket(port);
+    // The gateway arms the timer just before relaying the 101, so measuring from its arrival can only under-count.
+    const upgradedAt = performance.now();
     await Promise.all([once(client, 'close'), once(server, 'close')]);
-    assert.ok(Date.now() - openedAt >= IDLE_TIMEOUT_MS - 10, 'closed before the idle timeout elapsed');
+    const elapsed = performance.now() - upgradedAt;
+    assert.ok(elapsed >= IDLE_TIMEOUT_MS - 2, `closed ${elapsed.toFixed(1)} ms after the upgrade, before the idle timeout`);
     assert.deepEqual(uncaughtErrors, []);
   });
 
@@ -118,6 +121,71 @@ describe('WebSocket idle timeout', { timeout: 10_000 }, () => {
     await serverClosed;
   });
 
+  it('closes both sides when Jellyfin goes silent while the client keeps talking', async () => {
+    const port = await startGateway(0, { webSocketUpstreamIdleTimeoutMs: IDLE_TIMEOUT_MS });
+    const { client, server } = await openSocket(port);
+    const upgradedAt = performance.now();
+    const keepAlive = setInterval(() => client.write(maskedTextFrame('{"MessageType":"KeepAlive"}')), IDLE_TIMEOUT_MS / 3);
+    try {
+      await Promise.all([once(client, 'close'), once(server, 'close')]);
+    } finally {
+      clearInterval(keepAlive);
+    }
+    const elapsed = performance.now() - upgradedAt;
+    assert.ok(elapsed >= IDLE_TIMEOUT_MS - 2, `closed ${elapsed.toFixed(1)} ms after the upgrade, before the upstream timeout`);
+    assert.deepEqual(uncaughtErrors, []);
+  });
+
+  it('keeps the connection open while Jellyfin sends keepalive traffic', async () => {
+    const port = await startGateway(0, { webSocketUpstreamIdleTimeoutMs: IDLE_TIMEOUT_MS });
+    const { client, server } = await openSocket(port);
+    client.resume();
+    let closed = false;
+    client.once('close', () => { closed = true; });
+    const push = setInterval(() => server.write(textFrame('{"MessageType":"KeepAlive"}')), IDLE_TIMEOUT_MS / 3);
+    await delay(IDLE_TIMEOUT_MS * 4);
+    clearInterval(push);
+    assert.equal(closed, false);
+    await Promise.all([once(client, 'close'), once(server, 'close')]);
+  });
+
+  it('never closes for upstream silence when WS_UPSTREAM_IDLE_TIMEOUT_MS is 0', async () => {
+    const port = await startGateway(0, { webSocketUpstreamIdleTimeoutMs: 0 });
+    const { client, server } = await openSocket(port);
+    let closed = false;
+    client.once('close', () => { closed = true; });
+    const keepAlive = setInterval(() => client.write(maskedTextFrame('{"MessageType":"KeepAlive"}')), IDLE_TIMEOUT_MS / 3);
+    await delay(IDLE_TIMEOUT_MS * 4);
+    clearInterval(keepAlive);
+    assert.equal(closed, false);
+    assert.equal(server.destroyed, false);
+    const serverClosed = once(server, 'close');
+    client.destroy();
+    await serverClosed;
+  });
+
+  for (const side of ['the client', 'Jellyfin']) {
+    it(`clears both idle timers when ${side} closes the connection cleanly`, async () => {
+      const debugLines = [];
+      const debug = mock.method(console, 'debug', (line) => debugLines.push(JSON.parse(line)));
+      try {
+        const port = await startGateway(IDLE_TIMEOUT_MS, { webSocketUpstreamIdleTimeoutMs: IDLE_TIMEOUT_MS, logLevel: 'debug' });
+        const { client, server } = await openSocket(port);
+        client.resume();
+        const closed = Promise.all([once(client, 'close'), once(server, 'close')]);
+        if (side === 'the client') client.end();
+        else server.end();
+        await closed;
+        await delay(IDLE_TIMEOUT_MS * 2);
+        // A timer that survived the close would fire now and log its timeout before destroying the (closed) sockets.
+        assert.deepEqual(debugLines.filter((entry) => /idle timeout/.test(entry.message)), []);
+      } finally {
+        debug.mock.restore();
+      }
+      assert.deepEqual(uncaughtErrors, []);
+    });
+  }
+
   it('enables TCP keepalive on both proxied sockets', async () => {
     const setKeepAlive = mock.method(Socket.prototype, 'setKeepAlive');
     try {
@@ -140,6 +208,11 @@ function maskedTextFrame(text) {
   const mask = Buffer.from([1, 2, 3, 4]);
   const masked = Buffer.from(payload.map((byte, index) => byte ^ mask[index % 4]));
   return Buffer.concat([Buffer.from([0x81, 0x80 | payload.length]), mask, masked]);
+}
+
+function textFrame(text) {
+  const payload = Buffer.from(text);
+  return Buffer.concat([Buffer.from([0x81, payload.length]), payload]);
 }
 
 function stubService() {

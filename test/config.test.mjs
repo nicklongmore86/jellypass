@@ -10,7 +10,7 @@ const BASE = {
   SEERR_URL: 'http://seerr.test',
   SEERR_API_KEY: 'seerr-key',
 };
-const KEYS = [...Object.keys(BASE), 'REQUEST_BACKFILL_SINCE', 'REQUEST_BACKFILL_ENABLED', 'LOG_LEVEL', 'WS_IDLE_TIMEOUT_MS'];
+const KEYS = [...Object.keys(BASE), 'REQUEST_BACKFILL_SINCE', 'REQUEST_BACKFILL_ENABLED', 'LOG_LEVEL', 'WS_IDLE_TIMEOUT_MS', 'WS_UPSTREAM_IDLE_TIMEOUT_MS'];
 const saved = Object.fromEntries(KEYS.map((key) => [key, process.env[key]]));
 
 function load(overrides = {}) {
@@ -84,16 +84,30 @@ describe('logging and WebSocket configuration', () => {
     mock.restoreAll();
   });
 
-  it('defaults LOG_LEVEL to info and accepts known levels case-insensitively', () => {
+  it('defaults LOG_LEVEL to info and accepts levels and aliases case-insensitively', () => {
+    const warn = mock.method(console, 'warn', () => {});
     assert.equal(load().logLevel, 'info');
     assert.equal(load({ LOG_LEVEL: '' }).logLevel, 'info');
-    assert.equal(load({ LOG_LEVEL: ' DEBUG ' }).logLevel, 'debug');
-    for (const level of ['info', 'warn', 'error']) assert.equal(load({ LOG_LEVEL: level }).logLevel, level);
+    for (const [value, level] of [
+      [' DEBUG ', 'debug'], ['trace', 'debug'], ['Verbose', 'debug'],
+      ['info', 'info'], ['Information', 'info'],
+      ['warn', 'warn'], ['WARNING', 'warn'],
+      ['error', 'error'], ['err', 'error'],
+    ]) {
+      assert.equal(load({ LOG_LEVEL: value }).logLevel, level, value);
+    }
+    assert.equal(logLevelWarnings(warn).length, 0);
   });
 
-  it('rejects unknown LOG_LEVEL values', () => {
-    for (const value of ['verbose', 'trace', '1']) {
-      assert.throws(() => load({ LOG_LEVEL: value }), /LOG_LEVEL must be one of debug, info, warn, error/, value);
+  it('falls back to info with one startup warning naming an unrecognised LOG_LEVEL', () => {
+    const warn = mock.method(console, 'warn', () => {});
+    for (const value of ['loud', '1', 'Debugging']) {
+      warn.mock.resetCalls();
+      assert.equal(load({ LOG_LEVEL: value }).logLevel, 'info', value);
+      const warnings = logLevelWarnings(warn);
+      assert.equal(warnings.length, 1, value);
+      assert.equal(warnings[0].value, value);
+      assert.match(warnings[0].message, /using info/);
     }
   });
 
@@ -105,19 +119,35 @@ describe('logging and WebSocket configuration', () => {
     assert.equal(load({ WS_IDLE_TIMEOUT_MS: '86400000' }).webSocketIdleTimeoutMs, 86_400_000);
   });
 
-  it('rejects negative, non-numeric, fractional, and oversized WS_IDLE_TIMEOUT_MS values', () => {
-    for (const value of ['-1', '-300000', 'abc', '300s', '1e5', '1.5', '0x10', '86400001']) {
-      assert.throws(() => load({ WS_IDLE_TIMEOUT_MS: value }), /WS_IDLE_TIMEOUT_MS must be an integer between 0 and 86400000/, value);
-    }
+  it('defaults WS_UPSTREAM_IDLE_TIMEOUT_MS to three minutes and allows 0 to disable it', () => {
+    assert.equal(load().webSocketUpstreamIdleTimeoutMs, 180_000);
+    assert.equal(load({ WS_UPSTREAM_IDLE_TIMEOUT_MS: '' }).webSocketUpstreamIdleTimeoutMs, 180_000);
+    assert.equal(load({ WS_UPSTREAM_IDLE_TIMEOUT_MS: '0' }).webSocketUpstreamIdleTimeoutMs, 0);
+    assert.equal(load({ WS_UPSTREAM_IDLE_TIMEOUT_MS: '120000' }).webSocketUpstreamIdleTimeoutMs, 120_000);
   });
 
-  it('warns when WS_IDLE_TIMEOUT_MS would cut off healthy Jellyfin clients', () => {
-    const warn = mock.method(console, 'warn', () => {});
-    load({ WS_IDLE_TIMEOUT_MS: '30000' });
-    assert.equal(warn.mock.calls.filter((call) => String(call.arguments[0]).includes('WS_IDLE_TIMEOUT_MS')).length, 1);
-    warn.mock.resetCalls();
-    load({ WS_IDLE_TIMEOUT_MS: '0' });
-    load({ WS_IDLE_TIMEOUT_MS: '300000' });
-    assert.equal(warn.mock.calls.filter((call) => String(call.arguments[0]).includes('WS_IDLE_TIMEOUT_MS')).length, 0);
-  });
+  for (const name of ['WS_IDLE_TIMEOUT_MS', 'WS_UPSTREAM_IDLE_TIMEOUT_MS']) {
+    it(`rejects negative, non-numeric, fractional, and oversized ${name} values`, () => {
+      for (const value of ['-1', '-300000', 'abc', '300s', '1e5', '1.5', '0x10', '86400001']) {
+        assert.throws(() => load({ [name]: value }), new RegExp(`${name} must be an integer between 0 and 86400000`), value);
+      }
+    });
+
+    it(`warns when ${name} would cut off healthy Jellyfin connections`, () => {
+      const warn = mock.method(console, 'warn', () => {});
+      const named = () => warn.mock.calls.filter((call) => JSON.parse(call.arguments[0]).message.startsWith(`${name} `));
+      load({ [name]: '30000' });
+      load({ [name]: '60000' });
+      assert.equal(named().length, 2);
+      warn.mock.resetCalls();
+      load({ [name]: '0' });
+      load({ [name]: '60001' });
+      assert.equal(named().length, 0);
+    });
+  }
+
 });
+
+function logLevelWarnings(warn) {
+  return warn.mock.calls.map((call) => JSON.parse(call.arguments[0])).filter((entry) => entry.message.startsWith('LOG_LEVEL'));
+}

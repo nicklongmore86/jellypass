@@ -23,6 +23,7 @@ export interface ServerOptions {
     domain: string;
     hostPrefix: string;
     webSocketIdleTimeoutMs?: number;
+    webSocketUpstreamIdleTimeoutMs?: number;
     logLevel?: LogLevel;
   };
 }

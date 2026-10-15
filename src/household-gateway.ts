@@ -2,7 +2,7 @@ import http, { type IncomingHttpHeaders, type IncomingMessage, type RequestOptio
 import https from 'node:https';
 import type { Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
-import { DEFAULT_WS_IDLE_TIMEOUT_MS, type LogLevel } from './config.js';
+import { DEFAULT_WS_IDLE_TIMEOUT_MS, DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS, type LogLevel } from './config.js';
 
 const PUBLIC_USERS_PATH = '/users/public';
 const BRANDING_CONFIGURATION_PATH = '/branding/configuration';
@@ -40,6 +40,8 @@ export interface HouseholdGatewayOptions {
   isPasswordless?: (userId: string) => boolean;
   /** Close an upgraded connection after this long with no bytes in either direction; 0 disables. */
   webSocketIdleTimeoutMs?: number;
+  /** Close an upgraded connection after this long with no bytes from Jellyfin, even if the client keeps talking; 0 disables. */
+  webSocketUpstreamIdleTimeoutMs?: number;
   logLevel?: LogLevel;
 }
 
@@ -51,6 +53,7 @@ export class HouseholdGateway {
   readonly #isPasswordless: NonNullable<HouseholdGatewayOptions['isPasswordless']>;
   readonly #loginAttempts = new Map<string, { attempts: number; resetsAt: number }>();
   readonly #webSocketIdleTimeoutMs: number;
+  readonly #webSocketUpstreamIdleTimeoutMs: number;
   readonly #debug: boolean;
 
   public constructor(options: HouseholdGatewayOptions) {
@@ -63,6 +66,7 @@ export class HouseholdGateway {
     this.#memberIds = options.memberIds;
     this.#isPasswordless = options.isPasswordless ?? (() => false);
     this.#webSocketIdleTimeoutMs = options.webSocketIdleTimeoutMs ?? DEFAULT_WS_IDLE_TIMEOUT_MS;
+    this.#webSocketUpstreamIdleTimeoutMs = options.webSocketUpstreamIdleTimeoutMs ?? DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS;
     this.#debug = options.logLevel === 'debug';
   }
 
@@ -173,27 +177,34 @@ export class HouseholdGateway {
       if (upstreamHead.length) socket.write(upstreamHead);
       if (head.length) upstreamSocket.write(head);
       // A peer that vanishes without FIN/RST (sleeping TV, dropped NAT mapping) never surfaces as an error on its own:
-      // TCP keepalive lets the kernel notice a dead peer, and the idle timer closes connections with no traffic at all.
+      // TCP keepalive lets the kernel notice a dead peer, and the idle timers close connections with no traffic at all
+      // or whose Jellyfin side has gone quiet while the client keeps sending KeepAlives into the void.
       enableTcpKeepAlive(socket);
       enableTcpKeepAlive(upstreamSocket);
-      let idleTimer: NodeJS.Timeout | undefined;
-      if (this.#webSocketIdleTimeoutMs > 0) {
-        idleTimer = setTimeout(() => {
-          this.#logDebug('household gateway websocket idle timeout', { idleTimeoutMs: this.#webSocketIdleTimeoutMs });
-          socket.destroy();
-          upstreamSocket.destroy();
-        }, this.#webSocketIdleTimeoutMs);
-        idleTimer.unref();
-        const resetIdleTimer = () => idleTimer?.refresh();
-        socket.on('data', resetIdleTimer);
-        upstreamSocket.on('data', resetIdleTimer);
-      }
-      socket.once('close', () => {
+      const closeBoth = (message: string, timeoutMs: number) => {
+        this.#logDebug(message, { timeoutMs });
+        socket.destroy();
+        upstreamSocket.destroy();
+      };
+      const idleTimer = unrefTimer(this.#webSocketIdleTimeoutMs, () =>
+        closeBoth('household gateway websocket idle timeout', this.#webSocketIdleTimeoutMs));
+      const upstreamIdleTimer = unrefTimer(this.#webSocketUpstreamIdleTimeoutMs, () =>
+        closeBoth('household gateway websocket upstream idle timeout', this.#webSocketUpstreamIdleTimeoutMs));
+      socket.on('data', () => idleTimer?.refresh());
+      upstreamSocket.on('data', () => {
+        idleTimer?.refresh();
+        upstreamIdleTimer?.refresh();
+      });
+      const clearTimers = () => {
         clearTimeout(idleTimer);
+        clearTimeout(upstreamIdleTimer);
+      };
+      socket.once('close', () => {
+        clearTimers();
         upstreamSocket.destroy();
       });
       upstreamSocket.once('close', () => {
-        clearTimeout(idleTimer);
+        clearTimers();
         socket.destroy();
       });
       upstreamSocket.pipe(socket).pipe(upstreamSocket);
@@ -468,6 +479,9 @@ export class HouseholdGateway {
 }
 
 const DISCONNECT_CODES = new Set(['ECONNRESET', 'EPIPE', 'ECONNABORTED', 'ERR_STREAM_PREMATURE_CLOSE', 'ERR_STREAM_DESTROYED']);
+// TCP keepalive reports a client that vanished (sleeping TV, roaming phone) as ETIMEDOUT/EHOSTUNREACH. On the
+// Jellyfin side the same codes mean the server or its network is unreachable, which is worth a warning.
+const CLIENT_DISCONNECT_CODES = new Set([...DISCONNECT_CODES, 'ETIMEDOUT', 'EHOSTUNREACH']);
 
 type ExchangeLog = (level: 'debug' | 'warn', message: string, fields: Record<string, unknown>) => void;
 
@@ -488,7 +502,7 @@ class Exchange {
 
   public error(side: 'client' | 'upstream', context: string, error: unknown): void {
     const code = typeof error === 'object' && error && 'code' in error ? String((error as { code: unknown }).code) : undefined;
-    const disconnect = code !== undefined && DISCONNECT_CODES.has(code);
+    const disconnect = code !== undefined && (side === 'client' ? CLIENT_DISCONNECT_CODES : DISCONNECT_CODES).has(code);
     const expected = disconnect && (side === 'client' || this.#firstFailure !== undefined);
     this.#firstFailure ??= side;
     this.log(expected ? 'debug' : 'warn', `household gateway ${context} error`, {
@@ -496,6 +510,13 @@ class Exchange {
       error: error instanceof Error ? error.message : String(error),
     });
   }
+}
+
+function unrefTimer(timeoutMs: number, callback: () => void): NodeJS.Timeout | undefined {
+  if (timeoutMs <= 0) return undefined;
+  const timer = setTimeout(callback, timeoutMs);
+  timer.unref();
+  return timer;
 }
 
 function enableTcpKeepAlive(socket: Duplex): void {

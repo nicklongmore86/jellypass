@@ -1,12 +1,27 @@
 import path from 'node:path';
 
-export const LOG_LEVELS = ['debug', 'info', 'warn', 'error'] as const;
-export type LogLevel = typeof LOG_LEVELS[number];
+export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
+const LOG_LEVEL_ALIASES: Record<string, LogLevel> = {
+  debug: 'debug',
+  trace: 'debug',
+  verbose: 'debug',
+  info: 'info',
+  information: 'info',
+  warn: 'warn',
+  warning: 'warn',
+  error: 'error',
+  err: 'error',
+};
 /**
  * Jellyfin drops a WebSocket after 60 s without a client KeepAlive (clients send one every 30 s once the server's
  * ForceKeepAlive arrives), so a healthy connection is never silent for a minute. Five minutes leaves a wide margin.
  */
 export const DEFAULT_WS_IDLE_TIMEOUT_MS = 300_000;
+/**
+ * Jellyfin answers every client KeepAlive and sends ForceKeepAlive to quiet sockets, so a healthy upstream is never
+ * silent for much more than 60 s even while the client keeps talking.
+ */
+export const DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS = 180_000;
 const MAX_WS_IDLE_TIMEOUT_MS = 86_400_000;
 const JELLYFIN_WEBSOCKET_LOST_TIMEOUT_MS = 60_000;
 
@@ -29,6 +44,7 @@ export interface Config {
   requestBackfillSince?: Date;
   logLevel: LogLevel;
   webSocketIdleTimeoutMs: number;
+  webSocketUpstreamIdleTimeoutMs: number;
 }
 
 function required(name: string): string {
@@ -80,22 +96,9 @@ export function loadConfig(): Config {
   if (!/^[a-z0-9-]{1,32}$/.test(householdHostPrefix)) {
     throw new Error('HOUSEHOLD_HOST_PREFIX must contain only lowercase letters, numbers, and hyphens');
   }
-  const logLevel = (process.env.LOG_LEVEL?.trim().toLowerCase() || 'info') as LogLevel;
-  if (!LOG_LEVELS.includes(logLevel)) {
-    throw new Error(`LOG_LEVEL must be one of ${LOG_LEVELS.join(', ')}`);
-  }
-  const webSocketIdleTimeoutInput = process.env.WS_IDLE_TIMEOUT_MS?.trim() || String(DEFAULT_WS_IDLE_TIMEOUT_MS);
-  const webSocketIdleTimeoutMs = Number(webSocketIdleTimeoutInput);
-  if (!/^\d+$/.test(webSocketIdleTimeoutInput) || webSocketIdleTimeoutMs > MAX_WS_IDLE_TIMEOUT_MS) {
-    throw new Error(`WS_IDLE_TIMEOUT_MS must be an integer between 0 and ${MAX_WS_IDLE_TIMEOUT_MS}`);
-  }
-  if (webSocketIdleTimeoutMs > 0 && webSocketIdleTimeoutMs <= JELLYFIN_WEBSOCKET_LOST_TIMEOUT_MS) {
-    console.warn(JSON.stringify({
-      level: 'warn',
-      message: 'WS_IDLE_TIMEOUT_MS is not above Jellyfin\'s 60 s WebSocket keepalive window; idle but healthy clients may be disconnected',
-      webSocketIdleTimeoutMs,
-    }));
-  }
+  const logLevel = parseLogLevel(process.env.LOG_LEVEL);
+  const webSocketIdleTimeoutMs = webSocketTimeout('WS_IDLE_TIMEOUT_MS', DEFAULT_WS_IDLE_TIMEOUT_MS);
+  const webSocketUpstreamIdleTimeoutMs = webSocketTimeout('WS_UPSTREAM_IDLE_TIMEOUT_MS', DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS);
   const adminToken = process.env.ADMIN_TOKEN?.trim();
   if (!adminToken) {
     console.warn(JSON.stringify({
@@ -121,6 +124,7 @@ export function loadConfig(): Config {
     ...(requestBackfillSince ? { requestBackfillSince } : {}),
     logLevel,
     webSocketIdleTimeoutMs,
+    webSocketUpstreamIdleTimeoutMs,
   };
 }
 
@@ -143,6 +147,37 @@ function parseBackfillSince(value: string): Date {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) throw invalid();
   return date;
+}
+
+/** Unknown values fall back to `info` with a warning rather than blocking startup over a logging setting. */
+function parseLogLevel(input: string | undefined): LogLevel {
+  const value = input?.trim();
+  if (!value) return 'info';
+  const level = LOG_LEVEL_ALIASES[value.toLowerCase()];
+  if (level) return level;
+  console.warn(JSON.stringify({
+    level: 'warn',
+    message: 'LOG_LEVEL is not recognised; using info',
+    value,
+    accepted: ['debug', 'info', 'warn', 'error'],
+  }));
+  return 'info';
+}
+
+function webSocketTimeout(name: string, fallback: number): number {
+  const input = process.env[name]?.trim() || String(fallback);
+  const value = Number(input);
+  if (!/^\d+$/.test(input) || value > MAX_WS_IDLE_TIMEOUT_MS) {
+    throw new Error(`${name} must be an integer between 0 and ${MAX_WS_IDLE_TIMEOUT_MS}`);
+  }
+  if (value > 0 && value <= JELLYFIN_WEBSOCKET_LOST_TIMEOUT_MS) {
+    console.warn(JSON.stringify({
+      level: 'warn',
+      message: `${name} is not above Jellyfin's 60 s WebSocket keepalive window; healthy idle clients may be disconnected`,
+      [name]: value,
+    }));
+  }
+  return value;
 }
 
 function booleanEnvironment(name: string, fallback: boolean): boolean {
