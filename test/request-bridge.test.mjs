@@ -372,8 +372,11 @@ test('relays only the caller\'s own Jellyseerr activity', async () => {
         ],
       },
     },
-    '/api/v1/media?take=2': {
-      pageInfo: { page: 1, pages: 3, pageSize: 2, results: 5 },
+    '/api/v1/discover/requested?page=3': {
+      page: 3,
+      totalPages: 3,
+      totalResults: 5,
+      pageInfo: { page: 3, pages: 3, pageSize: 2, results: 5 },
       results: [
         { id: 1, requestedBy: 7, status: 2 },
         { id: 2, requestedBy: 8, status: 2 },
@@ -388,7 +391,18 @@ test('relays only the caller\'s own Jellyseerr activity', async () => {
       viewerUserId: 'ABC-123',
       watchers: [BLAIR_MINIMAL, ALEX_MINIMAL],
       users: [8, 7],
+      user_id: 8,
+      sharedUsers: [8],
       curator: { id: 8, avatar: '/b.png', userType: 3 },
+      hobbyId: 3,
+      lobbyId: 'lobby-1',
+      sortBy: 'popularity.desc',
+    },
+    '/api/v1/tv/202': {
+      id: 202,
+      name: 'Show',
+      createdBy: [{ id: 11, name: 'Creator', gender: 1, profilePath: '/c.png', creditId: 'credit-1' }],
+      mediaInfo: { status: 3, requests: [{ id: 5, requestedBy: BLAIR_MINIMAL }, { id: 6, createdBy: BLAIR_MINIMAL }] },
     },
     '/api/v1/discover/top-level-user': BLAIR_MINIMAL,
   };
@@ -418,9 +432,10 @@ test('relays only the caller\'s own Jellyseerr activity', async () => {
     }
     if (request.url === '/api/v1/request' && request.method === 'POST') {
       const body = JSON.parse(await requestBody(request));
-      return body.mediaId === 1
-        ? send(409, { message: 'Blair (blair@example.com) already requested this title.' })
-        : send(500, { message: 'TypeError at Blair\'s quota for user def456' });
+      if (body.mediaId === 1) return send(409, { message: 'Blair (blair@example.com) already requested this title.' });
+      if (body.mediaId === 3) return send(403, { message: 'Movie Quota exceeded.' });
+      if (body.mediaId === 4) return send(202, { message: 'No seasons available to request' });
+      return send(500, { message: 'TypeError at Blair\'s quota for user def456' });
     }
     if (payloads[request.url]) return send(200, payloads[request.url]);
     send(404, { message: 'Not found' });
@@ -469,9 +484,23 @@ test('relays only the caller\'s own Jellyseerr activity', async () => {
     }, 'own request kept with its timestamp; media-level timing removed');
 
     // Rows filtered locally get counts recomputed from what is visible.
-    const media = (await proxy('/api/v1/media?take=2')).body.data;
-    assert.deepEqual(media.results, [{ id: 1, requestedBy: 7, status: 2 }]);
-    assert.deepEqual(media.pageInfo, { page: 1, pages: 1, pageSize: 2, results: 1 });
+    const filtered = (await proxy('/api/v1/discover/requested?page=3')).body.data;
+    assert.deepEqual(filtered, {
+      page: 1,
+      totalPages: 1,
+      totalResults: 1,
+      pageInfo: { page: 1, pages: 1, pageSize: 2, results: 1 },
+      results: [{ id: 1, requestedBy: 7, status: 2 }],
+    }, 'page and totals agree after rows are withheld');
+    assert.equal((await proxy('/api/v1/media?filter=pending&sort=modified')).status, 403, '/api/v1/media is not relayed');
+    assert.equal((await proxy('/api/v1/media')).status, 403);
+
+    assert.deepEqual((await proxy('/api/v1/tv/202')).body.data, {
+      id: 202,
+      name: 'Show',
+      createdBy: [{ id: 11, name: 'Creator', gender: 1, profilePath: '/c.png', creditId: 'credit-1' }],
+      mediaInfo: { status: 3, requests: [] },
+    }, 'TMDB show creators are kept while Jellyseerr users are still removed');
 
     const details = (await proxy('/api/v1/movie/101')).body.data;
     assert.deepEqual(details, {
@@ -494,7 +523,11 @@ test('relays only the caller\'s own Jellyseerr activity', async () => {
       viewerUserId: 'ABC-123',
       watchers: [ALEX_MINIMAL],
       users: [7],
-    }, 'unknown identity keys and minimal user records fail closed');
+      sharedUsers: [],
+      hobbyId: 3,
+      lobbyId: 'lobby-1',
+      sortBy: 'popularity.desc',
+    }, 'unknown identity keys and minimal user records fail closed; unrelated keys survive');
     assert.deepEqual((await proxy('/api/v1/discover/top-level-user')).body.data, {});
 
     const duplicate = await proxy('/api/v1/request', {
@@ -504,7 +537,15 @@ test('relays only the caller\'s own Jellyseerr activity', async () => {
     const failure = await proxy('/api/v1/request', {
       method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mediaType: 'movie', mediaId: 2 }),
     });
-    assert.deepEqual(failure, { status: 500, body: { error: 'Jellyseerr is unavailable.' } });
+    assert.deepEqual(failure, { status: 500, body: { error: 'Jellyseerr is unavailable.' } }, 'unknown messages mentioning a quota are not passed through');
+    const quota = await proxy('/api/v1/request', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mediaType: 'movie', mediaId: 3 }),
+    });
+    assert.deepEqual(quota, { status: 403, body: { error: 'You have reached your request limit for now.' } });
+    const noSeasons = await proxy('/api/v1/request', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mediaType: 'tv', mediaId: 4, seasons: 'all' }),
+    });
+    assert.deepEqual(noSeasons, { status: 409, body: { error: 'Every season of this show has already been requested.' } });
     assert.deepEqual(await proxy('/api/v1/movie/999'), { status: 404, body: { error: 'Jellyseerr could not find that title.' } });
 
     seen.meResponse = { id: 8, jellyfinUserId: 'def456' };

@@ -336,9 +336,10 @@ Each bridge session is bound to the verified Jellyfin user and that user's
 access token. The token is held in memory and checked again against Jellyfin at
 most every five minutes while the session is in use. When a user signs out of
 Jellyfin or an administrator revokes the device, the bridge session ends at the
-next check. The random browser token is limited to discovery, search, media
-status, title details, request creation, and authenticated self-service access
-claims. Restarting JellyPass clears bridge sessions but not persisted claims.
+next check. The random browser token is limited to discovery, search, title
+details, request listing and creation, and authenticated self-service access
+claims. Jellyseerr's `/api/v1/media` list is not relayed, because its filters
+and sort orders reveal other households' request activity. Restarting JellyPass clears bridge sessions but not persisted claims.
 
 > **JellyQuest client change:** JellyQuest builds that pass only `user`
 > and `id` to the bridge can no longer open request sessions. JellyQuest must add
@@ -351,7 +352,9 @@ open across households, but each caller sees only their own:
 - `GET /jellyquest/access?mediaType=…&tmdbId=…` and `POST /jellyquest/access`
   return the caller's status only: `mediaType`, `tmdbId`, `claimed`,
   `managed`, `owned`, `public`, and `jellyfinItemId` only when the caller can
-  already open the item (owned or public).
+  already open the item (owned or public). Jellyfin administrators are not
+  owners of private items, so the bridge does not give them private item IDs
+  either. They manage access from the JellyPass admin console instead.
 - `GET /jellyquest/access/claims` returns `{ "claims": [...] }` containing only
   the caller's claims, each with the same fields plus `claimedAt`, the time
   this caller first claimed the title. Claims recorded before `claimedAt`
@@ -364,9 +367,12 @@ open across households, but each caller sees only their own:
 - Other relayed Jellyseerr responses are filtered the same way:
   - Requests, watchlist entries, issues, and comments made by other users are
     dropped. When that removes rows from `results`, `pageInfo` and totals are
-    recomputed from the visible rows, and the response becomes a single page.
+    recomputed from the visible rows, and the response becomes a single page
+    (`page` and `pageInfo.page` are reset to `1`).
   - Other users' records and IDs are removed under any key, including unknown
-    `…user`, `…UserId`, and `…ById` fields. `modifiedBy`/`updatedBy` are
+    `…user`, `…Users`, `…UserId`, and `…ById` fields. Matching is case-sensitive,
+    so keys such as `hobbyId` are left alone. TMDB credits, such as a show's
+    `createdBy` creators, are media data and are kept. `modifiedBy`/`updatedBy` are
     always removed, even on the caller's own requests, because they name the
     staff member who acted.
   - `createdAt`, `updatedAt`, `mediaAddedAt`, and `lastSeasonChange` are kept
@@ -375,7 +381,9 @@ open across households, but each caller sees only their own:
   - `mediaInfo.jellyfinMediaId` and `jellyfinMediaId4k` are removed for items
     the caller cannot open, matching the `jellyfinItemId` rule above.
 - Jellyseerr error messages are not relayed. The bridge keeps the status code
-  and returns a fixed message for it.
+  and returns a fixed message for it. Two known messages that only concern the
+  caller get their own fixed JellyPass wording: an exceeded request quota, and
+  a show with no seasons left to request.
 
 The bridge applies per-client rate limits to eligibility checks and session
 creation. Place it behind the same trusted TLS reverse proxy as the household

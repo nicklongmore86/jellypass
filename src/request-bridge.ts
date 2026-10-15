@@ -12,7 +12,15 @@ const MAX_PROBE_ATTEMPTS = 30;
 const IDENTITY_RECHECK_MS = 5 * 60 * 1000;
 const JELLYFIN_TOKEN_PATTERN = /^[A-Za-z0-9._~-]{16,256}$/;
 // Keys that hold a user, user ID, or list of users. Unknown keys of this shape fail closed.
-const IDENTITY_KEY_PATTERN = /^(?:.*_)?(?:users?|requestedBy|modifiedBy|createdBy|updatedBy)(?:Ids?)?$|(?:UserIds?|ById)$/i;
+// Case-sensitive so camel-case boundaries matter: `reviewerUserId` and `approvedById` match, `hobbyId` does not.
+const IDENTITY_KEY_PATTERN = new RegExp([
+  '^(?:\\w+_)?(?:users?|requestedBy|modifiedBy|createdBy|updatedBy)(?:Ids?)?$',
+  '(?:^|_)(?:users?|requested_by|modified_by|created_by|updated_by)(?:_ids?)?$',
+  '[a-z0-9](?:User|By)Ids?$',
+  '[a-z0-9]Users?$',
+].join('|'));
+// TMDB credits (such as a show's `createdBy` creators) are public media data, not Jellyseerr users.
+const TMDB_CREDIT_FIELDS = ['creditId', 'credit_id', 'profilePath', 'profile_path'];
 // Staff actions on a request are never relayed, even on the caller's own request.
 const ALWAYS_STRIPPED_KEYS = new Set(['modifiedBy', 'modifiedById', 'updatedBy', 'updatedById']);
 // Keys that make an array entry (request, watchlist entry, issue, comment) belong to that user.
@@ -170,7 +178,7 @@ export class RequestBridge {
       if (!result.response.ok || result.response.status === 202) {
         // Jellyseerr messages can describe other users' requests, so only the status is relayed.
         const status = result.response.status >= 400 ? result.response.status : 409;
-        return json(response, status, { error: seerrErrorMessage(status) });
+        return json(response, status, { error: seerrErrorMessage(status, result.data.message) });
       }
       const access = this.access;
       return json(response, 200, {
@@ -319,7 +327,17 @@ function callerScopedPath(pathname: string, options: RelayOptions, session: Brid
   return `${url.pathname}${url.search}`;
 }
 
-function seerrErrorMessage(status: number): string {
+// Known Jellyseerr messages that only describe the caller, mapped to fixed wording.
+const SAFE_SEERR_MESSAGES: Array<[RegExp, string]> = [
+  [/quota exceeded/i, 'You have reached your request limit for now.'],
+  [/no seasons (?:left|available) to request/i, 'Every season of this show has already been requested.'],
+];
+
+function seerrErrorMessage(status: number, upstreamMessage: unknown): string {
+  if (typeof upstreamMessage === 'string') {
+    const safe = SAFE_SEERR_MESSAGES.find(([pattern]) => pattern.test(upstreamMessage));
+    if (safe) return safe[1];
+  }
   if (status === 400 || status === 422) return 'Jellyseerr could not accept that request.';
   if (status === 401 || status === 403) return 'Jellyseerr does not allow that operation for this profile.';
   if (status === 404) return 'Jellyseerr could not find that title.';
@@ -355,10 +373,12 @@ function scrubValue(value: unknown, context: ScrubContext): unknown {
         && (typeof entry !== 'string' || !context.canAccessItem(entry))) continue;
     if (IDENTITY_KEY_PATTERN.test(key) && entry !== null && entry !== undefined) {
       if (Array.isArray(entry)) {
-        result[key] = entry.filter((item) => isCallerValue(item, session)).map((item) => scrubValue(item, context));
+        result[key] = entry
+          .filter((item) => isTmdbCredit(item) || isCallerValue(item, session))
+          .map((item) => scrubValue(item, context));
         continue;
       }
-      if (!isCallerValue(entry, session)) continue;
+      if (!isTmdbCredit(entry) && !isCallerValue(entry, session)) continue;
     } else if (isOtherUser(entry, session)) {
       continue;
     }
@@ -367,7 +387,8 @@ function scrubValue(value: unknown, context: ScrubContext): unknown {
   if (Array.isArray(value.results) && Array.isArray(result.results) && result.results.length < value.results.length) {
     // Rows were withheld, so upstream totals would count other users' records.
     const visible = result.results.length;
-    if (isRecord(result.pageInfo)) result.pageInfo = { ...result.pageInfo, pages: 1, results: visible };
+    if (isRecord(result.pageInfo)) result.pageInfo = { ...result.pageInfo, page: 1, pages: 1, results: visible };
+    if ('page' in result) result.page = 1;
     if ('totalResults' in result) result.totalResults = visible;
     if ('totalPages' in result) result.totalPages = 1;
   }
@@ -379,7 +400,13 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function ownerValues(record: Record<string, unknown>): unknown[] {
-  return OWNER_KEYS.map((key) => record[key]).filter((owner) => owner !== null && owner !== undefined);
+  // An owner is a single user reference; lists such as TMDB `createdBy` creators do not own the record.
+  return OWNER_KEYS.map((key) => record[key])
+    .filter((owner) => owner !== null && owner !== undefined && !Array.isArray(owner) && !isTmdbCredit(owner));
+}
+
+function isTmdbCredit(value: unknown): boolean {
+  return isRecord(value) && !isUserRecord(value) && TMDB_CREDIT_FIELDS.some((field) => field in value);
 }
 
 function ownedByCaller(record: Record<string, unknown>, session: BridgeSession): boolean {
@@ -454,7 +481,8 @@ function allowedRequest(pathname: string, options: RelayOptions): boolean {
   if (/^\/jellyquest\/access(?:\/claims)?(?:\?|$)/.test(pathname)) {
     return method === 'GET' || (method === 'POST' && pathname === '/jellyquest/access');
   }
-  const allowedPath = /^\/api\/v1\/(?:media(?:\?|$)|request(?:\?|$)|search\?|movie\/\d+(?:\?|$)|tv\/\d+(?:\?|$)|discover\/)/.test(pathname);
+  // `/api/v1/media` is not relayed: its filters and sorts expose other households' activity.
+  const allowedPath = /^\/api\/v1\/(?:request(?:\?|$)|search\?|movie\/\d+(?:\?|$)|tv\/\d+(?:\?|$)|discover\/)/.test(pathname);
   return allowedPath && (method === 'GET' || (method === 'POST' && pathname === '/api/v1/request'));
 }
 
