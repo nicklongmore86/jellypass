@@ -93,7 +93,15 @@ export function makeServer(service: AccessService, tokens: ServerTokens, webAuth
         if (!authorized(request, tokens.webhook) && !sameToken(url.searchParams.get('token') ?? '', tokens.webhook)) {
           return json(response, 401, { error: 'unauthorized' });
         }
-        const result = await service.processWebhook(parseWebhook(await readJson(request)));
+        service.recordWebhookReceived();
+        let event: ReturnType<typeof parseWebhook>;
+        try {
+          event = parseWebhook(await readJson(request));
+        } catch (error) {
+          service.recordInvalidWebhook();
+          throw error;
+        }
+        const result = await service.processWebhook(event);
         return json(response, result ? 200 : 202, result ? { status: 'granted', grant: result } : { status: 'ignored' });
       }
       if (!authorized(request, tokens.admin) && !webAuth?.session(request)) {

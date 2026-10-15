@@ -13,11 +13,16 @@ import type {
   MediaAccessStatus,
   MediaClaim,
   RecentSeerrRequest,
+  RequestBackfillResult,
   RevokeResult,
+  SeerrRequest,
   SeerrWebhook,
 } from './types.js';
 
 export const TAG_PREFIX = 'jfa:private:';
+
+// Seerr media statuses: 4 = partially available, 5 = available.
+const AVAILABLE_MEDIA_STATUSES = new Set([4, 5]);
 
 interface PlanContext {
   plan: ChangePlan;
@@ -257,6 +262,15 @@ export class AccessService {
     return this.#metrics.render();
   }
 
+  /** Records that an authenticated webhook call arrived, before its body is parsed. */
+  public recordWebhookReceived(): void {
+    this.#metrics.gauge('jfa_last_webhook_received_timestamp_seconds', Math.floor(Date.now() / 1000));
+  }
+
+  public recordInvalidWebhook(): void {
+    this.#metrics.increment('jfa_webhooks_total', { result: 'invalid' });
+  }
+
   public processWebhook(event: SeerrWebhook): Promise<GrantRecord | null> {
     return this.#exclusive(async () => {
       if (event.notificationType !== 'MEDIA_AVAILABLE') {
@@ -268,6 +282,7 @@ export class AccessService {
         itemId: resolved.itemId,
         requestId: event.request.id,
         userId: resolved.userId,
+        groupIds: this.#store.listGroupIdsForUser(resolved.userId),
         ...(resolved.mediaType ? { mediaType: resolved.mediaType } : {}),
         ...(resolved.tmdbId !== undefined ? { tmdbId: resolved.tmdbId } : {}),
       });
@@ -290,9 +305,7 @@ export class AccessService {
 
     if ((!itemId || !userId || tmdbId === undefined) && this.#seerr) {
       const request = await this.#seerr.getRequest(event.request.id);
-      itemId = request.is4k
-        ? request.media?.jellyfinMediaId4k ?? request.media?.jellyfinMediaId
-        : request.media?.jellyfinMediaId;
+      itemId = requestItemId(request);
       userId = request.requestedBy?.jellyfinUserId;
       mediaType ??= request.media?.mediaType ?? request.type;
       tmdbId ??= request.media?.tmdbId;
@@ -304,6 +317,71 @@ export class AccessService {
     if (!itemId) throw new Error(`Seerr request ${event.request.id} is missing a Jellyfin media ID`);
     if (!userId) throw new Error(`Seerr request ${event.request.id} is missing a Jellyfin user ID`);
     return { itemId, userId, ...(mediaType ? { mediaType } : {}), ...(tmdbId !== undefined ? { tmdbId } : {}) };
+  }
+
+  /**
+   * Pull-based fallback for missed MEDIA_AVAILABLE webhooks: grants available Seerr requests
+   * created at or after `since` whose item has no grant yet. One request failing never stops
+   * the rest; failures are logged and counted.
+   */
+  public backfillRequests(since: Date): Promise<RequestBackfillResult> {
+    return this.#exclusive(async () => {
+      if (!this.#seerr) throw new Error('Seerr lookup is not configured');
+      const seerr = this.#seerr;
+      // Oldest first, so the original requester's household owns an item requested more than once.
+      const requests = (await seerr.listRequestsSince(since)).reverse();
+      const result: RequestBackfillResult = { scanned: requests.length, granted: [], skipped: 0, failed: 0 };
+      let knownUserIds: Set<string> | undefined;
+      for (const listed of requests) {
+        const requestId = String(listed.id);
+        try {
+          if (!AVAILABLE_MEDIA_STATUSES.has(requestMediaStatus(listed) ?? 0) || this.#store.hasHandledRequest(requestId)) {
+            result.skipped += 1;
+            continue;
+          }
+          const request = requestItemId(listed) && listed.requestedBy?.jellyfinUserId
+            ? listed
+            : await seerr.getRequest(requestId);
+          const itemId = requestItemId(request);
+          const userId = request.requestedBy?.jellyfinUserId;
+          if (!itemId || !userId || this.#store.get(itemId)) {
+            result.skipped += 1;
+            continue;
+          }
+          knownUserIds ??= new Set((await this.#jellyfin.getUsers()).map((user) => normalizeId(user.Id)));
+          if (!knownUserIds.has(normalizeId(userId))) {
+            result.skipped += 1;
+            continue;
+          }
+          await this.#jellyfin.getItem(itemId);
+          const mediaType = request.media?.mediaType ?? request.type;
+          const tmdbId = request.media?.tmdbId;
+          const grant = await this.#store.grant({
+            itemId,
+            requestId,
+            userId,
+            groupIds: this.#store.listGroupIdsForUser(userId),
+            ...(mediaType ? { mediaType } : {}),
+            ...(tmdbId !== undefined ? { tmdbId } : {}),
+          });
+          result.granted.push(grant.itemId);
+          this.#metrics.increment('jfa_request_backfill_total', { result: 'granted' });
+          console.log(JSON.stringify({ level: 'info', message: 'request backfill granted item', requestId, itemId: grant.itemId, groupIds: grant.groupIds }));
+          await this.#reconcileGrant(grant);
+        } catch (error) {
+          result.failed += 1;
+          this.#metrics.increment('jfa_request_backfill_total', { result: 'error' });
+          console.error(JSON.stringify({
+            level: 'error',
+            message: 'request backfill failed',
+            requestId,
+            detail: error instanceof Error ? error.message : String(error),
+          }));
+        }
+      }
+      this.#metrics.gauge('jfa_request_backfill_last_run_timestamp_seconds', Math.floor(Date.now() / 1000));
+      return result;
+    });
   }
 
   public reconcileAll(options: { dryRun?: boolean; dueOnly?: boolean } = {}): Promise<ChangePlan[]> {
@@ -703,6 +781,16 @@ function isDue(grant: GrantRecord): boolean {
   if (grant.sync.state === 'pending') return true;
   if (grant.sync.state === 'synced') return true;
   return !grant.sync.nextRetryAt || Date.parse(grant.sync.nextRetryAt) <= Date.now();
+}
+
+function requestItemId(request: SeerrRequest): string | undefined {
+  return request.is4k
+    ? request.media?.jellyfinMediaId4k ?? request.media?.jellyfinMediaId
+    : request.media?.jellyfinMediaId;
+}
+
+function requestMediaStatus(request: SeerrRequest): number | undefined {
+  return request.is4k ? request.media?.status4k : request.media?.status;
 }
 
 function hypotheticalRevocation(grant: GrantRecord, requestId: string, store: GrantStore): GrantRecord {

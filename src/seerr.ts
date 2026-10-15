@@ -9,8 +9,8 @@ interface SeerrRequestList {
     is4k?: boolean;
     createdAt?: string;
     seasonCount?: number;
-    media?: { mediaType?: string; tmdbId?: number; status?: number; jellyfinMediaId?: string; jellyfinMediaId4k?: string };
-    requestedBy?: { displayName?: string; username?: string };
+    media?: { mediaType?: string; tmdbId?: number; status?: number; status4k?: number; jellyfinMediaId?: string; jellyfinMediaId4k?: string };
+    requestedBy?: { displayName?: string; username?: string; jellyfinUserId?: string };
   }>;
 }
 
@@ -69,6 +69,33 @@ export class SeerrClient {
       skip += users.length;
     }
     return false;
+  }
+
+  /**
+   * Pages through Seerr requests newest first and stops once a whole page was created before
+   * `since`, so the backfill does not walk the entire request history on every run.
+   */
+  public async listRequestsSince(since: Date): Promise<SeerrRequest[]> {
+    const requests: SeerrRequest[] = [];
+    const pageSize = 50;
+    let skip = 0;
+    let total = Number.POSITIVE_INFINITY;
+    while (skip < total) {
+      const list = await this.#getJson<SeerrRequestList>(`/api/v1/request?take=${pageSize}&skip=${skip}&sort=added`);
+      const page = list.results ?? [];
+      total = list.pageInfo?.results ?? skip + page.length;
+      let recent = 0;
+      for (const request of page) {
+        if (!Number.isInteger(request.id)) continue;
+        const createdAt = typeof request.createdAt === 'string' ? Date.parse(request.createdAt) : Number.NaN;
+        if (!Number.isFinite(createdAt) || createdAt < since.getTime()) continue;
+        recent += 1;
+        requests.push(request as SeerrRequest);
+      }
+      if (!page.length || recent === 0) break;
+      skip += page.length;
+    }
+    return requests;
   }
 
   public async getRecentRequests(take = 8, jellyfinItemIds?: ReadonlySet<string>): Promise<RecentSeerrRequest[]> {

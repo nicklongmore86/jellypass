@@ -15,6 +15,8 @@ export interface Config {
   catalogSyncIntervalSeconds: number;
   householdDomain?: string;
   householdHostPrefix: string;
+  requestBackfillEnabled: boolean;
+  requestBackfillSince?: Date;
 }
 
 function required(name: string): string {
@@ -49,6 +51,18 @@ export function loadConfig(): Config {
   if (jellyquestBridgeEnabled && !seerrUrl) {
     throw new Error('SEERR_URL and SEERR_API_KEY are required when JELLYQUEST_BRIDGE_ENABLED is true');
   }
+  const backfillSinceInput = process.env.REQUEST_BACKFILL_SINCE?.trim();
+  const requestBackfillSince = backfillSinceInput ? new Date(backfillSinceInput) : undefined;
+  if (requestBackfillSince && (!/^\d{4}-\d{2}-\d{2}/.test(backfillSinceInput!) || Number.isNaN(requestBackfillSince.getTime()))) {
+    throw new Error('REQUEST_BACKFILL_SINCE must be an ISO 8601 date or date-time');
+  }
+  const requestBackfillEnabled = booleanEnvironment('REQUEST_BACKFILL_ENABLED', Boolean(requestBackfillSince));
+  if (requestBackfillEnabled && !requestBackfillSince) {
+    throw new Error('REQUEST_BACKFILL_SINCE is required when REQUEST_BACKFILL_ENABLED is true');
+  }
+  if (requestBackfillEnabled && !seerrUrl) {
+    throw new Error('SEERR_URL and SEERR_API_KEY are required when REQUEST_BACKFILL_ENABLED is true');
+  }
   const householdDomain = process.env.HOUSEHOLD_DOMAIN?.trim().toLowerCase().replace(/^\.+|\.+$/g, '');
   if (householdDomain && !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(householdDomain)) {
     throw new Error('HOUSEHOLD_DOMAIN must be a valid DNS domain');
@@ -78,6 +92,8 @@ export function loadConfig(): Config {
     catalogSyncIntervalSeconds,
     ...(householdDomain ? { householdDomain } : {}),
     householdHostPrefix,
+    requestBackfillEnabled,
+    ...(requestBackfillSince ? { requestBackfillSince } : {}),
   };
 }
 

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import { AccessService, accessTag, sameStringSet } from '../dist/access-service.js';
+import { SeerrClient } from '../dist/seerr.js';
 import { GrantStore } from '../dist/store.js';
 import { parseWebhook } from '../dist/webhook.js';
 
@@ -287,6 +288,190 @@ describe('grant lifecycle', () => {
   });
 });
 
+describe('household-scoped request grants', () => {
+  async function twoHouseholds() {
+    const store = new GrantStore(await stateFile());
+    await store.load();
+    const fake = fakeJellyfin({ extraUsers: [{ Id: 'carol-id', Name: 'Carol' }, { Id: 'dave-id', Name: 'Dave' }] });
+    const service = new AccessService(fake, store);
+    await service.upsertGroup({ id: 'house-a', name: 'House A', userIds: ['alice-id', 'bob-id'] });
+    await service.upsertGroup({ id: 'house-b', name: 'House B', userIds: ['carol-id'] });
+    return { store, fake, service };
+  }
+
+  it('shares a webhook grant with the requester household and blocks other households', async () => {
+    const { store, fake, service } = await twoHouseholds();
+
+    const grant = await service.processWebhook(parseWebhook(webhook()));
+    assert.deepEqual(grant.groupIds, ['house-a']);
+    assert.deepEqual(grant.requests, { '17': 'alice-id' });
+    assert.deepEqual(grant.owners, ['alice-id', 'bob-id']);
+    assert.deepEqual(fake.user('bob-id').Policy.BlockedTags, ['other']);
+    assert.deepEqual(fake.user('carol-id').Policy.BlockedTags, ['jfa:private:item-1']);
+    assert.deepEqual(fake.user('dave-id').Policy.BlockedTags, ['jfa:private:item-1']);
+    assert.equal(store.get('item-1').sync.state, 'synced');
+  });
+
+  it('keeps a user-only grant when the requester belongs to no household', async () => {
+    const { fake, service } = await twoHouseholds();
+
+    const grant = await service.processWebhook(parseWebhook(webhook({ userId: 'dave-id' })));
+    assert.deepEqual(grant.groupIds, []);
+    assert.deepEqual(grant.owners, ['dave-id']);
+    assert.deepEqual(fake.user('bob-id').Policy.BlockedTags, ['other', 'jfa:private:item-1']);
+    assert.deepEqual(fake.user('dave-id').Policy.BlockedTags, []);
+  });
+
+  it('attaches every household of a requester who belongs to several', async () => {
+    const { service } = await twoHouseholds();
+    await service.upsertGroup({ id: 'house-b', name: 'House B', userIds: ['carol-id', 'alice-id'] });
+
+    const grant = await service.processWebhook(parseWebhook(webhook()));
+    assert.deepEqual(grant.groupIds, ['house-a', 'house-b']);
+    assert.deepEqual(grant.owners, ['alice-id', 'bob-id', 'carol-id']);
+  });
+
+  it('preserves manually assigned groups and users when a request is granted', async () => {
+    const { store, fake, service } = await twoHouseholds();
+    await service.setManualAccess({ itemId: 'item-1', mediaType: 'movie', userIds: ['dave-id'], groupIds: ['house-b'] });
+
+    const grant = await service.processWebhook(parseWebhook(webhook()));
+    assert.deepEqual(grant.groupIds, ['house-a', 'house-b']);
+    assert.deepEqual(grant.manualUserIds, ['dave-id']);
+    assert.deepEqual(store.get('item-1').owners, ['alice-id', 'bob-id', 'carol-id', 'dave-id']);
+    assert.deepEqual(fake.user('carol-id').Policy.BlockedTags, []);
+  });
+});
+
+describe('Seerr request backfill', () => {
+  const since = new Date('2026-10-01T00:00:00.000Z');
+
+  function seerrRequest(id, overrides = {}) {
+    return {
+      id,
+      type: 'movie',
+      is4k: false,
+      createdAt: '2026-10-10T00:00:00.000Z',
+      requestedBy: { displayName: 'Alice', jellyfinUserId: 'alice-id' },
+      media: { mediaType: 'movie', tmdbId: 1000 + id, status: 5, jellyfinMediaId: 'item-1' },
+      ...overrides,
+    };
+  }
+
+  async function withSeerr(listed, details, run) {
+    const originalFetch = globalThis.fetch;
+    const calls = [];
+    globalThis.fetch = async (input) => {
+      const url = new URL(String(input));
+      calls.push(`${url.pathname}${url.search}`);
+      if (url.pathname === '/api/v1/request') {
+        const skip = Number(url.searchParams.get('skip'));
+        const take = Number(url.searchParams.get('take'));
+        return Response.json({ pageInfo: { results: listed.length }, results: listed.slice(skip, skip + take) });
+      }
+      const match = url.pathname.match(/^\/api\/v1\/request\/(\d+)$/);
+      if (match && details[match[1]]) return Response.json(details[match[1]]);
+      return new Response('boom', { status: 500 });
+    };
+    try {
+      const store = new GrantStore(await stateFile());
+      await store.load();
+      const fake = fakeJellyfin({ extraUsers: [{ Id: 'carol-id', Name: 'Carol' }] });
+      const service = new AccessService(fake, store, undefined, new SeerrClient('http://seerr.test', 'key'));
+      await service.upsertGroup({ id: 'house-a', name: 'House A', userIds: ['alice-id', 'bob-id'] });
+      await service.upsertGroup({ id: 'house-b', name: 'House B', userIds: ['carol-id'] });
+      await run({ store, fake, service, calls });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }
+
+  it('grants available requests since the cutoff to the requester household and skips the rest', async () => {
+    const listed = [
+      seerrRequest(206, { media: { mediaType: 'movie', tmdbId: 1206, status: 5 }, requestedBy: {} }),
+      seerrRequest(205, { media: { mediaType: 'movie', tmdbId: 1205, status: 5 }, requestedBy: {} }),
+      seerrRequest(204, { requestedBy: { jellyfinUserId: 'ghost-id' }, media: { mediaType: 'tv', tmdbId: 1204, status: 5, jellyfinMediaId: 'item-2' } }),
+      seerrRequest(203, { media: { mediaType: 'tv', tmdbId: 1203, status: 3, jellyfinMediaId: 'item-2' } }),
+      seerrRequest(202, { requestedBy: { jellyfinUserId: 'bob-id' }, media: { mediaType: 'movie', tmdbId: 1201, status: 4, jellyfinMediaId: 'item-1' } }),
+      seerrRequest(201, { media: { mediaType: 'movie', tmdbId: 1201, status: 4, jellyfinMediaId: 'item-1' } }),
+      seerrRequest(200, { createdAt: '2026-09-30T23:59:59.000Z', media: { mediaType: 'tv', tmdbId: 1200, status: 5, jellyfinMediaId: 'item-2' } }),
+    ];
+    // 206 resolves to nothing; 205's lookup fails outright.
+    const details = { 206: { id: 206, media: { mediaType: 'movie' } } };
+    await withSeerr(listed, details, async ({ store, fake, service, calls }) => {
+      const result = await service.backfillRequests(since);
+      assert.equal(result.scanned, 6);
+      assert.deepEqual(result.granted, ['item-1']);
+      assert.equal(result.failed, 1);
+      assert.equal(result.skipped, 4);
+
+      const grant = store.get('item-1');
+      assert.deepEqual(grant.requests, { '201': 'alice-id' });
+      assert.deepEqual(grant.groupIds, ['house-a']);
+      assert.equal(grant.sync.state, 'synced');
+      assert.deepEqual(fake.item.Tags, ['keep-me', 'jfa:private:item-1']);
+      assert.deepEqual(fake.user('bob-id').Policy.BlockedTags, ['other']);
+      assert.deepEqual(fake.user('carol-id').Policy.BlockedTags, ['jfa:private:item-1']);
+      assert.equal(store.get('item-2'), undefined, 'pre-cutoff, unavailable and unknown-requester items stay public');
+      assert.deepEqual(fake.item2.Tags, []);
+      assert.ok(calls.includes('/api/v1/request/206'));
+      assert.ok(calls.includes('/api/v1/request/205'));
+
+      const metrics = service.renderMetrics();
+      assert.match(metrics, /jfa_request_backfill_total\{result="granted"\} 1/);
+      assert.match(metrics, /jfa_request_backfill_total\{result="error"\} 1/);
+      assert.match(metrics, /jfa_request_backfill_last_run_timestamp_seconds \d{10}/);
+
+      const again = await service.backfillRequests(since);
+      assert.deepEqual(again.granted, []);
+      assert.deepEqual(store.get('item-1').requests, { '201': 'alice-id' });
+    });
+  });
+
+  it('leaves existing grants and their manual audience untouched', async () => {
+    const listed = [seerrRequest(301, { requestedBy: { jellyfinUserId: 'carol-id' } })];
+    await withSeerr(listed, {}, async ({ store, service }) => {
+      await service.setManualAccess({ itemId: 'item-1', mediaType: 'movie', userIds: ['bob-id'], groupIds: ['house-a'] });
+      const before = store.get('item-1');
+
+      const result = await service.backfillRequests(since);
+      assert.deepEqual(result.granted, []);
+      assert.equal(result.skipped, 1);
+      const after = store.get('item-1');
+      assert.deepEqual(after.requests, {});
+      assert.deepEqual(after.groupIds, before.groupIds);
+      assert.deepEqual(after.manualUserIds, ['bob-id']);
+    });
+  });
+
+  it('does not re-create a grant an administrator removed after a webhook or backfill', async () => {
+    const listed = [seerrRequest(401)];
+    await withSeerr(listed, {}, async ({ store, service }) => {
+      assert.deepEqual((await service.backfillRequests(since)).granted, ['item-1']);
+      await service.revokeRequest('item-1', '401');
+      await service.setGrantGroups('item-1', []);
+      assert.equal(store.get('item-1'), undefined);
+
+      const result = await service.backfillRequests(since);
+      assert.deepEqual(result.granted, []);
+      assert.equal(store.get('item-1'), undefined);
+    });
+  });
+
+  it('stops paging once a whole page predates the cutoff', async () => {
+    const recent = Array.from({ length: 50 }, (_, index) => seerrRequest(600 - index, { media: { status: 3 } }));
+    const old = Array.from({ length: 60 }, (_, index) => seerrRequest(500 - index, { createdAt: '2026-01-01T00:00:00.000Z' }));
+    await withSeerr([...recent, ...old], {}, async ({ service, calls }) => {
+      const result = await service.backfillRequests(since);
+      assert.equal(result.scanned, 50);
+      assert.deepEqual(calls.filter((call) => call.startsWith('/api/v1/request?')), [
+        '/api/v1/request?take=50&skip=0&sort=added',
+        '/api/v1/request?take=50&skip=50&sort=added',
+      ]);
+    });
+  });
+});
+
 function webhook(overrides = {}) {
   return {
     notificationType: 'MEDIA_AVAILABLE',
@@ -302,11 +487,12 @@ function webhook(overrides = {}) {
   };
 }
 
-function fakeJellyfin() {
+function fakeJellyfin({ extraUsers = [] } = {}) {
   const users = [
     { Id: 'alice-id', Name: 'Alice', Policy: { BlockedTags: ['other'] } },
     { Id: 'bob-id', Name: 'Bob', Policy: { BlockedTags: ['other'] } },
     { Id: 'admin-id', Name: 'Admin', Policy: { IsAdministrator: true, BlockedTags: [] } },
+    ...extraUsers.map((user) => ({ Policy: { BlockedTags: [] }, ...user })),
   ];
   const localTrailers = new Map();
   let policyUpdates = 0;
