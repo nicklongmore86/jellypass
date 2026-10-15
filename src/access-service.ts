@@ -52,6 +52,7 @@ export class AccessService {
   readonly #metrics: Metrics;
   readonly #seerr: SeerrClient | undefined;
   #queue: Promise<void> = Promise.resolve();
+  readonly #backfillMissingItems = new Set<string>();
 
   public constructor(jellyfin: JellyfinClient, store: GrantStore, metrics = new Metrics(), seerr?: SeerrClient) {
     this.#jellyfin = jellyfin;
@@ -322,14 +323,17 @@ export class AccessService {
 
   /**
    * Pull-based fallback for missed MEDIA_AVAILABLE webhooks: grants available Seerr requests
-   * created at or after `since` whose item has no grant yet. One request failing never stops
-   * the rest; failures are logged and counted.
+   * created at or after `since`. A request for an item with no grant creates one; a request for
+   * an item whose grant came from other requests is added to it (additively, with the
+   * requester's households). Manual-only grants are left alone. Each request counts as exactly
+   * one outcome: granted (stored and reconciled), skipped, or failed (including a grant that was
+   * stored but could not be reconciled yet; reconcileAll retries it).
    */
   public backfillRequests(since: Date): Promise<RequestBackfillResult> {
     return this.#exclusive(async () => {
       if (!this.#seerr) throw new Error('Seerr lookup is not configured');
       const seerr = this.#seerr;
-      // Oldest first, so the original requester's household owns an item requested more than once.
+      // Oldest first, so a grant's first request comes from the original requester.
       const requests = (await seerr.listRequestsSince(since)).reverse();
       const result: RequestBackfillResult = { scanned: requests.length, granted: [], skipped: 0, failed: 0 };
       let knownUserIds: Set<string> | undefined;
@@ -340,12 +344,13 @@ export class AccessService {
             result.skipped += 1;
             continue;
           }
-          const request = requestItemId(listed) && listed.requestedBy?.jellyfinUserId
+          const request = backfillItemId(listed) && listed.requestedBy?.jellyfinUserId
             ? listed
             : await seerr.getRequest(requestId);
-          const itemId = requestItemId(request);
+          const itemId = backfillItemId(request);
           const userId = request.requestedBy?.jellyfinUserId;
-          if (!itemId || !userId || this.#store.get(itemId)) {
+          const existing = itemId ? this.#store.get(itemId) : undefined;
+          if (!itemId || !userId || (existing && (Object.keys(existing.requests).length === 0 || requestId in existing.requests))) {
             result.skipped += 1;
             continue;
           }
@@ -354,7 +359,17 @@ export class AccessService {
             result.skipped += 1;
             continue;
           }
-          await this.#jellyfin.getItem(itemId);
+          try {
+            await this.#jellyfin.getItem(itemId);
+          } catch (error) {
+            if ((error as { status?: unknown }).status !== 404) throw error;
+            result.skipped += 1;
+            if (!this.#backfillMissingItems.has(requestId)) {
+              this.#backfillMissingItems.add(requestId);
+              console.log(JSON.stringify({ level: 'debug', message: 'request backfill skipped missing Jellyfin item', requestId, itemId }));
+            }
+            continue;
+          }
           const mediaType = request.media?.mediaType ?? request.type;
           const tmdbId = request.media?.tmdbId;
           const grant = await this.#store.grant({
@@ -365,10 +380,10 @@ export class AccessService {
             ...(mediaType ? { mediaType } : {}),
             ...(tmdbId !== undefined ? { tmdbId } : {}),
           });
+          await this.#reconcileGrant(grant);
           result.granted.push(grant.itemId);
           this.#metrics.increment('jfa_request_backfill_total', { result: 'granted' });
           console.log(JSON.stringify({ level: 'info', message: 'request backfill granted item', requestId, itemId: grant.itemId, groupIds: grant.groupIds }));
-          await this.#reconcileGrant(grant);
         } catch (error) {
           result.failed += 1;
           this.#metrics.increment('jfa_request_backfill_total', { result: 'error' });
@@ -788,6 +803,12 @@ function requestItemId(request: SeerrRequest): string | undefined {
   return request.is4k
     ? request.media?.jellyfinMediaId4k ?? request.media?.jellyfinMediaId
     : request.media?.jellyfinMediaId;
+}
+
+// Unlike requestItemId, a 4K request never falls back to the HD item: the backfill must not
+// privatize an HD title that was public before the cutoff.
+function backfillItemId(request: SeerrRequest): string | undefined {
+  return request.is4k ? request.media?.jellyfinMediaId4k : request.media?.jellyfinMediaId;
 }
 
 function requestMediaStatus(request: SeerrRequest): number | undefined {

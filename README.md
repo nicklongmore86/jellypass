@@ -80,7 +80,7 @@ it appears in the catalog. A grant is created by one of these events:
 
 - JellyPass receives Jellyseerr's `MEDIA_AVAILABLE` webhook for a request.
 - The optional request backfill finds an available request created after
-  `REQUEST_BACKFILL_SINCE` that has no grant yet.
+  `REQUEST_BACKFILL_SINCE` that the webhook missed.
 - A JellyQuest user makes a self-service access claim.
 - An administrator assigns access from the Library tab or API.
 
@@ -193,7 +193,7 @@ JellyPass reads configuration from environment variables at startup.
 | `CATALOG_SYNC_INTERVAL_SECONDS` | No | `3600` | Jellyfin catalog refresh interval; `0` disables scheduling. Maximum `604800`. |
 | `HOUSEHOLD_DOMAIN` | No | — | Enables household hostnames below this DNS domain. |
 | `HOUSEHOLD_HOST_PREFIX` | No | `jelly-` | Prefix placed before each DNS-safe group ID. |
-| `REQUEST_BACKFILL_SINCE` | No | — | ISO 8601 date or date-time, such as `2026-10-15`. Requests created before it are never imported by the backfill. |
+| `REQUEST_BACKFILL_SINCE` | No | — | `YYYY-MM-DD` (UTC midnight) or an ISO 8601 date-time with `Z` or an offset, such as `2026-10-15T08:00:00+02:00`. Impossible dates are rejected. Requests created before it are never imported by the backfill. |
 | `REQUEST_BACKFILL_ENABLED` | No | `true` when `REQUEST_BACKFILL_SINCE` is set, otherwise `false` | Grants available Seerr requests that the webhook missed. Requires Seerr/Jellyseerr configuration and `REQUEST_BACKFILL_SINCE`. |
 | `JELLYPASS_IMAGE` | Compose only | `ghcr.io/nicklongmore86/jellypass:latest` | Container tag used by `compose.yaml`. |
 | `JELLYPASS_ENV_FILE` | Compose only | `.env` | Alternate environment-file path used by either Compose file. |
@@ -206,25 +206,47 @@ the impact of a leaked webhook URL or notification configuration.
 
 The `MEDIA_AVAILABLE` webhook is the fast path, but some Seerr releases fail to
 deliver it or do not expose webhook settings at all. With the request backfill
-enabled, every reconciliation cycle (`RECONCILE_INTERVAL_SECONDS`; `0` disables
-it) pages `GET /api/v1/request` and creates a household-scoped grant for each
-request that:
+enabled, JellyPass runs it once about five seconds after startup and then before
+every reconciliation cycle (`RECONCILE_INTERVAL_SECONDS`; with `0` it runs only
+at startup). It pages `GET /api/v1/request` and records each request that:
 
 - was created at or after `REQUEST_BACKFILL_SINCE`,
-- has media that is available or partially available (the 4K status and
-  `jellyfinMediaId4k` for 4K requests),
+- has media that is available or partially available,
 - has a Jellyfin media ID and a requester linked to an existing Jellyfin user,
-- targets an item with no existing grant, and
-- has not already produced a grant from a webhook or an earlier backfill run.
+- targets a Jellyfin item that still exists, and
+- has not already been recorded by a webhook or an earlier backfill run.
+
+If the item has no grant, the request creates a household-scoped one. If the
+item already has a grant that came from other requests, for example another
+household requesting a different season, the request is added to it along with
+the requester's households. Nothing already on the grant is removed. Items with
+a manual-only grant (no requests) are left exactly as the administrator set
+them.
+
+For 4K requests, the backfill uses the 4K availability status and
+`jellyfinMediaId4k` only. A 4K request without a 4K item is skipped rather than
+falling back to the HD item, so it cannot privatize an HD title that was public
+before the cutoff. The webhook path still falls back to the HD item.
 
 The cutoff exists so that titles that were already public before JellyPass
 managed them stay public. Set it to the date you start relying on JellyPass,
-never to an early date that would make a whole back catalogue private. The
-backfill is idempotent: a grant an administrator later revokes or clears is not
-recreated. A request that cannot be resolved is skipped; a request whose lookup
-or Jellyfin update fails is logged and counted, and the rest still run. When the
-same item was requested more than once, the oldest request's household owns the
-grant.
+never to an early date that would make a whole back catalogue private.
+
+The backfill is idempotent. Every request recorded on a grant is remembered,
+including requests on grants that existed before this feature (seeded when the
+state file loads), so a grant an administrator later revokes or clears is not
+recreated. Each request is counted as exactly one outcome:
+
+- **granted** (`jfa_request_backfill_total{result="granted"}`): the grant was
+  stored and applied to Jellyfin.
+- **error** (`{result="error"}`): the lookup failed, or the grant was stored but
+  could not be applied yet. Such a grant stays in an error state and the regular
+  reconciliation retries it; it is not also counted as granted.
+- **skipped** (not exported): not available, before the cutoff, already
+  recorded, unresolvable, or the Jellyfin item was deleted. A deleted item is
+  logged once at `debug`, not as an error on every cycle.
+
+A failure on one request never stops the rest of the run.
 
 ### Network addresses
 
@@ -290,7 +312,9 @@ prefer the bearer header whenever possible.
 After configuration, use Jellyseerr's test function if available. Every event
 other than `MEDIA_AVAILABLE`, including Seerr's `TEST_NOTIFICATION`, returns
 `202` with `{"status":"ignored"}` once the token is accepted, even though Seerr
-sends an empty request ID for test events. A `202` therefore proves only that
+sends an empty request ID for test events. The `notificationType` itself must
+still be a real value made of uppercase letters and underscores; an unfilled
+`{{notification_type}}` returns `400` and is counted as invalid. A `202` therefore proves only that
 JellyPass is reachable and the token is correct, not that the payload works:
 `MEDIA_AVAILABLE` events are validated strictly, and a missing, empty, or
 unfilled `{{...}}` ID returns `400` and is counted as
@@ -515,8 +539,8 @@ If `jfa_last_webhook_received_timestamp_seconds` is absent from `/metrics`, no
 authenticated webhook has reached JellyPass since it started. If
 `jfa_webhooks_total{result="invalid"}` grows, webhooks arrive but their body is
 malformed; re-save the payload through Seerr's webhook form. In either case,
-`jfa_request_backfill_total{result="granted"}` shows grants the backfill created
-instead, and `{result="error"}` counts requests it could not process.
+`jfa_request_backfill_total{result="granted"}` shows requests the backfill
+applied instead, and `{result="error"}` counts requests it could not process.
 
 ### Webhook returns `401`
 

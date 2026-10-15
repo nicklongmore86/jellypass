@@ -80,6 +80,8 @@ async function main(): Promise<void> {
       requestBackfillSince: backfillSince?.toISOString() ?? null,
     }));
     if (service.getLibraryCatalog().items.length === 0) void syncCatalog();
+    // Catch up on missed webhooks now rather than one reconcile interval after startup.
+    if (backfillSince) setTimeout(() => void backfillRequests(), 5_000).unref();
   });
 
   const shutdown = () => {

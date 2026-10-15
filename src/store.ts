@@ -17,7 +17,14 @@ export class GrantStore {
       const parsed = JSON.parse(await readFile(this.#file, 'utf8')) as unknown;
       const migrated = migrateState(parsed);
       this.#state = migrated.state;
-      if (migrated.changed) await this.#save();
+      // Requests already on grants (including ones recorded before handledRequestIds existed)
+      // count as handled, so the backfill never re-imports one an administrator later removed.
+      const handled = new Set(this.#state.handledRequestIds ?? []);
+      const before = handled.size;
+      for (const grant of Object.values(this.#state.grants)) Object.keys(grant.requests).forEach((id) => handled.add(id));
+      const seeded = this.#state.handledRequestIds === undefined || handled.size !== before;
+      if (seeded) this.#state.handledRequestIds = [...handled];
+      if (migrated.changed || seeded) await this.#save();
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
       await this.#save();

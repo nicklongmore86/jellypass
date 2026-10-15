@@ -452,6 +452,14 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.equal(emptyAvailableId.status, 400);
     assert.deepEqual(await emptyAvailableId.json(), { error: 'id must be a non-empty string' });
 
+    const unfilledType = await fetch(`${bridgeUrl}/webhooks/seerr`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer webhook-secret', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notificationType: '{{notification_type}}', request: { id: '' } }),
+    });
+    assert.equal(unfilledType.status, 400);
+    assert.deepEqual(await unfilledType.json(), { error: 'notificationType is invalid' });
+
     const malformed = await fetch(`${bridgeUrl}/webhooks/seerr`, {
       method: 'POST',
       headers: { Authorization: 'Bearer webhook-secret', 'Content-Type': 'application/json' },
@@ -502,7 +510,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     const metricsText = await metrics.text();
     assert.match(metricsText, /jfa_webhooks_total\{result="granted"\} 1/);
     assert.match(metricsText, /jfa_webhooks_total\{result="ignored"\} 3/);
-    assert.match(metricsText, /jfa_webhooks_total\{result="invalid"\} 2/);
+    assert.match(metricsText, /jfa_webhooks_total\{result="invalid"\} 3/);
     assert.match(metricsText, /jfa_last_webhook_received_timestamp_seconds \d{10}/);
 
     const plan = await fetch(`${bridgeUrl}/v1/grants/item-1/plan`, { headers: { Authorization: 'Bearer admin-secret' } });

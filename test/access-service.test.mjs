@@ -32,6 +32,9 @@ describe('access tags and webhook validation', () => {
     assert.throws(() => parseWebhook({ notificationType: 'MEDIA_AVAILABLE' }), /request must be an object/);
     assert.throws(() => parseWebhook({ notificationType: 'MEDIA_AVAILABLE', request: { id: '{{request_id}}' } }), /invalid/);
     assert.throws(() => parseWebhook({ request: { id: '1' } }), /notificationType/);
+    assert.throws(() => parseWebhook({ notificationType: '{{notification_type}}', request: { id: '' } }), /notificationType is invalid/);
+    assert.throws(() => parseWebhook({ notificationType: 'media_available' }), /notificationType is invalid/);
+    assert.throws(() => parseWebhook({ notificationType: 'TEST NOTIFICATION' }), /notificationType is invalid/);
 
     const store = new GrantStore(await stateFile());
     await store.load();
@@ -374,7 +377,7 @@ describe('Seerr request backfill', () => {
     };
   }
 
-  async function withSeerr(listed, details, run) {
+  async function withSeerr(listed, details, run, existingStore) {
     const originalFetch = globalThis.fetch;
     const calls = [];
     globalThis.fetch = async (input) => {
@@ -390,12 +393,14 @@ describe('Seerr request backfill', () => {
       return new Response('boom', { status: 500 });
     };
     try {
-      const store = new GrantStore(await stateFile());
-      await store.load();
+      const store = existingStore ?? new GrantStore(await stateFile());
+      if (!existingStore) await store.load();
       const fake = fakeJellyfin({ extraUsers: [{ Id: 'carol-id', Name: 'Carol' }] });
       const service = new AccessService(fake, store, undefined, new SeerrClient('http://seerr.test', 'key'));
-      await service.upsertGroup({ id: 'house-a', name: 'House A', userIds: ['alice-id', 'bob-id'] });
-      await service.upsertGroup({ id: 'house-b', name: 'House B', userIds: ['carol-id'] });
+      if (!existingStore) {
+        await service.upsertGroup({ id: 'house-a', name: 'House A', userIds: ['alice-id', 'bob-id'] });
+        await service.upsertGroup({ id: 'house-b', name: 'House B', userIds: ['carol-id'] });
+      }
       await run({ store, fake, service, calls });
     } finally {
       globalThis.fetch = originalFetch;
@@ -417,12 +422,13 @@ describe('Seerr request backfill', () => {
     await withSeerr(listed, details, async ({ store, fake, service, calls }) => {
       const result = await service.backfillRequests(since);
       assert.equal(result.scanned, 6);
-      assert.deepEqual(result.granted, ['item-1']);
+      // 202 is a second request for item-1, so it is added to the grant 201 created.
+      assert.deepEqual(result.granted, ['item-1', 'item-1']);
       assert.equal(result.failed, 1);
-      assert.equal(result.skipped, 4);
+      assert.equal(result.skipped, 3);
 
       const grant = store.get('item-1');
-      assert.deepEqual(grant.requests, { '201': 'alice-id' });
+      assert.deepEqual(grant.requests, { '201': 'alice-id', '202': 'bob-id' });
       assert.deepEqual(grant.groupIds, ['house-a']);
       assert.equal(grant.sync.state, 'synced');
       assert.deepEqual(fake.item.Tags, ['keep-me', 'jfa:private:item-1']);
@@ -434,13 +440,13 @@ describe('Seerr request backfill', () => {
       assert.ok(calls.includes('/api/v1/request/205'));
 
       const metrics = service.renderMetrics();
-      assert.match(metrics, /jfa_request_backfill_total\{result="granted"\} 1/);
+      assert.match(metrics, /jfa_request_backfill_total\{result="granted"\} 2/);
       assert.match(metrics, /jfa_request_backfill_total\{result="error"\} 1/);
       assert.match(metrics, /jfa_request_backfill_last_run_timestamp_seconds \d{10}/);
 
       const again = await service.backfillRequests(since);
       assert.deepEqual(again.granted, []);
-      assert.deepEqual(store.get('item-1').requests, { '201': 'alice-id' });
+      assert.deepEqual(store.get('item-1').requests, { '201': 'alice-id', '202': 'bob-id' });
     });
   });
 
@@ -472,6 +478,128 @@ describe('Seerr request backfill', () => {
       assert.deepEqual(result.granted, []);
       assert.equal(store.get('item-1'), undefined);
     });
+  });
+
+  it('adds a later request from another household to a request-originated grant', async () => {
+    const listed = [
+      seerrRequest(702, { requestedBy: { jellyfinUserId: 'carol-id' }, media: { mediaType: 'tv', tmdbId: 1700, status: 5, jellyfinMediaId: 'item-2' } }),
+      seerrRequest(701, { media: { mediaType: 'tv', tmdbId: 1700, status: 4, jellyfinMediaId: 'item-2' } }),
+    ];
+    await withSeerr(listed, {}, async ({ store, fake, service }) => {
+      const result = await service.backfillRequests(since);
+      assert.deepEqual(result.granted, ['item-2', 'item-2']);
+      const grant = store.get('item-2');
+      assert.deepEqual(grant.requests, { '701': 'alice-id', '702': 'carol-id' });
+      assert.deepEqual(grant.groupIds, ['house-a', 'house-b']);
+      assert.deepEqual(fake.user('carol-id').Policy.BlockedTags, []);
+      assert.deepEqual(fake.user('bob-id').Policy.BlockedTags, ['other']);
+      assert.deepEqual(fake.item2.Tags, ['jfa:private:item-2']);
+    });
+  });
+
+  it('adds a backfilled request to an existing webhook grant without removing anything', async () => {
+    const listed = [seerrRequest(801, { requestedBy: { jellyfinUserId: 'carol-id' } })];
+    await withSeerr(listed, {}, async ({ store, service }) => {
+      await service.processWebhook(parseWebhook(webhook({ userId: 'bob-id', tmdbId: 1017 })));
+      const result = await service.backfillRequests(since);
+      assert.deepEqual(result.granted, ['item-1']);
+      const grant = store.get('item-1');
+      assert.deepEqual(grant.requests, { '17': 'bob-id', '801': 'carol-id' });
+      assert.deepEqual(grant.groupIds, ['house-a', 'house-b']);
+    });
+  });
+
+  it('grants a 4K request on the 4K item only', async () => {
+    const listed = [
+      seerrRequest(903, { is4k: true, media: { mediaType: 'movie', tmdbId: 1903, status: 5, status4k: 5, jellyfinMediaId: 'item-1' } }),
+      seerrRequest(902, { is4k: true, media: { mediaType: 'movie', tmdbId: 1902, status: 5, status4k: 3, jellyfinMediaId: 'item-1', jellyfinMediaId4k: 'item-2' } }),
+      seerrRequest(901, { is4k: true, media: { mediaType: 'movie', tmdbId: 1901, status: 3, status4k: 5, jellyfinMediaId: 'item-1', jellyfinMediaId4k: 'item-2' } }),
+    ];
+    // 903 has no 4K item even after the detail lookup, so it must not fall back to the HD item.
+    const details = { 903: listed[0] };
+    await withSeerr(listed, details, async ({ store, fake, service, calls }) => {
+      const result = await service.backfillRequests(since);
+      assert.deepEqual(result.granted, ['item-2']);
+      assert.equal(result.skipped, 2);
+      assert.equal(result.failed, 0);
+      assert.deepEqual(store.get('item-2').requests, { '901': 'alice-id' });
+      assert.equal(store.get('item-1'), undefined, 'the HD item stays public');
+      assert.deepEqual(fake.item.Tags, ['keep-me']);
+      assert.ok(calls.includes('/api/v1/request/903'));
+    });
+  });
+
+  it('counts a stored grant that cannot be reconciled as a failure only', async () => {
+    const listed = [seerrRequest(1001)];
+    await withSeerr(listed, {}, async ({ store, fake, service }) => {
+      fake.updateItem = async () => { throw new Error('Jellyfin unavailable'); };
+      const result = await service.backfillRequests(since);
+      assert.deepEqual(result.granted, []);
+      assert.equal(result.failed, 1);
+      assert.equal(result.skipped, 0);
+      assert.equal(store.get('item-1').sync.state, 'error', 'the grant is kept for reconcileAll to retry');
+      const metrics = service.renderMetrics();
+      assert.doesNotMatch(metrics, /jfa_request_backfill_total\{result="granted"\}/);
+      assert.match(metrics, /jfa_request_backfill_total\{result="error"\} 1/);
+
+      const again = await service.backfillRequests(since);
+      assert.deepEqual(again, { scanned: 1, granted: [], skipped: 1, failed: 0 });
+    });
+  });
+
+  it('skips a request whose Jellyfin item was deleted and logs it once', async () => {
+    const listed = [seerrRequest(1101, { media: { mediaType: 'movie', tmdbId: 2101, status: 5, jellyfinMediaId: 'item-gone' } })];
+    await withSeerr(listed, {}, async ({ store, fake, service }) => {
+      const getItem = fake.getItem.bind(fake);
+      fake.getItem = async (itemId) => {
+        if (itemId === 'item-gone') throw Object.assign(new Error('Jellyfin GET /Items/item-gone returned 404'), { status: 404 });
+        return getItem(itemId);
+      };
+      const logged = [];
+      const originalLog = console.log;
+      console.log = (line) => logged.push(line);
+      try {
+        for (let run = 0; run < 2; run += 1) {
+          assert.deepEqual(await service.backfillRequests(since), { scanned: 1, granted: [], skipped: 1, failed: 0 });
+        }
+      } finally {
+        console.log = originalLog;
+      }
+      assert.equal(logged.filter((line) => line.includes('missing Jellyfin item')).length, 1);
+      assert.equal(store.get('item-gone'), undefined);
+      assert.doesNotMatch(service.renderMetrics(), /jfa_request_backfill_total\{result="error"\}/);
+    });
+  });
+
+  it('never re-imports a request recorded on a grant before handledRequestIds existed', async () => {
+    const file = await stateFile();
+    await writeFile(file, JSON.stringify({
+      version: 6,
+      grants: {
+        'item-1': {
+          itemId: 'item-1', active: true, owners: ['alice-id'], requests: { '1201': 'alice-id' }, manualUserIds: [],
+          groupIds: [], sync: { state: 'synced', attempts: 0 }, updatedAt: '2026-10-02T00:00:00.000Z',
+        },
+      },
+      groups: {},
+      catalog: { items: {} },
+      claims: {},
+      passwordlessUserIds: [],
+    }));
+    const store = new GrantStore(file);
+    await store.load();
+    assert.equal(store.hasHandledRequest('1201'), true);
+    assert.deepEqual(JSON.parse(await readFile(file, 'utf8')).handledRequestIds, ['1201']);
+
+    await withSeerr([seerrRequest(1201)], {}, async ({ service }) => {
+      await service.backfillRequests(since);
+    }, store);
+    await new AccessService(fakeJellyfin(), store).revokeRequest('item-1', '1201');
+    assert.equal(store.get('item-1'), undefined);
+    await withSeerr([seerrRequest(1201)], {}, async ({ service }) => {
+      assert.deepEqual((await service.backfillRequests(since)).granted, []);
+    }, store);
+    assert.equal(store.get('item-1'), undefined);
   });
 
   it('stops paging once a whole page predates the cutoff', async () => {
