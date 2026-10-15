@@ -46,14 +46,6 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     const webAuth = new WebAuth(jellyfinClient);
     bridge = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' }, webAuth, {
       householdGateway: { jellyfinUrl: jellyfin.url, domain: 'example.test', hostPrefix: 'jelly-' },
-      requestBridge: {
-        async handle(_request, response, url) {
-          if (url.pathname !== '/jellyquest-bridge/route-order') return false;
-          response.writeHead(200, { 'Content-Type': 'application/json' });
-          response.end(JSON.stringify({ route: 'request-bridge' }));
-          return true;
-        },
-      },
     });
     await new Promise((resolve) => bridge.listen(0, '127.0.0.1', resolve));
     const address = bridge.address();
@@ -78,9 +70,6 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     const householdUsersBody = await householdUsers.json();
     assert.deepEqual(householdUsersBody.map((user) => user.Name), ['Alice', 'Bob']);
     assert.deepEqual(householdUsersBody.map((user) => user.HasPassword), [true, true]);
-    const requestBridgeRoute = await fetchWithHost(bridgeUrl, '/jellyquest-bridge/route-order', 'jelly-farmhouse.example.test');
-    assert.equal(requestBridgeRoute.status, 200);
-    assert.equal((await requestBridgeRoute.json()).route, 'request-bridge');
     const householdInfo = await fetchWithHost(bridgeUrl, '/System/Info/Public', 'jelly-farmhouse.example.test');
     assert.equal(householdInfo.status, 200);
     assert.equal((await householdInfo.json()).ServerName, 'Test Jellyfin');
@@ -539,6 +528,28 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.deepEqual(jellyfin.item.Tags, ['existing']);
     assert.deepEqual(jellyfin.itemById('trailer-1').Tags, []);
     assert.deepEqual(jellyfin.user('bob-id').Policy.BlockedTags, []);
+  });
+
+  it('returns 404 for the removed JellyQuest bridge and access routes', async () => {
+    const removed = [
+      ['GET', '/jellyquest-bridge/bridge.html'],
+      ['GET', '/jellyquest-bridge/health'],
+      ['POST', '/jellyquest-bridge/session'],
+      ['POST', '/jellyquest-bridge/eligibility'],
+      ['POST', '/jellyquest-bridge/proxy'],
+      ['GET', '/jellyquest/access?mediaType=movie&tmdbId=101'],
+      ['POST', '/jellyquest/access'],
+      ['GET', '/jellyquest/access/claims'],
+    ];
+    for (const [method, pathname] of removed) {
+      const response = await fetch(`${bridgeUrl}${pathname}`, {
+        method,
+        headers: { Authorization: 'Bearer admin-secret', 'Content-Type': 'application/json' },
+        ...(method === 'POST' ? { body: '{}' } : {}),
+      });
+      assert.equal(response.status, 404, `${method} ${pathname}`);
+      await response.arrayBuffer();
+    }
   });
 });
 

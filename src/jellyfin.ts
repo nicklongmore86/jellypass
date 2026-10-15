@@ -225,14 +225,6 @@ function authorizationHeader(device: string, deviceId: string, token?: string): 
   return mediaBrowserAuthorization(parameters);
 }
 
-/**
- * Authenticates as an existing user token without client or device fields, so
- * Jellyfin leaves the device record that owns the token untouched.
- */
-export function tokenAuthorizationHeader(token: string): string {
-  return mediaBrowserAuthorization([['Token', token]]);
-}
-
 function mediaBrowserAuthorization(parameters: Array<[string, string]>): string {
   return `MediaBrowser ${parameters.map(([name, value]) => `${name}="${encodeURIComponent(value)}"`).join(', ')}`;
 }

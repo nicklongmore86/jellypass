@@ -10,8 +10,7 @@ JellyPass connects Jellyseerr requests to Jellyfin's native tag-based access
 policies. When requested media becomes available, JellyPass keeps it visible to
 the requester and blocks it for other non-administrator users. It also provides
 an administrator UI for retroactive access assignment, reusable household
-groups, household-specific Jellyfin hostnames, and an optional request bridge
-for [JellyQuest for Tizen](https://github.com/nicklongmore86/jellyquest-tizen).
+groups, and household-specific Jellyfin hostnames.
 
 JellyPass is independent, community-maintained software. It is not affiliated
 with or endorsed by Jellyfin, Seerr, or Jellyseerr.
@@ -35,7 +34,6 @@ with or endorsed by Jellyfin, Seerr, or Jellyseerr.
   public users, signs passwordless members in with one tap, and preserves the
   password prompt for everyone else.
 - Proxies household media requests, byte ranges, HLS requests, and WebSockets.
-- Optionally gives JellyQuest a narrowly scoped, server-side Jellyseerr session.
 - Exposes health and Prometheus metrics endpoints.
 
 JellyPass does **not** replace Jellyfin authentication, manage downloads, or
@@ -51,7 +49,6 @@ flowchart LR
   P -->|private item tag| I[Jellyfin item]
   P -->|BlockedTags policy| U[Jellyfin users]
   A[Administrator UI] -->|manual users and groups| P
-  J[JellyQuest] -->|optional scoped bridge| P
   P -->|catalog and policy API| F[Jellyfin]
 ```
 
@@ -81,7 +78,6 @@ it appears in the catalog. A grant is created by one of these events:
 - JellyPass receives Jellyseerr's `MEDIA_AVAILABLE` webhook for a request.
 - The optional request backfill finds an available request created after
   `REQUEST_BACKFILL_SINCE` that the webhook missed.
-- A JellyQuest user makes a self-service access claim.
 - An administrator assigns access from the Library tab or API.
 
 Library upgrades, replacements, manual downloads, and titles that Jellyseerr
@@ -117,7 +113,7 @@ requester's household can see the title; members of other households cannot.
 - A persistent, private location for `grants.json`.
 
 Jellyseerr is optional only if every webhook includes the Jellyfin media and user
-IDs and the JellyQuest bridge, recent-request cards, and Jellyseerr user import
+IDs and recent-request cards, the request backfill, and Jellyseerr user import
 are not needed.
 
 ## Quick start with Docker Compose
@@ -190,7 +186,6 @@ JellyPass reads configuration from environment variables at startup.
 | `ADMIN_TOKEN` | Recommended | `WEBHOOK_TOKEN` | Separate bearer token for administrative APIs and metrics. |
 | `SEERR_URL` | Conditional | — | Seerr/Jellyseerr base URL reachable from JellyPass. Configure with `SEERR_API_KEY`. |
 | `SEERR_API_KEY` | Conditional | — | Seerr/Jellyseerr API key. Configure with `SEERR_URL`. |
-| `JELLYQUEST_BRIDGE_ENABLED` | No | `false` | Enables the scoped JellyQuest bridge. Requires Seerr/Jellyseerr configuration. |
 | `STATE_FILE` | No | `./data/grants.json` | Durable state-file path. The container uses `/app/data/grants.json`. |
 | `HOST` | No | `0.0.0.0` | HTTP listen address inside the process/container. |
 | `PORT` | No | `8787` | HTTP listen port. |
@@ -267,7 +262,7 @@ services need to reach JellyPass only as follows:
 
 - Jellyseerr needs `/webhooks/seerr`.
 - Administrators need `/admin/` and the administrative API.
-- Household and JellyQuest clients need the full household origin.
+- Household clients need the full household origin.
 
 ## Configure Jellyseerr
 
@@ -394,119 +389,12 @@ authentication. Users still authenticate with Jellyfin, and Jellyfin policies
 remain authoritative. Quick Connect and legacy-login restrictions are described
 in [the household access design](docs/household-access.md).
 
-## Optional JellyQuest request bridge
-
-Enable the bridge only with valid Jellyseerr configuration:
-
-```dotenv
-SEERR_URL=http://jellyseerr:5055
-SEERR_API_KEY=replace-with-a-seerr-api-key
-JELLYQUEST_BRIDGE_ENABLED=true
-```
-
-JellyQuest loads:
-
-```text
-https://jelly-household.example.com/jellyquest-bridge/bridge.html
-```
-
-with the signed-in user's Jellyfin access token in the URL fragment, for example
-`#mode=session&nonce=…&id=<jellyfin-user-id>&token=<jellyfin-access-token>`.
-The fragment never reaches the server; the bridge page clears it immediately and
-sends the token to `POST /jellyquest-bridge/session` as an `X-Emby-Token` header.
-Other clients may instead send `Authorization: MediaBrowser …, Token="…"`, or an
-`accessToken` field in the JSON body.
-
-Session creation requires that access token. JellyPass checks it with
-`GET /Users/Me` on the configured `JELLYFIN_URL` and takes the user's ID and name
-only from Jellyfin's response. Client-supplied names are ignored. A
-client-supplied `id` that differs from the verified user is rejected. A missing,
-malformed, revoked, or disabled-user token returns `401`, and no Jellyseerr login
-is attempted. Only then does JellyPass sign the verified user into Jellyseerr
-server-side. It stores the Jellyseerr cookie only in memory, with a 12-hour idle
-lifetime.
-
-`POST /jellyquest-bridge/eligibility` (`#mode=eligibility&nonce=…&token=…` on the
-bridge page) uses the same token check. It answers `{ "eligible": true|false }`
-only for the token's own Jellyfin user, so it cannot be used to find out whether
-another profile has a Jellyseerr account. A missing, malformed, or rejected
-token, or an `id` that differs from the verified user, returns `401`. If
-Jellyfin cannot be reached the check returns `502`; it never falls back to an ID
-supplied by the client.
-
-Each bridge session is bound to the verified Jellyfin user and that user's
-access token. The token is held in memory and checked again against Jellyfin at
-most every five minutes while the session is in use. When a user signs out of
-Jellyfin or an administrator revokes the device, the bridge session ends at the
-next check. The random browser token is limited to discovery, search, title
-details, request listing and creation, and authenticated self-service access
-claims. Jellyseerr's `/api/v1/media` list is not relayed, because its filters
-and sort orders reveal other households' request activity. Restarting JellyPass clears bridge sessions but not persisted claims.
-
-> **JellyQuest client change:** JellyQuest builds that pass only `user`
-> and `id` to the bridge can no longer open request sessions. JellyQuest must add
-> `token=<AccessToken>` to the bridge URL fragment, using the access token it
-> already uses with Jellyfin.
-> The same applies to `mode=eligibility`: without `token` in the fragment the
-> eligibility check now fails with `401`, which the bridge page reports to
-> JellyQuest as an `error` message instead of an `eligibility` message.
-
-Bridge responses never reveal who else has or requested a title. Claims stay
-open across households, but each caller sees only their own:
-
-- `GET /jellyquest/access?mediaType=…&tmdbId=…` and `POST /jellyquest/access`
-  return the caller's status only: `mediaType`, `tmdbId`, `claimed`,
-  `managed`, `owned`, `public`, and `jellyfinItemId` only when the caller can
-  already open the item (owned or public). Jellyfin administrators are not
-  owners of private items, so the bridge does not give them private item IDs
-  either. They manage access from the JellyPass admin console instead.
-- `GET /jellyquest/access/claims` returns `{ "claims": [...] }` containing only
-  the caller's claims, each with the same fields plus `claimedAt`, the time
-  this caller first claimed the title. Claims recorded before `claimedAt`
-  existed omit it. Other claimants' IDs, claimant counts, and shared update
-  timestamps are never included.
-- `GET /api/v1/request` is always sent to Jellyseerr with `requestedBy` set to
-  the caller's Jellyseerr user ID, so results and `pageInfo` only cover the
-  caller's own requests. The bridge refuses to open a session when that ID
-  cannot be resolved for the verified Jellyfin profile.
-- Other relayed Jellyseerr responses are filtered the same way:
-  - Requests, watchlist entries, issues, and comments made by other users are
-    dropped. When that removes rows from `results`, `pageInfo` and totals are
-    recomputed from the visible rows, and the response becomes a single page
-    (`page` and `pageInfo.page` are reset to `1`).
-  - Other users' records and IDs are removed under any key, including unknown
-    `…user`, `…Users`, `…UserId`, and `…ById` fields. Keys are compared as whole
-    words in any case, so `UserId`, `USER_ID`, `user_id`, and `RequestedById`
-    all match, as do run-together forms such as `userid` and `requestedbyid`,
-    while `hobbyId`, `lobbyId`, and `sortBy` are left alone. The only
-    exception is a TV show's top-level `createdBy` list in `GET /api/v1/tv/:id`:
-    entries there that are TMDB credits are media data and are kept. A user
-    reference shaped like a credit anywhere else, such as under `requestedBy`,
-    is still removed. `modifiedBy`/`updatedBy` (in any case) are always removed,
-    even on the caller's own requests, because they name the staff member who
-    acted.
-  - `createdAt`, `updatedAt`, `mediaAddedAt`, and `lastSeasonChange` (in any
-    case, such as `CreatedAt` or `UPDATED_AT`) are kept only on records the
-    caller owns, so other households' activity timing is not shown.
-  - `mediaInfo.jellyfinMediaId` and `jellyfinMediaId4k` (in any case) are
-    removed for items the caller cannot open, matching the `jellyfinItemId`
-    rule above.
-- Jellyseerr error messages are not relayed. The bridge keeps the status code
-  and returns a fixed message for it. Two known messages that only concern the
-  caller get their own fixed JellyPass wording: an exceeded request quota, and
-  a show with no seasons left to request.
-
-The bridge applies per-client rate limits to eligibility checks and session
-creation. Place it behind the same trusted TLS reverse proxy as the household
-origin.
-
 ## Operations
 
 ### Health and logs
 
 ```sh
 curl http://127.0.0.1:8787/health
-curl http://127.0.0.1:8787/jellyquest-bridge/health # when enabled
 docker compose logs --tail=100 jellypass
 ```
 
@@ -538,7 +426,7 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" \
 ### Backup and restore
 
 The state file is the only JellyPass application data that must persist. It
-contains grants, access groups, claims, synchronization status, Jellyfin user
+contains grants, access groups, synchronization status, Jellyfin user
 IDs, and a catalog containing media names and IDs. Protect it as private data.
 
 For a consistent filesystem backup:
@@ -567,9 +455,9 @@ curl http://127.0.0.1:8787/health
 ```
 
 Back up the state file first. Read the [changelog](CHANGELOG.md) before
-changing between versioned tags. Upgrading from 1.0.0 requires a JellyQuest app
-update and new settings; see
-[Upgrading from 1.0.0](CHANGELOG.md#upgrading-from-100). Pinning `JELLYPASS_IMAGE` makes rollback explicit:
+changing between versioned tags. Upgrades can migrate the state file to a newer
+schema that older versions cannot read, so rolling back requires the backup taken
+before the upgrade. Pinning `JELLYPASS_IMAGE` makes rollback explicit:
 
 ```sh
 JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:PREVIOUS_VERSION docker compose up -d
@@ -685,10 +573,8 @@ administrator browser session. Request bodies are limited to 64 KiB.
   GitHub Security Advisories.
 
 JellyPass stores no Jellyfin passwords, supplied new-user passwords, Jellyfin
-access tokens, or Jellyseerr API responses containing credentials. Browser and
-JellyQuest sessions are held in memory and disappear on restart. While a
-JellyQuest bridge session is active, the Jellyfin access token that proved its
-identity also stays in memory so that it can be checked again.
+access tokens, or Jellyseerr API responses containing credentials. Browser
+sessions are held in memory and disappear on restart.
 
 ## Limitations
 

@@ -10,7 +10,7 @@ const BASE = {
   SEERR_URL: 'http://seerr.test',
   SEERR_API_KEY: 'seerr-key',
 };
-const KEYS = [...Object.keys(BASE), 'REQUEST_BACKFILL_SINCE', 'REQUEST_BACKFILL_ENABLED', 'LOG_LEVEL', 'WS_IDLE_TIMEOUT_MS', 'WS_UPSTREAM_IDLE_TIMEOUT_MS'];
+const KEYS = [...Object.keys(BASE), 'REQUEST_BACKFILL_SINCE', 'REQUEST_BACKFILL_ENABLED', 'LOG_LEVEL', 'WS_IDLE_TIMEOUT_MS', 'WS_UPSTREAM_IDLE_TIMEOUT_MS', 'JELLYQUEST_BRIDGE_ENABLED'];
 const saved = Object.fromEntries(KEYS.map((key) => [key, process.env[key]]));
 
 function load(overrides = {}) {
@@ -151,3 +151,29 @@ describe('logging and WebSocket configuration', () => {
 function logLevelWarnings(warn) {
   return warn.mock.calls.map((call) => JSON.parse(call.arguments[0])).filter((entry) => entry.message.startsWith('LOG_LEVEL'));
 }
+
+describe('removed configuration', () => {
+  afterEach(() => {
+    restoreEnvironment();
+    mock.restoreAll();
+  });
+
+  it('warns but still starts when JELLYQUEST_BRIDGE_ENABLED is set', () => {
+    const warn = mock.method(console, 'warn', () => {});
+    const removedWarnings = () => warn.mock.calls
+      .map((call) => JSON.parse(call.arguments[0]))
+      .filter((entry) => entry.message.includes('JELLYQUEST_BRIDGE_ENABLED'));
+
+    assert.equal(load().jellyfinUrl, 'http://jellyfin.test');
+    assert.equal(removedWarnings().length, 0);
+
+    for (const value of ['true', 'false']) {
+      warn.mock.resetCalls();
+      const config = load({ JELLYQUEST_BRIDGE_ENABLED: value, SEERR_URL: undefined, SEERR_API_KEY: undefined });
+      assert.equal('jellyquestBridgeEnabled' in config, false);
+      const warnings = removedWarnings();
+      assert.equal(warnings.length, 1, value);
+      assert.equal(warnings[0].level, 'warn');
+    }
+  });
+});

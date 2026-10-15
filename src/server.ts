@@ -5,7 +5,6 @@ import { ADMIN_APP_JS, ADMIN_FAVICON_SVG, ADMIN_HTML, ADMIN_STYLES } from './adm
 import { expiredSessionCookie, sessionCookie, type WebAuth } from './auth.js';
 import type { LogLevel } from './config.js';
 import { HouseholdGateway } from './household-gateway.js';
-import type { RequestBridge } from './request-bridge.js';
 import { parseWebhook } from './webhook.js';
 
 const BODY_LIMIT = 64 * 1024;
@@ -17,7 +16,6 @@ export interface ServerTokens {
 }
 
 export interface ServerOptions {
-  requestBridge?: RequestBridge;
   householdGateway?: {
     jellyfinUrl: string;
     domain: string;
@@ -39,7 +37,6 @@ export function makeServer(service: AccessService, tokens: ServerTokens, webAuth
   const server = createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? '/', 'http://localhost');
-      if (await options?.requestBridge?.handle(request, response, url)) return;
       const householdId = householdGateway?.householdId(request.headers.host);
       if (householdId) {
         await householdGateway?.handle(request, response, householdId);

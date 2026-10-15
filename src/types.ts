@@ -119,39 +119,13 @@ export interface GrantRecord {
 }
 
 export interface GrantState {
-  version: 6;
+  version: 7;
   grants: Record<string, GrantRecord>;
   groups: Record<string, AccessGroup>;
   catalog: LibraryCatalog;
-  claims: Record<string, MediaClaim>;
   passwordlessUserIds: string[];
   /** Seerr request IDs that already produced a grant; the backfill never re-imports them. */
   handledRequestIds?: string[];
-}
-
-export interface MediaClaim {
-  mediaType: 'movie' | 'tv';
-  tmdbId: number;
-  userIds: string[];
-  /** When each claimant first claimed the title, keyed by normalized Jellyfin user ID. */
-  claimedAt?: Record<string, string>;
-  jellyfinItemId?: string;
-  updatedAt: string;
-}
-
-export interface MediaAccessStatus {
-  mediaType: 'movie' | 'tv';
-  tmdbId: number;
-  claimed: boolean;
-  managed: boolean;
-  owned: boolean;
-  public: boolean;
-  jellyfinItemId?: string;
-}
-
-/** A claim as its claimant may see it: no other claimants and no shared timestamps. */
-export interface CallerMediaClaim extends MediaAccessStatus {
-  claimedAt?: string;
 }
 
 export interface AccessGroup {
