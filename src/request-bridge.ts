@@ -8,12 +8,23 @@ const SESSION_LIFETIME_MS = 12 * 60 * 60 * 1000;
 const PROFILE_ID_PATTERN = /^[a-fA-F0-9-]{1,64}$/;
 const PROBE_ATTEMPT_WINDOW_MS = 5 * 60 * 1000;
 const MAX_PROBE_ATTEMPTS = 30;
+const IDENTITY_RECHECK_MS = 5 * 60 * 1000;
+const JELLYFIN_TOKEN_PATTERN = /^[A-Za-z0-9._~-]{16,256}$/;
 
 interface BridgeSession {
   cookie: string;
   expires: number;
   userId: string;
+  jellyfinToken: string;
+  verifiedAt: number;
 }
+
+interface JellyfinIdentity {
+  id: string;
+  name: string;
+}
+
+type IdentityResult = JellyfinIdentity | 'invalid' | 'unavailable';
 
 export interface RequestBridgeAccess {
   hasJellyseerrUser(jellyfinUserId: string): Promise<boolean>;
@@ -36,12 +47,14 @@ interface SeerrResult {
 
 export class RequestBridge {
   private readonly seerrUrl: URL;
+  private readonly jellyfinUrl: string;
   private readonly access: RequestBridgeAccess | undefined;
   private readonly sessions = new Map<string, BridgeSession>();
   private readonly probeAttempts = new Map<string, { attempts: number; resetsAt: number }>();
 
-  constructor(seerrUrl: string, access?: RequestBridgeAccess) {
+  constructor(seerrUrl: string, jellyfinUrl: string, access?: RequestBridgeAccess) {
     this.seerrUrl = new URL(`${seerrUrl.replace(/\/+$/, '')}/`);
+    this.jellyfinUrl = jellyfinUrl.replace(/\/+$/, '');
     this.access = access;
   }
 
@@ -70,20 +83,32 @@ export class RequestBridge {
         return json(response, 429, { error: 'Too many requests.' });
       }
       const input = recordBody(await readJson(request));
-      if (typeof input.user !== 'string' || input.user.length < 1 || input.user.length > 128
-          || typeof input.id !== 'string' || !PROFILE_ID_PATTERN.test(input.id)) {
-        return json(response, 400, { error: 'Invalid Jellyfin profile.' });
+      const jellyfinToken = jellyfinAccessToken(request, input);
+      if (!jellyfinToken) return json(response, 401, { error: 'A Jellyfin access token is required.' });
+      // Identity comes only from Jellyfin; client-supplied user fields are never trusted.
+      const identity = await this.verifyJellyfinToken(jellyfinToken);
+      if (identity === 'unavailable') return json(response, 502, { error: 'Jellyfin is unavailable.' });
+      if (identity === 'invalid') return json(response, 401, { error: 'Jellyfin rejected this access token.' });
+      if (input.id !== undefined && (typeof input.id !== 'string' || !sameId(input.id, identity.id))) {
+        return json(response, 401, { error: 'The Jellyfin access token belongs to a different profile.' });
       }
       const auth = await this.seerr('/api/v1/auth/jellyfin', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ username: input.user, password: '', email: input.user }),
+        body: JSON.stringify({ username: identity.name, password: '', email: identity.name }),
       });
-      if (!auth.response.ok || String(auth.data.jellyfinUserId ?? '').toLowerCase() !== input.id.toLowerCase() || !auth.cookie) {
+      if (!auth.response.ok || !sameId(String(auth.data.jellyfinUserId ?? ''), identity.id) || !auth.cookie) {
         return json(response, 401, { error: 'Jellyseerr rejected this Jellyfin profile.' });
       }
       const token = randomBytes(32).toString('hex');
-      this.sessions.set(token, { cookie: auth.cookie, expires: Date.now() + SESSION_LIFETIME_MS, userId: input.id });
+      const now = Date.now();
+      this.sessions.set(token, {
+        cookie: auth.cookie,
+        expires: now + SESSION_LIFETIME_MS,
+        userId: identity.id,
+        jellyfinToken,
+        verifiedAt: now,
+      });
       this.pruneSessions();
       return json(response, 200, { token });
     }
@@ -93,6 +118,15 @@ export class RequestBridge {
       if (!token || !session || session.expires < Date.now()) {
         if (token) this.sessions.delete(token);
         return json(response, 401, { error: 'Request bridge session expired.' });
+      }
+      if (session.verifiedAt + IDENTITY_RECHECK_MS < Date.now()) {
+        const identity = await this.verifyJellyfinToken(session.jellyfinToken);
+        if (identity === 'unavailable') return json(response, 502, { error: 'Jellyfin is unavailable.' });
+        if (identity === 'invalid' || !sameId(identity.id, session.userId)) {
+          this.sessions.delete(token);
+          return json(response, 401, { error: 'Request bridge session expired.' });
+        }
+        session.verifiedAt = Date.now();
       }
       const input = recordBody(await readJson(request));
       const options = relayOptions(input.options);
@@ -149,6 +183,42 @@ export class RequestBridge {
       : this.access!.getMediaAccess(session.userId, mediaType, tmdbId, jellyfinItemId);
   }
 
+  private async verifyJellyfinToken(jellyfinToken: string): Promise<IdentityResult> {
+    let response: Response;
+    try {
+      response = await fetch(`${this.jellyfinUrl}/Users/Me`, {
+        signal: AbortSignal.timeout(15_000),
+        headers: {
+          Accept: 'application/json',
+          Authorization: `MediaBrowser Client="JellyPass", Device="JellyQuest bridge", DeviceId="jellypass-request-bridge", Version="1.0.0", Token="${jellyfinToken}"`,
+        },
+      });
+    } catch {
+      return 'unavailable';
+    }
+    if (response.status === 401 || response.status === 403) {
+      await response.body?.cancel();
+      return 'invalid';
+    }
+    if (!response.ok) {
+      await response.body?.cancel();
+      return 'unavailable';
+    }
+    let user: Record<string, unknown>;
+    try {
+      user = recordBody(await response.json() as unknown);
+    } catch {
+      return 'unavailable';
+    }
+    const policy = user.Policy && typeof user.Policy === 'object' ? user.Policy as Record<string, unknown> : {};
+    if (typeof user.Id !== 'string' || !PROFILE_ID_PATTERN.test(user.Id)
+        || typeof user.Name !== 'string' || user.Name.length < 1 || user.Name.length > 128
+        || policy.IsDisabled === true) {
+      return 'invalid';
+    }
+    return { id: user.Id, name: user.Name };
+  }
+
   private async seerr(pathname: string, options: RelayOptions = {}, cookie = ''): Promise<SeerrResult> {
     const headers: Record<string, string> = { Accept: 'application/json' };
     if (options.headers?.['Content-Type']) headers['Content-Type'] = options.headers['Content-Type'];
@@ -191,6 +261,23 @@ export class RequestBridge {
 
 function clientId(request: IncomingMessage): string {
   return request.socket.remoteAddress ?? 'unknown';
+}
+
+function sameId(left: string, right: string): boolean {
+  return left.replace(/-/g, '').toLowerCase() === right.replace(/-/g, '').toLowerCase();
+}
+
+function jellyfinAccessToken(request: IncomingMessage, input: Record<string, unknown>): string | undefined {
+  const candidates: unknown[] = [request.headers['x-emby-token'], request.headers['x-mediabrowser-token']];
+  for (const name of ['authorization', 'x-emby-authorization']) {
+    const value = request.headers[name];
+    if (typeof value === 'string' && /^(?:MediaBrowser|Emby)\s/i.test(value)) {
+      candidates.push(value.match(/(?:\s|,)Token="([^"]*)"/i)?.[1]);
+    }
+  }
+  candidates.push(input.accessToken);
+  const token = candidates.find((value) => typeof value === 'string' && value.length > 0);
+  return typeof token === 'string' && JELLYFIN_TOKEN_PATTERN.test(token) ? token : undefined;
 }
 
 function relayOptions(value: unknown): RelayOptions {
@@ -293,8 +380,8 @@ const BRIDGE_HTML = String.raw`<!doctype html>
   }
   function createSession() {
     return fetch('/jellyquest-bridge/session', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ user: params.user, id: params.id })
+      method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Emby-Token': params.token || '' },
+      body: JSON.stringify({ id: params.id })
     }).then(function (response) { return response.json().then(function (data) {
       if (!response.ok) throw new Error(data.error || 'Request bridge authentication failed.');
       sessionToken = data.token; reply({ type: 'ready' });
