@@ -24,6 +24,22 @@ describe('access tags and webhook validation', () => {
       request: { id: '136' },
     });
   });
+
+  it('ignores non-availability events without validating their IDs', async () => {
+    assert.deepEqual(parseWebhook({ notificationType: 'TEST_NOTIFICATION', request: { id: '' } }), { notificationType: 'TEST_NOTIFICATION' });
+    assert.deepEqual(parseWebhook({ notificationType: 'MEDIA_PENDING' }), { notificationType: 'MEDIA_PENDING' });
+    assert.throws(() => parseWebhook({ notificationType: 'MEDIA_AVAILABLE', request: { id: '' } }), /id must be a non-empty string/);
+    assert.throws(() => parseWebhook({ notificationType: 'MEDIA_AVAILABLE' }), /request must be an object/);
+    assert.throws(() => parseWebhook({ notificationType: 'MEDIA_AVAILABLE', request: { id: '{{request_id}}' } }), /invalid/);
+    assert.throws(() => parseWebhook({ request: { id: '1' } }), /notificationType/);
+
+    const store = new GrantStore(await stateFile());
+    await store.load();
+    const service = new AccessService(fakeJellyfin(), store);
+    assert.equal(await service.processWebhook(parseWebhook({ notificationType: 'TEST_NOTIFICATION', request: { id: '' } })), null);
+    assert.equal(store.list().length, 0);
+    assert.match(service.renderMetrics(), /jfa_webhooks_total\{result="ignored"\} 1/);
+  });
 });
 
 describe('state migration', () => {

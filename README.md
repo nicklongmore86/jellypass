@@ -287,8 +287,14 @@ If the notification UI cannot add an authorization header, append
 proxy logs, browser history, and diagnostics, so keep this route private and
 prefer the bearer header whenever possible.
 
-After configuration, use Jellyseerr's test function if available. A test event
-that is not `MEDIA_AVAILABLE` is expected to return `202` with an ignored status.
+After configuration, use Jellyseerr's test function if available. Every event
+other than `MEDIA_AVAILABLE`, including Seerr's `TEST_NOTIFICATION`, returns
+`202` with `{"status":"ignored"}` once the token is accepted, even though Seerr
+sends an empty request ID for test events. A `202` therefore proves only that
+JellyPass is reachable and the token is correct, not that the payload works:
+`MEDIA_AVAILABLE` events are validated strictly, and a missing, empty, or
+unfilled `{{...}}` ID returns `400` and is counted as
+`jfa_webhooks_total{result="invalid"}`.
 
 > [!WARNING]
 > Enter the payload in Seerr's own webhook form and let Seerr save it. Seerr

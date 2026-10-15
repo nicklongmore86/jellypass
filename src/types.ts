@@ -14,6 +14,11 @@ export interface SeerrWebhook {
   };
 }
 
+/** A webhook whose notificationType is not MEDIA_AVAILABLE; it carries nothing to grant. */
+export interface IgnoredWebhook {
+  notificationType: string;
+}
+
 export interface SeerrRequest {
   id: number;
   type?: string;

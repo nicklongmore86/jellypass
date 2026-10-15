@@ -420,6 +420,38 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.equal(queryAuthenticated.status, 202);
     await queryAuthenticated.json();
 
+    const seerrTest = await fetch(`${bridgeUrl}/webhooks/seerr`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer webhook-secret', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notificationType: 'TEST_NOTIFICATION', request: { id: '' } }),
+    });
+    assert.equal(seerrTest.status, 202);
+    assert.deepEqual(await seerrTest.json(), { status: 'ignored' });
+
+    const unknownType = await fetch(`${bridgeUrl}/webhooks/seerr`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer webhook-secret', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notificationType: 'MEDIA_PENDING' }),
+    });
+    assert.equal(unknownType.status, 202);
+    assert.deepEqual(await unknownType.json(), { status: 'ignored' });
+
+    const unauthorizedTest = await fetch(`${bridgeUrl}/webhooks/seerr`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notificationType: 'TEST_NOTIFICATION' }),
+    });
+    assert.equal(unauthorizedTest.status, 401);
+    await unauthorizedTest.json();
+
+    const emptyAvailableId = await fetch(`${bridgeUrl}/webhooks/seerr`, {
+      method: 'POST',
+      headers: { Authorization: 'Bearer webhook-secret', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ notificationType: 'MEDIA_AVAILABLE', request: { id: '' } }),
+    });
+    assert.equal(emptyAvailableId.status, 400);
+    assert.deepEqual(await emptyAvailableId.json(), { error: 'id must be a non-empty string' });
+
     const malformed = await fetch(`${bridgeUrl}/webhooks/seerr`, {
       method: 'POST',
       headers: { Authorization: 'Bearer webhook-secret', 'Content-Type': 'application/json' },
@@ -469,7 +501,8 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.equal(metrics.status, 200);
     const metricsText = await metrics.text();
     assert.match(metricsText, /jfa_webhooks_total\{result="granted"\} 1/);
-    assert.match(metricsText, /jfa_webhooks_total\{result="invalid"\} 1/);
+    assert.match(metricsText, /jfa_webhooks_total\{result="ignored"\} 3/);
+    assert.match(metricsText, /jfa_webhooks_total\{result="invalid"\} 2/);
     assert.match(metricsText, /jfa_last_webhook_received_timestamp_seconds \d{10}/);
 
     const plan = await fetch(`${bridgeUrl}/v1/grants/item-1/plan`, { headers: { Authorization: 'Bearer admin-secret' } });

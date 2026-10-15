@@ -6,6 +6,7 @@ import type {
   AccessGroup,
   ChangePlan,
   GrantRecord,
+  IgnoredWebhook,
   JellyfinItem,
   JellyfinUser,
   LibraryCatalogItem,
@@ -271,9 +272,9 @@ export class AccessService {
     this.#metrics.increment('jfa_webhooks_total', { result: 'invalid' });
   }
 
-  public processWebhook(event: SeerrWebhook): Promise<GrantRecord | null> {
+  public processWebhook(event: SeerrWebhook | IgnoredWebhook): Promise<GrantRecord | null> {
     return this.#exclusive(async () => {
-      if (event.notificationType !== 'MEDIA_AVAILABLE') {
+      if (event.notificationType !== 'MEDIA_AVAILABLE' || !('request' in event)) {
         this.#metrics.increment('jfa_webhooks_total', { result: 'ignored' });
         return null;
       }
