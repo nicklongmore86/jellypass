@@ -121,12 +121,31 @@ export class HouseholdGateway {
   }
 
   public handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer, householdId: string): void {
+    // Node's HTTP server detaches its own socket error listener before emitting 'upgrade', so a client
+    // reset (ECONNRESET/EPIPE) on an unguarded upgrade socket is an unhandled 'error' event that kills the process.
+    socket.on('error', (error) => {
+      logStreamError('websocket client socket', error);
+      socket.destroy();
+    });
     if (!this.#memberIds(householdId)) {
       socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
       return;
     }
     const upstream = this.#transport().request(this.#requestOptions(request));
+    let upgraded = false;
+    socket.once('close', () => {
+      if (!upgraded) upstream.destroy();
+    });
     upstream.on('upgrade', (upstreamResponse, upstreamSocket, upstreamHead) => {
+      upgraded = true;
+      upstreamSocket.on('error', (error) => {
+        logStreamError('websocket upstream socket', error);
+        upstreamSocket.destroy();
+      });
+      if (socket.destroyed) {
+        upstreamSocket.destroy();
+        return;
+      }
       const status = upstreamResponse.statusCode ?? 101;
       socket.write(`HTTP/1.1 ${status} ${upstreamResponse.statusMessage ?? 'Switching Protocols'}\r\n`);
       for (let index = 0; index < upstreamResponse.rawHeaders.length; index += 2) {
@@ -140,9 +159,15 @@ export class HouseholdGateway {
       upstreamSocket.pipe(socket).pipe(upstreamSocket);
     });
     upstream.on('response', (upstreamResponse) => {
-      socket.end(`HTTP/1.1 ${upstreamResponse.statusCode ?? 502} ${upstreamResponse.statusMessage ?? 'Bad Gateway'}\r\nConnection: close\r\n\r\n`);
+      upstreamResponse.resume();
+      if (!socket.destroyed) {
+        socket.end(`HTTP/1.1 ${upstreamResponse.statusCode ?? 502} ${upstreamResponse.statusMessage ?? 'Bad Gateway'}\r\nConnection: close\r\n\r\n`);
+      }
     });
-    upstream.on('error', () => socket.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n'));
+    upstream.on('error', (error) => {
+      logStreamError('websocket upstream request', error);
+      if (!socket.destroyed) socket.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n');
+    });
     upstream.end();
   }
 
@@ -221,15 +246,9 @@ export class HouseholdGateway {
     await new Promise<void>((resolve) => {
       const headers: IncomingHttpHeaders = { ...request.headers, 'content-length': String(body.length) };
       const upstream = this.#transport().request(this.#requestOptions(request, headers), (upstreamResponse) => {
-        response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
-        upstreamResponse.pipe(response);
-        upstreamResponse.once('end', resolve);
+        relayResponse(upstreamResponse, response, resolve);
       });
-      upstream.once('error', () => {
-        if (!response.headersSent) writeJson(response, 502, { error: 'jellyfin_unavailable' });
-        else response.destroy();
-        resolve();
-      });
+      guardUpstream(upstream, response, resolve);
       upstream.end(body);
     });
   }
@@ -237,14 +256,12 @@ export class HouseholdGateway {
   async #proxy(request: IncomingMessage, response: ServerResponse): Promise<void> {
     await new Promise<void>((resolve) => {
       const upstream = this.#transport().request(this.#requestOptions(request), (upstreamResponse) => {
-        response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
-        upstreamResponse.pipe(response);
-        upstreamResponse.once('end', resolve);
+        relayResponse(upstreamResponse, response, resolve);
       });
-      upstream.once('error', () => {
-        if (!response.headersSent) writeJson(response, 502, { error: 'jellyfin_unavailable' });
-        else response.destroy();
-        resolve();
+      guardUpstream(upstream, response, resolve);
+      request.on('error', (error) => {
+        logStreamError('proxy client request', error);
+        upstream.destroy();
       });
       request.once('aborted', () => upstream.destroy());
       request.pipe(upstream);
@@ -333,7 +350,13 @@ export class HouseholdGateway {
           if (size > MAX_TRANSFORMED_JSON_BYTES) upstreamResponse.destroy(new Error('JSON response is too large'));
           else chunks.push(chunk);
         });
-        upstreamResponse.once('error', () => {
+        upstreamResponse.on('error', (error) => {
+          logStreamError('proxy upstream response', error);
+          if (!response.headersSent) writeJson(response, 502, { error: 'jellyfin_unavailable' });
+          resolve();
+        });
+        upstreamResponse.once('close', () => {
+          if (upstreamResponse.complete) return;
           if (!response.headersSent) writeJson(response, 502, { error: 'jellyfin_unavailable' });
           resolve();
         });
@@ -355,10 +378,7 @@ export class HouseholdGateway {
           resolve();
         });
       });
-      upstream.once('error', () => {
-        if (!response.headersSent) writeJson(response, 502, { error: 'jellyfin_unavailable' });
-        resolve();
-      });
+      guardUpstream(upstream, response, resolve);
       upstream.end();
     });
   }
@@ -388,6 +408,52 @@ export class HouseholdGateway {
     url.search = query;
     return url;
   }
+}
+
+const QUIET_SOCKET_ERROR_CODES = new Set(['ECONNRESET', 'EPIPE', 'ECONNABORTED', 'ERR_STREAM_PREMATURE_CLOSE', 'ERR_STREAM_DESTROYED']);
+
+function logStreamError(context: string, error: unknown): void {
+  const code = typeof error === 'object' && error && 'code' in error ? String((error as { code: unknown }).code) : undefined;
+  const entry = JSON.stringify({
+    level: code && QUIET_SOCKET_ERROR_CODES.has(code) ? 'debug' : 'warn',
+    message: `household gateway ${context} error`,
+    code,
+    error: error instanceof Error ? error.message : String(error),
+  });
+  // Peer resets are routine for long-lived media and WebSocket connections; only surface them at debug level.
+  if (code && QUIET_SOCKET_ERROR_CODES.has(code)) console.debug(entry);
+  else console.warn(entry);
+}
+
+function guardUpstream(upstream: http.ClientRequest, response: ServerResponse, resolve: () => void): void {
+  upstream.on('error', (error) => {
+    logStreamError('proxy upstream request', error);
+    if (!response.headersSent) writeJson(response, 502, { error: 'jellyfin_unavailable' });
+    else response.destroy();
+    resolve();
+  });
+  response.on('error', (error) => {
+    logStreamError('proxy client response', error);
+    upstream.destroy();
+  });
+  response.once('close', () => {
+    if (!response.writableFinished) upstream.destroy();
+    resolve();
+  });
+}
+
+function relayResponse(upstreamResponse: IncomingMessage, response: ServerResponse, resolve: () => void): void {
+  upstreamResponse.on('error', (error) => {
+    logStreamError('proxy upstream response', error);
+    response.destroy();
+  });
+  // An upstream reset mid-body aborts the response without 'end'; tear down the client side instead of hanging.
+  upstreamResponse.once('close', () => {
+    if (!upstreamResponse.complete) response.destroy();
+  });
+  response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
+  upstreamResponse.pipe(response);
+  upstreamResponse.once('end', resolve);
 }
 
 async function readLimitedBody(request: IncomingMessage, limit: number): Promise<Buffer> {
