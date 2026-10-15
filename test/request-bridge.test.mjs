@@ -13,6 +13,9 @@ function listen(server) {
 
 const ALEX_TOKEN = 'alex0000000000000000000000000000';
 const BLAIR_TOKEN = 'blair000000000000000000000000000';
+const ALEX_SEERR = { id: 7, username: 'Alex', email: 'alex@example.com', jellyfinUserId: 'abc123' };
+const BLAIR_SEERR = { id: 8, username: 'Blair', email: 'blair@example.com', jellyfinUserId: 'def456' };
+const ADMIN_SEERR = { id: 1, username: 'admin', email: 'admin@example.com', jellyfinUserId: '0000aaaa' };
 
 // Jellyfin stand-in: resolves access tokens to users via GET /Users/Me.
 async function createFakeJellyfin() {
@@ -74,7 +77,7 @@ test('keeps the Jellyseerr session server-side and limits relayed operations', a
         'Content-Type': 'application/json',
         'Set-Cookie': `connect.sid=${jellyfinUserId === 'abc123' ? 'test-session' : 'other-session'}; HttpOnly; Path=/`,
       });
-      response.end(JSON.stringify({ jellyfinUserId }));
+      response.end(JSON.stringify({ id: jellyfinUserId === 'abc123' ? 7 : 8, jellyfinUserId }));
       return;
     }
     if (request.url === '/api/v1/discover/trending' && request.headers.cookie === 'connect.sid=test-session') {
@@ -84,7 +87,30 @@ test('keeps the Jellyseerr session server-side and limits relayed operations', a
     }
     if (request.url === '/api/v1/movie/101' && request.headers.cookie === 'connect.sid=test-session') {
       response.writeHead(200, { 'Content-Type': 'application/json' });
-      response.end(JSON.stringify({ id: 101, mediaInfo: { jellyfinMediaId: 'a1b2c3', status: 5 } }));
+      response.end(JSON.stringify({
+        id: 101,
+        mediaInfo: {
+          jellyfinMediaId: 'a1b2c3',
+          status: 5,
+          requests: [
+            { id: 1, status: 2, requestedBy: ALEX_SEERR, modifiedBy: ADMIN_SEERR },
+            { id: 2, status: 2, requestedBy: BLAIR_SEERR },
+          ],
+          watchlists: [{ id: 3, requestedBy: BLAIR_SEERR }],
+        },
+      }));
+      return;
+    }
+    if (request.url === '/api/v1/request?take=20&requestedBy=7' && request.headers.cookie === 'connect.sid=test-session') {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({
+        pageInfo: { results: 3 },
+        results: [
+          { id: 1, requestedBy: ALEX_SEERR, media: { tmdbId: 101 } },
+          { id: 2, requestedBy: BLAIR_SEERR, media: { tmdbId: 101 } },
+          { id: 4, requestedBy: 8, media: { tmdbId: 202 } },
+        ],
+      }));
       return;
     }
     response.writeHead(401, { 'Content-Type': 'application/json' });
@@ -93,6 +119,7 @@ test('keeps the Jellyseerr session server-side and limits relayed operations', a
   const fakePort = await listen(fakeSeerr);
   const seerr = new SeerrClient(`http://127.0.0.1:${fakePort}`, 'test-api-key');
   const accessCalls = [];
+  const visibleItems = new Set();
   const access = {
     hasJellyseerrUser(userId) {
       return seerr.hasJellyfinUser(userId);
@@ -103,7 +130,15 @@ test('keeps the Jellyseerr session server-side and limits relayed operations', a
     },
     listMediaClaims(userId) {
       accessCalls.push({ operation: 'list', userId });
-      return [{ mediaType: 'movie', tmdbId: 101, userIds: [userId], updatedAt: '2026-09-03T00:00:00.000Z' }];
+      // Deliberately over-shared: the bridge must still return only caller-safe fields.
+      return [{
+        mediaType: 'movie', tmdbId: 101, claimed: true, managed: true, owned: true, public: false,
+        jellyfinItemId: 'a1b2c3', claimedAt: '2026-09-02T00:00:00.000Z',
+        userIds: [userId, 'def456'], updatedAt: '2026-09-03T00:00:00.000Z',
+      }];
+    },
+    canAccessItem(userId, itemId) {
+      return userId === 'abc123' && visibleItems.has(itemId);
     },
     async claimMediaAccess(userId, mediaType, tmdbId, jellyfinItemId) {
       accessCalls.push({ operation: 'claim', userId, mediaType, tmdbId, jellyfinItemId });
@@ -195,7 +230,8 @@ test('keeps the Jellyseerr session server-side and limits relayed operations', a
       headers: { Authorization: `Bearer ${claimedNameToken}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: '/jellyquest/access/claims', options: {} }),
     });
-    assert.equal((await claimedNameClaims.json()).data.claims[0].userIds[0], 'abc123');
+    assert.equal((await claimedNameClaims.json()).data.claims[0].tmdbId, 101);
+    assert.deepEqual(accessCalls.at(-1), { operation: 'list', userId: 'abc123' }, 'claims are listed for the verified user');
     accessCalls.length = 0;
 
     const sessionResponse = await fetch(`${origin}/jellyquest-bridge/session`, {
@@ -249,12 +285,43 @@ test('keeps the Jellyseerr session server-side and limits relayed operations', a
       body: JSON.stringify({ path: '/jellyquest/access/claims', options: {} }),
     });
     assert.equal(claims.status, 200);
-    assert.equal((await claims.json()).data.claims[0].tmdbId, 101);
+    assert.deepEqual((await claims.json()).data.claims, [{
+      mediaType: 'movie', tmdbId: 101, claimed: true, managed: true, owned: true, public: false,
+      jellyfinItemId: 'a1b2c3', claimedAt: '2026-09-02T00:00:00.000Z',
+    }], 'no claimant IDs, counts, or shared timestamps leave the bridge');
     assert.deepEqual(accessCalls, [
       { operation: 'get', userId: 'abc123', mediaType: 'movie', tmdbId: 101, jellyfinItemId: 'a1b2c3' },
       { operation: 'claim', userId: 'abc123', mediaType: 'movie', tmdbId: 101, jellyfinItemId: 'a1b2c3' },
       { operation: 'list', userId: 'abc123' },
     ]);
+
+    const details = await fetch(`${origin}/jellyquest-bridge/proxy`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: '/api/v1/movie/101', options: {} }),
+    });
+    assert.equal(details.status, 200);
+    assert.deepEqual((await details.json()).data.mediaInfo, {
+      status: 5,
+      requests: [{ id: 1, status: 2, requestedBy: ALEX_SEERR }],
+      watchlists: [],
+    }, 'only the caller\'s own request survives; a private item ID the caller cannot open is withheld');
+    visibleItems.add('a1b2c3');
+    const visibleDetails = await fetch(`${origin}/jellyquest-bridge/proxy`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: '/api/v1/movie/101', options: {} }),
+    });
+    assert.equal((await visibleDetails.json()).data.mediaInfo.jellyfinMediaId, 'a1b2c3');
+
+    const requests = await fetch(`${origin}/jellyquest-bridge/proxy`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: '/api/v1/request?take=20', options: {} }),
+    });
+    const requestList = (await requests.json()).data;
+    assert.deepEqual(requestList.results.map((entry) => entry.id), [1]);
+    assert.doesNotMatch(JSON.stringify(requestList), /def456|Blair|admin/i);
 
     const blocked = await fetch(`${origin}/jellyquest-bridge/proxy`, {
       method: 'POST',
@@ -276,12 +343,228 @@ test('keeps the Jellyseerr session server-side and limits relayed operations', a
   }
 });
 
+test('relays only the caller\'s own Jellyseerr activity', async () => {
+  // Minimal record with no Jellyfin ID: only the Seerr user ID (resolved via /auth/me) identifies the caller.
+  const ALEX_MINIMAL = { id: 7, avatar: '/a.png', userType: 3 };
+  const BLAIR_MINIMAL = { id: 8, avatar: '/b.png', userType: 3 };
+  const seen = { requestUrls: [], meCalls: 0, meResponse: { id: 7, jellyfinUserId: 'abc123' } };
+  const payloads = {
+    '/api/v1/movie/101': {
+      id: 101,
+      releaseDate: '2026-01-01',
+      mediaInfo: {
+        id: 50, tmdbId: 101, status: 5, jellyfinMediaId: 'item-private', jellyfinMediaId4k: 'item-4k',
+        createdAt: '2026-03-01T00:00:00.000Z', updatedAt: '2026-03-02T00:00:00.000Z', mediaAddedAt: '2026-03-02T00:00:00.000Z',
+        seasons: [{ id: 1, seasonNumber: 1, status: 5, createdAt: '2026-03-01T00:00:00.000Z', updatedAt: '2026-03-02T00:00:00.000Z' }],
+        requests: [
+          { id: 1, status: 2, createdAt: '2026-02-01T00:00:00.000Z', requestedBy: ALEX_MINIMAL, modifiedBy: BLAIR_MINIMAL, modifiedById: 8 },
+          { id: 2, status: 2, createdAt: '2026-02-05T00:00:00.000Z', requestedBy: BLAIR_MINIMAL },
+        ],
+        issues: [
+          {
+            id: 10, issueType: 1, createdAt: '2026-04-01T00:00:00.000Z', createdBy: ALEX_MINIMAL,
+            comments: [
+              { id: 100, message: 'mine', createdAt: '2026-04-01T00:00:00.000Z', user: ALEX_MINIMAL },
+              { id: 101, message: 'theirs', createdAt: '2026-04-02T00:00:00.000Z', user: BLAIR_MINIMAL },
+            ],
+          },
+          { id: 11, issueType: 2, createdAt: '2026-04-03T00:00:00.000Z', createdBy: BLAIR_MINIMAL, comments: [] },
+        ],
+      },
+    },
+    '/api/v1/discover/requested?page=3': {
+      page: 3,
+      totalPages: 3,
+      totalResults: 5,
+      pageInfo: { page: 3, pages: 3, pageSize: 2, results: 5 },
+      results: [
+        { id: 1, requestedBy: 7, status: 2 },
+        { id: 2, requestedBy: 8, status: 2 },
+      ],
+    },
+    '/api/v1/discover/unknown-shape': {
+      id: 1,
+      requestedById: 7,
+      reviewerUserId: 'def456',
+      approvedById: 8,
+      owner_user: 'def456',
+      viewerUserId: 'ABC-123',
+      watchers: [BLAIR_MINIMAL, ALEX_MINIMAL],
+      users: [8, 7],
+      user_id: 8,
+      sharedUsers: [8],
+      curator: { id: 8, avatar: '/b.png', userType: 3 },
+      hobbyId: 3,
+      lobbyId: 'lobby-1',
+      sortBy: 'popularity.desc',
+    },
+    '/api/v1/tv/202': {
+      id: 202,
+      name: 'Show',
+      createdBy: [{ id: 11, name: 'Creator', gender: 1, profilePath: '/c.png', creditId: 'credit-1' }],
+      mediaInfo: { status: 3, requests: [{ id: 5, requestedBy: BLAIR_MINIMAL }, { id: 6, createdBy: BLAIR_MINIMAL }] },
+    },
+    '/api/v1/discover/top-level-user': BLAIR_MINIMAL,
+  };
+  const fakeSeerr = http.createServer(async (request, response) => {
+    const send = (status, value) => {
+      response.writeHead(status, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify(value));
+    };
+    if (request.url === '/api/v1/auth/jellyfin' && request.method === 'POST') {
+      await requestBody(request);
+      response.writeHead(200, { 'Content-Type': 'application/json', 'Set-Cookie': 'connect.sid=test-session; Path=/' });
+      response.end(JSON.stringify({ jellyfinUserId: 'abc123' })); // no numeric Seerr ID
+      return;
+    }
+    if (request.url === '/api/v1/auth/me') {
+      seen.meCalls += 1;
+      return seen.meResponse ? send(200, seen.meResponse) : send(500, { message: 'boom' });
+    }
+    if (request.url?.startsWith('/api/v1/request?')) {
+      seen.requestUrls.push(request.url);
+      const requestedBy = new URL(request.url, 'http://seerr').searchParams.get('requestedBy');
+      const rows = [
+        { id: 1, requestedBy: ALEX_MINIMAL, createdAt: '2026-02-01T00:00:00.000Z', media: { tmdbId: 101, createdAt: '2026-03-01T00:00:00.000Z' } },
+        { id: 2, requestedBy: BLAIR_MINIMAL, createdAt: '2026-02-05T00:00:00.000Z', media: { tmdbId: 101 } },
+      ].filter((row) => !requestedBy || String(row.requestedBy.id) === requestedBy);
+      return send(200, { pageInfo: { page: 1, pages: 1, pageSize: 10, results: rows.length }, results: rows });
+    }
+    if (request.url === '/api/v1/request' && request.method === 'POST') {
+      const body = JSON.parse(await requestBody(request));
+      if (body.mediaId === 1) return send(409, { message: 'Blair (blair@example.com) already requested this title.' });
+      if (body.mediaId === 3) return send(403, { message: 'Movie Quota exceeded.' });
+      if (body.mediaId === 4) return send(202, { message: 'No seasons available to request' });
+      return send(500, { message: 'TypeError at Blair\'s quota for user def456' });
+    }
+    if (payloads[request.url]) return send(200, payloads[request.url]);
+    send(404, { message: 'Not found' });
+  });
+  const fakePort = await listen(fakeSeerr);
+  const jellyfin = await createFakeJellyfin();
+  const access = {
+    hasJellyseerrUser: async () => true,
+    getMediaAccess: () => { throw new Error('unused'); },
+    listMediaClaims: () => [],
+    canAccessItem: (userId, itemId) => userId === 'abc123' && itemId === 'item-4k',
+    claimMediaAccess: async () => { throw new Error('unused'); },
+  };
+  const bridge = new RequestBridge(`http://127.0.0.1:${fakePort}`, jellyfin.url, access);
+  const app = http.createServer(async (request, response) => {
+    await bridge.handle(request, response, new URL(request.url ?? '/', 'http://localhost'));
+  });
+  const appPort = await listen(app);
+  const origin = `http://127.0.0.1:${appPort}`;
+  const openSession = () => fetch(`${origin}/jellyquest-bridge/session`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Emby-Token': ALEX_TOKEN },
+    body: '{}',
+  });
+
+  try {
+    const sessionResponse = await openSession();
+    assert.equal(sessionResponse.status, 200);
+    assert.equal(seen.meCalls, 1, 'the Seerr user ID is resolved from the verified Jellyseerr session');
+    const { token } = await sessionResponse.json();
+    const proxy = async (path, options = {}) => {
+      const response = await fetch(`${origin}/jellyquest-bridge/proxy`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path, options }),
+      });
+      return { status: response.status, body: await response.json() };
+    };
+
+    // Request listings are scoped upstream, even if the client asks for someone else's.
+    const requests = await proxy('/api/v1/request?take=10&requestedBy=8');
+    assert.deepEqual(seen.requestUrls, ['/api/v1/request?take=10&requestedBy=7']);
+    assert.deepEqual(requests.body.data, {
+      pageInfo: { page: 1, pages: 1, pageSize: 10, results: 1 },
+      results: [{ id: 1, requestedBy: ALEX_MINIMAL, createdAt: '2026-02-01T00:00:00.000Z', media: { tmdbId: 101 } }],
+    }, 'own request kept with its timestamp; media-level timing removed');
+
+    // Rows filtered locally get counts recomputed from what is visible.
+    const filtered = (await proxy('/api/v1/discover/requested?page=3')).body.data;
+    assert.deepEqual(filtered, {
+      page: 1,
+      totalPages: 1,
+      totalResults: 1,
+      pageInfo: { page: 1, pages: 1, pageSize: 2, results: 1 },
+      results: [{ id: 1, requestedBy: 7, status: 2 }],
+    }, 'page and totals agree after rows are withheld');
+    assert.equal((await proxy('/api/v1/media?filter=pending&sort=modified')).status, 403, '/api/v1/media is not relayed');
+    assert.equal((await proxy('/api/v1/media')).status, 403);
+
+    assert.deepEqual((await proxy('/api/v1/tv/202')).body.data, {
+      id: 202,
+      name: 'Show',
+      createdBy: [{ id: 11, name: 'Creator', gender: 1, profilePath: '/c.png', creditId: 'credit-1' }],
+      mediaInfo: { status: 3, requests: [] },
+    }, 'TMDB show creators are kept while Jellyseerr users are still removed');
+
+    const details = (await proxy('/api/v1/movie/101')).body.data;
+    assert.deepEqual(details, {
+      id: 101,
+      releaseDate: '2026-01-01',
+      mediaInfo: {
+        id: 50, tmdbId: 101, status: 5, jellyfinMediaId4k: 'item-4k',
+        seasons: [{ id: 1, seasonNumber: 1, status: 5 }],
+        requests: [{ id: 1, status: 2, createdAt: '2026-02-01T00:00:00.000Z', requestedBy: ALEX_MINIMAL }],
+        issues: [{
+          id: 10, issueType: 1, createdAt: '2026-04-01T00:00:00.000Z', createdBy: ALEX_MINIMAL,
+          comments: [{ id: 100, message: 'mine', createdAt: '2026-04-01T00:00:00.000Z', user: ALEX_MINIMAL }],
+        }],
+      },
+    }, 'other users\' requests, issues, comments, staff edits and media timing are removed');
+
+    assert.deepEqual((await proxy('/api/v1/discover/unknown-shape')).body.data, {
+      id: 1,
+      requestedById: 7,
+      viewerUserId: 'ABC-123',
+      watchers: [ALEX_MINIMAL],
+      users: [7],
+      sharedUsers: [],
+      hobbyId: 3,
+      lobbyId: 'lobby-1',
+      sortBy: 'popularity.desc',
+    }, 'unknown identity keys and minimal user records fail closed; unrelated keys survive');
+    assert.deepEqual((await proxy('/api/v1/discover/top-level-user')).body.data, {});
+
+    const duplicate = await proxy('/api/v1/request', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mediaType: 'movie', mediaId: 1 }),
+    });
+    assert.deepEqual(duplicate, { status: 409, body: { error: 'That title has already been requested.' } });
+    const failure = await proxy('/api/v1/request', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mediaType: 'movie', mediaId: 2 }),
+    });
+    assert.deepEqual(failure, { status: 500, body: { error: 'Jellyseerr is unavailable.' } }, 'unknown messages mentioning a quota are not passed through');
+    const quota = await proxy('/api/v1/request', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mediaType: 'movie', mediaId: 3 }),
+    });
+    assert.deepEqual(quota, { status: 403, body: { error: 'You have reached your request limit for now.' } });
+    const noSeasons = await proxy('/api/v1/request', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mediaType: 'tv', mediaId: 4, seasons: 'all' }),
+    });
+    assert.deepEqual(noSeasons, { status: 409, body: { error: 'Every season of this show has already been requested.' } });
+    assert.deepEqual(await proxy('/api/v1/movie/999'), { status: 404, body: { error: 'Jellyseerr could not find that title.' } });
+
+    seen.meResponse = { id: 8, jellyfinUserId: 'def456' };
+    assert.equal((await openSession()).status, 502, 'a Seerr user that is not the verified profile is rejected');
+    seen.meResponse = undefined;
+    assert.equal((await openSession()).status, 502, 'sessions are not opened without a resolvable Seerr user ID');
+  } finally {
+    await close(app);
+    await close(fakeSeerr);
+    await close(jellyfin.server);
+  }
+});
+
 test('ends bridge sessions when the Jellyfin access token is revoked', async () => {
   const fakeSeerr = http.createServer(async (request, response) => {
     if (request.url === '/api/v1/auth/jellyfin' && request.method === 'POST') {
       await requestBody(request);
       response.writeHead(200, { 'Content-Type': 'application/json', 'Set-Cookie': 'connect.sid=test-session; Path=/' });
-      response.end(JSON.stringify({ jellyfinUserId: 'abc123' }));
+      response.end(JSON.stringify({ id: 7, jellyfinUserId: 'abc123' }));
       return;
     }
     response.writeHead(200, { 'Content-Type': 'application/json' });

@@ -11,8 +11,8 @@ import type {
   JellyfinUser,
   LibraryCatalogItem,
   LibraryItemSummary,
+  CallerMediaClaim,
   MediaAccessStatus,
-  MediaClaim,
   RecentSeerrRequest,
   RequestBackfillResult,
   RevokeResult,
@@ -182,19 +182,33 @@ export class AccessService {
     const itemId = jellyfinItemId ? normalizeId(jellyfinItemId) : claim?.jellyfinItemId;
     const grant = itemId ? this.#store.get(itemId) : undefined;
     const managed = grant?.active === true;
+    const owned = managed && grant!.owners.includes(userId);
+    const isPublic = Boolean(itemId) && !managed;
     return {
       mediaType,
       tmdbId,
       claimed: claim?.userIds.includes(userId) === true,
       managed,
-      owned: managed && grant!.owners.includes(userId),
-      public: Boolean(itemId) && !managed,
-      ...(itemId ? { jellyfinItemId: itemId } : {}),
+      owned,
+      public: isPublic,
+      // A private item ID is only disclosed to users who can already open the item.
+      ...(itemId && (owned || isPublic) ? { jellyfinItemId: itemId } : {}),
     };
   }
 
-  public listMediaClaims(userId: string): MediaClaim[] {
-    return this.#store.listClaims(userId);
+  /** Whether the user can already open the item in Jellyfin: it is public or they are among its owners. */
+  public canAccessItem(userIdInput: string, jellyfinItemId: string): boolean {
+    const grant = this.#store.get(normalizeId(jellyfinItemId));
+    return grant?.active !== true || grant.owners.includes(normalizeId(userIdInput));
+  }
+
+  /** Lists only the caller's own claims, projected so no other claimant is revealed. */
+  public listMediaClaims(userIdInput: string): CallerMediaClaim[] {
+    const userId = normalizeId(userIdInput);
+    return this.#store.listClaims(userId).map((claim) => {
+      const claimedAt = claim.claimedAt?.[userId];
+      return { ...this.getMediaAccess(userId, claim.mediaType, claim.tmdbId), ...(claimedAt ? { claimedAt } : {}) };
+    });
   }
 
   public claimMediaAccess(

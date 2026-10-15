@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { tokenAuthorizationHeader } from './jellyfin.js';
-import type { MediaAccessStatus, MediaClaim } from './types.js';
+import type { CallerMediaClaim, MediaAccessStatus } from './types.js';
 
 const BRIDGE_PREFIX = '/jellyquest-bridge';
 const BODY_LIMIT = 64 * 1024;
@@ -11,6 +11,28 @@ const PROBE_ATTEMPT_WINDOW_MS = 5 * 60 * 1000;
 const MAX_PROBE_ATTEMPTS = 30;
 const IDENTITY_RECHECK_MS = 5 * 60 * 1000;
 const JELLYFIN_TOKEN_PATTERN = /^[A-Za-z0-9._~-]{16,256}$/;
+// Keys that hold a user, user ID, or list of users. Unknown keys of this shape fail closed.
+// Case-sensitive so camel-case boundaries matter: `reviewerUserId` and `approvedById` match, `hobbyId` does not.
+const IDENTITY_KEY_PATTERN = new RegExp([
+  '^(?:\\w+_)?(?:users?|requestedBy|modifiedBy|createdBy|updatedBy)(?:Ids?)?$',
+  '(?:^|_)(?:users?|requested_by|modified_by|created_by|updated_by)(?:_ids?)?$',
+  '[a-z0-9](?:User|By)Ids?$',
+  '[a-z0-9]Users?$',
+].join('|'));
+// TMDB credits (such as a show's `createdBy` creators) are public media data, not Jellyseerr users.
+const TMDB_CREDIT_FIELDS = ['creditId', 'credit_id', 'profilePath', 'profile_path'];
+// Staff actions on a request are never relayed, even on the caller's own request.
+const ALWAYS_STRIPPED_KEYS = new Set(['modifiedBy', 'modifiedById', 'updatedBy', 'updatedById']);
+// Keys that make an array entry (request, watchlist entry, issue, comment) belong to that user.
+const OWNER_KEYS = ['requestedBy', 'requestedById', 'createdBy', 'createdById', 'user', 'userId'];
+// Activity timing is only relayed on records the caller owns.
+const TIMESTAMP_KEYS = new Set(['createdAt', 'updatedAt', 'mediaAddedAt', 'lastSeasonChange']);
+const ITEM_ID_KEYS = new Set(['jellyfinMediaId', 'jellyfinMediaId4k']);
+// Any one of these marks an object as a Jellyseerr user record.
+const USER_FIELDS = [
+  'email', 'username', 'jellyfinUserId', 'jellyfinUsername', 'plexUsername', 'plexId', 'displayName',
+  'avatar', 'userType', 'permissions', 'requestCount', 'movieQuotaLimit', 'tvQuotaLimit',
+];
 
 interface BridgeSession {
   cookie: string;
@@ -18,6 +40,12 @@ interface BridgeSession {
   userId: string;
   jellyfinToken: string;
   verifiedAt: number;
+  seerrUserId: number;
+}
+
+interface ScrubContext {
+  session: BridgeSession;
+  canAccessItem(itemId: string): boolean;
 }
 
 interface JellyfinIdentity {
@@ -30,7 +58,8 @@ type IdentityResult = JellyfinIdentity | 'invalid' | 'unavailable';
 export interface RequestBridgeAccess {
   hasJellyseerrUser(jellyfinUserId: string): Promise<boolean>;
   getMediaAccess(userId: string, mediaType: 'movie' | 'tv', tmdbId: number, jellyfinItemId?: string): MediaAccessStatus;
-  listMediaClaims(userId: string): MediaClaim[];
+  listMediaClaims(userId: string): CallerMediaClaim[];
+  canAccessItem(userId: string, jellyfinItemId: string): boolean;
   claimMediaAccess(userId: string, mediaType: 'movie' | 'tv', tmdbId: number, jellyfinItemId?: string): Promise<MediaAccessStatus>;
 }
 
@@ -101,6 +130,8 @@ export class RequestBridge {
       if (!auth.response.ok || !sameId(String(auth.data.jellyfinUserId ?? ''), identity.id) || !auth.cookie) {
         return json(response, 401, { error: 'Jellyseerr rejected this Jellyfin profile.' });
       }
+      const seerrUserId = typeof auth.data.id === 'number' ? auth.data.id : await this.seerrUserId(auth.cookie, identity.id);
+      if (seerrUserId === undefined) return json(response, 502, { error: 'Jellyseerr did not identify this profile.' });
       const token = randomBytes(32).toString('hex');
       const now = Date.now();
       this.sessions.set(token, {
@@ -109,6 +140,7 @@ export class RequestBridge {
         userId: identity.id,
         jellyfinToken,
         verifiedAt: now,
+        seerrUserId,
       });
       this.pruneSessions();
       return json(response, 200, { token });
@@ -140,17 +172,21 @@ export class RequestBridge {
         session.expires = Date.now() + SESSION_LIFETIME_MS;
         return json(response, 200, { data });
       }
-      const result = await this.seerr(input.path, options, session.cookie);
+      const result = await this.seerr(callerScopedPath(input.path, options, session), options, session.cookie);
       session.cookie = result.cookie;
       session.expires = Date.now() + SESSION_LIFETIME_MS;
       if (!result.response.ok || result.response.status === 202) {
-        return json(response, result.response.status >= 400 ? result.response.status : 409, {
-          error: typeof result.data.message === 'string'
-            ? result.data.message
-            : `Jellyseerr returned ${result.response.status}.`,
-        });
+        // Jellyseerr messages can describe other users' requests, so only the status is relayed.
+        const status = result.response.status >= 400 ? result.response.status : 409;
+        return json(response, status, { error: seerrErrorMessage(status, result.data.message) });
       }
-      return json(response, 200, { data: result.data });
+      const access = this.access;
+      return json(response, 200, {
+        data: scrubPayload(result.data, {
+          session,
+          canAccessItem: (itemId) => access?.canAccessItem(session.userId, itemId) === true,
+        }),
+      });
     }
     return json(response, 404, { error: 'Not found.' });
   }
@@ -159,7 +195,7 @@ export class RequestBridge {
     const url = new URL(pathname, 'http://jellyquest.local');
     const method = (options.method ?? 'GET').toUpperCase();
     if (url.pathname === '/jellyquest/access/claims' && method === 'GET') {
-      return { claims: this.access!.listMediaClaims(session.userId) };
+      return { claims: this.access!.listMediaClaims(session.userId).map(callerClaim) };
     }
     if (url.pathname !== '/jellyquest/access' || (method !== 'GET' && method !== 'POST')) {
       throw new Error('That JellyPass access operation is not allowed.');
@@ -179,9 +215,9 @@ export class RequestBridge {
     const jellyfinItemId = typeof mediaInfo?.jellyfinMediaId === 'string' && PROFILE_ID_PATTERN.test(mediaInfo.jellyfinMediaId)
       ? mediaInfo.jellyfinMediaId
       : undefined;
-    return method === 'POST'
-      ? this.access!.claimMediaAccess(session.userId, mediaType, tmdbId, jellyfinItemId)
-      : this.access!.getMediaAccess(session.userId, mediaType, tmdbId, jellyfinItemId);
+    return accessStatus(method === 'POST'
+      ? await this.access!.claimMediaAccess(session.userId, mediaType, tmdbId, jellyfinItemId)
+      : this.access!.getMediaAccess(session.userId, mediaType, tmdbId, jellyfinItemId));
   }
 
   private async verifyJellyfinToken(jellyfinToken: string): Promise<IdentityResult> {
@@ -218,6 +254,13 @@ export class RequestBridge {
       return 'invalid';
     }
     return { id: user.Id, name: user.Name };
+  }
+
+  private async seerrUserId(cookie: string, jellyfinUserId: string): Promise<number | undefined> {
+    const me = await this.seerr('/api/v1/auth/me', {}, cookie);
+    if (!me.response.ok || typeof me.data.id !== 'number') return undefined;
+    if (me.data.jellyfinUserId !== undefined && !sameId(String(me.data.jellyfinUserId), jellyfinUserId)) return undefined;
+    return me.data.id;
   }
 
   private async seerr(pathname: string, options: RelayOptions = {}, cookie = ''): Promise<SeerrResult> {
@@ -258,6 +301,141 @@ export class RequestBridge {
     }
     return true;
   }
+}
+
+function accessStatus(status: MediaAccessStatus): MediaAccessStatus {
+  return {
+    mediaType: status.mediaType,
+    tmdbId: status.tmdbId,
+    claimed: status.claimed,
+    managed: status.managed,
+    owned: status.owned,
+    public: status.public,
+    ...(status.jellyfinItemId ? { jellyfinItemId: status.jellyfinItemId } : {}),
+  };
+}
+
+function callerClaim(claim: CallerMediaClaim): CallerMediaClaim {
+  return { ...accessStatus(claim), ...(claim.claimedAt ? { claimedAt: claim.claimedAt } : {}) };
+}
+
+/** Limits request listings to the caller's own requests so Jellyseerr's paging stays accurate. */
+function callerScopedPath(pathname: string, options: RelayOptions, session: BridgeSession): string {
+  if ((options.method ?? 'GET').toUpperCase() !== 'GET' || !/^\/api\/v1\/request(?:\?|$)/.test(pathname)) return pathname;
+  const url = new URL(pathname, 'http://jellyseerr.local');
+  url.searchParams.set('requestedBy', String(session.seerrUserId));
+  return `${url.pathname}${url.search}`;
+}
+
+// Known Jellyseerr messages that only describe the caller, mapped to fixed wording.
+const SAFE_SEERR_MESSAGES: Array<[RegExp, string]> = [
+  [/quota exceeded/i, 'You have reached your request limit for now.'],
+  [/no seasons (?:left|available) to request/i, 'Every season of this show has already been requested.'],
+];
+
+function seerrErrorMessage(status: number, upstreamMessage: unknown): string {
+  if (typeof upstreamMessage === 'string') {
+    const safe = SAFE_SEERR_MESSAGES.find(([pattern]) => pattern.test(upstreamMessage));
+    if (safe) return safe[1];
+  }
+  if (status === 400 || status === 422) return 'Jellyseerr could not accept that request.';
+  if (status === 401 || status === 403) return 'Jellyseerr does not allow that operation for this profile.';
+  if (status === 404) return 'Jellyseerr could not find that title.';
+  if (status === 409) return 'That title has already been requested.';
+  if (status === 429) return 'Jellyseerr is busy. Try again shortly.';
+  if (status >= 500) return 'Jellyseerr is unavailable.';
+  return 'Jellyseerr could not complete that operation.';
+}
+
+/**
+ * Removes other Jellyseerr users from a relayed payload. Entries owned by someone else
+ * (requests, watchlist entries, issues, comments) are dropped; any other user reference,
+ * activity timestamp, or inaccessible Jellyfin item ID is omitted.
+ */
+function scrubPayload(value: unknown, context: ScrubContext): unknown {
+  return isOtherUser(value, context.session) ? {} : scrubValue(value, context);
+}
+
+function scrubValue(value: unknown, context: ScrubContext): unknown {
+  const { session } = context;
+  if (Array.isArray(value)) {
+    return value
+      .filter((entry) => !isOtherUser(entry, session) && !ownedByOtherUser(entry, session))
+      .map((entry) => scrubValue(entry, context));
+  }
+  if (!isRecord(value)) return value;
+  const ownRecord = ownedByCaller(value, session) || (isUserRecord(value) && isCallerRef(value, session));
+  const result: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (ALWAYS_STRIPPED_KEYS.has(key)) continue;
+    if (TIMESTAMP_KEYS.has(key) && !ownRecord) continue;
+    if (ITEM_ID_KEYS.has(key) && entry !== null && entry !== undefined
+        && (typeof entry !== 'string' || !context.canAccessItem(entry))) continue;
+    if (IDENTITY_KEY_PATTERN.test(key) && entry !== null && entry !== undefined) {
+      if (Array.isArray(entry)) {
+        result[key] = entry
+          .filter((item) => isTmdbCredit(item) || isCallerValue(item, session))
+          .map((item) => scrubValue(item, context));
+        continue;
+      }
+      if (!isTmdbCredit(entry) && !isCallerValue(entry, session)) continue;
+    } else if (isOtherUser(entry, session)) {
+      continue;
+    }
+    result[key] = scrubValue(entry, context);
+  }
+  if (Array.isArray(value.results) && Array.isArray(result.results) && result.results.length < value.results.length) {
+    // Rows were withheld, so upstream totals would count other users' records.
+    const visible = result.results.length;
+    if (isRecord(result.pageInfo)) result.pageInfo = { ...result.pageInfo, page: 1, pages: 1, results: visible };
+    if ('page' in result) result.page = 1;
+    if ('totalResults' in result) result.totalResults = visible;
+    if ('totalPages' in result) result.totalPages = 1;
+  }
+  return result;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+
+function ownerValues(record: Record<string, unknown>): unknown[] {
+  // An owner is a single user reference; lists such as TMDB `createdBy` creators do not own the record.
+  return OWNER_KEYS.map((key) => record[key])
+    .filter((owner) => owner !== null && owner !== undefined && !Array.isArray(owner) && !isTmdbCredit(owner));
+}
+
+function isTmdbCredit(value: unknown): boolean {
+  return isRecord(value) && !isUserRecord(value) && TMDB_CREDIT_FIELDS.some((field) => field in value);
+}
+
+function ownedByCaller(record: Record<string, unknown>, session: BridgeSession): boolean {
+  const owners = ownerValues(record);
+  return owners.length > 0 && owners.every((owner) => isCallerValue(owner, session));
+}
+
+function ownedByOtherUser(entry: unknown, session: BridgeSession): boolean {
+  return isRecord(entry) && ownerValues(entry).some((owner) => !isCallerValue(owner, session));
+}
+
+function isOtherUser(value: unknown, session: BridgeSession): boolean {
+  return isUserRecord(value) && !isCallerRef(value, session);
+}
+
+function isUserRecord(value: unknown): value is Record<string, unknown> {
+  return isRecord(value) && USER_FIELDS.some((field) => field in value);
+}
+
+function isCallerValue(value: unknown, session: BridgeSession): boolean {
+  if (typeof value === 'number') return value === session.seerrUserId;
+  if (typeof value === 'string') return sameId(value, session.userId) || value === String(session.seerrUserId);
+  return isCallerRef(value, session);
+}
+
+function isCallerRef(value: unknown, session: BridgeSession): boolean {
+  if (!isUserRecord(value)) return false;
+  if (typeof value.jellyfinUserId === 'string') return sameId(value.jellyfinUserId, session.userId);
+  return value.id === session.seerrUserId;
 }
 
 function clientId(request: IncomingMessage): string {
@@ -303,7 +481,8 @@ function allowedRequest(pathname: string, options: RelayOptions): boolean {
   if (/^\/jellyquest\/access(?:\/claims)?(?:\?|$)/.test(pathname)) {
     return method === 'GET' || (method === 'POST' && pathname === '/jellyquest/access');
   }
-  const allowedPath = /^\/api\/v1\/(?:media(?:\?|$)|request(?:\?|$)|search\?|movie\/\d+(?:\?|$)|tv\/\d+(?:\?|$)|discover\/)/.test(pathname);
+  // `/api/v1/media` is not relayed: its filters and sorts expose other households' activity.
+  const allowedPath = /^\/api\/v1\/(?:request(?:\?|$)|search\?|movie\/\d+(?:\?|$)|tv\/\d+(?:\?|$)|discover\/)/.test(pathname);
   return allowedPath && (method === 'GET' || (method === 'POST' && pathname === '/api/v1/request'));
 }
 
