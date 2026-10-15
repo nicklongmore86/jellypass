@@ -133,9 +133,15 @@ export class HouseholdGateway {
     }
     const upstream = this.#transport().request(this.#requestOptions(request));
     let upgraded = false;
-    socket.once('close', () => {
-      if (!upgraded) upstream.destroy();
-    });
+    // HTTP server sockets allow half-open connections, so a client that sends FIN while the upstream upgrade is
+    // pending emits 'end' but never 'close'; abort on either so the upstream request is not left dangling.
+    const abortPending = () => {
+      if (upgraded) return;
+      upstream.destroy();
+      socket.destroy();
+    };
+    socket.once('end', abortPending);
+    socket.once('close', abortPending);
     upstream.on('upgrade', (upstreamResponse, upstreamSocket, upstreamHead) => {
       upgraded = true;
       upstreamSocket.on('error', (error) => {
@@ -410,18 +416,21 @@ export class HouseholdGateway {
   }
 }
 
-const QUIET_SOCKET_ERROR_CODES = new Set(['ECONNRESET', 'EPIPE', 'ECONNABORTED', 'ERR_STREAM_PREMATURE_CLOSE', 'ERR_STREAM_DESTROYED']);
+// Peer disconnects are routine for media seeks/skips and WebSocket clients, including the "socket hang up" our own
+// aborts produce. They are only logged with LOG_LEVEL=debug; anything else is logged as a warning.
+const EXPECTED_DISCONNECT_CODES = new Set(['ECONNRESET', 'EPIPE', 'ECONNABORTED', 'ERR_STREAM_PREMATURE_CLOSE', 'ERR_STREAM_DESTROYED']);
 
 function logStreamError(context: string, error: unknown): void {
   const code = typeof error === 'object' && error && 'code' in error ? String((error as { code: unknown }).code) : undefined;
+  const expected = code !== undefined && EXPECTED_DISCONNECT_CODES.has(code);
+  if (expected && process.env.LOG_LEVEL?.trim().toLowerCase() !== 'debug') return;
   const entry = JSON.stringify({
-    level: code && QUIET_SOCKET_ERROR_CODES.has(code) ? 'debug' : 'warn',
+    level: expected ? 'debug' : 'warn',
     message: `household gateway ${context} error`,
     code,
     error: error instanceof Error ? error.message : String(error),
   });
-  // Peer resets are routine for long-lived media and WebSocket connections; only surface them at debug level.
-  if (code && QUIET_SOCKET_ERROR_CODES.has(code)) console.debug(entry);
+  if (expected) console.debug(entry);
   else console.warn(entry);
 }
 
