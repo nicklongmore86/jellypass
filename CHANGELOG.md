@@ -7,9 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [1.1.0] - 2026-10-15
 
-This release changes the JellyQuest bridge API in a way that older JellyQuest
-for Tizen builds cannot use. Read [Upgrading from 1.0.0](#upgrading-from-100)
-before you deploy it.
+This release has three breaking changes. Read
+[Upgrading from 1.0.0](#upgrading-from-100) before you deploy it:
+
+- The JellyQuest bridge requires a Jellyfin access token for sessions and
+  eligibility checks, so older JellyQuest for Tizen builds stop working.
+- `/api/v1/media` is no longer relayed through the bridge and returns `403`.
+- The state file is migrated to schema v6, which 1.0.0 cannot read. Rolling
+  back requires a backup taken before the upgrade.
 
 ### Security
 
@@ -57,9 +62,11 @@ before you deploy it.
     half-closes (FIN) during a WebSocket handshake.
   - Upstream requests are released when the client leaves mid-response.
   - Upstream resets close the client response instead of leaving it open.
-- Revoking a request no longer makes a title public on its own when the
-  request attached household groups ([#2]). Remove the grant's groups to make
-  it public.
+- Revoking a request no longer removes the household groups the request
+  attached ([#2]). The title stays visible to those households instead of
+  becoming public. To make it public, clear the grant's groups (UI or
+  `PUT /v1/grants/{itemId}/groups`). The title becomes public only once no
+  other requests or manual users remain on the grant.
 - Seerr test notifications, and any other event that is not
   `MEDIA_AVAILABLE`, return `202 {"status":"ignored"}` once the token is
   accepted. They no longer require request or media IDs ([#2]).
@@ -78,14 +85,17 @@ before you deploy it.
 - **Request backfill** ([#2]). The backfill imports available Seerr requests
   that the webhook missed:
   - It runs about 5 seconds after startup and before each reconcile.
-  - It needs Seerr to be configured, and it is configured with
-    `REQUEST_BACKFILL_SINCE` and `REQUEST_BACKFILL_ENABLED`.
-  - It is off until `REQUEST_BACKFILL_SINCE` is set, and it ignores requests
-    created before that time.
+  - It is configured with `REQUEST_BACKFILL_SINCE` and
+    `REQUEST_BACKFILL_ENABLED`. It is off until `REQUEST_BACKFILL_SINCE` is set,
+    and it imports only requests created at or after that time.
+  - JellyPass refuses to start if the backfill is enabled without `SEERR_URL`
+    and `SEERR_API_KEY`, if `REQUEST_BACKFILL_ENABLED=true` is set without
+    `REQUEST_BACKFILL_SINCE`, or if `REQUEST_BACKFILL_SINCE` is not a valid
+    date.
   - It is idempotent and never recreates a grant an administrator removed.
 - **Webhook and backfill metrics** in `/metrics` ([#2]):
   - `jfa_last_webhook_received_timestamp_seconds`
-  - `jfa_webhooks_total{result="invalid"}`
+  - a new `result="invalid"` label on the existing `jfa_webhooks_total`
   - `jfa_request_backfill_total`
   - `jfa_request_backfill_last_run_timestamp_seconds`
 - **Idle WebSocket timeouts** on the household gateway ([#8]):
@@ -93,7 +103,8 @@ before you deploy it.
     in either direction.
   - `WS_UPSTREAM_IDLE_TIMEOUT_MS` (default `180000`) closes a connection when
     Jellyfin sends nothing, even while the client keeps sending.
-  - `0` disables either timeout.
+  - `0` disables either timeout. JellyPass refuses to start if either value is
+    not an integer or is above `86400000`.
   - TCP keepalive is enabled on both sockets.
 - **`LOG_LEVEL`** ([#5], [#8]): `debug`, `info`, `warn` or `error`,
   case-insensitive. The aliases `trace`, `verbose`, `information`, `warning`
@@ -123,7 +134,11 @@ before you deploy it.
 
 ### Upgrading from 1.0.0
 
-1. **Breaking: update JellyQuest for Tizen with this release.** The app must
+1. **Breaking (rollback): back up the state file before upgrading.** 1.1.0
+   migrates the state file to schema v6 on first start. 1.0.0 refuses to start
+   on a v6 file (`unsupported state schema version`), so rolling back requires
+   restoring the backup taken before the upgrade.
+2. **Breaking: update JellyQuest for Tizen with this release.** The app must
    add `token=<Jellyfin AccessToken>` to the bridge URL fragment in both modes,
    using the access token it already uses with Jellyfin:
 
@@ -133,18 +148,22 @@ before you deploy it.
    ```
 
    Older app builds cannot open request sessions or run eligibility checks.
-   `/eligibility` returns `401` for a missing or rejected token. The bridge page
-   reports any failed eligibility check to the app as an `error` message instead
-   of an `eligibility` message. This covers `400` (malformed body), `401`,
-   `429`, `502` and `503`. The app should treat any such `error` as "cannot
-   check" rather than as a definite answer.
-2. **Turn on the request backfill.** Set
-   `REQUEST_BACKFILL_SINCE=2026-08-31T21:29:00Z`. The backfill stays off until
-   this is set, and it requires `SEERR_URL` and `SEERR_API_KEY`. About 5 seconds
-   after startup, available requests created at or after that time that the
-   webhook missed get household-scoped grants. Requests created before it stay
-   public by design. Assign those from the Library tab if they should be private.
-3. **Optional new settings.** All have safe defaults:
+   `/eligibility` now returns `401` for a missing or rejected token. As before,
+   the bridge page reports any failed eligibility check to the app as an `error`
+   message rather than an `eligibility` message; only the `401` cause is new. The
+   app should treat that `error` as "cannot check" rather than as a definite
+   answer.
+3. **Breaking: `/api/v1/media` is no longer relayed** through the bridge and
+   returns `403`. JellyQuest does not use it.
+4. **Turn on the request backfill.** Set `REQUEST_BACKFILL_SINCE` to when your
+   Seerr webhook stopped delivering, or to your 1.0.0 install date if it never
+   worked, for example `REQUEST_BACKFILL_SINCE=2026-09-10`. The backfill stays
+   off until this is set, and JellyPass refuses to start if the backfill is
+   enabled without `SEERR_URL` and `SEERR_API_KEY`. About 5 seconds after
+   startup, available requests created at or after that time that the webhook
+   missed get household-scoped grants. Requests created before it stay public
+   by design. Assign those from the Library tab if they should be private.
+5. **Optional new settings.** All have safe defaults:
 
    | Variable | Default |
    | --- | --- |
@@ -153,23 +172,26 @@ before you deploy it.
    | `WS_UPSTREAM_IDLE_TIMEOUT_MS` | `180000` (`0` disables) |
    | `REQUEST_BACKFILL_ENABLED` | `true` when `REQUEST_BACKFILL_SINCE` is set |
 
-   Timeouts at or below `60000` log a startup warning, because Jellyfin itself
-   drops sockets after 60 seconds without a keepalive.
-4. **Check the Seerr webhook.** Enter the payload in Seerr's webhook settings
+   JellyPass refuses to start if a `WS_*` value is not an integer or is above
+   `86400000`. Values at or below `60000` log a startup warning, because
+   Jellyfin itself drops sockets after 60 seconds without a keepalive.
+6. **Mark existing passwordless members.** The v5 to v6 migration does not mark
+   anyone as passwordless; only users created without a password afterwards are
+   marked automatically. Mark existing passwordless members in the group
+   dialog's "One-tap sign-in" list. Administrators cannot be marked. Do not mark
+   a user who has a password: the household URL then skips the password form,
+   and they cannot sign in there.
+7. **Check the Seerr webhook.** Enter the payload in Seerr's webhook settings
    (UI or API) and let Seerr save it. A payload edited by hand in Seerr's
    `settings.json` is not stored in Seerr's own encoding and arrives malformed or
    not at all. A test notification should now return `202 {"status":"ignored"}`.
    After that, check `jfa_last_webhook_received_timestamp_seconds` and
    `jfa_webhooks_total{result="invalid"}` in `/metrics`.
-5. **Behaviour changes to note:**
-   - `/api/v1/media` is no longer relayed through the bridge and returns `403`.
-     JellyQuest does not use it.
-   - Revoking a request no longer makes a title public when the request attached
-     household groups. Clear the grant's groups in the UI or with
-     `PUT /v1/grants/{itemId}/groups` to make it public.
-6. **Back up the state file before upgrading.** 1.1.0 migrates the state file
-   to schema v6 on first start, and 1.0.0 cannot read v6. To roll back, restore
-   the backup taken before the upgrade.
+8. **Revoking a request no longer makes a title public.** It no longer removes
+   the household groups the request attached, so the title stays visible to
+   those households. To make it public, clear the grant's groups in the UI or
+   with `PUT /v1/grants/{itemId}/groups`. That works only once no other requests
+   or manual users remain on the grant.
 
 ## [1.0.0] - 2026-09-10
 
