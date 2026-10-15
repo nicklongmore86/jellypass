@@ -26,8 +26,8 @@ async function createFakeJellyfin() {
       state.meCalls += 1;
       const authorization = request.headers.authorization ?? '';
       state.authorizations.push(authorization);
-      const token = /^MediaBrowser .*Client="[^"]+".*DeviceId="[^"]+"/.test(authorization)
-        ? authorization.match(/Token="([^"]+)"/)?.[1]
+      const token = /^MediaBrowser\s/.test(authorization)
+        ? authorization.match(/(?:\s|,)Token="([^"]+)"/)?.[1]
         : undefined;
       const user = tokens.get(token);
       response.writeHead(user ? 200 : 401, { 'Content-Type': 'application/json' });
@@ -211,7 +211,10 @@ test('keeps the Jellyseerr session server-side and limits relayed operations', a
     assert.match(token, /^[a-f0-9]{64}$/);
     assert.deepEqual(loginBody, { username: 'Alex', password: '', email: 'Alex' });
     assert.equal(loginCalls, 2);
-    assert.match(jellyfin.state.authorizations.at(-1), new RegExp(`Token="${ALEX_TOKEN}"`));
+    assert.equal(jellyfin.state.authorizations.at(-1), `MediaBrowser Token="${ALEX_TOKEN}"`);
+    for (const authorization of jellyfin.state.authorizations) {
+      assert.doesNotMatch(authorization, /\b(?:Client|Device|DeviceId|Version)=/, 'verification must not rewrite the device record of the user token');
+    }
 
     const proxyResponse = await fetch(`${origin}/jellyquest-bridge/proxy`, {
       method: 'POST',

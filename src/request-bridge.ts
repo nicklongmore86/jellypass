@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { tokenAuthorizationHeader } from './jellyfin.js';
 import type { MediaAccessStatus, MediaClaim } from './types.js';
 
 const BRIDGE_PREFIX = '/jellyquest-bridge';
@@ -190,7 +191,7 @@ export class RequestBridge {
         signal: AbortSignal.timeout(15_000),
         headers: {
           Accept: 'application/json',
-          Authorization: `MediaBrowser Client="JellyPass", Device="JellyQuest bridge", DeviceId="jellypass-request-bridge", Version="1.0.0", Token="${jellyfinToken}"`,
+          Authorization: tokenAuthorizationHeader(jellyfinToken),
         },
       });
     } catch {
@@ -276,6 +277,8 @@ function jellyfinAccessToken(request: IncomingMessage, input: Record<string, unk
     }
   }
   candidates.push(input.accessToken);
+  // Only the first supplied token is considered: a malformed one is rejected
+  // rather than falling back to another source, so ambiguous input fails closed.
   const token = candidates.find((value) => typeof value === 'string' && value.length > 0);
   return typeof token === 'string' && JELLYFIN_TOKEN_PATTERN.test(token) ? token : undefined;
 }
