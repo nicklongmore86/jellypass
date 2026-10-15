@@ -7,9 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-JellyPass no longer supports JellyQuest for Tizen. Read
-[Upgrading from 1.1.0](#upgrading-from-110) before you deploy this release:
-the state file moves to schema v7, which 1.1.0 cannot read.
+## [2.0.0] - 2026-10-15
+
+This release has three breaking changes. Read
+[Upgrading from 1.1.0](#upgrading-from-110) before you deploy it:
+
+- JellyQuest for Tizen is no longer supported. The request bridge, the
+  `/jellyquest-bridge/*` endpoints, the relayed `/jellyquest/access` paths and
+  self-service claims are removed, and `JELLYQUEST_BRIDGE_ENABLED` is ignored.
+- The state file is migrated to schema v7, which 1.1.0 cannot read. Rolling
+  back requires a backup taken before the upgrade or a manual edit of the state
+  file.
+- A webhook for a 4K request is never granted on the HD item. A webhook whose
+  `event` names a 4K request now fails with `502` when `SEERR_URL` and
+  `SEERR_API_KEY` are not configured, and with `400` when Seerr does not know
+  the 4K item yet. Before, both granted the HD item.
 
 ### Removed
 
@@ -45,9 +57,9 @@ changes as described under [Changed](#changed).
   README) to skip the lookup for HD requests. A `tmdbId` in the payload is now
   ignored.
 - **A 4K request is never granted on the HD item.** A 4K event without
-  `SEERR_URL` and `SEERR_API_KEY` configured is rejected as an error. A 4K
-  request whose 4K item Seerr does not know yet is rejected by the webhook and
-  granted by the request backfill once the 4K item exists (when the request
+  `SEERR_URL` and `SEERR_API_KEY` configured is rejected with `502`. A 4K
+  request whose 4K item Seerr does not know yet is rejected by the webhook with
+  `400` and granted by the request backfill once the 4K item exists (when the request
   backfill is enabled). Before, the webhook granted the HD item in both cases.
 - **Failed webhook resolution counts as an error.** A failed Seerr lookup, a
   webhook missing Jellyfin IDs without Seerr configured, and a rejected 4K
@@ -74,6 +86,11 @@ changes as described under [Changed](#changed).
    the path is passed to Jellyfin like any other unknown path.
 4. **Remove `JELLYQUEST_BRIDGE_ENABLED`** from your `.env` or compose file to
    silence the startup warning.
+5. **Optional: add `"event": "{{event}}"` to the Seerr webhook payload** (see
+   the README). With it, JellyPass trusts the payload's IDs for HD requests and
+   skips the Seerr lookup, and recognizes 4K requests. Without it, every
+   webhook is resolved through Seerr when Seerr is configured; without Seerr,
+   JellyPass cannot tell a 4K request from an HD one.
 
 ## [1.1.0] - 2026-10-15
 
@@ -271,7 +288,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v1.1.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v2.0.0...HEAD
+[2.0.0]: https://github.com/nicklongmore86/jellypass/compare/v1.1.0...v2.0.0
 [1.1.0]: https://github.com/nicklongmore86/jellypass/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/nicklongmore86/jellypass/releases/tag/v1.0.0
 [#1]: https://github.com/nicklongmore86/jellypass/pull/1
