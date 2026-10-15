@@ -2,10 +2,11 @@ import type { IgnoredWebhook, SeerrWebhook } from './types.js';
 
 const ID_PATTERN = /^[a-zA-Z0-9-]{1,128}$/;
 const NOTIFICATION_TYPE_PATTERN = /^[A-Z_]{1,64}$/;
-// Seerr's MEDIA_AVAILABLE `{{event}}` texts. Seerr has no template variable for a request's 4K flag
-// or 4K Jellyfin media ID, so the event text is the only sign of which item became available.
-const HD_AVAILABLE_EVENT = /^(Movie|Series) Request Now Available$/;
-const UHD_AVAILABLE_EVENT = /^4K (Movie|Series) Request Now Available$/;
+// Seerr's MEDIA_AVAILABLE `{{event}}` texts: `[4K ]Movie|Series Request Now Available` when a request
+// becomes available, `[4K ]Movie|Series Now Available` when a request is approved for media that is
+// already available. Seerr has no template variable for a request's 4K flag or 4K Jellyfin media
+// ID, so the event text is the only sign of which item became available.
+const AVAILABLE_EVENT = /^(4K )?(Movie|Series)( Request)? Now Available$/;
 
 export function parseWebhook(value: unknown): SeerrWebhook | IgnoredWebhook {
   if (!value || typeof value !== 'object') throw new Error('body must be a JSON object');
@@ -22,9 +23,8 @@ export function parseWebhook(value: unknown): SeerrWebhook | IgnoredWebhook {
   const mediaType = media ? optionalStringAt(media, 'mediaType') : undefined;
   const mediaId = media ? optionalIdAt(media, 'jellyfinMediaId') : undefined;
   const availableEvent = optionalStringAt(body, 'event');
-  const is4k = availableEvent && UHD_AVAILABLE_EVENT.test(availableEvent) ? true
-    : availableEvent && HD_AVAILABLE_EVENT.test(availableEvent) ? false
-      : undefined;
+  const eventMatch = availableEvent ? AVAILABLE_EVENT.exec(availableEvent) : null;
+  const is4k = eventMatch ? eventMatch[1] !== undefined : undefined;
   const username = requestedBy ? optionalStringAt(requestedBy, 'username') : undefined;
   const userId = requestedBy ? optionalIdAt(requestedBy, 'jellyfinUserId') : undefined;
 

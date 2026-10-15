@@ -229,8 +229,9 @@ them.
 For 4K requests, the backfill uses the 4K availability status and
 `jellyfinMediaId4k` only. A 4K request without a 4K item is skipped rather than
 falling back to the HD item, so it cannot privatize an HD title that was public
-before the cutoff. The webhook path falls back to the HD item when Seerr has no
-4K item for the request.
+before the cutoff. The webhook applies the same rule: a 4K request whose 4K item
+Seerr does not know yet is rejected as an error and not recorded, so the backfill
+grants it once the 4K item exists.
 
 The cutoff exists so that titles that were already public before JellyPass
 managed them stay public. Set it to the date you start relying on JellyPass,
@@ -299,12 +300,17 @@ In **Settings → Notifications → Webhook**:
 ```
 
 JellyPass trusts the payload's media and user IDs only when both are present
-and `event` reads `Movie Request Now Available` or `Series Request Now
-Available`. For a 4K request Seerr still fills `{{media_jellyfinMediaId}}` with
-the HD item, and no template variable carries the 4K item. So when `event`
-names a 4K request (`4K Movie Request Now Available`), or the payload has no
-recognizable `event`, JellyPass asks Seerr for the request and grants the 4K
-item. Without `SEERR_URL` and `SEERR_API_KEY`, the payload IDs are used as sent.
+and `event` identifies an HD request. Seerr sends `Movie Request Now Available`
+or `Series Request Now Available` when a request becomes available, and `Movie
+Now Available` or `Series Now Available` when a request is approved for media
+that is already available. For a 4K request the same texts start with `4K `.
+Seerr fills `{{media_jellyfinMediaId}}` with the HD item even for a 4K request,
+and no template variable carries the 4K item. So when `event` names a 4K
+request, or the payload has no recognizable `event`, JellyPass asks Seerr for
+the request and grants the 4K item. 4K events therefore need `SEERR_URL` and
+`SEERR_API_KEY`: without them, a 4K event is rejected as an error rather than
+granted on the HD item. Other events without Seerr configured use the payload
+IDs as sent.
 
 Some Jellyseerr releases do not expose Jellyfin IDs as webhook template
 variables. When `SEERR_URL` and `SEERR_API_KEY` are configured, this smaller
