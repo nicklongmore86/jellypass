@@ -13,6 +13,9 @@ function listen(server) {
 
 const ALEX_TOKEN = 'alex0000000000000000000000000000';
 const BLAIR_TOKEN = 'blair000000000000000000000000000';
+const ALEX_SEERR = { id: 7, username: 'Alex', email: 'alex@example.com', jellyfinUserId: 'abc123' };
+const BLAIR_SEERR = { id: 8, username: 'Blair', email: 'blair@example.com', jellyfinUserId: 'def456' };
+const ADMIN_SEERR = { id: 1, username: 'admin', email: 'admin@example.com', jellyfinUserId: '0000aaaa' };
 
 // Jellyfin stand-in: resolves access tokens to users via GET /Users/Me.
 async function createFakeJellyfin() {
@@ -74,7 +77,7 @@ test('keeps the Jellyseerr session server-side and limits relayed operations', a
         'Content-Type': 'application/json',
         'Set-Cookie': `connect.sid=${jellyfinUserId === 'abc123' ? 'test-session' : 'other-session'}; HttpOnly; Path=/`,
       });
-      response.end(JSON.stringify({ jellyfinUserId }));
+      response.end(JSON.stringify({ id: jellyfinUserId === 'abc123' ? 7 : 8, jellyfinUserId }));
       return;
     }
     if (request.url === '/api/v1/discover/trending' && request.headers.cookie === 'connect.sid=test-session') {
@@ -84,7 +87,30 @@ test('keeps the Jellyseerr session server-side and limits relayed operations', a
     }
     if (request.url === '/api/v1/movie/101' && request.headers.cookie === 'connect.sid=test-session') {
       response.writeHead(200, { 'Content-Type': 'application/json' });
-      response.end(JSON.stringify({ id: 101, mediaInfo: { jellyfinMediaId: 'a1b2c3', status: 5 } }));
+      response.end(JSON.stringify({
+        id: 101,
+        mediaInfo: {
+          jellyfinMediaId: 'a1b2c3',
+          status: 5,
+          requests: [
+            { id: 1, status: 2, requestedBy: ALEX_SEERR, modifiedBy: ADMIN_SEERR },
+            { id: 2, status: 2, requestedBy: BLAIR_SEERR },
+          ],
+          watchlists: [{ id: 3, requestedBy: BLAIR_SEERR }],
+        },
+      }));
+      return;
+    }
+    if (request.url === '/api/v1/request?take=20' && request.headers.cookie === 'connect.sid=test-session') {
+      response.writeHead(200, { 'Content-Type': 'application/json' });
+      response.end(JSON.stringify({
+        pageInfo: { results: 3 },
+        results: [
+          { id: 1, requestedBy: ALEX_SEERR, media: { tmdbId: 101 } },
+          { id: 2, requestedBy: BLAIR_SEERR, media: { tmdbId: 101 } },
+          { id: 4, requestedBy: 8, media: { tmdbId: 202 } },
+        ],
+      }));
       return;
     }
     response.writeHead(401, { 'Content-Type': 'application/json' });
@@ -103,7 +129,12 @@ test('keeps the Jellyseerr session server-side and limits relayed operations', a
     },
     listMediaClaims(userId) {
       accessCalls.push({ operation: 'list', userId });
-      return [{ mediaType: 'movie', tmdbId: 101, userIds: [userId], updatedAt: '2026-09-03T00:00:00.000Z' }];
+      // Deliberately over-shared: the bridge must still return only caller-safe fields.
+      return [{
+        mediaType: 'movie', tmdbId: 101, claimed: true, managed: true, owned: true, public: false,
+        jellyfinItemId: 'a1b2c3', claimedAt: '2026-09-02T00:00:00.000Z',
+        userIds: [userId, 'def456'], updatedAt: '2026-09-03T00:00:00.000Z',
+      }];
     },
     async claimMediaAccess(userId, mediaType, tmdbId, jellyfinItemId) {
       accessCalls.push({ operation: 'claim', userId, mediaType, tmdbId, jellyfinItemId });
@@ -195,7 +226,8 @@ test('keeps the Jellyseerr session server-side and limits relayed operations', a
       headers: { Authorization: `Bearer ${claimedNameToken}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ path: '/jellyquest/access/claims', options: {} }),
     });
-    assert.equal((await claimedNameClaims.json()).data.claims[0].userIds[0], 'abc123');
+    assert.equal((await claimedNameClaims.json()).data.claims[0].tmdbId, 101);
+    assert.deepEqual(accessCalls.at(-1), { operation: 'list', userId: 'abc123' }, 'claims are listed for the verified user');
     accessCalls.length = 0;
 
     const sessionResponse = await fetch(`${origin}/jellyquest-bridge/session`, {
@@ -249,12 +281,35 @@ test('keeps the Jellyseerr session server-side and limits relayed operations', a
       body: JSON.stringify({ path: '/jellyquest/access/claims', options: {} }),
     });
     assert.equal(claims.status, 200);
-    assert.equal((await claims.json()).data.claims[0].tmdbId, 101);
+    assert.deepEqual((await claims.json()).data.claims, [{
+      mediaType: 'movie', tmdbId: 101, claimed: true, managed: true, owned: true, public: false,
+      jellyfinItemId: 'a1b2c3', claimedAt: '2026-09-02T00:00:00.000Z',
+    }], 'no claimant IDs, counts, or shared timestamps leave the bridge');
     assert.deepEqual(accessCalls, [
       { operation: 'get', userId: 'abc123', mediaType: 'movie', tmdbId: 101, jellyfinItemId: 'a1b2c3' },
       { operation: 'claim', userId: 'abc123', mediaType: 'movie', tmdbId: 101, jellyfinItemId: 'a1b2c3' },
       { operation: 'list', userId: 'abc123' },
     ]);
+
+    const details = await fetch(`${origin}/jellyquest-bridge/proxy`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: '/api/v1/movie/101', options: {} }),
+    });
+    assert.equal(details.status, 200);
+    const { mediaInfo } = (await details.json()).data;
+    assert.equal(mediaInfo.status, 5);
+    assert.deepEqual(mediaInfo.requests, [{ id: 1, status: 2, requestedBy: ALEX_SEERR }], 'only the caller\'s own request survives');
+    assert.deepEqual(mediaInfo.watchlists, []);
+
+    const requests = await fetch(`${origin}/jellyquest-bridge/proxy`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: '/api/v1/request?take=20', options: {} }),
+    });
+    const requestList = (await requests.json()).data;
+    assert.deepEqual(requestList.results.map((entry) => entry.id), [1]);
+    assert.doesNotMatch(JSON.stringify(requestList), /def456|Blair|admin/i);
 
     const blocked = await fetch(`${origin}/jellyquest-bridge/proxy`, {
       method: 'POST',

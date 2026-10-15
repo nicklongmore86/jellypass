@@ -141,6 +141,52 @@ describe('grant lifecycle', () => {
     assert.equal(service.listMediaClaims('bob-id')[0].jellyfinItemId, 'item-1');
   });
 
+  it('lists only the caller\'s own claims without revealing other households', async () => {
+    const store = new GrantStore(await stateFile());
+    await store.load();
+    const service = new AccessService(fakeJellyfin(), store);
+    await service.upsertGroup({ id: 'house-a', name: 'House A', userIds: ['alice-id'] });
+    await service.upsertGroup({ id: 'house-b', name: 'House B', userIds: ['bob-id'] });
+
+    await service.claimMediaAccess('alice-id', 'movie', 7);
+    await service.claimMediaAccess('alice-id', 'tv', 1399);
+    await service.claimMediaAccess('bob-id', 'tv', 1399);
+
+    const bobClaims = service.listMediaClaims('bob-id');
+    assert.deepEqual(bobClaims.map((claim) => `${claim.mediaType}:${claim.tmdbId}`), ['tv:1399'], 'Alice-only claims stay hidden');
+    assert.doesNotMatch(JSON.stringify(bobClaims), /alice-id/i);
+    assert.deepEqual(Object.keys(bobClaims[0]).sort(), ['claimed', 'claimedAt', 'managed', 'mediaType', 'owned', 'public', 'tmdbId']);
+    assert.equal(bobClaims[0].claimed, true);
+    assert.deepEqual(service.listMediaClaims('alice-id').map((claim) => claim.tmdbId).sort(), [1399, 7]);
+
+    const bobClaimedAt = bobClaims[0].claimedAt;
+    const aliceClaimedAt = service.listMediaClaims('alice-id').find((claim) => claim.tmdbId === 1399).claimedAt;
+    await service.claimMediaAccess('alice-id', 'tv', 1399);
+    assert.equal(service.listMediaClaims('bob-id')[0].claimedAt, bobClaimedAt, 'another claimant does not move the caller\'s timestamp');
+    assert.equal(service.listMediaClaims('alice-id').find((claim) => claim.tmdbId === 1399).claimedAt, aliceClaimedAt);
+  });
+
+  it('withholds a private item ID from users who cannot open the item', async () => {
+    const store = new GrantStore(await stateFile());
+    await store.load();
+    const service = new AccessService(fakeJellyfin(), store);
+    // Alice's pending claim records the item ID once her request becomes available.
+    await service.claimMediaAccess('alice-id', 'movie', 101);
+    await service.processWebhook(parseWebhook(webhook({ tmdbId: 101 })));
+
+    const outsider = service.getMediaAccess('bob-id', 'movie', 101);
+    assert.equal(outsider.managed, true);
+    assert.equal(outsider.owned, false);
+    assert.equal(outsider.jellyfinItemId, undefined);
+    assert.doesNotMatch(JSON.stringify(outsider), /alice-id/i);
+    assert.equal(service.getMediaAccess('alice-id', 'movie', 101, 'item-1').jellyfinItemId, 'item-1');
+
+    const claimed = await service.claimMediaAccess('bob-id', 'movie', 101, 'item-1');
+    assert.equal(claimed.owned, true);
+    assert.equal(claimed.jellyfinItemId, 'item-1');
+    assert.doesNotMatch(JSON.stringify([claimed, service.listMediaClaims('bob-id')]), /alice-id|"userIds"/i);
+  });
+
   it('adds a user to an existing private title without creating another request', async () => {
     const store = new GrantStore(await stateFile());
     await store.load();

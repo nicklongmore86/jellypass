@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { tokenAuthorizationHeader } from './jellyfin.js';
-import type { MediaAccessStatus, MediaClaim } from './types.js';
+import type { CallerMediaClaim, MediaAccessStatus } from './types.js';
 
 const BRIDGE_PREFIX = '/jellyquest-bridge';
 const BODY_LIMIT = 64 * 1024;
@@ -11,6 +11,11 @@ const PROBE_ATTEMPT_WINDOW_MS = 5 * 60 * 1000;
 const MAX_PROBE_ATTEMPTS = 30;
 const IDENTITY_RECHECK_MS = 5 * 60 * 1000;
 const JELLYFIN_TOKEN_PATTERN = /^[A-Za-z0-9._~-]{16,256}$/;
+// Jellyseerr keys that hold a user (or user ID) rather than media data.
+const IDENTITY_KEYS = new Set(['requestedBy', 'modifiedBy', 'createdBy', 'updatedBy', 'user']);
+// Keys that make an array entry (request, watchlist entry, issue, comment) belong to that user.
+const OWNER_KEYS = ['requestedBy', 'createdBy', 'user'];
+const USER_FIELDS = ['email', 'username', 'jellyfinUserId', 'jellyfinUsername', 'plexUsername', 'displayName'];
 
 interface BridgeSession {
   cookie: string;
@@ -18,6 +23,7 @@ interface BridgeSession {
   userId: string;
   jellyfinToken: string;
   verifiedAt: number;
+  seerrUserId?: number;
 }
 
 interface JellyfinIdentity {
@@ -30,7 +36,7 @@ type IdentityResult = JellyfinIdentity | 'invalid' | 'unavailable';
 export interface RequestBridgeAccess {
   hasJellyseerrUser(jellyfinUserId: string): Promise<boolean>;
   getMediaAccess(userId: string, mediaType: 'movie' | 'tv', tmdbId: number, jellyfinItemId?: string): MediaAccessStatus;
-  listMediaClaims(userId: string): MediaClaim[];
+  listMediaClaims(userId: string): CallerMediaClaim[];
   claimMediaAccess(userId: string, mediaType: 'movie' | 'tv', tmdbId: number, jellyfinItemId?: string): Promise<MediaAccessStatus>;
 }
 
@@ -109,6 +115,7 @@ export class RequestBridge {
         userId: identity.id,
         jellyfinToken,
         verifiedAt: now,
+        ...(typeof auth.data.id === 'number' ? { seerrUserId: auth.data.id } : {}),
       });
       this.pruneSessions();
       return json(response, 200, { token });
@@ -150,7 +157,7 @@ export class RequestBridge {
             : `Jellyseerr returned ${result.response.status}.`,
         });
       }
-      return json(response, 200, { data: result.data });
+      return json(response, 200, { data: scrubIdentities(result.data, session) });
     }
     return json(response, 404, { error: 'Not found.' });
   }
@@ -159,7 +166,7 @@ export class RequestBridge {
     const url = new URL(pathname, 'http://jellyquest.local');
     const method = (options.method ?? 'GET').toUpperCase();
     if (url.pathname === '/jellyquest/access/claims' && method === 'GET') {
-      return { claims: this.access!.listMediaClaims(session.userId) };
+      return { claims: this.access!.listMediaClaims(session.userId).map(callerClaim) };
     }
     if (url.pathname !== '/jellyquest/access' || (method !== 'GET' && method !== 'POST')) {
       throw new Error('That JellyPass access operation is not allowed.');
@@ -179,9 +186,9 @@ export class RequestBridge {
     const jellyfinItemId = typeof mediaInfo?.jellyfinMediaId === 'string' && PROFILE_ID_PATTERN.test(mediaInfo.jellyfinMediaId)
       ? mediaInfo.jellyfinMediaId
       : undefined;
-    return method === 'POST'
-      ? this.access!.claimMediaAccess(session.userId, mediaType, tmdbId, jellyfinItemId)
-      : this.access!.getMediaAccess(session.userId, mediaType, tmdbId, jellyfinItemId);
+    return accessStatus(method === 'POST'
+      ? await this.access!.claimMediaAccess(session.userId, mediaType, tmdbId, jellyfinItemId)
+      : this.access!.getMediaAccess(session.userId, mediaType, tmdbId, jellyfinItemId));
   }
 
   private async verifyJellyfinToken(jellyfinToken: string): Promise<IdentityResult> {
@@ -258,6 +265,64 @@ export class RequestBridge {
     }
     return true;
   }
+}
+
+function accessStatus(status: MediaAccessStatus): MediaAccessStatus {
+  return {
+    mediaType: status.mediaType,
+    tmdbId: status.tmdbId,
+    claimed: status.claimed,
+    managed: status.managed,
+    owned: status.owned,
+    public: status.public,
+    ...(status.jellyfinItemId ? { jellyfinItemId: status.jellyfinItemId } : {}),
+  };
+}
+
+function callerClaim(claim: CallerMediaClaim): CallerMediaClaim {
+  return { ...accessStatus(claim), ...(claim.claimedAt ? { claimedAt: claim.claimedAt } : {}) };
+}
+
+/**
+ * Removes other Jellyseerr users from a relayed payload: entries owned by someone else
+ * (requests, watchlist entries, issues) are dropped and any other user reference is omitted.
+ */
+function scrubIdentities(value: unknown, session: BridgeSession): any {
+  if (Array.isArray(value)) {
+    return value
+      .filter((entry) => !isOtherUser(entry, session) && !ownedByOtherUser(entry, session))
+      .map((entry) => scrubIdentities(entry, session));
+  }
+  if (!value || typeof value !== 'object') return value;
+  const result: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (IDENTITY_KEYS.has(key) && entry !== null && entry !== undefined && !isCallerRef(entry, session)) continue;
+    if (isOtherUser(entry, session)) continue;
+    result[key] = scrubIdentities(entry, session);
+  }
+  return result;
+}
+
+function ownedByOtherUser(entry: unknown, session: BridgeSession): boolean {
+  if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+  const record = entry as Record<string, unknown>;
+  return OWNER_KEYS.some((key) => record[key] !== null && record[key] !== undefined && !isCallerRef(record[key], session));
+}
+
+function isOtherUser(value: unknown, session: BridgeSession): boolean {
+  return isUserRecord(value) && !isCallerRef(value, session);
+}
+
+function isUserRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === 'object' && !Array.isArray(value)
+    && USER_FIELDS.some((field) => field in (value as Record<string, unknown>));
+}
+
+function isCallerRef(value: unknown, session: BridgeSession): boolean {
+  if (typeof value === 'number') return session.seerrUserId !== undefined && value === session.seerrUserId;
+  if (!isUserRecord(value)) return false;
+  if (typeof value.jellyfinUserId === 'string') return sameId(value.jellyfinUserId, session.userId);
+  return session.seerrUserId !== undefined && value.id === session.seerrUserId;
 }
 
 function clientId(request: IncomingMessage): string {

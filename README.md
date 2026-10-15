@@ -345,6 +345,20 @@ claims. Restarting JellyPass clears bridge sessions but not persisted claims.
 > `token=<AccessToken>` to the bridge URL fragment, using the access token it
 > already uses with Jellyfin.
 
+Bridge responses never reveal who else has or requested a title. Claims stay
+open across households, but each caller sees only their own:
+
+- `GET /jellyquest/access?mediaType=…&tmdbId=…` and `POST /jellyquest/access`
+  return the caller's status only: `mediaType`, `tmdbId`, `claimed`,
+  `managed`, `owned`, `public`, and `jellyfinItemId` when the caller can
+  already open the item (owned or public).
+- `GET /jellyquest/access/claims` returns `{ "claims": [...] }` containing only
+  the caller's claims, each with the same fields plus `claimedAt`, the time
+  this caller first claimed the title. Other claimants' IDs, claimant counts,
+  and shared update timestamps are never included.
+- Relayed Jellyseerr responses drop requests, watchlist entries, and issues
+  made by other users, and omit any other user record (such as `modifiedBy`).
+
 The bridge applies per-client rate limits to eligibility checks and session
 creation. Place it behind the same trusted TLS reverse proxy as the household
 origin.

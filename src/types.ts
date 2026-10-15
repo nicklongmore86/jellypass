@@ -116,6 +116,8 @@ export interface MediaClaim {
   mediaType: 'movie' | 'tv';
   tmdbId: number;
   userIds: string[];
+  /** When each claimant first claimed the title, keyed by normalized Jellyfin user ID. */
+  claimedAt?: Record<string, string>;
   jellyfinItemId?: string;
   updatedAt: string;
 }
@@ -128,6 +130,11 @@ export interface MediaAccessStatus {
   owned: boolean;
   public: boolean;
   jellyfinItemId?: string;
+}
+
+/** A claim as its claimant may see it: no other claimants and no shared timestamps. */
+export interface CallerMediaClaim extends MediaAccessStatus {
+  claimedAt?: string;
 }
 
 export interface AccessGroup {

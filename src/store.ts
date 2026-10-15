@@ -83,14 +83,17 @@ export class GrantStore {
   }): Promise<MediaClaim> {
     const key = claimKey(input.mediaType, input.tmdbId);
     const previous = this.#state.claims[key];
+    const userId = normalizeId(input.userId);
+    const now = new Date().toISOString();
     const claim: MediaClaim = {
       mediaType: input.mediaType,
       tmdbId: input.tmdbId,
-      userIds: [...new Set([...(previous?.userIds ?? []), normalizeId(input.userId)])].sort(),
+      userIds: [...new Set([...(previous?.userIds ?? []), userId])].sort(),
+      claimedAt: { ...previous?.claimedAt, [userId]: previous?.claimedAt?.[userId] ?? now },
       ...(input.jellyfinItemId || previous?.jellyfinItemId
         ? { jellyfinItemId: normalizeId(input.jellyfinItemId ?? previous!.jellyfinItemId!) }
         : {}),
-      updatedAt: new Date().toISOString(),
+      updatedAt: now,
     };
     this.#state.claims[key] = claim;
     await this.#save();
