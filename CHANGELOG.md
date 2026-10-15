@@ -27,8 +27,32 @@ the state file moves to schema v7, which 1.1.0 cannot read.
 - **Configuration.** `JELLYQUEST_BRIDGE_ENABLED` is no longer read. If it is
   still set, JellyPass logs a warning at startup and starts normally.
 
-Household grants, the Seerr webhook, the request backfill, household hostnames,
-passwordless sign-in, the admin UI and API, and metrics are unchanged.
+Household grants, the request backfill, household hostnames, passwordless
+sign-in, the admin UI and API, and metrics are unchanged. The Seerr webhook
+changes as described under [Changed](#changed).
+
+### Changed
+
+- **The webhook looks up Seerr unless both IDs are present and the event
+  identifies an HD request.** JellyPass now trusts the webhook's
+  `jellyfinMediaId` and `jellyfinUserId` when both are present and the
+  payload's `event` is `Movie Request Now Available`, `Series Request Now
+  Available`, `Movie Now Available` or `Series Now Available`. Before, any
+  webhook without a TMDB ID triggered a Seerr request lookup. Seerr's
+  `{{media_jellyfinMediaId}}` is the HD item even for 4K requests, so JellyPass
+  still asks Seerr when `event` names a 4K request (`4K …`) or is missing or
+  unrecognized. Add `"event": "{{event}}"` to your webhook payload (see the
+  README) to skip the lookup for HD requests. A `tmdbId` in the payload is now
+  ignored.
+- **A 4K request is never granted on the HD item.** A 4K event without
+  `SEERR_URL` and `SEERR_API_KEY` configured is rejected as an error. A 4K
+  request whose 4K item Seerr does not know yet is rejected by the webhook and
+  granted by the request backfill once the 4K item exists (when the request
+  backfill is enabled). Before, the webhook granted the HD item in both cases.
+- **Failed webhook resolution counts as an error.** A failed Seerr lookup, a
+  webhook missing Jellyfin IDs without Seerr configured, and a rejected 4K
+  event now count as `jfa_webhooks_total{result="error"}`. Before, they were
+  not counted.
 
 ### Upgrading from 1.1.0
 

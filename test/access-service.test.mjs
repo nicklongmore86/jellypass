@@ -18,6 +18,23 @@ describe('access tags and webhook validation', () => {
   it('parses valid events and rejects unresolved template variables', () => {
     const event = parseWebhook(webhook());
     assert.equal(event.request.requestedBy.jellyfinUserId, 'alice-id');
+    assert.equal(event.request.is4k, false);
+    for (const mediaType of ['Movie', 'Series']) {
+      for (const request of [' Request', '']) {
+        const text = `${mediaType}${request} Now Available`;
+        assert.equal(parseWebhook(webhook({ event: text })).request.is4k, false, text);
+        assert.equal(parseWebhook(webhook({ event: `4K ${text}` })).request.is4k, true, `4K ${text}`);
+      }
+    }
+    assert.equal(parseWebhook(webhook({ event: '  4K Movie Now Available\n' })).request.is4k, true);
+    assert.equal(parseWebhook(webhook({ event: ' Series Request Now Available ' })).request.is4k, false);
+    for (const unknown of [null, 4, true, { text: 'Movie Now Available' }, '{{event}}', '', 'Something else', '4k Movie Now Available', 'Movie Request Now Available!']) {
+      assert.equal('is4k' in parseWebhook(webhook({ event: unknown })).request, false, String(unknown));
+    }
+    // Payloads built from older templates may still send a TMDB ID; it is ignored, even if malformed.
+    const withTmdb = webhook();
+    withTmdb.media.tmdbId = 'not-a-number';
+    assert.deepEqual(parseWebhook(withTmdb).media, { jellyfinMediaId: 'item-1', mediaType: 'movie' });
     assert.throws(() => parseWebhook(webhook({ mediaId: '{{media_jellyfinMediaId}}' })), /invalid/);
     assert.deepEqual(parseWebhook({ notificationType: 'MEDIA_AVAILABLE', request: { id: '136' } }), {
       notificationType: 'MEDIA_AVAILABLE',
@@ -346,6 +363,46 @@ describe('grant lifecycle', () => {
   });
 });
 
+describe('webhooks without Seerr lookup', () => {
+  async function serviceWithoutSeerr() {
+    const store = new GrantStore(await stateFile());
+    await store.load();
+    const fake = fakeJellyfin();
+    return { store, fake, service: new AccessService(fake, store) };
+  }
+
+  it('rejects a 4K event instead of granting the payload item, and counts it as an error', async () => {
+    const { store, fake, service } = await serviceWithoutSeerr();
+    for (const event of ['4K Movie Request Now Available', '4K Movie Now Available']) {
+      await assert.rejects(
+        () => service.processWebhook(parseWebhook(webhook({ event }))),
+        /4K request and Seerr lookup is not configured/,
+      );
+    }
+    assert.equal(store.list().length, 0);
+    assert.deepEqual(fake.item.Tags, ['keep-me']);
+    assert.match(service.renderMetrics(), /jfa_webhooks_total\{result="error"\} 2/);
+  });
+
+  it('counts a webhook missing Jellyfin IDs as an error', async () => {
+    const { store, service } = await serviceWithoutSeerr();
+    await assert.rejects(
+      () => service.processWebhook(parseWebhook({ notificationType: 'MEDIA_AVAILABLE', request: { id: '136' } })),
+      /missing Jellyfin IDs and Seerr lookup is not configured/,
+    );
+    assert.equal(store.list().length, 0);
+    assert.match(service.renderMetrics(), /jfa_webhooks_total\{result="error"\} 1/);
+  });
+
+  it('grants the payload item for HD and unrecognized events', async () => {
+    const { store, service } = await serviceWithoutSeerr();
+    await service.processWebhook(parseWebhook(webhook({ event: 'Movie Now Available' })));
+    await service.processWebhook(parseWebhook(webhook({ event: null, requestId: '18' })));
+    assert.deepEqual(store.get('item-1').requests, { '17': 'alice-id', '18': 'alice-id' });
+    assert.match(service.renderMetrics(), /jfa_webhooks_total\{result="granted"\} 2/);
+  });
+});
+
 describe('household-scoped request grants', () => {
   async function twoHouseholds() {
     const store = new GrantStore(await stateFile());
@@ -539,12 +596,96 @@ describe('Seerr request backfill', () => {
   it('adds a backfilled request to an existing webhook grant without removing anything', async () => {
     const listed = [seerrRequest(801, { requestedBy: { jellyfinUserId: 'carol-id' } })];
     await withSeerr(listed, {}, async ({ store, service }) => {
-      await service.processWebhook(parseWebhook(webhook({ userId: 'bob-id', tmdbId: 1017 })));
+      await service.processWebhook(parseWebhook(webhook({ userId: 'bob-id' })));
       const result = await service.backfillRequests(since);
       assert.deepEqual(result.granted, ['item-1']);
       const grant = store.get('item-1');
       assert.deepEqual(grant.requests, { '17': 'bob-id', '801': 'carol-id' });
       assert.deepEqual(grant.groupIds, ['house-a', 'house-b']);
+    });
+  });
+
+  describe('webhook Seerr lookup', () => {
+    const detail4k = seerrRequest(17, {
+      is4k: true,
+      requestedBy: { jellyfinUserId: 'carol-id' },
+      media: { mediaType: 'movie', status: 5, status4k: 5, jellyfinMediaId: 'item-1', jellyfinMediaId4k: 'item-2' },
+    });
+
+    it('trusts the payload IDs of an HD request without asking Seerr', async () => {
+      await withSeerr([], { 17: detail4k }, async ({ store, fake, service, calls }) => {
+        const grant = await service.processWebhook(parseWebhook(webhook()));
+        assert.deepEqual(calls, []);
+        assert.equal(grant.itemId, 'item-1');
+        assert.deepEqual(grant.requests, { '17': 'alice-id' });
+        assert.equal(store.get('item-2'), undefined);
+        assert.deepEqual(fake.item.Tags, ['keep-me', 'jfa:private:item-1']);
+      });
+    });
+
+    it('asks Seerr when the payload lacks the item or user ID', async () => {
+      const detail = seerrRequest(17, { requestedBy: { jellyfinUserId: 'carol-id' }, media: { mediaType: 'tv', status: 5, jellyfinMediaId: 'item-2' } });
+      const noUser = webhook();
+      delete noUser.request.requestedBy;
+      const noItem = webhook({ requestId: '18' });
+      delete noItem.media.jellyfinMediaId;
+      await withSeerr([], { 17: detail, 18: { ...detail, id: 18 } }, async ({ store, service, calls }) => {
+        assert.equal((await service.processWebhook(parseWebhook(noUser))).itemId, 'item-2');
+        assert.equal((await service.processWebhook(parseWebhook(noItem))).itemId, 'item-2');
+        assert.deepEqual(calls, ['/api/v1/request/17', '/api/v1/request/18']);
+        assert.deepEqual(store.get('item-2').requests, { '17': 'carol-id', '18': 'carol-id' });
+      });
+    });
+
+    it('asks Seerr for the 4K item when the payload cannot rule out a 4K request', async () => {
+      // Seerr fills {{media_jellyfinMediaId}} with the HD item even for a 4K request.
+      for (const event of ['4K Movie Request Now Available', null, '{{event}}']) {
+        await withSeerr([], { 17: detail4k }, async ({ store, fake, service, calls }) => {
+          const grant = await service.processWebhook(parseWebhook(webhook({ event })));
+          assert.deepEqual(calls, ['/api/v1/request/17'], String(event));
+          assert.equal(grant.itemId, 'item-2');
+          assert.deepEqual(grant.requests, { '17': 'carol-id' });
+          assert.equal(store.get('item-1'), undefined, 'the HD item stays public');
+          assert.deepEqual(fake.item.Tags, ['keep-me']);
+        });
+      }
+    });
+
+    it('does not grant a 4K request on the HD item when Seerr has no 4K item yet', async () => {
+      const noUhdItem = seerrRequest(17, { is4k: true, media: { mediaType: 'movie', status: 5, status4k: 5, jellyfinMediaId: 'item-1' } });
+      await withSeerr([noUhdItem], { 17: noUhdItem }, async ({ store, fake, service, calls }) => {
+        await assert.rejects(
+          () => service.processWebhook(parseWebhook(webhook({ event: '4K Movie Request Now Available' }))),
+          /Seerr request 17 is missing a 4K Jellyfin media ID/,
+        );
+        assert.deepEqual(calls, ['/api/v1/request/17']);
+        assert.equal(store.list().length, 0);
+        assert.equal(store.hasHandledRequest('17'), false);
+        assert.deepEqual(fake.item.Tags, ['keep-me']);
+        assert.match(service.renderMetrics(), /jfa_webhooks_total\{result="error"\} 1/);
+        assert.doesNotMatch(service.renderMetrics(), /result="granted"/);
+
+        // Once Seerr knows the 4K item, the backfill grants it.
+        noUhdItem.media.jellyfinMediaId4k = 'item-2';
+        assert.deepEqual((await service.backfillRequests(since)).granted, ['item-2']);
+        assert.deepEqual(fake.item.Tags, ['keep-me']);
+      });
+    });
+
+    it('fails a needed lookup when Seerr is unreachable and leaves the request to the backfill', async () => {
+      const noUser = webhook();
+      delete noUser.request.requestedBy;
+      await withSeerr([seerrRequest(17)], {}, async ({ store, service, calls }) => {
+        await assert.rejects(() => service.processWebhook(parseWebhook(noUser)), /500/);
+        assert.deepEqual(calls, ['/api/v1/request/17']);
+        assert.match(service.renderMetrics(), /jfa_webhooks_total\{result="error"\} 1/);
+        assert.equal(store.list().length, 0);
+        assert.equal(store.hasHandledRequest('17'), false);
+
+        const result = await service.backfillRequests(since);
+        assert.deepEqual(result.granted, ['item-1']);
+        assert.deepEqual(store.get('item-1').requests, { '17': 'alice-id' });
+      });
     });
   });
 
@@ -674,12 +815,13 @@ describe('Seerr request backfill', () => {
 });
 
 function webhook(overrides = {}) {
+  const event = overrides.event === undefined ? 'Movie Request Now Available' : overrides.event;
   return {
     notificationType: 'MEDIA_AVAILABLE',
+    ...(event === null ? {} : { event }),
     media: {
       jellyfinMediaId: overrides.mediaId ?? 'item-1',
       mediaType: overrides.mediaType ?? 'movie',
-      ...(overrides.tmdbId ? { tmdbId: overrides.tmdbId } : {}),
     },
     request: {
       id: overrides.requestId ?? '17',

@@ -227,7 +227,13 @@ export class AccessService {
         this.#metrics.increment('jfa_webhooks_total', { result: 'ignored' });
         return null;
       }
-      const resolved = await this.#resolveWebhook(event);
+      let resolved: { itemId: string; userId: string; mediaType?: string };
+      try {
+        resolved = await this.#resolveWebhook(event);
+      } catch (error) {
+        this.#metrics.increment('jfa_webhooks_total', { result: 'error' });
+        throw error;
+      }
       const grant = await this.#store.grant({
         itemId: resolved.itemId,
         requestId: event.request.id,
@@ -250,15 +256,18 @@ export class AccessService {
     let itemId = event.media?.jellyfinMediaId;
     let userId = event.request.requestedBy?.jellyfinUserId;
     let mediaType = event.media?.mediaType;
-    const tmdbId = event.media?.tmdbId;
 
-    // A webhook without a TMDB ID still triggers a Seerr lookup, as in 1.1.0, even though the ID
-    // itself is no longer used. The lookup replaces the payload's item and user IDs with Seerr's
-    // (including the 4K media ID via requestItemId), so dropping this trigger would change which
-    // item a webhook grants. Removing it is a separate follow-up, not part of the JellyQuest removal.
-    if ((!itemId || !userId || tmdbId === undefined) && this.#seerr) {
+    // Seerr's {{media_jellyfinMediaId}} is the HD item whenever one exists, and no template variable
+    // carries the 4K item. The payload's IDs are therefore trusted only when both are present and
+    // the event text shows an HD request; otherwise Seerr's request decides (requestItemId).
+    if (event.request.is4k && !this.#seerr) {
+      throw new Error('webhook is for a 4K request and Seerr lookup is not configured');
+    }
+    let is4k = event.request.is4k === true;
+    if ((!itemId || !userId || event.request.is4k !== false) && this.#seerr) {
       const request = await this.#seerr.getRequest(event.request.id);
       itemId = requestItemId(request);
+      is4k = request.is4k === true;
       userId = request.requestedBy?.jellyfinUserId;
       mediaType ??= request.media?.mediaType ?? request.type;
     }
@@ -266,7 +275,7 @@ export class AccessService {
     if ((!itemId || !userId) && !this.#seerr) {
       throw new Error('webhook is missing Jellyfin IDs and Seerr lookup is not configured');
     }
-    if (!itemId) throw new Error(`Seerr request ${event.request.id} is missing a Jellyfin media ID`);
+    if (!itemId) throw new Error(`Seerr request ${event.request.id} is missing a ${is4k ? '4K ' : ''}Jellyfin media ID`);
     if (!userId) throw new Error(`Seerr request ${event.request.id} is missing a Jellyfin user ID`);
     return { itemId, userId, ...(mediaType ? { mediaType } : {}) };
   }
@@ -294,10 +303,10 @@ export class AccessService {
             result.skipped += 1;
             continue;
           }
-          const request = backfillItemId(listed) && listed.requestedBy?.jellyfinUserId
+          const request = requestItemId(listed) && listed.requestedBy?.jellyfinUserId
             ? listed
             : await seerr.getRequest(requestId);
-          const itemId = backfillItemId(request);
+          const itemId = requestItemId(request);
           const userId = request.requestedBy?.jellyfinUserId;
           const existing = itemId ? this.#store.get(itemId) : undefined;
           if (!itemId || !userId || (existing && (Object.keys(existing.requests).length === 0 || requestId in existing.requests))) {
@@ -751,15 +760,8 @@ function isDue(grant: GrantRecord): boolean {
   return !grant.sync.nextRetryAt || Date.parse(grant.sync.nextRetryAt) <= Date.now();
 }
 
+// A 4K request never falls back to the HD item: it must not privatize an HD title that is public.
 function requestItemId(request: SeerrRequest): string | undefined {
-  return request.is4k
-    ? request.media?.jellyfinMediaId4k ?? request.media?.jellyfinMediaId
-    : request.media?.jellyfinMediaId;
-}
-
-// Unlike requestItemId, a 4K request never falls back to the HD item: the backfill must not
-// privatize an HD title that was public before the cutoff.
-function backfillItemId(request: SeerrRequest): string | undefined {
   return request.is4k ? request.media?.jellyfinMediaId4k : request.media?.jellyfinMediaId;
 }
 
