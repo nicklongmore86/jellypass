@@ -20,7 +20,7 @@ async function main(): Promise<void> {
   const webAuth = new WebAuth(jellyfin);
   const server = makeServer(service, { webhook: config.webhookToken, admin: config.adminToken }, webAuth, {
     ...(config.jellyquestBridgeEnabled && config.seerrUrl ? {
-      requestBridge: new RequestBridge(config.seerrUrl, service),
+      requestBridge: new RequestBridge(config.seerrUrl, config.jellyfinUrl, service),
     } : {}),
     ...(config.householdDomain ? {
       householdGateway: {

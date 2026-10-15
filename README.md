@@ -316,12 +316,34 @@ JellyQuest loads:
 https://jelly-household.example.com/jellyquest-bridge/bridge.html
 ```
 
-JellyPass verifies that the selected Jellyfin profile maps to a Jellyseerr user,
-signs that profile into Jellyseerr server-side, and stores the Jellyseerr cookie
-only in memory for 12 hours. The random browser token is limited to discovery,
-search, media status, title details, request creation, and authenticated
-self-service access claims. Restarting JellyPass clears bridge sessions but not
-persisted claims.
+with the signed-in user's Jellyfin access token in the URL fragment, for example
+`#mode=session&nonce=…&id=<jellyfin-user-id>&token=<jellyfin-access-token>`.
+The fragment never reaches the server; the bridge page clears it immediately and
+sends the token to `POST /jellyquest-bridge/session` as an `X-Emby-Token` header.
+Other clients may instead send `Authorization: MediaBrowser …, Token="…"`, or an
+`accessToken` field in the JSON body.
+
+Session creation requires that access token. JellyPass checks it with
+`GET /Users/Me` on the configured `JELLYFIN_URL` and takes the user's ID and name
+only from Jellyfin's response. Client-supplied names are ignored. A
+client-supplied `id` that differs from the verified user is rejected. A missing,
+malformed, revoked, or disabled-user token returns `401`, and no Jellyseerr login
+is attempted. Only then does JellyPass sign the verified user into Jellyseerr
+server-side. It stores the Jellyseerr cookie only in memory, with a 12-hour idle
+lifetime.
+
+Each bridge session is bound to the verified Jellyfin user and that user's
+access token. The token is held in memory and checked again against Jellyfin at
+most every five minutes while the session is in use. When a user signs out of
+Jellyfin or an administrator revokes the device, the bridge session ends at the
+next check. The random browser token is limited to discovery, search, media
+status, title details, request creation, and authenticated self-service access
+claims. Restarting JellyPass clears bridge sessions but not persisted claims.
+
+> **JellyQuest client change:** JellyQuest builds that pass only `user`
+> and `id` to the bridge can no longer open request sessions. JellyQuest must add
+> `token=<AccessToken>` to the bridge URL fragment, using the access token it
+> already uses with Jellyfin.
 
 The bridge applies per-client rate limits to eligibility checks and session
 creation. Place it behind the same trusted TLS reverse proxy as the household
@@ -500,7 +522,9 @@ administrator browser session. Request bodies are limited to 64 KiB.
 
 JellyPass stores no Jellyfin passwords, supplied new-user passwords, Jellyfin
 access tokens, or Jellyseerr API responses containing credentials. Browser and
-JellyQuest sessions are held in memory and disappear on restart.
+JellyQuest sessions are held in memory and disappear on restart. While a
+JellyQuest bridge session is active, the Jellyfin access token that proved its
+identity also stays in memory so that it can be checked again.
 
 ## Limitations
 
