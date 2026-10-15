@@ -155,7 +155,7 @@ as semantic-version tags. For predictable production upgrades, set
 `JELLYPASS_IMAGE` in `.env` to a versioned image such as:
 
 ```dotenv
-JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:1.0.0
+JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:1.1.0
 ```
 
 Until the first versioned release is published, use `latest` or build from
@@ -561,8 +561,10 @@ docker compose up -d
 curl http://127.0.0.1:8787/health
 ```
 
-Back up the state file first. Read release notes before changing between
-versioned tags. Pinning `JELLYPASS_IMAGE` makes rollback explicit:
+Back up the state file first. Read the [changelog](CHANGELOG.md) before
+changing between versioned tags. Upgrading from 1.0.0 requires a JellyQuest app
+update and new settings; see
+[Upgrading from 1.0.0](CHANGELOG.md#upgrading-from-100). Pinning `JELLYPASS_IMAGE` makes rollback explicit:
 
 ```sh
 JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:PREVIOUS_VERSION docker compose up -d
