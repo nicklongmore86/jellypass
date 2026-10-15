@@ -112,6 +112,14 @@ export class GrantStore {
     return [...new Set([...Object.values(grant.requests), ...grant.manualUserIds, ...groupUsers].map(normalizeId))].sort();
   }
 
+  /** Whether two Jellyfin users are the same user or share membership in at least one access group. */
+  public shareHousehold(userIdA: string, userIdB: string): boolean {
+    const a = normalizeId(userIdA);
+    const b = normalizeId(userIdB);
+    if (a === b) return true;
+    return Object.values(this.#state.groups).some((group) => group.userIds.includes(a) && group.userIds.includes(b));
+  }
+
   public async grant(input: {
     itemId: string;
     mediaType?: string;
@@ -126,8 +134,9 @@ export class GrantStore {
     const claim = input.tmdbId !== undefined && (input.mediaType === 'movie' || input.mediaType === 'tv')
       ? this.#state.claims[claimKey(input.mediaType, input.tmdbId)]
       : undefined;
-    const manualUserIds = [...new Set([...(previous?.manualUserIds ?? []), ...(claim?.userIds ?? [])])].sort();
+    const manualUserIds = previous?.manualUserIds ?? [];
     const next = this.#makeGrant(itemId, requests, manualUserIds, previous?.groupIds ?? [], previous, input.mediaType);
+    this.#mergeHouseholdClaimants(next, claim);
     this.#state.grants[itemId] = next;
     if (claim) {
       claim.jellyfinItemId = itemId;
@@ -272,6 +281,26 @@ export class GrantStore {
     if (!grant || grant.active) return;
     delete this.#state.grants[itemId];
     await this.#save();
+  }
+
+  // Earlier self-service claimants only ride along on a grant when they share a household with one
+  // of its owners; an unrelated household's claim for the same title stays recorded but grants nothing.
+  #mergeHouseholdClaimants(grant: GrantRecord, claim: MediaClaim | undefined): void {
+    const claimants = (claim?.userIds ?? []).filter((userId) => !grant.owners.includes(userId));
+    const eligible = claimants.filter((userId) => grant.owners.some((owner) => this.shareHousehold(userId, owner)));
+    const excluded = claimants.filter((userId) => !eligible.includes(userId));
+    if (excluded.length > 0) {
+      console.warn(JSON.stringify({
+        level: 'warn',
+        message: 'excluded cross-household claimants from grant',
+        itemId: grant.itemId,
+        userIds: excluded,
+      }));
+    }
+    if (eligible.length === 0) return;
+    grant.manualUserIds = [...new Set([...grant.manualUserIds, ...eligible])].sort();
+    grant.active = true;
+    grant.owners = this.resolveOwners(grant);
   }
 
   #makeGrant(

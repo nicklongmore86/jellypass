@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import test from 'node:test';
+import { MediaClaimDeniedError } from '../dist/access-service.js';
 import { RequestBridge } from '../dist/request-bridge.js';
 import { SeerrClient } from '../dist/seerr.js';
 
@@ -57,6 +58,7 @@ test('keeps the Jellyseerr session server-side and limits relayed operations', a
   const fakePort = await listen(fakeSeerr);
   const seerr = new SeerrClient(`http://127.0.0.1:${fakePort}`, 'test-api-key');
   const accessCalls = [];
+  let denyClaims = false;
   const access = {
     hasJellyseerrUser(userId) {
       return seerr.hasJellyfinUser(userId);
@@ -71,6 +73,7 @@ test('keeps the Jellyseerr session server-side and limits relayed operations', a
     },
     async claimMediaAccess(userId, mediaType, tmdbId, jellyfinItemId) {
       accessCalls.push({ operation: 'claim', userId, mediaType, tmdbId, jellyfinItemId });
+      if (denyClaims) throw new MediaClaimDeniedError();
       return { mediaType, tmdbId, claimed: true, managed: true, owned: true, public: false, jellyfinItemId };
     },
   };
@@ -170,6 +173,18 @@ test('keeps the Jellyseerr session server-side and limits relayed operations', a
       { operation: 'claim', userId: 'abc123', mediaType: 'movie', tmdbId: 101, jellyfinItemId: 'a1b2c3' },
       { operation: 'list', userId: 'abc123' },
     ]);
+
+    denyClaims = true;
+    const deniedClaim = await fetch(`${origin}/jellyquest-bridge/proxy`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        path: '/jellyquest/access',
+        options: { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ mediaType: 'movie', tmdbId: 101 }) },
+      }),
+    });
+    assert.equal(deniedClaim.status, 403);
+    assert.match((await deniedClaim.json()).error, /another household/);
 
     const blocked = await fetch(`${origin}/jellyquest-bridge/proxy`, {
       method: 'POST',

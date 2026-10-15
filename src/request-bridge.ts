@@ -1,5 +1,6 @@
 import { randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { MediaClaimDeniedError } from './access-service.js';
 import type { MediaAccessStatus, MediaClaim } from './types.js';
 
 const BRIDGE_PREFIX = '/jellyquest-bridge';
@@ -101,7 +102,13 @@ export class RequestBridge {
       }
       if (input.path.startsWith('/jellyquest/access')) {
         if (!this.access) return json(response, 503, { error: 'JellyPass access claims are not configured.' });
-        const data = await this.handleAccess(input.path, options, session);
+        let data: unknown;
+        try {
+          data = await this.handleAccess(input.path, options, session);
+        } catch (error) {
+          if (error instanceof MediaClaimDeniedError) return json(response, error.status, { error: error.message });
+          throw error;
+        }
         session.expires = Date.now() + SESSION_LIFETIME_MS;
         return json(response, 200, { data });
       }

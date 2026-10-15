@@ -3,7 +3,7 @@ import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
-import { AccessService, accessTag, sameStringSet } from '../dist/access-service.js';
+import { AccessService, MediaClaimDeniedError, accessTag, sameStringSet } from '../dist/access-service.js';
 import { GrantStore } from '../dist/store.js';
 import { parseWebhook } from '../dist/webhook.js';
 
@@ -124,11 +124,12 @@ describe('state migration', () => {
 });
 
 describe('grant lifecycle', () => {
-  it('joins pending requests and grants the whole title to every claimant when available', async () => {
+  it('joins pending household claims and grants the whole title to every claimant when available', async () => {
     const store = new GrantStore(await stateFile());
     await store.load();
     const fake = fakeJellyfin();
     const service = new AccessService(fake, store);
+    await service.upsertGroup({ id: 'household', name: 'Household', userIds: ['alice-id', 'bob-id'] });
 
     const pending = await service.claimMediaAccess('bob-id', 'tv', 1399);
     assert.equal(pending.claimed, true);
@@ -141,17 +142,74 @@ describe('grant lifecycle', () => {
     assert.equal(service.listMediaClaims('bob-id')[0].jellyfinItemId, 'item-1');
   });
 
-  it('adds a user to an existing private title without creating another request', async () => {
+  it('excludes cross-household pending claims from the grant merge but keeps the claim', async () => {
     const store = new GrantStore(await stateFile());
     await store.load();
     const fake = fakeJellyfin();
     const service = new AccessService(fake, store);
+    await service.upsertGroup({ id: 'alice-home', name: 'Alice home', userIds: ['alice-id'] });
+    await service.upsertGroup({ id: 'bob-home', name: 'Bob home', userIds: ['bob-id'] });
+
+    await service.claimMediaAccess('bob-id', 'tv', 1399);
+    const grant = await service.processWebhook(parseWebhook(webhook({ mediaType: 'tv', tmdbId: 1399 })));
+    assert.deepEqual(grant.owners, ['alice-id']);
+    assert.deepEqual(grant.manualUserIds, []);
+    assert.equal(service.getMediaAccess('bob-id', 'tv', 1399).owned, false);
+    assert.deepEqual(store.getClaim('tv', 1399).userIds, ['bob-id'], 'the claim itself is not deleted');
+    assert.deepEqual(fake.user('bob-id').Policy.BlockedTags, ['other', 'jfa:private:item-1']);
+  });
+
+  it('adds a household member to an existing private title without creating another request', async () => {
+    const store = new GrantStore(await stateFile());
+    await store.load();
+    const fake = fakeJellyfin();
+    const service = new AccessService(fake, store);
+    await service.upsertGroup({ id: 'household', name: 'Household', userIds: ['alice-id', 'bob-id'] });
 
     await service.processWebhook(parseWebhook(webhook({ tmdbId: 101 })));
     const access = await service.claimMediaAccess('bob-id', 'movie', 101, 'item-1');
     assert.equal(access.owned, true);
     assert.deepEqual(store.get('item-1').manualUserIds, ['bob-id']);
     assert.equal(Object.keys(store.get('item-1').requests).length, 1);
+    assert.deepEqual(fake.user('bob-id').Policy.BlockedTags, ['other']);
+  });
+
+  it('rejects a claim on another household\'s private title', async () => {
+    const store = new GrantStore(await stateFile());
+    await store.load();
+    const fake = fakeJellyfin();
+    const service = new AccessService(fake, store);
+    await service.upsertGroup({ id: 'alice-home', name: 'Alice home', userIds: ['alice-id'] });
+    await service.upsertGroup({ id: 'bob-home', name: 'Bob home', userIds: ['bob-id'] });
+
+    await service.processWebhook(parseWebhook(webhook({ tmdbId: 101 })));
+    await assert.rejects(service.claimMediaAccess('bob-id', 'movie', 101, 'item-1'), MediaClaimDeniedError);
+    assert.deepEqual(store.get('item-1').owners, ['alice-id']);
+    assert.equal(store.getClaim('movie', 101)?.userIds.includes('bob-id') ?? false, false);
+    assert.deepEqual(fake.user('bob-id').Policy.BlockedTags, ['other', 'jfa:private:item-1']);
+  });
+
+  it('rejects an ungrouped claimant joining another user\'s private title', async () => {
+    const store = new GrantStore(await stateFile());
+    await store.load();
+    const fake = fakeJellyfin();
+    const service = new AccessService(fake, store);
+
+    await service.processWebhook(parseWebhook(webhook({ tmdbId: 101 })));
+    await assert.rejects(service.claimMediaAccess('bob-id', 'movie', 101, 'item-1'), /another household/);
+    assert.deepEqual(store.get('item-1').manualUserIds, []);
+    assert.equal(service.getMediaAccess('bob-id', 'movie', 101, 'item-1').owned, false);
+  });
+
+  it('records a claim on an unmanaged public title without creating a grant', async () => {
+    const store = new GrantStore(await stateFile());
+    await store.load();
+    const fake = fakeJellyfin();
+    const service = new AccessService(fake, store);
+
+    const access = await service.claimMediaAccess('bob-id', 'movie', 101, 'item-1');
+    assert.deepEqual(access, { mediaType: 'movie', tmdbId: 101, claimed: true, managed: false, owned: false, public: true, jellyfinItemId: 'item-1' });
+    assert.equal(store.get('item-1'), undefined);
     assert.deepEqual(fake.user('bob-id').Policy.BlockedTags, ['other']);
   });
 
@@ -278,6 +336,7 @@ describe('grant lifecycle', () => {
       },
     };
     const service = new AccessService(fake, store, undefined, seerr);
+    await service.upsertGroup({ id: 'household', name: 'Household', userIds: ['alice-id', 'bob-id'] });
 
     await service.claimMediaAccess('bob-id', 'movie', 101);
     const grant = await service.processWebhook(parseWebhook({ notificationType: 'MEDIA_AVAILABLE', request: { id: '136' } }));

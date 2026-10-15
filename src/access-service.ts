@@ -40,6 +40,14 @@ export class UserProvisioningError extends Error {
   }
 }
 
+export class MediaClaimDeniedError extends Error {
+  public readonly status = 403;
+
+  public constructor() {
+    super('This title is privately owned by another household and cannot be added to your library.');
+  }
+}
+
 export class AccessService {
   readonly #jellyfin: JellyfinClient;
   readonly #store: GrantStore;
@@ -201,6 +209,13 @@ export class AccessService {
       const users = await this.#jellyfin.getUsers();
       if (!users.some((user) => normalizeId(user.Id) === userId && !user.Policy.IsAdministrator)) {
         throw new Error('Jellyfin user is not eligible for self-service access');
+      }
+      const knownItemId = jellyfinItemId ? normalizeId(jellyfinItemId) : this.#store.getClaim(mediaType, tmdbId)?.jellyfinItemId;
+      const existing = knownItemId ? this.#store.get(knownItemId) : undefined;
+      // Joining a title another household privately owns would lift its BlockedTags for this user, so
+      // only members of an owner's household may join; a title with no owners yet has nothing to protect.
+      if (existing?.active && existing.owners.length > 0 && !existing.owners.some((owner) => this.#store.shareHousehold(userId, owner))) {
+        throw new MediaClaimDeniedError();
       }
       const claim = await this.#store.addClaim({ mediaType, tmdbId, userId, ...(jellyfinItemId ? { jellyfinItemId } : {}) });
       const itemId = jellyfinItemId ? normalizeId(jellyfinItemId) : claim.jellyfinItemId;
