@@ -195,6 +195,7 @@ JellyPass reads configuration from environment variables at startup.
 | `HOUSEHOLD_HOST_PREFIX` | No | `jelly-` | Prefix placed before each DNS-safe group ID. |
 | `REQUEST_BACKFILL_SINCE` | No | — | `YYYY-MM-DD` (UTC midnight) or an ISO 8601 date-time with `Z` or an offset, such as `2026-10-15T08:00:00+02:00`. Impossible dates are rejected. Requests created before it are never imported by the backfill. |
 | `REQUEST_BACKFILL_ENABLED` | No | `true` when `REQUEST_BACKFILL_SINCE` is set, otherwise `false` | Grants available Seerr requests that the webhook missed. Requires Seerr/Jellyseerr configuration and `REQUEST_BACKFILL_SINCE`. |
+| `LOG_LEVEL` | No | — | Set to `debug` to also log expected client/Jellyfin disconnects (`ECONNRESET`, `EPIPE`, aborted streams) on the household proxy. Unexpected proxy errors are always logged as warnings. |
 | `JELLYPASS_IMAGE` | Compose only | `ghcr.io/nicklongmore86/jellypass:latest` | Container tag used by `compose.yaml`. |
 | `JELLYPASS_ENV_FILE` | Compose only | `.env` | Alternate environment-file path used by either Compose file. |
 
