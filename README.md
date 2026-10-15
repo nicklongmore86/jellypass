@@ -231,7 +231,7 @@ For 4K requests, the backfill uses the 4K availability status and
 falling back to the HD item, so it cannot privatize an HD title that was public
 before the cutoff. The webhook applies the same rule: a 4K request whose 4K item
 Seerr does not know yet is rejected as an error and not recorded, so the backfill
-grants it once the 4K item exists.
+grants it once the 4K item exists (when the request backfill is enabled).
 
 The cutoff exists so that titles that were already public before JellyPass
 managed them stay public. Set it to the date you start relying on JellyPass,

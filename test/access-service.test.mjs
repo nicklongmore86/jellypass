@@ -656,7 +656,7 @@ describe('Seerr request backfill', () => {
       await withSeerr([noUhdItem], { 17: noUhdItem }, async ({ store, fake, service, calls }) => {
         await assert.rejects(
           () => service.processWebhook(parseWebhook(webhook({ event: '4K Movie Request Now Available' }))),
-          /4K request without a 4K Jellyfin media ID/,
+          /Seerr request 17 is missing a 4K Jellyfin media ID/,
         );
         assert.deepEqual(calls, ['/api/v1/request/17']);
         assert.equal(store.list().length, 0);

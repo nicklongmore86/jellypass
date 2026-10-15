@@ -263,12 +263,11 @@ export class AccessService {
     if (event.request.is4k && !this.#seerr) {
       throw new Error('webhook is for a 4K request and Seerr lookup is not configured');
     }
+    let is4k = event.request.is4k === true;
     if ((!itemId || !userId || event.request.is4k !== false) && this.#seerr) {
       const request = await this.#seerr.getRequest(event.request.id);
       itemId = requestItemId(request);
-      if (request.is4k && !itemId) {
-        throw new Error(`Seerr request ${event.request.id} is a 4K request without a 4K Jellyfin media ID`);
-      }
+      is4k = request.is4k === true;
       userId = request.requestedBy?.jellyfinUserId;
       mediaType ??= request.media?.mediaType ?? request.type;
     }
@@ -276,7 +275,7 @@ export class AccessService {
     if ((!itemId || !userId) && !this.#seerr) {
       throw new Error('webhook is missing Jellyfin IDs and Seerr lookup is not configured');
     }
-    if (!itemId) throw new Error(`Seerr request ${event.request.id} is missing a Jellyfin media ID`);
+    if (!itemId) throw new Error(`Seerr request ${event.request.id} is missing a ${is4k ? '4K ' : ''}Jellyfin media ID`);
     if (!userId) throw new Error(`Seerr request ${event.request.id} is missing a Jellyfin user ID`);
     return { itemId, userId, ...(mediaType ? { mediaType } : {}) };
   }

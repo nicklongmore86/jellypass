@@ -595,3 +595,58 @@ function upgradeWithHost(baseUrl, pathname, host) {
     socket.once('error', reject);
   });
 }
+
+describe('webhook resolution errors over HTTP', { timeout: 5_000 }, () => {
+  const servers = [];
+
+  async function webhookServer(seerr) {
+    const store = new GrantStore(path.join(await mkdtemp(path.join(tmpdir(), 'jfa-http-webhook-')), 'grants.json'));
+    await store.load();
+    const service = new AccessService(new JellyfinClient('http://127.0.0.1:9', 'test-key'), store, undefined, seerr);
+    const server = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    servers.push(server);
+    return async (body) => {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/webhooks/seerr`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer webhook-secret', 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      return { status: response.status, body: await response.json() };
+    };
+  }
+
+  after(async () => {
+    await Promise.all(servers.map((server) => new Promise((resolve) => server.close(resolve))));
+  });
+
+  const available = (id, event) => ({
+    notificationType: 'MEDIA_AVAILABLE',
+    event,
+    media: { jellyfinMediaId: 'item-1', mediaType: 'movie' },
+    request: { id, requestedBy: { jellyfinUserId: 'alice-id' } },
+  });
+
+  it('returns 400 for a request without its Jellyfin media ID, HD or 4K alike', async () => {
+    const send = await webhookServer({
+      async getRequest(requestId) {
+        return requestId === '4'
+          ? { id: 4, is4k: true, requestedBy: { jellyfinUserId: 'alice-id' }, media: { jellyfinMediaId: 'item-1' } }
+          : { id: 5, is4k: false, requestedBy: { jellyfinUserId: 'alice-id' }, media: {} };
+      },
+    });
+    assert.deepEqual(await send(available('4', '4K Movie Request Now Available')), {
+      status: 400, body: { error: 'Seerr request 4 is missing a 4K Jellyfin media ID' },
+    });
+    const hd = available('5', 'Movie Request Now Available');
+    delete hd.media.jellyfinMediaId;
+    assert.deepEqual(await send(hd), { status: 400, body: { error: 'Seerr request 5 is missing a Jellyfin media ID' } });
+  });
+
+  it('returns 502 for a 4K event when Seerr lookup is not configured', async () => {
+    const send = await webhookServer(undefined);
+    assert.deepEqual(await send(available('6', '4K Movie Now Available')), {
+      status: 502, body: { error: 'webhook is for a 4K request and Seerr lookup is not configured' },
+    });
+  });
+});

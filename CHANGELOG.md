@@ -47,8 +47,8 @@ changes as described under [Changed](#changed).
 - **A 4K request is never granted on the HD item.** A 4K event without
   `SEERR_URL` and `SEERR_API_KEY` configured is rejected as an error. A 4K
   request whose 4K item Seerr does not know yet is rejected by the webhook and
-  granted by the request backfill once the 4K item exists. Before, the webhook
-  granted the HD item in both cases.
+  granted by the request backfill once the 4K item exists (when the request
+  backfill is enabled). Before, the webhook granted the HD item in both cases.
 - **Failed webhook resolution counts as an error.** A failed Seerr lookup, a
   webhook missing Jellyfin IDs without Seerr configured, and a rejected 4K
   event now count as `jfa_webhooks_total{result="error"}`. Before, they were
