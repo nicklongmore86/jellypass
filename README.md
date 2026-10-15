@@ -153,11 +153,11 @@ as semantic-version tags. For predictable production upgrades, set
 `JELLYPASS_IMAGE` in `.env` to a versioned image such as:
 
 ```dotenv
-JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:1.1.0
+JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:2.0.0
 ```
 
-Each release is published as a semantic-version image tag, such as `1.1.0`,
-plus floating `1.1` and `1` tags that move to the newest release in that minor
+Each release is published as a semantic-version image tag, such as `2.0.0`,
+plus floating `2.0` and `2` tags that move to the newest release in that minor
 or major line; see [CHANGELOG.md](CHANGELOG.md) for what each one contains. `latest` is rebuilt on
 every push to `main` and may include unreleased changes, so use it, or build
 from source, only to test ahead of a release.
@@ -471,9 +471,11 @@ curl http://127.0.0.1:8787/health
 ```
 
 Back up the state file first. Read the [changelog](CHANGELOG.md) before
-changing between versioned tags. Upgrades can migrate the state file to a newer
-schema that older versions cannot read, so rolling back requires the backup taken
-before the upgrade. Pinning `JELLYPASS_IMAGE` makes rollback explicit:
+changing between versioned tags. Upgrading from 1.1.0 to 2.0.0 is a breaking
+upgrade; follow [Upgrading from 1.1.0](CHANGELOG.md#upgrading-from-110) in the
+2.0.0 notes. Upgrades can migrate the state file to a newer schema that older
+versions cannot read, so rolling back requires the backup taken before the
+upgrade. Pinning `JELLYPASS_IMAGE` makes rollback explicit:
 
 ```sh
 JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:PREVIOUS_VERSION docker compose up -d

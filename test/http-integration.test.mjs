@@ -531,7 +531,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.deepEqual(jellyfin.user('bob-id').Policy.BlockedTags, []);
   });
 
-  it('returns 404 for the removed JellyQuest bridge and access routes', async () => {
+  it('returns 401 without and 404 with admin credentials for the removed JellyQuest routes', async () => {
     const removed = [
       ['GET', '/jellyquest-bridge/bridge.html'],
       ['GET', '/jellyquest-bridge/health'],
@@ -543,6 +543,13 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
       ['GET', '/jellyquest/access/claims'],
     ];
     for (const [method, pathname] of removed) {
+      const anonymous = await fetch(`${bridgeUrl}${pathname}`, {
+        method,
+        headers: { 'Content-Type': 'application/json' },
+        ...(method === 'POST' ? { body: '{}' } : {}),
+      });
+      assert.equal(anonymous.status, 401, `${method} ${pathname} without credentials`);
+      assert.deepEqual(await anonymous.json(), { error: 'unauthorized' });
       const response = await fetch(`${bridgeUrl}${pathname}`, {
         method,
         headers: { Authorization: 'Bearer admin-secret', 'Content-Type': 'application/json' },
