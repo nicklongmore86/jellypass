@@ -454,11 +454,26 @@ test('relays only the caller\'s own Jellyseerr activity', async () => {
       sortBy: 'popularity.desc',
       SORT_BY: 'title.asc',
       UserType: 3,
+      CreatedAt: '2026-05-01T00:00:00.000Z',
+      UPDATED_AT: '2026-05-02T00:00:00.000Z',
+      MediaAddedAt: '2026-05-03T00:00:00.000Z',
+      last_season_change: '2026-05-04T00:00:00.000Z',
+      JellyfinMediaId: 'item-private',
+      JELLYFIN_MEDIA_ID_4K: 'item-4k',
+      totalResults: 40,
+      totalPages: 4,
+      pageInfo: { page: 2, pages: 4, pageSize: 10, results: 40 },
       results: [
         { id: 1, USER_ID: 7 },
         { id: 2, RequestedBy: BLAIR_MINIMAL },
         { id: 3, Requested_By_Id: 8 },
         { id: 4, CREATEDBY: 8 },
+        { id: 5, userid: 8 },
+        { id: 6, Userid: 8 },
+        { id: 7, requestedbyid: 8 },
+        { id: 8, createdbyid: 8, CreatedAt: '2026-05-05T00:00:00.000Z' },
+        { id: 9, Userid: 7, CreatedAt: '2026-05-06T00:00:00.000Z', UPDATED_AT: '2026-05-07T00:00:00.000Z' },
+        { id: 10, media: { CREATED_AT: '2026-05-08T00:00:00.000Z', jellyfinmediaid: 'item-private', JellyfinMediaID4k: 'item-4k' } },
       ],
     },
   };
@@ -583,8 +598,17 @@ test('relays only the caller\'s own Jellyseerr activity', async () => {
       sortBy: 'popularity.desc',
       SORT_BY: 'title.asc',
       UserType: 3,
-      results: [{ id: 1, USER_ID: 7 }],
-    }, 'identity keys match in any case, other users\' rows are dropped, staff keys are always removed, unrelated keys survive');
+      JELLYFIN_MEDIA_ID_4K: 'item-4k',
+      totalResults: 3,
+      totalPages: 1,
+      pageInfo: { page: 1, pages: 1, pageSize: 10, results: 3 },
+      results: [
+        { id: 1, USER_ID: 7 },
+        { id: 9, Userid: 7, CreatedAt: '2026-05-06T00:00:00.000Z', UPDATED_AT: '2026-05-07T00:00:00.000Z' },
+        { id: 10, media: { JellyfinMediaID4k: 'item-4k' } },
+      ],
+    }, 'run-together owner keys drop other users\' rows and recompute totals; timestamps and item IDs match in any case; '
+      + 'identity keys match in any case, other users\' rows are dropped, staff keys are always removed, unrelated keys survive');
 
     const details = (await proxy('/api/v1/movie/101')).body.data;
     assert.deepEqual(details, {

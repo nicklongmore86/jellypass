@@ -12,8 +12,9 @@ const MAX_PROBE_ATTEMPTS = 30;
 const IDENTITY_RECHECK_MS = 5 * 60 * 1000;
 const JELLYFIN_TOKEN_PATTERN = /^[A-Za-z0-9._~-]{16,256}$/;
 // Keys are compared as lower-case words split on camel case and `_`/`-`, so `UserId`, `USER_ID`
-// and `user_id` all read as `user_id` (all-caps `USERID` as `userid`). Whole words matter:
-// `hobbyId`, `lobbyId` and `sortBy` are not identities.
+// and `user_id` all read as `user_id` (so does all-caps `USERID`; run-together `userid` stays
+// `userid`). Whole words matter: `hobbyId`, `lobbyId` and `sortBy` are not identities.
+// Fixed key sets below are compared with `_` removed too, so `userid` and `user_id` both match.
 // Keys that hold a user, user ID, or list of users. Unknown keys of this shape fail closed.
 const IDENTITY_KEY_PATTERN = new RegExp([
   '(?:^|_)users?(?:_?ids?)?$',
@@ -26,13 +27,10 @@ const TV_DETAILS_PATH = /^\/api\/v1\/tv\/\d+(?:\?|$)/;
 // Staff actions on a request are never relayed, even on the caller's own request.
 const ALWAYS_STRIPPED_KEY_PATTERN = /^(?:modified|updated)_?by(?:_?id)?$/;
 // Keys that make an array entry (request, watchlist entry, issue, comment) belong to that user.
-const OWNER_KEYS = new Set([
-  'requested_by', 'requested_by_id', 'requestedby', 'requestedby_id',
-  'created_by', 'created_by_id', 'createdby', 'createdby_id', 'user', 'user_id',
-]);
+const OWNER_KEYS = new Set(['requestedby', 'requestedbyid', 'createdby', 'createdbyid', 'user', 'userid']);
 // Activity timing is only relayed on records the caller owns.
-const TIMESTAMP_KEYS = new Set(['createdAt', 'updatedAt', 'mediaAddedAt', 'lastSeasonChange']);
-const ITEM_ID_KEYS = new Set(['jellyfinMediaId', 'jellyfinMediaId4k']);
+const TIMESTAMP_KEYS = new Set(['createdat', 'updatedat', 'mediaaddedat', 'lastseasonchange']);
+const ITEM_ID_KEYS = new Set(['jellyfinmediaid', 'jellyfinmediaid4k']);
 // Any one of these marks an object as a Jellyseerr user record.
 const USER_FIELDS = [
   'email', 'username', 'jellyfinUserId', 'jellyfinUsername', 'plexUsername', 'plexId', 'displayName',
@@ -396,9 +394,10 @@ function scrubValue(value: unknown, context: ScrubContext, root = false): unknow
   const result: Record<string, unknown> = {};
   for (const [key, entry] of Object.entries(value)) {
     const words = keyWords(key);
+    const compact = compactKey(key);
     if (ALWAYS_STRIPPED_KEY_PATTERN.test(words)) continue;
-    if (TIMESTAMP_KEYS.has(key) && !ownRecord) continue;
-    if (ITEM_ID_KEYS.has(key) && entry !== null && entry !== undefined
+    if (TIMESTAMP_KEYS.has(compact) && !ownRecord) continue;
+    if (ITEM_ID_KEYS.has(compact) && entry !== null && entry !== undefined
         && (typeof entry !== 'string' || !context.canAccessItem(entry))) continue;
     if (root && context.tvDetails && key === 'createdBy' && Array.isArray(entry)) {
       // A TV show's creators: keep TMDB credits only, never anything that looks like a user.
@@ -445,10 +444,15 @@ function keyWords(key: string): string {
     .join('_');
 }
 
+/** `keyWords` without separators, for fixed key sets: `USER_ID`, `userId` and `userid` all become `userid`. */
+function compactKey(key: string): string {
+  return keyWords(key).replace(/_/g, '');
+}
+
 function ownerValues(record: Record<string, unknown>): unknown[] {
   // An owner is a single user reference; lists such as TMDB `createdBy` creators do not own the record.
   return Object.entries(record)
-    .filter(([key, owner]) => OWNER_KEYS.has(keyWords(key)) && owner !== null && owner !== undefined && !Array.isArray(owner))
+    .filter(([key, owner]) => OWNER_KEYS.has(compactKey(key)) && owner !== null && owner !== undefined && !Array.isArray(owner))
     .map(([, owner]) => owner);
 }
 

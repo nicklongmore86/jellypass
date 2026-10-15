@@ -469,18 +469,20 @@ open across households, but each caller sees only their own:
   - Other users' records and IDs are removed under any key, including unknown
     `…user`, `…Users`, `…UserId`, and `…ById` fields. Keys are compared as whole
     words in any case, so `UserId`, `USER_ID`, `user_id`, and `RequestedById`
-    all match, while `hobbyId`, `lobbyId`, and `sortBy` are left alone. The only
+    all match, as do run-together forms such as `userid` and `requestedbyid`,
+    while `hobbyId`, `lobbyId`, and `sortBy` are left alone. The only
     exception is a TV show's top-level `createdBy` list in `GET /api/v1/tv/:id`:
     entries there that are TMDB credits are media data and are kept. A user
     reference shaped like a credit anywhere else, such as under `requestedBy`,
     is still removed. `modifiedBy`/`updatedBy` (in any case) are always removed,
     even on the caller's own requests, because they name the staff member who
     acted.
-  - `createdAt`, `updatedAt`, `mediaAddedAt`, and `lastSeasonChange` are kept
-    only on records the caller owns, so other households' activity timing is
-    not shown.
-  - `mediaInfo.jellyfinMediaId` and `jellyfinMediaId4k` are removed for items
-    the caller cannot open, matching the `jellyfinItemId` rule above.
+  - `createdAt`, `updatedAt`, `mediaAddedAt`, and `lastSeasonChange` (in any
+    case, such as `CreatedAt` or `UPDATED_AT`) are kept only on records the
+    caller owns, so other households' activity timing is not shown.
+  - `mediaInfo.jellyfinMediaId` and `jellyfinMediaId4k` (in any case) are
+    removed for items the caller cannot open, matching the `jellyfinItemId`
+    rule above.
 - Jellyseerr error messages are not relayed. The bridge keeps the status code
   and returns a fixed message for it. Two known messages that only concern the
   caller get their own fixed JellyPass wording: an exceeded request quota, and
