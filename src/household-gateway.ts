@@ -1,6 +1,8 @@
 import http, { type IncomingHttpHeaders, type IncomingMessage, type RequestOptions, type ServerResponse } from 'node:http';
 import https from 'node:https';
+import type { Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
+import { DEFAULT_WS_IDLE_TIMEOUT_MS, DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS, type LogLevel } from './config.js';
 
 const PUBLIC_USERS_PATH = '/users/public';
 const BRANDING_CONFIGURATION_PATH = '/branding/configuration';
@@ -11,6 +13,7 @@ const MAX_TRANSFORMED_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_LOGIN_BODY_BYTES = 8 * 1024;
 const LOGIN_ATTEMPT_WINDOW_MS = 5 * 60 * 1000;
 const MAX_LOGIN_ATTEMPTS = 20;
+const TCP_KEEPALIVE_INITIAL_DELAY_MS = 60_000;
 const HOUSEHOLD_LOGIN_CSS = `
 /* JellyPass household profile picker */
 #loginPage .readOnlyContent,
@@ -35,6 +38,11 @@ export interface HouseholdGatewayOptions {
   hostPrefix: string;
   memberIds: (householdId: string) => string[] | undefined;
   isPasswordless?: (userId: string) => boolean;
+  /** Close an upgraded connection after this long with no bytes in either direction; 0 disables. */
+  webSocketIdleTimeoutMs?: number;
+  /** Close an upgraded connection after this long with no bytes from Jellyfin, even if the client keeps talking; 0 disables. */
+  webSocketUpstreamIdleTimeoutMs?: number;
+  logLevel?: LogLevel;
 }
 
 export class HouseholdGateway {
@@ -44,6 +52,9 @@ export class HouseholdGateway {
   readonly #memberIds: HouseholdGatewayOptions['memberIds'];
   readonly #isPasswordless: NonNullable<HouseholdGatewayOptions['isPasswordless']>;
   readonly #loginAttempts = new Map<string, { attempts: number; resetsAt: number }>();
+  readonly #webSocketIdleTimeoutMs: number;
+  readonly #webSocketUpstreamIdleTimeoutMs: number;
+  readonly #debug: boolean;
 
   public constructor(options: HouseholdGatewayOptions) {
     this.#target = new URL(options.jellyfinUrl);
@@ -54,6 +65,9 @@ export class HouseholdGateway {
     this.#hostPrefix = options.hostPrefix.toLowerCase();
     this.#memberIds = options.memberIds;
     this.#isPasswordless = options.isPasswordless ?? (() => false);
+    this.#webSocketIdleTimeoutMs = options.webSocketIdleTimeoutMs ?? DEFAULT_WS_IDLE_TIMEOUT_MS;
+    this.#webSocketUpstreamIdleTimeoutMs = options.webSocketUpstreamIdleTimeoutMs ?? DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS;
+    this.#debug = options.logLevel === 'debug';
   }
 
   public householdId(hostHeader: string | undefined): string | undefined {
@@ -121,10 +135,11 @@ export class HouseholdGateway {
   }
 
   public handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer, householdId: string): void {
+    const exchange = this.#exchange();
     // Node's HTTP server detaches its own socket error listener before emitting 'upgrade', so a client
     // reset (ECONNRESET/EPIPE) on an unguarded upgrade socket is an unhandled 'error' event that kills the process.
     socket.on('error', (error) => {
-      logStreamError('websocket client socket', error);
+      exchange.error('client', 'websocket client socket', error);
       socket.destroy();
     });
     if (!this.#memberIds(householdId)) {
@@ -137,6 +152,7 @@ export class HouseholdGateway {
     // pending emits 'end' but never 'close'; abort on either so the upstream request is not left dangling.
     const abortPending = () => {
       if (upgraded) return;
+      exchange.clientGone();
       upstream.destroy();
       socket.destroy();
     };
@@ -145,7 +161,7 @@ export class HouseholdGateway {
     upstream.on('upgrade', (upstreamResponse, upstreamSocket, upstreamHead) => {
       upgraded = true;
       upstreamSocket.on('error', (error) => {
-        logStreamError('websocket upstream socket', error);
+        exchange.error('upstream', 'websocket upstream socket', error);
         upstreamSocket.destroy();
       });
       if (socket.destroyed) {
@@ -160,8 +176,37 @@ export class HouseholdGateway {
       socket.write('\r\n');
       if (upstreamHead.length) socket.write(upstreamHead);
       if (head.length) upstreamSocket.write(head);
-      socket.once('close', () => upstreamSocket.destroy());
-      upstreamSocket.once('close', () => socket.destroy());
+      // A peer that vanishes without FIN/RST (sleeping TV, dropped NAT mapping) never surfaces as an error on its own:
+      // TCP keepalive lets the kernel notice a dead peer, and the idle timers close connections with no traffic at all
+      // or whose Jellyfin side has gone quiet while the client keeps sending KeepAlives into the void.
+      enableTcpKeepAlive(socket);
+      enableTcpKeepAlive(upstreamSocket);
+      const closeBoth = (message: string, timeoutMs: number) => {
+        this.#logDebug(message, { timeoutMs });
+        socket.destroy();
+        upstreamSocket.destroy();
+      };
+      const idleTimer = unrefTimer(this.#webSocketIdleTimeoutMs, () =>
+        closeBoth('household gateway websocket idle timeout', this.#webSocketIdleTimeoutMs));
+      const upstreamIdleTimer = unrefTimer(this.#webSocketUpstreamIdleTimeoutMs, () =>
+        closeBoth('household gateway websocket upstream idle timeout', this.#webSocketUpstreamIdleTimeoutMs));
+      socket.on('data', () => idleTimer?.refresh());
+      upstreamSocket.on('data', () => {
+        idleTimer?.refresh();
+        upstreamIdleTimer?.refresh();
+      });
+      const clearTimers = () => {
+        clearTimeout(idleTimer);
+        clearTimeout(upstreamIdleTimer);
+      };
+      socket.once('close', () => {
+        clearTimers();
+        upstreamSocket.destroy();
+      });
+      upstreamSocket.once('close', () => {
+        clearTimers();
+        socket.destroy();
+      });
       upstreamSocket.pipe(socket).pipe(upstreamSocket);
     });
     upstream.on('response', (upstreamResponse) => {
@@ -171,10 +216,21 @@ export class HouseholdGateway {
       }
     });
     upstream.on('error', (error) => {
-      logStreamError('websocket upstream request', error);
+      exchange.error('upstream', 'websocket upstream request', error);
       if (!socket.destroyed) socket.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n');
     });
     upstream.end();
+  }
+
+  #exchange(): Exchange {
+    return new Exchange((level, message, fields) => {
+      if (level === 'debug') this.#logDebug(message, fields);
+      else console.warn(JSON.stringify({ level, message, ...fields }));
+    });
+  }
+
+  #logDebug(message: string, fields: Record<string, unknown>): void {
+    if (this.#debug) console.debug(JSON.stringify({ level: 'debug', message, ...fields }));
   }
 
   #allowLoginAttempt(clientId: string): boolean {
@@ -251,25 +307,30 @@ export class HouseholdGateway {
   async #proxyBuffered(request: IncomingMessage, response: ServerResponse, body: Buffer): Promise<void> {
     await new Promise<void>((resolve) => {
       const headers: IncomingHttpHeaders = { ...request.headers, 'content-length': String(body.length) };
+      const exchange = this.#exchange();
       const upstream = this.#transport().request(this.#requestOptions(request, headers), (upstreamResponse) => {
-        relayResponse(upstreamResponse, response, resolve);
+        relayResponse(upstreamResponse, response, exchange, resolve);
       });
-      guardUpstream(upstream, response, resolve);
+      guardUpstream(upstream, response, exchange, resolve);
       upstream.end(body);
     });
   }
 
   async #proxy(request: IncomingMessage, response: ServerResponse): Promise<void> {
     await new Promise<void>((resolve) => {
+      const exchange = this.#exchange();
       const upstream = this.#transport().request(this.#requestOptions(request), (upstreamResponse) => {
-        relayResponse(upstreamResponse, response, resolve);
+        relayResponse(upstreamResponse, response, exchange, resolve);
       });
-      guardUpstream(upstream, response, resolve);
+      guardUpstream(upstream, response, exchange, resolve);
       request.on('error', (error) => {
-        logStreamError('proxy client request', error);
+        exchange.error('client', 'proxy client request', error);
         upstream.destroy();
       });
-      request.once('aborted', () => upstream.destroy());
+      request.once('aborted', () => {
+        exchange.clientGone();
+        upstream.destroy();
+      });
       request.pipe(upstream);
     });
   }
@@ -348,6 +409,7 @@ export class HouseholdGateway {
   ): Promise<void> {
     await new Promise<void>((resolve) => {
       const headers: IncomingHttpHeaders = { ...request.headers, 'accept-encoding': 'identity' };
+      const exchange = this.#exchange();
       const upstream = this.#transport().request(this.#requestOptions(request, headers), (upstreamResponse) => {
         const chunks: Buffer[] = [];
         let size = 0;
@@ -357,7 +419,7 @@ export class HouseholdGateway {
           else chunks.push(chunk);
         });
         upstreamResponse.on('error', (error) => {
-          logStreamError('proxy upstream response', error);
+          exchange.error('upstream', 'proxy upstream response', error);
           if (!response.headersSent) writeJson(response, 502, { error: 'jellyfin_unavailable' });
           resolve();
         });
@@ -384,7 +446,7 @@ export class HouseholdGateway {
           resolve();
         });
       });
-      guardUpstream(upstream, response, resolve);
+      guardUpstream(upstream, response, exchange, resolve);
       upstream.end();
     });
   }
@@ -416,44 +478,76 @@ export class HouseholdGateway {
   }
 }
 
-// Peer disconnects are routine for media seeks/skips and WebSocket clients, including the "socket hang up" our own
-// aborts produce. They are only logged with LOG_LEVEL=debug; anything else is logged as a warning.
-const EXPECTED_DISCONNECT_CODES = new Set(['ECONNRESET', 'EPIPE', 'ECONNABORTED', 'ERR_STREAM_PREMATURE_CLOSE', 'ERR_STREAM_DESTROYED']);
+const DISCONNECT_CODES = new Set(['ECONNRESET', 'EPIPE', 'ECONNABORTED', 'ERR_STREAM_PREMATURE_CLOSE', 'ERR_STREAM_DESTROYED']);
+// TCP keepalive reports a client that vanished (sleeping TV, roaming phone) as ETIMEDOUT/EHOSTUNREACH. On the
+// Jellyfin side the same codes mean the server or its network is unreachable, which is worth a warning.
+const CLIENT_DISCONNECT_CODES = new Set([...DISCONNECT_CODES, 'ETIMEDOUT', 'EHOSTUNREACH']);
 
-function logStreamError(context: string, error: unknown): void {
-  const code = typeof error === 'object' && error && 'code' in error ? String((error as { code: unknown }).code) : undefined;
-  const expected = code !== undefined && EXPECTED_DISCONNECT_CODES.has(code);
-  if (expected && process.env.LOG_LEVEL?.trim().toLowerCase() !== 'debug') return;
-  const entry = JSON.stringify({
-    level: expected ? 'debug' : 'warn',
-    message: `household gateway ${context} error`,
-    code,
-    error: error instanceof Error ? error.message : String(error),
-  });
-  if (expected) console.debug(entry);
-  else console.warn(entry);
+type ExchangeLog = (level: 'debug' | 'warn', message: string, fields: Record<string, unknown>) => void;
+
+/**
+ * Classifies stream errors for one proxied request or WebSocket. Client disconnects are routine (media seeks/skips,
+ * closed tabs, sleeping TVs) and only logged with LOG_LEVEL=debug. Jellyfin-side errors log as warnings unless they are
+ * the consequence of a failure already seen: our own abort after the client left ("socket hang up"/"aborted") or a
+ * follow-on error from the same upstream reset.
+ */
+class Exchange {
+  #firstFailure: 'client' | 'upstream' | undefined;
+
+  public constructor(private readonly log: ExchangeLog) {}
+
+  public clientGone(): void {
+    this.#firstFailure ??= 'client';
+  }
+
+  public error(side: 'client' | 'upstream', context: string, error: unknown): void {
+    const code = typeof error === 'object' && error && 'code' in error ? String((error as { code: unknown }).code) : undefined;
+    const disconnect = code !== undefined && (side === 'client' ? CLIENT_DISCONNECT_CODES : DISCONNECT_CODES).has(code);
+    const expected = disconnect && (side === 'client' || this.#firstFailure !== undefined);
+    this.#firstFailure ??= side;
+    this.log(expected ? 'debug' : 'warn', `household gateway ${context} error`, {
+      code,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
-function guardUpstream(upstream: http.ClientRequest, response: ServerResponse, resolve: () => void): void {
+function unrefTimer(timeoutMs: number, callback: () => void): NodeJS.Timeout | undefined {
+  if (timeoutMs <= 0) return undefined;
+  const timer = setTimeout(callback, timeoutMs);
+  timer.unref();
+  return timer;
+}
+
+function enableTcpKeepAlive(socket: Duplex): void {
+  if ('setKeepAlive' in socket && typeof socket.setKeepAlive === 'function') {
+    (socket as Socket).setKeepAlive(true, TCP_KEEPALIVE_INITIAL_DELAY_MS);
+  }
+}
+
+function guardUpstream(upstream: http.ClientRequest, response: ServerResponse, exchange: Exchange, resolve: () => void): void {
   upstream.on('error', (error) => {
-    logStreamError('proxy upstream request', error);
+    exchange.error('upstream', 'proxy upstream request', error);
     if (!response.headersSent) writeJson(response, 502, { error: 'jellyfin_unavailable' });
     else response.destroy();
     resolve();
   });
   response.on('error', (error) => {
-    logStreamError('proxy client response', error);
+    exchange.error('client', 'proxy client response', error);
     upstream.destroy();
   });
   response.once('close', () => {
-    if (!response.writableFinished) upstream.destroy();
+    if (!response.writableFinished) {
+      exchange.clientGone();
+      upstream.destroy();
+    }
     resolve();
   });
 }
 
-function relayResponse(upstreamResponse: IncomingMessage, response: ServerResponse, resolve: () => void): void {
+function relayResponse(upstreamResponse: IncomingMessage, response: ServerResponse, exchange: Exchange, resolve: () => void): void {
   upstreamResponse.on('error', (error) => {
-    logStreamError('proxy upstream response', error);
+    exchange.error('upstream', 'proxy upstream response', error);
     response.destroy();
   });
   // An upstream reset mid-body aborts the response without 'end'; tear down the client side instead of hanging.

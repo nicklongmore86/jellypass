@@ -27,6 +27,9 @@ async function main(): Promise<void> {
         jellyfinUrl: config.jellyfinUrl,
         domain: config.householdDomain,
         hostPrefix: config.householdHostPrefix,
+        webSocketIdleTimeoutMs: config.webSocketIdleTimeoutMs,
+        webSocketUpstreamIdleTimeoutMs: config.webSocketUpstreamIdleTimeoutMs,
+        logLevel: config.logLevel,
       },
     } : {}),
   });

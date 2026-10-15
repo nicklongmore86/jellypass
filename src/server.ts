@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { UserProvisioningError, type AccessService } from './access-service.js';
 import { ADMIN_APP_JS, ADMIN_FAVICON_SVG, ADMIN_HTML, ADMIN_STYLES } from './admin-ui.js';
 import { expiredSessionCookie, sessionCookie, type WebAuth } from './auth.js';
+import type { LogLevel } from './config.js';
 import { HouseholdGateway } from './household-gateway.js';
 import type { RequestBridge } from './request-bridge.js';
 import { parseWebhook } from './webhook.js';
@@ -21,6 +22,9 @@ export interface ServerOptions {
     jellyfinUrl: string;
     domain: string;
     hostPrefix: string;
+    webSocketIdleTimeoutMs?: number;
+    webSocketUpstreamIdleTimeoutMs?: number;
+    logLevel?: LogLevel;
   };
 }
 
