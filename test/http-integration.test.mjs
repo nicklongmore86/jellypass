@@ -462,7 +462,8 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
       headers: { Authorization: 'Bearer webhook-secret', 'Content-Type': 'application/json' },
       body: JSON.stringify({
         notificationType: 'MEDIA_AVAILABLE',
-        media: { jellyfinMediaId: 'item-1', mediaType: 'movie', tmdbId: 101 },
+        event: 'Movie Request Now Available',
+        media: { jellyfinMediaId: 'item-1', mediaType: 'movie' },
         request: { id: '17', requestedBy: { jellyfinUserId: 'alice-id' } },
       }),
     });

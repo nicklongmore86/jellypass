@@ -30,6 +30,19 @@ the state file moves to schema v7, which 1.1.0 cannot read.
 Household grants, the Seerr webhook, the request backfill, household hostnames,
 passwordless sign-in, the admin UI and API, and metrics are unchanged.
 
+### Changed
+
+- **The webhook only looks up Seerr when the payload lacks IDs.** JellyPass
+  now trusts the webhook's `jellyfinMediaId` and `jellyfinUserId` when both are
+  present and the payload's `event` names an HD request (`Movie Request Now
+  Available` or `Series Request Now Available`). Before, any webhook without a
+  TMDB ID triggered a Seerr request lookup. Because Seerr's
+  `{{media_jellyfinMediaId}}` is the HD item even for 4K requests, JellyPass
+  still asks Seerr when `event` names a 4K request or is missing, so a 4K
+  request is never granted on the HD item. Add `"event": "{{event}}"` to your
+  webhook payload (see the README) to skip the lookup for HD requests. A
+  `tmdbId` in the payload is now ignored.
+
 ### Upgrading from 1.1.0
 
 1. **Breaking (rollback): back up the state file before upgrading.** On first

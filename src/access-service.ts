@@ -250,13 +250,11 @@ export class AccessService {
     let itemId = event.media?.jellyfinMediaId;
     let userId = event.request.requestedBy?.jellyfinUserId;
     let mediaType = event.media?.mediaType;
-    const tmdbId = event.media?.tmdbId;
 
-    // A webhook without a TMDB ID still triggers a Seerr lookup, as in 1.1.0, even though the ID
-    // itself is no longer used. The lookup replaces the payload's item and user IDs with Seerr's
-    // (including the 4K media ID via requestItemId), so dropping this trigger would change which
-    // item a webhook grants. Removing it is a separate follow-up, not part of the JellyQuest removal.
-    if ((!itemId || !userId || tmdbId === undefined) && this.#seerr) {
+    // Seerr's {{media_jellyfinMediaId}} is the HD item whenever one exists, and no template variable
+    // carries the 4K item. The payload's IDs are therefore trusted only when both are present and
+    // the event text shows an HD request; otherwise Seerr's request decides (requestItemId).
+    if ((!itemId || !userId || event.request.is4k !== false) && this.#seerr) {
       const request = await this.#seerr.getRequest(event.request.id);
       itemId = requestItemId(request);
       userId = request.requestedBy?.jellyfinUserId;

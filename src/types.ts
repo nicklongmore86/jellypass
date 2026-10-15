@@ -3,10 +3,14 @@ export interface SeerrWebhook {
   media?: {
     jellyfinMediaId?: string;
     mediaType?: string;
-    tmdbId?: number;
   };
   request: {
     id: string;
+    /**
+     * Whether Seerr's `{{event}}` text names a 4K request. Undefined when the payload has no
+     * recognizable event, so the 4K and HD items cannot be told apart.
+     */
+    is4k?: boolean;
     requestedBy?: {
       jellyfinUserId?: string;
       username?: string;

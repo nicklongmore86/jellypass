@@ -229,7 +229,8 @@ them.
 For 4K requests, the backfill uses the 4K availability status and
 `jellyfinMediaId4k` only. A 4K request without a 4K item is skipped rather than
 falling back to the HD item, so it cannot privatize an HD title that was public
-before the cutoff. The webhook path still falls back to the HD item.
+before the cutoff. The webhook path falls back to the HD item when Seerr has no
+4K item for the request.
 
 The cutoff exists so that titles that were already public before JellyPass
 managed them stay public. Set it to the date you start relying on JellyPass,
@@ -282,6 +283,7 @@ In **Settings → Notifications → Webhook**:
 ```json
 {
   "notificationType": "{{notification_type}}",
+  "event": "{{event}}",
   "media": {
     "jellyfinMediaId": "{{media_jellyfinMediaId}}",
     "mediaType": "{{media_type}}"
@@ -295,6 +297,14 @@ In **Settings → Notifications → Webhook**:
   }
 }
 ```
+
+JellyPass trusts the payload's media and user IDs only when both are present
+and `event` reads `Movie Request Now Available` or `Series Request Now
+Available`. For a 4K request Seerr still fills `{{media_jellyfinMediaId}}` with
+the HD item, and no template variable carries the 4K item. So when `event`
+names a 4K request (`4K Movie Request Now Available`), or the payload has no
+recognizable `event`, JellyPass asks Seerr for the request and grants the 4K
+item. Without `SEERR_URL` and `SEERR_API_KEY`, the payload IDs are used as sent.
 
 Some Jellyseerr releases do not expose Jellyfin IDs as webhook template
 variables. When `SEERR_URL` and `SEERR_API_KEY` are configured, this smaller
