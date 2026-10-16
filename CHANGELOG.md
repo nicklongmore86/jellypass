@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- The real-Jellyfin integration test sends an HD `Movie Request Now Available`
+  webhook, matching the README template, and also checks that a webhook
+  without a recognized HD `event` is rejected with `502` and grants nothing
+  when Seerr lookup is not configured. It had failed since 2.1.0 because it
+  still sent a webhook without `event`.
+- `pnpm test:real` starts a throwaway Jellyfin container with Docker (or uses
+  `JELLYFIN_REAL_URL`), and `pnpm test:all` runs both suites.
+- The publish workflow runs the real-Jellyfin test before publishing an image
+  or creating a release.
+
 ## [2.1.0] - 2026-10-16
 
 This is a minor release. Most deployments can upgrade without changes, but
