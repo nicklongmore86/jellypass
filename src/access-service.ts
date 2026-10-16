@@ -259,9 +259,14 @@ export class AccessService {
 
     // Seerr's {{media_jellyfinMediaId}} is the HD item whenever one exists, and no template variable
     // carries the 4K item. The payload's IDs are therefore trusted only when both are present and
-    // the event text shows an HD request; otherwise Seerr's request decides (requestItemId).
-    if (event.request.is4k && !this.#seerr) {
-      throw new Error('webhook is for a 4K request and Seerr lookup is not configured');
+    // the event text shows an HD request; otherwise Seerr's request decides (requestItemId). Without
+    // Seerr, a missing, empty, unfilled or unrecognized event is rejected: it may be a 4K request.
+    if (!this.#seerr) {
+      if (event.request.is4k) throw new Error('webhook is for a 4K request and Seerr lookup is not configured');
+      if (!itemId || !userId) throw new Error('webhook is missing Jellyfin IDs and Seerr lookup is not configured');
+      if (event.request.is4k !== false) {
+        throw new Error('webhook event does not name an HD request and Seerr lookup is not configured');
+      }
     }
     let is4k = event.request.is4k === true;
     if ((!itemId || !userId || event.request.is4k !== false) && this.#seerr) {
@@ -272,9 +277,6 @@ export class AccessService {
       mediaType ??= request.media?.mediaType ?? request.type;
     }
 
-    if ((!itemId || !userId) && !this.#seerr) {
-      throw new Error('webhook is missing Jellyfin IDs and Seerr lookup is not configured');
-    }
     if (!itemId) throw new Error(`Seerr request ${event.request.id} is missing a ${is4k ? '4K ' : ''}Jellyfin media ID`);
     if (!userId) throw new Error(`Seerr request ${event.request.id} is missing a Jellyfin user ID`);
     return { itemId, userId, ...(mediaType ? { mediaType } : {}) };

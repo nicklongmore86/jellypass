@@ -656,4 +656,13 @@ describe('webhook resolution errors over HTTP', { timeout: 5_000 }, () => {
       status: 502, body: { error: 'webhook is for a 4K request and Seerr lookup is not configured' },
     });
   });
+
+  it('returns 502 for an event that does not name an HD request when Seerr lookup is not configured', async () => {
+    const send = await webhookServer(undefined);
+    for (const [id, event] of [['7', undefined], ['8', ''], ['9', '{{event}}'], ['10', 'Something Else']]) {
+      assert.deepEqual(await send(available(id, event)), {
+        status: 502, body: { error: 'webhook event does not name an HD request and Seerr lookup is not configured' },
+      }, String(event));
+    }
+  });
 });

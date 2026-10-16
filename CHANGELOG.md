@@ -12,8 +12,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Dashboard recent requests.** The Dashboard now shows up to 12 recent
   Jellyseerr requests instead of 8, so the poster grid fills evenly at four,
   three and two columns.
+- **Webhooks without Seerr lookup need `event`.** When `SEERR_URL` and
+  `SEERR_API_KEY` are not configured, the webhook payload must include
+  `"event": "{{event}}"`, as the README template already does. A webhook
+  without a recognized HD `event` is now rejected with `502` instead of
+  granted. The request backfill already needed Seerr lookup.
 
 ### Fixed
+
+- **4K webhooks with a missing or unrecognized `event`.** Without Seerr lookup,
+  a webhook whose `event` was missing, empty, unfilled (`{{event}}`) or
+  unrecognized was granted on the payload's media ID. Seerr fills that ID with
+  the HD item even for a 4K request, so such a 4K notification could privatize
+  the HD item and leave the 4K item public. These webhooks are now rejected and
+  counted as `jfa_webhooks_total{result="error"}`, like a 4K event without
+  Seerr lookup. With Seerr lookup configured they still resolve through Seerr.
 
 - **Recent requests cache.** The 60-second recent-requests cache kept only as
   many requests as the last caller asked for and ignored the catalog it was

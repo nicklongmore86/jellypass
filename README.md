@@ -307,10 +307,12 @@ that is already available. For a 4K request the same texts start with `4K `.
 Seerr fills `{{media_jellyfinMediaId}}` with the HD item even for a 4K request,
 and no template variable carries the 4K item. So when `event` names a 4K
 request, or the payload has no recognizable `event`, JellyPass asks Seerr for
-the request and grants the 4K item. 4K events therefore need `SEERR_URL` and
-`SEERR_API_KEY`: without them, a 4K event is rejected as an error rather than
-granted on the HD item. Other events without Seerr configured use the payload
-IDs as sent.
+the request and grants the 4K item. Without `SEERR_URL` and `SEERR_API_KEY`,
+JellyPass can only use the payload IDs, so it does so only for a recognized HD
+`event`. A 4K event, or a payload whose `event` is missing, empty, unfilled
+(`{{event}}`) or unrecognized, is rejected with `502` and counted as an error
+rather than granted on what may be the HD item. Keep `"event": "{{event}}"` in
+the payload when Seerr lookup is not configured.
 
 Some Jellyseerr releases do not expose Jellyfin IDs as webhook template
 variables. When `SEERR_URL` and `SEERR_API_KEY` are configured, this smaller

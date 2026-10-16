@@ -394,12 +394,32 @@ describe('webhooks without Seerr lookup', () => {
     assert.match(service.renderMetrics(), /jfa_webhooks_total\{result="error"\} 1/);
   });
 
-  it('grants the payload item for HD and unrecognized events', async () => {
+  it('grants the payload item only for a recognized HD event', async () => {
     const { store, service } = await serviceWithoutSeerr();
     await service.processWebhook(parseWebhook(webhook({ event: 'Movie Now Available' })));
-    await service.processWebhook(parseWebhook(webhook({ event: null, requestId: '18' })));
+    await service.processWebhook(parseWebhook(webhook({ event: 'Series Request Now Available', requestId: '18' })));
     assert.deepEqual(store.get('item-1').requests, { '17': 'alice-id', '18': 'alice-id' });
     assert.match(service.renderMetrics(), /jfa_webhooks_total\{result="granted"\} 2/);
+  });
+
+  it('rejects a missing, empty, unfilled or unrecognized event, which may be a 4K request', async () => {
+    // Seerr fills {{media_jellyfinMediaId}} with the HD item even for a 4K request, so trusting
+    // these payloads could privatize the HD item and leave the 4K item public.
+    const events = [null, '', '   ', '{{event}}', 'Movie Request Approved', 'Now Available'];
+    const { store, fake, service } = await serviceWithoutSeerr();
+    for (const event of events) {
+      await assert.rejects(
+        () => service.processWebhook(parseWebhook(webhook({ event }))),
+        /^Error: webhook event does not name an HD request and Seerr lookup is not configured$/,
+        String(event),
+      );
+    }
+    assert.equal(store.list().length, 0);
+    assert.equal(store.hasHandledRequest('17'), false);
+    assert.deepEqual(fake.item.Tags, ['keep-me']);
+    const metrics = service.renderMetrics();
+    assert.match(metrics, new RegExp(`jfa_webhooks_total\\{result="error"\\} ${events.length}\n`));
+    assert.doesNotMatch(metrics, /result="granted"/);
   });
 });
 
@@ -639,7 +659,7 @@ describe('Seerr request backfill', () => {
 
     it('asks Seerr for the 4K item when the payload cannot rule out a 4K request', async () => {
       // Seerr fills {{media_jellyfinMediaId}} with the HD item even for a 4K request.
-      for (const event of ['4K Movie Request Now Available', null, '{{event}}']) {
+      for (const event of ['4K Movie Request Now Available', null, '', '{{event}}', 'Movie Request Approved']) {
         await withSeerr([], { 17: detail4k }, async ({ store, fake, service, calls }) => {
           const grant = await service.processWebhook(parseWebhook(webhook({ event })));
           assert.deepEqual(calls, ['/api/v1/request/17'], String(event));
