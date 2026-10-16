@@ -2,13 +2,11 @@
 
 ## Status
 
-The first household entry point is operational at `jelly-farmhouse.starrgroup.io`. Nginx Proxy Manager proxy host 34 in Proxmox LXC 700 terminates TLS and forwards the original host to JellyPass on port 8787 in the Jellyseerr LXC 509. JellyPass then proxies Jellyfin 10.11.11.
+A household hostname is served by a TLS-terminating reverse proxy that forwards the original `Host` header to JellyPass, which then proxies Jellyfin.
 
-The deployed household implementation was recovered from `/opt/jellyseerr-jellyfin-access` in LXC 509 into this workspace. It had been running from an uncommitted source tree ahead of GitHub `main`; live secrets, state, build output, and safety backups were not copied.
+Read-only verification of a deployed household origin on 2026-09-01 confirmed:
 
-Read-only verification on 2026-09-01 confirmed:
-
-- the household origin returns four public Jellyfin profiles, exactly matching the four user IDs in the `farmhouse` access group;
+- the household origin returns four public Jellyfin profiles, exactly matching the four user IDs in that household's access group;
 - Quick Connect is globally disabled;
 - Jellyfin branding includes a `JellyPass household profile picker` rule;
 - the direct Manual Login action and secondary login controls are hidden,
@@ -19,11 +17,11 @@ The recovered integration suite confirms that password authentication is still d
 
 ## Goal
 
-Give every household its own JellyPass hostname, following the operational Farmhouse pattern:
+Give every household its own JellyPass hostname, following the pattern of the first household:
 
 ```text
-jelly-farmhouse.starrgroup.io
-jelly-example.starrgroup.io
+jelly-household-a.example.com
+jelly-household-b.example.com
 ```
 
 Jellyfin clients use the household hostname as their server address. JellyPass uses that hostname to present only the household's users instead of the server-wide public-user list. The final sign-in experience is passwordless and uses an identity provider assigned to that household.
@@ -75,8 +73,8 @@ Current persisted shape:
 
 ```json
 {
-  "id": "farmhouse",
-  "name": "Farmhouse",
+  "id": "household-a",
+  "name": "Household A",
   "userIds": ["jellyfin-user-id"],
   "createdAt": "2026-08-31T00:00:00.000Z",
   "updatedAt": "2026-09-01T00:00:00.000Z"
@@ -87,8 +85,8 @@ The hostname is derived rather than persisted. A future household-to-identity-pr
 
 ## Delivery sequence
 
-1. Review, test, and commit the recovered deployed source so GitHub becomes the source of truth again.
-2. Add a non-secret deployment runbook for the NPM wildcard/individual host, preserved `Host` header, TLS, and JellyPass household environment settings.
+1. Review, test, and commit the deployed source so GitHub becomes the source of truth again.
+2. Add a non-secret deployment runbook for the reverse proxy's wildcard or per-household host, preserved `Host` header, TLS, and JellyPass household environment settings.
 3. Add an external smoke test for the existing origin: expected household membership, Quick Connect disabled, login controls hidden, media byte ranges, and WebSocket upgrade behavior.
 4. Define the native-client SSO handoff and the separate administrator recovery origin.
 5. Add household-bound OIDC and explicit identity-to-Jellyfin-user mappings.
