@@ -308,6 +308,17 @@ describe('graceful shutdown', { timeout: 15_000 }, () => {
     assert.deepEqual(Object.keys(state.groups), ['first']);
   });
 
+  it('GrantStore.load() leaves state untouched when close() is called while the file is being read', async () => {
+    const { store: writer, file } = await newStore();
+    await writer.upsertGroup({ id: 'saved', name: 'Saved', userIds: [] });
+    await writer.close();
+    const store = new GrantStore(file);
+    const loading = store.load();
+    await store.close();
+    await assert.rejects(loading, /state store is closed/);
+    assert.deepEqual(store.listGroups(), []);
+  });
+
   it('GrantStore leaves memory untouched when it refuses a change after close()', async () => {
     const { store } = await newStore();
     await store.upsertGroup({ id: 'farmhouse', name: 'Farmhouse', userIds: ['alice-id'] });
