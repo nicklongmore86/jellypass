@@ -192,6 +192,21 @@ describe('graceful shutdown', { timeout: 15_000 }, () => {
     assert.ok(logs.some((entry) => entry.level === 'error' && entry.message === 'shutdown timed out; exiting'));
   });
 
+  it('keeps the process alive until the hard timeout fires when a step stalls with nothing else pending', async () => {
+    // In a child process, where nothing else keeps the event loop running: a stalled promise alone holds no handle.
+    const script = `
+      import { createShutdown } from ${JSON.stringify(new URL('../dist/shutdown.js', import.meta.url).href)};
+      createShutdown({ servers: [], timers: () => [], closeStore: () => new Promise(() => {}), hardTimeoutMs: 200 })('SIGTERM');
+    `;
+    const child = spawn(process.execPath, ['--input-type=module', '--eval', script], { stdio: ['ignore', 'pipe', 'pipe'] });
+    let output = '';
+    child.stdout.on('data', (chunk) => { output += chunk; });
+    child.stderr.on('data', (chunk) => { output += chunk; });
+    const [code] = await once(child, 'exit');
+    assert.equal(code, 1, output);
+    assert.match(output, /"message":"shutdown timed out; exiting"/);
+  });
+
   it('demonstrates the old behaviour: server.close() alone never completes while a proxied WebSocket is open', async () => {
     const server = await startServer();
     await openWebSocket(server.address().port);

@@ -42,7 +42,8 @@ export function createShutdown(options: ShutdownOptions): (reason: string) => Pr
       log('error', 'shutdown timed out; exiting', { timeoutMs: hardTimeoutMs });
       exit(1);
     }, hardTimeoutMs);
-    hardTimer.unref();
+    // Deliberately not unref'd: a stalled step with no other open handle would otherwise let the process exit 0 on its
+    // own, without the timeout log. Every completion path clears it.
     running = (async () => {
       for (const timer of options.timers()) clearTimeout(timer);
       const closed = options.servers.map(drain);
