@@ -1,8 +1,6 @@
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
 import { request as httpRequest } from 'node:http';
 import { connect as connectSocket } from 'node:net';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { AccessService } from '../dist/access-service.js';
@@ -11,6 +9,7 @@ import { JellyfinClient } from '../dist/jellyfin.js';
 import { makeServer } from '../dist/server.js';
 import { GrantStore } from '../dist/store.js';
 import { createFakeJellyfin } from './support/fake-jellyfin.mjs';
+import { makeTempDir } from './support/temp-dir.mjs';
 
 describe('HTTP integration', { timeout: 5_000 }, () => {
   let jellyfin;
@@ -20,7 +19,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
 
   before(async () => {
     jellyfin = await createFakeJellyfin();
-    const file = path.join(await mkdtemp(path.join(tmpdir(), 'jfa-http-test-')), 'grants.json');
+    const file = path.join(await makeTempDir(null, 'jfa-http-test-'), 'grants.json');
     const store = new GrantStore(file);
     await store.load();
     await store.upsertGroup({ id: 'farmhouse', name: 'Farmhouse', userIds: ['alice-id', 'bob-id'] });
@@ -614,7 +613,7 @@ describe('webhook resolution errors over HTTP', { timeout: 5_000 }, () => {
   const servers = [];
 
   async function webhookServer(seerr) {
-    const store = new GrantStore(path.join(await mkdtemp(path.join(tmpdir(), 'jfa-http-webhook-')), 'grants.json'));
+    const store = new GrantStore(path.join(await makeTempDir(null, 'jfa-http-webhook-'), 'grants.json'));
     await store.load();
     const service = new AccessService(new JellyfinClient('http://127.0.0.1:9', 'test-key'), store, undefined, seerr);
     const server = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' });
@@ -668,7 +667,7 @@ describe('webhook resolution errors over HTTP', { timeout: 5_000 }, () => {
     assert.doesNotMatch(metrics, /result="error"/);
   });
 
-  it('returns 202 ignored for a replayed webhook whose request an administrator revoked', async () => {
+  it('returns 202 ignored for a replayed webhook whose request an administrator revoked', async (t) => {
     const jellyfin = {
       item: { Id: 'item-1', Name: 'Movie', Tags: [] },
       users: [
@@ -681,7 +680,7 @@ describe('webhook resolution errors over HTTP', { timeout: 5_000 }, () => {
       async updateItem(item) { this.item = structuredClone(item); },
       async updatePolicy(userId, policy) { this.users.find((user) => user.Id === userId).Policy = structuredClone(policy); },
     };
-    const store = new GrantStore(path.join(await mkdtemp(path.join(tmpdir(), 'jfa-http-replay-')), 'grants.json'));
+    const store = new GrantStore(path.join(await makeTempDir(t, 'jfa-http-replay-'), 'grants.json'));
     await store.load();
     const service = new AccessService(jellyfin, store);
     const server = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' });
@@ -701,7 +700,7 @@ describe('webhook resolution errors over HTTP', { timeout: 5_000 }, () => {
     assert.deepEqual(jellyfin.item.Tags, []);
   });
 
-  it('applies a stored grant when Seerr retries a webhook whose Jellyfin update failed', async () => {
+  it('applies a stored grant when Seerr retries a webhook whose Jellyfin update failed', async (t) => {
     const jellyfin = {
       item: { Id: 'item-1', Name: 'Movie', Tags: [] },
       failUpdates: true,
@@ -719,7 +718,7 @@ describe('webhook resolution errors over HTTP', { timeout: 5_000 }, () => {
       },
       async updatePolicy(userId, policy) { this.users.find((user) => user.Id === userId).Policy = structuredClone(policy); },
     };
-    const store = new GrantStore(path.join(await mkdtemp(path.join(tmpdir(), 'jfa-http-retry-')), 'grants.json'));
+    const store = new GrantStore(path.join(await makeTempDir(t, 'jfa-http-retry-'), 'grants.json'));
     await store.load();
     const service = new AccessService(jellyfin, store);
     const server = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' });

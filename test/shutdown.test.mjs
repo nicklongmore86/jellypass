@@ -1,9 +1,8 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
+import { mkdir, readFile } from 'node:fs/promises';
 import { Agent, createServer, request as httpRequest } from 'node:http';
 import { connect as connectSocket, createServer as createNetServer } from 'node:net';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -11,6 +10,7 @@ import { makeServer } from '../dist/server.js';
 import { createShutdown } from '../dist/shutdown.js';
 import { GrantStore } from '../dist/store.js';
 import { createFakeJellyfin } from './support/fake-jellyfin.mjs';
+import { makeTempDir } from './support/temp-dir.mjs';
 
 const HOUSEHOLD_HOST = 'jelly-farmhouse.example.test';
 const ENTRYPOINT = fileURLToPath(new URL('../dist/index.js', import.meta.url));
@@ -79,8 +79,8 @@ describe('graceful shutdown', { timeout: 15_000 }, () => {
     return { client, upstreamSocket: upstreamSockets.at(-1) };
   }
 
-  async function newStore() {
-    const file = path.join(await mkdtemp(path.join(tmpdir(), 'jellypass-shutdown-test-')), 'grants.json');
+  async function newStore(t) {
+    const file = path.join(await makeTempDir(t, 'jellypass-shutdown-test-'), 'grants.json');
     const store = new GrantStore(file);
     await store.load();
     return { store, file };
@@ -100,10 +100,10 @@ describe('graceful shutdown', { timeout: 15_000 }, () => {
     return { shutdown, exits, logs };
   }
 
-  it('closes listeners, WebSockets and idle keep-alive sockets, lets in-flight requests finish, flushes state and exits 0', async () => {
+  it('closes listeners, WebSockets and idle keep-alive sockets, lets in-flight requests finish, flushes state and exits 0', async (t) => {
     const server = await startServer();
     const port = server.address().port;
-    const { store, file } = await newStore();
+    const { store, file } = await newStore(t);
     const { client, upstreamSocket } = await openWebSocket(port);
     const clientClosed = once(client, 'close');
     const upstreamEnded = once(upstreamSocket, 'end');
@@ -145,7 +145,7 @@ describe('graceful shutdown', { timeout: 15_000 }, () => {
     agent.destroy();
   });
 
-  it('closes both sides of an upgrade still waiting for Jellyfin to answer', async () => {
+  it('closes both sides of an upgrade still waiting for Jellyfin to answer', async (t) => {
     // A Jellyfin stand-in that accepts the upgrade request but withholds the 101.
     let pendingUpstream;
     const withholding = createServer();
@@ -169,7 +169,7 @@ describe('graceful shutdown', { timeout: 15_000 }, () => {
       await waitFor(() => pendingUpstream !== undefined);
       const clientClosed = once(client, 'close');
       const upstreamClosed = once(pendingUpstream, 'close');
-      const { store } = await newStore();
+      const { store } = await newStore(t);
       const { shutdown, exits, logs } = harness(server, store);
       const startedAt = performance.now();
       // Bounded, so an untracked pending upgrade (which keeps server.close() open) fails here instead of hanging.
@@ -191,9 +191,9 @@ describe('graceful shutdown', { timeout: 15_000 }, () => {
     }
   });
 
-  it('cuts off requests still running after the grace period', async () => {
+  it('cuts off requests still running after the grace period', async (t) => {
     const server = await startServer();
-    const { store } = await newStore();
+    const { store } = await newStore(t);
     const seenRequests = upstreamRequests;
     const hanging = get({ port: server.address().port, path: '/hang', headers: { Host: HOUSEHOLD_HOST } }).catch((error) => error);
     await waitFor(() => upstreamRequests > seenRequests);
@@ -206,9 +206,9 @@ describe('graceful shutdown', { timeout: 15_000 }, () => {
     assert.ok((await hanging) instanceof Error, 'the hanging request should have been cut off');
   });
 
-  it('is idempotent when a second signal arrives', async () => {
+  it('is idempotent when a second signal arrives', async (t) => {
     const server = await startServer();
-    const { store } = await newStore();
+    const { store } = await newStore(t);
     await openWebSocket(server.address().port);
     const { shutdown, exits, logs } = harness(server, store);
     const first = shutdown('SIGTERM');
@@ -264,8 +264,8 @@ describe('graceful shutdown', { timeout: 15_000 }, () => {
     await waitFor(() => closed);
   });
 
-  it('GrantStore.close() waits for the write in flight and the one queued behind it', async () => {
-    const { store, file } = await newStore();
+  it('GrantStore.close() waits for the write in flight and the one queued behind it', async (t) => {
+    const { store, file } = await newStore(t);
     const first = store.upsertGroup({ id: 'one', name: 'One', userIds: [] });
     const second = store.upsertGroup({ id: 'two', name: 'Two', userIds: [] });
     await store.close();
@@ -274,8 +274,8 @@ describe('graceful shutdown', { timeout: 15_000 }, () => {
     await Promise.all([first, second]);
   });
 
-  it('logs and exits 1 when the final state-file write fails', async () => {
-    const directory = await mkdtemp(path.join(tmpdir(), 'jellypass-shutdown-test-'));
+  it('logs and exits 1 when the final state-file write fails', async (t) => {
+    const directory = await makeTempDir(t, 'jellypass-shutdown-test-');
     // A directory where the state file should be: every write fails with EISDIR.
     const file = path.join(directory, 'grants.json');
     await mkdir(file);
@@ -297,8 +297,8 @@ describe('graceful shutdown', { timeout: 15_000 }, () => {
     assert.ok(!logs.some((entry) => entry.message === 'shutdown complete'));
   });
 
-  it('GrantStore refuses a save after close() even while a write is queued', async () => {
-    const { store, file } = await newStore();
+  it('GrantStore refuses a save after close() even while a write is queued', async (t) => {
+    const { store, file } = await newStore(t);
     const first = store.upsertGroup({ id: 'first', name: 'First', userIds: [] });
     const closing = store.close();
     await assert.rejects(store.upsertGroup({ id: 'late', name: 'Late', userIds: [] }), /state store is closed/);
@@ -308,8 +308,8 @@ describe('graceful shutdown', { timeout: 15_000 }, () => {
     assert.deepEqual(Object.keys(state.groups), ['first']);
   });
 
-  it('GrantStore.load() leaves state untouched when close() is called while the file is being read', async () => {
-    const { store: writer, file } = await newStore();
+  it('GrantStore.load() leaves state untouched when close() is called while the file is being read', async (t) => {
+    const { store: writer, file } = await newStore(t);
     await writer.upsertGroup({ id: 'saved', name: 'Saved', userIds: [] });
     await writer.close();
     const store = new GrantStore(file);
@@ -319,8 +319,8 @@ describe('graceful shutdown', { timeout: 15_000 }, () => {
     assert.deepEqual(store.listGroups(), []);
   });
 
-  it('GrantStore leaves memory untouched when it refuses a change after close()', async () => {
-    const { store } = await newStore();
+  it('GrantStore leaves memory untouched when it refuses a change after close()', async (t) => {
+    const { store } = await newStore(t);
     await store.upsertGroup({ id: 'farmhouse', name: 'Farmhouse', userIds: ['alice-id'] });
     await store.close();
     await assert.rejects(store.grant({ itemId: 'item-1', requestId: '42', userId: 'alice-id', groupIds: ['farmhouse'] }), /state store is closed/);
@@ -346,8 +346,8 @@ describe('SIGTERM to the JellyPass process', { timeout: 15_000 }, () => {
     await jellyfin.close();
   });
 
-  it('exits 0 within the budget with an open proxied WebSocket and an idle keep-alive connection', async () => {
-    const directory = await mkdtemp(path.join(tmpdir(), 'jellypass-sigterm-test-'));
+  it('exits 0 within the budget with an open proxied WebSocket and an idle keep-alive connection', async (t) => {
+    const directory = await makeTempDir(t, 'jellypass-sigterm-test-');
     const stateFile = path.join(directory, 'grants.json');
     const seed = new GrantStore(stateFile);
     await seed.load();
@@ -391,6 +391,8 @@ describe('SIGTERM to the JellyPass process', { timeout: 15_000 }, () => {
       agent.destroy();
     } finally {
       child.kill('SIGKILL');
+      // It may still be writing the state file; let it exit before its directory is removed.
+      await exited;
     }
   });
 });
