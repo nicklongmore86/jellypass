@@ -138,8 +138,8 @@ export function makeServer(service: AccessService, tokens: ServerTokens, webAuth
         const username = userName(body.username);
         const password = newUserPassword(body.password);
         const groupId = validId(nonEmptyString(body.groupId, 'groupId'), 'groupId');
-        const importToJellyseerr = optionalBoolean(body.importToJellyseerr, 'importToJellyseerr');
-        const result = await service.createUserInGroup({ username, password, groupId, importToJellyseerr });
+        const importToSeerr = optionalBoolean(body.importToJellyseerr, 'importToJellyseerr');
+        const result = await service.createUserInGroup({ username, password, groupId, importToSeerr });
         return json(response, 201, { status: 'created', ...result });
       }
       if (request.method === 'PUT' && segments.length === 4 && segments[0] === 'v1' && segments[1] === 'users' && segments[3] === 'sign-in') {

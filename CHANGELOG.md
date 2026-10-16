@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Seerr naming.** The administrator UI, error messages and documentation now
+  say Seerr instead of Jellyseerr, and the Dashboard's "Jellyseerr activity"
+  section is now "Activity". Seerr is the successor to Jellyseerr, and
+  Jellyseerr installations keep working unchanged. API field names and error
+  codes that contain `jellyseerr` (`importToJellyseerr`,
+  `jellyseerrImportAvailable`, the `jellyseerr` result of `POST /v1/users`, and
+  `user_created_jellyseerr_import_failed`) are unchanged, as are environment
+  variables, metrics and the state file.
+
 ## [2.1.0] - 2026-10-16
 
 This is a minor release. Most deployments can upgrade without changes, but

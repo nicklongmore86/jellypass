@@ -34,13 +34,13 @@ interface PlanContext {
 export class UserProvisioningError extends Error {
   public constructor(
     public readonly user: { id: string; name: string },
-    public readonly stage: 'household' | 'jellyseerr',
+    public readonly stage: 'household' | 'seerr',
     public readonly group: AccessGroup | undefined,
     cause: unknown,
   ) {
     super(stage === 'household'
       ? 'Jellyfin user was created, but household assignment did not finish. Refresh the group and review its membership.'
-      : 'Jellyfin user was created and assigned to the household, but Jellyseerr import failed. Import the user from Jellyseerr or try again there.');
+      : 'Jellyfin user was created and assigned to the household, but Seerr import failed. Import the user from Seerr or try again there.');
     this.cause = cause;
   }
 }
@@ -113,13 +113,13 @@ export class AccessService {
     return Boolean(this.#seerr);
   }
 
-  public createUserInGroup(input: { username: string; password: string; groupId: string; importToJellyseerr?: boolean }): Promise<{
+  public createUserInGroup(input: { username: string; password: string; groupId: string; importToSeerr?: boolean }): Promise<{
     user: { id: string; name: string; isAdministrator: false };
     group: AccessGroup;
     jellyseerr: { status: 'not_requested' | 'imported' | 'already_imported'; userId?: number };
   }> {
     return this.#exclusive(async () => {
-      if (input.importToJellyseerr && !this.#seerr) throw new Error('Jellyseerr user import is not configured');
+      if (input.importToSeerr && !this.#seerr) throw new Error('Seerr user import is not configured');
       const group = this.#store.getGroup(input.groupId);
       if (!group) throw new Error(`group not found: ${input.groupId}`);
       const users = await this.#jellyfin.getUsers();
@@ -149,7 +149,7 @@ export class AccessService {
         throw new UserProvisioningError(user, 'household', undefined, error);
       }
 
-      if (!input.importToJellyseerr) return { user, group: updatedGroup, jellyseerr: { status: 'not_requested' } };
+      if (!input.importToSeerr) return { user, group: updatedGroup, jellyseerr: { status: 'not_requested' } };
       try {
         const imported = await this.#seerr!.importJellyfinUser(created.Id);
         return {
@@ -161,7 +161,7 @@ export class AccessService {
           },
         };
       } catch (error) {
-        throw new UserProvisioningError(user, 'jellyseerr', updatedGroup, error);
+        throw new UserProvisioningError(user, 'seerr', updatedGroup, error);
       }
     });
   }

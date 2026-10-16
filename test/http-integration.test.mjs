@@ -37,7 +37,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
         return { body: new Uint8Array([255, 216, 255, 217]), contentType: 'image/jpeg' };
       },
       async importJellyfinUser(jellyfinUserId) {
-        if (jellyfinUserId === 'import-failure-id') throw new Error('simulated Jellyseerr failure');
+        if (jellyfinUserId === 'import-failure-id') throw new Error('simulated Seerr failure');
         importedUserIds.push(jellyfinUserId);
         return { status: 'imported', user: { id: 44, jellyfinUserId } };
       },
@@ -153,9 +153,12 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.match(adminMarkup, /Password · optional/);
     assert.doesNotMatch(adminMarkup, /id="new-password"[^>]*required/);
     assert.match(adminMarkup, /Leave both password fields blank/);
-    assert.match(adminMarkup, /id="import-to-jellyseerr"/);
-    assert.doesNotMatch(adminMarkup, /id="import-to-jellyseerr"[^>]*checked/);
-    assert.match(adminMarkup, /Jellyseerr applies its configured default permissions/);
+    assert.match(adminMarkup, /id="import-to-seerr"/);
+    assert.doesNotMatch(adminMarkup, /id="import-to-seerr"[^>]*checked/);
+    assert.match(adminMarkup, /Import into Seerr/);
+    assert.match(adminMarkup, /Seerr applies its configured default permissions/);
+    assert.match(adminMarkup, /<div class="eyebrow">Activity<\/div><h2>Recent requests<\/h2>/);
+    assert.doesNotMatch(adminMarkup, /Jellyseerr/i);
 
     const adminScript = await fetch(`${bridgeUrl}/admin/app.js`);
     assert.equal(adminScript.status, 200);
@@ -170,6 +173,9 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.match(adminScriptText, /window\.scrollTo\(0, 0\)/);
     assert.match(adminScriptText, /Access groups/);
     assert.match(adminScriptText, /\/v1\/requests\/recent/);
+    assert.match(adminScriptText, /'Activity unavailable'/);
+    // Contract identifiers (jellyseerrImportAvailable, importToJellyseerr, error codes) keep their names; no user-facing "Jellyseerr" text.
+    assert.doesNotMatch(adminScriptText, /\bJellyseerr/);
     assert.match(adminScriptText, /Edit library access/);
     assert.match(adminScriptText, /dateStyle: 'short'/);
     assert.match(adminScriptText, /sortingByDateAdded/);
@@ -297,7 +303,8 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.equal(failedImportBody.code, 'user_created_jellyseerr_import_failed');
     assert.deepEqual(failedImportBody.user, { id: 'import-failure-id', name: 'Import Failure', isAdministrator: false });
     assert.equal(failedImportBody.group.id, 'farmhouse');
-    assert.match(failedImportBody.error, /created and assigned.*Jellyseerr import failed/i);
+    assert.match(failedImportBody.error, /created and assigned.*Seerr import failed/);
+    assert.doesNotMatch(failedImportBody.error, /Jellyseerr/i);
     const updatedHouseholdUsers = await fetchWithHost(bridgeUrl, '/Users/Public', 'jelly-farmhouse.example.test');
     const updatedHouseholdUsersBody = await updatedHouseholdUsers.json();
     assert.deepEqual(updatedHouseholdUsersBody.map((user) => user.Name), ['Alice', 'Bob', 'Charlie', 'Dana', 'Import Failure']);

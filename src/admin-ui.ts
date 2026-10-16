@@ -48,7 +48,7 @@ export const ADMIN_HTML = `<!doctype html>
           <article><span>Request owners</span><strong id="stat-owners">—</strong><small>unique Jellyfin users</small></article>
           <article><span>Access groups</span><strong id="stat-groups">—</strong><small>shared audiences</small></article>
         </div>
-        <div class="recent-head"><div><div class="eyebrow">Jellyseerr activity</div><h2>Recent requests</h2></div><p>The latest requests successfully linked to your Jellyfin library.</p></div>
+        <div class="recent-head"><div><div class="eyebrow">Activity</div><h2>Recent requests</h2></div><p>The latest requests successfully linked to your Jellyfin library.</p></div>
         <div id="recent-requests" class="recent-grid"></div>
       </section>
       <section id="grants-panel" class="tab-panel" hidden>
@@ -71,10 +71,10 @@ export const ADMIN_HTML = `<!doctype html>
 
   <dialog id="plan-dialog"><div class="dialog-head"><div><div class="eyebrow">Dry-run</div><h2 id="plan-title">Change plan</h2></div><button class="dialog-close icon button" aria-label="Close">×</button></div><div id="plan-content" class="plan-content"></div></dialog>
   <dialog id="group-dialog"><form id="group-form"><div class="dialog-head"><div><div class="eyebrow">Shared access</div><h2 id="group-title">New group</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><label>Group ID<input id="group-id" required pattern="[a-zA-Z0-9_-]{1,128}" placeholder="household"></label><label>Display name<input id="group-name" required placeholder="Household"></label><fieldset><legend>Jellyfin users</legend><div id="user-options" class="check-list"></div></fieldset><fieldset><legend>One-tap sign-in</legend><p class="hint">Mark users whose Jellyfin account has no password. Their household login skips the password prompt. A marked user who does have a password will be unable to sign in from the household URL.</p><div id="passwordless-options" class="check-list"></div></fieldset><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button class="button primary" type="submit">Save group</button></div></form></dialog>
-  <dialog id="user-dialog"><form id="user-form"><div class="dialog-head"><div><div class="eyebrow">Household member</div><h2>Create Jellyfin user</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><label>Username<input id="new-username" name="new-username" maxlength="128" autocomplete="off" required></label><label>Password · optional<input id="new-password" name="new-password" type="password" maxlength="256" autocomplete="new-password"></label><label>Confirm password<input id="confirm-password" name="confirm-password" type="password" maxlength="256" autocomplete="new-password"></label><p class="hint">Leave both password fields blank to create a passwordless Jellyfin account. Until household SSO is implemented, anyone who can reach Jellyfin and knows the username can sign in to that account.</p><label>Household or access group<select id="new-user-group" required></select></label><label class="check"><input id="import-to-jellyseerr" type="checkbox"><span><strong>Import into Jellyseerr</strong><small id="jellyseerr-import-help">Link this Jellyfin identity so the user can own requests.</small></span></label><p class="hint">This creates a real non-administrator Jellyfin account and adds it to the selected group. Jellyseerr applies its configured default permissions to imported users.</p><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button class="button primary" type="submit">Create user</button></div></form></dialog>
+  <dialog id="user-dialog"><form id="user-form"><div class="dialog-head"><div><div class="eyebrow">Household member</div><h2>Create Jellyfin user</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><label>Username<input id="new-username" name="new-username" maxlength="128" autocomplete="off" required></label><label>Password · optional<input id="new-password" name="new-password" type="password" maxlength="256" autocomplete="new-password"></label><label>Confirm password<input id="confirm-password" name="confirm-password" type="password" maxlength="256" autocomplete="new-password"></label><p class="hint">Leave both password fields blank to create a passwordless Jellyfin account. Until household SSO is implemented, anyone who can reach Jellyfin and knows the username can sign in to that account.</p><label>Household or access group<select id="new-user-group" required></select></label><label class="check"><input id="import-to-seerr" type="checkbox"><span><strong>Import into Seerr</strong><small id="seerr-import-help">Link this Jellyfin identity so the user can own requests.</small></span></label><p class="hint">This creates a real non-administrator Jellyfin account and adds it to the selected group. Seerr applies its configured default permissions to imported users.</p><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button class="button primary" type="submit">Create user</button></div></form></dialog>
   <dialog id="access-dialog"><form id="access-form"><div class="dialog-head"><div><div class="eyebrow">Grant access</div><h2>Shared groups</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><p id="access-item" class="mono"></p><fieldset><legend>Groups with access</legend><div id="group-options" class="check-list"></div></fieldset><input id="access-item-id" type="hidden"><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button class="button primary" type="submit">Preview changes</button></div></form></dialog>
-  <dialog id="requests-dialog"><div class="dialog-head"><div><div class="eyebrow">Direct access</div><h2>Jellyseerr requests</h2></div><button class="dialog-close icon button" aria-label="Close">×</button></div><p id="requests-item" class="mono"></p><div id="requests-list" class="request-list"></div></dialog>
-  <dialog id="bulk-dialog"><form id="bulk-form"><div class="dialog-head"><div><div class="eyebrow">Bulk access</div><h2>Assign selected media</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><p id="bulk-summary" class="hint"></p><fieldset><legend>Individual Jellyfin users</legend><div id="bulk-user-options" class="check-list"></div></fieldset><fieldset><legend>Access groups</legend><div id="bulk-group-options" class="check-list"></div></fieldset><p class="hint">This replaces existing manual users and groups for every selected title. Jellyseerr request owners are preserved.</p><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button class="button primary" type="submit">Preview bulk changes</button></div></form></dialog>
+  <dialog id="requests-dialog"><div class="dialog-head"><div><div class="eyebrow">Direct access</div><h2>Seerr requests</h2></div><button class="dialog-close icon button" aria-label="Close">×</button></div><p id="requests-item" class="mono"></p><div id="requests-list" class="request-list"></div></dialog>
+  <dialog id="bulk-dialog"><form id="bulk-form"><div class="dialog-head"><div><div class="eyebrow">Bulk access</div><h2>Assign selected media</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><p id="bulk-summary" class="hint"></p><fieldset><legend>Individual Jellyfin users</legend><div id="bulk-user-options" class="check-list"></div></fieldset><fieldset><legend>Access groups</legend><div id="bulk-group-options" class="check-list"></div></fieldset><p class="hint">This replaces existing manual users and groups for every selected title. Seerr request owners are preserved.</p><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button class="button primary" type="submit">Preview bulk changes</button></div></form></dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="/admin/app.js" defer></script>
 </body>
@@ -110,7 +110,7 @@ body{background:radial-gradient(circle at 14% 4%,rgba(170,92,195,.2) 0,transpare
 export const ADMIN_APP_JS = `
 (() => {
   'use strict';
-  const state = { grants: [], groups: [], users: [], jellyseerrImportAvailable: false, catalog: [], catalogSyncedAt: null, recentRequests: [], recentRequestsUnavailable: false, selectedItems: new Set(), catalogPage: 1, catalogPageSize: 25, activeTab: 'dashboard' };
+  const state = { grants: [], groups: [], users: [], seerrImportAvailable: false, catalog: [], catalogSyncedAt: null, recentRequests: [], recentRequestsUnavailable: false, selectedItems: new Set(), catalogPage: 1, catalogPageSize: 25, activeTab: 'dashboard' };
   const byId = (id) => document.getElementById(id);
   const loginView = byId('login-view');
   const appView = byId('app-view');
@@ -165,7 +165,7 @@ export const ADMIN_APP_JS = `
     state.grants = results[0].grants;
     state.groups = results[1].groups;
     state.users = results[2].users;
-    state.jellyseerrImportAvailable = results[2].jellyseerrImportAvailable === true;
+    state.seerrImportAvailable = results[2].jellyseerrImportAvailable === true;
     state.catalog = results[3].items;
     state.catalogSyncedAt = results[3].lastSyncedAt || null;
     state.recentRequests = results[4].requests || [];
@@ -197,7 +197,7 @@ export const ADMIN_APP_JS = `
     const container = byId('recent-requests');
     if (!state.recentRequests.length) {
       container.replaceChildren(node('div', { class: 'empty' }, [
-        node('strong', { text: state.recentRequestsUnavailable ? 'Jellyseerr activity unavailable' : 'No linked requests yet' }),
+        node('strong', { text: state.recentRequestsUnavailable ? 'Activity unavailable' : 'No linked requests yet' }),
         node('span', { text: state.recentRequestsUnavailable ? 'JellyPass could not load recent requests right now.' : 'Requests appear here after their media is linked to the synchronized Jellyfin library.' }),
       ]));
       return;
@@ -373,7 +373,7 @@ export const ADMIN_APP_JS = `
     });
     list.replaceChildren();
     if (!grants.length) {
-      list.append(node('div', { class: 'empty' }, [node('strong', { text: query ? 'No matching grants' : 'No protected titles yet' }), node('span', { text: query ? 'Try a different search.' : 'New Jellyseerr requests will appear here after their media becomes available.' })]));
+      list.append(node('div', { class: 'empty' }, [node('strong', { text: query ? 'No matching grants' : 'No protected titles yet' }), node('span', { text: query ? 'Try a different search.' : 'New Seerr requests will appear here after their media becomes available.' })]));
       return;
     }
     grants.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).forEach((grant) => {
@@ -480,12 +480,12 @@ export const ADMIN_APP_JS = `
     const select = byId('new-user-group');
     select.replaceChildren(...state.groups.map((group) => node('option', { value: group.id, text: group.name + ' · ' + group.id })));
     if (groupId && state.groups.some((group) => group.id === groupId)) select.value = groupId;
-    const importOption = byId('import-to-jellyseerr');
-    importOption.disabled = !state.jellyseerrImportAvailable;
+    const importOption = byId('import-to-seerr');
+    importOption.disabled = !state.seerrImportAvailable;
     importOption.checked = false;
-    byId('jellyseerr-import-help').textContent = state.jellyseerrImportAvailable
+    byId('seerr-import-help').textContent = state.seerrImportAvailable
       ? 'Link this Jellyfin identity so the user can own requests.'
-      : 'Jellyseerr is not configured in JellyPass.';
+      : 'Seerr is not configured in JellyPass.';
     byId('user-dialog').showModal();
     byId('new-username').focus();
   }
@@ -658,13 +658,13 @@ export const ADMIN_APP_JS = `
       return;
     }
     const groupId = byId('new-user-group').value;
-    const importToJellyseerr = byId('import-to-jellyseerr').checked && !byId('import-to-jellyseerr').disabled;
+    const importToSeerr = byId('import-to-seerr').checked && !byId('import-to-seerr').disabled;
     await busy(async () => {
       try {
-        const result = await api('/v1/users', { method: 'POST', body: JSON.stringify({ username, password, groupId, importToJellyseerr }) });
+        const result = await api('/v1/users', { method: 'POST', body: JSON.stringify({ username, password, groupId, importToJellyseerr: importToSeerr }) });
         byId('user-dialog').close();
         await load();
-        const imported = result.jellyseerr.status === 'imported' ? ' and imported into Jellyseerr' : result.jellyseerr.status === 'already_imported' ? '; Jellyseerr was already linked' : '';
+        const imported = result.jellyseerr.status === 'imported' ? ' and imported into Seerr' : result.jellyseerr.status === 'already_imported' ? '; Seerr was already linked' : '';
         toast(result.user.name + ' was created and added to ' + result.group.name + imported);
       } catch (error) {
         if (error.code === 'user_created_jellyseerr_import_failed' || error.code === 'user_created_household_assignment_failed') {
