@@ -1,12 +1,12 @@
 import assert from 'node:assert/strict';
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import { AccessService, accessTag, sameStringSet } from '../dist/access-service.js';
 import { SeerrClient } from '../dist/seerr.js';
 import { GrantStore } from '../dist/store.js';
 import { parseWebhook } from '../dist/webhook.js';
+import { makeTempDir } from './support/temp-dir.mjs';
 
 describe('access tags and webhook validation', () => {
   it('uses stable tags and compares them without case or order sensitivity', () => {
@@ -42,7 +42,7 @@ describe('access tags and webhook validation', () => {
     });
   });
 
-  it('ignores non-availability events without validating their IDs', async () => {
+  it('ignores non-availability events without validating their IDs', async (t) => {
     assert.deepEqual(parseWebhook({ notificationType: 'TEST_NOTIFICATION', request: { id: '' } }), { notificationType: 'TEST_NOTIFICATION' });
     assert.deepEqual(parseWebhook({ notificationType: 'MEDIA_PENDING' }), { notificationType: 'MEDIA_PENDING' });
     assert.throws(() => parseWebhook({ notificationType: 'MEDIA_AVAILABLE', request: { id: '' } }), /id must be a non-empty string/);
@@ -53,7 +53,7 @@ describe('access tags and webhook validation', () => {
     assert.throws(() => parseWebhook({ notificationType: 'media_available' }), /notificationType is invalid/);
     assert.throws(() => parseWebhook({ notificationType: 'TEST NOTIFICATION' }), /notificationType is invalid/);
 
-    const store = new GrantStore(await stateFile());
+    const store = new GrantStore(await stateFile(t));
     await store.load();
     const service = new AccessService(fakeJellyfin(), store);
     assert.equal(await service.processWebhook(parseWebhook({ notificationType: 'TEST_NOTIFICATION', request: { id: '' } })), null);
@@ -63,8 +63,8 @@ describe('access tags and webhook validation', () => {
 });
 
 describe('state file persistence', () => {
-  it('applies concurrent passwordless updates without losing a write', async () => {
-    const file = await stateFile();
+  it('applies concurrent passwordless updates without losing a write', async (t) => {
+    const file = await stateFile(t);
     const store = new GrantStore(file);
     await store.load();
     const extraUsers = Array.from({ length: 20 }, (_, index) => ({ Id: `member-${index}`, Name: `Member ${index}` }));
@@ -78,8 +78,8 @@ describe('state file persistence', () => {
     assert.deepEqual((await readdir(path.dirname(file))).sort(), ['grants.json']);
   });
 
-  it('queues a passwordless update behind other service mutations', async () => {
-    const store = new GrantStore(await stateFile());
+  it('queues a passwordless update behind other service mutations', async (t) => {
+    const store = new GrantStore(await stateFile(t));
     await store.load();
     const fake = fakeJellyfin();
     let release;
@@ -100,8 +100,8 @@ describe('state file persistence', () => {
     assert.deepEqual(order, ['webhook', 'passwordless']);
   });
 
-  it('delivers a failed write to every coalesced caller and keeps writing afterwards', async () => {
-    const file = await stateFile();
+  it('delivers a failed write to every coalesced caller and keeps writing afterwards', async (t) => {
+    const file = await stateFile(t);
     const store = new GrantStore(file);
     await store.load();
     // A non-empty directory at the state path makes the rename fail.
@@ -118,8 +118,8 @@ describe('state file persistence', () => {
     assert.deepEqual((await readdir(path.dirname(file))).sort(), ['grants.json']);
   });
 
-  it('serializes overlapping store writes and leaves the newest state on disk', async () => {
-    const file = await stateFile();
+  it('serializes overlapping store writes and leaves the newest state on disk', async (t) => {
+    const file = await stateFile(t);
     const store = new GrantStore(file);
     await store.load();
     await store.upsertGroup({ id: 'house-a', name: 'House A', userIds: ['alice-id'] });
@@ -142,8 +142,8 @@ describe('state file persistence', () => {
 });
 
 describe('state migration', () => {
-  it('migrates v1 grants to active, pending v6 records', async () => {
-    const file = await stateFile();
+  it('migrates v1 grants to active, pending v6 records', async (t) => {
+    const file = await stateFile(t);
     await writeFile(file, JSON.stringify({
       version: 1,
       grants: {
@@ -165,8 +165,8 @@ describe('state migration', () => {
     assert.equal(JSON.parse(await readFile(file, 'utf8')).version, 7);
   });
 
-  it('adds manual audiences and catalog while migrating v2 state to v7', async () => {
-    const file = await stateFile();
+  it('adds manual audiences and catalog while migrating v2 state to v7', async (t) => {
+    const file = await stateFile(t);
     await writeFile(file, JSON.stringify({
       version: 2,
       grants: {
@@ -186,8 +186,8 @@ describe('state migration', () => {
     assert.equal('claims' in migrated, false);
   });
 
-  it('preserves v3 grants while adding the v7 catalog and passwordless list', async () => {
-    const file = await stateFile();
+  it('preserves v3 grants while adding the v7 catalog and passwordless list', async (t) => {
+    const file = await stateFile(t);
     await writeFile(file, JSON.stringify({
       version: 3,
       grants: {
@@ -208,8 +208,8 @@ describe('state migration', () => {
     assert.deepEqual(migrated.passwordlessUserIds, []);
   });
 
-  it('preserves v4 state while adding an empty passwordless user list', async () => {
-    const file = await stateFile();
+  it('preserves v4 state while adding an empty passwordless user list', async (t) => {
+    const file = await stateFile(t);
     await writeFile(file, JSON.stringify({ version: 4, grants: {}, groups: {}, catalog: { items: {} } }));
     const store = new GrantStore(file);
     await store.load();
@@ -219,8 +219,8 @@ describe('state migration', () => {
     assert.deepEqual(migrated.passwordlessUserIds, []);
   });
 
-  it('migrates v5 state to v7, dropping claims and adding an empty passwordless user list', async () => {
-    const file = await stateFile();
+  it('migrates v5 state to v7, dropping claims and adding an empty passwordless user list', async (t) => {
+    const file = await stateFile(t);
     const claims = { 'movie:1': { mediaType: 'movie', tmdbId: 1, userIds: ['alice-id'], updatedAt: '2026-01-01T00:00:00.000Z' } };
     await writeFile(file, JSON.stringify({ version: 5, grants: {}, groups: {}, catalog: { items: {} }, claims }));
     const store = new GrantStore(file);
@@ -238,9 +238,9 @@ describe('state migration', () => {
     assert.deepEqual(reloaded.listPasswordlessUserIds(), ['alice-id']);
   });
 
-  it('loads v5 and v6 state that has no claim registry', async () => {
+  it('loads v5 and v6 state that has no claim registry', async (t) => {
     for (const version of [5, 6]) {
-      const file = await stateFile();
+      const file = await stateFile(t);
       await writeFile(file, JSON.stringify({
         version,
         grants: {
@@ -260,16 +260,16 @@ describe('state migration', () => {
     }
   });
 
-  it('rejects a newer state schema and leaves the file untouched', async () => {
-    const file = await stateFile();
+  it('rejects a newer state schema and leaves the file untouched', async (t) => {
+    const file = await stateFile(t);
     const contents = JSON.stringify({ version: 8, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], future: true });
     await writeFile(file, contents);
     await assert.rejects(new GrantStore(file).load(), /unsupported state schema version/);
     assert.equal(await readFile(file, 'utf8'), contents);
   });
 
-  it('migrates v6 state to v7 by dropping claims and keeping grants that came from claims', async () => {
-    const file = await stateFile();
+  it('migrates v6 state to v7 by dropping claims and keeping grants that came from claims', async (t) => {
+    const file = await stateFile(t);
     // Bob claimed item-1 before it became available, so 1.1.0 added him as a manual user.
     const grants = {
       'item-1': {
@@ -311,8 +311,8 @@ describe('state migration', () => {
 });
 
 describe('grant lifecycle', () => {
-  it('syncs the catalog and consolidates bulk access into one policy write per user', async () => {
-    const store = new GrantStore(await stateFile());
+  it('syncs the catalog and consolidates bulk access into one policy write per user', async (t) => {
+    const store = new GrantStore(await stateFile(t));
     await store.load();
     const fake = fakeJellyfin();
     const service = new AccessService(fake, store);
@@ -332,8 +332,8 @@ describe('grant lifecycle', () => {
     assert.equal(service.getLibraryCatalog().items.every((item) => item.managed), true);
   });
 
-  it('searches and retroactively protects library media for selected users', async () => {
-    const store = new GrantStore(await stateFile());
+  it('searches and retroactively protects library media for selected users', async (t) => {
+    const store = new GrantStore(await stateFile(t));
     await store.load();
     const fake = fakeJellyfin();
     const service = new AccessService(fake, store);
@@ -352,8 +352,8 @@ describe('grant lifecycle', () => {
     assert.deepEqual(fake.user('bob-id').Policy.BlockedTags, ['other']);
   });
 
-  it('protects local trailers and discovers trailers added after the original grant', async () => {
-    const store = new GrantStore(await stateFile());
+  it('protects local trailers and discovers trailers added after the original grant', async (t) => {
+    const store = new GrantStore(await stateFile(t));
     await store.load();
     const fake = fakeJellyfin();
     fake.addLocalTrailer('item-1', { Id: 'trailer-1', Name: 'Movie Trailer', Type: 'Trailer', Tags: ['keep-trailer'] });
@@ -373,8 +373,8 @@ describe('grant lifecycle', () => {
     assert.deepEqual(fake.trailer('trailer-2').Tags, []);
   });
 
-  it('supports household sharing, dry runs, revocation, and last-owner cleanup', async () => {
-    const store = new GrantStore(await stateFile());
+  it('supports household sharing, dry runs, revocation, and last-owner cleanup', async (t) => {
+    const store = new GrantStore(await stateFile(t));
     await store.load();
     const fake = fakeJellyfin();
     const service = new AccessService(fake, store);
@@ -403,8 +403,8 @@ describe('grant lifecycle', () => {
     assert.deepEqual(fake.user('bob-id').Policy.BlockedTags, ['other']);
   });
 
-  it('persists failed synchronization status for a later retry', async () => {
-    const store = new GrantStore(await stateFile());
+  it('persists failed synchronization status for a later retry', async (t) => {
+    const store = new GrantStore(await stateFile(t));
     await store.load();
     const fake = fakeJellyfin();
     fake.updateItem = async () => { throw new Error('Jellyfin unavailable'); };
@@ -418,8 +418,8 @@ describe('grant lifecycle', () => {
     assert.ok(grant.sync.nextRetryAt);
   });
 
-  it('resolves webhooks without Jellyfin IDs through the Seerr request API', async () => {
-    const store = new GrantStore(await stateFile());
+  it('resolves webhooks without Jellyfin IDs through the Seerr request API', async (t) => {
+    const store = new GrantStore(await stateFile(t));
     await store.load();
     const fake = fakeJellyfin();
     const seerr = {
@@ -503,8 +503,8 @@ describe('webhooks without Seerr lookup', () => {
 });
 
 describe('webhook outcome accounting', () => {
-  it('counts a grant that cannot be persisted once as an error', async () => {
-    const store = new GrantStore(await stateFile());
+  it('counts a grant that cannot be persisted once as an error', async (t) => {
+    const store = new GrantStore(await stateFile(t));
     await store.load();
     const fake = fakeJellyfin();
     const service = new AccessService(fake, store);
@@ -518,8 +518,8 @@ describe('webhook outcome accounting', () => {
     assert.deepEqual(fake.item.Tags, ['keep-me']);
   });
 
-  it('counts a grant that is stored but cannot be reconciled once as an error', async () => {
-    const store = new GrantStore(await stateFile());
+  it('counts a grant that is stored but cannot be reconciled once as an error', async (t) => {
+    const store = new GrantStore(await stateFile(t));
     await store.load();
     const fake = fakeJellyfin();
     fake.updateItem = async () => {
@@ -1053,8 +1053,8 @@ describe('Seerr request backfill', () => {
     });
   });
 
-  it('never re-imports a request recorded on a grant before handledRequestIds existed', async () => {
-    const file = await stateFile();
+  it('never re-imports a request recorded on a grant before handledRequestIds existed', async (t) => {
+    const file = await stateFile(t);
     await writeFile(file, JSON.stringify({
       version: 7,
       grants: {
@@ -1178,8 +1178,9 @@ function fakeJellyfin({ extraUsers = [] } = {}) {
   };
 }
 
-async function stateFile() {
-  return path.join(await mkdtemp(path.join(tmpdir(), 'jfa-test-')), 'grants.json');
+/** Without a test context `t`, the directory is removed when this file's tests finish. */
+async function stateFile(t = null) {
+  return path.join(await makeTempDir(t, 'jfa-test-'), 'grants.json');
 }
 
 describe('Seerr recent requests cache', () => {

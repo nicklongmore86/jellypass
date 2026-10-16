@@ -1,21 +1,20 @@
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, it, mock } from 'node:test';
 import { AccessService, OperationCancelledError } from '../dist/access-service.js';
 import { BackgroundTasks, createShutdown } from '../dist/shutdown.js';
 import { GrantStore } from '../dist/store.js';
+import { makeTempDir } from './support/temp-dir.mjs';
 
 describe('stopping background work on shutdown', { timeout: 10_000 }, () => {
-  async function newStore() {
-    const store = new GrantStore(path.join(await mkdtemp(path.join(tmpdir(), 'jellypass-background-test-')), 'grants.json'));
+  async function newStore(t) {
+    const store = new GrantStore(path.join(await makeTempDir(t, 'jellypass-background-test-'), 'grants.json'));
     await store.load();
     return store;
   }
 
-  it('reconcileAll starts no further grant once its signal is aborted', async () => {
-    const store = await newStore();
+  it('reconcileAll starts no further grant once its signal is aborted', async (t) => {
+    const store = await newStore(t);
     await store.setManualAccess({ itemId: 'item-1', userIds: ['alice-id'], groupIds: [] });
     await store.setManualAccess({ itemId: 'item-2', userIds: ['alice-id'], groupIds: [] });
     const controller = new AbortController();
@@ -34,8 +33,8 @@ describe('stopping background work on shutdown', { timeout: 10_000 }, () => {
     assert.equal(fetched.length, 1, `reconciled ${fetched.join(', ')} after shutdown began`);
   });
 
-  it('reconcileAll does nothing when shutdown began before it ran', async () => {
-    const store = await newStore();
+  it('reconcileAll does nothing when shutdown began before it ran', async (t) => {
+    const store = await newStore(t);
     await store.setManualAccess({ itemId: 'item-1', userIds: ['alice-id'], groupIds: [] });
     const fetched = [];
     const jellyfin = {
@@ -47,8 +46,8 @@ describe('stopping background work on shutdown', { timeout: 10_000 }, () => {
     assert.deepEqual(fetched, []);
   });
 
-  it('backfillRequests starts no further request once its signal is aborted', async () => {
-    const store = await newStore();
+  it('backfillRequests starts no further request once its signal is aborted', async (t) => {
+    const store = await newStore(t);
     const controller = new AbortController();
     const looked = [];
     const seerr = {
@@ -68,8 +67,8 @@ describe('stopping background work on shutdown', { timeout: 10_000 }, () => {
     assert.equal(store.hasHandledRequest('1'), false);
   });
 
-  it('syncLibraryCatalog does not replace the catalog when shutdown began during the fetch', async () => {
-    const store = await newStore();
+  it('syncLibraryCatalog does not replace the catalog when shutdown began during the fetch', async (t) => {
+    const store = await newStore(t);
     const controller = new AbortController();
     const jellyfin = {
       async fetchLibraryCatalog() {
@@ -175,8 +174,8 @@ function recordingWorld(abortAt) {
 }
 
 describe('cancellation inside an active background run', { timeout: 10_000 }, () => {
-  async function newStore() {
-    const store = new GrantStore(path.join(await mkdtemp(path.join(tmpdir(), 'jellypass-cancel-test-')), 'grants.json'));
+  async function newStore(t) {
+    const store = new GrantStore(path.join(await makeTempDir(t, 'jellypass-cancel-test-'), 'grants.json'));
     await store.load();
     return store;
   }
@@ -199,9 +198,9 @@ describe('cancellation inside an active background run', { timeout: 10_000 }, ()
     ['getItem', ['listRequestsSince', 'getRequest', 'getUsers', 'getItem']],
   ];
   for (const [abortAt, expectedCalls] of BACKFILL_ABORT_POINTS) {
-    it(`backfill aborted inside ${abortAt}() makes no further call, stores no grant, and logs and counts nothing`, async () => {
+    it(`backfill aborted inside ${abortAt}() makes no further call, stores no grant, and logs and counts nothing`, async (t) => {
       const world = recordingWorld(abortAt);
-      const store = await newStore();
+      const store = await newStore(t);
       const service = new AccessService(world.jellyfin, store, world.metrics, world.seerr);
       const { error, errorLogs, infoLogs } = await quietly(() => service.backfillRequests(new Date(0), { signal: world.controller.signal }));
       assert.ok(error instanceof OperationCancelledError, String(error));
@@ -215,9 +214,9 @@ describe('cancellation inside an active background run', { timeout: 10_000 }, ()
   }
 
   for (const abortAt of ['getLocalTrailers', 'updateItem']) {
-    it(`backfill aborted while reconciling its new grant (inside ${abortAt}()) applies nothing further and logs and counts nothing`, async () => {
+    it(`backfill aborted while reconciling its new grant (inside ${abortAt}()) applies nothing further and logs and counts nothing`, async (t) => {
       const world = recordingWorld(abortAt);
-      const store = await newStore();
+      const store = await newStore(t);
       const service = new AccessService(world.jellyfin, store, world.metrics, world.seerr);
       const { error, errorLogs, infoLogs } = await quietly(() => service.backfillRequests(new Date(0), { signal: world.controller.signal }));
       assert.ok(error instanceof OperationCancelledError, String(error));
@@ -236,9 +235,9 @@ describe('cancellation inside an active background run', { timeout: 10_000 }, ()
     ['getLocalTrailers', ['getItem', 'getUsers', 'getLocalTrailers']],
     ['updateItem', ['getItem', 'getUsers', 'getLocalTrailers', 'updateItem']],
   ]) {
-    it(`reconcileAll aborted inside ${abortAt}() makes no further call, leaves the grant pending, and counts nothing`, async () => {
+    it(`reconcileAll aborted inside ${abortAt}() makes no further call, leaves the grant pending, and counts nothing`, async (t) => {
       const world = recordingWorld(abortAt);
-      const store = await newStore();
+      const store = await newStore(t);
       await store.setManualAccess({ itemId: 'item-1', userIds: ['alice-id'], groupIds: [] });
       await store.setManualAccess({ itemId: 'item-2', userIds: ['alice-id'], groupIds: [] });
       const service = new AccessService(world.jellyfin, store, world.metrics);
@@ -252,9 +251,9 @@ describe('cancellation inside an active background run', { timeout: 10_000 }, ()
     });
   }
 
-  it('catalog sync aborted inside fetchLibraryCatalog() stores nothing and rejects as cancelled', async () => {
+  it('catalog sync aborted inside fetchLibraryCatalog() stores nothing and rejects as cancelled', async (t) => {
     const world = recordingWorld('fetchLibraryCatalog');
-    const store = await newStore();
+    const store = await newStore(t);
     const service = new AccessService(world.jellyfin, store, world.metrics);
     const { error, errorLogs } = await quietly(() => service.syncLibraryCatalog({ signal: world.controller.signal }));
     assert.ok(error instanceof OperationCancelledError, String(error));
@@ -263,9 +262,9 @@ describe('cancellation inside an active background run', { timeout: 10_000 }, ()
     assert.deepEqual(errorLogs, []);
   });
 
-  it('reconciliation without a signal (webhook and admin paths) runs to completion as before', async () => {
+  it('reconciliation without a signal (webhook and admin paths) runs to completion as before', async (t) => {
     const world = recordingWorld(undefined);
-    const store = await newStore();
+    const store = await newStore(t);
     await store.setManualAccess({ itemId: 'item-1', userIds: ['alice-id'], groupIds: [] });
     const service = new AccessService(world.jellyfin, store, world.metrics);
     await service.reconcileAll();
@@ -276,8 +275,8 @@ describe('cancellation inside an active background run', { timeout: 10_000 }, ()
 });
 
 describe('cancellation while a reconciliation save is finishing', { timeout: 10_000 }, () => {
-  async function newStore() {
-    const store = new GrantStore(path.join(await mkdtemp(path.join(tmpdir(), 'jellypass-boundary-test-')), 'grants.json'));
+  async function newStore(t) {
+    const store = new GrantStore(path.join(await makeTempDir(t, 'jellypass-boundary-test-'), 'grants.json'));
     await store.load();
     return store;
   }
@@ -312,9 +311,9 @@ describe('cancellation while a reconciliation save is finishing', { timeout: 10_
     }
   }
 
-  it('does not purge an inactive grant or record success when shutdown aborts during the success save', async () => {
+  it('does not purge an inactive grant or record success when shutdown aborts during the success save', async (t) => {
     const world = recordingWorld(undefined);
-    const store = await newStore();
+    const store = await newStore(t);
     await store.grant({ itemId: 'item-1', requestId: 'r', userId: 'alice-id' });
     await store.revokeRequest('item-1', 'r');
     const storeCalls = [];
@@ -329,9 +328,9 @@ describe('cancellation while a reconciliation save is finishing', { timeout: 10_
     assert.deepEqual(logs, []);
   });
 
-  it('records no success when shutdown aborts while an inactive grant is being purged', async () => {
+  it('records no success when shutdown aborts while an inactive grant is being purged', async (t) => {
     const world = recordingWorld(undefined);
-    const store = await newStore();
+    const store = await newStore(t);
     await store.grant({ itemId: 'item-1', requestId: 'r', userId: 'alice-id' });
     await store.revokeRequest('item-1', 'r');
     abortAfter(store, 'purgeInactive', world.controller, []);
@@ -342,9 +341,9 @@ describe('cancellation while a reconciliation save is finishing', { timeout: 10_
     assert.deepEqual(logs, []);
   });
 
-  it('records no granted backfill when shutdown aborts during the new grant\'s success save', async () => {
+  it('records no granted backfill when shutdown aborts during the new grant\'s success save', async (t) => {
     const world = recordingWorld(undefined);
-    const store = await newStore();
+    const store = await newStore(t);
     abortAfter(store, 'markSyncSuccess', world.controller, []);
     const service = new AccessService(world.jellyfin, store, world.metrics, world.seerr);
     const { error, logs } = await quietly(() => service.backfillRequests(new Date(0), { signal: world.controller.signal }));
@@ -354,10 +353,10 @@ describe('cancellation while a reconciliation save is finishing', { timeout: 10_
     assert.equal(store.get('item-1')?.sync.state, 'synced');
   });
 
-  it('records no error when shutdown aborts while a failed reconciliation is being saved', async () => {
+  it('records no error when shutdown aborts while a failed reconciliation is being saved', async (t) => {
     const world = recordingWorld(undefined);
     world.jellyfin.getLocalTrailers = async () => { throw new Error('Jellyfin unavailable'); };
-    const store = await newStore();
+    const store = await newStore(t);
     await store.setManualAccess({ itemId: 'item-1', userIds: ['alice-id'], groupIds: [] });
     abortAfter(store, 'markSyncError', world.controller, []);
     const service = new AccessService(world.jellyfin, store, world.metrics);

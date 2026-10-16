@@ -1,12 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtemp } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { AccessService, accessTag } from '../dist/access-service.js';
 import { JellyfinClient } from '../dist/jellyfin.js';
 import { makeServer } from '../dist/server.js';
 import { GrantStore } from '../dist/store.js';
+import { makeTempDir } from './support/temp-dir.mjs';
 
 const baseUrl = process.env.JELLYFIN_REAL_URL;
 const webhookToken = 'real-webhook-secret';
@@ -19,7 +18,7 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
 
   before(async () => {
     fixture = await setupJellyfin(baseUrl);
-    store = new GrantStore(path.join(await mkdtemp(path.join(tmpdir(), 'jfa-real-')), 'grants.json'));
+    store = new GrantStore(path.join(await makeTempDir(null, 'jfa-real-'), 'grants.json'));
     await store.load();
     client = new JellyfinClient(baseUrl, fixture.token);
     // No Seerr client: webhooks must carry an HD event to be trusted.
