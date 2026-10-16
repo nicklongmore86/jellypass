@@ -311,8 +311,11 @@ the request and grants the 4K item. Without `SEERR_URL` and `SEERR_API_KEY`,
 JellyPass can only use the payload IDs, so it does so only for a recognized HD
 `event`. A 4K event, or a payload whose `event` is missing, empty, unfilled
 (`{{event}}`) or unrecognized, is rejected with `502` and counted as an error
-rather than granted on what may be the HD item. Keep `"event": "{{event}}"` in
-the payload when Seerr lookup is not configured.
+rather than granted on what may be the HD item. A payload without both Jellyfin
+IDs still returns `400` ("missing Jellyfin IDs"). A repeated webhook for a
+request JellyPass has already handled skips this check, because it only
+reapplies the recorded grant or is ignored (see below). Keep
+`"event": "{{event}}"` in the payload when Seerr lookup is not configured.
 
 Seerr may deliver the same webhook more than once. A request is handled once
 its grant has been stored, and a handled request is never granted again. If a

@@ -15,8 +15,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Webhooks without Seerr lookup need `event`.** When `SEERR_URL` and
   `SEERR_API_KEY` are not configured, the webhook payload must include
   `"event": "{{event}}"`, as the README template already does. A webhook
-  without a recognized HD `event` is now rejected with `502` instead of
-  granted. The request backfill already needed Seerr lookup.
+  with both Jellyfin IDs but without a recognized HD `event` is now rejected
+  with `502` instead of granted. One without both IDs still returns `400`, as
+  before, and a repeated webhook for an already handled request skips the
+  check: it reapplies the recorded grant, or returns `202` ignored if an
+  administrator revoked the request. The request backfill already needed Seerr
+  lookup.
 
 ### Fixed
 
@@ -24,9 +28,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a webhook whose `event` was missing, empty, unfilled (`{{event}}`) or
   unrecognized was granted on the payload's media ID. Seerr fills that ID with
   the HD item even for a 4K request, so such a 4K notification could privatize
-  the HD item and leave the 4K item public. These webhooks are now rejected and
-  counted as `jfa_webhooks_total{result="error"}`, like a 4K event without
-  Seerr lookup. With Seerr lookup configured they still resolve through Seerr.
+  the HD item and leave the 4K item public. These webhooks are now rejected
+  with `502` and counted as `jfa_webhooks_total{result="error"}`, like a 4K
+  event without Seerr lookup (a webhook missing its Jellyfin IDs keeps its
+  `400`). With Seerr lookup configured they still resolve through Seerr.
 - **Webhook state-write failures are counted.** A webhook whose grant could
   not be written to the state file was rejected without incrementing
   `jfa_webhooks_total`. Every failure after the body is validated (resolving,
