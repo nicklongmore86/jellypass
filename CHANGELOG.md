@@ -7,22 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.0] - 2026-10-16
+
+This is a minor release. Most deployments can upgrade without changes, but
+check two things first; [Upgrading from 2.0.0](#upgrading-from-200) has the
+steps:
+
+- **Without Seerr lookup, the webhook payload must include
+  `"event": "{{event}}"`.** When `SEERR_URL` and `SEERR_API_KEY` are not
+  configured, a webhook that has both Jellyfin IDs but no recognized HD `event`
+  is now rejected with `502` instead of granted. The README template already
+  includes `event`. Deployments with Seerr lookup are not affected.
+- **Behind a reverse proxy, set the new `TRUSTED_PROXIES`** (optional) and add
+  JellyPass to Jellyfin's known proxies to get real client addresses and
+  per-client login limits. Without it, the login limits stay keyed on the
+  connecting address, as in 2.0.0.
+
+The state file format is unchanged (schema v7), so 2.0.0 can read a state file
+written by 2.1.0.
+
 ### Added
 
 - **`TRUSTED_PROXIES`.** A comma-separated list of reverse-proxy addresses and
   CIDR ranges (IPv4 and IPv6). When a request arrives from a listed proxy,
-  JellyPass takes the client address from `X-Forwarded-For`, walking it right
-  to left past trusted hops. Requests from anywhere else use the connecting
-  address and ignore the header. Addresses are compared in canonical form, so
-  IPv4-mapped IPv6 spellings count as the IPv4 address and IPv6 case and zero
-  compression do not matter. Empty by default, which keeps the previous
-  behaviour; an invalid entry stops startup.
+  JellyPass takes the client address for the login rate limits from
+  `X-Forwarded-For`, walking it right to left past trusted hops. Requests from
+  anywhere else use the connecting address and ignore the header. The same
+  resolved address goes in the `X-Real-IP` header the household gateway sends
+  to Jellyfin, but only when the request has none: an existing `X-Real-IP` is
+  passed through unchanged, even from an untrusted client. Jellyfin does not
+  read `X-Real-IP`, so rely on `X-Forwarded-For` downstream. Addresses are
+  compared in canonical form, so IPv4-mapped IPv6 spellings count as the IPv4
+  address and IPv6 case and zero compression do not matter. Empty by default,
+  which keeps the previous behaviour; an invalid entry stops startup. See "Running behind a
+  reverse proxy" in the README, including chains of proxies and CDNs.
 
 ### Changed
 
-- **Dashboard recent requests.** The Dashboard now shows up to 12 recent
-  Jellyseerr requests instead of 8, so the poster grid fills evenly at four,
-  three and two columns.
 - **Webhooks without Seerr lookup need `event`.** When `SEERR_URL` and
   `SEERR_API_KEY` are not configured, the webhook payload must include
   `"event": "{{event}}"`, as the README template already does. A webhook
@@ -32,6 +53,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   check: it reapplies the recorded grant, or returns `202` ignored if an
   administrator revoked the request. The request backfill already needed Seerr
   lookup.
+- **Dashboard recent requests.** The Dashboard, and
+  `GET /v1/requests/recent`, now return up to 12 recent Jellyseerr requests
+  instead of 8, so the poster grid fills evenly at four, three and two columns.
+- **Release notes come from this changelog.** GitHub release notes are now
+  this file's section for the tag instead of an automatically generated list
+  of pull requests. A tag without a section here fails the release before any
+  image is published.
 
 ### Fixed
 
@@ -43,6 +71,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with `502` and counted as `jfa_webhooks_total{result="error"}`, like a 4K
   event without Seerr lookup (a webhook missing its Jellyfin IDs keeps its
   `400`). With Seerr lookup configured they still resolve through Seerr.
+- **Replayed webhooks restored grants an administrator removed.** The request
+  backfill skipped requests already handled, but the webhook did not: a
+  redelivered `MEDIA_AVAILABLE` webhook recreated a grant whose request an
+  administrator had revoked, and reattached household groups an administrator
+  had cleared. A request is now handled once its grant has been stored. A
+  webhook for a handled request that a grant still records only reconciles
+  that grant as it stands; one for a handled request that an administrator
+  revoked returns `202` with `{"status":"ignored"}` and counts as
+  `jfa_webhooks_total{result="ignored"}`. A delivery that failed before its
+  grant was stored is still retried as a first delivery.
 - **Webhook state-write failures are counted.** A webhook whose grant could
   not be written to the state file was rejected without incrementing
   `jfa_webhooks_total`. Every failure after the body is validated (resolving,
@@ -54,17 +92,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one during a grant, failed with `ENOENT` and could lose changes. Passwordless
   changes now wait their turn like other changes, the state file is written by
   one write at a time, and each write uses its own temporary file.
-- **Replayed webhooks restored grants an administrator removed.** The request
-  backfill skipped requests already handled, but the webhook did not: a
-  redelivered `MEDIA_AVAILABLE` webhook recreated a grant whose request an
-  administrator had revoked, and reattached household groups an administrator
-  had cleared. A request is now handled once its grant has been stored. A
-  webhook for a handled request that a grant still records only reconciles
-  that grant as it stands; one for a handled request that an administrator
-  revoked returns `202` with `{"status":"ignored"}` and counts as
-  `jfa_webhooks_total{result="ignored"}`. A delivery that failed before its
-  grant was stored is still retried as a first delivery.
-
 - **Recent requests cache.** The 60-second recent-requests cache kept only as
   many requests as the last caller asked for and ignored the catalog it was
   filtered against. A larger request within a minute got the smaller list, and
@@ -75,7 +102,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   WebSocket upgrades now append the gateway's peer address to
   `X-Forwarded-For` instead of passing the incoming header through unchanged,
   and set `X-Forwarded-Proto` and `X-Real-IP` when they are missing. With
-  JellyPass in Jellyfin's known proxies, Jellyfin sees the real client address.
+  JellyPass, and any reverse proxy in front of it, in Jellyfin's known proxies,
+  Jellyfin sees the real client address.
 - **Login rate limits behind a reverse proxy.** The household and
   administrator login limits keyed every client behind a proxy on the proxy's
   address, so one household could lock out all of them. With
@@ -84,6 +112,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of scanning every entry on each attempt. Lockouts are therefore
   best-effort: a flood from that many genuinely distinct addresses can evict
   one early, while a spoofed `X-Forwarded-For` from an untrusted peer cannot.
+
+### Upgrading from 2.0.0
+
+1. **Back up the state file**, as before any upgrade. 2.1.0 keeps the schema
+   v7 format and does not migrate the file, so rolling back to 2.0.0 needs no
+   edit: set `JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:2.0.0` and
+   recreate the container with `docker compose up -d`. The backup still
+   protects against anything else going wrong.
+2. **Without Seerr lookup, check the webhook payload.** If `SEERR_URL` and
+   `SEERR_API_KEY` are not set, make sure the Seerr webhook payload includes
+   `"event": "{{event}}"` (see the README template). A webhook that has both
+   Jellyfin IDs but no recognized HD `event` now fails with `502` and counts
+   as `jfa_webhooks_total{result="error"}`. One without both IDs still returns
+   `400`, as before. A repeated webhook for a request JellyPass has already
+   handled skips this check: it reapplies the recorded grant, or returns `202`
+   ignored if an administrator revoked the request. With Seerr lookup
+   configured, nothing changes.
+3. **Optional, behind a reverse proxy: set `TRUSTED_PROXIES`** to the address
+   or subnet of the proxy in front of JellyPass, and add JellyPass and that
+   proxy to Jellyfin's known proxies (**Dashboard → Networking → Known
+   proxies**). Make sure the proxy appends to `X-Forwarded-For`. With a CDN in
+   front of the proxy, follow "Chains of proxies and CDNs" in the README. An
+   invalid entry stops startup, so check the logs after restarting. Leaving
+   `TRUSTED_PROXIES` empty keeps the 2.0.0 behaviour.
+4. **Expect some repeated webhooks to be ignored.** Seerr redeliveries for
+   requests JellyPass has already handled, including requests handled by
+   2.0.0, no longer recreate revoked grants or reattach removed groups. A
+   redelivery for a revoked request counts as
+   `jfa_webhooks_total{result="ignored"}`, so a small increase there is
+   expected.
 
 ## [2.0.0] - 2026-10-15
 
@@ -119,7 +177,7 @@ This release has three breaking changes. Read
 
 Household grants, the request backfill, household hostnames, passwordless
 sign-in, the admin UI and API, and metrics are unchanged. The Seerr webhook
-changes as described under [Changed](#changed).
+changes as described under Changed below.
 
 ### Changed
 
@@ -256,7 +314,7 @@ This release has three breaking changes. Read
     date.
   - It is idempotent and never recreates a grant an administrator removed.
     (A replayed webhook could still recreate one in this release; see the
-    Unreleased fixes.)
+    2.1.0 fixes.)
 - **Webhook and backfill metrics** in `/metrics` ([#2]):
   - `jfa_last_webhook_received_timestamp_seconds`
   - a new `result="invalid"` label on the existing `jfa_webhooks_total`
@@ -370,7 +428,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v2.0.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/nicklongmore86/jellypass/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/nicklongmore86/jellypass/compare/v1.1.0...v2.0.0
 [1.1.0]: https://github.com/nicklongmore86/jellypass/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/nicklongmore86/jellypass/releases/tag/v1.0.0
