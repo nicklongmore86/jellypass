@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Dashboard recent requests.** The Dashboard now shows up to 12 recent
+  Jellyseerr requests instead of 8, so the poster grid fills evenly at four,
+  three and two columns.
+
+### Fixed
+
+- **Recent requests cache.** The 60-second recent-requests cache kept only as
+  many requests as the last caller asked for and ignored the catalog it was
+  filtered against. A larger request within a minute got the smaller list, and
+  a catalog sync could keep serving requests filtered for the old catalog. The
+  cache now always holds up to 20 requests per catalog and serves each caller
+  the count it asks for.
+
 ## [2.0.0] - 2026-10-15
 
 This release has three breaking changes. Read

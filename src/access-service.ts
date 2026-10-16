@@ -1,7 +1,7 @@
 import type { LogLevel } from './config.js';
 import type { JellyfinClient } from './jellyfin.js';
 import { Metrics } from './metrics.js';
-import type { SeerrClient } from './seerr.js';
+import { RECENT_REQUESTS_LIMIT, type SeerrClient } from './seerr.js';
 import { normalizeId, type GrantStore } from './store.js';
 import type {
   AccessGroup,
@@ -168,7 +168,7 @@ export class AccessService {
     return this.#jellyfin.searchLibrary(query);
   }
 
-  public listRecentRequests(take = 8): Promise<RecentSeerrRequest[]> {
+  public listRecentRequests(take = RECENT_REQUESTS_LIMIT): Promise<RecentSeerrRequest[]> {
     const catalogIds = new Set(this.#store.getCatalog().items.map((item) => normalizeId(item.id)));
     return this.#seerr?.getRecentRequests(take, catalogIds) ?? Promise.resolve([]);
   }
