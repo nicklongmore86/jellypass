@@ -667,7 +667,7 @@ describe('webhook resolution errors over HTTP', { timeout: 5_000 }, () => {
     assert.doesNotMatch(metrics, /result="error"/);
   });
 
-  it('returns 202 ignored for a replayed webhook whose request an administrator revoked', async (t) => {
+  it('returns 202 ignored for a replayed webhook whose request an administrator revoked', async () => {
     const jellyfin = {
       item: { Id: 'item-1', Name: 'Movie', Tags: [] },
       users: [
@@ -680,7 +680,8 @@ describe('webhook resolution errors over HTTP', { timeout: 5_000 }, () => {
       async updateItem(item) { this.item = structuredClone(item); },
       async updatePolicy(userId, policy) { this.users.find((user) => user.Id === userId).Policy = structuredClone(policy); },
     };
-    const store = new GrantStore(path.join(await makeTempDir(t, 'jfa-http-replay-'), 'grants.json'));
+    // Kept until the file finishes: the server using it is closed in the suite's after hook, not by this test.
+    const store = new GrantStore(path.join(await makeTempDir(null, 'jfa-http-replay-'), 'grants.json'));
     await store.load();
     const service = new AccessService(jellyfin, store);
     const server = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' });
@@ -700,7 +701,7 @@ describe('webhook resolution errors over HTTP', { timeout: 5_000 }, () => {
     assert.deepEqual(jellyfin.item.Tags, []);
   });
 
-  it('applies a stored grant when Seerr retries a webhook whose Jellyfin update failed', async (t) => {
+  it('applies a stored grant when Seerr retries a webhook whose Jellyfin update failed', async () => {
     const jellyfin = {
       item: { Id: 'item-1', Name: 'Movie', Tags: [] },
       failUpdates: true,
@@ -718,7 +719,8 @@ describe('webhook resolution errors over HTTP', { timeout: 5_000 }, () => {
       },
       async updatePolicy(userId, policy) { this.users.find((user) => user.Id === userId).Policy = structuredClone(policy); },
     };
-    const store = new GrantStore(path.join(await makeTempDir(t, 'jfa-http-retry-'), 'grants.json'));
+    // Kept until the file finishes: the server using it is closed in the suite's after hook, not by this test.
+    const store = new GrantStore(path.join(await makeTempDir(null, 'jfa-http-retry-'), 'grants.json'));
     await store.load();
     const service = new AccessService(jellyfin, store);
     const server = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' });

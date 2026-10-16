@@ -12,8 +12,10 @@ after(() => Promise.all([...created].map(remove)));
 
 /**
  * Creates a directory under the OS temp directory that is removed when the test `t` finishes, pass or fail. Pass `null`
- * outside a test (in a `before` hook or a shared helper) to remove it when the test file finishes instead. Close
- * anything still using the directory (servers, child processes, stores) within the test, before it is removed.
+ * outside a test (in a `before` hook or a shared helper) to remove it when the test file finishes instead. Anything
+ * still using the directory (servers, child processes, stores) must be closed before it is removed: within the test
+ * itself, since `t.after` hooks run in the order they were registered and this one is registered first; otherwise pass
+ * `null` so the directory outlives the suite `after` hook that closes it.
  */
 export async function makeTempDir(t, prefix) {
   const directory = await mkdtemp(path.join(tmpdir(), prefix));
