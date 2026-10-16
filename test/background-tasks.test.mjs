@@ -274,3 +274,96 @@ describe('cancellation inside an active background run', { timeout: 10_000 }, ()
     assert.ok(world.increments.some((entry) => entry.name === 'jfa_reconciliations_total' && entry.result === 'success'));
   });
 });
+
+describe('cancellation while a reconciliation save is finishing', { timeout: 10_000 }, () => {
+  async function newStore() {
+    const store = new GrantStore(path.join(await mkdtemp(path.join(tmpdir(), 'jellypass-boundary-test-')), 'grants.json'));
+    await store.load();
+    return store;
+  }
+
+  /** Lets `method` finish its save, then aborts: shutdown arriving exactly as the write completes. */
+  function abortAfter(store, method, controller, calls) {
+    const original = store[method].bind(store);
+    store[method] = async (...args) => {
+      calls.push(method);
+      await original(...args);
+      controller.abort(new Error('shutting down'));
+    };
+  }
+
+  function track(store, method, calls) {
+    const original = store[method].bind(store);
+    store[method] = async (...args) => {
+      calls.push(method);
+      return original(...args);
+    };
+  }
+
+  async function quietly(run) {
+    const errors = mock.method(console, 'error', () => {});
+    const infos = mock.method(console, 'log', () => {});
+    try {
+      const error = await run().then(() => undefined, (caught) => caught);
+      return { error, logs: [...errors.mock.calls, ...infos.mock.calls].map((call) => call.arguments.join(' ')) };
+    } finally {
+      errors.mock.restore();
+      infos.mock.restore();
+    }
+  }
+
+  it('does not purge an inactive grant or record success when shutdown aborts during the success save', async () => {
+    const world = recordingWorld(undefined);
+    const store = await newStore();
+    await store.grant({ itemId: 'item-1', requestId: 'r', userId: 'alice-id' });
+    await store.revokeRequest('item-1', 'r');
+    const storeCalls = [];
+    abortAfter(store, 'markSyncSuccess', world.controller, storeCalls);
+    track(store, 'purgeInactive', storeCalls);
+    const service = new AccessService(world.jellyfin, store, world.metrics);
+    const { error, logs } = await quietly(() => service.reconcileAll({ dueOnly: true, signal: world.controller.signal }));
+    assert.ok(error instanceof OperationCancelledError, String(error));
+    assert.deepEqual(storeCalls, ['markSyncSuccess']);
+    assert.ok(store.get('item-1'), 'the grant was purged after shutdown began');
+    assert.deepEqual(world.increments, []);
+    assert.deepEqual(logs, []);
+  });
+
+  it('records no success when shutdown aborts while an inactive grant is being purged', async () => {
+    const world = recordingWorld(undefined);
+    const store = await newStore();
+    await store.grant({ itemId: 'item-1', requestId: 'r', userId: 'alice-id' });
+    await store.revokeRequest('item-1', 'r');
+    abortAfter(store, 'purgeInactive', world.controller, []);
+    const service = new AccessService(world.jellyfin, store, world.metrics);
+    const { error, logs } = await quietly(() => service.reconcileAll({ dueOnly: true, signal: world.controller.signal }));
+    assert.ok(error instanceof OperationCancelledError, String(error));
+    assert.deepEqual(world.increments, []);
+    assert.deepEqual(logs, []);
+  });
+
+  it('records no granted backfill when shutdown aborts during the new grant\'s success save', async () => {
+    const world = recordingWorld(undefined);
+    const store = await newStore();
+    abortAfter(store, 'markSyncSuccess', world.controller, []);
+    const service = new AccessService(world.jellyfin, store, world.metrics, world.seerr);
+    const { error, logs } = await quietly(() => service.backfillRequests(new Date(0), { signal: world.controller.signal }));
+    assert.ok(error instanceof OperationCancelledError, String(error));
+    assert.deepEqual(world.increments.filter((entry) => !['jfa_item_updates_total', 'jfa_policy_updates_total'].includes(entry.name)), []);
+    assert.deepEqual(logs, []);
+    assert.equal(store.get('item-1')?.sync.state, 'synced');
+  });
+
+  it('records no error when shutdown aborts while a failed reconciliation is being saved', async () => {
+    const world = recordingWorld(undefined);
+    world.jellyfin.getLocalTrailers = async () => { throw new Error('Jellyfin unavailable'); };
+    const store = await newStore();
+    await store.setManualAccess({ itemId: 'item-1', userIds: ['alice-id'], groupIds: [] });
+    abortAfter(store, 'markSyncError', world.controller, []);
+    const service = new AccessService(world.jellyfin, store, world.metrics);
+    const { error, logs } = await quietly(() => service.reconcileAll({ dueOnly: true, signal: world.controller.signal }));
+    assert.ok(error instanceof OperationCancelledError, String(error));
+    assert.deepEqual(world.increments, []);
+    assert.deepEqual(logs, []);
+  });
+});

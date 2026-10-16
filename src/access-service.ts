@@ -386,6 +386,7 @@ export class AccessService {
             ...(mediaType ? { mediaType } : {}),
           });
           await this.#reconcileGrant(grant, signal);
+          throwIfAborted(signal);
           result.granted.push(grant.itemId);
           this.#metrics.increment('jfa_request_backfill_total', { result: 'granted' });
           console.log(JSON.stringify({ level: 'info', message: 'request backfill granted item', requestId, itemId: grant.itemId, groupIds: grant.groupIds }));
@@ -636,16 +637,22 @@ export class AccessService {
       throwIfAborted(signal);
       const context = await this.#buildPlan(grant, signal);
       await this.#applyPlan(context, signal);
+      // Checked after every await from here on: shutdown can abort while a save is finishing, and nothing after it
+      // (purging, counting) may then start. A grant left synced or pending is reconciled again after restart.
       throwIfAborted(signal);
       await this.#store.markSyncSuccess(grant.itemId);
-      if (!grant.active) await this.#store.purgeInactive(grant.itemId);
+      throwIfAborted(signal);
+      if (!grant.active) {
+        await this.#store.purgeInactive(grant.itemId);
+        throwIfAborted(signal);
+      }
       this.#metrics.increment('jfa_reconciliations_total', { result: 'success' });
       return context.plan;
     } catch (error) {
-      // Cancelled: the grant stays pending and is reconciled again after restart.
       rethrowIfCancelled(error, signal);
       const message = error instanceof Error ? error.message : String(error);
       await this.#store.markSyncError(grant.itemId, message);
+      throwIfAborted(signal);
       this.#metrics.increment('jfa_reconciliations_total', { result: 'error' });
       throw error;
     } finally {
