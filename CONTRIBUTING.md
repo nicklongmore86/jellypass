@@ -11,8 +11,8 @@ and focused code changes are welcome.
 - Use GitHub's private vulnerability-reporting flow for security issues; see
   [SECURITY.md](SECURITY.md).
 - For a bug, include the JellyPass revision or container tag, Jellyfin and
-  Seerr (or Jellyseerr) versions, deployment method, relevant redacted logs,
-  expected behavior, and actual behavior.
+  Seerr versions, deployment method, relevant redacted logs, expected
+  behavior, and actual behavior.
 
 ## Development setup
 

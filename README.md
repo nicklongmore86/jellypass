@@ -106,7 +106,7 @@ requester's household can see the title; members of other households cannot.
 ## Requirements
 
 - Jellyfin 10.11 or newer.
-- Seerr (or Jellyseerr) with webhook support and Jellyfin-linked users. See
+- Seerr with webhook support and Jellyfin-linked users. See
   [Configure Seerr](#configure-seerr).
 - A Jellyfin administrator API key.
 - Docker with Compose v2 for the recommended installation, or Node.js 22+ and
@@ -185,7 +185,7 @@ JellyPass reads configuration from environment variables at startup.
 | `JELLYFIN_API_KEY` | Yes | — | Jellyfin administrator API key used for catalog, tag, and policy operations. |
 | `WEBHOOK_TOKEN` | Yes | — | Secret accepted by `/webhooks/seerr`. Use a long random value. |
 | `ADMIN_TOKEN` | Recommended | `WEBHOOK_TOKEN` | Separate bearer token for administrative APIs and metrics. |
-| `SEERR_URL` | Conditional | — | Seerr base URL reachable from JellyPass (a Jellyseerr URL also works). Configure with `SEERR_API_KEY`. |
+| `SEERR_URL` | Conditional | — | Seerr base URL reachable from JellyPass. Configure with `SEERR_API_KEY`. |
 | `SEERR_API_KEY` | Conditional | — | Seerr API key. Configure with `SEERR_URL`. |
 | `STATE_FILE` | No | `./data/grants.json` | Durable state-file path. The container uses `/app/data/grants.json`. |
 | `HOST` | No | `0.0.0.0` | HTTP listen address inside the process/container. |
