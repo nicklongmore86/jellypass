@@ -4,6 +4,7 @@ import type { Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { ClientIpResolver, normaliseIp } from './client-ip.js';
 import { DEFAULT_WS_IDLE_TIMEOUT_MS, DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS, type LogLevel } from './config.js';
+import { AttemptCounter } from './rate-limit.js';
 
 const PUBLIC_USERS_PATH = '/users/public';
 const BRANDING_CONFIGURATION_PATH = '/branding/configuration';
@@ -14,6 +15,7 @@ const MAX_TRANSFORMED_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_LOGIN_BODY_BYTES = 8 * 1024;
 const LOGIN_ATTEMPT_WINDOW_MS = 5 * 60 * 1000;
 const MAX_LOGIN_ATTEMPTS = 20;
+const MAX_LOGIN_CLIENTS = 10_000;
 const TCP_KEEPALIVE_INITIAL_DELAY_MS = 60_000;
 const HOUSEHOLD_LOGIN_CSS = `
 /* JellyPass household profile picker */
@@ -54,7 +56,7 @@ export class HouseholdGateway {
   readonly #hostPrefix: string;
   readonly #memberIds: HouseholdGatewayOptions['memberIds'];
   readonly #isPasswordless: NonNullable<HouseholdGatewayOptions['isPasswordless']>;
-  readonly #loginAttempts = new Map<string, { attempts: number; resetsAt: number }>();
+  readonly #loginAttempts = new AttemptCounter({ windowMs: LOGIN_ATTEMPT_WINDOW_MS, maxKeys: MAX_LOGIN_CLIENTS });
   readonly #webSocketIdleTimeoutMs: number;
   readonly #webSocketUpstreamIdleTimeoutMs: number;
   readonly #debug: boolean;
@@ -239,17 +241,8 @@ export class HouseholdGateway {
   }
 
   #allowLoginAttempt(clientId: string): boolean {
-    const now = Date.now();
-    const bucket = this.#loginAttempts.get(clientId);
-    if (bucket && bucket.resetsAt > now) {
-      if (bucket.attempts >= MAX_LOGIN_ATTEMPTS) return false;
-      bucket.attempts += 1;
-    } else {
-      this.#loginAttempts.set(clientId, { attempts: 1, resetsAt: now + LOGIN_ATTEMPT_WINDOW_MS });
-    }
-    for (const [key, entry] of this.#loginAttempts) {
-      if (entry.resetsAt <= now) this.#loginAttempts.delete(key);
-    }
+    if (this.#loginAttempts.attempts(clientId) >= MAX_LOGIN_ATTEMPTS) return false;
+    this.#loginAttempts.increment(clientId);
     return true;
   }
 
