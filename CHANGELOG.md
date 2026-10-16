@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`TRUSTED_PROXIES`.** A comma-separated list of reverse-proxy addresses and
+  CIDR ranges (IPv4 and IPv6). When a request arrives from a listed proxy,
+  JellyPass takes the client address from `X-Forwarded-For`, walking it right
+  to left past trusted hops. Requests from anywhere else use the connecting
+  address and ignore the header. Addresses are compared in canonical form, so
+  IPv4-mapped IPv6 spellings count as the IPv4 address and IPv6 case and zero
+  compression do not matter. Empty by default, which keeps the previous
+  behaviour; an invalid entry stops startup.
+
 ### Changed
 
 - **Dashboard recent requests.** The Dashboard now shows up to 12 recent
@@ -21,6 +32,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a catalog sync could keep serving requests filtered for the old catalog. The
   cache now always holds up to 20 requests per catalog and serves each caller
   the count it asks for.
+- **Household gateway forwarding headers.** Proxied HTTP requests and
+  WebSocket upgrades now append the gateway's peer address to
+  `X-Forwarded-For` instead of passing the incoming header through unchanged,
+  and set `X-Forwarded-Proto` and `X-Real-IP` when they are missing. With
+  JellyPass in Jellyfin's known proxies, Jellyfin sees the real client address.
+- **Login rate limits behind a reverse proxy.** The household and
+  administrator login limits keyed every client behind a proxy on the proxy's
+  address, so one household could lock out all of them. With
+  `TRUSTED_PROXIES` set, they now apply per client. Each limit tracks at most
+  10,000 clients, evicting the oldest, and drops expired entries as it goes
+  instead of scanning every entry on each attempt. Lockouts are therefore
+  best-effort: a flood from that many genuinely distinct addresses can evict
+  one early, while a spoofed `X-Forwarded-For` from an untrusted peer cannot.
 
 ## [2.0.0] - 2026-10-15
 

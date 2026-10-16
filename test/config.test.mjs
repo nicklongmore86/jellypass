@@ -10,7 +10,7 @@ const BASE = {
   SEERR_URL: 'http://seerr.test',
   SEERR_API_KEY: 'seerr-key',
 };
-const KEYS = [...Object.keys(BASE), 'REQUEST_BACKFILL_SINCE', 'REQUEST_BACKFILL_ENABLED', 'LOG_LEVEL', 'WS_IDLE_TIMEOUT_MS', 'WS_UPSTREAM_IDLE_TIMEOUT_MS', 'JELLYQUEST_BRIDGE_ENABLED'];
+const KEYS = [...Object.keys(BASE), 'REQUEST_BACKFILL_SINCE', 'REQUEST_BACKFILL_ENABLED', 'LOG_LEVEL', 'WS_IDLE_TIMEOUT_MS', 'WS_UPSTREAM_IDLE_TIMEOUT_MS', 'JELLYQUEST_BRIDGE_ENABLED', 'TRUSTED_PROXIES'];
 const saved = Object.fromEntries(KEYS.map((key) => [key, process.env[key]]));
 
 function load(overrides = {}) {
@@ -151,6 +151,40 @@ describe('logging and WebSocket configuration', () => {
 function logLevelWarnings(warn) {
   return warn.mock.calls.map((call) => JSON.parse(call.arguments[0])).filter((entry) => entry.message.startsWith('LOG_LEVEL'));
 }
+
+describe('trusted proxy configuration', () => {
+  afterEach(restoreEnvironment);
+
+  it('defaults TRUSTED_PROXIES to an empty list', () => {
+    assert.deepEqual(load().trustedProxies, []);
+    assert.deepEqual(load({ TRUSTED_PROXIES: '' }).trustedProxies, []);
+    assert.deepEqual(load({ TRUSTED_PROXIES: ' , ' }).trustedProxies, []);
+  });
+
+  it('accepts IPv4 and IPv6 addresses and CIDR ranges with surrounding whitespace', () => {
+    assert.deepEqual(
+      load({ TRUSTED_PROXIES: ' 192.0.2.10 , 198.51.100.0/24,2001:DB8::1, fd00::/8,::ffff:203.0.113.7, 10.0.0.0/8,' }).trustedProxies,
+      ['192.0.2.10', '198.51.100.0/24', '2001:db8::1', 'fd00::/8', '203.0.113.7', '10.0.0.0/8'],
+    );
+  });
+
+  it('stores entries in canonical form', () => {
+    assert.deepEqual(
+      load({ TRUSTED_PROXIES: '::FFFF:CB00:7105, 0:0:0:0:0:ffff:c000:0200/120, ::ffff:0:0/96, 2001:0DB8:0:0::/32, fe80::1%eth0, 0000::0001' }).trustedProxies,
+      ['203.0.113.5', '192.0.2.0/24', '0.0.0.0/0', '2001:db8::/32', 'fe80::1', '::1'],
+    );
+  });
+
+  it('refuses to start on an invalid entry and names it', () => {
+    for (const value of ['::ffff:0:0/95', '[2001:db8::1]', '[2001:db8::1]:443', 'fe80::1%', '192.0.2.1%eth0', '2001:db8::1::1', 'proxy.example.test', '192.0.2.300', '192.0.2.0/33', '2001:db8::/129', '10.0.0.0/', '10.0.0.0/8/8', '10.0.0.0/-1', '10.0.0.0/abc', '192.0.2.1:8080']) {
+      assert.throws(
+        () => load({ TRUSTED_PROXIES: `192.0.2.1, ${value}` }),
+        { message: `TRUSTED_PROXIES must be a comma-separated list of IP addresses or CIDR ranges; "${value}" is not valid` },
+        value,
+      );
+    }
+  });
+});
 
 describe('removed configuration', () => {
   afterEach(() => {

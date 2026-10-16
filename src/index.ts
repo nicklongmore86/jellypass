@@ -18,6 +18,7 @@ async function main(): Promise<void> {
   const service = new AccessService(jellyfin, store, undefined, seerr, { logLevel: config.logLevel });
   const webAuth = new WebAuth(jellyfin);
   const server = makeServer(service, { webhook: config.webhookToken, admin: config.adminToken }, webAuth, {
+    trustedProxies: config.trustedProxies,
     ...(config.householdDomain ? {
       householdGateway: {
         jellyfinUrl: config.jellyfinUrl,

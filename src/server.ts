@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type ServerResponse } from 'node:ht
 import { UserProvisioningError, type AccessService } from './access-service.js';
 import { ADMIN_APP_JS, ADMIN_FAVICON_SVG, ADMIN_HTML, ADMIN_STYLES } from './admin-ui.js';
 import { expiredSessionCookie, sessionCookie, type WebAuth } from './auth.js';
+import { ClientIpResolver } from './client-ip.js';
 import type { LogLevel } from './config.js';
 import { HouseholdGateway } from './household-gateway.js';
 import { RECENT_REQUESTS_LIMIT } from './seerr.js';
@@ -17,6 +18,8 @@ export interface ServerTokens {
 }
 
 export interface ServerOptions {
+  /** Reverse proxies trusted to report the client address in X-Forwarded-For; empty uses the TCP peer. */
+  trustedProxies?: string[];
   householdGateway?: {
     jellyfinUrl: string;
     domain: string;
@@ -31,10 +34,12 @@ export function makeServer(service: AccessService, tokens: ServerTokens, webAuth
   const householdGateway = options?.householdGateway
     ? new HouseholdGateway({
         ...options.householdGateway,
+        trustedProxies: options.trustedProxies ?? [],
         memberIds: (householdId) => service.getHouseholdMemberIds(householdId),
         isPasswordless: (userId) => service.isPasswordless(userId),
       })
     : undefined;
+  const clientIp = new ClientIpResolver(options?.trustedProxies);
   const server = createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? '/', 'http://localhost');
@@ -70,7 +75,7 @@ export function makeServer(service: AccessService, tokens: ServerTokens, webAuth
         const password = nonEmptyString(body.password, 'password');
         let login: { token: string; username: string } | null;
         try {
-          login = await webAuth.login(username, password, request.socket.remoteAddress ?? 'unknown');
+          login = await webAuth.login(username, password, clientIp.resolve(request.socket.remoteAddress, request.headers['x-forwarded-for']));
         } catch (error) {
           if (error instanceof Error && error.message === 'too_many_login_attempts') {
             return json(response, 429, { error: 'too_many_login_attempts' });
