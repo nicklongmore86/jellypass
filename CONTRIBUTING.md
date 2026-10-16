@@ -11,7 +11,7 @@ and focused code changes are welcome.
 - Use GitHub's private vulnerability-reporting flow for security issues; see
   [SECURITY.md](SECURITY.md).
 - For a bug, include the JellyPass revision or container tag, Jellyfin and
-  Jellyseerr versions, deployment method, relevant redacted logs, expected
+  Seerr versions, deployment method, relevant redacted logs, expected
   behavior, and actual behavior.
 
 ## Development setup
@@ -27,7 +27,7 @@ pnpm build
 ```
 
 The normal test suite uses local mock HTTP services and does not require live
-Jellyfin or Jellyseerr credentials.
+Jellyfin or Seerr credentials.
 
 `pnpm test:real` runs `test/real-jellyfin.test.mjs` against a real Jellyfin. It
 needs Docker: it starts a throwaway `jellyfin/jellyfin` container (the same

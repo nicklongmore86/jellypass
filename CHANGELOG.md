@@ -18,6 +18,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `JELLYFIN_REAL_URL`), and `pnpm test:all` runs both suites.
 - The publish workflow runs the real-Jellyfin test before publishing an image
   or creating a release.
+- **Seerr naming.** The administrator UI, error messages and documentation now
+  say Seerr instead of Jellyseerr, and the Dashboard's "Jellyseerr activity"
+  section is now "Activity". Seerr is the successor to Jellyseerr, and
+  Jellyseerr installations keep working unchanged. API field names and error
+  codes that contain `jellyseerr` (`importToJellyseerr`,
+  `jellyseerrImportAvailable`, the `jellyseerr` result of `POST /v1/users`, and
+  `user_created_jellyseerr_import_failed`) are unchanged, as are environment
+  variables, metrics and the state file.
 
 ### Fixed
 

@@ -418,7 +418,7 @@ describe('grant lifecycle', () => {
     assert.ok(grant.sync.nextRetryAt);
   });
 
-  it('resolves legacy Jellyseerr webhooks through the request API', async () => {
+  it('resolves webhooks without Jellyfin IDs through the Seerr request API', async () => {
     const store = new GrantStore(await stateFile());
     await store.load();
     const fake = fakeJellyfin();
