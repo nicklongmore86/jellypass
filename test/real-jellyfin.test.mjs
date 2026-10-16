@@ -2,28 +2,62 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, it } from 'node:test';
+import { after, before, describe, it } from 'node:test';
 import { AccessService, accessTag } from '../dist/access-service.js';
 import { JellyfinClient } from '../dist/jellyfin.js';
+import { makeServer } from '../dist/server.js';
 import { GrantStore } from '../dist/store.js';
-import { parseWebhook } from '../dist/webhook.js';
 
 const baseUrl = process.env.JELLYFIN_REAL_URL;
+const webhookToken = 'real-webhook-secret';
 
-describe('real Jellyfin integration', { timeout: 90_000 }, () => {
-  it('grants and revokes access on Jellyfin', { skip: !baseUrl }, async () => {
-    const fixture = await setupJellyfin(baseUrl);
-    const stateFile = path.join(await mkdtemp(path.join(tmpdir(), 'jfa-real-')), 'grants.json');
-    const store = new GrantStore(stateFile);
+describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () => {
+  let fixture;
+  let client;
+  let store;
+  let server;
+
+  before(async () => {
+    fixture = await setupJellyfin(baseUrl);
+    store = new GrantStore(path.join(await mkdtemp(path.join(tmpdir(), 'jfa-real-')), 'grants.json'));
     await store.load();
-    const client = new JellyfinClient(baseUrl, fixture.token);
-    const service = new AccessService(client, store);
+    client = new JellyfinClient(baseUrl, fixture.token);
+    // No Seerr client: webhooks must carry an HD event to be trusted.
+    server = makeServer(new AccessService(client, store), { webhook: webhookToken, admin: 'real-admin-secret' });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  });
 
-    await service.processWebhook(parseWebhook({
-      notificationType: 'MEDIA_AVAILABLE',
-      media: { jellyfinMediaId: fixture.itemId, mediaType: 'movie' },
-      request: { id: 'real-17', requestedBy: { jellyfinUserId: fixture.aliceId } },
-    }));
+  after(async () => {
+    if (server) await new Promise((resolve) => server.close(resolve));
+  });
+
+  const available = (requestId, event) => ({
+    notificationType: 'MEDIA_AVAILABLE',
+    ...(event === undefined ? {} : { event }),
+    media: { jellyfinMediaId: fixture.itemId, mediaType: 'movie' },
+    request: { id: requestId, requestedBy: { jellyfinUserId: fixture.aliceId } },
+  });
+
+  it('rejects a Seerr-less webhook without a recognised HD event and grants nothing', async () => {
+    for (const [requestId, event] of [['real-16', undefined], ['real-16b', 'Something Else']]) {
+      assert.deepEqual(await sendWebhook(server, available(requestId, event)), {
+        status: 502,
+        body: { error: 'webhook event does not name an HD request and Seerr lookup is not configured' },
+      }, String(event));
+    }
+
+    assert.equal(store.get(fixture.itemId), undefined);
+    const item = await client.getItem(fixture.itemId);
+    const users = await client.getUsers();
+    assert.ok(!item.Tags.includes(accessTag(fixture.itemId)));
+    assert.ok(!user(users, fixture.bobId).Policy.BlockedTags.includes(accessTag(fixture.itemId)));
+  });
+
+  it('grants and revokes access on Jellyfin for an HD Now Available webhook', async () => {
+    const granted = await sendWebhook(server, available('real-17', 'Movie Request Now Available'));
+    assert.equal(granted.status, 200, JSON.stringify(granted.body));
+    assert.equal(granted.body.status, 'granted');
+    assert.ok(store.get(fixture.itemId));
 
     const taggedItem = await client.getItem(fixture.itemId);
     const grantedUsers = await client.getUsers();
@@ -31,13 +65,31 @@ describe('real Jellyfin integration', { timeout: 90_000 }, () => {
     assert.ok(user(grantedUsers, fixture.bobId).Policy.BlockedTags.includes(accessTag(fixture.itemId)));
     assert.ok(!user(grantedUsers, fixture.aliceId).Policy.BlockedTags.includes(accessTag(fixture.itemId)));
 
-    await service.revokeRequest(fixture.itemId, 'real-17');
+    const revoked = await fetch(`${serverUrl(server)}/v1/grants/${fixture.itemId}/requests/real-17`, {
+      method: 'DELETE',
+      headers: { Authorization: 'Bearer real-admin-secret' },
+    });
+    assert.ok(revoked.ok, await revoked.text());
     const cleanedItem = await client.getItem(fixture.itemId);
     const cleanedUsers = await client.getUsers();
     assert.ok(!cleanedItem.Tags.includes(accessTag(fixture.itemId)));
     assert.ok(!user(cleanedUsers, fixture.bobId).Policy.BlockedTags.includes(accessTag(fixture.itemId)));
   });
 });
+
+function serverUrl(server) {
+  return `http://127.0.0.1:${server.address().port}`;
+}
+
+async function sendWebhook(server, body) {
+  const response = await fetch(`${serverUrl(server)}/webhooks/seerr`, {
+    method: 'POST',
+    headers: { Authorization: `Bearer ${webhookToken}`, 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    signal: AbortSignal.timeout(15_000),
+  });
+  return { status: response.status, body: await response.json() };
+}
 
 async function setupJellyfin(url) {
   await waitFor(async () => (await request(url, '/System/Info/Public')).Version === '10.11.3');

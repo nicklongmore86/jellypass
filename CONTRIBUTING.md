@@ -29,6 +29,14 @@ pnpm build
 The normal test suite uses local mock HTTP services and does not require live
 Jellyfin or Seerr credentials.
 
+`pnpm test:real` runs `test/real-jellyfin.test.mjs` against a real Jellyfin. It
+needs Docker: it starts a throwaway `jellyfin/jellyfin` container (the same
+image as CI) on `127.0.0.1:18096` and removes it afterwards. To use another
+fresh, unconfigured Jellyfin instead, set `JELLYFIN_REAL_URL`. `pnpm test:all`
+runs both suites. CI and the release workflow run both, so run `pnpm test:all`
+before opening a pull request that touches webhooks, grants, or the Jellyfin
+client.
+
 ## Pull requests
 
 1. Fork the repository and create a focused branch from `main`.
@@ -36,7 +44,7 @@ Jellyfin or Seerr credentials.
 3. Add or update tests for behavior changes.
 4. Update README or operational documentation when configuration, API behavior,
    security boundaries, or deployment steps change.
-5. Run `pnpm check`, `pnpm test`, `pnpm build`, and `docker build .`.
+5. Run `pnpm check`, `pnpm test:all`, `pnpm build`, and `docker build .`.
 6. Explain user-visible behavior, operational impact, migration needs, and how
    the change was verified in the pull request.
 
