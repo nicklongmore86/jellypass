@@ -285,12 +285,46 @@ so clients cannot choose their own address. List only proxies you control, and
 make sure they append to `X-Forwarded-For` rather than pass through whatever
 the client sent.
 
+Addresses are compared in canonical form: IPv4-mapped IPv6 addresses (such as
+`::ffff:192.0.2.1`, in any spelling) count as the IPv4 address, IPv6 is compared
+regardless of case or zero compression, and IPv6 zone IDs (`%eth0`) are
+ignored. A `TRUSTED_PROXIES` entry must not include a port or brackets.
+`X-Forwarded-For` entries may carry a port (`192.0.2.1:4711`,
+`[2001:db8::1]:4711`). An entry that is not a valid address or has an invalid
+port ends the walk at the trusted proxy that wrote it, so that request is
+attributed to the proxy.
+
+#### Chains of proxies and CDNs
+
+Every hop between the client and JellyPass must be accounted for. JellyPass
+stops at the first address it does not trust, so with a CDN in front of your
+reverse proxy (for example Cloudflare → reverse proxy → JellyPass) the
+reverse proxy's peer is a CDN edge server. Either:
+
+- have the reverse proxy restore the real client address itself, using the
+  CDN's client-address header and published address ranges (for nginx, the
+  `real_ip` module with `set_real_ip_from` for each CDN range and
+  `real_ip_header CF-Connecting-IP`), so that the `X-Forwarded-For` it sends
+  ends with the real client; or
+- list the CDN's published address ranges in `TRUSTED_PROXIES` along with the
+  reverse proxy, and keep them current.
+
+Otherwise every client is attributed to a CDN edge address and the per-client
+login limits are shared again.
+
+#### Forwarding to Jellyfin
+
 The household gateway forwards to Jellyfin like any other proxy hop: it appends
 the address it received the request from to `X-Forwarded-For`, keeping existing
-entries, and sets `X-Forwarded-Proto` and `X-Real-IP` when they are missing.
-For Jellyfin to log and apply its own policies to the real client address, add
-JellyPass, and the proxy in front of it, to Jellyfin's known proxies
+entries, and sets `X-Forwarded-Proto` when it is missing. For Jellyfin to log
+and apply its own policies to the real client address, add JellyPass, and the
+proxy in front of it, to Jellyfin's known proxies
 (**Dashboard → Networking → Known proxies**).
+
+JellyPass also sets `X-Real-IP` to the client address it resolved, but only
+when the request does not already carry one. An existing `X-Real-IP` is passed
+through unchanged, even from an untrusted client, and Jellyfin does not read
+`X-Real-IP`, so do not rely on it downstream. Use `X-Forwarded-For`.
 
 ## Configure Jellyseerr
 

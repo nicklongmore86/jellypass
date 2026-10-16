@@ -13,7 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   CIDR ranges (IPv4 and IPv6). When a request arrives from a listed proxy,
   JellyPass takes the client address from `X-Forwarded-For`, walking it right
   to left past trusted hops. Requests from anywhere else use the connecting
-  address and ignore the header. Empty by default, which keeps the previous
+  address and ignore the header. Addresses are compared in canonical form, so
+  IPv4-mapped IPv6 spellings count as the IPv4 address and IPv6 case and zero
+  compression do not matter. Empty by default, which keeps the previous
   behaviour; an invalid entry stops startup.
 
 ### Changed
@@ -38,7 +40,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Login rate limits behind a reverse proxy.** The household and
   administrator login limits keyed every client behind a proxy on the proxy's
   address, so one household could lock out all of them. With
-  `TRUSTED_PROXIES` set, they now apply per client.
+  `TRUSTED_PROXIES` set, they now apply per client. Each limit tracks at most
+  10,000 clients, evicting the oldest, and drops expired entries as it goes
+  instead of scanning every entry on each attempt.
 
 ## [2.0.0] - 2026-10-15
 
