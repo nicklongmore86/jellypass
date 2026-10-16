@@ -27,6 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the HD item and leave the 4K item public. These webhooks are now rejected and
   counted as `jfa_webhooks_total{result="error"}`, like a 4K event without
   Seerr lookup. With Seerr lookup configured they still resolve through Seerr.
+- **Webhook state-write failures are counted.** A webhook whose grant could
+  not be written to the state file was rejected without incrementing
+  `jfa_webhooks_total`. Every failure after the body is validated (resolving,
+  storing or applying the grant) now counts exactly once as
+  `{result="error"}`; malformed bodies still count only as `{result="invalid"}`.
 
 - **Recent requests cache.** The 60-second recent-requests cache kept only as
   many requests as the last caller asked for and ignored the catalog it was

@@ -227,28 +227,24 @@ export class AccessService {
         this.#metrics.increment('jfa_webhooks_total', { result: 'ignored' });
         return null;
       }
-      let resolved: { itemId: string; userId: string; mediaType?: string };
+      // The body is valid from here on (parse failures count as "invalid" in the server), so every
+      // failure while resolving, persisting or reconciling counts once as "error".
       try {
-        resolved = await this.#resolveWebhook(event);
-      } catch (error) {
-        this.#metrics.increment('jfa_webhooks_total', { result: 'error' });
-        throw error;
-      }
-      const grant = await this.#store.grant({
-        itemId: resolved.itemId,
-        requestId: event.request.id,
-        userId: resolved.userId,
-        groupIds: this.#store.listGroupIdsForUser(resolved.userId),
-        ...(resolved.mediaType ? { mediaType: resolved.mediaType } : {}),
-      });
-      try {
+        const resolved = await this.#resolveWebhook(event);
+        const grant = await this.#store.grant({
+          itemId: resolved.itemId,
+          requestId: event.request.id,
+          userId: resolved.userId,
+          groupIds: this.#store.listGroupIdsForUser(resolved.userId),
+          ...(resolved.mediaType ? { mediaType: resolved.mediaType } : {}),
+        });
         await this.#reconcileGrant(grant);
         this.#metrics.increment('jfa_webhooks_total', { result: 'granted' });
+        return this.#store.get(grant.itemId) ?? grant;
       } catch (error) {
         this.#metrics.increment('jfa_webhooks_total', { result: 'error' });
         throw error;
       }
-      return this.#store.get(grant.itemId) ?? grant;
     });
   }
 

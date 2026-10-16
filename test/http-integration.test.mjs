@@ -613,14 +613,16 @@ describe('webhook resolution errors over HTTP', { timeout: 5_000 }, () => {
     const server = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     servers.push(server);
-    return async (body) => {
+    const send = async (body) => {
       const response = await fetch(`http://127.0.0.1:${server.address().port}/webhooks/seerr`, {
         method: 'POST',
         headers: { Authorization: 'Bearer webhook-secret', 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
+        body: typeof body === 'string' ? body : JSON.stringify(body),
       });
       return { status: response.status, body: await response.json() };
     };
+    send.service = service;
+    return send;
   }
 
   after(async () => {
@@ -648,6 +650,15 @@ describe('webhook resolution errors over HTTP', { timeout: 5_000 }, () => {
     const hd = available('5', 'Movie Request Now Available');
     delete hd.media.jellyfinMediaId;
     assert.deepEqual(await send(hd), { status: 400, body: { error: 'Seerr request 5 is missing a Jellyfin media ID' } });
+  });
+
+  it('counts a malformed or invalid body once as invalid and never as an error', async () => {
+    const send = await webhookServer(undefined);
+    assert.equal((await send('{"notificationType":')).status, 400);
+    assert.equal((await send({ notificationType: 'MEDIA_AVAILABLE', request: { id: '{{request_id}}' } })).status, 400);
+    const metrics = send.service.renderMetrics();
+    assert.match(metrics, /jfa_webhooks_total\{result="invalid"\} 2\n/);
+    assert.doesNotMatch(metrics, /result="error"/);
   });
 
   it('returns 502 for a 4K event when Seerr lookup is not configured', async () => {

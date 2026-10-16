@@ -423,6 +423,37 @@ describe('webhooks without Seerr lookup', () => {
   });
 });
 
+describe('webhook outcome accounting', () => {
+  it('counts a grant that cannot be persisted once as an error', async () => {
+    const store = new GrantStore(await stateFile());
+    await store.load();
+    const fake = fakeJellyfin();
+    const service = new AccessService(fake, store);
+    store.grant = async () => {
+      throw new Error('EACCES: permission denied, open state.json.tmp');
+    };
+    await assert.rejects(() => service.processWebhook(parseWebhook(webhook())), /EACCES/);
+    const metrics = service.renderMetrics();
+    assert.match(metrics, /jfa_webhooks_total\{result="error"\} 1\n/);
+    assert.doesNotMatch(metrics, /result="granted"|result="invalid"/);
+    assert.deepEqual(fake.item.Tags, ['keep-me']);
+  });
+
+  it('counts a grant that is stored but cannot be reconciled once as an error', async () => {
+    const store = new GrantStore(await stateFile());
+    await store.load();
+    const fake = fakeJellyfin();
+    fake.updateItem = async () => {
+      throw new Error('Jellyfin unavailable');
+    };
+    const service = new AccessService(fake, store);
+    await assert.rejects(() => service.processWebhook(parseWebhook(webhook())), /Jellyfin unavailable/);
+    const metrics = service.renderMetrics();
+    assert.match(metrics, /jfa_webhooks_total\{result="error"\} 1\n/);
+    assert.doesNotMatch(metrics, /result="granted"/);
+  });
+});
+
 describe('household-scoped request grants', () => {
   async function twoHouseholds() {
     const store = new GrantStore(await stateFile());

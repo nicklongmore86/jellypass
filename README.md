@@ -513,7 +513,9 @@ Library for immediate protection.
 If `jfa_last_webhook_received_timestamp_seconds` is absent from `/metrics`, no
 authenticated webhook has reached JellyPass since it started. If
 `jfa_webhooks_total{result="invalid"}` grows, webhooks arrive but their body is
-malformed; re-save the payload through Seerr's webhook form. In either case,
+malformed; re-save the payload through Seerr's webhook form. If
+`jfa_webhooks_total{result="error"}` grows, the body was valid but JellyPass
+could not resolve, store or apply the grant; the error is logged. In any case,
 `jfa_request_backfill_total{result="granted"}` shows requests the backfill
 applied instead, and `{result="error"}` counts requests it could not process.
 
