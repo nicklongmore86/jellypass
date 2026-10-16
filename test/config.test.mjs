@@ -168,8 +168,15 @@ describe('trusted proxy configuration', () => {
     );
   });
 
+  it('stores entries in canonical form', () => {
+    assert.deepEqual(
+      load({ TRUSTED_PROXIES: '::FFFF:CB00:7105, 0:0:0:0:0:ffff:c000:0200/120, ::ffff:0:0/96, 2001:0DB8:0:0::/32, fe80::1%eth0, 0000::0001' }).trustedProxies,
+      ['203.0.113.5', '192.0.2.0/24', '0.0.0.0/0', '2001:db8::/32', 'fe80::1', '::1'],
+    );
+  });
+
   it('refuses to start on an invalid entry and names it', () => {
-    for (const value of ['proxy.example.test', '192.0.2.300', '192.0.2.0/33', '2001:db8::/129', '10.0.0.0/', '10.0.0.0/8/8', '10.0.0.0/-1', '10.0.0.0/abc', '192.0.2.1:8080']) {
+    for (const value of ['::ffff:0:0/95', '[2001:db8::1]', '[2001:db8::1]:443', 'fe80::1%', '192.0.2.1%eth0', '2001:db8::1::1', 'proxy.example.test', '192.0.2.300', '192.0.2.0/33', '2001:db8::/129', '10.0.0.0/', '10.0.0.0/8/8', '10.0.0.0/-1', '10.0.0.0/abc', '192.0.2.1:8080']) {
       assert.throws(
         () => load({ TRUSTED_PROXIES: `192.0.2.1, ${value}` }),
         { message: `TRUSTED_PROXIES must be a comma-separated list of IP addresses or CIDR ranges; "${value}" is not valid` },

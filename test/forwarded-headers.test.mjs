@@ -142,6 +142,18 @@ describe('forwarded client addresses', { timeout: 10_000 }, () => {
     assert.equal((await attempt('203.0.113.6')).status, 401);
   });
 
+  it('shares one household login bucket across spellings of the same IPv6 client', async () => {
+    const port = await startGateway([LOCAL]);
+    const attempt = (client) => send(port, '/Users/AuthenticateByName', {
+      host: HOUSEHOLD_HOST,
+      'x-forwarded-for': client,
+      'content-type': 'application/json',
+    }, { method: 'POST', body: JSON.stringify({ Username: 'Alice', Pw: 'wrong' }) });
+    for (let index = 0; index < 10; index += 1) assert.equal((await attempt('2001:DB8::5')).status, 401);
+    for (let index = 0; index < 10; index += 1) assert.equal((await attempt('2001:db8:0:0:0:0:0:5')).status, 401);
+    assert.equal((await attempt('[2001:db8::5]:4711')).status, 429);
+  });
+
   it('keeps one household login bucket per peer when no proxy is trusted', async () => {
     const port = await startGateway();
     const attempt = (client) => send(port, '/Users/AuthenticateByName', {
@@ -164,6 +176,19 @@ describe('forwarded client addresses', { timeout: 10_000 }, () => {
     for (let index = 0; index < 8; index += 1) assert.equal((await attempt('203.0.113.5')).status, 401);
     assert.equal((await attempt('203.0.113.5')).status, 429);
     assert.equal((await attempt('203.0.113.6')).status, 401);
+  });
+
+  it('shares one administrator login bucket across IPv4-mapped spellings', async () => {
+    const webAuth = new WebAuth({ authenticateAdministrator: async () => null });
+    const port = await startGateway([LOCAL], webAuth);
+    const attempt = (client) => send(port, '/auth/login', {
+      host: `${LOCAL}:${port}`,
+      'x-forwarded-for': client,
+      'content-type': 'application/json',
+    }, { method: 'POST', body: JSON.stringify({ username: 'admin', password: 'wrong' }) });
+    const spellings = ['203.0.113.7', '::ffff:203.0.113.7', '::ffff:cb00:7107', '0:0:0:0:0:FFFF:CB00:7107'];
+    for (let index = 0; index < 8; index += 1) assert.equal((await attempt(spellings[index % spellings.length])).status, 401);
+    for (const spelling of spellings) assert.equal((await attempt(spelling)).status, 429, spelling);
   });
 });
 

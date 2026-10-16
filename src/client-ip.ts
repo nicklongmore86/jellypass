@@ -1,20 +1,55 @@
 import { BlockList, isIP } from 'node:net';
 
-const MAPPED_IPV4 = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/i;
+// After WHATWG serialisation every IPv4-mapped spelling (dotted, hex, expanded, upper-case) has exactly this form.
+const MAPPED_IPV4 = /^::ffff:([0-9a-f]{1,4}):([0-9a-f]{1,4})$/;
+const ZONE_ID = /^%[A-Za-z0-9._~-]+$/;
+const PORT = /^[1-9]\d{0,4}$/;
 
 /**
- * Canonical form of an address from a socket or a forwarding header: brackets, a port and the `::ffff:` prefix of an
- * IPv4-mapped IPv6 address are removed. Returns undefined for anything that is not an IP address.
+ * Canonical form of a bare IP address, or undefined if it is not one. IPv4 stays dotted-decimal; every IPv4-mapped IPv6
+ * spelling becomes the IPv4 address; other IPv6 addresses are serialised per RFC 5952 (lower case, longest zero run
+ * compressed). An IPv6 zone ID (`fe80::1%eth0`) only names a local interface and is stripped.
+ */
+export function canonicalIp(value: string): string | undefined {
+  let address = value.trim();
+  const zone = address.indexOf('%');
+  if (zone !== -1) {
+    if (!ZONE_ID.test(address.slice(zone))) return undefined;
+    address = address.slice(0, zone);
+    if (isIP(address) !== 6) return undefined;
+  }
+  const family = isIP(address);
+  if (family === 4) return address;
+  if (family !== 6) return undefined;
+  let serialised: string;
+  try {
+    serialised = new URL(`http://[${address}]/`).hostname.slice(1, -1);
+  } catch {
+    return undefined;
+  }
+  const mapped = MAPPED_IPV4.exec(serialised);
+  if (!mapped) return serialised;
+  const high = Number.parseInt(mapped[1] as string, 16);
+  const low = Number.parseInt(mapped[2] as string, 16);
+  return [high >> 8, high & 0xff, low >> 8, low & 0xff].join('.');
+}
+
+/**
+ * Canonical address (see {@link canonicalIp}) from a socket or a forwarding-header entry, which may also be written as
+ * `[ipv6]`, `[ipv6]:port` or `ipv4:port`. Returns undefined for anything else, including an invalid port.
  */
 export function normaliseIp(value: string | undefined): string | undefined {
-  let address = value?.trim();
+  const address = value?.trim();
   if (!address) return undefined;
-  const bracketed = /^\[([^\]]+)\](?::\d+)?$/.exec(address);
-  if (bracketed) address = bracketed[1] as string;
-  else if (/^\d{1,3}(?:\.\d{1,3}){3}:\d+$/.test(address)) address = address.slice(0, address.lastIndexOf(':'));
-  const mapped = MAPPED_IPV4.exec(address);
-  if (mapped) address = mapped[1] as string;
-  return isIP(address) ? address.toLowerCase() : undefined;
+  const bracketed = /^\[([^\]]+)\](?::([^:]*))?$/.exec(address);
+  if (bracketed) {
+    const [, inner, port] = bracketed;
+    if (port !== undefined && !validPort(port)) return undefined;
+    return isIP((inner as string).split('%')[0] as string) === 6 ? canonicalIp(inner as string) : undefined;
+  }
+  const withPort = /^(\d{1,3}(?:\.\d{1,3}){3}):([^:]*)$/.exec(address);
+  if (withPort) return validPort(withPort[2] as string) ? canonicalIp(withPort[1] as string) : undefined;
+  return canonicalIp(address);
 }
 
 /**
@@ -78,20 +113,25 @@ export class ClientIpResolver {
 function parseEntry(entry: string): { address: string; prefix?: number } | undefined {
   const [rawAddress, rawPrefix, extra] = entry.trim().split('/');
   if (extra !== undefined || !rawAddress) return undefined;
-  let address = rawAddress.toLowerCase();
-  const family = isIP(address);
-  if (!family) return undefined;
+  const family = isIP(rawAddress.split('%')[0] as string);
+  const address = canonicalIp(rawAddress);
+  if (!family || !address) return undefined;
   let prefix: number | undefined;
   if (rawPrefix !== undefined) {
     if (!/^\d{1,3}$/.test(rawPrefix)) return undefined;
     prefix = Number(rawPrefix);
     if (prefix > (family === 6 ? 128 : 32)) return undefined;
   }
-  // Peers are compared in normalised form, so an IPv4-mapped entry is stored as the plain IPv4 address or range.
-  const mapped = MAPPED_IPV4.exec(address);
-  if (mapped && (prefix === undefined || prefix >= 96)) {
-    address = mapped[1] as string;
-    if (prefix !== undefined) prefix -= 96;
+  // Peers are compared in canonical form, where IPv4-mapped addresses are plain IPv4, so a mapped entry is stored as the
+  // IPv4 address or range it covers. A mapped range wider than ::ffff:0:0/96 would also cover IPv6 that is not mapped,
+  // which a canonical peer can never match, so it is rejected rather than silently matching less than it says.
+  if (family === 6 && isIP(address) === 4 && prefix !== undefined) {
+    if (prefix < 96) return undefined;
+    prefix -= 96;
   }
   return prefix === undefined ? { address } : { address, prefix };
+}
+
+function validPort(port: string): boolean {
+  return PORT.test(port) && Number(port) <= 65_535;
 }
