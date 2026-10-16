@@ -30,13 +30,16 @@ written by 2.1.0.
 
 - **`TRUSTED_PROXIES`.** A comma-separated list of reverse-proxy addresses and
   CIDR ranges (IPv4 and IPv6). When a request arrives from a listed proxy,
-  JellyPass takes the client address for the login rate limits, and for the
-  `X-Real-IP` header it sends to Jellyfin, from `X-Forwarded-For`, walking it
-  right to left past trusted hops. Requests from anywhere else use the
-  connecting address and ignore the header. Addresses are compared in
-  canonical form, so IPv4-mapped IPv6 spellings count as the IPv4 address and
-  IPv6 case and zero compression do not matter. Empty by default, which keeps
-  the previous behaviour; an invalid entry stops startup. See "Running behind a
+  JellyPass takes the client address for the login rate limits from
+  `X-Forwarded-For`, walking it right to left past trusted hops. Requests from
+  anywhere else use the connecting address and ignore the header. The same
+  resolved address goes in the `X-Real-IP` header the household gateway sends
+  to Jellyfin, but only when the request has none: an existing `X-Real-IP` is
+  passed through unchanged, even from an untrusted client. Jellyfin does not
+  read `X-Real-IP`, so rely on `X-Forwarded-For` downstream. Addresses are
+  compared in canonical form, so IPv4-mapped IPv6 spellings count as the IPv4
+  address and IPv6 case and zero compression do not matter. Empty by default,
+  which keeps the previous behaviour; an invalid entry stops startup. See "Running behind a
   reverse proxy" in the README, including chains of proxies and CDNs.
 
 ### Changed
@@ -114,12 +117,17 @@ written by 2.1.0.
 
 1. **Back up the state file**, as before any upgrade. 2.1.0 keeps the schema
    v7 format and does not migrate the file, so rolling back to 2.0.0 needs no
-   edit: point `JELLYPASS_IMAGE` back at `2.0.0` and restart. The backup still
+   edit: set `JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:2.0.0` and
+   recreate the container with `docker compose up -d`. The backup still
    protects against anything else going wrong.
 2. **Without Seerr lookup, check the webhook payload.** If `SEERR_URL` and
    `SEERR_API_KEY` are not set, make sure the Seerr webhook payload includes
-   `"event": "{{event}}"` (see the README template). A webhook without a recognized HD `event` now fails with
-   `502` and counts as `jfa_webhooks_total{result="error"}`. With Seerr lookup
+   `"event": "{{event}}"` (see the README template). A webhook that has both
+   Jellyfin IDs but no recognized HD `event` now fails with `502` and counts
+   as `jfa_webhooks_total{result="error"}`. One without both IDs still returns
+   `400`, as before. A repeated webhook for a request JellyPass has already
+   handled skips this check: it reapplies the recorded grant, or returns `202`
+   ignored if an administrator revoked the request. With Seerr lookup
    configured, nothing changes.
 3. **Optional, behind a reverse proxy: set `TRUSTED_PROXIES`** to the address
    or subnet of the proxy in front of JellyPass, and add JellyPass and that
