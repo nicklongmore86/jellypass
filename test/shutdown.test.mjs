@@ -145,6 +145,52 @@ describe('graceful shutdown', { timeout: 15_000 }, () => {
     agent.destroy();
   });
 
+  it('closes both sides of an upgrade still waiting for Jellyfin to answer', async () => {
+    // A Jellyfin stand-in that accepts the upgrade request but withholds the 101.
+    let pendingUpstream;
+    const withholding = createServer();
+    withholding.on('upgrade', (request, socket) => {
+      socket.on('error', () => {});
+      socket.on('end', () => socket.end());
+      socket.resume();
+      pendingUpstream = socket;
+    });
+    await listen(withholding);
+    try {
+      const server = makeServer(stubService(), { webhook: 'w', admin: 'a' }, undefined, {
+        householdGateway: { jellyfinUrl: `http://127.0.0.1:${withholding.address().port}`, domain: 'example.test', hostPrefix: 'jelly-' },
+      });
+      servers.push(server);
+      await listen(server);
+      const client = connectSocket(server.address().port, '127.0.0.1');
+      client.on('error', () => {});
+      await once(client, 'connect');
+      client.write(`GET /socket HTTP/1.1\r\nHost: ${HOUSEHOLD_HOST}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n`);
+      await waitFor(() => pendingUpstream !== undefined);
+      const clientClosed = once(client, 'close');
+      const upstreamClosed = once(pendingUpstream, 'close');
+      const { store } = await newStore();
+      const { shutdown, exits, logs } = harness(server, store);
+      const startedAt = performance.now();
+      // Bounded, so an untracked pending upgrade (which keeps server.close() open) fails here instead of hanging.
+      const outcome = await Promise.race([
+        Promise.all([shutdown('SIGTERM'), clientClosed, upstreamClosed]).then(() => 'closed'),
+        delay(SHUTDOWN_BUDGET_MS).then(() => 'still open'),
+      ]);
+      const elapsed = performance.now() - startedAt;
+      assert.equal(outcome, 'closed');
+      assert.deepEqual(exits, [0]);
+      assert.ok(elapsed < SHUTDOWN_BUDGET_MS, `shutdown took ${elapsed.toFixed(0)} ms`);
+      assert.equal(client.destroyed, true);
+      assert.equal(pendingUpstream.destroyed, true);
+      assert.equal(logs.at(-1).webSockets, 1);
+    } finally {
+      pendingUpstream?.destroy();
+      withholding.closeAllConnections();
+      await new Promise((resolve) => withholding.close(resolve));
+    }
+  });
+
   it('cuts off requests still running after the grace period', async () => {
     const server = await startServer();
     const { store } = await newStore();
