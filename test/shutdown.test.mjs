@@ -212,6 +212,32 @@ describe('graceful shutdown', { timeout: 15_000 }, () => {
     assert.deepEqual(Object.keys(state.groups).sort(), ['one', 'two']);
     await Promise.all([first, second]);
   });
+
+  it('GrantStore refuses a save after close() even while a write is queued', async () => {
+    const { store, file } = await newStore();
+    const first = store.upsertGroup({ id: 'first', name: 'First', userIds: [] });
+    const closing = store.close();
+    await assert.rejects(store.upsertGroup({ id: 'late', name: 'Late', userIds: [] }), /state store is closed/);
+    await Promise.all([first, closing]);
+    assert.equal(store.getGroup('late'), undefined, 'the refused change is still in memory');
+    const state = JSON.parse(await readFile(file, 'utf8'));
+    assert.deepEqual(Object.keys(state.groups), ['first']);
+  });
+
+  it('GrantStore leaves memory untouched when it refuses a change after close()', async () => {
+    const { store } = await newStore();
+    await store.upsertGroup({ id: 'farmhouse', name: 'Farmhouse', userIds: ['alice-id'] });
+    await store.close();
+    await assert.rejects(store.grant({ itemId: 'item-1', requestId: '42', userId: 'alice-id', groupIds: ['farmhouse'] }), /state store is closed/);
+    assert.equal(store.get('item-1'), undefined);
+    assert.equal(store.hasHandledRequest('42'), false);
+    await assert.rejects(store.deleteGroup('farmhouse'), /state store is closed/);
+    await assert.rejects(store.setUserPasswordless('alice-id', true), /state store is closed/);
+    await assert.rejects(store.replaceCatalog([{ id: 'item-9', name: 'Nine', type: 'Movie' }]), /state store is closed/);
+    assert.ok(store.getGroup('farmhouse'));
+    assert.deepEqual(store.listPasswordlessUserIds(), []);
+    assert.deepEqual(store.getCatalog().items, []);
+  });
 });
 
 describe('SIGTERM to the JellyPass process', { timeout: 15_000 }, () => {
