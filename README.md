@@ -299,27 +299,44 @@ attributed to the proxy.
 Every hop between the client and JellyPass must be accounted for. JellyPass
 stops at the first address it does not trust, so with a CDN in front of your
 reverse proxy (for example Cloudflare → reverse proxy → JellyPass) the
-reverse proxy's peer is a CDN edge server. Either:
+reverse proxy's peer is a CDN edge server. Pick one of these, and configure
+Jellyfin's known proxies to match (see [Forwarding to Jellyfin](#forwarding-to-jellyfin)):
 
-- have the reverse proxy restore the real client address itself, using the
-  CDN's client-address header and published address ranges (for nginx, the
+- **The reverse proxy restores the real client address.** It uses the CDN's
+  client-address header and published address ranges (for nginx, the
   `real_ip` module with `set_real_ip_from` for each CDN range and
-  `real_ip_header CF-Connecting-IP`), so that the `X-Forwarded-For` it sends
-  ends with the real client; or
-- list the CDN's published address ranges in `TRUSTED_PROXIES` along with the
-  reverse proxy, and keep them current.
+  `real_ip_header CF-Connecting-IP`), so the `X-Forwarded-For` it sends ends
+  with the real client. `TRUSTED_PROXIES` lists the reverse proxy, and
+  Jellyfin's known proxies list JellyPass and the reverse proxy.
+- **JellyPass and Jellyfin walk past the CDN.** The reverse proxy appends the
+  CDN edge address to `X-Forwarded-For` as usual. `TRUSTED_PROXIES` lists the
+  reverse proxy and the CDN's published address ranges, and Jellyfin's known
+  proxies list JellyPass, the reverse proxy, and the same CDN ranges. Keep
+  both lists current when the CDN publishes changes.
 
-Otherwise every client is attributed to a CDN edge address and the per-client
-login limits are shared again.
+Otherwise every client is attributed to a CDN edge address: the per-client
+login limits are shared again, and Jellyfin sees the CDN as the client.
+
+#### Login lockouts are best-effort
+
+The household and administrator login limits each track at most 10,000 client
+addresses and evict the oldest first. A flood of logins from that many
+genuinely distinct source addresses, such as an attacker with a routed IPv6
+range, can therefore evict an active lockout before its five minutes are up.
+A spoofed `X-Forwarded-For` cannot do this: from an untrusted peer it is
+ignored, and every request counts against the peer's own address.
 
 #### Forwarding to Jellyfin
 
 The household gateway forwards to Jellyfin like any other proxy hop: it appends
 the address it received the request from to `X-Forwarded-For`, keeping existing
 entries, and sets `X-Forwarded-Proto` when it is missing. For Jellyfin to log
-and apply its own policies to the real client address, add JellyPass, and the
-proxy in front of it, to Jellyfin's known proxies
-(**Dashboard → Networking → Known proxies**).
+and apply its own policies to the real client address, add every hop that it
+must walk past to Jellyfin's known proxies
+(**Dashboard → Networking → Known proxies**): JellyPass and the reverse proxy
+in front of it and, if `TRUSTED_PROXIES` also lists CDN ranges instead of the
+reverse proxy restoring the client address, those CDN ranges too (see
+[Chains of proxies and CDNs](#chains-of-proxies-and-cdns)).
 
 JellyPass also sets `X-Real-IP` to the client address it resolved, but only
 when the request does not already carry one. An existing `X-Real-IP` is passed

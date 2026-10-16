@@ -42,7 +42,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   address, so one household could lock out all of them. With
   `TRUSTED_PROXIES` set, they now apply per client. Each limit tracks at most
   10,000 clients, evicting the oldest, and drops expired entries as it goes
-  instead of scanning every entry on each attempt.
+  instead of scanning every entry on each attempt. Lockouts are therefore
+  best-effort: a flood from that many genuinely distinct addresses can evict
+  one early, while a spoofed `X-Forwarded-For` from an untrusted peer cannot.
 
 ## [2.0.0] - 2026-10-15
 
