@@ -2,8 +2,8 @@ import assert from 'node:assert/strict';
 import { mkdtemp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { describe, it } from 'node:test';
-import { AccessService } from '../dist/access-service.js';
+import { describe, it, mock } from 'node:test';
+import { AccessService, OperationCancelledError } from '../dist/access-service.js';
 import { BackgroundTasks, createShutdown } from '../dist/shutdown.js';
 import { GrantStore } from '../dist/store.js';
 
@@ -131,5 +131,146 @@ describe('stopping background work on shutdown', { timeout: 10_000 }, () => {
     assert.deepEqual(exits, [0]);
     assert.ok(elapsed >= 95 && elapsed < 1_000, `shutdown took ${elapsed.toFixed(0)} ms`);
     assert.ok(logs.includes('background work still running; shutting down without waiting for it'));
+  });
+});
+
+/**
+ * A recorded backfill/reconcile world: every Jellyfin and Seerr call is logged, and `abortAt` aborts the run inside the
+ * named call (the call itself still completes, like a fetch already in flight).
+ */
+function recordingWorld(abortAt) {
+  const controller = new AbortController();
+  const calls = [];
+  const increments = [];
+  const record = (name, value) => {
+    calls.push(name);
+    if (name === abortAt) controller.abort(new Error('shutting down'));
+    return value;
+  };
+  const users = [
+    { Id: 'admin-id', Name: 'Admin', Policy: { IsAdministrator: true, BlockedTags: [] } },
+    { Id: 'alice-id', Name: 'Alice', Policy: { BlockedTags: [] } },
+    { Id: 'bob-id', Name: 'Bob', Policy: { BlockedTags: [] } },
+  ];
+  const jellyfin = {
+    getUsers: async () => record('getUsers', structuredClone(users)),
+    getItem: async (itemId) => record('getItem', { Id: itemId, Name: 'Movie', Type: 'Movie', Tags: [] }),
+    getLocalTrailers: async () => record('getLocalTrailers', []),
+    updateItem: async () => record('updateItem'),
+    updatePolicy: async () => record('updatePolicy'),
+    fetchLibraryCatalog: async () => record('fetchLibraryCatalog', [{ id: 'item-1', name: 'Movie', type: 'Movie' }]),
+  };
+  const seerr = {
+    listRequestsSince: async () => record('listRequestsSince', [{ id: 7, media: { status: 5 } }]),
+    getRequest: async (requestId) => record('getRequest', {
+      id: Number(requestId), media: { status: 5, jellyfinMediaId: 'item-1', mediaType: 'movie' }, requestedBy: { jellyfinUserId: 'alice-id' },
+    }),
+  };
+  const metrics = {
+    increment: (name, labels) => increments.push({ name, ...labels }),
+    gauge: () => {},
+    render: () => '',
+  };
+  return { controller, calls, increments, jellyfin, seerr, metrics };
+}
+
+describe('cancellation inside an active background run', { timeout: 10_000 }, () => {
+  async function newStore() {
+    const store = new GrantStore(path.join(await mkdtemp(path.join(tmpdir(), 'jellypass-cancel-test-')), 'grants.json'));
+    await store.load();
+    return store;
+  }
+
+  async function quietly(run) {
+    const errors = mock.method(console, 'error', () => {});
+    const infos = mock.method(console, 'log', () => {});
+    try {
+      const error = await run().then(() => undefined, (caught) => caught);
+      return { error, errorLogs: errors.mock.calls.map((call) => call.arguments.join(' ')), infoLogs: infos.mock.calls.map((call) => call.arguments.join(' ')) };
+    } finally {
+      errors.mock.restore();
+      infos.mock.restore();
+    }
+  }
+
+  const BACKFILL_ABORT_POINTS = [
+    ['getRequest', ['listRequestsSince', 'getRequest']],
+    ['getUsers', ['listRequestsSince', 'getRequest', 'getUsers']],
+    ['getItem', ['listRequestsSince', 'getRequest', 'getUsers', 'getItem']],
+  ];
+  for (const [abortAt, expectedCalls] of BACKFILL_ABORT_POINTS) {
+    it(`backfill aborted inside ${abortAt}() makes no further call, stores no grant, and logs and counts nothing`, async () => {
+      const world = recordingWorld(abortAt);
+      const store = await newStore();
+      const service = new AccessService(world.jellyfin, store, world.metrics, world.seerr);
+      const { error, errorLogs, infoLogs } = await quietly(() => service.backfillRequests(new Date(0), { signal: world.controller.signal }));
+      assert.ok(error instanceof OperationCancelledError, String(error));
+      assert.deepEqual(world.calls, expectedCalls);
+      assert.equal(store.get('item-1'), undefined);
+      assert.equal(store.hasHandledRequest('7'), false);
+      assert.deepEqual(world.increments, []);
+      assert.deepEqual(errorLogs, []);
+      assert.deepEqual(infoLogs, []);
+    });
+  }
+
+  for (const abortAt of ['getLocalTrailers', 'updateItem']) {
+    it(`backfill aborted while reconciling its new grant (inside ${abortAt}()) applies nothing further and logs and counts nothing`, async () => {
+      const world = recordingWorld(abortAt);
+      const store = await newStore();
+      const service = new AccessService(world.jellyfin, store, world.metrics, world.seerr);
+      const { error, errorLogs, infoLogs } = await quietly(() => service.backfillRequests(new Date(0), { signal: world.controller.signal }));
+      assert.ok(error instanceof OperationCancelledError, String(error));
+      assert.equal(world.calls.at(-1), abortAt, `calls after the abort: ${world.calls.join(', ')}`);
+      assert.ok(!world.calls.includes('updatePolicy'));
+      assert.deepEqual(world.increments.filter((entry) => entry.name !== 'jfa_item_updates_total'), []);
+      assert.deepEqual(errorLogs, []);
+      assert.deepEqual(infoLogs, []);
+      // The grant was stored before the abort; it stays pending (not failed) and is reconciled after restart.
+      assert.equal(store.get('item-1')?.sync.state, 'pending');
+    });
+  }
+
+  for (const [abortAt, expectedCalls] of [
+    ['getUsers', ['getItem', 'getUsers']],
+    ['getLocalTrailers', ['getItem', 'getUsers', 'getLocalTrailers']],
+    ['updateItem', ['getItem', 'getUsers', 'getLocalTrailers', 'updateItem']],
+  ]) {
+    it(`reconcileAll aborted inside ${abortAt}() makes no further call, leaves the grant pending, and counts nothing`, async () => {
+      const world = recordingWorld(abortAt);
+      const store = await newStore();
+      await store.setManualAccess({ itemId: 'item-1', userIds: ['alice-id'], groupIds: [] });
+      await store.setManualAccess({ itemId: 'item-2', userIds: ['alice-id'], groupIds: [] });
+      const service = new AccessService(world.jellyfin, store, world.metrics);
+      const { error, errorLogs } = await quietly(() => service.reconcileAll({ dueOnly: true, signal: world.controller.signal }));
+      assert.ok(error instanceof OperationCancelledError, String(error));
+      assert.deepEqual(world.calls, expectedCalls);
+      assert.deepEqual(world.increments.filter((entry) => entry.name !== 'jfa_item_updates_total'), []);
+      assert.deepEqual(errorLogs, []);
+      assert.equal(store.get('item-1').sync.state, 'pending');
+      assert.equal(store.get('item-1').sync.attempts, 0);
+    });
+  }
+
+  it('catalog sync aborted inside fetchLibraryCatalog() stores nothing and rejects as cancelled', async () => {
+    const world = recordingWorld('fetchLibraryCatalog');
+    const store = await newStore();
+    const service = new AccessService(world.jellyfin, store, world.metrics);
+    const { error, errorLogs } = await quietly(() => service.syncLibraryCatalog({ signal: world.controller.signal }));
+    assert.ok(error instanceof OperationCancelledError, String(error));
+    assert.deepEqual(world.calls, ['fetchLibraryCatalog']);
+    assert.deepEqual(store.getCatalog().items, []);
+    assert.deepEqual(errorLogs, []);
+  });
+
+  it('reconciliation without a signal (webhook and admin paths) runs to completion as before', async () => {
+    const world = recordingWorld(undefined);
+    const store = await newStore();
+    await store.setManualAccess({ itemId: 'item-1', userIds: ['alice-id'], groupIds: [] });
+    const service = new AccessService(world.jellyfin, store, world.metrics);
+    await service.reconcileAll();
+    assert.deepEqual(world.calls, ['getItem', 'getUsers', 'getLocalTrailers', 'updateItem', 'updatePolicy']);
+    assert.equal(store.get('item-1').sync.state, 'synced');
+    assert.ok(world.increments.some((entry) => entry.name === 'jfa_reconciliations_total' && entry.result === 'success'));
   });
 });

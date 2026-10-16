@@ -45,6 +45,24 @@ export class UserProvisioningError extends Error {
   }
 }
 
+/** A background run stopped because shutdown aborted its signal; it is neither a failure to log nor to count. */
+export class OperationCancelledError extends Error {
+  public constructor(signal: AbortSignal) {
+    super(signal.reason instanceof Error ? signal.reason.message : 'operation cancelled');
+    this.name = 'OperationCancelledError';
+  }
+}
+
+function throwIfAborted(signal: AbortSignal | undefined): void {
+  if (signal?.aborted) throw new OperationCancelledError(signal);
+}
+
+/** Rethrows cancellation, including an operation that failed because the run was aborted while it was in flight. */
+function rethrowIfCancelled(error: unknown, signal: AbortSignal | undefined): void {
+  if (error instanceof OperationCancelledError) throw error;
+  throwIfAborted(signal);
+}
+
 export class AccessService {
   readonly #jellyfin: JellyfinClient;
   readonly #store: GrantStore;
@@ -198,12 +216,12 @@ export class AccessService {
     };
   }
 
-  /** An aborted `signal` (shutdown) rejects with its reason and leaves the stored catalog unchanged. */
+  /** An aborted `signal` (shutdown) rejects with OperationCancelledError and leaves the stored catalog unchanged. */
   public syncLibraryCatalog(options: { signal?: AbortSignal } = {}): Promise<{ lastSyncedAt: string; items: Array<LibraryCatalogItem & { managed: boolean; managedAt?: string }> }> {
     return this.#exclusive(async () => {
-      options.signal?.throwIfAborted();
+      throwIfAborted(options.signal);
       const items = await this.#jellyfin.fetchLibraryCatalog();
-      options.signal?.throwIfAborted();
+      throwIfAborted(options.signal);
       const catalog = await this.#store.replaceCatalog(items);
       const grants = new Map(this.#store.list().filter((grant) => grant.active).map((grant) => [normalizeId(grant.itemId), grant]));
       return { ...catalog, items: catalog.items.map((item) => {
@@ -307,19 +325,22 @@ export class AccessService {
    * requester's households). Manual-only grants are left alone. Each request counts as exactly
    * one outcome: granted (stored and reconciled), skipped, or failed (including a grant that was
    * stored but could not be reconciled yet; reconcileAll retries it). Once `signal` is aborted (shutdown), no further
-   * request is started and the run rejects with the signal's reason.
+   * request, grant or write is started and the run rejects with OperationCancelledError, counting and logging nothing
+   * for the request it was on. A call already in flight is left to finish.
    */
   public backfillRequests(since: Date, options: { signal?: AbortSignal } = {}): Promise<RequestBackfillResult> {
     return this.#exclusive(async () => {
-      options.signal?.throwIfAborted();
+      const { signal } = options;
+      throwIfAborted(signal);
       if (!this.#seerr) throw new Error('Seerr lookup is not configured');
       const seerr = this.#seerr;
       // Oldest first, so a grant's first request comes from the original requester.
       const requests = (await seerr.listRequestsSince(since)).reverse();
+      throwIfAborted(signal);
       const result: RequestBackfillResult = { scanned: requests.length, granted: [], skipped: 0, failed: 0 };
       let knownUserIds: Set<string> | undefined;
       for (const listed of requests) {
-        options.signal?.throwIfAborted();
+        throwIfAborted(signal);
         const requestId = String(listed.id);
         try {
           if (!AVAILABLE_MEDIA_STATUSES.has(requestMediaStatus(listed) ?? 0) || this.#store.hasHandledRequest(requestId)) {
@@ -329,6 +350,7 @@ export class AccessService {
           const request = requestItemId(listed) && listed.requestedBy?.jellyfinUserId
             ? listed
             : await seerr.getRequest(requestId);
+          throwIfAborted(signal);
           const itemId = requestItemId(request);
           const userId = request.requestedBy?.jellyfinUserId;
           const existing = itemId ? this.#store.get(itemId) : undefined;
@@ -337,6 +359,7 @@ export class AccessService {
             continue;
           }
           knownUserIds ??= new Set((await this.#jellyfin.getUsers()).map((user) => normalizeId(user.Id)));
+          throwIfAborted(signal);
           if (!knownUserIds.has(normalizeId(userId))) {
             result.skipped += 1;
             continue;
@@ -344,6 +367,7 @@ export class AccessService {
           try {
             await this.#jellyfin.getItem(itemId);
           } catch (error) {
+            rethrowIfCancelled(error, signal);
             if ((error as { status?: unknown }).status !== 404) throw error;
             result.skipped += 1;
             if (!this.#backfillMissingItems.has(requestId)) {
@@ -352,6 +376,7 @@ export class AccessService {
             }
             continue;
           }
+          throwIfAborted(signal);
           const mediaType = request.media?.mediaType ?? request.type;
           const grant = await this.#store.grant({
             itemId,
@@ -360,11 +385,12 @@ export class AccessService {
             groupIds: this.#store.listGroupIdsForUser(userId),
             ...(mediaType ? { mediaType } : {}),
           });
-          await this.#reconcileGrant(grant);
+          await this.#reconcileGrant(grant, signal);
           result.granted.push(grant.itemId);
           this.#metrics.increment('jfa_request_backfill_total', { result: 'granted' });
           console.log(JSON.stringify({ level: 'info', message: 'request backfill granted item', requestId, itemId: grant.itemId, groupIds: grant.groupIds }));
         } catch (error) {
+          rethrowIfCancelled(error, signal);
           result.failed += 1;
           this.#metrics.increment('jfa_request_backfill_total', { result: 'error' });
           console.error(JSON.stringify({
@@ -380,21 +406,25 @@ export class AccessService {
     });
   }
 
-  /** Once `signal` is aborted (shutdown), no further grant is started and the run rejects with the signal's reason. */
+  /**
+   * Once `signal` is aborted (shutdown), no further Jellyfin call or write is started and the run rejects with
+   * OperationCancelledError; the grant it was on is neither marked failed nor counted. A call in flight is left to finish.
+   */
   public reconcileAll(options: { dryRun?: boolean; dueOnly?: boolean; signal?: AbortSignal } = {}): Promise<ChangePlan[]> {
     return this.#exclusive(async () => {
       const plans: ChangePlan[] = [];
       const errors: Error[] = [];
       for (const grant of this.#store.list()) {
-        options.signal?.throwIfAborted();
+        throwIfAborted(options.signal);
         if (options.dueOnly && !isDue(grant)) continue;
         try {
-          if (options.dryRun) plans.push((await this.#buildPlan(grant)).plan);
+          if (options.dryRun) plans.push((await this.#buildPlan(grant, options.signal)).plan);
           else {
-            const plan = await this.#reconcileGrant(grant);
+            const plan = await this.#reconcileGrant(grant, options.signal);
             plans.push(plan);
           }
         } catch (error) {
+          rethrowIfCancelled(error, options.signal);
           errors.push(error instanceof Error ? error : new Error(String(error)));
         }
       }
@@ -600,15 +630,20 @@ export class AccessService {
     return current;
   }
 
-  async #reconcileGrant(grant: GrantRecord): Promise<ChangePlan> {
+  /** Without `signal` (webhooks, admin requests) a reconciliation always runs to completion or failure. */
+  async #reconcileGrant(grant: GrantRecord, signal?: AbortSignal): Promise<ChangePlan> {
     try {
-      const context = await this.#buildPlan(grant);
-      await this.#applyPlan(context);
+      throwIfAborted(signal);
+      const context = await this.#buildPlan(grant, signal);
+      await this.#applyPlan(context, signal);
+      throwIfAborted(signal);
       await this.#store.markSyncSuccess(grant.itemId);
       if (!grant.active) await this.#store.purgeInactive(grant.itemId);
       this.#metrics.increment('jfa_reconciliations_total', { result: 'success' });
       return context.plan;
     } catch (error) {
+      // Cancelled: the grant stays pending and is reconciled again after restart.
+      rethrowIfCancelled(error, signal);
       const message = error instanceof Error ? error.message : String(error);
       await this.#store.markSyncError(grant.itemId, message);
       this.#metrics.increment('jfa_reconciliations_total', { result: 'error' });
@@ -618,14 +653,16 @@ export class AccessService {
     }
   }
 
-  async #buildPlan(grant: GrantRecord): Promise<PlanContext> {
+  async #buildPlan(grant: GrantRecord, signal?: AbortSignal): Promise<PlanContext> {
     const [item, users] = await Promise.all([
       this.#jellyfin.getItem(grant.itemId),
       this.#jellyfin.getUsers(),
     ]);
+    throwIfAborted(signal);
     const administrator = users.find((user) => user.Policy.IsAdministrator);
     if (!administrator) throw new Error('Jellyfin administrator user not found');
     const relatedItems = await this.#jellyfin.getLocalTrailers(grant.itemId, administrator.Id);
+    throwIfAborted(signal);
     return this.#buildPlanContext(grant, item, users, relatedItems);
   }
 
@@ -691,13 +728,15 @@ export class AccessService {
     };
   }
 
-  async #applyPlan(context: PlanContext): Promise<void> {
+  async #applyPlan(context: PlanContext, signal?: AbortSignal): Promise<void> {
     if (context.plan.item.action !== 'none') {
+      throwIfAborted(signal);
       await this.#jellyfin.updateItem({ ...context.item, Tags: context.plan.item.after });
       this.#metrics.increment('jfa_item_updates_total');
     }
     for (const change of context.plan.relatedItems) {
       if (change.action === 'none') continue;
+      throwIfAborted(signal);
       const relatedItem = context.relatedItems.find((entry) => entry.Id === change.itemId);
       if (!relatedItem) throw new Error(`Jellyfin related item disappeared during reconciliation: ${change.itemId}`);
       await this.#jellyfin.updateItem({ ...relatedItem, Tags: change.after });
@@ -705,6 +744,7 @@ export class AccessService {
     }
     for (const change of context.plan.users) {
       if (change.action === 'none') continue;
+      throwIfAborted(signal);
       const user = context.users.find((entry) => entry.Id === change.userId);
       if (!user) throw new Error(`Jellyfin user disappeared during reconciliation: ${change.userId}`);
       await this.#jellyfin.updatePolicy(user.Id, { ...user.Policy, BlockedTags: change.after });
