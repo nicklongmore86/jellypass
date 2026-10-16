@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
@@ -59,6 +59,85 @@ describe('access tags and webhook validation', () => {
     assert.equal(await service.processWebhook(parseWebhook({ notificationType: 'TEST_NOTIFICATION', request: { id: '' } })), null);
     assert.equal(store.list().length, 0);
     assert.match(service.renderMetrics(), /jfa_webhooks_total\{result="ignored"\} 1/);
+  });
+});
+
+describe('state file persistence', () => {
+  it('applies concurrent passwordless updates without losing a write', async () => {
+    const file = await stateFile();
+    const store = new GrantStore(file);
+    await store.load();
+    const extraUsers = Array.from({ length: 20 }, (_, index) => ({ Id: `member-${index}`, Name: `Member ${index}` }));
+    const service = new AccessService(fakeJellyfin({ extraUsers }), store);
+    const results = await Promise.allSettled(extraUsers.map((user) => service.setUserPasswordless(user.Id, true)));
+    assert.deepEqual(results.filter((result) => result.status === 'rejected').map((result) => result.reason.message), []);
+    const expected = extraUsers.map((user) => user.Id).sort();
+    assert.deepEqual(store.listPasswordlessUserIds(), expected);
+    const saved = JSON.parse(await readFile(file, 'utf8'));
+    assert.deepEqual(saved.passwordlessUserIds, expected);
+    assert.deepEqual((await readdir(path.dirname(file))).sort(), ['grants.json']);
+  });
+
+  it('queues a passwordless update behind other service mutations', async () => {
+    const store = new GrantStore(await stateFile());
+    await store.load();
+    const fake = fakeJellyfin();
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const getItem = fake.getItem;
+    fake.getItem = async function gatedGetItem(itemId) {
+      await gate;
+      return getItem.call(this, itemId);
+    };
+    const service = new AccessService(fake, store);
+    const order = [];
+    const webhookDone = service.processWebhook(parseWebhook(webhook())).then(() => order.push('webhook'));
+    const passwordlessDone = service.setUserPasswordless('bob-id', true).then(() => order.push('passwordless'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(order, [], 'the passwordless update waits for the running webhook');
+    release();
+    await Promise.all([webhookDone, passwordlessDone]);
+    assert.deepEqual(order, ['webhook', 'passwordless']);
+  });
+
+  it('delivers a failed write to every coalesced caller and keeps writing afterwards', async () => {
+    const file = await stateFile();
+    const store = new GrantStore(file);
+    await store.load();
+    // A non-empty directory at the state path makes the rename fail.
+    await rm(file);
+    await mkdir(path.join(file, 'blocker'), { recursive: true });
+    const results = await Promise.allSettled(['a', 'b', 'c'].map((id) => store.setUserPasswordless(`member-${id}`, true)));
+    assert.deepEqual(results.map((result) => result.status), ['rejected', 'rejected', 'rejected']);
+    assert.equal(new Set(results.map((result) => result.reason)).size, 1, 'the callers share one write');
+
+    await rm(file, { recursive: true });
+    await store.setUserPasswordless('member-d', true);
+    const saved = JSON.parse(await readFile(file, 'utf8'));
+    assert.deepEqual(saved.passwordlessUserIds, ['member-a', 'member-b', 'member-c', 'member-d']);
+    assert.deepEqual((await readdir(path.dirname(file))).sort(), ['grants.json']);
+  });
+
+  it('serializes overlapping store writes and leaves the newest state on disk', async () => {
+    const file = await stateFile();
+    const store = new GrantStore(file);
+    await store.load();
+    await store.upsertGroup({ id: 'house-a', name: 'House A', userIds: ['alice-id'] });
+    const writes = [];
+    for (let index = 0; index < 20; index += 1) {
+      writes.push(store.setUserPasswordless(`member-${index}`, true));
+      writes.push(store.grant({ itemId: `item-${index}`, requestId: String(100 + index), userId: 'alice-id', groupIds: ['house-a'] }));
+    }
+    const results = await Promise.allSettled(writes);
+    assert.deepEqual(results.filter((result) => result.status === 'rejected').map((result) => result.reason.message), []);
+    const saved = JSON.parse(await readFile(file, 'utf8'));
+    assert.equal(saved.passwordlessUserIds.length, 20);
+    assert.equal(Object.keys(saved.grants).length, 20);
+    assert.equal(saved.handledRequestIds.length, 20);
+    const reloaded = new GrantStore(file);
+    await reloaded.load();
+    assert.deepEqual(reloaded.list().map((grant) => grant.itemId).sort(), Object.keys(saved.grants).sort());
+    assert.deepEqual((await readdir(path.dirname(file))).sort(), ['grants.json']);
   });
 });
 
@@ -394,12 +473,63 @@ describe('webhooks without Seerr lookup', () => {
     assert.match(service.renderMetrics(), /jfa_webhooks_total\{result="error"\} 1/);
   });
 
-  it('grants the payload item for HD and unrecognized events', async () => {
+  it('grants the payload item only for a recognized HD event', async () => {
     const { store, service } = await serviceWithoutSeerr();
     await service.processWebhook(parseWebhook(webhook({ event: 'Movie Now Available' })));
-    await service.processWebhook(parseWebhook(webhook({ event: null, requestId: '18' })));
+    await service.processWebhook(parseWebhook(webhook({ event: 'Series Request Now Available', requestId: '18' })));
     assert.deepEqual(store.get('item-1').requests, { '17': 'alice-id', '18': 'alice-id' });
     assert.match(service.renderMetrics(), /jfa_webhooks_total\{result="granted"\} 2/);
+  });
+
+  it('rejects a missing, empty, unfilled or unrecognized event, which may be a 4K request', async () => {
+    // Seerr fills {{media_jellyfinMediaId}} with the HD item even for a 4K request, so trusting
+    // these payloads could privatize the HD item and leave the 4K item public.
+    const events = [null, '', '   ', '{{event}}', 'Movie Request Approved', 'Now Available'];
+    const { store, fake, service } = await serviceWithoutSeerr();
+    for (const event of events) {
+      await assert.rejects(
+        () => service.processWebhook(parseWebhook(webhook({ event }))),
+        /^Error: webhook event does not name an HD request and Seerr lookup is not configured$/,
+        String(event),
+      );
+    }
+    assert.equal(store.list().length, 0);
+    assert.equal(store.hasHandledRequest('17'), false);
+    assert.deepEqual(fake.item.Tags, ['keep-me']);
+    const metrics = service.renderMetrics();
+    assert.match(metrics, new RegExp(`jfa_webhooks_total\\{result="error"\\} ${events.length}\n`));
+    assert.doesNotMatch(metrics, /result="granted"/);
+  });
+});
+
+describe('webhook outcome accounting', () => {
+  it('counts a grant that cannot be persisted once as an error', async () => {
+    const store = new GrantStore(await stateFile());
+    await store.load();
+    const fake = fakeJellyfin();
+    const service = new AccessService(fake, store);
+    store.grant = async () => {
+      throw new Error('EACCES: permission denied, open state.json.tmp');
+    };
+    await assert.rejects(() => service.processWebhook(parseWebhook(webhook())), /EACCES/);
+    const metrics = service.renderMetrics();
+    assert.match(metrics, /jfa_webhooks_total\{result="error"\} 1\n/);
+    assert.doesNotMatch(metrics, /result="granted"|result="invalid"/);
+    assert.deepEqual(fake.item.Tags, ['keep-me']);
+  });
+
+  it('counts a grant that is stored but cannot be reconciled once as an error', async () => {
+    const store = new GrantStore(await stateFile());
+    await store.load();
+    const fake = fakeJellyfin();
+    fake.updateItem = async () => {
+      throw new Error('Jellyfin unavailable');
+    };
+    const service = new AccessService(fake, store);
+    await assert.rejects(() => service.processWebhook(parseWebhook(webhook())), /Jellyfin unavailable/);
+    const metrics = service.renderMetrics();
+    assert.match(metrics, /jfa_webhooks_total\{result="error"\} 1\n/);
+    assert.doesNotMatch(metrics, /result="granted"/);
   });
 });
 
@@ -455,6 +585,145 @@ describe('household-scoped request grants', () => {
     assert.deepEqual(grant.manualUserIds, ['dave-id']);
     assert.deepEqual(store.get('item-1').owners, ['alice-id', 'bob-id', 'carol-id', 'dave-id']);
     assert.deepEqual(fake.user('carol-id').Policy.BlockedTags, []);
+  });
+});
+
+describe('replayed webhooks', () => {
+  async function twoHouseholds() {
+    const store = new GrantStore(await stateFile());
+    await store.load();
+    const fake = fakeJellyfin({ extraUsers: [{ Id: 'carol-id', Name: 'Carol' }] });
+    const service = new AccessService(fake, store);
+    await service.upsertGroup({ id: 'house-a', name: 'House A', userIds: ['alice-id', 'bob-id'] });
+    await service.upsertGroup({ id: 'house-b', name: 'House B', userIds: ['carol-id'] });
+    return { store, fake, service };
+  }
+
+  it('does not recreate a grant whose last audience an administrator removed', async () => {
+    const { store, fake, service } = await twoHouseholds();
+    await service.processWebhook(parseWebhook(webhook()));
+    await service.revokeRequest('item-1', '17');
+    await service.setGrantGroups('item-1', []);
+    assert.equal(store.get('item-1'), undefined);
+    assert.equal(store.hasHandledRequest('17'), true);
+
+    assert.equal(await service.processWebhook(parseWebhook(webhook())), null);
+    assert.equal(await service.processWebhook(parseWebhook(webhook())), null);
+    assert.equal(store.get('item-1'), undefined);
+    assert.deepEqual(fake.item.Tags, ['keep-me']);
+    assert.deepEqual(fake.user('carol-id').Policy.BlockedTags, []);
+    const metrics = service.renderMetrics();
+    assert.match(metrics, /jfa_webhooks_total\{result="granted"\} 1\n/);
+    assert.match(metrics, /jfa_webhooks_total\{result="ignored"\} 2\n/);
+    assert.doesNotMatch(metrics, /result="error"/);
+  });
+
+  it('does not re-add a revoked request to a grant that other audiences keep', async () => {
+    const { store, service } = await twoHouseholds();
+    await service.processWebhook(parseWebhook(webhook()));
+    await service.setManualAccess({ itemId: 'item-1', userIds: ['carol-id'], groupIds: [] });
+    await service.revokeRequest('item-1', '17');
+
+    assert.equal(await service.processWebhook(parseWebhook(webhook())), null);
+    const grant = store.get('item-1');
+    assert.deepEqual(grant.requests, {});
+    assert.deepEqual(grant.manualUserIds, ['carol-id']);
+  });
+
+  it('does not reattach household groups an administrator cleared from the grant', async () => {
+    const { store, fake, service } = await twoHouseholds();
+    await service.processWebhook(parseWebhook(webhook()));
+    await service.setGrantGroups('item-1', []);
+    assert.deepEqual(fake.user('bob-id').Policy.BlockedTags, ['other', 'jfa:private:item-1']);
+
+    const grant = await service.processWebhook(parseWebhook(webhook()));
+    assert.deepEqual(grant.groupIds, []);
+    assert.deepEqual(grant.requests, { '17': 'alice-id' });
+    assert.deepEqual(store.get('item-1').groupIds, []);
+    assert.deepEqual(fake.user('bob-id').Policy.BlockedTags, ['other', 'jfa:private:item-1']);
+    assert.match(service.renderMetrics(), /jfa_webhooks_total\{result="granted"\} 2\n/);
+  });
+
+  it('retries a delivery whose grant was stored but not applied by reconciling it', async () => {
+    const { store, fake, service } = await twoHouseholds();
+    const updateItem = fake.updateItem;
+    fake.updateItem = async () => {
+      throw new Error('Jellyfin unavailable');
+    };
+    await assert.rejects(() => service.processWebhook(parseWebhook(webhook())), /Jellyfin unavailable/);
+    assert.equal(store.hasHandledRequest('17'), true);
+    assert.equal(store.get('item-1').sync.state, 'error');
+
+    fake.updateItem = updateItem;
+    const grant = await service.processWebhook(parseWebhook(webhook()));
+    assert.deepEqual(grant.groupIds, ['house-a']);
+    assert.equal(grant.sync.state, 'synced');
+    assert.deepEqual(fake.item.Tags, ['keep-me', 'jfa:private:item-1']);
+    const metrics = service.renderMetrics();
+    assert.match(metrics, /jfa_webhooks_total\{result="error"\} 1\n/);
+    assert.match(metrics, /jfa_webhooks_total\{result="granted"\} 1\n/);
+  });
+
+  it('adds a request from another household to the same title', async () => {
+    const { store, fake, service } = await twoHouseholds();
+    await service.processWebhook(parseWebhook(webhook()));
+    const grant = await service.processWebhook(parseWebhook(webhook({ requestId: '18', userId: 'carol-id' })));
+    assert.deepEqual(grant.requests, { '17': 'alice-id', '18': 'carol-id' });
+    assert.deepEqual(grant.groupIds, ['house-a', 'house-b']);
+    assert.deepEqual(store.get('item-1').owners, ['alice-id', 'bob-id', 'carol-id']);
+    assert.deepEqual(fake.user('carol-id').Policy.BlockedTags, []);
+  });
+
+  it('grants a new request for a title after an administrator revoked an earlier one', async () => {
+    const { store, fake, service } = await twoHouseholds();
+    await service.processWebhook(parseWebhook(webhook()));
+    await service.revokeRequest('item-1', '17');
+    await service.setGrantGroups('item-1', []);
+    assert.equal(store.get('item-1'), undefined);
+
+    const grant = await service.processWebhook(parseWebhook(webhook({ requestId: '19' })));
+    assert.deepEqual(grant.requests, { '19': 'alice-id' });
+    assert.deepEqual(grant.groupIds, ['house-a']);
+    assert.deepEqual(fake.item.Tags, ['keep-me', 'jfa:private:item-1']);
+  });
+
+  it('does not let a replay with other IDs or a 4K event change the recorded grant', async () => {
+    const { store, fake, service } = await twoHouseholds();
+    await service.processWebhook(parseWebhook(webhook()));
+    const recorded = store.get('item-1');
+    const altered = webhook({ userId: 'carol-id', mediaId: 'item-2', event: '4K Movie Request Now Available' });
+
+    const grant = await service.processWebhook(parseWebhook(altered));
+    assert.equal(grant.itemId, 'item-1');
+    assert.deepEqual(grant.requests, recorded.requests);
+    assert.deepEqual(grant.groupIds, recorded.groupIds);
+    assert.deepEqual(grant.owners, recorded.owners);
+    assert.equal(store.get('item-2'), undefined);
+    assert.deepEqual(fake.item2.Tags, []);
+    assert.deepEqual(fake.user('carol-id').Policy.BlockedTags, ['jfa:private:item-1']);
+
+    await service.revokeRequest('item-1', '17');
+    await service.setGrantGroups('item-1', []);
+    assert.equal(await service.processWebhook(parseWebhook(altered)), null);
+    assert.deepEqual(store.list(), []);
+    assert.deepEqual(fake.item2.Tags, []);
+    assert.doesNotMatch(service.renderMetrics(), /result="error"/);
+  });
+
+  it('retries a delivery that failed before its grant was stored as a first delivery', async () => {
+    const { store, fake, service } = await twoHouseholds();
+    const grant = store.grant;
+    store.grant = async () => {
+      throw new Error('ENOSPC: no space left on device');
+    };
+    await assert.rejects(() => service.processWebhook(parseWebhook(webhook())), /ENOSPC/);
+    assert.equal(store.hasHandledRequest('17'), false);
+
+    store.grant = grant;
+    const created = await service.processWebhook(parseWebhook(webhook()));
+    assert.deepEqual(created.requests, { '17': 'alice-id' });
+    assert.deepEqual(created.groupIds, ['house-a']);
+    assert.deepEqual(fake.item.Tags, ['keep-me', 'jfa:private:item-1']);
   });
 });
 
@@ -639,7 +908,7 @@ describe('Seerr request backfill', () => {
 
     it('asks Seerr for the 4K item when the payload cannot rule out a 4K request', async () => {
       // Seerr fills {{media_jellyfinMediaId}} with the HD item even for a 4K request.
-      for (const event of ['4K Movie Request Now Available', null, '{{event}}']) {
+      for (const event of ['4K Movie Request Now Available', null, '', '{{event}}', 'Movie Request Approved']) {
         await withSeerr([], { 17: detail4k }, async ({ store, fake, service, calls }) => {
           const grant = await service.processWebhook(parseWebhook(webhook({ event })));
           assert.deepEqual(calls, ['/api/v1/request/17'], String(event));
@@ -649,6 +918,20 @@ describe('Seerr request backfill', () => {
           assert.deepEqual(fake.item.Tags, ['keep-me']);
         });
       }
+    });
+
+    it('grants separate HD and 4K requests for a title on their own items', async () => {
+      await withSeerr([], { 20: { ...detail4k, id: 20 } }, async ({ store, fake, service, calls }) => {
+        const hd = await service.processWebhook(parseWebhook(webhook()));
+        const uhd = await service.processWebhook(parseWebhook(webhook({ requestId: '20', event: '4K Movie Request Now Available' })));
+        assert.deepEqual(calls, ['/api/v1/request/20']);
+        assert.equal(hd.itemId, 'item-1');
+        assert.equal(uhd.itemId, 'item-2');
+        assert.deepEqual(store.get('item-1').requests, { '17': 'alice-id' });
+        assert.deepEqual(store.get('item-2').requests, { '20': 'carol-id' });
+        assert.deepEqual(fake.item.Tags, ['keep-me', 'jfa:private:item-1']);
+        assert.deepEqual(fake.item2.Tags, ['jfa:private:item-2']);
+      });
     });
 
     it('does not grant a 4K request on the HD item when Seerr has no 4K item yet', async () => {

@@ -1,4 +1,5 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { randomUUID } from 'node:crypto';
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { AccessGroup, GrantRecord, GrantState, LibraryCatalogItem, RevokeResult, SyncStatus } from './types.js';
 
@@ -7,6 +8,10 @@ const EMPTY_STATE: GrantState = { version: 7, grants: {}, groups: {}, catalog: {
 export class GrantStore {
   readonly #file: string;
   #state: GrantState = structuredClone(EMPTY_STATE);
+  /** The latest state-file write, started or queued; writes never overlap. */
+  #writing: Promise<void> = Promise.resolve();
+  /** A queued write that has not started yet; saves requested meanwhile share it. */
+  #queued: Promise<void> | undefined;
 
   public constructor(file: string) {
     this.#file = file;
@@ -95,6 +100,12 @@ export class GrantStore {
 
   public hasHandledRequest(requestId: string): boolean {
     return (this.#state.handledRequestIds ?? []).includes(requestId);
+  }
+
+  /** The grant that currently records a request, if any. */
+  public findGrantForRequest(requestId: string): GrantRecord | undefined {
+    const grant = Object.values(this.#state.grants).find((entry) => requestId in entry.requests);
+    return grant ? clone(grant) : undefined;
   }
 
   /**
@@ -296,11 +307,33 @@ export class GrantStore {
     return { previous: clone(previous), current: clone(next) };
   }
 
-  async #save(): Promise<void> {
+  /**
+   * Persists the state. One write runs at a time; saves requested while a write is in flight
+   * share the next one, which serializes the state when it starts and so includes every change
+   * made before it.
+   */
+  #save(): Promise<void> {
+    if (this.#queued) return this.#queued;
+    const queued = this.#writing.catch(() => undefined).then(() => {
+      this.#queued = undefined;
+      return this.#write();
+    });
+    this.#queued = queued;
+    this.#writing = queued;
+    return queued;
+  }
+
+  async #write(): Promise<void> {
     await mkdir(path.dirname(this.#file), { recursive: true });
-    const temporary = `${this.#file}.tmp`;
-    await writeFile(temporary, `${JSON.stringify(this.#state, null, 2)}\n`, { mode: 0o600 });
-    await rename(temporary, this.#file);
+    // A unique name per write, so a stray concurrent writer can never rename another's file.
+    const temporary = `${this.#file}.${randomUUID()}.tmp`;
+    try {
+      await writeFile(temporary, `${JSON.stringify(this.#state, null, 2)}\n`, { mode: 0o600 });
+      await rename(temporary, this.#file);
+    } catch (error) {
+      await rm(temporary, { force: true }).catch(() => undefined);
+      throw error;
+    }
   }
 }
 

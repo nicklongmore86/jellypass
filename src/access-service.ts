@@ -85,13 +85,15 @@ export class AccessService {
     return this.#store.listPasswordlessUserIds().includes(userId.toLowerCase());
   }
 
-  public async setUserPasswordless(userId: string, passwordless: boolean): Promise<{ id: string; passwordless: boolean }> {
-    const users = await this.#jellyfin.getUsers();
-    const user = users.find((entry) => entry.Id.toLowerCase() === userId.toLowerCase());
-    if (!user) throw new Error(`user not found: ${userId}`);
-    if (passwordless && user.Policy.IsAdministrator === true) throw new Error('passwordless sign-in is invalid for administrators');
-    await this.#store.setUserPasswordless(user.Id, passwordless);
-    return { id: user.Id, passwordless };
+  public setUserPasswordless(userId: string, passwordless: boolean): Promise<{ id: string; passwordless: boolean }> {
+    return this.#exclusive(async () => {
+      const users = await this.#jellyfin.getUsers();
+      const user = users.find((entry) => entry.Id.toLowerCase() === userId.toLowerCase());
+      if (!user) throw new Error(`user not found: ${userId}`);
+      if (passwordless && user.Policy.IsAdministrator === true) throw new Error('passwordless sign-in is invalid for administrators');
+      await this.#store.setUserPasswordless(user.Id, passwordless);
+      return { id: user.Id, passwordless };
+    });
   }
 
   public async listUsers(): Promise<Array<{ id: string; name: string; isAdministrator: boolean; passwordless: boolean }>> {
@@ -227,28 +229,40 @@ export class AccessService {
         this.#metrics.increment('jfa_webhooks_total', { result: 'ignored' });
         return null;
       }
-      let resolved: { itemId: string; userId: string; mediaType?: string };
+      // The body is valid from here on (parse failures count as "invalid" in the server), so every
+      // failure while resolving, persisting or reconciling counts once as "error".
       try {
-        resolved = await this.#resolveWebhook(event);
-      } catch (error) {
-        this.#metrics.increment('jfa_webhooks_total', { result: 'error' });
-        throw error;
-      }
-      const grant = await this.#store.grant({
-        itemId: resolved.itemId,
-        requestId: event.request.id,
-        userId: resolved.userId,
-        groupIds: this.#store.listGroupIdsForUser(resolved.userId),
-        ...(resolved.mediaType ? { mediaType: resolved.mediaType } : {}),
-      });
-      try {
+        // A request is handled once its grant has been stored (store.grant records both in one
+        // write), so a delivery that failed before that is retried as a first delivery. A handled
+        // request is never granted again: if its grant still records it, a retry only reconciles
+        // that grant as it stands, without re-adding household groups an administrator removed;
+        // if an administrator revoked it, the replay is ignored.
+        if (this.#store.hasHandledRequest(event.request.id)) {
+          const existing = this.#store.findGrantForRequest(event.request.id);
+          if (!existing) {
+            this.#metrics.increment('jfa_webhooks_total', { result: 'ignored' });
+            this.#logDebug('webhook ignored for a request an administrator revoked', { requestId: event.request.id });
+            return null;
+          }
+          await this.#reconcileGrant(existing);
+          this.#metrics.increment('jfa_webhooks_total', { result: 'granted' });
+          return this.#store.get(existing.itemId) ?? existing;
+        }
+        const resolved = await this.#resolveWebhook(event);
+        const grant = await this.#store.grant({
+          itemId: resolved.itemId,
+          requestId: event.request.id,
+          userId: resolved.userId,
+          groupIds: this.#store.listGroupIdsForUser(resolved.userId),
+          ...(resolved.mediaType ? { mediaType: resolved.mediaType } : {}),
+        });
         await this.#reconcileGrant(grant);
         this.#metrics.increment('jfa_webhooks_total', { result: 'granted' });
+        return this.#store.get(grant.itemId) ?? grant;
       } catch (error) {
         this.#metrics.increment('jfa_webhooks_total', { result: 'error' });
         throw error;
       }
-      return this.#store.get(grant.itemId) ?? grant;
     });
   }
 
@@ -259,9 +273,14 @@ export class AccessService {
 
     // Seerr's {{media_jellyfinMediaId}} is the HD item whenever one exists, and no template variable
     // carries the 4K item. The payload's IDs are therefore trusted only when both are present and
-    // the event text shows an HD request; otherwise Seerr's request decides (requestItemId).
-    if (event.request.is4k && !this.#seerr) {
-      throw new Error('webhook is for a 4K request and Seerr lookup is not configured');
+    // the event text shows an HD request; otherwise Seerr's request decides (requestItemId). Without
+    // Seerr, a missing, empty, unfilled or unrecognized event is rejected: it may be a 4K request.
+    if (!this.#seerr) {
+      if (event.request.is4k) throw new Error('webhook is for a 4K request and Seerr lookup is not configured');
+      if (!itemId || !userId) throw new Error('webhook is missing Jellyfin IDs and Seerr lookup is not configured');
+      if (event.request.is4k !== false) {
+        throw new Error('webhook event does not name an HD request and Seerr lookup is not configured');
+      }
     }
     let is4k = event.request.is4k === true;
     if ((!itemId || !userId || event.request.is4k !== false) && this.#seerr) {
@@ -272,9 +291,6 @@ export class AccessService {
       mediaType ??= request.media?.mediaType ?? request.type;
     }
 
-    if ((!itemId || !userId) && !this.#seerr) {
-      throw new Error('webhook is missing Jellyfin IDs and Seerr lookup is not configured');
-    }
     if (!itemId) throw new Error(`Seerr request ${event.request.id} is missing a ${is4k ? '4K ' : ''}Jellyfin media ID`);
     if (!userId) throw new Error(`Seerr request ${event.request.id} is missing a Jellyfin user ID`);
     return { itemId, userId, ...(mediaType ? { mediaType } : {}) };

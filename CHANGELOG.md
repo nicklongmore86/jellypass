@@ -23,8 +23,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Dashboard recent requests.** The Dashboard now shows up to 12 recent
   Jellyseerr requests instead of 8, so the poster grid fills evenly at four,
   three and two columns.
+- **Webhooks without Seerr lookup need `event`.** When `SEERR_URL` and
+  `SEERR_API_KEY` are not configured, the webhook payload must include
+  `"event": "{{event}}"`, as the README template already does. A webhook
+  with both Jellyfin IDs but without a recognized HD `event` is now rejected
+  with `502` instead of granted. One without both IDs still returns `400`, as
+  before, and a repeated webhook for an already handled request skips the
+  check: it reapplies the recorded grant, or returns `202` ignored if an
+  administrator revoked the request. The request backfill already needed Seerr
+  lookup.
 
 ### Fixed
+
+- **4K webhooks with a missing or unrecognized `event`.** Without Seerr lookup,
+  a webhook whose `event` was missing, empty, unfilled (`{{event}}`) or
+  unrecognized was granted on the payload's media ID. Seerr fills that ID with
+  the HD item even for a 4K request, so such a 4K notification could privatize
+  the HD item and leave the 4K item public. These webhooks are now rejected
+  with `502` and counted as `jfa_webhooks_total{result="error"}`, like a 4K
+  event without Seerr lookup (a webhook missing its Jellyfin IDs keeps its
+  `400`). With Seerr lookup configured they still resolve through Seerr.
+- **Webhook state-write failures are counted.** A webhook whose grant could
+  not be written to the state file was rejected without incrementing
+  `jfa_webhooks_total`. Every failure after the body is validated (resolving,
+  storing or applying the grant) now counts exactly once as
+  `{result="error"}`; malformed bodies still count only as `{result="invalid"}`.
+- **Concurrent state-file writes.** Turning passwordless sign-in on or off
+  bypassed the queue that serializes other changes, and overlapping state-file
+  writes shared one temporary file. Several passwordless changes at once, or
+  one during a grant, failed with `ENOENT` and could lose changes. Passwordless
+  changes now wait their turn like other changes, the state file is written by
+  one write at a time, and each write uses its own temporary file.
+- **Replayed webhooks restored grants an administrator removed.** The request
+  backfill skipped requests already handled, but the webhook did not: a
+  redelivered `MEDIA_AVAILABLE` webhook recreated a grant whose request an
+  administrator had revoked, and reattached household groups an administrator
+  had cleared. A request is now handled once its grant has been stored. A
+  webhook for a handled request that a grant still records only reconciles
+  that grant as it stands; one for a handled request that an administrator
+  revoked returns `202` with `{"status":"ignored"}` and counts as
+  `jfa_webhooks_total{result="ignored"}`. A delivery that failed before its
+  grant was stored is still retried as a first delivery.
 
 - **Recent requests cache.** The 60-second recent-requests cache kept only as
   many requests as the last caller asked for and ignored the catalog it was
@@ -216,6 +255,8 @@ This release has three breaking changes. Read
     `REQUEST_BACKFILL_SINCE`, or if `REQUEST_BACKFILL_SINCE` is not a valid
     date.
   - It is idempotent and never recreates a grant an administrator removed.
+    (A replayed webhook could still recreate one in this release; see the
+    Unreleased fixes.)
 - **Webhook and backfill metrics** in `/metrics` ([#2]):
   - `jfa_last_webhook_received_timestamp_seconds`
   - a new `result="invalid"` label on the existing `jfa_webhooks_total`

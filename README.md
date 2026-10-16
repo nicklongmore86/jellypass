@@ -384,10 +384,24 @@ that is already available. For a 4K request the same texts start with `4K `.
 Seerr fills `{{media_jellyfinMediaId}}` with the HD item even for a 4K request,
 and no template variable carries the 4K item. So when `event` names a 4K
 request, or the payload has no recognizable `event`, JellyPass asks Seerr for
-the request and grants the 4K item. 4K events therefore need `SEERR_URL` and
-`SEERR_API_KEY`: without them, a 4K event is rejected as an error rather than
-granted on the HD item. Other events without Seerr configured use the payload
-IDs as sent.
+the request and grants the 4K item. Without `SEERR_URL` and `SEERR_API_KEY`,
+JellyPass can only use the payload IDs, so it does so only for a recognized HD
+`event`. A 4K event, or a payload whose `event` is missing, empty, unfilled
+(`{{event}}`) or unrecognized, is rejected with `502` and counted as an error
+rather than granted on what may be the HD item. A payload without both Jellyfin
+IDs still returns `400` ("missing Jellyfin IDs"). A repeated webhook for a
+request JellyPass has already handled skips this check, because it only
+reapplies the recorded grant or is ignored (see below). Keep
+`"event": "{{event}}"` in the payload when Seerr lookup is not configured.
+
+Seerr may deliver the same webhook more than once. A request is handled once
+its grant has been stored, and a handled request is never granted again. If a
+grant still records the request, a repeated webhook only reapplies that grant
+as it stands, so household groups an administrator removed stay removed. If an
+administrator revoked the request, the webhook returns `202` with
+`{"status":"ignored"}` and counts as `jfa_webhooks_total{result="ignored"}`. A
+webhook that failed before its grant was stored, for example because Seerr was
+unreachable, is handled normally when it is retried.
 
 Some Jellyseerr releases do not expose Jellyfin IDs as webhook template
 variables. When `SEERR_URL` and `SEERR_API_KEY` are configured, this smaller
@@ -590,7 +604,9 @@ Library for immediate protection.
 If `jfa_last_webhook_received_timestamp_seconds` is absent from `/metrics`, no
 authenticated webhook has reached JellyPass since it started. If
 `jfa_webhooks_total{result="invalid"}` grows, webhooks arrive but their body is
-malformed; re-save the payload through Seerr's webhook form. In either case,
+malformed; re-save the payload through Seerr's webhook form. If
+`jfa_webhooks_total{result="error"}` grows, the body was valid but JellyPass
+could not resolve, store or apply the grant; the error is logged. In any case,
 `jfa_request_backfill_total{result="granted"}` shows requests the backfill
 applied instead, and `{result="error"}` counts requests it could not process.
 
