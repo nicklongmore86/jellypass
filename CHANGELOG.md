@@ -7,17 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.1.1] - 2026-10-16
+
+This is a patch release. No configuration, API or state-file changes are
+needed: settings, webhook payloads and API field names are unchanged, and the
+state file format is unchanged (schema v7), so 2.1.0 can read a state file
+written by 2.1.1. To roll back, set `JELLYPASS_IMAGE` back to
+`ghcr.io/nicklongmore86/jellypass:2.1.0` and recreate the container.
+
 ### Changed
 
-- The real-Jellyfin integration test sends an HD `Movie Request Now Available`
-  webhook, matching the README template, and also checks that a webhook
-  without a recognized HD `event` is rejected with `502` and grants nothing
-  when Seerr lookup is not configured. It had failed since 2.1.0 because it
-  still sent a webhook without `event`.
-- `pnpm test:real` starts a throwaway Jellyfin container with Docker (or uses
-  `JELLYFIN_REAL_URL`), and `pnpm test:all` runs both suites.
-- The publish workflow runs the real-Jellyfin test before publishing an image
-  or creating a release.
 - **Seerr naming.** The administrator UI, error messages and documentation now
   say Seerr instead of Jellyseerr, and the Dashboard's "Jellyseerr activity"
   section is now "Activity". Seerr is the successor to Jellyseerr, and
@@ -26,6 +25,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `jellyseerrImportAvailable`, the `jellyseerr` result of `POST /v1/users`, and
   `user_created_jellyseerr_import_failed`) are unchanged, as are environment
   variables, metrics and the state file.
+- **Releases are gated on a real Jellyfin.** The publish workflow runs the
+  real-Jellyfin integration test before it publishes any image or creates a
+  release, so a failing test blocks both.
+- The real-Jellyfin integration test now sends webhooks through JellyPass's
+  HTTP server: an HD `Movie Request Now Available` webhook, matching the README
+  template, must grant and then revoke access on Jellyfin, and without Seerr
+  lookup a webhook with no recognized HD `event` must be rejected with `502`
+  and grant nothing. The test had failed since the 2.1.0 webhook change,
+  including on the 2.1.0 release commit, because it still sent a webhook
+  without `event`; JellyPass behaved correctly and the test was out of date.
+- `pnpm test:real` starts a throwaway Jellyfin container with Docker (or uses
+  `JELLYFIN_REAL_URL`), and `pnpm test:all` runs both suites.
 
 ### Fixed
 
@@ -41,8 +52,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   state-file write, refuses further changes, and exits `0`, normally well
   under a second. It exits `1` if that final write fails (logged as
   `shutdown failed`) or if anything still hangs after five seconds (logged as
-  `shutdown timed out`). A second signal during shutdown is ignored rather
-  than killing the process mid-write.
+  `shutdown timed out; exiting`). A second signal during shutdown is ignored
+  rather than killing the process mid-write.
 
 ## [2.1.0] - 2026-10-16
 
@@ -465,7 +476,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v2.1.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v2.1.1...HEAD
+[2.1.1]: https://github.com/nicklongmore86/jellypass/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/nicklongmore86/jellypass/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/nicklongmore86/jellypass/compare/v1.1.0...v2.0.0
 [1.1.0]: https://github.com/nicklongmore86/jellypass/compare/v1.0.0...v1.1.0

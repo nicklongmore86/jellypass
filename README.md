@@ -154,10 +154,10 @@ as semantic-version tags. For predictable production upgrades, set
 `JELLYPASS_IMAGE` in `.env` to a versioned image such as:
 
 ```dotenv
-JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:2.1.0
+JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:2.1.1
 ```
 
-Each release is published as a semantic-version image tag, such as `2.1.0`,
+Each release is published as a semantic-version image tag, such as `2.1.1`,
 plus floating `2.1` and `2` tags that move to the newest release in that minor
 or major line; see [CHANGELOG.md](CHANGELOG.md) for what each one contains. `latest` is rebuilt on
 every push to `main` and may include unreleased changes, so use it, or build
@@ -579,7 +579,8 @@ upgrade; follow [Upgrading from 1.1.0](CHANGELOG.md#upgrading-from-110) in the
 2.0.0 notes. Upgrading from 2.0.0 to 2.1.0 does not change the state file;
 check [Upgrading from 2.0.0](CHANGELOG.md#upgrading-from-200) in the 2.1.0
 notes if Seerr lookup is not configured or JellyPass runs behind a reverse
-proxy. Upgrades can migrate the state file to a newer schema that older
+proxy. Upgrading from 2.1.0 to 2.1.1 changes neither the state file nor any
+setting. Upgrades can migrate the state file to a newer schema that older
 versions cannot read, so rolling back requires the backup taken before the
 upgrade. Pinning `JELLYPASS_IMAGE` makes rollback explicit:
 
