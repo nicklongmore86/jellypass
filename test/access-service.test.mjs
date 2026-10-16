@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readFile, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
@@ -59,6 +59,67 @@ describe('access tags and webhook validation', () => {
     assert.equal(await service.processWebhook(parseWebhook({ notificationType: 'TEST_NOTIFICATION', request: { id: '' } })), null);
     assert.equal(store.list().length, 0);
     assert.match(service.renderMetrics(), /jfa_webhooks_total\{result="ignored"\} 1/);
+  });
+});
+
+describe('state file persistence', () => {
+  it('applies concurrent passwordless updates without losing a write', async () => {
+    const file = await stateFile();
+    const store = new GrantStore(file);
+    await store.load();
+    const extraUsers = Array.from({ length: 20 }, (_, index) => ({ Id: `member-${index}`, Name: `Member ${index}` }));
+    const service = new AccessService(fakeJellyfin({ extraUsers }), store);
+    const results = await Promise.allSettled(extraUsers.map((user) => service.setUserPasswordless(user.Id, true)));
+    assert.deepEqual(results.filter((result) => result.status === 'rejected').map((result) => result.reason.message), []);
+    const expected = extraUsers.map((user) => user.Id).sort();
+    assert.deepEqual(store.listPasswordlessUserIds(), expected);
+    const saved = JSON.parse(await readFile(file, 'utf8'));
+    assert.deepEqual(saved.passwordlessUserIds, expected);
+    assert.deepEqual((await readdir(path.dirname(file))).sort(), ['grants.json']);
+  });
+
+  it('queues a passwordless update behind other service mutations', async () => {
+    const store = new GrantStore(await stateFile());
+    await store.load();
+    const fake = fakeJellyfin();
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const getItem = fake.getItem;
+    fake.getItem = async function gatedGetItem(itemId) {
+      await gate;
+      return getItem.call(this, itemId);
+    };
+    const service = new AccessService(fake, store);
+    const order = [];
+    const webhookDone = service.processWebhook(parseWebhook(webhook())).then(() => order.push('webhook'));
+    const passwordlessDone = service.setUserPasswordless('bob-id', true).then(() => order.push('passwordless'));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(order, [], 'the passwordless update waits for the running webhook');
+    release();
+    await Promise.all([webhookDone, passwordlessDone]);
+    assert.deepEqual(order, ['webhook', 'passwordless']);
+  });
+
+  it('serializes overlapping store writes and leaves the newest state on disk', async () => {
+    const file = await stateFile();
+    const store = new GrantStore(file);
+    await store.load();
+    await store.upsertGroup({ id: 'house-a', name: 'House A', userIds: ['alice-id'] });
+    const writes = [];
+    for (let index = 0; index < 20; index += 1) {
+      writes.push(store.setUserPasswordless(`member-${index}`, true));
+      writes.push(store.grant({ itemId: `item-${index}`, requestId: String(100 + index), userId: 'alice-id', groupIds: ['house-a'] }));
+    }
+    const results = await Promise.allSettled(writes);
+    assert.deepEqual(results.filter((result) => result.status === 'rejected').map((result) => result.reason.message), []);
+    const saved = JSON.parse(await readFile(file, 'utf8'));
+    assert.equal(saved.passwordlessUserIds.length, 20);
+    assert.equal(Object.keys(saved.grants).length, 20);
+    assert.equal(saved.handledRequestIds.length, 20);
+    const reloaded = new GrantStore(file);
+    await reloaded.load();
+    assert.deepEqual(reloaded.list().map((grant) => grant.itemId).sort(), Object.keys(saved.grants).sort());
+    assert.deepEqual((await readdir(path.dirname(file))).sort(), ['grants.json']);
   });
 });
 

@@ -85,13 +85,15 @@ export class AccessService {
     return this.#store.listPasswordlessUserIds().includes(userId.toLowerCase());
   }
 
-  public async setUserPasswordless(userId: string, passwordless: boolean): Promise<{ id: string; passwordless: boolean }> {
-    const users = await this.#jellyfin.getUsers();
-    const user = users.find((entry) => entry.Id.toLowerCase() === userId.toLowerCase());
-    if (!user) throw new Error(`user not found: ${userId}`);
-    if (passwordless && user.Policy.IsAdministrator === true) throw new Error('passwordless sign-in is invalid for administrators');
-    await this.#store.setUserPasswordless(user.Id, passwordless);
-    return { id: user.Id, passwordless };
+  public setUserPasswordless(userId: string, passwordless: boolean): Promise<{ id: string; passwordless: boolean }> {
+    return this.#exclusive(async () => {
+      const users = await this.#jellyfin.getUsers();
+      const user = users.find((entry) => entry.Id.toLowerCase() === userId.toLowerCase());
+      if (!user) throw new Error(`user not found: ${userId}`);
+      if (passwordless && user.Policy.IsAdministrator === true) throw new Error('passwordless sign-in is invalid for administrators');
+      await this.#store.setUserPasswordless(user.Id, passwordless);
+      return { id: user.Id, passwordless };
+    });
   }
 
   public async listUsers(): Promise<Array<{ id: string; name: string; isAdministrator: boolean; passwordless: boolean }>> {

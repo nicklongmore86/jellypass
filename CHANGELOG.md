@@ -32,6 +32,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `jfa_webhooks_total`. Every failure after the body is validated (resolving,
   storing or applying the grant) now counts exactly once as
   `{result="error"}`; malformed bodies still count only as `{result="invalid"}`.
+- **Concurrent state-file writes.** Turning passwordless sign-in on or off
+  bypassed the queue that serializes other changes, and overlapping state-file
+  writes shared one temporary file. Several passwordless changes at once, or
+  one during a grant, failed with `ENOENT` and could lose changes. Passwordless
+  changes now wait their turn like other changes, the state file is written by
+  one write at a time, and each write uses its own temporary file.
 
 - **Recent requests cache.** The 60-second recent-requests cache kept only as
   many requests as the last caller asked for and ignored the catalog it was
