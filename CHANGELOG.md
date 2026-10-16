@@ -14,12 +14,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   WebSocket (an idle browser tab, for example) never does, so `docker stop`
   hung for 10 seconds and ended with exit code 137. Shutdown now stops the
   reconcile, catalog sync and backfill timers, stops accepting connections,
-  closes proxied WebSockets on both sides, gives in-flight HTTP requests one
-  second to finish while closing idle keep-alive connections, waits for any
-  pending state-file write, and exits `0`, normally well under a second. If
-  anything still hangs after five seconds it logs `shutdown timed out` and
-  exits `1`. A second signal during shutdown is ignored rather than killing
-  the process mid-write.
+  and closes proxied WebSockets on both sides. Reconciliation, request
+  backfill and catalog sync that are already running start no further steps.
+  In-flight HTTP requests and background jobs get one second to finish while
+  idle keep-alive connections are closed. JellyPass then waits for any pending
+  state-file write, refuses further changes, and exits `0`, normally well
+  under a second. It exits `1` if that final write fails (logged as
+  `shutdown failed`) or if anything still hangs after five seconds (logged as
+  `shutdown timed out`). A second signal during shutdown is ignored rather
+  than killing the process mid-write.
 
 ## [2.1.0] - 2026-10-16
 
