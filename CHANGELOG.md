@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Stopping the container waited for SIGKILL.** On `SIGTERM` or `SIGINT`
+  JellyPass waited for every connection to close, and a proxied household
+  WebSocket (an idle browser tab, for example) never does, so `docker stop`
+  hung for 10 seconds and ended with exit code 137. Shutdown now stops the
+  reconcile, catalog sync and backfill timers, stops accepting connections,
+  closes proxied WebSockets on both sides, gives in-flight HTTP requests one
+  second to finish while closing idle keep-alive connections, waits for any
+  pending state-file write, and exits `0`, normally well under a second. If
+  anything still hangs after five seconds it logs `shutdown timed out` and
+  exits `1`. A second signal during shutdown is ignored rather than killing
+  the process mid-write.
+
 ## [2.1.0] - 2026-10-16
 
 This is a minor release. Most deployments can upgrade without changes, but

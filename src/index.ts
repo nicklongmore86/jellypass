@@ -4,6 +4,7 @@ import { loadConfig } from './config.js';
 import { JellyfinClient } from './jellyfin.js';
 import { makeServer } from './server.js';
 import { SeerrClient } from './seerr.js';
+import { createShutdown } from './shutdown.js';
 import { GrantStore } from './store.js';
 
 async function main(): Promise<void> {
@@ -69,6 +70,7 @@ async function main(): Promise<void> {
     ? setInterval(syncCatalog, config.catalogSyncIntervalSeconds * 1000)
     : undefined;
   catalogSyncTimer?.unref();
+  let backfillTimer: NodeJS.Timeout | undefined;
   server.listen(config.port, config.host, () => {
     console.log(JSON.stringify({
       level: 'info',
@@ -81,16 +83,17 @@ async function main(): Promise<void> {
     }));
     if (service.getLibraryCatalog().items.length === 0) void syncCatalog();
     // Catch up on missed webhooks now rather than one reconcile interval after startup.
-    if (backfillSince) setTimeout(() => void backfillRequests(), 5_000).unref();
+    if (backfillSince) backfillTimer = setTimeout(() => void backfillRequests(), 5_000).unref();
   });
 
-  const shutdown = () => {
-    if (reconcileTimer) clearInterval(reconcileTimer);
-    if (catalogSyncTimer) clearInterval(catalogSyncTimer);
-    server.close(() => process.exit(0));
-  };
-  process.once('SIGINT', shutdown);
-  process.once('SIGTERM', shutdown);
+  const shutdown = createShutdown({
+    servers: [server],
+    closeStore: () => store.close(),
+    timers: () => [reconcileTimer, catalogSyncTimer, backfillTimer],
+  });
+  // `on`, not `once`: a second signal must reach the idempotent handler rather than Node's default, which kills at once.
+  process.on('SIGINT', (signal) => void shutdown(signal));
+  process.on('SIGTERM', (signal) => void shutdown(signal));
 }
 
 main().catch((error: unknown) => {

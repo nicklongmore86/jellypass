@@ -1,5 +1,5 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { createServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { UserProvisioningError, type AccessService } from './access-service.js';
 import { ADMIN_APP_JS, ADMIN_FAVICON_SVG, ADMIN_HTML, ADMIN_STYLES } from './admin-ui.js';
 import { expiredSessionCookie, sessionCookie, type WebAuth } from './auth.js';
@@ -30,7 +30,17 @@ export interface ServerOptions {
   };
 }
 
-export function makeServer(service: AccessService, tokens: ServerTokens, webAuth?: WebAuth, options?: ServerOptions) {
+export interface JellyPassServer extends Server {
+  /** Closes every proxied household WebSocket and refuses new upgrades; resolves with how many were open. */
+  closeWebSockets(): Promise<number>;
+}
+
+export function makeServer(
+  service: AccessService,
+  tokens: ServerTokens,
+  webAuth?: WebAuth,
+  options?: ServerOptions,
+): JellyPassServer {
   const householdGateway = options?.householdGateway
     ? new HouseholdGateway({
         ...options.householdGateway,
@@ -248,7 +258,9 @@ export function makeServer(service: AccessService, tokens: ServerTokens, webAuth
     }
     householdGateway.handleUpgrade(request, socket, head, householdId);
   });
-  return server;
+  return Object.assign(server, {
+    closeWebSockets: async () => householdGateway ? householdGateway.closeWebSockets() : 0,
+  });
 }
 
 function authorized(request: IncomingMessage, expectedToken: string): boolean {

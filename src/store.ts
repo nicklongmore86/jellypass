@@ -12,6 +12,7 @@ export class GrantStore {
   #writing: Promise<void> = Promise.resolve();
   /** A queued write that has not started yet; saves requested meanwhile share it. */
   #queued: Promise<void> | undefined;
+  #closed = false;
 
   public constructor(file: string) {
     this.#file = file;
@@ -314,6 +315,7 @@ export class GrantStore {
    */
   #save(): Promise<void> {
     if (this.#queued) return this.#queued;
+    if (this.#closed) return Promise.reject(new Error('state store is closed'));
     const queued = this.#writing.catch(() => undefined).then(() => {
       this.#queued = undefined;
       return this.#write();
@@ -321,6 +323,15 @@ export class GrantStore {
     this.#queued = queued;
     this.#writing = queued;
     return queued;
+  }
+
+  /**
+   * Waits for the write in flight and any already queued behind it, then refuses further saves, so the state file is
+   * complete when the process exits. A failed write is not rethrown; it was already reported to the caller that saved.
+   */
+  public async close(): Promise<void> {
+    this.#closed = true;
+    await this.#writing.catch(() => undefined);
   }
 
   async #write(): Promise<void> {

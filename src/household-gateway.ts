@@ -17,6 +17,8 @@ const LOGIN_ATTEMPT_WINDOW_MS = 5 * 60 * 1000;
 const MAX_LOGIN_ATTEMPTS = 20;
 const MAX_LOGIN_CLIENTS = 10_000;
 const TCP_KEEPALIVE_INITIAL_DELAY_MS = 60_000;
+/** How long a WebSocket peer gets to answer our FIN during shutdown before its socket is destroyed. */
+const WS_SHUTDOWN_GRACE_MS = 250;
 const HOUSEHOLD_LOGIN_CSS = `
 /* JellyPass household profile picker */
 #loginPage .readOnlyContent,
@@ -61,6 +63,9 @@ export class HouseholdGateway {
   readonly #webSocketUpstreamIdleTimeoutMs: number;
   readonly #debug: boolean;
   readonly #clientIp: ClientIpResolver;
+  /** Every upgrade in progress or established, keyed by its client socket, with the function that closes it. */
+  readonly #webSockets = new Map<Duplex, () => void>();
+  #closing = false;
 
   public constructor(options: HouseholdGatewayOptions) {
     this.#target = new URL(options.jellyfinUrl);
@@ -149,12 +154,22 @@ export class HouseholdGateway {
       exchange.error('client', 'websocket client socket', error);
       socket.destroy();
     });
+    if (this.#closing) {
+      socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
+      return;
+    }
     if (!this.#memberIds(householdId)) {
       socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
       return;
     }
     const upstream = this.#transport().request(this.#requestOptions(request));
     let upgraded = false;
+    this.#webSockets.set(socket, () => {
+      exchange.clientGone();
+      upstream.destroy();
+      socket.destroy();
+    });
+    socket.once('close', () => this.#webSockets.delete(socket));
     // HTTP server sockets allow half-open connections, so a client that sends FIN while the upstream upgrade is
     // pending emits 'end' but never 'close'; abort on either so the upstream request is not left dangling.
     const abortPending = () => {
@@ -171,8 +186,9 @@ export class HouseholdGateway {
         exchange.error('upstream', 'websocket upstream socket', error);
         upstreamSocket.destroy();
       });
-      if (socket.destroyed) {
+      if (socket.destroyed || this.#closing) {
         upstreamSocket.destroy();
+        socket.destroy();
         return;
       }
       const status = upstreamResponse.statusCode ?? 101;
@@ -206,6 +222,19 @@ export class HouseholdGateway {
         clearTimeout(idleTimer);
         clearTimeout(upstreamIdleTimer);
       };
+      // The relay is a byte pipe that never parses frames, so it cannot inject a WebSocket close frame without risking
+      // one in the middle of a relayed frame. Shutdown instead sends FIN both ways and destroys whatever lingers.
+      this.#webSockets.set(socket, () => {
+        clearTimers();
+        upstreamSocket.unpipe(socket);
+        socket.unpipe(upstreamSocket);
+        socket.end();
+        upstreamSocket.end();
+        unrefTimer(WS_SHUTDOWN_GRACE_MS, () => {
+          socket.destroy();
+          upstreamSocket.destroy();
+        });
+      });
       socket.once('close', () => {
         clearTimers();
         upstreamSocket.destroy();
@@ -227,6 +256,21 @@ export class HouseholdGateway {
       if (!socket.destroyed) socket.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n');
     });
     upstream.end();
+  }
+
+  /**
+   * Stops accepting upgrades and closes every proxied WebSocket, pending or established, on both sides. Returns how many
+   * were open and resolves once all their client sockets have closed.
+   */
+  public async closeWebSockets(): Promise<number> {
+    this.#closing = true;
+    const sockets = [...this.#webSockets.entries()];
+    await Promise.all(sockets.map(([socket, close]) => {
+      const closed = socket.destroyed ? Promise.resolve() : new Promise<void>((resolve) => socket.once('close', () => resolve()));
+      close();
+      return closed;
+    }));
+    return sockets.length;
   }
 
   #exchange(): Exchange {
