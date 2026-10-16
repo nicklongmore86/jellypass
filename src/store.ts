@@ -346,11 +346,11 @@ export class GrantStore {
 
   /**
    * Refuses further changes, then waits for the write in flight and any queued behind it, so the state file is complete
-   * when the process exits. A failed write is not rethrown; it was already reported to the caller that saved.
+   * when the process exits. Rejects if the last write failed: the file on disk is then missing changes.
    */
   public async close(): Promise<void> {
     this.#closed = true;
-    await this.#writing.catch(() => undefined);
+    await this.#writing;
   }
 
   async #write(): Promise<void> {

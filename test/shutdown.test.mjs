@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile } from 'node:fs/promises';
 import { Agent, createServer, request as httpRequest } from 'node:http';
 import { connect as connectSocket, createServer as createNetServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -211,6 +211,29 @@ describe('graceful shutdown', { timeout: 15_000 }, () => {
     const state = JSON.parse(await readFile(file, 'utf8'));
     assert.deepEqual(Object.keys(state.groups).sort(), ['one', 'two']);
     await Promise.all([first, second]);
+  });
+
+  it('logs and exits 1 when the final state-file write fails', async () => {
+    const directory = await mkdtemp(path.join(tmpdir(), 'jellypass-shutdown-test-'));
+    // A directory where the state file should be: every write fails with EISDIR.
+    const file = path.join(directory, 'grants.json');
+    await mkdir(file);
+    const store = new GrantStore(file);
+    // The caller that saved still sees its own failure, as in normal operation.
+    const failed = store.upsertGroup({ id: 'lost', name: 'Lost', userIds: [] }).catch((error) => error.code);
+    const exits = [];
+    const logs = [];
+    await createShutdown({
+      servers: [],
+      closeStore: () => store.close(),
+      timers: () => [],
+      exit: (code) => exits.push(code),
+      log: (level, message, fields) => logs.push({ level, message, ...fields }),
+    })('SIGTERM');
+    assert.equal(await failed, 'EISDIR');
+    assert.deepEqual(exits, [1]);
+    assert.ok(logs.some((entry) => entry.level === 'error' && entry.message === 'shutdown failed' && /EISDIR/.test(entry.detail)), JSON.stringify(logs));
+    assert.ok(!logs.some((entry) => entry.message === 'shutdown complete'));
   });
 
   it('GrantStore refuses a save after close() even while a write is queued', async () => {
