@@ -102,6 +102,12 @@ export class GrantStore {
     return (this.#state.handledRequestIds ?? []).includes(requestId);
   }
 
+  /** The grant that currently records a request, if any. */
+  public findGrantForRequest(requestId: string): GrantRecord | undefined {
+    const grant = Object.values(this.#state.grants).find((entry) => requestId in entry.requests);
+    return grant ? clone(grant) : undefined;
+  }
+
   /**
    * Adds a request to an item's grant. `groupIds` (the requester's households) are merged
    * into the grant's existing groups; groups and manual users already on the grant are kept.

@@ -314,6 +314,15 @@ JellyPass can only use the payload IDs, so it does so only for a recognized HD
 rather than granted on what may be the HD item. Keep `"event": "{{event}}"` in
 the payload when Seerr lookup is not configured.
 
+Seerr may deliver the same webhook more than once. A request is handled once
+its grant has been stored, and a handled request is never granted again. If a
+grant still records the request, a repeated webhook only reapplies that grant
+as it stands, so household groups an administrator removed stay removed. If an
+administrator revoked the request, the webhook returns `202` with
+`{"status":"ignored"}` and counts as `jfa_webhooks_total{result="ignored"}`. A
+webhook that failed before its grant was stored, for example because Seerr was
+unreachable, is handled normally when it is retried.
+
 Some Jellyseerr releases do not expose Jellyfin IDs as webhook template
 variables. When `SEERR_URL` and `SEERR_API_KEY` are configured, this smaller
 payload is sufficient because JellyPass resolves the request through the API:

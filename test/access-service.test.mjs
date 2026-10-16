@@ -570,6 +570,99 @@ describe('household-scoped request grants', () => {
   });
 });
 
+describe('replayed webhooks', () => {
+  async function twoHouseholds() {
+    const store = new GrantStore(await stateFile());
+    await store.load();
+    const fake = fakeJellyfin({ extraUsers: [{ Id: 'carol-id', Name: 'Carol' }] });
+    const service = new AccessService(fake, store);
+    await service.upsertGroup({ id: 'house-a', name: 'House A', userIds: ['alice-id', 'bob-id'] });
+    await service.upsertGroup({ id: 'house-b', name: 'House B', userIds: ['carol-id'] });
+    return { store, fake, service };
+  }
+
+  it('does not recreate a grant whose last audience an administrator removed', async () => {
+    const { store, fake, service } = await twoHouseholds();
+    await service.processWebhook(parseWebhook(webhook()));
+    await service.revokeRequest('item-1', '17');
+    await service.setGrantGroups('item-1', []);
+    assert.equal(store.get('item-1'), undefined);
+    assert.equal(store.hasHandledRequest('17'), true);
+
+    assert.equal(await service.processWebhook(parseWebhook(webhook())), null);
+    assert.equal(await service.processWebhook(parseWebhook(webhook())), null);
+    assert.equal(store.get('item-1'), undefined);
+    assert.deepEqual(fake.item.Tags, ['keep-me']);
+    assert.deepEqual(fake.user('carol-id').Policy.BlockedTags, []);
+    const metrics = service.renderMetrics();
+    assert.match(metrics, /jfa_webhooks_total\{result="granted"\} 1\n/);
+    assert.match(metrics, /jfa_webhooks_total\{result="ignored"\} 2\n/);
+    assert.doesNotMatch(metrics, /result="error"/);
+  });
+
+  it('does not re-add a revoked request to a grant that other audiences keep', async () => {
+    const { store, service } = await twoHouseholds();
+    await service.processWebhook(parseWebhook(webhook()));
+    await service.setManualAccess({ itemId: 'item-1', userIds: ['carol-id'], groupIds: [] });
+    await service.revokeRequest('item-1', '17');
+
+    assert.equal(await service.processWebhook(parseWebhook(webhook())), null);
+    const grant = store.get('item-1');
+    assert.deepEqual(grant.requests, {});
+    assert.deepEqual(grant.manualUserIds, ['carol-id']);
+  });
+
+  it('does not reattach household groups an administrator cleared from the grant', async () => {
+    const { store, fake, service } = await twoHouseholds();
+    await service.processWebhook(parseWebhook(webhook()));
+    await service.setGrantGroups('item-1', []);
+    assert.deepEqual(fake.user('bob-id').Policy.BlockedTags, ['other', 'jfa:private:item-1']);
+
+    const grant = await service.processWebhook(parseWebhook(webhook()));
+    assert.deepEqual(grant.groupIds, []);
+    assert.deepEqual(grant.requests, { '17': 'alice-id' });
+    assert.deepEqual(store.get('item-1').groupIds, []);
+    assert.deepEqual(fake.user('bob-id').Policy.BlockedTags, ['other', 'jfa:private:item-1']);
+    assert.match(service.renderMetrics(), /jfa_webhooks_total\{result="granted"\} 2\n/);
+  });
+
+  it('retries a delivery whose grant was stored but not applied by reconciling it', async () => {
+    const { store, fake, service } = await twoHouseholds();
+    const updateItem = fake.updateItem;
+    fake.updateItem = async () => {
+      throw new Error('Jellyfin unavailable');
+    };
+    await assert.rejects(() => service.processWebhook(parseWebhook(webhook())), /Jellyfin unavailable/);
+    assert.equal(store.hasHandledRequest('17'), true);
+    assert.equal(store.get('item-1').sync.state, 'error');
+
+    fake.updateItem = updateItem;
+    const grant = await service.processWebhook(parseWebhook(webhook()));
+    assert.deepEqual(grant.groupIds, ['house-a']);
+    assert.equal(grant.sync.state, 'synced');
+    assert.deepEqual(fake.item.Tags, ['keep-me', 'jfa:private:item-1']);
+    const metrics = service.renderMetrics();
+    assert.match(metrics, /jfa_webhooks_total\{result="error"\} 1\n/);
+    assert.match(metrics, /jfa_webhooks_total\{result="granted"\} 1\n/);
+  });
+
+  it('retries a delivery that failed before its grant was stored as a first delivery', async () => {
+    const { store, fake, service } = await twoHouseholds();
+    const grant = store.grant;
+    store.grant = async () => {
+      throw new Error('ENOSPC: no space left on device');
+    };
+    await assert.rejects(() => service.processWebhook(parseWebhook(webhook())), /ENOSPC/);
+    assert.equal(store.hasHandledRequest('17'), false);
+
+    store.grant = grant;
+    const created = await service.processWebhook(parseWebhook(webhook()));
+    assert.deepEqual(created.requests, { '17': 'alice-id' });
+    assert.deepEqual(created.groupIds, ['house-a']);
+    assert.deepEqual(fake.item.Tags, ['keep-me', 'jfa:private:item-1']);
+  });
+});
+
 describe('Seerr request backfill', () => {
   const since = new Date('2026-10-01T00:00:00.000Z');
 

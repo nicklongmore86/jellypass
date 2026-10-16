@@ -661,6 +661,39 @@ describe('webhook resolution errors over HTTP', { timeout: 5_000 }, () => {
     assert.doesNotMatch(metrics, /result="error"/);
   });
 
+  it('returns 202 ignored for a replayed webhook whose request an administrator revoked', async () => {
+    const jellyfin = {
+      item: { Id: 'item-1', Name: 'Movie', Tags: [] },
+      users: [
+        { Id: 'admin-id', Name: 'Admin', Policy: { IsAdministrator: true, BlockedTags: [] } },
+        { Id: 'alice-id', Name: 'Alice', Policy: { BlockedTags: [] } },
+      ],
+      async getItem() { return structuredClone(this.item); },
+      async getUsers() { return structuredClone(this.users); },
+      async getLocalTrailers() { return []; },
+      async updateItem(item) { this.item = structuredClone(item); },
+      async updatePolicy(userId, policy) { this.users.find((user) => user.Id === userId).Policy = structuredClone(policy); },
+    };
+    const store = new GrantStore(path.join(await mkdtemp(path.join(tmpdir(), 'jfa-http-replay-')), 'grants.json'));
+    await store.load();
+    const service = new AccessService(jellyfin, store);
+    const server = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    servers.push(server);
+    const send = async () => {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/webhooks/seerr`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer webhook-secret', 'Content-Type': 'application/json' },
+        body: JSON.stringify(available('17', 'Movie Request Now Available')),
+      });
+      return { status: response.status, body: await response.json() };
+    };
+    assert.equal((await send()).status, 200);
+    await service.revokeRequest('item-1', '17');
+    assert.deepEqual(await send(), { status: 202, body: { status: 'ignored' } });
+    assert.deepEqual(jellyfin.item.Tags, []);
+  });
+
   it('returns 502 for a 4K event when Seerr lookup is not configured', async () => {
     const send = await webhookServer(undefined);
     assert.deepEqual(await send(available('6', '4K Movie Now Available')), {

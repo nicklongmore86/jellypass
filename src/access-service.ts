@@ -232,6 +232,22 @@ export class AccessService {
       // The body is valid from here on (parse failures count as "invalid" in the server), so every
       // failure while resolving, persisting or reconciling counts once as "error".
       try {
+        // A request is handled once its grant has been stored (store.grant records both in one
+        // write), so a delivery that failed before that is retried as a first delivery. A handled
+        // request is never granted again: if its grant still records it, a retry only reconciles
+        // that grant as it stands, without re-adding household groups an administrator removed;
+        // if an administrator revoked it, the replay is ignored.
+        if (this.#store.hasHandledRequest(event.request.id)) {
+          const existing = this.#store.findGrantForRequest(event.request.id);
+          if (!existing) {
+            this.#metrics.increment('jfa_webhooks_total', { result: 'ignored' });
+            this.#logDebug('webhook ignored for a request an administrator revoked', { requestId: event.request.id });
+            return null;
+          }
+          await this.#reconcileGrant(existing);
+          this.#metrics.increment('jfa_webhooks_total', { result: 'granted' });
+          return this.#store.get(existing.itemId) ?? existing;
+        }
         const resolved = await this.#resolveWebhook(event);
         const grant = await this.#store.grant({
           itemId: resolved.itemId,

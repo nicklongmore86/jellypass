@@ -38,6 +38,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   one during a grant, failed with `ENOENT` and could lose changes. Passwordless
   changes now wait their turn like other changes, the state file is written by
   one write at a time, and each write uses its own temporary file.
+- **Replayed webhooks restored grants an administrator removed.** The request
+  backfill skipped requests already handled, but the webhook did not: a
+  redelivered `MEDIA_AVAILABLE` webhook recreated a grant whose request an
+  administrator had revoked, and reattached household groups an administrator
+  had cleared. A request is now handled once its grant has been stored. A
+  webhook for a handled request that a grant still records only reconciles
+  that grant as it stands; one for a handled request that an administrator
+  revoked returns `202` with `{"status":"ignored"}` and counts as
+  `jfa_webhooks_total{result="ignored"}`. A delivery that failed before its
+  grant was stored is still retried as a first delivery.
 
 - **Recent requests cache.** The 60-second recent-requests cache kept only as
   many requests as the last caller asked for and ignored the catalog it was
@@ -216,6 +226,8 @@ This release has three breaking changes. Read
     `REQUEST_BACKFILL_SINCE`, or if `REQUEST_BACKFILL_SINCE` is not a valid
     date.
   - It is idempotent and never recreates a grant an administrator removed.
+    (A replayed webhook could still recreate one in this release; see the
+    Unreleased fixes.)
 - **Webhook and backfill metrics** in `/metrics` ([#2]):
   - `jfa_last_webhook_received_timestamp_seconds`
   - a new `result="invalid"` label on the existing `jfa_webhooks_total`
