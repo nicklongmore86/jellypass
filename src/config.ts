@@ -1,4 +1,5 @@
 import path from 'node:path';
+import { parseTrustedProxies } from './client-ip.js';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 const LOG_LEVEL_ALIASES: Record<string, LogLevel> = {
@@ -44,6 +45,8 @@ export interface Config {
   logLevel: LogLevel;
   webSocketIdleTimeoutMs: number;
   webSocketUpstreamIdleTimeoutMs: number;
+  /** Reverse proxies whose X-Forwarded-For entries are believed, as canonical addresses and CIDR ranges. */
+  trustedProxies: string[];
 }
 
 function required(name: string): string {
@@ -100,6 +103,7 @@ export function loadConfig(): Config {
   const logLevel = parseLogLevel(process.env.LOG_LEVEL);
   const webSocketIdleTimeoutMs = webSocketTimeout('WS_IDLE_TIMEOUT_MS', DEFAULT_WS_IDLE_TIMEOUT_MS);
   const webSocketUpstreamIdleTimeoutMs = webSocketTimeout('WS_UPSTREAM_IDLE_TIMEOUT_MS', DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS);
+  const trustedProxies = parseTrustedProxies(process.env.TRUSTED_PROXIES);
   const adminToken = process.env.ADMIN_TOKEN?.trim();
   if (!adminToken) {
     console.warn(JSON.stringify({
@@ -125,6 +129,7 @@ export function loadConfig(): Config {
     logLevel,
     webSocketIdleTimeoutMs,
     webSocketUpstreamIdleTimeoutMs,
+    trustedProxies,
   };
 }
 

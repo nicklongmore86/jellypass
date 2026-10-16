@@ -27,7 +27,7 @@
     "build": "tsc -p tsconfig.json",
     "check": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/index.js",
-    "test": "pnpm build && node --test test/access-service.test.mjs test/changelog-section.test.mjs test/config.test.mjs test/http-integration.test.mjs test/socket-errors.test.mjs test/websocket-idle.test.mjs",
+    "test": "pnpm build && node --test test/access-service.test.mjs test/changelog-section.test.mjs test/client-ip.test.mjs test/config.test.mjs test/forwarded-headers.test.mjs test/http-integration.test.mjs test/socket-errors.test.mjs test/websocket-idle.test.mjs",
     "test:real": "pnpm build && node --test test/real-jellyfin.test.mjs"
   },
   "devDependencies": {

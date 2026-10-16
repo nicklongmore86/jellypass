@@ -2,6 +2,7 @@ import http, { type IncomingHttpHeaders, type IncomingMessage, type RequestOptio
 import https from 'node:https';
 import type { Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
+import { ClientIpResolver, normaliseIp } from './client-ip.js';
 import { DEFAULT_WS_IDLE_TIMEOUT_MS, DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS, type LogLevel } from './config.js';
 
 const PUBLIC_USERS_PATH = '/users/public';
@@ -43,6 +44,8 @@ export interface HouseholdGatewayOptions {
   /** Close an upgraded connection after this long with no bytes from Jellyfin, even if the client keeps talking; 0 disables. */
   webSocketUpstreamIdleTimeoutMs?: number;
   logLevel?: LogLevel;
+  /** Reverse proxies trusted to report the client address in X-Forwarded-For; empty uses the TCP peer. */
+  trustedProxies?: string[];
 }
 
 export class HouseholdGateway {
@@ -55,6 +58,7 @@ export class HouseholdGateway {
   readonly #webSocketIdleTimeoutMs: number;
   readonly #webSocketUpstreamIdleTimeoutMs: number;
   readonly #debug: boolean;
+  readonly #clientIp: ClientIpResolver;
 
   public constructor(options: HouseholdGatewayOptions) {
     this.#target = new URL(options.jellyfinUrl);
@@ -68,6 +72,7 @@ export class HouseholdGateway {
     this.#webSocketIdleTimeoutMs = options.webSocketIdleTimeoutMs ?? DEFAULT_WS_IDLE_TIMEOUT_MS;
     this.#webSocketUpstreamIdleTimeoutMs = options.webSocketUpstreamIdleTimeoutMs ?? DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS;
     this.#debug = options.logLevel === 'debug';
+    this.#clientIp = new ClientIpResolver(options.trustedProxies);
   }
 
   public householdId(hostHeader: string | undefined): string | undefined {
@@ -249,7 +254,7 @@ export class HouseholdGateway {
   }
 
   async #proxyHouseholdLogin(request: IncomingMessage, response: ServerResponse, memberIds: string[]): Promise<void> {
-    if (!this.#allowLoginAttempt(request.socket.remoteAddress ?? 'unknown')) {
+    if (!this.#allowLoginAttempt(this.#clientAddress(request))) {
       writeJson(response, 429, { error: 'too_many_login_attempts' });
       return;
     }
@@ -455,6 +460,15 @@ export class HouseholdGateway {
     const headers = { ...(headersInput ?? request.headers) };
     headers.host = this.#target.host;
     if (request.headers.host) headers['x-forwarded-host'] = request.headers.host;
+    // Jellyfin (with JellyPass in KnownProxies) and its logs see the household client rather than this gateway only if
+    // each hop appends its own peer. Existing entries are kept: Jellyfin decides which of them it trusts.
+    const peer = normaliseIp(request.socket.remoteAddress);
+    if (peer) {
+      const forwardedFor = joinedHeader(headers['x-forwarded-for']);
+      headers['x-forwarded-for'] = forwardedFor ? `${forwardedFor}, ${peer}` : peer;
+    }
+    headers['x-forwarded-proto'] ??= 'encrypted' in request.socket && request.socket.encrypted ? 'https' : 'http';
+    headers['x-real-ip'] ??= this.#clientAddress(request);
     return {
       protocol: this.#target.protocol,
       hostname: this.#target.hostname,
@@ -463,6 +477,10 @@ export class HouseholdGateway {
       path: targetPath(this.#target, request.url ?? '/'),
       headers,
     };
+  }
+
+  #clientAddress(request: IncomingMessage): string {
+    return this.#clientIp.resolve(request.socket.remoteAddress, request.headers['x-forwarded-for']);
   }
 
   #transport(): typeof http | typeof https {
@@ -576,6 +594,10 @@ function protectedResourceItemId(pathname: string): string | undefined {
   if (media) return decodeURIComponent(media[1] as string);
   const download = pathname.match(/^\/items\/([^/]+)\/download$/i);
   return download ? decodeURIComponent(download[1] as string) : undefined;
+}
+
+function joinedHeader(value: string | string[] | undefined): string {
+  return (Array.isArray(value) ? value.join(', ') : value ?? '').trim();
 }
 
 function targetPath(target: URL, requestUrl: string): string {

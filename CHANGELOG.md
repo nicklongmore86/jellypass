@@ -7,6 +7,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`TRUSTED_PROXIES`.** A comma-separated list of reverse-proxy addresses and
+  CIDR ranges (IPv4 and IPv6). When a request arrives from a listed proxy,
+  JellyPass takes the client address from `X-Forwarded-For`, walking it right
+  to left past trusted hops. Requests from anywhere else use the connecting
+  address and ignore the header. Empty by default, which keeps the previous
+  behaviour; an invalid entry stops startup.
+
+### Fixed
+
+- **Household gateway forwarding headers.** Proxied HTTP requests and
+  WebSocket upgrades now append the gateway's peer address to
+  `X-Forwarded-For` instead of passing the incoming header through unchanged,
+  and set `X-Forwarded-Proto` and `X-Real-IP` when they are missing. With
+  JellyPass in Jellyfin's known proxies, Jellyfin sees the real client address.
+- **Login rate limits behind a reverse proxy.** The household and
+  administrator login limits keyed every client behind a proxy on the proxy's
+  address, so one household could lock out all of them. With
+  `TRUSTED_PROXIES` set, they now apply per client.
+
 ## [2.0.0] - 2026-10-15
 
 This release has three breaking changes. Read

@@ -198,6 +198,7 @@ JellyPass reads configuration from environment variables at startup.
 | `WS_IDLE_TIMEOUT_MS` | No | `300000` | Closes a proxied household WebSocket after this many milliseconds with no bytes in either direction; `0` disables. Jellyfin drops sockets after 60 s without a client KeepAlive (clients send one every 30 s), so values at or below `60000` log a startup warning. Maximum `86400000`. |
 | `WS_UPSTREAM_IDLE_TIMEOUT_MS` | No | `180000` | Closes a proxied household WebSocket after this many milliseconds with no bytes from Jellyfin, even while the client keeps sending; `0` disables. Jellyfin answers every client KeepAlive and pings quiet sockets, so a healthy server is never silent for much more than 60 s; values at or below `60000` log a startup warning. Maximum `86400000`. |
 | `LOG_LEVEL` | No | `info` | One of `debug`, `info`, `warn`, `error` (case-insensitive; aliases such as `trace`/`verbose`, `information`, and `warning` are accepted). Only `debug` changes output today: it also logs routine client disconnects (`ECONNRESET`, `EPIPE`, aborted streams, keepalive timeouts) and idle WebSocket closes on the household proxy. `info`, `warn`, and `error` are accepted but behave identically. Jellyfin-side resets and other unexpected proxy errors are always logged as warnings. An unrecognised value logs a startup warning and falls back to `info`. |
+| `TRUSTED_PROXIES` | No | — | Comma-separated IP addresses and CIDR ranges (IPv4 or IPv6) of reverse proxies in front of JellyPass, such as `192.0.2.10, 2001:db8::/64`. When the connecting peer is listed, JellyPass reads the client address from `X-Forwarded-For` for login rate limits; otherwise it uses the peer and ignores the header. Empty trusts no proxy. An invalid entry stops startup. See [Running behind a reverse proxy](#running-behind-a-reverse-proxy). |
 | `JELLYPASS_IMAGE` | Compose only | `ghcr.io/nicklongmore86/jellypass:latest` | Container tag used by `compose.yaml`. |
 | `JELLYPASS_ENV_FILE` | Compose only | `.env` | Alternate environment-file path used by either Compose file. |
 
@@ -265,6 +266,31 @@ services need to reach JellyPass only as follows:
 - Jellyseerr needs `/webhooks/seerr`.
 - Administrators need `/admin/` and the administrative API.
 - Household clients need the full household origin.
+
+### Running behind a reverse proxy
+
+Behind a reverse proxy every request reaches JellyPass from the proxy's
+address. Set `TRUSTED_PROXIES` to that address (or its subnet) so the household
+and administrator login rate limits apply per client instead of putting every
+client behind the proxy in one bucket:
+
+```dotenv
+TRUSTED_PROXIES=192.0.2.10
+```
+
+JellyPass walks `X-Forwarded-For` from right to left, skips trusted proxies, and
+uses the first address that is not trusted. A request from an address that is
+not listed is attributed to that address, and its `X-Forwarded-For` is ignored,
+so clients cannot choose their own address. List only proxies you control, and
+make sure they append to `X-Forwarded-For` rather than pass through whatever
+the client sent.
+
+The household gateway forwards to Jellyfin like any other proxy hop: it appends
+the address it received the request from to `X-Forwarded-For`, keeping existing
+entries, and sets `X-Forwarded-Proto` and `X-Real-IP` when they are missing.
+For Jellyfin to log and apply its own policies to the real client address, add
+JellyPass, and the proxy in front of it, to Jellyfin's known proxies
+(**Dashboard → Networking → Known proxies**).
 
 ## Configure Jellyseerr
 
@@ -394,6 +420,8 @@ Deployment requirements:
 - Forward WebSocket upgrades and byte-range requests.
 - Avoid proxy buffering for large media responses.
 - Do not expose the JellyPass listener directly to untrusted clients.
+- Set `TRUSTED_PROXIES` to the proxy and add JellyPass to Jellyfin's known
+  proxies; see [Running behind a reverse proxy](#running-behind-a-reverse-proxy).
 - Keep a separate normal Jellyfin administrator/recovery origin.
 
 Unknown household hostnames fail closed with `404`. Group IDs used as household
