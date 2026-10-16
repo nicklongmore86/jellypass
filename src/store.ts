@@ -12,28 +12,35 @@ export class GrantStore {
   #writing: Promise<void> = Promise.resolve();
   /** A queued write that has not started yet; saves requested meanwhile share it. */
   #queued: Promise<void> | undefined;
+  #closed = false;
 
   public constructor(file: string) {
     this.#file = file;
   }
 
   public async load(): Promise<void> {
+    this.#assertOpen();
+    let text: string;
     try {
-      const parsed = JSON.parse(await readFile(this.#file, 'utf8')) as unknown;
-      const migrated = migrateState(parsed);
-      this.#state = migrated.state;
-      // Requests already on grants (including ones recorded before handledRequestIds existed)
-      // count as handled, so the backfill never re-imports one an administrator later removed.
-      const handled = new Set(this.#state.handledRequestIds ?? []);
-      const before = handled.size;
-      for (const grant of Object.values(this.#state.grants)) Object.keys(grant.requests).forEach((id) => handled.add(id));
-      const seeded = this.#state.handledRequestIds === undefined || handled.size !== before;
-      if (seeded) this.#state.handledRequestIds = [...handled];
-      if (migrated.changed || seeded) await this.#save();
+      text = await readFile(this.#file, 'utf8');
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+      this.#assertOpen();
       await this.#save();
+      return;
     }
+    // close() may have been called while the file was being read; state must not change after it.
+    this.#assertOpen();
+    const migrated = migrateState(JSON.parse(text) as unknown);
+    this.#state = migrated.state;
+    // Requests already on grants (including ones recorded before handledRequestIds existed)
+    // count as handled, so the backfill never re-imports one an administrator later removed.
+    const handled = new Set(this.#state.handledRequestIds ?? []);
+    const before = handled.size;
+    for (const grant of Object.values(this.#state.grants)) Object.keys(grant.requests).forEach((id) => handled.add(id));
+    const seeded = this.#state.handledRequestIds === undefined || handled.size !== before;
+    if (seeded) this.#state.handledRequestIds = [...handled];
+    if (migrated.changed || seeded) await this.#save();
   }
 
   public list(): GrantRecord[] {
@@ -59,6 +66,7 @@ export class GrantStore {
   }
 
   public async setUserPasswordless(userIdInput: string, passwordless: boolean): Promise<string[]> {
+    this.#assertOpen();
     const userId = normalizeId(userIdInput);
     const current = new Set(this.#state.passwordlessUserIds);
     if (passwordless) current.add(userId);
@@ -76,6 +84,7 @@ export class GrantStore {
   }
 
   public async replaceCatalog(items: LibraryCatalogItem[]): Promise<{ lastSyncedAt: string; items: LibraryCatalogItem[] }> {
+    this.#assertOpen();
     const lastSyncedAt = new Date().toISOString();
     this.#state.catalog = {
       lastSyncedAt,
@@ -119,6 +128,7 @@ export class GrantStore {
     userId: string;
     groupIds?: string[];
   }): Promise<GrantRecord> {
+    this.#assertOpen();
     const itemId = normalizeId(input.itemId);
     const userId = normalizeId(input.userId);
     const previous = this.#state.grants[itemId];
@@ -134,22 +144,28 @@ export class GrantStore {
   }
 
   public async revokeRequest(itemIdInput: string, requestId: string): Promise<RevokeResult | undefined> {
+    this.#assertOpen();
     const itemId = normalizeId(itemIdInput);
     const previous = this.#state.grants[itemId];
     if (!previous || !(requestId in previous.requests)) return undefined;
     const requests = { ...previous.requests };
     delete requests[requestId];
-    return this.#replaceOrDelete(previous, requests, previous.manualUserIds, previous.groupIds);
+    const result = this.#replaceGrant(previous, requests, previous.manualUserIds, previous.groupIds);
+    await this.#save();
+    return result;
   }
 
   public async setGrantGroups(itemIdInput: string, groupIdsInput: string[]): Promise<RevokeResult> {
+    this.#assertOpen();
     const itemId = normalizeId(itemIdInput);
     const previous = this.#state.grants[itemId];
     if (!previous) throw new Error(`grant not found: ${itemId}`);
     const groupIds = [...new Set(groupIdsInput.map(normalizeId))].sort();
     const missing = groupIds.filter((id) => !this.#state.groups[id]);
     if (missing.length > 0) throw new Error(`group not found: ${missing.join(', ')}`);
-    return this.#replaceOrDelete(previous, previous.requests, previous.manualUserIds, groupIds);
+    const result = this.#replaceGrant(previous, previous.requests, previous.manualUserIds, groupIds);
+    await this.#save();
+    return result;
   }
 
   public async setManualAccess(input: {
@@ -167,6 +183,7 @@ export class GrantStore {
     userIds: string[];
     groupIds: string[];
   }>): Promise<Array<{ previous?: GrantRecord; current: GrantRecord }>> {
+    this.#assertOpen();
     const results: Array<{ previous?: GrantRecord; current: GrantRecord }> = [];
     for (const input of inputs) {
     const itemId = normalizeId(input.itemId);
@@ -184,6 +201,7 @@ export class GrantStore {
   }
 
   public async upsertGroup(input: { id: string; name: string; userIds: string[] }): Promise<AccessGroup> {
+    this.#assertOpen();
     const id = normalizeId(input.id);
     const now = new Date().toISOString();
     const previous = this.#state.groups[id];
@@ -207,13 +225,14 @@ export class GrantStore {
   }
 
   public async deleteGroup(groupIdInput: string): Promise<RevokeResult[]> {
+    this.#assertOpen();
     const groupId = normalizeId(groupIdInput);
     if (!this.#state.groups[groupId]) return [];
     delete this.#state.groups[groupId];
     const results: RevokeResult[] = [];
     for (const previous of Object.values({ ...this.#state.grants })) {
       if (!previous.groupIds.includes(groupId)) continue;
-      results.push(await this.#replaceOrDelete(previous, previous.requests, previous.manualUserIds, previous.groupIds.filter((id) => id !== groupId), false));
+      results.push(this.#replaceGrant(previous, previous.requests, previous.manualUserIds, previous.groupIds.filter((id) => id !== groupId)));
     }
     await this.#save();
     return results;
@@ -224,6 +243,7 @@ export class GrantStore {
   }
 
   public async markSyncSuccessBatch(itemIds: string[]): Promise<void> {
+    this.#assertOpen();
     const now = new Date().toISOString();
     let changed = false;
     for (const itemId of itemIds) {
@@ -241,6 +261,7 @@ export class GrantStore {
   }
 
   public async markSyncErrorBatch(itemIds: string[], error: string): Promise<void> {
+    this.#assertOpen();
     const now = new Date();
     let changed = false;
     for (const itemId of itemIds) {
@@ -263,6 +284,7 @@ export class GrantStore {
   }
 
   public async purgeInactive(itemIdInput: string): Promise<void> {
+    this.#assertOpen();
     const itemId = normalizeId(itemIdInput);
     const grant = this.#state.grants[itemId];
     if (!grant || grant.active) return;
@@ -294,17 +316,21 @@ export class GrantStore {
     return placeholder;
   }
 
-  async #replaceOrDelete(
+  /** Synchronous, so a mutation and the save that persists it are never split by close(). */
+  #replaceGrant(
     previous: GrantRecord,
     requests: Record<string, string>,
     manualUserIds: string[],
     groupIds: string[],
-    save = true,
-  ): Promise<RevokeResult> {
+  ): RevokeResult {
     const next = this.#makeGrant(previous.itemId, requests, manualUserIds, groupIds, previous, previous.mediaType);
     this.#state.grants[previous.itemId] = next;
-    if (save) await this.#save();
     return { previous: clone(previous), current: clone(next) };
+  }
+
+  /** Every mutator calls this before touching state, so a change refused after close() leaves memory untouched too. */
+  #assertOpen(): void {
+    if (this.#closed) throw new Error('state store is closed');
   }
 
   /**
@@ -313,6 +339,7 @@ export class GrantStore {
    * made before it.
    */
   #save(): Promise<void> {
+    if (this.#closed) return Promise.reject(new Error('state store is closed'));
     if (this.#queued) return this.#queued;
     const queued = this.#writing.catch(() => undefined).then(() => {
       this.#queued = undefined;
@@ -321,6 +348,15 @@ export class GrantStore {
     this.#queued = queued;
     this.#writing = queued;
     return queued;
+  }
+
+  /**
+   * Refuses further changes, then waits for the write in flight and any queued behind it, so the state file is complete
+   * when the process exits. Rejects if the last write failed: the file on disk is then missing changes.
+   */
+  public async close(): Promise<void> {
+    this.#closed = true;
+    await this.#writing;
   }
 
   async #write(): Promise<void> {
