@@ -385,8 +385,8 @@ temporary Jellyfin session, and stores only an in-memory JellyPass session for
 
 The UI contains four views:
 
-- **Dashboard** — grant counts, synchronization health, and recent Jellyseerr
-  requests linked to the synchronized catalog.
+- **Dashboard** — grant counts, synchronization health, and up to 12 recent
+  Jellyseerr requests linked to the synchronized catalog.
 - **Library** — catalog search, filters, sorting, pagination, and bulk access
   assignment for up to 500 selected items.
 - **Grants** — active automated and manual grants, owners, groups, sync status,

@@ -6,6 +6,7 @@ import { expiredSessionCookie, sessionCookie, type WebAuth } from './auth.js';
 import { ClientIpResolver } from './client-ip.js';
 import type { LogLevel } from './config.js';
 import { HouseholdGateway } from './household-gateway.js';
+import { RECENT_REQUESTS_LIMIT } from './seerr.js';
 import { parseWebhook } from './webhook.js';
 
 const BODY_LIMIT = 64 * 1024;
@@ -148,7 +149,7 @@ export function makeServer(service: AccessService, tokens: ServerTokens, webAuth
         return json(response, 200, { status: 'saved', user });
       }
       if (request.method === 'GET' && url.pathname === '/v1/requests/recent') {
-        return json(response, 200, { requests: await service.listRecentRequests(8) });
+        return json(response, 200, { requests: await service.listRecentRequests(RECENT_REQUESTS_LIMIT) });
       }
       if (request.method === 'GET' && url.pathname === '/v1/requests/poster') {
         const poster = await service.getRequestPoster(nonEmptyString(url.searchParams.get('path'), 'posterPath'));

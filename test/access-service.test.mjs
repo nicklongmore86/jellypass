@@ -898,3 +898,72 @@ function fakeJellyfin({ extraUsers = [] } = {}) {
 async function stateFile() {
   return path.join(await mkdtemp(path.join(tmpdir(), 'jfa-test-')), 'grants.json');
 }
+
+describe('Seerr recent requests cache', () => {
+  function recentRequest(n) {
+    return {
+      id: n,
+      type: 'movie',
+      status: 2,
+      createdAt: `2026-10-${String(1 + (n % 28)).padStart(2, '0')}T00:00:00.000Z`,
+      requestedBy: { displayName: 'Alice' },
+      media: { mediaType: 'movie', tmdbId: 5000 + n, status: 5, jellyfinMediaId: `item-${n}` },
+    };
+  }
+
+  async function withRecentSeerr(count, run) {
+    const listed = Array.from({ length: count }, (_, index) => recentRequest(index + 1));
+    const originalFetch = globalThis.fetch;
+    const calls = { list: 0, details: 0 };
+    globalThis.fetch = async (input) => {
+      const url = new URL(String(input));
+      if (url.pathname === '/api/v1/request') {
+        calls.list += 1;
+        const skip = Number(url.searchParams.get('skip'));
+        const take = Number(url.searchParams.get('take'));
+        return Response.json({ pageInfo: { results: listed.length }, results: listed.slice(skip, skip + take) });
+      }
+      const match = url.pathname.match(/^\/api\/v1\/movie\/(\d+)$/);
+      if (match) {
+        calls.details += 1;
+        return Response.json({ title: `Movie ${Number(match[1]) - 5000}`, releaseDate: '2026-01-01' });
+      }
+      return new Response('boom', { status: 500 });
+    };
+    try {
+      await run(new SeerrClient('http://seerr.test', 'key'), calls);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  }
+
+  const ids = (items) => items.map((item) => item.id);
+  const catalog = (from, to) => new Set(Array.from({ length: to - from + 1 }, (_, index) => `item-${from + index}`));
+
+  it('serves a larger request from the cache after a smaller one within the TTL', async () => {
+    await withRecentSeerr(30, async (seerr, calls) => {
+      assert.deepEqual(ids(await seerr.getRecentRequests(8)), [1, 2, 3, 4, 5, 6, 7, 8]);
+      assert.deepEqual(ids(await seerr.getRecentRequests(12)), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+      assert.equal((await seerr.getRecentRequests(50)).length, 20);
+      assert.equal(calls.list, 1);
+      assert.equal(calls.details, 20);
+    });
+  });
+
+  it('defaults to twelve recent requests', async () => {
+    await withRecentSeerr(30, async (seerr) => {
+      assert.equal((await seerr.getRecentRequests()).length, 12);
+    });
+  });
+
+  it('does not serve results computed for a different catalog set', async () => {
+    await withRecentSeerr(30, async (seerr, calls) => {
+      assert.deepEqual(ids(await seerr.getRecentRequests(12, catalog(1, 5))), [1, 2, 3, 4, 5]);
+      assert.deepEqual(ids(await seerr.getRecentRequests(12, catalog(6, 15))), [6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+      assert.equal(calls.list, 2);
+      // An equal catalog in a new Set instance is still a cache hit.
+      assert.deepEqual(ids(await seerr.getRecentRequests(12, catalog(6, 15))), [6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+      assert.equal(calls.list, 2);
+    });
+  });
+});

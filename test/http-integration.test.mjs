@@ -28,7 +28,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     importedUserIds = [];
     const seerr = {
       async getRecentRequests(take, jellyfinItemIds) {
-        assert.equal(take, 8);
+        assert.equal(take, 12);
         assert.equal(jellyfinItemIds.has('item-2'), true);
         return [{ id: 136, mediaType: 'tv', title: 'Recent Series', year: 2026, posterPath: '/poster.jpg', jellyfinItemId: 'item-2', requestStatus: 'approved', mediaStatus: 'partially_available', requestedBy: 'Alice', createdAt: '2026-08-29T03:46:03.000Z', seasonCount: 2 }];
       },

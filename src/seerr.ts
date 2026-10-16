@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import type { RecentSeerrRequest, SeerrRequest } from './types.js';
 
 interface SeerrRequestList {
@@ -22,6 +23,12 @@ interface SeerrMediaDetails {
   posterPath?: string;
 }
 
+/** Recent requests shown on the admin Dashboard; divides evenly into its 4/3/2-column grid. */
+export const RECENT_REQUESTS_LIMIT = 12;
+/** Most recent requests fetched and cached per catalog; larger requests are capped to this. */
+export const RECENT_REQUESTS_MAX = 20;
+const RECENT_REQUESTS_TTL_MS = 60_000;
+
 export interface ImportedSeerrUser {
   id?: number;
   username?: string;
@@ -32,7 +39,7 @@ export interface ImportedSeerrUser {
 export class SeerrClient {
   readonly #baseUrl: string;
   readonly #apiKey: string;
-  #recentCache: { expiresAt: number; items: RecentSeerrRequest[] } | undefined;
+  #recentCache: { expiresAt: number; catalogKey: string; items: RecentSeerrRequest[] } | undefined;
 
   public constructor(baseUrl: string, apiKey: string) {
     this.#baseUrl = baseUrl;
@@ -78,16 +85,19 @@ export class SeerrClient {
     return requests;
   }
 
-  public async getRecentRequests(take = 8, jellyfinItemIds?: ReadonlySet<string>): Promise<RecentSeerrRequest[]> {
-    const count = Math.min(Math.max(Math.trunc(take), 1), 20);
-    if (this.#recentCache && this.#recentCache.expiresAt > Date.now()) {
-      return this.#recentCache.items.slice(0, count);
+  public async getRecentRequests(take = RECENT_REQUESTS_LIMIT, jellyfinItemIds?: ReadonlySet<string>): Promise<RecentSeerrRequest[]> {
+    const count = Math.min(Math.max(Math.trunc(take), 1), RECENT_REQUESTS_MAX);
+    const catalogKey = recentCatalogKey(jellyfinItemIds);
+    const cached = this.#recentCache;
+    if (cached && cached.expiresAt > Date.now() && cached.catalogKey === catalogKey) {
+      return cached.items.slice(0, count);
     }
+    // Always fill the cache to the cap so a later, larger request within the TTL is still served in full.
     const requests: NonNullable<SeerrRequestList['results']> = [];
     const pageSize = 50;
     let skip = 0;
     let total = Number.POSITIVE_INFINITY;
-    while (requests.length < count && skip < total) {
+    while (requests.length < RECENT_REQUESTS_MAX && skip < total) {
       const list = await this.#getJson<SeerrRequestList>(`/api/v1/request?take=${pageSize}&skip=${skip}&sort=added`);
       const page = list.results ?? [];
       total = list.pageInfo?.results ?? skip + page.length;
@@ -103,7 +113,7 @@ export class SeerrClient {
       if (!page.length) break;
       skip += page.length;
     }
-    requests.splice(count);
+    requests.splice(RECENT_REQUESTS_MAX);
     const items = await Promise.all(requests.map(async (request) => {
       const mediaType = request.type as 'movie' | 'tv';
       const tmdbId = request.media?.tmdbId as number;
@@ -131,8 +141,8 @@ export class SeerrClient {
         ...(mediaType === 'tv' && request.seasonCount ? { seasonCount: request.seasonCount } : {}),
       };
     }));
-    this.#recentCache = { expiresAt: Date.now() + 60_000, items };
-    return items;
+    this.#recentCache = { expiresAt: Date.now() + RECENT_REQUESTS_TTL_MS, catalogKey, items };
+    return items.slice(0, count);
   }
 
   public async getPoster(posterPath: string): Promise<{ body: Uint8Array; contentType: string }> {
@@ -194,4 +204,9 @@ function requestStatus(value: number | undefined): RecentSeerrRequest['requestSt
 
 function mediaStatus(value: number | undefined): RecentSeerrRequest['mediaStatus'] {
   return ({ 1: 'unknown', 2: 'pending', 3: 'processing', 4: 'partially_available', 5: 'available', 6: 'deleted' } as const)[value ?? 0] ?? 'unknown';
+}
+
+function recentCatalogKey(jellyfinItemIds: ReadonlySet<string> | undefined): string {
+  if (!jellyfinItemIds) return '*';
+  return createHash('sha256').update([...jellyfinItemIds].sort().join('\n')).digest('hex');
 }
