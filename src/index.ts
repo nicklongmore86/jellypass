@@ -4,7 +4,7 @@ import { loadConfig } from './config.js';
 import { JellyfinClient } from './jellyfin.js';
 import { makeServer } from './server.js';
 import { SeerrClient } from './seerr.js';
-import { createShutdown } from './shutdown.js';
+import { BackgroundTasks, createShutdown } from './shutdown.js';
 import { GrantStore } from './store.js';
 
 async function main(): Promise<void> {
@@ -32,14 +32,17 @@ async function main(): Promise<void> {
     } : {}),
   });
   const backfillSince = config.requestBackfillEnabled ? config.requestBackfillSince : undefined;
-  const backfillRequests = async () => {
+  // Shutdown aborts this signal: each job stops before its next step and failures from the abort are not logged.
+  const background = new BackgroundTasks();
+  const backfillRequests = async (signal: AbortSignal) => {
     if (!backfillSince) return;
     try {
-      const result = await service.backfillRequests(backfillSince);
+      const result = await service.backfillRequests(backfillSince, { signal });
       if (result.granted.length > 0 || result.failed > 0) {
         console.log(JSON.stringify({ level: 'info', message: 'request backfill finished', ...result }));
       }
     } catch (error) {
+      if (signal.aborted) return;
       console.error(JSON.stringify({
         level: 'error',
         message: 'request backfill failed',
@@ -48,23 +51,29 @@ async function main(): Promise<void> {
     }
   };
   const reconcileTimer = config.reconcileIntervalSeconds > 0
-    ? setInterval(() => {
-        void backfillRequests().then(() => service.reconcileAll({ dueOnly: true })).catch((error: unknown) => {
+    ? setInterval(() => background.run(async (signal) => {
+        await backfillRequests(signal);
+        if (signal.aborted) return;
+        await service.reconcileAll({ dueOnly: true, signal }).catch((error: unknown) => {
+          if (signal.aborted) return;
           console.error(JSON.stringify({
             level: 'error',
             message: 'scheduled reconciliation failed',
             detail: error instanceof Error ? error.message : String(error),
           }));
         });
-      }, config.reconcileIntervalSeconds * 1000)
+      }), config.reconcileIntervalSeconds * 1000)
     : undefined;
   reconcileTimer?.unref();
-  const syncCatalog = () => service.syncLibraryCatalog().catch((error: unknown) => {
-    console.error(JSON.stringify({
-      level: 'error',
-      message: 'library catalog sync failed',
-      detail: error instanceof Error ? error.message : String(error),
-    }));
+  const syncCatalog = () => background.run(async (signal) => {
+    await service.syncLibraryCatalog({ signal }).catch((error: unknown) => {
+      if (signal.aborted) return;
+      console.error(JSON.stringify({
+        level: 'error',
+        message: 'library catalog sync failed',
+        detail: error instanceof Error ? error.message : String(error),
+      }));
+    });
   });
   const catalogSyncTimer = config.catalogSyncIntervalSeconds > 0
     ? setInterval(syncCatalog, config.catalogSyncIntervalSeconds * 1000)
@@ -81,15 +90,16 @@ async function main(): Promise<void> {
       catalogSyncIntervalSeconds: config.catalogSyncIntervalSeconds,
       requestBackfillSince: backfillSince?.toISOString() ?? null,
     }));
-    if (service.getLibraryCatalog().items.length === 0) void syncCatalog();
+    if (service.getLibraryCatalog().items.length === 0) syncCatalog();
     // Catch up on missed webhooks now rather than one reconcile interval after startup.
-    if (backfillSince) backfillTimer = setTimeout(() => void backfillRequests(), 5_000).unref();
+    if (backfillSince) backfillTimer = setTimeout(() => background.run(backfillRequests), 5_000).unref();
   });
 
   const shutdown = createShutdown({
     servers: [server],
     closeStore: () => store.close(),
     timers: () => [reconcileTimer, catalogSyncTimer, backfillTimer],
+    background,
   });
   // `on`, not `once`: a second signal must reach the idempotent handler rather than Node's default, which kills at once.
   process.on('SIGINT', (signal) => void shutdown(signal));

@@ -198,9 +198,13 @@ export class AccessService {
     };
   }
 
-  public syncLibraryCatalog(): Promise<{ lastSyncedAt: string; items: Array<LibraryCatalogItem & { managed: boolean; managedAt?: string }> }> {
+  /** An aborted `signal` (shutdown) rejects with its reason and leaves the stored catalog unchanged. */
+  public syncLibraryCatalog(options: { signal?: AbortSignal } = {}): Promise<{ lastSyncedAt: string; items: Array<LibraryCatalogItem & { managed: boolean; managedAt?: string }> }> {
     return this.#exclusive(async () => {
-      const catalog = await this.#store.replaceCatalog(await this.#jellyfin.fetchLibraryCatalog());
+      options.signal?.throwIfAborted();
+      const items = await this.#jellyfin.fetchLibraryCatalog();
+      options.signal?.throwIfAborted();
+      const catalog = await this.#store.replaceCatalog(items);
       const grants = new Map(this.#store.list().filter((grant) => grant.active).map((grant) => [normalizeId(grant.itemId), grant]));
       return { ...catalog, items: catalog.items.map((item) => {
         const grant = grants.get(normalizeId(item.id));
@@ -302,10 +306,12 @@ export class AccessService {
    * an item whose grant came from other requests is added to it (additively, with the
    * requester's households). Manual-only grants are left alone. Each request counts as exactly
    * one outcome: granted (stored and reconciled), skipped, or failed (including a grant that was
-   * stored but could not be reconciled yet; reconcileAll retries it).
+   * stored but could not be reconciled yet; reconcileAll retries it). Once `signal` is aborted (shutdown), no further
+   * request is started and the run rejects with the signal's reason.
    */
-  public backfillRequests(since: Date): Promise<RequestBackfillResult> {
+  public backfillRequests(since: Date, options: { signal?: AbortSignal } = {}): Promise<RequestBackfillResult> {
     return this.#exclusive(async () => {
+      options.signal?.throwIfAborted();
       if (!this.#seerr) throw new Error('Seerr lookup is not configured');
       const seerr = this.#seerr;
       // Oldest first, so a grant's first request comes from the original requester.
@@ -313,6 +319,7 @@ export class AccessService {
       const result: RequestBackfillResult = { scanned: requests.length, granted: [], skipped: 0, failed: 0 };
       let knownUserIds: Set<string> | undefined;
       for (const listed of requests) {
+        options.signal?.throwIfAborted();
         const requestId = String(listed.id);
         try {
           if (!AVAILABLE_MEDIA_STATUSES.has(requestMediaStatus(listed) ?? 0) || this.#store.hasHandledRequest(requestId)) {
@@ -373,11 +380,13 @@ export class AccessService {
     });
   }
 
-  public reconcileAll(options: { dryRun?: boolean; dueOnly?: boolean } = {}): Promise<ChangePlan[]> {
+  /** Once `signal` is aborted (shutdown), no further grant is started and the run rejects with the signal's reason. */
+  public reconcileAll(options: { dryRun?: boolean; dueOnly?: boolean; signal?: AbortSignal } = {}): Promise<ChangePlan[]> {
     return this.#exclusive(async () => {
       const plans: ChangePlan[] = [];
       const errors: Error[] = [];
       for (const grant of this.#store.list()) {
+        options.signal?.throwIfAborted();
         if (options.dueOnly && !isDue(grant)) continue;
         try {
           if (options.dryRun) plans.push((await this.#buildPlan(grant)).plan);

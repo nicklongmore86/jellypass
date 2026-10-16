@@ -13,6 +13,8 @@ export interface ShutdownOptions {
   closeStore: () => Promise<void>;
   /** Background timers (reconcile, catalog sync, backfill) to clear before anything else. */
   timers: () => Array<NodeJS.Timeout | undefined>;
+  /** Background work already running; it is told to stop and given up to `graceMs` before the store closes. */
+  background?: { stop(): Promise<void> };
   graceMs?: number;
   hardTimeoutMs?: number;
   exit?: (code: number) => void;
@@ -46,9 +48,10 @@ export function createShutdown(options: ShutdownOptions): (reason: string) => Pr
     // own, without the timeout log. Every completion path clears it.
     running = (async () => {
       for (const timer of options.timers()) clearTimeout(timer);
+      const backgroundStopped = stopBackground();
       const closed = options.servers.map(drain);
       const webSockets = await Promise.all(options.servers.map((server) => server.closeWebSockets()));
-      await Promise.all(closed);
+      await Promise.all([...closed, backgroundStopped]);
       await options.closeStore();
       clearTimeout(hardTimer);
       log('info', 'shutdown complete', {
@@ -63,6 +66,21 @@ export function createShutdown(options: ShutdownOptions): (reason: string) => Pr
     });
     return running;
   };
+
+  /**
+   * Waits up to `graceMs` for running background work to notice it was stopped. Work still running after that is
+   * abandoned; any state change it tries later is refused by the closed store.
+   */
+  async function stopBackground(): Promise<void> {
+    if (!options.background) return;
+    let cutoff: NodeJS.Timeout | undefined;
+    const stopped = await Promise.race([
+      options.background.stop().then(() => true),
+      new Promise<false>((resolve) => { cutoff = setTimeout(() => resolve(false), graceMs); }),
+    ]);
+    clearTimeout(cutoff);
+    if (!stopped) log('info', 'background work still running; shutting down without waiting for it', { graceMs });
+  }
 
   function drain(server: JellyPassServer): Promise<void> {
     if (!server.listening) return Promise.resolve();
@@ -84,4 +102,30 @@ function defaultLog(level: 'info' | 'error', message: string, fields: Record<str
   const line = JSON.stringify({ level, message, ...fields });
   if (level === 'error') console.error(line);
   else console.log(line);
+}
+
+/**
+ * Runs background jobs (reconcile, backfill, catalog sync) under one AbortSignal, so shutdown can stop them from
+ * starting further steps and wait for the ones in flight.
+ */
+export class BackgroundTasks {
+  readonly #controller = new AbortController();
+  readonly #running = new Set<Promise<void>>();
+
+  public get signal(): AbortSignal {
+    return this.#controller.signal;
+  }
+
+  /** Starts `task` unless stopped. The task handles its own errors; anything it lets escape is dropped. */
+  public run(task: (signal: AbortSignal) => Promise<void>): void {
+    if (this.signal.aborted) return;
+    const running = task(this.signal).catch(() => undefined).finally(() => this.#running.delete(running));
+    this.#running.add(running);
+  }
+
+  /** Aborts the signal and resolves once every running task has settled. */
+  public async stop(): Promise<void> {
+    this.#controller.abort(new Error('shutting down'));
+    await Promise.all([...this.#running]);
+  }
 }
