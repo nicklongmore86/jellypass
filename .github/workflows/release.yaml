@@ -32,8 +32,22 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         run: node scripts/changelog-section.mjs "${GITHUB_REF_NAME}" > /dev/null
 
+  # Same check as CI's jellyfin-integration job: no image is published unless
+  # JellyPass grants and revokes access on a real Jellyfin.
+  jellyfin-integration:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm test:real
+
   container:
-    needs: validate
+    needs: [validate, jellyfin-integration]
     runs-on: ubuntu-24.04
     permissions:
       contents: read
@@ -90,7 +104,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           if gh release view "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" > /dev/null 2>&1; then
-            gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --notes-file "${RUNNER_TEMP}/release-notes.md"
+            gh release edit "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --title "${GITHUB_REF_NAME}" --notes-file "${RUNNER_TEMP}/release-notes.md"
           else
-            gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --verify-tag --notes-file "${RUNNER_TEMP}/release-notes.md"
+            gh release create "${GITHUB_REF_NAME}" --repo "${GITHUB_REPOSITORY}" --verify-tag --title "${GITHUB_REF_NAME}" --notes-file "${RUNNER_TEMP}/release-notes.md"
           fi
