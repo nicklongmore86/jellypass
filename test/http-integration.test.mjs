@@ -694,6 +694,53 @@ describe('webhook resolution errors over HTTP', { timeout: 5_000 }, () => {
     assert.deepEqual(jellyfin.item.Tags, []);
   });
 
+  it('applies a stored grant when Seerr retries a webhook whose Jellyfin update failed', async () => {
+    const jellyfin = {
+      item: { Id: 'item-1', Name: 'Movie', Tags: [] },
+      failUpdates: true,
+      users: [
+        { Id: 'admin-id', Name: 'Admin', Policy: { IsAdministrator: true, BlockedTags: [] } },
+        { Id: 'alice-id', Name: 'Alice', Policy: { BlockedTags: [] } },
+        { Id: 'bob-id', Name: 'Bob', Policy: { BlockedTags: [] } },
+      ],
+      async getItem() { return structuredClone(this.item); },
+      async getUsers() { return structuredClone(this.users); },
+      async getLocalTrailers() { return []; },
+      async updateItem(item) {
+        if (this.failUpdates) throw new Error('Jellyfin unavailable');
+        this.item = structuredClone(item);
+      },
+      async updatePolicy(userId, policy) { this.users.find((user) => user.Id === userId).Policy = structuredClone(policy); },
+    };
+    const store = new GrantStore(path.join(await mkdtemp(path.join(tmpdir(), 'jfa-http-retry-')), 'grants.json'));
+    await store.load();
+    const service = new AccessService(jellyfin, store);
+    const server = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' });
+    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    servers.push(server);
+    const send = async () => {
+      const response = await fetch(`http://127.0.0.1:${server.address().port}/webhooks/seerr`, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer webhook-secret', 'Content-Type': 'application/json' },
+        body: JSON.stringify(available('17', 'Movie Request Now Available')),
+      });
+      return { status: response.status, body: await response.json() };
+    };
+    assert.deepEqual(await send(), { status: 502, body: { error: 'Jellyfin unavailable' } });
+    assert.equal(store.get('item-1').sync.state, 'error');
+
+    jellyfin.failUpdates = false;
+    const retried = await send();
+    assert.equal(retried.status, 200);
+    assert.equal(retried.body.grant.sync.state, 'synced');
+    assert.deepEqual(retried.body.grant.requests, { '17': 'alice-id' });
+    assert.deepEqual(jellyfin.item.Tags, ['jfa:private:item-1']);
+    assert.deepEqual(jellyfin.users.find((user) => user.Id === 'bob-id').Policy.BlockedTags, ['jfa:private:item-1']);
+    const metrics = service.renderMetrics();
+    assert.match(metrics, /jfa_webhooks_total\{result="error"\} 1\n/);
+    assert.match(metrics, /jfa_webhooks_total\{result="granted"\} 1\n/);
+  });
+
   it('returns 502 for a 4K event when Seerr lookup is not configured', async () => {
     const send = await webhookServer(undefined);
     assert.deepEqual(await send(available('6', '4K Movie Now Available')), {

@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, readdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
@@ -98,6 +98,24 @@ describe('state file persistence', () => {
     release();
     await Promise.all([webhookDone, passwordlessDone]);
     assert.deepEqual(order, ['webhook', 'passwordless']);
+  });
+
+  it('delivers a failed write to every coalesced caller and keeps writing afterwards', async () => {
+    const file = await stateFile();
+    const store = new GrantStore(file);
+    await store.load();
+    // A non-empty directory at the state path makes the rename fail.
+    await rm(file);
+    await mkdir(path.join(file, 'blocker'), { recursive: true });
+    const results = await Promise.allSettled(['a', 'b', 'c'].map((id) => store.setUserPasswordless(`member-${id}`, true)));
+    assert.deepEqual(results.map((result) => result.status), ['rejected', 'rejected', 'rejected']);
+    assert.equal(new Set(results.map((result) => result.reason)).size, 1, 'the callers share one write');
+
+    await rm(file, { recursive: true });
+    await store.setUserPasswordless('member-d', true);
+    const saved = JSON.parse(await readFile(file, 'utf8'));
+    assert.deepEqual(saved.passwordlessUserIds, ['member-a', 'member-b', 'member-c', 'member-d']);
+    assert.deepEqual((await readdir(path.dirname(file))).sort(), ['grants.json']);
   });
 
   it('serializes overlapping store writes and leaves the newest state on disk', async () => {
@@ -646,6 +664,52 @@ describe('replayed webhooks', () => {
     assert.match(metrics, /jfa_webhooks_total\{result="granted"\} 1\n/);
   });
 
+  it('adds a request from another household to the same title', async () => {
+    const { store, fake, service } = await twoHouseholds();
+    await service.processWebhook(parseWebhook(webhook()));
+    const grant = await service.processWebhook(parseWebhook(webhook({ requestId: '18', userId: 'carol-id' })));
+    assert.deepEqual(grant.requests, { '17': 'alice-id', '18': 'carol-id' });
+    assert.deepEqual(grant.groupIds, ['house-a', 'house-b']);
+    assert.deepEqual(store.get('item-1').owners, ['alice-id', 'bob-id', 'carol-id']);
+    assert.deepEqual(fake.user('carol-id').Policy.BlockedTags, []);
+  });
+
+  it('grants a new request for a title after an administrator revoked an earlier one', async () => {
+    const { store, fake, service } = await twoHouseholds();
+    await service.processWebhook(parseWebhook(webhook()));
+    await service.revokeRequest('item-1', '17');
+    await service.setGrantGroups('item-1', []);
+    assert.equal(store.get('item-1'), undefined);
+
+    const grant = await service.processWebhook(parseWebhook(webhook({ requestId: '19' })));
+    assert.deepEqual(grant.requests, { '19': 'alice-id' });
+    assert.deepEqual(grant.groupIds, ['house-a']);
+    assert.deepEqual(fake.item.Tags, ['keep-me', 'jfa:private:item-1']);
+  });
+
+  it('does not let a replay with other IDs or a 4K event change the recorded grant', async () => {
+    const { store, fake, service } = await twoHouseholds();
+    await service.processWebhook(parseWebhook(webhook()));
+    const recorded = store.get('item-1');
+    const altered = webhook({ userId: 'carol-id', mediaId: 'item-2', event: '4K Movie Request Now Available' });
+
+    const grant = await service.processWebhook(parseWebhook(altered));
+    assert.equal(grant.itemId, 'item-1');
+    assert.deepEqual(grant.requests, recorded.requests);
+    assert.deepEqual(grant.groupIds, recorded.groupIds);
+    assert.deepEqual(grant.owners, recorded.owners);
+    assert.equal(store.get('item-2'), undefined);
+    assert.deepEqual(fake.item2.Tags, []);
+    assert.deepEqual(fake.user('carol-id').Policy.BlockedTags, ['jfa:private:item-1']);
+
+    await service.revokeRequest('item-1', '17');
+    await service.setGrantGroups('item-1', []);
+    assert.equal(await service.processWebhook(parseWebhook(altered)), null);
+    assert.deepEqual(store.list(), []);
+    assert.deepEqual(fake.item2.Tags, []);
+    assert.doesNotMatch(service.renderMetrics(), /result="error"/);
+  });
+
   it('retries a delivery that failed before its grant was stored as a first delivery', async () => {
     const { store, fake, service } = await twoHouseholds();
     const grant = store.grant;
@@ -854,6 +918,20 @@ describe('Seerr request backfill', () => {
           assert.deepEqual(fake.item.Tags, ['keep-me']);
         });
       }
+    });
+
+    it('grants separate HD and 4K requests for a title on their own items', async () => {
+      await withSeerr([], { 20: { ...detail4k, id: 20 } }, async ({ store, fake, service, calls }) => {
+        const hd = await service.processWebhook(parseWebhook(webhook()));
+        const uhd = await service.processWebhook(parseWebhook(webhook({ requestId: '20', event: '4K Movie Request Now Available' })));
+        assert.deepEqual(calls, ['/api/v1/request/20']);
+        assert.equal(hd.itemId, 'item-1');
+        assert.equal(uhd.itemId, 'item-2');
+        assert.deepEqual(store.get('item-1').requests, { '17': 'alice-id' });
+        assert.deepEqual(store.get('item-2').requests, { '20': 'carol-id' });
+        assert.deepEqual(fake.item.Tags, ['keep-me', 'jfa:private:item-1']);
+        assert.deepEqual(fake.item2.Tags, ['jfa:private:item-2']);
+      });
     });
 
     it('does not grant a 4K request on the HD item when Seerr has no 4K item yet', async () => {
