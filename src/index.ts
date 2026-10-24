@@ -12,7 +12,7 @@ import { TmdbClient, TmdbError } from './tmdb.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
-  const store = new GrantStore(config.stateFile);
+  const store = new GrantStore(config.stateFile, { limitHouseholds: config.householdAppEnabled });
   await store.load();
 
   const jellyfin = new JellyfinClient(config.jellyfinUrl, config.jellyfinApiKey);
