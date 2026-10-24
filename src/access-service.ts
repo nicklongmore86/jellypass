@@ -688,10 +688,10 @@ export class AccessService {
       const userIds = [...new Set(input.userIds.map(normalizeId))].sort();
       const groupIds = [...new Set(input.groupIds.map(normalizeId))].sort();
       await this.#validateManualAudience(userIds, groupIds);
-      if (dryRun) {
-        const [planned] = this.#store.previewManualAccessBatch([input]) as [{ previous?: GrantRecord; current: GrantRecord }];
-        return { ...planned, plan: (await this.#buildPlan(planned.current)).plan };
-      }
+      const [planned] = this.#store.previewManualAccessBatch([input]) as [{ previous?: GrantRecord; current: GrantRecord }];
+      // Planned before anything is stored, so a failed Jellyfin lookup leaves the grant as it was.
+      const plan = (await this.#buildPlan(planned.current)).plan;
+      if (dryRun) return { ...planned, plan };
       const stored = await this.#store.setManualAccess(input);
       const appliedPlan = await this.#reconcileGrant(stored.current);
       return { ...stored, plan: appliedPlan };

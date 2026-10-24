@@ -1454,3 +1454,144 @@ describe('administrator dry runs plan exactly what the write stores', { timeout:
     assert.deepEqual(planned.plan, written.plan);
   });
 });
+
+/**
+ * item-1 has alice's request 7 (House A) and bob's request 8 and is shared with Farmhouse by carol's library join; dave's
+ * request 9 was revoked from it (a revoked request and a removal mark). item-old was granted to House A through alice's
+ * request 11, then deleted from Jellyfin; Seerr's request now names item-new. Everything was applied, then the state
+ * file was written once more, so `snapshot` can tell any change apart.
+ */
+async function administered(t) {
+  const w = world();
+  const file = path.join(await makeTempDir(t, 'jellypass-write-order-test-'), 'grants.json');
+  const store = await newStore(t, file);
+  const service = new AccessService(w.jellyfin, store, undefined, w.seerr);
+  await store.upsertGroup({ id: 'cottage', name: 'Cottage', userIds: ['dave-id'] });
+  for (const id of ['item-1', 'item-2', 'item-old', 'item-new']) w.addItem(id);
+  await store.replaceCatalog(['item-1', 'item-2'].map((id) => ({ id, name: `Movie ${id}`, type: 'Movie', mediaType: 'movie', libraryId: 'movies', libraryName: 'Movies' })));
+  await store.grant({ itemId: 'item-1', requestId: '7', userId: 'alice-id', groupIds: ['house-a'] });
+  await store.grant({ itemId: 'item-1', requestId: '8', userId: 'bob-id' });
+  await store.grant({ itemId: 'item-1', requestId: '9', userId: 'dave-id' });
+  await store.grant({ itemId: 'item-old', requestId: '11', userId: 'alice-id', groupIds: ['house-a'] });
+  await service.reconcileAll();
+  w.titles.set('movie/603', 'item-1');
+  const joined = await quietly(() => service.joinLibrary({ userId: 'carol-id', isAdministrator: false, mediaType: 'movie', tmdbId: 603 }));
+  assert.equal(joined.error, undefined, String(joined.error));
+  assert.equal(joined.value, 'joined', 'precondition: carol joined');
+  const revoked = await quietly(() => service.revokeRequest('item-1', '9'));
+  assert.equal(revoked.error, undefined, String(revoked.error));
+  w.items.delete('item-old');
+  w.request(11, { jellyfinMediaId: 'item-new' });
+  const grant = store.get('item-1');
+  assert.deepEqual(grant.groupIds, ['farmhouse', 'house-a'], 'precondition: shared with Farmhouse');
+  assert.ok(store.isRequestRevoked('9', 'item-1'), 'precondition: request 9 was revoked');
+  assert.equal(grant.sync.state, 'synced', 'precondition: item-1 is synced');
+  await store.setUserPasswordless('bob-id', false);
+  w.calls.length = 0;
+  w.writes.length = 0;
+  return { w, store, service, file };
+}
+
+/**
+ * Everything stored about the grants, as the state file holds it and as the store holds it in memory (written out by an
+ * idempotent save), plus the readable parts for a clearer failure message.
+ */
+async function snapshot(store, file) {
+  const disk = await readFile(file, 'utf8');
+  await store.setUserPasswordless('bob-id', false);
+  const memory = await readFile(file, 'utf8');
+  const itemIds = ['item-1', 'item-2', 'item-old', 'item-new'];
+  return {
+    grants: store.list(),
+    removals: itemIds.map((id) => store.getRemovals(id)),
+    revoked: ['7', '8', '9', '11'].flatMap((requestId) => itemIds.filter((id) => store.isRequestRevoked(requestId, id)).map((id) => `${requestId}:${id}`)),
+    disk,
+    memory,
+  };
+}
+
+/** `write` rejects with `expected` and leaves the stored state and Jellyfin exactly as they were. */
+async function assertFailsUntouched(w, store, file, write, expected, message) {
+  const before = await snapshot(store, file);
+  assert.equal(before.disk, before.memory, 'precondition: the file holds the state');
+  const { error } = await quietly(write);
+  assert.ok(error, `${message}: rejects`);
+  assert.match(error.message, expected, message);
+  assert.deepEqual(await snapshot(store, file), before, `${message}: nothing is stored`);
+  assert.deepEqual(w.writes, [], `${message}: nothing changes in Jellyfin`);
+}
+
+/**
+ * A write whose planning, validation or Jellyfin and Seerr lookups fail stores nothing: no grant, removal mark, revoked
+ * request, join or sync status changes, and Jellyfin is not written to.
+ */
+describe('administrator writes that fail before storing leave everything as it was', { timeout: 10_000 }, () => {
+  it('manual access whose Jellyfin item lookup fails', async (t) => {
+    const { w, store, service, file } = await administered(t);
+    w.failures.set('item-1', 503);
+    const input = { itemId: 'item-1', userIds: ['dave-id'], groupIds: ['house-a'] };
+    await assertFailsUntouched(w, store, file, () => service.setManualAccess(input), /returned 503/, 'manual access');
+    // Nothing of the failed edit is waiting to take effect at the next reconcile either.
+    w.failures.delete('item-1');
+    const { error } = await quietly(() => service.reconcileAll());
+    assert.equal(error, undefined, String(error));
+    assert.deepEqual(w.blockedFrom(accessTag('item-1')), ['dave-id']);
+  });
+
+  it('manual access on an item Jellyfin no longer has', async (t) => {
+    const { w, store, service, file } = await administered(t);
+    w.items.delete('item-1');
+    const input = { itemId: 'item-1', userIds: ['dave-id'], groupIds: ['house-a'] };
+    await assertFailsUntouched(w, store, file, () => service.setManualAccess(input), /item-1/, 'manual access on a deleted item');
+  });
+
+  it('manual access with an unknown group or user', async (t) => {
+    const { w, store, service, file } = await administered(t);
+    await assertFailsUntouched(w, store, file, () => service.setManualAccess({ itemId: 'item-1', userIds: [], groupIds: ['nowhere'] }), /group not found/, 'unknown group');
+    await assertFailsUntouched(w, store, file, () => service.setManualAccess({ itemId: 'item-1', userIds: ['erin-id'], groupIds: [] }), /user not found/, 'unknown user');
+  });
+
+  it('bulk access whose Jellyfin item lookup fails', async (t) => {
+    const { w, store, service, file } = await administered(t);
+    w.failures.set('item-2', 503);
+    const input = { itemIds: ['item-1', 'item-2'], userIds: ['dave-id'], groupIds: ['house-a'] };
+    await assertFailsUntouched(w, store, file, () => service.setBulkManualAccess(input), /returned 503/, 'bulk access');
+  });
+
+  it('bulk access on an item Jellyfin no longer has', async (t) => {
+    const { w, store, service, file } = await administered(t);
+    w.items.delete('item-2');
+    const input = { itemIds: ['item-1', 'item-2'], userIds: ['dave-id'], groupIds: ['house-a'] };
+    await assertFailsUntouched(w, store, file, () => service.setBulkManualAccess(input), /returned 404/, 'bulk access on a deleted item');
+  });
+
+  it('revoking a request the grant does not have', async (t) => {
+    const { w, store, service, file } = await administered(t);
+    await assertFailsUntouched(w, store, file, () => service.revokeRequest('item-1', '9'), /request grant not found/, 'an already revoked request');
+    await assertFailsUntouched(w, store, file, () => service.revokeRequest('item-2', '7'), /request grant not found/, 'another item\'s request');
+  });
+
+  it('setting groups that do not exist, or on a grant that does not', async (t) => {
+    const { w, store, service, file } = await administered(t);
+    await assertFailsUntouched(w, store, file, () => service.setGrantGroups('item-1', ['house-a', 'nowhere']), /group not found/, 'unknown group');
+    await assertFailsUntouched(w, store, file, () => service.setGrantGroups('item-2', ['house-a']), /grant not found/, 'no grant');
+  });
+
+  it('moving a grant whose Jellyfin or Seerr lookups fail', async (t) => {
+    const { w, store, service, file } = await administered(t);
+    w.failures.set('item-new', 503);
+    await assertFailsUntouched(w, store, file, () => service.remapGrant('item-old', 'item-new'), /returned 503/, 'target lookup');
+    w.failures.delete('item-new');
+    w.failures.set('item-old', 503);
+    await assertFailsUntouched(w, store, file, () => service.remapGrant('item-old', 'item-new'), /returned 503/, 'source lookup');
+    w.failures.delete('item-old');
+    w.failures.set('seerr:11', 503);
+    await assertFailsUntouched(w, store, file, () => service.remapGrant('item-old', 'item-new'), /returned 503/, 'Seerr lookup');
+    w.failures.delete('seerr:11');
+    w.request(11, { jellyfinMediaId: 'item-other', jellyfinMediaId4k: 'item-new' });
+    await assertFailsUntouched(w, store, file, () => service.remapGrant('item-old', 'item-new'), /never moves between them/, 'other quality');
+    await assertFailsUntouched(w, store, file, () => service.remapGrant('item-old', 'item-gone'), /Jellyfin item not found/, 'missing target');
+    w.addItem('item-old');
+    await assertFailsUntouched(w, store, file, () => service.remapGrant('item-old', 'item-new'), /still exists|exists/, 'source still exists');
+  });
+});
