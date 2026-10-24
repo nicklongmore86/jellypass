@@ -1,8 +1,10 @@
 // A household app under test: a fake TMDB, a fake Seerr and a fake Jellyfin (all real HTTP servers), and a JellyPass
 // server whose household gateway serves the app API from them. TMDB answers are the canary-laden TMDB fixtures; Seerr
 // answers are built from the canary-laden Seerr 3.5.1 fixtures.
+import { writeFile } from 'node:fs/promises';
 import { request as httpRequest, createServer } from 'node:http';
 import path from 'node:path';
+import { performance } from 'node:perf_hooks';
 import { AccessService } from '../../dist/access-service.js';
 import { JellyfinClient } from '../../dist/jellyfin.js';
 import { SeerrClient } from '../../dist/seerr.js';
@@ -67,7 +69,10 @@ export function authorization(userId) {
  * - `blocklist`: the titles on Seerr's blocklist, as `{ mediaType, tmdbId }`;
  * - `items`, `episodes`: extra Jellyfin items and episodes;
  * - `seerrUsers`: Seerr user → changes to its record (permissions, jellyfinUserId);
- * - `failCatalogue`: a status TMDB answers every title call with;
+ * - `failCatalogue`: a status TMDB answers every title call with (a `429` says `Retry-After: 0`);
+ * - `tmdbQuota`: `{ calls, windowMs }`, TMDB's own rate limit: a title call beyond `calls` in the last `windowMs` is
+ *   answered `429` with `Retry-After: 1`;
+ * - `tmdbRateLimited`: how many title calls TMDB answers `429` first, with `Retry-After: <tmdbRetryAfter>`;
  * - `tmdbMovies`: more movies TMDB knows, by TMDB ID, as `{ title, release_date }`; search lists them too.
  */
 export function world(options = {}) {
@@ -99,6 +104,9 @@ export function world(options = {}) {
     tokens: { ...TOKENS, ...options.tokens },
     grants: [...(options.grants ?? [])],
     failCatalogue: options.failCatalogue,
+    tmdbQuota: options.tmdbQuota,
+    tmdbRateLimited: options.tmdbRateLimited ?? 0,
+    tmdbRetryAfter: options.tmdbRetryAfter,
     tmdbMovies: { ...options.tmdbMovies },
     extraResults: options.extraResults ?? 0,
   };
@@ -258,15 +266,31 @@ export async function createFakeSeerr(state) {
 
 /**
  * Starts a fake TMDB serving the TMDB fixtures. It refuses any call without JellyPass's key (as `api_key`) and records
- * every call in `calls`. `state.failCatalogue` makes every title call fail with that status.
+ * every call in `calls` (with the time it arrived, `at`, from `performance.now()`), and every `429` it answers in
+ * `limited`. `state.failCatalogue`, `state.tmdbQuota` and `state.tmdbRateLimited` make title calls fail.
  */
 export async function createFakeTmdb(state) {
   const calls = [];
+  const limited = [];
   const server = createServer((request, response) => {
     const url = new URL(request.url, 'http://localhost');
-    calls.push({ method: request.method, path: `${url.pathname}${url.search}`, pathname: url.pathname, query: url.searchParams, headers: request.headers });
+    const at = performance.now();
+    calls.push({ method: request.method, path: `${url.pathname}${url.search}`, pathname: url.pathname, query: url.searchParams, headers: request.headers, at });
     if (url.searchParams.get('api_key') !== TMDB_KEY) return send(response, 401, { status_code: 7, status_message: 'canary invalid key' });
     if (url.pathname === '/3/authentication') return send(response, 200, { success: true, status_code: 1, status_message: 'Success.' });
+    const tooMany = (retryAfter) => {
+      limited.push({ path: `${url.pathname}${url.search}`, at });
+      return send(response, 429, { status_code: 25, status_message: 'canary rate limited' }, { 'Retry-After': String(retryAfter) });
+    };
+    if (state.tmdbRateLimited > 0) {
+      state.tmdbRateLimited -= 1;
+      return tooMany(state.tmdbRetryAfter ?? 1);
+    }
+    if (state.tmdbQuota) {
+      const recent = calls.filter((call) => call.pathname !== '/3/authentication' && call.at > at - state.tmdbQuota.windowMs);
+      if (recent.length > state.tmdbQuota.calls) return tooMany(1);
+    }
+    if (state.failCatalogue === 429) return tooMany(0);
     if (state.failCatalogue) return send(response, state.failCatalogue, { status_code: 7300999, status_message: 'canary upstream failure' });
     const page = Number(url.searchParams.get('page'));
     const list = (results) => send(response, 200, { page, results, total_pages: 7300911, total_results: 7300912 });
@@ -307,7 +331,7 @@ export async function createFakeTmdb(state) {
   }
 
   await listen(server);
-  return { url: `http://127.0.0.1:${server.address().port}`, calls, state, close: () => close(server) };
+  return { url: `http://127.0.0.1:${server.address().port}`, calls, limited, state, close: () => close(server) };
 }
 
 /**
@@ -323,6 +347,10 @@ export async function createFakeJellyfinForApp(state) {
     requests.push({ method: request.method, path: `${url.pathname}${url.search}`, pathname: url.pathname });
     if (down) return send(response, 503, { message: 'down' });
     const token = /Token="([^"]+)"/.exec(request.headers.authorization ?? '')?.[1] ?? request.headers['x-emby-token'] ?? url.searchParams.get('api_key');
+    // JellyPass's own API key may list users (the admin API checks group members with it), and nothing else.
+    if (token === 'jellyfin-key' && request.method === 'GET' && url.pathname === '/Users') {
+      return send(response, 200, Object.entries(state.jellyfinUsers).map(([Id, user]) => ({ Id, Name: user.Name, Policy: user.Policy })));
+    }
     const userId = Object.entries(state.tokens ?? TOKENS).find(([, value]) => value === token)?.[0];
     const user = userId && state.jellyfinUsers[userId];
     if (!user) return send(response, 401, {});
@@ -370,14 +398,18 @@ function sees(user, item) {
 /**
  * Starts the whole app for `state`: fake TMDB, Seerr and Jellyfin and a JellyPass server with households A (Alice, Ann)
  * and B (Bob). Pass `app: false` to start JellyPass without the app API, `seerr: { url, apiKey }` to use a real Seerr
- * instead of the fake, `households` to replace the two households, and `now`, `libraryTtlMs`, `titleTtlMs` or
- * `blocklistTtlMs` to set the app's clock and cache lifetimes.
+ * instead of the fake, `households` to replace the two households, `stateFile` to start the store from that state,
+ * `trustedProxies` to trust `X-Forwarded-For` from them, `now`, `libraryTtlMs`, `titleTtlMs` or `blocklistTtlMs` to set
+ * the app's clock and cache lifetimes, and `catalogueLimits` to set its share of TMDB calls (by default high enough
+ * that tests not about it never wait for one).
  */
 export async function startApp(t, state = world(), options = {}) {
   const seerr = options.seerr ? { ...options.seerr, close: async () => undefined } : await createFakeSeerr(state);
   const tmdb = await createFakeTmdb(state);
   const jellyfin = await createFakeJellyfinForApp(state);
-  const store = new GrantStore(path.join(await makeTempDir(t, 'jfa-app-'), 'grants.json'));
+  const stateFile = path.join(await makeTempDir(t, 'jfa-app-'), 'grants.json');
+  if (options.stateFile) await writeFile(stateFile, JSON.stringify(options.stateFile));
+  const store = new GrantStore(stateFile);
   await store.load();
   for (const household of options.households ?? HOUSEHOLDS) await store.upsertGroup(household);
   for (const grant of state.grants ?? []) {
@@ -387,6 +419,7 @@ export async function startApp(t, state = world(), options = {}) {
   const admin = new SeerrClient(seerr.url, seerr.apiKey ?? 'seerr-key');
   const service = new AccessService(new JellyfinClient(jellyfin.url, 'jellyfin-key'), store, undefined, admin);
   const server = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' }, undefined, {
+    ...(options.trustedProxies ? { trustedProxies: options.trustedProxies } : {}),
     householdGateway: { jellyfinUrl: jellyfin.url, domain: 'example.test', hostPrefix: 'jelly-' },
     ...(options.app === false ? {} : {
       householdApp: {
@@ -397,6 +430,7 @@ export async function startApp(t, state = world(), options = {}) {
         ...(options.libraryTtlMs !== undefined ? { libraryTtlMs: options.libraryTtlMs } : {}),
         ...(options.titleTtlMs !== undefined ? { titleTtlMs: options.titleTtlMs } : {}),
         ...(options.blocklistTtlMs !== undefined ? { blocklistTtlMs: options.blocklistTtlMs } : {}),
+        catalogueLimits: options.catalogueLimits ?? { perSecond: 1000, burst: 1000 },
       },
     }),
   });
@@ -445,9 +479,9 @@ export function get(port, pathname, headers) {
   });
 }
 
-function send(response, status, value) {
+function send(response, status, value, headers = {}) {
   const encoded = JSON.stringify(value);
-  response.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(encoded) });
+  response.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(encoded), ...headers });
   response.end(encoded);
 }
 

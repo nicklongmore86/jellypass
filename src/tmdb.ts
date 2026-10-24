@@ -19,9 +19,12 @@ export const TMDB_LANGUAGE = 'en-US';
 export const TMDB_DISCOVER_LISTS = ['trending', 'popular-movies', 'popular-tv', 'upcoming'] as const;
 export type TmdbDiscoverList = typeof TMDB_DISCOVER_LISTS[number];
 
-/** A TMDB API call that failed, by status and route only. */
+/**
+ * A TMDB API call that failed, by status and route only. A `429` carries how long TMDB asked to wait (its
+ * `Retry-After`, in milliseconds), when it said.
+ */
 export class TmdbError extends Error {
-  public constructor(message: string, public readonly status: number) {
+  public constructor(message: string, public readonly status: number, public readonly retryAfterMs?: number) {
     super(message);
     this.name = 'TmdbError';
   }
@@ -120,7 +123,8 @@ export class TmdbClient {
     }
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
-      throw new TmdbError(`TMDB GET ${route} returned ${response.status}`, response.status);
+      const retryAfterMs = response.status === 429 ? retryAfter(response.headers.get('retry-after'), this.#now()) : undefined;
+      throw new TmdbError(`TMDB GET ${route} returned ${response.status}`, response.status, retryAfterMs);
     }
     const bytes = await readCappedBody(response, MAX_GUARDED_RESPONSE_BYTES).catch(() => {
       throw new TmdbError(`TMDB GET ${route} failed`, 502);
@@ -132,6 +136,14 @@ export class TmdbClient {
       throw new TmdbError(`TMDB GET ${route} returned invalid JSON`, 502);
     }
   }
+}
+
+/** A `Retry-After` header (seconds, or an HTTP date) in milliseconds from now, or undefined if it is not one. */
+function retryAfter(value: string | null, now: number): number | undefined {
+  if (value === null) return undefined;
+  if (/^[0-9]{1,6}$/.test(value.trim())) return Number(value.trim()) * 1000;
+  const date = Date.parse(value);
+  return Number.isFinite(date) ? Math.max(0, date - now) : undefined;
 }
 
 function stringValues(parameters: Record<string, string | number>): Record<string, string> {

@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { DispatchQueueFullError, FairDispatcher } from './fair-dispatcher.js';
 import { AttemptCounter } from './rate-limit.js';
 import {
   normalizeJellyfinUserId,
@@ -6,6 +7,7 @@ import {
   type SeerrClient,
   type SeerrMemberClient,
 } from './seerr.js';
+import { MAX_HOUSEHOLDS } from './store.js';
 import { TmdbError, type TmdbClient, type TmdbDiscoverList } from './tmdb.js';
 
 /**
@@ -16,9 +18,10 @@ import { TmdbError, type TmdbClient, type TmdbDiscoverList } from './tmdb.js';
  * checked for type, and nothing else is read into a response. Upstream objects are never spread, relayed or stripped.
  * Nothing in an answer depends on what another household holds, has requested or is waiting on: titles come from TMDB,
  * which knows nothing of households, Seerr's media records or anyone's requests; the household state of every title is
- * decided by {@link titleState} from the caller's own Jellyfin view, Seerr's administrator blocklist, the caller's own
- * Seerr permissions and the requests of members who belong to this household alone; and paging comes only from the
- * titles returned.
+ * decided by {@link titleState} from the caller's own Jellyfin view, Seerr's administrator blocklist and the caller's
+ * own Seerr permissions; and paging comes only from the titles returned. Each household has its own caches and its own
+ * turn at TMDB (see {@link FairDispatcher}), so another household's volume never evicts its answers or uses up its
+ * share of TMDB's rate limit.
  */
 
 export const APP_API_PREFIX = '/jellypass/app/v1';
@@ -35,16 +38,28 @@ export const APP_BLOCKLIST_TTL_MS = 60 * 1000;
 export const APP_BUDGET_WINDOW_MS = 5 * 60 * 1000;
 export const MAX_APP_REQUESTS_PER_CLIENT = 300;
 export const MAX_APP_REQUESTS_PER_USER = 200;
+/** App requests allowed per household, its members together, in each window of APP_BURST_WINDOW_MS. */
+export const APP_BURST_WINDOW_MS = 10 * 1000;
+export const MAX_APP_REQUESTS_PER_HOUSEHOLD_BURST = 60;
+/**
+ * TMDB calls, for all households together: at most 20 a second with at most 10 at once, so at most 30 in any second,
+ * well under TMDB's documented limit of about 40 a second. Each household queues at most 20 calls, each for at most 10
+ * seconds (see {@link FairDispatcher}).
+ */
+export const TMDB_CALLS_PER_SECOND = 20;
+export const TMDB_BURST = 10;
+export const TMDB_QUEUE_PER_HOUSEHOLD = 20;
+export const TMDB_QUEUE_TIMEOUT_MS = 10 * 1000;
+/** How long to wait when TMDB answers 429 without a usable Retry-After. */
+const TMDB_DEFAULT_RETRY_AFTER_MS = 1000;
 const MAX_TRACKED = 10_000;
-const MAX_LIBRARIES = 500;
-const MAX_HOUSEHOLDS = 1000;
+/** Verified tokens and library views kept per household, each household's own forgotten first. */
+const MAX_SESSIONS_PER_HOUSEHOLD = 100;
+const MAX_LIBRARIES_PER_HOUSEHOLD = 50;
 /** TMDB returns 20 titles per page; a full page is the only sign another may follow. */
 const CATALOGUE_PAGE_SIZE = 20;
 const MAX_PAGE = 500;
 const MAX_QUERY_LENGTH = 100;
-const OWN_REQUESTS_PAGE = 100;
-/** A member's newest 500 requests are read; an active request older than that shows as `get_this`. */
-const MAX_OWN_REQUEST_PAGES = 5;
 const BLOCKLIST_PAGE = 100;
 /** Seerr's newest 5000 blocklist entries are read. */
 const MAX_BLOCKLIST_PAGES = 50;
@@ -58,8 +73,6 @@ const SEERR_ADMIN = 2;
 const SEERR_REQUEST = 32;
 const SEERR_REQUEST_MOVIE = 262_144;
 const SEERR_REQUEST_TV = 524_288;
-/** Seerr MediaRequestStatus values a request is still active in: pending and approved. */
-const ACTIVE_REQUEST_STATUSES = new Set([1, 2]);
 
 export type AppEndpoint = 'me' | 'search' | 'discover' | 'movie' | 'tv' | 'season' | 'unknown';
 export type AppOutcome = 'ok' | 'unauthorized' | 'rate_limited' | 'invalid' | 'not_found' | 'unavailable';
@@ -85,6 +98,10 @@ const DISCOVER_LISTS: Record<string, { list: TmdbDiscoverList; mediaType?: Media
 };
 
 export type MediaType = 'movie' | 'tv';
+/**
+ * `requested` is part of the contract but never answered in step 1: it will come only from the household attribution
+ * records "Get this" writes in step 2 (see docs/app-design.md, "Requested and households").
+ */
 export type HouseholdState = 'unavailable' | 'in_library' | 'requested' | 'get_this';
 
 /** The caller as Jellyfin's GET /Users/Me reports them. */
@@ -119,17 +136,20 @@ export interface HouseholdAppOptions {
   catalogue: Pick<TmdbClient, 'search' | 'discover' | 'movie' | 'tv' | 'season'>;
   /** Seerr's administrator blocklist, read with the admin key. */
   blocklist: Pick<SeerrClient, 'blocklist'>;
-  /** Each member's own Seerr data, confirmed before every call (a `SeerrUserMap`). */
-  members: { member(jellyfinUserId: string): Pick<SeerrMemberClient, 'ownRequests' | 'ownUser'> | undefined };
+  /** The caller's own Seerr user, confirmed before every call (a `SeerrUserMap`). */
+  members: { member(jellyfinUserId: string): Pick<SeerrMemberClient, 'ownUser'> | undefined };
+  /** A household's name, or undefined once it no longer exists. */
   householdName: (householdId: string) => string | undefined;
-  /** How many households a Jellyfin user belongs to. */
-  householdCount: (jellyfinUserId: string) => number;
+  /** How many households there are. */
+  householdTotal: () => number;
   /** Counts each answer by endpoint and outcome; never by title. */
   record?: (endpoint: AppEndpoint, outcome: AppOutcome) => void;
   now?: () => number;
   libraryTtlMs?: number;
   titleTtlMs?: number;
   blocklistTtlMs?: number;
+  /** TMDB's share of calls (for tests; see {@link TMDB_CALLS_PER_SECOND}). */
+  catalogueLimits?: Partial<{ perSecond: number; burst: number; queuePerHousehold: number; queueTimeoutMs: number }>;
   logLevel?: string;
 }
 
@@ -141,28 +161,26 @@ interface TitleState {
 
 /**
  * Everything a household state is decided from. None of it depends on another household: the titles the caller's own
- * Jellyfin view holds, Seerr's administrator blocklist (the same for every household), the caller's own Seerr request
- * permission, and the requests of members who belong to the caller's household and no other (each read as that member).
+ * Jellyfin view holds, Seerr's administrator blocklist (the same for every household) and the caller's own Seerr
+ * request permission. No Seerr request is read: Seerr does not record which household a request was for, and the
+ * households its requester belongs to now say nothing about which one it was made for (see docs/app-design.md).
  */
 interface HouseholdView {
   library: ReadonlyMap<string, string>;
   blocklist: ReadonlySet<string>;
   eligible: Record<MediaType, boolean>;
-  requested: ReadonlySet<string>;
 }
 
 /**
  * The single place a household state is decided, for every card and title. `in_library` (the caller's own Jellyfin
  * view has it) comes first: playing their own item needs no request permission. Then `unavailable` (blocklisted, or
- * the caller may not request this media type, which includes a caller Seerr has no user for), `requested` (an active
- * HD request by a member of this household alone) and otherwise `get_this`.
+ * the caller may not request this media type, which includes a caller Seerr has no user for), and otherwise
+ * `get_this`. `requested` comes in step 2, from household attribution records only.
  */
 export function titleState(view: HouseholdView, mediaType: MediaType, tmdbId: number): TitleState {
-  const key = titleKey(mediaType, tmdbId);
-  const itemId = view.library.get(key);
+  const itemId = view.library.get(titleKey(mediaType, tmdbId));
   if (itemId) return { state: 'in_library', itemId };
   if (!requestable(view, mediaType, tmdbId)) return { state: 'unavailable' };
-  if (view.requested.has(key)) return { state: 'requested' };
   return { state: 'get_this' };
 }
 
@@ -181,12 +199,11 @@ function seasonState(view: HouseholdView, tmdbId: number, seasonsInLibrary: Read
 }
 
 /**
- * Answers kept per household, each household in its own partition with its own size limit, so one household's calls
- * never decide whether another's are answered from the cache (and so never change how long they take). Concurrent
- * calls for the same key share one upstream call; a failed call is not kept.
+ * Answers kept for a while, at most `maxEntries` (least recently used forgotten first). Concurrent calls for the same
+ * key share one upstream call; a failed call is not kept.
  */
-class HouseholdCache<T> {
-  readonly #partitions = new Map<string, Map<string, { expiresAt: number; value: Promise<T> }>>();
+class TtlCache<T> {
+  readonly #entries = new Map<string, { expiresAt: number; value: Promise<T> }>();
   readonly #ttlMs: number;
   readonly #maxEntries: number;
   readonly #now: () => number;
@@ -197,31 +214,36 @@ class HouseholdCache<T> {
     this.#now = now;
   }
 
-  public get(household: string, key: string, load: () => Promise<T>): Promise<T> {
-    let partition = this.#partitions.get(household);
-    if (!partition) {
-      partition = new Map();
-      this.#partitions.set(household, partition);
-      while (this.#partitions.size > MAX_HOUSEHOLDS) this.#partitions.delete(this.#partitions.keys().next().value as string);
-    }
+  public get(key: string, load: () => Promise<T>): Promise<T> {
     const now = this.#now();
-    const cached = partition.get(key);
-    partition.delete(key);
+    const cached = this.#entries.get(key);
+    this.#entries.delete(key);
     if (cached && cached.expiresAt > now) {
-      partition.set(key, cached);
+      this.#entries.set(key, cached);
       return cached.value;
     }
     const value = load();
     const entry = { expiresAt: now + this.#ttlMs, value };
-    partition.set(key, entry);
-    while (partition.size > this.#maxEntries) partition.delete(partition.keys().next().value as string);
-    const owner = partition;
+    this.#entries.set(key, entry);
+    while (this.#entries.size > this.#maxEntries) this.#entries.delete(this.#entries.keys().next().value as string);
     // A failed read is not kept.
     value.catch(() => {
-      if (owner.get(key) === entry) owner.delete(key);
+      if (this.#entries.get(key) === entry) this.#entries.delete(key);
     });
     return value;
   }
+}
+
+/**
+ * One household's caches. Each household that exists has its own (see {@link HouseholdApp}'s `#caches`), so one
+ * household's calls never decide whether another's are answered from a cache, and so never change how long they take.
+ */
+interface HouseholdCaches {
+  /** Verified tokens of this household's members, by credential hash. */
+  sessions: Map<string, { expiresAt: number; caller: JellyfinCaller }>;
+  libraries: TtlCache<Map<string, string>>;
+  titles: TtlCache<unknown>;
+  blocklist: TtlCache<Set<string>>;
 }
 
 class AppAnswer extends Error {
@@ -240,32 +262,73 @@ export class HouseholdApp implements HouseholdAppHandler {
   readonly #blocklistSource: HouseholdAppOptions['blocklist'];
   readonly #members: HouseholdAppOptions['members'];
   readonly #householdName: HouseholdAppOptions['householdName'];
-  readonly #householdCount: HouseholdAppOptions['householdCount'];
+  readonly #householdTotal: HouseholdAppOptions['householdTotal'];
   readonly #record: NonNullable<HouseholdAppOptions['record']>;
   readonly #now: () => number;
   readonly #libraryTtlMs: number;
+  readonly #titleTtlMs: number;
+  readonly #blocklistTtlMs: number;
   readonly #debug: boolean;
   readonly #byClient: AttemptCounter;
   readonly #byUser: AttemptCounter;
-  readonly #sessions = new Map<string, { expiresAt: number; caller: JellyfinCaller }>();
-  readonly #libraries = new Map<string, { expiresAt: number; library: Promise<Map<string, string>> }>();
-  readonly #titles: HouseholdCache<unknown>;
-  readonly #blocklists: HouseholdCache<Set<string>>;
+  readonly #byHousehold: AttemptCounter;
+  readonly #partitions = new Map<string, HouseholdCaches>();
+  readonly #tmdb: FairDispatcher;
 
   public constructor(options: HouseholdAppOptions) {
     this.#catalogue = options.catalogue;
     this.#blocklistSource = options.blocklist;
     this.#members = options.members;
     this.#householdName = options.householdName;
-    this.#householdCount = options.householdCount;
+    this.#householdTotal = options.householdTotal;
     this.#record = options.record ?? (() => undefined);
     this.#now = options.now ?? Date.now;
     this.#libraryTtlMs = options.libraryTtlMs ?? APP_LIBRARY_TTL_MS;
+    this.#titleTtlMs = options.titleTtlMs ?? APP_TITLE_TTL_MS;
+    this.#blocklistTtlMs = options.blocklistTtlMs ?? APP_BLOCKLIST_TTL_MS;
     this.#debug = options.logLevel === 'debug';
     this.#byClient = new AttemptCounter({ windowMs: APP_BUDGET_WINDOW_MS, maxKeys: MAX_TRACKED, now: this.#now });
     this.#byUser = new AttemptCounter({ windowMs: APP_BUDGET_WINDOW_MS, maxKeys: MAX_TRACKED, now: this.#now });
-    this.#titles = new HouseholdCache(options.titleTtlMs ?? APP_TITLE_TTL_MS, MAX_TITLES_PER_HOUSEHOLD, this.#now);
-    this.#blocklists = new HouseholdCache(options.blocklistTtlMs ?? APP_BLOCKLIST_TTL_MS, 1, this.#now);
+    this.#byHousehold = new AttemptCounter({ windowMs: APP_BURST_WINDOW_MS, maxKeys: MAX_TRACKED, now: this.#now });
+    const limits = options.catalogueLimits ?? {};
+    const queuePerHousehold = limits.queuePerHousehold ?? TMDB_QUEUE_PER_HOUSEHOLD;
+    this.#tmdb = new FairDispatcher({
+      ratePerSecond: limits.perSecond ?? TMDB_CALLS_PER_SECOND,
+      burst: limits.burst ?? TMDB_BURST,
+      maxQueuedPerLane: queuePerHousehold,
+      maxQueued: queuePerHousehold * MAX_HOUSEHOLDS,
+      queueTimeoutMs: limits.queueTimeoutMs ?? TMDB_QUEUE_TIMEOUT_MS,
+      retryAfter: (error) => error instanceof TmdbError && error.status === 429
+        ? error.retryAfterMs ?? TMDB_DEFAULT_RETRY_AFTER_MS
+        : undefined,
+    });
+  }
+
+  /**
+   * The household's caches, created the first time a household that exists is served. A household's caches are never
+   * dropped for another's: they go only once the household is deleted (when the next household's are created). The
+   * store refuses more than {@link MAX_HOUSEHOLDS} households, so there is room for every one; should a state file
+   * hold more, nothing is cached for any household (the same for all, whoever was served first).
+   */
+  #caches(householdId: string): HouseholdCaches | undefined {
+    if (this.#householdTotal() > MAX_HOUSEHOLDS) {
+      this.#partitions.clear();
+      return undefined;
+    }
+    const existing = this.#partitions.get(householdId);
+    if (existing) return existing;
+    if (this.#householdName(householdId) === undefined) return undefined;
+    for (const id of this.#partitions.keys()) {
+      if (this.#householdName(id) === undefined) this.#partitions.delete(id);
+    }
+    const caches: HouseholdCaches = {
+      sessions: new Map(),
+      libraries: new TtlCache(this.#libraryTtlMs, MAX_LIBRARIES_PER_HOUSEHOLD, this.#now),
+      titles: new TtlCache(this.#titleTtlMs, MAX_TITLES_PER_HOUSEHOLD, this.#now),
+      blocklist: new TtlCache(this.#blocklistTtlMs, 1, this.#now),
+    };
+    this.#partitions.set(householdId, caches);
+    return caches;
   }
 
   public async handle(request: IncomingMessage, response: ServerResponse, context: HouseholdAppRequest): Promise<void> {
@@ -288,6 +351,8 @@ export class HouseholdApp implements HouseholdAppHandler {
     }
     if (!caller) return answer('unauthorized');
     if (this.#byUser.increment(normalizedUserId(caller.id)) > MAX_APP_REQUESTS_PER_USER) return answer('rate_limited');
+    // Counted only for the household's own members, so no one else can use up its burst.
+    if (this.#byHousehold.increment(context.householdId) > MAX_APP_REQUESTS_PER_HOUSEHOLD_BURST) return answer('rate_limited');
     if (!route) return answer('not_found');
     let body: unknown;
     try {
@@ -323,28 +388,30 @@ export class HouseholdApp implements HouseholdAppHandler {
 
   /**
    * The caller, if their token is valid, their Jellyfin user enabled and a member of this host's household; otherwise
-   * undefined, whichever of these failed. A verified token is trusted for {@link APP_SESSION_TTL_MS}; membership is
-   * checked against the store on every call.
+   * undefined, whichever of these failed. A member's verified token is trusted for {@link APP_SESSION_TTL_MS}, in the
+   * household's own cache (anyone else's is checked with Jellyfin on every call, so it can never crowd a member's out);
+   * membership is checked against the store on every call.
    */
   async #caller(context: HouseholdAppRequest): Promise<JellyfinCaller | undefined> {
     const key = context.credentialKey;
     if (!key) return undefined;
     const now = this.#now();
-    let caller = this.#sessions.get(key);
+    const sessions = this.#caches(context.householdId)?.sessions;
+    let caller = sessions?.get(key);
     if (caller && caller.expiresAt <= now) {
-      this.#sessions.delete(key);
+      sessions?.delete(key);
       caller = undefined;
     }
     if (!caller) {
       const verified = await context.currentUser();
       if (!verified) return undefined;
       caller = { expiresAt: now + APP_SESSION_TTL_MS, caller: verified };
-      this.#sessions.set(key, caller);
-      while (this.#sessions.size > MAX_TRACKED) this.#sessions.delete(this.#sessions.keys().next().value as string);
+      if (sessions && !verified.disabled && isMember(context, verified)) {
+        sessions.set(key, caller);
+        while (sessions.size > MAX_SESSIONS_PER_HOUSEHOLD) sessions.delete(sessions.keys().next().value as string);
+      }
     }
-    if (caller.caller.disabled) return undefined;
-    const id = normalizedUserId(caller.caller.id);
-    if (!context.memberIds.some((member) => normalizedUserId(member) === id)) return undefined;
+    if (caller.caller.disabled || !isMember(context, caller.caller)) return undefined;
     return caller.caller;
   }
 
@@ -447,26 +514,31 @@ export class HouseholdApp implements HouseholdAppHandler {
 
   /**
    * A TMDB answer, reused by this household for {@link APP_TITLE_TTL_MS}. The key is the request's own parameters; the
-   * household only picks the partition (see {@link HouseholdCache}). A title TMDB does not know is `not_found`.
+   * household only picks the cache. The call waits for the household's turn (see {@link FairDispatcher}). A title TMDB
+   * does not know is `not_found`; a household with too many calls already waiting for TMDB is `rate_limited`.
    */
   async #title(context: HouseholdAppRequest, key: string, load: () => Promise<unknown>): Promise<unknown> {
+    const call = () => this.#tmdb.run(context.householdId, load);
     try {
-      return await this.#titles.get(context.householdId, key, load);
+      const titles = this.#caches(context.householdId)?.titles;
+      return await (titles ? titles.get(key, call) : call());
     } catch (error) {
       if (error instanceof TmdbError && error.status === 404) throw new AppAnswer('not_found');
+      if (error instanceof DispatchQueueFullError) throw new AppAnswer('rate_limited');
       throw error;
     }
   }
 
   /** Everything the household states of this answer are decided from (see {@link HouseholdView}), read in parallel. */
   async #view(caller: JellyfinCaller, context: HouseholdAppRequest): Promise<HouseholdView> {
-    const [library, blocklist, eligible, requested] = await Promise.all([
+    const blocklist = () => readBlocklist(this.#blocklistSource);
+    const cached = this.#caches(context.householdId)?.blocklist;
+    const [library, blocked, eligible] = await Promise.all([
       this.#library(caller, context),
-      this.#blocklists.get(context.householdId, 'blocklist', () => readBlocklist(this.#blocklistSource)),
+      cached ? cached.get('blocklist', blocklist) : blocklist(),
       this.#eligibility(caller),
-      this.#householdRequests(context.memberIds),
     ]);
-    return { library, blocklist, eligible, requested };
+    return { library, blocklist: blocked, eligible };
   }
 
   /**
@@ -492,46 +564,14 @@ export class HouseholdApp implements HouseholdAppHandler {
   }
 
   /**
-   * The titles members of this household have an active HD request for, each member's own requests read as that member.
-   * Only members who belong to this household and no other count: Seerr does not record which household a request was
-   * made for, so a request by someone in several households could be another household's, and is never read (until
-   * "Get this" records the household with each request; see docs/app-design.md). A member Seerr has no confirmed user
-   * for has none.
-   */
-  async #householdRequests(memberIds: readonly string[]): Promise<Set<string>> {
-    const members = [...new Set(memberIds.flatMap((id) => normalizeJellyfinUserId(id) ?? []))]
-      .filter((id) => this.#householdCount(id) === 1);
-    const keys = await Promise.all(members.map(async (id) => {
-      const member = this.#members.member(id);
-      if (!member) return [];
-      try {
-        return await activeRequests(member);
-      } catch (error) {
-        if (error instanceof SeerrUnmappedUserError) return [];
-        throw error;
-      }
-    }));
-    return new Set(keys.flat());
-  }
-
-  /**
    * The movies and series the caller's own Jellyfin view holds, by TMDB ID, read with the caller's own credentials (so
-   * Jellyfin applies their blocked tags, library access and parental limits) and reused for a short while.
+   * Jellyfin applies their blocked tags, library access and parental limits) and reused for a short while, in the
+   * household's own cache.
    */
   #library(caller: JellyfinCaller, context: HouseholdAppRequest): Promise<Map<string, string>> {
-    const key = normalizedUserId(caller.id);
-    const now = this.#now();
-    const cached = this.#libraries.get(key);
-    if (cached && cached.expiresAt > now) return cached.library;
-    const library = readLibrary(caller, context);
-    this.#libraries.delete(key);
-    this.#libraries.set(key, { expiresAt: now + this.#libraryTtlMs, library });
-    while (this.#libraries.size > MAX_LIBRARIES) this.#libraries.delete(this.#libraries.keys().next().value as string);
-    // A failed read is not kept.
-    library.catch(() => {
-      if (this.#libraries.get(key)?.library === library) this.#libraries.delete(key);
-    });
-    return library;
+    const load = () => readLibrary(caller, context);
+    const libraries = this.#caches(context.householdId)?.libraries;
+    return libraries ? libraries.get(normalizedUserId(caller.id), load) : load();
   }
 
   /** The season numbers of a series the caller's own Jellyfin view has episodes of; none unless it is `in_library`. */
@@ -692,25 +732,6 @@ function imageUrl(base: string, value: unknown): string | null {
   return typeof value === 'string' && /^\/[A-Za-z0-9_-]{1,100}\.(?:jpg|jpeg|png|webp)$/.test(value) ? `${base}${value}` : null;
 }
 
-/** The active HD requests of one member, as `mediaType:tmdbId` keys, paged through their own request list. */
-async function activeRequests(member: Pick<SeerrMemberClient, 'ownRequests'>): Promise<string[]> {
-  const keys: string[] = [];
-  for (let page = 0; page < MAX_OWN_REQUEST_PAGES; page += 1) {
-    const results = field(await member.ownRequests(OWN_REQUESTS_PAGE, page * OWN_REQUESTS_PAGE), 'results');
-    const requests = Array.isArray(results) ? results : [];
-    for (const request of requests) {
-      const status = field(request, 'status');
-      const type = field(request, 'type');
-      const tmdbId = positiveInteger(field(field(request, 'media'), 'tmdbId'));
-      if (typeof status !== 'number' || !ACTIVE_REQUEST_STATUSES.has(status) || field(request, 'is4k') === true) continue;
-      if ((type !== 'movie' && type !== 'tv') || tmdbId === null) continue;
-      keys.push(titleKey(type, tmdbId));
-    }
-    if (requests.length < OWN_REQUESTS_PAGE) break;
-  }
-  return keys;
-}
-
 /**
  * The titles on Seerr's blocklist, as `mediaType:tmdbId` keys, paged through with the admin key. Only each entry's
  * `mediaType` and `tmdbId` are read. The blocklist is kept by administrators and is the same for every household.
@@ -794,6 +815,11 @@ function titleKey(mediaType: MediaType, tmdbId: number): string {
 
 function normalizedUserId(id: string): string {
   return id.replace(/-/g, '').toLowerCase();
+}
+
+function isMember(context: HouseholdAppRequest, caller: JellyfinCaller): boolean {
+  const id = normalizedUserId(caller.id);
+  return context.memberIds.some((member) => normalizedUserId(member) === id);
 }
 
 /** One own property of a JSON object, or undefined; never anything inherited. */

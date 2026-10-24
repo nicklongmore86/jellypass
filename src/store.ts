@@ -12,6 +12,12 @@ import type {
   SyncStatus,
 } from './types.js';
 
+/**
+ * The most households (groups) JellyPass supports. Creating another is refused; the household app keeps one cache
+ * partition and one TMDB queue per household, sized for this many (see docs/app-design.md, "Shared upstreams").
+ */
+export const MAX_HOUSEHOLDS = 100;
+
 const EMPTY_STATE: GrantState = { version: 7, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [] };
 
 export class GrantStore {
@@ -69,6 +75,10 @@ export class GrantStore {
 
   public listGroups(): AccessGroup[] {
     return Object.values(this.#state.groups).map(clone);
+  }
+
+  public countGroups(): number {
+    return Object.keys(this.#state.groups).length;
   }
 
   public getGroup(groupId: string): AccessGroup | undefined {
@@ -292,6 +302,7 @@ export class GrantStore {
     const id = normalizeId(input.id);
     const now = new Date().toISOString();
     const previous = this.#state.groups[id];
+    if (!previous && this.countGroups() >= MAX_HOUSEHOLDS) throw new Error(`groups must be at most ${MAX_HOUSEHOLDS}`);
     const group: AccessGroup = {
       id,
       name: input.name.trim(),

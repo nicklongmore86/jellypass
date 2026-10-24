@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { connect } from 'node:net';
+import { performance } from 'node:perf_hooks';
 import { describe, it } from 'node:test';
+import { setTimeout as delay } from 'node:timers/promises';
 import { assertNoCanaries } from './support/seerr-fixtures.mjs';
 import {
   ADMIN,
@@ -171,72 +173,78 @@ describe('household app API: answers', { timeout: 20_000 }, () => {
 });
 
 describe('household app API: household states', { timeout: 20_000 }, () => {
-  it('is requested when a member of the caller\'s household has an active HD request', async (t) => {
-    const app = await startApp(t, world({
-      requests: {
-        [SEERR_IDS[ANN]]: [seerrRequest({ type: 'movie', tmdbId: T_MOVIE, status: 2 }), seerrRequest({ type: 'tv', tmdbId: T_TV, status: 1, seasons: [2] })],
-      },
-    }));
-    const answer = (await app.get(`${APP}/search?q=synthetic`)).json();
-    assert.deepEqual(states(answer), { [T_MOVIE]: 'requested', [T_TV]: 'requested', [OWN_MOVIE]: 'in_library' });
-    assert.equal((await app.get(`${APP}/movie/${T_MOVIE}`)).json().state, 'requested');
-    const series = (await app.get(`${APP}/tv/${T_TV}`)).json();
-    assert.equal(series.state, 'requested');
-    assert.deepEqual(series.seasons.map((season) => season.state), ['get_this', 'get_this']);
+  /** T's state for every member of every household, on every household's host, by `user@host`. */
+  async function everyone(app, households) {
+    const seen = {};
+    for (const household of households) {
+      for (const user of household.userIds) {
+        const host = `jelly-${household.id}.example.test`;
+        const movie = (await app.get(`${APP}/movie/${T_MOVIE}`, { host, user })).json();
+        const series = (await app.get(`${APP}/tv/${T_TV}`, { host, user })).json();
+        seen[`${user}@${household.id}`] = [movie.state, series.state, ...series.seasons.map((season) => season.state)].join(',');
+      }
+    }
+    return seen;
+  }
+
+  const allGetThis = (households) => Object.fromEntries(households.flatMap((household) =>
+    household.userIds.map((user) => [`${user}@${household.id}`, 'get_this,get_this,get_this,get_this'])));
+
+  /** Runs `steps` (each a list of households) in order, checking that nobody, anywhere, ever sees T as requested. */
+  async function membershipChanges(t, requests, steps) {
+    const app = await startApp(t, world({ requests }), { households: steps[0] });
+    for (const [index, households] of steps.entries()) {
+      for (const household of households) await app.store.upsertGroup(household);
+      assert.deepEqual(await everyone(app, households), allGetThis(households), `step ${index}`);
+    }
+    // Seerr's requests are never read: the households a requester belongs to now say nothing about which one they asked for.
+    assert.ok(!app.seerr.calls.some((call) => /\/requests$/.test(call.pathname)), JSON.stringify(app.seerr.calls.map((call) => call.path)));
+    assert.deepEqual(app.seerr.violations, []);
+  }
+
+  const pending = [seerrRequest({ type: 'movie', tmdbId: T_MOVIE, status: 1 }), seerrRequest({ type: 'tv', tmdbId: T_TV, status: 2, seasons: [2] })];
+  const FARMHOUSE = (...userIds) => ({ id: 'farmhouse', name: 'Farmhouse', userIds });
+  const MILL = (...userIds) => ({ id: 'mill', name: 'Mill', userIds });
+
+  it('never shows a Seerr request as requested, not even one by a member of this household alone', async (t) => {
+    await membershipChanges(t, { [SEERR_IDS[ANN]]: pending, [SEERR_IDS[ALICE]]: pending }, [[FARMHOUSE(ALICE, ANN), MILL(BOB)]]);
   });
 
-  it('is in_library, not requested, once the caller can play a title their household asked for', async (t) => {
+  it('keeps a shared member\'s old request hidden once they leave the other household (Codex\'s repro)', async (t) => {
+    // Bob, in Farmhouse and Mill, asked for T for Mill. Leaving Mill does not make his old request Farmhouse's.
+    await membershipChanges(t, { [SEERR_IDS[BOB]]: pending }, [
+      [FARMHOUSE(ALICE, ANN, BOB), MILL(BOB)],
+      [FARMHOUSE(ALICE, ANN, BOB), MILL()],
+    ]);
+  });
+
+  it('keeps a request hidden when its requester moves to another household', async (t) => {
+    // Ann asked for T while in Farmhouse alone; moving to Mill does not make it Mill's.
+    await membershipChanges(t, { [SEERR_IDS[ANN]]: pending }, [
+      [FARMHOUSE(ALICE, ANN), MILL(BOB)],
+      [FARMHOUSE(ALICE), MILL(BOB, ANN)],
+    ]);
+  });
+
+  it('keeps a request hidden when a shared member becomes exclusive to one household', async (t) => {
+    await membershipChanges(t, { [SEERR_IDS[CAROL]]: pending }, [
+      [FARMHOUSE(ALICE, ANN, CAROL), MILL(BOB, CAROL)],
+      [FARMHOUSE(ALICE, ANN, CAROL), MILL(BOB)],
+    ]);
+  });
+
+  it('keeps a request hidden when an exclusive member joins another household too', async (t) => {
+    await membershipChanges(t, { [SEERR_IDS[ANN]]: pending }, [
+      [FARMHOUSE(ALICE, ANN), MILL(BOB)],
+      [FARMHOUSE(ALICE, ANN), MILL(BOB, ANN)],
+    ]);
+  });
+
+  it('is in_library once the caller can play a title someone asked for', async (t) => {
     const app = await startApp(t, world({ requests: { [SEERR_IDS[ANN]]: [seerrRequest({ type: 'movie', tmdbId: OWN_MOVIE, status: 2 })] } }));
     const movie = (await app.get(`${APP}/movie/${OWN_MOVIE}`)).json();
     assert.equal(movie.state, 'in_library');
     assert.deepEqual(movie.play, PLAY(ITEMS.ownMovie));
-  });
-
-  it('ignores declined, failed, completed and 4K requests, and other households\' requests', async (t) => {
-    const app = await startApp(t, world({
-      requests: {
-        [SEERR_IDS[ALICE]]: [seerrRequest({ type: 'movie', tmdbId: T_MOVIE, status: 3 }), seerrRequest({ type: 'tv', tmdbId: T_TV, status: 4 })],
-        [SEERR_IDS[ANN]]: [seerrRequest({ type: 'movie', tmdbId: T_MOVIE, status: 1, is4k: true }), seerrRequest({ type: 'tv', tmdbId: T_TV, status: 5 })],
-        [SEERR_IDS[BOB]]: [seerrRequest({ type: 'movie', tmdbId: T_MOVIE, status: 1 })],
-      },
-    }));
-    assert.deepEqual(states((await app.get(`${APP}/search?q=synthetic`)).json()), { [T_MOVIE]: 'get_this', [T_TV]: 'get_this', [OWN_MOVIE]: 'in_library' });
-  });
-
-  it('pages through each member\'s own requests', async (t) => {
-    const filler = Array.from({ length: 150 }, (_, index) => seerrRequest({ type: 'movie', tmdbId: 800000 + index, status: 3 }));
-    const app = await startApp(t, world({ requests: { [SEERR_IDS[ANN]]: [...filler, seerrRequest({ type: 'movie', tmdbId: T_MOVIE, status: 1 })] } }));
-    assert.equal((await app.get(`${APP}/movie/${T_MOVIE}`)).json().state, 'requested');
-    assert.deepEqual(app.seerr.calls.filter((call) => call.actingUser === String(SEERR_IDS[ANN])).map((call) => call.path), [
-      '/api/v1/user/12/requests?take=100&skip=0',
-      '/api/v1/user/12/requests?take=100&skip=100',
-    ]);
-  });
-
-  it('reads at most a member\'s newest 500 requests', async (t) => {
-    const filler = Array.from({ length: 700 }, (_, index) => seerrRequest({ type: 'movie', tmdbId: 800000 + index, status: 3 }));
-    const app = await startApp(t, world({ requests: { [SEERR_IDS[ANN]]: [...filler, seerrRequest({ type: 'movie', tmdbId: T_MOVIE, status: 1 })] } }));
-    assert.equal((await app.get(`${APP}/movie/${T_MOVIE}`)).json().state, 'get_this');
-    assert.deepEqual(app.seerr.calls.filter((call) => call.actingUser === String(SEERR_IDS[ANN])).map((call) => call.path),
-      [0, 100, 200, 300, 400].map((skip) => `/api/v1/user/12/requests?take=100&skip=${skip}`));
-  });
-
-  it('counts only requests by members of this household alone: a member of several households is ignored (Codex\'s repro)', async (t) => {
-    // Carol is in Farmhouse and Mill; Seerr cannot say which household her pending requests were for.
-    const app = await startApp(t, world({
-      requests: { [SEERR_IDS[CAROL]]: [seerrRequest({ type: 'movie', tmdbId: T_MOVIE, status: 1 }), seerrRequest({ type: 'tv', tmdbId: T_TV, status: 2 })] },
-    }), { households: SHARED_HOUSEHOLDS });
-    for (const [host, user] of [[HOST_A, ALICE], [HOST_A, ANN], [HOST_B, BOB], [HOST_A, CAROL], [HOST_B, CAROL]]) {
-      const page = (await app.get(`${APP}/search?q=synthetic`, { host, user })).json();
-      assert.equal(states(page)[T_MOVIE], 'get_this', `${user} on ${host}`);
-      assert.equal(states(page)[T_TV], 'get_this', `${user} on ${host}`);
-    }
-    // Her requests are never even read: the calls do not reflect her request history.
-    assert.ok(!app.seerr.calls.some((call) => call.pathname === `/api/v1/user/${SEERR_IDS[CAROL]}/requests`));
-    // Once she belongs to Farmhouse alone, her requests are Farmhouse's.
-    await app.store.upsertGroup({ id: 'mill', name: 'Mill', userIds: [BOB] });
-    assert.equal((await app.get(`${APP}/movie/${T_MOVIE}`)).json().state, 'requested');
-    assert.equal((await app.get(`${APP}/movie/${T_MOVIE}`, { host: HOST_B, user: BOB })).json().state, 'get_this');
   });
 
   it('ignores the requests of an administrator who belongs to several households', async (t) => {
@@ -377,9 +385,10 @@ describe('household app API: other households are invisible', { timeout: 60_000 
           assert.equal(serialized(actual), serialized(expected), `${user} ${pathname}`);
         }
       }
-      // The worlds really differ: household B sees T.
+      // The worlds really differ: household B holds T, or has Seerr requests for it (which no household is shown in
+      // step 1: requests carry no household until "Get this" records one).
       const bob = (await changed.get(`${APP}/movie/${T_MOVIE}`, { host: HOST_B, user: BOB })).json();
-      assert.equal(bob.state, /pending|large/.test(name) ? 'requested' : 'in_library');
+      assert.equal(bob.state, /pending|large/.test(name) ? 'get_this' : 'in_library');
       assert.deepEqual(changed.seerr.violations, []);
     });
   }
@@ -426,7 +435,7 @@ describe('household app API: other households are invisible', { timeout: 60_000 
     for (const pathname of ENDPOINTS) assert.equal((await app.get(pathname)).status, 200, `${name} ${pathname}`);
     assert.deepEqual(app.seerr.violations, []);
     for (const call of app.seerr.calls) {
-      assert.match(call.pathname, /^\/api\/v1\/(?:user\/jellyfin\/[0-9a-f]{32}|user\/[0-9]+|user\/[0-9]+\/requests|auth\/me|blocklist)$/, call.path);
+      assert.match(call.pathname, /^\/api\/v1\/(?:user\/jellyfin\/[0-9a-f]{32}|user\/[0-9]+|auth\/me|blocklist)$/, call.path);
     }
     // Bob's long history is never read for household A.
     assert.ok(!app.seerr.calls.some((call) => call.actingUser === String(SEERR_IDS[BOB])));
@@ -434,11 +443,10 @@ describe('household app API: other households are invisible', { timeout: 60_000 
 });
 
 describe('household app API: identity', { timeout: 20_000 }, () => {
-  it('reads each member\'s data only as that member, each confirmed first, and titles never from Seerr', async (t) => {
+  it('reads only the caller\'s own permissions as the caller, each call confirmed first, and titles never from Seerr', async (t) => {
     const app = await startApp(t, world({ requests: { [SEERR_IDS[ANN]]: [seerrRequest({ type: 'movie', tmdbId: T_MOVIE })] } }));
     for (const pathname of ENDPOINTS) assert.equal((await app.get(pathname)).status, 200, pathname);
     assert.deepEqual(app.seerr.violations, []);
-    const household = new Set([String(SEERR_IDS[ALICE]), String(SEERR_IDS[ANN])]);
     const acting = app.seerr.calls.filter((call) => call.actingUser !== undefined);
     assert.ok(acting.length > 0);
     for (const call of app.seerr.calls) {
@@ -447,12 +455,10 @@ describe('household app API: identity', { timeout: 20_000 }, () => {
         assert.match(call.pathname, /^\/api\/v1\/(?:user\/(?:jellyfin\/[0-9a-f]{32}|[0-9]+)|blocklist)$/);
         continue;
       }
+      // Never the owner, never another member: only the caller's own Seerr user, for their own permissions.
       assert.equal(call.method, 'GET');
-      // Never the owner, never a member of another household.
-      assert.ok(household.has(call.actingUser), call.actingUser);
-      assert.match(call.pathname, new RegExp(`^/api/v1/(?:auth/me|user/${call.actingUser}/requests)$`));
-      // Only the caller's own permissions are read; other members' requests are read as them.
-      if (call.pathname === '/api/v1/auth/me') assert.equal(call.actingUser, String(SEERR_IDS[ALICE]));
+      assert.equal(call.actingUser, String(SEERR_IDS[ALICE]));
+      assert.equal(call.pathname, '/api/v1/auth/me');
     }
     // Every call made as a Seerr user follows its own admin confirmation of that user: concurrent calls interleave, so
     // each is matched with a confirmation no earlier call used.
@@ -543,6 +549,156 @@ describe('household app API: caches', { timeout: 20_000 }, () => {
   });
 });
 
+describe('household app API: one cache per household', { timeout: 120_000 }, () => {
+  const hostOf = (id) => `jelly-${id}.example.test`;
+
+  it('never evicts a household\'s cached answers for other households\' (Codex\'s repro)', async (t) => {
+    let now = Date.parse('2026-10-24T12:00:00.000Z');
+    const day = 24 * 60 * 60 * 1000;
+    const app = await startApp(t, world(), { now: () => now, titleTtlMs: day, blocklistTtlMs: day });
+    const titleReads = () => app.tmdb.calls.filter((call) => call.pathname === `/3/movie/${T_MOVIE}`).length;
+    const blocklistReads = () => app.seerr.calls.filter((call) => call.pathname === '/api/v1/blocklist').length;
+    await app.get(`${APP}/movie/${T_MOVIE}`);
+    await app.get(`${APP}/movie/${T_MOVIE}`);
+    assert.equal(titleReads(), 1);
+    // 1,000 more households, each browsing through Carol, a member of all of them. At most 100 households exist.
+    const refusals = [];
+    for (let index = 0; index < 1000; index += 1) {
+      await app.store.upsertGroup({ id: `h${index}`, name: `H${index}`, userIds: [CAROL] }).catch((error) => refusals.push(error.message));
+    }
+    const statuses = [];
+    for (let index = 0; index < 1000; index += 1) {
+      // Past Carol's 5-minute budget every 150 calls; the caches are kept for a day.
+      if (index % 150 === 0) now += 5 * 60 * 1000;
+      statuses.push((await app.get(`${APP}/movie/${T_MOVIE}`, { host: hostOf(`h${index}`), user: CAROL })).status);
+    }
+    const [titles, blocklists] = [titleReads(), blocklistReads()];
+    assert.equal((await app.get(`${APP}/movie/${T_MOVIE}`)).status, 200);
+    assert.equal(titleReads(), titles, 'household A\'s answer still comes from its own cache');
+    assert.equal(blocklistReads(), blocklists, 'and so does its blocklist');
+    // Only 98 more households could be created; the rest do not exist, so their hosts serve nothing.
+    assert.deepEqual(refusals, Array(902).fill('groups must be at most 100'));
+    assert.deepEqual(statuses, [...Array(98).fill(200), ...Array(902).fill(404)]);
+    assert.equal(titles, 99);
+    // A deleted household's caches go, and only its own: a new household takes its place, A's are untouched.
+    await app.store.deleteGroup('h0');
+    await app.store.upsertGroup({ id: 'newcomer', name: 'Newcomer', userIds: [CAROL] });
+    assert.equal((await app.get(`${APP}/movie/${T_MOVIE}`, { host: hostOf('newcomer'), user: CAROL })).status, 200);
+    assert.equal(titleReads(), titles + 1);
+    await app.get(`${APP}/movie/${T_MOVIE}`);
+    assert.equal(titleReads(), titles + 1);
+    await assert.rejects(app.store.upsertGroup({ id: 'one-too-many', name: 'Too many', userIds: [] }), /groups must be at most 100/);
+    const refusal = await fetch(`http://127.0.0.1:${app.port}/v1/groups/one-too-many`, {
+      method: 'PUT',
+      headers: { Authorization: 'Bearer admin-secret', 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: 'Too many', userIds: [] }),
+    });
+    assert.equal(refusal.status, 400);
+    assert.deepEqual(await refusal.json(), { error: 'groups must be at most 100' });
+    // Renaming or changing an existing household is still allowed at the limit.
+    await app.store.upsertGroup({ id: 'farmhouse', name: 'Farmhouse', userIds: [ALICE, ANN] });
+  });
+
+  it('caches nothing for any household when a state file holds more households than supported', async (t) => {
+    const at = '2026-10-24T12:00:00.000Z';
+    const groups = Object.fromEntries([
+      { id: 'farmhouse', name: 'Farmhouse', userIds: [ALICE, ANN].sort() },
+      { id: 'mill', name: 'Mill', userIds: [BOB] },
+      ...Array.from({ length: 99 }, (_, index) => ({ id: `h${index}`, name: `H${index}`, userIds: [] })),
+    ].map((group) => [group.id, { ...group, createdAt: at, updatedAt: at }]));
+    const app = await startApp(t, world(), {
+      stateFile: { version: 7, grants: {}, groups, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [] },
+    });
+    assert.equal(app.store.listGroups().length, 101);
+    for (const [host, user] of [[HOST_A, ALICE], [HOST_A, ALICE], [HOST_B, BOB], [HOST_B, BOB]]) {
+      assert.equal((await app.get(`${APP}/movie/${T_MOVIE}`, { host, user })).status, 200);
+    }
+    // The same for every household, whoever was served first: every call goes to TMDB and Seerr.
+    assert.equal(app.tmdb.calls.filter((call) => call.pathname === `/3/movie/${T_MOVIE}`).length, 4);
+    assert.equal(app.seerr.calls.filter((call) => call.pathname === '/api/v1/blocklist').length, 4);
+  });
+});
+
+describe('household app API: TMDB shared fairly', { timeout: 60_000 }, () => {
+  it('keeps household A\'s TMDB share while household B bursts past TMDB\'s rate limit (Codex\'s repro)', async (t) => {
+    // TMDB allows 40 calls a second; B sends 40 different searches at once, then A searches for something cold.
+    const app = await startApp(t, world({ tmdbQuota: { calls: 40, windowMs: 1000 } }), { catalogueLimits: {} });
+    // B is signed in and known to Seerr already, so its searches reach TMDB at once; its first call leaves TMDB's window.
+    assert.equal((await app.get(`${APP}/movie/${T_MOVIE}`, { host: HOST_B, user: BOB })).status, 200);
+    await delay(1100);
+    let bobAnswered = 0;
+    const bursts = Array.from({ length: 40 }, (_, index) =>
+      app.get(`${APP}/search?q=burst-${index}`, { host: HOST_B, user: BOB }).then((answer) => {
+        bobAnswered += 1;
+        return answer;
+      }));
+    await delay(200);
+    const started = performance.now();
+    const alice = await app.get(`${APP}/search?q=cold`);
+    const waited = performance.now() - started;
+    const bobAnsweredBeforeAlice = bobAnswered;
+    const bob = await Promise.all(bursts);
+    assert.equal(alice.status, 200, alice.text);
+    assert.deepEqual(app.tmdb.limited, [], 'TMDB never had to refuse a call');
+    // A took its own turn: B still had calls waiting when A was answered.
+    const bobServed = bob.filter((answer) => answer.status === 200).length;
+    assert.ok(bobAnsweredBeforeAlice < bob.length, `B answered ${bobAnsweredBeforeAlice} first`);
+    assert.ok(waited < 1000, `A waited ${waited} ms`);
+    // B's own volume only costs B: its calls beyond its queue are refused with the fixed 429, the rest answered.
+    for (const answer of bob) {
+      assert.ok(answer.status === 200 || answer.text === '{"error":"too_many_requests"}', `${answer.status} ${answer.text}`);
+    }
+    assert.ok(bobServed >= 20 && bobServed < 40, `B served ${bobServed}`);
+  });
+
+  it('starts at most 30 TMDB calls in any second, whatever households ask', async (t) => {
+    const app = await startApp(t, world(), { catalogueLimits: {} });
+    const asks = [];
+    for (const [host, user] of [[HOST_A, ALICE], [HOST_A, ANN], [HOST_B, BOB]]) {
+      for (let index = 0; index < 15; index += 1) asks.push(app.get(`${APP}/search?q=${user}-${index}`, { host, user }));
+    }
+    const answers = await Promise.all(asks);
+    assert.ok(answers.every((answer) => answer.status === 200 || answer.status === 429));
+    const times = app.tmdb.calls.filter((call) => call.pathname === '/3/search/multi').map((call) => call.at);
+    assert.ok(times.length >= 30, `${times.length} calls`);
+    for (const first of times) {
+      assert.ok(times.filter((time) => time >= first && time < first + 1000).length <= 30);
+    }
+  });
+
+  it('waits as long as TMDB asks after a 429, sends nothing meanwhile, and retries the call once', async (t) => {
+    const app = await startApp(t, world({ tmdbRateLimited: 1, tmdbRetryAfter: 1 }), { catalogueLimits: {} });
+    const [alice, bob] = await Promise.all([
+      app.get(`${APP}/movie/${T_MOVIE}`),
+      delay(100).then(() => app.get(`${APP}/search?q=synthetic`, { host: HOST_B, user: BOB })),
+    ]);
+    // The household whose call met the limit is not charged for it, and neither is the one that called meanwhile.
+    assert.equal(alice.status, 200);
+    assert.equal(bob.status, 200);
+    const calls = app.tmdb.calls.filter((call) => call.pathname !== '/3/authentication');
+    assert.equal(app.tmdb.limited.length, 1);
+    assert.equal(calls.length, 3);
+    const limitedAt = app.tmdb.limited[0].at;
+    for (const call of calls.slice(1)) assert.ok(call.at >= limitedAt + 900, `${call.path} ${call.at - limitedAt} ms after the 429`);
+  });
+
+  it('never retries a call more than once, and fails at once when TMDB asks to wait past the call\'s time', async (t) => {
+    const app = await startApp(t, world({ tmdbRateLimited: 2, tmdbRetryAfter: 0 }), { catalogueLimits: {} });
+    const answer = await app.get(`${APP}/movie/${T_MOVIE}`);
+    assert.equal(answer.status, 502);
+    assert.equal(answer.text, '{"error":"unavailable"}');
+    assert.equal(app.tmdb.calls.filter((call) => call.pathname !== '/3/authentication').length, 2);
+    // TMDB asks for 30 seconds; calls wait at most their queue time (here 300 ms), so they fail rather than pile up.
+    const paused = await startApp(t, world({ tmdbRateLimited: 1, tmdbRetryAfter: 30 }), { catalogueLimits: { queueTimeoutMs: 300 } });
+    const started = performance.now();
+    assert.equal((await paused.get(`${APP}/movie/${T_MOVIE}`)).status, 502);
+    const meanwhile = await paused.get(`${APP}/search?q=synthetic`, { host: HOST_B, user: BOB });
+    assert.equal(meanwhile.status, 502);
+    assert.ok(performance.now() - started < 5000);
+    assert.equal(paused.tmdb.calls.filter((call) => call.pathname !== '/3/authentication').length, 1, 'nothing sent while TMDB asked to wait');
+  });
+});
+
 describe('household app API: sessions', { timeout: 20_000 }, () => {
   const UNAUTHORIZED = '{"error":"unauthorized"}';
 
@@ -562,9 +718,9 @@ describe('household app API: sessions', { timeout: 20_000 }, () => {
       assert.equal(answer.text, UNAUTHORIZED);
       assert.equal(serialized(answer), serialized(refusals[0]));
     }
-    // A request with no credentials never reaches Jellyfin, and Bob's verified token is reused for his second call; none
-    // of these reached Seerr.
-    assert.equal(app.jellyfin.requests.filter((request) => request.pathname === '/Users/Me').length, refusals.length - 2);
+    // A request with no credentials never reaches Jellyfin, and a token that is not a member's is checked again on every
+    // call (it is never kept, so it cannot crowd a member's out); none of these reached Seerr.
+    assert.equal(app.jellyfin.requests.filter((request) => request.pathname === '/Users/Me').length, refusals.length - 1);
     assert.equal(app.seerr.calls.length, 0);
     assert.equal(app.tmdb.calls.length, 0);
   });
@@ -677,15 +833,23 @@ describe('household app API: input, budgets and metrics', { timeout: 30_000 }, (
   });
 
   it('limits calls per client address and per user, answering both the same way', async (t) => {
-    const app = await startApp(t);
+    let now = Date.parse('2026-10-24T12:00:00.000Z');
+    const app = await startApp(t, world(), { now: () => now });
+    // Spread over 4 minutes, so the household's 10-second burst limit never applies.
+    const get = async (options) => {
+      now += 750;
+      return app.get(`${APP}/me`, options);
+    };
     const answers = [];
-    for (let index = 0; index < 201; index += 1) answers.push(await app.get(`${APP}/me`));
+    for (let index = 0; index < 201; index += 1) answers.push(await get());
     assert.ok(answers.slice(0, 200).every((answer) => answer.status === 200));
     const perUser = answers[200];
     assert.equal(perUser.status, 429);
     // Ann, from the same address, still has her own budget, until the address's runs out.
-    for (let index = 0; index < 99; index += 1) assert.equal((await app.get(`${APP}/me`, { user: ANN })).status, 200);
-    const perClient = await app.get(`${APP}/me`, { user: ANN });
+    for (let index = 0; index < 99; index += 1) assert.equal((await get({ user: ANN })).status, 200);
+    // Still inside the address's 5-minute window.
+    assert.ok(now < Date.parse('2026-10-24T12:00:00.000Z') + 5 * 60 * 1000);
+    const perClient = await get({ user: ANN });
     assert.equal(perClient.status, 429);
     assert.equal(serialized(perClient), serialized(perUser));
     assert.equal(perUser.text, '{"error":"too_many_requests"}');
@@ -693,6 +857,22 @@ describe('household app API: input, budgets and metrics', { timeout: 30_000 }, (
     const verifications = app.jellyfin.requests.length;
     assert.equal((await app.get(`${APP}/me`, { user: null })).status, 429);
     assert.equal(app.jellyfin.requests.length, verifications);
+  });
+
+  it('limits each household\'s calls in any 10 seconds, counting only its own members', async (t) => {
+    let now = Date.parse('2026-10-24T12:00:00.000Z');
+    const app = await startApp(t, world(), { now: () => now });
+    // Someone else's calls on the household's host never use up its burst.
+    for (let index = 0; index < 30; index += 1) assert.equal((await app.get(`${APP}/me`, { user: BOB })).status, 401);
+    for (let index = 0; index < 60; index += 1) assert.equal((await app.get(`${APP}/me`, { user: index % 2 ? ANN : ALICE })).status, 200);
+    const limited = await app.get(`${APP}/me`);
+    assert.equal(limited.status, 429);
+    assert.equal(limited.text, '{"error":"too_many_requests"}');
+    assert.equal((await app.get(`${APP}/me`, { user: ANN })).status, 429);
+    // Another household has its own.
+    assert.equal((await app.get(`${APP}/me`, { host: HOST_B, user: BOB })).status, 200);
+    now += 10 * 1000;
+    assert.equal((await app.get(`${APP}/me`)).status, 200);
   });
 
   it('counts answers by endpoint and outcome, never by title', async (t) => {

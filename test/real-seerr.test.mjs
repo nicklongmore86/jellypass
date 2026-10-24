@@ -149,7 +149,7 @@ describe('real Seerr', { timeout: 60_000, skip: !baseUrl || !apiKey }, () => {
     assert.equal(entry.user.id, 1);
   });
 
-  it('serves household app states from Seerr itself, never from another household\'s requests', async (t) => {
+  it('serves household app states from Seerr\'s permissions and blocklist, never from anyone\'s requests', async (t) => {
     const MEMBER = MEMBER_JELLYFIN_ID.replaceAll('-', '');
     const people = [[REQUESTER_JELLYFIN_ID, 'requester', 'Requester'], [MEMBER, 'member', 'Member'], [NEIGHBOUR_JELLYFIN_ID, 'neighbour', 'Neighbour'], [SHARED_JELLYFIN_ID, 'shared', 'Shared']];
     const state = world({
@@ -174,11 +174,13 @@ describe('real Seerr', { timeout: 60_000, skip: !baseUrl || !apiKey }, () => {
     const matrix = first.json();
     assert.equal(matrix.title, 'The Matrix');
     assert.equal(matrix.year, 1999);
-    assert.equal(matrix.state, 'requested');
+    // Seerr does not record which household a request was for, so no Seerr request is shown as `requested` in step 1,
+    // not even one by a member of this household alone (step 2's attribution records will be the only source).
+    assert.equal(matrix.state, 'get_this');
     // Another household's pending request is invisible; Seerr's own status for it (pending) is never shown.
     const fightClub = await as('token-requester', '/jellypass/app/v1/movie/550');
     assert.equal(fightClub.json().state, 'get_this');
-    assert.equal((await as('token-neighbour', '/jellypass/app/v1/movie/550', 'jelly-mill.example.test')).json().state, 'requested');
+    assert.equal((await as('token-neighbour', '/jellypass/app/v1/movie/550', 'jelly-mill.example.test')).json().state, 'get_this');
     // Codex's repro: a pending request by a member of both households could be either's, so it shows in neither.
     const pulpFiction = await as('token-requester', '/jellypass/app/v1/movie/680');
     assert.equal(pulpFiction.json().state, 'get_this');
@@ -190,18 +192,18 @@ describe('real Seerr', { timeout: 60_000, skip: !baseUrl || !apiKey }, () => {
     assert.equal((await as('token-member', '/jellypass/app/v1/movie/603')).json().state, 'unavailable');
     const search = await as('token-requester', '/jellypass/app/v1/search?q=matrix');
     assert.equal(search.status, 200);
-    assert.equal(search.json().results.find((card) => card.tmdbId === 603)?.state, 'requested');
+    assert.equal(search.json().results.find((card) => card.tmdbId === 603)?.state, 'get_this');
     for (const answer of [first, fightClub, pulpFiction, forrestGump, search]) {
       assertNoCanaries(answer.text);
       assert.doesNotMatch(answer.text, /requester|neighbour|shared|example\.invalid|requestedBy|mediaInfo|jellyfinMediaId/i);
       assert.equal(answer.headers['cache-control'], 'no-store');
     }
-    // Seerr was asked only for user lookups and confirmations, the blocklist, and members' own data as them: never a
-    // title, and never as the shared member.
+    // Seerr was asked only for user lookups and confirmations, the blocklist, and callers' own permissions as them:
+    // never a title, never anyone's requests, and never as the shared member.
     const seerrCalls = calls.filter((call) => call.url.origin === baseUrl);
     assert.ok(seerrCalls.length > 0);
     for (const call of seerrCalls) {
-      assert.match(call.url.pathname, /^\/api\/v1\/(?:user\/jellyfin\/[0-9a-f]{32}|user\/[0-9]+|user\/[0-9]+\/requests|auth\/me|blocklist)$/, call.url.pathname);
+      assert.match(call.url.pathname, /^\/api\/v1\/(?:user\/jellyfin\/[0-9a-f]{32}|user\/[0-9]+|auth\/me|blocklist)$/, call.url.pathname);
       assert.notEqual(call.headers.get('x-api-user'), '6');
     }
   });

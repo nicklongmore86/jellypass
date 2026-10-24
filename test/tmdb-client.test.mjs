@@ -137,6 +137,25 @@ describe('TMDB client', () => {
     assert.doesNotMatch(`${unreachable.message}\n${unreachable.stack}`, /f00dfeed|synthetic/);
   });
 
+  it('carries how long TMDB asked to wait on a 429, and nothing else', async () => {
+    const answers = [
+      [429, { 'Retry-After': '3' }, 3000],
+      [429, { 'Retry-After': new Date(NOW + 5000).toUTCString() }, 5000],
+      [429, { 'Retry-After': new Date(NOW - 5000).toUTCString() }, 0],
+      [429, { 'Retry-After': 'soon' }, undefined],
+      [429, {}, undefined],
+      [503, { 'Retry-After': '3' }, undefined],
+    ];
+    for (const [status, headers, retryAfterMs] of answers) {
+      respond = () => new Response('{"status_message":"canary"}', { status, headers });
+      const error = await client().movie(900001).catch((caught) => caught);
+      assert.ok(error instanceof TmdbError);
+      assert.equal(error.status, status);
+      assert.equal(error.retryAfterMs, retryAfterMs, JSON.stringify(headers));
+      assert.equal(error.message, `TMDB GET /3/movie/:id returned ${status}`);
+    }
+  });
+
   it('refuses an oversized or invalid body', async () => {
     respond = () => new Response(`"${'é'.repeat(MAX_GUARDED_RESPONSE_BYTES / 2)}"`, { status: 200 });
     await assert.rejects(client().search('synthetic'), (error) => error instanceof TmdbError && error.message === 'TMDB GET /3/search/multi response is too large');
