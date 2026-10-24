@@ -1102,3 +1102,233 @@ describe('removals across household library joins and grant moves', { timeout: 1
     }
   });
 });
+
+/**
+ * Household library joins (GrantRecord.joins, an admin-only audit trail) follow the households they added when a grant
+ * moves: all of them when the whole audience moves to one item, only the matching ones on a split; an orphaned
+ * leftover keeps its own list, and merging the same move again records each join once. They never give access.
+ */
+describe('library join history across grant moves', { timeout: 10_000 }, () => {
+  /** TMDB movie 603 is linked in Seerr to `itemId`; `userId` joins it to their library. */
+  async function join(service, w, userId, itemId) {
+    w.titles.set('movie/603', itemId);
+    const { value, error } = await quietly(() => service.joinLibrary({ userId, isAdministrator: false, mediaType: 'movie', tmdbId: 603 }));
+    assert.equal(error, undefined, String(error));
+    assert.equal(value, 'joined', `${userId} joins ${itemId}`);
+  }
+
+  /** A grant's join history as comparable entries; a join recorded twice shows up twice. */
+  function history(grant) {
+    return (grant?.joins ?? []).map((entry) => `${entry.userId} ${entry.groupIds.join(',')} ${entry.userAdded} ${entry.joinedAt}`).sort();
+  }
+
+  /**
+   * item-old has alice's request 7 (House A); carol then joined Farmhouse to it and dave, in no household, joined
+   * himself. item-old was then deleted and re-imported as item-new, which Seerr's request 7 now names.
+   */
+  async function joinedThenReimported(t, file) {
+    const w = world();
+    const store = await newStore(t, file);
+    const service = new AccessService(w.jellyfin, store, undefined, w.seerr);
+    w.addItem('item-old');
+    await store.grant({ itemId: 'item-old', requestId: '7', userId: 'alice-id', groupIds: ['house-a'] });
+    await service.reconcileAll();
+    await join(service, w, 'carol-id', 'item-old');
+    await join(service, w, 'dave-id', 'item-old');
+    const joins = store.get('item-old').joins;
+    assert.deepEqual(joins.map((entry) => [entry.userId, entry.groupIds, entry.userAdded]), [
+      ['carol-id', ['farmhouse'], false],
+      ['dave-id', [], true],
+    ]);
+    assert.deepEqual(w.blockedFrom(OLD_TAG), ['bob-id']);
+    w.items.delete('item-old');
+    w.addItem('item-new');
+    w.request(7, { jellyfinMediaId: 'item-new' });
+    return { w, store, service, joins };
+  }
+
+  it('moves the whole history with the whole audience, once, and the history alone gives no access', async (t) => {
+    const { w, store, service, joins } = await joinedThenReimported(t);
+    const { error } = await quietly(() => service.reconcileAll());
+    assert.equal(error, undefined, String(error));
+    assert.equal(store.get('item-old'), undefined, 'the stale record is gone');
+    const moved = store.get('item-new');
+    assert.deepEqual(moved.joins, joins, 'every join made before the move, each once');
+    assert.deepEqual([moved.manualUserIds, moved.groupIds], [['dave-id'], ['farmhouse', 'house-a']]);
+    assert.deepEqual(w.blockedFrom(NEW_TAG), ['bob-id'], 'exactly the moved audience, as before the move');
+
+    // An administrator takes Farmhouse and dave off: their joins stay on record but give carol and dave nothing.
+    const { error: changed } = await quietly(() => service.setManualAccess({ itemId: 'item-new', userIds: [], groupIds: ['house-a'] }));
+    assert.equal(changed, undefined, String(changed));
+    assert.deepEqual(store.get('item-new').joins, joins);
+    assert.deepEqual(store.get('item-new').owners, ['alice-id']);
+    assert.deepEqual(w.blockedFrom(NEW_TAG), ['bob-id', 'carol-id', 'dave-id']);
+  });
+
+  it('splits the history with the households that follow each requester and keeps the rest on the leftover', async (t) => {
+    const w = world();
+    const store = await newStore(t);
+    const service = new AccessService(w.jellyfin, store, undefined, w.seerr);
+    await store.upsertGroup({ id: 'cottage', name: 'Cottage', userIds: ['bob-id'] });
+    w.addItem('item-old');
+    await store.grant({ itemId: 'item-old', requestId: '1', userId: 'alice-id' });
+    await store.grant({ itemId: 'item-old', requestId: '2', userId: 'bob-id' });
+    await store.grant({ itemId: 'item-old', requestId: '3', userId: 'carol-id' });
+    await service.reconcileAll();
+    // Each requester's household joins, then dave, in no household, joins himself.
+    for (const userId of ['alice-id', 'bob-id', 'carol-id', 'dave-id']) await join(service, w, userId, 'item-old');
+    const joins = store.get('item-old').joins;
+    const byUser = Object.fromEntries(joins.map((entry) => [entry.userId, entry]));
+    assert.deepEqual(joins.map((entry) => [entry.userId, entry.groupIds]), [
+      ['alice-id', ['house-a']], ['bob-id', ['cottage']], ['carol-id', ['farmhouse']], ['dave-id', []],
+    ]);
+    // Request 1 resolves to item-a and 2 to item-b; carol's request 3 still names the deleted item.
+    w.items.delete('item-old');
+    w.addItem('item-a');
+    w.addItem('item-b');
+    w.request(1, { jellyfinMediaId: 'item-a' });
+    w.request(2, { jellyfinMediaId: 'item-b' }, { requestedBy: { jellyfinUserId: 'bob-id' } });
+    w.request(3, { jellyfinMediaId: 'item-old' }, { requestedBy: { jellyfinUserId: 'carol-id' } });
+    const { error } = await quietly(() => service.reconcileAll());
+    assert.equal(error, undefined, String(error));
+
+    const a = store.get('item-a');
+    assert.deepEqual([a.requests, a.manualUserIds, a.groupIds], [{ 1: 'alice-id' }, [], ['house-a']]);
+    assert.deepEqual(a.joins, [byUser['alice-id']], 'only House A\'s join goes to item-a');
+    const b = store.get('item-b');
+    assert.deepEqual([b.requests, b.manualUserIds, b.groupIds], [{ 2: 'bob-id' }, [], ['cottage']]);
+    assert.deepEqual(b.joins, [byUser['bob-id']], 'only Cottage\'s join goes to item-b');
+    const leftover = store.get('item-old');
+    assert.equal(leftover.sync.state, 'orphaned');
+    assert.deepEqual([leftover.requests, leftover.manualUserIds, leftover.groupIds], [{ 3: 'carol-id' }, ['dave-id'], ['farmhouse']]);
+    assert.deepEqual(leftover.joins, joins, 'the leftover keeps its own list, the unassignable joins included');
+    // Access is exactly what each grant's audience gives, whatever its history mentions.
+    assert.deepEqual(w.blockedFrom(accessTag('item-a')), ['bob-id', 'carol-id', 'dave-id']);
+    assert.deepEqual(w.blockedFrom(accessTag('item-b')), ['alice-id', 'carol-id', 'dave-id']);
+  });
+
+  it('merges into a target with its own history, keeping both sets once', async (t) => {
+    const { w, store, service, joins } = await joinedThenReimported(t);
+    // item-new already has bob's own request 9, which Cottage (bob) joined.
+    await store.upsertGroup({ id: 'cottage', name: 'Cottage', userIds: ['bob-id'] });
+    await store.grant({ itemId: 'item-new', requestId: '9', userId: 'bob-id' });
+    w.request(9, { jellyfinMediaId: 'item-new' }, { requestedBy: { jellyfinUserId: 'bob-id' } });
+    await join(service, w, 'bob-id', 'item-new');
+    const own = store.get('item-new').joins;
+    assert.equal(own.length, 1);
+
+    const { error } = await quietly(() => service.reconcileAll());
+    assert.equal(error, undefined, String(error));
+    assert.equal(store.get('item-old'), undefined);
+    const merged = store.get('item-new');
+    assert.deepEqual(history(merged), history({ joins: [...own, ...joins] }));
+    assert.deepEqual([merged.requests, merged.manualUserIds, merged.groupIds], [{ 7: 'alice-id', 9: 'bob-id' }, ['dave-id'], ['cottage', 'farmhouse', 'house-a']]);
+    assert.deepEqual(w.blockedFrom(NEW_TAG), []);
+  });
+
+  it('records each join once when a move is interrupted, repeated and finished after a restart', async (t) => {
+    const file = path.join(await makeTempDir(t, 'jellypass-join-history-'), 'grants.json');
+    const { w, store, service, joins } = await joinedThenReimported(t, file);
+    // Applying item-new fails twice after the merge was stored, so the same move is merged twice.
+    const updateItem = w.jellyfin.updateItem;
+    w.jellyfin.updateItem = async (item) => { throw httpError(`Jellyfin POST /Items/${item.Id} returned 500`, 500); };
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      const { error } = await quietly(() => service.reconcileAll());
+      assert.ok(error instanceof AggregateError, String(error));
+      assert.deepEqual(store.get('item-new').joins, joins, `attempt ${attempt}: one copy on the target`);
+      assert.deepEqual(store.get('item-old').joins, joins, `attempt ${attempt}: the source keeps its list`);
+    }
+    w.jellyfin.updateItem = updateItem;
+
+    const restarted = await newStore(t, file);
+    const { error } = await quietly(() => new AccessService(w.jellyfin, restarted, undefined, w.seerr).reconcileAll());
+    assert.equal(error, undefined, String(error));
+    assert.equal(restarted.get('item-old'), undefined);
+    assert.deepEqual(restarted.get('item-new').joins, joins);
+    assert.deepEqual(w.blockedFrom(NEW_TAG), ['bob-id']);
+  });
+
+  it('records each join once when an interrupted split is run again', async (t) => {
+    const w = world();
+    const store = await newStore(t);
+    const service = new AccessService(w.jellyfin, store, undefined, w.seerr);
+    w.addItem('item-old');
+    await store.grant({ itemId: 'item-old', requestId: '1', userId: 'alice-id' });
+    await store.grant({ itemId: 'item-old', requestId: '3', userId: 'carol-id' });
+    await service.reconcileAll();
+    await join(service, w, 'alice-id', 'item-old');
+    await join(service, w, 'carol-id', 'item-old');
+    const joins = store.get('item-old').joins;
+    w.items.delete('item-old');
+    w.addItem('item-a');
+    w.request(1, { jellyfinMediaId: 'item-a' });
+    w.request(3, { jellyfinMediaId: 'item-old' }, { requestedBy: { jellyfinUserId: 'carol-id' } });
+    const updateItem = w.jellyfin.updateItem;
+    w.jellyfin.updateItem = async (item) => { throw httpError(`Jellyfin POST /Items/${item.Id} returned 500`, 500); };
+    const failed = await quietly(() => service.reconcileAll());
+    assert.ok(failed.error instanceof AggregateError, String(failed.error));
+    w.jellyfin.updateItem = updateItem;
+    for (let run = 1; run <= 2; run += 1) {
+      const { error } = await quietly(() => service.reconcileAll());
+      assert.equal(error, undefined, String(error));
+      assert.deepEqual(store.get('item-a').joins, [joins[0]], `run ${run}: House A's join once on item-a`);
+      assert.deepEqual(store.get('item-old').joins, joins, `run ${run}: the leftover keeps its own list once`);
+    }
+  });
+
+  it('carries the history on an administrator\'s move, and its dry run changes nothing', async (t) => {
+    const { w, store, service, joins } = await joinedThenReimported(t);
+    // Seerr no longer links request 7 to any item, so only an administrator can move the grant.
+    w.request(7, { jellyfinMediaId: 'item-old' });
+    await store.upsertGroup({ id: 'cottage', name: 'Cottage', userIds: ['bob-id'] });
+    await store.grant({ itemId: 'item-new', requestId: '9', userId: 'bob-id' });
+    await join(service, w, 'bob-id', 'item-new');
+    const own = store.get('item-new').joins;
+    const before = store.list();
+    w.writes.length = 0;
+
+    const planned = await service.remapGrant('item-old', 'item-new', true);
+    assert.deepEqual(history(planned.current), history({ joins: [...own, ...joins] }));
+    assert.deepEqual(store.list(), before, 'the dry run stores nothing');
+    assert.deepEqual(w.writes, []);
+
+    const { value: result, error } = await quietly(() => service.remapGrant('item-old', 'item-new'));
+    assert.equal(error, undefined, String(error));
+    assert.equal(store.get('item-old'), undefined);
+    assert.deepEqual(history(store.get('item-new')), history(planned.current));
+    assert.deepEqual(history(result.current), history(planned.current));
+    assert.deepEqual(w.blockedFrom(NEW_TAG), []);
+  });
+
+  it('moves an orphaned split leftover\'s whole history onto one of its split targets without duplicates', async (t) => {
+    const w = world();
+    const store = await newStore(t);
+    const service = new AccessService(w.jellyfin, store, undefined, w.seerr);
+    w.addItem('item-old');
+    await store.grant({ itemId: 'item-old', requestId: '1', userId: 'alice-id' });
+    await store.grant({ itemId: 'item-old', requestId: '3', userId: 'carol-id' });
+    await service.reconcileAll();
+    await join(service, w, 'alice-id', 'item-old');
+    await join(service, w, 'carol-id', 'item-old');
+    const joins = store.get('item-old').joins;
+    w.items.delete('item-old');
+    w.addItem('item-a');
+    w.request(1, { jellyfinMediaId: 'item-a' });
+    w.request(3, { jellyfinMediaId: 'item-old' }, { requestedBy: { jellyfinUserId: 'carol-id' } });
+    await quietly(() => service.reconcileAll());
+    assert.equal(store.get('item-old').sync.state, 'orphaned');
+    assert.deepEqual(store.get('item-a').joins, [joins[0]]);
+    const before = store.list();
+
+    const planned = await service.remapGrant('item-old', 'item-a', true);
+    assert.deepEqual(planned.current.joins, joins);
+    assert.deepEqual(store.list(), before, 'the dry run stores nothing');
+    const { error } = await quietly(() => service.remapGrant('item-old', 'item-a'));
+    assert.equal(error, undefined, String(error));
+    assert.equal(store.get('item-old'), undefined);
+    const a = store.get('item-a');
+    assert.deepEqual(a.joins, joins, 'House A\'s join once, Farmhouse\'s join added');
+    assert.deepEqual([a.requests, a.groupIds], [{ 1: 'alice-id', 3: 'carol-id' }, ['farmhouse', 'house-a']]);
+    assert.deepEqual(w.blockedFrom(accessTag('item-a')), ['bob-id', 'dave-id']);
+  });
+});
