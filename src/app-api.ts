@@ -318,8 +318,8 @@ export class HouseholdApp implements HouseholdAppHandler {
   /**
    * The household's caches, created the first time a household that exists is served. A household's caches are never
    * dropped for another's: they go only once the household is deleted (when the next household's are created). The
-   * store refuses more than {@link MAX_HOUSEHOLDS} households, so there is room for every one; should a state file
-   * hold more, nothing is cached for any household (the same for all, whoever was served first).
+   * store refuses more than {@link MAX_HOUSEHOLDS} households while the app is enabled, so there is room for every one;
+   * should a state file hold more, nothing is cached for any household (the same for all, whoever was served first).
    */
   #caches(householdId: string): HouseholdCaches | undefined {
     if (this.#householdTotal() > MAX_HOUSEHOLDS) {

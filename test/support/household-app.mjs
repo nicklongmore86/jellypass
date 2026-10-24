@@ -411,11 +411,11 @@ function sees(user, item) {
 
 /**
  * Starts the whole app for `state`: fake TMDB, Seerr and Jellyfin and a JellyPass server with households A (Alice, Ann)
- * and B (Bob). Pass `app: false` to start JellyPass without the app API, `seerr: { url, apiKey }` to use a real Seerr
- * instead of the fake, `households` to replace the two households, `stateFile` to start the store from that state,
- * `trustedProxies` to trust `X-Forwarded-For` from them, `now`, `libraryTtlMs`, `titleTtlMs` or `blocklistTtlMs` to set
- * the app's clock and cache lifetimes, and `catalogueLimits` to set its share of TMDB calls (by default high enough
- * that tests not about it never wait for one).
+ * and B (Bob). Pass `app: false` to start JellyPass without the app API (and so without the household limit),
+ * `seerr: { url, apiKey }` to use a real Seerr instead of the fake, `households` to replace the two households,
+ * `stateFile` to start the store from that state, `trustedProxies` to trust `X-Forwarded-For` from them, `now`,
+ * `libraryTtlMs`, `titleTtlMs` or `blocklistTtlMs` to set the app's clock and cache lifetimes, and `catalogueLimits` to
+ * set its share of TMDB calls (by default high enough that tests not about it never wait for one).
  */
 export async function startApp(t, state = world(), options = {}) {
   const seerr = options.seerr ? { ...options.seerr, close: async () => undefined } : await createFakeSeerr(state);
@@ -423,7 +423,7 @@ export async function startApp(t, state = world(), options = {}) {
   const jellyfin = await createFakeJellyfinForApp(state);
   const stateFile = path.join(await makeTempDir(t, 'jfa-app-'), 'grants.json');
   if (options.stateFile) await writeFile(stateFile, JSON.stringify(options.stateFile));
-  const store = new GrantStore(stateFile);
+  const store = new GrantStore(stateFile, { limitHouseholds: options.app !== false });
   await store.load();
   for (const household of options.households ?? HOUSEHOLDS) await store.upsertGroup(household);
   for (const grant of state.grants ?? []) {

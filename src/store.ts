@@ -13,8 +13,9 @@ import type {
 } from './types.js';
 
 /**
- * The most households (groups) JellyPass supports. Creating another is refused; the household app keeps one cache
- * partition and one TMDB queue per household, sized for this many (see docs/app-design.md, "Shared upstreams").
+ * The most households (groups) the household app supports. With the app enabled, creating another is refused; the app
+ * keeps one cache partition and one TMDB queue per household, sized for this many (see docs/app-design.md, "Shared
+ * upstreams"). With the app off there is no limit, as before 2.3.0.
  */
 export const MAX_HOUSEHOLDS = 100;
 
@@ -28,9 +29,12 @@ export class GrantStore {
   /** A queued write that has not started yet; saves requested meanwhile share it. */
   #queued: Promise<void> | undefined;
   #closed = false;
+  readonly #limitHouseholds: boolean;
 
-  public constructor(file: string) {
+  /** `limitHouseholds` (set when the household app is enabled) refuses new groups beyond {@link MAX_HOUSEHOLDS}. */
+  public constructor(file: string, options: { limitHouseholds?: boolean } = {}) {
     this.#file = file;
+    this.#limitHouseholds = options.limitHouseholds ?? false;
   }
 
   /** True once close() was called; every later change is refused. */
@@ -62,6 +66,13 @@ export class GrantStore {
     const seeded = this.#state.handledRequestIds === undefined || handled.size !== before;
     if (seeded) this.#state.handledRequestIds = [...handled];
     if (migrated.changed || lifted || seeded) await this.#save();
+    if (this.#limitHouseholds && this.countGroups() > MAX_HOUSEHOLDS) {
+      console.warn(JSON.stringify({
+        level: 'warn',
+        message: `the household app supports at most ${MAX_HOUSEHOLDS} households; no new group can be created until there are fewer, and the app caches nothing while there are more`,
+        groups: this.countGroups(),
+      }));
+    }
   }
 
   public list(): GrantRecord[] {
@@ -302,7 +313,7 @@ export class GrantStore {
     const id = normalizeId(input.id);
     const now = new Date().toISOString();
     const previous = this.#state.groups[id];
-    if (!previous && this.countGroups() >= MAX_HOUSEHOLDS) throw new Error(`groups must be at most ${MAX_HOUSEHOLDS}`);
+    if (this.#limitHouseholds && !previous && this.countGroups() >= MAX_HOUSEHOLDS) throw new Error(`groups must be at most ${MAX_HOUSEHOLDS}`);
     const group: AccessGroup = {
       id,
       name: input.name.trim(),
