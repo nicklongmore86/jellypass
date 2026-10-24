@@ -4,6 +4,7 @@ import https from 'node:https';
 import type { Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 import type { HouseholdAppHandler, JellyfinCaller } from './app-api.js';
+import type { AppAssets } from './app-assets.js';
 import { ClientIpResolver, normaliseIp } from './client-ip.js';
 import { DEFAULT_WS_IDLE_TIMEOUT_MS, DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS, type LogLevel } from './config.js';
 import { LIBRARY_JOIN_HTML, LIBRARY_JOIN_JS, LIBRARY_JOIN_STYLES } from './household-ui.js';
@@ -97,6 +98,8 @@ export interface HouseholdGatewayOptions {
    * proxied to Jellyfin.
    */
   app?: HouseholdAppHandler;
+  /** The app's own files at /jellypass/app/ (the page, script, styles, manifest, service worker). Only served with `app`. */
+  appAssets?: AppAssets;
 }
 
 interface CurrentUser {
@@ -121,6 +124,7 @@ export class HouseholdGateway {
   readonly #libraryJoinAttempts = new AttemptCounter({ windowMs: LIBRARY_JOIN_WINDOW_MS, maxKeys: MAX_LOGIN_CLIENTS });
   readonly #libraryJoin: HouseholdGatewayOptions['libraryJoin'];
   readonly #app: HouseholdGatewayOptions['app'];
+  readonly #appAssets: HouseholdGatewayOptions['appAssets'];
   readonly #libraryJoinsByUser = new AttemptCounter({ windowMs: LIBRARY_JOIN_WINDOW_MS, maxKeys: MAX_LOGIN_CLIENTS });
   readonly #libraryJoinsInAll = new AttemptCounter({ windowMs: LIBRARY_JOIN_WINDOW_MS, maxKeys: 1 });
   readonly #webSocketIdleTimeoutMs: number;
@@ -146,6 +150,7 @@ export class HouseholdGateway {
     this.#clientIp = new ClientIpResolver(options.trustedProxies);
     this.#libraryJoin = options.libraryJoin;
     this.#app = options.app;
+    this.#appAssets = options.app ? options.appAssets : undefined;
   }
 
   public householdId(hostHeader: string | undefined): string | undefined {
@@ -178,6 +183,9 @@ export class HouseholdGateway {
     const requestUrl = new URL(request.url ?? '/', 'http://localhost');
     const pathname = requestUrl.pathname.toLowerCase();
     if (pathname === APP_PATH || pathname.startsWith(`${APP_PATH}/`)) {
+      // The app's own files carry nothing user-specific and need no credentials; the API under /v1 always does.
+      // Files only at their exact (lower-case) paths: another spelling is an unknown app path, like any other.
+      if (this.#appAssets?.serve(request, response, requestUrl.pathname)) return;
       await this.#householdApp(request, response, requestUrl, householdId, memberIds);
       return;
     }

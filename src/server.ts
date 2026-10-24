@@ -3,6 +3,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { ConflictError, UserProvisioningError, type AccessService } from './access-service.js';
 import { HouseholdApp, type HouseholdAppOptions } from './app-api.js';
 import { ADMIN_APP_JS, ADMIN_FAVICON_SVG, ADMIN_HTML, ADMIN_STYLES } from './admin-ui.js';
+import { AppAssets } from './app-assets.js';
 import { expiredSessionCookie, sessionCookie, type WebAuth } from './auth.js';
 import { ClientIpResolver } from './client-ip.js';
 import type { LogLevel } from './config.js';
@@ -61,6 +62,7 @@ export function makeServer(
         memberIds: (householdId) => service.getHouseholdMemberIds(householdId),
         isPasswordless: (userId) => service.isPasswordless(userId),
         ...(options.householdApp ? {
+          appAssets: AppAssets.load(),
           app: new HouseholdApp({
             ...options.householdApp,
             householdName: (householdId) => service.getHouseholdName(householdId),

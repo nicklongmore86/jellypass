@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Household app page (read-only PWA, off by default).** With
+  `HOUSEHOLD_APP_ENABLED=true`, each household hostname also serves an
+  installable web app at `/jellypass/app/` (iPhone: Share, Add to Home Screen;
+  Android and desktop Chrome: Install app). It signs in with the member's
+  existing Jellyfin web session on that address (no password, nothing stored),
+  shows Home (Trending, Popular movies, Popular series, Upcoming movies),
+  Search, movie and series pages with seasons and episodes, and About & credits
+  with TMDB's logo and notice. Each title carries the household's state: **In
+  your library** with a Play button, **Available to request soon** (no request
+  button yet) or **Can't request**. A service worker caches only the app's own
+  static files, one complete set per release, never the API. Install and sign-in on a real iPhone are not yet verified. The files are served with a strict CSP and
+  security headers, the same for everyone, and only on household hosts. Built
+  with `tsc` alone from `app/`; `linkedom` is a new dev dependency for tests.
 - **Household app API (read-only, off by default).** With
   `HOUSEHOLD_APP_ENABLED=true` (which requires `HOUSEHOLD_DOMAIN`, Seerr and
   the new `TMDB_API_KEY`, a TMDB API key or read access token; startup stops

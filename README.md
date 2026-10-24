@@ -200,7 +200,7 @@ JellyPass reads configuration from environment variables at startup.
 | `CATALOG_SYNC_INTERVAL_SECONDS` | No | `3600` | Jellyfin catalog refresh interval; `0` disables scheduling. Maximum `604800`. |
 | `HOUSEHOLD_DOMAIN` | No | — | Enables household hostnames below this DNS domain. |
 | `HOUSEHOLD_HOST_PREFIX` | No | `jelly-` | Prefix placed before each DNS-safe group ID. |
-| `HOUSEHOLD_APP_ENABLED` | No | `false` | Serves the read-only [household app API](#household-app-api) at `/jellypass/app/v1/*` on household hostnames. Requires `HOUSEHOLD_DOMAIN`, Seerr configuration and `TMDB_API_KEY`; startup stops if any is missing. While `false`, those paths answer `404` and are never proxied to Jellyfin. |
+| `HOUSEHOLD_APP_ENABLED` | No | `false` | Serves the read-only [household app API](#household-app-api) at `/jellypass/app/v1/*`, and the [app](#household-app-pwa) at `/jellypass/app/`, on household hostnames. Requires `HOUSEHOLD_DOMAIN`, Seerr configuration and `TMDB_API_KEY`; startup stops if any is missing. While `false`, those paths answer `404` and are never proxied to Jellyfin. |
 | `REQUEST_BACKFILL_SINCE` | No | — | `YYYY-MM-DD` (UTC midnight) or an ISO 8601 date-time with `Z` or an offset, such as `2026-10-15T08:00:00+02:00`. Impossible dates are rejected. Requests created before it are never imported by the backfill. |
 | `REQUEST_BACKFILL_ENABLED` | No | `true` when `REQUEST_BACKFILL_SINCE` is set, otherwise `false` | Grants available Seerr requests that the webhook missed. Requires Seerr configuration and `REQUEST_BACKFILL_SINCE`. |
 | `WS_IDLE_TIMEOUT_MS` | No | `300000` | Closes a proxied household WebSocket after this many milliseconds with no bytes in either direction; `0` disables. Jellyfin drops sockets after 60 s without a client KeepAlive (clients send one every 30 s), so values at or below `60000` log a startup warning. Maximum `86400000`. |
@@ -605,13 +605,13 @@ the background, normally within seconds.
 
 ### Household app API
 
-The backend of the upcoming household app (a PWA first; see
+The backend of the household app (a PWA first; see
 [docs/app-design.md](docs/app-design.md)). It is **read-only** in this release
 and **off by default**: set `HOUSEHOLD_APP_ENABLED=true` together with
 `HOUSEHOLD_DOMAIN`, `SEERR_URL`, `SEERR_API_KEY` and `TMDB_API_KEY`.
-There is no app page yet; these are JSON endpoints under `/jellypass/app/v1` on
-each household hostname, and nowhere else (on the administrator host they do
-not exist).
+These are JSON endpoints under `/jellypass/app/v1` on each household hostname,
+and nowhere else (on the administrator host they do not exist). The
+[app](#household-app-pwa) that uses them is served next to them.
 
 | Method | Path | Answer |
 | --- | --- | --- |
@@ -703,14 +703,64 @@ Do not give household members Seerr's `MANAGE_BLOCKLIST` permission (Seerr
 does not by default): every blocklist entry makes the title `unavailable` in
 every household.
 
-This product uses the TMDB API but is not endorsed or certified by
-[TMDB](https://www.themoviedb.org/). Titles, overviews and images come from
-TMDB. There is no app page yet; the household app (step 1b) must show this
-notice with TMDB's approved logo in an About or Credits section, as TMDB's
-API terms require.
+This product uses TMDB and the TMDB APIs but is not endorsed, certified, or
+otherwise approved by [TMDB](https://www.themoviedb.org/). Titles, overviews
+and images come from TMDB. The app shows this notice with TMDB's logo on its
+About screen, as TMDB's API terms require.
 
 Without Seerr, `/jellypass/add` paths are proxied to Jellyfin like any other.
-`/jellypass/app` paths never are: without the app API they answer `404`.
+`/jellypass/app` paths never are: without the app they answer `404`.
+
+### Household app (PWA)
+
+With `HOUSEHOLD_APP_ENABLED=true`, each household hostname also serves the
+app itself at `https://jelly-<household>.<HOUSEHOLD_DOMAIN>/jellypass/app/`: an
+installable web app (a PWA) to browse what is in the household's Jellyfin
+library and find more to watch. It is **read-only** for now: it shows each
+title's state (`In your library` with a **Play** button, `Available to request
+soon`, or `Can't request`) and has no request button yet. Nothing about it
+exists on the administrator host, or on household hosts while the app is
+switched off (those answer the same fixed `404`).
+
+- **Needs:** the same settings as the API above. `TMDB_API_KEY` is a v3 API key
+  or v4 read access token from your TMDB account's API settings (free for
+  non-commercial use; read TMDB's [API terms](https://www.themoviedb.org/api-terms-of-use)).
+  Nothing else to configure: the app's files are built into the image.
+- **Signing in** is Jellyfin's. The app runs on the same address as Jellyfin
+  web and reuses its sign-in (the access token Jellyfin web keeps in the
+  browser), exactly as `/jellypass/add` does; it never asks for a password and
+  stores nothing itself. Signed out, it sends the member to `/web/` to pick
+  their profile; once they are signed in it carries on (in another tab, or when
+  they open the app again). It then shows who is signed in and their household.
+  The installed app's scope is the whole household address, so Jellyfin web
+  (sign-in, and the page **Play** opens) opens inside the installed app, whose
+  storage on iPhone and iPad is separate from Safari's. After signing in there,
+  swipe back, or open JellyPass again from the home screen.
+- **Screens:** Home (Trending, Popular movies, Popular series and Upcoming
+  movies as scrolling rows), Search (as you type, with **Load more**), a movie
+  page, a series page with its seasons (each with its own state) and a season
+  page with its episodes, and About & credits (TMDB's logo and notice).
+- **Install on iPhone or iPad:** open the app address in Safari, tap **Share**,
+  then **Add to Home Screen**. **Android (Chrome):** menu, **Install app** (or
+  **Add to Home screen**). Desktop Chrome and Edge: the install icon in the
+  address bar. It opens full screen with JellyPass's icon. **Not yet verified
+  on a real iPhone:** the install and the Jellyfin sign-in inside the installed
+  app have been tested only in a simulated browser, so expect to check them on a
+  device before relying on them.
+- **Offline and privacy:** a service worker keeps only the app's own static
+  files (page, styles, scripts, icons, TMDB logo), as one complete set per
+  release (replaced as a whole when the app is updated), so the app opens when
+  the network is slow or down. It never touches `/jellypass/app/v1/*` or anything
+  else: no titles, states or household data are ever cached, and without a
+  network the app says so.
+- **Page security:** the files are served with a strict
+  `Content-Security-Policy` (own origin only, plus `https://image.tmdb.org` for
+  posters and backdrops; no inline script or style, no framing, no forms),
+  `nosniff`, `Referrer-Policy: no-referrer`, a `Permissions-Policy` that turns off camera, microphone, location, payment, USB/serial/HID/Bluetooth, motion and other sensors, and the like and
+  cross-origin isolation headers. The files are the same for everyone and carry
+  no user data; the app fetches everything else from the API after loading.
+  Static files are revalidated on each use (`Cache-Control: no-cache` with an
+  `ETag`); icons and the logo are cached for a week.
 
 Filtering the login picker is a privacy and usability boundary, not
 authentication. Users still authenticate with Jellyfin, and Jellyfin policies

@@ -157,6 +157,22 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
       authorization: 'MediaBrowser Client="jfa-test", Device="ci", DeviceId="jfa-real-app", Version="1.0"',
       body: { Username: 'Bob', Pw: '' },
     });
+    // The app's page is served from the household host with no sign-in, and the sign-in the app sends (Jellyfin web's own
+    // token, as the only part of the Authorization header) is accepted by the real Jellyfin.
+    const host = { Host: 'jelly-apphouse.example.test' };
+    const shell = await getWithHeaders(gateway.address().port, '/jellypass/app/', host);
+    assert.equal(shell.status, 200);
+    assert.equal(shell.headers['content-type'], 'text/html; charset=utf-8');
+    assert.match(shell.headers['content-security-policy'], /^default-src 'none'; script-src 'self'; /);
+    assert.match(shell.text, /<title>JellyPass<\/title>/);
+    for (const asset of ['manifest.webmanifest', 'sw.js', 'app.css', 'js/main.js', 'tmdb-logo.svg', 'icons/icon-192.png']) {
+      assert.equal((await getWithHeaders(gateway.address().port, `/jellypass/app/${asset}`, host)).status, 200, asset);
+    }
+    const adminHost = await getWithHeaders(gateway.address().port, '/jellypass/app/', { Host: 'jellypass.example.test' });
+    assert.notEqual(adminHost.status, 200);
+    const me = await getWithHeaders(gateway.address().port, '/jellypass/app/v1/me', { ...host, Authorization: `MediaBrowser Token="${bob.AccessToken}"` });
+    assert.deepEqual(me.json(), { name: 'Bob', household: 'App House' });
+
     const movie = async () => {
       const answer = await getWithHeaders(gateway.address().port, `/jellypass/app/v1/movie/${OWN_MOVIE}`, {
         Host: 'jelly-apphouse.example.test',

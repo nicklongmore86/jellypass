@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0f1115">
+  <meta name="referrer" content="no-referrer">
+  <meta name="description" content="Browse your household's Jellyfin library and find more to watch.">
+  <title>JellyPass</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="JellyPass">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="stylesheet" href="app.css">
+  <script type="module" src="js/main.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#screen">Skip to content</a>
+  <header class="app-header">
+    <p class="brand">JellyPass</p>
+    <p id="who" class="who"></p>
+  </header>
+  <main id="screen" tabindex="-1" aria-busy="true">
+    <noscript><p class="notice">JellyPass needs JavaScript.</p></noscript>
+  </main>
+  <div id="status" class="visually-hidden" role="status" aria-live="polite"></div>
+  <nav class="tabbar" aria-label="Main">
+    <a data-nav="home" href="#/">Home</a>
+    <a data-nav="search" href="#/search">Search</a>
+    <a data-nav="about" href="#/about">About</a>
+  </nav>
+</body>
+</html>
