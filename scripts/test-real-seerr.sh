@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Runs test/real-seerr.test.mjs against a throwaway Seerr container, removed afterwards. The container
 # starts from an empty config; this script reads the API key Seerr generated and seeds two users
-# straight into its database (an owner and a member with no permissions), so no media server, TMDB
-# or network access is needed. Run after `pnpm build`.
+# straight into its database (an owner, a member with no permissions and a catalogue user), so no
+# media server is needed. Only the catalogue-preference test reaches TMDB, through Seerr, and it is
+# skipped when Seerr cannot. Run after `pnpm build`.
 set -euo pipefail
 
 SEERR_IMAGE="${SEERR_IMAGE:-ghcr.io/seerr-team/seerr:v3.5.1}"
@@ -40,7 +41,9 @@ api_key="$(docker exec "$container" node -p 'require("/app/config/settings.json"
 [[ -n "$api_key" ]] || fail 'Seerr settings have no API key'
 
 # Seerr's API key acts as user 1, which must exist; user 2 is a Jellyfin-linked member with no
-# permissions, so anything Seerr runs as the member is refused where the owner would succeed.
+# permissions, so anything Seerr runs as the member is refused where the owner would succeed, and
+# with its own discover preference (Japanese originals only); user 3 is the catalogue user, a local
+# user with no permissions, no Jellyfin link and no preferences of its own.
 docker exec "$container" node -e '
   const sqlite3 = require("sqlite3");
   const db = new sqlite3.Database("/app/config/db/db.sqlite3");
@@ -48,6 +51,9 @@ docker exec "$container" node -e '
   db.serialize(() => {
     db.run(insert, [1, "owner@example.invalid", "owner", 2, "/avatar", "0000000000000000000000000000000a", "owner"]);
     db.run(insert, [2, "member@example.invalid", "member", 0, "/avatar", "0000000000000000000000000000000b", "member"]);
+    db.run("INSERT INTO user (id, email, username, permissions, avatar, userType) VALUES (3, ?, ?, 0, ?, 2)",
+      ["catalogue@example.invalid", "jellypass-catalogue", "/avatar"]);
+    db.run("INSERT INTO user_settings (userId, locale, originalLanguage) VALUES (2, ?, ?)", ["", "ja"]);
   });
   db.close((error) => { if (error) { console.error(error); process.exit(1); } });
 ' || fail 'could not seed Seerr users'

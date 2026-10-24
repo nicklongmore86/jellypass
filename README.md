@@ -192,6 +192,7 @@ JellyPass reads configuration from environment variables at startup.
 | `ADMIN_TOKEN` | Recommended | `WEBHOOK_TOKEN` | Separate bearer token for administrative APIs and metrics. |
 | `SEERR_URL` | Conditional | — | Seerr base URL reachable from JellyPass. Configure with `SEERR_API_KEY`. |
 | `SEERR_API_KEY` | Conditional | — | Seerr API key. Configure with `SEERR_URL`. |
+| `SEERR_CATALOGUE_USER_ID` | No | — | Seerr user ID the upcoming household app reads search, discover and title details as, so no member's Seerr preferences shape them. Create a local Seerr user for JellyPass alone, remove all its permissions and do not link it to Jellyfin; never the owner (user 1). Requires Seerr configuration. Not used yet; when set, startup stops if the user is unfit. See [docs/app-design.md](docs/app-design.md#catalogue-identity). |
 | `STATE_FILE` | No | `./data/grants.json` | Durable state-file path. The container uses `/app/data/grants.json`. |
 | `HOST` | No | `0.0.0.0` | HTTP listen address inside the process/container. |
 | `PORT` | No | `8787` | HTTP listen port. |

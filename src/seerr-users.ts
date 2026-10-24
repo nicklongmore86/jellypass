@@ -1,6 +1,6 @@
-import { normalizeJellyfinUserId, type SeerrClient, type SeerrUserClient, type SeerrUserId } from './seerr.js';
+import { normalizeJellyfinUserId, SeerrMemberClient, type SeerrClient, type SeerrUserId, type SeerrUserResolver } from './seerr.js';
 
-/** How long a Jellyfin user's Seerr user is trusted for read-only calls once found. */
+/** How long a Jellyfin user's Seerr user is offered as the candidate once found (it is still confirmed before each call). */
 export const SEERR_USER_TTL_MS = 60_000;
 /** How long "Seerr has no user for this Jellyfin user" is remembered, so a new import is picked up soon. */
 export const SEERR_USER_MISSING_TTL_MS = 60_000;
@@ -14,23 +14,23 @@ interface CacheEntry {
 
 /**
  * Maps Jellyfin users to the Seerr users that act for them, with Seerr's GET /api/v1/user/jellyfin/:id (made with the
- * admin key). A Jellyfin user Seerr has no user for is unmapped: {@link SeerrUserMap.clientFor} then answers undefined,
- * and the caller must treat the title as unavailable. Nothing falls back to the admin client or imports the user;
- * Seerr users are created where they are today, by importing a Jellyfin user from the admin API.
+ * admin key), and makes the {@link SeerrMemberClient}s that act for them. A Jellyfin user Seerr has no user for is
+ * unmapped: their calls fail with `SeerrUnmappedUserError`, and the caller must treat the title as unavailable.
+ * Nothing falls back to the admin client or imports the user; Seerr users are created where they are today, by
+ * importing a Jellyfin user from the admin API.
  *
- * Found and missing users are cached (for {@link SEERR_USER_TTL_MS} and {@link SEERR_USER_MISSING_TTL_MS}), up to
- * {@link SEERR_USER_CACHE_MAX} entries. Failed lookups are not cached, and concurrent lookups for one user share a call.
- * A Seerr relink or deletion can leave a cached mapping stale, so:
+ * The map only proposes candidates: every member call is confirmed with Seerr immediately before it is sent (see
+ * {@link SeerrMemberClient}), so a stale entry can cost a lookup but never acts as anyone else. Found and missing users
+ * are cached (for {@link SEERR_USER_TTL_MS} and {@link SEERR_USER_MISSING_TTL_MS}), up to {@link SEERR_USER_CACHE_MAX}
+ * entries. Failed lookups are not cached, and concurrent lookups for one user share a call.
  *
- * - {@link verifiedClientFor}, for every state-changing or user-scoped call, checks with Seerr's GET /api/v1/user/:id
- *   that the Seerr user is still linked to this Jellyfin user before each use, and otherwise looks the user up again
- *   (once) or fails closed;
- * - {@link clientFor}, for read-only title calls only, trusts the cache for at most {@link SEERR_USER_TTL_MS};
- * - a 401, 403 or 404 from Seerr on a call made through either client forgets that user's mapping;
+ * - A candidate Seerr no longer links to the Jellyfin user, or a 401, 403 or 404 from Seerr on a call made as it, is
+ *   forgotten.
  * - {@link invalidate} and {@link clear} forget mappings at once, including lookups still in flight: those can no
- *   longer fill the cache, and later callers start a new lookup instead of joining them.
+ *   longer fill the cache, and later callers start a new lookup instead of joining them. A call being confirmed when
+ *   its user is invalidated is confirmed again before it is sent.
  */
-export class SeerrUserMap {
+export class SeerrUserMap implements SeerrUserResolver {
   readonly #seerr: SeerrClient;
   readonly #now: () => number;
   readonly #ttlMs: number;
@@ -38,6 +38,10 @@ export class SeerrUserMap {
   readonly #maxEntries: number;
   readonly #cache = new Map<string, CacheEntry>();
   readonly #pending = new Map<string, Promise<SeerrUserId | undefined>>();
+  /** Invalidation stamps from one counter that never repeats, so a forgotten stamp still reads as a change. */
+  readonly #versions = new Map<string, number>();
+  #counter = 0;
+  #clearedAt = 0;
 
   public constructor(seerr: SeerrClient, options: { now?: () => number; ttlMs?: number; missingTtlMs?: number; maxEntries?: number } = {}) {
     this.#seerr = seerr;
@@ -48,38 +52,33 @@ export class SeerrUserMap {
   }
 
   /**
-   * The client acting as this Jellyfin user's Seerr user, or undefined if they have none, from the cache. For read-only
-   * title calls only (search, discover, movie, tv, season). Throws if Seerr fails.
+   * The client for this Jellyfin user's own Seerr data, or undefined if `jellyfinUserId` is not a Jellyfin user ID. It
+   * holds the Jellyfin user, not a Seerr user, and confirms the Seerr user before every call, so it may be kept.
    */
-  public async clientFor(jellyfinUserId: string): Promise<SeerrUserClient | undefined> {
+  public member(jellyfinUserId: string): SeerrMemberClient | undefined {
     const key = normalizeJellyfinUserId(jellyfinUserId);
-    if (!key) return undefined;
-    const user = await this.#resolve(key);
-    return user === undefined ? undefined : this.#clientAs(key, user);
+    return key ? new SeerrMemberClient(this.#seerr, key, this) : undefined;
   }
 
   /**
-   * The client acting as this Jellyfin user's Seerr user after Seerr has confirmed, just now, that the Seerr user is
-   * still linked to them; undefined if they have none or the link cannot be confirmed. For every state-changing or
-   * user-scoped call (createRequest, ownRequests, quota, watchlist). Throws if Seerr fails.
+   * The Seerr user this Jellyfin user is believed to have, from the cache, or undefined if they have none. Unconfirmed:
+   * it says nothing about who a call would act as. Throws if Seerr fails.
    */
-  public async verifiedClientFor(jellyfinUserId: string): Promise<SeerrUserClient | undefined> {
-    const key = normalizeJellyfinUserId(jellyfinUserId);
-    if (!key) return undefined;
-    // A stale mapping is forgotten and looked up once more; a second mismatch means Seerr is changing under us.
-    for (let attempt = 0; attempt < 2; attempt += 1) {
-      const user = await this.#resolve(key);
-      if (user === undefined) return undefined;
-      if (await this.#seerr.jellyfinUserIdOf(user) === key) return this.#clientAs(key, user);
-      this.#forget(key, user);
-    }
-    return undefined;
-  }
-
-  /** This Jellyfin user's Seerr user ID from the cache, or undefined if they have none. Throws if Seerr fails. */
-  public async seerrUserId(jellyfinUserId: string): Promise<SeerrUserId | undefined> {
+  public async candidate(jellyfinUserId: string): Promise<SeerrUserId | undefined> {
     const key = normalizeJellyfinUserId(jellyfinUserId);
     return key ? this.#resolve(key) : undefined;
+  }
+
+  /** Forgets `user` as this Jellyfin user's mapping if it still is, so a newer answer is kept. */
+  public forget(jellyfinUserId: string, user: SeerrUserId): void {
+    const key = normalizeJellyfinUserId(jellyfinUserId);
+    if (key && this.#cache.get(key)?.user === user) this.#cache.delete(key);
+  }
+
+  /** Changes whenever this Jellyfin user's mapping is invalidated or every mapping is cleared. */
+  public version(jellyfinUserId: string): number {
+    const key = normalizeJellyfinUserId(jellyfinUserId);
+    return (key && this.#versions.get(key)) || this.#clearedAt;
   }
 
   /** Forgets one Jellyfin user's mapping, for example after they were relinked or removed in Seerr. */
@@ -88,12 +87,19 @@ export class SeerrUserMap {
     if (!key) return;
     this.#cache.delete(key);
     this.#pending.delete(key);
+    this.#versions.delete(key);
+    this.#versions.set(key, ++this.#counter);
+    while (this.#versions.size > this.#maxEntries) {
+      this.#versions.delete(this.#versions.keys().next().value as string);
+    }
   }
 
   /** Forgets every mapping, for example after users were imported into or removed from Seerr. */
   public clear(): void {
     this.#cache.clear();
     this.#pending.clear();
+    this.#versions.clear();
+    this.#clearedAt = ++this.#counter;
   }
 
   #resolve(key: string): Promise<SeerrUserId | undefined> {
@@ -127,14 +133,5 @@ export class SeerrUserMap {
     while (this.#cache.size > this.#maxEntries) {
       this.#cache.delete(this.#cache.keys().next().value as string);
     }
-  }
-
-  /** Forgets `key`'s mapping if it is still `user`, so a newer answer is kept. */
-  #forget(key: string, user: SeerrUserId): void {
-    if (this.#cache.get(key)?.user === user) this.#cache.delete(key);
-  }
-
-  #clientAs(key: string, user: SeerrUserId): SeerrUserClient {
-    return this.#seerr.asUser(user, { onRejected: () => this.#forget(key, user) });
   }
 }

@@ -78,7 +78,8 @@ export function normalizeJellyfinUserId(value: string): string | undefined {
 /**
  * The admin-key Seerr client. Its calls send only `X-Api-Key`, so Seerr runs them as its owner account (user 1): use it
  * for JellyPass's own administrative work, never on behalf of a household member. Calls made for a member go through
- * {@link SeerrUserClient}, from {@link SeerrClient.asUser}.
+ * {@link SeerrMemberClient} (their own data, verified before every call) or {@link SeerrCatalogueClient} (titles, as
+ * a dedicated catalogue user).
  */
 export class SeerrClient {
   readonly #baseUrl: string;
@@ -88,16 +89,12 @@ export class SeerrClient {
   public constructor(baseUrl: string, apiKey: string) {
     this.#baseUrl = baseUrl;
     this.#apiKey = apiKey;
-  }
-
-  /** A client that acts as the given Seerr user. Throws unless `user` is a valid Seerr user ID. */
-  public asUser(user: SeerrUserId, options?: SeerrUserClientOptions): SeerrUserClient {
-    return new SeerrUserClient(this.#baseUrl, this.#apiKey, user, options);
+    credentials.set(this, { baseUrl, apiKey });
   }
 
   /**
    * The Seerr user linked to a Jellyfin user, or undefined when Seerr has none (or `jellyfinUserId` is not a Jellyfin
-   * user ID). Throws on any other failed lookup. Like every {@link SeerrUserClient} call, it refuses redirects and its
+   * user ID). Throws on any other failed lookup. Like every acting-user call, it refuses redirects and its
    * errors carry only the status and the route template.
    */
   public async findUserByJellyfinId(jellyfinUserId: string): Promise<LinkedSeerrUser | undefined> {
@@ -123,15 +120,36 @@ export class SeerrClient {
    * longer exists or has no Jellyfin link. Throws on any other failed lookup; guarded like {@link findUserByJellyfinId}.
    */
   public async jellyfinUserIdOf(user: SeerrUserId): Promise<string | undefined> {
-    let answer: { id?: unknown; jellyfinUserId?: unknown };
+    const record = await this.#userRecord(user);
+    return typeof record?.jellyfinUserId === 'string' ? normalizeJellyfinUserId(record.jellyfinUserId) : undefined;
+  }
+
+  /**
+   * Why a Seerr user cannot be the catalogue user, or undefined if it can: it must exist, must not be the owner, must
+   * have no permissions at all and must not be linked to a Jellyfin user (so no household member ever acts as it).
+   * Throws on any other failed lookup; guarded like {@link findUserByJellyfinId}.
+   */
+  public async catalogueUserProblem(user: SeerrUserId): Promise<string | undefined> {
+    const record = await this.#userRecord(user);
+    if (!record) return 'does not exist';
+    if (user === 1) return 'is the owner';
+    if (record.permissions !== 0) return 'has permissions';
+    if (record.jellyfinUserId !== null && record.jellyfinUserId !== undefined && record.jellyfinUserId !== '') {
+      return 'is linked to a Jellyfin user';
+    }
+    return undefined;
+  }
+
+  /** Seerr's GET /api/v1/user/:id as the admin, or undefined when that user does not exist (or is not the one asked for). */
+  async #userRecord(user: SeerrUserId): Promise<{ jellyfinUserId?: unknown; permissions?: unknown } | undefined> {
+    let answer: { id?: unknown; jellyfinUserId?: unknown; permissions?: unknown };
     try {
       answer = await this.#guardedGet('/api/v1/user/:id', `/api/v1/user/${seerrUserId(user)}`) as typeof answer;
     } catch (error) {
       if (error instanceof SeerrError && error.status === 404) return undefined;
       throw error;
     }
-    if (answer?.id !== user || typeof answer.jellyfinUserId !== 'string') return undefined;
-    return normalizeJellyfinUserId(answer.jellyfinUserId);
+    return answer?.id === user ? answer : undefined;
   }
 
   /** An admin-key GET with the acting-user client's guards: no redirects, capped body, route-only errors. */
@@ -307,69 +325,92 @@ export const MAX_GUARDED_RESPONSE_BYTES = 4 * 1024 * 1024;
 /** Statuses after which Seerr may no longer accept the acting user (unknown, removed or relinked). */
 const USER_REJECTED_STATUSES = new Set([401, 403, 404]);
 
-export interface SeerrUserClientOptions {
-  /** Called when Seerr answers a call with 401, 403 or 404, before the call throws; for invalidating a cached mapping. */
-  onRejected?: (status: number) => void;
+/** How long the catalogue user is trusted after Seerr last confirmed it is fit for the role. */
+export const SEERR_CATALOGUE_RECHECK_MS = 60_000;
+
+/** The admin client's connection details, for the acting-user clients made from it; never exported. */
+const credentials = new WeakMap<SeerrClient, { baseUrl: string; apiKey: string }>();
+
+/** A Jellyfin user Seerr has no user for, or whose Seerr user could not be confirmed just before a call. */
+export class SeerrUnmappedUserError extends Error {
+  public constructor() {
+    super('Seerr has no confirmed user for this Jellyfin user');
+    this.name = 'SeerrUnmappedUserError';
+  }
+}
+
+/** The configured catalogue user is unfit for the role (see {@link SeerrClient.catalogueUserProblem}). */
+export class SeerrCatalogueUserError extends Error {
+  public constructor(problem: string) {
+    super(`Seerr catalogue user ${problem}`);
+    this.name = 'SeerrCatalogueUserError';
+  }
 }
 
 /**
- * Seerr's API as one Seerr user sees it. Every call sends that user's ID in `X-API-User`, so Seerr applies their
- * permissions, quota and visibility rather than the owner's. The user is fixed when the client is made and must be a
- * valid {@link SeerrUserId}; the constructor throws otherwise, and so does every call if the ID is ever not one.
+ * Where a {@link SeerrMemberClient} gets the Seerr user to try for a Jellyfin user. Its answers are only candidates:
+ * the client confirms each with Seerr before every call, so a wrong or stale answer can make a call fail closed but
+ * never run as anyone else.
+ */
+export interface SeerrUserResolver {
+  /** The Seerr user believed linked to a normalized Jellyfin user ID, or undefined if none. */
+  candidate(jellyfinUserId: string): Promise<SeerrUserId | undefined>;
+  /** Stops offering `user` for this Jellyfin user, because Seerr no longer links them. */
+  forget(jellyfinUserId: string, user: SeerrUserId): void;
+  /** A value that changes whenever this Jellyfin user's mapping is invalidated. */
+  version(jellyfinUserId: string): number;
+}
+
+/** A resolver with no cache: every call looks the user up again. */
+function lookupResolver(admin: SeerrClient): SeerrUserResolver {
+  return {
+    candidate: async (jellyfinUserId) => (await admin.findUserByJellyfinId(jellyfinUserId))?.id,
+    forget: () => undefined,
+    version: () => 0,
+  };
+}
+
+/**
+ * A household member's own data in Seerr (requests, quota, watchlist), acting as their Seerr user. The client holds
+ * the member's Jellyfin user, never a Seerr user: immediately before every call it takes a candidate Seerr user from
+ * its resolver and has Seerr confirm, with the admin key and GET /api/v1/user/:id, that the candidate is still linked
+ * to that Jellyfin user, and only then sends the call with that user in `X-API-User`. Nothing is awaited between the
+ * confirmation and the call being sent. A mismatch forgets the candidate and tries once more; a mapping invalidated
+ * while a call was being confirmed is confirmed again. Anything else fails closed with {@link SeerrUnmappedUserError}.
+ * So a client kept across a relink acts as whoever Seerr links to the member at the time of each call, or nobody.
  *
  * Only the endpoints the household app uses are exposed, each behind its own method; there is no generic pass-through.
- * Responses are Seerr's JSON as-is (`unknown`): they include other users' data, so callers copy out only the fields
- * they need. Errors carry the status and the route, never Seerr's response body.
+ * Responses are Seerr's JSON as-is (`unknown`): callers copy out only the fields they need. Errors carry the status and
+ * the route, never Seerr's response body.
  */
-export class SeerrUserClient {
-  readonly #baseUrl: string;
-  readonly #apiKey: string;
-  readonly #user: SeerrUserId;
-  readonly #onRejected: ((status: number) => void) | undefined;
+export class SeerrMemberClient {
+  readonly #admin: SeerrClient;
+  readonly #jellyfinUserId: string;
+  readonly #resolver: SeerrUserResolver;
 
-  public constructor(baseUrl: string, apiKey: string, user: SeerrUserId, options: SeerrUserClientOptions = {}) {
-    this.#baseUrl = baseUrl;
-    this.#apiKey = apiKey;
-    this.#user = seerrUserId(user);
-    this.#onRejected = options.onRejected;
+  /** Throws a TypeError unless `jellyfinUserId` is a Jellyfin user ID. */
+  public constructor(admin: SeerrClient, jellyfinUserId: string, resolver: SeerrUserResolver = lookupResolver(admin)) {
+    if (!credentials.has(admin)) throw new TypeError('Seerr admin client is invalid');
+    const normalized = typeof jellyfinUserId === 'string' ? normalizeJellyfinUserId(jellyfinUserId) : undefined;
+    if (!normalized) throw new TypeError('Jellyfin user ID is invalid');
+    this.#admin = admin;
+    this.#jellyfinUserId = normalized;
+    this.#resolver = resolver;
   }
 
-  public get userId(): SeerrUserId {
-    return this.#user;
-  }
-
-  public search(query: string, page = 1): Promise<unknown> {
-    if (typeof query !== 'string' || !query.trim() || query.length > 200) throw new TypeError('search query is invalid');
-    const parameters = new URLSearchParams({ query, page: String(pageNumber(page)) });
-    return this.#getJson('/api/v1/search', `/api/v1/search?${parameters}`);
-  }
-
-  public discover(list: SeerrDiscoverList, page = 1): Promise<unknown> {
-    if (!SEERR_DISCOVER_LISTS.includes(list)) throw new TypeError('discover list is invalid');
-    return this.#getJson(`/api/v1/discover/${list}`, `/api/v1/discover/${list}?page=${pageNumber(page)}`);
-  }
-
-  public movie(tmdbId: number): Promise<unknown> {
-    return this.#getJson('/api/v1/movie/:id', `/api/v1/movie/${tmdbIdentifier(tmdbId)}`);
-  }
-
-  public tv(tmdbId: number): Promise<unknown> {
-    return this.#getJson('/api/v1/tv/:id', `/api/v1/tv/${tmdbIdentifier(tmdbId)}`);
-  }
-
-  public season(tmdbId: number, seasonNumber: number): Promise<unknown> {
-    if (!Number.isSafeInteger(seasonNumber) || seasonNumber < 0) throw new TypeError('season number is invalid');
-    return this.#getJson('/api/v1/tv/:id/season/:n', `/api/v1/tv/${tmdbIdentifier(tmdbId)}/season/${seasonNumber}`);
+  /** The member's Jellyfin user ID, normalized. */
+  public get jellyfinUserId(): string {
+    return this.#jellyfinUserId;
   }
 
   /**
-   * Requests a title as this user, in HD. The body names only the title: never `userId` (which would let a manager
+   * Requests a title as this member, in HD. The body names only the title: never `userId` (which would let a manager
    * request for someone else) or a server, profile or folder override.
    */
   public createRequest(input: SeerrRequestInput): Promise<unknown> {
     const tmdbId = tmdbIdentifier(input.tmdbId);
     if (input.mediaType === 'movie') {
-      return this.#sendJson('POST', '/api/v1/request', { mediaType: 'movie', mediaId: tmdbId, is4k: false });
+      return this.#send('POST', '/api/v1/request', () => '/api/v1/request', { mediaType: 'movie', mediaId: tmdbId, is4k: false });
     }
     if (input.mediaType !== 'tv') throw new TypeError('media type is invalid');
     const seasons = input.seasons;
@@ -377,48 +418,155 @@ export class SeerrUserClient {
         !seasons.every((season) => Number.isSafeInteger(season) && season > 0)) {
       throw new TypeError('seasons are invalid');
     }
-    return this.#sendJson('POST', '/api/v1/request', { mediaType: 'tv', mediaId: tmdbId, seasons: [...new Set(seasons)], is4k: false });
+    return this.#send('POST', '/api/v1/request', () => '/api/v1/request',
+      { mediaType: 'tv', mediaId: tmdbId, seasons: [...new Set(seasons)], is4k: false });
   }
 
-  /** This user's own requests, newest first. The user ID in the path is always this client's. */
+  /** This member's own requests, newest first. The user ID in the path is always the confirmed acting user's. */
   public ownRequests(take = 20, skip = 0): Promise<unknown> {
     const count = Math.min(Math.max(Math.trunc(take), 1), 100);
     const offset = Math.max(Math.trunc(skip), 0);
     if (!Number.isSafeInteger(count) || !Number.isSafeInteger(offset)) throw new TypeError('paging is invalid');
-    return this.#getJson('/api/v1/user/:self/requests', `/api/v1/user/${this.#header()}/requests?take=${count}&skip=${offset}`);
+    return this.#send('GET', '/api/v1/user/:self/requests', (user) => `/api/v1/user/${user}/requests?take=${count}&skip=${offset}`);
   }
 
   public quota(): Promise<unknown> {
-    return this.#getJson('/api/v1/user/:self/quota', `/api/v1/user/${this.#header()}/quota`);
+    return this.#send('GET', '/api/v1/user/:self/quota', (user) => `/api/v1/user/${user}/quota`);
   }
 
-  /** This user's own Seerr watchlist. */
+  /** This member's own Seerr watchlist. */
   public watchlist(page = 1): Promise<unknown> {
-    return this.#getJson('/api/v1/discover/watchlist', `/api/v1/discover/watchlist?page=${pageNumber(page)}`);
+    const parameters = `page=${pageNumber(page)}`;
+    return this.#send('GET', '/api/v1/discover/watchlist', () => `/api/v1/discover/watchlist?${parameters}`);
   }
 
-  /** The acting user as `X-API-User` sends it; throws rather than return anything Seerr would read as its owner. */
-  #header(): string {
-    if (!isSeerrUserId(this.#user)) throw new TypeError('Seerr user ID must be a positive integer');
-    return String(this.#user);
-  }
-
-  #getJson(route: string, path: string): Promise<unknown> {
-    return this.#sendJson('GET', route, undefined, path);
-  }
-
-  async #sendJson(method: 'GET' | 'POST', route: string, body?: unknown, path = route): Promise<unknown> {
-    const headers: Record<string, string> = {
-      Accept: 'application/json',
-      'X-Api-Key': this.#apiKey,
-      'X-API-User': this.#header(),
-    };
-    try {
-      return await guardedSeerrJson(this.#baseUrl, method, route, path, headers, body);
-    } catch (error) {
-      if (error instanceof SeerrError && USER_REJECTED_STATUSES.has(error.status)) this.#onRejected?.(error.status);
-      throw error;
+  async #send(method: 'GET' | 'POST', route: string, path: (user: string) => string, body?: unknown): Promise<unknown> {
+    const key = this.#jellyfinUserId;
+    // A stale candidate is forgotten and replaced once; a second failure means Seerr is changing under us.
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const version = this.#resolver.version(key);
+      const user = await this.#resolver.candidate(key);
+      if (user === undefined || !isSeerrUserId(user)) break;
+      if (await this.#admin.jellyfinUserIdOf(user) !== key) {
+        this.#resolver.forget(key, user);
+        continue;
+      }
+      if (this.#resolver.version(key) !== version) continue;
+      // Sent at once: nothing is awaited between Seerr confirming the link and the call leaving.
+      return actingUserJson(this.#admin, user, method, route, path(String(user)), body, () => this.#resolver.forget(key, user));
     }
+    throw new SeerrUnmappedUserError();
+  }
+}
+
+/**
+ * Seerr's title catalogue (search, discover, details), read as one dedicated Seerr user that belongs to no household
+ * member. Seerr shapes these answers with the acting user's own settings (discover region, original language and
+ * display locale; Seerr 3.5.1 `createTmdbWithRegionLanguage` and `checkUser`), so reading them as a member would make
+ * one member's results depend on whichever Seerr user they were last mapped to. The catalogue user is the same for
+ * everyone, and before its first call, then at least every {@link SEERR_CATALOGUE_RECHECK_MS}, Seerr must confirm it
+ * is fit for the role ({@link SeerrClient.catalogueUserProblem}): otherwise every call throws
+ * {@link SeerrCatalogueUserError}. Nothing it reads is anyone's own data.
+ */
+export class SeerrCatalogueClient {
+  readonly #admin: SeerrClient;
+  readonly #user: SeerrUserId;
+  readonly #now: () => number;
+  readonly #recheckMs: number;
+  #validUntil = 0;
+  #pending: Promise<void> | undefined;
+
+  public constructor(admin: SeerrClient, user: SeerrUserId, options: { now?: () => number; recheckMs?: number } = {}) {
+    if (!credentials.has(admin)) throw new TypeError('Seerr admin client is invalid');
+    this.#admin = admin;
+    this.#user = seerrUserId(user);
+    this.#now = options.now ?? Date.now;
+    this.#recheckMs = options.recheckMs ?? SEERR_CATALOGUE_RECHECK_MS;
+  }
+
+  public get userId(): SeerrUserId {
+    return this.#user;
+  }
+
+  /**
+   * Confirms with Seerr that the catalogue user is fit for the role. Throws {@link SeerrCatalogueUserError} if it is
+   * not, or the {@link SeerrError} if Seerr fails. Concurrent checks share one call.
+   */
+  public validate(): Promise<void> {
+    this.#pending ??= this.#admin.catalogueUserProblem(this.#user)
+      .then((problem) => {
+        if (problem) {
+          this.#validUntil = 0;
+          throw new SeerrCatalogueUserError(problem);
+        }
+        this.#validUntil = this.#now() + this.#recheckMs;
+      })
+      .finally(() => {
+        this.#pending = undefined;
+      });
+    return this.#pending;
+  }
+
+  public search(query: string, page = 1): Promise<unknown> {
+    if (typeof query !== 'string' || !query.trim() || query.length > 200) throw new TypeError('search query is invalid');
+    const parameters = new URLSearchParams({ query, page: String(pageNumber(page)) });
+    return this.#get('/api/v1/search', `/api/v1/search?${parameters}`);
+  }
+
+  public discover(list: SeerrDiscoverList, page = 1): Promise<unknown> {
+    if (!SEERR_DISCOVER_LISTS.includes(list)) throw new TypeError('discover list is invalid');
+    return this.#get(`/api/v1/discover/${list}`, `/api/v1/discover/${list}?page=${pageNumber(page)}`);
+  }
+
+  public movie(tmdbId: number): Promise<unknown> {
+    return this.#get('/api/v1/movie/:id', `/api/v1/movie/${tmdbIdentifier(tmdbId)}`);
+  }
+
+  public tv(tmdbId: number): Promise<unknown> {
+    return this.#get('/api/v1/tv/:id', `/api/v1/tv/${tmdbIdentifier(tmdbId)}`);
+  }
+
+  public season(tmdbId: number, seasonNumber: number): Promise<unknown> {
+    if (!Number.isSafeInteger(seasonNumber) || seasonNumber < 0) throw new TypeError('season number is invalid');
+    return this.#get('/api/v1/tv/:id/season/:n', `/api/v1/tv/${tmdbIdentifier(tmdbId)}/season/${seasonNumber}`);
+  }
+
+  async #get(route: string, path: string): Promise<unknown> {
+    if (this.#validUntil <= this.#now()) await this.validate();
+    return actingUserJson(this.#admin, this.#user, 'GET', route, path, undefined, (status) => {
+      // Seerr refusing the catalogue user means it changed: confirm it again before the next call.
+      if (status !== 404) this.#validUntil = 0;
+    });
+  }
+}
+
+/**
+ * A guarded Seerr call acting as `user`, which must be a valid {@link SeerrUserId}: `X-API-User` is built from it and
+ * re-checked here, so it is never missing or empty (which Seerr runs as its owner). `onRejected` runs before a 401, 403
+ * or 404 is thrown.
+ */
+async function actingUserJson(
+  admin: SeerrClient,
+  user: SeerrUserId,
+  method: 'GET' | 'POST',
+  route: string,
+  path: string,
+  body: unknown,
+  onRejected: (status: number) => void,
+): Promise<unknown> {
+  const connection = credentials.get(admin);
+  if (!connection) throw new TypeError('Seerr admin client is invalid');
+  if (!isSeerrUserId(user)) throw new TypeError('Seerr user ID must be a positive integer');
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    'X-Api-Key': connection.apiKey,
+    'X-API-User': String(user),
+  };
+  try {
+    return await guardedSeerrJson(connection.baseUrl, method, route, path, headers, body);
+  } catch (error) {
+    if (error instanceof SeerrError && USER_REJECTED_STATUSES.has(error.status)) onRejected(error.status);
+    throw error;
   }
 }
 
