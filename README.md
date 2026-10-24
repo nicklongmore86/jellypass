@@ -679,11 +679,12 @@ no one's requests are read. The caller's library comes from Jellyfin with the
 caller's own token (reused for up to a minute), so Jellyfin's blocked tags,
 library access and parental limits apply. Expect a handful of local Seerr
 calls per answer. Each household has its own caches, never emptied for
-another's; JellyPass supports at most 100 households (creating another is
-refused). If you upgrade with more than 100 groups (earlier versions allowed
-it), they all still load and can be changed or deleted, but no new group can
-be created until there are fewer than 100, and the app caches nothing for any
-household while there are more than 100. Cache limits count entries, not
+another's; with the app enabled, JellyPass supports at most 100 households
+(creating another is refused with `400`; with the app off there is no limit).
+If you enable the app with more than 100 groups, they all still load (startup
+logs a warning) and can be changed or deleted, but no new group can be created
+until there are fewer than 100, and the app caches nothing for any household
+while there are more than 100. Cache limits count entries, not
 bytes (up to 500 TMDB answers per household, each read up to 4 MiB but
 usually tens of kilobytes), so memory grows with the households actually
 browsing; see
@@ -844,8 +845,8 @@ file at schema v7, adding new records to it; see
 [Upgrading from 2.1.1](CHANGELOG.md#upgrading-from-211). Upgrading from 2.2.0
 to 2.2.1 changes neither the state file nor any setting. Upgrading from 2.2.1
 to 2.3.0 keeps the state file at schema v7, adds optional settings for the
-household app (off by default) and limits every deployment to 100
-households; see [Upgrading from 2.2.1](CHANGELOG.md#upgrading-from-221).
+household app (off by default), which limits households to 100 while it is
+enabled; see [Upgrading from 2.2.1](CHANGELOG.md#upgrading-from-221).
 Rolling back from 2.3.0 to 2.2.1 needs no state-file change. Rolling back from
 2.2.0 to 2.1.1, 2.1.0 or 2.0.0 keeps the state file readable, but those
 versions retry grants marked `orphaned` (see
@@ -1038,7 +1039,7 @@ blocked-tag policy.
 | `PUT` | `/v1/grants/{itemId}/manual` | Set manual users/groups; supports `?dryRun=true`. |
 | `POST` | `/v1/grants/{itemId}/remap` | Move a grant to another Jellyfin item (`{"toItemId": "..."}`), merging with any grant already there; supports `?dryRun=true`. |
 | `GET` | `/v1/groups` | List groups and generated household URLs. |
-| `PUT` | `/v1/groups/{groupId}` | Create or replace a group. |
+| `PUT` | `/v1/groups/{groupId}` | Create or replace a group. With the household app enabled, creating a 101st is refused with `400`. |
 | `DELETE` | `/v1/groups/{groupId}` | Delete a group and reconcile affected grants. |
 | `GET` | `/v1/users` | List Jellyfin users. |
 | `POST` | `/v1/users` | Create a non-administrator Jellyfin user and assign a group. |

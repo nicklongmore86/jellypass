@@ -11,8 +11,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 This is a minor release. It adds the household app, which is **off by
 default**: with `HOUSEHOLD_APP_ENABLED` unset, the only changes are the
-100-household limit, the household hostnames' `/jellypass/app` paths and a
-format check on `TMDB_API_KEY` if it is set (see below). Read these before
+household hostnames' `/jellypass/app` paths and a format check on
+`TMDB_API_KEY` if it is set (see below); groups can be created without limit,
+as in 2.2.1. Read these before
 upgrading;
 [Upgrading from 2.2.1](#upgrading-from-221) has the steps:
 
@@ -42,11 +43,12 @@ upgrading;
   not change this; it is closed only once the app can request titles and the
   Seerr website is restricted to administrators (step 4 of
   [the app plan](docs/app-design.md#late-requests-closed-by-design)).
-- **At most 100 households, on every deployment,** whether or not the app is
-  enabled. Creating a 101st household (group) is refused with `400`. A state
-  file with more than 100 groups still loads and every existing group keeps
-  working and can still be changed or deleted; only new groups are refused
-  until there are fewer than 100.
+- **With the app enabled, at most 100 households.** While
+  `HOUSEHOLD_APP_ENABLED=true`, creating a 101st household (group) is refused
+  with `400`. A state file with more than 100 groups still loads (startup logs
+  a warning) and every existing group keeps working and can still be changed
+  or deleted; only new groups are refused until there are fewer than 100.
+  With the app off there is no limit, as in 2.2.1.
 - **Install and sign-in on a real iPhone are not verified yet.** They have
   only been exercised in a simulated browser; see
   [Household app (PWA)](README.md#household-app-pwa).
@@ -102,6 +104,15 @@ upgrading;
   setting is off, `/jellypass/app` paths answer `404` and are never proxied to
   Jellyfin. See [Household app API](README.md#household-app-api) and
   [docs/app-design.md](docs/app-design.md).
+- **At most 100 households while the household app is enabled.** With
+  `HOUSEHOLD_APP_ENABLED=true`, creating a 101st household (group) is refused
+  with `400` (`groups must be at most 100`); existing ones can still be
+  changed. With the app off, groups are created without limit, as in 2.2.1.
+  **Enabling the app with more than 100 groups:** the state file still loads
+  and startup logs a warning; every existing group can still be changed or
+  deleted and keeps working, but new groups are refused until there are fewer
+  than 100, and the app caches nothing for any household while there are more
+  than 100 (every app call goes upstream).
 - **At most 10 TMDB calls in flight.** Besides the start rate, no more than 10
   TMDB calls are ever unanswered at once, and a call TMDB has not answered in
   15 seconds is abandoned, so a slow or hung TMDB cannot pile up connections.
@@ -115,40 +126,31 @@ upgrading;
   throwaway Seerr 3.5.1 container (also run in CI). The design is in
   [docs/app-design.md](docs/app-design.md).
 
-### Changed
-
-- **At most 100 households.** Creating a 101st household (group) is refused
-  with `400` (`groups must be at most 100`); existing ones can still be
-  changed. This applies whether or not the household app is enabled.
-  **Upgrading with more than 100 groups** (allowed before this version): the
-  state file still loads, every existing group can still be changed or
-  deleted and keeps working, but new groups are refused until there are fewer
-  than 100, and the app caches nothing for any household while there are more
-  than 100 (every app call goes upstream).
-
 ### Upgrading from 2.2.1
 
 1. **Back up the state file**, as before any upgrade. 2.3.0 keeps the schema
    v7 format and does not migrate the file or add fields to it, but the
    backup is the clean way back if anything else goes wrong.
-2. **Check your household count.** If you have more than 100 groups, 2.3.0
-   still loads them all, but refuses new ones until there are fewer than 100.
-3. **No setting changes are needed.** `HOUSEHOLD_APP_ENABLED` and
+2. **No setting changes are needed.** `HOUSEHOLD_APP_ENABLED` and
    `TMDB_API_KEY` are new and optional, and nothing is removed or renamed.
    Webhook payloads, the administrator API and its existing responses are
-   unchanged, except that creating a 101st group is refused. If you already
+   unchanged while the app is off. If you already
    set `TMDB_API_KEY` for something else, make sure it is a valid TMDB key or
    token, or remove it: a malformed value stops startup.
-4. **Optional: enable the household app.** Set `HOUSEHOLD_APP_ENABLED=true`
+3. **Optional: enable the household app.** Set `HOUSEHOLD_APP_ENABLED=true`
    and `TMDB_API_KEY`, with `HOUSEHOLD_DOMAIN`, `SEERR_URL` and
    `SEERR_API_KEY` already configured, recreate the container and check the
-   logs: startup stops if any is missing or TMDB refuses the key. Then share
+   logs: startup stops if any is missing or TMDB refuses the key. Check your
+   household count first: with the app enabled, new groups are refused once
+   there are 100, and if you have more than 100, startup logs a warning, new
+   groups are refused until there are fewer than 100 and the app caches
+   nothing. Then share
    `https://jelly-<household>.<HOUSEHOLD_DOMAIN>/jellypass/app/` with each
    household (with the default `HOUSEHOLD_HOST_PREFIX`). Make sure household
    members do not have Seerr's `MANAGE_BLOCKLIST` permission, and remember the
    app is read-only: households still request titles in Seerr, and the
    late-request risk above remains.
-5. **Watch the new metric** `jfa_app_requests_total{endpoint, outcome}` once
+4. **Watch the new metric** `jfa_app_requests_total{endpoint, outcome}` once
    the app is enabled. A rise in `outcome="unavailable"` means Jellyfin, Seerr
    or TMDB failed or did not answer in time, or TMDB calls queued too long;
    check the logs.

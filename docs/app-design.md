@@ -293,12 +293,14 @@ served and dropped only once the household is deleted (when the next household's
 are ever dropped, or shrunk, for another's. Within a household the least recently used entry goes first. A token that
 is not a member's is checked with Jellyfin on every call and never kept, so outsiders cannot crowd members' out.
 
-JellyPass supports **at most 100 households**: the store refuses to create another (`groups must be at most 100`;
-`400` from the admin API), and changing an existing one is always allowed. On upgrade, a state file with more than 100
-groups (valid under earlier versions, which had no limit) still loads unchanged: every existing group can still be
-changed and deleted and keeps working for access, but no new group can be created until there are fewer than 100,
-and while there are more than 100 the app caches nothing for any household, the same for all whichever was served
-first, rather than caching for some (every app call then goes to TMDB, Jellyfin and Seerr).
+With the app enabled (`HOUSEHOLD_APP_ENABLED=true`), JellyPass supports **at most 100 households**: the store refuses
+to create another (`groups must be at most 100`; `400` from the admin API), and changing an existing one is always
+allowed. With the app off the store has no limit, as in 2.2.1, so the limit never changes the admin API of a
+deployment that does not use the app. Enabling the app with a state file of more than 100 groups (valid with the app
+off, and under earlier versions) loads it unchanged and logs a warning at startup rather than refusing to start: every
+existing group can still be changed and deleted and keeps working for access, but no new group can be created until
+there are fewer than 100, and while there are more than 100 the app caches nothing for any household, the same for
+all whichever was served first, rather than caching for some (every app call then goes to TMDB, Jellyfin and Seerr).
 
 The cache bounds are **entry counts, not bytes**: at most 100 households, each with at most 100 verified tokens, 50
 library views, 500 TMDB answers and one blocklist. Each entry's size depends on what upstream sent. A TMDB answer is
@@ -718,7 +720,7 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
   paging from `total_pages`; putting `unavailable` before `in_library`; ignoring the blocklist or request permission;
   matching the blocklist without its media type; leaving seasons `get_this` when the series cannot be requested;
   sharing the caches across households, dropping other households' caches when a household's are created, or dropping
-  the oldest beyond 50; caching for some households when there are too many; removing the store's household limit;
+  the oldest beyond 50; caching for some households when there are too many; removing the store's household limit with the app enabled, or applying it with the app off;
   keeping non-members' tokens; removing the household budget; sending TMDB calls past the dispatcher, or in one queue
   for all households; a lane keeping its place instead of taking turns; a rate of 100 a second; no queue bound; no
   queue timeout; no bound on calls in flight, no call timeout, a place never freed, not starting the next call when a

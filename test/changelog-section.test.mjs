@@ -58,9 +58,13 @@ describe('changelogSection with the real CHANGELOG.md', () => {
     assertSection(notes, {
       version: '2.3.0',
       nextVersion: '2.2.1',
-      subheadings: ['Added', 'Changed', 'Upgrading from 2\\.2\\.1', 'Rolling back to 2\\.2\\.1'],
+      subheadings: ['Added', 'Upgrading from 2\\.2\\.1', 'Rolling back to 2\\.2\\.1'],
     });
     assert.match(notes, /^This is a minor release\./);
+    // The household limit applies only with the app enabled, so it is not a change for every deployment.
+    assert.doesNotMatch(notes, /^### Changed$/m);
+    assert.doesNotMatch(notes, /every deployment/);
+    assert.match(notes, /\*\*At most 100 households while the household app is enabled\.\*\*/);
     assert.doesNotMatch(notes, /^This is a patch release/m);
     assert.deepEqual(split(notes).definitions, []);
   });
