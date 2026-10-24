@@ -275,6 +275,26 @@ export class GrantStore {
    */
   public async joinGrant(input: { itemId: string; userId: string; groupIds: string[] }): Promise<RevokeResult | undefined> {
     this.#assertOpen();
+    const planned = this.#planJoin(input);
+    if (!planned) return undefined;
+    const { previous, join } = planned;
+    const result = this.#replaceGrant(
+      previous,
+      previous.requests,
+      join.userAdded ? [...previous.manualUserIds, join.userId].sort() : previous.manualUserIds,
+      [...previous.groupIds, ...join.groupIds].sort(),
+      { joins: [...(previous.joins ?? []), join] },
+    );
+    await this.#save();
+    return result;
+  }
+
+  /** Whether joinGrant would change the grant now; it reads only, so it needs no turn in the write queue. */
+  public wouldJoin(input: { itemId: string; userId: string; groupIds: string[] }): boolean {
+    return Boolean(this.#planJoin(input));
+  }
+
+  #planJoin(input: { itemId: string; userId: string; groupIds: string[] }): { previous: GrantRecord; join: LibraryJoin } | undefined {
     const itemId = normalizeId(input.itemId);
     const userId = normalizeId(input.userId);
     const previous = this.#state.grants[itemId];
@@ -286,16 +306,7 @@ export class GrantStore {
       .sort();
     const userAdded = households.length === 0 && !this.resolveOwners(previous).includes(userId);
     if (addedGroupIds.length === 0 && !userAdded) return undefined;
-    const join: LibraryJoin = { userId, groupIds: addedGroupIds, userAdded, joinedAt: new Date().toISOString() };
-    const result = this.#replaceGrant(
-      previous,
-      previous.requests,
-      userAdded ? [...previous.manualUserIds, userId].sort() : previous.manualUserIds,
-      [...previous.groupIds, ...addedGroupIds].sort(),
-      { joins: [...(previous.joins ?? []), join] },
-    );
-    await this.#save();
-    return result;
+    return { previous, join: { userId, groupIds: addedGroupIds, userAdded, joinedAt: new Date().toISOString() } };
   }
 
   public async markSyncSuccess(itemIdInput: string): Promise<void> {

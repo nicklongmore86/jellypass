@@ -210,45 +210,80 @@ describe('household "Add to my library"', { timeout: 10_000 }, () => {
   });
 
   it('answers without waiting for the write queue, however long it is held', async (t) => {
-    const { client, store, service, login, join, grantForAlice, settled } = await gateway(t);
+    const world = await gateway(t);
+    const { store, login, join, grantForAlice, settled } = world;
     await grantForAlice();
     const token = await login('Carol');
-    // An administrator change holds the shared write queue until it is released.
-    let release;
-    const held = new Promise((resolve) => { release = resolve; });
-    const getUsers = client.getUsers.bind(client);
-    client.getUsers = async () => {
-      await held;
-      return getUsers();
-    };
-    const queued = service.setUserPasswordless('dave-id', true).catch(() => undefined);
+    const release = holdWriteQueue(world);
     const response = await within(2_000, join(token));
     assert.equal(response.status, 202);
     assert.equal(store.get('item-1').joins, undefined, 'the join is still waiting for the queue');
-    release();
-    await queued;
+    await release();
     await settled();
     assert.deepEqual(store.get('item-1').groupIds, ['cottage', 'farmhouse']);
   });
 
-  it('starts at most three running joins per user and drops the rest with the same answer', async (t) => {
-    let release;
-    const { store, service, login, join, grantForAlice, settled, lookups } = await gateway(t, { lookupGate: new Promise((resolve) => { release = resolve; }) });
+  it('classifies a join that changes nothing without waiting for the write queue', async (t) => {
+    const world = await gateway(t);
+    const { login, join, grantForAlice, started } = world;
     await grantForAlice();
-    const token = await login('Carol');
-    const dave = await login('Dave');
-    for (const tmdbId of [404, 604, 500, 603]) {
-      assert.equal((await within(2_000, join(token, { mediaType: 'movie', tmdbId }))).status, 202, String(tmdbId));
+    const alice = await login('Alice');
+    const carol = await login('Carol');
+    const release = holdWriteQueue(world);
+    // A public title, a title already in the caller's library, and one not in the library.
+    assert.equal((await join(carol, { mediaType: 'movie', tmdbId: 604 })).status, 202);
+    assert.equal((await join(alice, { mediaType: 'movie', tmdbId: 603 })).status, 202);
+    assert.equal((await join(carol, { mediaType: 'movie', tmdbId: 404 })).status, 202);
+    await within(2_000, Promise.all(started));
+    await release();
+  });
+
+  // Codex's probe: three calls for a target T while the write queue is held, then one for a title P the caller can
+  // join. Whether P is started must not depend on what T is.
+  for (const [label, tmdbId] of [['public, so resolved but unchanged', 604], ['not in the library', 404]]) {
+    it(`starts a probe after three calls for a target that is ${label}`, async (t) => {
+      const world = await gateway(t);
+      const { store, service, login, join, grantForAlice, settled, lookups } = world;
+      await grantForAlice();
+      const token = await login('Carol');
+      const release = holdWriteQueue(world);
+      for (let call = 0; call < 3; call += 1) assert.equal((await join(token, { mediaType: 'movie', tmdbId })).status, 202);
+      assert.equal((await join(token)).status, 202);
+      await release();
+      await settled();
+      assert.deepEqual(lookups, [`movie/${tmdbId}`, `movie/${tmdbId}`, `movie/${tmdbId}`, 'movie/603']);
+      assert.deepEqual(store.get('item-1').groupIds, ['cottage', 'farmhouse'], 'the probe joined');
+      assert.doesNotMatch(service.renderMetrics(), /result="dropped"/);
+    });
+  }
+
+  it('admits calls by count alone: ten per user per window, whatever the titles resolve to', async (t) => {
+    const outcomes = [];
+    for (const tmdbId of [604, 404]) {
+      const world = await gateway(t);
+      const { store, service, login, join, grantForAlice, settled, lookups } = world;
+      await grantForAlice();
+      const token = await login('Carol');
+      const dave = await login('Dave');
+      const release = holdWriteQueue(world);
+      for (let call = 0; call < 10; call += 1) assert.equal((await join(token, { mediaType: 'movie', tmdbId })).status, 202);
+      const probe = await join(token);
+      assert.equal(probe.status, 202, 'a dropped call gets the same answer');
+      assert.equal(probe.body, '{"status":"accepted"}');
+      assert.equal((await join(dave)).status, 202, 'another user has their own budget');
+      await release();
+      await settled();
+      outcomes.push({
+        lookups: lookups.length,
+        carolJoined: store.get('item-1').groupIds.includes('cottage'),
+        daveJoined: store.get('item-1').manualUserIds.length === 1,
+        dropped: /jfa_library_joins_total\{result="dropped"\} (\d+)/.exec(service.renderMetrics())?.[1],
+      });
     }
-    assert.deepEqual(lookups, ['movie/404', 'movie/604', 'movie/500'], 'the fourth join was not started');
-    assert.equal((await join(dave)).status, 202);
-    assert.equal(lookups.length, 4, 'another user has their own limit');
-    assert.match(service.renderMetrics(), /jfa_library_joins_total\{result="dropped"\} 1\n/);
-    release();
-    await settled();
-    assert.equal((await join(token)).status, 202);
-    await settled();
-    assert.deepEqual(store.get('item-1').groupIds, ['cottage', 'farmhouse'], 'finished joins free their slots');
+    assert.deepEqual(outcomes, [
+      { lookups: 11, carolJoined: false, daveJoined: true, dropped: '1' },
+      { lookups: 11, carolJoined: false, daveJoined: true, dropped: '1' },
+    ]);
   });
 
   it('is drained by shutdown before the store closes, and applies nothing once shutdown began', async (t) => {
@@ -350,6 +385,25 @@ describe('household "Add to my library"', { timeout: 10_000 }, () => {
     assert.equal(jellyfin.requestedPaths.at(-1), JOIN_PATH);
   });
 });
+
+/**
+ * Holds the shared write queue with an administrator change until the returned function is called; it resolves once
+ * the change has finished.
+ */
+function holdWriteQueue({ client, service }) {
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  const getUsers = client.getUsers.bind(client);
+  client.getUsers = async () => {
+    await held;
+    return getUsers();
+  };
+  const queued = service.setUserPasswordless('nobody-id', true).catch(() => undefined);
+  return () => {
+    release();
+    return queued;
+  };
+}
 
 /** Rejects if `promise` has not settled within `ms`, so a response that waits on held work fails instead of hanging. */
 function within(ms, promise) {

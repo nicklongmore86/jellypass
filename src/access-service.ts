@@ -331,8 +331,14 @@ export class AccessService {
         this.#logDebug('library join found no Jellyfin item', fields);
         return finish('unchanged');
       }
+      // Classified without the shared write queue, so a join that changes nothing never waits on it or holds it up.
+      if (!this.#store.wouldJoin({ itemId, userId: input.userId, groupIds: this.#store.listGroupIdsForUser(input.userId) })) {
+        this.#logDebug('library join changed nothing', { ...fields, itemId });
+        return finish('unchanged');
+      }
       return await this.#exclusive(async () => {
         throwIfAborted(signal);
+        // Checked again in the queue: the grant may have changed while this join waited.
         const joined = await this.#store.joinGrant({
           itemId,
           userId: input.userId,
@@ -381,7 +387,7 @@ export class AccessService {
     }
   }
 
-  /** Counts a household "Add to my library" call that was not started because too many were already running. */
+  /** Counts a household "Add to my library" call that was not started because its budget was used up. */
   public recordLibraryJoinDropped(): void {
     this.#metrics.increment('jfa_library_joins_total', { result: 'dropped' });
   }

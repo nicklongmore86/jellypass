@@ -573,16 +573,22 @@ the background, normally within seconds.
   gets `401`, malformed input `400`, and administrators (who see everything
   already) change nothing.
 - **Rate limited.** Each client address (after `TRUSTED_PROXIES`) may call it
-  30 times in 10 minutes, signed in or not; further calls get `429`. At most 3
-  joins per user, 10 per client address and 50 in all run at once; a call past
-  that gets the same `202` but its join is not started, so try again later.
+  30 times in 10 minutes, signed in or not; further calls get `429`. Each
+  user may start 10 joins in 10 minutes, and all users together 200; a signed-in,
+  valid call past either budget gets the same `202` but its join is not
+  started, so try again later. These budgets count calls and are never given
+  back when a join finishes, so whether a call is started depends only on how
+  many calls were made and when, not on any title; they also bound the joins
+  waiting on Seerr or Jellyfin to 200 started per 10 minutes. A join that
+  would change nothing (public, already visible, manual-only, missing) is
+  decided without waiting behind other writes.
   During shutdown it answers `503`; joins already running are stopped before
   their next step and given the usual grace period, and a join that was saved
   but not yet applied to Jellyfin is applied after restart.
 - `jfa_library_joins_total{result="joined"|"unchanged"|"error"|"dropped"}`
   counts calls. `unchanged` deliberately covers every no-op reason, `dropped`
-  counts calls not started because too many were running, and no label names
-  a title.
+  counts calls not started because a budget was used up, and no label names a
+  title.
 
 Without Seerr, `/jellypass/` paths are proxied to Jellyfin like any other.
 

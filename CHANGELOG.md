@@ -21,9 +21,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every case: the lookup and the join run in the background afterwards, so
   neither the answer nor the time it takes reveals whether, or by whom, a title
   is held. The caller is identified only by their Jellyfin token, checked with
-  Jellyfin; calls are rate-limited per client address (30 per 10 minutes), at
-  most 3 joins per user, 10 per client address and 50 in all run at once
-  (further calls get the same answer but are not started), and calls are
+  Jellyfin; calls are rate-limited per client address (30 per 10 minutes),
+  each user may start 10 joins and all users together 200 per 10 minutes
+  (further calls get the same answer but are not started; the budgets count
+  calls, never how long a join took), and calls are
   refused during shutdown, which stops running joins and waits for them like
   other background work. Requires Seerr lookup (`SEERR_URL`,
   `SEERR_API_KEY`); no new settings.
@@ -34,7 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nothing, even through a household they join later or after leaving the
   removed one. The state file stays at schema v7.
 - `jfa_library_joins_total{result}` counts joins as `joined`, `unchanged`,
-  `error` or `dropped` (not started because too many were running).
+  `error` or `dropped` (not started because a budget was used up).
 
 ### Fixed
 

@@ -27,12 +27,15 @@ const MAX_LIBRARY_JOIN_BODY_BYTES = 1024;
 const LIBRARY_JOIN_WINDOW_MS = 10 * 60 * 1000;
 const MAX_LIBRARY_JOINS = 30;
 /**
- * Joins still running in the background, per signed-in user, per client address and in all. A call past any limit is
- * answered exactly like any other but not started, so a flood cannot pile work onto Seerr or the shared write queue.
+ * Joins started per signed-in user, and in all, in each window of LIBRARY_JOIN_WINDOW_MS (the per-address budget is the
+ * MAX_LIBRARY_JOINS rate limit). These count submissions and are never given back when a join finishes, so whether a
+ * call is started depends only on how many calls were made and when, never on how long any title's work took. A signed-
+ * in, valid call past either budget is answered exactly like any other but not started. At most
+ * MAX_LIBRARY_JOINS_STARTED joins are therefore started in any window, which bounds the work queued behind Seerr and
+ * the shared write queue.
  */
-const MAX_RUNNING_LIBRARY_JOINS_PER_USER = 3;
-const MAX_RUNNING_LIBRARY_JOINS_PER_CLIENT = 10;
-const MAX_RUNNING_LIBRARY_JOINS = 50;
+const MAX_LIBRARY_JOINS_STARTED_PER_USER = 10;
+const MAX_LIBRARY_JOINS_STARTED = 200;
 /**
  * The only answer to an accepted join, sent as soon as the caller is authenticated and the input is valid, before the
  * title is looked up. It is the same, and takes the same time, whether the title was joined, already visible to the
@@ -77,7 +80,7 @@ export interface HouseholdGatewayOptions {
    * Household "Add to my library" at /jellypass/add. Without it those paths are proxied to Jellyfin like any other.
    * `start` begins the join as tracked background work and returns at once: a promise that settles when the work has,
    * and must not reject, or undefined when shutdown refused it. Its outcome is never shown to the caller. `dropped` is
-   * called for a join not started because too many were running.
+   * called for a join not started because its user, or all users together, had used up their budget.
    */
   libraryJoin?: {
     start: (input: { userId: string; isAdministrator: boolean; mediaType: 'movie' | 'tv'; tmdbId: number }) => Promise<void> | undefined;
@@ -99,8 +102,8 @@ export class HouseholdGateway {
   readonly #loginAttempts = new AttemptCounter({ windowMs: LOGIN_ATTEMPT_WINDOW_MS, maxKeys: MAX_LOGIN_CLIENTS });
   readonly #libraryJoinAttempts = new AttemptCounter({ windowMs: LIBRARY_JOIN_WINDOW_MS, maxKeys: MAX_LOGIN_CLIENTS });
   readonly #libraryJoin: HouseholdGatewayOptions['libraryJoin'];
-  /** Running background joins by `user:<id>`, `client:<address>` and `all`. */
-  readonly #runningLibraryJoins = new Map<string, number>();
+  readonly #libraryJoinsByUser = new AttemptCounter({ windowMs: LIBRARY_JOIN_WINDOW_MS, maxKeys: MAX_LOGIN_CLIENTS });
+  readonly #libraryJoinsInAll = new AttemptCounter({ windowMs: LIBRARY_JOIN_WINDOW_MS, maxKeys: 1 });
   readonly #webSocketIdleTimeoutMs: number;
   readonly #webSocketUpstreamIdleTimeoutMs: number;
   readonly #debug: boolean;
@@ -388,25 +391,15 @@ export class HouseholdGateway {
       writeJson(response, 503, { error: 'shutting_down' });
       return;
     }
-    const keys = [`user:${user.Id.toLowerCase()}`, `client:${clientId}`, 'all'];
-    const limits = [MAX_RUNNING_LIBRARY_JOINS_PER_USER, MAX_RUNNING_LIBRARY_JOINS_PER_CLIENT, MAX_RUNNING_LIBRARY_JOINS];
-    if (keys.some((key, index) => (this.#runningLibraryJoins.get(key) ?? 0) >= (limits[index] as number))) {
-      this.#logDebug('household library join dropped: too many running', { clientId });
+    // Every such call is counted, started or not.
+    const byUser = this.#libraryJoinsByUser.increment(user.Id.toLowerCase());
+    const inAll = this.#libraryJoinsInAll.increment('all');
+    if (byUser > MAX_LIBRARY_JOINS_STARTED_PER_USER || inAll > MAX_LIBRARY_JOINS_STARTED) {
+      this.#logDebug('household library join dropped: over budget', { clientId });
       libraryJoin.dropped?.();
-    } else {
-      const running = libraryJoin.start({ userId: user.Id, isAdministrator: user.Policy?.IsAdministrator === true, ...media });
-      if (!running) {
-        writeJson(response, 503, { error: 'shutting_down' });
-        return;
-      }
-      for (const key of keys) this.#runningLibraryJoins.set(key, (this.#runningLibraryJoins.get(key) ?? 0) + 1);
-      void running.finally(() => {
-        for (const key of keys) {
-          const count = (this.#runningLibraryJoins.get(key) ?? 1) - 1;
-          if (count > 0) this.#runningLibraryJoins.set(key, count);
-          else this.#runningLibraryJoins.delete(key);
-        }
-      });
+    } else if (!libraryJoin.start({ userId: user.Id, isAdministrator: user.Policy?.IsAdministrator === true, ...media })) {
+      writeJson(response, 503, { error: 'shutting_down' });
+      return;
     }
     writeJson(response, 202, LIBRARY_JOIN_ACCEPTED);
   }
