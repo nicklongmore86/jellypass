@@ -32,17 +32,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   refused during shutdown, which stops running joins and waits for them like
   other background work. Requires Seerr lookup (`SEERR_URL`,
   `SEERR_API_KEY`); no new settings.
-- Grants record each join in `joins`, the groups an administrator removed in
-  `removedGroupIds`, and the users an administrator's change took access from
-  (including the members of a removed household) in `removedUserIds`, so a join
-  never undoes an administrator's removal: a marked user's joins change
-  nothing, even through a household they join later or after leaving the
-  removed one. The state file stays at schema v7.
+- Grants record each join in `joins`. The groups an administrator removed from
+  an item, and the users an administrator's change took access from (including
+  the members of a removed household and a revoked request's requester), are
+  kept in one per-item removal record in the state file (`removedAccess`,
+  shown as `removed` on each grant in `GET /v1/grants`) that library joins and
+  grant moves both check, so a join never undoes an administrator's removal: a
+  marked user's joins change nothing, even through a household they join later
+  or after leaving the removed one. Joins never touch a grant left behind on a
+  deleted item (`orphaned`, or carrying a `remap` note). The state file stays
+  at schema v7.
 - `jfa_library_joins_total{result}` counts joins as `joined`, `unchanged`,
   `error` or `dropped` (not started because a budget was used up).
+- **Orphaned grants.** A grant whose deleted item has no resolvable
+  replacement is marked `orphaned` (`sync.state` in `GET /v1/grants`, an
+  `orphaned` status in Grants) and logged once. It is kept, no longer retried
+  by scheduled reconciliation, and counted by the new `jfa_orphaned_grants`
+  gauge instead of `jfa_sync_errors`. A full `POST /v1/reconcile` tries it
+  again.
+- **`POST /v1/grants/{itemId}/remap`** (`{"toItemId": "..."}`, supports
+  `?dryRun=true`) and a **Move** action in Grants move a grant whose item was
+  deleted to another Jellyfin item, merging its whole audience into any grant
+  already there. The target must exist. A grant whose item still exists is
+  refused with `409` (`code: "source_item_exists"`), since moving it would make
+  that item visible to every household: revoke it explicitly instead. Moving a
+  4K request onto the title's HD item (or HD onto 4K) is refused with `409`
+  (`code: "quality_mismatch"`). The old grant is removed only after the target
+  is applied; if applying fails, it is kept and the move can be repeated, and if
+  the old item reappears meanwhile it is kept as above and the move answers
+  `409` (`code: "source_reappeared"`).
+- `jfa_grant_remaps_total{result="remapped"|"orphaned"|"source_reappeared",trigger="auto"|"admin"}`.
 
 ### Fixed
 
+- **A deleted and re-imported title kept its grant on the deleted item.** When
+  Jellyfin deleted a title and imported it again under a new item ID, the
+  request-derived grant kept pointing at the deleted item: reconciliation
+  failed on Jellyfin's `404` forever (backing off to hourly, with
+  `jfa_sync_errors` stuck), and the new item had no grant, so every household
+  could see it. Reconciliation (including a re-sent `MEDIA_AVAILABLE` webhook
+  for the request) now asks Seerr which item each of the grant's requests
+  resolves to, keeping 4K and HD items apart, and moves the grant there,
+  merging into any grant already on the new item. When every request resolves
+  to the same item (the usual re-import) the whole audience moves, manual users
+  and groups included. When they resolve to several items, each gets only its
+  own requests and those requesters' households (limited to groups the grant
+  already had); manual users and groups that cannot be attributed stay on the
+  old grant, which is marked `orphaned`. A request that resolves to no existing
+  item is never assigned to another one (so a 4K request never lands on an HD
+  item); it too stays on the orphaned grant. A grant left over from such a
+  split remembers it (`remap.splitTo`): when its remaining requests resolve
+  later, only they and their requesters' households move, and its manual users
+  and groups stay orphaned until an administrator assigns them. The new grants are stored and
+  applied before the old one is removed or reduced, so a restart partway
+  through converges on the next run without anyone gaining or losing access;
+  the deleted item's tag is then removed from user policies. If the deleted item
+  exists again by then, the old grant is kept intact with its restrictions and
+  marked `source reappeared` (`remap.sourceReappeared`), logged and counted; the
+  new grants stay applied. Revoking a request is remembered per item
+  (`revokedRequests` in the state file): no recovery or move adds that request
+  to that item again, even from a copy left on the old grant by an unfinished
+  move. A new Seerr request for the title is unaffected. Removing a manual
+  user or a group from an item is remembered the same way, per item, in the
+  removal record shared with **Add to my library** (see Added): no recovery or
+  move, dry runs included, adds it to that item again, removing it from the old
+  grant leaves the new one alone, and assigning it to the item again as an
+  administrator (or deleting the group) clears the record. When a grant moves,
+  the old item's removal marks and revoked requests are recorded for the new
+  item too (except for what the new item's grant already had on its own), so
+  nobody an administrator removed before the move can add themselves back with
+  a library join; the old grant's join audit history moves with the households
+  it added. Only a `404`
+  counts as deleted; network failures and `5xx` responses keep the usual retry.
+- A grant left with no requests or groups on a deleted item (for example after
+  revoking its last request) is now removed instead of failing on the `404`.
 - **The request backfill granted requests Seerr had not approved.** Seerr's
   request list includes pending, declined and failed requests, and the backfill
   only checked that the media was available. A pending or declined request for
@@ -55,15 +118,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Rolling back to 2.1.1
 
-2.1.1 reads this state file, but whenever it rewrites a grant (a new request
-granted to it by the webhook or backfill, a revoked request, an administrator
-changing its groups or manual access, or deleting one of its groups) it drops
-that grant's `joins`, `removedGroupIds` and `removedUserIds`. Reconciliation
-alone keeps them. A rewritten grant loses its join audit history and its
-removal marks for good: after upgrading again, the households and users an
-administrator removed from it can join it again. Restore the state-file backup
-taken before upgrading to keep them, or review those grants' audiences after
-upgrading again.
+The state file format is unchanged (schema v7), so 2.1.1 and 2.0.0 still load a
+state file written by this version, and they keep its `removedAccess` and
+`revokedRequests` records. They do not act on them, though, and they differ in
+three ways:
+
+- They do not know the `orphaned` state: they retry orphaned grants on every
+  scheduled run, fail on the deleted item's `404`, back off to hourly retries
+  and count them in `jfa_sync_errors` again.
+- Whenever they rewrite a grant (a new request granted to it by the webhook or
+  backfill, a revoked request, an administrator changing its groups or manual
+  access, deleting one of its groups) they drop that grant's `joins` and
+  `remap` fields. A rewritten grant loses its join audit history for good.
+- Administrator changes made while rolled back do not update `removedAccess`:
+  a user or group removed then is not marked (after upgrading again, they can
+  join that grant with **Add to my library** or be restored by a move), and one
+  assigned again then stays marked (which only stops their own later joins and
+  moves, not the access they have).
+
+Before rolling back, remap or revoke orphaned grants and resolve grants marked
+`source reappeared`. After upgrading again, review the audiences of grants
+changed while rolled back, or restore the state-file backup taken before
+rolling back.
 
 ## [2.1.1] - 2026-10-16
 

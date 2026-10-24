@@ -832,8 +832,8 @@ describe('household library joins', () => {
     await service.setGrantGroups('item-1', ['house-a']);
     await service.revokeRequest('item-1', '18');
     let grant = store.get('item-1');
-    assert.deepEqual(grant.removedGroupIds, ['house-b']);
-    assert.deepEqual(grant.removedUserIds, ['carol-id', 'dave-id'], 'Carol lost access with her household');
+    assert.deepEqual(store.getRemovals('item-1').groupIds, ['house-b']);
+    assert.deepEqual(store.getRemovals('item-1').userIds, ['carol-id', 'dave-id'], 'Carol lost access with her household');
     assert.deepEqual(fake.user('carol-id').Policy.BlockedTags, ['jfa:private:item-1']);
 
     assert.equal(await join('carol-id'), 'unchanged');
@@ -847,8 +847,8 @@ describe('household library joins', () => {
     // Assigning them again is the administrator's call, and clears the marks.
     await service.setManualAccess({ itemId: 'item-1', userIds: ['dave-id'], groupIds: ['house-a', 'house-b'] });
     grant = store.get('item-1');
-    assert.equal(grant.removedGroupIds, undefined);
-    assert.equal(grant.removedUserIds, undefined);
+    assert.equal(store.getRemovals('item-1').groupIds, undefined);
+    assert.equal(store.getRemovals('item-1').userIds, undefined);
     assert.equal(grant.joins.length, 1, 'the audit trail survives administrator edits');
   });
 
@@ -858,7 +858,7 @@ describe('household library joins', () => {
     await join('carol-id');
     await service.setGrantGroups('item-1', ['house-a']);
     await service.deleteGroup('house-b');
-    assert.equal(store.get('item-1').removedGroupIds, undefined);
+    assert.equal(store.getRemovals('item-1').groupIds, undefined);
     await service.upsertGroup({ id: 'house-b', name: 'New House B', userIds: ['carol-id', 'dave-id'] });
     assert.equal(await join('carol-id'), 'unchanged', 'Carol herself is still marked');
     assert.equal(await join('dave-id'), 'joined');
@@ -871,7 +871,7 @@ describe('household library joins', () => {
     // Dave, in no household, joins as a user, and an administrator takes him off.
     assert.equal(await join('dave-id'), 'joined');
     await service.setManualAccess({ itemId: 'item-1', userIds: [], groupIds: ['house-a'] });
-    assert.deepEqual(store.get('item-1').removedUserIds, ['dave-id']);
+    assert.deepEqual(store.getRemovals('item-1').userIds, ['dave-id']);
     assert.deepEqual(fake.user('dave-id').Policy.BlockedTags, ['jfa:private:item-1']);
 
     // He moves into House B, which nobody removed, and joins again: nothing happens.
@@ -884,7 +884,7 @@ describe('household library joins', () => {
     // The mark is Dave's own: another member can still join House B, which then includes him.
     assert.equal(await join('carol-id'), 'joined');
     assert.deepEqual(store.get('item-1').groupIds, ['house-a', 'house-b']);
-    assert.deepEqual(store.get('item-1').removedUserIds, ['dave-id']);
+    assert.deepEqual(store.getRemovals('item-1').userIds, ['dave-id']);
     assert.deepEqual(fake.user('dave-id').Policy.BlockedTags, []);
   });
 
@@ -893,7 +893,7 @@ describe('household library joins', () => {
     await service.processWebhook(parseWebhook(webhook()));
     assert.equal(await join('carol-id'), 'joined');
     await service.setGrantGroups('item-1', ['house-a']);
-    assert.deepEqual(store.get('item-1').removedUserIds, ['carol-id']);
+    assert.deepEqual(store.getRemovals('item-1').userIds, ['carol-id']);
 
     // Carol leaves House B, so she belongs to no household and would be added directly.
     await service.upsertGroup({ id: 'house-b', name: 'House B', userIds: [] });
@@ -927,10 +927,10 @@ describe('household library joins', () => {
     await join('carol-id');
     await service.setGrantGroups('item-1', ['house-a']);
     await service.setGrantGroups('item-1', ['house-a']);
-    assert.deepEqual(store.get('item-1').removedUserIds, ['carol-id']);
+    assert.deepEqual(store.getRemovals('item-1').userIds, ['carol-id']);
     await service.setGrantGroups('item-1', ['house-a', 'house-b']);
-    assert.equal(store.get('item-1').removedUserIds, undefined);
-    assert.equal(store.get('item-1').removedGroupIds, undefined);
+    assert.equal(store.getRemovals('item-1').userIds, undefined);
+    assert.equal(store.getRemovals('item-1').groupIds, undefined);
   });
 
   it('reports a failed lookup or write as an error without throwing or changing anything', async (t) => {

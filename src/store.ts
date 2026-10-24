@@ -1,7 +1,16 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { AccessGroup, GrantRecord, GrantState, LibraryCatalogItem, LibraryJoin, RevokeResult, SyncStatus } from './types.js';
+import type {
+  AccessGroup,
+  AccessRemovals,
+  GrantRecord,
+  GrantState,
+  LibraryCatalogItem,
+  LibraryJoin,
+  RevokeResult,
+  SyncStatus,
+} from './types.js';
 
 const EMPTY_STATE: GrantState = { version: 7, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [] };
 
@@ -38,6 +47,7 @@ export class GrantStore {
     this.#assertOpen();
     const migrated = migrateState(JSON.parse(text) as unknown);
     this.#state = migrated.state;
+    const lifted = liftRemovals(this.#state);
     // Requests already on grants (including ones recorded before handledRequestIds existed)
     // count as handled, so the backfill never re-imports one an administrator later removed.
     const handled = new Set(this.#state.handledRequestIds ?? []);
@@ -45,7 +55,7 @@ export class GrantStore {
     for (const grant of Object.values(this.#state.grants)) Object.keys(grant.requests).forEach((id) => handled.add(id));
     const seeded = this.#state.handledRequestIds === undefined || handled.size !== before;
     if (seeded) this.#state.handledRequestIds = [...handled];
-    if (migrated.changed || seeded) await this.#save();
+    if (migrated.changed || lifted || seeded) await this.#save();
   }
 
   public list(): GrantRecord[] {
@@ -99,7 +109,7 @@ export class GrantStore {
     return { lastSyncedAt, items: items.map(clone) };
   }
 
-  public resolveOwners(grant: GrantRecord): string[] {
+  public resolveOwners(grant: Pick<GrantRecord, 'requests' | 'manualUserIds' | 'groupIds'>): string[] {
     const groupUsers = grant.groupIds.flatMap((id) => this.#state.groups[id]?.userIds ?? []);
     return [...new Set([...Object.values(grant.requests), ...grant.manualUserIds, ...groupUsers].map(normalizeId))].sort();
   }
@@ -116,6 +126,21 @@ export class GrantStore {
     return (this.#state.handledRequestIds ?? []).includes(requestId);
   }
 
+  /** Whether an administrator revoked the request from that item (see GrantState.revokedRequests). */
+  public isRequestRevoked(requestId: string, itemId: string): boolean {
+    return this.#state.revokedRequests?.[requestId]?.includes(normalizeId(itemId)) ?? false;
+  }
+
+  /** Whether an administrator removed the user or group from that item (see GrantState.removedAccess). */
+  public isAccessRemoved(itemId: string, kind: keyof AccessRemovals, id: string): boolean {
+    return this.#state.removedAccess?.[normalizeId(itemId)]?.[kind]?.includes(normalizeId(id)) ?? false;
+  }
+
+  /** The users and groups an administrator removed from that item (see GrantState.removedAccess). */
+  public getRemovals(itemId: string): AccessRemovals {
+    return clone(this.#state.removedAccess?.[normalizeId(itemId)] ?? {});
+  }
+
   /** The grant that currently records a request, if any. */
   public findGrantForRequest(requestId: string): GrantRecord | undefined {
     const grant = Object.values(this.#state.grants).find((entry) => requestId in entry.requests);
@@ -125,6 +150,10 @@ export class GrantStore {
   /**
    * Adds a request to an item's grant. `groupIds` (the requester's households) are merged
    * into the grant's existing groups; groups and manual users already on the grant are kept.
+   * A request an administrator revoked from the item is never recorded on it again (see
+   * GrantState.revokedRequests); it still counts as handled. A new request is a new grant
+   * decision, so it adds its requester's households even if an administrator removed them
+   * earlier; replays of handled requests never reach here (see processWebhook).
    */
   public async grant(input: {
     itemId: string;
@@ -137,7 +166,9 @@ export class GrantStore {
     const itemId = normalizeId(input.itemId);
     const userId = normalizeId(input.userId);
     const previous = this.#state.grants[itemId];
-    const requests = { ...(previous?.requests ?? {}), [input.requestId]: userId };
+    const requests = this.isRequestRevoked(input.requestId, itemId)
+      ? { ...(previous?.requests ?? {}) }
+      : { ...(previous?.requests ?? {}), [input.requestId]: userId };
     const manualUserIds = previous?.manualUserIds ?? [];
     const requesterGroupIds = (input.groupIds ?? []).map(normalizeId).filter((id) => this.#state.groups[id]);
     const groupIds = [...new Set([...(previous?.groupIds ?? []), ...requesterGroupIds])].sort();
@@ -156,13 +187,15 @@ export class GrantStore {
     const requests = { ...previous.requests };
     const requester = requests[requestId] as string;
     delete requests[requestId];
+    const result = this.#replaceGrant(previous, requests, previous.manualUserIds, previous.groupIds);
+    // Only this item: a copy of the request on another grant (a move's source or target) keeps its own access.
+    const revokedFrom = this.#state.revokedRequests?.[requestId] ?? [];
+    this.#state.revokedRequests = { ...this.#state.revokedRequests, [requestId]: [...new Set([...revokedFrom, itemId])].sort() };
     // Revoking a user's request removes that user's access; a household join must not quietly restore it.
-    const removedUserIds = Object.values(requests).includes(requester) || previous.manualUserIds.includes(requester)
-      ? previous.removedUserIds
-      : [...new Set([...(previous.removedUserIds ?? []), requester])].sort();
-    const result = this.#replaceGrant(previous, requests, previous.manualUserIds, previous.groupIds, {
-      ...(removedUserIds?.length ? { removedUserIds } : {}),
-    });
+    if (!Object.values(requests).includes(requester) && !previous.manualUserIds.includes(requester)) {
+      const removals = this.#state.removedAccess?.[itemId] ?? {};
+      this.#setRemovals(itemId, { ...removals, userIds: [...(removals.userIds ?? []), requester] });
+    }
     await this.#save();
     return result;
   }
@@ -175,8 +208,8 @@ export class GrantStore {
     const groupIds = [...new Set(groupIdsInput.map(normalizeId))].sort();
     const missing = groupIds.filter((id) => !this.#state.groups[id]);
     if (missing.length > 0) throw new Error(`group not found: ${missing.join(', ')}`);
-    const result = this.#replaceGrant(previous, previous.requests, previous.manualUserIds, groupIds,
-      this.#administratorRemovals(previous, previous.manualUserIds, groupIds));
+    const result = this.#replaceGrant(previous, previous.requests, previous.manualUserIds, groupIds);
+    this.#recordAdministratorChange(itemId, previous, previous.manualUserIds, groupIds);
     await this.#save();
     return result;
   }
@@ -205,9 +238,9 @@ export class GrantStore {
     const groupIds = [...new Set(input.groupIds.map(normalizeId))].sort();
     const missing = groupIds.filter((id) => !this.#state.groups[id]);
     if (missing.length > 0) throw new Error(`group not found: ${missing.join(', ')}`);
-    const current = this.#makeGrant(itemId, previous?.requests ?? {}, manualUserIds, groupIds, previous, input.mediaType,
-      previous ? this.#administratorRemovals(previous, manualUserIds, groupIds) : {});
+    const current = this.#makeGrant(itemId, previous?.requests ?? {}, manualUserIds, groupIds, previous, input.mediaType);
     this.#state.grants[itemId] = current;
+    this.#recordAdministratorChange(itemId, previous, manualUserIds, groupIds);
       results.push({ ...(previous ? { previous: clone(previous) } : {}), current: clone(current) });
     }
     await this.#save();
@@ -243,14 +276,12 @@ export class GrantStore {
     const groupId = normalizeId(groupIdInput);
     if (!this.#state.groups[groupId]) return [];
     delete this.#state.groups[groupId];
+    // A group created later under the same ID is a different household and starts unmarked.
+    for (const [itemId, removals] of Object.entries(this.#state.removedAccess ?? {})) {
+      if (removals.groupIds?.includes(groupId)) this.#setRemovals(itemId, { ...removals, groupIds: removals.groupIds.filter((id) => id !== groupId) });
+    }
     const results: RevokeResult[] = [];
     for (const previous of Object.values({ ...this.#state.grants })) {
-      // A group created later under the same ID is a different household and starts unmarked.
-      if (previous.removedGroupIds?.includes(groupId)) {
-        const removedGroupIds = previous.removedGroupIds.filter((id) => id !== groupId);
-        if (removedGroupIds.length) previous.removedGroupIds = removedGroupIds;
-        else delete previous.removedGroupIds;
-      }
       if (!previous.groupIds.includes(groupId)) continue;
       results.push(this.#replaceGrant(previous, previous.requests, previous.manualUserIds, previous.groupIds.filter((id) => id !== groupId)));
     }
@@ -261,12 +292,14 @@ export class GrantStore {
   /**
    * Household "Add to my library": adds the caller's households (`groupIds`), or the caller as a manual user when they
    * belong to none, to the grant of `itemId`. Only an active grant that records at least one request is joined, the
-   * same grants the request backfill adds requests to; manual-only grants and items without a grant are left alone.
-   * Nothing is ever removed, and a join never undoes an administrator's removal:
+   * same grants the request backfill adds requests to; manual-only grants and items without a grant are left alone, and
+   * so is a grant left behind on a deleted item (orphaned, or carrying a `remap` note) for an administrator to resolve.
+   * Nothing is ever removed, and a join never undoes an administrator's removal (GrantState.removedAccess for the item,
+   * including removals that followed the grant from a deleted item it was moved off):
    *
-   * - a caller in `removedUserIds` (an administrator's change took their access) joins nothing at all, whichever
-   *   household they belong to now;
-   * - a household in `removedGroupIds` is never added; the caller's other households still are;
+   * - a marked caller (an administrator's change took their access) joins nothing at all, whichever household they
+   *   belong to now;
+   * - a marked household is never added; the caller's other households still are;
    * - a caller in no household is added as a user, unless they are marked.
    *
    * A mark is personal: it does not stop another member of the caller's household from joining it, which then gives
@@ -299,10 +332,11 @@ export class GrantStore {
     const userId = normalizeId(input.userId);
     const previous = this.#state.grants[itemId];
     if (!previous?.active || Object.keys(previous.requests).length === 0) return undefined;
-    if (previous.removedUserIds?.includes(userId)) return undefined;
+    if (previous.sync.state === 'orphaned' || previous.remap) return undefined;
+    if (this.isAccessRemoved(itemId, 'userIds', userId)) return undefined;
     const households = [...new Set(input.groupIds.map(normalizeId))].filter((id) => this.#state.groups[id]);
     const addedGroupIds = households
-      .filter((id) => !previous.groupIds.includes(id) && !previous.removedGroupIds?.includes(id))
+      .filter((id) => !previous.groupIds.includes(id) && !this.isAccessRemoved(itemId, 'groupIds', id))
       .sort();
     const userAdded = households.length === 0 && !this.resolveOwners(previous).includes(userId);
     if (addedGroupIds.length === 0 && !userAdded) return undefined;
@@ -363,6 +397,189 @@ export class GrantStore {
     await this.#save();
   }
 
+  /** Throws once close() has been called, so a caller can refuse before starting work it could not record. */
+  public assertOpen(): void {
+    this.#assertOpen();
+  }
+
+  /**
+   * The grant an item would have after `move` is merged into it, without storing anything: requests, manual users and
+   * groups are added to whatever grant the item already has (nothing on it is dropped). Groups that no longer exist,
+   * requests an administrator revoked from that item and users and groups an administrator removed from it
+   * (GrantState.removedAccess) are left out of the moved ones.
+   */
+  public previewMerge(move: GrantMove): GrantRecord {
+    return clone(this.#mergedGrant(move));
+  }
+
+  /**
+   * The first step of moving a grant: merges each move into its target item's grant (see previewMerge) in one write,
+   * leaving the source grant as it is. A crash before the targets are applied therefore loses nobody: the targets are
+   * stored (pending), the source still records everyone, and merging the same move again changes nothing. Moved
+   * requests stay handled, so the backfill never re-imports them. Finish with retireMovedGrant once the targets are applied.
+   *
+   * What an administrator removed from the source item follows the grant to each target, so a move never lets anyone
+   * regain access an administrator took (by a later household library join, webhook, backfill or move): the source's
+   * removal marks (GrantState.removedAccess) and its revoked requests are recorded for each target too. Marks only ever
+   * restrict, so they never give anyone access. A user or group the target's grant already gave access to on its own
+   * keeps it, and so does a request it already records: removing access from a stale copy of a grant never takes it
+   * from the item that copy was moved to. The source keeps its own marks. The source's library joins (an audit trail,
+   * which gives no access) move with the households they added: all of them when the whole audience moves, otherwise
+   * those whose households or user moved to that target; the source keeps its own list until it is deleted.
+   */
+  public async mergeGrants(fromItemIdInput: string, moves: GrantMove[]): Promise<GrantRecord[]> {
+    this.#assertOpen();
+    const fromItemId = normalizeId(fromItemIdInput);
+    if (!this.#state.grants[fromItemId]) throw new Error(`grant not found: ${fromItemId}`);
+    const targetIds = moves.map((move) => normalizeId(move.itemId));
+    if (targetIds.length === 0 || targetIds.includes(fromItemId) || new Set(targetIds).size !== targetIds.length) {
+      throw new Error('grant move targets are invalid');
+    }
+    const source = this.#state.grants[fromItemId] as GrantRecord;
+    const currents = moves.map((move) => {
+      const before = this.#state.grants[normalizeId(move.itemId)];
+      const current = this.#mergedGrant(move, this.#movedJoins(source, move));
+      this.#carryRemovals(fromItemId, current.itemId, before);
+      return current;
+    });
+    for (const current of currents) this.#state.grants[current.itemId] = current;
+    await this.#save();
+    return currents.map(clone);
+  }
+
+  /**
+   * The last step of moving a grant: deletes the source grant or, given `remainder` (the part of its audience that was
+   * not moved), replaces it with that part, records the items the rest went to (`remap.splitTo`) and marks it orphaned
+   * with `remainder.reason`. Resolves true only when the grant was newly orphaned.
+   */
+  public async retireMovedGrant(fromItemIdInput: string, remainder?: GrantRemainder): Promise<boolean> {
+    this.#assertOpen();
+    const fromItemId = normalizeId(fromItemIdInput);
+    const previous = this.#state.grants[fromItemId];
+    if (!previous) return false;
+    if (!remainder) {
+      delete this.#state.grants[fromItemId];
+      await this.#save();
+      return false;
+    }
+    const groupIds = [...new Set(remainder.groupIds.map(normalizeId))].filter((id) => this.#state.groups[id]).sort();
+    const manualUserIds = [...new Set(remainder.manualUserIds.map(normalizeId))].sort();
+    const next = this.#makeGrant(fromItemId, { ...remainder.requests }, manualUserIds, groupIds, previous, previous.mediaType);
+    const splitTo = [...new Set([...(previous.remap?.splitTo ?? []), ...remainder.movedTo.map(normalizeId)])].sort();
+    next.remap = { ...next.remap, splitTo };
+    next.sync = orphanedSync(previous.sync, remainder.reason);
+    this.#state.grants[fromItemId] = next;
+    await this.#save();
+    return previous.sync.state !== 'orphaned';
+  }
+
+  /**
+   * Records that a grant's item existed again when a move off it to `movedTo` finished (see GrantRemapNote), leaving
+   * the grant's audience as it is. It becomes pending, so the next reconciliation applies it to the item again.
+   */
+  public async markSourceReappeared(itemIdInput: string, movedTo: string[]): Promise<void> {
+    this.#assertOpen();
+    const grant = this.#state.grants[normalizeId(itemIdInput)];
+    if (!grant) return;
+    grant.remap = { ...grant.remap, sourceReappeared: { at: new Date().toISOString(), movedTo: movedTo.map(normalizeId).sort() } };
+    grant.sync = pendingSync(grant.sync);
+    await this.#save();
+  }
+
+  /** Marks a grant orphaned (see SyncStatus); resolves true only when it was not orphaned already. */
+  public async markOrphaned(itemIdInput: string, reason: string): Promise<boolean> {
+    this.#assertOpen();
+    const grant = this.#state.grants[normalizeId(itemIdInput)];
+    if (!grant) return false;
+    const newlyOrphaned = grant.sync.state !== 'orphaned';
+    grant.sync = orphanedSync(grant.sync, reason);
+    await this.#save();
+    return newlyOrphaned;
+  }
+
+  #mergedGrant(move: GrantMove, joins: LibraryJoin[] = []): GrantRecord {
+    const itemId = normalizeId(move.itemId);
+    const previous = this.#state.grants[itemId];
+    const moved = Object.entries(move.requests).filter(([requestId]) => !this.isRequestRevoked(requestId, itemId));
+    const requests = { ...(previous?.requests ?? {}), ...Object.fromEntries(moved) };
+    const movedUserIds = move.manualUserIds.map(normalizeId).filter((id) => !this.isAccessRemoved(itemId, 'userIds', id));
+    const manualUserIds = [...new Set([...(previous?.manualUserIds ?? []), ...movedUserIds])].sort();
+    const movedGroupIds = move.groupIds.map(normalizeId)
+      .filter((id) => this.#state.groups[id] && !this.isAccessRemoved(itemId, 'groupIds', id));
+    const groupIds = [...new Set([...(previous?.groupIds ?? []), ...movedGroupIds])].sort();
+    // The same join merged again (a repeated move) is recorded once.
+    const allJoins = [...(previous?.joins ?? []), ...joins];
+    const mergedJoins = allJoins
+      .filter((join, index) => allJoins.findIndex((other) => other.userId === join.userId && other.joinedAt === join.joinedAt) === index)
+      .sort((left, right) => left.joinedAt.localeCompare(right.joinedAt));
+    return this.#makeGrant(itemId, requests, manualUserIds, groupIds, previous, previous?.mediaType ?? move.mediaType, {
+      joins: mergedJoins,
+    });
+  }
+
+  /** The source's library joins that go with `move` (see mergeGrants). */
+  #movedJoins(source: GrantRecord, move: GrantMove): LibraryJoin[] {
+    const groupIds = new Set(move.groupIds.map(normalizeId));
+    const manualUserIds = new Set(move.manualUserIds.map(normalizeId));
+    const whole = source.groupIds.every((id) => groupIds.has(id)) && source.manualUserIds.every((id) => manualUserIds.has(id));
+    return (source.joins ?? []).filter((join) => whole
+      || join.groupIds.some((id) => groupIds.has(id))
+      || (join.userAdded && manualUserIds.has(join.userId)));
+  }
+
+  /**
+   * Records the source item's removal marks and revoked requests for a move's target (see mergeGrants), except for what
+   * the target's grant before the move (`before`) already gave access to.
+   */
+  #carryRemovals(fromItemId: string, toItemId: string, before: GrantRecord | undefined): void {
+    const source = this.#state.removedAccess?.[fromItemId];
+    if (source) {
+      const owners = new Set(before ? this.resolveOwners(before) : []);
+      const target = this.#state.removedAccess?.[toItemId] ?? {};
+      this.#setRemovals(toItemId, {
+        userIds: [...(target.userIds ?? []), ...(source.userIds ?? []).filter((id) => !owners.has(id))],
+        groupIds: [...(target.groupIds ?? []), ...(source.groupIds ?? []).filter((id) => !before?.groupIds.includes(id))],
+      });
+    }
+    for (const [requestId, itemIds] of Object.entries(this.#state.revokedRequests ?? {})) {
+      if (!itemIds.includes(fromItemId) || itemIds.includes(toItemId) || (before && requestId in before.requests)) continue;
+      this.#state.revokedRequests = { ...this.#state.revokedRequests, [requestId]: [...itemIds, toItemId].sort() };
+    }
+  }
+
+  /**
+   * Records an administrator setting an item's groups and manual users (see GrantState.removedAccess), from its grant
+   * before the change, if any. Whatever they took off is marked: each removed group, each removed manual user, and every
+   * user who loses access through the change (such as the members of a removed household), so that user cannot regain
+   * it by joining directly or through another household, or through a move. Whatever they assign is unmarked: the
+   * groups and manual users they set, and the members of each group they add. Members of a group that merely stays on
+   * the grant keep their marks.
+   */
+  #recordAdministratorChange(itemId: string, previous: GrantRecord | undefined, manualUserIds: string[], groupIds: string[]): void {
+    const removals = this.#state.removedAccess?.[itemId] ?? {};
+    const before: Pick<GrantRecord, 'requests' | 'manualUserIds' | 'groupIds'> = previous ?? { requests: {}, manualUserIds: [], groupIds: [] };
+    const removedGroupIds = [...(removals.groupIds ?? []), ...before.groupIds].filter((id) => !groupIds.includes(id));
+    const owners = new Set(this.resolveOwners({ requests: before.requests, manualUserIds, groupIds }));
+    const lostAccess = this.resolveOwners(before).filter((id) => !owners.has(id));
+    const assigned = new Set([
+      ...manualUserIds,
+      ...groupIds.filter((id) => !before.groupIds.includes(id)).flatMap((id) => this.#state.groups[id]?.userIds ?? []),
+    ]);
+    const removedUserIds = [...(removals.userIds ?? []), ...before.manualUserIds, ...lostAccess].filter((id) => !assigned.has(id));
+    this.#setRemovals(itemId, { userIds: removedUserIds, groupIds: removedGroupIds });
+  }
+
+  #setRemovals(itemId: string, removals: AccessRemovals): void {
+    const next: AccessRemovals = {
+      ...(removals.userIds?.length ? { userIds: [...new Set(removals.userIds)].sort() } : {}),
+      ...(removals.groupIds?.length ? { groupIds: [...new Set(removals.groupIds)].sort() } : {}),
+    };
+    const { [itemId]: _, ...others } = this.#state.removedAccess ?? {};
+    if (next.userIds || next.groupIds) this.#state.removedAccess = { ...others, [itemId]: next };
+    else if (Object.keys(others).length > 0) this.#state.removedAccess = others;
+    else delete this.#state.removedAccess;
+  }
+
   #makeGrant(
     itemId: string,
     requests: Record<string, string>,
@@ -374,8 +591,6 @@ export class GrantStore {
   ): GrantRecord {
     const resolvedMediaType = mediaType ?? previous?.mediaType;
     const joins = 'joins' in audit ? audit.joins : previous?.joins;
-    const removedGroupIds = 'removedGroupIds' in audit ? audit.removedGroupIds : previous?.removedGroupIds;
-    const removedUserIds = 'removedUserIds' in audit ? audit.removedUserIds : previous?.removedUserIds;
     const placeholder: GrantRecord = {
       itemId,
       active: Object.keys(requests).length > 0 || manualUserIds.length > 0 || groupIds.length > 0,
@@ -384,37 +599,13 @@ export class GrantStore {
       manualUserIds: [...manualUserIds],
       groupIds: [...groupIds],
       ...(joins?.length ? { joins: clone(joins) } : {}),
-      ...(removedGroupIds?.length ? { removedGroupIds: [...removedGroupIds] } : {}),
-      ...(removedUserIds?.length ? { removedUserIds: [...removedUserIds] } : {}),
       sync: pendingSync(previous?.sync),
       updatedAt: new Date().toISOString(),
       ...(resolvedMediaType ? { mediaType: resolvedMediaType } : {}),
     };
+    if (previous?.remap) placeholder.remap = clone(previous.remap);
     placeholder.owners = this.resolveOwners(placeholder);
     return placeholder;
-  }
-
-  /**
-   * The removal marks after an administrator sets a grant's groups and manual users. Whatever they took off is marked:
-   * each removed group, each removed manual user, and every user who loses access through the change (such as the
-   * members of a removed household), so that user cannot regain it by joining directly or through another household.
-   * Whatever they assign is unmarked: the groups and manual users they set, and the members of each group they add.
-   * Members of a group that merely stays on the grant keep their marks.
-   */
-  #administratorRemovals(previous: GrantRecord, manualUserIds: string[], groupIds: string[]): GrantAudit {
-    const removedGroupIds = [...new Set([...(previous.removedGroupIds ?? []), ...previous.groupIds])]
-      .filter((id) => !groupIds.includes(id))
-      .sort();
-    const owners = new Set(this.resolveOwners({ ...previous, manualUserIds, groupIds }));
-    const lostAccess = this.resolveOwners(previous).filter((id) => !owners.has(id));
-    const assigned = new Set([
-      ...manualUserIds,
-      ...groupIds.filter((id) => !previous.groupIds.includes(id)).flatMap((id) => this.#state.groups[id]?.userIds ?? []),
-    ]);
-    const removedUserIds = [...new Set([...(previous.removedUserIds ?? []), ...previous.manualUserIds, ...lostAccess])]
-      .filter((id) => !assigned.has(id))
-      .sort();
-    return { removedGroupIds, removedUserIds };
   }
 
   /** Synchronous, so a mutation and the save that persists it are never split by close(). */
@@ -475,8 +666,27 @@ export class GrantStore {
   }
 }
 
+/** Part of a grant moved to another item: merged into that item's grant by GrantStore.mergeGrants. */
+export interface GrantMove {
+  itemId: string;
+  requests: Record<string, string>;
+  manualUserIds: string[];
+  groupIds: string[];
+  mediaType?: string;
+}
+
+/** What stays on a moved grant's deleted item, orphaned, because it could not be attributed to a target. */
+export interface GrantRemainder {
+  requests: Record<string, string>;
+  manualUserIds: string[];
+  groupIds: string[];
+  reason: string;
+  /** The items the rest of the grant moved to. */
+  movedTo: string[];
+}
+
 /** Audit fields to set on a rebuilt grant; a field that is absent is carried over from the previous grant. */
-type GrantAudit = Partial<Pick<GrantRecord, 'joins' | 'removedGroupIds' | 'removedUserIds'>>;
+type GrantAudit = Partial<Pick<GrantRecord, 'joins'>>;
 
 export function normalizeId(value: string): string {
   return value.trim().toLowerCase();
@@ -490,8 +700,48 @@ function pendingSync(previous?: SyncStatus): SyncStatus {
   };
 }
 
+function orphanedSync(previous: SyncStatus, reason: string): SyncStatus {
+  return {
+    state: 'orphaned',
+    attempts: previous.attempts,
+    lastAttemptAt: new Date().toISOString(),
+    lastError: reason.slice(0, 1000),
+    ...(previous.lastSuccessAt ? { lastSuccessAt: previous.lastSuccessAt } : {}),
+  };
+}
+
 function clone<T>(value: T): T {
   return structuredClone(value);
+}
+
+/**
+ * Gathers removal records written by earlier development builds into GrantState.removedAccess, keeping every mark:
+ * per-grant `removedUserIds` / `removedGroupIds` (household library joins) and the state's `removedManualAccess`
+ * (grant moves). Both were keyed by item like removedAccess, with the same meaning per kind. Resolves true when the state
+ * changed and must be saved. A 2.1.1 state file has neither and is left as it is.
+ */
+function liftRemovals(state: GrantState): boolean {
+  const legacy = state as GrantState & { removedManualAccess?: Record<string, AccessRemovals> };
+  const found: Array<[string, AccessRemovals]> = Object.entries(legacy.removedManualAccess ?? {});
+  for (const grant of Object.values(state.grants)) {
+    const marked = grant as GrantRecord & { removedUserIds?: string[]; removedGroupIds?: string[] };
+    if (!marked.removedUserIds && !marked.removedGroupIds) continue;
+    found.push([grant.itemId, { userIds: marked.removedUserIds ?? [], groupIds: marked.removedGroupIds ?? [] }]);
+    delete marked.removedUserIds;
+    delete marked.removedGroupIds;
+  }
+  if (!legacy.removedManualAccess && found.length === 0) return false;
+  delete legacy.removedManualAccess;
+  const removedAccess = { ...state.removedAccess };
+  for (const [itemIdInput, removals] of found) {
+    const itemId = normalizeId(itemIdInput);
+    const userIds = [...new Set([...(removedAccess[itemId]?.userIds ?? []), ...(removals.userIds ?? []).map(normalizeId)])].sort();
+    const groupIds = [...new Set([...(removedAccess[itemId]?.groupIds ?? []), ...(removals.groupIds ?? []).map(normalizeId)])].sort();
+    if (userIds.length === 0 && groupIds.length === 0) continue;
+    removedAccess[itemId] = { ...(userIds.length ? { userIds } : {}), ...(groupIds.length ? { groupIds } : {}) };
+  }
+  if (Object.keys(removedAccess).length > 0) state.removedAccess = removedAccess;
+  return true;
 }
 
 function migrateState(value: unknown): { state: GrantState; changed: boolean } {

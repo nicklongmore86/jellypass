@@ -472,7 +472,8 @@ The UI contains four views:
 - **Library** — catalog search, filters, sorting, pagination, and bulk access
   assignment for up to 500 selected items.
 - **Grants** — active automated and manual grants, owners, groups, sync status,
-  dry-run plans, and revocation.
+  dry-run plans, revocation, and **Move** (remap a grant to another Jellyfin
+  item; see [A re-imported title is public](#a-re-imported-title-is-public-or-a-grant-is-orphaned)).
 - **Groups** — reusable audiences, household URLs, and optional Jellyfin user
   creation/import.
 
@@ -537,10 +538,14 @@ the background, normally within seconds.
   titles need no join.
 - **Administrator removals stick.** A household an administrator took off a
   grant (in the grant's groups, the manual-access dialog, or bulk access) is
-  remembered in the grant's `removedGroupIds`, and every user that change, or
-  revoking a request, took access from (a removed manual user, the requester,
-  each member of a removed household with no other access) in
-  `removedUserIds`. A join never adds a marked household, and a marked user's
+  remembered for that item, and so is every user that change, or revoking a
+  request, took access from (a removed manual user, the requester, each member
+  of a removed household with no other access). Both are kept in the state
+  file's per-item removal record (`removedAccess`), shown as `removed`
+  (`groupIds`, `userIds`) on the grant in `GET /v1/grants`; grant moves use the
+  same record (see
+  [A re-imported title is public](#a-re-imported-title-is-public-or-a-grant-is-orphaned)),
+  and the marks follow a grant moved to a re-imported item. A join never adds a marked household, and a marked user's
   own joins change nothing at all, whichever household they belong to later
   and even once they belong to none. A caller's unmarked households are still
   added. A mark is personal: it does not stop another, unmarked member of the
@@ -548,9 +553,11 @@ the background, normally within seconds.
   marked user; remove the household itself to prevent that. Assigning a
   household again clears its mark, and assigning a user as a manual user, or
   adding a household they belong to, clears theirs; deleting a group clears
-  its own mark from every grant but not its former members'. Changing a
+  its own mark from every item but not its former members'. Changing a
   household's membership marks nobody. A new Seerr request still adds its
-  requester's households as before.
+  requester's households as before. Joins never touch a grant left behind on a
+  deleted item (orphaned, or split by a move) while it waits for an
+  administrator.
 - **Joins are audited.** Each join that changed a grant is recorded in the
   grant's `joins` (user, households added, whether the user was added, time),
   visible only to administrators through `GET /v1/grants`, and logged as
@@ -673,10 +680,13 @@ upgrade; follow [Upgrading from 1.1.0](CHANGELOG.md#upgrading-from-110) in the
 check [Upgrading from 2.0.0](CHANGELOG.md#upgrading-from-200) in the 2.1.0
 notes if Seerr lookup is not configured or JellyPass runs behind a reverse
 proxy. Upgrading from 2.1.0 to 2.1.1 changes neither the state file nor any
-setting. Rolling back from a version with **Add to my library** to 2.1.1
-drops the join audit history and administrator removal marks from every grant
-2.1.1 rewrites, so removed households and users could join those grants again
-after upgrading once more; see the changelog. Upgrades can migrate the state file to a newer schema that older
+setting. Rolling back from this version to 2.1.1 or 2.0.0 keeps the state
+file readable, but those versions retry grants marked `orphaned` (see
+[A re-imported title is public](#a-re-imported-title-is-public-or-a-grant-is-orphaned))
+on every scheduled run, counted in `jfa_sync_errors`, and drop a grant's join
+audit history and `remap` note whenever they rewrite it; administrator removal
+records are kept but not enforced. Remap or revoke orphaned grants first, and
+see the changelog. Upgrades can migrate the state file to a newer schema that older
 versions cannot read, so rolling back requires the backup taken before the
 upgrade. Pinning `JELLYPASS_IMAGE` makes rollback explicit:
 
@@ -742,6 +752,104 @@ Confirm the group exists, its ID is DNS-safe, `HOUSEHOLD_DOMAIN` and
 `HOUSEHOLD_HOST_PREFIX` match the hostname, and the reverse proxy preserves the
 original `Host` header.
 
+### A re-imported title is public or a grant is orphaned
+
+When Jellyfin deletes and re-imports a title, the new copy gets a new item ID
+and the grant still points at the old one. Reconciliation recovers on its own:
+when Jellyfin answers `404` for a grant's item, JellyPass asks Seerr which item
+each of the grant's requests now resolves to (the 4K item for a 4K request and
+the HD item for an HD request, never the other) and moves the grant there,
+merging into any grant already on the new item, including a manual one, so
+nobody loses access. Who moves where follows one rule, so nobody gains access
+to an item they did not have:
+
+- **Every request resolves to the same item** (the usual re-import): the whole
+  grant moves there, manual users and groups included. This applies only when
+  the original grant moves in one go: a grant left over from an earlier partial
+  move records that (`remap.splitTo` in `GET /v1/grants`), and later recoveries
+  move only its newly resolved requests and their requesters' households, so
+  its manual users and groups stay orphaned until you assign them yourself.
+- **Requests resolve to several items:** each item gets only its own requests
+  and those requesters' households (the groups a webhook would assign, limited
+  to groups the grant already had). Manual users and groups that cannot be
+  attributed to one of them stay on the old grant, marked `orphaned`.
+- **A request resolves to no existing item:** it is never assigned to another
+  item; it stays on the old grant, marked `orphaned`, with any manual users and
+  groups (they are not attributable either).
+
+The new grants are stored and applied first; only then is the old grant
+removed (or reduced to what stays, orphaned) and the deleted item's tag removed
+from user policies, so a restart partway through converges on the next run. If
+the old item exists in Jellyfin again by then, nothing is removed: the old grant
+is kept intact with its restrictions, shown with a `source reappeared` status in
+Grants (`remap.sourceReappeared` in `GET /v1/grants`), logged as
+`grant source reappeared` and counted as `result="source_reappeared"`; the new
+grants stay applied. Revoke whichever grant is no longer needed.
+Requests stay handled, so the backfill does not import them again.
+
+Until a move finishes (for example when applying the new item failed), a
+request can be on both the old and the new grant. Revoking it in **Requests**
+revokes it from that item only, and is remembered: no later recovery or
+**Move** adds that request to that item again, so a copy left on the old
+grant cannot restore it (the copy is dropped instead). A new Seerr request for
+the title has its own ID and is granted as usual. Seerr re-sending
+`MEDIA_AVAILABLE` for the request triggers the same recovery. Only a definite
+`404` counts as deleted: network failures and `5xx` responses from Jellyfin or
+Seerr are retried with the usual backoff.
+
+Removing a manual user or a group works like revoking a request. Removing one
+from an item (in **Grants**, a bulk change, `PUT /v1/grants/{itemId}/manual`
+or `PUT /v1/grants/{itemId}/groups`) is remembered for that item only, in the
+same per-item removal record household library joins use (`removedAccess` in
+the state file, `removed` in `GET /v1/grants`; see
+[Add to my library](#add-to-my-library)), together with each user the change
+took access from: no later recovery or **Move**, previews included, adds that
+user or group to that item again, so a copy left on the old grant cannot
+restore it. Removing one from the old grant does not take it off the new one.
+Assigning the user or group to the item again as an administrator (or adding a
+household the user belongs to) clears the record, and deleting a group clears
+it everywhere.
+
+When a grant moves to another item, what an administrator removed from the old
+item follows it: its removal marks and revoked requests are recorded for the
+new item too, so nobody removed before the move can add themselves back with
+**Add to my library**, and no later move restores them. Marks only restrict:
+they never give anyone access. A user, group or request the new item's grant
+already had on its own (for example from an unfinished earlier move) keeps its
+access there. The old grant's library joins (an audit trail) move with the
+households they added.
+
+If no request resolves to an existing item (Seerr still names the deleted item,
+the request was deleted, the grant is manual-only, or Seerr lookup is not
+configured), or part of a grant stays behind as above, it is marked `orphaned`: it is kept, logged once as
+`grant orphaned`, shown with an `orphaned` status in Grants and
+`sync.state: "orphaned"` in `GET /v1/grants`, and counted by the
+`jfa_orphaned_grants` gauge rather than `jfa_sync_errors`. Scheduled
+reconciliation no longer retries it; a full reconcile (`POST /v1/reconcile`)
+tries again. Move it yourself with **Move** in Grants, or:
+
+```sh
+# Preview, then apply. The target item must exist; the old one must be gone.
+curl -fsS -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"toItemId":"NEW_ITEM_ID"}' 'http://127.0.0.1:8787/v1/grants/OLD_ITEM_ID/remap?dryRun=true'
+curl -fsS -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"toItemId":"NEW_ITEM_ID"}' http://127.0.0.1:8787/v1/grants/OLD_ITEM_ID/remap
+```
+
+A move merges the grant's whole audience into the target, as an explicit
+administrator decision. It is refused with `409` if the old item still exists
+in Jellyfin (`code: "source_item_exists"`): moving its grant would make it
+visible to every household, so revoke it explicitly instead. It is also refused
+with `409` if Seerr says a request is for the other quality's item of the title
+(a 4K request onto the HD item or the reverse, `code: "quality_mismatch"`). The
+old grant is removed only after the target has been applied; if applying fails,
+it is kept and the move can be repeated. If the old item reappears meanwhile,
+the target stays applied, the old grant is kept as above, and the move answers
+`409` (`code: "source_reappeared"`). `jfa_grant_remaps_total` counts moves
+(`result="remapped"`), new orphans (`result="orphaned"`) and reappeared source
+items (`result="source_reappeared"`) by `trigger`
+(`auto` or `admin`).
+
 ### Changes do not reach every user
 
 Open Grants, preview reconciliation, inspect the reported changes, and apply
@@ -760,6 +868,7 @@ blocked-tag policy.
 | `DELETE` | `/v1/grants/{itemId}/requests/{requestId}` | Revoke one request owner; supports `?dryRun=true`. |
 | `PUT` | `/v1/grants/{itemId}/groups` | Replace assigned groups; supports `?dryRun=true`. |
 | `PUT` | `/v1/grants/{itemId}/manual` | Set manual users/groups; supports `?dryRun=true`. |
+| `POST` | `/v1/grants/{itemId}/remap` | Move a grant to another Jellyfin item (`{"toItemId": "..."}`), merging with any grant already there; supports `?dryRun=true`. |
 | `GET` | `/v1/groups` | List groups and generated household URLs. |
 | `PUT` | `/v1/groups/{groupId}` | Create or replace a group. |
 | `DELETE` | `/v1/groups/{groupId}` | Delete a group and reconcile affected grants. |

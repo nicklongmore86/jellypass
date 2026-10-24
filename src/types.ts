@@ -122,17 +122,24 @@ export interface GrantRecord {
   groupIds: string[];
   /** Household "Add to my library" joins that changed this grant, oldest first, for administrators to audit. */
   joins?: LibraryJoin[];
-  /**
-   * Groups an administrator removed from this grant, and users an administrator's change took access from (a removed
-   * manual user, a revoked request's requester, each member of a removed household who had no other access). A
-   * household join never adds a marked group, and a marked user's own joins change nothing; see GrantStore.joinGrant.
-   * An administrator assigning the group again clears its mark; assigning the user as a manual user, or adding a
-   * household they belong to, clears theirs.
-   */
-  removedGroupIds?: string[];
-  removedUserIds?: string[];
   sync: SyncStatus;
   updatedAt: string;
+  /** Set when moving the grant off its deleted Jellyfin item did not finish as a plain move (see GrantRemapNote). */
+  remap?: GrantRemapNote;
+}
+
+export interface GrantRemapNote {
+  /**
+   * Items part of this grant's requests already moved to. Its manual users and groups were kept here because they
+   * cannot be attributed to any one of those items, so a later recovery moves only newly resolved requests and their
+   * requesters' households, never the whole audience.
+   */
+  splitTo?: string[];
+  /**
+   * The grant's item existed again when a move off it finished: the targets were applied, but this grant was kept
+   * intact (still restricting the item) for an administrator to resolve.
+   */
+  sourceReappeared?: { at: string; movedTo: string[] };
 }
 
 export interface LibraryJoin {
@@ -151,6 +158,37 @@ export interface GrantState {
   passwordlessUserIds: string[];
   /** Seerr request IDs that already produced a grant; the backfill never re-imports them. */
   handledRequestIds?: string[];
+  /**
+   * Requests an administrator revoked, by request ID, with the items they were revoked from. Moving a grant (recovery
+   * or remap) never adds a request to an item it was revoked from, so a copy left on a stale grant cannot restore it.
+   */
+  revokedRequests?: Record<string, string[]>;
+  /**
+   * What an administrator removed from each item, by item ID (see AccessRemovals): the one removal record that household
+   * library joins and grant moves (recovery or remap, dry runs included) both check, so neither adds a removed user or
+   * group to that item again. Webhooks and the request backfill never grant a handled request again, and a new request
+   * is a new grant decision (see GrantStore.grant).
+   */
+  removedAccess?: Record<string, AccessRemovals>;
+}
+
+/**
+ * See GrantState.removedAccess. Kept in the state rather than on the grant so it outlives a grant that is purged or
+ * replaced by a move.
+ *
+ * - `groupIds`: groups an administrator removed from the item. No join or move adds them again.
+ * - `userIds`: users an administrator's change took access from: a removed manual user, a revoked request's requester,
+ *   each member of a removed household who had no other access. A marked user's own joins change nothing, and no move
+ *   adds them as a manual user again.
+ *
+ * An administrator assigning a group to the item again clears its mark; assigning a user as a manual user, or adding a
+ * household they belong to, clears theirs. Deleting a group clears that group everywhere. When a grant moves to a new
+ * item, its marks follow it there, except for users and groups the new item's grant already gave access to on its own
+ * (see GrantStore.mergeGrants).
+ */
+export interface AccessRemovals {
+  userIds?: string[];
+  groupIds?: string[];
 }
 
 export interface AccessGroup {
@@ -162,7 +200,11 @@ export interface AccessGroup {
 }
 
 export interface SyncStatus {
-  state: 'pending' | 'synced' | 'error';
+  /**
+   * `orphaned`: the grant's Jellyfin item was deleted and no replacement could be resolved from its Seerr requests.
+   * Scheduled reconciliation skips it (lastError says why) until an administrator remaps it or runs a full reconcile.
+   */
+  state: 'pending' | 'synced' | 'error' | 'orphaned';
   attempts: number;
   lastAttemptAt?: string;
   lastSuccessAt?: string;

@@ -36,6 +36,14 @@ export interface ImportedSeerrUser {
   jellyfinUserId?: string;
 }
 
+/** A Seerr API call that returned a non-2xx status. */
+export class SeerrError extends Error {
+  public constructor(message: string, public readonly status: number) {
+    super(message);
+    this.name = 'SeerrError';
+  }
+}
+
 export class SeerrClient {
   readonly #baseUrl: string;
   readonly #apiKey: string;
@@ -179,7 +187,7 @@ export class SeerrClient {
     });
     if (!response.ok) {
       const detail = (await response.text()).slice(0, 500);
-      throw new Error(`Seerr GET ${path} returned ${response.status}${detail ? `: ${detail}` : ''}`);
+      throw new SeerrError(`Seerr GET ${path} returned ${response.status}${detail ? `: ${detail}` : ''}`, response.status);
     }
     return (await response.json()) as T;
   }
