@@ -17,7 +17,9 @@
  * aborted and its place freed if in flight. When the upstream says it is rate limited (`retryAfter` returns how long to
  * wait), no call starts until then, the bucket starts again from empty, and the refused call is retried once, first in
  * its lane, if it can still start before its time runs out: the household whose call met the limit is not charged for
- * everyone's load, and a limit never causes more than one retry per call.
+ * everyone's load, and a limit never causes more than one retry per call. A retry is queued like any new call, so only
+ * if its lane and every lane together have room: when either is full, the call fails with the upstream's error, as
+ * when its wait outlasts its time. So the queue bounds always hold, however many calls in flight are rate limited.
  */
 
 export class DispatchQueueFullError extends Error {
@@ -102,7 +104,7 @@ export class FairDispatcher {
         reject(signal.reason);
         return;
       }
-      if ((this.#lanes.get(lane)?.length ?? 0) >= this.#options.maxQueuedPerLane || this.#queued >= this.#options.maxQueued) {
+      if (!this.#hasRoom(lane)) {
         reject(new DispatchQueueFullError());
         return;
       }
@@ -129,6 +131,11 @@ export class FairDispatcher {
       this.#enqueue(job, false);
       this.#pump();
     });
+  }
+
+  /** Whether `lane`, and every lane together, can hold one more waiting call. Checked before every call is queued. */
+  #hasRoom(lane: string): boolean {
+    return (this.#lanes.get(lane)?.length ?? 0) < this.#options.maxQueuedPerLane && this.#queued < this.#options.maxQueued;
   }
 
   #enqueue(job: Job, first: boolean): void {
@@ -210,7 +217,10 @@ export class FairDispatcher {
       .then((value) => finish({ value }), (error: unknown) => finish({ error }));
   }
 
-  /** A call in flight failed with `error`: retried once if the upstream was rate limited and there is time, else failed. */
+  /**
+   * A call in flight failed with `error`: retried once if the upstream was rate limited, there is time, and its lane and
+   * every lane together have room for it, else failed.
+   */
   #failed(job: Job, error: unknown): void {
     const wait = job.signal?.aborted ? undefined : this.#options.retryAfter(error);
     if (wait === undefined) return job.reject(error);
@@ -220,7 +230,7 @@ export class FairDispatcher {
     // The bucket starts again from empty once the wait is over, so the limit is not met again by a burst.
     this.#tokens = 0;
     this.#refilledAt = Math.max(this.#refilledAt, this.#pausedUntil);
-    if (job.retried || job.deadline <= this.#pausedUntil) return job.reject(error);
+    if (job.retried || job.deadline <= this.#pausedUntil || !this.#hasRoom(job.lane)) return job.reject(error);
     job.retried = true;
     this.#enqueue(job, true);
   }

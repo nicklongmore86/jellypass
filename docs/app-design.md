@@ -338,7 +338,11 @@ next search answered `502`. TMDB calls now go through `FairDispatcher` (`src/fai
   no TMDB call starts until its `Retry-After` has passed (1 second when it gives none, at most 60), the bucket starts
   again from empty, and the refused call is retried once, first in its household's queue: the household whose call met
   the limit is not charged for everyone's load. A call is never retried more than once, and fails at once if the wait
-  would outlast its 10 seconds.
+  would outlast its 10 seconds. A retry is queued like a new call, so only when its household's queue holds fewer than
+  20 and all queues together fewer than their total: when either is full, the call fails at once instead, with the
+  same `502 unavailable` as a call that cannot be retried. So the queue bounds hold whatever TMDB answers. (Codex's
+  repro: with one household's 10 calls in flight and 20 waiting, TMDB refusing all 10 used to leave 30 waiting; now
+  20, and the 10 fail.)
 
 What remains shared, honestly: TMDB's capacity is one resource. While households are busy at the same time, a call
 waits for its turn, so A's latency rises with how many other households have calls waiting (never with what they asked
@@ -605,7 +609,8 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
   answering, 10 calls held open at a time and each closed by JellyPass when abandoned, the rest started in turn as
   places free; after a `429` nothing
   is sent until `Retry-After` has passed and the call is retried once, so neither the household that met it nor one
-  calling meanwhile fails; never a second retry; a wait longer than a call's time fails it at once and sends nothing);
+  calling meanwhile fails; never a second retry; a wait longer than a call's time fails it at once and sends nothing;
+  a retry never queued past the household's or the total queue bound);
   sessions (missing, invalid and disabled tokens and other households' members refused identically, non-members'
   tokens never kept, the three token forms, the 5-minute cache with membership checked every call, Jellyfin down or
   unreachable failing closed, the admin host, an unknown household and the app switched off answering `404` without
@@ -615,7 +620,10 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
   of each busy lane, not their queues), the token bucket, the per-lane and total queue bounds (refused at once), the
   queue timeout (and that a timed-out call is forgotten), a lane kept within its share while another always has a full
   queue, the wait after a rate limit (nothing starts meanwhile, the bucket restarts empty, the call is retried once,
-  first in its lane), no second retry, no retry when the wait outlasts the call, and no retry for other failures; and
+  first in its lane), no second retry, no retry when the wait outlasts the call, and no retry for other failures;
+  retries kept within the queue bounds: Codex's repro (production settings, one household with 10 calls in flight
+  and 20 waiting, TMDB refusing all 10: never more than 20 waiting, the 10 failed, and after the wait refused calls
+  retried while the lane has room) and the same for the bound on all lanes together; and
   the places in flight: Codex's repro (production settings, 30 never-answered calls from three households: 10 in
   flight, 20 waiting, after 1.1 seconds), lanes taking turns as places free, a place freed when a call succeeds,
   fails, throws at once, times out (also when the task ignores its abort) or its caller aborts, and calls waiting for
@@ -632,6 +640,7 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
   queue timeout; no bound on calls in flight, no call timeout, a place never freed, not starting the next call when a
   place frees, freed places not taken in turn, an abort not freeing a place or not aborting the task, the TMDB client
   ignoring the signal, the app not passing it; not retrying a `429`, retrying without limit, ignoring its wait, or not emptying the bucket after it;
+  queuing a retry without checking the household's queue bound, the total bound, or either;
   not reading `Retry-After`; keeping a failed TMDB answer; following TMDB redirects; dropping the fixed language;
   putting the URL (and with it the key) in TMDB errors. The step 1a rule of counting single-household members' requests
   fails the membership-change tests. Earlier checks still hold: skipping the disabled or household-membership check,

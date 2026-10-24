@@ -222,6 +222,78 @@ describe('fair dispatcher', () => {
     assert.equal(started.length, 3);
   });
 
+  it('never lets retries exceed a lane\'s queue bound, also when every call in flight meets a 429 (Codex\'s repro)', async () => {
+    // Production settings, one household: 10 calls in flight and 20 waiting, then TMDB refuses every call in flight.
+    const { fair, run, started } = dispatcher({
+      ratePerSecond: 20, burst: 10, maxInFlight: 10, maxQueuedPerLane: 20, maxQueued: 2000, callTimeoutMs: 60_000,
+    });
+    const controller = new AbortController();
+    const refusals = [];
+    const outcomes = Array.from({ length: 30 }, (_, index) =>
+      run('household', index, () => new Promise((resolve, reject) => {
+        refusals.push(() => reject(new RateLimited(300)));
+      }), { signal: controller.signal }).catch((error) => error));
+    await delay(20);
+    assert.equal(fair.inFlight, 10);
+    assert.equal(fair.queued, 20);
+    let mostQueued = fair.queued;
+    for (const refuse of refusals.splice(0)) {
+      refuse();
+      await delay(0);
+      mostQueued = Math.max(mostQueued, fair.queued);
+    }
+    // The lane is full, so none is retried: each fails with TMDB's 429, as a call that cannot be retried does.
+    assert.equal(mostQueued, 20);
+    assert.equal(fair.inFlight, 0);
+    for (const outcome of outcomes.slice(0, 10)) assert.ok(await outcome instanceof RateLimited);
+    assert.equal(started.length, 10);
+    // After the wait (the bucket refilling from empty) the next 10 start; a refused call is retried, first in its lane,
+    // only while the lane has room.
+    await delay(1000);
+    assert.equal(fair.inFlight, 10);
+    assert.equal(fair.queued, 10);
+    for (const refuse of refusals.splice(0)) {
+      refuse();
+      await delay(0);
+      mostQueued = Math.max(mostQueued, fair.queued);
+    }
+    assert.equal(mostQueued, 20);
+    assert.equal(fair.queued, 20);
+    controller.abort(new Error('gave up'));
+    await Promise.all(outcomes);
+    assert.equal(fair.queued, 0);
+    assert.equal(fair.inFlight, 0);
+  });
+
+  it('never lets retries exceed the bound on all lanes together', async () => {
+    // Three lanes each with room, but all lanes together full when TMDB refuses every call in flight.
+    const { fair, run } = dispatcher({
+      ratePerSecond: 20, burst: 10, maxInFlight: 10, maxQueuedPerLane: 20, maxQueued: 15, callTimeoutMs: 60_000,
+    });
+    const controller = new AbortController();
+    const refusals = [];
+    const outcomes = Array.from({ length: 25 }, (_, index) =>
+      run(`household-${index % 3}`, index, () => new Promise((resolve, reject) => {
+        refusals.push(() => reject(new RateLimited(300)));
+      }), { signal: controller.signal }).catch((error) => error));
+    await delay(20);
+    assert.equal(fair.inFlight, 10);
+    assert.equal(fair.queued, 15);
+    let mostQueued = fair.queued;
+    for (const refuse of refusals.splice(0)) {
+      refuse();
+      await delay(0);
+      mostQueued = Math.max(mostQueued, fair.queued);
+    }
+    assert.equal(mostQueued, 15);
+    assert.equal(fair.inFlight, 0);
+    for (const outcome of outcomes.slice(0, 10)) assert.ok(await outcome instanceof RateLimited);
+    controller.abort(new Error('gave up'));
+    await Promise.all(outcomes);
+    assert.equal(fair.queued, 0);
+    assert.equal(fair.inFlight, 0);
+  });
+
   it('never retries a call that failed for any other reason', async () => {
     const { run, started } = dispatcher();
     await assert.rejects(run('a', 'broken', async () => { throw new Error('boom'); }), /boom/);
