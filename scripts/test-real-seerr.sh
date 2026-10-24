@@ -2,8 +2,9 @@
 # Runs test/real-seerr.test.mjs against a throwaway Seerr container, removed afterwards. The container
 # starts from an empty config; this script reads the API key Seerr generated and seeds two users
 # straight into its database (an owner, a member with no permissions and a catalogue user), so no
-# media server is needed. Only the catalogue-preference test reaches TMDB, through Seerr, and it is
-# skipped when Seerr cannot. Run after `pnpm build`.
+# media server is needed. Only the catalogue-preference test reaches TMDB, through Seerr. It is skipped
+# only when a probe from inside the container shows TMDB is unreachable there, and never when CI or
+# SEERR_REQUIRE_TMDB=1 is set. Run after `pnpm build`.
 set -euo pipefail
 
 SEERR_IMAGE="${SEERR_IMAGE:-ghcr.io/seerr-team/seerr:v3.5.1}"
@@ -58,6 +59,18 @@ docker exec "$container" node -e '
   db.close((error) => { if (error) { console.error(error); process.exit(1); } });
 ' || fail 'could not seed Seerr users'
 
-if ! SEERR_REAL_URL="$url" SEERR_REAL_API_KEY="$api_key" node --test test/real-seerr.test.mjs; then
+# Whether Seerr's own network reaches TMDB: "reachable" on any HTTP answer, else "unreachable <reason>".
+tmdb_probe="$(docker exec "$container" node -e '
+  const request = require("https").get("https://api.themoviedb.org/3/configuration", { timeout: 10000 }, (response) => {
+    response.resume();
+    console.log("reachable");
+  });
+  request.on("timeout", () => request.destroy(Object.assign(new Error("timeout"), { code: "ETIMEDOUT" })));
+  request.on("error", (error) => console.log(`unreachable ${error.code || error.message}`));
+' 2>&1 | head -n 1)"
+echo "TMDB from the Seerr container: ${tmdb_probe}"
+
+if ! SEERR_REAL_URL="$url" SEERR_REAL_API_KEY="$api_key" SEERR_TMDB_PROBE="$tmdb_probe" \
+    node --test test/real-seerr.test.mjs; then
   fail 'real Seerr tests failed'
 fi

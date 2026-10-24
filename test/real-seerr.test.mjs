@@ -8,6 +8,10 @@ import { SeerrUserMap } from '../dist/seerr-users.js';
 const baseUrl = process.env.SEERR_REAL_URL;
 const apiKey = process.env.SEERR_REAL_API_KEY;
 const MEMBER_JELLYFIN_ID = '00000000-0000-0000-0000-00000000000b';
+// The script's probe of TMDB from inside the Seerr container ("reachable", or "unreachable <reason>"). Only a positive
+// "unreachable" lets the TMDB-backed test skip, and never in CI or with SEERR_REQUIRE_TMDB=1.
+const tmdbProbe = process.env.SEERR_TMDB_PROBE ?? '';
+const tmdbRequired = process.env.CI === 'true' || process.env.SEERR_REQUIRE_TMDB === '1';
 
 describe('real Seerr', { timeout: 60_000, skip: !baseUrl || !apiKey }, () => {
   let calls = [];
@@ -118,8 +122,10 @@ describe('real Seerr', { timeout: 60_000, skip: !baseUrl || !apiKey }, () => {
     const asMember = await originalFetch(`${baseUrl}/api/v1/discover/movies?page=1`, {
       headers: { Accept: 'application/json', 'X-Api-Key': apiKey, 'X-API-User': '2' },
     });
-    if (asMember.status === 500) return t.skip('Seerr cannot reach TMDB here');
-    assert.equal(asMember.status, 200);
+    if (asMember.status === 500 && !tmdbRequired && tmdbProbe.startsWith('unreachable ')) {
+      return t.skip(`Seerr cannot reach TMDB here (${tmdbProbe})`);
+    }
+    assert.equal(asMember.status, 200, `Seerr discover failed; TMDB probe: ${tmdbProbe || 'not run'}`);
     const memberResults = (await asMember.json()).results;
     assert.ok(memberResults.length > 0);
     assert.ok(memberResults.every((result) => result.originalLanguage === 'ja'), 'Seerr applied the member\'s preference');
