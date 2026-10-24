@@ -3,10 +3,7 @@ import { createServer } from 'node:http';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import {
   MAX_GUARDED_RESPONSE_BYTES,
-  SEERR_DISCOVER_LISTS,
   SeerrClient,
-  SeerrCatalogueClient,
-  SeerrCatalogueUserError,
   SeerrError,
   SeerrMemberClient,
   SeerrUnmappedUserError,
@@ -19,12 +16,10 @@ const BASE_URL = 'http://seerr.test';
 const API_KEY = 'test-api-key';
 const MEMBER_JELLYFIN_ID = 'aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
 const MEMBER = 42;
-const CATALOGUE = 43;
 
-/** Seerr's admin view of the member and the catalogue user, as GET /api/v1/user/:id answers it. */
+/** Seerr's admin view of the member, as GET /api/v1/user/:id answers it. */
 function seerrUserRecord(pathname) {
   if (pathname === `/api/v1/user/${MEMBER}`) return { id: MEMBER, permissions: 32, jellyfinUserId: MEMBER_JELLYFIN_ID.replaceAll('-', '') };
-  if (pathname === `/api/v1/user/${CATALOGUE}`) return { id: CATALOGUE, permissions: 0, jellyfinUserId: null };
   return undefined;
 }
 
@@ -57,15 +52,6 @@ afterEach(() => {
   globalThis.fetch = originalFetch;
 });
 
-/** Every public method of the catalogue client that calls Seerr as the catalogue user, called once. */
-const CATALOGUE_CALLS = {
-  search: (client) => client.search('synthetic', 2),
-  discover: (client) => client.discover('trending', 1),
-  movie: (client) => client.movie(900001),
-  tv: (client) => client.tv(900002),
-  season: (client) => client.season(900002, 1),
-};
-
 /** Every public method of the member client, called once with valid arguments. */
 const MEMBER_CALLS = {
   createRequest: (client) => client.createRequest({ mediaType: 'tv', tmdbId: 900002, seasons: [1, 2] }),
@@ -75,7 +61,6 @@ const MEMBER_CALLS = {
   watchlist: (client) => client.watchlist(1),
 };
 
-const catalogueClient = (baseUrl = BASE_URL) => new SeerrCatalogueClient(new SeerrClient(baseUrl, API_KEY), seerrUserId(CATALOGUE));
 const memberClient = (baseUrl = BASE_URL, user = MEMBER) =>
   new SeerrMemberClient(new SeerrClient(baseUrl, API_KEY), MEMBER_JELLYFIN_ID, proposing(user));
 /** The calls that acted as someone. */
@@ -83,7 +68,7 @@ const actingCalls = () => calls.filter((request) => request.headers.has('x-api-u
 
 /** Every public method of the admin-key client, called once with valid arguments. */
 const ADMIN_CALLS = {
-  catalogueUserProblem: (client) => client.catalogueUserProblem(seerrUserId(9)),
+  blocklist: (client) => client.blocklist(100, 0),
   findUserByJellyfinId: (client) => client.findUserByJellyfinId(MEMBER_JELLYFIN_ID),
   jellyfinUserIdOf: (client) => client.jellyfinUserIdOf(seerrUserId(9)),
   getRequest: (client) => client.getRequest('5'),
@@ -114,40 +99,21 @@ describe('Seerr user IDs', () => {
 });
 
 describe('acting-user Seerr clients', () => {
-  it('cannot be made without a valid Seerr user, Jellyfin user or admin client', () => {
+  it('cannot be made without a valid Jellyfin user or admin client', () => {
     const admin = new SeerrClient(BASE_URL, API_KEY);
-    for (const user of [undefined, null, 0, -3, 1.5, Number.NaN, '', '42', ' 42', '1e1', {}, [42]]) {
-      assert.throws(() => new SeerrCatalogueClient(admin, user), TypeError, String(user));
-    }
     for (const id of [undefined, null, '', 'alice-id', '42', '../user', 42]) {
       assert.throws(() => new SeerrMemberClient(admin, id), TypeError, String(id));
     }
     for (const fake of [undefined, {}, { findUserByJellyfinId: async () => ({ id: 42 }), jellyfinUserIdOf: async () => MEMBER_JELLYFIN_ID }]) {
       assert.throws(() => new SeerrMemberClient(fake, MEMBER_JELLYFIN_ID), TypeError);
-      assert.throws(() => new SeerrCatalogueClient(fake, seerrUserId(CATALOGUE)), TypeError);
     }
     assert.equal(calls.length, 0);
   });
 
   it('has a test for every public method', () => {
-    assert.deepEqual(publicMethods(SeerrCatalogueClient.prototype), [...Object.keys(CATALOGUE_CALLS), 'validate'].sort());
     assert.deepEqual(publicMethods(SeerrMemberClient.prototype), Object.keys(MEMBER_CALLS).sort());
     assert.deepEqual(publicMethods(SeerrClient.prototype), Object.keys(ADMIN_CALLS).sort());
   });
-
-  for (const [name, call] of Object.entries(CATALOGUE_CALLS)) {
-    it(`catalogue ${name} acts as the catalogue user once Seerr has confirmed it`, async () => {
-      await call(catalogueClient());
-      assert.deepEqual(calls.map((request) => `${request.url.pathname} ${request.headers.get('x-api-user')}`), [
-        `/api/v1/user/${CATALOGUE} null`,
-        `${calls[1].url.pathname} ${CATALOGUE}`,
-      ]);
-      const request = calls[1];
-      assert.equal(request.url.origin, BASE_URL);
-      assert.equal(request.headers.get('x-api-key'), API_KEY);
-      assert.equal(request.redirect, 'manual');
-    });
-  }
 
   for (const [name, call] of Object.entries(MEMBER_CALLS)) {
     it(`member ${name} confirms the member's Seerr user, then acts as it, never the owner`, async () => {
@@ -164,30 +130,16 @@ describe('acting-user Seerr clients', () => {
   }
 
   it('calls only the allowlisted routes, with the acting user in any user path', async () => {
-    const catalogue = catalogueClient();
     const member = memberClient();
-    for (const call of Object.values(CATALOGUE_CALLS)) await call(catalogue);
-    for (const list of SEERR_DISCOVER_LISTS) await catalogue.discover(list);
     for (const call of Object.values(MEMBER_CALLS)) await call(member);
     assert.deepEqual(actingCalls().map((request) => `${request.headers.get('x-api-user')} ${request.method} ${request.url.pathname}${request.url.search}`), [
-      '43 GET /api/v1/search?query=synthetic&page=2',
-      '43 GET /api/v1/discover/trending?page=1',
-      '43 GET /api/v1/movie/900001',
-      '43 GET /api/v1/tv/900002',
-      '43 GET /api/v1/tv/900002/season/1',
-      '43 GET /api/v1/discover/trending?page=1',
-      '43 GET /api/v1/discover/movies?page=1',
-      '43 GET /api/v1/discover/movies/upcoming?page=1',
-      '43 GET /api/v1/discover/tv?page=1',
-      '43 GET /api/v1/discover/tv/upcoming?page=1',
       '42 POST /api/v1/request',
       '42 GET /api/v1/user/42/requests?take=20&skip=0',
       '42 GET /api/v1/user/42/quota',
       '42 GET /api/v1/auth/me',
       '42 GET /api/v1/discover/watchlist?page=1',
     ]);
-    // The catalogue user and the member are each confirmed before every call.
-    assert.equal(calls.filter((request) => request.url.pathname === `/api/v1/user/${CATALOGUE}`).length, 10);
+    // The member is confirmed before every call.
     assert.equal(calls.filter((request) => request.url.pathname === `/api/v1/user/${MEMBER}`).length, 5);
   });
 
@@ -203,23 +155,14 @@ describe('acting-user Seerr clients', () => {
   });
 
   it('rejects malformed input before calling Seerr', async () => {
-    const catalogue = catalogueClient();
+    const admin = new SeerrClient(BASE_URL, API_KEY);
     const member = memberClient();
     const invalid = [
-      () => catalogue.search(''),
-      () => catalogue.search('   '),
-      () => catalogue.search('x'.repeat(201)),
-      () => catalogue.search('ok', 0),
-      () => catalogue.search('ok', 501),
-      () => catalogue.discover('../user'),
-      () => catalogue.discover('movies/genre/1'),
-      () => catalogue.discover('watchlist'),
-      () => catalogue.movie(0),
-      () => catalogue.movie('1/../../user'),
-      () => catalogue.movie(1.5),
-      () => catalogue.tv(-1),
-      () => catalogue.season(1, -1),
-      () => catalogue.season(1, '1/../../user'),
+      () => admin.blocklist(0, 0),
+      () => admin.blocklist(101, 0),
+      () => admin.blocklist(100, -1),
+      () => admin.blocklist('100&filter=manual', 0),
+      () => admin.blocklist(100, 1.5),
       () => member.createRequest({ mediaType: 'person', tmdbId: 1 }),
       () => member.createRequest({ mediaType: 'movie', tmdbId: '1' }),
       () => member.createRequest({ mediaType: 'tv', tmdbId: 1 }),
@@ -234,19 +177,19 @@ describe('acting-user Seerr clients', () => {
   });
 
   it('returns Seerr JSON unchanged for the caller to shape', async () => {
-    const fixture = seerrFixture('movie');
+    const fixture = seerrFixture('requests');
     respond = () => Response.json(fixture);
-    assert.deepEqual(await catalogueClient().movie(900001), fixture);
+    assert.deepEqual(await memberClient().ownRequests(), fixture);
   });
 
   it('reports a failed call by status and route only, never Seerr text or the IDs asked for', async () => {
     const leaky = JSON.stringify(seerrFixture('tv'));
     for (const status of [400, 403, 404, 409, 500, 503]) {
       respond = () => new Response(leaky, { status, headers: { 'Content-Type': 'application/json' } });
-      const error = await catalogueClient().tv(900002).catch((caught) => caught);
+      const error = await memberClient().ownRequests(20, 900002).catch((caught) => caught);
       assert.ok(error instanceof SeerrError);
       assert.equal(error.status, status);
-      assert.equal(error.message, `Seerr GET /api/v1/tv/:id returned ${status}`);
+      assert.equal(error.message, `Seerr GET /api/v1/user/:self/requests returned ${status}`);
       assertNoCanaries(`${error.message}\n${error.stack}`);
     }
     respond = () => new Response(`not json ${leaky}`, { status: 200 });
@@ -258,7 +201,7 @@ describe('acting-user Seerr clients', () => {
 
   it('refuses an oversized response', async () => {
     respond = () => new Response(`"${'x'.repeat(4 * 1024 * 1024)}"`, { status: 200 });
-    await assert.rejects(catalogueClient().search('synthetic'), (error) => error instanceof SeerrError && /too large/.test(error.message));
+    await assert.rejects(memberClient().ownUser(), (error) => error instanceof SeerrError && /too large/.test(error.message));
   });
 
   it('counts the size limit in bytes, not characters', async () => {
@@ -266,10 +209,10 @@ describe('acting-user Seerr clients', () => {
     // Two bytes per character: fewer characters than the limit, more bytes.
     const over = 'é'.repeat(MAX_GUARDED_RESPONSE_BYTES / 2);
     respond = () => new Response(`"${over}"`, { status: 200 });
-    await assert.rejects(catalogueClient().search('synthetic'), (error) => error instanceof SeerrError && /too large/.test(error.message));
+    await assert.rejects(memberClient().ownUser(), (error) => error instanceof SeerrError && /too large/.test(error.message));
     const under = 'é'.repeat(MAX_GUARDED_RESPONSE_BYTES / 2 - 1);
     respond = () => new Response(`"${under}"`, { status: 200 });
-    assert.equal(await catalogueClient().search('synthetic'), under);
+    assert.equal(await memberClient().ownUser(), under);
   });
 
   it('stops reading an oversized body as soon as it passes the limit', async () => {
@@ -357,125 +300,9 @@ describe('member client', () => {
   });
 });
 
-describe('catalogue client', () => {
-  it('refuses a catalogue user that is missing, the owner, has permissions or is linked to Jellyfin', async () => {
-    respondsToAdmin = true;
-    for (const [record, problem] of [
-      [undefined, 'does not exist'],
-      [{ id: CATALOGUE, permissions: 2, jellyfinUserId: null }, 'has permissions'],
-      [{ id: CATALOGUE, permissions: 32, jellyfinUserId: null }, 'has permissions'],
-      [{ id: CATALOGUE, jellyfinUserId: null }, 'has permissions'],
-      [{ id: CATALOGUE, permissions: 0, jellyfinUserId: MEMBER_JELLYFIN_ID }, 'is linked to a Jellyfin user'],
-      [{ id: 99, permissions: 0, jellyfinUserId: null }, 'does not exist'],
-    ]) {
-      calls = [];
-      respond = () => record ? Response.json(record) : Response.json({}, { status: 404 });
-      const catalogue = catalogueClient();
-      const error = await catalogue.search('synthetic').catch((caught) => caught);
-      assert.ok(error instanceof SeerrCatalogueUserError, problem);
-      assert.equal(error.message, `Seerr catalogue user ${problem}`);
-      assert.equal(actingCalls().length, 0, problem);
-    }
-    respond = () => Response.json({ id: 1, permissions: 0, jellyfinUserId: null });
-    const owner = new SeerrCatalogueClient(new SeerrClient(BASE_URL, API_KEY), seerrUserId(1));
-    await assert.rejects(owner.validate(), /Seerr catalogue user is the owner/);
-    assert.equal(actingCalls().length, 0);
-  });
-
-  /** Answers the catalogue user's record from `record`, which a test may change between calls, and title reads with {}. */
-  function catalogueSeerr(record) {
-    respondsToAdmin = true;
-    respond = ({ url, headers }) => !headers.has('x-api-user') && url.pathname === `/api/v1/user/${CATALOGUE}`
-      ? Response.json(record)
-      : Response.json({});
-  }
-  const trace = () => calls.map((request) => `${request.headers.get('x-api-user')} ${request.url.pathname}`);
-
-  it('confirms the catalogue user before every call, so one linked to a member since the last call fails closed', async () => {
-    // Codex's repro: a valid catalogue user, then linked to member B, who could then steer it with their own settings.
-    const record = { id: CATALOGUE, permissions: 0, jellyfinUserId: null };
-    catalogueSeerr(record);
-    const catalogue = catalogueClient();
-    await catalogue.discover('movies');
-    record.jellyfinUserId = MEMBER_JELLYFIN_ID;
-    const error = await catalogue.discover('movies').catch((caught) => caught);
-    assert.ok(error instanceof SeerrCatalogueUserError);
-    assert.equal(error.message, 'Seerr catalogue user is linked to a Jellyfin user');
-    assert.deepEqual(trace(), [
-      'null /api/v1/user/43',
-      '43 /api/v1/discover/movies',
-      'null /api/v1/user/43',
-    ]);
-  });
-
-  it('fails closed on the next call once the catalogue user is granted a permission', async () => {
-    const record = { id: CATALOGUE, permissions: 0, jellyfinUserId: null };
-    catalogueSeerr(record);
-    const catalogue = catalogueClient();
-    await catalogue.movie(1);
-    record.permissions = 32;
-    await assert.rejects(catalogue.tv(2), /Seerr catalogue user has permissions/);
-    record.permissions = 0;
-    await catalogue.tv(2);
-    assert.deepEqual(trace(), [
-      'null /api/v1/user/43',
-      '43 /api/v1/movie/1',
-      'null /api/v1/user/43',
-      'null /api/v1/user/43',
-      '43 /api/v1/tv/2',
-    ]);
-  });
-
-  it('confirms each of several concurrent calls on its own', async () => {
-    const record = { id: CATALOGUE, permissions: 0, jellyfinUserId: null };
-    catalogueSeerr(record);
-    const catalogue = catalogueClient();
-    await Promise.all([catalogue.movie(1), catalogue.movie(2), catalogue.tv(3), catalogue.search('synthetic')]);
-    assert.equal(calls.filter((request) => request.url.pathname === '/api/v1/user/43').length, 4);
-    assert.equal(actingCalls().length, 4);
-
-    // A link landing while some calls are being confirmed fails exactly those confirmed after it.
-    calls = [];
-    const inFlight = [catalogue.movie(1), catalogue.movie(2)];
-    record.jellyfinUserId = MEMBER_JELLYFIN_ID;
-    const later = [catalogue.movie(3), catalogue.tv(4)];
-    const settled = await Promise.allSettled([...inFlight, ...later]);
-    // The fake answers each check when it is made, so the first two read the record before the link.
-    assert.deepEqual(settled.map((result) => result.status), ['fulfilled', 'fulfilled', 'rejected', 'rejected']);
-    assert.deepEqual(actingCalls().map((request) => request.url.pathname), ['/api/v1/movie/1', '/api/v1/movie/2']);
-  });
-
-  it('confirms the catalogue user again after Seerr refuses it', async () => {
-    const record = { id: CATALOGUE, permissions: 0, jellyfinUserId: null };
-    catalogueSeerr(record);
-    const catalogue = catalogueClient();
-    respond = ({ url, headers }) => !headers.has('x-api-user') && url.pathname === `/api/v1/user/${CATALOGUE}`
-      ? Response.json(record)
-      : Response.json({}, { status: 403 });
-    await assert.rejects(catalogue.movie(1), (error) => error.status === 403);
-    await assert.rejects(catalogue.movie(1), (error) => error.status === 403);
-    assert.deepEqual(trace(), [
-      'null /api/v1/user/43',
-      '43 /api/v1/movie/1',
-      'null /api/v1/user/43',
-      '43 /api/v1/movie/1',
-    ]);
-  });
-
-  it('uses the same Seerr user for every caller, so no member\'s Seerr settings shape the catalogue', async () => {
-    const catalogue = catalogueClient();
-    await catalogue.discover('movies');
-    await catalogue.search('synthetic');
-    assert.deepEqual(actingCalls().map((request) => request.headers.get('x-api-user')), ['43', '43']);
-    // No region or language is sent: on /discover/movies and /discover/tv Seerr would read `language` as an
-    // original-language filter, so the catalogue user's own settings decide both, the same for everyone.
-    assert.ok(actingCalls().every((request) => !request.url.searchParams.has('language') && !request.url.searchParams.has('watchRegion')));
-  });
-});
-
 /**
- * Two real local servers: Seerr, which redirects everything but the member's and catalogue user's records (so the
- * acting-user calls get past their confirmations), and the redirect's target, which records what reaches it.
+ * Two real local servers: Seerr, which redirects everything but the member's record (so the acting-user calls get past
+ * their confirmations), and the redirect's target, which records what reaches it.
  */
 async function redirectingSeerr() {
   const reached = [];
@@ -513,11 +340,7 @@ describe('Seerr calls made for the household app, against a real redirect', () =
   const GUARDED_CALLS = {
     findUserByJellyfinId: ({ baseUrl }) => new SeerrClient(baseUrl, API_KEY).findUserByJellyfinId(MEMBER_JELLYFIN_ID),
     jellyfinUserIdOf: ({ baseUrl }) => new SeerrClient(baseUrl, API_KEY).jellyfinUserIdOf(seerrUserId(9)),
-    catalogueUserProblem: ({ baseUrl }) => new SeerrClient(baseUrl, API_KEY).catalogueUserProblem(seerrUserId(9)),
-    ...Object.fromEntries(Object.entries(CATALOGUE_CALLS).map(([name, call]) => [
-      `SeerrCatalogueClient.${name}`,
-      ({ baseUrl }) => call(catalogueClient(baseUrl)),
-    ])),
+    blocklist: ({ baseUrl }) => new SeerrClient(baseUrl, API_KEY).blocklist(100, 0),
     ...Object.fromEntries(Object.entries(MEMBER_CALLS).map(([name, call]) => [
       `SeerrMemberClient.${name}`,
       ({ baseUrl }) => call(memberClient(baseUrl)),
@@ -545,6 +368,7 @@ describe('Seerr calls made for the household app, on failure', () => {
       for (const [call, route] of [
         [() => admin.findUserByJellyfinId(MEMBER_JELLYFIN_ID), '/api/v1/user/jellyfin/:jellyfinUserId'],
         [() => admin.jellyfinUserIdOf(seerrUserId(9)), '/api/v1/user/:id'],
+        [() => admin.blocklist(100, 0), '/api/v1/blocklist'],
       ]) {
         const error = await call().catch((caught) => caught);
         assert.ok(error instanceof SeerrError);

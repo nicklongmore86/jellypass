@@ -10,7 +10,7 @@ const BASE = {
   SEERR_URL: 'http://seerr.test',
   SEERR_API_KEY: 'seerr-key',
 };
-const KEYS = [...Object.keys(BASE), 'REQUEST_BACKFILL_SINCE', 'REQUEST_BACKFILL_ENABLED', 'LOG_LEVEL', 'WS_IDLE_TIMEOUT_MS', 'WS_UPSTREAM_IDLE_TIMEOUT_MS', 'JELLYQUEST_BRIDGE_ENABLED', 'TRUSTED_PROXIES', 'SEERR_CATALOGUE_USER_ID', 'HOUSEHOLD_APP_ENABLED', 'HOUSEHOLD_DOMAIN'];
+const KEYS = [...Object.keys(BASE), 'REQUEST_BACKFILL_SINCE', 'REQUEST_BACKFILL_ENABLED', 'LOG_LEVEL', 'WS_IDLE_TIMEOUT_MS', 'WS_UPSTREAM_IDLE_TIMEOUT_MS', 'JELLYQUEST_BRIDGE_ENABLED', 'TRUSTED_PROXIES', 'TMDB_API_KEY', 'HOUSEHOLD_APP_ENABLED', 'HOUSEHOLD_DOMAIN'];
 const saved = Object.fromEntries(KEYS.map((key) => [key, process.env[key]]));
 
 function load(overrides = {}) {
@@ -28,23 +28,20 @@ function restoreEnvironment() {
   }
 }
 
-describe('Seerr catalogue user configuration', () => {
+const TMDB_V3_KEY = 'f00dfeedf00dfeedf00dfeedf00dfeed';
+const TMDB_V4_TOKEN = 'eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJzeW50aGV0aWMiLCJzdWIiOiJ0ZXN0In0.c3ludGhldGljLXNpZ25hdHVyZQ';
+
+describe('TMDB configuration', () => {
   afterEach(restoreEnvironment);
 
-  it('is optional, and a positive integer other than the owner when set', () => {
-    assert.equal(load().seerrCatalogueUserId, undefined);
-    assert.equal(load({ SEERR_CATALOGUE_USER_ID: ' 7 ' }).seerrCatalogueUserId, 7);
-    for (const value of ['0', '-2', '1.5', '7a', '07', '1e3', '99999999999999999999']) {
-      assert.throws(() => load({ SEERR_CATALOGUE_USER_ID: value }), /SEERR_CATALOGUE_USER_ID must be a positive integer/, value);
+  it('is optional, and a TMDB API key or read access token when set, never quoted in an error', () => {
+    assert.equal(load().tmdbApiKey, undefined);
+    assert.equal(load({ TMDB_API_KEY: ` ${TMDB_V3_KEY} ` }).tmdbApiKey, TMDB_V3_KEY);
+    assert.equal(load({ TMDB_API_KEY: TMDB_V4_TOKEN }).tmdbApiKey, TMDB_V4_TOKEN);
+    for (const value of ['secret-value', `${TMDB_V3_KEY}0`, 'eyJsecret.value', `Bearer ${TMDB_V4_TOKEN}`]) {
+      assert.throws(() => load({ TMDB_API_KEY: value }), (error) =>
+        /TMDB_API_KEY must be a TMDB API key/.test(error.message) && !error.message.includes(value.slice(0, 8)), value);
     }
-    assert.throws(() => load({ SEERR_CATALOGUE_USER_ID: '1' }), /must not be the Seerr owner/);
-  });
-
-  it('requires Seerr', () => {
-    assert.throws(
-      () => load({ SEERR_CATALOGUE_USER_ID: '7', SEERR_URL: undefined, SEERR_API_KEY: undefined }),
-      /SEERR_URL and SEERR_API_KEY are required when SEERR_CATALOGUE_USER_ID/,
-    );
   });
 });
 
@@ -53,18 +50,18 @@ describe('household app configuration', () => {
 
   it('is off by default, even with everything it needs configured', () => {
     assert.equal(load().householdAppEnabled, false);
-    assert.equal(load({ HOUSEHOLD_DOMAIN: 'example.test', SEERR_CATALOGUE_USER_ID: '7' }).householdAppEnabled, false);
+    assert.equal(load({ HOUSEHOLD_DOMAIN: 'example.test', TMDB_API_KEY: TMDB_V3_KEY }).householdAppEnabled, false);
     assert.equal(load({ HOUSEHOLD_APP_ENABLED: 'false' }).householdAppEnabled, false);
   });
 
-  it('needs household hosts, Seerr and the catalogue user when enabled', () => {
-    const ready = { HOUSEHOLD_APP_ENABLED: 'true', HOUSEHOLD_DOMAIN: 'example.test', SEERR_CATALOGUE_USER_ID: '7' };
+  it('needs household hosts, Seerr and TMDB when enabled', () => {
+    const ready = { HOUSEHOLD_APP_ENABLED: 'true', HOUSEHOLD_DOMAIN: 'example.test', TMDB_API_KEY: TMDB_V3_KEY };
     assert.equal(load(ready).householdAppEnabled, true);
     assert.equal(load({ ...ready, HOUSEHOLD_APP_ENABLED: '1' }).householdAppEnabled, true);
-    for (const missing of ['HOUSEHOLD_DOMAIN', 'SEERR_CATALOGUE_USER_ID']) {
-      assert.throws(() => load({ ...ready, [missing]: undefined }), /SEERR_CATALOGUE_USER_ID are required when HOUSEHOLD_APP_ENABLED is true/, missing);
+    for (const missing of ['HOUSEHOLD_DOMAIN', 'TMDB_API_KEY']) {
+      assert.throws(() => load({ ...ready, [missing]: undefined }), /SEERR_API_KEY and TMDB_API_KEY are required when HOUSEHOLD_APP_ENABLED is true/, missing);
     }
-    assert.throws(() => load({ ...ready, SEERR_URL: undefined, SEERR_API_KEY: undefined }), /SEERR_URL and SEERR_API_KEY are required/);
+    assert.throws(() => load({ ...ready, SEERR_URL: undefined, SEERR_API_KEY: undefined }), /SEERR_URL, SEERR_API_KEY and TMDB_API_KEY are required/);
     assert.throws(() => load({ ...ready, HOUSEHOLD_APP_ENABLED: 'yes' }), /HOUSEHOLD_APP_ENABLED must be true, false, 1, or 0/);
   });
 });

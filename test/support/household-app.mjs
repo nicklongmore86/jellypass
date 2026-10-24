@@ -1,27 +1,41 @@
-// A household app under test: a fake Seerr and a fake Jellyfin (both real HTTP servers), and a JellyPass server whose
-// household gateway serves the app API from them. Seerr answers are built from the canary-laden 3.5.1 fixtures.
+// A household app under test: a fake TMDB, a fake Seerr and a fake Jellyfin (all real HTTP servers), and a JellyPass
+// server whose household gateway serves the app API from them. TMDB answers are the canary-laden TMDB fixtures; Seerr
+// answers are built from the canary-laden Seerr 3.5.1 fixtures.
 import { request as httpRequest, createServer } from 'node:http';
 import path from 'node:path';
 import { AccessService } from '../../dist/access-service.js';
 import { JellyfinClient } from '../../dist/jellyfin.js';
-import { SeerrCatalogueClient, SeerrClient, seerrUserId } from '../../dist/seerr.js';
+import { SeerrClient } from '../../dist/seerr.js';
 import { SeerrUserMap } from '../../dist/seerr-users.js';
 import { makeServer } from '../../dist/server.js';
 import { GrantStore } from '../../dist/store.js';
+import { TmdbClient } from '../../dist/tmdb.js';
 import { seerrFixture } from './seerr-fixtures.mjs';
+import { tmdbFixture } from './tmdb-fixtures.mjs';
 import { makeTempDir } from './temp-dir.mjs';
 
-// Jellyfin users (32 hex digits, none a canary). Alice and Ann are household A ("farmhouse"); Bob is household B.
+// Jellyfin users (32 hex digits, none a canary). Alice and Ann are household A ("farmhouse"); Bob is household B
+// ("mill"); Carol is in no household unless a test puts her in some (see SHARED_HOUSEHOLDS); the outsider is in none.
 export const ALICE = 'a11ce000a11ce000a11ce000a11ce000';
 export const ANN = 'a2200000a2200000a2200000a2200000';
 export const BOB = 'b0b00000b0b00000b0b00000b0b00000';
+export const CAROL = 'ca201000ca201000ca201000ca201000';
 export const OUTSIDER = 'e0e00000e0e00000e0e00000e0e00000';
-export const TOKENS = { [ALICE]: 'token-alice', [ANN]: 'token-ann', [BOB]: 'token-bob', [OUTSIDER]: 'token-outsider' };
+export const TOKENS = { [ALICE]: 'token-alice', [ANN]: 'token-ann', [BOB]: 'token-bob', [CAROL]: 'token-carol', [OUTSIDER]: 'token-outsider' };
 export const HOST_A = 'jelly-farmhouse.example.test';
 export const HOST_B = 'jelly-mill.example.test';
-// Seerr users: each member's, and the catalogue user.
-export const SEERR_IDS = { [ALICE]: 11, [ANN]: 12, [BOB]: 21, [OUTSIDER]: 31 };
-export const CATALOGUE = 50;
+/** The default households, and the same with Carol in both. */
+export const HOUSEHOLDS = [
+  { id: 'farmhouse', name: 'Farmhouse', userIds: [ALICE, ANN] },
+  { id: 'mill', name: 'Mill', userIds: [BOB] },
+];
+export const SHARED_HOUSEHOLDS = [
+  { id: 'farmhouse', name: 'Farmhouse', userIds: [ALICE, ANN, CAROL] },
+  { id: 'mill', name: 'Mill', userIds: [BOB, CAROL] },
+];
+// Seerr users, one per Jellyfin user.
+export const SEERR_IDS = { [ALICE]: 11, [ANN]: 12, [BOB]: 21, [CAROL]: 41, [OUTSIDER]: 31 };
+export const ADMIN = 2;
 export const REQUEST = 32;
 export const REQUEST_MOVIE = 262_144;
 export const REQUEST_TV = 524_288;
@@ -37,6 +51,9 @@ export const ITEMS = {
   ownMovie: '33330000333300003333000033330000',
 };
 
+/** JellyPass's TMDB v3 API key in these tests (not a canary). */
+export const TMDB_KEY = 'f00dfeedf00dfeedf00dfeedf00dfeed';
+
 /** A household's member, by Jellyfin ID, as `Authorization` for the app. */
 export function authorization(userId) {
   return `MediaBrowser Client="JellyPass app test", Device="Test", DeviceId="app-test", Version="1.0.0", Token="${TOKENS[userId]}"`;
@@ -44,15 +61,20 @@ export function authorization(userId) {
 
 /**
  * The baseline world, in which nobody but household A holds or asks for anything. `options` change it:
- * - `media`: tmdbId → Seerr's `mediaInfo` for that title (undefined: Seerr has no record);
+ * - `media`: tmdbId → Seerr's `mediaInfo` for that title (undefined: Seerr has no record). The app never reads it:
+ *   the fake Seerr counts any title read as a violation;
  * - `requests`: Seerr user → that user's own requests (Seerr request objects);
+ * - `blocklist`: the titles on Seerr's blocklist, as `{ mediaType, tmdbId }`;
  * - `items`, `episodes`: extra Jellyfin items and episodes;
- * - `seerrUsers`: Seerr user → changes to its record (permissions, jellyfinUserId).
+ * - `seerrUsers`: Seerr user → changes to its record (permissions, jellyfinUserId);
+ * - `failCatalogue`: a status TMDB answers every title call with;
+ * - `tmdbMovies`: more movies TMDB knows, by TMDB ID, as `{ title, release_date }`; search lists them too.
  */
 export function world(options = {}) {
   return {
     media: { ...options.media },
     requests: { ...options.requests },
+    blocklist: [...(options.blocklist ?? [])],
     items: [
       { Id: ITEMS.ownMovie, Name: 'Synthetic Movie Three', Type: 'Movie', ProviderIds: { Tmdb: String(OWN_MOVIE) }, Tags: [], library: 'shared' },
       ...(options.items ?? []),
@@ -62,6 +84,7 @@ export function world(options = {}) {
       [ALICE]: { Name: 'Alice', Policy: { BlockedTags: ['jellypass-held-elsewhere'], EnabledFolders: ['shared'] } },
       [ANN]: { Name: 'Ann', Policy: { BlockedTags: ['jellypass-held-elsewhere'], EnabledFolders: ['shared'] } },
       [BOB]: { Name: 'Bob', Policy: { BlockedTags: [], EnableAllFolders: true } },
+      [CAROL]: { Name: 'Carol', Policy: { BlockedTags: [], EnableAllFolders: true } },
       [OUTSIDER]: { Name: 'Outsider', Policy: { BlockedTags: [], EnableAllFolders: true } },
       ...options.jellyfinUsers,
     },
@@ -69,13 +92,14 @@ export function world(options = {}) {
       [SEERR_IDS[ALICE]]: { jellyfinUserId: ALICE, permissions: REQUEST },
       [SEERR_IDS[ANN]]: { jellyfinUserId: ANN, permissions: REQUEST },
       [SEERR_IDS[BOB]]: { jellyfinUserId: BOB, permissions: REQUEST },
+      [SEERR_IDS[CAROL]]: { jellyfinUserId: CAROL, permissions: REQUEST },
       [SEERR_IDS[OUTSIDER]]: { jellyfinUserId: OUTSIDER, permissions: REQUEST },
-      [CATALOGUE]: { jellyfinUserId: null, permissions: 0 },
       ...options.seerrUsers,
     },
     tokens: { ...TOKENS, ...options.tokens },
     grants: [...(options.grants ?? [])],
     failCatalogue: options.failCatalogue,
+    tmdbMovies: { ...options.tmdbMovies },
     extraResults: options.extraResults ?? 0,
   };
 }
@@ -96,6 +120,17 @@ export function seerrRequest({ type, tmdbId, status = 1, is4k = false, seasons }
 export function mediaInfo(tmdbId, status, { requests } = {}) {
   const source = tmdbId === T_TV ? seerrFixture('tv').mediaInfo : seerrFixture('movie').mediaInfo;
   return { ...source, tmdbId, status, requests: requests ?? source.requests };
+}
+
+/**
+ * Seerr's `mediaInfo` for T as a busy server would hold it: thousands of other households' requests, about `megabytes`
+ * of JSON in all, each full of canaries.
+ */
+export function largeMediaInfo(tmdbId, megabytes) {
+  const request = seerrFixture('movie').mediaInfo.requests[0];
+  const size = Buffer.byteLength(JSON.stringify(request));
+  const requests = Array.from({ length: Math.ceil((megabytes * 1024 * 1024) / size) }, () => request);
+  return mediaInfo(tmdbId, 5, { requests });
 }
 
 /** The worlds that differ from the baseline only in whether household B holds or asked for T. */
@@ -136,6 +171,17 @@ export function otherHouseholdWorlds() {
       items: tItems({ Tags: [], library: 'mill-only' }),
       episodes: tEpisodes,
     }),
+    // Codex's measurement: +1 MB of Seerr records slowed A's answers, +4.3 MB made them fail. Seerr is not on the
+    // catalogue path, so neither can matter now; Bob's own request history is long too.
+    'large Seerr records of other households\' requests': world({
+      media: { [T_MOVIE]: largeMediaInfo(T_MOVIE, 5), [T_TV]: largeMediaInfo(T_TV, 5) },
+      requests: {
+        [SEERR_IDS[BOB]]: [
+          seerrRequest({ type: 'movie', tmdbId: T_MOVIE, status: 1 }),
+          ...Array.from({ length: 2000 }, (_, index) => seerrRequest({ type: 'movie', tmdbId: 800000 + index, status: 2 })),
+        ],
+      },
+    }),
   };
 }
 
@@ -170,12 +216,9 @@ export async function createFakeSeerr(state) {
       const mine = state.requests[acting] ?? [];
       return send(response, 200, { pageInfo: { pages: 7300901, pageSize: take, results: 7300902, page: 7300903 }, results: mine.slice(skip, skip + take) });
     }
-    if (acting !== CATALOGUE) {
-      violations.push(`${acting} read ${url.pathname}`);
-      return send(response, 403, { message: 'canary' });
-    }
-    if (state.failCatalogue) return send(response, state.failCatalogue, { message: 'canary upstream failure', stack: 'canary stack' });
-    return catalogue(url, response);
+    // Titles never come from Seerr: its title answers carry every household's media records and requests.
+    violations.push(`${acting} read ${url.pathname}`);
+    return send(response, 403, { message: 'canary' });
   });
 
   function admin(url, response) {
@@ -191,59 +234,80 @@ export async function createFakeSeerr(state) {
       return user ? send(response, 200, { id: Number(byId[1]), permissions: user.permissions, jellyfinUserId: user.jellyfinUserId, email: 'canary@example.invalid' })
         : send(response, 404, { message: 'canary' });
     }
+    if (url.pathname === '/api/v1/blocklist') {
+      const take = Number(url.searchParams.get('take'));
+      const skip = Number(url.searchParams.get('skip'));
+      const entries = state.blocklist.map(({ mediaType, tmdbId }, index) => ({
+        id: 7300800 + index,
+        mediaType,
+        title: 'canary blocklisted title',
+        tmdbId,
+        blocklistedTags: null,
+        createdAt: '2001-01-01T00:00:00.000Z',
+        user: seerrFixture('requests').results.find((request) => request.modifiedBy).modifiedBy,
+      }));
+      return send(response, 200, { pageInfo: { pages: 7300901, pageSize: take, results: 7300902, page: 7300903 }, results: entries.slice(skip, skip + take) });
+    }
     violations.push(`admin GET ${url.pathname}`);
-    return send(response, 404, { message: 'canary' });
-  }
-
-  /** A title with the world's own `mediaInfo` for it (none when Seerr has no record of it). */
-  function withMedia(title) {
-    const result = { ...title };
-    delete result.mediaInfo;
-    if (Object.hasOwn(state.media, title.id)) result.mediaInfo = state.media[title.id];
-    return result;
-  }
-
-  function searchResults() {
-    const fixture = seerrFixture('search').results;
-    const extra = Array.from({ length: state.extraResults }, (_, index) =>
-      ({ ...fixture[2], id: 910000 + index, title: `Synthetic Extra ${index}`, posterPath: `/synthetic-poster-${910000 + index}.jpg` }));
-    return [...fixture, ...extra].map((entry) => entry.mediaType === 'person' ? entry : withMedia(entry));
-  }
-
-  function catalogue(url, response) {
-    const page = (results) => send(response, 200, { page: Number(url.searchParams.get('page')), totalPages: 7300911, totalResults: 7300912, results });
-    if (url.pathname === '/api/v1/search') return page(searchResults());
-    if (url.pathname === '/api/v1/discover/trending') return page(searchResults());
-    if (url.pathname === '/api/v1/discover/movies' || url.pathname === '/api/v1/discover/movies/upcoming') {
-      return page(searchResults().filter((entry) => entry.mediaType === 'movie'));
-    }
-    if (url.pathname === '/api/v1/discover/tv' || url.pathname === '/api/v1/discover/tv/upcoming') {
-      return page(searchResults().filter((entry) => entry.mediaType === 'tv'));
-    }
-    const movie = /^\/api\/v1\/movie\/([0-9]+)$/.exec(url.pathname);
-    if (movie) {
-      const tmdbId = Number(movie[1]);
-      const listed = seerrFixture('search').results.find((entry) => entry.id === tmdbId && entry.mediaType === 'movie');
-      if (!listed) return send(response, 404, { message: 'canary not found' });
-      return send(response, 200, withMedia({ ...seerrFixture('movie'), id: tmdbId, title: listed.title, posterPath: listed.posterPath }));
-    }
-    const tv = /^\/api\/v1\/tv\/([0-9]+)$/.exec(url.pathname);
-    if (tv) {
-      if (Number(tv[1]) !== T_TV) return send(response, 404, { message: 'canary not found' });
-      return send(response, 200, withMedia(seerrFixture('tv')));
-    }
-    const season = /^\/api\/v1\/tv\/([0-9]+)\/season\/([0-9]+)$/.exec(url.pathname);
-    if (season) {
-      const seasonNumber = Number(season[2]);
-      if (Number(season[1]) !== T_TV || ![1, 2].includes(seasonNumber)) return send(response, 404, { message: 'canary not found' });
-      return send(response, 200, { ...seerrFixture('season'), seasonNumber, name: `Season ${seasonNumber}` });
-    }
-    violations.push(`catalogue GET ${url.pathname}`);
     return send(response, 404, { message: 'canary' });
   }
 
   await listen(server);
   return { url: `http://127.0.0.1:${server.address().port}`, calls, violations, state, close: () => close(server) };
+}
+
+/**
+ * Starts a fake TMDB serving the TMDB fixtures. It refuses any call without JellyPass's key (as `api_key`) and records
+ * every call in `calls`. `state.failCatalogue` makes every title call fail with that status.
+ */
+export async function createFakeTmdb(state) {
+  const calls = [];
+  const server = createServer((request, response) => {
+    const url = new URL(request.url, 'http://localhost');
+    calls.push({ method: request.method, path: `${url.pathname}${url.search}`, pathname: url.pathname, query: url.searchParams, headers: request.headers });
+    if (url.searchParams.get('api_key') !== TMDB_KEY) return send(response, 401, { status_code: 7, status_message: 'canary invalid key' });
+    if (url.pathname === '/3/authentication') return send(response, 200, { success: true, status_code: 1, status_message: 'Success.' });
+    if (state.failCatalogue) return send(response, state.failCatalogue, { status_code: 7300999, status_message: 'canary upstream failure' });
+    const page = Number(url.searchParams.get('page'));
+    const list = (results) => send(response, 200, { page, results, total_pages: 7300911, total_results: 7300912 });
+    if (url.pathname === '/3/search/multi' || url.pathname === '/3/trending/all/day') return list(searchResults());
+    if (url.pathname === '/3/discover/movie' || url.pathname === '/3/discover/tv') {
+      const type = url.pathname.endsWith('movie') ? 'movie' : 'tv';
+      // TMDB's discover results carry no media_type.
+      return list(searchResults().filter((entry) => entry.media_type === type).map(({ media_type: _, ...entry }) => entry));
+    }
+    const movie = /^\/3\/movie\/([0-9]+)$/.exec(url.pathname);
+    if (movie) {
+      const tmdbId = Number(movie[1]);
+      const listed = searchResults().find((entry) => entry.id === tmdbId && entry.media_type === 'movie');
+      if (!listed) return send(response, 404, { status_code: 34, status_message: 'canary not found' });
+      return send(response, 200, { ...tmdbFixture('movie'), id: tmdbId, title: listed.title, release_date: listed.release_date, poster_path: listed.poster_path });
+    }
+    const tv = /^\/3\/tv\/([0-9]+)$/.exec(url.pathname);
+    if (tv) {
+      if (Number(tv[1]) !== T_TV) return send(response, 404, { status_code: 34, status_message: 'canary not found' });
+      return send(response, 200, tmdbFixture('tv'));
+    }
+    const season = /^\/3\/tv\/([0-9]+)\/season\/([0-9]+)$/.exec(url.pathname);
+    if (season) {
+      const seasonNumber = Number(season[2]);
+      if (Number(season[1]) !== T_TV || ![1, 2].includes(seasonNumber)) return send(response, 404, { status_code: 34, status_message: 'canary not found' });
+      return send(response, 200, { ...tmdbFixture('season'), season_number: seasonNumber, name: `Season ${seasonNumber}` });
+    }
+    return send(response, 404, { status_code: 34, status_message: 'canary unknown route' });
+  });
+
+  function searchResults() {
+    const fixture = tmdbFixture('search').results;
+    const extra = Array.from({ length: state.extraResults ?? 0 }, (_, index) =>
+      ({ ...fixture[2], id: 910000 + index, title: `Synthetic Extra ${index}`, poster_path: `/synthetic-poster-${910000 + index}.jpg` }));
+    const movies = Object.entries(state.tmdbMovies ?? {}).map(([id, movie]) =>
+      ({ ...fixture[2], id: Number(id), poster_path: `/synthetic-poster-${id}.jpg`, ...movie }));
+    return [...fixture, ...extra, ...movies];
+  }
+
+  await listen(server);
+  return { url: `http://127.0.0.1:${server.address().port}`, calls, state, close: () => close(server) };
 }
 
 /**
@@ -304,19 +368,18 @@ function sees(user, item) {
 }
 
 /**
- * Starts the whole app for `state`: fake Seerr and Jellyfin and a JellyPass server with households A (Alice, Ann) and B
- * (Bob). Pass `app: false` to start JellyPass without the app API, `seerr: { url, apiKey }` to use a real Seerr instead
- * of the fake (with its `catalogueUserId`), and `households` to replace the two households.
+ * Starts the whole app for `state`: fake TMDB, Seerr and Jellyfin and a JellyPass server with households A (Alice, Ann)
+ * and B (Bob). Pass `app: false` to start JellyPass without the app API, `seerr: { url, apiKey }` to use a real Seerr
+ * instead of the fake, `households` to replace the two households, and `now`, `libraryTtlMs`, `titleTtlMs` or
+ * `blocklistTtlMs` to set the app's clock and cache lifetimes.
  */
 export async function startApp(t, state = world(), options = {}) {
   const seerr = options.seerr ? { ...options.seerr, close: async () => undefined } : await createFakeSeerr(state);
+  const tmdb = await createFakeTmdb(state);
   const jellyfin = await createFakeJellyfinForApp(state);
   const store = new GrantStore(path.join(await makeTempDir(t, 'jfa-app-'), 'grants.json'));
   await store.load();
-  for (const household of options.households ?? [
-    { id: 'farmhouse', name: 'Farmhouse', userIds: [ALICE, ANN] },
-    { id: 'mill', name: 'Mill', userIds: [BOB] },
-  ]) await store.upsertGroup(household);
+  for (const household of options.households ?? HOUSEHOLDS) await store.upsertGroup(household);
   for (const grant of state.grants ?? []) {
     if (grant.request) await store.grant(grant.request);
     if (grant.manual) await store.setManualAccess(grant.manual);
@@ -327,22 +390,26 @@ export async function startApp(t, state = world(), options = {}) {
     householdGateway: { jellyfinUrl: jellyfin.url, domain: 'example.test', hostPrefix: 'jelly-' },
     ...(options.app === false ? {} : {
       householdApp: {
-        catalogue: new SeerrCatalogueClient(admin, seerrUserId(options.catalogueUserId ?? CATALOGUE)),
+        catalogue: new TmdbClient(TMDB_KEY, { baseUrl: tmdb.url, ...(options.now ? { now: options.now } : {}) }),
+        blocklist: admin,
         members: new SeerrUserMap(admin),
         ...(options.now ? { now: options.now } : {}),
         ...(options.libraryTtlMs !== undefined ? { libraryTtlMs: options.libraryTtlMs } : {}),
+        ...(options.titleTtlMs !== undefined ? { titleTtlMs: options.titleTtlMs } : {}),
+        ...(options.blocklistTtlMs !== undefined ? { blocklistTtlMs: options.blocklistTtlMs } : {}),
       },
     }),
   });
   await listen(server);
   t.after(async () => {
     server.closeAllConnections();
-    await Promise.all([close(server), seerr.close(), jellyfin.close()]);
+    await Promise.all([close(server), seerr.close(), tmdb.close(), jellyfin.close()]);
   });
   const port = server.address().port;
   return {
     port,
     seerr,
+    tmdb,
     jellyfin,
     store,
     service,

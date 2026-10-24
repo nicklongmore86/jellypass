@@ -78,8 +78,8 @@ export function normalizeJellyfinUserId(value: string): string | undefined {
 /**
  * The admin-key Seerr client. Its calls send only `X-Api-Key`, so Seerr runs them as its owner account (user 1): use it
  * for JellyPass's own administrative work, never on behalf of a household member. Calls made for a member go through
- * {@link SeerrMemberClient} (their own data, verified before every call) or {@link SeerrCatalogueClient} (titles, as
- * a dedicated catalogue user).
+ * {@link SeerrMemberClient} (their own data, verified before every call). The household app reads titles from TMDB,
+ * never from Seerr (see `src/tmdb.ts`).
  */
 export class SeerrClient {
   readonly #baseUrl: string;
@@ -125,24 +125,20 @@ export class SeerrClient {
   }
 
   /**
-   * Why a Seerr user cannot be the catalogue user, or undefined if it can: it must exist, must not be the owner, must
-   * have no permissions at all and must not be linked to a Jellyfin user (so no household member ever acts as it).
-   * Throws on any other failed lookup; guarded like {@link findUserByJellyfinId}.
+   * One page of Seerr's blocklist (GET /api/v1/blocklist), newest first. The blocklist is kept by administrators and is
+   * the same for every household: each entry names a title and the administrator who blocklisted it, and Seerr joins
+   * nothing else to it (no media record, no requests). Guarded like {@link findUserByJellyfinId}.
    */
-  public async catalogueUserProblem(user: SeerrUserId): Promise<string | undefined> {
-    const record = await this.#userRecord(user);
-    if (!record) return 'does not exist';
-    if (user === 1) return 'is the owner';
-    if (record.permissions !== 0) return 'has permissions';
-    if (record.jellyfinUserId !== null && record.jellyfinUserId !== undefined && record.jellyfinUserId !== '') {
-      return 'is linked to a Jellyfin user';
+  public blocklist(take: number, skip: number): Promise<unknown> {
+    if (!Number.isSafeInteger(take) || take < 1 || take > 100 || !Number.isSafeInteger(skip) || skip < 0) {
+      throw new TypeError('paging is invalid');
     }
-    return undefined;
+    return this.#guardedGet('/api/v1/blocklist', `/api/v1/blocklist?take=${take}&skip=${skip}`);
   }
 
   /** Seerr's GET /api/v1/user/:id as the admin, or undefined when that user does not exist (or is not the one asked for). */
-  async #userRecord(user: SeerrUserId): Promise<{ jellyfinUserId?: unknown; permissions?: unknown } | undefined> {
-    let answer: { id?: unknown; jellyfinUserId?: unknown; permissions?: unknown };
+  async #userRecord(user: SeerrUserId): Promise<{ jellyfinUserId?: unknown } | undefined> {
+    let answer: { id?: unknown; jellyfinUserId?: unknown };
     try {
       answer = await this.#guardedGet('/api/v1/user/:id', `/api/v1/user/${seerrUserId(user)}`) as typeof answer;
     } catch (error) {
@@ -310,10 +306,6 @@ export class SeerrClient {
   }
 }
 
-/** The discover lists the household app can show. */
-export const SEERR_DISCOVER_LISTS = ['trending', 'movies', 'movies/upcoming', 'tv', 'tv/upcoming'] as const;
-export type SeerrDiscoverList = typeof SEERR_DISCOVER_LISTS[number];
-
 /** An HD request for a title: a whole movie, or the named seasons of a series. */
 export type SeerrRequestInput =
   | { mediaType: 'movie'; tmdbId: number }
@@ -333,14 +325,6 @@ export class SeerrUnmappedUserError extends Error {
   public constructor() {
     super('Seerr has no confirmed user for this Jellyfin user');
     this.name = 'SeerrUnmappedUserError';
-  }
-}
-
-/** The configured catalogue user is unfit for the role (see {@link SeerrClient.catalogueUserProblem}). */
-export class SeerrCatalogueUserError extends Error {
-  public constructor(problem: string) {
-    super(`Seerr catalogue user ${problem}`);
-    this.name = 'SeerrCatalogueUserError';
   }
 }
 
@@ -462,71 +446,6 @@ export class SeerrMemberClient {
 }
 
 /**
- * Seerr's title catalogue (search, discover, details), read as one dedicated Seerr user that belongs to no household
- * member. Seerr shapes these answers with the acting user's own settings (discover region, original language and
- * display locale; Seerr 3.5.1 `createTmdbWithRegionLanguage` and `checkUser`), so reading them as a member would make
- * one member's results depend on whichever Seerr user they were last mapped to. The catalogue user is the same for
- * everyone, and Seerr confirms it is fit for the role ({@link SeerrClient.catalogueUserProblem}) immediately before
- * every call, the way member calls are confirmed: a user that has since gained permissions or a Jellyfin link (so a
- * member could change the settings that shape the catalogue) fails the call with {@link SeerrCatalogueUserError}. This
- * costs one admin read per call. Nothing it reads is anyone's own data.
- */
-export class SeerrCatalogueClient {
-  readonly #admin: SeerrClient;
-  readonly #user: SeerrUserId;
-
-  public constructor(admin: SeerrClient, user: SeerrUserId) {
-    if (!credentials.has(admin)) throw new TypeError('Seerr admin client is invalid');
-    this.#admin = admin;
-    this.#user = seerrUserId(user);
-  }
-
-  public get userId(): SeerrUserId {
-    return this.#user;
-  }
-
-  /**
-   * Confirms with Seerr that the catalogue user is fit for the role, for example at startup. Throws
-   * {@link SeerrCatalogueUserError} if it is not, or the {@link SeerrError} if Seerr fails.
-   */
-  public async validate(): Promise<void> {
-    const problem = await this.#admin.catalogueUserProblem(this.#user);
-    if (problem) throw new SeerrCatalogueUserError(problem);
-  }
-
-  public search(query: string, page = 1): Promise<unknown> {
-    if (typeof query !== 'string' || !query.trim() || query.length > 200) throw new TypeError('search query is invalid');
-    const parameters = new URLSearchParams({ query, page: String(pageNumber(page)) });
-    return this.#get('/api/v1/search', `/api/v1/search?${parameters}`);
-  }
-
-  public discover(list: SeerrDiscoverList, page = 1): Promise<unknown> {
-    if (!SEERR_DISCOVER_LISTS.includes(list)) throw new TypeError('discover list is invalid');
-    return this.#get(`/api/v1/discover/${list}`, `/api/v1/discover/${list}?page=${pageNumber(page)}`);
-  }
-
-  public movie(tmdbId: number): Promise<unknown> {
-    return this.#get('/api/v1/movie/:id', `/api/v1/movie/${tmdbIdentifier(tmdbId)}`);
-  }
-
-  public tv(tmdbId: number): Promise<unknown> {
-    return this.#get('/api/v1/tv/:id', `/api/v1/tv/${tmdbIdentifier(tmdbId)}`);
-  }
-
-  public season(tmdbId: number, seasonNumber: number): Promise<unknown> {
-    if (!Number.isSafeInteger(seasonNumber) || seasonNumber < 0) throw new TypeError('season number is invalid');
-    return this.#get('/api/v1/tv/:id/season/:n', `/api/v1/tv/${tmdbIdentifier(tmdbId)}/season/${seasonNumber}`);
-  }
-
-  async #get(route: string, path: string): Promise<unknown> {
-    const problem = await this.#admin.catalogueUserProblem(this.#user);
-    if (problem) throw new SeerrCatalogueUserError(problem);
-    // Sent at once: nothing is awaited between Seerr confirming the catalogue user and the call leaving.
-    return actingUserJson(this.#admin, this.#user, 'GET', route, path);
-  }
-}
-
-/**
  * A guarded Seerr call acting as `user`, which must be a valid {@link SeerrUserId}: `X-API-User` is built from it and
  * re-checked here, so it is never missing or empty (which Seerr runs as its owner). `onRejected`, if given, runs before a
  * 401, 403 or 404 is thrown.
@@ -581,7 +500,7 @@ async function guardedSeerrJson(
     // Includes an unfollowed redirect, which Node's fetch hands back as the 3xx itself.
     throw new SeerrError(`Seerr ${method} ${route} returned ${response.status}`, response.status);
   }
-  const bytes = await readCapped(response, MAX_GUARDED_RESPONSE_BYTES);
+  const bytes = await readCappedBody(response, MAX_GUARDED_RESPONSE_BYTES);
   if (!bytes) throw new SeerrError(`Seerr ${method} ${route} response is too large`, 502);
   try {
     return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown;
@@ -592,7 +511,7 @@ async function guardedSeerrJson(
 }
 
 /** The response body if it is at most `limit` bytes, or undefined (with the rest of the body left unread) if not. */
-async function readCapped(response: Response, limit: number): Promise<Uint8Array | undefined> {
+export async function readCappedBody(response: Response, limit: number): Promise<Uint8Array | undefined> {
   const declared = Number(response.headers.get('content-length'));
   if (Number.isFinite(declared) && declared > limit) {
     await response.body?.cancel().catch(() => undefined);

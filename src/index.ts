@@ -3,10 +3,11 @@ import { WebAuth } from './auth.js';
 import { loadConfig } from './config.js';
 import { JellyfinClient } from './jellyfin.js';
 import { makeServer } from './server.js';
-import { SeerrCatalogueClient, SeerrCatalogueUserError, SeerrClient, seerrUserId } from './seerr.js';
+import { SeerrClient } from './seerr.js';
 import { SeerrUserMap } from './seerr-users.js';
 import { BackgroundTasks, createShutdown } from './shutdown.js';
 import { GrantStore } from './store.js';
+import { TmdbClient, TmdbError } from './tmdb.js';
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -17,17 +18,20 @@ async function main(): Promise<void> {
   const seerr = config.seerrUrl && config.seerrApiKey
     ? new SeerrClient(config.seerrUrl, config.seerrApiKey)
     : undefined;
-  let catalogue: SeerrCatalogueClient | undefined;
-  if (seerr && config.seerrCatalogueUserId !== undefined) {
-    // Checked now so a misconfigured user stops startup early; the client checks it again before every call.
-    catalogue = new SeerrCatalogueClient(seerr, seerrUserId(config.seerrCatalogueUserId));
+  let catalogue: TmdbClient | undefined;
+  if (config.householdAppEnabled && config.tmdbApiKey) {
+    catalogue = new TmdbClient(config.tmdbApiKey);
+    // Checked now so a key TMDB refuses stops startup; an unreachable TMDB is only logged (the app answers
+    // `unavailable` until it is back). The message names the route and status, never the key.
     try {
       await catalogue.validate();
     } catch (error) {
-      if (error instanceof SeerrCatalogueUserError) throw error;
+      if (error instanceof TmdbError && (error.status === 401 || error.status === 403)) {
+        throw new Error(`TMDB_API_KEY was refused by TMDB (${error.message})`);
+      }
       console.warn(JSON.stringify({
         level: 'warn',
-        message: 'could not check the Seerr catalogue user at startup; it is checked again before it is used',
+        message: 'could not check TMDB_API_KEY at startup; the household app answers unavailable until TMDB answers',
         detail: error instanceof Error ? error.message : String(error),
       }));
     }
@@ -50,7 +54,7 @@ async function main(): Promise<void> {
       },
     } : {}),
     ...(config.householdAppEnabled && seerr && catalogue ? {
-      householdApp: { catalogue, members: new SeerrUserMap(seerr) },
+      householdApp: { catalogue, blocklist: seerr, members: new SeerrUserMap(seerr) },
     } : {}),
   });
   const backfillSince = config.requestBackfillEnabled ? config.requestBackfillSince : undefined;

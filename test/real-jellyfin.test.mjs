@@ -7,9 +7,10 @@ import { AccessService, accessTag } from '../dist/access-service.js';
 import { JellyfinClient } from '../dist/jellyfin.js';
 import { makeServer } from '../dist/server.js';
 import { GrantStore } from '../dist/store.js';
-import { CATALOGUE, OWN_MOVIE, REQUEST, createFakeSeerr, get as getWithHeaders, world } from './support/household-app.mjs';
-import { SeerrCatalogueClient, SeerrClient, seerrUserId } from '../dist/seerr.js';
+import { OWN_MOVIE, REQUEST, TMDB_KEY, createFakeSeerr, createFakeTmdb, get as getWithHeaders, world } from './support/household-app.mjs';
+import { SeerrClient } from '../dist/seerr.js';
 import { SeerrUserMap } from '../dist/seerr-users.js';
+import { TmdbClient } from '../dist/tmdb.js';
 import { makeTempDir } from './support/temp-dir.mjs';
 
 const baseUrl = process.env.JELLYFIN_REAL_URL;
@@ -123,7 +124,7 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
   });
 
   it('shows a household app title in_library only when the caller\'s own Jellyfin view has it', async (t) => {
-    // The movie gets a TMDB ID the fake Seerr catalogue knows; Bob's household is the only one here.
+    // The movie gets a TMDB ID the fake TMDB knows; Bob's household is the only one here.
     const original = await client.getItem(fixture.itemId);
     await client.updateItem({ ...original, ProviderIds: { ...original.ProviderIds, Tmdb: String(OWN_MOVIE) }, Tags: [...original.Tags, 'jp-app-hidden'] });
     t.after(() => client.updateItem({ ...original }));
@@ -134,12 +135,20 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
     const appStore = new GrantStore(path.join(await makeTempDir(t, 'jfa-real-app-'), 'grants.json'));
     await appStore.load();
     await appStore.upsertGroup({ id: 'apphouse', name: 'App House', userIds: [fixture.bobId] });
-    const seerr = await createFakeSeerr(world({ seerrUsers: { 61: { jellyfinUserId: fixture.bobId.replaceAll('-', '').toLowerCase(), permissions: REQUEST } } }));
-    t.after(() => seerr.close());
+    const state = world({ seerrUsers: { 61: { jellyfinUserId: fixture.bobId.replaceAll('-', '').toLowerCase(), permissions: REQUEST } } });
+    const seerr = await createFakeSeerr(state);
+    const tmdb = await createFakeTmdb(state);
+    t.after(() => Promise.all([seerr.close(), tmdb.close()]));
     const admin = new SeerrClient(seerr.url, 'seerr-key');
     const gateway = makeServer(new AccessService(client, appStore), { webhook: webhookToken, admin: 'real-admin-secret' }, undefined, {
       householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-' },
-      householdApp: { catalogue: new SeerrCatalogueClient(admin, seerrUserId(CATALOGUE)), members: new SeerrUserMap(admin), libraryTtlMs: 0 },
+      householdApp: {
+        catalogue: new TmdbClient(TMDB_KEY, { baseUrl: tmdb.url }),
+        blocklist: admin,
+        members: new SeerrUserMap(admin),
+        libraryTtlMs: 0,
+        blocklistTtlMs: 0,
+      },
     });
     await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
     t.after(() => new Promise((resolve) => gateway.close(resolve)));
@@ -173,6 +182,14 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
     assert.equal((await movie()).state, 'get_this');
     await setBob({});
     assert.equal((await movie()).state, 'in_library');
+    // Bob's own playable item needs no request permission, and stays playable once blocklisted; hidden, it is
+    // unavailable to him.
+    state.seerrUsers[61].permissions = 0;
+    state.blocklist.push({ mediaType: 'movie', tmdbId: OWN_MOVIE });
+    assert.equal((await movie()).state, 'in_library');
+    await setBob({ BlockedTags: ['jp-app-hidden'] });
+    assert.deepEqual([(await movie()).state, (await movie()).play], ['unavailable', null]);
+    assert.deepEqual(seerr.violations, []);
   });
 });
 

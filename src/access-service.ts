@@ -135,6 +135,13 @@ export class AccessService {
     return this.#store.getGroup(groupId)?.name;
   }
 
+  /** How many households a user belongs to, whatever form their Jellyfin ID is written in. */
+  public getHouseholdCount(userId: string): number {
+    const id = userId.replace(/-/g, '').toLowerCase();
+    return this.#store.listGroups()
+      .filter((group) => group.userIds.some((member) => member.replace(/-/g, '').toLowerCase() === id)).length;
+  }
+
   /** Counts a household app API answer by endpoint and outcome. */
   public recordAppRequest(endpoint: string, outcome: string): void {
     this.#metrics.increment('jfa_app_requests_total', { endpoint, outcome });

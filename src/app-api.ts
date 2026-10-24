@@ -2,22 +2,22 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import { AttemptCounter } from './rate-limit.js';
 import {
   normalizeJellyfinUserId,
-  SeerrError,
   SeerrUnmappedUserError,
-  type SeerrCatalogueClient,
-  type SeerrDiscoverList,
+  type SeerrClient,
   type SeerrMemberClient,
 } from './seerr.js';
+import { TmdbError, type TmdbClient, type TmdbDiscoverList } from './tmdb.js';
 
 /**
  * The household app API, served under /jellypass/app/v1 on household hosts only (see docs/app-design.md). Read-only in
  * this version: who the caller is, search, discover and title details, each title with the caller's household state.
  *
- * Every answer is built by allowlist shaping: each DTO field is copied from one Seerr or Jellyfin field chosen for it,
- * checked for type, and nothing else is read into a response. Seerr objects are never spread, relayed or stripped.
- * Nothing in an answer depends on what another household holds, has requested or is waiting on: titles are read as
- * the catalogue user, the household state of every title is decided by {@link titleState} from the caller's own Seerr
- * permissions, their household's own requests and the caller's own Jellyfin view, and paging comes only from the
+ * Every answer is built by allowlist shaping: each DTO field is copied from one TMDB or Jellyfin field chosen for it,
+ * checked for type, and nothing else is read into a response. Upstream objects are never spread, relayed or stripped.
+ * Nothing in an answer depends on what another household holds, has requested or is waiting on: titles come from TMDB,
+ * which knows nothing of households, Seerr's media records or anyone's requests; the household state of every title is
+ * decided by {@link titleState} from the caller's own Jellyfin view, Seerr's administrator blocklist, the caller's own
+ * Seerr permissions and the requests of members who belong to this household alone; and paging comes only from the
  * titles returned.
  */
 
@@ -26,18 +26,28 @@ export const APP_API_PREFIX = '/jellypass/app/v1';
 export const APP_SESSION_TTL_MS = 5 * 60 * 1000;
 /** How long the caller's own Jellyfin library view is reused. */
 export const APP_LIBRARY_TTL_MS = 60 * 1000;
+/** How long a household reuses a TMDB answer, and how many it keeps (least recently used forgotten first). */
+export const APP_TITLE_TTL_MS = 10 * 60 * 1000;
+export const MAX_TITLES_PER_HOUSEHOLD = 500;
+/** How long a household reuses Seerr's blocklist. */
+export const APP_BLOCKLIST_TTL_MS = 60 * 1000;
 /** App requests allowed per client address, and per signed-in user, in each window of APP_BUDGET_WINDOW_MS. */
 export const APP_BUDGET_WINDOW_MS = 5 * 60 * 1000;
 export const MAX_APP_REQUESTS_PER_CLIENT = 300;
 export const MAX_APP_REQUESTS_PER_USER = 200;
 const MAX_TRACKED = 10_000;
 const MAX_LIBRARIES = 500;
-/** Seerr returns 20 titles per page (TMDB's page size); a full page is the only sign another may follow. */
+const MAX_HOUSEHOLDS = 1000;
+/** TMDB returns 20 titles per page; a full page is the only sign another may follow. */
 const CATALOGUE_PAGE_SIZE = 20;
 const MAX_PAGE = 500;
 const MAX_QUERY_LENGTH = 100;
 const OWN_REQUESTS_PAGE = 100;
-const MAX_OWN_REQUEST_PAGES = 10;
+/** A member's newest 500 requests are read; an active request older than that shows as `get_this`. */
+const MAX_OWN_REQUEST_PAGES = 5;
+const BLOCKLIST_PAGE = 100;
+/** Seerr's newest 5000 blocklist entries are read. */
+const MAX_BLOCKLIST_PAGES = 50;
 const LIBRARY_PAGE = 1000;
 const MAX_LIBRARY_PAGES = 50;
 const TMDB_POSTER_BASE = 'https://image.tmdb.org/t/p/w342';
@@ -48,8 +58,6 @@ const SEERR_ADMIN = 2;
 const SEERR_REQUEST = 32;
 const SEERR_REQUEST_MOVIE = 262_144;
 const SEERR_REQUEST_TV = 524_288;
-/** Seerr MediaStatus.BLOCKLISTED: set only by an administrator's blocklist, the same for every household. */
-const SEERR_MEDIA_BLOCKLISTED = 6;
 /** Seerr MediaRequestStatus values a request is still active in: pending and approved. */
 const ACTIVE_REQUEST_STATUSES = new Set([1, 2]);
 
@@ -68,12 +76,12 @@ const APP_ERRORS: Record<Exclude<AppOutcome, 'ok'>, { status: number; body: { er
   unavailable: { status: 502, body: { error: 'unavailable' } },
 };
 
-/** The discover lists the app offers, by their path segment. */
-const DISCOVER_LISTS: Record<string, { list: SeerrDiscoverList; mediaType?: MediaType }> = {
+/** The discover lists the app offers, by their path segment, with the media type of lists that hold only one. */
+const DISCOVER_LISTS: Record<string, { list: TmdbDiscoverList; mediaType?: MediaType }> = {
   trending: { list: 'trending' },
-  'popular-movies': { list: 'movies', mediaType: 'movie' },
-  'popular-tv': { list: 'tv', mediaType: 'tv' },
-  upcoming: { list: 'movies/upcoming', mediaType: 'movie' },
+  'popular-movies': { list: 'popular-movies', mediaType: 'movie' },
+  'popular-tv': { list: 'popular-tv', mediaType: 'tv' },
+  upcoming: { list: 'upcoming', mediaType: 'movie' },
 };
 
 export type MediaType = 'movie' | 'tv';
@@ -107,15 +115,21 @@ export interface HouseholdAppHandler {
 }
 
 export interface HouseholdAppOptions {
-  /** Titles, read as the dedicated catalogue user. */
-  catalogue: Pick<SeerrCatalogueClient, 'search' | 'discover' | 'movie' | 'tv' | 'season'>;
+  /** Titles, from TMDB. */
+  catalogue: Pick<TmdbClient, 'search' | 'discover' | 'movie' | 'tv' | 'season'>;
+  /** Seerr's administrator blocklist, read with the admin key. */
+  blocklist: Pick<SeerrClient, 'blocklist'>;
   /** Each member's own Seerr data, confirmed before every call (a `SeerrUserMap`). */
   members: { member(jellyfinUserId: string): Pick<SeerrMemberClient, 'ownRequests' | 'ownUser'> | undefined };
   householdName: (householdId: string) => string | undefined;
+  /** How many households a Jellyfin user belongs to. */
+  householdCount: (jellyfinUserId: string) => number;
   /** Counts each answer by endpoint and outcome; never by title. */
   record?: (endpoint: AppEndpoint, outcome: AppOutcome) => void;
   now?: () => number;
   libraryTtlMs?: number;
+  titleTtlMs?: number;
+  blocklistTtlMs?: number;
   logLevel?: string;
 }
 
@@ -126,35 +140,88 @@ interface TitleState {
 }
 
 /**
- * Everything a household state is decided from. None of it depends on another household: the caller's own Seerr
- * request permission, the requests of the caller's own household members (each read as that member) and the titles the
- * caller's own Jellyfin view holds.
+ * Everything a household state is decided from. None of it depends on another household: the titles the caller's own
+ * Jellyfin view holds, Seerr's administrator blocklist (the same for every household), the caller's own Seerr request
+ * permission, and the requests of members who belong to the caller's household and no other (each read as that member).
  */
 interface HouseholdView {
+  library: ReadonlyMap<string, string>;
+  blocklist: ReadonlySet<string>;
   eligible: Record<MediaType, boolean>;
   requested: ReadonlySet<string>;
-  library: ReadonlyMap<string, string>;
 }
 
 /**
- * The single place a household state is decided, for every card, title and season. `unavailable` (blocklisted, or the
- * caller may not request this media type, which includes a caller Seerr has no user for) is decided before anything
- * else; then `in_library` (the caller's own Jellyfin view has it), `requested` (an active HD request by a member of the
- * caller's household) and otherwise `get_this`.
+ * The single place a household state is decided, for every card and title. `in_library` (the caller's own Jellyfin
+ * view has it) comes first: playing their own item needs no request permission. Then `unavailable` (blocklisted, or
+ * the caller may not request this media type, which includes a caller Seerr has no user for), `requested` (an active
+ * HD request by a member of this household alone) and otherwise `get_this`.
  */
-export function titleState(view: HouseholdView, mediaType: MediaType, tmdbId: number, blocklisted: boolean): TitleState {
-  if (blocklisted || !view.eligible[mediaType]) return { state: 'unavailable' };
+export function titleState(view: HouseholdView, mediaType: MediaType, tmdbId: number): TitleState {
   const key = titleKey(mediaType, tmdbId);
   const itemId = view.library.get(key);
   if (itemId) return { state: 'in_library', itemId };
+  if (!requestable(view, mediaType, tmdbId)) return { state: 'unavailable' };
   if (view.requested.has(key)) return { state: 'requested' };
   return { state: 'get_this' };
 }
 
-/** A season's state: the series' own when that is `unavailable`, otherwise whether the caller's view has its episodes. */
-function seasonState(series: TitleState, seasonsInLibrary: ReadonlySet<number>, seasonNumber: number): HouseholdState {
-  if (series.state === 'unavailable') return 'unavailable';
-  return seasonsInLibrary.has(seasonNumber) ? 'in_library' : 'get_this';
+/** Whether the caller could ask for a title: it is not blocklisted and they may request its media type. */
+function requestable(view: HouseholdView, mediaType: MediaType, tmdbId: number): boolean {
+  return view.eligible[mediaType] && !view.blocklist.has(titleKey(mediaType, tmdbId));
+}
+
+/**
+ * A season's state: `in_library` when the caller's view has its episodes, otherwise `unavailable` when the series
+ * cannot be requested, otherwise `get_this`.
+ */
+function seasonState(view: HouseholdView, tmdbId: number, seasonsInLibrary: ReadonlySet<number>, seasonNumber: number): HouseholdState {
+  if (seasonsInLibrary.has(seasonNumber)) return 'in_library';
+  return requestable(view, 'tv', tmdbId) ? 'get_this' : 'unavailable';
+}
+
+/**
+ * Answers kept per household, each household in its own partition with its own size limit, so one household's calls
+ * never decide whether another's are answered from the cache (and so never change how long they take). Concurrent
+ * calls for the same key share one upstream call; a failed call is not kept.
+ */
+class HouseholdCache<T> {
+  readonly #partitions = new Map<string, Map<string, { expiresAt: number; value: Promise<T> }>>();
+  readonly #ttlMs: number;
+  readonly #maxEntries: number;
+  readonly #now: () => number;
+
+  public constructor(ttlMs: number, maxEntries: number, now: () => number) {
+    this.#ttlMs = ttlMs;
+    this.#maxEntries = maxEntries;
+    this.#now = now;
+  }
+
+  public get(household: string, key: string, load: () => Promise<T>): Promise<T> {
+    let partition = this.#partitions.get(household);
+    if (!partition) {
+      partition = new Map();
+      this.#partitions.set(household, partition);
+      while (this.#partitions.size > MAX_HOUSEHOLDS) this.#partitions.delete(this.#partitions.keys().next().value as string);
+    }
+    const now = this.#now();
+    const cached = partition.get(key);
+    partition.delete(key);
+    if (cached && cached.expiresAt > now) {
+      partition.set(key, cached);
+      return cached.value;
+    }
+    const value = load();
+    const entry = { expiresAt: now + this.#ttlMs, value };
+    partition.set(key, entry);
+    while (partition.size > this.#maxEntries) partition.delete(partition.keys().next().value as string);
+    const owner = partition;
+    // A failed read is not kept.
+    value.catch(() => {
+      if (owner.get(key) === entry) owner.delete(key);
+    });
+    return value;
+  }
 }
 
 class AppAnswer extends Error {
@@ -170,8 +237,10 @@ interface Route {
 
 export class HouseholdApp implements HouseholdAppHandler {
   readonly #catalogue: HouseholdAppOptions['catalogue'];
+  readonly #blocklistSource: HouseholdAppOptions['blocklist'];
   readonly #members: HouseholdAppOptions['members'];
   readonly #householdName: HouseholdAppOptions['householdName'];
+  readonly #householdCount: HouseholdAppOptions['householdCount'];
   readonly #record: NonNullable<HouseholdAppOptions['record']>;
   readonly #now: () => number;
   readonly #libraryTtlMs: number;
@@ -180,17 +249,23 @@ export class HouseholdApp implements HouseholdAppHandler {
   readonly #byUser: AttemptCounter;
   readonly #sessions = new Map<string, { expiresAt: number; caller: JellyfinCaller }>();
   readonly #libraries = new Map<string, { expiresAt: number; library: Promise<Map<string, string>> }>();
+  readonly #titles: HouseholdCache<unknown>;
+  readonly #blocklists: HouseholdCache<Set<string>>;
 
   public constructor(options: HouseholdAppOptions) {
     this.#catalogue = options.catalogue;
+    this.#blocklistSource = options.blocklist;
     this.#members = options.members;
     this.#householdName = options.householdName;
+    this.#householdCount = options.householdCount;
     this.#record = options.record ?? (() => undefined);
     this.#now = options.now ?? Date.now;
     this.#libraryTtlMs = options.libraryTtlMs ?? APP_LIBRARY_TTL_MS;
     this.#debug = options.logLevel === 'debug';
     this.#byClient = new AttemptCounter({ windowMs: APP_BUDGET_WINDOW_MS, maxKeys: MAX_TRACKED, now: this.#now });
     this.#byUser = new AttemptCounter({ windowMs: APP_BUDGET_WINDOW_MS, maxKeys: MAX_TRACKED, now: this.#now });
+    this.#titles = new HouseholdCache(options.titleTtlMs ?? APP_TITLE_TTL_MS, MAX_TITLES_PER_HOUSEHOLD, this.#now);
+    this.#blocklists = new HouseholdCache(options.blocklistTtlMs ?? APP_BLOCKLIST_TTL_MS, 1, this.#now);
   }
 
   public async handle(request: IncomingMessage, response: ServerResponse, context: HouseholdAppRequest): Promise<void> {
@@ -281,7 +356,10 @@ export class HouseholdApp implements HouseholdAppHandler {
     const query = url.searchParams.get('q')?.trim() ?? '';
     if (!query || query.length > MAX_QUERY_LENGTH) throw new AppAnswer('invalid');
     const page = pageParameter(url);
-    const [answer, view] = await Promise.all([this.#catalogue.search(query, page), this.#view(caller, context)]);
+    const [answer, view] = await Promise.all([
+      this.#title(context, `search\n${query}\n${page}`, () => this.#catalogue.search(query, page)),
+      this.#view(caller, context),
+    ]);
     return pageOf(answer, page, undefined, view, context.origin);
   }
 
@@ -289,17 +367,23 @@ export class HouseholdApp implements HouseholdAppHandler {
     caller: JellyfinCaller,
     context: HouseholdAppRequest,
     url: URL,
-    list: { list: SeerrDiscoverList; mediaType?: MediaType },
+    list: { list: TmdbDiscoverList; mediaType?: MediaType },
   ): Promise<PageDto> {
     const page = pageParameter(url);
-    const [answer, view] = await Promise.all([this.#catalogue.discover(list.list, page), this.#view(caller, context)]);
+    const [answer, view] = await Promise.all([
+      this.#title(context, `discover\n${list.list}\n${page}`, () => this.#catalogue.discover(list.list, page)),
+      this.#view(caller, context),
+    ]);
     return pageOf(answer, page, list.mediaType, view, context.origin);
   }
 
   async #movie(caller: JellyfinCaller, context: HouseholdAppRequest, input: string): Promise<MovieDto> {
     const tmdbId = tmdbParameter(input);
-    const [answer, view] = await Promise.all([catalogueTitle(this.#catalogue.movie(tmdbId)), this.#view(caller, context)]);
-    const state = titleState(view, 'movie', tmdbId, isBlocklisted(answer));
+    const [answer, view] = await Promise.all([
+      this.#title(context, `movie\n${tmdbId}`, () => this.#catalogue.movie(tmdbId)),
+      this.#view(caller, context),
+    ]);
+    const state = titleState(view, 'movie', tmdbId);
     return {
       mediaType: 'movie',
       tmdbId,
@@ -312,10 +396,13 @@ export class HouseholdApp implements HouseholdAppHandler {
 
   async #tv(caller: JellyfinCaller, context: HouseholdAppRequest, input: string): Promise<TvDto> {
     const tmdbId = tmdbParameter(input);
-    const [answer, view] = await Promise.all([catalogueTitle(this.#catalogue.tv(tmdbId)), this.#view(caller, context)]);
-    const state = titleState(view, 'tv', tmdbId, isBlocklisted(answer));
+    const [answer, view] = await Promise.all([
+      this.#title(context, `tv\n${tmdbId}`, () => this.#catalogue.tv(tmdbId)),
+      this.#view(caller, context),
+    ]);
+    const state = titleState(view, 'tv', tmdbId);
     const inLibrary = await this.#seasonsInLibrary(caller, context, state);
-    const runTimes = field(answer, 'episodeRunTime');
+    const runTimes = field(answer, 'episode_run_time');
     return {
       mediaType: 'tv',
       tmdbId,
@@ -324,7 +411,7 @@ export class HouseholdApp implements HouseholdAppHandler {
       runtime: Array.isArray(runTimes) ? positiveInteger(runTimes[0]) : null,
       seasons: seasonList(field(answer, 'seasons')).map((season) => ({
         ...season,
-        state: seasonState(state, inLibrary, season.seasonNumber),
+        state: seasonState(view, tmdbId, inLibrary, season.seasonNumber),
       })),
       ...stateFields(state, context.origin),
     };
@@ -334,12 +421,11 @@ export class HouseholdApp implements HouseholdAppHandler {
     const tmdbId = tmdbParameter(input);
     if (!/^(?:0|[1-9][0-9]{0,2})$/.test(seasonInput)) throw new AppAnswer('invalid');
     const seasonNumber = Number(seasonInput);
-    const [series, answer, view] = await Promise.all([
-      catalogueTitle(this.#catalogue.tv(tmdbId)),
-      catalogueTitle(this.#catalogue.season(tmdbId, seasonNumber)),
+    const [answer, view] = await Promise.all([
+      this.#title(context, `season\n${tmdbId}\n${seasonNumber}`, () => this.#catalogue.season(tmdbId, seasonNumber)),
       this.#view(caller, context),
     ]);
-    const state = titleState(view, 'tv', tmdbId, isBlocklisted(series));
+    const state = titleState(view, 'tv', tmdbId);
     const inLibrary = await this.#seasonsInLibrary(caller, context, state);
     const episodes = field(answer, 'episodes');
     return {
@@ -348,25 +434,39 @@ export class HouseholdApp implements HouseholdAppHandler {
       name: text(field(answer, 'name'), 200),
       overview: text(field(answer, 'overview'), 4000),
       episodes: (Array.isArray(episodes) ? episodes : []).flatMap((episode) => {
-        const episodeNumber = nonNegativeInteger(field(episode, 'episodeNumber'));
+        const episodeNumber = nonNegativeInteger(field(episode, 'episode_number'));
         return episodeNumber === null ? [] : [{
           episodeNumber,
           name: text(field(episode, 'name'), 200),
           overview: text(field(episode, 'overview'), 4000),
         }];
       }).slice(0, 500),
-      state: seasonState(state, inLibrary, seasonNumber),
+      state: seasonState(view, tmdbId, inLibrary, seasonNumber),
     };
+  }
+
+  /**
+   * A TMDB answer, reused by this household for {@link APP_TITLE_TTL_MS}. The key is the request's own parameters; the
+   * household only picks the partition (see {@link HouseholdCache}). A title TMDB does not know is `not_found`.
+   */
+  async #title(context: HouseholdAppRequest, key: string, load: () => Promise<unknown>): Promise<unknown> {
+    try {
+      return await this.#titles.get(context.householdId, key, load);
+    } catch (error) {
+      if (error instanceof TmdbError && error.status === 404) throw new AppAnswer('not_found');
+      throw error;
+    }
   }
 
   /** Everything the household states of this answer are decided from (see {@link HouseholdView}), read in parallel. */
   async #view(caller: JellyfinCaller, context: HouseholdAppRequest): Promise<HouseholdView> {
-    const [eligible, requested, library] = await Promise.all([
+    const [library, blocklist, eligible, requested] = await Promise.all([
+      this.#library(caller, context),
+      this.#blocklists.get(context.householdId, 'blocklist', () => readBlocklist(this.#blocklistSource)),
       this.#eligibility(caller),
       this.#householdRequests(context.memberIds),
-      this.#library(caller, context),
     ]);
-    return { eligible, requested, library };
+    return { library, blocklist, eligible, requested };
   }
 
   /**
@@ -393,10 +493,14 @@ export class HouseholdApp implements HouseholdAppHandler {
 
   /**
    * The titles members of this household have an active HD request for, each member's own requests read as that member.
-   * A member Seerr has no confirmed user for has none.
+   * Only members who belong to this household and no other count: Seerr does not record which household a request was
+   * made for, so a request by someone in several households could be another household's, and is never read (until
+   * "Get this" records the household with each request; see docs/app-design.md). A member Seerr has no confirmed user
+   * for has none.
    */
   async #householdRequests(memberIds: readonly string[]): Promise<Set<string>> {
-    const members = [...new Set(memberIds.flatMap((id) => normalizeJellyfinUserId(id) ?? []))];
+    const members = [...new Set(memberIds.flatMap((id) => normalizeJellyfinUserId(id) ?? []))]
+      .filter((id) => this.#householdCount(id) === 1);
     const keys = await Promise.all(members.map(async (id) => {
       const member = this.#members.member(id);
       if (!member) return [];
@@ -449,7 +553,7 @@ export class HouseholdApp implements HouseholdAppHandler {
   }
 
   #logFailure(endpoint: AppEndpoint, error: unknown): void {
-    // Seerr and Jellyfin errors name the route and status only.
+    // TMDB, Seerr and Jellyfin errors name the route and status only.
     console.error(JSON.stringify({
       level: 'error',
       message: 'household app request failed',
@@ -519,8 +623,8 @@ export interface SeasonDto {
 }
 
 /**
- * A page of cards from a Seerr search or discover answer. Only movies and series are kept (people and collections are
- * not titles). `nextPage` comes only from the answer's own results: Seerr's totals and paging are never read.
+ * A page of cards from a TMDB search or discover answer. Only movies and series are kept (people and collections are
+ * not titles). `nextPage` comes only from the answer's own results: TMDB's totals and paging are never read.
  */
 function pageOf(answer: unknown, page: number, mediaType: MediaType | undefined, view: HouseholdView, origin: string): PageDto {
   const results = field(answer, 'results');
@@ -533,25 +637,25 @@ function pageOf(answer: unknown, page: number, mediaType: MediaType | undefined,
 }
 
 function cardOf(entry: unknown, listType: MediaType | undefined, view: HouseholdView, origin: string): CardDto | undefined {
-  const declared = field(entry, 'mediaType');
+  const declared = field(entry, 'media_type');
   const mediaType = declared === 'movie' || declared === 'tv' ? declared : declared === undefined ? listType : undefined;
   const tmdbId = positiveInteger(field(entry, 'id'));
   if (!mediaType || tmdbId === null) return undefined;
-  const state = titleState(view, mediaType, tmdbId, isBlocklisted(entry));
+  const state = titleState(view, mediaType, tmdbId);
   return { mediaType, tmdbId, ...titleFields(entry, mediaType), ...stateFields(state, origin) };
 }
 
 /** The title fields every card and title shares, each copied from the one TMDB field chosen for it. */
 function titleFields(source: unknown, mediaType: MediaType): Pick<CardDto, 'title' | 'year' | 'overview' | 'posterUrl' | 'backdropUrl' | 'rating'> {
-  const date = field(source, mediaType === 'movie' ? 'releaseDate' : 'firstAirDate');
+  const date = field(source, mediaType === 'movie' ? 'release_date' : 'first_air_date');
   const year = typeof date === 'string' && /^[0-9]{4}-/.test(date) ? Number(date.slice(0, 4)) : null;
-  const rating = field(source, 'voteAverage');
+  const rating = field(source, 'vote_average');
   return {
     title: text(field(source, mediaType === 'movie' ? 'title' : 'name'), 300),
     year,
     overview: text(field(source, 'overview'), 4000),
-    posterUrl: imageUrl(TMDB_POSTER_BASE, field(source, 'posterPath')),
-    backdropUrl: imageUrl(TMDB_BACKDROP_BASE, field(source, 'backdropPath')),
+    posterUrl: imageUrl(TMDB_POSTER_BASE, field(source, 'poster_path')),
+    backdropUrl: imageUrl(TMDB_BACKDROP_BASE, field(source, 'backdrop_path')),
     rating: typeof rating === 'number' && Number.isFinite(rating) && rating > 0 && rating <= 10 ? Math.round(rating * 10) / 10 : null,
   };
 }
@@ -565,18 +669,13 @@ function stateFields(state: TitleState, origin: string): Pick<CardDto, 'state' |
   };
 }
 
-/** Whether an administrator blocklisted the title: Seerr's `mediaInfo.status`, the only field read from `mediaInfo`. */
-function isBlocklisted(source: unknown): boolean {
-  return field(field(source, 'mediaInfo'), 'status') === SEERR_MEDIA_BLOCKLISTED;
-}
-
 function seasonList(value: unknown): Array<Omit<SeasonSummaryDto, 'state'>> {
   return (Array.isArray(value) ? value : []).flatMap((season) => {
-    const seasonNumber = nonNegativeInteger(field(season, 'seasonNumber'));
+    const seasonNumber = nonNegativeInteger(field(season, 'season_number'));
     return seasonNumber === null ? [] : [{
       seasonNumber,
       name: text(field(season, 'name'), 200),
-      episodeCount: nonNegativeInteger(field(season, 'episodeCount')),
+      episodeCount: nonNegativeInteger(field(season, 'episode_count')),
     }];
   }).slice(0, 200);
 }
@@ -608,6 +707,25 @@ async function activeRequests(member: Pick<SeerrMemberClient, 'ownRequests'>): P
       keys.push(titleKey(type, tmdbId));
     }
     if (requests.length < OWN_REQUESTS_PAGE) break;
+  }
+  return keys;
+}
+
+/**
+ * The titles on Seerr's blocklist, as `mediaType:tmdbId` keys, paged through with the admin key. Only each entry's
+ * `mediaType` and `tmdbId` are read. The blocklist is kept by administrators and is the same for every household.
+ */
+async function readBlocklist(seerr: Pick<SeerrClient, 'blocklist'>): Promise<Set<string>> {
+  const keys = new Set<string>();
+  for (let page = 0; page < MAX_BLOCKLIST_PAGES; page += 1) {
+    const results = field(await seerr.blocklist(BLOCKLIST_PAGE, page * BLOCKLIST_PAGE), 'results');
+    const entries = Array.isArray(results) ? results : [];
+    for (const entry of entries) {
+      const type = field(entry, 'mediaType');
+      const tmdbId = positiveInteger(field(entry, 'tmdbId'));
+      if ((type === 'movie' || type === 'tv') && tmdbId !== null) keys.add(titleKey(type, tmdbId));
+    }
+    if (entries.length < BLOCKLIST_PAGE) break;
   }
   return keys;
 }
@@ -656,16 +774,6 @@ function providerTmdbId(providerIds: unknown): number | null {
     }
   }
   return null;
-}
-
-/** A catalogue answer, with a title Seerr does not know reported as `not_found`. */
-async function catalogueTitle(answer: Promise<unknown>): Promise<unknown> {
-  try {
-    return await answer;
-  } catch (error) {
-    if (error instanceof SeerrError && error.status === 404) throw new AppAnswer('not_found');
-    throw error;
-  }
 }
 
 function pageParameter(url: URL): number {

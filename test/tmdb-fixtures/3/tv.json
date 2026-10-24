@@ -1,0 +1,102 @@
+{
+  "adult": false,
+  "backdrop_path": "/synthetic-backdrop-900002.jpg",
+  "created_by": [
+    {
+      "id": 7300301,
+      "credit_id": "canary-credit",
+      "name": "Canary Creator",
+      "original_name": "canary",
+      "gender": 0,
+      "profile_path": null
+    }
+  ],
+  "episode_run_time": [],
+  "first_air_date": "2019-09-01",
+  "genres": [
+    {
+      "id": 18,
+      "name": "Drama"
+    }
+  ],
+  "homepage": "https://canary.example.invalid/series",
+  "id": 900002,
+  "in_production": false,
+  "languages": [
+    "en"
+  ],
+  "last_air_date": "2021-10-01",
+  "last_episode_to_air": {
+    "id": 7300302,
+    "name": "canary finale",
+    "overview": "canary",
+    "vote_average": 7,
+    "vote_count": 7300303,
+    "air_date": "2021-10-01",
+    "episode_number": 3,
+    "season_number": 2,
+    "show_id": 900002,
+    "still_path": null
+  },
+  "name": "Synthetic Series Two",
+  "next_episode_to_air": null,
+  "networks": [
+    {
+      "id": 7300304,
+      "logo_path": null,
+      "name": "Canary Network",
+      "origin_country": "US"
+    }
+  ],
+  "number_of_episodes": 7300305,
+  "number_of_seasons": 7300306,
+  "origin_country": [
+    "US"
+  ],
+  "original_language": "en",
+  "original_name": "Synthetic Series Two (canary original name)",
+  "overview": "A synthetic series used only in tests.",
+  "popularity": 7300307,
+  "poster_path": "/synthetic-poster-900002.jpg",
+  "production_companies": [],
+  "production_countries": [
+    {
+      "iso_3166_1": "US",
+      "name": "United States of America"
+    }
+  ],
+  "seasons": [
+    {
+      "air_date": "2019-09-01",
+      "episode_count": 3,
+      "id": 7300308,
+      "name": "Season 1",
+      "overview": "canary season overview",
+      "poster_path": null,
+      "season_number": 1,
+      "vote_average": 0
+    },
+    {
+      "air_date": "2021-09-01",
+      "episode_count": 3,
+      "id": 7300309,
+      "name": "Season 2",
+      "overview": "canary season overview",
+      "poster_path": null,
+      "season_number": 2,
+      "vote_average": 0
+    }
+  ],
+  "spoken_languages": [
+    {
+      "english_name": "English",
+      "iso_639_1": "en",
+      "name": "English"
+    }
+  ],
+  "status": "Ended",
+  "tagline": "canary tagline",
+  "type": "Scripted",
+  "vote_average": 6.9,
+  "vote_count": 7300310
+}

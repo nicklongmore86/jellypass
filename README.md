@@ -192,7 +192,7 @@ JellyPass reads configuration from environment variables at startup.
 | `ADMIN_TOKEN` | Recommended | `WEBHOOK_TOKEN` | Separate bearer token for administrative APIs and metrics. |
 | `SEERR_URL` | Conditional | — | Seerr base URL reachable from JellyPass. Configure with `SEERR_API_KEY`. |
 | `SEERR_API_KEY` | Conditional | — | Seerr API key. Configure with `SEERR_URL`. |
-| `SEERR_CATALOGUE_USER_ID` | Conditional | — | Seerr user ID the [household app API](#household-app-api) reads search, discover and title details as, so no member's Seerr preferences shape them. Required when `HOUSEHOLD_APP_ENABLED` is true; the app is off without it. Create a local Seerr user for JellyPass alone, remove all its permissions and do not link it to Jellyfin; never the owner (user 1). Requires Seerr configuration. When set, startup stops if the user is unfit. See [docs/app-design.md](docs/app-design.md#catalogue-identity). |
+| `TMDB_API_KEY` | Conditional | — | TMDB API key (v3, 32 hexadecimal characters) or API read access token (v4) the [household app API](#household-app-api) reads search, discover and title details with, straight from TMDB. Required when `HOUSEHOLD_APP_ENABLED` is true. Get one from your TMDB account's API settings. Startup stops if it is malformed or TMDB refuses it; it is never logged. See [docs/app-design.md](docs/app-design.md#catalogue-source). |
 | `STATE_FILE` | No | `./data/grants.json` | Durable state-file path. The container uses `/app/data/grants.json`. |
 | `HOST` | No | `0.0.0.0` | HTTP listen address inside the process/container. |
 | `PORT` | No | `8787` | HTTP listen port. |
@@ -200,7 +200,7 @@ JellyPass reads configuration from environment variables at startup.
 | `CATALOG_SYNC_INTERVAL_SECONDS` | No | `3600` | Jellyfin catalog refresh interval; `0` disables scheduling. Maximum `604800`. |
 | `HOUSEHOLD_DOMAIN` | No | — | Enables household hostnames below this DNS domain. |
 | `HOUSEHOLD_HOST_PREFIX` | No | `jelly-` | Prefix placed before each DNS-safe group ID. |
-| `HOUSEHOLD_APP_ENABLED` | No | `false` | Serves the read-only [household app API](#household-app-api) at `/jellypass/app/v1/*` on household hostnames. Requires `HOUSEHOLD_DOMAIN`, Seerr configuration and `SEERR_CATALOGUE_USER_ID`; startup stops if any is missing. While `false`, those paths answer `404` and are never proxied to Jellyfin. |
+| `HOUSEHOLD_APP_ENABLED` | No | `false` | Serves the read-only [household app API](#household-app-api) at `/jellypass/app/v1/*` on household hostnames. Requires `HOUSEHOLD_DOMAIN`, Seerr configuration and `TMDB_API_KEY`; startup stops if any is missing. While `false`, those paths answer `404` and are never proxied to Jellyfin. |
 | `REQUEST_BACKFILL_SINCE` | No | — | `YYYY-MM-DD` (UTC midnight) or an ISO 8601 date-time with `Z` or an offset, such as `2026-10-15T08:00:00+02:00`. Impossible dates are rejected. Requests created before it are never imported by the backfill. |
 | `REQUEST_BACKFILL_ENABLED` | No | `true` when `REQUEST_BACKFILL_SINCE` is set, otherwise `false` | Grants available Seerr requests that the webhook missed. Requires Seerr configuration and `REQUEST_BACKFILL_SINCE`. |
 | `WS_IDLE_TIMEOUT_MS` | No | `300000` | Closes a proxied household WebSocket after this many milliseconds with no bytes in either direction; `0` disables. Jellyfin drops sockets after 60 s without a client KeepAlive (clients send one every 30 s), so values at or below `60000` log a startup warning. Maximum `86400000`. |
@@ -608,7 +608,7 @@ the background, normally within seconds.
 The backend of the upcoming household app (a PWA first; see
 [docs/app-design.md](docs/app-design.md)). It is **read-only** in this release
 and **off by default**: set `HOUSEHOLD_APP_ENABLED=true` together with
-`HOUSEHOLD_DOMAIN`, `SEERR_URL`, `SEERR_API_KEY` and `SEERR_CATALOGUE_USER_ID`.
+`HOUSEHOLD_DOMAIN`, `SEERR_URL`, `SEERR_API_KEY` and `TMDB_API_KEY`.
 There is no app page yet; these are JSON endpoints under `/jellypass/app/v1` on
 each household hostname, and nowhere else (on the administrator host they do
 not exist).
@@ -631,31 +631,34 @@ not exist).
   household all get the same `401 {"error":"unauthorized"}`.
 - **Cards** are `{"mediaType", "tmdbId", "title", "year", "overview",
   "posterUrl", "backdropUrl", "rating", "state", "play"}`; a page is
-  `{"page", "nextPage", "results"}`, where `nextPage` is `null` unless Seerr
+  `{"page", "nextPage", "results"}`, where `nextPage` is `null` unless TMDB
   returned a full page. A movie adds `"genres"` and `"runtime"`, a series also
   `"seasons"` (`{"seasonNumber", "name", "episodeCount", "state"}`), and a
   season is `{"tmdbId", "seasonNumber", "name", "overview", "episodes",
   "state"}`. Missing values are `null` (or `""` for text). Images are TMDB URLs
   built from an allowlisted file name.
 - **`state`** is the household's own view of the title, decided in this order:
-  `unavailable` (an administrator blocklisted it in Seerr, or the caller may
-  not request this media type in Seerr, which includes a caller Seerr has no
-  user for), `in_library` (the caller's own Jellyfin view has it; only then is
-  `play` set, to `{"itemId", "url"}` with
-  `https://<household host>/web/#/details?id=<itemId>`), `requested` (a member
-  of the caller's household has a pending or approved HD request for it), and
-  otherwise `get_this`. Seasons are `in_library` or `get_this` from the
-  caller's own Jellyfin view (`unavailable` with their series). Nothing
+  `in_library` (the caller's own Jellyfin view has it, whatever their Seerr
+  permissions; only then is `play` set, to `{"itemId", "url"}` with
+  `https://<household host>/web/#/details?id=<itemId>`), `unavailable` (an
+  administrator blocklisted it in Seerr, or the caller may not request this
+  media type in Seerr, which includes a caller Seerr has no user for),
+  `requested` (a pending or approved HD request by a member who belongs to
+  this household and no other), and otherwise `get_this`. Seasons are
+  `in_library` when the caller's own Jellyfin view has their episodes,
+  otherwise `unavailable` or `get_this` as their series would be. Nothing
   depends on what another household holds, has requested or is waiting on: a
-  title another household holds looks exactly like one nobody has.
-- **Nothing else from Seerr** is ever returned: no requester, request or media
-  IDs, Seerr status, Jellyfin item IDs other than the caller's own playable
-  one, totals or timestamps. Every answer has `Cache-Control: no-store`.
+  title another household holds looks exactly like one nobody has. Requests by
+  someone in several households are not shown in any of them yet, because
+  Seerr does not record which household a request was for.
+- **Nothing else** is ever returned: no requester, request or media IDs, Seerr
+  status, Jellyfin item IDs other than the caller's own playable one, totals or
+  timestamps. Every answer has `Cache-Control: no-store`.
 - **Fixed errors:** `400 {"error":"invalid_request"}`, `401
-  {"error":"unauthorized"}`, `404 {"error":"not_found"}` (unknown path or
-  title), `429 {"error":"too_many_requests"}` and `502
-  {"error":"unavailable"}` (Jellyfin or Seerr failed, or the catalogue user is
-  no longer fit; details are logged, never returned).
+  {"error":"unauthorized"}`, `404 {"error":"not_found"}` (unknown path, or a
+  title TMDB does not know), `429 {"error":"too_many_requests"}` and `502
+  {"error":"unavailable"}` (Jellyfin, Seerr or TMDB failed; details are
+  logged, never returned).
 - **Rate limited.** 300 calls per client address (after `TRUSTED_PROXIES`)
   and 200 per signed-in user in each 5-minute window; both answer the same
   `429`.
@@ -664,12 +667,20 @@ not exist).
   (`ok`, `unauthorized`, `rate_limited`, `invalid`, `not_found`,
   `unavailable`); no label names a title.
 
-Each call reads titles from Seerr as the catalogue user, the caller's own Seerr
-permissions and each household member's own requests as that member (each
-confirmed with Seerr just before the call), and the caller's library from
-Jellyfin with the caller's own token (reused for up to a minute), so Jellyfin's
-blocked tags, library access and parental limits apply. Expect a handful of
-local Seerr calls per answer.
+Each call reads titles straight from TMDB with `TMDB_API_KEY` (in English;
+each household reuses an answer for up to 10 minutes), never from Seerr, so
+other households' Seerr records cannot change an answer, its size or its
+timing. From Seerr it reads only the administrator blocklist with the admin key
+(reused for up to a minute), the caller's own permissions as the caller, and
+the own requests of each member who belongs to this household alone, as that
+member (each confirmed with Seerr just before the call, at most their newest
+500). The caller's library comes from Jellyfin with the caller's own token
+(reused for up to a minute), so Jellyfin's blocked tags, library access and
+parental limits apply. Expect a handful of local Seerr calls per answer.
+
+This product uses the TMDB API but is not endorsed or certified by
+[TMDB](https://www.themoviedb.org/). Titles, overviews and images come from
+TMDB; the household app shows TMDB's attribution, as TMDB's API terms require.
 
 Without Seerr, `/jellypass/add` paths are proxied to Jellyfin like any other.
 `/jellypass/app` paths never are: without the app API they answer `404`.
@@ -976,7 +987,7 @@ administrator browser session. Request bodies are limited to 64 KiB.
 
 ## Security and privacy
 
-- Keep Jellyfin and Seerr API keys out of Git, logs, screenshots, and
+- Keep Jellyfin, Seerr and TMDB API keys out of Git, logs, screenshots, and
   support requests.
 - Use different random webhook and administrator tokens.
 - Put browser, household, and remote webhook traffic behind TLS.
