@@ -24,10 +24,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   already had); manual users and groups that cannot be attributed stay on the
   old grant, which is marked `orphaned`. A request that resolves to no existing
   item is never assigned to another one (so a 4K request never lands on an HD
-  item); it too stays on the orphaned grant. The new grants are stored and
+  item); it too stays on the orphaned grant. A grant left over from such a
+  split remembers it (`remap.splitTo`): when its remaining requests resolve
+  later, only they and their requesters' households move, and its manual users
+  and groups stay orphaned until an administrator assigns them. The new grants are stored and
   applied before the old one is removed or reduced, so a restart partway
   through converges on the next run without anyone gaining or losing access;
-  the deleted item's tag is then removed from user policies. Only a `404`
+  the deleted item's tag is then removed from user policies. If the deleted item
+  exists again by then, the old grant is kept intact with its restrictions and
+  marked `source reappeared` (`remap.sourceReappeared`), logged and counted; the
+  new grants stay applied. Only a `404`
   counts as deleted; network failures and `5xx` responses keep the usual retry.
 - A grant left with no requests or groups on a deleted item (for example after
   revoking its last request) is now removed instead of failing on the `404`.
@@ -48,8 +54,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   that item visible to every household: revoke it explicitly instead. Moving a
   4K request onto the title's HD item (or HD onto 4K) is refused with `409`
   (`code: "quality_mismatch"`). The old grant is removed only after the target
-  is applied; if applying fails, it is kept and the move can be repeated.
-- `jfa_grant_remaps_total{result="remapped"|"orphaned",trigger="auto"|"admin"}`.
+  is applied; if applying fails, it is kept and the move can be repeated, and if
+  the old item reappears meanwhile it is kept as above and the move answers
+  `409` (`code: "source_reappeared"`).
+- `jfa_grant_remaps_total{result="remapped"|"orphaned"|"source_reappeared",trigger="auto"|"admin"}`.
 
 ### Rollback
 
@@ -57,7 +65,9 @@ The state file format is unchanged (schema v7), so 2.1.1 and 2.0.0 still load a
 state file written by this version. They do not know the `orphaned` state,
 though: they retry orphaned grants on every scheduled run, fail on the deleted
 item's `404`, back off to hourly retries and count them in `jfa_sync_errors`
-again. Remap or revoke orphaned grants before rolling back to avoid that.
+again. They also ignore the new `remap` field and drop it when they next
+change that grant. Remap or revoke orphaned grants, and resolve grants marked
+`source reappeared`, before rolling back to avoid that.
 
 ## [2.1.1] - 2026-10-16
 

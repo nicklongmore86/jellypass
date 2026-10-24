@@ -394,7 +394,7 @@ export const ADMIN_APP_JS = `
       const sourceText = requestCount + ' request' + (requestCount === 1 ? '' : 's') + (manualCount ? ' · ' + manualCount + ' manual' : '');
       const main = node('div', { class: 'grant-main' }, [title, node('div', { class: 'meta mono', text: grant.itemId }), node('div', { class: 'meta', text: sourceText + ' · updated ' + new Date(grant.updatedAt).toLocaleString() })]);
       const ownerSection = node('div', { class: 'grant-section grant-owners' }, [node('strong', { text: 'Access owners' }), node('div', { class: 'pill-row' }, ownerPills.length ? ownerPills : [node('span', { class: 'meta', text: 'No direct owners' })])]);
-      const accessSection = node('div', { class: 'grant-section grant-access' }, [node('strong', { text: groupNames.length ? groupNames.join(', ') : 'Direct requests only' }), node('div', { class: 'pill-row' }, [node('span', { class: 'pill sync-' + grant.sync.state, text: grant.sync.state }), node('span', { class: 'meta', text: groupNames.length + ' shared group' + (groupNames.length === 1 ? '' : 's') })])]);
+      const accessSection = node('div', { class: 'grant-section grant-access' }, [node('strong', { text: groupNames.length ? groupNames.join(', ') : 'Direct requests only' }), node('div', { class: 'pill-row' }, [node('span', { class: 'pill sync-' + grant.sync.state, text: grant.sync.state })].concat(grant.remap && grant.remap.sourceReappeared ? [node('span', { class: 'pill sync-orphaned', text: 'source reappeared', title: 'This item exists again in Jellyfin after its grant was moved to ' + grant.remap.sourceReappeared.movedTo.join(', ') + '. Its restrictions were kept; revoke the grant explicitly if it is no longer needed.' })] : [], [node('span', { class: 'meta', text: groupNames.length + ' shared group' + (groupNames.length === 1 ? '' : 's') })]))]);
       const planButton = node('button', { class: 'button quiet', text: 'Plan' });
       planButton.addEventListener('click', () => showGrantPlan(grant));
       const accessButton = node('button', { class: 'button quiet', text: 'Access' });
@@ -627,6 +627,11 @@ export const ADMIN_APP_JS = `
           throw new Error('Not moved: ' + grant.itemId + ' still exists in Jellyfin, and moving its grant would make it visible to every household. Revoke its access explicitly first.');
         }
         if (error.code === 'quality_mismatch') throw new Error('Not moved: ' + error.message);
+        if (error.code === 'source_reappeared') {
+          byId('plan-dialog').close();
+          await load();
+          throw new Error(grant.itemId + ' exists again in Jellyfin: ' + toItemId + ' was granted, but the original grant was kept with its restrictions. Revoke it explicitly if it is no longer needed.');
+        }
         throw error;
       }
     });

@@ -513,7 +513,8 @@ export class AccessService {
    * explicitly instead). A request is never moved onto the other quality's item of its title (4K onto HD or HD onto 4K;
    * see requestItemId). The source grant is removed only after the merged grant has been stored and applied, then its
    * deleted item's tag is cleared from user policies; `plan` and `sourcePlan` describe those two steps. If applying the
-   * target fails, the source grant is kept and the move can be repeated.
+   * target fails, the source grant is kept and the move can be repeated. If the source item exists again by then, the
+   * source grant is kept intact with its restrictions (see #keepReappearedSource) and the move rejects with ConflictError.
    */
   public remapGrant(fromItemId: string, toItemId: string, dryRun = false): Promise<{
     previous: GrantRecord;
@@ -531,12 +532,7 @@ export class AccessService {
       // Refuse during shutdown before calling Jellyfin or Seerr, rather than partway through the move.
       if (!dryRun) this.#store.assertOpen();
       if (!await this.#itemExists(to)) throw new Error(`Jellyfin item not found: ${to}`);
-      if (await this.#itemExists(from)) {
-        throw new ConflictError(
-          `source item still exists in Jellyfin: ${from}; moving its grant would make it visible to every household, so revoke its access explicitly first`,
-          'source_item_exists',
-        );
-      }
+      if (await this.#itemExists(from)) throw sourceExistsError(from);
       await this.#assertSameQuality(source, to);
       const target = this.#store.get(to);
       const move: GrantMove = {
@@ -548,13 +544,21 @@ export class AccessService {
       };
       if (dryRun) {
         const current = this.#store.previewMerge(move);
-        const sourcePlan = (await this.#buildPlan({ ...source, active: false })).plan;
-        return { previous: source, ...(target ? { target } : {}), current, sourcePlan, plan: (await this.#buildPlan(current)).plan };
+        const retired = await this.#retirementPlan(source);
+        if (!retired) throw sourceExistsError(from);
+        return { previous: source, ...(target ? { target } : {}), current, sourcePlan: retired.plan, plan: (await this.#buildPlan(current)).plan };
       }
       try {
         const [merged] = await this.#store.mergeGrants(from, [move]);
         const plan = await this.#reconcileGrant(merged as GrantRecord);
-        const retired = await this.#buildPlan({ ...source, active: false });
+        const retired = await this.#retirementPlan(source);
+        if (!retired) {
+          await this.#keepReappearedSource(from, [to], 'admin');
+          throw new ConflictError(
+            `source item reappeared in Jellyfin while its grant was moved: ${from}; ${to} was granted, but the source grant was kept with its restrictions, so revoke it explicitly`,
+            'source_reappeared',
+          );
+        }
         await this.#applyPlan(retired);
         await this.#store.retireMovedGrant(from);
         this.#metrics.increment('jfa_grant_remaps_total', { result: 'remapped', trigger: 'admin' });
@@ -761,8 +765,15 @@ export class AccessService {
       const plans: ChangePlan[] = [];
       for (const current of currents) plans.push(await this.#reconcileGrant(current, signal));
       // Only now that every target is applied: clear the deleted item's tag from user policies and drop the grant
-      // that records it, or keep what was not moved on it, orphaned.
-      if (!remainder) await this.#applyPlan(await this.#buildPlan({ ...grant, active: false }, signal), signal);
+      // that records it, or keep what was not moved on it, orphaned. Unless the item exists again: then nothing is
+      // cleared or dropped.
+      const retired = await this.#retirementPlan(grant, signal);
+      if (!retired) {
+        await this.#keepReappearedSource(grant.itemId, currents.map((current) => current.itemId), 'auto');
+        throwIfAborted(signal);
+        return plans;
+      }
+      if (!remainder) await this.#applyPlan(retired, signal);
       throwIfAborted(signal);
       const newlyOrphaned = await this.#store.retireMovedGrant(grant.itemId, remainder);
       throwIfAborted(signal);
@@ -793,8 +804,10 @@ export class AccessService {
   /**
    * Splits a deleted item's grant among the items its requests now resolve to (`targets`). A request goes only to the
    * item it resolves to; one that resolves to no existing item is never assigned to another (no guessing, so a 4K
-   * request never lands on an HD item). When every request resolves to the same item (the usual re-import), the whole
-   * audience, manual users and groups included, moves there. Otherwise each item gets its own requests plus those
+   * request never lands on an HD item). When every request of the original grant resolves to the same item in one
+   * recovery (the usual re-import), the whole audience, manual users and groups included, moves there; never for a
+   * grant left over from an earlier split (`remap.splitTo`), whose manual audience is no longer attributable to any one
+   * item and stays until an administrator assigns it. Otherwise each item gets its own requests plus those
    * requesters' households (the groups webhooks and the backfill would assign, limited to groups the grant already
    * had), and the rest (unresolved requests, manual users, groups attributable to no moved request, and the unresolved
    * requesters' households) is the `remainder`, kept on the stale grant as orphaned for an administrator to resolve.
@@ -804,7 +817,7 @@ export class AccessService {
     const resolved = new Set([...targets.values()].flatMap((requests) => Object.keys(requests)));
     const unresolved = Object.fromEntries(Object.entries(grant.requests).filter(([requestId]) => !resolved.has(requestId)));
     const [only] = targets;
-    if (targets.size === 1 && only && Object.keys(unresolved).length === 0) {
+    if (targets.size === 1 && only && Object.keys(unresolved).length === 0 && !grant.remap?.splitTo) {
       return { moves: [{ itemId: only[0], requests: only[1], manualUserIds: grant.manualUserIds, groupIds: grant.groupIds, ...mediaType }] };
     }
     const households = (requests: Record<string, string>): string[] => [...new Set(Object.values(requests)
@@ -818,8 +831,37 @@ export class AccessService {
     if (Object.keys(unresolved).length === 0 && grant.manualUserIds.length === 0 && groupIds.length === 0) return { moves };
     const reason = Object.keys(unresolved).length > 0
       ? 'Jellyfin item was deleted; its requests that resolve to no existing Jellyfin item were kept here, with manual users and groups not attributable to the items its other requests moved to'
-      : 'Jellyfin item was deleted and its requests moved to several items; manual users and groups not attributable to one of them were kept here';
-    return { moves, remainder: { requests: unresolved, manualUserIds: grant.manualUserIds, groupIds, reason } };
+      : 'Jellyfin item was deleted and its requests moved to other items; manual users and groups not attributable to one of them were kept here';
+    const movedTo = moves.map((move) => move.itemId);
+    return { moves, remainder: { requests: unresolved, manualUserIds: grant.manualUserIds, groupIds, reason, movedTo } };
+  }
+
+  /**
+   * The plan that clears a moved grant's deleted item tag from user policies, or undefined when Jellyfin has the item
+   * again: then its restrictions must stay.
+   */
+  async #retirementPlan(grant: GrantRecord, signal?: AbortSignal): Promise<PlanContext | undefined> {
+    const [exists, users] = await Promise.all([this.#itemExists(grant.itemId), this.#jellyfin.getUsers()]);
+    throwIfAborted(signal);
+    if (exists) return undefined;
+    return this.#buildPlanContext({ ...grant, active: false }, { Id: grant.itemId, Name: grant.itemId, Tags: [] }, users, []);
+  }
+
+  /**
+   * The source item exists again after a move's targets were applied: the source grant is kept intact (its tag and
+   * every user restriction stay), marked for an administrator (GrantRemapNote.sourceReappeared), logged and counted.
+   */
+  async #keepReappearedSource(itemId: string, movedTo: string[], trigger: 'auto' | 'admin'): Promise<void> {
+    await this.#store.markSourceReappeared(itemId, movedTo);
+    this.#metrics.increment('jfa_grant_remaps_total', { result: 'source_reappeared', trigger });
+    console.error(JSON.stringify({
+      level: 'warn',
+      message: 'grant source reappeared',
+      trigger,
+      itemId,
+      movedTo,
+      detail: 'the item exists again in Jellyfin; its grant was kept with its restrictions for an administrator to resolve',
+    }));
   }
 
   #logOrphaned(itemId: string, reason: string): void {
@@ -1097,6 +1139,13 @@ function uniqueCaseInsensitive(values: string[]): string[] {
     seen.add(normalized);
     return true;
   });
+}
+
+function sourceExistsError(itemId: string): ConflictError {
+  return new ConflictError(
+    `source item still exists in Jellyfin: ${itemId}; moving its grant would make it visible to every household, so revoke its access explicitly first`,
+    'source_item_exists',
+  );
 }
 
 function isDue(grant: GrantRecord): boolean {

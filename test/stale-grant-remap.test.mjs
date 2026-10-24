@@ -321,7 +321,62 @@ describe('grants whose Jellyfin item was deleted and re-imported', { timeout: 10
     const stale = store.get('item-old');
     assert.deepEqual([stale.requests, stale.manualUserIds, stale.groupIds], [{}, ['dave-id'], ['neighbours']]);
     assert.equal(stale.sync.state, 'orphaned', 'the unattributable audience waits for an administrator');
-    assert.match(stale.sync.lastError, /moved to several items/);
+    assert.match(stale.sync.lastError, /moved to other items/);
+  });
+
+  it('never carries the manual audience of a grant left over from a split when its last request resolves later', async (t) => {
+    const w = world();
+    const store = await newStore(t);
+    const service = new AccessService(w.jellyfin, store, undefined, w.seerr);
+    w.addItem('item-a');
+    await store.grant({ itemId: 'item-old', requestId: '1', userId: 'alice-id' });
+    await store.grant({ itemId: 'item-old', requestId: '2', userId: 'bob-id' });
+    await store.setManualAccess({ itemId: 'item-old', userIds: ['dave-id'], groupIds: [] });
+    w.request(1, { jellyfinMediaId: 'item-a' });
+    // Bob's request is not re-imported yet: Seerr still names the deleted item.
+    w.request(2, { jellyfinMediaId: 'item-old' }, { requestedBy: { jellyfinUserId: 'bob-id' } });
+    await quietly(() => service.reconcileAll());
+    assert.deepEqual(store.get('item-a').requests, { 1: 'alice-id' });
+    const leftover = store.get('item-old');
+    assert.deepEqual([leftover.requests, leftover.manualUserIds, leftover.sync.state], [{ 2: 'bob-id' }, ['dave-id'], 'orphaned']);
+    assert.deepEqual(leftover.remap.splitTo, ['item-a']);
+
+    w.addItem('item-b');
+    w.request(2, { jellyfinMediaId: 'item-b' }, { requestedBy: { jellyfinUserId: 'bob-id' } });
+    const { error } = await quietly(() => service.reconcileAll());
+    assert.equal(error, undefined, String(error));
+    const b = store.get('item-b');
+    assert.deepEqual([b.requests, b.manualUserIds, b.groupIds], [{ 2: 'bob-id' }, [], []], 'only the newly resolved request moves');
+    assert.deepEqual(w.blockedFrom(accessTag('item-b')), ['alice-id', 'carol-id', 'dave-id'], 'Dave gains nothing');
+    const still = store.get('item-old');
+    assert.deepEqual([still.requests, still.manualUserIds, still.sync.state], [{}, ['dave-id'], 'orphaned'], 'Dave waits for an administrator');
+    assert.deepEqual(still.remap.splitTo, ['item-a', 'item-b']);
+  });
+
+  it('keeps the source grant and its restrictions when the deleted item reappears before the move finishes', async (t) => {
+    const { w, store, service } = await reimported(t);
+    const getLocalTrailers = w.jellyfin.getLocalTrailers;
+    w.jellyfin.getLocalTrailers = async (itemId, userId) => {
+      // While the target is applied, Jellyfin finds the old item again (still tagged).
+      if (itemId === 'item-new') w.addItem('item-old', [OLD_TAG]);
+      return getLocalTrailers(itemId, userId);
+    };
+    const { error, errorLogs } = await quietly(() => service.reconcileAll({ dueOnly: true }));
+    assert.equal(error, undefined, String(error));
+    assert.deepEqual(w.tags('item-old'), [OLD_TAG], 'the source keeps its tag');
+    assert.deepEqual(w.blockedFrom(OLD_TAG), ['bob-id', 'carol-id', 'dave-id'], 'nobody gains access to the source');
+    assert.deepEqual(w.blockedFrom(NEW_TAG), ['bob-id', 'carol-id', 'dave-id'], 'the target stays applied');
+    const source = store.get('item-old');
+    assert.deepEqual(source.requests, { 7: 'alice-id' }, 'the source grant is kept intact');
+    assert.deepEqual(source.groupIds, ['house-a']);
+    assert.deepEqual(source.remap.sourceReappeared.movedTo, ['item-new']);
+    assert.ok(errorLogs.some((line) => line.includes('grant source reappeared')));
+    assert.match(service.renderMetrics(), /jfa_grant_remaps_total\{result="source_reappeared",trigger="auto"\} 1/);
+
+    w.jellyfin.getLocalTrailers = getLocalTrailers;
+    await quietly(() => service.reconcileAll({ dueOnly: true }));
+    assert.equal(store.get('item-old').sync.state, 'synced', 'the next run applies it to the reappeared item');
+    assert.deepEqual(w.blockedFrom(OLD_TAG), ['bob-id', 'carol-id', 'dave-id']);
   });
 
   it('carries the whole audience when every request resolves to one item that already has a manual grant', async (t) => {
@@ -500,6 +555,25 @@ describe('admin grant remap', { timeout: 10_000 }, () => {
     assert.deepEqual(store.get('item-new').requests, { 7: 'alice-id' });
     assert.deepEqual(w.blockedFrom(NEW_TAG), ['bob-id', 'carol-id', 'dave-id']);
     assert.deepEqual(w.blockedFrom(OLD_TAG), []);
+  });
+
+  it('keeps the source grant when its item reappears while an administrator moves it', async (t) => {
+    const { w, store, service } = await reimported(t);
+    const getLocalTrailers = w.jellyfin.getLocalTrailers;
+    w.jellyfin.getLocalTrailers = async (itemId, userId) => {
+      if (itemId === 'item-new') w.addItem('item-old', [OLD_TAG]);
+      return getLocalTrailers(itemId, userId);
+    };
+    const { error, errorLogs } = await quietly(() => service.remapGrant('item-old', 'item-new'));
+    assert.ok(error instanceof ConflictError && error.code === 'source_reappeared', String(error));
+    assert.match(error.message, /source grant was kept with its restrictions/);
+    assert.deepEqual(w.tags('item-old'), [OLD_TAG]);
+    assert.deepEqual(w.blockedFrom(OLD_TAG), ['bob-id', 'carol-id', 'dave-id']);
+    assert.deepEqual(store.get('item-old').requests, { 7: 'alice-id' });
+    assert.deepEqual(store.get('item-old').remap.sourceReappeared.movedTo, ['item-new']);
+    assert.equal(store.get('item-new').sync.state, 'synced');
+    assert.ok(errorLogs.some((line) => line.includes('grant source reappeared')));
+    assert.match(service.renderMetrics(), /jfa_grant_remaps_total\{result="source_reappeared",trigger="admin"\} 1/);
   });
 
   it('refuses to move a 4K request onto the HD item or an HD request onto the 4K item', async (t) => {

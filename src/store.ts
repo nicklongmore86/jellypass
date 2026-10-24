@@ -328,8 +328,8 @@ export class GrantStore {
 
   /**
    * The last step of moving a grant: deletes the source grant or, given `remainder` (the part of its audience that was
-   * not moved), replaces it with that part and marks it orphaned with `remainder.reason`. Resolves true only when the
-   * grant was newly orphaned.
+   * not moved), replaces it with that part, records the items the rest went to (`remap.splitTo`) and marks it orphaned
+   * with `remainder.reason`. Resolves true only when the grant was newly orphaned.
    */
   public async retireMovedGrant(fromItemIdInput: string, remainder?: GrantRemainder): Promise<boolean> {
     this.#assertOpen();
@@ -344,10 +344,25 @@ export class GrantStore {
     const groupIds = [...new Set(remainder.groupIds.map(normalizeId))].filter((id) => this.#state.groups[id]).sort();
     const manualUserIds = [...new Set(remainder.manualUserIds.map(normalizeId))].sort();
     const next = this.#makeGrant(fromItemId, { ...remainder.requests }, manualUserIds, groupIds, previous, previous.mediaType);
+    const splitTo = [...new Set([...(previous.remap?.splitTo ?? []), ...remainder.movedTo.map(normalizeId)])].sort();
+    next.remap = { ...next.remap, splitTo };
     next.sync = orphanedSync(previous.sync, remainder.reason);
     this.#state.grants[fromItemId] = next;
     await this.#save();
     return previous.sync.state !== 'orphaned';
+  }
+
+  /**
+   * Records that a grant's item existed again when a move off it to `movedTo` finished (see GrantRemapNote), leaving
+   * the grant's audience as it is. It becomes pending, so the next reconciliation applies it to the item again.
+   */
+  public async markSourceReappeared(itemIdInput: string, movedTo: string[]): Promise<void> {
+    this.#assertOpen();
+    const grant = this.#state.grants[normalizeId(itemIdInput)];
+    if (!grant) return;
+    grant.remap = { ...grant.remap, sourceReappeared: { at: new Date().toISOString(), movedTo: movedTo.map(normalizeId).sort() } };
+    grant.sync = pendingSync(grant.sync);
+    await this.#save();
   }
 
   /** Marks a grant orphaned (see SyncStatus); resolves true only when it was not orphaned already. */
@@ -391,6 +406,7 @@ export class GrantStore {
       updatedAt: new Date().toISOString(),
       ...(resolvedMediaType ? { mediaType: resolvedMediaType } : {}),
     };
+    if (previous?.remap) placeholder.remap = clone(previous.remap);
     placeholder.owners = this.resolveOwners(placeholder);
     return placeholder;
   }
@@ -467,6 +483,8 @@ export interface GrantRemainder {
   manualUserIds: string[];
   groupIds: string[];
   reason: string;
+  /** The items the rest of the grant moved to. */
+  movedTo: string[];
 }
 
 export function normalizeId(value: string): string {

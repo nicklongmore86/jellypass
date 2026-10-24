@@ -120,6 +120,22 @@ export interface GrantRecord {
   groupIds: string[];
   sync: SyncStatus;
   updatedAt: string;
+  /** Set when moving the grant off its deleted Jellyfin item did not finish as a plain move (see GrantRemapNote). */
+  remap?: GrantRemapNote;
+}
+
+export interface GrantRemapNote {
+  /**
+   * Items part of this grant's requests already moved to. Its manual users and groups were kept here because they
+   * cannot be attributed to any one of those items, so a later recovery moves only newly resolved requests and their
+   * requesters' households, never the whole audience.
+   */
+  splitTo?: string[];
+  /**
+   * The grant's item existed again when a move off it finished: the targets were applied, but this grant was kept
+   * intact (still restricting the item) for an administrator to resolve.
+   */
+  sourceReappeared?: { at: string; movedTo: string[] };
 }
 
 export interface GrantState {

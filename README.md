@@ -663,7 +663,11 @@ nobody loses access. Who moves where follows one rule, so nobody gains access
 to an item they did not have:
 
 - **Every request resolves to the same item** (the usual re-import): the whole
-  grant moves there, manual users and groups included.
+  grant moves there, manual users and groups included. This applies only when
+  the original grant moves in one go: a grant left over from an earlier partial
+  move records that (`remap.splitTo` in `GET /v1/grants`), and later recoveries
+  move only its newly resolved requests and their requesters' households, so
+  its manual users and groups stay orphaned until you assign them yourself.
 - **Requests resolve to several items:** each item gets only its own requests
   and those requesters' households (the groups a webhook would assign, limited
   to groups the grant already had). Manual users and groups that cannot be
@@ -674,7 +678,12 @@ to an item they did not have:
 
 The new grants are stored and applied first; only then is the old grant
 removed (or reduced to what stays, orphaned) and the deleted item's tag removed
-from user policies, so a restart partway through converges on the next run.
+from user policies, so a restart partway through converges on the next run. If
+the old item exists in Jellyfin again by then, nothing is removed: the old grant
+is kept intact with its restrictions, shown with a `source reappeared` status in
+Grants (`remap.sourceReappeared` in `GET /v1/grants`), logged as
+`grant source reappeared` and counted as `result="source_reappeared"`; the new
+grants stay applied. Revoke whichever grant is no longer needed.
 Requests stay handled, so the backfill does not import them again. Seerr re-sending
 `MEDIA_AVAILABLE` for the request triggers the same recovery. Only a definite
 `404` counts as deleted: network failures and `5xx` responses from Jellyfin or
@@ -704,8 +713,11 @@ visible to every household, so revoke it explicitly instead. It is also refused
 with `409` if Seerr says a request is for the other quality's item of the title
 (a 4K request onto the HD item or the reverse, `code: "quality_mismatch"`). The
 old grant is removed only after the target has been applied; if applying fails,
-it is kept and the move can be repeated. `jfa_grant_remaps_total` counts moves
-(`result="remapped"`) and new orphans (`result="orphaned"`) by `trigger`
+it is kept and the move can be repeated. If the old item reappears meanwhile,
+the target stays applied, the old grant is kept as above, and the move answers
+`409` (`code: "source_reappeared"`). `jfa_grant_remaps_total` counts moves
+(`result="remapped"`), new orphans (`result="orphaned"`) and reappeared source
+items (`result="source_reappeared"`) by `trigger`
 (`auto` or `admin`).
 
 ### Changes do not reach every user
