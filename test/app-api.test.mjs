@@ -599,7 +599,7 @@ describe('household app API: one cache per household', { timeout: 120_000 }, () 
     await app.store.upsertGroup({ id: 'farmhouse', name: 'Farmhouse', userIds: [ALICE, ANN] });
   });
 
-  it('caches nothing for any household when a state file holds more households than supported', async (t) => {
+  it('caches nothing for any household when a state file holds more households than supported, and still loads it', async (t) => {
     const at = '2026-10-24T12:00:00.000Z';
     const groups = Object.fromEntries([
       { id: 'farmhouse', name: 'Farmhouse', userIds: [ALICE, ANN].sort() },
@@ -616,6 +616,15 @@ describe('household app API: one cache per household', { timeout: 120_000 }, () 
     // The same for every household, whoever was served first: every call goes to TMDB and Seerr.
     assert.equal(app.tmdb.calls.filter((call) => call.pathname === `/3/movie/${T_MOVIE}`).length, 4);
     assert.equal(app.seerr.calls.filter((call) => call.pathname === '/api/v1/blocklist').length, 4);
+    // An upgrade with more groups than supported: existing groups can still be changed and deleted, new ones are
+    // refused until there are fewer than 100.
+    await app.store.upsertGroup({ id: 'h0', name: 'Renamed', userIds: [] });
+    await assert.rejects(app.store.upsertGroup({ id: 'new', name: 'New', userIds: [] }), /groups must be at most 100/);
+    await app.store.deleteGroup('h0');
+    await assert.rejects(app.store.upsertGroup({ id: 'new', name: 'New', userIds: [] }), /groups must be at most 100/);
+    await app.store.deleteGroup('h1');
+    await app.store.upsertGroup({ id: 'new', name: 'New', userIds: [] });
+    assert.equal(app.store.listGroups().length, 100);
   });
 });
 
@@ -649,6 +658,28 @@ describe('household app API: TMDB shared fairly', { timeout: 60_000 }, () => {
       assert.ok(answer.status === 200 || answer.text === '{"error":"too_many_requests"}', `${answer.status} ${answer.text}`);
     }
     assert.ok(bobServed >= 20 && bobServed < 40, `B served ${bobServed}`);
+  });
+
+  it('never has more TMDB calls unanswered than allowed, and gives up on a hung one, freeing its place', async (t) => {
+    // TMDB never answers; tokens are plentiful, so only the 10 places in flight limit, each call abandoned after 300 ms.
+    const app = await startApp(t, world({ tmdbHang: true }), { catalogueLimits: { perSecond: 1000, burst: 1000, inFlight: 10, callTimeoutMs: 300 } });
+    const asks = [];
+    for (const [host, user] of [[HOST_A, ALICE], [HOST_A, ANN], [HOST_B, BOB]]) {
+      for (let index = 0; index < 8; index += 1) asks.push(app.get(`${APP}/search?q=${user}-${index}`, { host, user }));
+    }
+    // Between abandonments (at 300 ms and 600 ms) TMDB holds 10 open calls, then the last 4.
+    const open = [];
+    for (const at of [150, 450, 750]) {
+      await delay(at - (open.length ? [150, 450, 750][open.length - 1] : 0));
+      open.push(app.tmdb.hung.open);
+    }
+    assert.deepEqual(open, [10, 10, 4]);
+    const answers = await Promise.all(asks);
+    for (const answer of answers) assert.equal(answer.text, '{"error":"unavailable"}');
+    // Every call reached TMDB in its turn, and JellyPass closed each one it gave up on.
+    assert.equal(app.tmdb.calls.filter((call) => call.pathname === '/3/search/multi').length, 24);
+    for (let waited = 0; app.tmdb.hung.open > 0 && waited < 1000; waited += 10) await delay(10);
+    assert.equal(app.tmdb.hung.open, 0);
   });
 
   it('starts at most 30 TMDB calls in any second, whatever households ask', async (t) => {

@@ -41,6 +41,14 @@ export function isTmdbCredential(value: unknown): value is string {
 /** TMDB's credentials, private to this module: never on an instance, so never logged or serialized with it. */
 const credentials = new WeakMap<TmdbClient, string>();
 
+/** How long one TMDB call, its body included, may take. */
+export const TMDB_TIMEOUT_MS = 15_000;
+
+export interface TmdbCallOptions {
+  /** Abandons the call when it aborts. */
+  signal?: AbortSignal;
+}
+
 export class TmdbClient {
   readonly #baseUrl: string;
   readonly #now: () => number;
@@ -62,9 +70,9 @@ export class TmdbClient {
   }
 
   /** Movies, series and people matching `query` (people are not titles; the app drops them). */
-  public search(query: string, page = 1): Promise<unknown> {
+  public search(query: string, page = 1, options: TmdbCallOptions = {}): Promise<unknown> {
     if (typeof query !== 'string' || !query.trim() || query.length > 200) throw new TypeError('search query is invalid');
-    return this.#get('/3/search/multi', '/3/search/multi', { query, page: pageNumber(page), include_adult: 'false' });
+    return this.#get('/3/search/multi', '/3/search/multi', { query, page: pageNumber(page), include_adult: 'false' }, options);
   }
 
   /**
@@ -72,51 +80,58 @@ export class TmdbClient {
    * trending titles; popular movies and series are TMDB discover by popularity; upcoming is movies by popularity whose
    * primary release is today (UTC) or later.
    */
-  public discover(list: TmdbDiscoverList, page = 1): Promise<unknown> {
+  public discover(list: TmdbDiscoverList, page = 1, options: TmdbCallOptions = {}): Promise<unknown> {
     const parameters = { page: pageNumber(page) };
-    if (list === 'trending') return this.#get('/3/trending/all/day', '/3/trending/all/day', parameters);
+    if (list === 'trending') return this.#get('/3/trending/all/day', '/3/trending/all/day', parameters, options);
     if (list === 'popular-movies') {
-      return this.#get('/3/discover/movie', '/3/discover/movie', { ...parameters, sort_by: 'popularity.desc', include_adult: 'false' });
+      return this.#get('/3/discover/movie', '/3/discover/movie', { ...parameters, sort_by: 'popularity.desc', include_adult: 'false' }, options);
     }
     if (list === 'popular-tv') {
-      return this.#get('/3/discover/tv', '/3/discover/tv', { ...parameters, sort_by: 'popularity.desc', include_null_first_air_dates: 'false' });
+      return this.#get('/3/discover/tv', '/3/discover/tv', { ...parameters, sort_by: 'popularity.desc', include_null_first_air_dates: 'false' }, options);
     }
     if (list === 'upcoming') {
       const today = new Date(this.#now()).toISOString().slice(0, 10);
       return this.#get('/3/discover/movie', '/3/discover/movie',
-        { ...parameters, sort_by: 'popularity.desc', include_adult: 'false', 'primary_release_date.gte': today });
+        { ...parameters, sort_by: 'popularity.desc', include_adult: 'false', 'primary_release_date.gte': today }, options);
     }
     throw new TypeError('discover list is invalid');
   }
 
-  public movie(tmdbId: number): Promise<unknown> {
-    return this.#get('/3/movie/:id', `/3/movie/${tmdbIdentifier(tmdbId)}`, {});
+  public movie(tmdbId: number, options: TmdbCallOptions = {}): Promise<unknown> {
+    return this.#get('/3/movie/:id', `/3/movie/${tmdbIdentifier(tmdbId)}`, {}, options);
   }
 
-  public tv(tmdbId: number): Promise<unknown> {
-    return this.#get('/3/tv/:id', `/3/tv/${tmdbIdentifier(tmdbId)}`, {});
+  public tv(tmdbId: number, options: TmdbCallOptions = {}): Promise<unknown> {
+    return this.#get('/3/tv/:id', `/3/tv/${tmdbIdentifier(tmdbId)}`, {}, options);
   }
 
-  public season(tmdbId: number, seasonNumber: number): Promise<unknown> {
+  public season(tmdbId: number, seasonNumber: number, options: TmdbCallOptions = {}): Promise<unknown> {
     if (!Number.isSafeInteger(seasonNumber) || seasonNumber < 0) throw new TypeError('season number is invalid');
-    return this.#get('/3/tv/:id/season/:n', `/3/tv/${tmdbIdentifier(tmdbId)}/season/${seasonNumber}`, {});
+    return this.#get('/3/tv/:id/season/:n', `/3/tv/${tmdbIdentifier(tmdbId)}/season/${seasonNumber}`, {}, options);
   }
 
   /**
    * A guarded TMDB GET. A redirect is never followed (it would carry the credential to wherever it points) and counts as
    * a failure. The body is read up to {@link MAX_GUARDED_RESPONSE_BYTES} bytes and no further. Errors carry only the
-   * status and the route template.
+   * status and the route template. The call is abandoned after {@link TMDB_TIMEOUT_MS}, or when `options.signal` aborts.
    */
-  async #get(route: string, path: string, parameters: Record<string, string | number>): Promise<unknown> {
+  async #get(
+    route: string,
+    path: string,
+    parameters: Record<string, string | number>,
+    options: TmdbCallOptions = {},
+  ): Promise<unknown> {
     const credential = credentials.get(this);
     if (!credential) throw new TypeError('TMDB client is invalid');
     const query = new URLSearchParams({ ...stringValues(parameters), language: TMDB_LANGUAGE });
     const headers: Record<string, string> = { Accept: 'application/json' };
     if (V3_KEY.test(credential)) query.set('api_key', credential);
     else headers.Authorization = `Bearer ${credential}`;
+    const timeout = AbortSignal.timeout(TMDB_TIMEOUT_MS);
+    const signal = options.signal ? AbortSignal.any([timeout, options.signal]) : timeout;
     let response: Response;
     try {
-      response = await fetch(`${this.#baseUrl}${path}?${query}`, { signal: AbortSignal.timeout(15_000), redirect: 'manual', headers });
+      response = await fetch(`${this.#baseUrl}${path}?${query}`, { signal, redirect: 'manual', headers });
     } catch {
       // fetch's own error may quote the URL, and with it a v3 key.
       throw new TmdbError(`TMDB GET ${route} failed`, 502);

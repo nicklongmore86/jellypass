@@ -73,7 +73,8 @@ export function authorization(userId) {
  * - `tmdbQuota`: `{ calls, windowMs }`, TMDB's own rate limit: a title call beyond `calls` in the last `windowMs` is
  *   answered `429` with `Retry-After: 1`;
  * - `tmdbRateLimited`: how many title calls TMDB answers `429` first, with `Retry-After: <tmdbRetryAfter>`;
- * - `tmdbMovies`: more movies TMDB knows, by TMDB ID, as `{ title, release_date }`; search lists them too.
+ * - `tmdbMovies`: more movies TMDB knows, by TMDB ID, as `{ title, release_date }`; search lists them too;
+ * - `tmdbHang`: TMDB never answers a title call; it only notices when JellyPass gives up on it.
  */
 export function world(options = {}) {
   return {
@@ -108,6 +109,7 @@ export function world(options = {}) {
     tmdbRateLimited: options.tmdbRateLimited ?? 0,
     tmdbRetryAfter: options.tmdbRetryAfter,
     tmdbMovies: { ...options.tmdbMovies },
+    tmdbHang: options.tmdbHang ?? false,
     extraResults: options.extraResults ?? 0,
   };
 }
@@ -267,11 +269,14 @@ export async function createFakeSeerr(state) {
 /**
  * Starts a fake TMDB serving the TMDB fixtures. It refuses any call without JellyPass's key (as `api_key`) and records
  * every call in `calls` (with the time it arrived, `at`, from `performance.now()`), and every `429` it answers in
- * `limited`. `state.failCatalogue`, `state.tmdbQuota` and `state.tmdbRateLimited` make title calls fail.
+ * `limited`. `state.failCatalogue`, `state.tmdbQuota` and `state.tmdbRateLimited` make title calls fail; with
+ * `state.tmdbHang`, title calls are held open and `hung` counts those open now, the most open at once, and those
+ * JellyPass closed.
  */
 export async function createFakeTmdb(state) {
   const calls = [];
   const limited = [];
+  const hung = { open: 0, maxOpen: 0, closed: 0 };
   const server = createServer((request, response) => {
     const url = new URL(request.url, 'http://localhost');
     const at = performance.now();
@@ -289,6 +294,15 @@ export async function createFakeTmdb(state) {
     if (state.tmdbQuota) {
       const recent = calls.filter((call) => call.pathname !== '/3/authentication' && call.at > at - state.tmdbQuota.windowMs);
       if (recent.length > state.tmdbQuota.calls) return tooMany(1);
+    }
+    if (state.tmdbHang) {
+      hung.open += 1;
+      hung.maxOpen = Math.max(hung.maxOpen, hung.open);
+      response.on('close', () => {
+        hung.open -= 1;
+        hung.closed += 1;
+      });
+      return undefined;
     }
     if (state.failCatalogue === 429) return tooMany(0);
     if (state.failCatalogue) return send(response, state.failCatalogue, { status_code: 7300999, status_message: 'canary upstream failure' });
@@ -331,7 +345,7 @@ export async function createFakeTmdb(state) {
   }
 
   await listen(server);
-  return { url: `http://127.0.0.1:${server.address().port}`, calls, limited, state, close: () => close(server) };
+  return { url: `http://127.0.0.1:${server.address().port}`, calls, limited, hung, state, close: () => close(server) };
 }
 
 /**

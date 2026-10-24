@@ -10,23 +10,35 @@ class RateLimited extends Error {
   }
 }
 
-/** A dispatcher whose calls record when they start, in `started`, as `lane:label`. */
+/** A dispatcher whose calls record when they start, in `started`, as `lane:label`, and the most in flight at once. */
 function dispatcher(options = {}) {
   const started = [];
+  let active = 0;
+  let maxActive = 0;
   const fair = new FairDispatcher({
     ratePerSecond: 50,
     burst: 1,
+    maxInFlight: 10,
     maxQueuedPerLane: 100,
     maxQueued: 1000,
     queueTimeoutMs: 10_000,
+    callTimeoutMs: 10_000,
     retryAfter: (error) => (error instanceof RateLimited ? error.retryAfterMs : undefined),
     ...options,
   });
-  const run = (lane, label, task = async () => label) => fair.run(lane, () => {
-    started.push({ name: `${lane}:${label}`, at: performance.now() });
-    return task();
-  });
-  return { fair, run, started, names: () => started.map((call) => call.name) };
+  const run = (lane, label, task = async () => label, runOptions) => fair.run(lane, async (signal) => {
+    started.push({ name: `${lane}:${label}`, at: performance.now(), signal });
+    active += 1;
+    maxActive = Math.max(maxActive, active);
+    try {
+      return await task(signal);
+    } finally {
+      active -= 1;
+    }
+  }, runOptions);
+  return {
+    fair, run, started, names: () => started.map((call) => call.name), maxActive: () => maxActive, active: () => active,
+  };
 }
 
 describe('fair dispatcher', () => {
@@ -49,6 +61,92 @@ describe('fair dispatcher', () => {
     // 5 at once, then 20 a second: the 25th starts no sooner than one second in.
     assert.ok(times[24] - times[0] >= 950, `${times[24] - times[0]} ms`);
     for (const first of times) assert.ok(times.filter((time) => time >= first && time < first + 500).length <= 5 + 10 + 1);
+  });
+
+  it('never has more calls in flight than allowed, however long they take (Codex\'s repro)', async () => {
+    // Production settings; 30 calls from three households that TMDB never answers.
+    const { fair, run, maxActive } = dispatcher({ ratePerSecond: 20, burst: 10, maxInFlight: 10, callTimeoutMs: 60_000 });
+    const controller = new AbortController();
+    const calls = Array.from({ length: 30 }, (_, index) =>
+      run(`household-${index % 3}`, index, () => new Promise(() => undefined), { signal: controller.signal }));
+    await delay(1100);
+    // Tokens refilled meanwhile, but no call starts while 10 are unanswered.
+    assert.equal(maxActive(), 10);
+    assert.equal(fair.queued, 20);
+    assert.equal(fair.inFlight, 10);
+    controller.abort(new Error('gave up'));
+    for (const call of calls) await assert.rejects(call, /gave up/);
+    assert.equal(fair.inFlight, 0);
+    assert.equal(fair.queued, 0);
+  });
+
+  it('takes turns between lanes when a place in flight frees up', async () => {
+    const { run, names, maxActive } = dispatcher({ ratePerSecond: 1000, burst: 100, maxInFlight: 1 });
+    const slow = async () => delay(5);
+    const b = Array.from({ length: 5 }, (_, index) => run('b', index, slow));
+    const c = Array.from({ length: 5 }, (_, index) => run('c', index, slow));
+    const a = run('a', 0, slow);
+    await Promise.all([...b, ...c, a]);
+    // Tokens are plentiful; only the place in flight limits, and each freed place goes to the next lane in turn.
+    assert.deepEqual(names().slice(0, 7), ['b:0', 'b:1', 'c:0', 'a:0', 'b:2', 'c:1', 'b:3']);
+    assert.equal(maxActive(), 1);
+  });
+
+  it('frees a place in flight when a call succeeds, fails, times out or is aborted', async () => {
+    const { fair, run, started } = dispatcher({ ratePerSecond: 1000, burst: 100, maxInFlight: 1, callTimeoutMs: 100 });
+    assert.equal(await run('a', 'ok'), 'ok');
+    assert.equal(fair.inFlight, 0);
+    await assert.rejects(run('a', 'error', async () => { throw new Error('boom'); }), /boom/);
+    assert.equal(fair.inFlight, 0);
+    // A task that throws before returning a promise is a failure like any other.
+    await assert.rejects(fair.run('a', () => { throw new Error('at once'); }), /at once/);
+    assert.equal(fair.inFlight, 0);
+
+    // A call that never settles, and ignores its signal, still frees its place when its time is up.
+    const hung = run('a', 'hung', () => new Promise(() => undefined));
+    const next = run('b', 'next');
+    const startedAt = performance.now();
+    await assert.rejects(hung, DispatchTimeoutError);
+    assert.ok(performance.now() - startedAt >= 90, `${performance.now() - startedAt} ms`);
+    assert.equal(started.find((call) => call.name === 'a:hung').signal.aborted, true);
+    assert.equal(await next, 'next');
+    assert.equal(fair.inFlight, 0);
+
+    // A caller that gives up frees the place at once; its task is told to stop.
+    const controller = new AbortController();
+    const aborted = run('a', 'aborted', () => new Promise(() => undefined), { signal: controller.signal });
+    const after = run('b', 'after');
+    await delay(10);
+    assert.equal(fair.inFlight, 1);
+    controller.abort(new Error('caller gave up'));
+    await assert.rejects(aborted, /caller gave up/);
+    assert.equal(started.find((call) => call.name === 'a:aborted').signal.aborted, true);
+    assert.equal(await after, 'after');
+    assert.equal(fair.inFlight, 0);
+  });
+
+  it('times out and bounds calls waiting for a place in flight, and forgets one whose caller gives up', async () => {
+    const { fair, run, names } = dispatcher({
+      ratePerSecond: 1000, burst: 100, maxInFlight: 1, maxQueuedPerLane: 2, queueTimeoutMs: 100, callTimeoutMs: 5000,
+    });
+    let finish;
+    const busy = run('a', 'busy', () => new Promise((resolve) => { finish = resolve; }));
+    await delay(5);
+    const waiting = [run('b', 0), run('b', 1)];
+    // The lane is full while the place is taken: refused at once.
+    await assert.rejects(run('b', 2), DispatchQueueFullError);
+    const controller = new AbortController();
+    const givenUp = run('c', 0, undefined, { signal: controller.signal });
+    controller.abort(new Error('gave up'));
+    await assert.rejects(givenUp, /gave up/);
+    const startedAt = performance.now();
+    for (const call of waiting) await assert.rejects(call, DispatchTimeoutError);
+    assert.ok(performance.now() - startedAt < 200, `${performance.now() - startedAt} ms`);
+    assert.equal(fair.queued, 0);
+    finish('done');
+    assert.equal(await busy, 'done');
+    // Only the call in flight ever started.
+    assert.deepEqual(names(), ['a:busy']);
   });
 
   it('refuses a call at once when its lane, or every lane together, is full', async () => {

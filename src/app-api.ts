@@ -8,7 +8,7 @@ import {
   type SeerrMemberClient,
 } from './seerr.js';
 import { MAX_HOUSEHOLDS } from './store.js';
-import { TmdbError, type TmdbClient, type TmdbDiscoverList } from './tmdb.js';
+import { TMDB_TIMEOUT_MS, TmdbError, type TmdbClient, type TmdbDiscoverList } from './tmdb.js';
 
 /**
  * The household app API, served under /jellypass/app/v1 on household hosts only (see docs/app-design.md). Read-only in
@@ -42,12 +42,14 @@ export const MAX_APP_REQUESTS_PER_USER = 200;
 export const APP_BURST_WINDOW_MS = 10 * 1000;
 export const MAX_APP_REQUESTS_PER_HOUSEHOLD_BURST = 60;
 /**
- * TMDB calls, for all households together: at most 20 a second with at most 10 at once, so at most 30 in any second,
- * well under TMDB's documented limit of about 40 a second. Each household queues at most 20 calls, each for at most 10
- * seconds (see {@link FairDispatcher}).
+ * TMDB calls, for all households together: at most 20 start a second with at most 10 started at once, so at most 30 in
+ * any second, well under TMDB's documented limit of about 40 a second; and at most 10 are ever unanswered at once, each
+ * abandoned after {@link TMDB_TIMEOUT_MS}. Each household queues at most 20 calls, each for at most 10 seconds (see
+ * {@link FairDispatcher}).
  */
 export const TMDB_CALLS_PER_SECOND = 20;
 export const TMDB_BURST = 10;
+export const TMDB_IN_FLIGHT = 10;
 export const TMDB_QUEUE_PER_HOUSEHOLD = 20;
 export const TMDB_QUEUE_TIMEOUT_MS = 10 * 1000;
 /** How long to wait when TMDB answers 429 without a usable Retry-After. */
@@ -149,7 +151,14 @@ export interface HouseholdAppOptions {
   titleTtlMs?: number;
   blocklistTtlMs?: number;
   /** TMDB's share of calls (for tests; see {@link TMDB_CALLS_PER_SECOND}). */
-  catalogueLimits?: Partial<{ perSecond: number; burst: number; queuePerHousehold: number; queueTimeoutMs: number }>;
+  catalogueLimits?: Partial<{
+    perSecond: number;
+    burst: number;
+    inFlight: number;
+    queuePerHousehold: number;
+    queueTimeoutMs: number;
+    callTimeoutMs: number;
+  }>;
   logLevel?: string;
 }
 
@@ -295,9 +304,11 @@ export class HouseholdApp implements HouseholdAppHandler {
     this.#tmdb = new FairDispatcher({
       ratePerSecond: limits.perSecond ?? TMDB_CALLS_PER_SECOND,
       burst: limits.burst ?? TMDB_BURST,
+      maxInFlight: limits.inFlight ?? TMDB_IN_FLIGHT,
       maxQueuedPerLane: queuePerHousehold,
       maxQueued: queuePerHousehold * MAX_HOUSEHOLDS,
       queueTimeoutMs: limits.queueTimeoutMs ?? TMDB_QUEUE_TIMEOUT_MS,
+      callTimeoutMs: limits.callTimeoutMs ?? TMDB_TIMEOUT_MS,
       retryAfter: (error) => error instanceof TmdbError && error.status === 429
         ? error.retryAfterMs ?? TMDB_DEFAULT_RETRY_AFTER_MS
         : undefined,
@@ -424,7 +435,7 @@ export class HouseholdApp implements HouseholdAppHandler {
     if (!query || query.length > MAX_QUERY_LENGTH) throw new AppAnswer('invalid');
     const page = pageParameter(url);
     const [answer, view] = await Promise.all([
-      this.#title(context, `search\n${query}\n${page}`, () => this.#catalogue.search(query, page)),
+      this.#title(context, `search\n${query}\n${page}`, (signal) => this.#catalogue.search(query, page, { signal })),
       this.#view(caller, context),
     ]);
     return pageOf(answer, page, undefined, view, context.origin);
@@ -438,7 +449,7 @@ export class HouseholdApp implements HouseholdAppHandler {
   ): Promise<PageDto> {
     const page = pageParameter(url);
     const [answer, view] = await Promise.all([
-      this.#title(context, `discover\n${list.list}\n${page}`, () => this.#catalogue.discover(list.list, page)),
+      this.#title(context, `discover\n${list.list}\n${page}`, (signal) => this.#catalogue.discover(list.list, page, { signal })),
       this.#view(caller, context),
     ]);
     return pageOf(answer, page, list.mediaType, view, context.origin);
@@ -447,7 +458,7 @@ export class HouseholdApp implements HouseholdAppHandler {
   async #movie(caller: JellyfinCaller, context: HouseholdAppRequest, input: string): Promise<MovieDto> {
     const tmdbId = tmdbParameter(input);
     const [answer, view] = await Promise.all([
-      this.#title(context, `movie\n${tmdbId}`, () => this.#catalogue.movie(tmdbId)),
+      this.#title(context, `movie\n${tmdbId}`, (signal) => this.#catalogue.movie(tmdbId, { signal })),
       this.#view(caller, context),
     ]);
     const state = titleState(view, 'movie', tmdbId);
@@ -464,7 +475,7 @@ export class HouseholdApp implements HouseholdAppHandler {
   async #tv(caller: JellyfinCaller, context: HouseholdAppRequest, input: string): Promise<TvDto> {
     const tmdbId = tmdbParameter(input);
     const [answer, view] = await Promise.all([
-      this.#title(context, `tv\n${tmdbId}`, () => this.#catalogue.tv(tmdbId)),
+      this.#title(context, `tv\n${tmdbId}`, (signal) => this.#catalogue.tv(tmdbId, { signal })),
       this.#view(caller, context),
     ]);
     const state = titleState(view, 'tv', tmdbId);
@@ -489,7 +500,7 @@ export class HouseholdApp implements HouseholdAppHandler {
     if (!/^(?:0|[1-9][0-9]{0,2})$/.test(seasonInput)) throw new AppAnswer('invalid');
     const seasonNumber = Number(seasonInput);
     const [answer, view] = await Promise.all([
-      this.#title(context, `season\n${tmdbId}\n${seasonNumber}`, () => this.#catalogue.season(tmdbId, seasonNumber)),
+      this.#title(context, `season\n${tmdbId}\n${seasonNumber}`, (signal) => this.#catalogue.season(tmdbId, seasonNumber, { signal })),
       this.#view(caller, context),
     ]);
     const state = titleState(view, 'tv', tmdbId);
@@ -517,7 +528,7 @@ export class HouseholdApp implements HouseholdAppHandler {
    * household only picks the cache. The call waits for the household's turn (see {@link FairDispatcher}). A title TMDB
    * does not know is `not_found`; a household with too many calls already waiting for TMDB is `rate_limited`.
    */
-  async #title(context: HouseholdAppRequest, key: string, load: () => Promise<unknown>): Promise<unknown> {
+  async #title(context: HouseholdAppRequest, key: string, load: (signal: AbortSignal) => Promise<unknown>): Promise<unknown> {
     const call = () => this.#tmdb.run(context.householdId, load);
     try {
       const titles = this.#caches(context.householdId)?.titles;

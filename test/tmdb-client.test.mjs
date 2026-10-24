@@ -28,7 +28,7 @@ beforeEach(() => {
   respond = () => Response.json({});
   originalFetch = globalThis.fetch;
   globalThis.fetch = async (input, init = {}) => {
-    const call = { url: new URL(String(input)), method: init.method ?? 'GET', headers: new Headers(init.headers), redirect: init.redirect };
+    const call = { url: new URL(String(input)), method: init.method ?? 'GET', headers: new Headers(init.headers), redirect: init.redirect, signal: init.signal };
     calls.push(call);
     return respond(call);
   };
@@ -165,6 +165,36 @@ describe('TMDB client', () => {
 });
 
 describe('TMDB client, against a real redirect', () => {
+  it('abandons a call when the caller\'s signal aborts, and gives every call a timeout of its own', async () => {
+    // TMDB never answers: only an abort ends the call.
+    respond = (call) => new Promise((_resolve, reject) => {
+      call.signal.addEventListener('abort', () => reject(call.signal.reason), { once: true });
+    });
+    const withSignal = {
+      search: (signal) => client().search('synthetic title', 2, { signal }),
+      discover: (signal) => client().discover('trending', 1, { signal }),
+      movie: (signal) => client().movie(900001, { signal }),
+      tv: (signal) => client().tv(900002, { signal }),
+      season: (signal) => client().season(900002, 1, { signal }),
+    };
+    for (const [name, call] of Object.entries(withSignal)) {
+      const controller = new AbortController();
+      const pending = call(controller.signal);
+      controller.abort(new Error('caller gave up'));
+      // At once, not when the client's own timeout ends the call.
+      let timer;
+      const late = new Promise((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error(`${name} still waiting`)), 1000);
+      });
+      await assert.rejects(Promise.race([pending, late]).finally(() => clearTimeout(timer)), (error) => error instanceof TmdbError && error.status === 502 && error.message.endsWith('failed'), name);
+    }
+    // Without a signal of its own, a call still has one: the client's timeout.
+    respond = () => Response.json({});
+    await client().movie(900001);
+    assert.ok(calls.at(-1).signal instanceof AbortSignal);
+    assert.equal(calls.at(-1).signal.aborted, false);
+  });
+
   it('never follows a redirect, so the key never reaches anywhere else', async () => {
     globalThis.fetch = originalFetch;
     const reached = [];
