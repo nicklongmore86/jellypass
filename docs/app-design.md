@@ -405,10 +405,10 @@ elsewhere; the files are never proxied to Jellyfin.
   carries no user data (tested), so it is not `no-store`; the API stays `no-store`.
 - **Service worker** (`sw.js`, scope `/jellypass/app/`). It precaches and serves only the app's own static files (the
   exact list in `sw.js`, which a test compares with the files served), network first, falling back to its copy when
-  the network fails. The copy is one release: the cache is named for a hash of the precached files (computed by
-  `scripts/build-app.mjs` and written into `sw.js`, so any changed file changes the worker and its cache name), the
-  whole set is installed or none of it (a failed install deletes its cache), nothing is added to it afterwards, and
-  activation deletes the older releases' caches, so what runs offline is always one coherent release. Requests are
+  the network fails. The copy is one release: the cache is named for a hash of the precached files and of the unstamped worker (computed by
+  `scripts/build-app.mjs` and written into `sw.js`, so any changed file, or a worker-only change, gets a new cache name), the
+  whole set is installed or none of it (a failed install deletes only a cache it created, never an existing one), nothing is added to it afterwards, and
+  activation deletes the older releases' caches, so what runs offline is always one complete release. (A complete precache does not make every page load one coherent release: network first can mix newer network files with older cached ones during intermittent connectivity.) Requests are
   answered from an exact allowlist: anything under `/jellypass/app/v1/`, other origins (TMDB images), non-`GET`
   requests and every other path is not handled by the worker at all, so it is never cached or answered offline (tested
   by running the worker against a fake browser, including odd spellings of API addresses).

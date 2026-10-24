@@ -7,12 +7,14 @@ import { dirname, join, posix } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const HASH_PLACEHOLDER = '__CONTENT_HASH__';
+const SOURCE_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'app', 'static');
 
 /**
- * A hash of every file the service worker precaches (everything under `directory` but sw.js itself, whose own text
- * carries the result): same files, same hash; any change to any of them, a new one. It names the worker's cache.
+ * A hash of every file the service worker precaches (everything under `directory` but the stamped sw.js) and of the
+ * unstamped worker template (sw.js with the placeholder, which cannot contain the result): same files and worker, same
+ * hash; any change to either, a new one. It names the worker's cache, so a worker-only release gets its own cache.
  */
-export function contentHash(directory) {
+export function contentHash(directory, template = readFileSync(join(SOURCE_DIR, 'sw.js'), 'utf8')) {
   const files = [];
   const walk = (dir, prefix) => {
     for (const name of readdirSync(dir)) {
@@ -23,7 +25,7 @@ export function contentHash(directory) {
     }
   };
   walk(directory, '');
-  const hash = createHash('sha256');
+  const hash = createHash('sha256').update(`sw.js\0${Buffer.byteLength(template)}\0${template}`);
   for (const [relative, full] of files.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))) {
     const body = readFileSync(full);
     hash.update(`${relative}\0${body.length}\0`).update(body);
@@ -36,7 +38,7 @@ export function stampWorker(directory) {
   const path = join(directory, 'sw.js');
   const source = readFileSync(path, 'utf8');
   if (!source.includes(HASH_PLACEHOLDER)) throw new Error(`sw.js has no ${HASH_PLACEHOLDER} to fill in`);
-  writeFileSync(path, source.replaceAll(HASH_PLACEHOLDER, contentHash(directory)));
+  writeFileSync(path, source.replaceAll(HASH_PLACEHOLDER, contentHash(directory, source)));
 }
 
 if (import.meta.url === pathToFileURL(process.argv[1] ?? '').href) {

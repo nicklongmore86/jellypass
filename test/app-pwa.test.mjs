@@ -505,7 +505,10 @@ describe('household app page: service worker', () => {
       cpSync(DIST_APP, copy, { recursive: true });
       assert.equal(contentHash(copy), hash, 'the same files give the same hash');
       writeFileSync(path.join(copy, 'sw.js'), 'changed worker text');
-      assert.equal(contentHash(copy), hash, 'the worker\'s own text (which carries the hash) is not part of it');
+      assert.equal(contentHash(copy), hash, 'the stamped worker\'s own text (which carries the hash) is not part of it');
+      const template = readFileSync(path.join(import.meta.dirname, '..', 'app', 'static', 'sw.js'), 'utf8');
+      assert.equal(contentHash(copy, template), hash, 'the unstamped worker is what the build hashes');
+      assert.notEqual(contentHash(copy, `${template}\n// worker-only change\n`), hash, 'a worker-only change is a new cache name');
       for (const file of ['app.css', 'js/main.js', 'index.html', 'icons/icon-192.png']) {
         const target = path.join(copy, file);
         const original = readFileSync(target);
@@ -528,6 +531,25 @@ describe('household app page: service worker', () => {
     await assert.rejects(Promise.all(waits), /network error while precaching/);
     assert.deepEqual([...worker.stores.keys()], ['jellypass-app-static-previous'], 'no partial cache is left behind');
     assert.equal(worker.log.deleted.length, 1);
+  });
+
+  it('a worker-only update that fails to install leaves the active release\'s cache and offline fallback intact', async () => {
+    // Same cache name is what a release reusing the active hash would get; the old worker's files are all there.
+    const ok = runWorker();
+    const waits = [];
+    ok.listeners.install({ waitUntil: (promise) => waits.push(promise) });
+    await Promise.all(waits);
+    const [name] = ok.stores.keys();
+    const active = ok.stores.get(name);
+    const failing = runWorker({ failAdd: true, network: async () => { throw new TypeError('offline'); } });
+    failing.stores.set(name, active);
+    const more = [];
+    failing.listeners.install({ waitUntil: (promise) => more.push(promise) });
+    await assert.rejects(Promise.all(more), /network error while precaching/);
+    assert.deepEqual([...failing.stores.keys()], [name], 'the existing cache was not deleted');
+    assert.deepEqual(failing.log.deleted, []);
+    const answer = await fetchEvent(failing, `${ORIGIN}${PAGE}app.css`);
+    assert.equal(await answer.response.text(), 'precached', 'offline fallback still works');
   });
 
   it('removes older releases\' caches (and only those) once the new one is active', async () => {

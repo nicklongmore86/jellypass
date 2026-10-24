@@ -4,7 +4,7 @@
 // without this worker touching them, so no household data is ever kept for offline use. Files are fetched from the
 // network first and the copy is only used when the network is unreachable.
 //
-// The copy is one release's complete set: the cache is named for a hash of the precached files (filled in by
+// The copy is one release's complete set: the cache is named for a hash of the precached files and of this worker (filled in by
 // scripts/build-app.mjs), installed all at once or not at all, and never added to afterwards, so what is used offline is
 // always the files of one release. A new release installs its own cache; activation removes the older ones.
 const CACHE_PREFIX = 'jellypass-app-static-';
@@ -27,11 +27,16 @@ const STATIC = new Set(STATIC_PATHS);
 
 self.addEventListener('install', (event) => {
   event.waitUntil(
-    caches.open(CACHE)
-      .then((cache) => cache.addAll(STATIC_PATHS.map((path) => new Request(path, { cache: 'reload' }))))
-      .then(() => self.skipWaiting())
-      // A set that could not be completed is thrown away, so a half-filled cache is never mistaken for a release.
-      .catch((error) => caches.delete(CACHE).then(() => Promise.reject(error))),
+    // A cache of this name that is already there was not made by this install (the same release, already running):
+    // it is never touched on failure, only one this attempt created is thrown away.
+    caches.keys().then((keys) => {
+      const created = !keys.includes(CACHE);
+      return caches.open(CACHE)
+        .then((cache) => cache.addAll(STATIC_PATHS.map((path) => new Request(path, { cache: 'reload' }))))
+        .then(() => self.skipWaiting())
+        // A set that could not be completed is thrown away, so a half-filled cache is never mistaken for a release.
+        .catch((error) => (created ? caches.delete(CACHE) : Promise.resolve()).then(() => Promise.reject(error)));
+    }),
   );
 });
 
