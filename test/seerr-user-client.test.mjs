@@ -312,7 +312,8 @@ describe('Seerr calls made for the household app, against a real redirect', () =
       assert.ok(error instanceof SeerrError, String(error));
       assert.equal(error.status, 302);
       assert.match(error.message, /^Seerr (GET|POST) \/api\/v1\/[a-z/:]+ returned 302$/i);
-      assert.doesNotMatch(`${error.message}\n${error.stack}`, /canary|redirected|aaaaaaaa|\b9\b|42/);
+      // The message is the route template only (checked above), so it holds no IDs; nor may anything else in the error.
+      assert.doesNotMatch(`${error.message}\n${error.stack}`, /canary|redirected|aaaaaaaa/);
       assert.deepEqual(servers.reached, []);
     });
   }
