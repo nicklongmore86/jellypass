@@ -184,7 +184,8 @@ export class HouseholdGateway {
     const pathname = requestUrl.pathname.toLowerCase();
     if (pathname === APP_PATH || pathname.startsWith(`${APP_PATH}/`)) {
       // The app's own files carry nothing user-specific and need no credentials; the API under /v1 always does.
-      if (this.#appAssets?.serve(request, response, pathname)) return;
+      // Files only at their exact (lower-case) paths: another spelling is an unknown app path, like any other.
+      if (this.#appAssets?.serve(request, response, requestUrl.pathname)) return;
       await this.#householdApp(request, response, requestUrl, householdId, memberIds);
       return;
     }

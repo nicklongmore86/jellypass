@@ -90,7 +90,7 @@ export class AppAssets {
         if (!contentType) throw new Error(`household app file ${relative} has no known content type`);
         const body = readFileSync(full);
         const keep = /\.(png|svg)$/i.test(name);
-        assets.set(`${APP_PAGE_PATH}${relative}`.toLowerCase(), {
+        assets.set(`${APP_PAGE_PATH}${relative}`, {
           body,
           contentType,
           cacheControl: keep ? KEEP : REVALIDATE,
@@ -115,8 +115,9 @@ export class AppAssets {
   }
 
   /**
-   * Answers a GET or HEAD for one of the app's files and returns true; false if `pathname` (already lower-cased) is not
-   * one. `/jellypass/app` itself redirects to the page. A conditional request gets a 304.
+   * Answers a GET or HEAD for one of the app's files and returns true; false if `pathname` (as requested, not
+   * lower-cased) is not one. Only the exact paths are served, so the app has one address and one service worker
+   * registration; any other spelling is just an unknown app path. `/jellypass/app` itself redirects to the page. A conditional request gets a 304.
    */
   public serve(request: IncomingMessage, response: ServerResponse, pathname: string): boolean {
     if (request.method !== 'GET' && request.method !== 'HEAD') return false;

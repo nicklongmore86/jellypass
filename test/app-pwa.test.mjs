@@ -10,7 +10,7 @@ import { pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import { parseHTML } from 'linkedom';
 import { APP_CONTENT_SECURITY_POLICY, APP_PERMISSIONS_POLICY } from '../dist/app-assets.js';
-import { contentHash } from '../scripts/build-app.mjs';
+import { contentHash, stampWorker } from '../scripts/build-app.mjs';
 import { ALICE, HOST_A, HOST_B, OWN_MOVIE, T_MOVIE, T_TV, TOKENS, get, startApp, world } from './support/household-app.mjs';
 import { assertNoCanaries } from './support/seerr-fixtures.mjs';
 
@@ -119,6 +119,23 @@ describe('household app page: serving', { timeout: 30_000 }, () => {
     const nowhere = shape(await on.get('/', { host: 'jelly-nowhere.example.test', user: null }));
     assert.equal(shape(await on.get(PAGE, { host: 'jelly-nowhere.example.test', user: null })).text, nowhere.text);
     assert.equal(on.jellyfin.requests.length, 0);
+  });
+
+  it('serves the app only at its exact lower-case paths: any other spelling is an unknown app path, never the page', async (t) => {
+    const app = await startApp(t);
+    const unknown = shape(await app.get('/jellypass/app/no-such-file', { user: null }));
+    assert.equal(unknown.status, 401);
+    for (const variant of ['/JELLYPASS/APP/', '/Jellypass/App/', '/jellypass/APP/', '/JELLYPASS/APP', '/jellypass/app/SW.JS', '/JELLYPASS/APP/sw.js',
+      '/jellypass/app/JS/main.js', '/jellypass/app/App.css', '/jellypass/app/INDEX.HTML']) {
+      assert.deepEqual(shape(await app.get(variant, { user: null })), unknown, variant);
+    }
+    const signedIn = shape(await app.get('/jellypass/app/no-such-file'));
+    for (const variant of ['/JELLYPASS/APP/', '/JELLYPASS/APP/sw.js', '/jellypass/app/SW.JS']) {
+      assert.deepEqual(shape(await app.get(variant)), signedIn, variant);
+    }
+    // The API is unaffected: it was always exact-case and still answers where it did.
+    assert.equal((await app.get('/jellypass/app/v1/me')).status, 200);
+    assert.equal((await app.get(PAGE, { user: null })).status, 200);
   });
 
   it('leaves the API as it was: files need no sign-in, /v1 and unknown app paths still do', async (t) => {
@@ -318,9 +335,8 @@ describe('household app page: service worker', () => {
   const ORIGIN = 'https://jelly-farmhouse.example.test';
 
   /** Runs sw.js against fake service-worker globals, returning its listeners and everything it cached or fetched. */
-  function runWorker({ network = async () => new Response('fresh', { status: 200 }), failAdd = false } = {}) {
+  function runWorker({ network = async () => new Response('fresh', { status: 200 }), failAdd = false, stores = new Map(), source = SOURCE } = {}) {
     const listeners = {};
-    const stores = new Map();
     const log = { puts: [], added: [], deleted: [], fetched: [] };
     const cacheNamed = (name) => {
       if (!stores.has(name)) stores.set(name, new Map());
@@ -365,9 +381,9 @@ describe('household app page: service worker', () => {
       },
       // A browser resolves a relative address against the worker's own; Node's Request does not.
       Request: class extends Request { constructor(input, init) { super(new URL(input.url ?? input, ORIGIN), init); } },
-      Response, URL, Promise,
+      Response, URL, Promise, crypto: globalThis.crypto,
     };
-    vm.runInNewContext(SOURCE, context);
+    vm.runInNewContext(source, context);
     return { listeners, stores, log };
   }
 
@@ -498,7 +514,8 @@ describe('household app page: service worker', () => {
     const waits = [];
     worker.listeners.install({ waitUntil: (promise) => waits.push(promise) });
     await Promise.all(waits);
-    assert.deepEqual([...worker.stores.keys()], [`jellypass-app-static-${hash}`]);
+    assert.equal(worker.stores.size, 1);
+    assert.match([...worker.stores.keys()][0], new RegExp(`^jellypass-app-static-${hash}-[0-9a-f-]{36}$`));
 
     const copy = mkdtempSync(path.join(os.tmpdir(), 'jellypass-hash-'));
     try {
@@ -523,7 +540,7 @@ describe('household app page: service worker', () => {
     }
   });
 
-  it('installs a release whole or not at all, and leaves the running release alone when it cannot', async () => {
+  it('installs a release whole or not at all, and leaves other releases\' caches alone when it cannot', async () => {
     const worker = runWorker({ failAdd: true });
     worker.stores.set('jellypass-app-static-previous', new Map([[`${PAGE}app.css`, new Response('old release')]]));
     const waits = [];
@@ -533,23 +550,54 @@ describe('household app page: service worker', () => {
     assert.equal(worker.log.deleted.length, 1);
   });
 
-  it('a worker-only update that fails to install leaves the active release\'s cache and offline fallback intact', async () => {
-    // Same cache name is what a release reusing the active hash would get; the old worker's files are all there.
-    const ok = runWorker();
-    const waits = [];
-    ok.listeners.install({ waitUntil: (promise) => waits.push(promise) });
-    await Promise.all(waits);
-    const [name] = ok.stores.keys();
-    const active = ok.stores.get(name);
-    const failing = runWorker({ failAdd: true, network: async () => { throw new TypeError('offline'); } });
-    failing.stores.set(name, active);
-    const more = [];
-    failing.listeners.install({ waitUntil: (promise) => more.push(promise) });
-    await assert.rejects(Promise.all(more), /network error while precaching/);
-    assert.deepEqual([...failing.stores.keys()], [name], 'the existing cache was not deleted');
-    assert.deepEqual(failing.log.deleted, []);
-    const answer = await fetchEvent(failing, `${ORIGIN}${PAGE}app.css`);
-    assert.equal(await answer.response.text(), 'precached', 'offline fallback still works');
+  it('a concurrent install of the same release that fails leaves the active install\'s cache and offline fallback intact', async () => {
+    // Two installers (two registrations) share one CacheStorage; both start before either has cached anything.
+    const stores = new Map();
+    const a = runWorker({ stores });
+    const b = runWorker({ stores, failAdd: true, network: async () => { throw new TypeError('offline'); } });
+    const waitsA = [];
+    const waitsB = [];
+    a.listeners.install({ waitUntil: (promise) => waitsA.push(promise) });
+    b.listeners.install({ waitUntil: (promise) => waitsB.push(promise) });
+    await Promise.all(waitsA);
+    a.listeners.activate({ waitUntil: (promise) => waitsA.push(promise) });
+    await Promise.all(waitsA);
+    const [name] = stores.keys();
+    await assert.rejects(Promise.all(waitsB), /network error while precaching/);
+    assert.deepEqual([...stores.keys()], [name], 'only the failed install\'s own cache was deleted');
+    assert.deepEqual(a.log.deleted, []);
+    const offline = runWorker({ stores, network: async () => { throw new TypeError('offline'); } });
+    assert.equal(await (await fetchEvent(offline, `${ORIGIN}${PAGE}app.css`)).response.text(), 'precached', 'offline fallback still works');
+  });
+
+  it('keeps every install\'s cache separate, and a restarted worker still finds its release\'s copy', async () => {
+    const stores = new Map();
+    for (const _ of [1, 2]) {
+      const worker = runWorker({ stores });
+      const waits = [];
+      worker.listeners.install({ waitUntil: (promise) => waits.push(promise) });
+      await Promise.all(waits);
+    }
+    assert.equal(stores.size, 2, 'distinct names per install');
+    const restarted = runWorker({ stores, network: async () => { throw new TypeError('offline'); } });
+    assert.equal(await (await fetchEvent(restarted, `${ORIGIN}${PAGE}js/main.js`)).response.text(), 'precached');
+  });
+
+  it('stamps the worker with the hash of the files it precaches, and refuses a worker with nothing to stamp', () => {
+    const copy = mkdtempSync(path.join(os.tmpdir(), 'jellypass-stamp-'));
+    try {
+      cpSync(path.join(import.meta.dirname, '..', 'app', 'static'), copy, { recursive: true });
+      const template = readFileSync(path.join(copy, 'sw.js'), 'utf8');
+      const expected = contentHash(copy, template);
+      stampWorker(copy);
+      const stamped = readFileSync(path.join(copy, 'sw.js'), 'utf8');
+      assert.doesNotMatch(stamped, /__CONTENT_HASH__/);
+      assert.ok(stamped.includes(`\${CACHE_PREFIX}${expected}`));
+      assert.equal(contentHash(copy, template), expected, 'stamping changes nothing the hash covers');
+      assert.throws(() => stampWorker(copy), /no __CONTENT_HASH__/);
+    } finally {
+      rmSync(copy, { recursive: true, force: true });
+    }
   });
 
   it('removes older releases\' caches (and only those) once the new one is active', async () => {
@@ -558,18 +606,20 @@ describe('household app page: service worker', () => {
     worker.listeners.install({ waitUntil: (promise) => waits.push(promise) });
     await Promise.all(waits);
     const current = [...worker.stores.keys()][0];
+    const sibling = `${current}-sibling`.replace(/-[0-9a-f-]{36}-sibling$/, '-00000000-0000-0000-0000-000000000000');
+    worker.stores.set(sibling, new Map());
     worker.stores.set('jellypass-app-static-v1', new Map());
     worker.stores.set('jellypass-app-static-0123456789abcdef', new Map());
     worker.stores.set('someone-elses-cache', new Map());
     worker.listeners.activate({ waitUntil: (promise) => waits.push(promise) });
     await Promise.all(waits);
-    assert.deepEqual([...worker.stores.keys()].sort(), [current, 'someone-elses-cache'].sort());
+    assert.deepEqual([...worker.stores.keys()].sort(), [current, sibling, 'someone-elses-cache'].sort());
     assert.deepEqual(worker.log.deleted.sort(), ['jellypass-app-static-0123456789abcdef', 'jellypass-app-static-v1']);
   });
 
-  it('is registered by the page within its own scope', () => {
+  it('is registered by the page at the one canonical absolute URL and scope', () => {
     const main = read('js/main.js');
-    assert.match(main, /serviceWorker\.register\('sw\.js', \{ scope: '\.\/' \}\)/);
+    assert.match(main, /serviceWorker\.register\('\/jellypass\/app\/sw\.js', \{ scope: '\/jellypass\/app\/' \}\)/);
   });
 });
 
