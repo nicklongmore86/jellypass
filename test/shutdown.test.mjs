@@ -426,6 +426,7 @@ function stubService() {
   return {
     getHouseholdMemberIds: (householdId) => (householdId === 'farmhouse' ? ['alice-id'] : undefined),
     isPasswordless: () => false,
+    canJoinLibrary: () => false,
   };
 }
 

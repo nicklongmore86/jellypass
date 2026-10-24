@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, it, mock } from 'node:test';
 import { AccessService, OperationCancelledError } from '../dist/access-service.js';
@@ -53,7 +54,7 @@ describe('stopping background work on shutdown', { timeout: 10_000 }, () => {
     const seerr = {
       async listRequestsSince() {
         controller.abort(new Error('shutting down'));
-        return [{ id: 1, media: { status: 5 } }, { id: 2, media: { status: 5 } }];
+        return [{ id: 1, status: 2, media: { status: 5 } }, { id: 2, status: 2, media: { status: 5 } }];
       },
       async getRequest(requestId) {
         looked.push(requestId);
@@ -160,7 +161,7 @@ function recordingWorld(abortAt) {
     fetchLibraryCatalog: async () => record('fetchLibraryCatalog', [{ id: 'item-1', name: 'Movie', type: 'Movie' }]),
   };
   const seerr = {
-    listRequestsSince: async () => record('listRequestsSince', [{ id: 7, media: { status: 5 } }]),
+    listRequestsSince: async () => record('listRequestsSince', [{ id: 7, status: 2, media: { status: 5 } }]),
     getRequest: async (requestId) => record('getRequest', {
       id: Number(requestId), media: { status: 5, jellyfinMediaId: 'item-1', mediaType: 'movie' }, requestedBy: { jellyfinUserId: 'alice-id' },
     }),
@@ -365,4 +366,121 @@ describe('cancellation while a reconciliation save is finishing', { timeout: 10_
     assert.deepEqual(world.increments, []);
     assert.deepEqual(logs, []);
   });
+});
+
+describe('household library join stopped by shutdown', { timeout: 10_000 }, () => {
+  /**
+   * Bob, of House B, adds Alice's requested item-1 to his library. At `stopAt` shutdown begins and closes the store, the
+   * way the hard cutoff would: the signal is aborted and close() is called while that call is still in flight.
+   */
+  async function joinWorld(t, stopAt) {
+    const file = path.join(await makeTempDir(t, 'jellypass-join-stop-test-'), 'grants.json');
+    const store = new GrantStore(file);
+    await store.load();
+    await store.upsertGroup({ id: 'house-a', name: 'House A', userIds: ['alice-id'] });
+    await store.upsertGroup({ id: 'house-b', name: 'House B', userIds: ['bob-id'] });
+    await store.grant({ itemId: 'item-1', requestId: '17', userId: 'alice-id', groupIds: ['house-a'] });
+    const controller = new AbortController();
+    const calls = [];
+    const increments = [];
+    let closing;
+    const stop = () => {
+      controller.abort(new Error('shutting down'));
+      closing = store.close();
+    };
+    const record = (name, value) => {
+      calls.push(name);
+      if (name === stopAt) stop();
+      return value;
+    };
+    const users = [
+      { Id: 'admin-id', Name: 'Admin', Policy: { IsAdministrator: true, BlockedTags: [] } },
+      { Id: 'alice-id', Name: 'Alice', Policy: { BlockedTags: [] } },
+      { Id: 'bob-id', Name: 'Bob', Policy: { BlockedTags: ['jfa:private:item-1'] } },
+    ];
+    const jellyfin = {
+      getUsers: async () => record('getUsers', structuredClone(users)),
+      getItem: async (itemId) => record('getItem', { Id: itemId, Name: 'Movie', Type: 'Movie', Tags: [] }),
+      getLocalTrailers: async () => record('getLocalTrailers', []),
+      updateItem: async () => record('updateItem'),
+      updatePolicy: async () => record('updatePolicy'),
+    };
+    const seerr = { getJellyfinItemId: async () => record('getJellyfinItemId', 'item-1') };
+    const joinGrant = store.joinGrant.bind(store);
+    store.joinGrant = async (input) => {
+      const joined = await joinGrant(input);
+      if (stopAt === 'joinGrant') stop();
+      return joined;
+    };
+    const metrics = { increment: (name, labels) => increments.push({ name, ...labels }), gauge: () => {}, render: () => '' };
+    const service = new AccessService(jellyfin, store, metrics, seerr);
+    const saved = async () => {
+      await closing;
+      return JSON.parse(await readFile(file, 'utf8')).grants['item-1'];
+    };
+    return { controller, calls, increments, service, saved };
+  }
+
+  async function quietly(run) {
+    const errors = mock.method(console, 'error', () => {});
+    const infos = mock.method(console, 'log', () => {});
+    try {
+      const result = await run();
+      return { result, errorLogs: errors.mock.calls.map((call) => call.arguments.join(' ')), infoLogs: infos.mock.calls.map((call) => call.arguments.join(' ')) };
+    } finally {
+      errors.mock.restore();
+      infos.mock.restore();
+    }
+  }
+
+  const bob = { userId: 'bob-id', isAdministrator: false, mediaType: 'movie', tmdbId: 603 };
+  const reconcileCalls = ['getJellyfinItemId', 'getItem', 'getUsers', 'getLocalTrailers', 'updateItem', 'updatePolicy'];
+
+  it('runs to completion without a shutdown', async (t) => {
+    const world = await joinWorld(t, undefined);
+    const { result } = await quietly(() => world.service.joinLibrary(bob, { signal: world.controller.signal }));
+    assert.equal(result, 'joined');
+    assert.deepEqual(world.calls, reconcileCalls);
+  });
+
+  it('does nothing when shutdown began before it ran', async (t) => {
+    const world = await joinWorld(t, undefined);
+    world.controller.abort(new Error('shutting down'));
+    const { result, errorLogs } = await quietly(() => world.service.joinLibrary(bob, { signal: world.controller.signal }));
+    assert.equal(result, 'cancelled');
+    assert.deepEqual(world.calls, []);
+    assert.deepEqual(errorLogs, []);
+  });
+
+  it('stores nothing when shutdown closes the store during the Seerr lookup', async (t) => {
+    const world = await joinWorld(t, 'getJellyfinItemId');
+    const { result, errorLogs, infoLogs } = await quietly(() => world.service.joinLibrary(bob, { signal: world.controller.signal }));
+    assert.equal(result, 'cancelled');
+    assert.deepEqual(world.calls, ['getJellyfinItemId']);
+    assert.deepEqual(world.increments, []);
+    assert.deepEqual(errorLogs, []);
+    assert.deepEqual(infoLogs, []);
+    assert.deepEqual((await world.saved()).groupIds, ['house-a']);
+  });
+
+  for (const stopAt of ['joinGrant', 'getItem', 'getUsers', 'getLocalTrailers', 'updateItem', 'updatePolicy']) {
+    it(`leaves a stored join pending, writing nothing further, when shutdown closes the store during ${stopAt}()`, async (t) => {
+      const world = await joinWorld(t, stopAt);
+      const { result, errorLogs, infoLogs } = await quietly(() => world.service.joinLibrary(bob, { signal: world.controller.signal }));
+      assert.equal(result, 'cancelled');
+      // getItem and getUsers are fetched together, so stopping in either leaves both started and nothing after them.
+      const lastCall = { joinGrant: 'getJellyfinItemId', getItem: 'getUsers' }[stopAt] ?? stopAt;
+      assert.deepEqual(world.calls, reconcileCalls.slice(0, reconcileCalls.indexOf(lastCall) + 1));
+      assert.deepEqual(errorLogs, [], 'no write was attempted on the closed store');
+      assert.equal(infoLogs.length, 1);
+      assert.match(infoLogs[0], /household library join/);
+      assert.deepEqual(
+        world.increments.filter((entry) => !['jfa_item_updates_total', 'jfa_policy_updates_total'].includes(entry.name)),
+        [{ name: 'jfa_library_joins_total', result: 'joined' }],
+      );
+      const saved = await world.saved();
+      assert.deepEqual(saved.groupIds, ['house-a', 'house-b'], 'the join was saved');
+      assert.equal(saved.sync.state, 'pending', 'and is applied after restart');
+    });
+  }
 });

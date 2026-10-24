@@ -7,6 +7,7 @@ import { ClientIpResolver } from './client-ip.js';
 import type { LogLevel } from './config.js';
 import { HouseholdGateway } from './household-gateway.js';
 import { RECENT_REQUESTS_LIMIT } from './seerr.js';
+import { BackgroundTasks } from './shutdown.js';
 import { parseWebhook } from './webhook.js';
 
 const BODY_LIMIT = 64 * 1024;
@@ -28,6 +29,11 @@ export interface ServerOptions {
     webSocketUpstreamIdleTimeoutMs?: number;
     logLevel?: LogLevel;
   };
+  /**
+   * Runs household "Add to my library" joins after their answer. Pass the BackgroundTasks shutdown stops, so it can
+   * abort them and wait for them before closing the store; without it, joins run untracked.
+   */
+  background?: Pick<BackgroundTasks, 'run'>;
 }
 
 export interface JellyPassServer extends Server {
@@ -41,12 +47,19 @@ export function makeServer(
   webAuth?: WebAuth,
   options?: ServerOptions,
 ): JellyPassServer {
+  const background = options?.background ?? new BackgroundTasks();
   const householdGateway = options?.householdGateway
     ? new HouseholdGateway({
         ...options.householdGateway,
         trustedProxies: options.trustedProxies ?? [],
         memberIds: (householdId) => service.getHouseholdMemberIds(householdId),
         isPasswordless: (userId) => service.isPasswordless(userId),
+        ...(service.canJoinLibrary() ? {
+          libraryJoin: {
+            start: (input) => background.run((signal) => service.joinLibrary(input, { signal })),
+            dropped: () => service.recordLibraryJoinDropped(),
+          },
+        } : {}),
       })
     : undefined;
   const clientIp = new ClientIpResolver(options?.trustedProxies);

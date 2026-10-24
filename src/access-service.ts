@@ -23,6 +23,9 @@ export const TAG_PREFIX = 'jfa:private:';
 
 // Seerr media statuses: 4 = partially available, 5 = available.
 const AVAILABLE_MEDIA_STATUSES = new Set([4, 5]);
+// Seerr (v3.5.0) request statuses: 2 = approved, 5 = completed. Pending (1), declined (3) and failed (4) requests are
+// listed too, and their media can be available through someone else's request.
+const GRANTABLE_REQUEST_STATUSES = new Set([2, 5]);
 
 interface PlanContext {
   plan: ChangePlan;
@@ -288,6 +291,107 @@ export class AccessService {
     });
   }
 
+  /** Whether household "Add to my library" can resolve titles; it needs Seerr lookup. */
+  public canJoinLibrary(): boolean {
+    return Boolean(this.#seerr);
+  }
+
+  /**
+   * Household "Add to my library" for a Jellyfin-authenticated user: resolves a TMDB title to its HD Jellyfin item
+   * through Seerr, joins that item's request grant (see GrantStore.joinGrant) and applies the join to Jellyfin. It runs
+   * as background work after the caller has had their answer. The result is for metrics and tests only; callers must
+   * not reveal it, since it tells whether another household holds the title. Every failure is logged and reported as
+   * `error`, never thrown; a join that was stored but could not be applied is retried by reconciliation like any other
+   * grant. Once `signal` is aborted (shutdown), no further Seerr, Jellyfin or store call is started and the run resolves
+   * `cancelled`, logging and counting nothing more: a join stored by then stays pending and is applied after restart.
+   */
+  public async joinLibrary(input: {
+    userId: string;
+    isAdministrator: boolean;
+    mediaType: 'movie' | 'tv';
+    tmdbId: number;
+  }, options: { signal?: AbortSignal } = {}): Promise<'joined' | 'unchanged' | 'error' | 'cancelled'> {
+    const { signal } = options;
+    const fields = { userId: input.userId, mediaType: input.mediaType, tmdbId: input.tmdbId };
+    const finish = (result: 'joined' | 'unchanged' | 'error') => {
+      this.#metrics.increment('jfa_library_joins_total', { result });
+      return result;
+    };
+    try {
+      throwIfAborted(signal);
+      if (!this.#seerr) throw new Error('Seerr lookup is not configured');
+      // Administrators already see every title, and a grant never lists them.
+      if (input.isAdministrator) {
+        this.#logDebug('library join ignored for an administrator', fields);
+        return finish('unchanged');
+      }
+      const itemId = await this.#seerr.getJellyfinItemId(input.mediaType, input.tmdbId);
+      throwIfAborted(signal);
+      if (!itemId) {
+        this.#logDebug('library join found no Jellyfin item', fields);
+        return finish('unchanged');
+      }
+      // Classified without the shared write queue, so a join that changes nothing never waits on it or holds it up.
+      if (!this.#store.wouldJoin({ itemId, userId: input.userId, groupIds: this.#store.listGroupIdsForUser(input.userId) })) {
+        this.#logDebug('library join changed nothing', { ...fields, itemId });
+        return finish('unchanged');
+      }
+      return await this.#exclusive(async () => {
+        throwIfAborted(signal);
+        // Checked again in the queue: the grant may have changed while this join waited.
+        const joined = await this.#store.joinGrant({
+          itemId,
+          userId: input.userId,
+          groupIds: this.#store.listGroupIdsForUser(input.userId),
+        });
+        if (!joined) {
+          throwIfAborted(signal);
+          this.#logDebug('library join changed nothing', { ...fields, itemId });
+          return finish('unchanged');
+        }
+        // The join is stored from here on, so it counts even if shutdown stops it being applied now.
+        const join = joined.current.joins?.at(-1);
+        console.log(JSON.stringify({
+          level: 'info',
+          message: 'household library join',
+          ...fields,
+          itemId: joined.current.itemId,
+          groupIds: join?.groupIds ?? [],
+          userAdded: join?.userAdded ?? false,
+        }));
+        finish('joined');
+        throwIfAborted(signal);
+        try {
+          await this.#reconcileGrant(joined.current, signal);
+        } catch (error) {
+          rethrowIfCancelled(error, signal);
+          console.error(JSON.stringify({
+            level: 'error',
+            message: 'library join reconciliation failed',
+            itemId: joined.current.itemId,
+            detail: error instanceof Error ? error.message : String(error),
+          }));
+        }
+        return 'joined';
+      });
+    } catch (error) {
+      // Includes a store write refused because shutdown closed the store after its grace period.
+      if (error instanceof OperationCancelledError || signal?.aborted) return 'cancelled';
+      console.error(JSON.stringify({
+        level: 'error',
+        message: 'library join failed',
+        ...fields,
+        detail: error instanceof Error ? error.message : String(error),
+      }));
+      return finish('error');
+    }
+  }
+
+  /** Counts a household "Add to my library" call that was not started because its budget was used up. */
+  public recordLibraryJoinDropped(): void {
+    this.#metrics.increment('jfa_library_joins_total', { result: 'dropped' });
+  }
+
   async #resolveWebhook(event: SeerrWebhook): Promise<{ itemId: string; userId: string; mediaType?: string }> {
     let itemId = event.media?.jellyfinMediaId;
     let userId = event.request.requestedBy?.jellyfinUserId;
@@ -319,8 +423,8 @@ export class AccessService {
   }
 
   /**
-   * Pull-based fallback for missed MEDIA_AVAILABLE webhooks: grants available Seerr requests
-   * created at or after `since`. A request for an item with no grant creates one; a request for
+   * Pull-based fallback for missed MEDIA_AVAILABLE webhooks: grants approved or completed Seerr
+   * requests for available media created at or after `since`. A request for an item with no grant creates one; a request for
    * an item whose grant came from other requests is added to it (additively, with the
    * requester's households). Manual-only grants are left alone. Each request counts as exactly
    * one outcome: granted (stored and reconciled), skipped, or failed (including a grant that was
@@ -343,7 +447,11 @@ export class AccessService {
         throwIfAborted(signal);
         const requestId = String(listed.id);
         try {
-          if (!AVAILABLE_MEDIA_STATUSES.has(requestMediaStatus(listed) ?? 0) || this.#store.hasHandledRequest(requestId)) {
+          if (
+            !GRANTABLE_REQUEST_STATUSES.has(listed.status ?? 0)
+            || !AVAILABLE_MEDIA_STATUSES.has(requestMediaStatus(listed) ?? 0)
+            || this.#store.hasHandledRequest(requestId)
+          ) {
             result.skipped += 1;
             continue;
           }
