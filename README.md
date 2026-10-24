@@ -953,7 +953,8 @@ The runtime uses only Node.js standard-library modules. TypeScript and Node type
 definitions are development dependencies.
 
 CI performs type checking, unit and HTTP integration tests, a production
-container build, and an integration test against Jellyfin 10.11.3. To run the
+container build, an integration test against Jellyfin 10.11.3, and one against
+Seerr 3.5.1 (`pnpm test:seerr`, which starts its own container). To run the
 real-Jellyfin test locally, start an equivalent fresh Jellyfin container with
 `test/fixtures` mounted at `/media`, then run:
 

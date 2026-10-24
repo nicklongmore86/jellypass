@@ -1,0 +1,431 @@
+{
+  "createdBy": [
+    {
+      "id": 900401,
+      "credit_id": "synthetic-credit-3",
+      "name": "Synthetic Creator",
+      "original_name": "Synthetic Creator",
+      "gender": 0,
+      "profile_path": null
+    }
+  ],
+  "episodeRunTime": [],
+  "firstAirDate": "2019-09-01",
+  "genres": [
+    {
+      "id": 18,
+      "name": "Drama"
+    }
+  ],
+  "relatedVideos": [],
+  "homepage": "https://synthetic-series.example.invalid/",
+  "id": 900002,
+  "inProduction": false,
+  "languages": [
+    "en"
+  ],
+  "lastAirDate": "2021-10-01",
+  "name": "Synthetic Series Two",
+  "networks": [
+    {
+      "id": 900501,
+      "name": "Synthetic Network",
+      "originCountry": "US",
+      "logoPath": null
+    }
+  ],
+  "numberOfEpisodes": 6,
+  "numberOfSeasons": 2,
+  "originCountry": [
+    "US"
+  ],
+  "originalLanguage": "en",
+  "originalName": "Synthetic Series Two",
+  "tagline": "",
+  "overview": "A synthetic series used only in tests.",
+  "popularity": 8.25,
+  "productionCompanies": [],
+  "productionCountries": [
+    {
+      "iso_3166_1": "US",
+      "name": "United States of America"
+    }
+  ],
+  "contentRatings": {
+    "results": [
+      {
+        "descriptors": [],
+        "iso_3166_1": "US",
+        "rating": "TV-14"
+      }
+    ]
+  },
+  "spokenLanguages": [
+    {
+      "englishName": "English",
+      "iso_639_1": "en",
+      "name": "English"
+    }
+  ],
+  "seasons": [
+    {
+      "airDate": "2019-09-01",
+      "episodeCount": 3,
+      "id": 900601,
+      "name": "Season 1",
+      "overview": "",
+      "seasonNumber": 1,
+      "posterPath": null
+    },
+    {
+      "airDate": "2021-09-01",
+      "episodeCount": 3,
+      "id": 900602,
+      "name": "Season 2",
+      "overview": "",
+      "seasonNumber": 2,
+      "posterPath": null
+    }
+  ],
+  "status": "Ended",
+  "type": "Scripted",
+  "voteAverage": 6.9,
+  "voteCount": 300,
+  "backdropPath": "/synthetic-backdrop-900002.jpg",
+  "lastEpisodeToAir": {
+    "id": 900703,
+    "airDate": "2021-10-01",
+    "episodeNumber": 3,
+    "name": "Synthetic Finale",
+    "overview": "",
+    "productionCode": "",
+    "seasonNumber": 2,
+    "showId": 900002,
+    "voteAverage": 7,
+    "voteCount": 10,
+    "stillPath": null
+  },
+  "posterPath": "/synthetic-poster-900002.jpg",
+  "credits": {
+    "cast": [],
+    "crew": []
+  },
+  "externalIds": {
+    "facebookId": null,
+    "freebaseId": null,
+    "freebaseMid": null,
+    "imdbId": "tt9000002",
+    "instagramId": null,
+    "tvdbId": 800002,
+    "tvrageId": null,
+    "twitterId": null
+  },
+  "keywords": [],
+  "mediaInfo": {
+    "downloadStatus": [],
+    "downloadStatus4k": [],
+    "id": 7300036,
+    "mediaType": "tv",
+    "tmdbId": 900002,
+    "tvdbId": 800002,
+    "imdbId": null,
+    "status": 3,
+    "status4k": 1,
+    "createdAt": "2001-09-09T05:05:05.005Z",
+    "updatedAt": "2001-01-01T06:06:06.006Z",
+    "lastSeasonChange": "2001-02-02T07:07:07.007Z",
+    "mediaAddedAt": "2001-03-03T08:08:08.008Z",
+    "serviceId": 7300037,
+    "serviceId4k": null,
+    "externalServiceId": 7300038,
+    "externalServiceId4k": null,
+    "externalServiceSlug": "canary-service-slug",
+    "externalServiceSlug4k": null,
+    "ratingKey": null,
+    "ratingKey4k": null,
+    "jellyfinMediaId": "c0ffee00c0ffee000000000000000102",
+    "jellyfinMediaId4k": "c0ffee00c0ffee000000000000000202",
+    "requests": [
+      {
+        "id": 7300041,
+        "status": 1,
+        "createdAt": "2001-06-06T01:01:01.001Z",
+        "updatedAt": "2001-07-07T02:02:02.002Z",
+        "type": "tv",
+        "is4k": false,
+        "serverId": 7300042,
+        "profileId": 7300043,
+        "rootFolder": "/canary/root-folder",
+        "languageProfileId": null,
+        "tags": null,
+        "isAutoRequest": false,
+        "ignoreQuota": false,
+        "media": {
+          "id": 7300036,
+          "mediaType": "tv",
+          "tmdbId": 900002,
+          "tvdbId": 800002,
+          "imdbId": null,
+          "status": 3,
+          "status4k": 1,
+          "createdAt": "2001-09-09T05:05:05.005Z",
+          "updatedAt": "2001-01-01T06:06:06.006Z",
+          "lastSeasonChange": "2001-02-02T07:07:07.007Z",
+          "mediaAddedAt": "2001-03-03T08:08:08.008Z",
+          "serviceId": 7300037,
+          "serviceId4k": null,
+          "externalServiceId": 7300038,
+          "externalServiceId4k": null,
+          "externalServiceSlug": "canary-service-slug",
+          "externalServiceSlug4k": null,
+          "ratingKey": null,
+          "ratingKey4k": null,
+          "jellyfinMediaId": "c0ffee00c0ffee000000000000000102",
+          "jellyfinMediaId4k": "c0ffee00c0ffee000000000000000202"
+        },
+        "requestedBy": {
+          "permissions": 32,
+          "warnings": [],
+          "id": 7300039,
+          "email": "canary-self@example.invalid",
+          "plexUsername": "canary-self-plex",
+          "jellyfinUsername": "canary-self-jellyfin",
+          "username": "canary-self",
+          "recoveryLinkExpirationDate": null,
+          "userType": 3,
+          "plexId": null,
+          "jellyfinUserId": "c0ffee00c0ffee000000000000000001",
+          "avatar": "/avatarproxy/canary-self-avatar",
+          "avatarETag": "canary-self-etag",
+          "avatarVersion": "canary-self-avatar-version",
+          "movieQuotaLimit": null,
+          "movieQuotaDays": null,
+          "tvQuotaLimit": null,
+          "tvQuotaDays": null,
+          "createdAt": "2001-04-04T09:09:09.009Z",
+          "updatedAt": "2001-05-05T00:00:00.000Z",
+          "requestCount": 7300040,
+          "displayName": "Canary Self"
+        },
+        "modifiedBy": null,
+        "seasons": [
+          {
+            "id": 7300044,
+            "seasonNumber": 1,
+            "status": 1,
+            "createdAt": "2001-08-08T03:03:03.003Z",
+            "updatedAt": "2001-09-09T04:04:04.004Z"
+          }
+        ],
+        "seasonCount": 1
+      },
+      {
+        "id": 7300049,
+        "status": 2,
+        "createdAt": "2001-05-05T09:09:09.009Z",
+        "updatedAt": "2001-06-06T00:00:00.000Z",
+        "type": "tv",
+        "is4k": false,
+        "serverId": 7300050,
+        "profileId": 7300051,
+        "rootFolder": "/canary/root-folder",
+        "languageProfileId": null,
+        "tags": null,
+        "isAutoRequest": false,
+        "ignoreQuota": false,
+        "media": {
+          "id": 7300036,
+          "mediaType": "tv",
+          "tmdbId": 900002,
+          "tvdbId": 800002,
+          "imdbId": null,
+          "status": 3,
+          "status4k": 1,
+          "createdAt": "2001-09-09T05:05:05.005Z",
+          "updatedAt": "2001-01-01T06:06:06.006Z",
+          "lastSeasonChange": "2001-02-02T07:07:07.007Z",
+          "mediaAddedAt": "2001-03-03T08:08:08.008Z",
+          "serviceId": 7300037,
+          "serviceId4k": null,
+          "externalServiceId": 7300038,
+          "externalServiceId4k": null,
+          "externalServiceSlug": "canary-service-slug",
+          "externalServiceSlug4k": null,
+          "ratingKey": null,
+          "ratingKey4k": null,
+          "jellyfinMediaId": "c0ffee00c0ffee000000000000000102",
+          "jellyfinMediaId4k": "c0ffee00c0ffee000000000000000202"
+        },
+        "requestedBy": {
+          "permissions": 32,
+          "warnings": [],
+          "id": 7300045,
+          "email": "canary-otherhousehold@example.invalid",
+          "plexUsername": "canary-otherhousehold-plex",
+          "jellyfinUsername": "canary-otherhousehold-jellyfin",
+          "username": "canary-otherhousehold",
+          "recoveryLinkExpirationDate": null,
+          "userType": 3,
+          "plexId": null,
+          "jellyfinUserId": "c0ffee00c0ffee000000000000000002",
+          "avatar": "/avatarproxy/canary-otherhousehold-avatar",
+          "avatarETag": "canary-otherhousehold-etag",
+          "avatarVersion": "canary-otherhousehold-avatar-version",
+          "movieQuotaLimit": null,
+          "movieQuotaDays": null,
+          "tvQuotaLimit": null,
+          "tvQuotaDays": null,
+          "createdAt": "2001-01-01T05:05:05.005Z",
+          "updatedAt": "2001-02-02T06:06:06.006Z",
+          "requestCount": 7300046,
+          "displayName": "Canary Otherhousehold"
+        },
+        "modifiedBy": {
+          "permissions": 2,
+          "warnings": [],
+          "id": 7300047,
+          "email": "canary-owner@example.invalid",
+          "plexUsername": "canary-owner-plex",
+          "jellyfinUsername": "canary-owner-jellyfin",
+          "username": "canary-owner",
+          "recoveryLinkExpirationDate": null,
+          "userType": 3,
+          "plexId": null,
+          "jellyfinUserId": "c0ffee00c0ffee000000000000000003",
+          "avatar": "/avatarproxy/canary-owner-avatar",
+          "avatarETag": "canary-owner-etag",
+          "avatarVersion": "canary-owner-avatar-version",
+          "movieQuotaLimit": null,
+          "movieQuotaDays": null,
+          "tvQuotaLimit": null,
+          "tvQuotaDays": null,
+          "createdAt": "2001-03-03T07:07:07.007Z",
+          "updatedAt": "2001-04-04T08:08:08.008Z",
+          "requestCount": 7300048,
+          "displayName": "Canary Owner"
+        },
+        "seasons": [
+          {
+            "id": 7300052,
+            "seasonNumber": 2,
+            "status": 2,
+            "createdAt": "2001-07-07T01:01:01.001Z",
+            "updatedAt": "2001-08-08T02:02:02.002Z"
+          }
+        ],
+        "seasonCount": 1
+      }
+    ],
+    "issues": [
+      {
+        "id": 7300053,
+        "issueType": 1,
+        "status": 1,
+        "problemSeason": 0,
+        "problemEpisode": 0,
+        "createdAt": "2001-09-09T03:03:03.003Z",
+        "updatedAt": "2001-01-01T04:04:04.004Z",
+        "createdBy": {
+          "permissions": 32,
+          "warnings": [],
+          "id": 7300054,
+          "email": "canary-otherhousehold@example.invalid",
+          "plexUsername": "canary-otherhousehold-plex",
+          "jellyfinUsername": "canary-otherhousehold-jellyfin",
+          "username": "canary-otherhousehold",
+          "recoveryLinkExpirationDate": null,
+          "userType": 3,
+          "plexId": null,
+          "jellyfinUserId": "c0ffee00c0ffee000000000000000002",
+          "avatar": "/avatarproxy/canary-otherhousehold-avatar",
+          "avatarETag": "canary-otherhousehold-etag",
+          "avatarVersion": "canary-otherhousehold-avatar-version",
+          "movieQuotaLimit": null,
+          "movieQuotaDays": null,
+          "tvQuotaLimit": null,
+          "tvQuotaDays": null,
+          "createdAt": "2001-02-02T05:05:05.005Z",
+          "updatedAt": "2001-03-03T06:06:06.006Z",
+          "requestCount": 7300055,
+          "displayName": "Canary Otherhousehold"
+        },
+        "modifiedBy": {
+          "permissions": 2,
+          "warnings": [],
+          "id": 7300056,
+          "email": "canary-owner@example.invalid",
+          "plexUsername": "canary-owner-plex",
+          "jellyfinUsername": "canary-owner-jellyfin",
+          "username": "canary-owner",
+          "recoveryLinkExpirationDate": null,
+          "userType": 3,
+          "plexId": null,
+          "jellyfinUserId": "c0ffee00c0ffee000000000000000003",
+          "avatar": "/avatarproxy/canary-owner-avatar",
+          "avatarETag": "canary-owner-etag",
+          "avatarVersion": "canary-owner-avatar-version",
+          "movieQuotaLimit": null,
+          "movieQuotaDays": null,
+          "tvQuotaLimit": null,
+          "tvQuotaDays": null,
+          "createdAt": "2001-04-04T07:07:07.007Z",
+          "updatedAt": "2001-05-05T08:08:08.008Z",
+          "requestCount": 7300057,
+          "displayName": "Canary Owner"
+        },
+        "comments": [
+          {
+            "id": 7300058,
+            "message": "canary issue comment: audio out of sync on 192.0.2.10",
+            "createdAt": "2001-06-06T09:09:09.009Z",
+            "updatedAt": "2001-07-07T00:00:00.000Z",
+            "user": {
+              "permissions": 32,
+              "warnings": [],
+              "id": 7300059,
+              "email": "canary-otherhousehold@example.invalid",
+              "plexUsername": "canary-otherhousehold-plex",
+              "jellyfinUsername": "canary-otherhousehold-jellyfin",
+              "username": "canary-otherhousehold",
+              "recoveryLinkExpirationDate": null,
+              "userType": 3,
+              "plexId": null,
+              "jellyfinUserId": "c0ffee00c0ffee000000000000000002",
+              "avatar": "/avatarproxy/canary-otherhousehold-avatar",
+              "avatarETag": "canary-otherhousehold-etag",
+              "avatarVersion": "canary-otherhousehold-avatar-version",
+              "movieQuotaLimit": null,
+              "movieQuotaDays": null,
+              "tvQuotaLimit": null,
+              "tvQuotaDays": null,
+              "createdAt": "2001-08-08T01:01:01.001Z",
+              "updatedAt": "2001-09-09T02:02:02.002Z",
+              "requestCount": 7300060,
+              "displayName": "Canary Otherhousehold"
+            }
+          }
+        ]
+      }
+    ],
+    "seasons": [
+      {
+        "id": 7300061,
+        "seasonNumber": 1,
+        "status": 3,
+        "status4k": 1,
+        "createdAt": "2001-01-01T03:03:03.003Z",
+        "updatedAt": "2001-02-02T04:04:04.004Z"
+      },
+      {
+        "id": 7300062,
+        "seasonNumber": 2,
+        "status": 5,
+        "status4k": 1,
+        "createdAt": "2001-03-03T05:05:05.005Z",
+        "updatedAt": "2001-04-04T06:06:06.006Z"
+      }
+    ]
+  },
+  "watchProviders": [],
+  "onUserWatchlist": false
+}

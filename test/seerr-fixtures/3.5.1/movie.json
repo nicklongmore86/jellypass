@@ -1,0 +1,346 @@
+{
+  "id": 900001,
+  "adult": false,
+  "budget": 1000000,
+  "genres": [
+    {
+      "id": 28,
+      "name": "Action"
+    },
+    {
+      "id": 878,
+      "name": "Science Fiction"
+    }
+  ],
+  "relatedVideos": [
+    {
+      "site": "YouTube",
+      "key": "synthetic-trailer",
+      "name": "Synthetic Trailer",
+      "size": 1080,
+      "type": "Trailer",
+      "url": "https://www.youtube.com/watch?v=synthetic-trailer"
+    }
+  ],
+  "originalLanguage": "en",
+  "originalTitle": "Synthetic Movie One",
+  "popularity": 12.5,
+  "productionCompanies": [
+    {
+      "id": 900100,
+      "name": "Synthetic Pictures",
+      "originCountry": "US",
+      "logoPath": null
+    }
+  ],
+  "productionCountries": [
+    {
+      "iso_3166_1": "US",
+      "name": "United States of America"
+    }
+  ],
+  "releaseDate": "2020-05-01",
+  "releases": {
+    "results": [
+      {
+        "iso_3166_1": "US",
+        "release_dates": [
+          {
+            "certification": "PG-13",
+            "descriptors": [],
+            "iso_639_1": "",
+            "note": "",
+            "release_date": "2020-05-01T00:00:00.000Z",
+            "type": 3
+          }
+        ]
+      }
+    ]
+  },
+  "revenue": 2000000,
+  "spokenLanguages": [
+    {
+      "english_name": "English",
+      "iso_639_1": "en",
+      "name": "English"
+    }
+  ],
+  "status": "Released",
+  "title": "Synthetic Movie One",
+  "video": false,
+  "voteAverage": 7.1,
+  "voteCount": 1200,
+  "backdropPath": "/synthetic-backdrop-900001.jpg",
+  "homepage": "https://synthetic-movie.example.invalid/",
+  "imdbId": "tt9000001",
+  "overview": "A synthetic film used only in tests.",
+  "posterPath": "/synthetic-poster-900001.jpg",
+  "runtime": 101,
+  "tagline": "Entirely made up.",
+  "credits": {
+    "cast": [
+      {
+        "castId": 1,
+        "character": "Lead",
+        "creditId": "synthetic-credit-1",
+        "id": 900201,
+        "name": "Synthetic Actor",
+        "order": 0,
+        "gender": 0,
+        "profilePath": null
+      }
+    ],
+    "crew": [
+      {
+        "creditId": "synthetic-credit-2",
+        "department": "Directing",
+        "id": 900202,
+        "job": "Director",
+        "name": "Synthetic Director",
+        "gender": 0,
+        "profilePath": null
+      }
+    ]
+  },
+  "collection": null,
+  "externalIds": {
+    "facebookId": null,
+    "imdbId": "tt9000001",
+    "instagramId": null,
+    "twitterId": null
+  },
+  "mediaInfo": {
+    "downloadStatus": [
+      {
+        "externalId": 7300015,
+        "estimatedCompletionTime": "2001-06-06T04:04:04.004Z",
+        "mediaType": "movie",
+        "size": 7300016,
+        "sizeLeft": 7300017,
+        "status": "downloading",
+        "timeLeft": "00:42:00",
+        "title": "canary download Synthetic Movie One",
+        "downloadId": "canary-download-id"
+      }
+    ],
+    "downloadStatus4k": [],
+    "id": 7300018,
+    "mediaType": "movie",
+    "tmdbId": 900001,
+    "tvdbId": null,
+    "imdbId": null,
+    "status": 5,
+    "status4k": 1,
+    "createdAt": "2001-07-07T05:05:05.005Z",
+    "updatedAt": "2001-08-08T06:06:06.006Z",
+    "lastSeasonChange": "2001-09-09T07:07:07.007Z",
+    "mediaAddedAt": "2001-01-01T08:08:08.008Z",
+    "serviceId": 7300019,
+    "serviceId4k": null,
+    "externalServiceId": 7300020,
+    "externalServiceId4k": null,
+    "externalServiceSlug": "canary-service-slug",
+    "externalServiceSlug4k": null,
+    "ratingKey": null,
+    "ratingKey4k": null,
+    "jellyfinMediaId": "c0ffee00c0ffee000000000000000101",
+    "jellyfinMediaId4k": "c0ffee00c0ffee000000000000000201",
+    "requests": [
+      {
+        "id": 7300025,
+        "status": 2,
+        "createdAt": "2001-06-06T03:03:03.003Z",
+        "updatedAt": "2001-07-07T04:04:04.004Z",
+        "type": "movie",
+        "is4k": false,
+        "serverId": 7300026,
+        "profileId": 7300027,
+        "rootFolder": "/canary/root-folder",
+        "languageProfileId": null,
+        "tags": null,
+        "isAutoRequest": false,
+        "ignoreQuota": false,
+        "media": {
+          "id": 7300018,
+          "mediaType": "movie",
+          "tmdbId": 900001,
+          "tvdbId": null,
+          "imdbId": null,
+          "status": 5,
+          "status4k": 1,
+          "createdAt": "2001-07-07T05:05:05.005Z",
+          "updatedAt": "2001-08-08T06:06:06.006Z",
+          "lastSeasonChange": "2001-09-09T07:07:07.007Z",
+          "mediaAddedAt": "2001-01-01T08:08:08.008Z",
+          "serviceId": 7300019,
+          "serviceId4k": null,
+          "externalServiceId": 7300020,
+          "externalServiceId4k": null,
+          "externalServiceSlug": "canary-service-slug",
+          "externalServiceSlug4k": null,
+          "ratingKey": null,
+          "ratingKey4k": null,
+          "jellyfinMediaId": "c0ffee00c0ffee000000000000000101",
+          "jellyfinMediaId4k": "c0ffee00c0ffee000000000000000201"
+        },
+        "requestedBy": {
+          "permissions": 32,
+          "warnings": [],
+          "id": 7300021,
+          "email": "canary-otherhousehold@example.invalid",
+          "plexUsername": "canary-otherhousehold-plex",
+          "jellyfinUsername": "canary-otherhousehold-jellyfin",
+          "username": "canary-otherhousehold",
+          "recoveryLinkExpirationDate": null,
+          "userType": 3,
+          "plexId": null,
+          "jellyfinUserId": "c0ffee00c0ffee000000000000000002",
+          "avatar": "/avatarproxy/canary-otherhousehold-avatar",
+          "avatarETag": "canary-otherhousehold-etag",
+          "avatarVersion": "canary-otherhousehold-avatar-version",
+          "movieQuotaLimit": null,
+          "movieQuotaDays": null,
+          "tvQuotaLimit": null,
+          "tvQuotaDays": null,
+          "createdAt": "2001-02-02T09:09:09.009Z",
+          "updatedAt": "2001-03-03T00:00:00.000Z",
+          "requestCount": 7300022,
+          "displayName": "Canary Otherhousehold"
+        },
+        "modifiedBy": {
+          "permissions": 2,
+          "warnings": [],
+          "id": 7300023,
+          "email": "canary-owner@example.invalid",
+          "plexUsername": "canary-owner-plex",
+          "jellyfinUsername": "canary-owner-jellyfin",
+          "username": "canary-owner",
+          "recoveryLinkExpirationDate": null,
+          "userType": 3,
+          "plexId": null,
+          "jellyfinUserId": "c0ffee00c0ffee000000000000000003",
+          "avatar": "/avatarproxy/canary-owner-avatar",
+          "avatarETag": "canary-owner-etag",
+          "avatarVersion": "canary-owner-avatar-version",
+          "movieQuotaLimit": null,
+          "movieQuotaDays": null,
+          "tvQuotaLimit": null,
+          "tvQuotaDays": null,
+          "createdAt": "2001-04-04T01:01:01.001Z",
+          "updatedAt": "2001-05-05T02:02:02.002Z",
+          "requestCount": 7300024,
+          "displayName": "Canary Owner"
+        },
+        "seasons": [],
+        "seasonCount": 0
+      }
+    ],
+    "issues": [
+      {
+        "id": 7300028,
+        "issueType": 1,
+        "status": 1,
+        "problemSeason": 0,
+        "problemEpisode": 0,
+        "createdAt": "2001-08-08T05:05:05.005Z",
+        "updatedAt": "2001-09-09T06:06:06.006Z",
+        "createdBy": {
+          "permissions": 32,
+          "warnings": [],
+          "id": 7300029,
+          "email": "canary-otherhousehold@example.invalid",
+          "plexUsername": "canary-otherhousehold-plex",
+          "jellyfinUsername": "canary-otherhousehold-jellyfin",
+          "username": "canary-otherhousehold",
+          "recoveryLinkExpirationDate": null,
+          "userType": 3,
+          "plexId": null,
+          "jellyfinUserId": "c0ffee00c0ffee000000000000000002",
+          "avatar": "/avatarproxy/canary-otherhousehold-avatar",
+          "avatarETag": "canary-otherhousehold-etag",
+          "avatarVersion": "canary-otherhousehold-avatar-version",
+          "movieQuotaLimit": null,
+          "movieQuotaDays": null,
+          "tvQuotaLimit": null,
+          "tvQuotaDays": null,
+          "createdAt": "2001-01-01T07:07:07.007Z",
+          "updatedAt": "2001-02-02T08:08:08.008Z",
+          "requestCount": 7300030,
+          "displayName": "Canary Otherhousehold"
+        },
+        "modifiedBy": {
+          "permissions": 2,
+          "warnings": [],
+          "id": 7300031,
+          "email": "canary-owner@example.invalid",
+          "plexUsername": "canary-owner-plex",
+          "jellyfinUsername": "canary-owner-jellyfin",
+          "username": "canary-owner",
+          "recoveryLinkExpirationDate": null,
+          "userType": 3,
+          "plexId": null,
+          "jellyfinUserId": "c0ffee00c0ffee000000000000000003",
+          "avatar": "/avatarproxy/canary-owner-avatar",
+          "avatarETag": "canary-owner-etag",
+          "avatarVersion": "canary-owner-avatar-version",
+          "movieQuotaLimit": null,
+          "movieQuotaDays": null,
+          "tvQuotaLimit": null,
+          "tvQuotaDays": null,
+          "createdAt": "2001-03-03T09:09:09.009Z",
+          "updatedAt": "2001-04-04T00:00:00.000Z",
+          "requestCount": 7300032,
+          "displayName": "Canary Owner"
+        },
+        "comments": [
+          {
+            "id": 7300033,
+            "message": "canary issue comment: audio out of sync on 192.0.2.10",
+            "createdAt": "2001-05-05T01:01:01.001Z",
+            "updatedAt": "2001-06-06T02:02:02.002Z",
+            "user": {
+              "permissions": 32,
+              "warnings": [],
+              "id": 7300034,
+              "email": "canary-otherhousehold@example.invalid",
+              "plexUsername": "canary-otherhousehold-plex",
+              "jellyfinUsername": "canary-otherhousehold-jellyfin",
+              "username": "canary-otherhousehold",
+              "recoveryLinkExpirationDate": null,
+              "userType": 3,
+              "plexId": null,
+              "jellyfinUserId": "c0ffee00c0ffee000000000000000002",
+              "avatar": "/avatarproxy/canary-otherhousehold-avatar",
+              "avatarETag": "canary-otherhousehold-etag",
+              "avatarVersion": "canary-otherhousehold-avatar-version",
+              "movieQuotaLimit": null,
+              "movieQuotaDays": null,
+              "tvQuotaLimit": null,
+              "tvQuotaDays": null,
+              "createdAt": "2001-07-07T03:03:03.003Z",
+              "updatedAt": "2001-08-08T04:04:04.004Z",
+              "requestCount": 7300035,
+              "displayName": "Canary Otherhousehold"
+            }
+          }
+        ]
+      }
+    ],
+    "seasons": []
+  },
+  "watchProviders": [
+    {
+      "iso_3166_1": "US",
+      "link": "https://www.themoviedb.org/movie/900001/watch?locale=US",
+      "buy": [],
+      "flatrate": []
+    }
+  ],
+  "keywords": [
+    {
+      "id": 900301,
+      "name": "synthetic"
+    }
+  ],
+  "onUserWatchlist": false
+}
