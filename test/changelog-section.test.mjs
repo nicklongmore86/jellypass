@@ -53,6 +53,18 @@ function assertSection(notes, { version, nextVersion, subheadings }) {
 }
 
 describe('changelogSection with the real CHANGELOG.md', () => {
+  it('extracts 2.2.0 without its heading, up to the 2.1.1 section', () => {
+    const notes = changelogSection(CHANGELOG, '2.2.0');
+    assertSection(notes, {
+      version: '2.2.0',
+      nextVersion: '2.1.1',
+      subheadings: ['Added', 'Changed', 'Fixed', 'Upgrading from 2\\.1\\.1', 'Rolling back to 2\\.1\\.1'],
+    });
+    assert.match(notes, /^This is a minor release\./);
+    assert.doesNotMatch(notes, /### Upgrading from 2\.0\.0/);
+    assert.deepEqual(split(notes).definitions, []);
+  });
+
   it('extracts 2.1.1 without its heading, up to the 2.1.0 section', () => {
     const notes = changelogSection(CHANGELOG, '2.1.1');
     assertSection(notes, {

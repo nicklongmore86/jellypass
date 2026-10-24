@@ -85,18 +85,18 @@ describe('ClientIpResolver', () => {
 
   it('ignores a spoofed X-Forwarded-For from an untrusted peer', () => {
     assert.equal(trusted.resolve('203.0.113.5', '198.51.100.1'), '203.0.113.5');
-    assert.equal(trusted.resolve('203.0.113.5', '1.1.1.1, 192.0.2.10'), '203.0.113.5');
+    assert.equal(trusted.resolve('203.0.113.5', '203.0.113.11, 192.0.2.10'), '203.0.113.5');
   });
 
   it('takes the first untrusted address walking right to left from a trusted peer', () => {
     assert.equal(trusted.resolve('192.0.2.10', '203.0.113.5'), '203.0.113.5');
     // A client-supplied entry left of the real client is never reached.
-    assert.equal(trusted.resolve('192.0.2.10', '6.6.6.6, 203.0.113.5'), '203.0.113.5');
+    assert.equal(trusted.resolve('192.0.2.10', '203.0.113.66, 203.0.113.5'), '203.0.113.5');
   });
 
   it('skips several trusted hops, including CIDR members', () => {
-    assert.equal(trusted.resolve('192.0.2.10', '6.6.6.6, 203.0.113.5, 198.51.100.7, 198.51.100.200'), '203.0.113.5');
-    assert.equal(trusted.resolve('198.51.100.3', ['6.6.6.6, 203.0.113.5', '192.0.2.10']), '203.0.113.5');
+    assert.equal(trusted.resolve('192.0.2.10', '203.0.113.66, 203.0.113.5, 198.51.100.7, 198.51.100.200'), '203.0.113.5');
+    assert.equal(trusted.resolve('198.51.100.3', ['203.0.113.66, 203.0.113.5', '192.0.2.10']), '203.0.113.5');
   });
 
   it('handles IPv6 peers, IPv6 hops and IPv4-mapped peers', () => {
@@ -127,7 +127,7 @@ describe('ClientIpResolver', () => {
 
   it('stops at the trusted proxy when a hop is garbage or has an invalid port', () => {
     for (const hop of ['garbage', '203.0.113.5:0', '203.0.113.5:65536', '[2001:db8:1::5]:', '[203.0.113.5]:80', 'fe80::1%']) {
-      assert.equal(trusted.resolve('192.0.2.10', `6.6.6.6, ${hop}`), '192.0.2.10', hop);
+      assert.equal(trusted.resolve('192.0.2.10', `203.0.113.66, ${hop}`), '192.0.2.10', hop);
     }
   });
 

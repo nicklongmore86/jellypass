@@ -7,10 +7,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.0] - 2026-10-24
+
+This is a minor release. No settings change, and most deployments can upgrade
+without changes. Check four things first;
+[Upgrading from 2.1.1](#upgrading-from-211) has the steps:
+
+- **The request backfill now grants only approved or completed Seerr
+  requests.** Earlier versions also granted pending, declined and failed
+  requests whose media was available, which could make a title private to a
+  household or add a household to an existing grant. Grants such requests
+  already produced are not changed; review them if this affected you.
+- **Tell households about the new Add to my library page,**
+  `/jellypass/add` on each household hostname. It is served only when both
+  household hostnames (`HOUSEHOLD_DOMAIN`) and Seerr lookup (`SEERR_URL`,
+  `SEERR_API_KEY`) are configured; without Seerr lookup those paths are still
+  proxied to Jellyfin.
+- **The state file stays at schema v7 but gains fields:** `removedAccess` and
+  `revokedRequests` at the top level, `joins` and `remap` on grants, and the
+  `orphaned` sync state. 2.1.1, 2.1.0 and 2.0.0 still load it.
+- **Rolling back to 2.1.1 needs care.** 2.1.1 keeps the new records but does
+  not act on them, retries orphaned grants, drops a grant's join history when
+  it rewrites the grant, and its backfill grants unapproved requests again; see
+  [Rolling back to 2.1.1](#rolling-back-to-211).
+
 ### Added
 
 - **Add to my library.** Household hostnames serve `/jellypass/add`, where a
-  member signed in to Jellyfin pastes a Seerr or TMDB link and adds a title
+  user signed in to Jellyfin pastes a Seerr or TMDB link and adds a title
   another household requested to their own library. Seerr hides Request for an
   available movie and rejects duplicates while it downloads, so this was
   otherwise impossible for movies. JellyPass resolves the title's HD item
@@ -28,10 +52,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   never how long a join took, over fixed 10-minute windows starting at the
   first call counted, so they limit the rate joins are started, not how many
   are in flight: joins still queued from one window add to the next), and
-  calls are
-  refused during shutdown, which stops running joins and waits for them like
-  other background work. Requires Seerr lookup (`SEERR_URL`,
-  `SEERR_API_KEY`); no new settings.
+  calls are refused during shutdown, which stops running joins and waits for
+  them like other background work. An administrator's join changes nothing,
+  since administrators already see every title. Requires household hostnames
+  (`HOUSEHOLD_DOMAIN`) and Seerr lookup (`SEERR_URL`, `SEERR_API_KEY`); no new
+  settings.
 - Grants record each join in `joins`. The groups an administrator removed from
   an item, and the users an administrator's change took access from (including
   the members of a removed household and a revoked request's requester), are
@@ -61,7 +86,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is applied; if applying fails, it is kept and the move can be repeated, and if
   the old item reappears meanwhile it is kept as above and the move answers
   `409` (`code: "source_reappeared"`).
-- `jfa_grant_remaps_total{result="remapped"|"orphaned"|"source_reappeared",trigger="auto"|"admin"}`.
+- `jfa_grant_remaps_total{result="remapped"|"orphaned"|"source_reappeared",trigger="auto"|"admin"}`
+  counts grants moved to a new item, marked orphaned, or kept because their
+  item reappeared, by whether reconciliation or an administrator's move did it.
+
+### Changed
+
+- `pnpm test` and `pnpm test:real` run with a private temporary directory and
+  fail if a test leaves anything in it; the tests now remove the temporary
+  directories they create.
 
 ### Fixed
 
@@ -104,8 +137,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   a library join; the old grant's join audit history moves with the households
   it added. Only a `404`
   counts as deleted; network failures and `5xx` responses keep the usual retry.
-- A grant left with no requests or groups on a deleted item (for example after
-  revoking its last request) is now removed instead of failing on the `404`.
+- A grant left with no requests, manual users or groups on a deleted item (for
+  example after revoking its last request) is now removed instead of failing
+  on the `404`.
 - **The request backfill granted requests Seerr had not approved.** Seerr's
   request list includes pending, declined and failed requests, and the backfill
   only checked that the media was available. A pending or declined request for
@@ -115,31 +149,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the request status to be approved or completed (Seerr v3.5.0 statuses 2 and
   5). Such requests are not recorded as handled, so one that Seerr approves
   later is still picked up. The webhook is unchanged.
+- **Administrator dry runs now return exactly the grant the write would
+  store.** With `?dryRun=true`, the `current` grant in manual access
+  (`PUT /v1/grants/{itemId}/manual`) and bulk access (`PUT /v1/library/access`)
+  previews left out `sync.lastSuccessAt`; revoke request
+  (`DELETE /v1/grants/{itemId}/requests/{requestId}`) and set groups
+  (`PUT /v1/grants/{itemId}/groups`) previews returned the grant's previous
+  `sync` instead of `pending`; and the set groups preview also kept the
+  previous `updatedAt` and listed `groupIds` in input order instead of sorted.
+  Only the previews were wrong: real writes and access were never affected.
+
+### Upgrading from 2.1.1
+
+1. **Back up the state file**, as before any upgrade. 2.2.0 keeps the schema
+   v7 format and does not migrate the file, but it adds records that 2.1.1
+   does not act on (see [Rolling back to 2.1.1](#rolling-back-to-211)), so the
+   backup is the clean way back.
+2. **No settings change.** No environment variable is added, removed or
+   renamed, and webhook payloads and existing API fields are unchanged.
+   `GET /v1/grants` gains the optional `joins`, `remap` and `removed` fields
+   and the `orphaned` sync state.
+3. **Review grants the backfill may have made from unapproved requests.** If
+   request backfill is enabled, earlier versions could have granted a pending,
+   declined or failed request whose media was available. 2.2.0 does not undo
+   those grants; check Grants for titles that are private to a household that
+   never had its request approved, and revoke the request or adjust the groups.
+4. **Tell households about Add to my library.** With `HOUSEHOLD_DOMAIN` and
+   Seerr lookup configured, share `/jellypass/add` on each household hostname
+   (see "Add to my library" in the README). Without both, the page is not
+   served and nothing changes.
+5. **Watch the new metrics.** Grants left on deleted items that cannot be
+   recovered move from `jfa_sync_errors` to the new `jfa_orphaned_grants`
+   gauge; remap them with **Move** in Grants or revoke them.
 
 ### Rolling back to 2.1.1
 
-The state file format is unchanged (schema v7), so 2.1.1 and 2.0.0 still load a
-state file written by this version, and they keep its `removedAccess` and
-`revokedRequests` records. They do not act on them, though, and they differ in
-three ways:
+The state file format is unchanged (schema v7), so 2.1.1 (and 2.1.0 and 2.0.0)
+still load a state file written by this version and keep its top-level
+`removedAccess` and `revokedRequests` records when they save it. They do not
+act on them, though, and they differ in these ways:
 
-- They do not know the `orphaned` state: they retry orphaned grants on every
-  scheduled run, fail on the deleted item's `404`, back off to hourly retries
-  and count them in `jfa_sync_errors` again.
+- Access added by **Add to my library** stays: a join adds ordinary groups or
+  manual users to a grant. 2.1.1 does not serve `/jellypass/add`; those paths
+  are proxied to Jellyfin, so tell households the page is unavailable.
+- They do not know the `orphaned` state: a scheduled run retries an orphaned
+  grant, fails on the deleted item's `404`, and then backs off to hourly
+  retries, counting it in `jfa_sync_errors` again. They do not recover
+  re-imported titles either.
 - Whenever they rewrite a grant (a new request granted to it by the webhook or
   backfill, a revoked request, an administrator changing its groups or manual
   access, deleting one of its groups) they drop that grant's `joins` and
-  `remap` fields. A rewritten grant loses its join audit history for good.
-- Administrator changes made while rolled back do not update `removedAccess`:
-  a user or group removed then is not marked (after upgrading again, they can
-  join that grant with **Add to my library** or be restored by a move), and one
-  assigned again then stays marked (which only stops their own later joins and
-  moves, not the access they have).
+  `remap` fields. A rewritten grant loses its join audit history and its
+  `remap.splitTo` or `remap.sourceReappeared` note for good.
+- Administrator changes made while rolled back do not update `removedAccess`
+  or `revokedRequests`: a user or group removed then is not marked (after
+  upgrading again, they can join that grant with **Add to my library** or be
+  restored by a move), and one assigned again then stays marked (which only
+  stops their own later joins and moves, not the access they have).
+- Their request backfill grants pending, declined and failed requests whose
+  media is available again. Requests 2.2.0 skipped for that reason are not
+  recorded as handled, so 2.1.1 grants them on its next backfill. Turn the
+  backfill off while rolled back (`REQUEST_BACKFILL_ENABLED=false`) if this
+  matters to you.
 
 Before rolling back, remap or revoke orphaned grants and resolve grants marked
-`source reappeared`. After upgrading again, review the audiences of grants
-changed while rolled back, or restore the state-file backup taken before
-rolling back.
+`source reappeared`. To roll back, set `JELLYPASS_IMAGE` back to
+`ghcr.io/nicklongmore86/jellypass:2.1.1` and recreate the container. After
+upgrading again, review the audiences of grants changed while rolled back, or
+restore the state-file backup taken before rolling back.
 
 ## [2.1.1] - 2026-10-16
 
@@ -610,7 +687,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v2.1.1...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/nicklongmore86/jellypass/compare/v2.1.1...v2.2.0
 [2.1.1]: https://github.com/nicklongmore86/jellypass/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/nicklongmore86/jellypass/compare/v2.0.0...v2.1.0
 [2.0.0]: https://github.com/nicklongmore86/jellypass/compare/v1.1.0...v2.0.0
