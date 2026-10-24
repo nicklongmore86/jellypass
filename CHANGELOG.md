@@ -9,20 +9,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Foundation for the household app.** No user-visible change. Adds one
-  optional setting, `SEERR_CATALOGUE_USER_ID` (not used until the app API
-  ships; when set, startup stops if that Seerr user is missing, the owner, has
-  any permission or is linked to a Jellyfin user). Adds Seerr clients that act
-  as one Seerr user and never with a missing or empty `X-API-User` (which Seerr
-  runs as its owner): a member client that holds a Jellyfin user and confirms
-  with Seerr, immediately before every call, which Seerr user is linked to it,
-  and a catalogue client that reads titles as the dedicated catalogue user,
-  confirmed fit for the role before every call, so no member's Seerr
-  preferences shape them. Also a cached Jellyfin-to-Seerr user map that fails
-  closed for unmapped users, synthetic Seerr 3.5.1 fixtures with
-  canary values for privacy tests, and `pnpm test:seerr`, which checks the
-  clients against a throwaway Seerr 3.5.1 container (also run in CI). The
-  design is in [docs/app-design.md](docs/app-design.md).
+- **Household app API (read-only, off by default).** With
+  `HOUSEHOLD_APP_ENABLED=true` (which requires `HOUSEHOLD_DOMAIN`, Seerr and
+  the new `TMDB_API_KEY`, a TMDB API key or read access token; startup stops
+  without them, or if TMDB refuses the key), each household hostname serves
+  JSON endpoints under `/jellypass/app/v1`: `me`, `search`,
+  `discover/{trending,popular-movies,popular-tv,upcoming}`, `movie/:tmdbId`,
+  `tv/:tmdbId` and `tv/:tmdbId/season/:n`. The caller signs in with their
+  Jellyfin token (checked with Jellyfin, trusted for at most 5 minutes) and
+  must belong to that household. Titles are read straight from TMDB, never
+  from Seerr, so other households' Seerr records cannot change an answer or
+  how long it takes. Each title carries the household's own state:
+  `in_library` (the caller's own Jellyfin view has it, with a Play link, even
+  without Seerr request permission), `unavailable` (blocklisted in Seerr, or
+  the caller may not request it) or `get_this`; `requested` is reserved for
+  when "Get this" records which household asked, so no Seerr request is shown
+  in any household yet. Answers are built from allowlisted fields only, never
+  depend on what another household holds or asked for, and have fixed error
+  bodies and `Cache-Control: no-store`; calls are limited per client address,
+  per user and per household, and counted in
+  `jfa_app_requests_total{endpoint, outcome}`. Each household has its own
+  caches, and households take turns at TMDB under a rate kept well below
+  TMDB's (honouring its `Retry-After`), so one household's volume cannot
+  evict another's cached answers or use up its share of TMDB calls. Do not
+  give household members Seerr's `MANAGE_BLOCKLIST` permission.
+- **At most 100 households.** Creating a 101st household (group) is refused
+  with `400`; existing ones can still be changed. **Upgrading with more than
+  100 groups** (allowed before this version): the state file still loads,
+  every existing group can still be changed or deleted and keeps working, but
+  new groups are refused until there are fewer than 100, and the app caches
+  nothing for any household while there are more than 100 (every app call
+  goes upstream). App cache limits count entries, not bytes (500 TMDB answers
+  per household, each up to 4 MiB as read): size memory for the households
+  actually browsing; see
+  [One cache per household](docs/app-design.md#one-cache-per-household).
+- **At most 10 TMDB calls in flight.** Besides the start rate, no more than 10
+  TMDB calls are ever unanswered at once, and a call TMDB has not answered in
+  15 seconds is abandoned, so a slow or hung TMDB cannot pile up connections.
+  While the setting is off,
+  `/jellypass/app` paths answer `404` and are never proxied to Jellyfin. There
+  is no app page yet. See [Household app API](README.md#household-app-api) and
+  [docs/app-design.md](docs/app-design.md).
+- **Foundation for the household app.** Adds a Seerr client that acts as a
+  household member's own Seerr user and never with a missing or empty
+  `X-API-User` (which Seerr runs as its owner): it holds a Jellyfin user and
+  confirms with Seerr, immediately before every call, which Seerr user is
+  linked to it. Also a cached Jellyfin-to-Seerr user map that fails closed for
+  unmapped users, synthetic Seerr 3.5.1 and TMDB fixtures with canary values
+  for privacy tests, and `pnpm test:seerr`, which checks the client against a
+  throwaway Seerr 3.5.1 container (also run in CI). The design is in
+  [docs/app-design.md](docs/app-design.md).
 
 ## [2.2.1] - 2026-10-24
 

@@ -1,7 +1,9 @@
+import { createHash } from 'node:crypto';
 import http, { type IncomingHttpHeaders, type IncomingMessage, type RequestOptions, type ServerResponse } from 'node:http';
 import https from 'node:https';
 import type { Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
+import type { HouseholdAppHandler, JellyfinCaller } from './app-api.js';
 import { ClientIpResolver, normaliseIp } from './client-ip.js';
 import { DEFAULT_WS_IDLE_TIMEOUT_MS, DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS, type LogLevel } from './config.js';
 import { LIBRARY_JOIN_HTML, LIBRARY_JOIN_JS, LIBRARY_JOIN_STYLES } from './household-ui.js';
@@ -18,6 +20,9 @@ const LOGIN_ATTEMPT_WINDOW_MS = 5 * 60 * 1000;
 const MAX_LOGIN_ATTEMPTS = 20;
 const MAX_LOGIN_CLIENTS = 10_000;
 const LIBRARY_JOIN_PATH = '/jellypass/add';
+const APP_PATH = '/jellypass/app';
+/** Largest Jellyfin answer read for the household app with the caller's own credentials, in bytes. */
+const MAX_CALLER_JSON_BYTES = 16 * 1024 * 1024;
 const LIBRARY_JOIN_ASSETS: Record<string, { body: string; contentType: string }> = {
   '/jellypass/add': { body: LIBRARY_JOIN_HTML, contentType: 'text/html; charset=utf-8' },
   '/jellypass/add.js': { body: LIBRARY_JOIN_JS, contentType: 'text/javascript; charset=utf-8' },
@@ -87,11 +92,23 @@ export interface HouseholdGatewayOptions {
     start: (input: { userId: string; isAdministrator: boolean; mediaType: 'movie' | 'tv'; tmdbId: number }) => Promise<void> | undefined;
     dropped?: () => void;
   };
+  /**
+   * The household app API at /jellypass/app/v1/*. Without it every /jellypass/app path answers a fixed 404 and is never
+   * proxied to Jellyfin.
+   */
+  app?: HouseholdAppHandler;
 }
 
 interface CurrentUser {
   Id: string;
+  Name?: string;
   Policy?: { IsAdministrator?: boolean; IsDisabled?: boolean };
+}
+
+/** The Jellyfin credentials a request carries: its authorization headers and token query parameters, nothing else. */
+interface JellyfinCredentials {
+  headers: Headers;
+  query: URLSearchParams;
 }
 
 export class HouseholdGateway {
@@ -103,6 +120,7 @@ export class HouseholdGateway {
   readonly #loginAttempts = new AttemptCounter({ windowMs: LOGIN_ATTEMPT_WINDOW_MS, maxKeys: MAX_LOGIN_CLIENTS });
   readonly #libraryJoinAttempts = new AttemptCounter({ windowMs: LIBRARY_JOIN_WINDOW_MS, maxKeys: MAX_LOGIN_CLIENTS });
   readonly #libraryJoin: HouseholdGatewayOptions['libraryJoin'];
+  readonly #app: HouseholdGatewayOptions['app'];
   readonly #libraryJoinsByUser = new AttemptCounter({ windowMs: LIBRARY_JOIN_WINDOW_MS, maxKeys: MAX_LOGIN_CLIENTS });
   readonly #libraryJoinsInAll = new AttemptCounter({ windowMs: LIBRARY_JOIN_WINDOW_MS, maxKeys: 1 });
   readonly #webSocketIdleTimeoutMs: number;
@@ -127,6 +145,7 @@ export class HouseholdGateway {
     this.#debug = options.logLevel === 'debug';
     this.#clientIp = new ClientIpResolver(options.trustedProxies);
     this.#libraryJoin = options.libraryJoin;
+    this.#app = options.app;
   }
 
   public householdId(hostHeader: string | undefined): string | undefined {
@@ -158,6 +177,10 @@ export class HouseholdGateway {
     }
     const requestUrl = new URL(request.url ?? '/', 'http://localhost');
     const pathname = requestUrl.pathname.toLowerCase();
+    if (pathname === APP_PATH || pathname.startsWith(`${APP_PATH}/`)) {
+      await this.#householdApp(request, response, requestUrl, householdId, memberIds);
+      return;
+    }
     if (request.method === 'GET' && pathname === PUBLIC_USERS_PATH) {
       await this.#proxyPublicUsers(request, response, memberIds);
       return;
@@ -216,7 +239,9 @@ export class HouseholdGateway {
       socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
       return;
     }
-    if (!this.#memberIds(householdId)) {
+    const pathname = new URL(request.url ?? '/', 'http://localhost').pathname.toLowerCase();
+    // The app API has no WebSockets, and its paths are never proxied to Jellyfin.
+    if (!this.#memberIds(householdId) || pathname === APP_PATH || pathname.startsWith(`${APP_PATH}/`)) {
       socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
       return;
     }
@@ -346,6 +371,37 @@ export class HouseholdGateway {
     if (this.#loginAttempts.attempts(clientId) >= MAX_LOGIN_ATTEMPTS) return false;
     this.#loginAttempts.increment(clientId);
     return true;
+  }
+
+  /**
+   * The household app API. Identity comes only from Jellyfin, through the same GET /Users/Me check as "Add to my
+   * library" and protected media; Jellyfin reads made for the app use the caller's own credentials, so Jellyfin applies
+   * the caller's own access. The app decides everything else.
+   */
+  async #householdApp(
+    request: IncomingMessage,
+    response: ServerResponse,
+    requestUrl: URL,
+    householdId: string,
+    memberIds: string[],
+  ): Promise<void> {
+    if (!this.#app) {
+      writeJson(response, 404, { error: 'not_found' });
+      return;
+    }
+    const credentials = this.#credentials(request, requestUrl);
+    await this.#app.handle(request, response, {
+      householdId,
+      memberIds,
+      origin: `https://${this.#hostPrefix}${householdId}.${this.#domain}`,
+      clientId: this.#clientAddress(request),
+      credentialKey: credentialKey(credentials),
+      currentUser: async () => {
+        const user = (await this.#userFor(credentials, { serverErrorsThrow: true }))?.user;
+        return user ? callerOf(user) : undefined;
+      },
+      getAsCaller: (pathname, query) => this.#callerJson(credentials, pathname, query),
+    });
   }
 
   /**
@@ -544,30 +600,95 @@ export class HouseholdGateway {
    * Jellyfin's GET /Users/Me reports it, or undefined if Jellyfin rejects them. Throws if Jellyfin cannot be reached.
    */
   async #currentUser(request: IncomingMessage, requestUrl: URL): Promise<{ user: CurrentUser; headers: Headers; suffix: string } | undefined> {
+    return this.#userFor(this.#credentials(request, requestUrl));
+  }
+
+  #credentials(request: IncomingMessage, requestUrl: URL): JellyfinCredentials {
     const headers = new Headers({ Accept: 'application/json' });
     for (const name of ['authorization', 'x-emby-authorization', 'x-emby-token']) {
       const value = request.headers[name];
       if (typeof value === 'string') headers.set(name, value);
     }
-    const authenticationQuery = new URLSearchParams();
+    const query = new URLSearchParams();
     for (const [name, value] of requestUrl.searchParams) {
       if (['apikey', 'api_key', 'access_token'].includes(name.toLowerCase()) && value) {
-        authenticationQuery.append(name, value);
+        query.append(name, value);
       }
     }
-    const suffix = authenticationQuery.size ? `?${authenticationQuery}` : '';
+    return { headers, query };
+  }
+
+  /**
+   * See {@link #currentUser}. With `serverErrorsThrow`, a 5xx from Jellyfin throws like an unreachable Jellyfin instead
+   * of counting as rejected credentials.
+   */
+  async #userFor(
+    credentials: JellyfinCredentials,
+    options: { serverErrorsThrow?: boolean } = {},
+  ): Promise<{ user: CurrentUser; headers: Headers; suffix: string } | undefined> {
+    const { headers } = credentials;
+    const suffix = credentials.query.size ? `?${credentials.query}` : '';
     const currentUserResponse = await fetch(this.#targetUrl(`/Users/Me${suffix}`), {
       headers,
       signal: AbortSignal.timeout(15_000),
     });
     if (!currentUserResponse.ok) {
       await currentUserResponse.body?.cancel();
+      if (options.serverErrorsThrow && currentUserResponse.status >= 500) {
+        throw new Error(`Jellyfin GET /Users/Me returned ${currentUserResponse.status}`);
+      }
       return undefined;
     }
-    const currentUser = await currentUserResponse.json() as { Id?: unknown; Policy?: unknown };
+    const currentUser = await currentUserResponse.json() as { Id?: unknown; Name?: unknown; Policy?: unknown };
     if (typeof currentUser.Id !== 'string' || !currentUser.Id) return undefined;
     const policy = currentUser.Policy && typeof currentUser.Policy === 'object' ? currentUser.Policy as CurrentUser['Policy'] : undefined;
-    return { user: { Id: currentUser.Id, ...(policy ? { Policy: policy } : {}) }, headers, suffix };
+    return {
+      user: {
+        Id: currentUser.Id,
+        ...(typeof currentUser.Name === 'string' ? { Name: currentUser.Name } : {}),
+        ...(policy ? { Policy: policy } : {}),
+      },
+      headers,
+      suffix,
+    };
+  }
+
+  /**
+   * A Jellyfin GET made with the caller's own credentials, so Jellyfin answers with what that caller may see. Never
+   * follows a redirect; reads at most MAX_CALLER_JSON_BYTES. Errors name only the path and status.
+   */
+  async #callerJson(credentials: JellyfinCredentials, pathname: string, query: URLSearchParams): Promise<unknown> {
+    const url = this.#targetUrl(pathname);
+    for (const [name, value] of query) url.searchParams.append(name, value);
+    for (const [name, value] of credentials.query) url.searchParams.append(name, value);
+    const response = await fetch(url, {
+      headers: credentials.headers,
+      redirect: 'manual',
+      signal: AbortSignal.timeout(15_000),
+    });
+    if (!response.ok) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error(`Jellyfin GET ${pathname} returned ${response.status}`);
+    }
+    const declared = Number(response.headers.get('content-length'));
+    if (Number.isFinite(declared) && declared > MAX_CALLER_JSON_BYTES) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new Error(`Jellyfin GET ${pathname} response is too large`);
+    }
+    const chunks: Uint8Array[] = [];
+    let size = 0;
+    if (response.body) {
+      for await (const chunk of response.body) {
+        size += chunk.byteLength;
+        if (size > MAX_CALLER_JSON_BYTES) throw new Error(`Jellyfin GET ${pathname} response is too large`);
+        chunks.push(chunk);
+      }
+    }
+    try {
+      return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
+    } catch {
+      throw new Error(`Jellyfin GET ${pathname} returned invalid JSON`);
+    }
   }
 
   async #proxyJson(
@@ -768,6 +889,21 @@ function protectedResourceItemId(pathname: string): string | undefined {
   if (media) return decodeURIComponent(media[1] as string);
   const download = pathname.match(/^\/items\/([^/]+)\/download$/i);
   return download ? decodeURIComponent(download[1] as string) : undefined;
+}
+
+/**
+ * A hash of the credentials a request carries, to key the app's short-lived cache of who they belong to, or undefined
+ * when it carries none.
+ */
+function credentialKey(credentials: JellyfinCredentials): string | undefined {
+  const parts = [...credentials.headers].filter(([name]) => name !== 'accept').sort(([a], [b]) => a.localeCompare(b));
+  const query = [...credentials.query].sort(([a], [b]) => a.localeCompare(b));
+  if (!parts.length && !query.length) return undefined;
+  return createHash('sha256').update(JSON.stringify([parts, query])).digest('hex');
+}
+
+function callerOf(user: CurrentUser): JellyfinCaller {
+  return { id: user.Id, name: user.Name ?? '', disabled: user.Policy?.IsDisabled === true };
 }
 
 function joinedHeader(value: string | string[] | undefined): string {

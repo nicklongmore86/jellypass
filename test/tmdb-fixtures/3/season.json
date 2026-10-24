@@ -1,0 +1,78 @@
+{
+  "_id": "canary0000000000",
+  "air_date": "2019-09-01",
+  "episodes": [
+    {
+      "air_date": "2019-09-01",
+      "crew": [
+        {
+          "name": "canary crew",
+          "id": 7300401
+        }
+      ],
+      "episode_number": 1,
+      "episode_type": "standard",
+      "guest_stars": [],
+      "id": 7300411,
+      "name": "Synthetic Episode 1",
+      "overview": "",
+      "production_code": "canary",
+      "runtime": 45,
+      "season_number": 1,
+      "show_id": 900002,
+      "still_path": "/canary-still.jpg",
+      "vote_average": 7,
+      "vote_count": 7300421
+    },
+    {
+      "air_date": "2019-09-02",
+      "crew": [
+        {
+          "name": "canary crew",
+          "id": 7300402
+        }
+      ],
+      "episode_number": 2,
+      "episode_type": "standard",
+      "guest_stars": [],
+      "id": 7300412,
+      "name": "Synthetic Episode 2",
+      "overview": "",
+      "production_code": "canary",
+      "runtime": 45,
+      "season_number": 1,
+      "show_id": 900002,
+      "still_path": "/canary-still.jpg",
+      "vote_average": 7,
+      "vote_count": 7300422
+    },
+    {
+      "air_date": "2019-09-03",
+      "crew": [
+        {
+          "name": "canary crew",
+          "id": 7300403
+        }
+      ],
+      "episode_number": 3,
+      "episode_type": "standard",
+      "guest_stars": [],
+      "id": 7300413,
+      "name": "Synthetic Episode 3",
+      "overview": "",
+      "production_code": "canary",
+      "runtime": 45,
+      "season_number": 1,
+      "show_id": 900002,
+      "still_path": "/canary-still.jpg",
+      "vote_average": 7,
+      "vote_count": 7300423
+    }
+  ],
+  "id": 7300430,
+  "name": "Season 1",
+  "overview": "",
+  "poster_path": null,
+  "season_number": 1,
+  "vote_average": 0
+}

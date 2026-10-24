@@ -31,6 +31,8 @@ export class Metrics {
       '# TYPE jfa_request_backfill_last_run_timestamp_seconds gauge',
       '# HELP jfa_library_joins_total Household "Add to my library" calls by result: joined, unchanged (nothing to join, for any reason), error, or dropped (not started: over budget).',
       '# TYPE jfa_library_joins_total counter',
+      '# HELP jfa_app_requests_total Household app API answers by endpoint (me, search, discover, movie, tv, season, unknown) and outcome (ok, unauthorized, rate_limited, invalid, not_found, unavailable).',
+      '# TYPE jfa_app_requests_total counter',
       '# HELP jfa_reconciliations_total Reconciliation attempts by result.',
       '# TYPE jfa_reconciliations_total counter',
       '# HELP jfa_item_updates_total Jellyfin item metadata updates.',

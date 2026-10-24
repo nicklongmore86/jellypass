@@ -1,5 +1,6 @@
 import path from 'node:path';
 import { parseTrustedProxies } from './client-ip.js';
+import { isTmdbCredential } from './tmdb.js';
 
 export type LogLevel = 'debug' | 'info' | 'warn' | 'error';
 const LOG_LEVEL_ALIASES: Record<string, LogLevel> = {
@@ -35,13 +36,15 @@ export interface Config {
   jellyfinApiKey: string;
   seerrUrl?: string;
   seerrApiKey?: string;
-  /** The Seerr user the household app reads the title catalogue as; see docs/app-design.md. */
-  seerrCatalogueUserId?: number;
+  /** The TMDB v3 API key or v4 read access token the household app reads titles with; see docs/app-design.md. */
+  tmdbApiKey?: string;
   stateFile: string;
   reconcileIntervalSeconds: number;
   catalogSyncIntervalSeconds: number;
   householdDomain?: string;
   householdHostPrefix: string;
+  /** Serves the household app API on household hosts; needs Seerr, TMDB_API_KEY and HOUSEHOLD_DOMAIN. */
+  householdAppEnabled: boolean;
   requestBackfillEnabled: boolean;
   requestBackfillSince?: Date;
   logLevel: LogLevel;
@@ -79,16 +82,10 @@ export function loadConfig(): Config {
   if (!!seerrUrl !== !!seerrApiKey) {
     throw new Error('SEERR_URL and SEERR_API_KEY must be configured together');
   }
-  const catalogueUserInput = process.env.SEERR_CATALOGUE_USER_ID?.trim();
-  const seerrCatalogueUserId = catalogueUserInput ? Number(catalogueUserInput) : undefined;
-  if (catalogueUserInput && (!/^[1-9][0-9]*$/.test(catalogueUserInput) || !Number.isSafeInteger(seerrCatalogueUserId))) {
-    throw new Error('SEERR_CATALOGUE_USER_ID must be a positive integer');
-  }
-  if (seerrCatalogueUserId === 1) {
-    throw new Error('SEERR_CATALOGUE_USER_ID must not be the Seerr owner (user 1)');
-  }
-  if (seerrCatalogueUserId !== undefined && !seerrUrl) {
-    throw new Error('SEERR_URL and SEERR_API_KEY are required when SEERR_CATALOGUE_USER_ID is set');
+  const tmdbApiKey = process.env.TMDB_API_KEY?.trim() || undefined;
+  // The message never quotes the value.
+  if (tmdbApiKey && !isTmdbCredential(tmdbApiKey)) {
+    throw new Error('TMDB_API_KEY must be a TMDB API key (32 hexadecimal characters) or an API read access token');
   }
   if (process.env.JELLYQUEST_BRIDGE_ENABLED?.trim()) {
     console.warn(JSON.stringify({
@@ -113,6 +110,10 @@ export function loadConfig(): Config {
   if (!/^[a-z0-9-]{1,32}$/.test(householdHostPrefix)) {
     throw new Error('HOUSEHOLD_HOST_PREFIX must contain only lowercase letters, numbers, and hyphens');
   }
+  const householdAppEnabled = booleanEnvironment('HOUSEHOLD_APP_ENABLED', false);
+  if (householdAppEnabled && (!householdDomain || !seerrUrl || !tmdbApiKey)) {
+    throw new Error('HOUSEHOLD_DOMAIN, SEERR_URL, SEERR_API_KEY and TMDB_API_KEY are required when HOUSEHOLD_APP_ENABLED is true');
+  }
   const logLevel = parseLogLevel(process.env.LOG_LEVEL);
   const webSocketIdleTimeoutMs = webSocketTimeout('WS_IDLE_TIMEOUT_MS', DEFAULT_WS_IDLE_TIMEOUT_MS);
   const webSocketUpstreamIdleTimeoutMs = webSocketTimeout('WS_UPSTREAM_IDLE_TIMEOUT_MS', DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS);
@@ -132,12 +133,13 @@ export function loadConfig(): Config {
     jellyfinUrl: required('JELLYFIN_URL').replace(/\/+$/, ''),
     jellyfinApiKey: required('JELLYFIN_API_KEY'),
     ...(seerrUrl && seerrApiKey ? { seerrUrl, seerrApiKey } : {}),
-    ...(seerrCatalogueUserId !== undefined ? { seerrCatalogueUserId } : {}),
+    ...(tmdbApiKey ? { tmdbApiKey } : {}),
     stateFile: path.resolve(process.env.STATE_FILE?.trim() || './data/grants.json'),
     reconcileIntervalSeconds,
     catalogSyncIntervalSeconds,
     ...(householdDomain ? { householdDomain } : {}),
     householdHostPrefix,
+    householdAppEnabled,
     requestBackfillEnabled,
     ...(requestBackfillSince ? { requestBackfillSince } : {}),
     logLevel,
