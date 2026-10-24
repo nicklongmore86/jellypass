@@ -159,6 +159,8 @@ function recordingWorld(abortAt) {
     updateItem: async () => record('updateItem'),
     updatePolicy: async () => record('updatePolicy'),
     fetchLibraryCatalog: async () => record('fetchLibraryCatalog', [{ id: 'item-1', name: 'Movie', type: 'Movie' }]),
+    fetchAvailability: async () => record('fetchAvailability', { titles: [{ mediaType: 'movie', itemId: 'item-1', tmdbId: 603, qualities: ['hd'] }], episodes: [] }),
+    fetchSavedSince: async () => record('fetchSavedSince', { titles: [{ mediaType: 'movie', itemId: 'item-2', tmdbId: 604, qualities: ['hd'] }], episodes: [] }),
   };
   const seerr = {
     listRequestsSince: async () => record('listRequestsSince', [{ id: 7, status: 2, media: { status: 5 } }]),
@@ -264,6 +266,34 @@ describe('cancellation inside an active background run', { timeout: 10_000 }, ()
     assert.deepEqual(world.calls, ['fetchLibraryCatalog']);
     assert.deepEqual(store.getCatalog().items, []);
     assert.deepEqual(errorLogs, []);
+  });
+
+  it('catalog sync aborted inside fetchAvailability() records neither the catalog nor the availability journal', async (t) => {
+    const world = recordingWorld('fetchAvailability');
+    const store = await newStore(t);
+    const service = new AccessService(world.jellyfin, store, world.metrics);
+    const { error, errorLogs } = await quietly(() => service.syncLibraryCatalog({ signal: world.controller.signal }));
+    assert.ok(error instanceof OperationCancelledError, String(error));
+    assert.deepEqual(world.calls, ['fetchLibraryCatalog', 'fetchAvailability']);
+    assert.deepEqual(store.getCatalog().items, []);
+    assert.equal(store.availabilitySince(), undefined);
+    assert.deepEqual(errorLogs, []);
+  });
+
+  it('availability poll aborted inside fetchSavedSince() records nothing and rejects as cancelled', async (t) => {
+    const world = recordingWorld('fetchSavedSince');
+    const store = await newStore(t);
+    const service = new AccessService(world.jellyfin, store, world.metrics);
+    await service.syncLibraryCatalog();
+    const before = store.availabilityProgress();
+    const { error } = await quietly(() => service.pollAvailability({ signal: world.controller.signal }));
+    assert.ok(error instanceof OperationCancelledError, String(error));
+    assert.deepEqual(store.availabilityProgress(), before);
+    assert.equal(store.availableAt(['movie:tmdb-604:hd'], Date.now() + 1), 0);
+
+    // Not aborted, the same poll records the title.
+    await service.pollAvailability();
+    assert.equal(store.availableAt(['movie:tmdb-604:hd'], Date.now() + 1), 1);
   });
 
   it('reconciliation without a signal (webhook and admin paths) runs to completion as before', async (t) => {

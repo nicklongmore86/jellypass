@@ -474,7 +474,7 @@ describe('webhooks without Seerr lookup', () => {
     assert.match(service.renderMetrics(), /jfa_webhooks_total\{result="error"\} 1/);
   });
 
-  it('treats a recognized HD event as a late request: it joins request grants but never grants', async () => {
+  it('treats a recognized HD event as unverified: it joins request grants but never grants', async () => {
     // Without Seerr there is no request creation time, so a request that came after its title was
     // already available cannot be told apart from a new one (see the late request tests).
     const { store, fake, service } = await serviceWithoutSeerr();
@@ -493,8 +493,8 @@ describe('webhooks without Seerr lookup', () => {
     assert.deepEqual(store.get('item-2').requests, { '5': 'bob-id' });
     assert.equal(store.get('item-2').joins.length, 1);
     assert.deepEqual(fake.user('alice-id').Policy.BlockedTags, ['other']);
-    assert.match(service.renderMetrics(), /jfa_webhooks_total\{result="late"\} 3/);
-    assert.doesNotMatch(service.renderMetrics(), /result="granted"/);
+    assert.match(service.renderMetrics(), /jfa_webhooks_total\{result="unverified"\} 3/);
+    assert.doesNotMatch(service.renderMetrics(), /result="(granted|late)"/);
   });
 
   it('rejects a missing, empty, unfilled or unrecognized event, which may be a 4K request', async () => {
@@ -984,6 +984,8 @@ describe('Seerr request backfill', () => {
       createdAt: '2026-10-10T00:00:00.000Z',
       requestedBy: { displayName: 'Alice', jellyfinUserId: 'alice-id' },
       media: { mediaType: 'movie', tmdbId: 1000 + id, status: 5, jellyfinMediaId: 'item-1' },
+      // A TV request names the seasons it asked for; one without seasons never creates a grant.
+      ...(overrides.media?.mediaType === 'tv' ? { seasons: [{ seasonNumber: 1 }] } : {}),
       ...overrides,
     };
   }
@@ -1171,6 +1173,7 @@ describe('Seerr request backfill', () => {
 
     it('asks Seerr when the payload lacks the item or user ID', async () => {
       const detail = seerrRequest(17, { requestedBy: { jellyfinUserId: 'carol-id' }, media: { mediaType: 'tv', status: 5, jellyfinMediaId: 'item-2' } });
+      assert.deepEqual(detail.seasons, [{ seasonNumber: 1 }]);
       const noUser = webhook();
       delete noUser.request.requestedBy;
       const noItem = webhook({ requestId: '18' });
@@ -1403,6 +1406,7 @@ function webhook(overrides = {}) {
     createdAt: overrides.createdAt ?? REQUESTED_AT,
     requestedBy: { jellyfinUserId: overrides.userId ?? 'alice-id' },
     media: { mediaType, status: 5, jellyfinMediaId: overrides.mediaId ?? 'item-1' },
+    ...(mediaType === 'tv' ? { seasons: [{ seasonNumber: 1 }] } : {}),
   });
   return {
     notificationType: 'MEDIA_AVAILABLE',
@@ -1448,6 +1452,12 @@ function fakeJellyfin({ extraUsers = [] } = {}) {
         { id: 'item-1', name: 'Movie', mediaType: 'movie', productionYear: 2026, libraryId: 'movies', libraryName: 'Movies' },
         { id: 'item-2', name: 'Series', mediaType: 'series', productionYear: 2025, libraryId: 'shows', libraryName: 'TV Shows' },
       ];
+    },
+    async fetchAvailability() {
+      return { titles: [{ mediaType: 'movie', itemId: 'item-1', tmdbId: 603, qualities: ['hd'] }], episodes: [] };
+    },
+    async getEpisodes(seriesId) {
+      return seriesId === 'item-2' ? [{ seriesId, seasonNumber: 1, qualities: ['hd'] }] : [];
     },
     async getItem(itemId = 'item-1') {
       return structuredClone(itemId === 'item-2' ? this.item2 : this.item);

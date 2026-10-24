@@ -122,15 +122,55 @@ auto-approve make a public title private to their household, add their
 household back after an administrator removed it, or extend a manual-only
 grant.
 
-JellyPass therefore compares two times that the requester cannot set: when
-Seerr created the request (`createdAt`, set by Seerr's database) and when
-Jellyfin added the requested item (`DateCreated`). A request is new only when
-Jellyfin added the item after it. For a series Jellyfin already had, such as a
-request for the missing seasons of a partly available show, it is new when
-Jellyfin added at least one requested season after it. Anything else is a late
-request, including a request whose times are missing or unreadable, a TV
-request that names no season, and every webhook when Seerr lookup is not
-configured, since the payload carries no request time.
+JellyPass therefore decides by what it saw in Jellyfin itself, its
+**availability journal**, against when Seerr created the request (`createdAt`,
+set by Seerr's database, which the requester cannot choose). Jellyfin's own
+dates cannot decide it: an item's `DateCreated` is normally the file's
+modification time, which a downloader keeps from the release (often years
+old) and a rewrite or upgrade resets.
+
+- **Movies.** A request is late when JellyPass had seen the title, in the
+  requested quality (HD or 4K), before the request was made. The journal knows
+  titles by TMDB ID, so a re-import, upgrade, rewrite or new Jellyfin item ID
+  after the request changes nothing. Otherwise the request is new.
+- **Series.** A request is new when Jellyfin now has more episodes, in the
+  requested quality, of at least one requested season than JellyPass had seen
+  when the request was made: something the request asked for arrived. That
+  covers a new season and the rest of a partly available season. A request
+  whose seasons were all there already, or that names no season, is late.
+  (Seerr 3.5 only accepts seasons it had no episodes of.)
+- **Before the journal.** A request made before the journal's first full sync
+  (the first catalog sync after upgrading), or more than 400 days ago, is
+  judged as JellyPass 2.2.1 did: new.
+- A request without a readable creation time is late.
+- **Without Seerr lookup** there is no request time, so a webhook is
+  *unverified* and handled like a late request; see
+  [Without Seerr lookup](#without-seerr-lookup).
+
+The journal is filled by every catalog sync (`CATALOG_SYNC_INTERVAL_SECONDS`,
+and **Sync library**), which records each movie and the episodes of each
+season, by TMDB ID and quality. Between syncs, every reconciliation cycle
+(`RECONCILE_INTERVAL_SECONDS`) asks Jellyfin for the items it saved since the
+last look, which finds a new title even when its file is old (Jellyfin's
+last-saved time, unlike `DateCreated`, is when it added the item). Movies
+JellyPass looks up for the backfill and reconciliation, and the episodes it
+counts for a TV request, are recorded too. The journal is kept in `grants.json`; a title deleted from Jellyfin is
+remembered for 400 days.
+
+What remains uncertain, and which way it fails:
+
+- **A title added shortly before the request** that JellyPass had not seen yet
+  counts as not there, so the request is new. The window is from when Jellyfin
+  adds the title to JellyPass's next look: at most one reconciliation interval
+  (5 minutes by default), or one catalog sync interval (1 hour by default) when
+  reconciliation is off. A requester cannot choose when JellyPass looks.
+- **A title deleted shortly before it was requested again** counts as still
+  there until a catalog sync sees it gone, so a re-request made within one
+  catalog sync interval of the deletion is late and the title stays public.
+  Assign it from the Library tab if it should be private.
+- A 4K file also counts as the HD version, because Seerr links it as the HD
+  item when 4K is not enabled for its server; with 4K enabled, an HD request
+  for a title that only had a 4K file is late and stays public.
 
 A late request is handled like [Add to my library](#add-to-my-library), never
 as a grant:
@@ -146,11 +186,23 @@ as a grant:
   {"status":"ignored"}`) and later backfill runs do not decide it again.
 
 A late webhook answers `202 {"status":"ignored"}` and counts as
-`jfa_webhooks_total{result="late"}`. Jellyfin's `DateCreated` usually comes
-from the media file. If your downloader keeps old file times (for example an
-unpacked archive on a filesystem without creation times), a new request can
-look late; the title then stays public and you can assign it from the Library
-tab.
+`jfa_webhooks_total{result="late"}`.
+
+### Without Seerr lookup
+
+> **Breaking change from 2.2.1.** Without `SEERR_URL` and `SEERR_API_KEY`,
+> `MEDIA_AVAILABLE` webhooks no longer create grants. The payload carries no
+> request time, so JellyPass cannot tell a new request from a late one, and
+> granting would let a late request make a public title private. Such a
+> webhook only joins its requester to an existing request grant, answers `202
+> {"status":"ignored"}`, counts as `jfa_webhooks_total{result="unverified"}`
+> and logs a warning. JellyPass logs an error at every start while Seerr lookup
+> is not configured. Configure Seerr lookup to keep request grants.
+
+JellyPass does not guess the request time from when the webhook arrived: the
+webhook comes when Seerr's own scan finds the title, which can be hours after
+JellyPass saw it in Jellyfin, so a genuine request would look late as often as
+a late one would look new.
 
 ## Requirements
 
@@ -164,7 +216,9 @@ tab.
 
 Seerr lookup (`SEERR_URL` and `SEERR_API_KEY`) is needed for webhooks to
 create request grants: without it, JellyPass cannot tell a new request from a
-[late request](#late-requests), so webhooks only join existing request grants.
+[late request](#late-requests), so webhooks only join existing request grants
+(see [Without Seerr lookup](#without-seerr-lookup); this changed in the release
+after 2.2.1).
 Recent-request cards, the request backfill, Add to my library, and Seerr user
 import also need it.
 
@@ -241,8 +295,8 @@ JellyPass reads configuration from environment variables at startup.
 | `STATE_FILE` | No | `./data/grants.json` | Durable state-file path. The container uses `/app/data/grants.json`. |
 | `HOST` | No | `0.0.0.0` | HTTP listen address inside the process/container. |
 | `PORT` | No | `8787` | HTTP listen port. |
-| `RECONCILE_INTERVAL_SECONDS` | No | `300` | Retry/reconciliation interval; `0` disables scheduling. Maximum `86400`. |
-| `CATALOG_SYNC_INTERVAL_SECONDS` | No | `3600` | Jellyfin catalog refresh interval; `0` disables scheduling. Maximum `604800`. |
+| `RECONCILE_INTERVAL_SECONDS` | No | `300` | Retry/reconciliation interval, which also polls Jellyfin for newly added titles for the [availability journal](#late-requests); `0` disables scheduling. Maximum `86400`. |
+| `CATALOG_SYNC_INTERVAL_SECONDS` | No | `3600` | Jellyfin catalog and [availability journal](#late-requests) refresh interval; `0` disables scheduling (a full sync then runs only at startup). Maximum `604800`. |
 | `HOUSEHOLD_DOMAIN` | No | — | Enables household hostnames below this DNS domain. |
 | `HOUSEHOLD_HOST_PREFIX` | No | `jelly-` | Prefix placed before each DNS-safe group ID. |
 | `REQUEST_BACKFILL_SINCE` | No | — | `YYYY-MM-DD` (UTC midnight) or an ISO 8601 date-time with `Z` or an offset, such as `2026-10-15T08:00:00+02:00`. Impossible dates are rejected. Requests created before it are never imported by the backfill. |
@@ -449,7 +503,7 @@ because only Seerr knows when it was made (see [Late requests](#late-requests)),
 and uses Seerr's item, requester and 4K flag for it rather than the payload's.
 Without Seerr lookup, JellyPass trusts the payload's media and user IDs only
 when both are present and `event` identifies an HD request, and even then only
-joins existing request grants. Seerr sends `Movie Request Now Available`
+joins existing request grants (see [Without Seerr lookup](#without-seerr-lookup)). Seerr sends `Movie Request Now Available`
 or `Series Request Now Available` when a request becomes available, and `Movie
 Now Available` or `Series Now Available` when a request is approved for media
 that is already available. For a 4K request the same texts start with `4K `.
@@ -737,7 +791,11 @@ proxy. Upgrading from 2.1.0 to 2.1.1 changes neither the state file nor any
 setting. Upgrading from 2.1.1 to 2.2.0 changes no setting and keeps the state
 file at schema v7, adding new records to it; see
 [Upgrading from 2.1.1](CHANGELOG.md#upgrading-from-211). Upgrading from 2.2.0
-to 2.2.1 changes neither the state file nor any setting. Rolling back from
+to 2.2.1 changes neither the state file nor any setting. Upgrading from 2.2.1
+keeps schema v7 and adds the [availability journal](#late-requests) to it; **without
+Seerr lookup, webhooks stop creating grants** (see
+[Without Seerr lookup](#without-seerr-lookup) and
+[Upgrading from 2.2.1](CHANGELOG.md#upgrading-from-221)). Rolling back from
 2.2.0 to 2.1.1, 2.1.0 or 2.0.0 keeps the state file readable, but those
 versions retry grants marked `orphaned` (see
 [A re-imported title is public](#a-re-imported-title-is-public-or-a-grant-is-orphaned))
@@ -789,7 +847,9 @@ could not resolve, store or apply the grant; the error is logged. In any case,
 `jfa_request_backfill_total{result="granted"}` shows requests the backfill
 applied instead, and `{result="error"}` counts requests it could not process.
 `jfa_webhooks_total{result="late"}` counts webhooks for
-[late requests](#late-requests), which never create a grant.
+[late requests](#late-requests), which never create a grant, and
+`{result="unverified"}` webhooks that could not be checked because Seerr lookup
+is not configured (see [Without Seerr lookup](#without-seerr-lookup)).
 
 ### Webhook returns `401`
 
@@ -805,7 +865,9 @@ Also confirm that the requester was imported from Jellyfin.
 
 Check Jellyfin reachability and API-key privileges, then run **Sync library** in
 the UI. Confirm that `CATALOG_SYNC_INTERVAL_SECONDS` is not `0` if automatic
-refreshes are expected.
+refreshes are expected. The catalog sync also keeps the
+[availability journal](#late-requests) current; with `0` it is synced in full
+only when JellyPass starts, and a warning is logged.
 
 ### A household hostname returns `404`
 
@@ -990,6 +1052,10 @@ sessions are held in memory and disappear on restart.
   JellyPass needs for automatic revocation; use the UI or API.
 - Concurrent policy edits in another administrator interface can race with a
   JellyPass update. Reconciliation restores JellyPass-owned blocked tags.
+- Whether a request came after its title was already available is judged by
+  what JellyPass saw in Jellyfin, so it is uncertain for a title added, or
+  deleted, shortly before the request; see [Late requests](#late-requests) for
+  the windows and which way each fails.
 - Seerr requests created before `REQUEST_BACKFILL_SINCE`, or all of them
   when the backfill is disabled, are not automatically imported as grants.
 - Household profile filtering is not passwordless SSO. See

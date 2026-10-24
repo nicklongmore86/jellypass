@@ -18,12 +18,13 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
   let store;
   let server;
   let seerrStore;
+  let seerrService;
   let seerrServer;
-  // Seerr's GET /api/v1/request/:id answers, by request ID. A request made in 2000 predates every item Jellyfin added
-  // (a new request); one made now comes after them (a late request).
+  // Seerr's GET /api/v1/request/:id answers, by request ID. A request made in 2000 predates the availability journal
+  // (judged new, as 2.2.1 did); one made after a catalog sync saw the movie is late.
   const requests = new Map();
   const seerr = { getRequest: async (requestId) => structuredClone(requests.get(String(requestId))) };
-  const seerrRequest = (requestId, createdAt) => {
+  const seerrRequest = (requestId, createdAt, tmdbId) => {
     requests.set(requestId, {
       id: requestId,
       status: 5,
@@ -31,7 +32,7 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
       is4k: false,
       createdAt,
       requestedBy: { jellyfinUserId: fixture.aliceId },
-      media: { mediaType: 'movie', status: 5, jellyfinMediaId: fixture.itemId },
+      media: { mediaType: 'movie', status: 5, jellyfinMediaId: fixture.itemId, ...(tmdbId ? { tmdbId } : {}) },
     });
   };
 
@@ -45,7 +46,8 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     seerrStore = new GrantStore(path.join(await makeTempDir(null, 'jfa-real-seerr-'), 'grants.json'));
     await seerrStore.load();
-    seerrServer = makeServer(new AccessService(client, seerrStore, undefined, seerr), { webhook: webhookToken, admin: 'real-admin-secret' });
+    seerrService = new AccessService(client, seerrStore, undefined, seerr);
+    seerrServer = makeServer(seerrService, { webhook: webhookToken, admin: 'real-admin-secret' });
     await new Promise((resolve) => seerrServer.listen(0, '127.0.0.1', resolve));
   });
 
@@ -86,18 +88,32 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
     assert.ok(!user(await client.getUsers(), fixture.bobId).Policy.BlockedTags.includes(accessTag(fixture.itemId)));
   });
 
-  it('reports when it added an item, which tells a late request from a new one', async () => {
-    const added = Date.parse((await client.getItem(fixture.itemId)).DateCreated);
-    assert.ok(Number.isFinite(added) && added > Date.parse('2000-01-01T00:00:00.000Z') && added <= Date.now(), String(added));
+  it('records what a catalog sync and a poll see, and judges a request made after that late', async () => {
+    const { titles, episodes } = await client.fetchAvailability();
+    const movie = titles.find((title) => title.itemId === fixture.itemId);
+    assert.ok(movie, JSON.stringify(titles));
+    assert.equal(movie.mediaType, 'movie');
+    assert.deepEqual(movie.qualities, ['hd']);
+    assert.deepEqual(episodes, []);
+    // Jellyfin's last-saved filter finds the movie when asked from before it was added, and nothing from later on.
+    assert.ok((await client.fetchSavedSince(new Date('2000-01-01T00:00:00.000Z'))).titles.some((title) => title.itemId === fixture.itemId));
+    assert.deepEqual(await client.fetchSavedSince(new Date(Date.now() + 3_600_000)), { titles: [], episodes: [] });
 
-    // A request made after Jellyfin added the movie leaves it public, whichever availability event Seerr sends first.
-    seerrRequest('real-late', new Date().toISOString());
+    await seerrService.syncLibraryCatalog();
+    assert.equal(seerrService.hasAvailabilityJournal(), true);
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    // Seerr knows the movie by the TMDB ID Jellyfin matched, if it matched one.
+    seerrRequest('real-late', new Date().toISOString(), movie.tmdbId);
     for (const event of ['Movie Now Available', 'Movie Request Now Available']) {
       assert.deepEqual(await sendWebhook(seerrServer, available('real-late', event)), { status: 202, body: { status: 'ignored' } }, event);
     }
     assert.equal(seerrStore.get(fixture.itemId), undefined);
     assert.ok(!(await client.getItem(fixture.itemId)).Tags.includes(accessTag(fixture.itemId)));
     assert.ok(!user(await client.getUsers(), fixture.bobId).Policy.BlockedTags.includes(accessTag(fixture.itemId)));
+    // The poll overlaps the sync by two minutes, so it may see the just-scanned movie again; it changes nothing.
+    const polled = await seerrService.pollAvailability();
+    assert.ok(polled.titles <= 1 && polled.episodes === 0, JSON.stringify(polled));
+    assert.equal(seerrStore.get(fixture.itemId), undefined);
   });
 
   it('answers an unknown item ID with a 404, the only status JellyPass treats as a deleted item', async () => {

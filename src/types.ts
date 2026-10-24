@@ -31,7 +31,10 @@ export interface SeerrRequest {
   is4k?: boolean;
   /** Set by Seerr's database when the request is saved; a requester cannot choose it. */
   createdAt?: string;
-  /** The seasons a TV request asked for. */
+  /**
+   * The seasons a TV request asked for. Seerr (3.5.x) keeps only seasons it had no episodes of (status unknown or
+   * deleted) and refuses a request that is left with none.
+   */
   seasons?: Array<{ seasonNumber?: number }>;
   requestedBy?: {
     jellyfinUserId?: string;
@@ -89,11 +92,22 @@ export interface JellyfinItem {
   Type?: string;
   CollectionType?: string;
   ProductionYear?: number;
-  /** When Jellyfin added the item to its library. */
+  /**
+   * Usually the file's modification time, not when Jellyfin added the item: downloaders keep a release's old file
+   * times, and a rewrite or upgrade sets a new one. JellyPass never uses it to judge a request (see AvailabilityJournal).
+   */
   DateCreated?: string;
-  /** A season's number, on season items. */
-  IndexNumber?: number;
   Tags?: string[];
+  ProviderIds?: Record<string, string | null | undefined>;
+  /** The primary video's width, with `Fields=Width`. */
+  Width?: number;
+  /** With `Fields=MediaSourceCount`; Jellyfin leaves it out for an item with one version. */
+  MediaSourceCount?: number;
+  MediaSources?: Array<{ MediaStreams?: Array<{ Type?: string; Width?: number }> }>;
+  /** An episode's series and season number. */
+  SeriesId?: string;
+  ParentIndexNumber?: number;
+  LocationType?: string;
   [key: string]: unknown;
 }
 
@@ -118,6 +132,50 @@ export interface LibraryCatalogItem extends LibraryItemSummary {
 export interface LibraryCatalog {
   lastSyncedAt?: string;
   items: Record<string, LibraryCatalogItem>;
+}
+
+/** `hd` is Seerr's standard quality; `4k` its 4K quality, a video wider than 2000 pixels as Seerr (3.5.x) counts it. */
+export type MediaQuality = 'hd' | '4k';
+
+/** A movie or series JellyPass saw in Jellyfin, for the AvailabilityJournal. */
+export interface AvailabilityTitle {
+  mediaType: 'movie' | 'tv';
+  itemId: string;
+  tmdbId?: number;
+  qualities: MediaQuality[];
+}
+
+/** An episode JellyPass saw in Jellyfin, for the AvailabilityJournal. */
+export interface AvailabilityEpisode {
+  seriesId: string;
+  seasonNumber: number;
+  qualities: MediaQuality[];
+}
+
+/**
+ * What JellyPass itself saw in Jellyfin, and when, so that a request can be judged by whether its title was already
+ * there when it was made (see AccessService.classifyRequest). Jellyfin's own dates cannot answer that (see
+ * JellyfinItem.DateCreated). Each key counts, over time, the Jellyfin items of a movie in one quality
+ * (`movie:<title>:<quality>`) or the episodes of one season of a series in one quality
+ * (`tv:<title>:<quality>:s<season>`), where `<title>` is `tmdb-<TMDB ID>`, or `item-<Jellyfin ID>` for an item
+ * Jellyfin has no TMDB ID for. Keyed by title rather than Jellyfin item, an entry survives the new item ID, path or
+ * file date of a re-import, an upgrade or a rewrite.
+ */
+export interface AvailabilityJournal {
+  /**
+   * The earliest time the journal can judge: when the first full sync that recorded it finished, moved forward as old
+   * history is pruned (see AVAILABILITY_RETENTION_DAYS). A request made before it is judged as JellyPass 2.2.1 did.
+   */
+  since: string;
+  /** When the latest full sync finished. */
+  syncedAt: string;
+  /** When the latest look for items Jellyfin saved since the one before started (see AccessService.pollAvailability). */
+  polledAt?: string;
+  /**
+   * Per key, each change of the count as `[time, count]`, oldest first. A count seen to rise is dated when the
+   * observation finished; one a full sync saw fall, when that sync started (see GrantStore.recordAvailabilitySync).
+   */
+  titles: Record<string, Array<[string, number]>>;
 }
 
 export interface GrantRecord {
@@ -166,6 +224,8 @@ export interface GrantState {
   passwordlessUserIds: string[];
   /** Seerr request IDs that already produced a grant or were recorded as late; the backfill never re-imports them. */
   handledRequestIds?: string[];
+  /** Added after 2.2.1 without a schema change: 2.2.1 loads and saves the field unchanged and ignores it. */
+  availability?: AvailabilityJournal;
   /**
    * Requests an administrator revoked, by request ID, with the items they were revoked from. Moving a grant (recovery
    * or remap) never adds a request to an item it was revoked from, so a copy left on a stale grant cannot restore it.

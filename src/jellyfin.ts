@@ -1,5 +1,24 @@
 import { randomUUID } from 'node:crypto';
-import type { JellyfinItem, JellyfinItemQueryResult, JellyfinPolicy, JellyfinUser, LibraryCatalogItem, LibraryItemSummary } from './types.js';
+import { availabilityEpisode, availabilityTitle } from './availability.js';
+import type {
+  AvailabilityEpisode,
+  AvailabilityTitle,
+  JellyfinItem,
+  JellyfinItemQueryResult,
+  JellyfinPolicy,
+  JellyfinUser,
+  LibraryCatalogItem,
+  LibraryItemSummary,
+} from './types.js';
+
+/** Enough to tell a title (TMDB ID) and its quality (see itemQualities), without images or user data. */
+const AVAILABILITY_QUERY = {
+  Recursive: 'true',
+  Fields: 'ProviderIds,Width,MediaSourceCount',
+  CollapseBoxSetItems: 'false',
+  EnableImages: 'false',
+  EnableUserData: 'false',
+};
 
 interface JellyfinAuthenticationResult {
   User?: {
@@ -153,13 +172,69 @@ export class JellyfinClient {
     )));
   }
 
-  /** A series' seasons, each with its number (IndexNumber) and the date Jellyfin added it (DateCreated). */
-  public async getSeasons(seriesId: string, userId: string): Promise<JellyfinItem[]> {
-    const parameters = new URLSearchParams({ userId, Fields: 'DateCreated' });
+  /**
+   * Every movie, series and episode on disk in every library, for a full sync of the AvailabilityJournal. Missing
+   * (virtual) episodes are left out.
+   */
+  public async fetchAvailability(): Promise<{ titles: AvailabilityTitle[]; episodes: AvailabilityEpisode[] }> {
+    const folders = await this.#request<JellyfinItemQueryResult>('/Library/MediaFolders');
+    const titles: AvailabilityTitle[] = [];
+    const episodes: AvailabilityEpisode[] = [];
+    for (const library of folders.Items ?? []) {
+      for (const item of await this.#allItems({ ...AVAILABILITY_QUERY, ParentId: library.Id, IncludeItemTypes: 'Movie,Series' })) {
+        const title = availabilityTitle(item);
+        if (title) titles.push(title);
+      }
+      for (const item of await this.#allItems({ ...AVAILABILITY_QUERY, ParentId: library.Id, IncludeItemTypes: 'Episode', IsMissing: 'false' })) {
+        const episode = availabilityEpisode(item);
+        if (episode) episodes.push(episode);
+      }
+    }
+    return { titles, episodes };
+  }
+
+  /**
+   * The movies and series Jellyfin saved (added, or changed) since `since`, and every episode on disk of each series
+   * one of whose episodes it saved. Jellyfin sets an item's last-saved time when it adds the item, whatever the file's
+   * dates (unlike DateCreated), so this finds a title added with an old file time.
+   */
+  public async fetchSavedSince(since: Date): Promise<{ titles: AvailabilityTitle[]; episodes: AvailabilityEpisode[] }> {
+    const saved = await this.#allItems({
+      ...AVAILABILITY_QUERY,
+      IncludeItemTypes: 'Movie,Series,Episode',
+      MinDateLastSaved: since.toISOString(),
+    });
+    const titles = saved.flatMap((item) => availabilityTitle(item) ?? []);
+    const seriesIds = [...new Set(saved.flatMap((item) => item.Type === 'Episode' && item.SeriesId ? [item.SeriesId] : []))];
+    const known = new Set(titles.map((title) => title.itemId));
+    const unknown = seriesIds.filter((seriesId) => !known.has(seriesId));
+    for (let start = 0; start < unknown.length; start += 100) {
+      const ids = unknown.slice(start, start + 100).join(',');
+      for (const item of await this.#allItems({ ...AVAILABILITY_QUERY, Ids: ids })) {
+        const title = availabilityTitle(item);
+        if (title) titles.push(title);
+      }
+    }
+    const episodes: AvailabilityEpisode[] = [];
+    for (const seriesId of seriesIds) episodes.push(...await this.getEpisodes(seriesId));
+    return { titles, episodes };
+  }
+
+  /** A series' episodes on disk, by season and quality. */
+  public async getEpisodes(seriesId: string): Promise<AvailabilityEpisode[]> {
+    const parameters = new URLSearchParams({
+      Fields: 'Width,MediaSourceCount',
+      IsMissing: 'false',
+      EnableImages: 'false',
+      EnableUserData: 'false',
+    });
     const result = await this.#request<JellyfinItemQueryResult>(
-      `/Shows/${encodeURIComponent(seriesId)}/Seasons?${parameters.toString()}`,
+      `/Shows/${encodeURIComponent(seriesId)}/Episodes?${parameters.toString()}`,
     );
-    return result.Items ?? [];
+    return (result.Items ?? []).flatMap((item) => {
+      const episode = availabilityEpisode({ ...item, Type: item.Type ?? 'Episode', SeriesId: item.SeriesId ?? seriesId });
+      return episode ? [episode] : [];
+    });
   }
 
   public async getLocalTrailers(itemId: string, userId: string): Promise<JellyfinItem[]> {
@@ -194,6 +269,19 @@ export class JellyfinClient {
       method: 'POST',
       body: JSON.stringify(policy),
     });
+  }
+
+  /** Pages through `/Items` with these parameters. */
+  async #allItems(query: Record<string, string>): Promise<JellyfinItem[]> {
+    const items: JellyfinItem[] = [];
+    const limit = 500;
+    while (true) {
+      const parameters = new URLSearchParams({ ...query, StartIndex: String(items.length), Limit: String(limit) });
+      const page = await this.#request<JellyfinItemQueryResult>(`/Items?${parameters.toString()}`);
+      const pageItems = page.Items ?? [];
+      items.push(...pageItems);
+      if (pageItems.length === 0 || items.length >= (page.TotalRecordCount ?? items.length)) return items;
+    }
   }
 
   async #request<T = unknown>(pathname: string, init: RequestInit = {}): Promise<T> {

@@ -1,9 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import { countAt, latestCount, pruneJournal, recordChange } from './availability.js';
 import type {
   AccessGroup,
   AccessRemovals,
+  AvailabilityJournal,
   GrantRecord,
   GrantState,
   LibraryCatalogItem,
@@ -107,6 +109,63 @@ export class GrantStore {
     };
     await this.#save();
     return { lastSyncedAt, items: items.map(clone) };
+  }
+
+  /** The earliest time the availability journal can judge, or undefined before its first full sync (see AvailabilityJournal). */
+  public availabilitySince(): number | undefined {
+    const since = this.#state.availability?.since;
+    return since ? Date.parse(since) : undefined;
+  }
+
+  /** When the journal's latest full sync finished and its latest poll started (see AvailabilityJournal). */
+  public availabilityProgress(): { syncedAt: string; polledAt?: string } | undefined {
+    const journal = this.#state.availability;
+    return journal ? { syncedAt: journal.syncedAt, ...(journal.polledAt ? { polledAt: journal.polledAt } : {}) } : undefined;
+  }
+
+  /** The largest count any of `keys` had at `time` (see AvailabilityJournal); 0 without a journal. */
+  public availableAt(keys: string[], time: number): number {
+    const journal = this.#state.availability;
+    return journal ? Math.max(0, ...keys.map((key) => countAt(journal, key, time))) : 0;
+  }
+
+  /**
+   * Records a full sync of everything Jellyfin has (see AvailabilityJournal), which started at `startedAt` and finished at
+   * `finishedAt`: a count that rose is dated `finishedAt`, so a title counts as there only from when JellyPass could
+   * know it was; one that fell (including to nothing, for a key the sync did not see), `startedAt`. The first sync
+   * starts the journal. History older than the retention period is pruned.
+   */
+  public async recordAvailabilitySync(counts: Map<string, number>, startedAt: Date, finishedAt: Date): Promise<void> {
+    this.#assertOpen();
+    const finished = finishedAt.toISOString();
+    const journal: AvailabilityJournal = this.#state.availability ?? { since: finished, syncedAt: finished, titles: {} };
+    for (const key of new Set([...Object.keys(journal.titles), ...counts.keys()])) {
+      const count = counts.get(key) ?? 0;
+      recordChange(journal, key, count > latestCount(journal, key) ? finished : startedAt.toISOString(), count);
+    }
+    journal.syncedAt = finished;
+    // Whatever Jellyfin saved after the sync listed it is for the next poll to find.
+    journal.polledAt = startedAt.toISOString();
+    pruneJournal(journal, finishedAt);
+    this.#state.availability = journal;
+    await this.#save();
+  }
+
+  /**
+   * Records counts seen at `at` outside a full sync (a poll or a lookup). They may be partial, so only a rise is
+   * recorded; nothing is recorded before the first full sync. `polledAt` advances the poll's starting point. Resolves
+   * whether anything was stored, writing only then.
+   */
+  public async recordAvailabilitySeen(counts: Map<string, number>, at: Date, polledAt?: Date): Promise<boolean> {
+    this.#assertOpen();
+    const journal = this.#state.availability;
+    if (!journal) return false;
+    const rises = [...counts].filter(([key, count]) => count > latestCount(journal, key));
+    if (rises.length === 0 && !polledAt) return false;
+    for (const [key, count] of rises) recordChange(journal, key, at.toISOString(), count);
+    if (polledAt) journal.polledAt = polledAt.toISOString();
+    await this.#save();
+    return true;
   }
 
   public resolveOwners(grant: Pick<GrantRecord, 'requests' | 'manualUserIds' | 'groupIds'>): string[] {

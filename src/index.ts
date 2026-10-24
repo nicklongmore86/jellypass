@@ -52,8 +52,20 @@ async function main(): Promise<void> {
       }));
     }
   };
+  const pollAvailability = async (signal: AbortSignal) => {
+    await service.pollAvailability({ signal }).catch((error: unknown) => {
+      if (signal.aborted) return;
+      console.error(JSON.stringify({
+        level: 'error',
+        message: 'availability poll failed',
+        detail: error instanceof Error ? error.message : String(error),
+      }));
+    });
+  };
   const reconcileTimer = config.reconcileIntervalSeconds > 0
     ? setInterval(() => background.run(async (signal) => {
+        await pollAvailability(signal);
+        if (signal.aborted) return;
         await backfillRequests(signal);
         if (signal.aborted) return;
         await service.reconcileAll({ dueOnly: true, signal }).catch((error: unknown) => {
@@ -92,7 +104,12 @@ async function main(): Promise<void> {
       catalogSyncIntervalSeconds: config.catalogSyncIntervalSeconds,
       requestBackfillSince: backfillSince?.toISOString() ?? null,
     }));
-    if (service.getLibraryCatalog().items.length === 0) syncCatalog();
+    // The availability journal judges late requests: until its first full sync every request counts as new, and a
+    // journal not synced for a whole interval (downtime, a rollback, or scheduled syncs off) missed changes.
+    const journalSyncedAt = service.availabilitySyncedAt()?.getTime() ?? 0;
+    const journalStale = !catalogSyncTimer || Date.now() - journalSyncedAt >= config.catalogSyncIntervalSeconds * 1000;
+    if (service.getLibraryCatalog().items.length === 0 || journalStale) syncCatalog();
+    logStartupDiagnostics(config, Boolean(seerr));
     // Catch up on missed webhooks now rather than one reconcile interval after startup.
     if (backfillSince) backfillTimer = setTimeout(() => background.run(backfillRequests), 5_000).unref();
   });
@@ -106,6 +123,31 @@ async function main(): Promise<void> {
   // `on`, not `once`: a second signal must reach the idempotent handler rather than Node's default, which kills at once.
   process.on('SIGINT', (signal) => void shutdown(signal));
   process.on('SIGTERM', (signal) => void shutdown(signal));
+}
+
+/** Warns, at every start, about settings that weaken how webhooks tell new requests from late ones. */
+function logStartupDiagnostics(config: ReturnType<typeof loadConfig>, seerrLookup: boolean): void {
+  if (!seerrLookup) {
+    console.error(JSON.stringify({
+      level: 'error',
+      message: 'Seerr lookup is not configured (SEERR_URL and SEERR_API_KEY): MEDIA_AVAILABLE webhooks will not create grants',
+      detail: 'without the request from Seerr there is no request time, so a request for a title that was already available cannot be told from a new one; webhooks only add requesters to existing request grants. Configure Seerr lookup to keep request grants.',
+    }));
+  }
+  if (config.catalogSyncIntervalSeconds === 0) {
+    console.error(JSON.stringify({
+      level: 'warn',
+      message: 'CATALOG_SYNC_INTERVAL_SECONDS is 0: the availability journal is synced in full only at startup',
+      detail: 'deleted titles are not noticed until the next restart, so a request made after a title was deleted may be judged late and leave the title public',
+    }));
+  }
+  if (config.reconcileIntervalSeconds === 0) {
+    console.error(JSON.stringify({
+      level: 'warn',
+      message: 'RECONCILE_INTERVAL_SECONDS is 0: Jellyfin is not polled for newly added titles between catalog syncs',
+      detail: 'a request for a title added since the last catalog sync is judged new',
+    }));
+  }
 }
 
 main().catch((error: unknown) => {

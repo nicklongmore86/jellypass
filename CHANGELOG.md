@@ -7,37 +7,89 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
+This release fixes a security problem in how request grants are decided. It
+keeps the state file at schema v7 and changes no setting, but **installs
+without Seerr lookup stop creating grants from webhooks**; read
+[Upgrading from 2.2.1](#upgrading-from-221) first.
 
-- **Security: a request for a title that was already available no longer
-  makes it private or overrides an administrator.** Seerr's API accepts a
-  request for a movie that is already available (its interface only hides
-  the button) and, for a user who may auto-approve, reports it available at
-  once. Any such user could send one request from the browser and have the
-  webhook or the request backfill make a public title private to their
-  household, add their household back to a grant an administrator had
-  removed it from, or add it to a manual-only grant. JellyPass now compares
-  when Seerr created the request with when Jellyfin added the item (for a
-  series Jellyfin already had, the requested seasons). A request made after
-  that, a late request, is treated like
+### Security
+
+- **A request for a title that was already available no longer makes it
+  private or overrides an administrator.** Seerr's API accepts a request for a
+  movie that is already available (its interface only hides the button) and,
+  for a user who may auto-approve, reports it available at once. Any such user
+  could send one request from the browser and have the webhook or the request
+  backfill make a public title private to their household, add their
+  household back to a grant an administrator had removed it from, or add it to
+  a manual-only grant. Such a request, a late request, is now treated like
   [Add to my library](README.md#add-to-my-library): it joins the requester's
-  households to a grant that came from a request, never creates a grant,
-  never touches a manual-only grant, never re-adds a removed household or
-  user, and joins HD items only. It is recorded, so neither a repeated
-  webhook nor the backfill decides it again. It counts as
-  `jfa_webhooks_total{result="late"}`, or in the backfill as
-  `jfa_request_backfill_total{result="joined"}` when it joined a grant. A
-  request made before Jellyfin added the item is granted as before. See
-  [Late requests](README.md#late-requests).
+  households to a grant that came from a request, never creates a grant, never
+  touches a manual-only grant, never re-adds a removed household or user, and
+  joins HD items only. It is recorded, so neither a repeated webhook nor the
+  backfill decides it again. It counts as `jfa_webhooks_total{result="late"}`,
+  or in the backfill as `jfa_request_backfill_total{result="joined"}` when it
+  joined a grant. See [Late requests](README.md#late-requests).
+
+### Added
+
+- **An availability journal in the state file records what JellyPass saw in
+  Jellyfin, and when,** which is what tells a late request from a new one.
+  Jellyfin's `DateCreated` cannot: it is normally the file's modification
+  time, which downloaders keep from the release and rewrites or upgrades
+  reset, so comparing it with the request time would leave genuine requests
+  public. Every catalog sync records each movie by TMDB ID and quality (HD or
+  4K) and the episodes of each season; every reconciliation cycle asks
+  Jellyfin for the items it saved since the last one, so a new title is known
+  within `RECONCILE_INTERVAL_SECONDS` (5 minutes by default). A movie request
+  is late when JellyPass had seen the title in the requested quality before
+  the request was made; a re-import, upgrade, rewrite or new item ID changes
+  nothing. A TV request is new when a requested season has more episodes now
+  than JellyPass had seen at the request, which includes completing a partly
+  available season; one that names no season is late. A deleted title is
+  remembered for 400 days. A request made before the journal's first full
+  sync is judged as 2.2.1 did. The remaining windows, and which way each
+  fails, are listed under [Late requests](README.md#late-requests).
+- JellyPass now runs a catalog sync at startup when the journal has not had a
+  full sync within `CATALOG_SYNC_INTERVAL_SECONDS` (always, when that is `0`),
+  and warns at startup when either interval is `0`.
+- `RequestBackfillResult` gains `joined`.
+
+### Changed
+
+- **Without Seerr lookup, webhooks no longer create grants.** The payload
+  carries no request time, so a late request cannot be told apart. Such a
+  webhook only joins its requester to an existing request grant, answers
+  `202 {"status":"ignored"}`, counts as
+  `jfa_webhooks_total{result="unverified"}` and logs a warning; JellyPass also
+  logs an error at every start while Seerr lookup is not configured. See
+  [Without Seerr lookup](README.md#without-seerr-lookup).
 - **Webhooks now always look the request up in Seerr when Seerr lookup is
   configured,** because only Seerr knows when a request was made. Seerr's own
   item, requester and 4K flag for the request are used, not the payload's. A
   webhook that arrives while Seerr is unreachable fails and is retried, or
   picked up by the request backfill, as before.
-- **Without Seerr lookup, webhooks no longer create grants.** The payload
-  carries no request time, so a late request cannot be told apart and every
-  request is treated as late: it only joins existing request grants. To keep
-  request grants, configure `SEERR_URL` and `SEERR_API_KEY`.
+
+### Upgrading from 2.2.1
+
+1. **Back up the state file**, as before any upgrade. It stays at schema v7;
+   this release adds the top-level `availability` field to it.
+2. **Configure Seerr lookup** (`SEERR_URL` and `SEERR_API_KEY`) if it is not
+   configured: without it, webhooks no longer create grants. Check the startup
+   log for the error that says so.
+3. **Keep `CATALOG_SYNC_INTERVAL_SECONDS` and `RECONCILE_INTERVAL_SECONDS`
+   above `0`.** The first fills and refreshes the journal and notices deleted
+   titles; the second finds new titles between syncs.
+4. **Nothing to do for requests made before the upgrade.** The journal starts
+   with the first catalog sync, which runs at startup; requests made before
+   it are judged as 2.2.1 judged them.
+
+To roll back, set `JELLYPASS_IMAGE` back to
+`ghcr.io/nicklongmore86/jellypass:2.2.1` and recreate the container. 2.2.1
+loads the state file, keeps the `availability` field unchanged and ignores it;
+late requests recorded by this release stay handled. After upgrading again,
+the journal has missed whatever changed meanwhile, so JellyPass runs a catalog
+sync at startup once its last one is older than `CATALOG_SYNC_INTERVAL_SECONDS`;
+run **Sync library** after a shorter rollback.
 
 ## [2.2.1] - 2026-10-24
 

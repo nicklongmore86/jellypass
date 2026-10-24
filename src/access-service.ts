@@ -1,3 +1,4 @@
+import { availabilityTitle, countAvailability, movieKey, seasonKey, titleId } from './availability.js';
 import type { LogLevel } from './config.js';
 import type { JellyfinClient } from './jellyfin.js';
 import { Metrics } from './metrics.js';
@@ -6,6 +7,7 @@ import { normalizeId, type GrantMove, type GrantRemainder, type GrantStore } fro
 import type {
   AccessGroup,
   AccessRemovals,
+  AvailabilityEpisode,
   ChangePlan,
   GrantRecord,
   IgnoredWebhook,
@@ -13,6 +15,7 @@ import type {
   JellyfinUser,
   LibraryCatalogItem,
   LibraryItemSummary,
+  MediaQuality,
   RecentSeerrRequest,
   RequestBackfillResult,
   RevokeResult,
@@ -36,6 +39,19 @@ interface ResolvedRequest {
   mediaType?: string;
   request?: SeerrRequest;
 }
+
+/**
+ * How a MEDIA_AVAILABLE request is applied (see AccessService.classifyRequest): `new` is a grant decision; `late` and
+ * `unverified` (no Seerr lookup, so no request time) only join, like a household library join. `basis` says why, for
+ * logs.
+ */
+interface RequestClass {
+  kind: 'new' | 'late' | 'unverified';
+  basis: string;
+}
+
+/** Overlap between availability polls, so an item Jellyfin saved while the previous one ran is not missed. */
+const AVAILABILITY_POLL_OVERLAP_MS = 120_000;
 
 interface PlanContext {
   plan: ChangePlan;
@@ -108,19 +124,22 @@ export class AccessService {
   #queue: Promise<void> = Promise.resolve();
   readonly #backfillMissingItems = new Set<string>();
   readonly #debug: boolean;
+  readonly #now: () => Date;
 
+  /** `now` is the clock the availability journal is dated by; tests replace it. */
   public constructor(
     jellyfin: JellyfinClient,
     store: GrantStore,
     metrics = new Metrics(),
     seerr?: SeerrClient,
-    options: { logLevel?: LogLevel } = {},
+    options: { logLevel?: LogLevel; now?: () => Date } = {},
   ) {
     this.#jellyfin = jellyfin;
     this.#store = store;
     this.#metrics = metrics;
     this.#seerr = seerr;
     this.#debug = options.logLevel === 'debug';
+    this.#now = options.now ?? (() => new Date());
     this.#refreshGauges();
   }
 
@@ -257,11 +276,19 @@ export class AccessService {
     };
   }
 
-  /** An aborted `signal` (shutdown) rejects with OperationCancelledError and leaves the stored catalog unchanged. */
+  /**
+   * Replaces the catalog and records a full sync of the availability journal (see AvailabilityJournal) from what
+   * Jellyfin has now. An aborted `signal` (shutdown) rejects with OperationCancelledError and leaves both unchanged.
+   */
   public syncLibraryCatalog(options: { signal?: AbortSignal } = {}): Promise<{ lastSyncedAt: string; items: Array<LibraryCatalogItem & { managed: boolean; managedAt?: string }> }> {
     return this.#exclusive(async () => {
       throwIfAborted(options.signal);
+      const startedAt = this.#now();
       const items = await this.#jellyfin.fetchLibraryCatalog();
+      throwIfAborted(options.signal);
+      const available = await this.#jellyfin.fetchAvailability();
+      throwIfAborted(options.signal);
+      await this.#store.recordAvailabilitySync(countAvailability(available.titles, available.episodes), startedAt, this.#now());
       throwIfAborted(options.signal);
       const catalog = await this.#store.replaceCatalog(items);
       const grants = new Map(this.#store.list().filter((grant) => grant.active).map((grant) => [normalizeId(grant.itemId), grant]));
@@ -269,6 +296,38 @@ export class AccessService {
         const grant = grants.get(normalizeId(item.id));
         return { ...item, managed: Boolean(grant), ...(grant ? { managedAt: grant.updatedAt } : {}) };
       }) };
+    });
+  }
+
+  /** Whether the availability journal has had its first full sync, without which no request can be judged late. */
+  public hasAvailabilityJournal(): boolean {
+    return this.#store.availabilitySince() !== undefined;
+  }
+
+  /** When the availability journal's latest full sync finished, if it has had one. */
+  public availabilitySyncedAt(): Date | undefined {
+    const progress = this.#store.availabilityProgress();
+    return progress ? new Date(progress.syncedAt) : undefined;
+  }
+
+  /**
+   * Records the titles and episodes Jellyfin saved since the previous poll (see JellyfinClient.fetchSavedSince), so a
+   * title added between two full syncs counts as there from now on rather than from the next full sync. A poll only
+   * adds: what was deleted is noticed by the next full sync. Does nothing before the journal's first full sync.
+   * Resolves how many titles and episodes it saw. An aborted `signal` (shutdown) rejects with OperationCancelledError
+   * and records nothing.
+   */
+  public pollAvailability(options: { signal?: AbortSignal } = {}): Promise<{ titles: number; episodes: number }> {
+    return this.#exclusive(async () => {
+      throwIfAborted(options.signal);
+      const progress = this.#store.availabilityProgress();
+      if (!progress) return { titles: 0, episodes: 0 };
+      const startedAt = this.#now();
+      const from = Date.parse(progress.polledAt ?? progress.syncedAt) - AVAILABILITY_POLL_OVERLAP_MS;
+      const saved = await this.#jellyfin.fetchSavedSince(new Date(from));
+      throwIfAborted(options.signal);
+      await this.#store.recordAvailabilitySeen(countAvailability(saved.titles, saved.episodes), this.#now(), startedAt);
+      return { titles: saved.titles.length, episodes: saved.episodes.length };
     });
   }
 
@@ -315,10 +374,11 @@ export class AccessService {
         }
         const resolved = await this.#resolveWebhook(event);
         // Seerr accepts a request for a title that is already available and reports it available at once, so the
-        // event alone does not mean anything was added for this requester (see #isLateRequest).
-        if (await this.#isLateRequest(resolved.request, resolved.itemId)) {
-          await this.#applyLateRequest(event.request.id, resolved);
-          this.#metrics.increment('jfa_webhooks_total', { result: 'late' });
+        // event alone does not mean anything was added for this requester (see #classifyRequest).
+        const decided = await this.#classifyRequest(resolved);
+        if (decided.kind !== 'new') {
+          await this.#applyLateRequest(event.request.id, resolved, decided);
+          this.#metrics.increment('jfa_webhooks_total', { result: decided.kind });
           return null;
         }
         const grant = await this.#store.grant({
@@ -441,8 +501,8 @@ export class AccessService {
 
   /**
    * With Seerr lookup, the request always comes from Seerr: its creation time decides whether it is late (see
-   * #isLateRequest), and its IDs and 4K flag are Seerr's own. Without it, only the payload is known, so the request is
-   * returned undefined and counts as late.
+   * #classifyRequest), and its IDs and 4K flag are Seerr's own. Without it, only the payload is known, so the request is
+   * returned undefined and is unverified.
    */
   async #resolveWebhook(event: SeerrWebhook): Promise<ResolvedRequest> {
     let itemId = event.media?.jellyfinMediaId;
@@ -473,46 +533,112 @@ export class AccessService {
   }
 
   /**
-   * Whether a request was made after its title was already available ("late"). Seerr accepts a request for a movie
-   * that is already available (its interface only hides the button) and, for a user who may auto-approve, reports it
-   * available at once, so a late request must never be a grant decision: it would make a public title private, re-add
-   * households an administrator removed, or extend a manual-only grant.
+   * Whether a request is new, a grant decision, or late: made when its title was already available. Seerr accepts a
+   * request for a movie that is already available (its interface only hides the button) and, for a user who may
+   * auto-approve, reports it available at once, so a late request must never be a grant decision: it would make a
+   * public title private, re-add households an administrator removed, or extend a manual-only grant.
    *
-   * A request is new only when Jellyfin added its item after Seerr created the request: Seerr's `createdAt` is set by
-   * its database when the request is saved, and the item's `DateCreated` by Jellyfin when it adds the item, so neither
-   * is the requester's to choose. For a series that Jellyfin had already (a request for new seasons of a partly
-   * available show), the request is new when Jellyfin added at least one of its requested seasons after it. Everything
-   * that cannot be shown to be new counts as late: no Seerr request (Seerr lookup not configured), a missing or
-   * unparseable date, a TV request without seasons, or seasons none of which is newer than the request.
+   * Only what JellyPass itself saw in Jellyfin decides (the AvailabilityJournal), against Seerr's `createdAt`, which
+   * Seerr's database sets when the request is saved. Jellyfin's DateCreated cannot: it is usually the file's time,
+   * which a download keeps from the release and a rewrite or upgrade resets.
+   *
+   * - A movie request is late when JellyPass had seen its title in the requested quality (by TMDB ID, or by the item
+   *   Seerr links it to) by the time the request was made. A re-import, upgrade or rewrite since then changes nothing.
+   * - A TV request is new when Jellyfin has more episodes now, in the requested quality, of at least one of its seasons
+   *   than JellyPass had seen when the request was made: the request asked for something that arrived. Seerr only
+   *   accepts seasons it had no episodes of. A TV request without seasons is late.
+   * - A request made before the journal could judge it (before its first full sync, or longer ago than it keeps
+   *   history) is new, as in JellyPass 2.2.1. A request without a valid creation time is late.
+   * - Without Seerr lookup there is no request time: the request is `unverified` and only joins.
+   *
+   * Without `signal` (webhooks) the lookup always runs; once `signal` is aborted no further Jellyfin call is started.
    */
-  async #isLateRequest(request: SeerrRequest | undefined, itemId: string, item?: JellyfinItem): Promise<boolean> {
-    const requestedAt = Date.parse(request?.createdAt ?? '');
-    if (!request || !Number.isFinite(requestedAt)) return true;
-    const addedAfterRequest = (entry: JellyfinItem) => Date.parse(entry.DateCreated ?? '') > requestedAt;
-    const current = item ?? await this.#jellyfin.getItem(itemId);
-    if (addedAfterRequest(current)) return false;
-    if ((request.media?.mediaType ?? request.type) !== 'tv') return true;
-    const requestedSeasons = new Set((request.seasons ?? []).flatMap((season) =>
-      Number.isInteger(season.seasonNumber) ? [season.seasonNumber as number] : []));
-    if (requestedSeasons.size === 0) return true;
-    const administrator = (await this.#jellyfin.getUsers()).find((user) => user.Policy.IsAdministrator);
-    if (!administrator) throw new Error('Jellyfin administrator user not found');
-    const seasons = await this.#jellyfin.getSeasons(itemId, administrator.Id);
-    return !seasons.some((season) => requestedSeasons.has(season.IndexNumber ?? -1) && addedAfterRequest(season));
+  async #classifyRequest(resolved: ResolvedRequest, signal?: AbortSignal): Promise<RequestClass> {
+    const { request } = resolved;
+    if (!request) return { kind: 'unverified', basis: 'no Seerr lookup' };
+    const requestedAt = Date.parse(request.createdAt ?? '');
+    if (!Number.isFinite(requestedAt)) return { kind: 'late', basis: 'no request time' };
+    const quality: MediaQuality = resolved.is4k ? '4k' : 'hd';
+    const tmdbId = request.media?.tmdbId;
+    const titles = [...new Set([
+      ...(Number.isInteger(tmdbId) ? [titleId({ tmdbId: tmdbId as number, itemId: resolved.itemId })] : []),
+      titleId({ itemId: resolved.itemId }),
+    ])];
+    const isTv = (request.media?.mediaType ?? request.type) === 'tv';
+    const seasons = [...new Set((request.seasons ?? []).flatMap((season) =>
+      Number.isInteger(season.seasonNumber) ? [season.seasonNumber as number] : []))];
+    if (isTv && seasons.length === 0) return { kind: 'late', basis: 'TV request without seasons' };
+    const since = this.#store.availabilitySince();
+    if (since === undefined || requestedAt < since) return { kind: 'new', basis: 'made before the availability journal' };
+    if (!isTv) {
+      const seen = this.#store.availableAt(titles.map((title) => movieKey(title, quality)), requestedAt);
+      return seen > 0
+        ? { kind: 'late', basis: 'title was in Jellyfin when requested' }
+        : { kind: 'new', basis: 'title was not in Jellyfin when requested' };
+    }
+    throwIfAborted(signal);
+    const episodes = await this.#jellyfin.getEpisodes(resolved.itemId);
+    throwIfAborted(signal);
+    // Under its main title only, as a full sync records it; both titles are checked above and below.
+    await this.#recordEpisodes(titles[0] as string, episodes);
+    for (const season of seasons) {
+      const now = episodes.filter((episode) => episode.seasonNumber === season && episode.qualities.includes(quality)).length;
+      if (now > this.#store.availableAt(titles.map((title) => seasonKey(title, quality, season)), requestedAt)) {
+        return { kind: 'new', basis: `season ${season} gained episodes after the request` };
+      }
+    }
+    return { kind: 'late', basis: 'no requested season gained episodes after the request' };
+  }
+
+  /** Records a series' episodes as seen now (only rises; see recordAvailabilitySeen). */
+  async #recordEpisodes(title: string, episodes: AvailabilityEpisode[]): Promise<void> {
+    const counts = new Map<string, number>();
+    for (const episode of episodes) {
+      for (const quality of episode.qualities) {
+        const key = seasonKey(title, quality, episode.seasonNumber);
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
+    }
+    await this.#store.recordAvailabilitySeen(counts, this.#now());
+  }
+
+  /** Records a Jellyfin movie or series looked up for another reason as seen now (see recordAvailabilitySeen). */
+  async #recordItem(item: JellyfinItem): Promise<void> {
+    const title = availabilityTitle(item);
+    if (title?.mediaType === 'movie') await this.#store.recordAvailabilitySeen(countAvailability([title], []), this.#now());
   }
 
   /**
-   * Applies a late request (see #isLateRequest) as a household library join would (see GrantStore.recordLateRequest):
-   * an HD request's requester joins the item's request grant, if it has one; a 4K request joins nothing, since joins
-   * are for HD items only. The request is recorded as handled either way. Resolves with the joined grant, or undefined.
+   * Applies a late or unverified request (see #classifyRequest) as a household library join would (see
+   * GrantStore.recordLateRequest): an HD request's requester joins the item's request grant, if it has one; a 4K request
+   * joins nothing, since joins are for HD items only. The request is recorded as handled either way. Resolves with the
+   * joined grant, or undefined.
    */
-  async #applyLateRequest(requestId: string, resolved: ResolvedRequest, signal?: AbortSignal): Promise<GrantRecord | undefined> {
+  async #applyLateRequest(
+    requestId: string,
+    resolved: ResolvedRequest,
+    decided: RequestClass,
+    signal?: AbortSignal,
+  ): Promise<GrantRecord | undefined> {
     const joined = await this.#store.recordLateRequest(requestId, resolved.is4k ? undefined : {
       itemId: resolved.itemId,
       userId: resolved.userId,
       groupIds: this.#store.listGroupIdsForUser(resolved.userId),
     });
-    const fields = { requestId, itemId: normalizeId(resolved.itemId), userId: resolved.userId, is4k: resolved.is4k };
+    const fields = {
+      requestId,
+      itemId: normalizeId(resolved.itemId),
+      userId: resolved.userId,
+      is4k: resolved.is4k,
+      basis: decided.basis,
+    };
+    if (decided.kind === 'unverified') {
+      console.error(JSON.stringify({
+        level: 'warn',
+        message: 'webhook did not create a grant: Seerr lookup is not configured, so a new request cannot be told from a late one',
+        ...fields,
+      }));
+    }
     if (!joined) {
       this.#logDebug('late request changed nothing', fields);
       return undefined;
@@ -520,7 +646,7 @@ export class AccessService {
     const join = joined.current.joins?.at(-1);
     console.log(JSON.stringify({
       level: 'info',
-      message: 'late request joined',
+      message: decided.kind === 'unverified' ? 'unverified request joined' : 'late request joined',
       ...fields,
       groupIds: join?.groupIds ?? [],
       userAdded: join?.userAdded ?? false,
@@ -533,7 +659,7 @@ export class AccessService {
    * Pull-based fallback for missed MEDIA_AVAILABLE webhooks: grants approved or completed Seerr
    * requests for available media created at or after `since`. A request for an item with no grant creates one; a request for
    * an item whose grant came from other requests is added to it (additively, with the
-   * requester's households). Manual-only grants are left alone. A late request (see #isLateRequest) grants nothing: it
+   * requester's households). Manual-only grants are left alone. A late request (see #classifyRequest) grants nothing: it
    * is recorded and only joins its requester's households to a request grant, as webhooks do. Each request counts as
    * exactly one outcome: granted (stored and reconciled), joined (a late request's join, stored and reconciled),
    * skipped, or failed (including a grant or join that was stored but could not be reconciled yet; reconcileAll
@@ -564,9 +690,10 @@ export class AccessService {
             result.skipped += 1;
             continue;
           }
-          const request = requestItemId(listed) && listed.requestedBy?.jellyfinUserId
-            ? listed
-            : await seerr.getRequest(requestId);
+          // A listed TV request without its seasons is looked up: the seasons decide whether it is late.
+          const complete = requestItemId(listed) && listed.requestedBy?.jellyfinUserId
+            && ((listed.media?.mediaType ?? listed.type) !== 'tv' || Array.isArray(listed.seasons));
+          const request = complete ? listed : await seerr.getRequest(requestId);
           throwIfAborted(signal);
           const itemId = requestItemId(request);
           const userId = request.requestedBy?.jellyfinUserId;
@@ -595,11 +722,14 @@ export class AccessService {
             continue;
           }
           throwIfAborted(signal);
-          // Decided (and recorded) before the manual-only check, so a late request is never decided again, even
-          // against a re-imported item that Jellyfin added after the request.
-          if (await this.#isLateRequest(request, itemId, item)) {
-            throwIfAborted(signal);
-            const joined = await this.#applyLateRequest(requestId, { itemId, userId, is4k: request.is4k === true }, signal);
+          await this.#recordItem(item);
+          throwIfAborted(signal);
+          // Decided (and recorded) before the manual-only check, so a late request is never decided again.
+          const resolved: ResolvedRequest = { itemId, userId, is4k: request.is4k === true, request };
+          const decided = await this.#classifyRequest(resolved, signal);
+          throwIfAborted(signal);
+          if (decided.kind !== 'new') {
+            const joined = await this.#applyLateRequest(requestId, resolved, decided, signal);
             throwIfAborted(signal);
             if (joined) {
               result.joined.push(joined.itemId);
@@ -1129,6 +1259,8 @@ export class AccessService {
       await this.#applyPlan(context, signal);
       // Checked after every await from here on: shutdown can abort while a save is finishing, and nothing after it
       // (purging, counting) may then start. A grant left synced or pending is reconciled again after restart.
+      throwIfAborted(signal);
+      await this.#recordItem(context.item);
       throwIfAborted(signal);
       await this.#store.markSyncSuccess(grant.itemId);
       throwIfAborted(signal);
