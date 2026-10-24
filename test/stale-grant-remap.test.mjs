@@ -1178,6 +1178,23 @@ describe('library join history across grant moves', { timeout: 10_000 }, () => {
     assert.deepEqual(w.blockedFrom(NEW_TAG), ['bob-id', 'carol-id', 'dave-id']);
   });
 
+  it('moves the whole history when an administrator took members off before the move, and it restores nobody', async (t) => {
+    const { w, store, service, joins } = await joinedThenReimported(t);
+    // Before the item was found deleted, an administrator took Farmhouse and dave off, so carol and dave are marked.
+    await store.setManualAccess({ itemId: 'item-old', userIds: [], groupIds: ['house-a'] });
+    assert.deepEqual(store.getRemovals('item-old'), { userIds: ['carol-id', 'dave-id'], groupIds: ['farmhouse'] });
+    assert.deepEqual(store.get('item-old').joins, joins);
+
+    const { error } = await quietly(() => service.reconcileAll());
+    assert.equal(error, undefined, String(error));
+    assert.equal(store.get('item-old'), undefined);
+    const moved = store.get('item-new');
+    assert.deepEqual(moved.joins, joins, 'the whole remaining audience moved, so its whole history goes with it');
+    assert.deepEqual([moved.requests, moved.manualUserIds, moved.groupIds, moved.owners], [{ 7: 'alice-id' }, [], ['house-a'], ['alice-id']]);
+    assert.deepEqual(store.getRemovals('item-new'), { userIds: ['carol-id', 'dave-id'], groupIds: ['farmhouse'] });
+    assert.deepEqual(w.blockedFrom(NEW_TAG), ['bob-id', 'carol-id', 'dave-id'], 'the history gives carol and dave nothing');
+  });
+
   it('splits the history with the households that follow each requester and keeps the rest on the leftover', async (t) => {
     const w = world();
     const store = await newStore(t);
