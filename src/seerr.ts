@@ -325,9 +325,6 @@ export const MAX_GUARDED_RESPONSE_BYTES = 4 * 1024 * 1024;
 /** Statuses after which Seerr may no longer accept the acting user (unknown, removed or relinked). */
 const USER_REJECTED_STATUSES = new Set([401, 403, 404]);
 
-/** How long the catalogue user is trusted after Seerr last confirmed it is fit for the role. */
-export const SEERR_CATALOGUE_RECHECK_MS = 60_000;
-
 /** The admin client's connection details, for the acting-user clients made from it; never exported. */
 const credentials = new WeakMap<SeerrClient, { baseUrl: string; apiKey: string }>();
 
@@ -464,24 +461,19 @@ export class SeerrMemberClient {
  * member. Seerr shapes these answers with the acting user's own settings (discover region, original language and
  * display locale; Seerr 3.5.1 `createTmdbWithRegionLanguage` and `checkUser`), so reading them as a member would make
  * one member's results depend on whichever Seerr user they were last mapped to. The catalogue user is the same for
- * everyone, and before its first call, then at least every {@link SEERR_CATALOGUE_RECHECK_MS}, Seerr must confirm it
- * is fit for the role ({@link SeerrClient.catalogueUserProblem}): otherwise every call throws
- * {@link SeerrCatalogueUserError}. Nothing it reads is anyone's own data.
+ * everyone, and Seerr confirms it is fit for the role ({@link SeerrClient.catalogueUserProblem}) immediately before
+ * every call, the way member calls are confirmed: a user that has since gained permissions or a Jellyfin link (so a
+ * member could change the settings that shape the catalogue) fails the call with {@link SeerrCatalogueUserError}. This
+ * costs one admin read per call. Nothing it reads is anyone's own data.
  */
 export class SeerrCatalogueClient {
   readonly #admin: SeerrClient;
   readonly #user: SeerrUserId;
-  readonly #now: () => number;
-  readonly #recheckMs: number;
-  #validUntil = 0;
-  #pending: Promise<void> | undefined;
 
-  public constructor(admin: SeerrClient, user: SeerrUserId, options: { now?: () => number; recheckMs?: number } = {}) {
+  public constructor(admin: SeerrClient, user: SeerrUserId) {
     if (!credentials.has(admin)) throw new TypeError('Seerr admin client is invalid');
     this.#admin = admin;
     this.#user = seerrUserId(user);
-    this.#now = options.now ?? Date.now;
-    this.#recheckMs = options.recheckMs ?? SEERR_CATALOGUE_RECHECK_MS;
   }
 
   public get userId(): SeerrUserId {
@@ -489,22 +481,12 @@ export class SeerrCatalogueClient {
   }
 
   /**
-   * Confirms with Seerr that the catalogue user is fit for the role. Throws {@link SeerrCatalogueUserError} if it is
-   * not, or the {@link SeerrError} if Seerr fails. Concurrent checks share one call.
+   * Confirms with Seerr that the catalogue user is fit for the role, for example at startup. Throws
+   * {@link SeerrCatalogueUserError} if it is not, or the {@link SeerrError} if Seerr fails.
    */
-  public validate(): Promise<void> {
-    this.#pending ??= this.#admin.catalogueUserProblem(this.#user)
-      .then((problem) => {
-        if (problem) {
-          this.#validUntil = 0;
-          throw new SeerrCatalogueUserError(problem);
-        }
-        this.#validUntil = this.#now() + this.#recheckMs;
-      })
-      .finally(() => {
-        this.#pending = undefined;
-      });
-    return this.#pending;
+  public async validate(): Promise<void> {
+    const problem = await this.#admin.catalogueUserProblem(this.#user);
+    if (problem) throw new SeerrCatalogueUserError(problem);
   }
 
   public search(query: string, page = 1): Promise<unknown> {
@@ -532,18 +514,17 @@ export class SeerrCatalogueClient {
   }
 
   async #get(route: string, path: string): Promise<unknown> {
-    if (this.#validUntil <= this.#now()) await this.validate();
-    return actingUserJson(this.#admin, this.#user, 'GET', route, path, undefined, (status) => {
-      // Seerr refusing the catalogue user means it changed: confirm it again before the next call.
-      if (status !== 404) this.#validUntil = 0;
-    });
+    const problem = await this.#admin.catalogueUserProblem(this.#user);
+    if (problem) throw new SeerrCatalogueUserError(problem);
+    // Sent at once: nothing is awaited between Seerr confirming the catalogue user and the call leaving.
+    return actingUserJson(this.#admin, this.#user, 'GET', route, path);
   }
 }
 
 /**
  * A guarded Seerr call acting as `user`, which must be a valid {@link SeerrUserId}: `X-API-User` is built from it and
- * re-checked here, so it is never missing or empty (which Seerr runs as its owner). `onRejected` runs before a 401, 403
- * or 404 is thrown.
+ * re-checked here, so it is never missing or empty (which Seerr runs as its owner). `onRejected`, if given, runs before a
+ * 401, 403 or 404 is thrown.
  */
 async function actingUserJson(
   admin: SeerrClient,
@@ -551,8 +532,8 @@ async function actingUserJson(
   method: 'GET' | 'POST',
   route: string,
   path: string,
-  body: unknown,
-  onRejected: (status: number) => void,
+  body?: unknown,
+  onRejected?: (status: number) => void,
 ): Promise<unknown> {
   const connection = credentials.get(admin);
   if (!connection) throw new TypeError('Seerr admin client is invalid');
@@ -565,7 +546,7 @@ async function actingUserJson(
   try {
     return await guardedSeerrJson(connection.baseUrl, method, route, path, headers, body);
   } catch (error) {
-    if (error instanceof SeerrError && USER_REJECTED_STATUSES.has(error.status)) onRejected(error.status);
+    if (error instanceof SeerrError && USER_REJECTED_STATUSES.has(error.status)) onRejected?.(error.status);
     throw error;
   }
 }

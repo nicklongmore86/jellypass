@@ -184,8 +184,8 @@ describe('acting-user Seerr clients', () => {
       '42 GET /api/v1/user/42/quota',
       '42 GET /api/v1/discover/watchlist?page=1',
     ]);
-    // The catalogue user is confirmed once per minute; the member before every call.
-    assert.equal(calls.filter((request) => request.url.pathname === `/api/v1/user/${CATALOGUE}`).length, 1);
+    // The catalogue user and the member are each confirmed before every call.
+    assert.equal(calls.filter((request) => request.url.pathname === `/api/v1/user/${CATALOGUE}`).length, 10);
     assert.equal(calls.filter((request) => request.url.pathname === `/api/v1/user/${MEMBER}`).length, 4);
   });
 
@@ -380,23 +380,84 @@ describe('catalogue client', () => {
     assert.equal(actingCalls().length, 0);
   });
 
-  it('confirms the catalogue user again once a minute, and at once after Seerr refuses it', async () => {
-    const time = { now: 1_000_000 };
-    const catalogue = new SeerrCatalogueClient(new SeerrClient(BASE_URL, API_KEY), seerrUserId(CATALOGUE), { now: () => time.now });
-    const checks = () => calls.filter((request) => request.url.pathname === `/api/v1/user/${CATALOGUE}`).length;
-    await Promise.all([catalogue.movie(1), catalogue.movie(2), catalogue.tv(3)]);
-    assert.equal(checks(), 1);
-    time.now += 59_999;
+  /** Answers the catalogue user's record from `record`, which a test may change between calls, and title reads with {}. */
+  function catalogueSeerr(record) {
+    respondsToAdmin = true;
+    respond = ({ url, headers }) => !headers.has('x-api-user') && url.pathname === `/api/v1/user/${CATALOGUE}`
+      ? Response.json(record)
+      : Response.json({});
+  }
+  const trace = () => calls.map((request) => `${request.headers.get('x-api-user')} ${request.url.pathname}`);
+
+  it('confirms the catalogue user before every call, so one linked to a member since the last call fails closed', async () => {
+    // Codex's repro: a valid catalogue user, then linked to member B, who could then steer it with their own settings.
+    const record = { id: CATALOGUE, permissions: 0, jellyfinUserId: null };
+    catalogueSeerr(record);
+    const catalogue = catalogueClient();
+    await catalogue.discover('movies');
+    record.jellyfinUserId = MEMBER_JELLYFIN_ID;
+    const error = await catalogue.discover('movies').catch((caught) => caught);
+    assert.ok(error instanceof SeerrCatalogueUserError);
+    assert.equal(error.message, 'Seerr catalogue user is linked to a Jellyfin user');
+    assert.deepEqual(trace(), [
+      'null /api/v1/user/43',
+      '43 /api/v1/discover/movies',
+      'null /api/v1/user/43',
+    ]);
+  });
+
+  it('fails closed on the next call once the catalogue user is granted a permission', async () => {
+    const record = { id: CATALOGUE, permissions: 0, jellyfinUserId: null };
+    catalogueSeerr(record);
+    const catalogue = catalogueClient();
     await catalogue.movie(1);
-    assert.equal(checks(), 1);
-    time.now += 1;
-    await catalogue.movie(1);
-    assert.equal(checks(), 2);
-    respond = () => Response.json({}, { status: 403 });
+    record.permissions = 32;
+    await assert.rejects(catalogue.tv(2), /Seerr catalogue user has permissions/);
+    record.permissions = 0;
+    await catalogue.tv(2);
+    assert.deepEqual(trace(), [
+      'null /api/v1/user/43',
+      '43 /api/v1/movie/1',
+      'null /api/v1/user/43',
+      'null /api/v1/user/43',
+      '43 /api/v1/tv/2',
+    ]);
+  });
+
+  it('confirms each of several concurrent calls on its own', async () => {
+    const record = { id: CATALOGUE, permissions: 0, jellyfinUserId: null };
+    catalogueSeerr(record);
+    const catalogue = catalogueClient();
+    await Promise.all([catalogue.movie(1), catalogue.movie(2), catalogue.tv(3), catalogue.search('synthetic')]);
+    assert.equal(calls.filter((request) => request.url.pathname === '/api/v1/user/43').length, 4);
+    assert.equal(actingCalls().length, 4);
+
+    // A link landing while some calls are being confirmed fails exactly those confirmed after it.
+    calls = [];
+    const inFlight = [catalogue.movie(1), catalogue.movie(2)];
+    record.jellyfinUserId = MEMBER_JELLYFIN_ID;
+    const later = [catalogue.movie(3), catalogue.tv(4)];
+    const settled = await Promise.allSettled([...inFlight, ...later]);
+    // The fake answers each check when it is made, so the first two read the record before the link.
+    assert.deepEqual(settled.map((result) => result.status), ['fulfilled', 'fulfilled', 'rejected', 'rejected']);
+    assert.deepEqual(actingCalls().map((request) => request.url.pathname), ['/api/v1/movie/1', '/api/v1/movie/2']);
+  });
+
+  it('confirms the catalogue user again after Seerr refuses it', async () => {
+    const record = { id: CATALOGUE, permissions: 0, jellyfinUserId: null };
+    catalogueSeerr(record);
+    const catalogue = catalogueClient();
+    respond = ({ url, headers }) => !headers.has('x-api-user') && url.pathname === `/api/v1/user/${CATALOGUE}`
+      ? Response.json(record)
+      : Response.json({}, { status: 403 });
     await assert.rejects(catalogue.movie(1), (error) => error.status === 403);
-    respond = () => Response.json({});
-    await catalogue.movie(1);
-    assert.equal(checks(), 3);
+    await assert.rejects(catalogue.movie(1), (error) => error.status === 403);
+    assert.deepEqual(trace(), [
+      'null /api/v1/user/43',
+      '43 /api/v1/movie/1',
+      'null /api/v1/user/43',
+      '43 /api/v1/movie/1',
+    ]);
   });
 
   it('uses the same Seerr user for every caller, so no member\'s Seerr settings shape the catalogue', async () => {
