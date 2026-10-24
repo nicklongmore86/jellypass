@@ -38,10 +38,15 @@ export class SeerrUserMap implements SeerrUserResolver {
   readonly #maxEntries: number;
   readonly #cache = new Map<string, CacheEntry>();
   readonly #pending = new Map<string, Promise<SeerrUserId | undefined>>();
-  /** Invalidation stamps from one counter that never repeats, so a forgotten stamp still reads as a change. */
+  /** Invalidation stamps from one counter that only grows. */
   readonly #versions = new Map<string, number>();
   #counter = 0;
-  #clearedAt = 0;
+  /**
+   * The newest stamp forgotten, by clear() or by eviction; a user with no stamp reads as this. Stamps are only ever
+   * replaced by a newer one or folded into the floor, so each user's version never goes down and grows on every
+   * invalidation: a version read before an invalidation can never be read again after it.
+   */
+  #floor = 0;
 
   public constructor(seerr: SeerrClient, options: { now?: () => number; ttlMs?: number; missingTtlMs?: number; maxEntries?: number } = {}) {
     this.#seerr = seerr;
@@ -75,10 +80,13 @@ export class SeerrUserMap implements SeerrUserResolver {
     if (key && this.#cache.get(key)?.user === user) this.#cache.delete(key);
   }
 
-  /** Changes whenever this Jellyfin user's mapping is invalidated or every mapping is cleared. */
+  /**
+   * Grows whenever this Jellyfin user's mapping is invalidated or every mapping is cleared, and never goes down (it may
+   * also grow when another user's stamp is forgotten, which costs only a second confirmation).
+   */
   public version(jellyfinUserId: string): number {
     const key = normalizeJellyfinUserId(jellyfinUserId);
-    return (key && this.#versions.get(key)) || this.#clearedAt;
+    return Math.max((key && this.#versions.get(key)) || 0, this.#floor);
   }
 
   /** Forgets one Jellyfin user's mapping, for example after they were relinked or removed in Seerr. */
@@ -90,7 +98,9 @@ export class SeerrUserMap implements SeerrUserResolver {
     this.#versions.delete(key);
     this.#versions.set(key, ++this.#counter);
     while (this.#versions.size > this.#maxEntries) {
-      this.#versions.delete(this.#versions.keys().next().value as string);
+      const [oldest, stamp] = this.#versions.entries().next().value as [string, number];
+      this.#versions.delete(oldest);
+      this.#floor = Math.max(this.#floor, stamp);
     }
   }
 
@@ -99,7 +109,7 @@ export class SeerrUserMap implements SeerrUserResolver {
     this.#cache.clear();
     this.#pending.clear();
     this.#versions.clear();
-    this.#clearedAt = ++this.#counter;
+    this.#floor = ++this.#counter;
   }
 
   #resolve(key: string): Promise<SeerrUserId | undefined> {

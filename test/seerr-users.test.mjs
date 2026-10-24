@@ -315,7 +315,7 @@ describe('Jellyfin to Seerr user map after Seerr changes', () => {
     assert.deepEqual(seerr.checks, [2]);
   });
 
-  it('keeps detecting invalidations after its stamps were evicted', async () => {
+  it('keeps a user\'s version when only their stamp is evicted', async () => {
     seerr.users = { [alice]: 2 };
     const map = new SeerrUserMap(admin(), { maxEntries: 1 });
     map.invalidate(ALICE);
@@ -324,8 +324,72 @@ describe('Jellyfin to Seerr user map after Seerr changes', () => {
       map.invalidate(BOB); // evicts Alice's stamp
     };
     await map.member(ALICE).quota();
-    // Losing Alice's stamp reads as a change, so the call is confirmed again rather than trusted.
-    assert.deepEqual(seerr.checks, [2, 2]);
+    // Alice was not invalidated: her evicted stamp becomes the floor, so her version reads the same and she still
+    // goes as the user Seerr confirmed.
+    assert.deepEqual(seerr.checks, [2]);
+    assert.deepEqual(seerr.acted, ['2 GET /api/v1/user/2/quota']);
+  });
+
+  it('is not fooled by an invalidation whose stamp was evicted during the confirmation', async () => {
+    // Codex's repro: Alice's confirmation starts with no stamp for her; Alice is relinked to 3 and Bob to 2, and both
+    // invalidations land, the second evicting the first. Alice must not read as unchanged and go as 2.
+    seerr.users = { [alice]: 2 };
+    const map = new SeerrUserMap(admin(), { maxEntries: 1 });
+    seerr.onCheck = () => {
+      seerr.onCheck = undefined;
+      seerr.users = { [alice]: 3, [bob]: 2 };
+      map.invalidate(ALICE);
+      map.invalidate(BOB);
+    };
+    await map.member(ALICE).quota();
+    assert.deepEqual(seerr.checks, [2, 3]);
+    assert.deepEqual(seerr.acted, ['3 GET /api/v1/user/3/quota']);
+  });
+
+  it('never sends as the old user however many invalidations and evictions land during a confirmation', async () => {
+    for (const maxEntries of [1, 2, 3, 10]) {
+      for (const others of [0, 1, 2, 5, 50]) {
+        for (const clearAt of [-1, 0, Math.floor(others / 2)]) {
+          seerr.users = { [alice]: 2 };
+          seerr.checks = [];
+          seerr.acted = [];
+          const map = new SeerrUserMap(admin(), { maxEntries });
+          if (maxEntries > 1) map.invalidate(ALICE); // also start from a stamp Alice has
+          seerr.onCheck = () => {
+            seerr.onCheck = undefined;
+            seerr.users = { [alice]: 3, [bob]: 2 };
+            map.invalidate(ALICE);
+            for (let index = 0; index < others; index += 1) {
+              if (index === clearAt) map.clear();
+              map.invalidate(index % 2 ? BOB : jellyfinId(1000 + index));
+            }
+          };
+          await map.member(ALICE).quota();
+          const label = `maxEntries ${maxEntries}, ${others} others, clear at ${clearAt}`;
+          assert.deepEqual(seerr.acted, ['3 GET /api/v1/user/3/quota'], label);
+        }
+      }
+    }
+  });
+
+  it('gives every user a version that never goes down and grows on each of their invalidations', () => {
+    const map = new SeerrUserMap(admin(), { maxEntries: 3 });
+    const users = [1, 2, 3, 4, 5, 6].map(jellyfinId);
+    const last = new Map(users.map((user) => [user, map.version(user)]));
+    let seed = 7;
+    const random = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+    for (let step = 0; step < 5_000; step += 1) {
+      const target = users[Math.floor(random() * users.length)];
+      const clearing = random() < 0.02;
+      if (clearing) map.clear();
+      else map.invalidate(target);
+      for (const user of users) {
+        const version = map.version(user);
+        assert.ok(version >= last.get(user), `step ${step}: ${user} went down`);
+        if (clearing || user === target) assert.ok(version > last.get(user), `step ${step}: ${user} did not grow`);
+        last.set(user, version);
+      }
+    }
   });
 
   it('trusts no cached mapping for any call after a relink, however recent', async () => {
