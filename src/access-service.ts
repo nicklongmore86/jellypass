@@ -656,7 +656,7 @@ export class AccessService {
         ...(source.mediaType ? { mediaType: source.mediaType } : {}),
       };
       if (dryRun) {
-        const current = this.#store.previewMerge(move);
+        const current = this.#store.previewMerge(from, move);
         const retired = await this.#retirementPlan(source);
         if (!retired) throw sourceExistsError(from);
         return { previous: source, ...(target ? { target } : {}), current, sourcePlan: retired.plan, plan: (await this.#buildPlan(current)).plan };

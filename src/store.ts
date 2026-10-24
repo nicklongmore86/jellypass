@@ -406,10 +406,14 @@ export class GrantStore {
    * The grant an item would have after `move` is merged into it, without storing anything: requests, manual users and
    * groups are added to whatever grant the item already has (nothing on it is dropped). Groups that no longer exist,
    * requests an administrator revoked from that item and users and groups an administrator removed from it
-   * (GrantState.removedAccess) are left out of the moved ones.
+   * (GrantState.removedAccess) are left out of the moved ones. The library joins of the grant on `fromItemId` that go
+   * with the move are added exactly as mergeGrants adds them.
    */
-  public previewMerge(move: GrantMove): GrantRecord {
-    return clone(this.#mergedGrant(move));
+  public previewMerge(fromItemIdInput: string, move: GrantMove): GrantRecord {
+    const fromItemId = normalizeId(fromItemIdInput);
+    const source = this.#state.grants[fromItemId];
+    if (!source) throw new Error(`grant not found: ${fromItemId}`);
+    return clone(this.#mergedMove(source, move));
   }
 
   /**
@@ -438,7 +442,7 @@ export class GrantStore {
     const source = this.#state.grants[fromItemId] as GrantRecord;
     const currents = moves.map((move) => {
       const before = this.#state.grants[normalizeId(move.itemId)];
-      const current = this.#mergedGrant(move, this.#movedJoins(source, move));
+      const current = this.#mergedMove(source, move);
       this.#carryRemovals(fromItemId, current.itemId, before);
       return current;
     });
@@ -497,7 +501,8 @@ export class GrantStore {
     return newlyOrphaned;
   }
 
-  #mergedGrant(move: GrantMove, joins: LibraryJoin[] = []): GrantRecord {
+  /** The target's grant once `move` off `source` is merged into it; previewMerge and mergeGrants share it. */
+  #mergedMove(source: GrantRecord, move: GrantMove): GrantRecord {
     const itemId = normalizeId(move.itemId);
     const previous = this.#state.grants[itemId];
     const moved = Object.entries(move.requests).filter(([requestId]) => !this.isRequestRevoked(requestId, itemId));
@@ -508,7 +513,7 @@ export class GrantStore {
       .filter((id) => this.#state.groups[id] && !this.isAccessRemoved(itemId, 'groupIds', id));
     const groupIds = [...new Set([...(previous?.groupIds ?? []), ...movedGroupIds])].sort();
     // The same join merged again (a repeated move) is recorded once.
-    const allJoins = [...(previous?.joins ?? []), ...joins];
+    const allJoins = [...(previous?.joins ?? []), ...this.#movedJoins(source, move)];
     const mergedJoins = allJoins
       .filter((join, index) => allJoins.findIndex((other) => other.userId === join.userId && other.joinedAt === join.joinedAt) === index)
       .sort((left, right) => left.joinedAt.localeCompare(right.joinedAt));
