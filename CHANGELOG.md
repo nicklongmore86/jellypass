@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A store write that failed partway no longer kept its first half.** A
+  manual-access batch with an invalid later item, a grant move with a
+  malformed later target, or a sync-status batch with a malformed later item
+  ID left the earlier items changed in memory, and the next save stored them.
+  None was reachable through the API, which validates and previews these
+  writes first; all are now all-or-nothing.
+
 ## [2.2.0] - 2026-10-24
 
 This is a minor release. No settings change, and most deployments can upgrade
