@@ -1711,4 +1711,14 @@ describe('store writes that throw partway leave everything as it was', { timeout
       { itemId: 'item-new', requests: null, manualUserIds: [], groupIds: [], mediaType: 'movie' },
     ]), /null/, 'grant merge');
   });
+
+  it('a sync success batch whose second ID is not a string', async (t) => {
+    const { w, store, file } = await administered(t);
+    await assertFailsUntouched(w, store, file, () => store.markSyncSuccessBatch(['item-old', null]), /null/, 'sync success batch');
+  });
+
+  it('a sync error batch whose second ID is not a string', async (t) => {
+    const { w, store, file } = await administered(t);
+    await assertFailsUntouched(w, store, file, () => store.markSyncErrorBatch(['item-1', null], 'boom'), /null/, 'sync error batch');
+  });
 });

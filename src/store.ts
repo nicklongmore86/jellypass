@@ -390,9 +390,11 @@ export class GrantStore {
   public async markSyncSuccessBatch(itemIds: string[]): Promise<void> {
     this.#assertOpen();
     const now = new Date().toISOString();
+    // Every ID is normalized before any grant changes, so a bad one throws with the state untouched.
+    const normalized = itemIds.map(normalizeId);
     let changed = false;
-    for (const itemId of itemIds) {
-      const grant = this.#state.grants[normalizeId(itemId)];
+    for (const itemId of normalized) {
+      const grant = this.#state.grants[itemId];
       if (!grant) continue;
       grant.sync = { state: 'synced', attempts: 0, lastAttemptAt: now, lastSuccessAt: now };
       changed = true;
@@ -408,9 +410,11 @@ export class GrantStore {
   public async markSyncErrorBatch(itemIds: string[], error: string): Promise<void> {
     this.#assertOpen();
     const now = new Date();
+    // As in markSyncSuccessBatch; a bad `error` already throws on the first grant, before it changes.
+    const normalized = itemIds.map(normalizeId);
     let changed = false;
-    for (const itemId of itemIds) {
-      const grant = this.#state.grants[normalizeId(itemId)];
+    for (const itemId of normalized) {
+      const grant = this.#state.grants[itemId];
       if (!grant) continue;
       const attempts = grant.sync.attempts + 1;
       const delaySeconds = Math.min(3600, 2 ** Math.min(attempts, 10) * 15);
