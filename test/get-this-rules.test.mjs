@@ -387,6 +387,10 @@ describe('"Get this": series ready season by season', { timeout: 60_000 }, () =>
     assert.equal(app.store.listAppRequests()[0][1].status, 'pending');
     assert.ok(app.requests.activeKeys('farmhouse').has(`tv:${T_TV}:2`));
     assert.ok(!app.requests.activeKeys('farmhouse').has(`tv:${T_TV}:1`));
+    // Refreshed meanwhile, it still waits for season 2.
+    now += 10 * 60 * 1000;
+    await app.requests.refresh();
+    assert.deepEqual([app.store.listAppRequests()[0][1].status, app.store.listAppRequests()[0][1].readySeasons], ['pending', [1]]);
     // Season 2 arrives later; the next refresh sees it.
     app.jellyfin.state.episodes.push(episode(2));
     now += 10 * 60 * 1000;

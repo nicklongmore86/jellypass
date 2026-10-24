@@ -77,6 +77,7 @@ export class GrantStore {
     this.#assertOpen();
     const migrated = migrateState(JSON.parse(text) as unknown);
     this.#state = migrated.state;
+    this.#appIndexCache = undefined;
     const lifted = liftRemovals(this.#state);
     // Requests already on grants (including ones recorded before handledRequestIds existed)
     // count as handled, so the backfill never re-imports one an administrator later removed.

@@ -789,15 +789,17 @@ requests; records of a call still running when it is deleted are added detached 
   settle-time read): when they take more than 2 seconds in all, its records appear later than an interest's would. A
   call waits for the caller's earlier calls' eligibility checks and Seerr requests (the per-user lock), and for other
   households' calls on the same title (the per-title queue), before its branches run: only its records can appear later
-  for it, never an answer. A join is applied to Jellyfin before its record is written.
+  for it, never an answer. A join is applied to Jellyfin before its record is written. Every state-file write serializes the whole state on
+  the event loop, as each JellyPass write always has; its cost grows with every household's grants and records
+  together, never with one title or one household's records.
 - **Quota.** A series is charged for every season asked for, as Seerr charges seasons named in a request; the app only
   offers seasons the series has (step 2b). Seasons the caller can already see are charged at the check and freed when
   the record is written, so asking for them can make a call ineligible that Seerr would have allowed. Later events
   reach the tally at the next refresh: Seerr frees the caller's own request the moment it is declined or its media is
   deleted, while an interest or join follows at the next refresh (10 minutes for a request's status, 6 hours for a
   completed record's media). A quota window longer than 400 days counts pruned virtual requests older than 400 days in
-  full once it reaches the oldest of them (stricter, never looser); lifetime quotas and windows up to 400 days are
-  exact. A record pruned into the ledger no longer follows its request or media (it is settled and past 400 days, or
+  full once it reaches the oldest of them (stricter, never looser), and so does any window once a member has more than
+  10,000 ledger entries for a media type; otherwise lifetime quotas and windows up to 400 days are exact. A record pruned into the ledger no longer follows its request or media (it is settled and past 400 days, or
   beyond the household's newest 2000 settled records): its unit stays counted (stricter).
 - **New seasons of a series Jellyfin has.** Seasons Jellyfin does not have are requested even when it has others
   (there is no other way to get them; these are genuine requests, not late ones), but their grant follows the join

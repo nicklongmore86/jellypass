@@ -597,9 +597,9 @@ function parseTitleOffThread(bytes: Uint8Array, route: string): Promise<SeerrTit
   return new Promise((resolve, reject) => {
     current.jobs.set(id, { resolve, reject, route });
     current.worker.ref();
-    // A copy made for the transfer, so the caller's view of the bytes stays whole.
-    const copy = bytes.slice();
-    current.worker.postMessage({ id, bytes: copy }, [copy.buffer]);
+    // Handed over, not copied: nothing reads the bytes here afterwards.
+    const whole = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength ? bytes : bytes.slice();
+    current.worker.postMessage({ id, bytes: whole }, [whole.buffer as ArrayBuffer]);
   });
 }
 
