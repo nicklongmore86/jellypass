@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { AccessService, accessTag } from '../dist/access-service.js';
@@ -50,6 +51,11 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
     const users = await client.getUsers();
     assert.ok(!item.Tags.includes(accessTag(fixture.itemId)));
     assert.ok(!user(users, fixture.bobId).Policy.BlockedTags.includes(accessTag(fixture.itemId)));
+  });
+
+  it('answers an unknown item ID with a 404, the only status JellyPass treats as a deleted item', async () => {
+    const unknownId = randomUUID().replaceAll('-', '');
+    await assert.rejects(client.getItem(unknownId), (error) => error.status === 404);
   });
 
   it('grants and revokes access on Jellyfin for an HD Now Available webhook', async () => {

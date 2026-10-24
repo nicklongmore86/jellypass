@@ -465,7 +465,8 @@ The UI contains four views:
 - **Library** — catalog search, filters, sorting, pagination, and bulk access
   assignment for up to 500 selected items.
 - **Grants** — active automated and manual grants, owners, groups, sync status,
-  dry-run plans, and revocation.
+  dry-run plans, revocation, and **Move** (remap a grant to another Jellyfin
+  item; see [A re-imported title is public](#a-re-imported-title-is-public-or-a-grant-is-orphaned)).
 - **Groups** — reusable audiences, household URLs, and optional Jellyfin user
   creation/import.
 
@@ -646,6 +647,43 @@ Confirm the group exists, its ID is DNS-safe, `HOUSEHOLD_DOMAIN` and
 `HOUSEHOLD_HOST_PREFIX` match the hostname, and the reverse proxy preserves the
 original `Host` header.
 
+### A re-imported title is public or a grant is orphaned
+
+When Jellyfin deletes and re-imports a title, the new copy gets a new item ID
+and the grant still points at the old one. Reconciliation recovers on its own:
+when Jellyfin answers `404` for a grant's item, JellyPass asks Seerr which item
+each of the grant's requests now resolves to (the 4K item for a 4K request and
+the HD item for an HD request, never the other) and moves the grant there. The
+requests, manual users and groups are merged into any grant already on the new
+item, including a manual one, so nobody loses access; the deleted item's tag is
+removed from user policies and the new item is made private. Requests stay
+handled, so the backfill does not import them again. Seerr re-sending
+`MEDIA_AVAILABLE` for the request triggers the same recovery. Only a definite
+`404` counts as deleted: network failures and `5xx` responses from Jellyfin or
+Seerr are retried with the usual backoff.
+
+If no request resolves to an existing item (Seerr still names the deleted item,
+the request was deleted, the grant is manual-only, or Seerr lookup is not
+configured), the grant is marked `orphaned`: it is kept, logged once as
+`grant orphaned`, shown with an `orphaned` status in Grants and
+`sync.state: "orphaned"` in `GET /v1/grants`, and counted by the
+`jfa_orphaned_grants` gauge rather than `jfa_sync_errors`. Scheduled
+reconciliation no longer retries it; a full reconcile (`POST /v1/reconcile`)
+tries again. Move it yourself with **Move** in Grants, or:
+
+```sh
+# Preview, then apply. The target item must exist; the old one may be gone.
+curl -fsS -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"toItemId":"NEW_ITEM_ID"}' 'http://127.0.0.1:8787/v1/grants/OLD_ITEM_ID/remap?dryRun=true'
+curl -fsS -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"toItemId":"NEW_ITEM_ID"}' http://127.0.0.1:8787/v1/grants/OLD_ITEM_ID/remap
+```
+
+A move uses the same merge as the automatic recovery. If the old item still
+exists it becomes public again. `jfa_grant_remaps_total` counts moves
+(`result="remapped"`) and new orphans (`result="orphaned"`) by `trigger`
+(`auto` or `admin`).
+
 ### Changes do not reach every user
 
 Open Grants, preview reconciliation, inspect the reported changes, and apply
@@ -664,6 +702,7 @@ blocked-tag policy.
 | `DELETE` | `/v1/grants/{itemId}/requests/{requestId}` | Revoke one request owner; supports `?dryRun=true`. |
 | `PUT` | `/v1/grants/{itemId}/groups` | Replace assigned groups; supports `?dryRun=true`. |
 | `PUT` | `/v1/grants/{itemId}/manual` | Set manual users/groups; supports `?dryRun=true`. |
+| `POST` | `/v1/grants/{itemId}/remap` | Move a grant to another Jellyfin item (`{"toItemId": "..."}`), merging with any grant already there; supports `?dryRun=true`. |
 | `GET` | `/v1/groups` | List groups and generated household URLs. |
 | `PUT` | `/v1/groups/{groupId}` | Create or replace a group. |
 | `DELETE` | `/v1/groups/{groupId}` | Delete a group and reconcile affected grants. |

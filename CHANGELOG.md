@@ -7,6 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A deleted and re-imported title kept its grant on the deleted item.** When
+  Jellyfin deleted a title and imported it again under a new item ID, the
+  request-derived grant kept pointing at the deleted item: reconciliation
+  failed on Jellyfin's `404` forever (backing off to hourly, with
+  `jfa_sync_errors` stuck), and the new item had no grant, so every household
+  could see it. Reconciliation (including a re-sent `MEDIA_AVAILABLE` webhook
+  for the request) now asks Seerr which item each of the grant's requests
+  resolves to, keeping 4K and HD items apart, and moves the grant there,
+  merging its requests, manual users and groups into any grant already on the
+  new item. The deleted item's tag is removed from user policies. Only a `404`
+  counts as deleted; network failures and `5xx` responses keep the usual retry.
+- A grant left with no requests or groups on a deleted item (for example after
+  revoking its last request) is now removed instead of failing on the `404`.
+
+### Added
+
+- **Orphaned grants.** A grant whose deleted item has no resolvable
+  replacement is marked `orphaned` (`sync.state` in `GET /v1/grants`, an
+  `orphaned` status in Grants) and logged once. It is kept, no longer retried
+  by scheduled reconciliation, and counted by the new `jfa_orphaned_grants`
+  gauge instead of `jfa_sync_errors`. A full `POST /v1/reconcile` tries it
+  again.
+- **`POST /v1/grants/{itemId}/remap`** (`{"toItemId": "..."}`, supports
+  `?dryRun=true`) and a **Move** action in Grants move a grant to another
+  Jellyfin item with the same merge. The target must exist; the source item may
+  already be gone, and if it still exists it becomes public again.
+- `jfa_grant_remaps_total{result="remapped"|"orphaned",trigger="auto"|"admin"}`.
+
 ## [2.1.1] - 2026-10-16
 
 This is a patch release. No configuration, API or state-file changes are

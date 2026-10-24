@@ -141,7 +141,11 @@ export interface AccessGroup {
 }
 
 export interface SyncStatus {
-  state: 'pending' | 'synced' | 'error';
+  /**
+   * `orphaned`: the grant's Jellyfin item was deleted and no replacement could be resolved from its Seerr requests.
+   * Scheduled reconciliation skips it (lastError says why) until an administrator remaps it or runs a full reconcile.
+   */
+  state: 'pending' | 'synced' | 'error' | 'orphaned';
   attempts: number;
   lastAttemptAt?: string;
   lastSuccessAt?: string;

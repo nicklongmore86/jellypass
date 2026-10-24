@@ -210,6 +210,13 @@ export function makeServer(
         const result = await service.setGrantGroups(validId(segments[2], 'itemId'), stringArray(body.groupIds, 'groupIds'), dryRun);
         return json(response, 200, { status: dryRun ? 'planned' : 'updated', result });
       }
+      if (request.method === 'POST' && segments.length === 4 && segments[0] === 'v1' && segments[1] === 'grants' && segments[3] === 'remap') {
+        const body = recordBody(await readJson(request));
+        const dryRun = url.searchParams.get('dryRun') === 'true';
+        const toItemId = validId(typeof body.toItemId === 'string' ? body.toItemId.trim() : undefined, 'toItemId');
+        const result = await service.remapGrant(validId(segments[2], 'itemId'), toItemId, dryRun);
+        return json(response, 200, { status: dryRun ? 'planned' : 'remapped', result });
+      }
       if (request.method === 'PUT' && segments.length === 4 && segments[0] === 'v1' && segments[1] === 'grants' && segments[3] === 'manual') {
         const body = recordBody(await readJson(request));
         const mediaType = typeof body.mediaType === 'string' && body.mediaType.trim() ? body.mediaType.trim() : undefined;
