@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
+import { readFile, writeFile } from 'node:fs/promises';
 import { describe, it, mock } from 'node:test';
 import { AccessService, ConflictError, OperationCancelledError, accessTag } from '../dist/access-service.js';
 import { makeServer } from '../dist/server.js';
@@ -55,7 +56,13 @@ function world() {
       users.find((user) => user.Id === userId).Policy = structuredClone(policy);
     },
   };
+  // Household "Add to my library" lookups: `${mediaType}/${tmdbId}` to the HD Jellyfin item Seerr links to the title.
+  const titles = new Map();
   const seerr = {
+    async getJellyfinItemId(mediaType, tmdbId) {
+      calls.push(`getJellyfinItemId:${mediaType}/${tmdbId}`);
+      return titles.get(`${mediaType}/${tmdbId}`);
+    },
     async getRequest(requestId) {
       calls.push(`getRequest:${requestId}`);
       const failure = failures.get(`seerr:${requestId}`);
@@ -71,6 +78,7 @@ function world() {
     items,
     requests,
     failures,
+    titles,
     calls,
     writes,
     addItem(id, tags = []) { items.set(id, { Id: id, Name: `Movie ${id}`, Type: 'Movie', Tags: tags }); },
@@ -550,8 +558,8 @@ describe('grants whose Jellyfin item was deleted and re-imported', { timeout: 10
     assert.equal(removed.error, undefined, String(removed.error));
     const restarted = new GrantStore(file);
     await restarted.load();
-    assert.ok(restarted.isManualAccessRemoved('item-new', 'userIds', 'dave-id'), 'the removal is stored');
-    assert.ok(!restarted.isManualAccessRemoved('item-old', 'userIds', 'dave-id'), 'for that item only');
+    assert.ok(restarted.isAccessRemoved('item-new', 'userIds', 'dave-id'), 'the removal is stored');
+    assert.ok(!restarted.isAccessRemoved('item-old', 'userIds', 'dave-id'), 'for that item only');
 
     // An administrator's explicit move, previewed or not, does not restore the user either.
     const preview = await service.remapGrant('item-old', 'item-new', true);
@@ -570,7 +578,7 @@ describe('grants whose Jellyfin item was deleted and re-imported', { timeout: 10
     const { w, store, service } = await failedManualApply(t);
     const removed = await quietly(() => service.setGrantGroups('item-new', []));
     assert.equal(removed.error, undefined, String(removed.error));
-    assert.ok(store.isManualAccessRemoved('item-new', 'groupIds', 'farmhouse'));
+    assert.ok(store.isAccessRemoved('item-new', 'groupIds', 'farmhouse'));
 
     const preview = await service.remapGrant('item-old', 'item-new', true);
     assert.deepEqual(preview.current.groupIds, []);
@@ -589,9 +597,9 @@ describe('grants whose Jellyfin item was deleted and re-imported', { timeout: 10
     await quietly(() => service.setGrantGroups('item-old', []));
     await store.setManualAccess({ itemId: 'item-old', userIds: [], groupIds: [] });
     assert.deepEqual([store.get('item-old').manualUserIds, store.get('item-old').groupIds], [[], []]);
-    assert.ok(store.isManualAccessRemoved('item-old', 'userIds', 'dave-id'));
-    assert.ok(!store.isManualAccessRemoved('item-new', 'userIds', 'dave-id'));
-    assert.ok(!store.isManualAccessRemoved('item-new', 'groupIds', 'farmhouse'));
+    assert.ok(store.isAccessRemoved('item-old', 'userIds', 'dave-id'));
+    assert.ok(!store.isAccessRemoved('item-new', 'userIds', 'dave-id'));
+    assert.ok(!store.isAccessRemoved('item-new', 'groupIds', 'farmhouse'));
 
     const { error } = await quietly(() => service.reconcileAll());
     assert.equal(error, undefined, String(error));
@@ -605,29 +613,29 @@ describe('grants whose Jellyfin item was deleted and re-imported', { timeout: 10
   it('clears a removal when an administrator assigns the manual user or group to the item again', async (t) => {
     const { store, service, file } = await failedManualApply(t);
     await quietly(() => service.setManualAccess({ itemId: 'item-new', userIds: ['bob-id'], groupIds: [] }));
-    assert.ok(store.isManualAccessRemoved('item-new', 'userIds', 'dave-id'));
-    assert.ok(store.isManualAccessRemoved('item-new', 'groupIds', 'farmhouse'));
+    assert.ok(store.isAccessRemoved('item-new', 'userIds', 'dave-id'));
+    assert.ok(store.isAccessRemoved('item-new', 'groupIds', 'farmhouse'));
     assert.deepEqual((await service.remapGrant('item-old', 'item-new', true)).current.manualUserIds, ['bob-id']);
 
     const readded = await quietly(() => service.setManualAccess({ itemId: 'item-new', userIds: ['dave-id'], groupIds: [] }));
     assert.equal(readded.error, undefined, String(readded.error));
-    assert.ok(!store.isManualAccessRemoved('item-new', 'userIds', 'dave-id'), 'assigning the user again clears its removal');
-    assert.ok(store.isManualAccessRemoved('item-new', 'userIds', 'bob-id'), 'the user taken off now is marked');
+    assert.ok(!store.isAccessRemoved('item-new', 'userIds', 'dave-id'), 'assigning the user again clears its removal');
+    assert.ok(store.isAccessRemoved('item-new', 'userIds', 'bob-id'), 'the user taken off now is marked');
     const regrouped = await quietly(() => service.setGrantGroups('item-new', ['farmhouse']));
     assert.equal(regrouped.error, undefined, String(regrouped.error));
-    assert.ok(!store.isManualAccessRemoved('item-new', 'groupIds', 'farmhouse'), 'assigning the group again clears its removal');
+    assert.ok(!store.isAccessRemoved('item-new', 'groupIds', 'farmhouse'), 'assigning the group again clears its removal');
     const restarted = new GrantStore(file);
     await restarted.load();
-    assert.ok(!restarted.isManualAccessRemoved('item-new', 'userIds', 'dave-id'));
-    assert.ok(!restarted.isManualAccessRemoved('item-new', 'groupIds', 'farmhouse'));
+    assert.ok(!restarted.isAccessRemoved('item-new', 'userIds', 'dave-id'));
+    assert.ok(!restarted.isAccessRemoved('item-new', 'groupIds', 'farmhouse'));
   });
 
   it('forgets a deleted group\'s removals, so a new group with the same ID starts unmarked', async (t) => {
     const { store, service } = await failedManualApply(t);
     await quietly(() => service.setGrantGroups('item-new', []));
-    assert.ok(store.isManualAccessRemoved('item-new', 'groupIds', 'farmhouse'));
+    assert.ok(store.isAccessRemoved('item-new', 'groupIds', 'farmhouse'));
     await quietly(() => service.deleteGroup('farmhouse'));
-    assert.ok(!store.isManualAccessRemoved('item-new', 'groupIds', 'farmhouse'));
+    assert.ok(!store.isAccessRemoved('item-new', 'groupIds', 'farmhouse'));
   });
 
   it('deletes an inactive grant whose item is gone instead of failing forever', async (t) => {
@@ -838,5 +846,259 @@ describe('admin grant remap', { timeout: 10_000 }, () => {
     assert.equal(body.status, 'remapped');
     assert.equal(body.result.current.itemId, 'item-new');
     assert.equal(store.get('item-old'), undefined);
+  });
+});
+
+/**
+ * Household library joins (removedAccess marks, from PR #25) and grant moves (revokedRequests and removal marks, from
+ * PR #24) share one per-item removal record; each path must honour every removal the other records.
+ */
+describe('removals across household library joins and grant moves', { timeout: 10_000 }, () => {
+  /** TMDB movie 603 is linked in Seerr to `itemId`. */
+  function join(service, w, userId, itemId = 'item-new') {
+    w.titles.set('movie/603', itemId);
+    return quietly(() => service.joinLibrary({ userId, isAdministrator: false, mediaType: 'movie', tmdbId: 603 }))
+      .then(({ value, error }) => {
+        assert.equal(error, undefined, String(error));
+        return value;
+      });
+  }
+
+  /**
+   * item-old has alice's request 7 (with House A), dave as a manual user and Farmhouse (carol); applying the move to
+   * item-new failed after it was merged, so that whole audience is on both grants. The state is kept in `file`.
+   */
+  async function staleCopy(t) {
+    const file = path.join(await makeTempDir(t, 'jellypass-removals-'), 'grants.json');
+    const w = world();
+    const store = await newStore(t, file);
+    const service = new AccessService(w.jellyfin, store, undefined, w.seerr);
+    w.addItem('item-old');
+    await store.grant({ itemId: 'item-old', requestId: '7', userId: 'alice-id', groupIds: ['house-a'] });
+    await store.setManualAccess({ itemId: 'item-old', userIds: ['dave-id'], groupIds: ['farmhouse', 'house-a'] });
+    await service.reconcileAll();
+    w.items.delete('item-old');
+    w.addItem('item-new');
+    w.request(7, { jellyfinMediaId: 'item-new' });
+    const updateItem = w.jellyfin.updateItem;
+    w.jellyfin.updateItem = async (item) => { throw httpError(`Jellyfin POST /Items/${item.Id} returned 500`, 500); };
+    const { error } = await quietly(() => service.reconcileAll());
+    assert.ok(error instanceof AggregateError, String(error));
+    w.jellyfin.updateItem = updateItem;
+    for (const itemId of ['item-old', 'item-new']) {
+      const grant = store.get(itemId);
+      assert.deepEqual([grant.requests, grant.manualUserIds, grant.groupIds], [{ 7: 'alice-id' }, ['dave-id'], ['farmhouse', 'house-a']]);
+    }
+    return { w, store, service, file };
+  }
+
+  it('(a) never re-adds a household removed by hand on an item, by library join or by a move onto it', async (t) => {
+    const { w, store, service } = await staleCopy(t);
+    const removed = await quietly(() => service.setGrantGroups('item-new', ['house-a']));
+    assert.equal(removed.error, undefined, String(removed.error));
+    assert.ok(store.isAccessRemoved('item-new', 'groupIds', 'farmhouse'));
+    // Bob joins Farmhouse afterwards, so he has no mark of his own: only the household's mark stops his join.
+    await store.upsertGroup({ id: 'farmhouse', name: 'Farmhouse', userIds: ['bob-id', 'carol-id'] });
+
+    assert.equal(await join(service, w, 'bob-id'), 'unchanged');
+    assert.deepEqual(store.get('item-new').groupIds, ['house-a']);
+    // Nor does an administrator's move, previewed or not, nor recovery, from the stale copy that still lists Farmhouse.
+    assert.deepEqual((await service.remapGrant('item-old', 'item-new', true)).current.groupIds, ['house-a']);
+    const { error } = await quietly(() => service.reconcileAll());
+    assert.equal(error, undefined, String(error));
+    assert.equal(store.get('item-old'), undefined);
+    assert.deepEqual(store.get('item-new').groupIds, ['house-a']);
+    assert.equal(await join(service, w, 'bob-id'), 'unchanged', 'nor after the move');
+    assert.deepEqual(store.get('item-new').groupIds, ['house-a']);
+    assert.deepEqual(w.blockedFrom(NEW_TAG), ['bob-id', 'carol-id']);
+  });
+
+  it('(b) keeps users and households removed before an automatic move from joining the new item', async (t) => {
+    const { w, store, service } = await reimported(t);
+    // Before item-old was deleted, an administrator gave it Farmhouse (carol) and dave, then took both off again.
+    w.addItem('item-old');
+    await quietly(() => service.setManualAccess({ itemId: 'item-old', userIds: ['dave-id'], groupIds: ['farmhouse', 'house-a'] }));
+    await quietly(() => service.setManualAccess({ itemId: 'item-old', userIds: [], groupIds: ['house-a'] }));
+    w.items.delete('item-old');
+    assert.deepEqual(store.getRemovals('item-old'), { userIds: ['carol-id', 'dave-id'], groupIds: ['farmhouse'] });
+
+    const { error } = await quietly(() => service.reconcileAll());
+    assert.equal(error, undefined, String(error));
+    assert.equal(store.get('item-old'), undefined);
+    assert.deepEqual(store.getRemovals('item-new'), { userIds: ['carol-id', 'dave-id'], groupIds: ['farmhouse'] }, 'the marks moved with the grant');
+
+    // Carol, Dave (in no household) and Bob, who joins Farmhouse only now, all try to add themselves.
+    await store.upsertGroup({ id: 'farmhouse', name: 'Farmhouse', userIds: ['bob-id', 'carol-id'] });
+    assert.equal(await join(service, w, 'carol-id'), 'unchanged');
+    assert.equal(await join(service, w, 'dave-id'), 'unchanged');
+    assert.equal(await join(service, w, 'bob-id'), 'unchanged');
+    // Carol, now in a new household of her own too, still joins nothing.
+    await store.upsertGroup({ id: 'cottage', name: 'Cottage', userIds: ['carol-id'] });
+    assert.equal(await join(service, w, 'carol-id'), 'unchanged');
+    const grant = store.get('item-new');
+    assert.deepEqual([grant.manualUserIds, grant.groupIds, grant.joins], [[], ['house-a'], undefined]);
+    assert.deepEqual(w.blockedFrom(NEW_TAG), ['bob-id', 'carol-id', 'dave-id']);
+  });
+
+  it('(c) joins only the caller\'s household to a moved grant and never touches the orphaned leftover', async (t) => {
+    const w = world();
+    const store = await newStore(t);
+    const service = new AccessService(w.jellyfin, store, undefined, w.seerr);
+    await store.upsertGroup({ id: 'neighbours', name: 'Neighbours', userIds: ['dave-id'] });
+    w.addItem('item-new');
+    await store.grant({ itemId: 'item-old', requestId: '7', userId: 'alice-id', groupIds: ['house-a'] });
+    await store.grant({ itemId: 'item-old', requestId: '8', userId: 'bob-id' });
+    await store.setManualAccess({ itemId: 'item-old', userIds: ['dave-id'], groupIds: ['house-a', 'neighbours'] });
+    // Request 7 resolves to item-new; request 8 still names the deleted item, so the grant is split.
+    w.request(7, { jellyfinMediaId: 'item-new' });
+    w.request(8, { jellyfinMediaId: 'item-old' }, { requestedBy: { jellyfinUserId: 'bob-id' } });
+    const { error } = await quietly(() => service.reconcileAll());
+    assert.equal(error, undefined, String(error));
+    const leftover = store.get('item-old');
+    assert.equal(leftover.sync.state, 'orphaned');
+    assert.deepEqual([leftover.requests, leftover.manualUserIds, leftover.groupIds], [{ 8: 'bob-id' }, ['dave-id'], ['neighbours']]);
+
+    assert.equal(await join(service, w, 'carol-id'), 'joined');
+    const moved = store.get('item-new');
+    assert.deepEqual([moved.requests, moved.manualUserIds, moved.groupIds], [{ 7: 'alice-id' }, [], ['farmhouse', 'house-a']]);
+    assert.deepEqual(moved.joins.map((entry) => [entry.userId, entry.groupIds]), [['carol-id', ['farmhouse']]]);
+    assert.deepEqual(w.blockedFrom(NEW_TAG), ['bob-id', 'dave-id'], 'only the caller\'s household gained access');
+
+    // A title Seerr still links to the deleted item joins nobody to the leftover, whose audience waits for an administrator.
+    assert.equal(await join(service, w, 'alice-id', 'item-old'), 'unchanged');
+    assert.equal(await join(service, w, 'carol-id', 'item-old'), 'unchanged');
+    assert.deepEqual(store.get('item-old'), leftover);
+  });
+
+  it('(d) lets joins and moves reach a user again once an administrator re-adds them by hand', async (t) => {
+    const { w, store, service } = await staleCopy(t);
+    await quietly(() => service.setManualAccess({ itemId: 'item-new', userIds: [], groupIds: ['farmhouse', 'house-a'] }));
+    assert.ok(store.isAccessRemoved('item-new', 'userIds', 'dave-id'));
+    assert.equal(await join(service, w, 'dave-id'), 'unchanged', 'dave is marked');
+    assert.deepEqual((await service.remapGrant('item-old', 'item-new', true)).current.manualUserIds, []);
+
+    // An administrator adds Neighbours, dave's household, by hand: that clears dave's mark.
+    await store.upsertGroup({ id: 'neighbours', name: 'Neighbours', userIds: ['dave-id'] });
+    const readded = await quietly(() => service.setGrantGroups('item-new', ['farmhouse', 'house-a', 'neighbours']));
+    assert.equal(readded.error, undefined, String(readded.error));
+    assert.ok(!store.isAccessRemoved('item-new', 'userIds', 'dave-id'));
+    // The stale copy's manual user moves again, and dave's own join adds his other household.
+    assert.deepEqual((await service.remapGrant('item-old', 'item-new', true)).current.manualUserIds, ['dave-id']);
+    const { error } = await quietly(() => service.reconcileAll());
+    assert.equal(error, undefined, String(error));
+    assert.deepEqual(store.get('item-new').manualUserIds, ['dave-id']);
+    await store.upsertGroup({ id: 'cottage', name: 'Cottage', userIds: ['bob-id', 'dave-id'] });
+    assert.equal(await join(service, w, 'dave-id'), 'joined');
+    assert.deepEqual(store.get('item-new').groupIds, ['cottage', 'farmhouse', 'house-a', 'neighbours']);
+    assert.deepEqual(w.blockedFrom(NEW_TAG), []);
+  });
+
+  it('(e) keeps a revoked request revoked when the grant moves, even when its requester tries a library join', async (t) => {
+    const { w, store, service } = await reimported(t);
+    w.addItem('item-old');
+    // Carol, in no household, had her own request 8 for the title; an administrator revoked it from item-old.
+    await store.upsertGroup({ id: 'farmhouse', name: 'Farmhouse', userIds: [] });
+    await store.grant({ itemId: 'item-old', requestId: '8', userId: 'carol-id' });
+    await quietly(() => service.revokeRequest('item-old', '8'));
+    w.items.delete('item-old');
+    w.request(8, { jellyfinMediaId: 'item-new' }, { requestedBy: { jellyfinUserId: 'carol-id' } });
+
+    const { error } = await quietly(() => service.reconcileAll());
+    assert.equal(error, undefined, String(error));
+    assert.equal(store.get('item-old'), undefined);
+    assert.ok(store.isRequestRevoked('8', 'item-new'), 'the revocation moved with the grant');
+    assert.ok(store.isAccessRemoved('item-new', 'userIds', 'carol-id'));
+    assert.equal(await join(service, w, 'carol-id'), 'unchanged');
+    // Nor does Seerr re-sending the request's MEDIA_AVAILABLE restore it.
+    const event = parseWebhook({ notificationType: 'MEDIA_AVAILABLE', event: 'Movie Request Now Available', media: { jellyfinMediaId: 'item-new', mediaType: 'movie' }, request: { id: '8', requestedBy: { jellyfinUserId: 'carol-id' } } });
+    assert.equal((await quietly(() => service.processWebhook(event))).value, null);
+    const grant = store.get('item-new');
+    assert.deepEqual([grant.requests, grant.manualUserIds, grant.groupIds], [{ 7: 'alice-id' }, [], ['house-a']]);
+    assert.ok(w.blocked('carol-id').includes(NEW_TAG));
+  });
+
+  it('(e) keeps a request revoked from the new item off it when the stale copy moves, despite a library join', async (t) => {
+    const { w, store, service } = await staleCopy(t);
+    // Carol, in no household, also requested the title (request 8); both copies record it.
+    await store.upsertGroup({ id: 'farmhouse', name: 'Farmhouse', userIds: [] });
+    await store.grant({ itemId: 'item-old', requestId: '8', userId: 'carol-id' });
+    await store.grant({ itemId: 'item-new', requestId: '8', userId: 'carol-id' });
+    w.request(8, { jellyfinMediaId: 'item-new' }, { requestedBy: { jellyfinUserId: 'carol-id' } });
+    const revoked = await quietly(() => service.revokeRequest('item-new', '8'));
+    assert.equal(revoked.error, undefined, String(revoked.error));
+    assert.equal(await join(service, w, 'carol-id'), 'unchanged');
+
+    assert.deepEqual((await service.remapGrant('item-old', 'item-new', true)).current.requests, { 7: 'alice-id' });
+    const { error } = await quietly(() => service.reconcileAll());
+    assert.equal(error, undefined, String(error));
+    // The revoked request goes nowhere, so the rest of the stale copy stays behind, orphaned, without it.
+    const leftover = store.get('item-old');
+    assert.deepEqual([leftover.requests, leftover.sync.state], [{}, 'orphaned']);
+    assert.equal(await join(service, w, 'carol-id'), 'unchanged', 'nor after the move');
+    assert.equal(await join(service, w, 'carol-id', 'item-old'), 'unchanged');
+    const grant = store.get('item-new');
+    assert.deepEqual([grant.requests, grant.manualUserIds], [{ 7: 'alice-id' }, ['dave-id']]);
+    assert.ok(store.isRequestRevoked('8', 'item-new'));
+    assert.ok(w.blocked('carol-id').includes(NEW_TAG));
+  });
+
+  it('(f) loads state files written by 2.1.1 and by each earlier development shape without losing a record', async (t) => {
+    const dir = await makeTempDir(t, 'jellypass-removal-shapes-');
+    const now = '2026-10-20T00:00:00.000Z';
+    const groups = { farmhouse: { id: 'farmhouse', name: 'Farmhouse', userIds: ['carol-id'], createdAt: now, updatedAt: now } };
+    const grant = (itemId, extra = {}) => ({
+      itemId, active: true, owners: ['alice-id'], requests: { 7: 'alice-id' }, manualUserIds: [], groupIds: [],
+      sync: { state: 'synced', attempts: 0 }, updatedAt: now, ...extra,
+    });
+    const base = { version: 7, groups, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: ['7', '8'] };
+    const join = { userId: 'carol-id', groupIds: ['farmhouse'], userAdded: false, joinedAt: now };
+    const shapes = {
+      // 2.1.1: no removal records at all.
+      'v2.1.1': { ...base, grants: { 'item-a': grant('item-a') } },
+      // Grant moves only: removals in the state, revoked requests, a split leftover.
+      moves: {
+        ...base,
+        grants: { 'item-a': grant('item-a', { remap: { splitTo: ['item-b'] }, sync: { state: 'orphaned', attempts: 0, lastError: 'split' } }) },
+        revokedRequests: { 8: ['item-a'] },
+        removedManualAccess: { 'item-a': { userIds: ['dave-id'], groupIds: ['farmhouse'] } },
+      },
+      // Library joins only: marks and joins on the grant.
+      joins: { ...base, grants: { 'item-a': grant('item-a', { joins: [join], removedUserIds: ['carol-id'], removedGroupIds: ['farmhouse'] }) } },
+      // Both, overlapping on the same item.
+      both: {
+        ...base,
+        grants: { 'item-a': grant('item-a', { joins: [join], removedUserIds: ['carol-id'], removedGroupIds: ['farmhouse'] }) },
+        revokedRequests: { 8: ['item-a'] },
+        removedManualAccess: { 'item-a': { userIds: ['dave-id'] }, 'item-gone': { groupIds: ['farmhouse'] } },
+      },
+    };
+    const expected = {
+      'v2.1.1': {},
+      moves: { 'item-a': { userIds: ['dave-id'], groupIds: ['farmhouse'] } },
+      joins: { 'item-a': { userIds: ['carol-id'], groupIds: ['farmhouse'] } },
+      both: { 'item-a': { userIds: ['carol-id', 'dave-id'], groupIds: ['farmhouse'] }, 'item-gone': { groupIds: ['farmhouse'] } },
+    };
+    for (const [name, state] of Object.entries(shapes)) {
+      const file = path.join(dir, `${name}.json`);
+      await writeFile(file, JSON.stringify(state));
+      for (const pass of ['first load', 'reload']) {
+        const store = new GrantStore(file);
+        await store.load();
+        const loaded = JSON.parse(await readFile(file, 'utf8'));
+        assert.equal(loaded.version, 7, `${name} ${pass}`);
+        assert.deepEqual(loaded.removedAccess ?? {}, expected[name], `${name} ${pass}: every removal mark is kept`);
+        for (const [itemId, removals] of Object.entries(expected[name])) assert.deepEqual(store.getRemovals(itemId), removals);
+        assert.equal(loaded.removedManualAccess, undefined, `${name} ${pass}`);
+        assert.equal('removedUserIds' in loaded.grants['item-a'] || 'removedGroupIds' in loaded.grants['item-a'], false);
+        assert.deepEqual(loaded.revokedRequests, state.revokedRequests, `${name} ${pass}`);
+        assert.equal(store.isRequestRevoked('8', 'item-a'), Boolean(state.revokedRequests));
+        const loadedGrant = store.get('item-a');
+        assert.deepEqual(loadedGrant.joins, state.grants['item-a'].joins, `${name} ${pass}: joins are kept`);
+        assert.deepEqual(loadedGrant.remap, state.grants['item-a'].remap);
+        assert.equal(loadedGrant.sync.state, state.grants['item-a'].sync.state);
+        assert.deepEqual(loadedGrant.requests, { 7: 'alice-id' });
+        assert.deepEqual(store.listGroups().map((group) => group.id), ['farmhouse']);
+      }
+    }
   });
 });

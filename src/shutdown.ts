@@ -105,8 +105,8 @@ function defaultLog(level: 'info' | 'error', message: string, fields: Record<str
 }
 
 /**
- * Runs background jobs (reconcile, backfill, catalog sync) under one AbortSignal, so shutdown can stop them from
- * starting further steps and wait for the ones in flight.
+ * Runs background jobs (reconcile, backfill, catalog sync, household library joins) under one AbortSignal, so shutdown
+ * can stop them from starting further steps and wait for the ones in flight.
  */
 export class BackgroundTasks {
   readonly #controller = new AbortController();
@@ -116,11 +116,16 @@ export class BackgroundTasks {
     return this.#controller.signal;
   }
 
-  /** Starts `task` unless stopped. The task handles its own errors; anything it lets escape is dropped. */
-  public run(task: (signal: AbortSignal) => Promise<void>): void {
-    if (this.signal.aborted) return;
-    const running = task(this.signal).catch(() => undefined).finally(() => this.#running.delete(running));
+  /**
+   * Starts `task` unless stopped, and returns a promise that settles (never rejects) when it does, or undefined when
+   * it was not started. The task handles its own errors; anything it lets escape is dropped.
+   */
+  public run(task: (signal: AbortSignal) => Promise<unknown>): Promise<void> | undefined {
+    if (this.signal.aborted) return undefined;
+    const running: Promise<void> = task(this.signal).then(() => undefined, () => undefined)
+      .finally(() => this.#running.delete(running));
     this.#running.add(running);
+    return running;
   }
 
   /** Aborts the signal and resolves once every running task has settled. */

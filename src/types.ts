@@ -25,6 +25,8 @@ export interface IgnoredWebhook {
 
 export interface SeerrRequest {
   id: number;
+  /** Seerr MediaRequestStatus: 1 pending, 2 approved, 3 declined, 4 failed, 5 completed. */
+  status?: number;
   type?: string;
   is4k?: boolean;
   createdAt?: string;
@@ -118,6 +120,8 @@ export interface GrantRecord {
   requests: Record<string, string>;
   manualUserIds: string[];
   groupIds: string[];
+  /** Household "Add to my library" joins that changed this grant, oldest first, for administrators to audit. */
+  joins?: LibraryJoin[];
   sync: SyncStatus;
   updatedAt: string;
   /** Set when moving the grant off its deleted Jellyfin item did not finish as a plain move (see GrantRemapNote). */
@@ -138,6 +142,14 @@ export interface GrantRemapNote {
   sourceReappeared?: { at: string; movedTo: string[] };
 }
 
+export interface LibraryJoin {
+  userId: string;
+  /** Households added to the grant; empty when the user, who belongs to none, was added as a manual user. */
+  groupIds: string[];
+  userAdded: boolean;
+  joinedAt: string;
+}
+
 export interface GrantState {
   version: 7;
   grants: Record<string, GrantRecord>;
@@ -152,22 +164,29 @@ export interface GrantState {
    */
   revokedRequests?: Record<string, string[]>;
   /**
-   * Manual users and groups an administrator removed from an item, by item ID (the counterpart of revokedRequests for
-   * the manual audience). Moving a grant (recovery or remap, dry runs included) never adds them to that item again, so
-   * a copy left on a stale grant cannot restore them; the same user or group on another item is unaffected. Assigning
-   * one to the item again as an administrator clears its entry, and deleting a group clears that group everywhere.
+   * What an administrator removed from each item, by item ID (see AccessRemovals): the one removal record that household
+   * library joins and grant moves (recovery or remap, dry runs included) both check, so neither adds a removed user or
+   * group to that item again. Webhooks and the request backfill never grant a handled request again, and a new request
+   * is a new grant decision (see GrantStore.grant).
    */
-  removedManualAccess?: Record<string, ManualAccessRemovals>;
+  removedAccess?: Record<string, AccessRemovals>;
 }
 
 /**
- * See GrantState.removedManualAccess. Kept in the state rather than on the grant so it outlives a grant that is purged
- * or replaced by a move. It is keyed by item, like grant-level removal marks for household library joins
- * (`removedUserIds` / `removedGroupIds`), so the two can later share one per-item record: `groupIds` matches
- * `removedGroupIds`; `userIds` holds only removed manual users, a subset of `removedUserIds`, which also marks users who
- * lost access another way. Merges and joins would then both read that one record.
+ * See GrantState.removedAccess. Kept in the state rather than on the grant so it outlives a grant that is purged or
+ * replaced by a move.
+ *
+ * - `groupIds`: groups an administrator removed from the item. No join or move adds them again.
+ * - `userIds`: users an administrator's change took access from: a removed manual user, a revoked request's requester,
+ *   each member of a removed household who had no other access. A marked user's own joins change nothing, and no move
+ *   adds them as a manual user again.
+ *
+ * An administrator assigning a group to the item again clears its mark; assigning a user as a manual user, or adding a
+ * household they belong to, clears theirs. Deleting a group clears that group everywhere. When a grant moves to a new
+ * item, its marks follow it there, except for users and groups the new item's grant already gave access to on its own
+ * (see GrantStore.mergeGrants).
  */
-export interface ManualAccessRemovals {
+export interface AccessRemovals {
   userIds?: string[];
   groupIds?: string[];
 }
