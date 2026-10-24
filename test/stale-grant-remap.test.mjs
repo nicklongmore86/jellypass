@@ -1595,3 +1595,95 @@ describe('administrator writes that fail before storing leave everything as it w
     await assertFailsUntouched(w, store, file, () => service.remapGrant('item-old', 'item-new'), /still exists|exists/, 'source still exists');
   });
 });
+
+/** A dry run works on its own copy of the state: whatever happens to it, or around it, the real state is untouched. */
+describe('dry runs are isolated from the stored state', { timeout: 10_000 }, () => {
+  const move = { itemId: 'item-new', requests: { 11: 'alice-id' }, manualUserIds: ['bob-id'], groupIds: ['cottage'], mediaType: 'movie' };
+
+  /** Runs every store preview once, with changes that differ from anything stored. */
+  function previewAll(store) {
+    return {
+      manual: store.previewManualAccessBatch([
+        { itemId: 'item-1', userIds: ['bob-id'], groupIds: ['cottage'] },
+        { itemId: 'item-2', userIds: ['dave-id'], groupIds: [] },
+      ]),
+      groups: store.previewGrantGroups('item-1', ['cottage']),
+      revoke: store.previewRevokeRequest('item-1', '7'),
+      merge: store.previewMerge('item-old', move),
+    };
+  }
+
+  it('a preview while a real write is paused or queued changes neither the real nor the stored state', async (t) => {
+    const { w, store, service, file } = await administered(t);
+    const updatePolicy = w.jellyfin.updatePolicy;
+    let reached;
+    const paused = new Promise((resolve) => { reached = resolve; });
+    let release;
+    const gate = new Promise((resolve) => { release = resolve; });
+    w.jellyfin.updatePolicy = async (...args) => {
+      reached();
+      await gate;
+      return updatePolicy(...args);
+    };
+    const write = quietly(() => service.setManualAccess({ itemId: 'item-1', userIds: ['dave-id'], groupIds: ['house-a'] }));
+    await paused;
+    // The write is stored and paused applying it; a service dry run queues behind it.
+    const during = await snapshot(store, file);
+    assert.deepEqual(store.get('item-1').manualUserIds, ['dave-id']);
+    const queued = service.setGrantGroups('item-1', ['cottage'], true);
+    const previews = previewAll(store);
+    assert.deepEqual(previews.manual[0].current.groupIds, ['cottage']);
+    assert.deepEqual(await snapshot(store, file), during, 'previews while the write is paused change nothing');
+    release();
+    const { error } = await write;
+    assert.equal(error, undefined, String(error));
+    const dryRun = await queued;
+    const stored = store.get('item-1');
+    assert.deepEqual(dryRun.previous, stored, 'the queued dry run plans from the written and applied grant');
+    const after = await snapshot(store, file);
+    assert.equal(after.disk, after.memory);
+    assert.deepEqual([stored.manualUserIds, stored.groupIds, stored.sync.state], [['dave-id'], ['house-a'], 'synced']);
+    assert.deepEqual(store.get('item-2'), undefined);
+    assert.deepEqual(store.get('item-old'), during.grants.find((grant) => grant.itemId === 'item-old'));
+    assert.deepEqual(JSON.parse(after.disk).grants['item-1'], stored);
+  });
+
+  it('changing what a preview returns does not change the real state', async (t) => {
+    const { store, service, file } = await administered(t);
+    const before = await snapshot(store, file);
+    const previews = previewAll(store);
+    const dryRun = await service.setManualAccess({ itemId: 'item-1', userIds: ['dave-id'], groupIds: ['house-a'] }, true);
+    const grants = [
+      ...previews.manual.flatMap((result) => [result.previous, result.current]),
+      previews.groups.previous, previews.groups.current,
+      previews.revoke.previous, previews.revoke.current,
+      previews.merge,
+      dryRun.previous, dryRun.current,
+    ].filter(Boolean);
+    for (const grant of grants) {
+      grant.manualUserIds.push('erin-id');
+      grant.groupIds.push('nowhere');
+      grant.owners.push('erin-id');
+      grant.requests['99'] = 'erin-id';
+      delete grant.requests['7'];
+      grant.joins?.push({ userId: 'erin-id', groupIds: [], joinedAt: new Date(0).toISOString() });
+      if (grant.joins?.[0]) grant.joins[0].userId = 'erin-id';
+      grant.sync.state = 'error';
+      grant.active = false;
+    }
+    assert.deepEqual(await snapshot(store, file), before);
+  });
+
+  it('a preview that throws leaves the state as it was', async (t) => {
+    const { store, file } = await administered(t);
+    const before = await snapshot(store, file);
+    // The first item is changed on the copy before the second one throws.
+    assert.throws(() => store.previewManualAccessBatch([
+      { itemId: 'item-1', userIds: ['dave-id'], groupIds: [] },
+      { itemId: 'item-2', userIds: [], groupIds: ['nowhere'] },
+    ]), /group not found/);
+    assert.throws(() => store.previewGrantGroups('item-1', ['nowhere']), /group not found/);
+    assert.throws(() => store.previewMerge('item-gone', { ...move, itemId: 'item-1' }), /grant not found/);
+    assert.deepEqual(await snapshot(store, file), before);
+  });
+});
