@@ -2,14 +2,14 @@
 
 ## Status
 
-Step 1a of 4 (read API). Step 0 added the acting-user Seerr client (`SeerrMemberClient` in `src/seerr.ts`), the
+Step 1b of 4 (read API and read-only PWA). Step 0 added the acting-user Seerr client (`SeerrMemberClient` in `src/seerr.ts`), the
 Jellyfin-to-Seerr user map (`SeerrUserMap` in `src/seerr-users.ts`), recorded-shape Seerr fixtures with canaries, and a
 real-Seerr test. Step 1a serves the read-only app API (`HouseholdApp` in `src/app-api.ts`, see "App API (step 1a)"):
 who the caller is, search, discover, and movie, series and season details, each title with its household state. Titles
 come from TMDB (`TmdbClient` in `src/tmdb.ts`, `TMDB_API_KEY`; see "Catalogue source"), which replaced step 0's Seerr
 catalogue client and its `SEERR_CATALOGUE_USER_ID` before either was released. The app API is off unless
-`HOUSEHOLD_APP_ENABLED` is true. There is no app page yet (step 1b). This document is the contract the later steps are
-built and reviewed against.
+`HOUSEHOLD_APP_ENABLED` is true. Step 1b serves the read-only PWA over it at `/jellypass/app/` (see "App page (step
+1b)"); it has no "Get this" yet (step 2). This document is the contract the later steps are built and reviewed against.
 
 ## Goal
 
@@ -124,8 +124,11 @@ So `TmdbClient` (`src/tmdb.ts`) reads TMDB's v3 API directly, with JellyPass's o
 - **Images** are TMDB's own `poster_path` and `backdrop_path` through the existing allowlisted image URLs
   (`https://image.tmdb.org/t/p/{w342,w780}` plus a file name matching `^/[A-Za-z0-9_-]{1,100}\.(jpg|jpeg|png|webp)$`).
 - **Attribution.** TMDB's API terms require attribution: the README carries TMDB's notice ("This product uses the TMDB
-  API but is not endorsed or certified by TMDB"). Step 1a has no page to show it on; step 1b's app must show that
-  notice with TMDB's approved logo in an About or Credits section.
+  API but is not endorsed or certified by TMDB"). Step 1b's About & credits screen shows TMDB's
+  notice (the wording on TMDB's API terms page: "This product uses TMDB and the TMDB APIs but is not endorsed,
+  certified, or otherwise approved by TMDB.") with TMDB's logo, bundled locally and unmodified (the primary short blue
+  logo from TMDB's Logos & Attribution page), and a link to themoviedb.org. The logo is shown small, on that screen
+  only, so it is less prominent than JellyPass's own name, as the terms require.
 - **Rate limit.** All households share one TMDB credential, so one TMDB rate limit. TMDB calls go through a fair
   dispatcher kept well under it, with a turn for each household (see "Shared upstreams").
 
@@ -352,6 +355,66 @@ free, and a call can wait out its 10 seconds). Neither says which titles another
 key for JellyPass alone.
 
 
+## App page (step 1b)
+
+The read-only PWA is served by the household gateway at `/jellypass/app/`, on household hosts only and only with
+`HOUSEHOLD_APP_ENABLED=true`. With the app off, on the administrator host, and on a host for no household, every
+`/jellypass/app` path answers what it did before: a fixed `404` on household hosts, and the admin API's own answer
+elsewhere; the files are never proxied to Jellyfin.
+
+- **Source and build.** Plain TypeScript, HTML and CSS: no framework and no bundler. The client (`app/src/*.ts`) is
+  compiled by `tsc` alone (`tsconfig.app.json`: DOM libraries, ES modules) to `dist/app/js`, and `scripts/build-app.mjs`
+  copies the static files (`app/static`: page, stylesheet, manifest, service worker, icons, TMDB logo) beside it. The
+  server reads `dist/app` once at startup (`src/app-assets.ts`) and refuses to start the app if it is missing. The
+  Dockerfile builds it with the rest. `scripts/make-app-icons.py` regenerates the PNG icons (Pillow; the PNGs are
+  committed). The only new dependency is `linkedom`, a dev dependency, for DOM-level tests.
+- **Routing.** One page, with screens chosen by the URL hash (`#/`, `#/search?q=`, `#/movie/:id`, `#/tv/:id`,
+  `#/tv/:id/season/:n`, `#/about`), so the server needs no fallback route and a deep link is just the page.
+- **Sign-in.** The page sits on the household host next to the proxied Jellyfin web client, so it reads the access token
+  Jellyfin web keeps in `localStorage` (`jellyfin_credentials`, the same read as `/jellypass/add`) and sends it as
+  `Authorization: MediaBrowser Token="..."` to `/jellypass/app/v1/*`, with `credentials: omit` and `cache: no-store`.
+  The app writes nothing to browser storage. With no token, or a `401`, it shows a fixed "Sign in" state linking to
+  `/web/`; it carries on by itself when the token appears (a `storage` event, the page being shown again, or opened
+  again). Jellyfin web has no return address, so there is no automatic redirect back; the state says to come back from
+  the home screen. `GET /me` provides the name and household shown in the header. The manifest's `scope` is `/` (its
+  `start_url` is the app), not `/jellypass/app/`: an installed iOS web app keeps its storage apart from Safari's, and a
+  link out of its scope opens in an in-app Safari view, so a Jellyfin sign-in made there would never reach the app.
+  Within scope, Jellyfin web's sign-in and the page **Play** opens stay in the installed app and share its storage.
+  Only the service worker is limited to `/jellypass/app/`. This is unverified on a real iPhone (see "Not in this
+  step").
+- **Screens.** Home (four rows of 20 titles, each row loaded and failing on its own), Search (debounced 300 ms, one call
+  per pause, previous calls aborted, **Load more** by the API's `nextPage`, query kept in the address), movie page,
+  series page with a seasons list (each season's state) and a season page with its episodes, About & credits.
+- **States.** Shown exactly as the DTO says, coarsely: `in_library` is "In your library" with a **Play** button (only
+  when `play.url` is exactly the household host's own `/web/#/details?id=<itemId>`), `get_this` is "Available to request
+  soon" (informational: there is no request button until step 2, and the wording says nothing about other households),
+  `unavailable` is "Can't request", and `requested` (never answered yet) is "Requested". Nothing is shown that is not
+  a DTO field.
+- **Rendering.** Every string is a fixed one or a DTO field set with `textContent`; no HTML is ever parsed (no
+  `innerHTML`). Image URLs are re-checked against the allowlisted TMDB pattern before use. Errors are three fixed
+  states, plus offline: `401` "Sign in to continue", `429` "Too many requests", `502` "Can't load this right now", and
+  a `404` "Not found"; none shows upstream text.
+- **Headers.** Every app file: `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self';
+  img-src 'self' https://image.tmdb.org; connect-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none';
+  form-action 'none'; frame-ancestors 'none'`; `X-Content-Type-Options: nosniff`; `Referrer-Policy: no-referrer`;
+  `X-Frame-Options: DENY`; `Cross-Origin-Opener-Policy` and `Cross-Origin-Resource-Policy: same-origin`; a deny-all
+  `Permissions-Policy`. `Cache-Control: no-cache` plus an `ETag` (304 on match) for the page, script, styles, manifest
+  and service worker; `public, max-age=604800` for icons and the logo. The HTML is identical for every caller and
+  carries no user data (tested), so it is not `no-store`; the API stays `no-store`.
+- **Service worker** (`sw.js`, scope `/jellypass/app/`). It precaches and serves only the app's own static files (the
+  exact list in `sw.js`, which a test compares with the files served), network first, falling back to its copy when
+  the network fails, and keeps only successful same-origin answers. Everything else, and in particular anything under
+  `/jellypass/app/v1/`, other origins (TMDB images), non-`GET` requests and every other path, is not handled by the worker
+  at all, so it is never cached or answered offline (tested by running the worker against a fake browser).
+- **Accessibility and layout.** Semantic landmarks (header, main, labelled nav), a skip link, a labelled search field,
+  focus moved to each screen's heading, polite status announcements, scrollable rows reachable by keyboard, `:focus-visible`
+  outlines, 44 px touch targets, text and badge colours checked at WCAG AA contrast by a test, `prefers-reduced-motion`,
+  safe-area insets and `viewport-fit=cover` for notched phones, and posters and backdrops with size attributes and an
+  aspect-ratio frame so nothing shifts as images load (posters below the fold load lazily).
+- **Not in this step:** a link from Jellyfin web back to the app (the sign-in page could carry one through the branding
+  configuration the gateway already rewrites), a check on a real iPhone of the install and sign-in flow, any request action ("Get this", step 2), the user's own requests, the Seerr cut-over (step 4),
+  notifications, and a Jellyfin sign-in that returns to the app.
+
 ### Leak channels in step 1a
 
 | Channel | How step 1a closes it |
@@ -514,8 +577,8 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
 
 0. **Foundation**: member client, user map, fixtures with canaries, real-Seerr test, this document.
 1. **Read API**: (1a, done) identity chain, search, discover, title details with household states, as allowlist DTOs
-   tested with `assertNoCanaries` and byte-for-byte indistinguishability tests; (1b) the PWA's read-only screens over
-   it. Endpoints for the caller's own requests and quota are not in 1a; they come with step 2, which needs them.
+   tested with `assertNoCanaries` and byte-for-byte indistinguishability tests; (1b, done) the PWA's read-only screens
+   over it (see "App page (step 1b)"). Endpoints for the caller's own requests and quota are not in 1a; they come with step 2, which needs them.
 2. **"Get this"**: the uniform background action above, with the household attribution record (see "Requested and
    households").
 3. **PWA**: the household app itself, served on household hosts.
@@ -630,6 +693,20 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
   a place still refused beyond the lane bound, timed out after their wait, or forgotten when their caller gives up.
   `test/tmdb-client.test.mjs` checks that a `429` carries TMDB's `Retry-After` (seconds or a date) and nothing else,
   and that each call is abandoned at once when its caller's signal aborts.
+- **App page.** `test/app-pwa.test.mjs`: the page and every file serve on household hosts only, with no credentials and
+  without any call to Jellyfin, Seerr or TMDB, the same bytes to everyone; with the app off, on the admin host (with and
+  without its credentials) and on an unknown household host every app path answers exactly like any other unknown path;
+  HEAD, `ETag` and 304; the exact CSP and security headers on every file and the cache rule for each kind; the page has
+  no inline script or style, no handler attribute and no outside address, a manifest with real PNG icons in scope; the
+  client code uses no HTML parsing, `eval` or browser storage writes; stylesheet colour pairs at AA contrast; the service
+  worker (run against a fake browser) precaches exactly the files served, never handles the API or other origins or
+  methods, caches only static paths, is network first with a copy as fallback and never keeps a failed answer; DOM
+  rendering with linkedom of each state to its badge and Play link (a Play link or image URL that is not the household's
+  or TMDB's is dropped, markup in text is inert), series, seasons and episodes, each fixed error, and the About screen;
+  and the real client modules run against the real API on the test server (home rows, a movie, series, season, search
+  with debounce and Load more, signed out and signing in, 401, 429, 502 and 404), serializing the page after each screen
+  to `assertNoCanaries`. `pnpm test:real` also loads the page from a real Jellyfin 10.11.3 household and checks that the
+  sign-in the app sends is accepted.
 - **App mutation checks.** Each of these fails at least one app or client test: spreading the TMDB movie into a DTO;
   paging from `total_pages`; putting `unavailable` before `in_library`; ignoring the blocklist or request permission;
   matching the blocklist without its media type; leaving seasons `get_this` when the series cannot be requested;

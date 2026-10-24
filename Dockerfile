@@ -1,8 +1,10 @@
 FROM node:24-alpine AS build
 WORKDIR /app
-COPY package.json pnpm-lock.yaml tsconfig.json ./
+COPY package.json pnpm-lock.yaml tsconfig.json tsconfig.app.json ./
 RUN corepack enable && pnpm install --frozen-lockfile
 COPY src ./src
+COPY app ./app
+COPY scripts/build-app.mjs ./scripts/build-app.mjs
 RUN pnpm build
 
 FROM node:24-alpine
