@@ -747,8 +747,8 @@ export class AccessService {
    */
   async #recoverMissingItem(grant: GrantRecord, signal?: AbortSignal): Promise<ChangePlan[]> {
     try {
-      const targets = await this.#resolveRequestTargets(grant, signal);
-      if (targets.size === 0) {
+      const { targets, revoked } = await this.#resolveRequestTargets(grant, signal);
+      if (targets.size === 0 && revoked.size === 0) {
         const reason = !this.#seerr
           ? 'Jellyfin item was deleted and Seerr lookup is not configured to find its replacement'
           : Object.keys(grant.requests).length === 0
@@ -759,8 +759,8 @@ export class AccessService {
         if (newlyOrphaned) this.#logOrphaned(grant.itemId, reason);
         return [];
       }
-      const { moves, remainder } = this.#partitionMove(grant, targets);
-      const currents = await this.#store.mergeGrants(grant.itemId, moves);
+      const { moves, remainder } = this.#partitionMove(grant, targets, revoked);
+      const currents = moves.length > 0 ? await this.#store.mergeGrants(grant.itemId, moves) : [];
       throwIfAborted(signal);
       const plans: ChangePlan[] = [];
       for (const current of currents) plans.push(await this.#reconcileGrant(current, signal));
@@ -811,13 +811,19 @@ export class AccessService {
    * requesters' households (the groups webhooks and the backfill would assign, limited to groups the grant already
    * had), and the rest (unresolved requests, manual users, groups attributable to no moved request, and the unresolved
    * requesters' households) is the `remainder`, kept on the stale grant as orphaned for an administrator to resolve.
+   * A request an administrator revoked from the item it resolves to (`revoked`, see GrantState.revokedRequests) goes
+   * nowhere: it is dropped from the stale grant, and the whole audience never moves with the others.
    */
-  #partitionMove(grant: GrantRecord, targets: Map<string, Record<string, string>>): { moves: GrantMove[]; remainder?: GrantRemainder } {
+  #partitionMove(
+    grant: GrantRecord,
+    targets: Map<string, Record<string, string>>,
+    revoked: Map<string, Record<string, string>>,
+  ): { moves: GrantMove[]; remainder?: GrantRemainder } {
     const mediaType = grant.mediaType ? { mediaType: grant.mediaType } : {};
-    const resolved = new Set([...targets.values()].flatMap((requests) => Object.keys(requests)));
-    const unresolved = Object.fromEntries(Object.entries(grant.requests).filter(([requestId]) => !resolved.has(requestId)));
+    const settled = new Set([...targets.values(), ...revoked.values()].flatMap((requests) => Object.keys(requests)));
+    const unresolved = Object.fromEntries(Object.entries(grant.requests).filter(([requestId]) => !settled.has(requestId)));
     const [only] = targets;
-    if (targets.size === 1 && only && Object.keys(unresolved).length === 0 && !grant.remap?.splitTo) {
+    if (targets.size === 1 && only && Object.keys(unresolved).length === 0 && revoked.size === 0 && !grant.remap?.splitTo) {
       return { moves: [{ itemId: only[0], requests: only[1], manualUserIds: grant.manualUserIds, groupIds: grant.groupIds, ...mediaType }] };
     }
     const households = (requests: Record<string, string>): string[] => [...new Set(Object.values(requests)
@@ -831,8 +837,10 @@ export class AccessService {
     if (Object.keys(unresolved).length === 0 && grant.manualUserIds.length === 0 && groupIds.length === 0) return { moves };
     const reason = Object.keys(unresolved).length > 0
       ? 'Jellyfin item was deleted; its requests that resolve to no existing Jellyfin item were kept here, with manual users and groups not attributable to the items its other requests moved to'
-      : 'Jellyfin item was deleted and its requests moved to other items; manual users and groups not attributable to one of them were kept here';
-    const movedTo = moves.map((move) => move.itemId);
+      : moves.length > 0
+        ? 'Jellyfin item was deleted and its requests moved to other items; manual users and groups not attributable to one of them were kept here'
+        : 'Jellyfin item was deleted and its requests were revoked from the items they resolve to; its manual users and groups were kept here';
+    const movedTo = [...new Set([...moves.map((move) => move.itemId), ...revoked.keys()])].sort();
     return { moves, remainder: { requests: unresolved, manualUserIds: grant.manualUserIds, groupIds, reason, movedTo } };
   }
 
@@ -890,10 +898,17 @@ export class AccessService {
     }
   }
 
-  /** The existing items the grant's requests now resolve to (never its own deleted item), with the requests for each. */
-  async #resolveRequestTargets(grant: GrantRecord, signal?: AbortSignal): Promise<Map<string, Record<string, string>>> {
+  /**
+   * The existing items the grant's requests now resolve to (never its own deleted item), with the requests for each:
+   * `targets`, or `revoked` for a request an administrator revoked from that item.
+   */
+  async #resolveRequestTargets(grant: GrantRecord, signal?: AbortSignal): Promise<{
+    targets: Map<string, Record<string, string>>;
+    revoked: Map<string, Record<string, string>>;
+  }> {
     const targets = new Map<string, Record<string, string>>();
-    if (!this.#seerr) return targets;
+    const revoked = new Map<string, Record<string, string>>();
+    if (!this.#seerr) return { targets, revoked };
     const exists = new Map<string, boolean>();
     for (const [requestId, userId] of Object.entries(grant.requests)) {
       throwIfAborted(signal);
@@ -909,13 +924,17 @@ export class AccessService {
       const resolved = requestItemId(request);
       const itemId = resolved ? normalizeId(resolved) : undefined;
       if (!itemId || itemId === grant.itemId) continue;
+      if (this.#store.isRequestRevoked(requestId, itemId)) {
+        revoked.set(itemId, { ...revoked.get(itemId), [requestId]: userId });
+        continue;
+      }
       if (!exists.has(itemId)) {
         exists.set(itemId, await this.#itemExists(itemId));
         throwIfAborted(signal);
       }
       if (exists.get(itemId)) targets.set(itemId, { ...targets.get(itemId), [requestId]: userId });
     }
-    return targets;
+    return { targets, revoked };
   }
 
   async #itemExists(itemId: string): Promise<boolean> {

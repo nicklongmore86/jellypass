@@ -684,7 +684,14 @@ is kept intact with its restrictions, shown with a `source reappeared` status in
 Grants (`remap.sourceReappeared` in `GET /v1/grants`), logged as
 `grant source reappeared` and counted as `result="source_reappeared"`; the new
 grants stay applied. Revoke whichever grant is no longer needed.
-Requests stay handled, so the backfill does not import them again. Seerr re-sending
+Requests stay handled, so the backfill does not import them again.
+
+Until a move finishes (for example when applying the new item failed), a
+request can be on both the old and the new grant. Revoking it in **Requests**
+revokes it from that item only, and is remembered: no later recovery or
+**Move** adds that request to that item again, so a copy left on the old
+grant cannot restore it (the copy is dropped instead). A new Seerr request for
+the title has its own ID and is granted as usual. Seerr re-sending
 `MEDIA_AVAILABLE` for the request triggers the same recovery. Only a definite
 `404` counts as deleted: network failures and `5xx` responses from Jellyfin or
 Seerr are retried with the usual backoff.

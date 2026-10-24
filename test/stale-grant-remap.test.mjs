@@ -445,6 +445,77 @@ describe('grants whose Jellyfin item was deleted and re-imported', { timeout: 10
     assert.deepEqual(w.blockedFrom(OLD_TAG), [], 'the deleted item\'s tag is cleared once the move finished');
   });
 
+  /**
+   * Alice's request 7 on the deleted item-old (no households) resolves to item-new, but applying item-new fails after
+   * the merge was stored, so the request is on both grants until the next run.
+   */
+  async function failedApply(t) {
+    const w = world();
+    const store = await newStore(t);
+    const service = new AccessService(w.jellyfin, store, undefined, w.seerr);
+    w.addItem('item-old');
+    await store.grant({ itemId: 'item-old', requestId: '7', userId: 'alice-id' });
+    await service.reconcileAll();
+    w.items.delete('item-old');
+    w.addItem('item-new');
+    w.request(7, { jellyfinMediaId: 'item-new' });
+    const updateItem = w.jellyfin.updateItem;
+    w.jellyfin.updateItem = async (item) => { throw httpError(`Jellyfin POST /Items/${item.Id} returned 500`, 500); };
+    const { error } = await quietly(() => service.reconcileAll());
+    assert.ok(error instanceof AggregateError, String(error));
+    w.jellyfin.updateItem = updateItem;
+    assert.deepEqual(store.get('item-old').requests, { 7: 'alice-id' });
+    assert.deepEqual(store.get('item-new').requests, { 7: 'alice-id' });
+    return { w, store, service };
+  }
+
+  it('never restores a request an administrator revoked from the target from the stale copy on the source', async (t) => {
+    const { w, store, service } = await failedApply(t);
+    const revoked = await quietly(() => service.revokeRequest('item-new', '7'));
+    assert.equal(revoked.error, undefined, String(revoked.error));
+    assert.equal(store.get('item-new'), undefined, 'the emptied target grant is purged');
+
+    const { error } = await quietly(() => service.reconcileAll());
+    assert.equal(error, undefined, String(error));
+    assert.equal(store.get('item-new'), undefined, 'recovery does not recreate the revoked request');
+    assert.equal(store.findGrantForRequest('7'), undefined);
+    assert.equal(store.get('item-old'), undefined, 'the stale copy is dropped');
+    assert.deepEqual(w.tags('item-new'), []);
+    assert.deepEqual(w.blockedFrom(OLD_TAG), []);
+
+    // An administrator's explicit move does not restore it either.
+    await store.grant({ itemId: 'item-gone', requestId: '7', userId: 'alice-id' });
+    const preview = await service.remapGrant('item-gone', 'item-new', true);
+    assert.deepEqual(preview.current.requests, {});
+  });
+
+  it('keeps the target\'s copy when the request is revoked from the stale source only', async (t) => {
+    const { w, store, service } = await failedApply(t);
+    const revoked = await quietly(() => service.revokeRequest('item-old', '7'));
+    assert.equal(revoked.error, undefined, String(revoked.error));
+    assert.equal(store.get('item-old'), undefined);
+
+    const { error } = await quietly(() => service.reconcileAll());
+    assert.equal(error, undefined, String(error));
+    assert.deepEqual(store.get('item-new').requests, { 7: 'alice-id' }, 'a revoke is scoped to the item it was made on');
+    assert.equal(store.get('item-new').sync.state, 'synced');
+    assert.deepEqual(w.blockedFrom(NEW_TAG), ['bob-id', 'carol-id', 'dave-id']);
+  });
+
+  it('still grants a genuine new Seerr request for the title after the old one was revoked', async (t) => {
+    const { w, store, service } = await failedApply(t);
+    await quietly(() => service.revokeRequest('item-new', '7'));
+    await quietly(() => service.reconcileAll());
+    assert.equal(store.get('item-new'), undefined);
+
+    const event = parseWebhook({ notificationType: 'MEDIA_AVAILABLE', event: 'Movie Request Now Available', media: { jellyfinMediaId: 'item-new', mediaType: 'movie' }, request: { id: '8', is4k: false, requestedBy: { jellyfinUserId: 'alice-id' } } });
+    const { value, error } = await quietly(() => service.processWebhook(event));
+    assert.equal(error, undefined, String(error));
+    assert.deepEqual(value.requests, { 8: 'alice-id' });
+    assert.equal(store.get('item-new').sync.state, 'synced');
+    assert.deepEqual(w.blockedFrom(NEW_TAG), ['bob-id', 'carol-id', 'dave-id']);
+  });
+
   it('deletes an inactive grant whose item is gone instead of failing forever', async (t) => {
     const { w, store, service } = await reimported(t);
     // Clearing its groups leaves it active (the request still holds it), so applying still fails on the 404.

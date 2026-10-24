@@ -33,7 +33,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the deleted item's tag is then removed from user policies. If the deleted item
   exists again by then, the old grant is kept intact with its restrictions and
   marked `source reappeared` (`remap.sourceReappeared`), logged and counted; the
-  new grants stay applied. Only a `404`
+  new grants stay applied. Revoking a request is remembered per item
+  (`revokedRequests` in the state file): no recovery or move adds that request
+  to that item again, even from a copy left on the old grant by an unfinished
+  move. A new Seerr request for the title is unaffected. Only a `404`
   counts as deleted; network failures and `5xx` responses keep the usual retry.
 - A grant left with no requests or groups on a deleted item (for example after
   revoking its last request) is now removed instead of failing on the `404`.
@@ -66,7 +69,7 @@ state file written by this version. They do not know the `orphaned` state,
 though: they retry orphaned grants on every scheduled run, fail on the deleted
 item's `404`, back off to hourly retries and count them in `jfa_sync_errors`
 again. They also ignore the new `remap` field and drop it when they next
-change that grant. Remap or revoke orphaned grants, and resolve grants marked
+change that grant, and ignore `revokedRequests`. Remap or revoke orphaned grants, and resolve grants marked
 `source reappeared`, before rolling back to avoid that.
 
 ## [2.1.1] - 2026-10-16

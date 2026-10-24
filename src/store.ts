@@ -111,6 +111,11 @@ export class GrantStore {
     return (this.#state.handledRequestIds ?? []).includes(requestId);
   }
 
+  /** Whether an administrator revoked the request from that item (see GrantState.revokedRequests). */
+  public isRequestRevoked(requestId: string, itemId: string): boolean {
+    return this.#state.revokedRequests?.[requestId]?.includes(normalizeId(itemId)) ?? false;
+  }
+
   /** The grant that currently records a request, if any. */
   public findGrantForRequest(requestId: string): GrantRecord | undefined {
     const grant = Object.values(this.#state.grants).find((entry) => requestId in entry.requests);
@@ -151,6 +156,9 @@ export class GrantStore {
     const requests = { ...previous.requests };
     delete requests[requestId];
     const result = this.#replaceGrant(previous, requests, previous.manualUserIds, previous.groupIds);
+    // Only this item: a copy of the request on another grant (a move's source or target) keeps its own access.
+    const revokedFrom = this.#state.revokedRequests?.[requestId] ?? [];
+    this.#state.revokedRequests = { ...this.#state.revokedRequests, [requestId]: [...new Set([...revokedFrom, itemId])].sort() };
     await this.#save();
     return result;
   }
@@ -299,8 +307,8 @@ export class GrantStore {
 
   /**
    * The grant an item would have after `move` is merged into it, without storing anything: requests, manual users and
-   * groups are added to whatever grant the item already has (nothing on it is dropped). Groups that no longer exist are
-   * left out of the moved ones.
+   * groups are added to whatever grant the item already has (nothing on it is dropped). Groups that no longer exist and
+   * requests an administrator revoked from that item are left out of the moved ones.
    */
   public previewMerge(move: GrantMove): GrantRecord {
     return clone(this.#mergedGrant(move));
@@ -379,7 +387,8 @@ export class GrantStore {
   #mergedGrant(move: GrantMove): GrantRecord {
     const itemId = normalizeId(move.itemId);
     const previous = this.#state.grants[itemId];
-    const requests = { ...(previous?.requests ?? {}), ...move.requests };
+    const moved = Object.entries(move.requests).filter(([requestId]) => !this.isRequestRevoked(requestId, itemId));
+    const requests = { ...(previous?.requests ?? {}), ...Object.fromEntries(moved) };
     const manualUserIds = [...new Set([...(previous?.manualUserIds ?? []), ...move.manualUserIds.map(normalizeId)])].sort();
     const movedGroupIds = move.groupIds.map(normalizeId).filter((id) => this.#state.groups[id]);
     const groupIds = [...new Set([...(previous?.groupIds ?? []), ...movedGroupIds])].sort();

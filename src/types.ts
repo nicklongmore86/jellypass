@@ -146,6 +146,11 @@ export interface GrantState {
   passwordlessUserIds: string[];
   /** Seerr request IDs that already produced a grant; the backfill never re-imports them. */
   handledRequestIds?: string[];
+  /**
+   * Requests an administrator revoked, by request ID, with the items they were revoked from. Moving a grant (recovery
+   * or remap) never adds a request to an item it was revoked from, so a copy left on a stale grant cannot restore it.
+   */
+  revokedRequests?: Record<string, string[]>;
 }
 
 export interface AccessGroup {
