@@ -1687,3 +1687,28 @@ describe('dry runs are isolated from the stored state', { timeout: 10_000 }, () 
     assert.deepEqual(await snapshot(store, file), before);
   });
 });
+
+/**
+ * The store's multi-step writes are all-or-nothing on their own, without the service's validation and dry run in front
+ * of them: one that throws after changing part of the state keeps none of it, in memory or in a later save.
+ */
+describe('store writes that throw partway leave everything as it was', { timeout: 10_000 }, () => {
+  it('a manual access batch whose second item names a missing group', async (t) => {
+    const { w, store, file } = await administered(t);
+    // The first item is valid and would change item-1 and its removal marks before the second one throws.
+    await assertFailsUntouched(w, store, file, () => store.setManualAccessBatch([
+      { itemId: 'item-1', userIds: ['dave-id'], groupIds: [] },
+      { itemId: 'item-2', userIds: ['bob-id'], groupIds: ['nowhere'] },
+    ]), /group not found: nowhere/, 'manual access batch');
+  });
+
+  it('a grant merge whose second move is malformed', async (t) => {
+    const { w, store, file } = await administered(t);
+    assert.ok(store.isAccessRemoved('item-1', 'userIds', 'dave-id'), 'precondition: item-1 has removal marks to carry');
+    // The first move carries item-1's removal marks and revoked requests to item-2 before the second one throws.
+    await assertFailsUntouched(w, store, file, () => store.mergeGrants('item-1', [
+      { itemId: 'item-2', requests: { 7: 'alice-id' }, manualUserIds: [], groupIds: ['house-a'], mediaType: 'movie' },
+      { itemId: 'item-new', requests: null, manualUserIds: [], groupIds: [], mediaType: 'movie' },
+    ]), /null/, 'grant merge');
+  });
+});

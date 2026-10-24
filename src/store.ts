@@ -250,7 +250,7 @@ export class GrantStore {
     groupIds: string[];
   }>): Promise<Array<{ previous?: GrantRecord; current: GrantRecord }>> {
     this.#assertOpen();
-    const results = this.#setManualAccessBatch(inputs);
+    const results = this.#atomically(() => this.#setManualAccessBatch(inputs));
     await this.#save();
     return results;
   }
@@ -470,7 +470,7 @@ export class GrantStore {
    */
   public async mergeGrants(fromItemIdInput: string, moves: GrantMove[]): Promise<GrantRecord[]> {
     this.#assertOpen();
-    const currents = this.#mergeGrants(fromItemIdInput, moves);
+    const currents = this.#atomically(() => this.#mergeGrants(fromItemIdInput, moves));
     await this.#save();
     return currents;
   }
@@ -505,6 +505,22 @@ export class GrantStore {
       return clone(mutate());
     } finally {
       this.#state = state;
+    }
+  }
+
+  /**
+   * Runs one of the synchronous mutations behind a write that changes the state in several steps on a copy of the
+   * state, and keeps the copy only if it completes: a mutation that throws partway (on a later item of a batch, say)
+   * leaves the state exactly as it was, so no later save can store half of it.
+   */
+  #atomically<T>(mutate: () => T): T {
+    const state = this.#state;
+    this.#state = clone(state);
+    try {
+      return mutate();
+    } catch (error) {
+      this.#state = state;
+      throw error;
     }
   }
 
