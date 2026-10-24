@@ -7,7 +7,9 @@ import { AccessService, accessTag } from '../dist/access-service.js';
 import { JellyfinClient } from '../dist/jellyfin.js';
 import { makeServer } from '../dist/server.js';
 import { GrantStore } from '../dist/store.js';
-import { OWN_MOVIE, REQUEST, TMDB_KEY, createFakeSeerr, createFakeTmdb, get as getWithHeaders, world } from './support/household-app.mjs';
+import { createSignInApi, SignInError } from '../dist/app/js/api.js';
+import { clearSignIn, deviceId, jellyfinToken, storeSignIn } from '../dist/app/js/session.js';
+import { OWN_MOVIE, REQUEST, TMDB_KEY, createFakeSeerr, createFakeTmdb, get as getWithHeaders, post as postWithHeaders, world } from './support/household-app.mjs';
 import { SeerrClient } from '../dist/seerr.js';
 import { SeerrUserMap } from '../dist/seerr-users.js';
 import { TmdbClient } from '../dist/tmdb.js';
@@ -206,6 +208,85 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
     await setBob({ BlockedTags: ['jp-app-hidden'] });
     assert.deepEqual([(await movie()).state, (await movie()).play], ['unavailable', null]);
     assert.deepEqual(seerr.violations, []);
+  });
+
+  it('signs in through the app\'s own flow on the household host, stores it where Jellyfin web does, and then loads /me', async (t) => {
+    // Bob is the only member of this household; Alice signs in on Jellyfin itself, and the admin is in no household. Jellyfin
+    // 10.11 hides new users from its public list (the profile picker) until the owner shows them, as a household's owner has.
+    const originalBob = user(await client.getUsers(), fixture.bobId);
+    t.after(() => client.updatePolicy(fixture.bobId, originalBob.Policy));
+    await client.updatePolicy(fixture.bobId, { ...originalBob.Policy, IsHidden: false });
+    const appStore = new GrantStore(path.join(await makeTempDir(t, 'jfa-real-signin-'), 'grants.json'));
+    await appStore.load();
+    await appStore.upsertGroup({ id: 'signinhouse', name: 'Sign-in House', userIds: [fixture.bobId] });
+    const state = world({ seerrUsers: { 61: { jellyfinUserId: fixture.bobId.replaceAll('-', '').toLowerCase(), permissions: REQUEST } } });
+    const seerr = await createFakeSeerr(state);
+    const tmdb = await createFakeTmdb(state);
+    t.after(() => Promise.all([seerr.close(), tmdb.close()]));
+    const admin = new SeerrClient(seerr.url, 'seerr-key');
+    const gateway = makeServer(new AccessService(client, appStore), { webhook: webhookToken, admin: 'real-admin-secret' }, undefined, {
+      householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-' },
+      householdApp: {
+        catalogue: new TmdbClient(TMDB_KEY, { baseUrl: tmdb.url }),
+        blocklist: admin,
+        members: new SeerrUserMap(admin),
+      },
+    });
+    await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise((resolve) => gateway.close(resolve)));
+    const port = gateway.address().port;
+    const host = 'jelly-signinhouse.example.test';
+    const origin = `https://${host}`;
+
+    // The page's calls, as the browser makes them: same-origin paths, answered by the gateway for this household's host.
+    const asPage = async (pathname, init = {}) => {
+      const answer = init.method === 'POST'
+        ? await postWithHeaders(port, pathname, { Host: host, ...init.headers }, init.body ? JSON.parse(init.body) : undefined)
+        : await getWithHeaders(port, pathname, { Host: host, ...init.headers });
+      return new Response([204, 304].includes(answer.status) ? null : answer.body, { status: answer.status, headers: answer.headers });
+    };
+    const storage = (() => {
+      const items = new Map();
+      return { items, getItem: (key) => items.get(key) ?? null, setItem: (key, value) => items.set(key, String(value)) };
+    })();
+    const api = createSignInApi({ fetch: asPage, deviceId: () => deviceId(storage), deviceName: 'iPhone' });
+
+    // The picker: this household's members only, as the gateway lists them; Alice and the admin are not on it.
+    const profiles = await api.profiles();
+    assert.deepEqual(profiles.map((profile) => profile.name), ['Bob']);
+    assert.equal(profiles[0].id.replaceAll('-', '').toLowerCase(), fixture.bobId.replaceAll('-', '').toLowerCase());
+
+    // Signing in is Jellyfin web's own call with the app's device ID and headers; Jellyfin accepts it.
+    const result = await api.signIn('Bob', '');
+    const info = await request(baseUrl, '/System/Info/Public');
+    assert.equal(result.serverId, info.Id);
+    assert.equal(result.userId.replaceAll('-', '').toLowerCase(), fixture.bobId.replaceAll('-', '').toLowerCase());
+    assert.equal(storeSignIn(storage, origin, { serverId: result.serverId, userId: result.userId, token: result.token }), true);
+    assert.equal(jellyfinToken(storage, origin), result.token);
+    const stored = JSON.parse(storage.items.get('jellyfin_credentials')).Servers;
+    assert.deepEqual(stored.map(({ DateLastAccessed, ...entry }) => entry), [
+      { Id: info.Id, ManualAddress: origin, LastConnectionMode: 2, UserId: result.userId, AccessToken: result.token },
+    ]);
+    // Jellyfin recorded the session as the app's own device, which is not Jellyfin web's.
+    const devices = await request(baseUrl, '/Devices', { token: fixture.token });
+    const device = devices.Items.find((entry) => entry.Id === storage.items.get('jellypass_device_id'));
+    assert.ok(device, 'the app\'s device is listed');
+    assert.deepEqual([device.AppName, device.Name], ['JellyPass', 'iPhone']);
+
+    // The app then calls /me with that token, and nothing else, and is the household's member.
+    const me = await getWithHeaders(port, '/jellypass/app/v1/me', { Host: host, Authorization: `MediaBrowser Token="${jellyfinToken(storage, origin)}"` });
+    assert.deepEqual(me.json(), { name: 'Bob', household: 'Sign-in House' });
+
+    // Another household's user, and the administrator, cannot sign in on this host; Jellyfin is never asked to.
+    for (const name of ['Alice', 'admin']) {
+      await assert.rejects(api.signIn(name, name === 'admin' ? 'test-password' : ''), (error) => error instanceof SignInError && error.kind === 'invalid');
+    }
+
+    // Signing out revokes the token at Jellyfin and takes it out of storage.
+    await api.signOut(result.token);
+    assert.equal((await fetch(`${baseUrl}/Users/Me`, { headers: { Authorization: `MediaBrowser Token="${result.token}"` } })).status, 401);
+    assert.equal(clearSignIn(storage, origin), true);
+    assert.equal(jellyfinToken(storage, origin), undefined);
   });
 });
 

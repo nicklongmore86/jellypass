@@ -103,6 +103,8 @@ export function world(options = {}) {
       ...options.seerrUsers,
     },
     tokens: { ...TOKENS, ...options.tokens },
+    passwords: { ...options.passwords },
+    signInDown: options.signInDown ?? false,
     grants: [...(options.grants ?? [])],
     failCatalogue: options.failCatalogue,
     tmdbQuota: options.tmdbQuota,
@@ -355,17 +357,50 @@ export async function createFakeTmdb(state) {
  */
 export async function createFakeJellyfinForApp(state) {
   const requests = [];
+  const minted_ = [];
+  const logouts = [];
   let down = false;
   const server = createServer((request, response) => {
     const url = new URL(request.url, 'http://localhost');
     requests.push({ method: request.method, path: `${url.pathname}${url.search}`, pathname: url.pathname });
     if (down) return send(response, 503, { message: 'down' });
+    if (url.pathname === '/Users/Public' && request.method === 'GET') {
+      // Like Jellyfin, every user: the household gateway is what narrows this to a household.
+      return send(response, 200, Object.entries(state.jellyfinUsers).map(([Id, user]) => ({
+        // Jellyfin says so even for an empty password: JellyPass's passwordless marking is what turns it off.
+        Id, Name: user.Name, HasPassword: true, HasConfiguredPassword: true,
+      })));
+    }
+    if (url.pathname === '/Users/AuthenticateByName' && request.method === 'POST') {
+      return readJson(request).then((body) => {
+        const header = request.headers.authorization ?? '';
+        // Jellyfin 10.11 refuses a sign-in whose Authorization names no client, device, device ID and version.
+        if (!/^MediaBrowser /.test(header) || !['Client', 'Device', 'DeviceId', 'Version'].every((name) => new RegExp(`${name}="[^"]+"`).test(header))) {
+          return send(response, 400, { error: 'request.App is required' });
+        }
+        const entry = Object.entries(state.jellyfinUsers).find(([, user]) => user.Name.toLowerCase() === String(body.Username).toLowerCase());
+        if (state.signInDown) return send(response, 503, { message: 'upstream detail that must never be shown' });
+        if (!entry || entry[1].Policy.IsDisabled || (state.passwords?.[entry[0]] ?? '') !== body.Pw) return send(response, 401, { message: 'upstream detail that must never be shown' });
+        const minted = `signin-token-${entry[0].slice(0, 4)}-${minted_.length + 1}`;
+        minted_.push({ token: minted, userId: entry[0], header });
+        return send(response, 200, { User: { Id: entry[0], Name: entry[1].Name }, AccessToken: minted, ServerId: 'server' });
+      });
+    }
+    if (url.pathname === '/Sessions/Logout' && request.method === 'POST') {
+      const logoutToken = /Token="([^"]+)"/.exec(request.headers.authorization ?? '')?.[1];
+      const session = minted_.find((entry) => entry.token === logoutToken && !entry.revoked);
+      if (!session) return send(response, 401, {});
+      session.revoked = true;
+      logouts.push(logoutToken);
+      return send(response, 204, undefined);
+    }
     const token = /Token="([^"]+)"/.exec(request.headers.authorization ?? '')?.[1] ?? request.headers['x-emby-token'] ?? url.searchParams.get('api_key');
     // JellyPass's own API key may list users (the admin API checks group members with it), and nothing else.
     if (token === 'jellyfin-key' && request.method === 'GET' && url.pathname === '/Users') {
       return send(response, 200, Object.entries(state.jellyfinUsers).map(([Id, user]) => ({ Id, Name: user.Name, Policy: user.Policy })));
     }
-    const userId = Object.entries(state.tokens ?? TOKENS).find(([, value]) => value === token)?.[0];
+    const userId = minted_.find((entry) => entry.token === token && !entry.revoked)?.userId
+      ?? Object.entries(state.tokens ?? TOKENS).find(([, value]) => value === token)?.[0];
     const user = userId && state.jellyfinUsers[userId];
     if (!user) return send(response, 401, {});
     if (url.pathname === '/Users/Me') return send(response, 200, { Id: userId, Name: user.Name, Policy: user.Policy, ServerId: 'server' });
@@ -396,6 +431,10 @@ export async function createFakeJellyfinForApp(state) {
   return {
     url: `http://127.0.0.1:${server.address().port}`,
     requests,
+    /** Every sign-in this Jellyfin granted: token, user and the Authorization header it came with. */
+    signIns: minted_,
+    /** The tokens signed out at Jellyfin. */
+    logouts,
     state,
     set down(value) { down = value; },
     close: () => close(server),
@@ -472,8 +511,17 @@ export async function startApp(t, state = world(), options = {}) {
 
 /** The raw answer: status, headers and body bytes. */
 export function get(port, pathname, headers) {
+  return call(port, pathname, { headers });
+}
+
+/** POST a JSON body. */
+export function post(port, pathname, headers, body) {
+  return call(port, pathname, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
+}
+
+function call(port, pathname, { method = 'GET', headers, body }) {
   return new Promise((resolve, reject) => {
-    const request = httpRequest({ hostname: '127.0.0.1', port, path: pathname, headers }, (response) => {
+    const request = httpRequest({ hostname: '127.0.0.1', port, path: pathname, method, headers }, (response) => {
       const chunks = [];
       response.on('data', (chunk) => chunks.push(chunk));
       response.on('end', () => {
@@ -489,12 +537,26 @@ export function get(port, pathname, headers) {
       });
     });
     request.once('error', reject);
-    request.end();
+    request.end(body);
+  });
+}
+
+function readJson(request) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    request.on('data', (chunk) => chunks.push(chunk));
+    request.on('end', () => {
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      } catch {
+        resolve({});
+      }
+    });
   });
 }
 
 function send(response, status, value, headers = {}) {
-  const encoded = JSON.stringify(value);
+  const encoded = value === undefined ? '' : JSON.stringify(value);
   response.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(encoded), ...headers });
   response.end(encoded);
 }

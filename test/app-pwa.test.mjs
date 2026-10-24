@@ -11,7 +11,7 @@ import vm from 'node:vm';
 import { parseHTML } from 'linkedom';
 import { APP_CONTENT_SECURITY_POLICY, APP_PERMISSIONS_POLICY } from '../dist/app-assets.js';
 import { contentHash, stampWorker } from '../scripts/build-app.mjs';
-import { ALICE, HOST_A, HOST_B, OWN_MOVIE, T_MOVIE, T_TV, TOKENS, get, startApp, world } from './support/household-app.mjs';
+import { ALICE, ANN, BOB, CAROL, HOST_A, HOST_B, OUTSIDER, OWN_MOVIE, T_MOVIE, T_TV, TOKENS, get, post, startApp, world } from './support/household-app.mjs';
 import { assertNoCanaries } from './support/seerr-fixtures.mjs';
 
 const DIST_APP = path.join(import.meta.dirname, '..', 'dist', 'app');
@@ -292,14 +292,23 @@ describe('household app page: files', () => {
     assert.doesNotMatch(read('app.css'), /@import|url\(/);
   });
 
-  it('writes nothing it should not: no HTML parsing of text, no eval, no browser storage written, no cookies', () => {
+  it('writes nothing it should not: no HTML parsing of text, no eval, no cookies, and storage only in session.js, for two keys', () => {
     for (const file of FILES.filter((name) => name.startsWith('js/'))) {
       const source = read(file);
       assert.doesNotMatch(source, /innerHTML|outerHTML|insertAdjacentHTML|document\.write|\beval\(|new Function|srcdoc/, file);
-      assert.doesNotMatch(source, /setItem|removeItem|sessionStorage|indexedDB|document\.cookie|caches\./, file);
+      assert.doesNotMatch(source, /sessionStorage|indexedDB|document\.cookie|caches\./, file);
+      if (file !== 'js/session.js') assert.doesNotMatch(source, /setItem|removeItem|\.clear\(/, `${file} writes browser storage outside session.js`);
     }
-    // localStorage is only read: it holds Jellyfin web's own sign-in.
-    assert.match(read('js/session.js'), /localStorage|getItem/);
+    // The only storage the app writes is Jellyfin web's own credentials (its sign-in) and its own random device ID.
+    const session = read('js/session.js');
+    const keys = new Set([...session.matchAll(/CREDENTIALS_KEY = '([^']+)'|DEVICE_ID_KEY = '([^']+)'/g)].map((match) => match[1] ?? match[2]));
+    assert.deepEqual([...keys].sort(), ['jellyfin_credentials', 'jellypass_device_id']);
+    assert.deepEqual([...session.matchAll(/setItem\(([A-Z_]+)/g)].map((match) => match[1]).sort(), ['CREDENTIALS_KEY', 'CREDENTIALS_KEY', 'DEVICE_ID_KEY']);
+    assert.doesNotMatch(session, /removeItem/);
+    // No token, password or user ID reaches a URL, a log or the address bar.
+    for (const file of FILES.filter((name) => name.startsWith('js/'))) {
+      assert.doesNotMatch(read(file), /console\./, `${file} logs`);
+    }
   });
 
   it('keeps every colour pair in the stylesheet at WCAG AA contrast', () => {
@@ -429,6 +438,12 @@ describe('household app page: service worker', () => {
       `${ORIGIN}/web/`,
       `${ORIGIN}/Videos/abc/stream`,
       `${ORIGIN}/jellypass/add`,
+      // The sign-in calls: they carry passwords and tokens and must always reach the network, never this worker.
+      `${ORIGIN}/Users/Public`,
+      `${ORIGIN}/Users/AuthenticateByName`,
+      `${ORIGIN}/Users/Me`,
+      `${ORIGIN}/Sessions/Logout`,
+      `${ORIGIN}/QuickConnect/Enabled`,
       `${ORIGIN}/jellypass/app/unknown.js`,
       'https://image.tmdb.org/t/p/w342/synthetic.jpg',
       'https://example.test/jellypass/app/app.css',
@@ -437,6 +452,9 @@ describe('household app page: service worker', () => {
       assert.equal(handled, false, url);
     }
     assert.equal((await fetchEvent(worker, `${ORIGIN}${PAGE}app.css`, { method: 'POST' })).handled, false);
+    for (const url of ['/Users/AuthenticateByName', '/Sessions/Logout']) {
+      assert.equal((await fetchEvent(worker, `${ORIGIN}${url}`, { method: 'POST' })).handled, false, `POST ${url}`);
+    }
     assert.deepEqual(worker.log.fetched, [], 'the worker fetched something it was not asked to handle');
     assert.deepEqual(worker.log.puts, []);
     assert.deepEqual(worker.log.added, []);
@@ -810,12 +828,12 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
    * Loads the real page and client modules into a DOM, signed in as `user` with Jellyfin web's own stored sign-in, and
    * wires `fetch` to the real API on the test server. One page per test (the client keeps its state in module scope).
    */
-  async function openApp(t, app, { user = ALICE, host = HOST_A, signedIn = true, override, hash = '', holdMe } = {}) {
+  async function openApp(t, app, { user = ALICE, host = HOST_A, signedIn = true, override, hash = '', holdMe, store: initialStore, storageFails = false, userAgent = '' } = {}) {
     const origin = `https://${host}`;
     const { document, Event } = parseHTML(read('index.html'));
-    const store = new Map(signedIn ? [['jellyfin_credentials', JSON.stringify({
+    const store = new Map(initialStore ?? (signedIn ? [['jellyfin_credentials', JSON.stringify({
       Servers: [{ ManualAddress: origin, AccessToken: TOKENS[user], UserId: user }],
-    })]] : []);
+    })]] : []));
     const requests = [];
     const location = { origin, hash };
     const listeners = {};
@@ -829,14 +847,22 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
           requests.push({ url, init });
           if (init.signal?.aborted) throw new DOMException('aborted', 'AbortError');
           if (holdMe && url === '/jellypass/app/v1/me') await holdMe;
-          const answer = override?.(url) ?? await get(app.port, url, { Host: host, ...init.headers });
+          const answer = override?.(url, init) ?? await (init.method === 'POST'
+            ? post(app.port, url, { Host: host, ...init.headers }, init.body ? JSON.parse(init.body) : undefined)
+            : get(app.port, url, { Host: host, ...init.headers }));
           return new Response(answer.body, { status: answer.status, headers: answer.headers });
         },
       },
       location,
       history: { replaceState(_state, _title, url) { location.hash = String(url).slice(String(url).indexOf('#')); } },
-      localStorage: { getItem: (key) => store.get(key) ?? null },
-      navigator: {},
+      localStorage: {
+        getItem: (key) => store.get(key) ?? null,
+        setItem: (key, value) => {
+          if (storageFails) throw new DOMException('quota', 'QuotaExceededError');
+          store.set(key, String(value));
+        },
+      },
+      navigator: { userAgent },
     };
     const previous = Object.fromEntries(Object.keys(globals).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
     for (const [key, value] of Object.entries(globals)) Object.defineProperty(globalThis, key, { value, configurable: true, writable: true });
@@ -1039,18 +1065,297 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4, 'home');
   });
 
-  it('sends a signed-out visitor to the household\'s Jellyfin sign-in, without calling the API', async (t) => {
-    const app = await startApp(t);
+  const credentials = (page) => JSON.parse(page.store.get('jellyfin_credentials'));
+  const click = (page, node) => node.dispatchEvent(new page.Event('click', { bubbles: true, cancelable: true }));
+  const profileButton = (page, name) => [...page.main().querySelectorAll('button.profile')].find((button) => button.textContent.includes(name));
+  const enterPassword = (page, password) => {
+    const input = page.main().querySelector('input[type="password"]');
+    input.value = password;
+    page.main().querySelector('form').dispatchEvent(new page.Event('submit', { cancelable: true }));
+  };
+  const homeLoaded = (page) => page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4, 'the home rows');
+  const message = (page) => page.main().querySelector('#signin-message')?.textContent ?? '';
+  /** Alice has a password at Jellyfin; Ann is marked passwordless in JellyPass and has none. */
+  const signInWorld = () => world({ passwords: { [ALICE]: 'alice-pass' } });
+  const signInApp = async (t) => {
+    const app = await startApp(t, signInWorld());
+    await app.store.setUserPasswordless(ANN, true);
+    return app;
+  };
+
+  it('shows the household\'s own profiles when signed out, without calling the app API', async (t) => {
+    const app = await signInApp(t);
     const page = await openApp(t, app, { signedIn: false });
-    await page.until(() => page.main().querySelector('[role="alert"]'), 'the signed-out state');
-    assert.equal(page.main().querySelector('h1').textContent, 'Sign in to continue');
-    assert.equal(page.main().querySelector('a.button').getAttribute('href'), '/web/');
-    assert.equal(page.requests.length, 0);
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the profile picker');
+    assert.equal(page.main().querySelector('h1').textContent, 'Sign in');
+    assert.equal(page.document.title, 'Sign in – JellyPass');
+    // Only what the gateway lists on this host: this household's members, not Bob, Carol or the outsider.
+    assert.deepEqual([...page.main().querySelectorAll('.profile-name')].map((name) => name.textContent), ['Alice', 'Ann']);
+    assert.deepEqual([...page.main().querySelectorAll('button.profile')].map((button) => button.getAttribute('type')), ['button', 'button']);
+    assert.deepEqual(page.requests.map((request) => [request.init.method ?? 'GET', request.url]), [['GET', '/Users/Public']]);
+    assert.equal(page.document.getElementById('signout').hidden, true, 'nothing to sign out of');
+    // Jellyfin web is only a fallback, below the picker.
+    const links = [...page.main().querySelectorAll('a')];
+    assert.deepEqual(links.map((link) => [link.textContent, link.getAttribute('href')]), [['Open Jellyfin to sign in', '/web/']]);
+    assert.equal(page.main().querySelectorAll('a.button').length, 0);
     assert.equal(page.document.getElementById('who').textContent, '');
-    // Signing in (Jellyfin web writes its credentials) brings the app back without a reload.
+    const other = await openApp(t, app, { signedIn: false, host: HOST_B });
+    await other.until(() => other.main().querySelector('ul.profiles'), 'household B\'s picker');
+    assert.deepEqual([...other.main().querySelectorAll('.profile-name')].map((name) => name.textContent), ['Bob']);
+  });
+
+  it('signs in with a password, stores the session where Jellyfin web keeps its own, and then loads the app', async (t) => {
+    const app = await signInApp(t);
+    const page = await openApp(t, app, { signedIn: false, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)' });
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker');
+    click(page, profileButton(page, 'Alice'));
+    const input = await page.until(() => page.main().querySelector('input[type="password"]'), 'the password step');
+    assert.equal(page.main().querySelector('h1').textContent, 'Sign in as Alice');
+    assert.equal(page.main().querySelector('label[for="password"]').textContent, 'Password');
+    assert.equal(input.getAttribute('autocomplete'), 'current-password');
+    assert.equal(page.main().querySelector('input[name="username"]').getAttribute('value'), 'Alice');
+    assert.equal(page.main().querySelector('input[name="username"]').getAttribute('aria-hidden'), 'true');
+    assert.equal(page.main().querySelector('[role="alert"]').getAttribute('id'), 'signin-message');
+    assert.equal(input.getAttribute('aria-describedby'), 'signin-message');
+    const requests = page.requests.length;
+    enterPassword(page, 'alice-pass');
+    await homeLoaded(page);
+    assert.equal(page.document.getElementById('who').textContent, 'Alice · Farmhouse');
+    assert.equal(page.document.getElementById('signout').hidden, false);
+
+    // One call signed in, with the headers Jellyfin web sends; the password is only in that body.
+    const login = page.requests[requests];
+    assert.equal(login.url, '/Users/AuthenticateByName');
+    assert.equal(login.init.method, 'POST');
+    assert.deepEqual(JSON.parse(login.init.body), { Username: 'Alice', Pw: 'alice-pass' });
+    assert.equal(login.init.credentials, 'omit');
+    assert.equal(login.init.cache, 'no-store');
+    const deviceId = page.store.get('jellypass_device_id');
+    assert.match(deviceId, /^jellypass-[0-9a-f-]{36}$/);
+    assert.equal(login.init.headers.Authorization, `MediaBrowser Client="JellyPass", Device="iPhone", DeviceId="${deviceId}", Version="1.0"`);
+    assert.equal(app.jellyfin.signIns.length, 1);
+    assert.equal(app.jellyfin.signIns[0].header, login.init.headers.Authorization);
+    // Stored exactly as Jellyfin web 10.11 stores it (Id, address, user, token, mode, time), where the app and /web/ both read.
+    const { token } = app.jellyfin.signIns[0];
+    assert.deepEqual(Object.keys(credentials(page)), ['Servers']);
+    const [server, ...others] = credentials(page).Servers;
+    assert.equal(others.length, 0);
+    assert.deepEqual({ ...server, DateLastAccessed: typeof server.DateLastAccessed }, {
+      Id: 'server', ManualAddress: page.location.origin, LastConnectionMode: 2, DateLastAccessed: 'number', UserId: ALICE, AccessToken: token,
+    });
+    assert.ok(Math.abs(server.DateLastAccessed - Date.now()) < 60_000);
+    // The app then calls /me and the lists with that token, and with nothing else.
+    const calls = page.requests.slice(requests + 1).filter((request) => request.url.startsWith('/jellypass/app/v1/'));
+    assert.ok(calls.length >= 5);
+    for (const { init } of calls) assert.equal(init.headers.Authorization, `MediaBrowser Token="${token}"`);
+    // The password is never in a URL, the page, storage (beyond the credentials above) or another request body.
+    for (const request of page.requests) assert.doesNotMatch(String(request.url), /alice-pass|signin-token/);
+    assert.doesNotMatch(page.serialize(), /alice-pass|signin-token/);
+    assert.doesNotMatch(page.store.get('jellyfin_credentials') + deviceId, /alice-pass/);
+    assert.equal(page.location.hash.includes(token), false);
+    assert.equal(input.value, '', 'the password field was cleared');
+    // Reloading finds the same device ID.
+    const again = await openApp(t, app, { store: page.store, user: ALICE });
+    await homeLoaded(again);
+    assert.equal(again.store.get('jellypass_device_id'), deviceId);
+  });
+
+  it('keeps what else Jellyfin web stored, and replaces a stale entry for this address', async (t) => {
+    const app = await signInApp(t);
+    const origin = `https://${HOST_A}`;
+    const before = JSON.stringify({
+      Servers: [
+        { Id: 'old-server', Name: 'Old', ManualAddress: origin, UserId: BOB, AccessToken: 'token-revoked' },
+        { Id: 'server', Name: 'Home Jellyfin', ManualAddress: origin, LocalAddress: 'http://10.0.0.5:8096', UserLinkType: 'Guest', DateLastAccessed: 1 },
+        { Id: 'elsewhere', Name: 'Elsewhere', ManualAddress: 'https://elsewhere.example.test' },
+      ],
+      Extra: { kept: true },
+    });
+    const page = await openApp(t, app, { store: new Map([['jellyfin_credentials', before]]) });
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker after a revoked token');
+    click(page, profileButton(page, 'Alice'));
+    await page.until(() => page.main().querySelector('input[type="password"]'), 'the password step');
+    enterPassword(page, 'alice-pass');
+    await homeLoaded(page);
+    const stored = credentials(page);
+    assert.deepEqual(stored.Extra, { kept: true });
+    assert.deepEqual(stored.Servers.map((server) => server.Id), ['server', 'elsewhere'], 'the stale entry for this address is gone');
+    assert.equal(stored.Servers[0].Name, 'Home Jellyfin');
+    assert.equal(stored.Servers[0].LocalAddress, 'http://10.0.0.5:8096');
+    assert.equal(stored.Servers[0].UserLinkType, 'Guest');
+    assert.equal(stored.Servers[0].UserId, ALICE);
+    assert.equal(stored.Servers[0].AccessToken, app.jellyfin.signIns[0].token);
+    assert.equal(stored.Servers[1].AccessToken, undefined);
+  });
+
+  it('signs in with one tap for a member marked passwordless, as Jellyfin web does', async (t) => {
+    const app = await signInApp(t);
+    const page = await openApp(t, app, { signedIn: false });
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker');
+    click(page, profileButton(page, 'Ann'));
+    await homeLoaded(page);
+    assert.equal(page.main().querySelector('input[type="password"]'), null, 'no password step');
+    assert.equal(page.document.getElementById('who').textContent, 'Ann · Farmhouse');
+    const login = page.requests.find((request) => request.url === '/Users/AuthenticateByName');
+    assert.deepEqual(JSON.parse(login.init.body), { Username: 'Ann', Pw: '' });
+    assert.equal(credentials(page).Servers[0].UserId, ANN);
+  });
+
+  it('asks for a password when a one-tap member has gained one, instead of failing', async (t) => {
+    const app = await startApp(t, world({ passwords: { [ANN]: 'ann-pass' } }));
+    await app.store.setUserPasswordless(ANN, true);
+    const page = await openApp(t, app, { signedIn: false });
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker');
+    click(page, profileButton(page, 'Ann'));
+    await page.until(() => page.main().querySelector('input[type="password"]'), 'the password step');
+    assert.equal(message(page), "That didn't work. Check your password and try again.");
+    enterPassword(page, 'ann-pass');
+    await homeLoaded(page);
+  });
+
+  it('shows fixed text for a wrong password, too many attempts, an outage, being offline and unusable storage', async (t) => {
+    const app = await signInApp(t);
+    const page = await openApp(t, app, { signedIn: false });
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker');
+    click(page, profileButton(page, 'Alice'));
+    await page.until(() => page.main().querySelector('input[type="password"]'), 'the password step');
+    const input = () => page.main().querySelector('input[type="password"]');
+    const submit = () => page.main().querySelector('button[type="submit"]');
+    const attempt = async (password, expected) => {
+      enterPassword(page, password);
+      assert.equal(submit().disabled, true, 'one attempt at a time');
+      await page.until(() => message(page) === expected, expected);
+      assert.equal(submit().disabled, false);
+      assert.equal(submit().textContent, 'Sign in');
+      assert.equal(input().value, '');
+      assert.doesNotMatch(page.serialize(), /upstream detail|canary/i);
+    };
+    await attempt('wrong', "That didn't work. Check your password and try again.");
+    assert.equal(input().getAttribute('aria-invalid'), 'true');
+    // An empty password is refused before any call.
+    const calls = page.requests.length;
+    enterPassword(page, '');
+    assert.equal(message(page), "That didn't work. Check your password and try again.");
+    assert.equal(page.requests.length, calls);
+    // The gateway's per-client limit: the household's other sign-in attempts used it up.
+    for (let attempts = 0; attempts < 20; attempts += 1) {
+      const answer = await post(app.port, '/Users/AuthenticateByName', { Host: HOST_A, Authorization: 'MediaBrowser Client="x", Device="y", DeviceId="zzzzzzzzzzzzzzzz", Version="1"' }, { Username: 'Alice', Pw: 'no' });
+      if (answer.status === 429) break;
+    }
+    await attempt('alice-pass', 'Too many attempts. Wait a few minutes, then try again.');
+    assert.equal(app.jellyfin.signIns.length, 0, 'the limited attempt never reached Jellyfin');
+    assert.equal(page.store.get('jellyfin_credentials'), undefined);
+  });
+
+  it('shows fixed text when Jellyfin is down, the network is gone or storage refuses the sign-in', async (t) => {
+    const app = await signInApp(t);
+    const outage = await openApp(t, app, { signedIn: false });
+    await outage.until(() => outage.main().querySelector('ul.profiles'), 'the picker');
+    app.jellyfin.state.signInDown = true;
+    click(outage, profileButton(outage, 'Ann'));
+    await outage.until(() => message(outage), 'the outage message');
+    assert.equal(message(outage), "Can't sign in right now. Try again in a moment.");
+    assert.ok(outage.main().querySelector('ul.profiles'), 'the picker stays, with its buttons usable again');
+    assert.ok([...outage.main().querySelectorAll('button.profile')].every((button) => !button.disabled));
+    assert.doesNotMatch(outage.serialize(), /upstream detail/);
+    app.jellyfin.state.signInDown = false;
+
+    const offline = await openApp(t, app, { signedIn: false, override: (url) => { if (url === '/Users/AuthenticateByName') throw new TypeError('network'); } });
+    await offline.until(() => offline.main().querySelector('ul.profiles'), 'the picker');
+    click(offline, profileButton(offline, 'Ann'));
+    await offline.until(() => message(offline), 'the offline message');
+    assert.equal(message(offline), 'Check your connection, then try again.');
+
+    const refusing = await openApp(t, app, { signedIn: false, storageFails: true });
+    await refusing.until(() => refusing.main().querySelector('ul.profiles'), 'the picker');
+    click(refusing, profileButton(refusing, 'Ann'));
+    await refusing.until(() => message(refusing), 'the storage message');
+    assert.equal(message(refusing), "Can't keep your sign-in on this device. Allow site data for this page in your browser settings, then try again.");
+    assert.equal(refusing.document.getElementById('who').textContent, '');
+    assert.equal(refusing.requests.some((request) => request.url.startsWith('/jellypass/app/v1/')), false);
+  });
+
+  it('shows fixed text and a retry when the profiles cannot be loaded, and still offers Jellyfin web', async (t) => {
+    const app = await signInApp(t);
+    let fail = true;
+    const page = await openApp(t, app, {
+      signedIn: false,
+      override: (url) => (fail && url === '/Users/Public' ? { status: 502, body: Buffer.from('{"error":"jellyfin_unavailable"}'), headers: {} } : undefined),
+    });
+    await page.until(() => page.main().querySelector('button'), 'the failure');
+    assert.equal(page.main().querySelector('h1').textContent, 'Sign in');
+    assert.match(page.main().textContent, /Can't sign in right now\. Try again in a moment\./);
+    assert.doesNotMatch(page.main().textContent, /jellyfin_unavailable/);
+    assert.equal(page.main().querySelector('a').getAttribute('href'), '/web/');
+    fail = false;
+    click(page, page.main().querySelector('button'));
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker after retrying');
+  });
+
+  it('says a sign-in has expired when Jellyfin refuses the one it holds, and replaces it on signing in again', async (t) => {
+    const app = await signInApp(t);
+    const page = await openApp(t, app, { store: new Map([['jellyfin_credentials', JSON.stringify({
+      Servers: [{ Id: 'server', ManualAddress: `https://${HOST_A}`, AccessToken: 'token-revoked', UserId: ALICE }],
+    })]]) });
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker');
+    assert.match(page.main().textContent, /Your sign-in has expired/);
+    assert.equal(page.document.getElementById('signout').hidden, true);
+    click(page, profileButton(page, 'Ann'));
+    await homeLoaded(page);
+    assert.equal(credentials(page).Servers[0].AccessToken, app.jellyfin.signIns[0].token);
+    assert.equal(credentials(page).Servers.length, 1);
+  });
+
+  it('signs out: revokes the token at Jellyfin, clears the stored sign-in and shows the picker again', async (t) => {
+    const app = await signInApp(t);
+    const page = await openApp(t, app, { signedIn: false });
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker');
+    click(page, profileButton(page, 'Ann'));
+    await homeLoaded(page);
+    const { token } = app.jellyfin.signIns[0];
+    assert.equal((await app.get('/jellypass/app/v1/me', { headers: { Authorization: `MediaBrowser Token="${token}"` }, user: null })).status, 200);
+    click(page, page.document.getElementById('signout'));
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker after signing out');
+    assert.deepEqual(app.jellyfin.logouts, [token]);
+    const logout = page.requests.find((request) => request.url === '/Sessions/Logout');
+    assert.equal(logout.init.method, 'POST');
+    assert.equal(logout.init.headers.Authorization, `MediaBrowser Token="${token}"`);
+    assert.equal(logout.init.credentials, 'omit');
+    // What Jellyfin web would find: the server entry stays, without a user or token.
+    const [server] = credentials(page).Servers;
+    assert.equal(server.Id, 'server');
+    assert.equal(server.ManualAddress, page.location.origin);
+    assert.equal(server.AccessToken, undefined);
+    assert.equal(server.UserId, undefined);
+    assert.equal(page.document.getElementById('who').textContent, '');
+    assert.equal(page.document.getElementById('signout').hidden, true);
+    // Dead at Jellyfin, and so for Jellyfin web (the app API keeps trusting a token it has just verified for a few minutes).
+    assert.equal((await app.get('/Users/Me', { headers: { Authorization: `MediaBrowser Token="${token}"` }, user: null })).status, 401, 'the token is dead at Jellyfin');
+    // The device ID stays, so the next sign-in is the same device.
+    assert.match(page.store.get('jellypass_device_id'), /^jellypass-/);
+  });
+
+  it('signs out of this browser even when Jellyfin cannot be reached', async (t) => {
+    const app = await signInApp(t);
+    const page = await openApp(t, app, { override: (url) => { if (url === '/Sessions/Logout') throw new TypeError('network'); } });
+    await homeLoaded(page);
+    click(page, page.document.getElementById('signout'));
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker after signing out');
+    assert.equal(credentials(page).Servers[0].AccessToken, undefined);
+  });
+
+  it('follows a sign-in or sign-out made elsewhere on this address without a reload', async (t) => {
+    const app = await signInApp(t);
+    const page = await openApp(t, app, { signedIn: false });
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker');
+    // Jellyfin web (another tab) signs in.
     page.store.set('jellyfin_credentials', JSON.stringify({ Servers: [{ ManualAddress: page.location.origin, AccessToken: TOKENS[ALICE], UserId: ALICE }] }));
     for (const listener of page.listeners.storage ?? []) listener({ key: 'jellyfin_credentials' });
-    await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4, 'the home rows after signing in');
+    await homeLoaded(page);
+    // And signs out again.
+    page.store.set('jellyfin_credentials', JSON.stringify({ Servers: [{ ManualAddress: page.location.origin }] }));
+    for (const listener of page.listeners.storage ?? []) listener({ key: 'jellyfin_credentials' });
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker after signing out elsewhere');
   });
 
   it('shows the fixed state for an expired sign-in (401), a rate limit (429) and a failure (502), never upstream text', async (t) => {
@@ -1059,8 +1364,9 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     const expired = await openApp(t, app, { user: ALICE });
     expired.store.set('jellyfin_credentials', JSON.stringify({ Servers: [{ ManualAddress: expired.location.origin, AccessToken: 'token-revoked', UserId: ALICE }] }));
     expired.go('#/');
-    await expired.until(() => expired.main().querySelector('h1')?.textContent === 'Sign in to continue', 'the sign-in state');
-    assert.equal(expired.main().querySelector('a.button').getAttribute('href'), '/web/');
+    await expired.until(() => expired.main().querySelector('ul.profiles'), 'the sign-in state');
+    assert.equal(expired.main().querySelector('h1').textContent, 'Sign in');
+    assert.equal(expired.main().querySelector('a').getAttribute('href'), '/web/');
     assert.equal(expired.document.getElementById('who').textContent, '');
 
     // 502: TMDB is failing, so every row says so in fixed words (and the app answered 502 with its fixed body).

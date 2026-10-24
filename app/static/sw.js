@@ -24,6 +24,7 @@ const STATIC_PATHS = [
   '/jellypass/app/js/main.js',
   '/jellypass/app/js/render.js',
   '/jellypass/app/js/session.js',
+  '/jellypass/app/js/signin.js',
 ];
 const STATIC = new Set(STATIC_PATHS);
 

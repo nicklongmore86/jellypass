@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The household app signs in inside the app.** Tapping **Sign in** used to
+  send the member to Jellyfin web (`/web/`), which has no return address, so
+  they had to open the app again, and the installed iPhone app, whose storage is
+  apart from Safari's, could not be signed in from Safari at all. The app now
+  shows the household's profile picker, a password step (or one tap for
+  passwordless members), and signs in through the household gateway exactly as
+  Jellyfin web does, with the same household scoping and sign-in rate limit and
+  fixed messages for a wrong password, too many attempts and an outage. The
+  sign-in is stored in Jellyfin web's own format, so the app and Jellyfin web
+  share one session and **Play** stays signed in. New **Sign out** revokes the
+  session and also signs Jellyfin web out on that address. **Open Jellyfin to
+  sign in** remains as a fallback.
+
 ## [2.3.0] - 2026-10-24
 
 This is a minor release. It adds the household app, which is **off by

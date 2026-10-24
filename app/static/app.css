@@ -151,6 +151,39 @@ main {
 .tmdb-logo { width: 9rem; height: auto; aspect-ratio: 273.42 / 35.52; }
 .about { display: grid; gap: 0.75rem; max-width: 40rem; }
 
+/* Sign-in: the household's profiles, then a password for those who have one. */
+[hidden] { display: none !important; }
+.signout {
+  min-height: 2.75rem; min-width: 2.75rem; padding: 0 0.25rem; border: 0; background: none; color: var(--accent);
+  font: inherit; font-size: 0.875rem; cursor: pointer; touch-action: manipulation;
+}
+.app-header { align-items: center; }
+.app-header .who { margin-left: auto; }
+.signin { display: grid; gap: 1rem; max-width: 40rem; }
+.profiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(8.5rem, 1fr)); gap: 0.75rem; }
+.profile {
+  display: grid; justify-items: center; gap: 0.5rem; width: 100%; min-height: 7rem; padding: 1rem 0.5rem;
+  border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text);
+  font: inherit; cursor: pointer; touch-action: manipulation;
+}
+.profile:disabled { opacity: 0.7; cursor: default; }
+.avatar {
+  display: grid; place-items: center; width: 3.5rem; height: 3.5rem; border-radius: 50%;
+  background: var(--accent); color: var(--on-accent); font-size: 1.5rem; font-weight: 700;
+}
+.profile-name { font-weight: 600; overflow-wrap: anywhere; }
+.signin-form { display: grid; gap: 0.75rem; }
+.signin-form label { font-weight: 600; }
+.signin-form input[type='password'] {
+  width: 100%; min-height: 2.75rem; padding: 0.5rem 0.9rem; border-radius: var(--radius);
+  border: 1px solid var(--border); background: var(--surface); color: var(--text); font: inherit; font-size: 1rem;
+}
+.signin-form input[aria-invalid='true'] { border-color: var(--badge-no-text); }
+.form-actions { display: flex; flex-wrap: wrap; gap: 0.75rem; }
+.form-error { color: var(--badge-no-text); min-height: 1.5rem; }
+.form-error:empty { display: none; }
+.signin-fallback { margin-top: 0.5rem; }
+
 /* Loading skeletons. */
 .skeleton { background: linear-gradient(90deg, var(--surface) 25%, var(--surface-raised) 50%, var(--surface) 75%); background-size: 200% 100%; animation: shimmer 1.4s linear infinite; border-radius: var(--radius); }
 .skeleton-heading { height: 1.4rem; width: 9rem; margin-bottom: 0.75rem; }
