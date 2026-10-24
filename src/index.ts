@@ -4,6 +4,7 @@ import { loadConfig } from './config.js';
 import { JellyfinClient } from './jellyfin.js';
 import { makeServer } from './server.js';
 import { SeerrCatalogueClient, SeerrCatalogueUserError, SeerrClient, seerrUserId } from './seerr.js';
+import { SeerrUserMap } from './seerr-users.js';
 import { BackgroundTasks, createShutdown } from './shutdown.js';
 import { GrantStore } from './store.js';
 
@@ -16,9 +17,10 @@ async function main(): Promise<void> {
   const seerr = config.seerrUrl && config.seerrApiKey
     ? new SeerrClient(config.seerrUrl, config.seerrApiKey)
     : undefined;
+  let catalogue: SeerrCatalogueClient | undefined;
   if (seerr && config.seerrCatalogueUserId !== undefined) {
-    // Not used until the household app API is served; checked now so a misconfigured user stops startup early.
-    const catalogue = new SeerrCatalogueClient(seerr, seerrUserId(config.seerrCatalogueUserId));
+    // Checked now so a misconfigured user stops startup early; the client checks it again before every call.
+    catalogue = new SeerrCatalogueClient(seerr, seerrUserId(config.seerrCatalogueUserId));
     try {
       await catalogue.validate();
     } catch (error) {
@@ -46,6 +48,9 @@ async function main(): Promise<void> {
         webSocketUpstreamIdleTimeoutMs: config.webSocketUpstreamIdleTimeoutMs,
         logLevel: config.logLevel,
       },
+    } : {}),
+    ...(config.householdAppEnabled && seerr && catalogue ? {
+      householdApp: { catalogue, members: new SeerrUserMap(seerr) },
     } : {}),
   });
   const backfillSince = config.requestBackfillEnabled ? config.requestBackfillSince : undefined;
@@ -105,6 +110,7 @@ async function main(): Promise<void> {
       reconcileIntervalSeconds: config.reconcileIntervalSeconds,
       catalogSyncIntervalSeconds: config.catalogSyncIntervalSeconds,
       requestBackfillSince: backfillSince?.toISOString() ?? null,
+      householdApp: config.householdAppEnabled,
     }));
     if (service.getLibraryCatalog().items.length === 0) syncCatalog();
     // Catch up on missed webhooks now rather than one reconcile interval after startup.

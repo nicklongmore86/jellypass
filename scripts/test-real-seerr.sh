@@ -44,7 +44,9 @@ api_key="$(docker exec "$container" node -p 'require("/app/config/settings.json"
 # Seerr's API key acts as user 1, which must exist; user 2 is a Jellyfin-linked member with no
 # permissions, so anything Seerr runs as the member is refused where the owner would succeed, and
 # with its own discover preference (Japanese originals only); user 3 is the catalogue user, a local
-# user with no permissions, no Jellyfin link and no preferences of its own.
+# user with no permissions, no Jellyfin link and no preferences of its own. For the household app,
+# user 4 is a member who may request and has a pending request for The Matrix (TMDB 603), and user 5
+# a member of another household with a pending request for Fight Club (TMDB 550).
 docker exec "$container" node -e '
   const sqlite3 = require("sqlite3");
   const db = new sqlite3.Database("/app/config/db/db.sqlite3");
@@ -55,6 +57,10 @@ docker exec "$container" node -e '
     db.run("INSERT INTO user (id, email, username, permissions, avatar, userType) VALUES (3, ?, ?, 0, ?, 2)",
       ["catalogue@example.invalid", "jellypass-catalogue", "/avatar"]);
     db.run("INSERT INTO user_settings (userId, locale, originalLanguage) VALUES (2, ?, ?)", ["", "ja"]);
+    db.run(insert, [4, "requester@example.invalid", "requester", 32, "/avatar", "0000000000000000000000000000000c", "requester"]);
+    db.run(insert, [5, "neighbour@example.invalid", "neighbour", 32, "/avatar", "0000000000000000000000000000000d", "neighbour"]);
+    db.run("INSERT INTO media (id, mediaType, tmdbId, status) VALUES (1, ?, 603, 2), (2, ?, 550, 2)", ["movie", "movie"]);
+    db.run("INSERT INTO media_request (id, status, type, mediaId, requestedById, is4k) VALUES (1, 1, ?, 1, 4, 0), (2, 1, ?, 2, 5, 0)", ["movie", "movie"]);
   });
   db.close((error) => { if (error) { console.error(error); process.exit(1); } });
 ' || fail 'could not seed Seerr users'

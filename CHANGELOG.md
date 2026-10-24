@@ -9,10 +9,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Foundation for the household app.** No user-visible change. Adds one
-  optional setting, `SEERR_CATALOGUE_USER_ID` (not used until the app API
-  ships; when set, startup stops if that Seerr user is missing, the owner, has
-  any permission or is linked to a Jellyfin user). Adds Seerr clients that act
+- **Household app API (read-only, off by default).** With
+  `HOUSEHOLD_APP_ENABLED=true` (which requires `HOUSEHOLD_DOMAIN`, Seerr and
+  `SEERR_CATALOGUE_USER_ID`; startup stops without them), each household
+  hostname serves JSON endpoints under `/jellypass/app/v1`: `me`, `search`,
+  `discover/{trending,popular-movies,popular-tv,upcoming}`, `movie/:tmdbId`,
+  `tv/:tmdbId` and `tv/:tmdbId/season/:n`. The caller signs in with their
+  Jellyfin token (checked with Jellyfin, trusted for at most 5 minutes) and
+  must belong to that household. Each title carries the household's own
+  state: `unavailable` (blocklisted, or the caller may not request it in
+  Seerr), `in_library` (the caller's own Jellyfin view has it, with a Play
+  link), `requested` (a household member has a pending or approved HD
+  request) or `get_this`. Answers are built from allowlisted fields only, never
+  depend on what another household holds or asked for, and have fixed error
+  bodies and `Cache-Control: no-store`; calls are limited per client address
+  and per user, and counted in `jfa_app_requests_total{endpoint, outcome}`.
+  While the setting is off, `/jellypass/app` paths answer `404` and are never
+  proxied to Jellyfin. There is no app page yet. See
+  [Household app API](README.md#household-app-api) and
+  [docs/app-design.md](docs/app-design.md).
+- **Foundation for the household app.** Adds one optional setting,
+  `SEERR_CATALOGUE_USER_ID` (used by the household app API; when set, startup
+  stops if that Seerr user is missing, the owner, has any permission or is
+  linked to a Jellyfin user). Adds Seerr clients that act
   as one Seerr user and never with a missing or empty `X-API-User` (which Seerr
   runs as its owner): a member client that holds a Jellyfin user and confirms
   with Seerr, immediately before every call, which Seerr user is linked to it,

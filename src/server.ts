@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { ConflictError, UserProvisioningError, type AccessService } from './access-service.js';
+import { HouseholdApp, type HouseholdAppOptions } from './app-api.js';
 import { ADMIN_APP_JS, ADMIN_FAVICON_SVG, ADMIN_HTML, ADMIN_STYLES } from './admin-ui.js';
 import { expiredSessionCookie, sessionCookie, type WebAuth } from './auth.js';
 import { ClientIpResolver } from './client-ip.js';
@@ -34,6 +35,11 @@ export interface ServerOptions {
    * abort them and wait for them before closing the store; without it, joins run untracked.
    */
   background?: Pick<BackgroundTasks, 'run'>;
+  /**
+   * The household app API at /jellypass/app/v1/* on household hosts (needs `householdGateway`). Without it those paths
+   * answer a fixed 404 there; they are never served on the admin host.
+   */
+  householdApp?: Pick<HouseholdAppOptions, 'catalogue' | 'members' | 'libraryTtlMs' | 'now'>;
 }
 
 export interface JellyPassServer extends Server {
@@ -54,6 +60,14 @@ export function makeServer(
         trustedProxies: options.trustedProxies ?? [],
         memberIds: (householdId) => service.getHouseholdMemberIds(householdId),
         isPasswordless: (userId) => service.isPasswordless(userId),
+        ...(options.householdApp ? {
+          app: new HouseholdApp({
+            ...options.householdApp,
+            householdName: (householdId) => service.getHouseholdName(householdId),
+            record: (endpoint, outcome) => service.recordAppRequest(endpoint, outcome),
+            ...(options.householdGateway.logLevel ? { logLevel: options.householdGateway.logLevel } : {}),
+          }),
+        } : {}),
         ...(service.canJoinLibrary() ? {
           libraryJoin: {
             start: (input) => background.run((signal) => service.joinLibrary(input, { signal })),

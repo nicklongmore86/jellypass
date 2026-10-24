@@ -431,6 +431,11 @@ export class SeerrMemberClient {
     return this.#send('GET', '/api/v1/user/:self/quota', (user) => `/api/v1/user/${user}/quota`);
   }
 
+  /** This member's own Seerr user as Seerr reports it to them (GET /api/v1/auth/me), for their own permissions. */
+  public ownUser(): Promise<unknown> {
+    return this.#send('GET', '/api/v1/auth/me', () => '/api/v1/auth/me');
+  }
+
   /** This member's own Seerr watchlist. */
   public watchlist(page = 1): Promise<unknown> {
     const parameters = `page=${pageNumber(page)}`;

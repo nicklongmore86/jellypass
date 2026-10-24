@@ -71,6 +71,7 @@ const MEMBER_CALLS = {
   createRequest: (client) => client.createRequest({ mediaType: 'tv', tmdbId: 900002, seasons: [1, 2] }),
   ownRequests: (client) => client.ownRequests(20, 0),
   quota: (client) => client.quota(),
+  ownUser: (client) => client.ownUser(),
   watchlist: (client) => client.watchlist(1),
 };
 
@@ -182,11 +183,12 @@ describe('acting-user Seerr clients', () => {
       '42 POST /api/v1/request',
       '42 GET /api/v1/user/42/requests?take=20&skip=0',
       '42 GET /api/v1/user/42/quota',
+      '42 GET /api/v1/auth/me',
       '42 GET /api/v1/discover/watchlist?page=1',
     ]);
     // The catalogue user and the member are each confirmed before every call.
     assert.equal(calls.filter((request) => request.url.pathname === `/api/v1/user/${CATALOGUE}`).length, 10);
-    assert.equal(calls.filter((request) => request.url.pathname === `/api/v1/user/${MEMBER}`).length, 4);
+    assert.equal(calls.filter((request) => request.url.pathname === `/api/v1/user/${MEMBER}`).length, 5);
   });
 
   it('requests only the named title in HD, never for another user or with overrides', async () => {
@@ -325,8 +327,8 @@ describe('member client', () => {
     }
     assert.equal(actingCalls().length, 0);
     // Each call confirmed twice, forgetting the candidate both times.
-    assert.equal(calls.length, 8);
-    assert.equal(forgotten.length, 8);
+    assert.equal(calls.length, 2 * Object.keys(MEMBER_CALLS).length);
+    assert.equal(forgotten.length, 2 * Object.keys(MEMBER_CALLS).length);
   });
 
   it('fails closed for a member Seerr has no user for', async () => {

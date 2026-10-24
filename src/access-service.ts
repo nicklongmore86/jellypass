@@ -131,6 +131,15 @@ export class AccessService {
     return this.#store.getGroup(groupId)?.userIds;
   }
 
+  public getHouseholdName(groupId: string): string | undefined {
+    return this.#store.getGroup(groupId)?.name;
+  }
+
+  /** Counts a household app API answer by endpoint and outcome. */
+  public recordAppRequest(endpoint: string, outcome: string): void {
+    this.#metrics.increment('jfa_app_requests_total', { endpoint, outcome });
+  }
+
   public isPasswordless(userId: string): boolean {
     return this.#store.listPasswordlessUserIds().includes(userId.toLowerCase());
   }

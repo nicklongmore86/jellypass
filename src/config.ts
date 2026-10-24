@@ -42,6 +42,8 @@ export interface Config {
   catalogSyncIntervalSeconds: number;
   householdDomain?: string;
   householdHostPrefix: string;
+  /** Serves the household app API on household hosts; needs Seerr, the catalogue user and HOUSEHOLD_DOMAIN. */
+  householdAppEnabled: boolean;
   requestBackfillEnabled: boolean;
   requestBackfillSince?: Date;
   logLevel: LogLevel;
@@ -113,6 +115,10 @@ export function loadConfig(): Config {
   if (!/^[a-z0-9-]{1,32}$/.test(householdHostPrefix)) {
     throw new Error('HOUSEHOLD_HOST_PREFIX must contain only lowercase letters, numbers, and hyphens');
   }
+  const householdAppEnabled = booleanEnvironment('HOUSEHOLD_APP_ENABLED', false);
+  if (householdAppEnabled && (!householdDomain || seerrCatalogueUserId === undefined)) {
+    throw new Error('HOUSEHOLD_DOMAIN, SEERR_URL, SEERR_API_KEY and SEERR_CATALOGUE_USER_ID are required when HOUSEHOLD_APP_ENABLED is true');
+  }
   const logLevel = parseLogLevel(process.env.LOG_LEVEL);
   const webSocketIdleTimeoutMs = webSocketTimeout('WS_IDLE_TIMEOUT_MS', DEFAULT_WS_IDLE_TIMEOUT_MS);
   const webSocketUpstreamIdleTimeoutMs = webSocketTimeout('WS_UPSTREAM_IDLE_TIMEOUT_MS', DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS);
@@ -138,6 +144,7 @@ export function loadConfig(): Config {
     catalogSyncIntervalSeconds,
     ...(householdDomain ? { householdDomain } : {}),
     householdHostPrefix,
+    householdAppEnabled,
     requestBackfillEnabled,
     ...(requestBackfillSince ? { requestBackfillSince } : {}),
     logLevel,

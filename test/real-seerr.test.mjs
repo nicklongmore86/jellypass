@@ -2,12 +2,18 @@ import assert from 'node:assert/strict';
 import { after, before, describe, it } from 'node:test';
 import { SeerrCatalogueClient, SeerrCatalogueUserError, SeerrClient, SeerrError, SeerrMemberClient, SeerrUnmappedUserError, seerrUserId } from '../dist/seerr.js';
 import { SeerrUserMap } from '../dist/seerr-users.js';
+import { assertNoCanaries } from './support/seerr-fixtures.mjs';
+import { startApp, world } from './support/household-app.mjs';
 
 // Set by scripts/test-real-seerr.sh: a fresh Seerr whose user 1 is the owner, user 2 a member with no permissions (and
 // a preference for Japanese originals) and user 3 the catalogue user.
 const baseUrl = process.env.SEERR_REAL_URL;
 const apiKey = process.env.SEERR_REAL_API_KEY;
 const MEMBER_JELLYFIN_ID = '00000000-0000-0000-0000-00000000000b';
+// Seeded by the script for the household app: a member who may request, with a pending request for The Matrix (603),
+// and a member of another household with a pending request for Fight Club (550).
+const REQUESTER_JELLYFIN_ID = '0000000000000000000000000000000c';
+const NEIGHBOUR_JELLYFIN_ID = '0000000000000000000000000000000d';
 // The script's probe of TMDB from inside the Seerr container ("reachable", or "unreachable <reason>"). Only a positive
 // "unreachable" lets the TMDB-backed test skip, and never in CI or with SEERR_REQUIRE_TMDB=1.
 const tmdbProbe = process.env.SEERR_TMDB_PROBE ?? '';
@@ -104,6 +110,67 @@ describe('real Seerr', { timeout: 60_000, skip: !baseUrl || !apiKey }, () => {
     for (const call of acting) {
       assert.equal(call.url.origin, baseUrl);
       assert.equal(call.headers.get('x-api-user'), '2', call.url.pathname);
+    }
+  });
+
+  it('reads a member\'s own permissions as that member, once Seerr has confirmed it', async () => {
+    calls = [];
+    const map = new SeerrUserMap(new SeerrClient(baseUrl, apiKey));
+    const member = await map.member(MEMBER_JELLYFIN_ID).ownUser();
+    assert.equal(member.id, 2);
+    assert.equal(member.permissions, 0);
+    const requester = await map.member(REQUESTER_JELLYFIN_ID).ownUser();
+    assert.equal(requester.id, 4);
+    assert.equal(requester.permissions, 32);
+    assert.deepEqual(calls.map((call) => `${call.headers.get('x-api-user')} ${call.url.pathname}`), [
+      'null /api/v1/user/jellyfin/0000000000000000000000000000000b',
+      'null /api/v1/user/2',
+      '2 /api/v1/auth/me',
+      'null /api/v1/user/jellyfin/0000000000000000000000000000000c',
+      'null /api/v1/user/4',
+      '4 /api/v1/auth/me',
+    ]);
+  });
+
+  it('serves household app states from Seerr itself, never from another household\'s requests', async (t) => {
+    const MEMBER = MEMBER_JELLYFIN_ID.replaceAll('-', '');
+    const state = world({
+      tokens: { [REQUESTER_JELLYFIN_ID]: 'token-requester', [MEMBER]: 'token-member', [NEIGHBOUR_JELLYFIN_ID]: 'token-neighbour' },
+      jellyfinUsers: Object.fromEntries([[REQUESTER_JELLYFIN_ID, 'Requester'], [MEMBER, 'Member'], [NEIGHBOUR_JELLYFIN_ID, 'Neighbour']]
+        .map(([id, name]) => [id, { Name: name, Policy: { BlockedTags: [], EnableAllFolders: true } }])),
+    });
+    const app = await startApp(t, state, {
+      seerr: { url: baseUrl, apiKey },
+      catalogueUserId: 3,
+      households: [
+        { id: 'farmhouse', name: 'Farmhouse', userIds: [REQUESTER_JELLYFIN_ID, MEMBER] },
+        { id: 'mill', name: 'Mill', userIds: [NEIGHBOUR_JELLYFIN_ID] },
+      ],
+    });
+    const as = (token, pathname, host = 'jelly-farmhouse.example.test') =>
+      app.get(pathname, { host, user: null, headers: { Authorization: `MediaBrowser Token="${token}"` } });
+    const first = await as('token-requester', '/jellypass/app/v1/movie/603');
+    if (first.status === 502 && !tmdbRequired && tmdbProbe.startsWith('unreachable ')) {
+      return t.skip(`Seerr cannot reach TMDB here (${tmdbProbe})`);
+    }
+    assert.equal(first.status, 200, `${first.text}; TMDB probe: ${tmdbProbe || 'not run'}`);
+    const matrix = first.json();
+    assert.equal(matrix.title, 'The Matrix');
+    assert.equal(matrix.year, 1999);
+    assert.equal(matrix.state, 'requested');
+    // Another household's pending request is invisible; Seerr's own status for it (pending) is never shown.
+    const fightClub = await as('token-requester', '/jellypass/app/v1/movie/550');
+    assert.equal(fightClub.json().state, 'get_this');
+    assert.equal((await as('token-neighbour', '/jellypass/app/v1/movie/550', 'jelly-mill.example.test')).json().state, 'requested');
+    // The member may not request at all, so everything is unavailable for them, their household's request included.
+    assert.equal((await as('token-member', '/jellypass/app/v1/movie/603')).json().state, 'unavailable');
+    const search = await as('token-requester', '/jellypass/app/v1/search?q=matrix');
+    assert.equal(search.status, 200);
+    assert.equal(search.json().results.find((card) => card.tmdbId === 603)?.state, 'requested');
+    for (const answer of [first, fightClub, search]) {
+      assertNoCanaries(answer.text);
+      assert.doesNotMatch(answer.text, /requester|neighbour|example\.invalid|requestedBy|mediaInfo|jellyfinMediaId/i);
+      assert.equal(answer.headers['cache-control'], 'no-store');
     }
   });
 

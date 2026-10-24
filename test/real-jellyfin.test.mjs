@@ -7,6 +7,9 @@ import { AccessService, accessTag } from '../dist/access-service.js';
 import { JellyfinClient } from '../dist/jellyfin.js';
 import { makeServer } from '../dist/server.js';
 import { GrantStore } from '../dist/store.js';
+import { CATALOGUE, OWN_MOVIE, REQUEST, createFakeSeerr, get as getWithHeaders, world } from './support/household-app.mjs';
+import { SeerrCatalogueClient, SeerrClient, seerrUserId } from '../dist/seerr.js';
+import { SeerrUserMap } from '../dist/seerr-users.js';
 import { makeTempDir } from './support/temp-dir.mjs';
 
 const baseUrl = process.env.JELLYFIN_REAL_URL;
@@ -117,6 +120,59 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
     await waitFor(async () => !user(await client.getUsers(), fixture.bobId).Policy.BlockedTags.includes(accessTag(fixture.itemId)));
     const item = await request(baseUrl, `/Users/${fixture.bobId}/Items/${fixture.itemId}`, { token: bob.AccessToken });
     assert.equal(item.Id, fixture.itemId);
+  });
+
+  it('shows a household app title in_library only when the caller\'s own Jellyfin view has it', async (t) => {
+    // The movie gets a TMDB ID the fake Seerr catalogue knows; Bob's household is the only one here.
+    const original = await client.getItem(fixture.itemId);
+    await client.updateItem({ ...original, ProviderIds: { ...original.ProviderIds, Tmdb: String(OWN_MOVIE) }, Tags: [...original.Tags, 'jp-app-hidden'] });
+    t.after(() => client.updateItem({ ...original }));
+    const originalBob = user(await client.getUsers(), fixture.bobId);
+    t.after(() => client.updatePolicy(fixture.bobId, originalBob.Policy));
+    const setBob = (changes) => client.updatePolicy(fixture.bobId, { ...originalBob.Policy, BlockedTags: [], ...changes });
+
+    const appStore = new GrantStore(path.join(await makeTempDir(t, 'jfa-real-app-'), 'grants.json'));
+    await appStore.load();
+    await appStore.upsertGroup({ id: 'apphouse', name: 'App House', userIds: [fixture.bobId] });
+    const seerr = await createFakeSeerr(world({ seerrUsers: { 61: { jellyfinUserId: fixture.bobId.replaceAll('-', '').toLowerCase(), permissions: REQUEST } } }));
+    t.after(() => seerr.close());
+    const admin = new SeerrClient(seerr.url, 'seerr-key');
+    const gateway = makeServer(new AccessService(client, appStore), { webhook: webhookToken, admin: 'real-admin-secret' }, undefined, {
+      householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-' },
+      householdApp: { catalogue: new SeerrCatalogueClient(admin, seerrUserId(CATALOGUE)), members: new SeerrUserMap(admin), libraryTtlMs: 0 },
+    });
+    await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise((resolve) => gateway.close(resolve)));
+    const bob = await request(baseUrl, '/Users/AuthenticateByName', {
+      method: 'POST',
+      authorization: 'MediaBrowser Client="jfa-test", Device="ci", DeviceId="jfa-real-app", Version="1.0"',
+      body: { Username: 'Bob', Pw: '' },
+    });
+    const movie = async () => {
+      const answer = await getWithHeaders(gateway.address().port, `/jellypass/app/v1/movie/${OWN_MOVIE}`, {
+        Host: 'jelly-apphouse.example.test',
+        Authorization: `MediaBrowser Token="${bob.AccessToken}"`,
+      });
+      assert.equal(answer.status, 200, answer.text);
+      return answer.json();
+    };
+
+    await setBob({});
+    const itemId = fixture.itemId.replaceAll('-', '').toLowerCase();
+    assert.deepEqual(await movie(), {
+      ...(await movie()),
+      state: 'in_library',
+      play: { itemId, url: `https://jelly-apphouse.example.test/web/#/details?id=${itemId}` },
+    });
+    // A tag Bob is blocked from hides it, as JellyPass grants do.
+    await setBob({ BlockedTags: ['jp-app-hidden'] });
+    assert.deepEqual([(await movie()).state, (await movie()).play], ['get_this', null]);
+    // So does a parental rating above Bob's limit.
+    await client.updateItem({ ...(await client.getItem(fixture.itemId)), OfficialRating: 'R' });
+    await setBob({ MaxParentalRating: 10 });
+    assert.equal((await movie()).state, 'get_this');
+    await setBob({});
+    assert.equal((await movie()).state, 'in_library');
   });
 });
 

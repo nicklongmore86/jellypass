@@ -10,7 +10,7 @@ const BASE = {
   SEERR_URL: 'http://seerr.test',
   SEERR_API_KEY: 'seerr-key',
 };
-const KEYS = [...Object.keys(BASE), 'REQUEST_BACKFILL_SINCE', 'REQUEST_BACKFILL_ENABLED', 'LOG_LEVEL', 'WS_IDLE_TIMEOUT_MS', 'WS_UPSTREAM_IDLE_TIMEOUT_MS', 'JELLYQUEST_BRIDGE_ENABLED', 'TRUSTED_PROXIES', 'SEERR_CATALOGUE_USER_ID'];
+const KEYS = [...Object.keys(BASE), 'REQUEST_BACKFILL_SINCE', 'REQUEST_BACKFILL_ENABLED', 'LOG_LEVEL', 'WS_IDLE_TIMEOUT_MS', 'WS_UPSTREAM_IDLE_TIMEOUT_MS', 'JELLYQUEST_BRIDGE_ENABLED', 'TRUSTED_PROXIES', 'SEERR_CATALOGUE_USER_ID', 'HOUSEHOLD_APP_ENABLED', 'HOUSEHOLD_DOMAIN'];
 const saved = Object.fromEntries(KEYS.map((key) => [key, process.env[key]]));
 
 function load(overrides = {}) {
@@ -45,6 +45,27 @@ describe('Seerr catalogue user configuration', () => {
       () => load({ SEERR_CATALOGUE_USER_ID: '7', SEERR_URL: undefined, SEERR_API_KEY: undefined }),
       /SEERR_URL and SEERR_API_KEY are required when SEERR_CATALOGUE_USER_ID/,
     );
+  });
+});
+
+describe('household app configuration', () => {
+  afterEach(restoreEnvironment);
+
+  it('is off by default, even with everything it needs configured', () => {
+    assert.equal(load().householdAppEnabled, false);
+    assert.equal(load({ HOUSEHOLD_DOMAIN: 'example.test', SEERR_CATALOGUE_USER_ID: '7' }).householdAppEnabled, false);
+    assert.equal(load({ HOUSEHOLD_APP_ENABLED: 'false' }).householdAppEnabled, false);
+  });
+
+  it('needs household hosts, Seerr and the catalogue user when enabled', () => {
+    const ready = { HOUSEHOLD_APP_ENABLED: 'true', HOUSEHOLD_DOMAIN: 'example.test', SEERR_CATALOGUE_USER_ID: '7' };
+    assert.equal(load(ready).householdAppEnabled, true);
+    assert.equal(load({ ...ready, HOUSEHOLD_APP_ENABLED: '1' }).householdAppEnabled, true);
+    for (const missing of ['HOUSEHOLD_DOMAIN', 'SEERR_CATALOGUE_USER_ID']) {
+      assert.throws(() => load({ ...ready, [missing]: undefined }), /SEERR_CATALOGUE_USER_ID are required when HOUSEHOLD_APP_ENABLED is true/, missing);
+    }
+    assert.throws(() => load({ ...ready, SEERR_URL: undefined, SEERR_API_KEY: undefined }), /SEERR_URL and SEERR_API_KEY are required/);
+    assert.throws(() => load({ ...ready, HOUSEHOLD_APP_ENABLED: 'yes' }), /HOUSEHOLD_APP_ENABLED must be true, false, 1, or 0/);
   });
 });
 

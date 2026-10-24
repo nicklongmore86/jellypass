@@ -2,10 +2,12 @@
 
 ## Status
 
-Step 0 of 4 (foundation). Nothing here is user-facing yet: no `/jellypass/app/v1/*` endpoint is served. Step 0 adds
-the acting-user Seerr clients (`SeerrMemberClient` and `SeerrCatalogueClient` in `src/seerr.ts`), the
-Jellyfin-to-Seerr user map (`SeerrUserMap` in `src/seerr-users.ts`), the `SEERR_CATALOGUE_USER_ID` setting,
-recorded-shape Seerr fixtures with canaries, and a real-Seerr test. This document is the contract the later steps are
+Step 1a of 4 (read API). Step 0 added the acting-user Seerr clients (`SeerrMemberClient` and `SeerrCatalogueClient`
+in `src/seerr.ts`), the Jellyfin-to-Seerr user map (`SeerrUserMap` in `src/seerr-users.ts`), the
+`SEERR_CATALOGUE_USER_ID` setting, recorded-shape Seerr fixtures with canaries, and a real-Seerr test. Step 1a serves
+the read-only app API (`HouseholdApp` in `src/app-api.ts`, see "App API (step 1a)"): who the caller is, search,
+discover, and movie, series and season details, each title with its household state. It is off unless
+`HOUSEHOLD_APP_ENABLED` is true. There is no app page yet (step 1b). This document is the contract the later steps are
 built and reviewed against.
 
 ## Goal
@@ -40,7 +42,8 @@ Identity comes only from Jellyfin, never from anything the client says about its
 
 1. The app sends the user's Jellyfin access token to the household host.
 2. JellyPass verifies it with Jellyfin's `GET /Users/Me` (as the household gateway does today) and caches the answer
-   for at most 5 minutes, keyed by a hash of the token. A disabled user is rejected.
+   for at most 5 minutes, keyed by a hash of the token. A disabled user is rejected. A Jellyfin that cannot be reached,
+   or answers 5xx, fails the call (`unavailable`) rather than signing the caller out.
 3. The household comes from the JellyPass store, and the caller must be a member of the household whose host they
    called. Anyone not in that household is refused.
 4. The caller's own Seerr data (requests, quota, watchlist) is read and written through `SeerrUserMap.member(id)`, a
@@ -113,10 +116,11 @@ So titles are never read as a household member:
 - The real-Seerr test gives the member a Japanese-originals-only preference and shows that Seerr applies it to the
   member's own `/discover/movies` while the catalogue client's answer is unaffected.
 
-Step 1 makes `SEERR_CATALOGUE_USER_ID` required for the app API.
+`SEERR_CATALOGUE_USER_ID` is required for the app API: `HOUSEHOLD_APP_ENABLED=true` without it stops startup.
 
 **Unmapped users fail closed.** A Jellyfin user Seerr has no confirmed user for gets `unavailable` for everything,
-even though titles are read as the catalogue user: step 1 decides this from a member call. Nothing falls
+even though titles are read as the catalogue user: the app decides this from a member call, `SeerrMemberClient.ownUser()`
+(`GET /api/v1/auth/me` as the caller), which fails with `SeerrUnmappedUserError` for them. Nothing falls
 back to the admin client, and the map does not import users: Seerr users are still created by the existing admin
 import (`importToJellyseerr` when a user is created).
 
@@ -158,6 +162,86 @@ Each title the app shows has exactly one household state, decided in this order:
 | `get_this` | Everything else: not in Seerr, held privately by another household, downloading for someone else, requested by someone else. | A "Get this" action. |
 
 A title another household holds is indistinguishable from one nobody has.
+
+As implemented in step 1a, every state is decided by one function, `titleState` in `src/app-api.ts`, from three inputs
+that depend on nothing another household does, all read for each answer:
+
+- **Eligibility**: the caller's own Seerr user, read as them (`ownUser()`). The caller may request movies with Seerr's
+  `ADMIN`, `REQUEST` or `REQUEST_MOVIE` permission and series with `ADMIN`, `REQUEST` or `REQUEST_TV` (Seerr 3.5.1
+  `MediaRequest.request`). Unmapped, or no such permission: `unavailable`. A title is blocklisted when the catalogue
+  answer's `mediaInfo.status` is `6` (`BLOCKLISTED`, set only by an administrator's blocklist, the same for every
+  household); it is the only `mediaInfo` field read.
+- **Library**: the movies and series the caller's own Jellyfin view holds, by TMDB ID, from one paged
+  `GET /Items?userId=<caller>&hasTmdbId=true&fields=ProviderIds` made with the caller's own token, so Jellyfin applies
+  their blocked tags, library access and parental limits. Seerr's `jellyfinMediaId` is never used. It is reused for up
+  to a minute per caller (one lookup per results page or less). A series' seasons are `in_library` when the caller's
+  view has episodes of them (`GET /Shows/:id/Episodes?userId=<caller>&isMissing=false`), otherwise `get_this`, or
+  `unavailable` with their series.
+- **Requested**: the titles household members have a pending or approved (Seerr request status 1 or 2) HD request for,
+  each member's own requests read as that member (`ownRequests`, 100 per page, at most 10 pages), each call confirmed
+  as usual. Declined, failed, completed and 4K requests do not count; a member Seerr has no user for has none.
+
+Because `unavailable` is decided first, a caller without request permission sees no Play link even for a title in their
+own library. That is the contract's order; step 1b may want `in_library` to win for callers without request
+permission (it reveals nothing about other households, since it comes from the caller's own Jellyfin view).
+
+## App API (step 1a)
+
+Served by `HouseholdApp` (`src/app-api.ts`) through the household gateway, only on household hosts and only with
+`HOUSEHOLD_APP_ENABLED=true` (which requires `HOUSEHOLD_DOMAIN`, Seerr and `SEERR_CATALOGUE_USER_ID`). Without it, every
+`/jellypass/app` path answers a fixed `404 {"error":"not_found"}` on household hosts and is never proxied to Jellyfin.
+On the administrator host the paths do not exist (the admin API's own `401`/`404`).
+
+| Endpoint | Answer |
+|---|---|
+| `GET /jellypass/app/v1/me` | `{name, household}` (no Seerr call) |
+| `GET /jellypass/app/v1/search?q=&page=` | `Page` (`q` 1 to 100 characters, `page` 1 to 500) |
+| `GET /jellypass/app/v1/discover/{trending,popular-movies,popular-tv,upcoming}?page=` | `Page` (`upcoming` is upcoming movies) |
+| `GET /jellypass/app/v1/movie/:tmdbId` | `Movie` |
+| `GET /jellypass/app/v1/tv/:tmdbId` | `Series` |
+| `GET /jellypass/app/v1/tv/:tmdbId/season/:n` | `Season` |
+
+DTOs (every key always present; missing values `null`, or `""` for text):
+
+- `Card`: `mediaType`, `tmdbId`, `title`, `year`, `overview`, `posterUrl`, `backdropUrl`, `rating` (TMDB vote average,
+  `null` when 0), `state`, `play` (`{itemId, url}` only for `in_library`, the URL
+  `https://<household host>/web/#/details?id=<itemId>`). Images are `https://image.tmdb.org/t/p/{w342,w780}` plus a
+  path matching `^/[A-Za-z0-9_-]{1,100}\.(jpg|jpeg|png|webp)$`.
+- `Page`: `page`, `nextPage` (`page + 1` only when Seerr returned a full page of 20 results, up to 500), `results`
+  (cards for movies and series; people and collections dropped).
+- `Movie`: the card's keys plus `genres` (names) and `runtime` (minutes). `Series`: also `seasons`
+  (`{seasonNumber, name, episodeCount, state}`), with `runtime` the first episode run time.
+- `Season`: `tmdbId`, `seasonNumber`, `name`, `overview`, `episodes` (`{episodeNumber, name, overview}`), `state`.
+
+Every DTO is built by copying named fields, each type-checked and length-capped, through an own-property reader; no
+Seerr or Jellyfin object is spread, relayed or stripped.
+
+Errors are fixed and the same for every endpoint and title: `400 invalid_request`, `401 unauthorized` (missing,
+invalid or disabled token, or a caller from another household, all identical), `404 not_found` (unknown path, or a
+title TMDB does not know), `429 too_many_requests`, `502 unavailable` (Jellyfin or Seerr failed, or the catalogue user
+is unfit; logged with the route and status only). Every answer has `Cache-Control: no-store`, `X-Content-Type-Options:
+nosniff` and `Referrer-Policy: no-referrer`.
+
+Budgets: 300 calls per client address and 200 per user in each 5-minute window (fixed windows, `AttemptCounter`); the
+address budget is counted before any credential is checked. Both answer the same `429`. Metrics:
+`jfa_app_requests_total{endpoint, outcome}`, with no title label.
+
+### Leak channels in step 1a
+
+| Channel | How step 1a closes it |
+|---|---|
+| Fields | Allowlist DTOs only (above). Canary tests run every endpoint over the canary-laden fixtures in every test world and pass status, headers and body to `assertNoCanaries`. |
+| Counts | No count is returned; a page holds exactly the titles returned. |
+| Paging | `nextPage` comes from the number of results Seerr returned; `totalPages` and `totalResults` are never read. |
+| Error text | Fixed bodies; Seerr and Jellyfin errors are logged by route and status. |
+| Status codes | Fixed per outcome; nothing about another household changes an outcome. |
+| Sequential IDs | Only TMDB IDs, and the caller's own playable Jellyfin item ID. |
+| Item IDs | Only from the caller's own Jellyfin view, and only for `in_library`. |
+| Timing | The calls made are the same whatever other households hold (tested); per-answer work is bounded (one catalogue read, two for a season, one permission read, at most 10 request pages per household member, a cached library read, one episode read for a series in the caller's library). Residual: Seerr's own title answer carries the title's media record, so its size and latency vary slightly with other households' records; JellyPass reads but never returns them. |
+| Caching | `Cache-Control: no-store` on every answer. |
+| Volume | Per-address and per-user budgets with one `429`. |
+| Identity, Preferences | Titles only as the catalogue user, member data only through `SeerrUserMap.member()`, each call confirmed (tested on every endpoint). |
+| Quota, Late requests | Not reachable: step 1a makes no requests. |
 
 ## "Get this" (step 2)
 
@@ -290,7 +374,7 @@ Only the v1 endpoints are reachable for a household member, each through its own
 
 | Group | Endpoints | Where |
 |---|---|---|
-| v1, as the member (confirmed per call) | `POST /request`; `GET /user/:self/requests`; `GET /user/:self/quota`; `GET /discover/watchlist` | `SeerrMemberClient` |
+| v1, as the member (confirmed per call) | `POST /request`; `GET /user/:self/requests`; `GET /user/:self/quota`; `GET /auth/me` (own permissions); `GET /discover/watchlist` | `SeerrMemberClient` |
 | v1, as the catalogue user | `GET /search`; `GET /discover/{trending,movies,movies/upcoming,tv,tv/upcoming}`; `GET /movie/:id`; `GET /tv/:id`; `GET /tv/:id/season/:n` | `SeerrCatalogueClient` |
 | v1, admin key | `GET /user/jellyfin/:jellyfinUserId` (user lookup); `GET /user/:id` (link check, its `id` and `jellyfinUserId`; catalogue-user check, also `permissions`) | `SeerrClient.findUserByJellyfinId`, `SeerrClient.jellyfinUserIdOf`, `SeerrClient.catalogueUserProblem` |
 | Later | Request cancellation by its owner, recommendations and similar titles, genre and keyword discovery, watchlist writes | Not yet |
@@ -301,8 +385,9 @@ Only the v1 endpoints are reachable for a household member, each through its own
 
 0. **Foundation** (this step): member and catalogue clients, user map, fixtures with canaries, real-Seerr test, this
    document.
-1. **Read API**: identity chain, search, discover, title details with household states, own requests and quota, as
-   allowlist DTOs tested with `assertNoCanaries`.
+1. **Read API**: (1a, done) identity chain, search, discover, title details with household states, as allowlist DTOs
+   tested with `assertNoCanaries` and byte-for-byte indistinguishability tests; (1b) the PWA's read-only screens over
+   it. Endpoints for the caller's own requests and quota are not in 1a; they come with step 2, which needs them.
 2. **"Get this"**: the uniform background action above.
 3. **PWA**: the household app itself, served on household hosts.
 4. **Cut-over**: the Seerr website restricted to administrators. Required: it closes late requests made directly to
@@ -367,6 +452,34 @@ Only the v1 endpoints are reachable for a household member, each through its own
   user only once per client, letting a pending lookup fill the cache after `clear()`, accepting a catalogue
   user with permissions or a Jellyfin link, reading the catalogue as the member, or counting the size limit in
   characters.
+- **App API.** `test/app-api.test.mjs` runs the app through the household gateway against a fake Seerr that enforces
+  `X-API-User` (built from the canary fixtures) and a fake Jellyfin that applies each user's blocked tags, library
+  access and parental limit (`test/support/household-app.mjs`). It covers: exact DTOs for every endpoint; every
+  endpoint canary-free in every world, and on Seerr errors; **indistinguishability**: household A's answers (status,
+  every header, body) from every endpoint, for two members, are byte-for-byte the same in the baseline world and in each
+  world where household B holds or asked for the title through a private grant, a pending request, a manual grant, or
+  a public title outside A's libraries (Seerr status, requests, watchlists, media IDs, JellyPass grants and Jellyfin
+  items all differ), and the Seerr and Jellyfin calls made are the same; each state rule (household requests, 4K,
+  declined, failed and completed ignored, other households ignored, paging through requests, per-media-type
+  permission, unmapped caller, blocklist, `in_library` before `requested`, blocked tags, libraries and parental limits,
+  per-season states); identity (titles only as the catalogue user, member routes only as that member with that
+  member's ID in the path, each call matched to its own preceding confirmation, never another household's member, an
+  unfit catalogue user failing the call); sessions (missing, invalid and disabled tokens and other households'
+  members refused identically, the three token forms, the 5-minute cache with membership checked every call, Jellyfin
+  down or unreachable failing closed, the admin host, an unknown household and the app switched off answering `404`
+  without proxying); input validation; both budgets; and metrics without titles.
+- **App mutation checks.** Each of these fails at least one app test: spreading the Seerr result, its `mediaInfo`, a
+  movie answer or a season into a DTO; relaying `totalResults`; paging from `totalPages`; deriving `requested` from
+  Seerr's media status; skipping the disabled or household-membership check; dropping `Cache-Control`; counting 4K or
+  declined, failed and completed requests; ignoring the blocklist or request permission; putting `requested` before
+  `in_library` or `in_library` before `unavailable`; reading another household's member; trusting a token for 10
+  minutes; dropping either budget.
+- **Real Jellyfin and Seerr for the app.** `pnpm test:real` serves the app from a real Jellyfin 10.11.3: the caller's
+  title is `in_library` with its Play link until a blocked tag or a parental rating above their limit hides it.
+  `pnpm test:seerr` seeds a member who may request (with a pending request) and another household's member (with
+  one) in a real Seerr 3.5.1, and checks `ownUser()` is read as the member, that the household's request shows as
+  `requested` and the other household's as `get_this`, that a member without permission gets `unavailable`, and that
+  no user data reaches an answer.
 - **TODO (step 2): quota before branching.** With a Seerr quota of 1 movie and the tally mirroring it: after one
   "Get this" through each of the join, interest and request branches, the next "Get this" runs no branch (no join,
   interest or request recorded) and answers byte-for-byte the same whichever branch it would have taken; the "request
