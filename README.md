@@ -536,12 +536,21 @@ the background, normally within seconds.
   as an administrator set them, the same rule as the request backfill. Public
   titles need no join.
 - **Administrator removals stick.** A household an administrator took off a
-  grant (in the grant's groups, the manual-access dialog, or bulk access), a
-  manual user they removed, and the requester of a request they revoked are
-  remembered on the grant (`removedGroupIds`, `removedUserIds`), and a join
-  never adds them back. Assigning them again as an administrator clears the
-  mark; deleting a group clears it from every grant. A new Seerr request still
-  adds its requester's households as before.
+  grant (in the grant's groups, the manual-access dialog, or bulk access) is
+  remembered in the grant's `removedGroupIds`, and every user that change, or
+  revoking a request, took access from (a removed manual user, the requester,
+  each member of a removed household with no other access) in
+  `removedUserIds`. A join never adds a marked household, and a marked user's
+  own joins change nothing at all, whichever household they belong to later
+  and even once they belong to none. A caller's unmarked households are still
+  added. A mark is personal: it does not stop another, unmarked member of the
+  caller's household from joining that household, which then includes the
+  marked user; remove the household itself to prevent that. Assigning a
+  household again clears its mark, and assigning a user as a manual user, or
+  adding a household they belong to, clears theirs; deleting a group clears
+  its own mark from every grant but not its former members'. Changing a
+  household's membership marks nobody. A new Seerr request still adds its
+  requester's households as before.
 - **Joins are audited.** Each join that changed a grant is recorded in the
   grant's `joins` (user, households added, whether the user was added, time),
   visible only to administrators through `GET /v1/grants`, and logged as

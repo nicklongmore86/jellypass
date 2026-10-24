@@ -836,7 +836,7 @@ describe('household library joins', () => {
     await service.revokeRequest('item-1', '18');
     let grant = store.get('item-1');
     assert.deepEqual(grant.removedGroupIds, ['house-b']);
-    assert.deepEqual(grant.removedUserIds, ['dave-id']);
+    assert.deepEqual(grant.removedUserIds, ['carol-id', 'dave-id'], 'Carol lost access with her household');
     assert.deepEqual(fake.user('carol-id').Policy.BlockedTags, ['jfa:private:item-1']);
 
     assert.equal(await join('carol-id'), 'unchanged');
@@ -855,15 +855,85 @@ describe('household library joins', () => {
     assert.equal(grant.joins.length, 1, 'the audit trail survives administrator edits');
   });
 
-  it('forgets a removal mark when its group is deleted', async (t) => {
+  it('forgets a removal mark when its group is deleted, but not the marks of the members who lost access', async (t) => {
     const { store, service, join } = await households(t);
     await service.processWebhook(parseWebhook(webhook()));
     await join('carol-id');
     await service.setGrantGroups('item-1', ['house-a']);
     await service.deleteGroup('house-b');
     assert.equal(store.get('item-1').removedGroupIds, undefined);
-    await service.upsertGroup({ id: 'house-b', name: 'New House B', userIds: ['carol-id'] });
+    await service.upsertGroup({ id: 'house-b', name: 'New House B', userIds: ['carol-id', 'dave-id'] });
+    assert.equal(await join('carol-id'), 'unchanged', 'Carol herself is still marked');
+    assert.equal(await join('dave-id'), 'joined');
+    assert.deepEqual(store.get('item-1').groupIds, ['house-a', 'house-b']);
+  });
+
+  it('does not let a user an administrator removed regain access by joining through a household', async (t) => {
+    const { store, fake, service, join } = await households(t);
+    await service.processWebhook(parseWebhook(webhook()));
+    // Dave, in no household, joins as a user, and an administrator takes him off.
+    assert.equal(await join('dave-id'), 'joined');
+    await service.setManualAccess({ itemId: 'item-1', userIds: [], groupIds: ['house-a'] });
+    assert.deepEqual(store.get('item-1').removedUserIds, ['dave-id']);
+    assert.deepEqual(fake.user('dave-id').Policy.BlockedTags, ['jfa:private:item-1']);
+
+    // He moves into House B, which nobody removed, and joins again: nothing happens.
+    await service.upsertGroup({ id: 'house-b', name: 'House B', userIds: ['carol-id', 'dave-id'] });
+    assert.equal(await join('dave-id'), 'unchanged');
+    assert.deepEqual(store.get('item-1').groupIds, ['house-a']);
+    assert.equal(store.get('item-1').joins.length, 1);
+    assert.deepEqual(fake.user('dave-id').Policy.BlockedTags, ['jfa:private:item-1']);
+
+    // The mark is Dave's own: another member can still join House B, which then includes him.
     assert.equal(await join('carol-id'), 'joined');
+    assert.deepEqual(store.get('item-1').groupIds, ['house-a', 'house-b']);
+    assert.deepEqual(store.get('item-1').removedUserIds, ['dave-id']);
+    assert.deepEqual(fake.user('dave-id').Policy.BlockedTags, []);
+  });
+
+  it('does not let a member of a removed household regain access by joining after leaving it', async (t) => {
+    const { store, fake, service, join } = await households(t);
+    await service.processWebhook(parseWebhook(webhook()));
+    assert.equal(await join('carol-id'), 'joined');
+    await service.setGrantGroups('item-1', ['house-a']);
+    assert.deepEqual(store.get('item-1').removedUserIds, ['carol-id']);
+
+    // Carol leaves House B, so she belongs to no household and would be added directly.
+    await service.upsertGroup({ id: 'house-b', name: 'House B', userIds: [] });
+    assert.equal(await join('carol-id'), 'unchanged');
+    // Nor through a new household.
+    await service.upsertGroup({ id: 'house-c', name: 'House C', userIds: ['carol-id'] });
+    assert.equal(await join('carol-id'), 'unchanged');
+    const grant = store.get('item-1');
+    assert.deepEqual(grant.groupIds, ['house-a']);
+    assert.deepEqual(grant.manualUserIds, []);
+    assert.deepEqual(fake.user('carol-id').Policy.BlockedTags, ['jfa:private:item-1']);
+  });
+
+  it('skips a caller\'s removed household but adds their others', async (t) => {
+    const { store, service, join } = await households(t);
+    await service.processWebhook(parseWebhook(webhook()));
+    await join('carol-id');
+    await service.setGrantGroups('item-1', ['house-a']);
+    // Dave never had access, so he is not marked; he belongs to the removed House B and to House C.
+    await service.upsertGroup({ id: 'house-b', name: 'House B', userIds: ['carol-id', 'dave-id'] });
+    await service.upsertGroup({ id: 'house-c', name: 'House C', userIds: ['dave-id'] });
+    assert.equal(await join('dave-id'), 'joined');
+    const grant = store.get('item-1');
+    assert.deepEqual(grant.groupIds, ['house-a', 'house-c']);
+    assert.deepEqual(grant.joins.at(-1).groupIds, ['house-c']);
+  });
+
+  it('keeps a member\'s mark when their household stays on the grant, and clears it when an administrator adds the household', async (t) => {
+    const { store, service, join } = await households(t);
+    await service.processWebhook(parseWebhook(webhook()));
+    await join('carol-id');
+    await service.setGrantGroups('item-1', ['house-a']);
+    await service.setGrantGroups('item-1', ['house-a']);
+    assert.deepEqual(store.get('item-1').removedUserIds, ['carol-id']);
+    await service.setGrantGroups('item-1', ['house-a', 'house-b']);
+    assert.equal(store.get('item-1').removedUserIds, undefined);
+    assert.equal(store.get('item-1').removedGroupIds, undefined);
   });
 
   it('reports a failed lookup or write as an error without throwing or changing anything', async (t) => {

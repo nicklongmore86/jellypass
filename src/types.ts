@@ -123,8 +123,11 @@ export interface GrantRecord {
   /** Household "Add to my library" joins that changed this grant, oldest first, for administrators to audit. */
   joins?: LibraryJoin[];
   /**
-   * Groups and users an administrator removed from this grant. A household join never adds them back; an
-   * administrator assigning them again clears the mark.
+   * Groups an administrator removed from this grant, and users an administrator's change took access from (a removed
+   * manual user, a revoked request's requester, each member of a removed household who had no other access). A
+   * household join never adds a marked group, and a marked user's own joins change nothing; see GrantStore.joinGrant.
+   * An administrator assigning the group again clears its mark; assigning the user as a manual user, or adding a
+   * household they belong to, clears theirs.
    */
   removedGroupIds?: string[];
   removedUserIds?: string[];

@@ -176,7 +176,7 @@ export class GrantStore {
     const missing = groupIds.filter((id) => !this.#state.groups[id]);
     if (missing.length > 0) throw new Error(`group not found: ${missing.join(', ')}`);
     const result = this.#replaceGrant(previous, previous.requests, previous.manualUserIds, groupIds,
-      administratorRemovals(previous, previous.manualUserIds, groupIds));
+      this.#administratorRemovals(previous, previous.manualUserIds, groupIds));
     await this.#save();
     return result;
   }
@@ -206,7 +206,7 @@ export class GrantStore {
     const missing = groupIds.filter((id) => !this.#state.groups[id]);
     if (missing.length > 0) throw new Error(`group not found: ${missing.join(', ')}`);
     const current = this.#makeGrant(itemId, previous?.requests ?? {}, manualUserIds, groupIds, previous, input.mediaType,
-      previous ? administratorRemovals(previous, manualUserIds, groupIds) : {});
+      previous ? this.#administratorRemovals(previous, manualUserIds, groupIds) : {});
     this.#state.grants[itemId] = current;
       results.push({ ...(previous ? { previous: clone(previous) } : {}), current: clone(current) });
     }
@@ -262,8 +262,16 @@ export class GrantStore {
    * Household "Add to my library": adds the caller's households (`groupIds`), or the caller as a manual user when they
    * belong to none, to the grant of `itemId`. Only an active grant that records at least one request is joined, the
    * same grants the request backfill adds requests to; manual-only grants and items without a grant are left alone.
-   * Nothing is ever removed, and groups or users an administrator removed from the grant are not added back. Returns
-   * undefined, without writing, when nothing changes.
+   * Nothing is ever removed, and a join never undoes an administrator's removal:
+   *
+   * - a caller in `removedUserIds` (an administrator's change took their access) joins nothing at all, whichever
+   *   household they belong to now;
+   * - a household in `removedGroupIds` is never added; the caller's other households still are;
+   * - a caller in no household is added as a user, unless they are marked.
+   *
+   * A mark is personal: it does not stop another member of the caller's household from joining it, which then gives
+   * the whole household, the marked caller included, access. Removing the household itself is what blocks that.
+   * Returns undefined, without writing, when nothing changes.
    */
   public async joinGrant(input: { itemId: string; userId: string; groupIds: string[] }): Promise<RevokeResult | undefined> {
     this.#assertOpen();
@@ -271,13 +279,12 @@ export class GrantStore {
     const userId = normalizeId(input.userId);
     const previous = this.#state.grants[itemId];
     if (!previous?.active || Object.keys(previous.requests).length === 0) return undefined;
+    if (previous.removedUserIds?.includes(userId)) return undefined;
     const households = [...new Set(input.groupIds.map(normalizeId))].filter((id) => this.#state.groups[id]);
     const addedGroupIds = households
       .filter((id) => !previous.groupIds.includes(id) && !previous.removedGroupIds?.includes(id))
       .sort();
-    const userAdded = households.length === 0
-      && !this.resolveOwners(previous).includes(userId)
-      && !previous.removedUserIds?.includes(userId);
+    const userAdded = households.length === 0 && !this.resolveOwners(previous).includes(userId);
     if (addedGroupIds.length === 0 && !userAdded) return undefined;
     const join: LibraryJoin = { userId, groupIds: addedGroupIds, userAdded, joinedAt: new Date().toISOString() };
     const result = this.#replaceGrant(
@@ -376,6 +383,29 @@ export class GrantStore {
     return placeholder;
   }
 
+  /**
+   * The removal marks after an administrator sets a grant's groups and manual users. Whatever they took off is marked:
+   * each removed group, each removed manual user, and every user who loses access through the change (such as the
+   * members of a removed household), so that user cannot regain it by joining directly or through another household.
+   * Whatever they assign is unmarked: the groups and manual users they set, and the members of each group they add.
+   * Members of a group that merely stays on the grant keep their marks.
+   */
+  #administratorRemovals(previous: GrantRecord, manualUserIds: string[], groupIds: string[]): GrantAudit {
+    const removedGroupIds = [...new Set([...(previous.removedGroupIds ?? []), ...previous.groupIds])]
+      .filter((id) => !groupIds.includes(id))
+      .sort();
+    const owners = new Set(this.resolveOwners({ ...previous, manualUserIds, groupIds }));
+    const lostAccess = this.resolveOwners(previous).filter((id) => !owners.has(id));
+    const assigned = new Set([
+      ...manualUserIds,
+      ...groupIds.filter((id) => !previous.groupIds.includes(id)).flatMap((id) => this.#state.groups[id]?.userIds ?? []),
+    ]);
+    const removedUserIds = [...new Set([...(previous.removedUserIds ?? []), ...previous.manualUserIds, ...lostAccess])]
+      .filter((id) => !assigned.has(id))
+      .sort();
+    return { removedGroupIds, removedUserIds };
+  }
+
   /** Synchronous, so a mutation and the save that persists it are never split by close(). */
   #replaceGrant(
     previous: GrantRecord,
@@ -436,20 +466,6 @@ export class GrantStore {
 
 /** Audit fields to set on a rebuilt grant; a field that is absent is carried over from the previous grant. */
 type GrantAudit = Partial<Pick<GrantRecord, 'joins' | 'removedGroupIds' | 'removedUserIds'>>;
-
-/**
- * The removal marks after an administrator sets a grant's groups and manual users: whatever they took off is marked, and
- * whatever they assigned is unmarked.
- */
-function administratorRemovals(previous: GrantRecord, manualUserIds: string[], groupIds: string[]): GrantAudit {
-  const removedGroupIds = [...new Set([...(previous.removedGroupIds ?? []), ...previous.groupIds])]
-    .filter((id) => !groupIds.includes(id))
-    .sort();
-  const removedUserIds = [...new Set([...(previous.removedUserIds ?? []), ...previous.manualUserIds])]
-    .filter((id) => !manualUserIds.includes(id))
-    .sort();
-  return { removedGroupIds, removedUserIds };
-}
 
 export function normalizeId(value: string): string {
   return value.trim().toLowerCase();

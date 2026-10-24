@@ -22,9 +22,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Jellyfin token, checked with Jellyfin; calls are rate-limited per client
   address (30 per 10 minutes) and refused during shutdown. Requires Seerr
   lookup (`SEERR_URL`, `SEERR_API_KEY`); no new settings.
-- Grants record each join in `joins`, and the groups and users an
-  administrator removed in `removedGroupIds` and `removedUserIds`, so a join
-  never undoes an administrator's removal. The state file stays at schema v7;
+- Grants record each join in `joins`, the groups an administrator removed in
+  `removedGroupIds`, and the users an administrator's change took access from
+  (including the members of a removed household) in `removedUserIds`, so a join
+  never undoes an administrator's removal: a marked user's joins change
+  nothing, even through a household they join later or after leaving the
+  removed one. The state file stays at schema v7;
   2.1.1 reads it and drops these fields from a grant it rewrites.
 - `jfa_library_joins_total{result}` counts joins as `joined`, `unchanged` or
   `error`.
