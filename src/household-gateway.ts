@@ -30,9 +30,10 @@ const MAX_LIBRARY_JOINS = 30;
  * Joins started per signed-in user, and in all, in each window of LIBRARY_JOIN_WINDOW_MS (the per-address budget is the
  * MAX_LIBRARY_JOINS rate limit). These count submissions and are never given back when a join finishes, so whether a
  * call is started depends only on how many calls were made and when, never on how long any title's work took. A signed-
- * in, valid call past either budget is answered exactly like any other but not started. At most
- * MAX_LIBRARY_JOINS_STARTED joins are therefore started in any window, which bounds the work queued behind Seerr and
- * the shared write queue.
+ * in, valid call past either budget is answered exactly like any other but not started; a call past the user's own
+ * budget is not counted against the shared one. Both are fixed windows that start at the first counted call. At most
+ * MAX_LIBRARY_JOINS_STARTED joins are therefore started per window: this limits the rate work is submitted to Seerr and
+ * the shared write queue, not how much is in flight, since joins still queued from one window add to the next.
  */
 const MAX_LIBRARY_JOINS_STARTED_PER_USER = 10;
 const MAX_LIBRARY_JOINS_STARTED = 200;
@@ -391,10 +392,11 @@ export class HouseholdGateway {
       writeJson(response, 503, { error: 'shutting_down' });
       return;
     }
-    // Every such call is counted, started or not.
-    const byUser = this.#libraryJoinsByUser.increment(user.Id.toLowerCase());
-    const inAll = this.#libraryJoinsInAll.increment('all');
-    if (byUser > MAX_LIBRARY_JOINS_STARTED_PER_USER || inAll > MAX_LIBRARY_JOINS_STARTED) {
+    // Every such call is counted against its user, started or not; only a call the user's budget admits is counted
+    // against the shared one, so one user cannot use up more of it than their own budget.
+    const overBudget = this.#libraryJoinsByUser.increment(user.Id.toLowerCase()) > MAX_LIBRARY_JOINS_STARTED_PER_USER
+      || this.#libraryJoinsInAll.increment('all') > MAX_LIBRARY_JOINS_STARTED;
+    if (overBudget) {
       this.#logDebug('household library join dropped: over budget', { clientId });
       libraryJoin.dropped?.();
     } else if (!libraryJoin.start({ userId: user.Id, isAdministrator: user.Policy?.IsAdministrator === true, ...media })) {

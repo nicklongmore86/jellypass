@@ -576,10 +576,14 @@ the background, normally within seconds.
   30 times in 10 minutes, signed in or not; further calls get `429`. Each
   user may start 10 joins in 10 minutes, and all users together 200; a signed-in,
   valid call past either budget gets the same `202` but its join is not
-  started, so try again later. These budgets count calls and are never given
-  back when a join finishes, so whether a call is started depends only on how
-  many calls were made and when, not on any title; they also bound the joins
-  waiting on Seerr or Jellyfin to 200 started per 10 minutes. A join that
+  started, so try again later. A call past a user's own budget does not use up
+  the shared one. These budgets count calls and are never given back when a
+  join finishes, so whether a call is started depends only on how many calls
+  were made and when, not on any title. They are submission-rate limits over
+  fixed 10-minute windows, each starting at the first call counted in it: at
+  most 200 joins are started per window, but this is not a bound on joins in
+  flight, since joins still waiting on Seerr or Jellyfin from one window add
+  to those started in the next. A join that
   would change nothing (public, already visible, manual-only, missing) is
   decided without waiting behind other writes.
   During shutdown it answers `503`; joins already running are stopped before

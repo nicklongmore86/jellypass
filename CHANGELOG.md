@@ -23,8 +23,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is held. The caller is identified only by their Jellyfin token, checked with
   Jellyfin; calls are rate-limited per client address (30 per 10 minutes),
   each user may start 10 joins and all users together 200 per 10 minutes
-  (further calls get the same answer but are not started; the budgets count
-  calls, never how long a join took), and calls are
+  (further calls get the same answer but are not started, and a call past a
+  user's own budget does not use up the shared one; the budgets count calls,
+  never how long a join took, over fixed 10-minute windows starting at the
+  first call counted, so they limit the rate joins are started, not how many
+  are in flight: joins still queued from one window add to the next), and
+  calls are
   refused during shutdown, which stops running joins and waits for them like
   other background work. Requires Seerr lookup (`SEERR_URL`,
   `SEERR_API_KEY`); no new settings.

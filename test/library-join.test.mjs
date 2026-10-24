@@ -286,6 +286,33 @@ describe('household "Add to my library"', { timeout: 10_000 }, () => {
     ]);
   });
 
+  it('counts only calls a user\'s budget admits against the shared budget, from however many addresses', async (t) => {
+    const { client, service, login, join, settled, lookups } = await gateway(t, { trustedProxies: ['127.0.0.1'] });
+    const from = (address) => ({ 'X-Forwarded-For': address });
+    const notInLibrary = { mediaType: 'movie', tmdbId: 404 };
+    const carol = await login('Carol');
+    // 240 calls from eight addresses, past the shared budget of 200: only Carol's own ten are started.
+    for (let address = 0; address < 8; address += 1) {
+      for (let call = 0; call < 30; call += 1) {
+        assert.equal((await join(carol, notInLibrary, from(`203.0.113.${address}`))).status, 202);
+      }
+    }
+    assert.equal((await join(await login('Dave'), notInLibrary, from('198.51.100.1'))).status, 202);
+    await settled();
+    assert.equal(lookups.length, 11, 'Carol started ten and Dave was admitted');
+    // Exactly 189 of the shared budget are left: nineteen more users get 189 started and one dropped.
+    for (let user = 0; user < 19; user += 1) {
+      await client.createUser(`Member${user}`, 'user-password');
+      const token = await login(`Member${user}`);
+      for (let call = 0; call < 10; call += 1) {
+        assert.equal((await join(token, notInLibrary, from(`198.51.100.${user + 10}`))).status, 202);
+      }
+    }
+    await settled();
+    assert.equal(lookups.length, 200);
+    assert.match(service.renderMetrics(), /jfa_library_joins_total\{result="dropped"\} 231\b/);
+  });
+
   it('is drained by shutdown before the store closes, and applies nothing once shutdown began', async (t) => {
     let release;
     const { jellyfin, store, server, background, login, join, grantForAlice, started, carol } = await gateway(t, {
