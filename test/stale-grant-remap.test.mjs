@@ -41,6 +41,7 @@ function world() {
       if (!item) throw httpError(`Jellyfin GET /Users/admin-id/Items/${itemId} returned 404`, 404);
       return structuredClone(item);
     },
+    async getItems(itemIds) { return Promise.all(itemIds.map((itemId) => jellyfin.getItem(itemId))); },
     async getLocalTrailers(itemId) {
       calls.push(`getLocalTrailers:${itemId}`);
       if (!items.has(itemId)) throw httpError(`Jellyfin GET /Items/${itemId}/LocalTrailers returned 404`, 404);
@@ -118,6 +119,18 @@ async function reimported(t, { seerr = true } = {}) {
   w.calls.length = 0;
   w.writes.length = 0;
   return { w, store, service };
+}
+
+/**
+ * A dry run's grant is exactly what the write stores, apart from when it was written and its reconciliation, which a
+ * dry run never does: it stays pending with `previous`'s attempt count and last success, as the write stores it.
+ */
+function assertPreviewStored(preview, stored, previous, message) {
+  const { updatedAt: _plannedAt, sync, ...planned } = preview;
+  const { updatedAt: _storedAt, sync: _reconciled, ...actual } = stored;
+  assert.deepEqual(planned, actual, message);
+  const lastSuccessAt = previous?.sync.lastSuccessAt;
+  assert.deepEqual(sync, { state: 'pending', attempts: previous?.sync.attempts ?? 0, ...(lastSuccessAt ? { lastSuccessAt } : {}) }, `${message}: sync`);
 }
 
 async function quietly(run) {
@@ -1285,6 +1298,7 @@ describe('library join history across grant moves', { timeout: 10_000 }, () => {
     await join(service, w, 'bob-id', 'item-new');
     const own = store.get('item-new').joins;
     const before = store.list();
+    const target = store.get('item-new');
     w.writes.length = 0;
 
     const planned = await service.remapGrant('item-old', 'item-new', true);
@@ -1295,8 +1309,8 @@ describe('library join history across grant moves', { timeout: 10_000 }, () => {
     const { value: result, error } = await quietly(() => service.remapGrant('item-old', 'item-new'));
     assert.equal(error, undefined, String(error));
     assert.equal(store.get('item-old'), undefined);
-    assert.deepEqual(history(store.get('item-new')), history(planned.current));
-    assert.deepEqual(history(result.current), history(planned.current));
+    assertPreviewStored(planned.current, store.get('item-new'), target, 'the dry run plans the grant the move stores');
+    assert.deepEqual(result.current, store.get('item-new'));
     assert.deepEqual(w.blockedFrom(NEW_TAG), []);
   });
 
@@ -1319,6 +1333,7 @@ describe('library join history across grant moves', { timeout: 10_000 }, () => {
     assert.equal(store.get('item-old').sync.state, 'orphaned');
     assert.deepEqual(store.get('item-a').joins, [joins[0]]);
     const before = store.list();
+    const target = store.get('item-a');
 
     const planned = await service.remapGrant('item-old', 'item-a', true);
     assert.deepEqual(planned.current.joins, joins);
@@ -1327,8 +1342,98 @@ describe('library join history across grant moves', { timeout: 10_000 }, () => {
     assert.equal(error, undefined, String(error));
     assert.equal(store.get('item-old'), undefined);
     const a = store.get('item-a');
+    assertPreviewStored(planned.current, a, target, 'the dry run plans the grant the move stores');
     assert.deepEqual(a.joins, joins, 'House A\'s join once, Farmhouse\'s join added');
     assert.deepEqual([a.requests, a.groupIds], [{ 1: 'alice-id', 3: 'carol-id' }, ['farmhouse', 'house-a']]);
     assert.deepEqual(w.blockedFrom(accessTag('item-a')), ['bob-id', 'dave-id']);
+  });
+});
+
+/**
+ * Every administrator dry run (manual access, bulk access, revoking a request, setting a grant's groups, moving a grant)
+ * returns the grant its write stores: library join history, remap notes and sync status included.
+ */
+describe('administrator dry runs plan exactly what the write stores', { timeout: 10_000 }, () => {
+  /**
+   * item-1 has alice's request 7 (House A) and bob's request 8; carol joined Farmhouse to it. Its last move off it
+   * found the item there again (a `remap` note). It was applied since, so it is synced with a last success.
+   */
+  async function joinedAndNoted(t) {
+    const w = world();
+    const store = await newStore(t);
+    const service = new AccessService(w.jellyfin, store, undefined, w.seerr);
+    await store.upsertGroup({ id: 'cottage', name: 'Cottage', userIds: ['dave-id'] });
+    w.addItem('item-1');
+    w.addItem('item-2');
+    await store.replaceCatalog(['item-1', 'item-2'].map((id) => ({ id, name: `Movie ${id}`, type: 'Movie', mediaType: 'movie', libraryId: 'movies', libraryName: 'Movies' })));
+    await store.grant({ itemId: 'item-1', requestId: '7', userId: 'alice-id', groupIds: ['house-a'] });
+    await store.grant({ itemId: 'item-1', requestId: '8', userId: 'bob-id' });
+    await service.reconcileAll();
+    w.titles.set('movie/603', 'item-1');
+    const { value, error } = await quietly(() => service.joinLibrary({ userId: 'carol-id', isAdministrator: false, mediaType: 'movie', tmdbId: 603 }));
+    assert.equal(error, undefined, String(error));
+    assert.equal(value, 'joined');
+    await store.markSourceReappeared('item-1', ['item-x']);
+    await service.reconcileAll();
+    const grant = store.get('item-1');
+    assert.equal(grant.joins.length, 1);
+    assert.ok(grant.remap?.sourceReappeared);
+    assert.equal(grant.sync.state, 'synced');
+    assert.ok(grant.sync.lastSuccessAt);
+    w.writes.length = 0;
+    return { w, store, service, grant };
+  }
+
+  /** Runs `write` as a dry run and for real; the dry run stores and changes nothing. */
+  async function previewThenWrite(w, store, write) {
+    const before = store.list();
+    const planned = await write(true);
+    assert.deepEqual(store.list(), before, 'the dry run stores nothing');
+    assert.deepEqual(w.writes, [], 'the dry run changes nothing in Jellyfin');
+    const { value, error } = await quietly(() => write(false));
+    assert.equal(error, undefined, String(error));
+    return { planned, written: value };
+  }
+
+  it('previews manual access with the grant\'s join history and remap note', async (t) => {
+    const { w, store, service, grant } = await joinedAndNoted(t);
+    const input = { itemId: 'item-1', userIds: ['dave-id'], groupIds: ['house-a', 'farmhouse'] };
+    const { planned, written } = await previewThenWrite(w, store, (dryRun) => service.setManualAccess(input, dryRun));
+    assert.deepEqual(planned.current.joins, grant.joins, 'carol\'s join is in the preview');
+    assert.deepEqual(planned.previous, grant);
+    assertPreviewStored(planned.current, store.get('item-1'), grant, 'manual access');
+    assertPreviewStored(planned.current, written.current, grant, 'manual access result');
+    assert.deepEqual(planned.plan, written.plan);
+  });
+
+  it('previews bulk manual access with each grant\'s join history and remap note', async (t) => {
+    const { w, store, service, grant } = await joinedAndNoted(t);
+    const input = { itemIds: ['item-1', 'item-2'], userIds: ['dave-id'], groupIds: ['farmhouse'] };
+    const { planned, written } = await previewThenWrite(w, store, (dryRun) => service.setBulkManualAccess(input, dryRun));
+    assert.deepEqual(planned.currents.map((current) => current.itemId), ['item-1', 'item-2']);
+    assert.deepEqual(planned.currents[0].joins, grant.joins, 'carol\'s join is in the preview');
+    assertPreviewStored(planned.currents[0], store.get('item-1'), grant, 'bulk access, existing grant');
+    assertPreviewStored(planned.currents[1], store.get('item-2'), undefined, 'bulk access, new grant');
+    planned.currents.forEach((current, index) => assertPreviewStored(current, written.currents[index], index === 0 ? grant : undefined, `bulk access result ${index}`));
+    assert.deepEqual(planned.plans, written.plans);
+  });
+
+  it('previews revoking a request as the revocation stores it', async (t) => {
+    const { w, store, service, grant } = await joinedAndNoted(t);
+    const { planned, written } = await previewThenWrite(w, store, (dryRun) => service.revokeRequest('item-1', '8', dryRun));
+    assert.deepEqual(planned.previous, grant);
+    assertPreviewStored(planned.current, store.get('item-1'), grant, 'revocation');
+    assertPreviewStored(planned.current, written.current, grant, 'revocation result');
+    assert.deepEqual(planned.plan, written.plan);
+  });
+
+  it('previews setting a grant\'s groups as the change stores it', async (t) => {
+    const { w, store, service, grant } = await joinedAndNoted(t);
+    const { planned, written } = await previewThenWrite(w, store, (dryRun) => service.setGrantGroups('item-1', ['house-a', 'cottage'], dryRun));
+    assert.deepEqual(planned.previous, grant);
+    assert.deepEqual(planned.current.groupIds, ['cottage', 'house-a']);
+    assertPreviewStored(planned.current, store.get('item-1'), grant, 'groups');
+    assertPreviewStored(planned.current, written.current, grant, 'groups result');
+    assert.deepEqual(planned.plan, written.plan);
   });
 });

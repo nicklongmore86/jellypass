@@ -591,8 +591,8 @@ export class AccessService {
       const existing = this.#store.get(itemId);
       if (!existing || !(requestId in existing.requests)) throw new Error('request grant not found');
       if (dryRun) {
-        const hypothetical = hypotheticalRevocation(existing, requestId, this.#store);
-        return { previous: existing, current: hypothetical, plan: (await this.#buildPlan(hypothetical)).plan };
+        const planned = this.#store.previewRevokeRequest(itemId, requestId) as RevokeResult;
+        return { ...planned, plan: (await this.#buildPlan(planned.current)).plan };
       }
       const result = await this.#store.revokeRequest(itemId, requestId);
       if (!result) throw new Error('request grant not found');
@@ -604,14 +604,8 @@ export class AccessService {
   public setGrantGroups(itemId: string, groupIds: string[], dryRun = false): Promise<RevokeResult & { plan: ChangePlan }> {
     return this.#exclusive(async () => {
       if (dryRun) {
-        const existing = this.#store.get(itemId);
-        if (!existing) throw new Error(`grant not found: ${normalizeId(itemId)}`);
-        const missing = groupIds.filter((id) => !this.#store.getGroup(id));
-        if (missing.length > 0) throw new Error(`group not found: ${missing.join(', ')}`);
-        const hypothetical = { ...existing, groupIds: [...new Set(groupIds.map(normalizeId))] };
-        hypothetical.owners = this.#store.resolveOwners(hypothetical);
-        hypothetical.active = Object.keys(hypothetical.requests).length > 0 || hypothetical.manualUserIds.length > 0 || hypothetical.groupIds.length > 0;
-        return { previous: existing, current: hypothetical, plan: (await this.#buildPlan(hypothetical)).plan };
+        const planned = this.#store.previewGrantGroups(itemId, groupIds);
+        return { ...planned, plan: (await this.#buildPlan(planned.current)).plan };
       }
       const result = await this.#store.setGrantGroups(itemId, groupIds);
       const plan = await this.#reconcileGrant(result.current);
@@ -694,22 +688,10 @@ export class AccessService {
       const userIds = [...new Set(input.userIds.map(normalizeId))].sort();
       const groupIds = [...new Set(input.groupIds.map(normalizeId))].sort();
       await this.#validateManualAudience(userIds, groupIds);
-      const previous = this.#store.get(input.itemId);
-      const mediaType = input.mediaType ?? previous?.mediaType;
-      const current: GrantRecord = {
-        itemId: normalizeId(input.itemId),
-        active: Object.keys(previous?.requests ?? {}).length > 0 || userIds.length > 0 || groupIds.length > 0,
-        owners: [],
-        requests: previous?.requests ?? {},
-        manualUserIds: userIds,
-        groupIds,
-        sync: { state: 'pending', attempts: previous?.sync.attempts ?? 0 },
-        updatedAt: new Date().toISOString(),
-        ...(mediaType ? { mediaType } : {}),
-      };
-      current.owners = this.#store.resolveOwners(current);
-      const plan = (await this.#buildPlan(current)).plan;
-      if (dryRun) return { ...(previous ? { previous } : {}), current, plan };
+      if (dryRun) {
+        const [planned] = this.#store.previewManualAccessBatch([input]) as [{ previous?: GrantRecord; current: GrantRecord }];
+        return { ...planned, plan: (await this.#buildPlan(planned.current)).plan };
+      }
       const stored = await this.#store.setManualAccess(input);
       const appliedPlan = await this.#reconcileGrant(stored.current);
       return { ...stored, plan: appliedPlan };
@@ -736,12 +718,12 @@ export class AccessService {
       if (!administrator) throw new Error('Jellyfin administrator user not found');
       const relatedItems = await Promise.all(itemIds.map((itemId) =>
         this.#jellyfin.getLocalTrailers(itemId, administrator.Id)));
-      const currents = itemIds.map((itemId) => this.#makeManualGrant(
-        itemId,
-        catalogById.get(itemId)?.mediaType,
-        userIds,
-        groupIds,
-      ));
+      const inputs = itemIds.map((itemId) => {
+        const mediaType = catalogById.get(itemId)?.mediaType;
+        return { itemId, userIds, groupIds, ...(mediaType ? { mediaType } : {}) };
+      });
+      // Exactly what setManualAccessBatch stores below, so the plans applied are the plans previewed.
+      const currents = this.#store.previewManualAccessBatch(inputs).map((result) => result.current);
       const contexts = currents.map((grant, index) => this.#buildPlanContext(
         grant,
         items[index] as JellyfinItem,
@@ -751,12 +733,7 @@ export class AccessService {
       const plans = contexts.map((context) => context.plan);
       if (dryRun) return { currents, plans };
 
-      const stored = await this.#store.setManualAccessBatch(currents.map((grant) => ({
-        itemId: grant.itemId,
-        userIds: grant.manualUserIds,
-        groupIds: grant.groupIds,
-        ...(grant.mediaType ? { mediaType: grant.mediaType } : {}),
-      })));
+      const stored = await this.#store.setManualAccessBatch(inputs);
       try {
         await this.#applyBatch(contexts, users);
         await this.#store.markSyncSuccessBatch(stored.map((result) => result.current.itemId));
@@ -818,24 +795,6 @@ export class AccessService {
     const administrators = userIds.filter((id) => byId.get(id)?.Policy.IsAdministrator);
     if (administrators.length > 0) throw new Error('Jellyfin administrators already have unrestricted access');
     return users;
-  }
-
-  #makeManualGrant(itemId: string, mediaType: string | undefined, userIds: string[], groupIds: string[]): GrantRecord {
-    const previous = this.#store.get(itemId);
-    const resolvedMediaType = mediaType ?? previous?.mediaType;
-    const current: GrantRecord = {
-      itemId: normalizeId(itemId),
-      active: Object.keys(previous?.requests ?? {}).length > 0 || userIds.length > 0 || groupIds.length > 0,
-      owners: [],
-      requests: previous?.requests ?? {},
-      manualUserIds: userIds,
-      groupIds,
-      sync: { state: 'pending', attempts: previous?.sync.attempts ?? 0 },
-      updatedAt: new Date().toISOString(),
-      ...(resolvedMediaType ? { mediaType: resolvedMediaType } : {}),
-    };
-    current.owners = this.#store.resolveOwners(current);
-    return current;
   }
 
   /**
@@ -1294,13 +1253,4 @@ function requestItemId(request: SeerrRequest): string | undefined {
 
 function requestMediaStatus(request: SeerrRequest): number | undefined {
   return request.is4k ? request.media?.status4k : request.media?.status;
-}
-
-function hypotheticalRevocation(grant: GrantRecord, requestId: string, store: GrantStore): GrantRecord {
-  const requests = { ...grant.requests };
-  delete requests[requestId];
-  const next = { ...grant, requests, updatedAt: new Date().toISOString() };
-  next.owners = store.resolveOwners(next);
-  next.active = Object.keys(requests).length > 0 || next.manualUserIds.length > 0 || next.groupIds.length > 0;
-  return next;
 }

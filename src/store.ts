@@ -181,6 +181,17 @@ export class GrantStore {
 
   public async revokeRequest(itemIdInput: string, requestId: string): Promise<RevokeResult | undefined> {
     this.#assertOpen();
+    const result = this.#revokeRequest(itemIdInput, requestId);
+    if (result) await this.#save();
+    return result;
+  }
+
+  /** What revokeRequest would store, without storing anything (see #preview). */
+  public previewRevokeRequest(itemIdInput: string, requestId: string): RevokeResult | undefined {
+    return this.#preview(() => this.#revokeRequest(itemIdInput, requestId));
+  }
+
+  #revokeRequest(itemIdInput: string, requestId: string): RevokeResult | undefined {
     const itemId = normalizeId(itemIdInput);
     const previous = this.#state.grants[itemId];
     if (!previous || !(requestId in previous.requests)) return undefined;
@@ -196,12 +207,22 @@ export class GrantStore {
       const removals = this.#state.removedAccess?.[itemId] ?? {};
       this.#setRemovals(itemId, { ...removals, userIds: [...(removals.userIds ?? []), requester] });
     }
-    await this.#save();
     return result;
   }
 
   public async setGrantGroups(itemIdInput: string, groupIdsInput: string[]): Promise<RevokeResult> {
     this.#assertOpen();
+    const result = this.#setGrantGroups(itemIdInput, groupIdsInput);
+    await this.#save();
+    return result;
+  }
+
+  /** What setGrantGroups would store, without storing anything (see #preview). */
+  public previewGrantGroups(itemIdInput: string, groupIdsInput: string[]): RevokeResult {
+    return this.#preview(() => this.#setGrantGroups(itemIdInput, groupIdsInput));
+  }
+
+  #setGrantGroups(itemIdInput: string, groupIdsInput: string[]): RevokeResult {
     const itemId = normalizeId(itemIdInput);
     const previous = this.#state.grants[itemId];
     if (!previous) throw new Error(`grant not found: ${itemId}`);
@@ -210,7 +231,6 @@ export class GrantStore {
     if (missing.length > 0) throw new Error(`group not found: ${missing.join(', ')}`);
     const result = this.#replaceGrant(previous, previous.requests, previous.manualUserIds, groupIds);
     this.#recordAdministratorChange(itemId, previous, previous.manualUserIds, groupIds);
-    await this.#save();
     return result;
   }
 
@@ -230,20 +250,40 @@ export class GrantStore {
     groupIds: string[];
   }>): Promise<Array<{ previous?: GrantRecord; current: GrantRecord }>> {
     this.#assertOpen();
+    const results = this.#setManualAccessBatch(inputs);
+    await this.#save();
+    return results;
+  }
+
+  /** What setManualAccessBatch would store, without storing anything (see #preview). */
+  public previewManualAccessBatch(inputs: Array<{
+    itemId: string;
+    mediaType?: string;
+    userIds: string[];
+    groupIds: string[];
+  }>): Array<{ previous?: GrantRecord; current: GrantRecord }> {
+    return this.#preview(() => this.#setManualAccessBatch(inputs));
+  }
+
+  #setManualAccessBatch(inputs: Array<{
+    itemId: string;
+    mediaType?: string;
+    userIds: string[];
+    groupIds: string[];
+  }>): Array<{ previous?: GrantRecord; current: GrantRecord }> {
     const results: Array<{ previous?: GrantRecord; current: GrantRecord }> = [];
     for (const input of inputs) {
-    const itemId = normalizeId(input.itemId);
-    const previous = this.#state.grants[itemId];
-    const manualUserIds = [...new Set(input.userIds.map(normalizeId))].sort();
-    const groupIds = [...new Set(input.groupIds.map(normalizeId))].sort();
-    const missing = groupIds.filter((id) => !this.#state.groups[id]);
-    if (missing.length > 0) throw new Error(`group not found: ${missing.join(', ')}`);
-    const current = this.#makeGrant(itemId, previous?.requests ?? {}, manualUserIds, groupIds, previous, input.mediaType);
-    this.#state.grants[itemId] = current;
-    this.#recordAdministratorChange(itemId, previous, manualUserIds, groupIds);
+      const itemId = normalizeId(input.itemId);
+      const previous = this.#state.grants[itemId];
+      const manualUserIds = [...new Set(input.userIds.map(normalizeId))].sort();
+      const groupIds = [...new Set(input.groupIds.map(normalizeId))].sort();
+      const missing = groupIds.filter((id) => !this.#state.groups[id]);
+      if (missing.length > 0) throw new Error(`group not found: ${missing.join(', ')}`);
+      const current = this.#makeGrant(itemId, previous?.requests ?? {}, manualUserIds, groupIds, previous, input.mediaType);
+      this.#state.grants[itemId] = current;
+      this.#recordAdministratorChange(itemId, previous, manualUserIds, groupIds);
       results.push({ ...(previous ? { previous: clone(previous) } : {}), current: clone(current) });
     }
-    await this.#save();
     return results;
   }
 
@@ -403,17 +443,14 @@ export class GrantStore {
   }
 
   /**
-   * The grant an item would have after `move` is merged into it, without storing anything: requests, manual users and
-   * groups are added to whatever grant the item already has (nothing on it is dropped). Groups that no longer exist,
-   * requests an administrator revoked from that item and users and groups an administrator removed from it
-   * (GrantState.removedAccess) are left out of the moved ones. The library joins of the grant on `fromItemId` that go
-   * with the move are added exactly as mergeGrants adds them.
+   * The grant an item would have after `move` off the grant on `fromItemId` is merged into it, without storing anything
+   * (see #preview): requests, manual users and groups are added to whatever grant the item already has (nothing on it
+   * is dropped). Groups that no longer exist, requests an administrator revoked from that item and users and groups an
+   * administrator removed from it (GrantState.removedAccess) are left out of the moved ones. The source's library joins
+   * that go with the move are added as mergeGrants describes.
    */
   public previewMerge(fromItemIdInput: string, move: GrantMove): GrantRecord {
-    const fromItemId = normalizeId(fromItemIdInput);
-    const source = this.#state.grants[fromItemId];
-    if (!source) throw new Error(`grant not found: ${fromItemId}`);
-    return clone(this.#mergedMove(source, move));
+    return this.#preview(() => this.#mergeGrants(fromItemIdInput, [move]))[0] as GrantRecord;
   }
 
   /**
@@ -433,6 +470,12 @@ export class GrantStore {
    */
   public async mergeGrants(fromItemIdInput: string, moves: GrantMove[]): Promise<GrantRecord[]> {
     this.#assertOpen();
+    const currents = this.#mergeGrants(fromItemIdInput, moves);
+    await this.#save();
+    return currents;
+  }
+
+  #mergeGrants(fromItemIdInput: string, moves: GrantMove[]): GrantRecord[] {
     const fromItemId = normalizeId(fromItemIdInput);
     if (!this.#state.grants[fromItemId]) throw new Error(`grant not found: ${fromItemId}`);
     const targetIds = moves.map((move) => normalizeId(move.itemId));
@@ -447,8 +490,22 @@ export class GrantStore {
       return current;
     });
     for (const current of currents) this.#state.grants[current.itemId] = current;
-    await this.#save();
     return currents.map(clone);
+  }
+
+  /**
+   * Runs one of the synchronous mutations behind a write on a copy of the state and discards the copy, so a dry run
+   * returns exactly what the write would store (audit fields, remap notes and sync status included) and cannot drift
+   * from it. It stores nothing, so it is allowed after close().
+   */
+  #preview<T>(mutate: () => T): T {
+    const state = this.#state;
+    this.#state = clone(state);
+    try {
+      return clone(mutate());
+    } finally {
+      this.#state = state;
+    }
   }
 
   /**
@@ -501,7 +558,7 @@ export class GrantStore {
     return newlyOrphaned;
   }
 
-  /** The target's grant once `move` off `source` is merged into it; previewMerge and mergeGrants share it. */
+  /** The target's grant once `move` off `source` is merged into it (see mergeGrants). */
   #mergedMove(source: GrantRecord, move: GrantMove): GrantRecord {
     const itemId = normalizeId(move.itemId);
     const previous = this.#state.grants[itemId];
