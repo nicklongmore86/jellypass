@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict';
 import { connect } from 'node:net';
+import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { describe, it } from 'node:test';
 import { setTimeout as delay } from 'node:timers/promises';
+import { GrantStore } from '../dist/store.js';
 import { assertNoCanaries } from './support/seerr-fixtures.mjs';
 import {
   ADMIN,
@@ -29,6 +31,7 @@ import {
   startApp,
   world,
 } from './support/household-app.mjs';
+import { makeTempDir } from './support/temp-dir.mjs';
 
 const APP = '/jellypass/app/v1';
 /** Every endpoint, called once with valid arguments. */
@@ -606,10 +609,13 @@ describe('household app API: one cache per household', { timeout: 120_000 }, () 
       { id: 'mill', name: 'Mill', userIds: [BOB] },
       ...Array.from({ length: 99 }, (_, index) => ({ id: `h${index}`, name: `H${index}`, userIds: [] })),
     ].map((group) => [group.id, { ...group, createdAt: at, updatedAt: at }]));
+    const warn = t.mock.method(console, 'warn', () => undefined);
     const app = await startApp(t, world(), {
       stateFile: { version: 7, grants: {}, groups, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [] },
     });
     assert.equal(app.store.listGroups().length, 101);
+    // Startup is not refused, but says why new groups are refused and nothing is cached.
+    assert.deepEqual(warn.mock.calls.map((call) => JSON.parse(call.arguments[0])), [householdLimitWarning(101)]);
     for (const [host, user] of [[HOST_A, ALICE], [HOST_A, ALICE], [HOST_B, BOB], [HOST_B, BOB]]) {
       assert.equal((await app.get(`${APP}/movie/${T_MOVIE}`, { host, user })).status, 200);
     }
@@ -625,6 +631,87 @@ describe('household app API: one cache per household', { timeout: 120_000 }, () 
     await app.store.deleteGroup('h1');
     await app.store.upsertGroup({ id: 'new', name: 'New', userIds: [] });
     assert.equal(app.store.listGroups().length, 100);
+  });
+});
+
+/** The startup warning for a state file holding `groups` groups, more than the household app supports. */
+const householdLimitWarning = (groups) => ({
+  level: 'warn',
+  message: 'the household app supports at most 100 households; no new group can be created until there are fewer, and the app caches nothing while there are more',
+  groups,
+});
+
+/** A schema v7 state file holding `count` empty groups `h0`, `h1`, .... */
+function stateWithGroups(count) {
+  const at = '2026-10-24T12:00:00.000Z';
+  const groups = Object.fromEntries(Array.from({ length: count }, (_, index) =>
+    [`h${index}`, { id: `h${index}`, name: `H${index}`, userIds: [], createdAt: at, updatedAt: at }]));
+  return { version: 7, grants: {}, groups, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [] };
+}
+
+describe('household limit: only while the household app is enabled', { timeout: 60_000 }, () => {
+  const putGroup = (app, id) => fetch(`http://127.0.0.1:${app.port}/v1/groups/${id}`, {
+    method: 'PUT',
+    headers: { Authorization: 'Bearer admin-secret', 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name: id, userIds: [] }),
+  });
+
+  it('with the app off, creates a group beyond 100 as 2.2.1 did (Codex\'s repro)', async (t) => {
+    const warn = t.mock.method(console, 'warn', () => undefined);
+    const app = await startApp(t, world(), { app: false, households: [], stateFile: stateWithGroups(100) });
+    const created = await putGroup(app, 'new-household');
+    assert.equal(created.status, 200, await created.clone().text());
+    assert.equal((await created.json()).group.id, 'new-household');
+    await app.store.upsertGroup({ id: 'another', name: 'Another', userIds: [] });
+    assert.equal(app.store.countGroups(), 102);
+    assert.equal(warn.mock.callCount(), 0, 'no household limit warning with the app off');
+  });
+
+  it('with the app on, refuses a 101st group with 400', async (t) => {
+    const app = await startApp(t, world(), { households: [], stateFile: stateWithGroups(100) });
+    const refused = await putGroup(app, 'new-household');
+    assert.equal(refused.status, 400);
+    assert.deepEqual(await refused.json(), { error: 'groups must be at most 100' });
+    assert.equal(app.store.countGroups(), 100);
+  });
+
+  it('follows the setting across restarts of the same state file', async (t) => {
+    const file = path.join(await makeTempDir(t, 'jfa-household-limit-'), 'grants.json');
+    const warn = t.mock.method(console, 'warn', () => undefined);
+    const open = async (limitHouseholds) => {
+      const store = new GrantStore(file, { limitHouseholds });
+      await store.load();
+      return store;
+    };
+    // App off (the default): no limit.
+    const off = await open(false);
+    for (let index = 0; index < 101; index += 1) await off.upsertGroup({ id: `h${index}`, name: `H${index}`, userIds: [] });
+    await off.close();
+    assert.equal(warn.mock.callCount(), 0);
+    // App on: the 101 groups load with a warning, stay editable and deletable, and new ones are refused until fewer than 100.
+    const on = await open(true);
+    assert.equal(on.countGroups(), 101);
+    assert.deepEqual(warn.mock.calls.map((call) => JSON.parse(call.arguments[0])), [householdLimitWarning(101)]);
+    await on.upsertGroup({ id: 'h0', name: 'Renamed', userIds: [] });
+    await assert.rejects(on.upsertGroup({ id: 'new', name: 'New', userIds: [] }), /groups must be at most 100/);
+    await on.deleteGroup('h0');
+    await on.deleteGroup('h1');
+    await on.upsertGroup({ id: 'new', name: 'New', userIds: [] });
+    await assert.rejects(on.upsertGroup({ id: 'newer', name: 'Newer', userIds: [] }), /groups must be at most 100/);
+    await on.close();
+    // App off again: creating is unlimited once more, and nothing is logged.
+    const again = await open(false);
+    await again.upsertGroup({ id: 'newer', name: 'Newer', userIds: [] });
+    await again.upsertGroup({ id: 'newest', name: 'Newest', userIds: [] });
+    assert.equal(again.countGroups(), 102);
+    await again.close();
+    assert.equal(warn.mock.callCount(), 1);
+    // And a store built without options is unlimited, as in 2.2.1.
+    const plain = new GrantStore(file);
+    await plain.load();
+    await plain.upsertGroup({ id: 'plain', name: 'Plain', userIds: [] });
+    assert.equal(plain.countGroups(), 103);
+    await plain.close();
   });
 });
 
