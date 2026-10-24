@@ -29,6 +29,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `jfa_library_joins_total{result}` counts joins as `joined`, `unchanged` or
   `error`.
 
+### Fixed
+
+- **The request backfill granted requests Seerr had not approved.** Seerr's
+  request list includes pending, declined and failed requests, and the backfill
+  only checked that the media was available. A pending or declined request for
+  a title that was available through another request (or already in the
+  library) therefore made the title private to the requester's household, or
+  added that household to an existing grant. The backfill now also requires
+  the request status to be approved or completed (Seerr v3.5.0 statuses 2 and
+  5). Such requests are not recorded as handled, so one that Seerr approves
+  later is still picked up. The webhook is unchanged.
+
 ## [2.1.1] - 2026-10-16
 
 This is a patch release. No configuration, API or state-file changes are

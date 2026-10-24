@@ -221,6 +221,8 @@ every reconciliation cycle (`RECONCILE_INTERVAL_SECONDS`; with `0` it runs only
 at startup). It pages `GET /api/v1/request` and records each request that:
 
 - was created at or after `REQUEST_BACKFILL_SINCE`,
+- was approved or completed in Seerr (pending, declined and failed requests
+  are skipped, even when the media is available through another request),
 - has media that is available or partially available,
 - has a Jellyfin media ID and a requester linked to an existing Jellyfin user,
 - targets a Jellyfin item that still exists, and
@@ -254,9 +256,9 @@ recreated. Each request is counted as exactly one outcome:
 - **error** (`{result="error"}`): the lookup failed, or the grant was stored but
   could not be applied yet. Such a grant stays in an error state and the regular
   reconciliation retries it; it is not also counted as granted.
-- **skipped** (not exported): not available, before the cutoff, already
-  recorded, unresolvable, or the Jellyfin item was deleted. A deleted item is
-  logged once at `debug`, not as an error on every cycle.
+- **skipped** (not exported): not approved, not available, before the cutoff,
+  already recorded, unresolvable, or the Jellyfin item was deleted. A deleted
+  item is logged once at `debug`, not as an error on every cycle.
 
 A failure on one request never stops the rest of the run.
 

@@ -917,9 +917,11 @@ describe('household library joins', () => {
 describe('Seerr request backfill', () => {
   const since = new Date('2026-10-01T00:00:00.000Z');
 
+  // Seerr v3.5.0 MediaRequestStatus: 1 pending, 2 approved, 3 declined, 4 failed, 5 completed.
   function seerrRequest(id, overrides = {}) {
     return {
       id,
+      status: 2,
       type: 'movie',
       is4k: false,
       createdAt: '2026-10-10T00:00:00.000Z',
@@ -999,6 +1001,35 @@ describe('Seerr request backfill', () => {
       const again = await service.backfillRequests(since);
       assert.deepEqual(again.granted, []);
       assert.deepEqual(store.get('item-1').requests, { '201': 'alice-id', '202': 'bob-id' });
+    });
+  });
+
+  it('grants only approved or completed requests, even for available media', async () => {
+    const available = (id, status, overrides = {}) => seerrRequest(id, { status, ...overrides });
+    const listed = [
+      available(1306, undefined, { media: { mediaType: 'movie', tmdbId: 2306, status: 5, jellyfinMediaId: 'item-2' } }),
+      available(1305, 4, { media: { mediaType: 'movie', tmdbId: 2305, status: 5, jellyfinMediaId: 'item-2' } }),
+      available(1304, 3, { requestedBy: { jellyfinUserId: 'carol-id' }, media: { mediaType: 'movie', tmdbId: 2304, status: 5, jellyfinMediaId: 'item-2' } }),
+      available(1303, 1, { requestedBy: { jellyfinUserId: 'carol-id' }, media: { mediaType: 'movie', tmdbId: 2303, status: 5, jellyfinMediaId: 'item-1' } }),
+      available(1302, 5, { media: { mediaType: 'movie', tmdbId: 2302, status: 5, jellyfinMediaId: 'item-1' } }),
+      available(1301, 2, { requestedBy: { jellyfinUserId: 'bob-id' }, media: { mediaType: 'movie', tmdbId: 2301, status: 4, jellyfinMediaId: 'item-1' } }),
+    ];
+    await withSeerr(listed, {}, async ({ store, fake, service }) => {
+      const result = await service.backfillRequests(since);
+      assert.deepEqual(result.granted, ['item-1', 'item-1']);
+      assert.equal(result.skipped, 4);
+      const grant = store.get('item-1');
+      assert.deepEqual(grant.requests, { '1301': 'bob-id', '1302': 'alice-id' });
+      assert.deepEqual(grant.groupIds, ['house-a'], 'a pending request from another household joins nothing');
+      assert.deepEqual(fake.user('carol-id').Policy.BlockedTags, ['jfa:private:item-1']);
+      assert.equal(store.get('item-2'), undefined, 'declined, failed and status-less requests privatize nothing');
+      assert.deepEqual(fake.item2.Tags, []);
+      for (const id of ['1303', '1304', '1305', '1306']) assert.equal(store.hasHandledRequest(id), false, id);
+
+      // Once Seerr approves the pending request, a later run adds it.
+      listed[3].status = 2;
+      assert.deepEqual((await service.backfillRequests(since)).granted, ['item-1']);
+      assert.deepEqual(store.get('item-1').groupIds, ['house-a', 'house-b']);
     });
   });
 

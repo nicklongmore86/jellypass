@@ -25,6 +25,8 @@ export interface IgnoredWebhook {
 
 export interface SeerrRequest {
   id: number;
+  /** Seerr MediaRequestStatus: 1 pending, 2 approved, 3 declined, 4 failed, 5 completed. */
+  status?: number;
   type?: string;
   is4k?: boolean;
   createdAt?: string;

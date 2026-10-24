@@ -53,7 +53,7 @@ describe('stopping background work on shutdown', { timeout: 10_000 }, () => {
     const seerr = {
       async listRequestsSince() {
         controller.abort(new Error('shutting down'));
-        return [{ id: 1, media: { status: 5 } }, { id: 2, media: { status: 5 } }];
+        return [{ id: 1, status: 2, media: { status: 5 } }, { id: 2, status: 2, media: { status: 5 } }];
       },
       async getRequest(requestId) {
         looked.push(requestId);
@@ -160,7 +160,7 @@ function recordingWorld(abortAt) {
     fetchLibraryCatalog: async () => record('fetchLibraryCatalog', [{ id: 'item-1', name: 'Movie', type: 'Movie' }]),
   };
   const seerr = {
-    listRequestsSince: async () => record('listRequestsSince', [{ id: 7, media: { status: 5 } }]),
+    listRequestsSince: async () => record('listRequestsSince', [{ id: 7, status: 2, media: { status: 5 } }]),
     getRequest: async (requestId) => record('getRequest', {
       id: Number(requestId), media: { status: 5, jellyfinMediaId: 'item-1', mediaType: 'movie' }, requestedBy: { jellyfinUserId: 'alice-id' },
     }),

@@ -23,6 +23,9 @@ export const TAG_PREFIX = 'jfa:private:';
 
 // Seerr media statuses: 4 = partially available, 5 = available.
 const AVAILABLE_MEDIA_STATUSES = new Set([4, 5]);
+// Seerr (v3.5.0) request statuses: 2 = approved, 5 = completed. Pending (1), declined (3) and failed (4) requests are
+// listed too, and their media can be available through someone else's request.
+const GRANTABLE_REQUEST_STATUSES = new Set([2, 5]);
 
 interface PlanContext {
   plan: ChangePlan;
@@ -396,8 +399,8 @@ export class AccessService {
   }
 
   /**
-   * Pull-based fallback for missed MEDIA_AVAILABLE webhooks: grants available Seerr requests
-   * created at or after `since`. A request for an item with no grant creates one; a request for
+   * Pull-based fallback for missed MEDIA_AVAILABLE webhooks: grants approved or completed Seerr
+   * requests for available media created at or after `since`. A request for an item with no grant creates one; a request for
    * an item whose grant came from other requests is added to it (additively, with the
    * requester's households). Manual-only grants are left alone. Each request counts as exactly
    * one outcome: granted (stored and reconciled), skipped, or failed (including a grant that was
@@ -420,7 +423,11 @@ export class AccessService {
         throwIfAborted(signal);
         const requestId = String(listed.id);
         try {
-          if (!AVAILABLE_MEDIA_STATUSES.has(requestMediaStatus(listed) ?? 0) || this.#store.hasHandledRequest(requestId)) {
+          if (
+            !GRANTABLE_REQUEST_STATUSES.has(listed.status ?? 0)
+            || !AVAILABLE_MEDIA_STATUSES.has(requestMediaStatus(listed) ?? 0)
+            || this.#store.hasHandledRequest(requestId)
+          ) {
             result.skipped += 1;
             continue;
           }
