@@ -642,15 +642,16 @@ not exist).
   permissions; only then is `play` set, to `{"itemId", "url"}` with
   `https://<household host>/web/#/details?id=<itemId>`), `unavailable` (an
   administrator blocklisted it in Seerr, or the caller may not request this
-  media type in Seerr, which includes a caller Seerr has no user for),
-  `requested` (a pending or approved HD request by a member who belongs to
-  this household and no other), and otherwise `get_this`. Seasons are
+  media type in Seerr, which includes a caller Seerr has no user for), and
+  otherwise `get_this`. Seasons are
   `in_library` when the caller's own Jellyfin view has their episodes,
   otherwise `unavailable` or `get_this` as their series would be. Nothing
   depends on what another household holds, has requested or is waiting on: a
-  title another household holds looks exactly like one nobody has. Requests by
-  someone in several households are not shown in any of them yet, because
-  Seerr does not record which household a request was for.
+  title another household holds looks exactly like one nobody has. `requested`
+  is reserved and not answered yet: Seerr does not record which household a
+  request was for, and who belongs to which household now cannot say, so no
+  Seerr request is shown in any household until "Get this" records the
+  household with each request it makes.
 - **Nothing else** is ever returned: no requester, request or media IDs, Seerr
   status, Jellyfin item IDs other than the caller's own playable one, totals or
   timestamps. Every answer has `Cache-Control: no-store`.
@@ -660,8 +661,10 @@ not exist).
   {"error":"unavailable"}` (Jellyfin, Seerr or TMDB failed; details are
   logged, never returned).
 - **Rate limited.** 300 calls per client address (after `TRUSTED_PROXIES`)
-  and 200 per signed-in user in each 5-minute window; both answer the same
-  `429`.
+  and 200 per signed-in user in each 5-minute window, and 60 per household
+  (its own members' calls only) in each 10 seconds; all answer the same
+  `429`, as does a call when its household already has 20 TMDB calls
+  waiting.
 - `jfa_app_requests_total{endpoint, outcome}` counts answers, by endpoint
   (`me`, `search`, `discover`, `movie`, `tv`, `season`, `unknown`) and outcome
   (`ok`, `unauthorized`, `rate_limited`, `invalid`, `not_found`,
@@ -671,16 +674,32 @@ Each call reads titles straight from TMDB with `TMDB_API_KEY` (in English;
 each household reuses an answer for up to 10 minutes), never from Seerr, so
 other households' Seerr records cannot change an answer, its size or its
 timing. From Seerr it reads only the administrator blocklist with the admin key
-(reused for up to a minute), the caller's own permissions as the caller, and
-the own requests of each member who belongs to this household alone, as that
-member (each confirmed with Seerr just before the call, at most their newest
-500). The caller's library comes from Jellyfin with the caller's own token
-(reused for up to a minute), so Jellyfin's blocked tags, library access and
-parental limits apply. Expect a handful of local Seerr calls per answer.
+(reused for up to a minute) and the caller's own permissions as the caller;
+no one's requests are read. The caller's library comes from Jellyfin with the
+caller's own token (reused for up to a minute), so Jellyfin's blocked tags,
+library access and parental limits apply. Expect a handful of local Seerr
+calls per answer. Each household has its own caches, never emptied for
+another's; JellyPass supports at most 100 households (creating another is
+refused).
+
+All households share `TMDB_API_KEY`, and so TMDB's rate limit (about 40
+requests a second). JellyPass starts at most 20 TMDB calls a second (10 at
+once) and lets households take turns, so one household's burst cannot use up
+another's share; if TMDB still answers `429`, nothing is sent until its
+`Retry-After` has passed and the call is retried once. Busy households can
+still make each other wait briefly for their turn, and a TMDB outage or rate
+limit affects every household alike. Use a TMDB key for JellyPass alone. See
+[Shared upstreams](docs/app-design.md#shared-upstreams).
+
+Do not give household members Seerr's `MANAGE_BLOCKLIST` permission (Seerr
+does not by default): every blocklist entry makes the title `unavailable` in
+every household.
 
 This product uses the TMDB API but is not endorsed or certified by
 [TMDB](https://www.themoviedb.org/). Titles, overviews and images come from
-TMDB; the household app shows TMDB's attribution, as TMDB's API terms require.
+TMDB. There is no app page yet; the household app (step 1b) must show this
+notice with TMDB's approved logo in an About or Credits section, as TMDB's
+API terms require.
 
 Without Seerr, `/jellypass/add` paths are proxied to Jellyfin like any other.
 `/jellypass/app` paths never are: without the app API they answer `404`.

@@ -22,14 +22,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   how long it takes. Each title carries the household's own state:
   `in_library` (the caller's own Jellyfin view has it, with a Play link, even
   without Seerr request permission), `unavailable` (blocklisted in Seerr, or
-  the caller may not request it), `requested` (a pending or approved HD
-  request by a member who belongs to this household alone; requests by
-  someone in several households are not shown until "Get this" records which
-  household asked) or `get_this`. Answers are built from allowlisted fields
-  only, never depend on what another household holds or asked for, and have
-  fixed error bodies and `Cache-Control: no-store`; calls are limited per
-  client address and per user, and counted in
-  `jfa_app_requests_total{endpoint, outcome}`. While the setting is off,
+  the caller may not request it) or `get_this`; `requested` is reserved for
+  when "Get this" records which household asked, so no Seerr request is shown
+  in any household yet. Answers are built from allowlisted fields only, never
+  depend on what another household holds or asked for, and have fixed error
+  bodies and `Cache-Control: no-store`; calls are limited per client address,
+  per user and per household, and counted in
+  `jfa_app_requests_total{endpoint, outcome}`. Each household has its own
+  caches, and households take turns at TMDB under a rate kept well below
+  TMDB's (honouring its `Retry-After`), so one household's volume cannot
+  evict another's cached answers or use up its share of TMDB calls. Do not
+  give household members Seerr's `MANAGE_BLOCKLIST` permission.
+- **At most 100 households.** Creating a 101st household (group) is refused
+  with `400`; existing ones can still be changed. While the setting is off,
   `/jellypass/app` paths answer `404` and are never proxied to Jellyfin. There
   is no app page yet. See [Household app API](README.md#household-app-api) and
   [docs/app-design.md](docs/app-design.md).

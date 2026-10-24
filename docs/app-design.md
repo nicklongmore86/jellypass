@@ -119,15 +119,17 @@ So `TmdbClient` (`src/tmdb.ts`) reads TMDB's v3 API directly, with JellyPass's o
 - **Cache.** Each answer is kept for 10 minutes, keyed only by the request's own parameters (endpoint, query, page,
   TMDB ID, season). Each household has its own partition of at most 500 answers (least recently used forgotten first),
   so whether household A's answer comes from the cache never depends on what household B looked at, and B's volume
-  never evicts A's entries. Concurrent calls for the same key in one household share one TMDB call; a failed call is
-  not kept.
+  never evicts A's entries (see "One cache per household"). Concurrent calls for the same key in one household share
+  one TMDB call; a failed call is not kept.
 - **Images** are TMDB's own `poster_path` and `backdrop_path` through the existing allowlisted image URLs
   (`https://image.tmdb.org/t/p/{w342,w780}` plus a file name matching `^/[A-Za-z0-9_-]{1,100}\.(jpg|jpeg|png|webp)$`).
 - **Attribution.** TMDB's API terms require attribution: the README carries TMDB's notice ("This product uses the TMDB
-  API but is not endorsed or certified by TMDB"), and the app (step 1b) must show it, with TMDB's logo, on an about
-  screen. JellyPass makes no more than a few TMDB calls per answer, well inside TMDB's rate limits, and caches as above.
+  API but is not endorsed or certified by TMDB"). Step 1a has no page to show it on; step 1b's app must show that
+  notice with TMDB's approved logo in an About or Credits section.
+- **Rate limit.** All households share one TMDB credential, so one TMDB rate limit. TMDB calls go through a fair
+  dispatcher kept well under it, with a turn for each household (see "Shared upstreams").
 
-From Seerr the app now reads only three things, none of which carries another household's records:
+From Seerr the app now reads only two things, none of which carries another household's records:
 
 - **The blocklist**, `GET /api/v1/blocklist` with the admin key (Seerr's API key runs as its owner, who has
   `MANAGE_BLOCKLIST`), 100 entries per page, at most 50 pages (the newest 5000 entries), reused by each household for a
@@ -136,9 +138,12 @@ From Seerr the app now reads only three things, none of which carries another ho
   joins only the administrator who added an entry (`leftJoinAndSelect('blocklist.user')`), never its media record or
   any request, so its size and timing depend only on the blocklist itself; the real-Seerr test checks the keys of a
   real entry. Only each entry's `mediaType` and `tmdbId` are read. Seerr's media `status` is no longer read at all.
+  **Never grant `MANAGE_BLOCKLIST` to household members** (Seerr's default user permissions do not include it): every
+  household sees every blocklist entry as `unavailable`, so a member who could blocklist titles could change what
+  other households see, and learn nothing they could not already, but still act across households.
 - **The caller's own request permission**, as the caller (see "Per-title states").
-- **Household members' own requests**, each as that member, only for members of this household alone (see "Requested
-  and households").
+
+No one's Seerr requests are read (see "Requested and households").
 
 ### Unmapped users
 
@@ -181,13 +186,14 @@ Each title the app shows has exactly one household state, decided in this order:
 |---|---|---|
 | `in_library` | Playable by the caller in Jellyfin through their household. Decided first: it needs no request permission. | The only state with a Jellyfin item ID and a Play link to the household host. |
 | `unavailable` | Not playable by the caller, and blocklisted or the caller may not request it (including an unmapped caller). | Title only, no actions. |
-| `requested` | This household has a request for it, or has registered interest. | Coarse status. |
+| `requested` | This household has a request for it, or has registered interest, by its own attribution record (step 2; never answered in step 1). | Coarse status. |
 | `get_this` | Everything else: not in Seerr, held privately by another household, downloading for someone else, requested by someone else. | A "Get this" action. |
 
 A title another household holds is indistinguishable from one nobody has.
 
 As implemented in step 1a, every state is decided by one function, `titleState` in `src/app-api.ts`, in this order:
-`in_library`, then `unavailable`, then `requested`, then `get_this`. `in_library` comes first because it comes from the
+`in_library`, then `unavailable`, then `get_this`; `requested` is in the contract (and the DTO type) but never
+answered until step 2 (see "Requested and households"). `in_library` comes first because it comes from the
 caller's own Jellyfin view: playing an item the caller can already see needs no Seerr request permission, and it says
 nothing about another household. `unavailable` covers only titles the caller cannot play. The inputs depend on nothing
 another household does, and are all read for each answer:
@@ -202,8 +208,6 @@ another household does, and are all read for each answer:
   `ADMIN`, `REQUEST` or `REQUEST_MOVIE` permission and series with `ADMIN`, `REQUEST` or `REQUEST_TV` (Seerr 3.5.1
   `MediaRequest.request`). A title the caller cannot play is `unavailable` when it is blocklisted, when the caller has
   no such permission, or when Seerr has no user for them.
-- **Requested**: the titles household members have a pending or approved (Seerr request status 1 or 2) HD request
-  for, read as described in "Requested and households". Declined, failed, completed and 4K requests do not count.
 
 A series' seasons are `in_library` when the caller's view has episodes of them
 (`GET /Shows/:id/Episodes?userId=<caller>&isMissing=false`, read only when the series is `in_library`); otherwise
@@ -213,30 +217,25 @@ without series permission sees the seasons they have as `in_library` and the res
 ### Requested and households
 
 Seerr records who made a request, not which household it was for, and a Jellyfin user can belong to several
-households (administrators often do). Counting such a person's requests in every household they belong to would show
-household A what was asked for in household B (Codex's repro: Bob in Farmhouse and Mill with a pending request; Alice
-in Farmhouse saw it as `requested`). Until requests carry their household, step 1a fails closed:
+households (administrators often do). Neither who asked nor which households they belong to **now** can say which
+household a past request was for. Codex's repros: Bob, in Farmhouse and Mill, makes a pending request for Mill; when
+Alice in Farmhouse saw it as `requested`, it leaked Mill's request; when only members of one household counted, removing
+Bob from Mill made Alice see the same old Mill request as `requested`. Moving a member between households, or a shared
+member becoming exclusive, re-attributed their old requests the same way.
 
-- Only members who belong to **exactly one household**, this one, count. Their requests can only be this household's.
-- A member of several households, administrators included, is ambiguous: their requests are **not read at all** (no
-  Seerr call is made for them), so neither the answer nor the calls made reflect their request history. Their
-  requests show as `get_this` everywhere, including to themselves. A user in no household cannot use the app, and
-  their requests count nowhere.
-- Each counted member's own requests are read as that member (`ownRequests`, 100 per page, newest first, at most 5
-  pages: their newest 500 requests), each call confirmed as usual. The number of calls depends only on that member's
-  own history, which is this household's own data. An active request older than the newest 500 shows as `get_this`
-  (the cost is bounded rather than exact; "Get this" in step 2 handles a title already requested).
-- Membership is read from the JellyPass store on every answer, so moving someone between households changes this at
-  once. What remains: a single-household member's requests made while they belonged to another household (or before
-  joining) count for their current household; and whether a member is shared with another household changes which
-  calls A makes (an administrator's configuration, not anything a household holds or asked for).
+So step 1 shows **no Seerr request** as `requested`: every title nobody can play and nobody blocklisted is `get_this`,
+in every household, whoever asked for it and whatever the households' membership is or was. No Seerr request is read
+at all (no `GET /user/:id/requests` call is made), so neither the answers nor the calls made reflect anyone's request
+history. "Get this" (step 2) handles a title already requested (see "Get this").
 
-**Step 2 attribution record.** "Get this" will record, for every Seerr request it makes, `{seerrRequestId, householdId,
-jellyfinUserId, mediaType, tmdbId, seasons, createdAt}` in the JellyPass store at the moment of the request (the
-household is the host it was made on). `requested` then comes from these records (for this household only, whoever
-made them) joined with each request's current status read as its requester, and requests made outside the app (no
-record) count only for single-household requesters, as now. Interest and join branches already record the household
-(see "Get this"). The record is written before the request is answered and is never shown to another household.
+**Step 2 attribution record: the only source of `requested`.** "Get this" will write, in the JellyPass store,
+`{seerrRequestId, householdId, jellyfinUserId, mediaType, tmdbId, seasons, createdAt}` whenever it creates a Seerr
+request or records the household's interest in a title already requested, before it answers; `householdId` is the
+household whose host the call was made on. A title is `requested` for a household only when that household has such a
+record for it (whoever in the household made it) and the request it names is still active (pending or approved, HD),
+read as its requester. Records are never derived from membership: membership changes never create, move or re-attribute
+them (a member who leaves keeps nothing; the household keeps its record), and requests made outside the app (no record)
+are never `requested` anywhere. A record is never shown to another household.
 
 ## App API (step 1a)
 
@@ -277,9 +276,53 @@ title TMDB does not know), `429 too_many_requests`, `502 unavailable` (Jellyfin,
 route and status only). Every answer has `Cache-Control: no-store`, `X-Content-Type-Options:
 nosniff` and `Referrer-Policy: no-referrer`.
 
-Budgets: 300 calls per client address and 200 per user in each 5-minute window (fixed windows, `AttemptCounter`); the
-address budget is counted before any credential is checked. Both answer the same `429`. Metrics:
-`jfa_app_requests_total{endpoint, outcome}`, with no title label.
+Budgets: 300 calls per client address and 200 per user in each 5-minute window, and 60 per household (its members
+together) in each 10-second window (fixed windows, `AttemptCounter`). The address budget is counted before any
+credential is checked; the household budget only for the household's own members, so no one else can use it up. All
+answer the same `429`, which is also the answer when the household already has 20 TMDB calls waiting (see "Shared
+upstreams"). Metrics: `jfa_app_requests_total{endpoint, outcome}`, with no title label.
+
+### One cache per household
+
+Each household that exists has its own caches: verified tokens (its own members' only, at most 100), library views (at
+most 50 members'), TMDB answers (at most 500) and the blocklist. They are created the first time the household is
+served and dropped only once the household is deleted (when the next household's are created); no household's caches
+are ever dropped, or shrunk, for another's. Within a household the least recently used entry goes first. A token that
+is not a member's is checked with Jellyfin on every call and never kept, so outsiders cannot crowd members' out.
+
+JellyPass supports **at most 100 households**: the store refuses to create another (`groups must be at most 100`;
+`400` from the admin API), and changing an existing one is always allowed. Should a state file hold more (written by
+hand), nothing is cached for any household, the same for all whichever was served first, rather than caching for some.
+At most, the caches hold 100 households × 500 TMDB answers.
+
+### Shared upstreams
+
+Every household shares one TMDB credential, so one TMDB rate limit (TMDB documents about 40 requests a second). Codex
+simulated a 40-calls-a-second TMDB: household B sending 40 different searches at once used it up, and household A's
+next search answered `502`. TMDB calls now go through `FairDispatcher` (`src/fair-dispatcher.ts`):
+
+- **Under TMDB's limit.** At most 20 calls start a second, at most 10 at once (a token bucket), so at most 30 in any
+  second, for all households together.
+- **A turn for each household.** Each household has its own queue, and the queues take turns: whenever a call may
+  start, the next household in turn with a call waiting starts its oldest. However many calls B has waiting, A's next
+  call waits for at most one call of each other household with calls waiting; every household with calls waiting gets
+  at least 20 ÷ (households waiting) calls a second.
+- **Bounded queues.** A household holds at most 20 waiting calls (more are refused at once with the fixed `429`), and
+  a call waits at most 10 seconds (then `502 unavailable`). So with at most 100 households, a household's first call
+  waits at most 5 seconds behind everyone else's and is never refused or timed out because of another household; only
+  its own volume is refused. The 10-second burst budget above limits each household before it reaches the queue.
+- **TMDB's `429`.** If TMDB still answers `429` (another program using the same key, or a lower limit than documented),
+  no TMDB call starts until its `Retry-After` has passed (1 second when it gives none, at most 60), the bucket starts
+  again from empty, and the refused call is retried once, first in its household's queue: the household whose call met
+  the limit is not charged for everyone's load. A call is never retried more than once, and fails at once if the wait
+  would outlast its 10 seconds.
+
+What remains shared, honestly: TMDB's capacity is one resource. While households are busy at the same time, a call
+waits for its turn, so A's latency rises with how many other households have calls waiting (never with what they asked
+for, and by at most one call each); and when TMDB itself is down, rate-limits the key, or asks for a long wait, every
+household sees the same delays and `502`s. Neither says which titles another household looked at or holds. Use a TMDB
+key for JellyPass alone.
+
 
 ### Leak channels in step 1a
 
@@ -292,10 +335,11 @@ address budget is counted before any credential is checked. Both answer the same
 | Status codes | Fixed per outcome; nothing about another household changes an outcome. Seerr title answers, whose size other households' records set (Codex: +4.3 MB made a `502`), are no longer read. |
 | Sequential IDs | Only TMDB IDs, and the caller's own playable Jellyfin item ID. |
 | Item IDs | Only from the caller's own Jellyfin view, and only for `in_library`. |
-| Requests of shared members | A member of several households could have asked for any of them, so their requests are not read (see "Requested and households"). |
-| Timing | Titles come from TMDB, which has no household data, so other households' Seerr records cannot change their size or latency (tested with 5 MB of them). The calls made are the same whatever other households hold or asked for, including a shared member's request history (tested). Per-answer work is bounded: one TMDB read (cached per household), one blocklist read per household per minute (at most 50 pages, set by administrators), one permission read, at most 5 request pages per single-household member, a cached library read, one episode read for a series in the caller's library. Caches are partitioned per household, so another household's browsing never decides whether A's answer is cached. Residual: TMDB's own CDN may answer a URL faster after anyone (on any TMDB client) asked for it; that is outside JellyPass, shared with the whole internet, and says nothing about households. Whether a member is shared with another household changes which Seerr calls A makes (administrator configuration only). |
+| Requests | Seerr does not record which household a request was for, and membership now cannot say, so no Seerr request is read or shown in step 1; step 2's attribution records are the only source of `requested` (see "Requested and households"). Tested across membership changes: a shared member leaving a household (Codex's repro), a move between households, shared to exclusive and exclusive to shared. |
+| Timing | Titles come from TMDB, which has no household data, so other households' Seerr records cannot change their size or latency (tested with 5 MB of them). The calls made are the same whatever other households hold or asked for, including a shared member's request history (tested). Per-answer work is bounded: one TMDB read (cached per household), one blocklist read per household per minute (at most 50 pages, set by administrators), one permission read, a cached library read, one episode read for a series in the caller's library. Every cache is one per household, never evicted for another (see "One cache per household"), so another household's browsing never decides whether A's answer is cached (tested with 1,000 other households attempted). Residuals: TMDB's own CDN may answer a URL faster after anyone (on any TMDB client) asked for it; that is outside JellyPass, shared with the whole internet, and says nothing about households. A TMDB call waits for its household's turn, so while other households are busy A's latency rises by at most one call per busy household (see "Shared upstreams"): it reflects that others are active, never what they asked for. |
 | Caching | `Cache-Control: no-store` on every answer. |
-| Volume | Per-address and per-user budgets with one `429`. |
+| Volume | Per-address, per-user and per-household budgets with one `429`. |
+| Shared upstreams | TMDB calls take turns per household under a global rate kept well below TMDB's (see "Shared upstreams"): another household's burst cannot use up A's share or change A's status (Codex's repro: A stays `200`). Residual: a TMDB outage or rate limit on the key affects every household alike. |
 | Identity, Preferences | Titles from TMDB with no user at all; member data only through `SeerrUserMap.member()`, each call confirmed (tested on every endpoint). |
 | Quota, Late requests | Not reachable: step 1a makes no requests. |
 
@@ -421,7 +465,7 @@ closes each channel by construction:
 | Quota | Only the request branch of "Get this" meeting Seerr's quota, or refunding differently, so an exhausted user sees which titles another household holds | Eligibility decided before any branch; joins and interest recorded as virtual requests counted and freed exactly as Seerr counts the caller's own (declined frees, failed does not); series charged per season asked for; no counts shown (see "Quota before branching"). |
 | Identity | A cached Seerr user acting for a Jellyfin user after a relink or deletion | No client holds a Seerr user; every member call is confirmed with Seerr immediately before it is sent; invalidation reaches calls in flight (see "Stale mappings"). |
 | Preferences | Seerr shaping title results with the acting user's region, language and watchlist, so results follow whoever the caller is mapped to | Titles read from TMDB with one fixed language and no user; title DTOs copy no per-user field (see "Catalogue source"). |
-| Attribution | Seerr not recording which household a request was for, so a member of several households leaked requests across them | Only single-household members' requests count until step 2 records the household with each request (see "Requested and households"). |
+| Attribution | Seerr not recording which household a request was for, so a member of several households leaked requests across them, and so did membership changes | No Seerr request counts in step 1; in step 2 only the household's own attribution records do, never membership (see "Requested and households"). |
 | Late requests | A request for an already-available title granted as if genuine | "Get this" checks Jellyfin first and joins; no other request path; Seerr website admin-only at step 4 (see "Late requests"). |
 
 ## Seerr function inventory
@@ -431,7 +475,7 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
 
 | Group | Endpoints | Where |
 |---|---|---|
-| v1, as the member (confirmed per call) | `POST /request`; `GET /user/:self/requests`; `GET /user/:self/quota`; `GET /auth/me` (own permissions); `GET /discover/watchlist` | `SeerrMemberClient` |
+| v1, as the member (confirmed per call) | `POST /request`; `GET /user/:self/requests` (not called by the step 1 app); `GET /user/:self/quota`; `GET /auth/me` (own permissions); `GET /discover/watchlist` | `SeerrMemberClient` |
 | v1, admin key | `GET /user/jellyfin/:jellyfinUserId` (user lookup); `GET /user/:id` (link check, its `id` and `jellyfinUserId`); `GET /blocklist` (each entry's `mediaType` and `tmdbId`) | `SeerrClient.findUserByJellyfinId`, `SeerrClient.jellyfinUserIdOf`, `SeerrClient.blocklist` |
 | TMDB v3 (not Seerr) | `GET /search/multi`; `GET /trending/all/day`; `GET /discover/{movie,tv}`; `GET /movie/:id`; `GET /tv/:id`; `GET /tv/:id/season/:n`; `GET /authentication` (startup) | `TmdbClient` |
 | Later | Request cancellation by its owner, recommendations and similar titles, genre and keyword discovery, watchlist writes | Not yet |
@@ -520,37 +564,54 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
   the title plus a 2000-request history (Seerr status, requests, watchlists, media IDs, JellyPass grants and Jellyfin
   items all differ), and where a member A shares with B asked for it; the TMDB, Seerr and Jellyfin calls made are the
   same in all of them (a shared member's long history included), and no Seerr title endpoint is ever called; each
-  state rule (household requests, 4K, declined, failed and completed ignored, other households ignored, paging
-  through requests and the 500-request cap, Codex's repro of a member of two households, an administrator in two
-  households, a user in no household, per-media-type permission, unmapped caller, the blocklist by media type and
-  paged, `in_library` before `unavailable` and `requested`, seasons of an in-library series without permission,
-  blocked tags, libraries and parental limits, per-season states); identity (member routes only as that member with
-  that member's ID in the path, each call matched to its own preceding confirmation, never another household's
-  member; TMDB calls identical whoever asks, with JellyPass's key, `en-US` and nothing about the caller); caches (a
-  TMDB answer reused within a household for 10 minutes and never across households, keyed by parameters, failures not
-  kept; the blocklist reused per household for a minute); sessions (missing, invalid and disabled tokens and other
-  households' members refused identically, the three token forms, the 5-minute cache with membership checked every
-  call, Jellyfin down or unreachable failing closed, the admin host, an unknown household and the app switched off
-  answering `404` without proxying, none of them reaching Seerr or TMDB); input validation; both budgets; and metrics
-  without titles.
+  state rule (no Seerr request ever `requested`, not even one by a member of this household alone, and none read; the
+  same for every member on every household's host across membership changes: Codex's repro of a shared member leaving
+  the other household, a move between households, shared to exclusive and exclusive to shared; an administrator in
+  two households, a user in no household, per-media-type permission, unmapped caller, the blocklist by media type and
+  paged, `in_library` before `unavailable`, seasons of an in-library series without permission, blocked tags,
+  libraries and parental limits, per-season states); identity (only the caller's own permissions read as the caller,
+  each call matched to its own preceding confirmation; TMDB calls identical whoever asks, with JellyPass's key, `en-US`
+  and nothing about the caller); caches (a TMDB answer reused within a household for 10 minutes and never across
+  households, keyed by parameters, failures not kept; the blocklist reused per household for a minute; Codex's repro:
+  household A's cached answer and blocklist still served from its cache after 1,000 more households were attempted,
+  each browsing, of which the store refused 902; a deleted household's caches replaced without touching A's; a state
+  file with 101 households caching nothing for anyone); the TMDB share (Codex's repro: with a TMDB allowing 40 calls a
+  second, household B's 40 simultaneous searches leave A's cold search `200`, answered while B still waits, TMDB never
+  refusing a call and B refused only beyond its own queue; at most 30 calls start in any second; after a `429` nothing
+  is sent until `Retry-After` has passed and the call is retried once, so neither the household that met it nor one
+  calling meanwhile fails; never a second retry; a wait longer than a call's time fails it at once and sends nothing);
+  sessions (missing, invalid and disabled tokens and other households' members refused identically, non-members'
+  tokens never kept, the three token forms, the 5-minute cache with membership checked every call, Jellyfin down or
+  unreachable failing closed, the admin host, an unknown household and the app switched off answering `404` without
+  proxying, none of them reaching Seerr or TMDB); input validation; the address, user and household budgets (the
+  household's counting only its members); and metrics without titles.
+- **Fair dispatcher.** `test/fair-dispatcher.test.mjs` checks the turn order (a lane with one call waits for one call
+  of each busy lane, not their queues), the token bucket, the per-lane and total queue bounds (refused at once), the
+  queue timeout (and that a timed-out call is forgotten), a lane kept within its share while another always has a full
+  queue, the wait after a rate limit (nothing starts meanwhile, the bucket restarts empty, the call is retried once,
+  first in its lane), no second retry, no retry when the wait outlasts the call, and no retry for other failures.
+  `test/tmdb-client.test.mjs` checks that a `429` carries TMDB's `Retry-After` (seconds or a date) and nothing else.
 - **App mutation checks.** Each of these fails at least one app or client test: spreading the TMDB movie into a DTO;
-  paging from `total_pages`; counting requests of members of several households (or of any household); putting
-  `unavailable` or `requested` before `in_library`; ignoring the blocklist or request permission; matching the
-  blocklist without its media type; leaving seasons `get_this` when the series cannot be requested; sharing the title
-  or blocklist cache across households; keeping a failed TMDB answer; reading more than 5 request pages; following
-  TMDB redirects; dropping the fixed language; putting the URL (and with it the key) in TMDB errors. Earlier checks
-  still hold: skipping the disabled or household-membership check, dropping `Cache-Control`, counting 4K or declined,
-  failed and completed requests, reading another household's member, trusting a token for 10 minutes, dropping either
-  budget.
+  paging from `total_pages`; putting `unavailable` before `in_library`; ignoring the blocklist or request permission;
+  matching the blocklist without its media type; leaving seasons `get_this` when the series cannot be requested;
+  sharing the caches across households, dropping other households' caches when a household's are created, or dropping
+  the oldest beyond 50; caching for some households when there are too many; removing the store's household limit;
+  keeping non-members' tokens; removing the household budget; sending TMDB calls past the dispatcher, or in one queue
+  for all households; a lane keeping its place instead of taking turns; a rate of 100 a second; no queue bound; no
+  queue timeout; not retrying a `429`, retrying without limit, ignoring its wait, or not emptying the bucket after it;
+  not reading `Retry-After`; keeping a failed TMDB answer; following TMDB redirects; dropping the fixed language;
+  putting the URL (and with it the key) in TMDB errors. The step 1a rule of counting single-household members' requests
+  fails the membership-change tests. Earlier checks still hold: skipping the disabled or household-membership check,
+  dropping `Cache-Control`, trusting a token for 10 minutes, dropping the address or user budget.
 - **Real Jellyfin and Seerr for the app.** `pnpm test:real` serves the app from a real Jellyfin 10.11.3 (titles from
   the fake TMDB): the caller's title is `in_library` with its Play link until a blocked tag or a parental rating above
   their limit hides it, stays `in_library` once the caller loses request permission and the title is blocklisted, and
   is then `unavailable` when hidden. `pnpm test:seerr` seeds, in a real Seerr 3.5.1, a member who may request (with a
   pending request), another household's member (with one), a member of both households (with one) and a blocklisted
-  title, and checks that `ownUser()` is read as the member, that the household's request shows as `requested`, the
-  other household's as `get_this`, the shared member's as `get_this` in both households, the blocklisted title as
-  `unavailable`, that a member without permission gets `unavailable`, that no user data reaches an answer, and that
-  Seerr is asked for no title and nothing as the shared member.
+  title, and checks that `ownUser()` is read as the member, that every one of those requests shows as `get_this` in
+  every household (their own included), the blocklisted title as `unavailable`, that a member without permission gets
+  `unavailable`, that no user data reaches an answer, and that Seerr is asked for no title, no one's requests and
+  nothing as the shared member.
 - **TODO (step 2): quota before branching.** With a Seerr quota of 1 movie and the tally mirroring it: after one
   "Get this" through each of the join, interest and request branches, the next "Get this" runs no branch (no join,
   interest or request recorded) and answers byte-for-byte the same whichever branch it would have taken; the "request
