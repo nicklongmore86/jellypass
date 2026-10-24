@@ -7,14 +7,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.2.1] - 2026-10-24
+
+This is a patch release with one bug fix. There is nothing to do when
+upgrading from 2.2.0: settings, webhook payloads, API fields and responses are
+unchanged, and the state file is unchanged (schema v7, with the same fields as
+2.2.0), so 2.2.0 reads a state file written by 2.2.1. To roll back, set
+`JELLYPASS_IMAGE` back to `ghcr.io/nicklongmore86/jellypass:2.2.0` and recreate
+the container.
+
 ### Fixed
 
 - **A store write that failed partway no longer kept its first half.** A
   manual-access batch with an invalid later item, a grant move with a
   malformed later target, or a sync-status batch with a malformed later item
   ID left the earlier items changed in memory, and the next save stored them.
-  None was reachable through the API, which validates and previews these
-  writes first; all are now all-or-nothing.
+  None of these could happen in normal operation: the API validates and
+  previews manual-access changes and grant moves first, and sync-status
+  batches only name grants that were just stored. All three are now
+  all-or-nothing.
 
 ## [2.2.0] - 2026-10-24
 
@@ -696,7 +707,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v2.2.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v2.2.1...HEAD
+[2.2.1]: https://github.com/nicklongmore86/jellypass/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/nicklongmore86/jellypass/compare/v2.1.1...v2.2.0
 [2.1.1]: https://github.com/nicklongmore86/jellypass/compare/v2.1.0...v2.1.1
 [2.1.0]: https://github.com/nicklongmore86/jellypass/compare/v2.0.0...v2.1.0
