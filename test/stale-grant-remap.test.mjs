@@ -516,6 +516,120 @@ describe('grants whose Jellyfin item was deleted and re-imported', { timeout: 10
     assert.deepEqual(w.blockedFrom(NEW_TAG), ['bob-id', 'carol-id', 'dave-id']);
   });
 
+  /**
+   * Like failedApply, but item-old also has dave as a manual user and the farmhouse group (carol), so after the failed
+   * apply that whole audience is on both grants. The state is kept in `file`.
+   */
+  async function failedManualApply(t) {
+    const file = path.join(await makeTempDir(t, 'jellypass-remap-manual-'), 'grants.json');
+    const w = world();
+    const store = await newStore(t, file);
+    const service = new AccessService(w.jellyfin, store, undefined, w.seerr);
+    w.addItem('item-old');
+    await store.grant({ itemId: 'item-old', requestId: '7', userId: 'alice-id' });
+    await store.setManualAccess({ itemId: 'item-old', userIds: ['dave-id'], groupIds: ['farmhouse'] });
+    await service.reconcileAll();
+    w.items.delete('item-old');
+    w.addItem('item-new');
+    w.request(7, { jellyfinMediaId: 'item-new' });
+    const updateItem = w.jellyfin.updateItem;
+    w.jellyfin.updateItem = async (item) => { throw httpError(`Jellyfin POST /Items/${item.Id} returned 500`, 500); };
+    const { error } = await quietly(() => service.reconcileAll());
+    assert.ok(error instanceof AggregateError, String(error));
+    w.jellyfin.updateItem = updateItem;
+    for (const itemId of ['item-old', 'item-new']) {
+      const grant = store.get(itemId);
+      assert.deepEqual([grant.requests, grant.manualUserIds, grant.groupIds], [{ 7: 'alice-id' }, ['dave-id'], ['farmhouse']]);
+    }
+    return { w, store, service, file };
+  }
+
+  it('never restores a manual user an administrator removed from the target from the stale copy on the source', async (t) => {
+    const { w, store, service, file } = await failedManualApply(t);
+    const removed = await quietly(() => service.setManualAccess({ itemId: 'item-new', userIds: [], groupIds: ['farmhouse'] }));
+    assert.equal(removed.error, undefined, String(removed.error));
+    const restarted = new GrantStore(file);
+    await restarted.load();
+    assert.ok(restarted.isManualAccessRemoved('item-new', 'userIds', 'dave-id'), 'the removal is stored');
+    assert.ok(!restarted.isManualAccessRemoved('item-old', 'userIds', 'dave-id'), 'for that item only');
+
+    // An administrator's explicit move, previewed or not, does not restore the user either.
+    const preview = await service.remapGrant('item-old', 'item-new', true);
+    assert.deepEqual(preview.current.manualUserIds, []);
+
+    const { error } = await quietly(() => service.reconcileAll());
+    assert.equal(error, undefined, String(error));
+    assert.equal(store.get('item-old'), undefined);
+    const merged = store.get('item-new');
+    assert.deepEqual([merged.requests, merged.manualUserIds, merged.groupIds], [{ 7: 'alice-id' }, [], ['farmhouse']]);
+    assert.equal(merged.sync.state, 'synced');
+    assert.deepEqual(w.blockedFrom(NEW_TAG), ['bob-id', 'dave-id']);
+  });
+
+  it('never restores a group an administrator removed from the target from the stale copy on the source', async (t) => {
+    const { w, store, service } = await failedManualApply(t);
+    const removed = await quietly(() => service.setGrantGroups('item-new', []));
+    assert.equal(removed.error, undefined, String(removed.error));
+    assert.ok(store.isManualAccessRemoved('item-new', 'groupIds', 'farmhouse'));
+
+    const preview = await service.remapGrant('item-old', 'item-new', true);
+    assert.deepEqual(preview.current.groupIds, []);
+
+    const { error } = await quietly(() => service.reconcileAll());
+    assert.equal(error, undefined, String(error));
+    assert.equal(store.get('item-old'), undefined);
+    const merged = store.get('item-new');
+    assert.deepEqual([merged.requests, merged.manualUserIds, merged.groupIds], [{ 7: 'alice-id' }, ['dave-id'], []]);
+    assert.deepEqual(w.blockedFrom(NEW_TAG), ['bob-id', 'carol-id']);
+  });
+
+  it('keeps the target\'s manual users and groups when they are removed from the stale source only', async (t) => {
+    const { w, store, service } = await failedManualApply(t);
+    // Applying item-old then fails on its 404, but the administrator's change is stored.
+    await quietly(() => service.setGrantGroups('item-old', []));
+    await store.setManualAccess({ itemId: 'item-old', userIds: [], groupIds: [] });
+    assert.deepEqual([store.get('item-old').manualUserIds, store.get('item-old').groupIds], [[], []]);
+    assert.ok(store.isManualAccessRemoved('item-old', 'userIds', 'dave-id'));
+    assert.ok(!store.isManualAccessRemoved('item-new', 'userIds', 'dave-id'));
+    assert.ok(!store.isManualAccessRemoved('item-new', 'groupIds', 'farmhouse'));
+
+    const { error } = await quietly(() => service.reconcileAll());
+    assert.equal(error, undefined, String(error));
+    assert.equal(store.get('item-old'), undefined);
+    const merged = store.get('item-new');
+    assert.deepEqual([merged.manualUserIds, merged.groupIds], [['dave-id'], ['farmhouse']], 'a removal is scoped to the item it was made on');
+    assert.equal(merged.sync.state, 'synced');
+    assert.deepEqual(w.blockedFrom(NEW_TAG), ['bob-id']);
+  });
+
+  it('clears a removal when an administrator assigns the manual user or group to the item again', async (t) => {
+    const { store, service, file } = await failedManualApply(t);
+    await quietly(() => service.setManualAccess({ itemId: 'item-new', userIds: ['bob-id'], groupIds: [] }));
+    assert.ok(store.isManualAccessRemoved('item-new', 'userIds', 'dave-id'));
+    assert.ok(store.isManualAccessRemoved('item-new', 'groupIds', 'farmhouse'));
+    assert.deepEqual((await service.remapGrant('item-old', 'item-new', true)).current.manualUserIds, ['bob-id']);
+
+    const readded = await quietly(() => service.setManualAccess({ itemId: 'item-new', userIds: ['dave-id'], groupIds: [] }));
+    assert.equal(readded.error, undefined, String(readded.error));
+    assert.ok(!store.isManualAccessRemoved('item-new', 'userIds', 'dave-id'), 'assigning the user again clears its removal');
+    assert.ok(store.isManualAccessRemoved('item-new', 'userIds', 'bob-id'), 'the user taken off now is marked');
+    const regrouped = await quietly(() => service.setGrantGroups('item-new', ['farmhouse']));
+    assert.equal(regrouped.error, undefined, String(regrouped.error));
+    assert.ok(!store.isManualAccessRemoved('item-new', 'groupIds', 'farmhouse'), 'assigning the group again clears its removal');
+    const restarted = new GrantStore(file);
+    await restarted.load();
+    assert.ok(!restarted.isManualAccessRemoved('item-new', 'userIds', 'dave-id'));
+    assert.ok(!restarted.isManualAccessRemoved('item-new', 'groupIds', 'farmhouse'));
+  });
+
+  it('forgets a deleted group\'s removals, so a new group with the same ID starts unmarked', async (t) => {
+    const { store, service } = await failedManualApply(t);
+    await quietly(() => service.setGrantGroups('item-new', []));
+    assert.ok(store.isManualAccessRemoved('item-new', 'groupIds', 'farmhouse'));
+    await quietly(() => service.deleteGroup('farmhouse'));
+    assert.ok(!store.isManualAccessRemoved('item-new', 'groupIds', 'farmhouse'));
+  });
+
   it('deletes an inactive grant whose item is gone instead of failing forever', async (t) => {
     const { w, store, service } = await reimported(t);
     // Clearing its groups leaves it active (the request still holds it), so applying still fails on the 404.

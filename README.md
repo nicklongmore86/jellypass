@@ -696,6 +696,15 @@ the title has its own ID and is granted as usual. Seerr re-sending
 `404` counts as deleted: network failures and `5xx` responses from Jellyfin or
 Seerr are retried with the usual backoff.
 
+Removing a manual user or a group works like revoking a request. Removing one
+from an item (in **Grants**, a bulk change, `PUT /v1/grants/{itemId}/manual`
+or `PUT /v1/grants/{itemId}/groups`) is remembered for that item only
+(`removedManualAccess` in the state file): no later recovery or **Move**,
+previews included, adds that user or group to that item again, so a copy left
+on the old grant cannot restore it. Removing one from the old grant does not
+take it off the new one. Assigning the user or group to the item again as an
+administrator clears the record, and deleting a group clears it everywhere.
+
 If no request resolves to an existing item (Seerr still names the deleted item,
 the request was deleted, the grant is manual-only, or Seerr lookup is not
 configured), or part of a grant stays behind as above, it is marked `orphaned`: it is kept, logged once as

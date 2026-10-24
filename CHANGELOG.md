@@ -36,7 +36,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   new grants stay applied. Revoking a request is remembered per item
   (`revokedRequests` in the state file): no recovery or move adds that request
   to that item again, even from a copy left on the old grant by an unfinished
-  move. A new Seerr request for the title is unaffected. Only a `404`
+  move. A new Seerr request for the title is unaffected. Removing a manual
+  user or a group from an item is remembered the same way, per item
+  (`removedManualAccess`): no recovery or move, dry runs included, adds it to
+  that item again, removing it from the old grant leaves the new one alone, and
+  assigning it to the item again as an administrator (or deleting the group)
+  clears the record. Only a `404`
   counts as deleted; network failures and `5xx` responses keep the usual retry.
 - A grant left with no requests or groups on a deleted item (for example after
   revoking its last request) is now removed instead of failing on the `404`.
@@ -69,7 +74,10 @@ state file written by this version. They do not know the `orphaned` state,
 though: they retry orphaned grants on every scheduled run, fail on the deleted
 item's `404`, back off to hourly retries and count them in `jfa_sync_errors`
 again. They also ignore the new `remap` field and drop it when they next
-change that grant, and ignore `revokedRequests`. Remap or revoke orphaned grants, and resolve grants marked
+change that grant. They ignore `revokedRequests` and `removedManualAccess`,
+but keep them in the state file; a user or group assigned again there stays
+recorded as removed, which only stops a later move from adding it, not the
+access it has. Remap or revoke orphaned grants, and resolve grants marked
 `source reappeared`, before rolling back to avoid that.
 
 ## [2.1.1] - 2026-10-16

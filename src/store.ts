@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { AccessGroup, GrantRecord, GrantState, LibraryCatalogItem, RevokeResult, SyncStatus } from './types.js';
+import type { AccessGroup, GrantRecord, GrantState, LibraryCatalogItem, ManualAccessRemovals, RevokeResult, SyncStatus } from './types.js';
 
 const EMPTY_STATE: GrantState = { version: 7, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [] };
 
@@ -116,6 +116,11 @@ export class GrantStore {
     return this.#state.revokedRequests?.[requestId]?.includes(normalizeId(itemId)) ?? false;
   }
 
+  /** Whether an administrator removed the manual user or group from that item (see GrantState.removedManualAccess). */
+  public isManualAccessRemoved(itemId: string, kind: keyof ManualAccessRemovals, id: string): boolean {
+    return this.#state.removedManualAccess?.[normalizeId(itemId)]?.[kind]?.includes(normalizeId(id)) ?? false;
+  }
+
   /** The grant that currently records a request, if any. */
   public findGrantForRequest(requestId: string): GrantRecord | undefined {
     const grant = Object.values(this.#state.grants).find((entry) => requestId in entry.requests);
@@ -172,6 +177,7 @@ export class GrantStore {
     const missing = groupIds.filter((id) => !this.#state.groups[id]);
     if (missing.length > 0) throw new Error(`group not found: ${missing.join(', ')}`);
     const result = this.#replaceGrant(previous, previous.requests, previous.manualUserIds, groupIds);
+    this.#recordManualRemovals(previous, previous.manualUserIds, groupIds);
     await this.#save();
     return result;
   }
@@ -202,6 +208,7 @@ export class GrantStore {
     if (missing.length > 0) throw new Error(`group not found: ${missing.join(', ')}`);
     const current = this.#makeGrant(itemId, previous?.requests ?? {}, manualUserIds, groupIds, previous, input.mediaType);
     this.#state.grants[itemId] = current;
+    this.#recordManualRemovals(previous ?? current, manualUserIds, groupIds);
       results.push({ ...(previous ? { previous: clone(previous) } : {}), current: clone(current) });
     }
     await this.#save();
@@ -237,6 +244,10 @@ export class GrantStore {
     const groupId = normalizeId(groupIdInput);
     if (!this.#state.groups[groupId]) return [];
     delete this.#state.groups[groupId];
+    // A group created later under the same ID is a different household and starts unmarked.
+    for (const [itemId, removals] of Object.entries(this.#state.removedManualAccess ?? {})) {
+      if (removals.groupIds?.includes(groupId)) this.#setRemovals(itemId, { ...removals, groupIds: removals.groupIds.filter((id) => id !== groupId) });
+    }
     const results: RevokeResult[] = [];
     for (const previous of Object.values({ ...this.#state.grants })) {
       if (!previous.groupIds.includes(groupId)) continue;
@@ -307,8 +318,9 @@ export class GrantStore {
 
   /**
    * The grant an item would have after `move` is merged into it, without storing anything: requests, manual users and
-   * groups are added to whatever grant the item already has (nothing on it is dropped). Groups that no longer exist and
-   * requests an administrator revoked from that item are left out of the moved ones.
+   * groups are added to whatever grant the item already has (nothing on it is dropped). Groups that no longer exist,
+   * requests an administrator revoked from that item and manual users and groups an administrator removed from it are
+   * left out of the moved ones.
    */
   public previewMerge(move: GrantMove): GrantRecord {
     return clone(this.#mergedGrant(move));
@@ -389,10 +401,34 @@ export class GrantStore {
     const previous = this.#state.grants[itemId];
     const moved = Object.entries(move.requests).filter(([requestId]) => !this.isRequestRevoked(requestId, itemId));
     const requests = { ...(previous?.requests ?? {}), ...Object.fromEntries(moved) };
-    const manualUserIds = [...new Set([...(previous?.manualUserIds ?? []), ...move.manualUserIds.map(normalizeId)])].sort();
-    const movedGroupIds = move.groupIds.map(normalizeId).filter((id) => this.#state.groups[id]);
+    const movedUserIds = move.manualUserIds.map(normalizeId).filter((id) => !this.isManualAccessRemoved(itemId, 'userIds', id));
+    const manualUserIds = [...new Set([...(previous?.manualUserIds ?? []), ...movedUserIds])].sort();
+    const movedGroupIds = move.groupIds.map(normalizeId)
+      .filter((id) => this.#state.groups[id] && !this.isManualAccessRemoved(itemId, 'groupIds', id));
     const groupIds = [...new Set([...(previous?.groupIds ?? []), ...movedGroupIds])].sort();
     return this.#makeGrant(itemId, requests, manualUserIds, groupIds, previous, previous?.mediaType ?? move.mediaType);
+  }
+
+  /**
+   * Records an administrator's change of an item's manual users and groups from `previous` (see
+   * GrantState.removedManualAccess): each one taken off is marked for that item only, and each one assigned is unmarked.
+   */
+  #recordManualRemovals(previous: GrantRecord, manualUserIds: string[], groupIds: string[]): void {
+    const removals = this.#state.removedManualAccess?.[previous.itemId] ?? {};
+    const userIds = [...new Set([...(removals.userIds ?? []), ...previous.manualUserIds])].filter((id) => !manualUserIds.includes(id));
+    const removedGroupIds = [...new Set([...(removals.groupIds ?? []), ...previous.groupIds])].filter((id) => !groupIds.includes(id));
+    this.#setRemovals(previous.itemId, { userIds, groupIds: removedGroupIds });
+  }
+
+  #setRemovals(itemId: string, removals: ManualAccessRemovals): void {
+    const next: ManualAccessRemovals = {
+      ...(removals.userIds?.length ? { userIds: [...removals.userIds].sort() } : {}),
+      ...(removals.groupIds?.length ? { groupIds: [...removals.groupIds].sort() } : {}),
+    };
+    const { [itemId]: _, ...others } = this.#state.removedManualAccess ?? {};
+    if (next.userIds || next.groupIds) this.#state.removedManualAccess = { ...others, [itemId]: next };
+    else if (Object.keys(others).length > 0) this.#state.removedManualAccess = others;
+    else delete this.#state.removedManualAccess;
   }
 
   #makeGrant(

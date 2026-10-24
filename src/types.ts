@@ -151,6 +151,25 @@ export interface GrantState {
    * or remap) never adds a request to an item it was revoked from, so a copy left on a stale grant cannot restore it.
    */
   revokedRequests?: Record<string, string[]>;
+  /**
+   * Manual users and groups an administrator removed from an item, by item ID (the counterpart of revokedRequests for
+   * the manual audience). Moving a grant (recovery or remap, dry runs included) never adds them to that item again, so
+   * a copy left on a stale grant cannot restore them; the same user or group on another item is unaffected. Assigning
+   * one to the item again as an administrator clears its entry, and deleting a group clears that group everywhere.
+   */
+  removedManualAccess?: Record<string, ManualAccessRemovals>;
+}
+
+/**
+ * See GrantState.removedManualAccess. Kept in the state rather than on the grant so it outlives a grant that is purged
+ * or replaced by a move. It is keyed by item, like grant-level removal marks for household library joins
+ * (`removedUserIds` / `removedGroupIds`), so the two can later share one per-item record: `groupIds` matches
+ * `removedGroupIds`; `userIds` holds only removed manual users, a subset of `removedUserIds`, which also marks users who
+ * lost access another way. Merges and joins would then both read that one record.
+ */
+export interface ManualAccessRemovals {
+  userIds?: string[];
+  groupIds?: string[];
 }
 
 export interface AccessGroup {
