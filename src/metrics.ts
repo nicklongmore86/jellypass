@@ -25,7 +25,7 @@ export class Metrics {
       '# TYPE jfa_request_backfill_total counter',
       '# HELP jfa_request_backfill_last_run_timestamp_seconds Unix time the Seerr request backfill last completed a scan.',
       '# TYPE jfa_request_backfill_last_run_timestamp_seconds gauge',
-      '# HELP jfa_library_joins_total Household "Add to my library" calls by result: joined, unchanged (nothing to join, for any reason) or error.',
+      '# HELP jfa_library_joins_total Household "Add to my library" calls by result: joined, unchanged (nothing to join, for any reason), error, or dropped (not started: too many running).',
       '# TYPE jfa_library_joins_total counter',
       '# HELP jfa_reconciliations_total Reconciliation attempts by result.',
       '# TYPE jfa_reconciliations_total counter',

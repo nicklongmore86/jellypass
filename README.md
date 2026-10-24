@@ -556,10 +556,12 @@ the background, normally within seconds.
   visible only to administrators through `GET /v1/grants`, and logged as
   `household library join`.
 - **The answer never tells what happened.** Once the caller is signed in and
-  the input is valid, the response is always `202 {"status":"accepted"}` after
-  at least one second, whether the title was joined, already visible, public,
-  held by another household, manual-only, not in the library, or could not be
-  looked up. Requester IDs, household names, counts, timestamps and item IDs
+  the input is valid, the response is always `202 {"status":"accepted"}`, sent
+  at once, before the title is looked up: the Seerr lookup, the join and
+  applying it to Jellyfin all run in the background afterwards, so neither the
+  answer nor how long it takes depends on whether the title was joined,
+  already visible, public, held by another household, manual-only, not in the
+  library, or could not be looked up. Requester IDs, household names, counts, timestamps and item IDs
   are never returned. The caller can only tell whether the title appears in
   their library afterwards. Details are logged server-side
   (`library join changed nothing` and similar at `LOG_LEVEL=debug`).
@@ -571,11 +573,16 @@ the background, normally within seconds.
   gets `401`, malformed input `400`, and administrators (who see everything
   already) change nothing.
 - **Rate limited.** Each client address (after `TRUSTED_PROXIES`) may call it
-  30 times in 10 minutes, signed in or not; further calls get `429`. During
-  shutdown it answers `503`.
-- `jfa_library_joins_total{result="joined"|"unchanged"|"error"}` counts calls.
-  `unchanged` deliberately covers every no-op reason, and no label names a
-  title.
+  30 times in 10 minutes, signed in or not; further calls get `429`. At most 3
+  joins per user, 10 per client address and 50 in all run at once; a call past
+  that gets the same `202` but its join is not started, so try again later.
+  During shutdown it answers `503`; joins already running are stopped before
+  their next step and given the usual grace period, and a join that was saved
+  but not yet applied to Jellyfin is applied after restart.
+- `jfa_library_joins_total{result="joined"|"unchanged"|"error"|"dropped"}`
+  counts calls. `unchanged` deliberately covers every no-op reason, `dropped`
+  counts calls not started because too many were running, and no label names
+  a title.
 
 Without Seerr, `/jellypass/` paths are proxied to Jellyfin like any other.
 
@@ -656,7 +663,10 @@ upgrade; follow [Upgrading from 1.1.0](CHANGELOG.md#upgrading-from-110) in the
 check [Upgrading from 2.0.0](CHANGELOG.md#upgrading-from-200) in the 2.1.0
 notes if Seerr lookup is not configured or JellyPass runs behind a reverse
 proxy. Upgrading from 2.1.0 to 2.1.1 changes neither the state file nor any
-setting. Upgrades can migrate the state file to a newer schema that older
+setting. Rolling back from a version with **Add to my library** to 2.1.1
+drops the join audit history and administrator removal marks from every grant
+2.1.1 rewrites, so removed households and users could join those grants again
+after upgrading once more; see the changelog. Upgrades can migrate the state file to a newer schema that older
 versions cannot read, so rolling back requires the backup taken before the
 upgrade. Pinning `JELLYPASS_IMAGE` makes rollback explicit:
 

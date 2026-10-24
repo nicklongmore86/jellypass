@@ -26,11 +26,17 @@ const LIBRARY_JOIN_ASSETS: Record<string, { body: string; contentType: string }>
 const MAX_LIBRARY_JOIN_BODY_BYTES = 1024;
 const LIBRARY_JOIN_WINDOW_MS = 10 * 60 * 1000;
 const MAX_LIBRARY_JOINS = 30;
-/** Every accepted join is answered no sooner than this, so the time taken does not tell which case applied. */
-export const DEFAULT_LIBRARY_JOIN_MIN_RESPONSE_MS = 1_000;
 /**
- * The only answer to an accepted join. It is the same whether the title was joined, already visible to the caller,
- * public, held by another household, admin-managed, missing, or could not be looked up.
+ * Joins still running in the background, per signed-in user, per client address and in all. A call past any limit is
+ * answered exactly like any other but not started, so a flood cannot pile work onto Seerr or the shared write queue.
+ */
+const MAX_RUNNING_LIBRARY_JOINS_PER_USER = 3;
+const MAX_RUNNING_LIBRARY_JOINS_PER_CLIENT = 10;
+const MAX_RUNNING_LIBRARY_JOINS = 50;
+/**
+ * The only answer to an accepted join, sent as soon as the caller is authenticated and the input is valid, before the
+ * title is looked up. It is the same, and takes the same time, whether the title was joined, already visible to the
+ * caller, public, held by another household, admin-managed, missing, or could not be looked up.
  */
 const LIBRARY_JOIN_ACCEPTED = { status: 'accepted' };
 const TCP_KEEPALIVE_INITIAL_DELAY_MS = 60_000;
@@ -69,11 +75,13 @@ export interface HouseholdGatewayOptions {
   trustedProxies?: string[];
   /**
    * Household "Add to my library" at /jellypass/add. Without it those paths are proxied to Jellyfin like any other.
-   * `join` must not reject; its outcome is never shown to the caller.
+   * `start` begins the join as tracked background work and returns at once: a promise that settles when the work has,
+   * and must not reject, or undefined when shutdown refused it. Its outcome is never shown to the caller. `dropped` is
+   * called for a join not started because too many were running.
    */
   libraryJoin?: {
-    join: (input: { userId: string; isAdministrator: boolean; mediaType: 'movie' | 'tv'; tmdbId: number }) => Promise<unknown>;
-    minResponseMs?: number;
+    start: (input: { userId: string; isAdministrator: boolean; mediaType: 'movie' | 'tv'; tmdbId: number }) => Promise<void> | undefined;
+    dropped?: () => void;
   };
 }
 
@@ -91,6 +99,8 @@ export class HouseholdGateway {
   readonly #loginAttempts = new AttemptCounter({ windowMs: LOGIN_ATTEMPT_WINDOW_MS, maxKeys: MAX_LOGIN_CLIENTS });
   readonly #libraryJoinAttempts = new AttemptCounter({ windowMs: LIBRARY_JOIN_WINDOW_MS, maxKeys: MAX_LOGIN_CLIENTS });
   readonly #libraryJoin: HouseholdGatewayOptions['libraryJoin'];
+  /** Running background joins by `user:<id>`, `client:<address>` and `all`. */
+  readonly #runningLibraryJoins = new Map<string, number>();
   readonly #webSocketIdleTimeoutMs: number;
   readonly #webSocketUpstreamIdleTimeoutMs: number;
   readonly #debug: boolean;
@@ -337,7 +347,8 @@ export class HouseholdGateway {
   /**
    * Household "Add to my library". Identity comes only from Jellyfin: the caller's own token is checked with
    * GET /Users/Me, exactly as for protected media. Rate limiting, authentication and input validation answer the same
-   * for every title; past them, every case gets the same 202 body after the same minimum delay.
+   * for every title. Past them the join is started in the background and every case gets the same 202 at once: nothing
+   * that depends on the title (Seerr, the write queue, Jellyfin) is awaited before answering.
    */
   async #joinLibrary(
     request: IncomingMessage,
@@ -373,18 +384,30 @@ export class HouseholdGateway {
       writeJson(response, 400, { error: 'invalid_request' });
       return;
     }
-    const startedAt = performance.now();
-    try {
-      await libraryJoin.join({ userId: user.Id, isAdministrator: user.Policy?.IsAdministrator === true, ...media });
-    } catch (error) {
-      console.error(JSON.stringify({
-        level: 'error',
-        message: 'household library join failed',
-        detail: error instanceof Error ? error.message : String(error),
-      }));
+    if (this.#closing) {
+      writeJson(response, 503, { error: 'shutting_down' });
+      return;
     }
-    const remainingMs = (libraryJoin.minResponseMs ?? DEFAULT_LIBRARY_JOIN_MIN_RESPONSE_MS) - (performance.now() - startedAt);
-    if (remainingMs > 0) await new Promise((resolve) => setTimeout(resolve, remainingMs));
+    const keys = [`user:${user.Id.toLowerCase()}`, `client:${clientId}`, 'all'];
+    const limits = [MAX_RUNNING_LIBRARY_JOINS_PER_USER, MAX_RUNNING_LIBRARY_JOINS_PER_CLIENT, MAX_RUNNING_LIBRARY_JOINS];
+    if (keys.some((key, index) => (this.#runningLibraryJoins.get(key) ?? 0) >= (limits[index] as number))) {
+      this.#logDebug('household library join dropped: too many running', { clientId });
+      libraryJoin.dropped?.();
+    } else {
+      const running = libraryJoin.start({ userId: user.Id, isAdministrator: user.Policy?.IsAdministrator === true, ...media });
+      if (!running) {
+        writeJson(response, 503, { error: 'shutting_down' });
+        return;
+      }
+      for (const key of keys) this.#runningLibraryJoins.set(key, (this.#runningLibraryJoins.get(key) ?? 0) + 1);
+      void running.finally(() => {
+        for (const key of keys) {
+          const count = (this.#runningLibraryJoins.get(key) ?? 1) - 1;
+          if (count > 0) this.#runningLibraryJoins.set(key, count);
+          else this.#runningLibraryJoins.delete(key);
+        }
+      });
+    }
     writeJson(response, 202, LIBRARY_JOIN_ACCEPTED);
   }
 

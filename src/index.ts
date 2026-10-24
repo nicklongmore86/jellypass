@@ -18,8 +18,11 @@ async function main(): Promise<void> {
     : undefined;
   const service = new AccessService(jellyfin, store, undefined, seerr, { logLevel: config.logLevel });
   const webAuth = new WebAuth(jellyfin);
+  // Shutdown aborts this signal: each job stops before its next step and failures from the abort are not logged.
+  const background = new BackgroundTasks();
   const server = makeServer(service, { webhook: config.webhookToken, admin: config.adminToken }, webAuth, {
     trustedProxies: config.trustedProxies,
+    background,
     ...(config.householdDomain ? {
       householdGateway: {
         jellyfinUrl: config.jellyfinUrl,
@@ -32,8 +35,6 @@ async function main(): Promise<void> {
     } : {}),
   });
   const backfillSince = config.requestBackfillEnabled ? config.requestBackfillSince : undefined;
-  // Shutdown aborts this signal: each job stops before its next step and failures from the abort are not logged.
-  const background = new BackgroundTasks();
   const backfillRequests = async (signal: AbortSignal) => {
     if (!backfillSince) return;
     try {

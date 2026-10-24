@@ -5,6 +5,7 @@ import { describe, it } from 'node:test';
 import { AccessService } from '../dist/access-service.js';
 import { JellyfinClient } from '../dist/jellyfin.js';
 import { makeServer } from '../dist/server.js';
+import { BackgroundTasks, createShutdown } from '../dist/shutdown.js';
 import { GrantStore } from '../dist/store.js';
 import { createFakeJellyfin } from './support/fake-jellyfin.mjs';
 import { makeTempDir } from './support/temp-dir.mjs';
@@ -14,7 +15,8 @@ const JOIN_PATH = '/jellypass/add';
 
 describe('household "Add to my library"', { timeout: 10_000 }, () => {
   // TMDB movie 603 is item-1, movie 604 is item-2, movie 404 is not in the library and movie 500 fails to resolve.
-  async function gateway(t, { seerr = true, trustedProxies, minResponseMs = 0 } = {}) {
+  // `lookupGate`, if given, holds every Seerr lookup until it resolves.
+  async function gateway(t, { seerr = true, trustedProxies, lookupGate } = {}) {
     const jellyfin = await createFakeJellyfin();
     t.after(() => jellyfin.close());
     const store = new GrantStore(path.join(await makeTempDir(t, 'jfa-join-test-'), 'grants.json'));
@@ -28,14 +30,26 @@ describe('household "Add to my library"', { timeout: 10_000 }, () => {
     const seerrClient = seerr ? {
       async getJellyfinItemId(mediaType, tmdbId) {
         lookups.push(`${mediaType}/${tmdbId}`);
+        await lookupGate;
         if (tmdbId === 500) throw new Error('Seerr GET /api/v1/movie/500 returned 500');
         return { 'movie/603': 'item-1', 'movie/604': 'item-2' }[`${mediaType}/${tmdbId}`];
       },
     } : undefined;
     const service = new AccessService(client, store, undefined, seerrClient);
+    // Every background join is recorded, so a test can wait for the ones it started.
+    const background = new BackgroundTasks();
+    const started = [];
+    const tracked = {
+      run(task) {
+        const running = background.run(task);
+        if (running) started.push(running);
+        return running;
+      },
+    };
     const server = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' }, undefined, {
       ...(trustedProxies ? { trustedProxies } : {}),
-      householdGateway: { jellyfinUrl: jellyfin.url, domain: 'example.test', hostPrefix: 'jelly-', libraryJoinMinResponseMs: minResponseMs },
+      background: tracked,
+      householdGateway: { jellyfinUrl: jellyfin.url, domain: 'example.test', hostPrefix: 'jelly-' },
     });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     t.after(() => {
@@ -73,9 +87,9 @@ describe('household "Add to my library"', { timeout: 10_000 }, () => {
       assert.equal(response.status, 200);
       await response.arrayBuffer();
     };
-    // Each join's reconciliation runs after the response; any later service call waits for it.
-    const settled = () => service.planGrant('item-1').catch(() => undefined);
-    return { jellyfin, store, service, server, baseUrl, login, join, grantForAlice, settled, lookups, carol, dave };
+    // Each join runs in the background after its response.
+    const settled = () => Promise.all(started);
+    return { jellyfin, client, store, service, server, background, baseUrl, login, join, grantForAlice, settled, started, lookups, carol, dave };
   }
 
   it('requires a Jellyfin-confirmed sign-in and ignores a user ID sent by the client', async (t) => {
@@ -177,15 +191,95 @@ describe('household "Add to my library"', { timeout: 10_000 }, () => {
     assert.doesNotMatch(metrics.split('\n').filter((line) => line.startsWith('jfa_library_joins_total')).join('\n'), /item|tmdb|farmhouse|cottage/);
   });
 
-  it('takes at least the minimum response time whichever case applies', async (t) => {
-    const { login, join, grantForAlice } = await gateway(t, { minResponseMs: 150 });
+  it('answers before the Seerr lookup settles, so the time taken cannot depend on the title', async (t) => {
+    let release;
+    const { store, login, join, grantForAlice, settled, lookups } = await gateway(t, { lookupGate: new Promise((resolve) => { release = resolve; }) });
     await grantForAlice();
     const token = await login('Carol');
-    for (const tmdbId of [404, 604, 603]) {
-      const startedAt = performance.now();
-      assert.equal((await join(token, { mediaType: 'movie', tmdbId })).status, 202);
-      assert.ok(performance.now() - startedAt >= 145, String(tmdbId));
+    // At most three per user run at once; see the next tests for the rest.
+    for (const tmdbId of [404, 500, 603]) {
+      const response = await within(2_000, join(token, { mediaType: 'movie', tmdbId }));
+      assert.equal(response.status, 202, String(tmdbId));
+      assert.equal(response.body, '{"status":"accepted"}');
     }
+    assert.deepEqual(lookups, ['movie/404', 'movie/500', 'movie/603'], 'every lookup started and none has finished');
+    assert.equal(store.get('item-1').joins, undefined);
+    release();
+    await settled();
+    assert.deepEqual(store.get('item-1').groupIds, ['cottage', 'farmhouse'], 'the join still happens afterwards');
+  });
+
+  it('answers without waiting for the write queue, however long it is held', async (t) => {
+    const { client, store, service, login, join, grantForAlice, settled } = await gateway(t);
+    await grantForAlice();
+    const token = await login('Carol');
+    // An administrator change holds the shared write queue until it is released.
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    const getUsers = client.getUsers.bind(client);
+    client.getUsers = async () => {
+      await held;
+      return getUsers();
+    };
+    const queued = service.setUserPasswordless('dave-id', true).catch(() => undefined);
+    const response = await within(2_000, join(token));
+    assert.equal(response.status, 202);
+    assert.equal(store.get('item-1').joins, undefined, 'the join is still waiting for the queue');
+    release();
+    await queued;
+    await settled();
+    assert.deepEqual(store.get('item-1').groupIds, ['cottage', 'farmhouse']);
+  });
+
+  it('starts at most three running joins per user and drops the rest with the same answer', async (t) => {
+    let release;
+    const { store, service, login, join, grantForAlice, settled, lookups } = await gateway(t, { lookupGate: new Promise((resolve) => { release = resolve; }) });
+    await grantForAlice();
+    const token = await login('Carol');
+    const dave = await login('Dave');
+    for (const tmdbId of [404, 604, 500, 603]) {
+      assert.equal((await within(2_000, join(token, { mediaType: 'movie', tmdbId }))).status, 202, String(tmdbId));
+    }
+    assert.deepEqual(lookups, ['movie/404', 'movie/604', 'movie/500'], 'the fourth join was not started');
+    assert.equal((await join(dave)).status, 202);
+    assert.equal(lookups.length, 4, 'another user has their own limit');
+    assert.match(service.renderMetrics(), /jfa_library_joins_total\{result="dropped"\} 1\n/);
+    release();
+    await settled();
+    assert.equal((await join(token)).status, 202);
+    await settled();
+    assert.deepEqual(store.get('item-1').groupIds, ['cottage', 'farmhouse'], 'finished joins free their slots');
+  });
+
+  it('is drained by shutdown before the store closes, and applies nothing once shutdown began', async (t) => {
+    let release;
+    const { jellyfin, store, server, background, login, join, grantForAlice, started, carol } = await gateway(t, {
+      lookupGate: new Promise((resolve) => { release = resolve; }),
+    });
+    await grantForAlice();
+    const token = await login('Carol');
+    assert.equal((await join(token)).status, 202);
+    const events = [];
+    void started[0].then(() => events.push('join settled'));
+    const exits = [];
+    const shutdown = createShutdown({
+      servers: [server],
+      timers: () => [],
+      background,
+      closeStore: async () => {
+        events.push('store closing');
+        await store.close();
+      },
+      graceMs: 2_000,
+      exit: (code) => exits.push(code),
+      log: () => {},
+    })('SIGTERM');
+    setTimeout(release, 50);
+    await shutdown;
+    assert.deepEqual(events, ['join settled', 'store closing']);
+    assert.deepEqual(exits, [0]);
+    assert.deepEqual(store.get('item-1').groupIds, ['farmhouse'], 'the lookup finished after shutdown began, so nothing was joined');
+    assert.deepEqual(jellyfin.user(carol.Id).Policy.BlockedTags, ['jfa:private:item-1']);
   });
 
   it('rejects malformed input with one generic 400', async (t) => {
@@ -256,6 +350,15 @@ describe('household "Add to my library"', { timeout: 10_000 }, () => {
     assert.equal(jellyfin.requestedPaths.at(-1), JOIN_PATH);
   });
 });
+
+/** Rejects if `promise` has not settled within `ms`, so a response that waits on held work fails instead of hanging. */
+function within(ms, promise) {
+  let timer;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => { timer = setTimeout(() => reject(new Error(`no response within ${ms} ms`)), ms); }),
+  ]).finally(() => clearTimeout(timer));
+}
 
 function comparableHeaders(headers) {
   const { date: _date, connection: _connection, 'keep-alive': _keepAlive, ...rest } = headers;

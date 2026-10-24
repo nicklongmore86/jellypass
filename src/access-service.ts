@@ -298,23 +298,27 @@ export class AccessService {
 
   /**
    * Household "Add to my library" for a Jellyfin-authenticated user: resolves a TMDB title to its HD Jellyfin item
-   * through Seerr and joins that item's request grant (see GrantStore.joinGrant). The result is for metrics and tests
-   * only; callers must not reveal it, since it tells whether another household holds the title. Every failure is logged
-   * and reported as `error`, never thrown. The join is stored before this resolves; `reconciled` settles once it has
-   * been applied to Jellyfin, or failed to be (logged, and retried by reconciliation like any other grant).
+   * through Seerr, joins that item's request grant (see GrantStore.joinGrant) and applies the join to Jellyfin. It runs
+   * as background work after the caller has had their answer. The result is for metrics and tests only; callers must
+   * not reveal it, since it tells whether another household holds the title. Every failure is logged and reported as
+   * `error`, never thrown; a join that was stored but could not be applied is retried by reconciliation like any other
+   * grant. Once `signal` is aborted (shutdown), no further Seerr, Jellyfin or store call is started and the run resolves
+   * `cancelled`, logging and counting nothing more: a join stored by then stays pending and is applied after restart.
    */
   public async joinLibrary(input: {
     userId: string;
     isAdministrator: boolean;
     mediaType: 'movie' | 'tv';
     tmdbId: number;
-  }): Promise<{ result: 'joined' | 'unchanged' | 'error'; reconciled: Promise<void> }> {
+  }, options: { signal?: AbortSignal } = {}): Promise<'joined' | 'unchanged' | 'error' | 'cancelled'> {
+    const { signal } = options;
     const fields = { userId: input.userId, mediaType: input.mediaType, tmdbId: input.tmdbId };
-    const finish = (result: 'joined' | 'unchanged' | 'error', reconciled = Promise.resolve()) => {
+    const finish = (result: 'joined' | 'unchanged' | 'error') => {
       this.#metrics.increment('jfa_library_joins_total', { result });
-      return { result, reconciled };
+      return result;
     };
     try {
+      throwIfAborted(signal);
       if (!this.#seerr) throw new Error('Seerr lookup is not configured');
       // Administrators already see every title, and a grant never lists them.
       if (input.isAdministrator) {
@@ -322,42 +326,51 @@ export class AccessService {
         return finish('unchanged');
       }
       const itemId = await this.#seerr.getJellyfinItemId(input.mediaType, input.tmdbId);
+      throwIfAborted(signal);
       if (!itemId) {
         this.#logDebug('library join found no Jellyfin item', fields);
         return finish('unchanged');
       }
-      const joined = await this.#exclusive(() => this.#store.joinGrant({
-        itemId,
-        userId: input.userId,
-        groupIds: this.#store.listGroupIdsForUser(input.userId),
-      }));
-      if (!joined) {
-        this.#logDebug('library join changed nothing', { ...fields, itemId });
-        return finish('unchanged');
-      }
-      const join = joined.current.joins?.at(-1);
-      console.log(JSON.stringify({
-        level: 'info',
-        message: 'household library join',
-        ...fields,
-        itemId: joined.current.itemId,
-        groupIds: join?.groupIds ?? [],
-        userAdded: join?.userAdded ?? false,
-      }));
-      const reconciled = this.#exclusive(async () => {
-        // Shutdown closed the store: the grant was saved as pending and is reconciled after restart.
-        if (this.#store.closed) return;
-        await this.#reconcileGrant(this.#store.get(joined.current.itemId) ?? joined.current);
-      }).catch((error: unknown) => {
-        console.error(JSON.stringify({
-          level: 'error',
-          message: 'library join reconciliation failed',
+      return await this.#exclusive(async () => {
+        throwIfAborted(signal);
+        const joined = await this.#store.joinGrant({
+          itemId,
+          userId: input.userId,
+          groupIds: this.#store.listGroupIdsForUser(input.userId),
+        });
+        if (!joined) {
+          throwIfAborted(signal);
+          this.#logDebug('library join changed nothing', { ...fields, itemId });
+          return finish('unchanged');
+        }
+        // The join is stored from here on, so it counts even if shutdown stops it being applied now.
+        const join = joined.current.joins?.at(-1);
+        console.log(JSON.stringify({
+          level: 'info',
+          message: 'household library join',
+          ...fields,
           itemId: joined.current.itemId,
-          detail: error instanceof Error ? error.message : String(error),
+          groupIds: join?.groupIds ?? [],
+          userAdded: join?.userAdded ?? false,
         }));
+        finish('joined');
+        throwIfAborted(signal);
+        try {
+          await this.#reconcileGrant(joined.current, signal);
+        } catch (error) {
+          rethrowIfCancelled(error, signal);
+          console.error(JSON.stringify({
+            level: 'error',
+            message: 'library join reconciliation failed',
+            itemId: joined.current.itemId,
+            detail: error instanceof Error ? error.message : String(error),
+          }));
+        }
+        return 'joined';
       });
-      return finish('joined', reconciled);
     } catch (error) {
+      // Includes a store write refused because shutdown closed the store after its grace period.
+      if (error instanceof OperationCancelledError || signal?.aborted) return 'cancelled';
       console.error(JSON.stringify({
         level: 'error',
         message: 'library join failed',
@@ -366,6 +379,11 @@ export class AccessService {
       }));
       return finish('error');
     }
+  }
+
+  /** Counts a household "Add to my library" call that was not started because too many were already running. */
+  public recordLibraryJoinDropped(): void {
+    this.#metrics.increment('jfa_library_joins_total', { result: 'dropped' });
   }
 
   async #resolveWebhook(event: SeerrWebhook): Promise<{ itemId: string; userId: string; mediaType?: string }> {

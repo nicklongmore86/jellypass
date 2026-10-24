@@ -16,21 +16,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   otherwise impossible for movies. JellyPass resolves the title's HD item
   through Seerr and adds the caller's households (or the caller, when they
   belong to none) to the item's grant if the grant came from a request;
-  manual-only grants are untouched and nothing is removed. The answer is the
-  same `202` after the same minimum delay in every case, so it never reveals
-  whether, or by whom, a title is held. The caller is identified only by their
-  Jellyfin token, checked with Jellyfin; calls are rate-limited per client
-  address (30 per 10 minutes) and refused during shutdown. Requires Seerr
-  lookup (`SEERR_URL`, `SEERR_API_KEY`); no new settings.
+  manual-only grants are untouched and nothing is removed. Once the caller is
+  signed in and the input is valid, the answer is the same `202` at once in
+  every case: the lookup and the join run in the background afterwards, so
+  neither the answer nor the time it takes reveals whether, or by whom, a title
+  is held. The caller is identified only by their Jellyfin token, checked with
+  Jellyfin; calls are rate-limited per client address (30 per 10 minutes), at
+  most 3 joins per user, 10 per client address and 50 in all run at once
+  (further calls get the same answer but are not started), and calls are
+  refused during shutdown, which stops running joins and waits for them like
+  other background work. Requires Seerr lookup (`SEERR_URL`,
+  `SEERR_API_KEY`); no new settings.
 - Grants record each join in `joins`, the groups an administrator removed in
   `removedGroupIds`, and the users an administrator's change took access from
   (including the members of a removed household) in `removedUserIds`, so a join
   never undoes an administrator's removal: a marked user's joins change
   nothing, even through a household they join later or after leaving the
-  removed one. The state file stays at schema v7;
-  2.1.1 reads it and drops these fields from a grant it rewrites.
-- `jfa_library_joins_total{result}` counts joins as `joined`, `unchanged` or
-  `error`.
+  removed one. The state file stays at schema v7.
+- `jfa_library_joins_total{result}` counts joins as `joined`, `unchanged`,
+  `error` or `dropped` (not started because too many were running).
 
 ### Fixed
 
@@ -43,6 +47,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the request status to be approved or completed (Seerr v3.5.0 statuses 2 and
   5). Such requests are not recorded as handled, so one that Seerr approves
   later is still picked up. The webhook is unchanged.
+
+### Rolling back to 2.1.1
+
+2.1.1 reads this state file, but whenever it rewrites a grant (a new request
+granted to it by the webhook or backfill, a revoked request, an administrator
+changing its groups or manual access, or deleting one of its groups) it drops
+that grant's `joins`, `removedGroupIds` and `removedUserIds`. Reconciliation
+alone keeps them. A rewritten grant loses its join audit history and its
+removal marks for good: after upgrading again, the households and users an
+administrator removed from it can join it again. Restore the state-file backup
+taken before upgrading to keep them, or review those grants' audiences after
+upgrading again.
 
 ## [2.1.1] - 2026-10-16
 

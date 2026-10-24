@@ -84,7 +84,7 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
     const seerr = { getJellyfinItemId: async (mediaType, tmdbId) => (mediaType === 'movie' && tmdbId === 603 ? fixture.itemId : undefined) };
     const service = new AccessService(client, joinStore, undefined, seerr);
     const gateway = makeServer(service, { webhook: webhookToken, admin: 'real-admin-secret' }, undefined, {
-      householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-', libraryJoinMinResponseMs: 0 },
+      householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-' },
     });
     await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
     t.after(() => new Promise((resolve) => gateway.close(resolve)));
@@ -105,6 +105,8 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
     // The page sends only the token, as Jellyfin web stored it, so Jellyfin does not rename the user's web session.
     const accepted = await join(`MediaBrowser Token="${bob.AccessToken}"`);
     assert.deepEqual(accepted, { status: 202, body: { status: 'accepted' } });
+    // The join runs after the answer.
+    await waitFor(async () => joinStore.get(fixture.itemId).manualUserIds.includes(fixture.bobId.toLowerCase()));
     assert.deepEqual(joinStore.get(fixture.itemId).manualUserIds, [fixture.bobId.toLowerCase()]);
     await waitFor(async () => !user(await client.getUsers(), fixture.bobId).Policy.BlockedTags.includes(accessTag(fixture.itemId)));
     const item = await request(baseUrl, `/Users/${fixture.bobId}/Items/${fixture.itemId}`, { token: bob.AccessToken });

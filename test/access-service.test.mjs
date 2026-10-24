@@ -749,11 +749,8 @@ describe('household library joins', () => {
     const service = new AccessService(fake, store, undefined, seerr);
     await service.upsertGroup({ id: 'house-a', name: 'House A', userIds: ['alice-id', 'bob-id'] });
     await service.upsertGroup({ id: 'house-b', name: 'House B', userIds: ['carol-id'] });
-    const join = async (userId, tmdbId = 603, mediaType = 'movie', isAdministrator = false) => {
-      const { result, reconciled } = await service.joinLibrary({ userId, isAdministrator, mediaType, tmdbId });
-      await reconciled;
-      return result;
-    };
+    const join = (userId, tmdbId = 603, mediaType = 'movie', isAdministrator = false) =>
+      service.joinLibrary({ userId, isAdministrator, mediaType, tmdbId });
     return { store, fake, seerr, service, join };
   }
 
@@ -954,33 +951,6 @@ describe('household library joins', () => {
     assert.deepEqual(errors.map((entry) => entry.message), ['library join failed', 'library join failed']);
     assert.match(errors[1].detail, /state store is closed/);
     assert.match(service.renderMetrics(), /jfa_library_joins_total\{result="error"\} 2\n/);
-  });
-
-  it('skips applying a stored join once shutdown has closed the store, leaving it pending for the next start', async (t) => {
-    const file = await stateFile(t);
-    const store = new GrantStore(file);
-    await store.load();
-    const fake = fakeJellyfin({ extraUsers: [{ Id: 'carol-id', Name: 'Carol' }] });
-    const service = new AccessService(fake, store, undefined, fakeSeerr());
-    await service.upsertGroup({ id: 'house-a', name: 'House A', userIds: ['alice-id', 'bob-id'] });
-    await service.upsertGroup({ id: 'house-b', name: 'House B', userIds: ['carol-id'] });
-    await service.processWebhook(parseWebhook(webhook()));
-    // Shutdown lands just after the join is saved, before its reconciliation starts.
-    const joinGrant = store.joinGrant.bind(store);
-    let closing;
-    store.joinGrant = async (input) => {
-      const joined = await joinGrant(input);
-      closing = store.close();
-      return joined;
-    };
-    const { result, reconciled } = await service.joinLibrary({ userId: 'carol-id', isAdministrator: false, mediaType: 'movie', tmdbId: 603 });
-    assert.equal(result, 'joined');
-    await reconciled;
-    await closing;
-    assert.deepEqual(fake.user('carol-id').Policy.BlockedTags, ['jfa:private:item-1'], 'nothing was applied after close');
-    const saved = JSON.parse(await readFile(file, 'utf8')).grants['item-1'];
-    assert.deepEqual(saved.groupIds, ['house-a', 'house-b']);
-    assert.equal(saved.sync.state, 'pending');
   });
 });
 
