@@ -509,8 +509,8 @@ Residual leak: none between households. What a caller can learn from the count i
 "Get this" calls used and whether each ended declined (freed) or otherwise, which is theirs to know and the same
 whichever branch served them. Seerr requests made outside the app (the Seerr website before step 4, or by an
 administrator on the caller's behalf) count towards Seerr's `used` but were the caller's own or an administrator's
-doing; requests an administrator makes with `ignoreQuota` are not counted, as in Seerr. The live server currently has
-no quotas configured, so today every caller is eligible unless they lack request permission.
+doing; requests an administrator makes with `ignoreQuota` are not counted, as in Seerr. Without quotas configured in
+Seerr, every caller is eligible unless they lack request permission.
 
 ### Late requests (closed by design)
 
@@ -522,9 +522,10 @@ public title private, re-add access an administrator removed, or extend a manual
 
 **Why not classify after the fact.** Telling a late request from a genuine one afterwards needs to know whether the
 title was in Jellyfin when the request was made, and nothing proves that. Jellyfin's `DateCreated` is the file's
-modification time (it left 3 of 19 real genuine requests public). A periodic availability journal cannot prove
-absence at request time either: there are gaps between observations, deletions and re-downloads, HD/4K inferred from
-`MediaSourceCount`, item IDs that change without a TMDB link, and TV file counts that do not show episode coverage.
+modification time (so a genuine request whose downloaded file is dated before the request looks late and stays
+public). A periodic availability journal cannot prove absence at request time either: there are gaps between
+observations, deletions and re-downloads, HD/4K inferred from `MediaSourceCount`, item IDs that change without a
+TMDB link, and TV file counts that do not show episode coverage.
 
 **The rules that close it.**
 

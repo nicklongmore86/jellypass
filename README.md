@@ -159,11 +159,11 @@ as semantic-version tags. For predictable production upgrades, set
 `JELLYPASS_IMAGE` in `.env` to a versioned image such as:
 
 ```dotenv
-JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:2.2.1
+JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:2.3.0
 ```
 
-Each release is published as a semantic-version image tag, such as `2.2.1`,
-plus floating `2.2` and `2` tags that move to the newest release in that minor
+Each release is published as a semantic-version image tag, such as `2.3.0`,
+plus floating `2.3` and `2` tags that move to the newest release in that minor
 or major line; see [CHANGELOG.md](CHANGELOG.md) for what each one contains. `latest` is rebuilt on
 every push to `main` and may include unreleased changes, so use it, or build
 from source, only to test ahead of a release.
@@ -842,7 +842,11 @@ proxy. Upgrading from 2.1.0 to 2.1.1 changes neither the state file nor any
 setting. Upgrading from 2.1.1 to 2.2.0 changes no setting and keeps the state
 file at schema v7, adding new records to it; see
 [Upgrading from 2.1.1](CHANGELOG.md#upgrading-from-211). Upgrading from 2.2.0
-to 2.2.1 changes neither the state file nor any setting. Rolling back from
+to 2.2.1 changes neither the state file nor any setting. Upgrading from 2.2.1
+to 2.3.0 keeps the state file at schema v7, adds optional settings for the
+household app (off by default) and limits every deployment to 100
+households; see [Upgrading from 2.2.1](CHANGELOG.md#upgrading-from-221).
+Rolling back from 2.3.0 to 2.2.1 needs no state-file change. Rolling back from
 2.2.0 to 2.1.1, 2.1.0 or 2.0.0 keeps the state file readable, but those
 versions retry grants marked `orphaned` (see
 [A re-imported title is public](#a-re-imported-title-is-public-or-a-grant-is-orphaned))

@@ -7,6 +7,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [2.3.0] - 2026-10-24
+
+This is a minor release. It adds the household app, which is **off by
+default**: with `HOUSEHOLD_APP_ENABLED` unset, the only changes are the
+100-household limit, the household hostnames' `/jellypass/app` paths and a
+format check on `TMDB_API_KEY` if it is set (see below). Read these before
+upgrading;
+[Upgrading from 2.2.1](#upgrading-from-221) has the steps:
+
+- **The household app is off by default.** To enable it, set
+  `HOUSEHOLD_APP_ENABLED=true` together with `HOUSEHOLD_DOMAIN`, `SEERR_URL`
+  and `SEERR_API_KEY`, and the new `TMDB_API_KEY` (a TMDB v3 API key or v4 API
+  read access token). Startup stops if the app is enabled without any of
+  them, or if TMDB refuses the key (`401` or `403`); a TMDB that cannot be
+  reached at startup is only logged, and the app answers `unavailable` until
+  it is back. A `TMDB_API_KEY` that is set but is neither a key nor a token
+  stops startup even while the app is off.
+- **What it serves:** on each household hostname, and nowhere else, an
+  installable web app (a PWA) at `/jellypass/app/` and its JSON API under
+  `/jellypass/app/v1`. Members sign in with their existing Jellyfin web
+  session on that address, browse and search titles from TMDB, and see each
+  title's state for their household (**In your library** with **Play**,
+  **Available to request soon**, or **Can't request**). While the app is off,
+  `/jellypass/app` paths on household hostnames answer `404` instead of being
+  proxied to Jellyfin.
+- **It is read-only in 2.3.0.** There is no **Get this** yet: the app makes no
+  Seerr requests, and households keep requesting through Seerr as before.
+- **The Seerr website is not restricted yet, so the late-request risk
+  remains.** Seerr 3.5.x accepts a request for a title that is already
+  available, and for a user with auto-approve, the webhook and backfill treat
+  it as a genuine request, which can make a public title private, re-add
+  access an administrator removed, or extend a manual-only grant. 2.3.0 does
+  not change this; it is closed only once the app can request titles and the
+  Seerr website is restricted to administrators (step 4 of
+  [the app plan](docs/app-design.md#late-requests-closed-by-design)).
+- **At most 100 households, on every deployment,** whether or not the app is
+  enabled. Creating a 101st household (group) is refused with `400`. A state
+  file with more than 100 groups still loads and every existing group keeps
+  working and can still be changed or deleted; only new groups are refused
+  until there are fewer than 100.
+- **Install and sign-in on a real iPhone are not verified yet.** They have
+  only been exercised in a simulated browser; see
+  [Household app (PWA)](README.md#household-app-pwa).
+- **The state file is unchanged:** schema v7, with the same fields as 2.2.1.
+  The app keeps everything it caches in memory and writes nothing to the
+  state file, so 2.2.1 reads a state file written by 2.3.0; see
+  [Rolling back to 2.2.1](#rolling-back-to-221).
+
 ### Added
 
 - **Household app page (read-only PWA, off by default).** With
@@ -19,9 +67,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with TMDB's logo and notice. Each title carries the household's state: **In
   your library** with a Play button, **Available to request soon** (no request
   button yet) or **Can't request**. A service worker caches only the app's own
-  static files, one complete set per release, never the API. Install and sign-in on a real iPhone are not yet verified. The files are served with a strict CSP and
-  security headers, the same for everyone, and only on household hosts. Built
-  with `tsc` alone from `app/`; `linkedom` is a new dev dependency for tests.
+  static files, one complete set per release, never the API. Install and
+  sign-in on a real iPhone are not yet verified. The files are served with a
+  strict CSP and security headers, the same for everyone, and only on
+  household hosts. Built with `tsc` alone from `app/`; `linkedom` is a new dev
+  dependency for tests.
 - **Household app API (read-only, off by default).** With
   `HOUSEHOLD_APP_ENABLED=true` (which requires `HOUSEHOLD_DOMAIN`, Seerr and
   the new `TMDB_API_KEY`, a TMDB API key or read access token; startup stops
@@ -44,25 +94,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `jfa_app_requests_total{endpoint, outcome}`. Each household has its own
   caches, and households take turns at TMDB under a rate kept well below
   TMDB's (honouring its `Retry-After`), so one household's volume cannot
-  evict another's cached answers or use up its share of TMDB calls. Do not
-  give household members Seerr's `MANAGE_BLOCKLIST` permission.
-- **At most 100 households.** Creating a 101st household (group) is refused
-  with `400`; existing ones can still be changed. **Upgrading with more than
-  100 groups** (allowed before this version): the state file still loads,
-  every existing group can still be changed or deleted and keeps working, but
-  new groups are refused until there are fewer than 100, and the app caches
-  nothing for any household while there are more than 100 (every app call
-  goes upstream). App cache limits count entries, not bytes (500 TMDB answers
-  per household, each up to 4 MiB as read): size memory for the households
-  actually browsing; see
-  [One cache per household](docs/app-design.md#one-cache-per-household).
+  evict another's cached answers or use up its share of TMDB calls. App cache
+  limits count entries, not bytes (500 TMDB answers per household, each up to
+  4 MiB as read): size memory for the households actually browsing; see
+  [One cache per household](docs/app-design.md#one-cache-per-household). Do
+  not give household members Seerr's `MANAGE_BLOCKLIST` permission. While the
+  setting is off, `/jellypass/app` paths answer `404` and are never proxied to
+  Jellyfin. See [Household app API](README.md#household-app-api) and
+  [docs/app-design.md](docs/app-design.md).
 - **At most 10 TMDB calls in flight.** Besides the start rate, no more than 10
   TMDB calls are ever unanswered at once, and a call TMDB has not answered in
   15 seconds is abandoned, so a slow or hung TMDB cannot pile up connections.
-  While the setting is off,
-  `/jellypass/app` paths answer `404` and are never proxied to Jellyfin. There
-  is no app page yet. See [Household app API](README.md#household-app-api) and
-  [docs/app-design.md](docs/app-design.md).
 - **Foundation for the household app.** Adds a Seerr client that acts as a
   household member's own Seerr user and never with a missing or empty
   `X-API-User` (which Seerr runs as its owner): it holds a Jellyfin user and
@@ -72,6 +114,53 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for privacy tests, and `pnpm test:seerr`, which checks the client against a
   throwaway Seerr 3.5.1 container (also run in CI). The design is in
   [docs/app-design.md](docs/app-design.md).
+
+### Changed
+
+- **At most 100 households.** Creating a 101st household (group) is refused
+  with `400` (`groups must be at most 100`); existing ones can still be
+  changed. This applies whether or not the household app is enabled.
+  **Upgrading with more than 100 groups** (allowed before this version): the
+  state file still loads, every existing group can still be changed or
+  deleted and keeps working, but new groups are refused until there are fewer
+  than 100, and the app caches nothing for any household while there are more
+  than 100 (every app call goes upstream).
+
+### Upgrading from 2.2.1
+
+1. **Back up the state file**, as before any upgrade. 2.3.0 keeps the schema
+   v7 format and does not migrate the file or add fields to it, but the
+   backup is the clean way back if anything else goes wrong.
+2. **Check your household count.** If you have more than 100 groups, 2.3.0
+   still loads them all, but refuses new ones until there are fewer than 100.
+3. **No setting changes are needed.** `HOUSEHOLD_APP_ENABLED` and
+   `TMDB_API_KEY` are new and optional, and nothing is removed or renamed.
+   Webhook payloads, the administrator API and its existing responses are
+   unchanged, except that creating a 101st group is refused. If you already
+   set `TMDB_API_KEY` for something else, make sure it is a valid TMDB key or
+   token, or remove it: a malformed value stops startup.
+4. **Optional: enable the household app.** Set `HOUSEHOLD_APP_ENABLED=true`
+   and `TMDB_API_KEY`, with `HOUSEHOLD_DOMAIN`, `SEERR_URL` and
+   `SEERR_API_KEY` already configured, recreate the container and check the
+   logs: startup stops if any is missing or TMDB refuses the key. Then share
+   `https://jelly-<household>.<HOUSEHOLD_DOMAIN>/jellypass/app/` with each
+   household (with the default `HOUSEHOLD_HOST_PREFIX`). Make sure household
+   members do not have Seerr's `MANAGE_BLOCKLIST` permission, and remember the
+   app is read-only: households still request titles in Seerr, and the
+   late-request risk above remains.
+5. **Watch the new metric** `jfa_app_requests_total{endpoint, outcome}` once
+   the app is enabled. A rise in `outcome="unavailable"` means Jellyfin, Seerr
+   or TMDB failed or did not answer in time, or TMDB calls queued too long;
+   check the logs.
+
+### Rolling back to 2.2.1
+
+The state file is unchanged, so 2.2.1 reads a state file written by 2.3.0
+with nothing lost. 2.2.1 does not read `HOUSEHOLD_APP_ENABLED` or
+`TMDB_API_KEY`, does not serve `/jellypass/app` (on household hostnames those
+paths are proxied to Jellyfin again, so an installed app stops working; tell
+households), and has no household limit. To roll back, set `JELLYPASS_IMAGE`
+back to `ghcr.io/nicklongmore86/jellypass:2.2.1` and recreate the container.
 
 ## [2.2.1] - 2026-10-24
 
@@ -773,7 +862,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v2.2.1...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v2.3.0...HEAD
+[2.3.0]: https://github.com/nicklongmore86/jellypass/compare/v2.2.1...v2.3.0
 [2.2.1]: https://github.com/nicklongmore86/jellypass/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/nicklongmore86/jellypass/compare/v2.1.1...v2.2.0
 [2.1.1]: https://github.com/nicklongmore86/jellypass/compare/v2.1.0...v2.1.1
