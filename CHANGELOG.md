@@ -13,7 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   settings. Adds a Seerr client that acts as one Seerr user and cannot be made
   or called without a valid user ID (Seerr runs an API-key call with a missing
   or empty `X-API-User` as its owner), a cached Jellyfin-to-Seerr user map that
-  fails closed for unmapped users, synthetic Seerr 3.5.1 fixtures with canary
+  fails closed for unmapped users and re-confirms the link before any
+  state-changing or user-scoped call, synthetic Seerr 3.5.1 fixtures with canary
   values for privacy tests, and `pnpm test:seerr`, which checks the client
   against a throwaway Seerr 3.5.1 container (also run in CI). The design is in
   [docs/app-design.md](docs/app-design.md).
