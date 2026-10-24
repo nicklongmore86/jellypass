@@ -149,6 +149,15 @@ without changes. Check four things first;
   the request status to be approved or completed (Seerr v3.5.0 statuses 2 and
   5). Such requests are not recorded as handled, so one that Seerr approves
   later is still picked up. The webhook is unchanged.
+- **Administrator dry runs now return exactly the grant the write would
+  store.** With `?dryRun=true`, the `current` grant in manual access
+  (`PUT /v1/grants/{itemId}/manual`) and bulk access (`PUT /v1/library/access`)
+  previews left out `sync.lastSuccessAt`; revoke request
+  (`DELETE /v1/grants/{itemId}/requests/{requestId}`) and set groups
+  (`PUT /v1/grants/{itemId}/groups`) previews returned the grant's previous
+  `sync` instead of `pending`; and the set groups preview also kept the
+  previous `updatedAt` and listed `groupIds` in input order instead of sorted.
+  Only the previews were wrong: real writes and access were never affected.
 
 ### Upgrading from 2.1.1
 
