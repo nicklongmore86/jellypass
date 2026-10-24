@@ -159,11 +159,11 @@ as semantic-version tags. For predictable production upgrades, set
 `JELLYPASS_IMAGE` in `.env` to a versioned image such as:
 
 ```dotenv
-JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:2.1.1
+JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:2.2.0
 ```
 
-Each release is published as a semantic-version image tag, such as `2.1.1`,
-plus floating `2.1` and `2` tags that move to the newest release in that minor
+Each release is published as a semantic-version image tag, such as `2.2.0`,
+plus floating `2.2` and `2` tags that move to the newest release in that minor
 or major line; see [CHANGELOG.md](CHANGELOG.md) for what each one contains. `latest` is rebuilt on
 every push to `main` and may include unreleased changes, so use it, or build
 from source, only to test ahead of a release.
@@ -680,13 +680,17 @@ upgrade; follow [Upgrading from 1.1.0](CHANGELOG.md#upgrading-from-110) in the
 check [Upgrading from 2.0.0](CHANGELOG.md#upgrading-from-200) in the 2.1.0
 notes if Seerr lookup is not configured or JellyPass runs behind a reverse
 proxy. Upgrading from 2.1.0 to 2.1.1 changes neither the state file nor any
-setting. Rolling back from this version to 2.1.1 or 2.0.0 keeps the state
-file readable, but those versions retry grants marked `orphaned` (see
+setting. Upgrading from 2.1.1 to 2.2.0 changes no setting and keeps the state
+file at schema v7, adding new records to it; see
+[Upgrading from 2.1.1](CHANGELOG.md#upgrading-from-211). Rolling back from
+2.2.0 to 2.1.1, 2.1.0 or 2.0.0 keeps the state file readable, but those
+versions retry grants marked `orphaned` (see
 [A re-imported title is public](#a-re-imported-title-is-public-or-a-grant-is-orphaned))
-on every scheduled run, counted in `jfa_sync_errors`, and drop a grant's join
-audit history and `remap` note whenever they rewrite it; administrator removal
-records are kept but not enforced. Remap or revoke orphaned grants first, and
-see the changelog. Upgrades can migrate the state file to a newer schema that older
+and count them in `jfa_sync_errors`, drop a grant's join audit history and
+`remap` note whenever they rewrite it, keep administrator removal records
+without enforcing them, and their request backfill grants unapproved requests
+again. Remap or revoke orphaned grants first, and see
+[Rolling back to 2.1.1](CHANGELOG.md#rolling-back-to-211). Upgrades can migrate the state file to a newer schema that older
 versions cannot read, so rolling back requires the backup taken before the
 upgrade. Pinning `JELLYPASS_IMAGE` makes rollback explicit:
 
