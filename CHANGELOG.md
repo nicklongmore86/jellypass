@@ -34,7 +34,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   evict another's cached answers or use up its share of TMDB calls. Do not
   give household members Seerr's `MANAGE_BLOCKLIST` permission.
 - **At most 100 households.** Creating a 101st household (group) is refused
-  with `400`; existing ones can still be changed. While the setting is off,
+  with `400`; existing ones can still be changed. **Upgrading with more than
+  100 groups** (allowed before this version): the state file still loads,
+  every existing group can still be changed or deleted and keeps working, but
+  new groups are refused until there are fewer than 100, and the app caches
+  nothing for any household while there are more than 100 (every app call
+  goes upstream). App cache limits count entries, not bytes (500 TMDB answers
+  per household, each up to 4 MiB as read): size memory for the households
+  actually browsing; see
+  [One cache per household](docs/app-design.md#one-cache-per-household).
+- **At most 10 TMDB calls in flight.** Besides the start rate, no more than 10
+  TMDB calls are ever unanswered at once, and a call TMDB has not answered in
+  15 seconds is abandoned, so a slow or hung TMDB cannot pile up connections.
+  While the setting is off,
   `/jellypass/app` paths answer `404` and are never proxied to Jellyfin. There
   is no app page yet. See [Household app API](README.md#household-app-api) and
   [docs/app-design.md](docs/app-design.md).

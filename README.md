@@ -680,15 +680,23 @@ caller's own token (reused for up to a minute), so Jellyfin's blocked tags,
 library access and parental limits apply. Expect a handful of local Seerr
 calls per answer. Each household has its own caches, never emptied for
 another's; JellyPass supports at most 100 households (creating another is
-refused).
+refused). If you upgrade with more than 100 groups (earlier versions allowed
+it), they all still load and can be changed or deleted, but no new group can
+be created until there are fewer than 100, and the app caches nothing for any
+household while there are more than 100. Cache limits count entries, not
+bytes (up to 500 TMDB answers per household, each read up to 4 MiB but
+usually tens of kilobytes), so memory grows with the households actually
+browsing; see
+[One cache per household](docs/app-design.md#one-cache-per-household).
 
 All households share `TMDB_API_KEY`, and so TMDB's rate limit (about 40
 requests a second). JellyPass starts at most 20 TMDB calls a second (10 at
-once) and lets households take turns, so one household's burst cannot use up
-another's share; if TMDB still answers `429`, nothing is sent until its
+once), never has more than 10 unanswered at once (abandoning any after 15
+seconds), and lets households take turns, so one household's burst cannot use
+up another's share; if TMDB still answers `429`, nothing is sent until its
 `Retry-After` has passed and the call is retried once. Busy households can
-still make each other wait briefly for their turn, and a TMDB outage or rate
-limit affects every household alike. Use a TMDB key for JellyPass alone. See
+still make each other wait briefly for their turn, and a TMDB outage, slowdown
+or rate limit affects every household alike. Use a TMDB key for JellyPass alone. See
 [Shared upstreams](docs/app-design.md#shared-upstreams).
 
 Do not give household members Seerr's `MANAGE_BLOCKLIST` permission (Seerr

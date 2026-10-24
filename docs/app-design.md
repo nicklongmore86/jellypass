@@ -291,9 +291,20 @@ are ever dropped, or shrunk, for another's. Within a household the least recentl
 is not a member's is checked with Jellyfin on every call and never kept, so outsiders cannot crowd members' out.
 
 JellyPass supports **at most 100 households**: the store refuses to create another (`groups must be at most 100`;
-`400` from the admin API), and changing an existing one is always allowed. Should a state file hold more (written by
-hand), nothing is cached for any household, the same for all whichever was served first, rather than caching for some.
-At most, the caches hold 100 households × 500 TMDB answers.
+`400` from the admin API), and changing an existing one is always allowed. On upgrade, a state file with more than 100
+groups (valid under earlier versions, which had no limit) still loads unchanged: every existing group can still be
+changed and deleted and keeps working for access, but no new group can be created until there are fewer than 100,
+and while there are more than 100 the app caches nothing for any household, the same for all whichever was served
+first, rather than caching for some (every app call then goes to TMDB, Jellyfin and Seerr).
+
+The cache bounds are **entry counts, not bytes**: at most 100 households, each with at most 100 verified tokens, 50
+library views, 500 TMDB answers and one blocklist. Each entry's size depends on what upstream sent. A TMDB answer is
+the parsed JSON of a body read up to 4 MiB, so the hard worst case for TMDB answers alone is 100 × 500 × 4 MiB (about
+200 GiB of bodies, more once parsed), reached only if TMDB sent bodies of that size, which it does not for these
+endpoints; its answers are usually a few to a few tens of kilobytes (a season with many episodes more), on the order of
+1 GB with every household holding 500 answers at once. A library view holds one entry per title in the member's
+Jellyfin view, and the blocklist at most 5000. Memory therefore grows with the number of households actively browsing;
+size the host for the households served, not for the limit.
 
 ### Shared upstreams
 
@@ -303,14 +314,26 @@ next search answered `502`. TMDB calls now go through `FairDispatcher` (`src/fai
 
 - **Under TMDB's limit.** At most 20 calls start a second, at most 10 at once (a token bucket), so at most 30 in any
   second, for all households together.
+- **At most 10 in flight.** At most 10 TMDB calls are ever unanswered at once: while 10 are, no call starts, however
+  many tokens have built up meanwhile, and the next household in turn starts its oldest call as soon as one of them
+  settles (answered, failed, timed out or abandoned). A call is abandoned after 15 seconds (its request is aborted and
+  its place freed then, whatever TMDB does), so a hung TMDB call never holds a place for longer. (Codex's repro: 30
+  never-answered calls from three households left 30 in flight after 1.1 seconds; now 10 in flight and 20 waiting.)
+  A place is reused as soon as JellyPass abandons a call; TMDB may see the old connection close a moment later.
 - **A turn for each household.** Each household has its own queue, and the queues take turns: whenever a call may
   start, the next household in turn with a call waiting starts its oldest. However many calls B has waiting, A's next
   call waits for at most one call of each other household with calls waiting; every household with calls waiting gets
   at least 20 ÷ (households waiting) calls a second.
 - **Bounded queues.** A household holds at most 20 waiting calls (more are refused at once with the fixed `429`), and
-  a call waits at most 10 seconds (then `502 unavailable`). So with at most 100 households, a household's first call
-  waits at most 5 seconds behind everyone else's and is never refused or timed out because of another household; only
-  its own volume is refused. The 10-second burst budget above limits each household before it reaches the queue.
+  a call waits at most 10 seconds to start, for a token or for a place in flight (then `502 unavailable`); both bounds
+  hold while every place is taken. A household's first call waits for at most one start of each other household with
+  calls waiting, so at most 99 starts with 100 households, and is never refused because of another household; only its
+  own volume is refused. Calls start at 20 a second, or at 10 ÷ TMDB's answer time a second when TMDB is slower than
+  half a second, whichever is fewer. So while TMDB answers within half a second, a first call waits at most 5 seconds;
+  if TMDB slows down while many households are busy, the wait grows with TMDB's answer time and can reach the 10-second
+  limit (with 100 busy households and TMDB taking over a second, or with every place held by calls TMDB never answers,
+  until they are abandoned). That is TMDB's slowness, the same for every household, not another household's volume
+  beyond its turn. The 10-second burst budget above limits each household before it reaches the queue.
 - **TMDB's `429`.** If TMDB still answers `429` (another program using the same key, or a lower limit than documented),
   no TMDB call starts until its `Retry-After` has passed (1 second when it gives none, at most 60), the bucket starts
   again from empty, and the refused call is retried once, first in its household's queue: the household whose call met
@@ -319,8 +342,9 @@ next search answered `502`. TMDB calls now go through `FairDispatcher` (`src/fai
 
 What remains shared, honestly: TMDB's capacity is one resource. While households are busy at the same time, a call
 waits for its turn, so A's latency rises with how many other households have calls waiting (never with what they asked
-for, and by at most one call each); and when TMDB itself is down, rate-limits the key, or asks for a long wait, every
-household sees the same delays and `502`s. Neither says which titles another household looked at or holds. Use a TMDB
+for, and by at most one call each); and when TMDB itself is down, slow, rate-limits the key, or asks for a long wait,
+every household sees the same delays and `502`s (while TMDB holds every place in flight, calls start only as places
+free, and a call can wait out its 10 seconds). Neither says which titles another household looked at or holds. Use a TMDB
 key for JellyPass alone.
 
 
@@ -336,7 +360,7 @@ key for JellyPass alone.
 | Sequential IDs | Only TMDB IDs, and the caller's own playable Jellyfin item ID. |
 | Item IDs | Only from the caller's own Jellyfin view, and only for `in_library`. |
 | Requests | Seerr does not record which household a request was for, and membership now cannot say, so no Seerr request is read or shown in step 1; step 2's attribution records are the only source of `requested` (see "Requested and households"). Tested across membership changes: a shared member leaving a household (Codex's repro), a move between households, shared to exclusive and exclusive to shared. |
-| Timing | Titles come from TMDB, which has no household data, so other households' Seerr records cannot change their size or latency (tested with 5 MB of them). The calls made are the same whatever other households hold or asked for, including a shared member's request history (tested). Per-answer work is bounded: one TMDB read (cached per household), one blocklist read per household per minute (at most 50 pages, set by administrators), one permission read, a cached library read, one episode read for a series in the caller's library. Every cache is one per household, never evicted for another (see "One cache per household"), so another household's browsing never decides whether A's answer is cached (tested with 1,000 other households attempted). Residuals: TMDB's own CDN may answer a URL faster after anyone (on any TMDB client) asked for it; that is outside JellyPass, shared with the whole internet, and says nothing about households. A TMDB call waits for its household's turn, so while other households are busy A's latency rises by at most one call per busy household (see "Shared upstreams"): it reflects that others are active, never what they asked for. |
+| Timing | Titles come from TMDB, which has no household data, so other households' Seerr records cannot change their size or latency (tested with 5 MB of them). The calls made are the same whatever other households hold or asked for, including a shared member's request history (tested). Per-answer work is bounded: one TMDB read (cached per household), one blocklist read per household per minute (at most 50 pages, set by administrators), one permission read, a cached library read, one episode read for a series in the caller's library. Every cache is one per household, never evicted for another (see "One cache per household"), so another household's browsing never decides whether A's answer is cached (tested with 1,000 other households attempted). Residuals: TMDB's own CDN may answer a URL faster after anyone (on any TMDB client) asked for it; that is outside JellyPass, shared with the whole internet, and says nothing about households. A TMDB call waits for its household's turn, so while other households are busy A's latency rises by at most one call start per busy household, and when all 10 places in flight are taken it waits for one to free (see "Shared upstreams"): it reflects that others are active, or that TMDB is slow, never what they asked for. |
 | Caching | `Cache-Control: no-store` on every answer. |
 | Volume | Per-address, per-user and per-household budgets with one `429`. |
 | Shared upstreams | TMDB calls take turns per household under a global rate kept well below TMDB's (see "Shared upstreams"): another household's burst cannot use up A's share or change A's status (Codex's repro: A stays `200`). Residual: a TMDB outage or rate limit on the key affects every household alike. |
@@ -577,7 +601,9 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
   each browsing, of which the store refused 902; a deleted household's caches replaced without touching A's; a state
   file with 101 households caching nothing for anyone); the TMDB share (Codex's repro: with a TMDB allowing 40 calls a
   second, household B's 40 simultaneous searches leave A's cold search `200`, answered while B still waits, TMDB never
-  refusing a call and B refused only beyond its own queue; at most 30 calls start in any second; after a `429` nothing
+  refusing a call and B refused only beyond its own queue; at most 30 calls start in any second; with TMDB never
+  answering, 10 calls held open at a time and each closed by JellyPass when abandoned, the rest started in turn as
+  places free; after a `429` nothing
   is sent until `Retry-After` has passed and the call is retried once, so neither the household that met it nor one
   calling meanwhile fails; never a second retry; a wait longer than a call's time fails it at once and sends nothing);
   sessions (missing, invalid and disabled tokens and other households' members refused identically, non-members'
@@ -589,8 +615,13 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
   of each busy lane, not their queues), the token bucket, the per-lane and total queue bounds (refused at once), the
   queue timeout (and that a timed-out call is forgotten), a lane kept within its share while another always has a full
   queue, the wait after a rate limit (nothing starts meanwhile, the bucket restarts empty, the call is retried once,
-  first in its lane), no second retry, no retry when the wait outlasts the call, and no retry for other failures.
-  `test/tmdb-client.test.mjs` checks that a `429` carries TMDB's `Retry-After` (seconds or a date) and nothing else.
+  first in its lane), no second retry, no retry when the wait outlasts the call, and no retry for other failures; and
+  the places in flight: Codex's repro (production settings, 30 never-answered calls from three households: 10 in
+  flight, 20 waiting, after 1.1 seconds), lanes taking turns as places free, a place freed when a call succeeds,
+  fails, throws at once, times out (also when the task ignores its abort) or its caller aborts, and calls waiting for
+  a place still refused beyond the lane bound, timed out after their wait, or forgotten when their caller gives up.
+  `test/tmdb-client.test.mjs` checks that a `429` carries TMDB's `Retry-After` (seconds or a date) and nothing else,
+  and that each call is abandoned at once when its caller's signal aborts.
 - **App mutation checks.** Each of these fails at least one app or client test: spreading the TMDB movie into a DTO;
   paging from `total_pages`; putting `unavailable` before `in_library`; ignoring the blocklist or request permission;
   matching the blocklist without its media type; leaving seasons `get_this` when the series cannot be requested;
@@ -598,7 +629,9 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
   the oldest beyond 50; caching for some households when there are too many; removing the store's household limit;
   keeping non-members' tokens; removing the household budget; sending TMDB calls past the dispatcher, or in one queue
   for all households; a lane keeping its place instead of taking turns; a rate of 100 a second; no queue bound; no
-  queue timeout; not retrying a `429`, retrying without limit, ignoring its wait, or not emptying the bucket after it;
+  queue timeout; no bound on calls in flight, no call timeout, a place never freed, not starting the next call when a
+  place frees, freed places not taken in turn, an abort not freeing a place or not aborting the task, the TMDB client
+  ignoring the signal, the app not passing it; not retrying a `429`, retrying without limit, ignoring its wait, or not emptying the bucket after it;
   not reading `Retry-After`; keeping a failed TMDB answer; following TMDB redirects; dropping the fixed language;
   putting the URL (and with it the key) in TMDB errors. The step 1a rule of counting single-household members' requests
   fails the membership-change tests. Earlier checks still hold: skipping the disabled or household-membership check,
