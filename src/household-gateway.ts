@@ -4,6 +4,7 @@ import type { Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 import { ClientIpResolver, normaliseIp } from './client-ip.js';
 import { DEFAULT_WS_IDLE_TIMEOUT_MS, DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS, type LogLevel } from './config.js';
+import { LIBRARY_JOIN_HTML, LIBRARY_JOIN_JS, LIBRARY_JOIN_STYLES } from './household-ui.js';
 import { AttemptCounter } from './rate-limit.js';
 
 const PUBLIC_USERS_PATH = '/users/public';
@@ -16,6 +17,22 @@ const MAX_LOGIN_BODY_BYTES = 8 * 1024;
 const LOGIN_ATTEMPT_WINDOW_MS = 5 * 60 * 1000;
 const MAX_LOGIN_ATTEMPTS = 20;
 const MAX_LOGIN_CLIENTS = 10_000;
+const LIBRARY_JOIN_PATH = '/jellypass/add';
+const LIBRARY_JOIN_ASSETS: Record<string, { body: string; contentType: string }> = {
+  '/jellypass/add': { body: LIBRARY_JOIN_HTML, contentType: 'text/html; charset=utf-8' },
+  '/jellypass/add.js': { body: LIBRARY_JOIN_JS, contentType: 'text/javascript; charset=utf-8' },
+  '/jellypass/add.css': { body: LIBRARY_JOIN_STYLES, contentType: 'text/css; charset=utf-8' },
+};
+const MAX_LIBRARY_JOIN_BODY_BYTES = 1024;
+const LIBRARY_JOIN_WINDOW_MS = 10 * 60 * 1000;
+const MAX_LIBRARY_JOINS = 30;
+/** Every accepted join is answered no sooner than this, so the time taken does not tell which case applied. */
+export const DEFAULT_LIBRARY_JOIN_MIN_RESPONSE_MS = 1_000;
+/**
+ * The only answer to an accepted join. It is the same whether the title was joined, already visible to the caller,
+ * public, held by another household, admin-managed, missing, or could not be looked up.
+ */
+const LIBRARY_JOIN_ACCEPTED = { status: 'accepted' };
 const TCP_KEEPALIVE_INITIAL_DELAY_MS = 60_000;
 /** How long a WebSocket peer gets to answer our FIN during shutdown before its socket is destroyed. */
 const WS_SHUTDOWN_GRACE_MS = 250;
@@ -50,6 +67,19 @@ export interface HouseholdGatewayOptions {
   logLevel?: LogLevel;
   /** Reverse proxies trusted to report the client address in X-Forwarded-For; empty uses the TCP peer. */
   trustedProxies?: string[];
+  /**
+   * Household "Add to my library" at /jellypass/add. Without it those paths are proxied to Jellyfin like any other.
+   * `join` must not reject; its outcome is never shown to the caller.
+   */
+  libraryJoin?: {
+    join: (input: { userId: string; isAdministrator: boolean; mediaType: 'movie' | 'tv'; tmdbId: number }) => Promise<unknown>;
+    minResponseMs?: number;
+  };
+}
+
+interface CurrentUser {
+  Id: string;
+  Policy?: { IsAdministrator?: boolean; IsDisabled?: boolean };
 }
 
 export class HouseholdGateway {
@@ -59,6 +89,8 @@ export class HouseholdGateway {
   readonly #memberIds: HouseholdGatewayOptions['memberIds'];
   readonly #isPasswordless: NonNullable<HouseholdGatewayOptions['isPasswordless']>;
   readonly #loginAttempts = new AttemptCounter({ windowMs: LOGIN_ATTEMPT_WINDOW_MS, maxKeys: MAX_LOGIN_CLIENTS });
+  readonly #libraryJoinAttempts = new AttemptCounter({ windowMs: LIBRARY_JOIN_WINDOW_MS, maxKeys: MAX_LOGIN_CLIENTS });
+  readonly #libraryJoin: HouseholdGatewayOptions['libraryJoin'];
   readonly #webSocketIdleTimeoutMs: number;
   readonly #webSocketUpstreamIdleTimeoutMs: number;
   readonly #debug: boolean;
@@ -80,6 +112,7 @@ export class HouseholdGateway {
     this.#webSocketUpstreamIdleTimeoutMs = options.webSocketUpstreamIdleTimeoutMs ?? DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS;
     this.#debug = options.logLevel === 'debug';
     this.#clientIp = new ClientIpResolver(options.trustedProxies);
+    this.#libraryJoin = options.libraryJoin;
   }
 
   public householdId(hostHeader: string | undefined): string | undefined {
@@ -130,6 +163,17 @@ export class HouseholdGateway {
     if (request.method === 'POST' && pathname === AUTHENTICATE_BY_NAME_PATH) {
       await this.#proxyHouseholdLogin(request, response, memberIds);
       return;
+    }
+    if (this.#libraryJoin) {
+      const libraryJoinAsset = LIBRARY_JOIN_ASSETS[pathname];
+      if (request.method === 'GET' && libraryJoinAsset) {
+        writeAsset(response, libraryJoinAsset.body, libraryJoinAsset.contentType);
+        return;
+      }
+      if (request.method === 'POST' && pathname === LIBRARY_JOIN_PATH) {
+        await this.#joinLibrary(request, response, requestUrl, this.#libraryJoin);
+        return;
+      }
     }
     const streamedItemId = protectedResourceItemId(requestUrl.pathname);
     if (streamedItemId) {
@@ -290,6 +334,60 @@ export class HouseholdGateway {
     return true;
   }
 
+  /**
+   * Household "Add to my library". Identity comes only from Jellyfin: the caller's own token is checked with
+   * GET /Users/Me, exactly as for protected media. Rate limiting, authentication and input validation answer the same
+   * for every title; past them, every case gets the same 202 body after the same minimum delay.
+   */
+  async #joinLibrary(
+    request: IncomingMessage,
+    response: ServerResponse,
+    requestUrl: URL,
+    libraryJoin: NonNullable<HouseholdGatewayOptions['libraryJoin']>,
+  ): Promise<void> {
+    if (this.#closing) {
+      writeJson(response, 503, { error: 'shutting_down' });
+      return;
+    }
+    const clientId = this.#clientAddress(request);
+    if (this.#libraryJoinAttempts.attempts(clientId) >= MAX_LIBRARY_JOINS) {
+      writeJson(response, 429, { error: 'too_many_requests' });
+      return;
+    }
+    this.#libraryJoinAttempts.increment(clientId);
+    let user: CurrentUser | undefined;
+    try {
+      user = (await this.#currentUser(request, requestUrl))?.user;
+    } catch {
+      writeJson(response, 502, { error: 'jellyfin_unavailable' });
+      return;
+    }
+    if (!user || user.Policy?.IsDisabled === true) {
+      writeJson(response, 401, { error: 'unauthorized' });
+      return;
+    }
+    let media: { mediaType: 'movie' | 'tv'; tmdbId: number };
+    try {
+      media = libraryJoinInput(JSON.parse((await readLimitedBody(request, MAX_LIBRARY_JOIN_BODY_BYTES)).toString('utf8')) as unknown);
+    } catch {
+      writeJson(response, 400, { error: 'invalid_request' });
+      return;
+    }
+    const startedAt = performance.now();
+    try {
+      await libraryJoin.join({ userId: user.Id, isAdministrator: user.Policy?.IsAdministrator === true, ...media });
+    } catch (error) {
+      console.error(JSON.stringify({
+        level: 'error',
+        message: 'household library join failed',
+        detail: error instanceof Error ? error.message : String(error),
+      }));
+    }
+    const remainingMs = (libraryJoin.minResponseMs ?? DEFAULT_LIBRARY_JOIN_MIN_RESPONSE_MS) - (performance.now() - startedAt);
+    if (remainingMs > 0) await new Promise((resolve) => setTimeout(resolve, remainingMs));
+    writeJson(response, 202, LIBRARY_JOIN_ACCEPTED);
+  }
+
   async #proxyHouseholdLogin(request: IncomingMessage, response: ServerResponse, memberIds: string[]): Promise<void> {
     if (!this.#allowLoginAttempt(this.#clientAddress(request))) {
       writeJson(response, 429, { error: 'too_many_login_attempts' });
@@ -411,6 +509,23 @@ export class HouseholdGateway {
   }
 
   async #canAccessItem(request: IncomingMessage, requestUrl: URL, itemId: string): Promise<boolean> {
+    const current = await this.#currentUser(request, requestUrl);
+    if (!current) return false;
+    const itemResponse = await fetch(this.#targetUrl(
+      `/Users/${encodeURIComponent(current.user.Id)}/Items/${encodeURIComponent(itemId)}${current.suffix}`,
+    ), {
+      headers: current.headers,
+      signal: AbortSignal.timeout(15_000),
+    });
+    await itemResponse.body?.cancel();
+    return itemResponse.ok;
+  }
+
+  /**
+   * The Jellyfin user the request's own credentials (authorization headers or token query parameters) belong to, as
+   * Jellyfin's GET /Users/Me reports it, or undefined if Jellyfin rejects them. Throws if Jellyfin cannot be reached.
+   */
+  async #currentUser(request: IncomingMessage, requestUrl: URL): Promise<{ user: CurrentUser; headers: Headers; suffix: string } | undefined> {
     const headers = new Headers({ Accept: 'application/json' });
     for (const name of ['authorization', 'x-emby-authorization', 'x-emby-token']) {
       const value = request.headers[name];
@@ -429,18 +544,12 @@ export class HouseholdGateway {
     });
     if (!currentUserResponse.ok) {
       await currentUserResponse.body?.cancel();
-      return false;
+      return undefined;
     }
-    const currentUser = await currentUserResponse.json() as { Id?: unknown };
-    if (typeof currentUser.Id !== 'string' || !currentUser.Id) return false;
-    const itemResponse = await fetch(this.#targetUrl(
-      `/Users/${encodeURIComponent(currentUser.Id)}/Items/${encodeURIComponent(itemId)}${suffix}`,
-    ), {
-      headers,
-      signal: AbortSignal.timeout(15_000),
-    });
-    await itemResponse.body?.cancel();
-    return itemResponse.ok;
+    const currentUser = await currentUserResponse.json() as { Id?: unknown; Policy?: unknown };
+    if (typeof currentUser.Id !== 'string' || !currentUser.Id) return undefined;
+    const policy = currentUser.Policy && typeof currentUser.Policy === 'object' ? currentUser.Policy as CurrentUser['Policy'] : undefined;
+    return { user: { Id: currentUser.Id, ...(policy ? { Policy: policy } : {}) }, headers, suffix };
   }
 
   async #proxyJson(
@@ -626,6 +735,16 @@ async function readLimitedBody(request: IncomingMessage, limit: number): Promise
   return Buffer.concat(chunks);
 }
 
+function libraryJoinInput(value: unknown): { mediaType: 'movie' | 'tv'; tmdbId: number } {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('body must be a JSON object');
+  const { mediaType, tmdbId } = value as Record<string, unknown>;
+  if (mediaType !== 'movie' && mediaType !== 'tv') throw new Error('mediaType must be movie or tv');
+  if (typeof tmdbId !== 'number' || !Number.isSafeInteger(tmdbId) || tmdbId < 1 || tmdbId > 2_147_483_647) {
+    throw new Error('tmdbId must be a positive integer');
+  }
+  return { mediaType, tmdbId };
+}
+
 function protectedResourceItemId(pathname: string): string | undefined {
   const media = pathname.match(/^\/(?:videos|audio)\/([^/]+)\/(?:stream(?:\.[^/]*)?|master\.m3u8|main\.m3u8)$/i);
   if (media) return decodeURIComponent(media[1] as string);
@@ -651,6 +770,19 @@ function sanitizedHeaders(headers: IncomingHttpHeaders, contentLength: number): 
   result['cache-control'] = 'no-store';
   result['x-content-type-options'] = 'nosniff';
   return result;
+}
+
+function writeAsset(response: ServerResponse, body: string, contentType: string): void {
+  response.writeHead(200, {
+    'Content-Type': contentType,
+    'Content-Length': Buffer.byteLength(body),
+    'Cache-Control': 'no-store',
+    'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+    'Referrer-Policy': 'no-referrer',
+    'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
+  });
+  response.end(body);
 }
 
 function writeJson(response: ServerResponse, status: number, body: unknown): void {

@@ -34,6 +34,8 @@ with or endorsed by Jellyfin, Seerr, or Jellyseerr.
   public users, signs passwordless members in with one tap, and preserves the
   password prompt for everyone else.
 - Proxies household media requests, byte ranges, HLS requests, and WebSockets.
+- Lets household members add a title another household requested to their own
+  library, without learning who requested it.
 - Exposes health and Prometheus metrics endpoints.
 
 JellyPass does **not** replace Jellyfin authentication, manage downloads, or
@@ -102,6 +104,9 @@ requester's household can see the title; members of other households cannot.
   on the grant.
 - Joining a household later does not change older grants. Add the group to
   those grants, or add the user to a household that is already assigned.
+- A member of another household can add the title to their own library with
+  [Add to my library](#add-to-my-library), which adds their households to the
+  grant.
 
 ## Requirements
 
@@ -503,6 +508,66 @@ Unknown household hostnames fail closed with `404`. Group IDs used as household
 IDs must contain lowercase letters, numbers, and hyphens and be no longer than
 63 characters.
 
+### Add to my library
+
+Seerr hides **Request** for a movie that is already available and rejects a
+duplicate request while it downloads, so a second household cannot get a movie
+another household requested through Seerr. Household records exist for
+privacy, not control: any household may watch a title another household has,
+but must never learn who requested it or which household holds it.
+
+With Seerr configured (`SEERR_URL` and `SEERR_API_KEY`), every household
+hostname serves a small page at `/jellypass/add`, for example
+`https://jelly-farmhouse.example.com/jellypass/add`. A member who is signed in
+to Jellyfin on that hostname pastes a Seerr or TMDB link to a movie or series
+(or a bare TMDB ID) and selects **Add to my library**. Share the link with
+households. The page reuses the Jellyfin web client's sign-in on the same
+hostname and has no sign-in of its own.
+
+JellyPass looks the title up in Seerr, takes the HD Jellyfin item Seerr has
+linked to it (4K items are never joined) and, when that item has a grant that
+came from at least one request, adds the caller's households to it. A caller in
+no household is added as a user instead. It applies the change to Jellyfin in
+the background, normally within seconds.
+
+- **Nothing is removed**, and manual-only grants (no requests) are left exactly
+  as an administrator set them, the same rule as the request backfill. Public
+  titles need no join.
+- **Administrator removals stick.** A household an administrator took off a
+  grant (in the grant's groups, the manual-access dialog, or bulk access), a
+  manual user they removed, and the requester of a request they revoked are
+  remembered on the grant (`removedGroupIds`, `removedUserIds`), and a join
+  never adds them back. Assigning them again as an administrator clears the
+  mark; deleting a group clears it from every grant. A new Seerr request still
+  adds its requester's households as before.
+- **Joins are audited.** Each join that changed a grant is recorded in the
+  grant's `joins` (user, households added, whether the user was added, time),
+  visible only to administrators through `GET /v1/grants`, and logged as
+  `household library join`.
+- **The answer never tells what happened.** Once the caller is signed in and
+  the input is valid, the response is always `202 {"status":"accepted"}` after
+  at least one second, whether the title was joined, already visible, public,
+  held by another household, manual-only, not in the library, or could not be
+  looked up. Requester IDs, household names, counts, timestamps and item IDs
+  are never returned. The caller can only tell whether the title appears in
+  their library afterwards. Details are logged server-side
+  (`library join changed nothing` and similar at `LOG_LEVEL=debug`).
+- **Identity comes from Jellyfin only.** `POST /jellypass/add` takes
+  `{"mediaType": "movie" | "tv", "tmdbId": <number>}` and the caller's Jellyfin
+  token in the usual `Authorization` header; JellyPass checks it with
+  Jellyfin's `GET /Users/Me`, exactly as it does for protected media, and
+  ignores any user ID in the body. A missing, invalid or disabled user's token
+  gets `401`, malformed input `400`, and administrators (who see everything
+  already) change nothing.
+- **Rate limited.** Each client address (after `TRUSTED_PROXIES`) may call it
+  30 times in 10 minutes, signed in or not; further calls get `429`. During
+  shutdown it answers `503`.
+- `jfa_library_joins_total{result="joined"|"unchanged"|"error"}` counts calls.
+  `unchanged` deliberately covers every no-op reason, and no label names a
+  title.
+
+Without Seerr, `/jellypass/` paths are proxied to Jellyfin like any other.
+
 Filtering the login picker is a privacy and usability boundary, not
 authentication. Users still authenticate with Jellyfin, and Jellyfin policies
 remain authoritative. Quick Connect and legacy-login restrictions are described
@@ -679,6 +744,13 @@ blocked-tag policy.
 | `PUT` | `/v1/library/access` | Assign one audience to up to 500 items; supports `?dryRun=true`. |
 | `POST` | `/v1/reconcile` | Reconcile all grants; supports `?dryRun=true`. |
 | `GET` | `/metrics` | Prometheus metrics. |
+
+On household hostnames, with Seerr configured:
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `GET` | `/jellypass/add` | The [Add to my library](#add-to-my-library) page. |
+| `POST` | `/jellypass/add` | Add a title to the signed-in Jellyfin user's library; always `202` once authenticated and valid. |
 
 Administrative routes accept `ADMIN_TOKEN` bearer authentication or a valid
 administrator browser session. Request bodies are limited to 64 KiB.

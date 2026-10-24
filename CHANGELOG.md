@@ -7,6 +7,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Add to my library.** Household hostnames serve `/jellypass/add`, where a
+  member signed in to Jellyfin pastes a Seerr or TMDB link and adds a title
+  another household requested to their own library. Seerr hides Request for an
+  available movie and rejects duplicates while it downloads, so this was
+  otherwise impossible for movies. JellyPass resolves the title's HD item
+  through Seerr and adds the caller's households (or the caller, when they
+  belong to none) to the item's grant if the grant came from a request;
+  manual-only grants are untouched and nothing is removed. The answer is the
+  same `202` after the same minimum delay in every case, so it never reveals
+  whether, or by whom, a title is held. The caller is identified only by their
+  Jellyfin token, checked with Jellyfin; calls are rate-limited per client
+  address (30 per 10 minutes) and refused during shutdown. Requires Seerr
+  lookup (`SEERR_URL`, `SEERR_API_KEY`); no new settings.
+- Grants record each join in `joins`, and the groups and users an
+  administrator removed in `removedGroupIds` and `removedUserIds`, so a join
+  never undoes an administrator's removal. The state file stays at schema v7;
+  2.1.1 reads it and drops these fields from a grant it rewrites.
+- `jfa_library_joins_total{result}` counts joins as `joined`, `unchanged` or
+  `error`.
+
 ## [2.1.1] - 2026-10-16
 
 This is a patch release. No configuration, API or state-file changes are

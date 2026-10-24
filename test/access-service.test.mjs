@@ -727,6 +727,193 @@ describe('replayed webhooks', () => {
   });
 });
 
+describe('household library joins', () => {
+  // TMDB movie 603 is item-1, TV 1396 is item-2, movie 404 is not in the library and movie 500 fails to resolve.
+  function fakeSeerr() {
+    const lookups = [];
+    return {
+      lookups,
+      async getJellyfinItemId(mediaType, tmdbId) {
+        lookups.push(`${mediaType}/${tmdbId}`);
+        if (tmdbId === 500) throw new Error('Seerr GET /api/v1/movie/500 returned 500');
+        return { 'movie/603': 'item-1', 'tv/1396': 'item-2' }[`${mediaType}/${tmdbId}`];
+      },
+    };
+  }
+
+  async function households(t) {
+    const store = new GrantStore(await stateFile(t));
+    await store.load();
+    const fake = fakeJellyfin({ extraUsers: [{ Id: 'carol-id', Name: 'Carol' }, { Id: 'dave-id', Name: 'Dave' }] });
+    const seerr = fakeSeerr();
+    const service = new AccessService(fake, store, undefined, seerr);
+    await service.upsertGroup({ id: 'house-a', name: 'House A', userIds: ['alice-id', 'bob-id'] });
+    await service.upsertGroup({ id: 'house-b', name: 'House B', userIds: ['carol-id'] });
+    const join = async (userId, tmdbId = 603, mediaType = 'movie', isAdministrator = false) => {
+      const { result, reconciled } = await service.joinLibrary({ userId, isAdministrator, mediaType, tmdbId });
+      await reconciled;
+      return result;
+    };
+    return { store, fake, seerr, service, join };
+  }
+
+  it('adds the caller\'s households to a request grant and records the join', async (t) => {
+    const { store, fake, service, join } = await households(t);
+    await service.processWebhook(parseWebhook(webhook()));
+    assert.deepEqual(fake.user('carol-id').Policy.BlockedTags, ['jfa:private:item-1']);
+
+    assert.equal(await join('carol-id'), 'joined');
+    const grant = store.get('item-1');
+    assert.deepEqual(grant.requests, { '17': 'alice-id' });
+    assert.deepEqual(grant.groupIds, ['house-a', 'house-b']);
+    assert.deepEqual(grant.manualUserIds, []);
+    assert.deepEqual(grant.owners, ['alice-id', 'bob-id', 'carol-id']);
+    assert.equal(grant.joins.length, 1);
+    assert.deepEqual({ ...grant.joins[0], joinedAt: undefined }, { userId: 'carol-id', groupIds: ['house-b'], userAdded: false, joinedAt: undefined });
+    assert.ok(Date.parse(grant.joins[0].joinedAt) > 0);
+    assert.equal(grant.sync.state, 'synced');
+    assert.deepEqual(fake.user('carol-id').Policy.BlockedTags, []);
+    assert.deepEqual(fake.user('dave-id').Policy.BlockedTags, ['jfa:private:item-1']);
+    assert.match(service.renderMetrics(), /jfa_library_joins_total\{result="joined"\} 1\n/);
+  });
+
+  it('adds a caller who belongs to no household as a user', async (t) => {
+    const { store, fake, service, join } = await households(t);
+    await service.processWebhook(parseWebhook(webhook({ mediaId: 'item-2', mediaType: 'tv' })));
+
+    assert.equal(await join('dave-id', 1396, 'tv'), 'joined');
+    const grant = store.get('item-2');
+    assert.deepEqual(grant.groupIds, ['house-a']);
+    assert.deepEqual(grant.manualUserIds, ['dave-id']);
+    assert.equal(grant.joins[0].userAdded, true);
+    assert.deepEqual(grant.joins[0].groupIds, []);
+    assert.deepEqual(fake.user('dave-id').Policy.BlockedTags, []);
+    assert.deepEqual(fake.user('carol-id').Policy.BlockedTags, ['jfa:private:item-2']);
+  });
+
+  it('is idempotent: repeating a join changes and writes nothing', async (t) => {
+    const { store, service, join } = await households(t);
+    await service.processWebhook(parseWebhook(webhook()));
+    assert.equal(await join('carol-id'), 'joined');
+    const joined = store.get('item-1');
+
+    for (const userId of ['carol-id', 'alice-id', 'bob-id']) assert.equal(await join(userId), 'unchanged', userId);
+    assert.deepEqual(store.get('item-1'), joined);
+    const metrics = service.renderMetrics();
+    assert.match(metrics, /jfa_library_joins_total\{result="joined"\} 1\n/);
+    assert.match(metrics, /jfa_library_joins_total\{result="unchanged"\} 3\n/);
+  });
+
+  it('leaves manual-only grants, public titles and titles outside the library untouched', async (t) => {
+    const { store, fake, seerr, service, join } = await households(t);
+    await service.setManualAccess({ itemId: 'item-1', mediaType: 'movie', userIds: [], groupIds: ['house-a'] });
+    const manual = store.get('item-1');
+
+    assert.equal(await join('carol-id'), 'unchanged');
+    assert.equal(await join('dave-id'), 'unchanged');
+    assert.equal(await join('carol-id', 1396, 'tv'), 'unchanged', 'item-2 has no grant, so it is public');
+    assert.equal(await join('carol-id', 404), 'unchanged', 'not in the library');
+    assert.deepEqual(store.get('item-1'), manual);
+    assert.equal(store.get('item-2'), undefined);
+    assert.deepEqual(fake.user('carol-id').Policy.BlockedTags, ['jfa:private:item-1']);
+    assert.deepEqual(seerr.lookups, ['movie/603', 'movie/603', 'tv/1396', 'movie/404']);
+  });
+
+  it('ignores administrators, who already see every title', async (t) => {
+    const { store, service, join } = await households(t);
+    await service.processWebhook(parseWebhook(webhook()));
+    const before = store.get('item-1');
+    assert.equal(await join('admin-id', 603, 'movie', true), 'unchanged');
+    assert.deepEqual(store.get('item-1'), before);
+  });
+
+  it('does not add back a household or user an administrator removed', async (t) => {
+    const { store, fake, service, join } = await households(t);
+    await service.processWebhook(parseWebhook(webhook()));
+    await service.processWebhook(parseWebhook(webhook({ requestId: '18', userId: 'dave-id' })));
+    await join('carol-id');
+    await service.setGrantGroups('item-1', ['house-a']);
+    await service.revokeRequest('item-1', '18');
+    let grant = store.get('item-1');
+    assert.deepEqual(grant.removedGroupIds, ['house-b']);
+    assert.deepEqual(grant.removedUserIds, ['dave-id']);
+    assert.deepEqual(fake.user('carol-id').Policy.BlockedTags, ['jfa:private:item-1']);
+
+    assert.equal(await join('carol-id'), 'unchanged');
+    assert.equal(await join('dave-id'), 'unchanged');
+    grant = store.get('item-1');
+    assert.deepEqual(grant.groupIds, ['house-a']);
+    assert.deepEqual(grant.manualUserIds, []);
+    assert.deepEqual(fake.user('carol-id').Policy.BlockedTags, ['jfa:private:item-1']);
+    assert.deepEqual(fake.user('dave-id').Policy.BlockedTags, ['jfa:private:item-1']);
+
+    // Assigning them again is the administrator's call, and clears the marks.
+    await service.setManualAccess({ itemId: 'item-1', userIds: ['dave-id'], groupIds: ['house-a', 'house-b'] });
+    grant = store.get('item-1');
+    assert.equal(grant.removedGroupIds, undefined);
+    assert.equal(grant.removedUserIds, undefined);
+    assert.equal(grant.joins.length, 1, 'the audit trail survives administrator edits');
+  });
+
+  it('forgets a removal mark when its group is deleted', async (t) => {
+    const { store, service, join } = await households(t);
+    await service.processWebhook(parseWebhook(webhook()));
+    await join('carol-id');
+    await service.setGrantGroups('item-1', ['house-a']);
+    await service.deleteGroup('house-b');
+    assert.equal(store.get('item-1').removedGroupIds, undefined);
+    await service.upsertGroup({ id: 'house-b', name: 'New House B', userIds: ['carol-id'] });
+    assert.equal(await join('carol-id'), 'joined');
+  });
+
+  it('reports a failed lookup or write as an error without throwing or changing anything', async (t) => {
+    const { store, service, join } = await households(t);
+    await service.processWebhook(parseWebhook(webhook()));
+    const before = store.get('item-1');
+    const errors = [];
+    const originalError = console.error;
+    console.error = (line) => errors.push(JSON.parse(line));
+    try {
+      assert.equal(await join('carol-id', 500), 'error');
+      await store.close();
+      assert.equal(await join('carol-id'), 'error');
+    } finally {
+      console.error = originalError;
+    }
+    assert.deepEqual(store.get('item-1'), before, 'a closed store refuses the join and memory stays unchanged');
+    assert.deepEqual(errors.map((entry) => entry.message), ['library join failed', 'library join failed']);
+    assert.match(errors[1].detail, /state store is closed/);
+    assert.match(service.renderMetrics(), /jfa_library_joins_total\{result="error"\} 2\n/);
+  });
+
+  it('skips applying a stored join once shutdown has closed the store, leaving it pending for the next start', async (t) => {
+    const file = await stateFile(t);
+    const store = new GrantStore(file);
+    await store.load();
+    const fake = fakeJellyfin({ extraUsers: [{ Id: 'carol-id', Name: 'Carol' }] });
+    const service = new AccessService(fake, store, undefined, fakeSeerr());
+    await service.upsertGroup({ id: 'house-a', name: 'House A', userIds: ['alice-id', 'bob-id'] });
+    await service.upsertGroup({ id: 'house-b', name: 'House B', userIds: ['carol-id'] });
+    await service.processWebhook(parseWebhook(webhook()));
+    // Shutdown lands just after the join is saved, before its reconciliation starts.
+    const joinGrant = store.joinGrant.bind(store);
+    let closing;
+    store.joinGrant = async (input) => {
+      const joined = await joinGrant(input);
+      closing = store.close();
+      return joined;
+    };
+    const { result, reconciled } = await service.joinLibrary({ userId: 'carol-id', isAdministrator: false, mediaType: 'movie', tmdbId: 603 });
+    assert.equal(result, 'joined');
+    await reconciled;
+    await closing;
+    assert.deepEqual(fake.user('carol-id').Policy.BlockedTags, ['jfa:private:item-1'], 'nothing was applied after close');
+    const saved = JSON.parse(await readFile(file, 'utf8')).grants['item-1'];
+    assert.deepEqual(saved.groupIds, ['house-a', 'house-b']);
+    assert.equal(saved.sync.state, 'pending');
+  });
+});
+
 describe('Seerr request backfill', () => {
   const since = new Date('2026-10-01T00:00:00.000Z');
 

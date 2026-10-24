@@ -27,6 +27,8 @@ export interface ServerOptions {
     webSocketIdleTimeoutMs?: number;
     webSocketUpstreamIdleTimeoutMs?: number;
     logLevel?: LogLevel;
+    /** Shortest time to answer a household "Add to my library" call; defaults to one second. */
+    libraryJoinMinResponseMs?: number;
   };
 }
 
@@ -47,6 +49,14 @@ export function makeServer(
         trustedProxies: options.trustedProxies ?? [],
         memberIds: (householdId) => service.getHouseholdMemberIds(householdId),
         isPasswordless: (userId) => service.isPasswordless(userId),
+        ...(service.canJoinLibrary() ? {
+          libraryJoin: {
+            join: (input) => service.joinLibrary(input),
+            ...(options.householdGateway.libraryJoinMinResponseMs !== undefined
+              ? { minResponseMs: options.householdGateway.libraryJoinMinResponseMs }
+              : {}),
+          },
+        } : {}),
       })
     : undefined;
   const clientIp = new ClientIpResolver(options?.trustedProxies);

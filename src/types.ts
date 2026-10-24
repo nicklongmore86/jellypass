@@ -118,8 +118,24 @@ export interface GrantRecord {
   requests: Record<string, string>;
   manualUserIds: string[];
   groupIds: string[];
+  /** Household "Add to my library" joins that changed this grant, oldest first, for administrators to audit. */
+  joins?: LibraryJoin[];
+  /**
+   * Groups and users an administrator removed from this grant. A household join never adds them back; an
+   * administrator assigning them again clears the mark.
+   */
+  removedGroupIds?: string[];
+  removedUserIds?: string[];
   sync: SyncStatus;
   updatedAt: string;
+}
+
+export interface LibraryJoin {
+  userId: string;
+  /** Households added to the grant; empty when the user, who belongs to none, was added as a manual user. */
+  groupIds: string[];
+  userAdded: boolean;
+  joinedAt: string;
 }
 
 export interface GrantState {

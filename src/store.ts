@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
-import type { AccessGroup, GrantRecord, GrantState, LibraryCatalogItem, RevokeResult, SyncStatus } from './types.js';
+import type { AccessGroup, GrantRecord, GrantState, LibraryCatalogItem, LibraryJoin, RevokeResult, SyncStatus } from './types.js';
 
 const EMPTY_STATE: GrantState = { version: 7, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [] };
 
@@ -16,6 +16,11 @@ export class GrantStore {
 
   public constructor(file: string) {
     this.#file = file;
+  }
+
+  /** True once close() was called; every later change is refused. */
+  public get closed(): boolean {
+    return this.#closed;
   }
 
   public async load(): Promise<void> {
@@ -149,8 +154,15 @@ export class GrantStore {
     const previous = this.#state.grants[itemId];
     if (!previous || !(requestId in previous.requests)) return undefined;
     const requests = { ...previous.requests };
+    const requester = requests[requestId] as string;
     delete requests[requestId];
-    const result = this.#replaceGrant(previous, requests, previous.manualUserIds, previous.groupIds);
+    // Revoking a user's request removes that user's access; a household join must not quietly restore it.
+    const removedUserIds = Object.values(requests).includes(requester) || previous.manualUserIds.includes(requester)
+      ? previous.removedUserIds
+      : [...new Set([...(previous.removedUserIds ?? []), requester])].sort();
+    const result = this.#replaceGrant(previous, requests, previous.manualUserIds, previous.groupIds, {
+      ...(removedUserIds?.length ? { removedUserIds } : {}),
+    });
     await this.#save();
     return result;
   }
@@ -163,7 +175,8 @@ export class GrantStore {
     const groupIds = [...new Set(groupIdsInput.map(normalizeId))].sort();
     const missing = groupIds.filter((id) => !this.#state.groups[id]);
     if (missing.length > 0) throw new Error(`group not found: ${missing.join(', ')}`);
-    const result = this.#replaceGrant(previous, previous.requests, previous.manualUserIds, groupIds);
+    const result = this.#replaceGrant(previous, previous.requests, previous.manualUserIds, groupIds,
+      administratorRemovals(previous, previous.manualUserIds, groupIds));
     await this.#save();
     return result;
   }
@@ -192,7 +205,8 @@ export class GrantStore {
     const groupIds = [...new Set(input.groupIds.map(normalizeId))].sort();
     const missing = groupIds.filter((id) => !this.#state.groups[id]);
     if (missing.length > 0) throw new Error(`group not found: ${missing.join(', ')}`);
-    const current = this.#makeGrant(itemId, previous?.requests ?? {}, manualUserIds, groupIds, previous, input.mediaType);
+    const current = this.#makeGrant(itemId, previous?.requests ?? {}, manualUserIds, groupIds, previous, input.mediaType,
+      previous ? administratorRemovals(previous, manualUserIds, groupIds) : {});
     this.#state.grants[itemId] = current;
       results.push({ ...(previous ? { previous: clone(previous) } : {}), current: clone(current) });
     }
@@ -231,11 +245,50 @@ export class GrantStore {
     delete this.#state.groups[groupId];
     const results: RevokeResult[] = [];
     for (const previous of Object.values({ ...this.#state.grants })) {
+      // A group created later under the same ID is a different household and starts unmarked.
+      if (previous.removedGroupIds?.includes(groupId)) {
+        const removedGroupIds = previous.removedGroupIds.filter((id) => id !== groupId);
+        if (removedGroupIds.length) previous.removedGroupIds = removedGroupIds;
+        else delete previous.removedGroupIds;
+      }
       if (!previous.groupIds.includes(groupId)) continue;
       results.push(this.#replaceGrant(previous, previous.requests, previous.manualUserIds, previous.groupIds.filter((id) => id !== groupId)));
     }
     await this.#save();
     return results;
+  }
+
+  /**
+   * Household "Add to my library": adds the caller's households (`groupIds`), or the caller as a manual user when they
+   * belong to none, to the grant of `itemId`. Only an active grant that records at least one request is joined, the
+   * same grants the request backfill adds requests to; manual-only grants and items without a grant are left alone.
+   * Nothing is ever removed, and groups or users an administrator removed from the grant are not added back. Returns
+   * undefined, without writing, when nothing changes.
+   */
+  public async joinGrant(input: { itemId: string; userId: string; groupIds: string[] }): Promise<RevokeResult | undefined> {
+    this.#assertOpen();
+    const itemId = normalizeId(input.itemId);
+    const userId = normalizeId(input.userId);
+    const previous = this.#state.grants[itemId];
+    if (!previous?.active || Object.keys(previous.requests).length === 0) return undefined;
+    const households = [...new Set(input.groupIds.map(normalizeId))].filter((id) => this.#state.groups[id]);
+    const addedGroupIds = households
+      .filter((id) => !previous.groupIds.includes(id) && !previous.removedGroupIds?.includes(id))
+      .sort();
+    const userAdded = households.length === 0
+      && !this.resolveOwners(previous).includes(userId)
+      && !previous.removedUserIds?.includes(userId);
+    if (addedGroupIds.length === 0 && !userAdded) return undefined;
+    const join: LibraryJoin = { userId, groupIds: addedGroupIds, userAdded, joinedAt: new Date().toISOString() };
+    const result = this.#replaceGrant(
+      previous,
+      previous.requests,
+      userAdded ? [...previous.manualUserIds, userId].sort() : previous.manualUserIds,
+      [...previous.groupIds, ...addedGroupIds].sort(),
+      { joins: [...(previous.joins ?? []), join] },
+    );
+    await this.#save();
+    return result;
   }
 
   public async markSyncSuccess(itemIdInput: string): Promise<void> {
@@ -299,8 +352,12 @@ export class GrantStore {
     groupIds: string[],
     previous?: GrantRecord,
     mediaType?: string,
+    audit: GrantAudit = {},
   ): GrantRecord {
     const resolvedMediaType = mediaType ?? previous?.mediaType;
+    const joins = 'joins' in audit ? audit.joins : previous?.joins;
+    const removedGroupIds = 'removedGroupIds' in audit ? audit.removedGroupIds : previous?.removedGroupIds;
+    const removedUserIds = 'removedUserIds' in audit ? audit.removedUserIds : previous?.removedUserIds;
     const placeholder: GrantRecord = {
       itemId,
       active: Object.keys(requests).length > 0 || manualUserIds.length > 0 || groupIds.length > 0,
@@ -308,6 +365,9 @@ export class GrantStore {
       requests,
       manualUserIds: [...manualUserIds],
       groupIds: [...groupIds],
+      ...(joins?.length ? { joins: clone(joins) } : {}),
+      ...(removedGroupIds?.length ? { removedGroupIds: [...removedGroupIds] } : {}),
+      ...(removedUserIds?.length ? { removedUserIds: [...removedUserIds] } : {}),
       sync: pendingSync(previous?.sync),
       updatedAt: new Date().toISOString(),
       ...(resolvedMediaType ? { mediaType: resolvedMediaType } : {}),
@@ -322,8 +382,9 @@ export class GrantStore {
     requests: Record<string, string>,
     manualUserIds: string[],
     groupIds: string[],
+    audit: GrantAudit = {},
   ): RevokeResult {
-    const next = this.#makeGrant(previous.itemId, requests, manualUserIds, groupIds, previous, previous.mediaType);
+    const next = this.#makeGrant(previous.itemId, requests, manualUserIds, groupIds, previous, previous.mediaType, audit);
     this.#state.grants[previous.itemId] = next;
     return { previous: clone(previous), current: clone(next) };
   }
@@ -371,6 +432,23 @@ export class GrantStore {
       throw error;
     }
   }
+}
+
+/** Audit fields to set on a rebuilt grant; a field that is absent is carried over from the previous grant. */
+type GrantAudit = Partial<Pick<GrantRecord, 'joins' | 'removedGroupIds' | 'removedUserIds'>>;
+
+/**
+ * The removal marks after an administrator sets a grant's groups and manual users: whatever they took off is marked, and
+ * whatever they assigned is unmarked.
+ */
+function administratorRemovals(previous: GrantRecord, manualUserIds: string[], groupIds: string[]): GrantAudit {
+  const removedGroupIds = [...new Set([...(previous.removedGroupIds ?? []), ...previous.groupIds])]
+    .filter((id) => !groupIds.includes(id))
+    .sort();
+  const removedUserIds = [...new Set([...(previous.removedUserIds ?? []), ...previous.manualUserIds])]
+    .filter((id) => !manualUserIds.includes(id))
+    .sort();
+  return { removedGroupIds, removedUserIds };
 }
 
 export function normalizeId(value: string): string {

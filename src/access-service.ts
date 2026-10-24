@@ -288,6 +288,83 @@ export class AccessService {
     });
   }
 
+  /** Whether household "Add to my library" can resolve titles; it needs Seerr lookup. */
+  public canJoinLibrary(): boolean {
+    return Boolean(this.#seerr);
+  }
+
+  /**
+   * Household "Add to my library" for a Jellyfin-authenticated user: resolves a TMDB title to its HD Jellyfin item
+   * through Seerr and joins that item's request grant (see GrantStore.joinGrant). The result is for metrics and tests
+   * only; callers must not reveal it, since it tells whether another household holds the title. Every failure is logged
+   * and reported as `error`, never thrown. The join is stored before this resolves; `reconciled` settles once it has
+   * been applied to Jellyfin, or failed to be (logged, and retried by reconciliation like any other grant).
+   */
+  public async joinLibrary(input: {
+    userId: string;
+    isAdministrator: boolean;
+    mediaType: 'movie' | 'tv';
+    tmdbId: number;
+  }): Promise<{ result: 'joined' | 'unchanged' | 'error'; reconciled: Promise<void> }> {
+    const fields = { userId: input.userId, mediaType: input.mediaType, tmdbId: input.tmdbId };
+    const finish = (result: 'joined' | 'unchanged' | 'error', reconciled = Promise.resolve()) => {
+      this.#metrics.increment('jfa_library_joins_total', { result });
+      return { result, reconciled };
+    };
+    try {
+      if (!this.#seerr) throw new Error('Seerr lookup is not configured');
+      // Administrators already see every title, and a grant never lists them.
+      if (input.isAdministrator) {
+        this.#logDebug('library join ignored for an administrator', fields);
+        return finish('unchanged');
+      }
+      const itemId = await this.#seerr.getJellyfinItemId(input.mediaType, input.tmdbId);
+      if (!itemId) {
+        this.#logDebug('library join found no Jellyfin item', fields);
+        return finish('unchanged');
+      }
+      const joined = await this.#exclusive(() => this.#store.joinGrant({
+        itemId,
+        userId: input.userId,
+        groupIds: this.#store.listGroupIdsForUser(input.userId),
+      }));
+      if (!joined) {
+        this.#logDebug('library join changed nothing', { ...fields, itemId });
+        return finish('unchanged');
+      }
+      const join = joined.current.joins?.at(-1);
+      console.log(JSON.stringify({
+        level: 'info',
+        message: 'household library join',
+        ...fields,
+        itemId: joined.current.itemId,
+        groupIds: join?.groupIds ?? [],
+        userAdded: join?.userAdded ?? false,
+      }));
+      const reconciled = this.#exclusive(async () => {
+        // Shutdown closed the store: the grant was saved as pending and is reconciled after restart.
+        if (this.#store.closed) return;
+        await this.#reconcileGrant(this.#store.get(joined.current.itemId) ?? joined.current);
+      }).catch((error: unknown) => {
+        console.error(JSON.stringify({
+          level: 'error',
+          message: 'library join reconciliation failed',
+          itemId: joined.current.itemId,
+          detail: error instanceof Error ? error.message : String(error),
+        }));
+      });
+      return finish('joined', reconciled);
+    } catch (error) {
+      console.error(JSON.stringify({
+        level: 'error',
+        message: 'library join failed',
+        ...fields,
+        detail: error instanceof Error ? error.message : String(error),
+      }));
+      return finish('error');
+    }
+  }
+
   async #resolveWebhook(event: SeerrWebhook): Promise<{ itemId: string; userId: string; mediaType?: string }> {
     let itemId = event.media?.jellyfinMediaId;
     let userId = event.request.requestedBy?.jellyfinUserId;

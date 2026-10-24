@@ -25,6 +25,8 @@ export class Metrics {
       '# TYPE jfa_request_backfill_total counter',
       '# HELP jfa_request_backfill_last_run_timestamp_seconds Unix time the Seerr request backfill last completed a scan.',
       '# TYPE jfa_request_backfill_last_run_timestamp_seconds gauge',
+      '# HELP jfa_library_joins_total Household "Add to my library" calls by result: joined, unchanged (nothing to join, for any reason) or error.',
+      '# TYPE jfa_library_joins_total counter',
       '# HELP jfa_reconciliations_total Reconciliation attempts by result.',
       '# TYPE jfa_reconciliations_total counter',
       '# HELP jfa_item_updates_total Jellyfin item metadata updates.',

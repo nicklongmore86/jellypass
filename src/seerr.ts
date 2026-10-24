@@ -50,6 +50,17 @@ export class SeerrClient {
     return this.#getJson<SeerrRequest>(`/api/v1/request/${encodeURIComponent(requestId)}`);
   }
 
+  /**
+   * The HD Jellyfin item Seerr has linked to a TMDB title, or undefined when Seerr knows the title but has no item for
+   * it. Throws on any failed lookup, including a TMDB ID Seerr cannot find.
+   */
+  public async getJellyfinItemId(mediaType: 'movie' | 'tv', tmdbId: number): Promise<string | undefined> {
+    const details = await this.#getJson<{ mediaInfo?: { jellyfinMediaId?: string | null } | null }>(
+      `/api/v1/${mediaType}/${encodeURIComponent(String(tmdbId))}`,
+    );
+    return details.mediaInfo?.jellyfinMediaId || undefined;
+  }
+
   public async importJellyfinUser(jellyfinUserId: string): Promise<{ status: 'imported' | 'already_imported'; user?: ImportedSeerrUser }> {
     const users = await this.#postJson<ImportedSeerrUser[]>('/api/v1/user/import-from-jellyfin', {
       jellyfinUserIds: [jellyfinUserId],
