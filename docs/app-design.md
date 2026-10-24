@@ -519,7 +519,8 @@ and refund the caller's own request for that title.
    finds eligible always passes Seerr's own check; Seerr's check never runs for a virtual request, so the tally
    alone enforces the limit there.
 6. **Serialized.** Eligibility and the count are checked and recorded under a per-user lock, so concurrent "Get this"
-   calls cannot overrun the limit through one branch and not another.
+   calls cannot overrun the limit through one branch and not another. Every Seerr request made as the caller is sent
+   under the same lock, so a quota read never overlaps one (see "Get this" as implemented).
 7. **No numbers shown.** v1 displays no quota counts. The app shows a single title-independent state, "You've reached
    your request limit", derived solely from the caller's own combined usage, before the action is offered; the
    action's answer itself never mentions quota.
@@ -556,6 +557,15 @@ absence at request time either: there are gaps between observations, deletions a
 
 Step 2a implements the first two rules (see '"Get this" as implemented (step 2a)'): Jellyfin is read with JellyPass's
 key before any branch is chosen, and the request branch is taken only for seasons (or a movie) Jellyfin does not have.
+It reads Jellyfin again right before the request is sent, with nothing else awaited in between, and joins a title (or
+season) that arrived meanwhile instead. The window left is the request's own round trip to Seerr (at most its 15-second
+timeout, typically tens of milliseconds): a title arriving in Jellyfin then still reaches Seerr's request endpoint. Its
+grant is closed too: the app knows it made the request, so it reads Jellyfin once more before writing the record
+(within the 2-second record delay) and, if the title (or one of the seasons asked for) is there, marks the record
+`present-at-settle`; a webhook or backfill for a request whose record is marked, or not yet written, grants it by the
+library join rules, never as a new grant (see "When a grant is created"). So a title that arrives in that window gets,
+at worst, a redundant Seerr request (and download), never a private grant. A title that arrives after the settle-time
+read was not there when the request was made: the request is genuine.
 
 ### "Get this" as implemented (step 2a)
 
@@ -568,28 +578,38 @@ only, with `HOUSEHOLD_APP_ENABLED=true`. There is no app button yet (step 2b).
 | `POST /jellypass/app/v1/tv/:tmdbId/get` with `{"seasons":[n, ...]}` | The same `202`; 1 to 100 distinct seasons from 1 to 999 (specials cannot be requested) |
 | `GET /jellypass/app/v1/requests` | `{results: [{id, mediaType, tmdbId, status, seasons, byYou}]}` (below) |
 
-**The immediate part depends only on the caller.** In order: the address, user and household app budgets and the
-session and household check (as for every app endpoint); input validation (fixed `400`); the "Get this" submission
-budgets, 10 per user, 30 per client address and 30 per household in each 10-minute window (fixed windows, counted for
-every valid call and never given back; each counted only if the one before admitted the call, so a call refused for
-the caller's own volume never uses up the address's or the household's; fixed `429`); then, under a per-user lock,
-the caller's eligibility for the media type: their own Seerr user (`ownUser()`) and quota (`quota()`), read as them in
-parallel. If they are eligible, the units the call needs (1 for a movie, one per season asked for) are held for it and
-the branches are started as background work (`BackgroundTasks`, so shutdown aborts and waits for them); if not, nothing
-runs. Either way the answer is the same fixed `202`, sent before anything about the title is looked up (the branches
-start after the answer is written). Its headers and body are byte-for-byte the same whatever the title's situation and
-whether or not the caller was eligible; both paths make the same two Seerr calls before answering. A Seerr failure
-while reading eligibility answers the fixed `502` (the caller's own Seerr data, the same whatever the title), and so
-does a call made once shutdown has begun.
+**The answer depends only on the call.** In order: the address, user and household app budgets and the session and
+household check (as for every app endpoint); input validation (fixed `400`); the "Get this" submission budgets, 10 per
+user, 30 per client address and 30 per household in each 10-minute window (fixed windows, counted for every valid call
+and never given back; each counted only if the one before admitted the call, so a call refused for the caller's own
+volume never uses up the address's or the household's; fixed `429`); then the call is started as background work
+(`BackgroundTasks`, so shutdown aborts and waits for it) and the fixed `202` is sent. Nothing about the caller's
+eligibility or the title is read before the answer, and no endpoint ever waits on that work: its headers and body are
+byte-for-byte the same whatever the title's situation and whether or not the caller is eligible. A call made once
+shutdown has begun answers the fixed `502`.
+
+**In the background, eligibility first**, under a per-user lock: the caller's own Seerr user (`ownUser()`) and quota
+(`quota()`), read as them in parallel. If they are eligible, the units the call needs (1 for a movie, one per season
+asked for) are held for it and the branches run; if not, or if Seerr cannot answer (counted as `error`, logged),
+nothing runs.
 
 **Eligibility** is Seerr 3.5.1's `User.getQuota` and `MediaRequest.request` applied to real and virtual requests
 alike: the caller needs `ADMIN`, `REQUEST` or `REQUEST_MOVIE`/`REQUEST_TV`; when Seerr reports a `limit` (0 or none
 means none, including a caller who bypasses quotas with `MANAGE_USERS`), Seerr's own `used` plus the caller's virtual
-requests made in the last `days` days (strictly after, as Seerr's `AfterDate`) plus the units still held by their
-calls whose branches have not been recorded plus the units asked for must be within it. A call's units stay held after
-its branches are recorded only for Seerr requests it made, until a later eligibility check whose quota read began after
-they were made (so Seerr's `used` has them). A request made while a quota read was in flight may therefore be counted
-twice by that one check, never missed: stricter for that moment, never looser.
+requests made in the last `days` days (strictly after, as Seerr's `AfterDate`; **every one ever made when `days` is 0
+or unset**, as Seerr then applies no date at all) plus the units held by their calls still running plus the units
+asked for must be within it.
+
+**Each unit is counted exactly once, at every instant, whichever branch serves it.** A call's units are held from the
+moment it is found eligible. A Seerr request made as the caller is sent under the caller's lock, the same lock every
+quota read is taken under, so no quota read is ever in flight while one is made: a read either started before the
+request (Seerr's `used` does not have it, the hold does) or after it was made (Seerr's `used` has it, and the hold gave
+those units up in the same step that noted the request made). A join or interest keeps its units held until its
+record is written, and the tally counts the record from that same turn. So while a call is pending, during its record
+delay, and after its record is written, the caller's next call is decided the same whichever branch the earlier one
+took (tested at limits of 1 and 2, for all three branches and all three phases). A caller's own request made outside
+the app and followed by the call is counted by Seerr and by the hold until the record is written, as is a season the
+caller can already see: those are the caller's own doing.
 
 **Branches**, in the background, serialized per title (one title's calls take turns, whichever household made them):
 
@@ -598,11 +618,14 @@ twice by that one check, never missed: stricter for that moment, never looser.
    their view has episodes of, and seasons (or the movie) **their household already asked for** and is still waiting
    on (an active or failed record): nothing for those; their units are freed.
 3. Otherwise both decision inputs are read, always both, so a failure of either stops every branch alike (nothing is
-   recorded and the units are freed): **Jellyfin** with JellyPass's key (every movie or series item with that TMDB ID,
-   `JellyfinClient.findItemsByTmdbId`, and for a series the seasons it has episodes of) and **Seerr** with the admin key
-   (`SeerrClient.titleRequests`: the title's media record and each request's ID, status, quality, seasons and
-   requester, read up to 64 MiB because every household's records are on it; never part of an answer). A title Seerr
-   cannot find on TMDB is refused (nothing, freed).
+   recorded and the units are freed): **Seerr** with the admin key (`SeerrClient.titleRequests`: the title's media
+   record, the Jellyfin items it links, and each request's ID, status, quality, seasons and requester, read up to
+   64 MiB because every household's records are on it, and parsed in a worker thread so its size never holds up the
+   event loop; never part of an answer), then **Jellyfin** with JellyPass's key: every movie or series item with that
+   TMDB ID (`JellyfinClient.findItemsByTmdbId`) **and the items Seerr's media record links** (`jellyfinMediaId` and
+   `jellyfinMediaId4k`, looked up by ID, `JellyfinClient.existingItems`, so an item Jellyfin holds without TMDB
+   metadata counts), and for a series the seasons they have episodes of. A title Seerr cannot find on TMDB is refused
+   (nothing, freed).
 4. Each season asked for (or the movie) goes to exactly one branch:
    - **Jellyfin has it** (an HD item: never the one Seerr links as 4K; an item Seerr does not link counts as HD, so a
      title Jellyfin has is never requested): the **join branch**. The household whose host was used, never the
@@ -616,21 +639,32 @@ twice by that one check, never missed: stricter for that moment, never looser.
      recorded as the household's `request` record instead: Seerr already counts it, so it is not a virtual request.
    - Otherwise: the **request branch**, one real HD Seerr request as the caller for all such seasons
      (`SeerrMemberClient.createRequest`, which sends only `mediaType`, `mediaId`, `seasons` and `is4k: false`), and a
-     `request` record naming it, `pending`. A `409` (someone requested it meanwhile), a `202` without a request (every
-     season was requested meanwhile) or a request covering only some of the seasons falls back to the interest branch
-     for the rest, following the request Seerr now lists (any not declined), or none. A `403` or any other failure
-     (permission or quota changed meanwhile, the caller unlinked, Seerr down) records nothing and frees the units.
+     `request` record naming it, `pending`, with `checkedAt`. Under the caller's lock, Jellyfin is read again (TMDB ID
+     and linked items, as above) and the request sent right after, nothing else awaited between them: seasons (or the
+     movie) that arrived since the first read go to the join branch instead (`request_late`). A `409` (someone requested
+     it meanwhile), a `202` without a request (every season was requested meanwhile) or a request covering only some of
+     the seasons falls back to the interest branch for the rest, following the request Seerr now lists (any not
+     declined), or none. A `403` or any other failure (permission or quota changed meanwhile, the caller unlinked, Seerr
+     down) records nothing and frees the units. A request for a series Jellyfin already has (new seasons) is marked
+     `existing-series`; a request whose title (or one of its seasons) Jellyfin has when its record is about to be
+     written is marked `present-at-settle` (see "Late requests"). Until its record is written, the request is noted in
+     memory (`GrantStore.holdAppRequest`) so that a grant for it meanwhile is a join too.
 5. The call's records are written together, no sooner than 2 seconds after the call was accepted (so how soon the
-   title shows as `requested` does not tell the request branch, which makes one more Seerr call, from the interest
-   branch while Seerr answers within that time), and its held units are released in the same step. Once shutdown
-   begins, a branch stops before its next step and records only what it did: a Seerr request already made, or a join
-   already stored, is still recorded.
+   title shows as `requested` does not tell the request branch, which makes more calls, from the interest branch while
+   they finish within that time), and its held units are released in the same turn. A household deleted while the
+   call ran, or deleted and created again under the same ID, never gets them: each household has an epoch
+   (`GrantStore.householdEpoch`, in memory; a call never outlives the process), taken when the call is accepted; the
+   store adds records whose epoch is no longer the household's detached, and `joinHousehold` joins nothing for it.
+   Once shutdown begins, a branch stops before its next step and records only what it did: a Seerr request already
+   made, or a join already stored, is still recorded.
 
 **Records** (`GrantState.appRequests`, `AppRequestRecord` in `src/types.ts`), one per branch and call:
 `{householdId, jellyfinUserId, mediaType, tmdbId, seasons, createdAt, updatedAt, branch, status, seerrRequestId?,
-seerrMediaId?, itemIds?, detached?}` by a random ID that never leaves JellyPass. Each is the doc's attribution record,
-and a `join` or `interest` record is also one of its member's **virtual requests**: the quota tally is these records,
-counted as above. `requested` and `GET /requests` read only them.
+seerrMediaId?, itemIds?, readySeasons?, joinOnGrant?, checkedAt?, detached?}` by a random ID that never leaves
+JellyPass. Each is the doc's attribution record, and a `join` or `interest` record is also one of its member's
+**virtual requests**: the quota tally is these records (and the ledger of pruned ones, below), counted as above.
+`requested` and `GET /requests` read only them, through a per-household index, so their work depends on the
+household's own records only.
 
 **Accounting, as implemented** (each row of the table above):
 
@@ -640,22 +674,38 @@ counted as above. `requested` and `GET /requests` read only them.
 | Declined | Seerr frees it; the record follows (`declined`) | The followed request declined: `declined`, freed | Cannot happen |
 | Failed | Seerr still counts it; `failed` | `failed`, still counted | Cannot happen |
 | Failed, then retried | Back to `pending` | Back to `pending`, counted | Cannot happen |
-| Completed | `completed` when its grant is created (webhook or backfill) or Seerr reports it completed | `completed` once the household joined the title's grant (when the grant is created; or, if that was missed, on the next refresh once Jellyfin has it); `failed`, still counted, if the join rules refuse the household | `completed` |
+| Completed | `completed` when its grant is created (webhook or backfill) or Seerr reports it completed, and Jellyfin has every season it covers | `completed` once the household joined the title's grant (when the grant is created; or, if that was missed, on the next refresh once Jellyfin has it) and Jellyfin has every season it covers; `failed`, still counted, if the join rules refuse the household | `completed` |
 | The followed request deleted, title not yet available | Seerr frees it; `deleted` (not listed, as Seerr no longer lists it) | `failed`, still counted; it then waits for any grant of the title | n/a |
-| The title's Seerr media record deleted | `deleted`, freed | `deleted`, freed | `deleted`, freed (each join record keeps the media record's ID it was made against) |
+| The title's Seerr media record deleted | `deleted`, freed (Seerr frees it at once) | `deleted`, freed, also once `completed` | `deleted`, freed (each record keeps the media record's ID it was made against) |
 | Refused before anything is recorded | Nothing | Nothing | Nothing (a refused join) |
 | Window ends | Seerr stops counting it | No longer counted | No longer counted |
 
 `HouseholdRequests.refresh` brings records up to date: run by every scheduled reconciliation (after the request
-backfill), it reads each `pending` or `failed` request or interest record's Seerr request at most every 10 minutes and
-each join record's media record at most every 6 hours, at most 50 reads a run, those read longest ago first.
+backfill), it reads each `pending` or `failed` request or interest record's Seerr request at most every 10 minutes (a
+record whose grant was settled and that waits for seasons reads Jellyfin's episodes instead), and each `completed`
+record's media record, **in every branch**, at most every 6 hours, at most 50 reads a run, those read longest ago first.
+So a completed record whose media Seerr deleted is freed as Seerr frees its own request's unit, and drops out of
+`GET /requests`.
+
+**Readiness, season by season.** A series record is `completed` only once Jellyfin (read with JellyPass's key) has
+episodes of every season it covers; until then it stays `pending` with `readySeasons`, those seasons show `ready` in
+`GET /requests` and leave `requested` and the seasons the household is waiting on, and the refresh reads it again
+until every season is there. A movie is ready with its item.
 
 **When a grant is created** (a `MEDIA_AVAILABLE` webhook, its replay, or the request backfill), `AccessService` settles
-the app records for it before answering: a `request` record naming that request is `completed`, and every `interest`
+the app records for it before answering: a `request` record naming that request is ready (above), and every `interest`
 record naming it (or, for a movie, or an interest that follows no request, every interest in the grant's title, from
 the item's TMDB provider ID) joins its household through the join rules, with the household whose host was used and
 never the member's current households. A failure there is logged and never fails the grant; the next refresh tries
 again.
+
+**A request granted as a join.** A request "Get this" made whose record is marked `existing-series` or
+`present-at-settle`, or whose record is not written yet, is never a new grant and never adds the requester's
+households: the request is recorded as handled (so neither a replay nor the backfill grants it later), and the
+household the request was made for joins the item's grant, if it has one, through the library join rules (an
+administrator's removal sticks; a manual-only grant is left alone). A public title or series stays public. Webhook
+answer `202` when there is no grant, metrics `jfa_webhooks_total{result="joined"}` and
+`jfa_request_backfill_total{result="joined"}`.
 
 **`GET /requests`** answers the household's own titles from its own records only, newest first, at most 200:
 `{id, mediaType, tmdbId, status, seasons, byYou}`. `status` is coarse: `requested` (Requested: pending or approved),
@@ -675,19 +725,31 @@ stays unchanged until the first "Get this" record.
 |---|---|---|
 | `appRequests` | Keeps it as it is (loaded and written back unread) | Nothing is `requested` and `GET /requests` does not exist (2.2.1 has no app writes); statuses stop being refreshed, and interests are not joined when their grant is created; a household deleted meanwhile does not detach its records. Upgrading again picks them up: refresh catches statuses up, but an interest whose grant was created while rolled back joins only on a later refresh (once its request reads as completed). |
 | `appIdKey` | Keeps it as it is | Unused; upgrading again keeps every opaque ID the same. |
+| `appQuotaLedger` | Keeps it as it is | Unused: pruned virtual requests are not counted; upgrading again counts them again. |
 
 Writes go through the store's one atomic write (a unique temporary file renamed over the state file, writes never
-overlapping) and are refused once the store is closed (shutdown). Records are forgotten 400 days after they were made
-(so a Seerr quota window longer than that is not mirrored for older virtual requests), and each household keeps at
-most its own newest 2000 (one household's volume never removes another's); with at most 100 households and the
-submission budgets, the state file stays bounded. Deleting a household **detaches** its records: no household (not one
-later created with the same ID) sees, joins or is `requested` by them again, but they still count towards their
-member's quota, as Seerr still counts that member's own requests.
+overlapping) and are refused once the store is closed (shutdown). **Pruning never changes a count:**
+
+- a `pending` record is never pruned (it is still being followed), nor a `failed` one younger than 400 days;
+- settled records (`completed`, `declined`, `deleted`) are kept for 400 days, at most each household's own newest 2000
+  (one household's volume never prunes another's), and `failed` ones go after 400 days too;
+- a pruned record that still counts (a join or interest neither declined nor deleted) moves to its member's
+  `appQuotaLedger`: its creation time and units, exactly, so every window counts it as before (tested with more than
+  2,000 records inside one window). Ledger entries older than 400 days, and beyond 10,000 per member and media type,
+  are summed (`older`: units, oldest, newest): counted in full by a lifetime quota and by any window reaching back to
+  the oldest, not at all by a window starting after the newest.
+
+The rows are bounded by the per-household cap plus the pending records (each household has at most one active record
+per title and season, so these are bounded by the titles in flight), the ledger by the entry cap per member. Deleting a
+household **detaches** its records: no household (not one later created with the same ID) sees, joins or is
+`requested` by them again, but they still count towards their member's quota, as Seerr still counts that member's own
+requests; records of a call still running when it is deleted are added detached (see 5 above).
 
 **Metrics** (no label names a title): `jfa_app_requests_total{endpoint="get"|"requests", outcome}`,
-`jfa_app_get_this_total{result="accepted"|"ineligible"}` and `jfa_app_get_this_branches_total{branch}` (`visible`,
-`refused`, `join_joined`, `join_already`, `join_refused`, `join_error`, `join_cancelled`, `interest`, `own_request`,
-`request`, `request_refused`, `error`, `cancelled`).
+`jfa_app_get_this_total{result="accepted"|"ineligible"|"error"}` (decided in the background) and
+`jfa_app_get_this_branches_total{branch}` (`visible`, `refused`, `join_joined`, `join_already`, `join_refused`,
+`join_ungranted`, `join_error`, `join_cancelled`, `interest`, `own_request`, `request`, `request_late`,
+`request_refused`, `error`, `cancelled`).
 
 #### Leak channels in step 2a
 
@@ -697,17 +759,17 @@ member's quota, as Seerr still counts that member's own requests.
 | Counts | No count or total; the list holds exactly the household's own titles. |
 | Paging | None: at most 200 titles, newest first. |
 | Error text | Fixed bodies; Seerr's `409`, `202` and errors are handled or logged by route and status. |
-| Status codes | Fixed: `202` whatever the branch, the title or the caller's eligibility; `400`, `401`, `429` and `502` depend only on the input, the caller, their own budgets and Seerr's own answer about them. |
+| Status codes | Fixed: `202` whatever the branch, the title or the caller's eligibility; `400`, `401` and `429` depend only on the input, the caller and their own budgets, and `502` only on shutdown. |
 | Sequential IDs | No Seerr request, media or user ID is returned; the list's IDs are HMACs. |
 | Item IDs | None in either answer; Play links only through `in_library` as before. |
 | Requests | `requested` and the list come only from the household's own records; tested across membership changes (a shared member leaving, a move between households), a member of several households, another household asking for the same title, and a deleted household. |
-| Timing | The answer comes before anything about the title is read, after the same reads of the caller's own Seerr user and quota whatever the title. The branches run afterwards, one title at a time; records are written together no sooner than 2 seconds after the call (residual below). |
+| Timing | The answer comes before anything about the caller's eligibility or the title is read, and no endpoint waits on that work: eligibility and the branches run afterwards, the branches one title at a time (a queue shared by every household, so it only orders background work); records are written together no sooner than 2 seconds after the call (residual below). Seerr's title answers, whose size grows with every household's records on the title, are parsed in a worker thread, so they never hold up the event loop other answers run on. `requested` and `GET /requests` read the household's own records through a per-household index, so their work does not grow with other households' records. |
 | Caching | `Cache-Control: no-store`. |
 | Volume | Submission budgets per user, address and household, never given back, on top of the app's budgets. |
-| Quota | Eligibility first, from the caller's own Seerr quota and records; join and interest counted and freed as Seerr counts the caller's own request; series charged per season asked for; held units cover calls still running; no number shown. |
+| Quota | Eligibility first, from the caller's own Seerr quota and records; join and interest counted and freed as Seerr counts the caller's own request (lifetime when Seerr's quota has no window; completed records freed with their media); series charged per season asked for; held units cover calls still running, each unit counted once at every instant whichever branch serves it; pruning never changes a count; no number shown. |
 | Identity | Every member call (`ownUser`, `quota`, `createRequest`) through `SeerrUserMap.member()`, confirmed per call; an unmapped caller is simply not eligible; never the admin key for a member's request. |
 | Attribution | The household whose host was used, never membership; a join adds only that household. |
-| Late requests | Jellyfin is read before any branch is chosen; a title (or season) it has is joined, never requested; tested for every combination of holdings and Seerr state. |
+| Late requests | Jellyfin is read before any branch is chosen, by TMDB ID and by the items Seerr links, and again right before a request is sent; a title (or season) it has is joined, never requested; a request whose title arrived while it was made, or for new seasons of a series Jellyfin has, is granted as a join; tested for every combination of holdings and Seerr state, for an arrival between the first read and the request, and during the request. |
 
 **Residuals, honestly.**
 
@@ -723,17 +785,27 @@ member's quota, as Seerr still counts that member's own requests.
   notifications to the requester: a request made by the request branch shows there, an interest does not. Step 4
   (Seerr for administrators only) closes this; until then, keep Seerr's per-user notifications off for household
   members if this matters.
-- **Timing.** A Seerr request answered after more than 2 seconds makes the request branch's records appear later than
-  an interest's would; and a join is applied to Jellyfin before its record is written.
-- **Quota.** A Seerr request made while one of the caller's own quota reads was in flight may be counted twice by that
-  one check (stricter for that moment). A series is charged for every season asked for, as Seerr charges seasons
-  named in a request; the app only offers seasons the series has (step 2b). Seasons the caller can already see are
-  charged at the check and freed afterwards, so asking for them can make a call ineligible that Seerr would have
-  allowed.
+- **Timing.** The request branch makes more calls than the interest branch (the re-check, the request, the
+  settle-time read): when they take more than 2 seconds in all, its records appear later than an interest's would. A
+  call waits for the caller's earlier calls' eligibility checks and Seerr requests (the per-user lock), and for other
+  households' calls on the same title (the per-title queue), before its branches run: only its records can appear later
+  for it, never an answer. A join is applied to Jellyfin before its record is written.
+- **Quota.** A series is charged for every season asked for, as Seerr charges seasons named in a request; the app only
+  offers seasons the series has (step 2b). Seasons the caller can already see are charged at the check and freed when
+  the record is written, so asking for them can make a call ineligible that Seerr would have allowed. Later events
+  reach the tally at the next refresh: Seerr frees the caller's own request the moment it is declined or its media is
+  deleted, while an interest or join follows at the next refresh (10 minutes for a request's status, 6 hours for a
+  completed record's media). A quota window longer than 400 days counts pruned virtual requests older than 400 days in
+  full once it reaches the oldest of them (stricter, never looser); lifetime quotas and windows up to 400 days are
+  exact. A record pruned into the ledger no longer follows its request or media (it is settled and past 400 days, or
+  beyond the household's newest 2000 settled records): its unit stays counted (stricter).
 - **New seasons of a series Jellyfin has.** Seasons Jellyfin does not have are requested even when it has others
-  (there is no other way to get them; these are genuine requests, not late ones). When they arrive, the webhook grants
-  the series item to the requester's households as for any request, so a series that was public until then becomes
-  private to them, exactly as a season requested through Seerr would make it.
+  (there is no other way to get them; these are genuine requests, not late ones), but their grant follows the join
+  rules (`existing-series`): a public series stays public, and a series held through someone's request is joined by
+  the household (an administrator's removal sticks). A new season requested through Seerr's own website still makes
+  the series private to the requester until step 4.
+- **Late requests in the request's own round trip.** A title arriving in Jellyfin while the request is in flight still
+  gets a (redundant) Seerr request; its grant is a join (see "Late requests").
 - **Failures.** A Seerr failure between the lookups and the request (or a refusal Seerr makes then) leaves nothing
   recorded, while the other branches do not call Seerr at that point.
 
@@ -977,6 +1049,23 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
   kept), metrics without titles, and no endpoints without the request service; and the store's bounds, retention,
   status updates and refusal once closed. `test/seerr-user-client.test.mjs` covers the new admin calls like the
   others (no `X-API-User`, guarded against redirects, route-only errors, input checked first) and their shaping.
+- **"Get this" rules.** `test/get-this-rules.test.mjs` covers: **the re-check**: a movie, and a season, arriving after
+  the branch's first Jellyfin read are joined and never requested; a title arriving while the request is in flight
+  marks it `present-at-settle`, and its webhook makes no new grant (a public title stays public, Bob's grant is
+  joined); a webhook arriving before the record is written is a join too; **items without TMDB metadata**: an HD movie
+  and series with empty provider IDs, found through Seerr's linked item, joined with no request; **accounting at every
+  instant**: a second call decided the same at limits 1 and 2 after the request, interest and join branches, while the
+  first is pending, during its record delay and after its record; no quota read while Seerr has made a request but not
+  answered; two concurrent calls at a limit of one, the second quota read not started until the first is decided;
+  **windows**: `days` 0 counts every request ever made, in the request and interest branches; a completed record of
+  every branch freed and no longer listed once its media is deleted; more than 2,000 virtual requests in one window all
+  counted; **households**: a household deleted and created again while a request, interest or join call runs gets no
+  record, `requested` or join, then or when the interest's grant is created; **new seasons**: a public series stays
+  public when the requested season arrives, a private one is joined, and an administrator's removal sticks; **readiness**:
+  a series interest partly ready per season, then completed by the refresh; and the store keeping every pending record
+  and moving pruned counted ones to the ledger, exact in any window and summed past the horizon, across a restart.
+  `pnpm test:seerr` also checks that Seerr 3.5.1 counts every request ever made when a quota has no window (a request
+  from 2001), and that "Get this" then runs no branch; `pnpm test:real` checks the by-ID item lookup against Jellyfin.
 - **Real Seerr and Jellyfin for "Get this".** `pnpm test:seerr` (Seerr 3.5.1, which must reach TMDB for this test)
   makes "Get this" as a member with a movie quota of 2: one real HD request made as the member (only `mediaType`,
   `mediaId` and `is4k: false` sent), attributed to the household; then Seerr's own quota is restricted and the next call
@@ -993,6 +1082,12 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
   interest whose request was deleted; never freeing a join whose media was deleted; ignoring Seerr's `used`; ignoring
   the quota window; not joining interests when a grant is created; leaving `requested` out of the state function;
   attributing to a fixed household; a per-user budget a hundred times larger; counting the caller's own request twice;
-  and recording without the delay. Removing the per-user lock alone fails none: deciding eligibility and holding the
-  units happen in one synchronous step after the reads, so the hold already serializes concurrent calls; the lock is
-  kept as the documented guarantee.
+  and recording without the delay. Removing the per-user lock around eligibility fails the concurrent-calls test (the
+  two quota reads then overlap, and both calls at a limit of one run a branch: an earlier claim here that the lock was
+  redundant was wrong, as the reads are awaited before the units are held); removing it around the request fails the
+  test that holds Seerr's answer after it made the request. Also, each fails at least one rules test: no re-check before
+  the request; no lookup of Seerr's linked items; not giving up the hold when the request is made; `days` 0 read as a
+  window starting now; completed records left out of the refresh; ignoring the household epoch in the store, or in
+  joins; pruning pending records, or pruning counted ones without the ledger; ignoring `joinOnGrant` at grant time, or
+  the unwritten-record note; completing a series record without its seasons. Parsing title answers on the main thread,
+  and listing every household's records for one household's answer, fail none: they are timing-only (documented above).

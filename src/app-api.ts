@@ -580,10 +580,10 @@ export class HouseholdApp implements HouseholdAppHandler {
   }
 
   /**
-   * "Get this" (see {@link HouseholdRequests}). Only the caller decides what happens before the answer: their input,
-   * their own submission budgets (per user, per client address and per household, counted for every valid call and
-   * never given back), and their eligibility (request permission and quota). Then the same `202` always follows, before
-   * anything about the title is looked up, whether the branches were started or the caller was not eligible.
+   * "Get this" (see {@link HouseholdRequests}). Only the call decides what happens before the answer: its input and the
+   * caller's own submission budgets (per user, per client address and per household, counted for every valid call and
+   * never given back). Then the same `202` always follows, before anything is read about the caller's eligibility or
+   * the title: both are decided in the background, and nothing the caller can call waits on them.
    */
   async #getThis(caller: JellyfinCaller, context: HouseholdAppRequest, request: IncomingMessage, mediaType: MediaType, input: string): Promise<unknown> {
     const requests = this.#requests as NonNullable<HouseholdAppOptions['requests']>;

@@ -122,6 +122,12 @@ export function world(options = {}) {
     autoApprove: options.autoApprove ?? false,
     // A promise each POST /api/v1/request waits for before Seerr answers, if set.
     holdRequests: undefined,
+    // A promise each POST /api/v1/request waits for after making the request and before answering, if set.
+    holdCreated: undefined,
+    // A promise each member quota read (GET /api/v1/user/:id/quota) waits for before Seerr answers, if set.
+    holdQuota: undefined,
+    // A promise each admin title read (GET /api/v1/movie|tv/:id) waits for before Seerr answers, if set.
+    holdTitles: undefined,
   };
 }
 
@@ -233,6 +239,8 @@ export async function createFakeSeerr(state) {
         violations.push(`${acting} read ${url.pathname}`);
         return send(response, 403, { message: 'canary' });
       }
+      if (state.quotaFails) return send(response, 500, { message: 'canary failure' });
+      if (state.holdQuota) return state.holdQuota.then(() => send(response, 200, { movie: quotaOf(acting, 'movie'), tv: quotaOf(acting, 'tv') }));
       return send(response, 200, { movie: quotaOf(acting, 'movie'), tv: quotaOf(acting, 'tv') });
     }
     if (url.pathname === '/api/v1/auth/me') {
@@ -270,11 +278,14 @@ export async function createFakeSeerr(state) {
     return { ...(info ?? { id: 7360000 + (tmdbId % 10000), mediaType, tmdbId, status: 2 }), requests: [...(info?.requests ?? []), ...requests] };
   }
 
-  /** Seerr 3.5.1's quota for a user: requests not declined, made within the window; one unit per movie or season. */
+  /**
+   * Seerr 3.5.1's quota for a user: requests not declined, made within the window (every request ever made when `days`
+   * is 0 or unset); one unit per movie or season.
+   */
   function quotaOf(acting, mediaType) {
     const limits = state.quotas[acting]?.[mediaType];
     if (!limits?.limit) return { days: limits?.days ?? 0, limit: 0, used: 0, restricted: false };
-    const since = Date.now() - limits.days * 24 * 60 * 60 * 1000;
+    const since = limits.days ? Date.now() - limits.days * 24 * 60 * 60 * 1000 : -Infinity;
     const used = (state.requests[acting] ?? []).filter((entry) => entry.type === mediaType && entry.status !== 3 && Date.parse(entry.createdAt) > since)
       .reduce((sum, entry) => sum + (mediaType === 'movie' ? 1 : entry.seasons.length), 0);
     return { days: limits.days, limit: limits.limit, used, remaining: Math.max(0, limits.limit - used), restricted: limits.limit - used <= 0 };
@@ -317,14 +328,16 @@ export async function createFakeSeerr(state) {
       requestedBy: { id: acting, jellyfinUserId: user.jellyfinUserId, email: 'canary-new@example.invalid' },
     };
     state.requests[acting] = [...(state.requests[acting] ?? []), created];
+    // Made, and counted by the quota from now on, before the answer leaves.
+    if (state.holdCreated) await state.holdCreated;
     return send(response, 201, created);
   }
 
   function admin(url, response) {
     const title = /^\/api\/v1\/(movie|tv)\/([0-9]+)$/.exec(url.pathname);
     if (title) {
-      const mediaInfo = mediaRecord(title[1], Number(title[2]));
-      return send(response, 200, { ...seerrFixture(title[1]), id: Number(title[2]), mediaInfo });
+      const answer = () => send(response, 200, { ...seerrFixture(title[1]), id: Number(title[2]), mediaInfo: mediaRecord(title[1], Number(title[2])) });
+      return state.holdTitles ? state.holdTitles.then(answer) : answer();
     }
     const byRequest = /^\/api\/v1\/request\/([0-9]+)$/.exec(url.pathname);
     if (byRequest) {
@@ -497,13 +510,18 @@ export async function createFakeJellyfinForApp(state) {
     }
     if (request.method === 'GET' && url.pathname === '/Items' && !parameter('userId')) {
       const types = (parameter('includeItemTypes') ?? '').split(',');
-      const all = state.items.filter((item) => types.includes(item.Type) && (parameter('hasTmdbId') !== 'true' || item.ProviderIds?.Tmdb));
+      const ids = parameter('ids')?.split(',');
+      const all = state.items.filter((item) => types.includes(item.Type) && (!ids || ids.includes(item.Id))
+        && (parameter('hasTmdbId') !== 'true' || item.ProviderIds?.Tmdb));
+      state.onAdminRead?.(url.pathname);
       const start = Number(parameter('startIndex') ?? 0);
       return send(response, 200, { Items: all.slice(start, start + Number(parameter('limit') ?? 100)).map(itemOf) });
     }
     const episodes = /^\/Shows\/([0-9a-f]{32})\/Episodes$/.exec(url.pathname);
     if (request.method === 'GET' && episodes) {
-      return send(response, 200, { Items: state.episodes.filter((episode) => episode.SeriesId === episodes[1]).map((episode) => ({ Id: episode.Id, Type: 'Episode', ParentIndexNumber: episode.ParentIndexNumber })) });
+      const answer = state.episodes.filter((episode) => episode.SeriesId === episodes[1]);
+      state.onAdminRead?.(url.pathname);
+      return send(response, 200, { Items: answer.map((episode) => ({ Id: episode.Id, Type: 'Episode', ParentIndexNumber: episode.ParentIndexNumber })) });
     }
     const item = /^\/Users\/[0-9a-f]{32}\/Items\/([0-9a-f]{32})$/.exec(url.pathname);
     if (request.method === 'GET' && item) {

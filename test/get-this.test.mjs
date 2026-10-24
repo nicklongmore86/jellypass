@@ -88,8 +88,10 @@ const start = (t, state, options = {}) => startApp(t, state, { reconcile: true, 
 /** The app's records, without their random IDs and times. */
 function records(app) {
   return app.store.listAppRequests().map(([, record]) => {
-    const { createdAt, updatedAt, ...rest } = record;
+    const { createdAt, updatedAt, checkedAt, ...rest } = record;
     assert.ok(Date.parse(createdAt) > 0 && Date.parse(updatedAt) > 0);
+    // A request the app made notes when Jellyfin was read again just before it was sent.
+    assert.ok(checkedAt === undefined || (rest.branch === 'request' && Date.parse(checkedAt) > 0));
     return rest;
   }).sort((left, right) => left.branch.localeCompare(right.branch) || left.seasons.join().localeCompare(right.seasons.join()));
 }
@@ -125,15 +127,28 @@ describe('household app "Get this": the immediate answer', { timeout: 60_000 }, 
     for (const [name, answer] of Object.entries(answers)) assert.equal(answer, expected, name);
   });
 
-  it('answers before anything about the title is looked up', async (t) => {
+  it('answers before anything about the caller\'s eligibility or the title is looked up', async (t) => {
     const app = await start(t, world({ tmdbMovies }));
-    app.seerr.state.holdRequests = new Promise(() => undefined);
-    const before = app.seerr.calls.length;
+    let release;
+    app.seerr.state.holdQuota = new Promise((resolve) => { release = resolve; });
+    // The answer comes while the caller's quota read is still held: eligibility is read in the background.
     const answer = await app.post(GET_MOVIE);
-    assert.equal(answer.status, 202);
-    // Only the caller's own permission and quota (each confirmed first) were read before the answer.
-    const early = app.seerr.calls.slice(before).map((call) => `${call.actingUser ?? 'admin'} ${call.pathname}`);
-    assert.ok(early.every((call) => /^(admin \/api\/v1\/user\/(jellyfin\/[0-9a-f]{32}|[0-9]+)|11 \/api\/v1\/(auth\/me|user\/11\/quota))$/.test(call)), early.join('\n'));
+    assert.equal(answer.text, ACCEPTED);
+    assert.deepEqual(app.seerr.posts, []);
+    assert.ok(!app.seerr.calls.some((call) => call.pathname === `/api/v1/movie/${T_MOVIE}`));
+    release();
+    await app.background.settled();
+    assert.equal(app.seerr.posts.length, 1);
+  });
+
+  it('answers the same fixed 202 when Seerr fails to read the caller\'s eligibility, and runs nothing', async (t) => {
+    const app = await start(t, world({ tmdbMovies }));
+    app.seerr.state.quotaFails = true;
+    const answer = await getThis(app);
+    assert.equal(answer.text, ACCEPTED);
+    assert.deepEqual(app.seerr.posts, []);
+    assert.deepEqual(records(app), []);
+    assert.match(app.service.renderMetrics(), /jfa_app_get_this_total\{result="error"\} 1/);
   });
 });
 
@@ -220,8 +235,9 @@ describe('household app "Get this": branches', { timeout: 60_000 }, () => {
     const base = { householdId: 'farmhouse', jellyfinUserId: ALICE, mediaType: 'tv', tmdbId: T_TV, seerrMediaId: 7360002 };
     assert.deepEqual(records(app), [
       { ...base, seasons: [2], branch: 'interest', status: 'pending', seerrRequestId: '7300602' },
-      { ...base, seasons: [1], branch: 'join', status: 'completed', itemIds: [ITEMS.tSeries] },
-      { ...base, seasons: [3], branch: 'request', status: 'pending', seerrRequestId: '7350001' },
+      { ...base, seasons: [1], branch: 'join', status: 'completed', itemIds: [ITEMS.tSeries], readySeasons: [1] },
+      // Jellyfin has the series: the request is for a season it lacks, and its grant follows the join rules.
+      { ...base, seasons: [3], branch: 'request', status: 'pending', seerrRequestId: '7350001', joinOnGrant: 'existing-series' },
     ]);
     const series = (await app.get(`${APP}/tv/${T_TV}`)).json();
     assert.equal(series.state, 'in_library');
@@ -382,6 +398,8 @@ describe('household app "Get this": every outcome counted as Seerr counts the ca
 
   const setStatus = (status, seerrUser, id) => (seerr) => {
     seerr.requests[seerrUser].find((entry) => entry.id === id).status = status;
+    // A request completes once the title is in Jellyfin.
+    if (status === 5) seerr.items.push(movieItem());
   };
 
   for (const [event, status, freed, shown] of [['declined', 3, true, 'failed'], ['failed', 4, false, 'failed'], ['approved', 2, false, 'requested'], ['completed', 5, false, 'ready']]) {
@@ -777,14 +795,14 @@ describe('"Get this" records in the store', () => {
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), ...overrides,
   });
 
-  it('keeps each household\'s newest records, forgets records past the retention, and survives a restart', async (t) => {
+  it('keeps each household\'s newest settled records, forgets settled records past the retention, and survives a restart', async (t) => {
     const file = path.join(await makeTempDir(t, 'jfa-get-this-'), 'grants.json');
     const store = new GrantStore(file);
     await store.load();
     const old = new Date(Date.now() - 401 * 24 * 60 * 60 * 1000).toISOString();
-    await store.writeAppRequests({ add: [record({ createdAt: old }), record({ householdId: 'mill' })] });
+    await store.writeAppRequests({ add: [record({ createdAt: old, status: 'declined' }), record({ householdId: 'mill' })] });
     assert.deepEqual(store.listAppRequests().map(([, entry]) => entry.householdId), ['mill']);
-    const many = Array.from({ length: MAX_APP_REQUESTS_PER_HOUSEHOLD + 5 }, (_, index) => record({ tmdbId: index + 1, createdAt: new Date(Date.now() - (index + 1) * 1000).toISOString() }));
+    const many = Array.from({ length: MAX_APP_REQUESTS_PER_HOUSEHOLD + 5 }, (_, index) => record({ tmdbId: index + 1, status: 'declined', createdAt: new Date(Date.now() - (index + 1) * 1000).toISOString() }));
     await store.writeAppRequests({ add: many });
     const kept = store.listAppRequests().map(([, entry]) => entry);
     assert.equal(kept.filter((entry) => entry.householdId === 'farmhouse').length, MAX_APP_REQUESTS_PER_HOUSEHOLD);

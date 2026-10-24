@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { Worker } from 'node:worker_threads';
 import type { RecentSeerrRequest, SeerrRequest } from './types.js';
 
 interface SeerrRequestList {
@@ -149,38 +150,16 @@ export class SeerrClient {
   }
 
   async #titleRequests(mediaType: 'movie' | 'tv', id: number): Promise<SeerrTitleRecord | undefined> {
-    let answer: unknown;
+    const route = `/api/v1/${mediaType}/:id`;
+    let bytes: Uint8Array;
     try {
-      answer = await guardedSeerrJson(this.#baseUrl, 'GET', `/api/v1/${mediaType}/:id`, `/api/v1/${mediaType}/${id}`,
+      bytes = await guardedSeerrBytes(this.#baseUrl, 'GET', route, `/api/v1/${mediaType}/${id}`,
         { Accept: 'application/json', 'X-Api-Key': this.#apiKey }, undefined, MAX_TITLE_RECORD_BYTES);
     } catch (error) {
       if (error instanceof SeerrError && error.status === 404) return undefined;
       throw error;
     }
-    const media = ownField(answer, 'mediaInfo');
-    const requests = ownField(media, 'requests');
-    return {
-      ...optional('mediaId', positiveSafeInteger(ownField(media, 'id'))),
-      ...optional('jellyfinMediaId', jellyfinItemId(ownField(media, 'jellyfinMediaId'))),
-      ...optional('jellyfinMediaId4k', jellyfinItemId(ownField(media, 'jellyfinMediaId4k'))),
-      requests: (Array.isArray(requests) ? requests : []).flatMap((request) => {
-        const requestId = positiveSafeInteger(ownField(request, 'id'));
-        const status = positiveSafeInteger(ownField(request, 'status'));
-        if (requestId === undefined || status === undefined) return [];
-        const seasons = ownField(request, 'seasons');
-        const requester = ownField(ownField(request, 'requestedBy'), 'jellyfinUserId');
-        return [{
-          id: String(requestId),
-          status,
-          is4k: ownField(request, 'is4k') === true,
-          seasons: (Array.isArray(seasons) ? seasons : []).flatMap((season) => {
-            const number = positiveSafeInteger(ownField(season, 'seasonNumber'));
-            return number === undefined ? [] : [number];
-          }),
-          ...optional('requesterJellyfinId', typeof requester === 'string' ? normalizeJellyfinUserId(requester) : undefined),
-        }];
-      }),
-    };
+    return parseTitleOffThread(bytes, route);
   }
 
   /**
@@ -571,6 +550,25 @@ async function guardedSeerrJson(
   body?: unknown,
   limit = MAX_GUARDED_RESPONSE_BYTES,
 ): Promise<unknown> {
+  const bytes = await guardedSeerrBytes(baseUrl, method, route, path, headers, body, limit);
+  try {
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown;
+  } catch {
+    // JSON.parse's own message quotes the body.
+    throw new SeerrError(`Seerr ${method} ${route} returned invalid JSON`, 502);
+  }
+}
+
+/** {@link guardedSeerrJson}'s call, up to reading the body's bytes. */
+async function guardedSeerrBytes(
+  baseUrl: string,
+  method: 'GET' | 'POST',
+  route: string,
+  path: string,
+  headers: Record<string, string>,
+  body: unknown,
+  limit: number,
+): Promise<Uint8Array> {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     signal: AbortSignal.timeout(15_000),
@@ -585,12 +583,49 @@ async function guardedSeerrJson(
   }
   const bytes = await readCappedBody(response, limit);
   if (!bytes) throw new SeerrError(`Seerr ${method} ${route} response is too large`, 502);
-  try {
-    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown;
-  } catch {
-    // JSON.parse's own message quotes the body.
-    throw new SeerrError(`Seerr ${method} ${route} returned invalid JSON`, 502);
-  }
+  return bytes;
+}
+
+/** The worker title answers are parsed in (see parseTitleAnswer), started when first needed and kept while it works. */
+let titleWorker: { worker: Worker; jobs: Map<number, { resolve: (record: SeerrTitleRecord) => void; reject: (error: Error) => void; route: string }> } | undefined;
+let nextTitleJob = 1;
+
+/** Parses a title answer in the title worker, so the event loop never waits on the size of other households' records. */
+function parseTitleOffThread(bytes: Uint8Array, route: string): Promise<SeerrTitleRecord> {
+  const current = titleWorker ??= startTitleWorker();
+  const id = nextTitleJob++;
+  return new Promise((resolve, reject) => {
+    current.jobs.set(id, { resolve, reject, route });
+    current.worker.ref();
+    // A copy made for the transfer, so the caller's view of the bytes stays whole.
+    const copy = bytes.slice();
+    current.worker.postMessage({ id, bytes: copy }, [copy.buffer]);
+  });
+}
+
+function startTitleWorker(): NonNullable<typeof titleWorker> {
+  const worker = new Worker(new URL('./seerr-title-worker.js', import.meta.url));
+  const state: NonNullable<typeof titleWorker> = { worker, jobs: new Map() };
+  const idle = () => {
+    if (state.jobs.size === 0) worker.unref();
+  };
+  worker.on('message', ({ id, record }: { id: number; record?: SeerrTitleRecord }) => {
+    const job = state.jobs.get(id);
+    state.jobs.delete(id);
+    idle();
+    if (!job) return;
+    if (record) job.resolve(record);
+    else job.reject(new SeerrError(`Seerr GET ${job.route} returned invalid JSON`, 502));
+  });
+  const fail = () => {
+    if (titleWorker === state) titleWorker = undefined;
+    for (const job of state.jobs.values()) job.reject(new SeerrError(`Seerr GET ${job.route} could not be read`, 502));
+    state.jobs.clear();
+  };
+  worker.on('error', fail);
+  worker.on('exit', fail);
+  worker.unref();
+  return state;
 }
 
 /** The response body if it is at most `limit` bytes, or undefined (with the rest of the body left unread) if not. */
@@ -631,10 +666,6 @@ function ownField(value: unknown, name: string): unknown {
 
 function positiveSafeInteger(value: unknown): number | undefined {
   return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined;
-}
-
-function jellyfinItemId(value: unknown): string | undefined {
-  return typeof value === 'string' && /^[0-9a-f]{32}$/i.test(value.replace(/-/g, '')) ? value.replace(/-/g, '').toLowerCase() : undefined;
 }
 
 function optional<K extends string, V>(key: K, value: V | undefined): Partial<Record<K, V>> {

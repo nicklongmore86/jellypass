@@ -31,7 +31,7 @@ const AVAILABLE_MEDIA_STATUSES = new Set([4, 5]);
 const GRANTABLE_REQUEST_STATUSES = new Set([2, 5]);
 
 /** What a household app join did: see AccessService.joinHousehold. */
-export type HouseholdJoinResult = 'joined' | 'already' | 'refused' | 'error' | 'cancelled';
+export type HouseholdJoinResult = 'joined' | 'already' | 'refused' | 'ungranted' | 'error' | 'cancelled';
 
 interface PlanContext {
   plan: ChangePlan;
@@ -150,7 +150,7 @@ export class AccessService {
     this.#metrics.increment('jfa_app_requests_total', { endpoint, outcome });
   }
 
-  /** Counts a household app "Get this" call by what its immediate part decided; never by title. */
+  /** Counts a household app "Get this" call by what its eligibility check decided; never by title. */
   public recordGetThis(result: string): void {
     this.#metrics.increment('jfa_app_get_this_total', { result });
   }
@@ -329,11 +329,16 @@ export class AccessService {
           }
           await this.#reconcileOrRecover(existing);
           const current = this.#store.findGrantForRequest(event.request.id);
-          if (current) await this.#settleAppRequests(current, event.request.id);
+          if (current) await this.#settleAppRequests(current.itemId, event.request.id);
           this.#metrics.increment('jfa_webhooks_total', { result: 'granted' });
           return this.#store.findGrantForRequest(event.request.id) ?? existing;
         }
         const resolved = await this.#resolveWebhook(event);
+        if (this.#grantsAsJoin(event.request.id)) {
+          const joined = await this.#grantAsJoin(resolved.itemId, event.request.id);
+          this.#metrics.increment('jfa_webhooks_total', { result: 'joined' });
+          return joined;
+        }
         const grant = await this.#store.grant({
           itemId: resolved.itemId,
           requestId: event.request.id,
@@ -342,7 +347,7 @@ export class AccessService {
           ...(resolved.mediaType ? { mediaType: resolved.mediaType } : {}),
         });
         await this.#reconcileGrant(grant);
-        await this.#settleAppRequests(this.#store.get(grant.itemId) ?? grant, event.request.id);
+        await this.#settleAppRequests(grant.itemId, event.request.id);
         this.#metrics.increment('jfa_webhooks_total', { result: 'granted' });
         return this.#store.get(grant.itemId) ?? grant;
       } catch (error) {
@@ -450,24 +455,31 @@ export class AccessService {
 
   /**
    * The household app's join branch of "Get this": adds `householdId` (only the household whose host the call was made
-   * on, never the caller's other households) to the grant of each of `itemIds` through the library join rules (see
+   * on, never the caller's other households, and only while it is the household the call was made for: the same
+   * `householdEpoch`) to the grant of each of `itemIds` through the library join rules (see
    * GrantStore.joinGrant: only an active grant with a request is joined, an administrator's removal of the household or
    * of the caller sticks, manual-only grants and items without a grant are left alone) and applies each join. Resolves
-   * `joined` when a grant changed, `already` when the household was already on one, and `refused` otherwise. Like
+   * `joined` when a grant changed, `already` when the household was already on one, `ungranted` when none of the items
+   * has a grant at all, and `refused` otherwise. Like
    * joinLibrary, it runs in the background, its result must never reach the caller's answer, failures are logged and
    * reported as `error`, and an aborted `signal` (shutdown) stops it before its next step (`cancelled`).
    */
   public async joinHousehold(
-    input: { itemIds: string[]; userId: string; householdId: string },
+    input: { itemIds: string[]; userId: string; householdId: string; householdEpoch?: number },
     options: { signal?: AbortSignal } = {},
   ): Promise<HouseholdJoinResult> {
     const { signal } = options;
     // Once stored, a join is reported as such even if applying it is cut short: it is applied after restart.
-    let stored: 'joined' | 'already' | 'refused' | undefined;
+    let stored: 'joined' | 'already' | 'refused' | 'ungranted' | undefined;
     try {
       throwIfAborted(signal);
       return await this.#exclusive(async () => {
         throwIfAborted(signal);
+        // A household deleted (or deleted and created again) since the call began joins nothing.
+        if (input.householdEpoch !== undefined && this.#store.householdEpoch(input.householdId) !== input.householdEpoch) {
+          stored = 'refused';
+          return stored;
+        }
         const { result, joined } = await this.#joinHouseholdNow(input.itemIds, input.userId, input.householdId);
         stored = result;
         for (const grant of joined) {
@@ -499,12 +511,13 @@ export class AccessService {
 
   /** The joins of joinHousehold, stored but not yet applied; in the write queue. */
   async #joinHouseholdNow(itemIds: string[], userId: string, householdId: string): Promise<{
-    result: 'joined' | 'already' | 'refused';
+    result: 'joined' | 'already' | 'refused' | 'ungranted';
     joined: GrantRecord[];
   }> {
     const groupId = normalizeId(householdId);
     if (!this.#store.getGroup(groupId)) return { result: 'refused', joined: [] };
-    let result: 'joined' | 'already' | 'refused' = 'refused';
+    if (!itemIds.some((itemId) => this.#store.get(itemId))) return { result: 'ungranted', joined: [] };
+    let result: 'joined' | 'already' | 'refused' | 'ungranted' = 'refused';
     const joined: GrantRecord[] = [];
     for (const itemId of itemIds) {
       const change = await this.#store.joinGrant({ itemId, userId, groupIds: [groupId] });
@@ -522,38 +535,50 @@ export class AccessService {
   }
 
   /**
-   * Settles household app records once a grant was stored for `requestId` (a webhook or the backfill): a request the
-   * app made is completed, and each household that registered interest in that request (or, for a movie or an interest
-   * that found no request, in the grant's title) joins the grant through the library join rules, so an administrator's
-   * removals stick. An interest whose household could not join is `failed` (still counted, as Seerr counts a failed
-   * request). Runs in the write queue. A failure here is logged and never fails the grant; the app's scheduled refresh
-   * tries interests again.
+   * Settles household app records once `requestId` was granted on `itemId` (a webhook or the backfill), whether as a
+   * new grant or as a join (see #grantAsJoin): a request the app made is ready, and each household that registered
+   * interest in that request (or, for a movie or an interest that found no request, in the item's title) joins the
+   * item's grant through the library join rules, so an administrator's removals stick. A request the app made whose
+   * grant follows the join rules (AppRequestRecord.joinOnGrant) joins its household the same way. An interest whose
+   * household could not join a grant is `failed` (still counted, as Seerr counts a failed request); one for an item no
+   * grant holds (a request granted as a join of a public title) needs no join. A record is `completed` once Jellyfin has
+   * episodes of every season it covers (a movie at once); until then its ready seasons are noted and the app's refresh
+   * reads it again. Runs in the write queue. A failure here is logged and never fails the grant; the app's scheduled
+   * refresh tries again.
    */
-  async #settleAppRequests(grant: GrantRecord, requestId: string, signal?: AbortSignal): Promise<void> {
+  async #settleAppRequests(itemId: string, requestId: string, signal?: AbortSignal): Promise<void> {
     try {
       const records = this.#store.listAppRequests()
         .filter(([, record]) => !record.detached && (record.status === 'pending' || record.status === 'failed'));
       if (records.length === 0) return;
       let title: { mediaType: 'movie' | 'tv'; tmdbId: number } | undefined | null = null;
-      const updates: Array<{ id: string; status: AppRequestStatus; itemIds?: string[] }> = [];
+      let seasons: Set<number> | undefined;
+      const ready = async (record: AppRequestRecord) => {
+        if (record.mediaType === 'movie') return { status: 'completed' as const, itemIds: [itemId] };
+        seasons ??= new Set(await this.#jellyfin.seasonsWithEpisodes(itemId));
+        throwIfAborted(signal);
+        const readySeasons = record.seasons.filter((season) => seasons?.has(season));
+        return { status: readySeasons.length === record.seasons.length ? 'completed' as const : 'pending' as const, itemIds: [itemId], readySeasons };
+      };
+      const updates: Array<{ id: string; status: AppRequestStatus; itemIds?: string[]; readySeasons?: number[] }> = [];
       const joined: GrantRecord[] = [];
       for (const [id, record] of records) {
-        if (record.branch === 'request') {
-          if (record.seerrRequestId === requestId) updates.push({ id, status: 'completed', itemIds: [grant.itemId] });
-          continue;
-        }
-        if (record.branch !== 'interest') continue;
+        if (record.branch === 'join') continue;
         let matches = record.seerrRequestId === requestId;
-        if (!matches && (record.mediaType === 'movie' || !record.seerrRequestId)) {
-          if (title === null) title = await this.#itemTitle(grant.itemId);
+        if (!matches && record.branch === 'interest' && (record.mediaType === 'movie' || !record.seerrRequestId)) {
+          if (title === null) title = await this.#itemTitle(itemId);
           throwIfAborted(signal);
           matches = title?.mediaType === record.mediaType && title.tmdbId === record.tmdbId;
         }
         if (!matches) continue;
-        const outcome = await this.#joinHouseholdNow([grant.itemId], record.jellyfinUserId, record.householdId);
+        if (record.branch === 'request' && !record.joinOnGrant) {
+          updates.push({ id, ...await ready(record) });
+          continue;
+        }
+        const outcome = await this.#joinHouseholdNow([itemId], record.jellyfinUserId, record.householdId);
         throwIfAborted(signal);
         joined.push(...outcome.joined);
-        updates.push({ id, status: outcome.result === 'refused' ? 'failed' : 'completed', itemIds: [grant.itemId] });
+        updates.push(outcome.result === 'refused' ? { id, status: 'failed', itemIds: [itemId] } : { id, ...await ready(record) });
       }
       if (updates.length > 0) await this.#store.writeAppRequests({ update: updates });
       throwIfAborted(signal);
@@ -565,10 +590,34 @@ export class AccessService {
         level: 'error',
         message: 'household app records could not be settled for a grant',
         requestId,
-        itemId: grant.itemId,
+        itemId,
         detail: error instanceof Error ? error.message : String(error),
       }));
     }
+  }
+
+  /**
+   * Whether a request is one "Get this" made whose grant must follow the library join rules rather than be a new grant
+   * (docs/app-design.md, "Late requests" and "New seasons of a series Jellyfin has"): its record says so
+   * (AppRequestRecord.joinOnGrant), or its record is not written yet (a title Jellyfin already has can be reported
+   * available within moments; a genuine download cannot).
+   */
+  #grantsAsJoin(requestId: string): boolean {
+    if (this.#store.isAppRequestUnsettled(requestId)) return true;
+    return this.#store.listAppRequests().some(([, record]) => record.branch === 'request' && record.seerrRequestId === requestId && record.joinOnGrant !== undefined);
+  }
+
+  /**
+   * Grants a request "Get this" made as a join (see #grantsAsJoin): never a new grant and never the requester's
+   * households; the request is recorded as handled (so neither a replay nor the backfill grants it later), and
+   * #settleAppRequests joins the household the request was made for to the item's grant, if it has one, through the
+   * library join rules. A public title stays public. Runs in the write queue.
+   */
+  async #grantAsJoin(itemId: string, requestId: string, signal?: AbortSignal): Promise<GrantRecord | null> {
+    await this.#store.markRequestsHandled([requestId]);
+    console.log(JSON.stringify({ level: 'info', message: 'household app request granted as a join', requestId, itemId: normalizeId(itemId) }));
+    await this.#settleAppRequests(itemId, requestId, signal);
+    return this.#store.get(itemId) ?? null;
   }
 
   /** The TMDB title of a Jellyfin movie or series item, from its provider IDs, or undefined if it has none. */
@@ -686,6 +735,13 @@ export class AccessService {
             continue;
           }
           throwIfAborted(signal);
+          if (this.#grantsAsJoin(requestId)) {
+            await this.#grantAsJoin(itemId, requestId, signal);
+            throwIfAborted(signal);
+            result.skipped += 1;
+            this.#metrics.increment('jfa_request_backfill_total', { result: 'joined' });
+            continue;
+          }
           const mediaType = request.media?.mediaType ?? request.type;
           const grant = await this.#store.grant({
             itemId,
@@ -696,7 +752,7 @@ export class AccessService {
           });
           await this.#reconcileGrant(grant, signal);
           throwIfAborted(signal);
-          await this.#settleAppRequests(this.#store.get(grant.itemId) ?? grant, requestId, signal);
+          await this.#settleAppRequests(grant.itemId, requestId, signal);
           throwIfAborted(signal);
           result.granted.push(grant.itemId);
           this.#metrics.increment('jfa_request_backfill_total', { result: 'granted' });

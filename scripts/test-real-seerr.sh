@@ -44,7 +44,8 @@ api_key="$(docker exec "$container" node -p 'require("/app/config/settings.json"
 # household app, user 4 is a member who may request and has a pending request for The Matrix (TMDB
 # 603), user 5 a member of another household with a pending request for Fight Club (TMDB 550), and
 # user 6 a member of both households with a pending request for Pulp Fiction (TMDB 680). User 4 has a
-# movie quota of 2 a week, so "Get this" is checked against Seerr's own count. Seerr fetches titles it
+# movie quota of 2 a week, so "Get this" is checked against Seerr's own count. User 7 has a movie quota of 1 with no
+# window (days unset), and an approved request for Forrest Gump (TMDB 13) made in 2001: Seerr counts it for ever. Seerr fetches titles it
 # is asked to request from TMDB itself, so the "Get this" test needs Seerr to reach TMDB.
 docker exec "$container" node -e '
   const sqlite3 = require("sqlite3");
@@ -56,9 +57,13 @@ docker exec "$container" node -e '
     db.run(insert, [4, "requester@example.invalid", "requester", 32, "/avatar", "0000000000000000000000000000000c", "requester"]);
     db.run(insert, [5, "neighbour@example.invalid", "neighbour", 32, "/avatar", "0000000000000000000000000000000d", "neighbour"]);
     db.run(insert, [6, "shared@example.invalid", "shared", 32, "/avatar", "0000000000000000000000000000000e", "shared"]);
+    db.run(insert, [7, "lifetime@example.invalid", "lifetime", 32, "/avatar", "0000000000000000000000000000000f", "lifetime"]);
     db.run("INSERT INTO media (id, mediaType, tmdbId, status) VALUES (1, ?, 603, 2), (2, ?, 550, 2), (3, ?, 680, 2)", ["movie", "movie", "movie"]);
     db.run("INSERT INTO media_request (id, status, type, mediaId, requestedById, is4k) VALUES (1, 1, ?, 1, 4, 0), (2, 1, ?, 2, 5, 0), (3, 1, ?, 3, 6, 0)", ["movie", "movie", "movie"]);
     db.run("UPDATE user SET movieQuotaLimit = 2, movieQuotaDays = 7 WHERE id = 4");
+    db.run("INSERT INTO media (id, mediaType, tmdbId, status) VALUES (4, ?, 13, 3)", ["movie"]);
+    db.run("INSERT INTO media_request (id, status, type, mediaId, requestedById, is4k, createdAt) VALUES (4, 2, ?, 4, 7, 0, ?)", ["movie", "2001-01-01 00:00:00"]);
+    db.run("UPDATE user SET movieQuotaLimit = 1, movieQuotaDays = NULL WHERE id = 7");
   });
   db.close((error) => { if (error) { console.error(error); process.exit(1); } });
 ' || fail 'could not seed Seerr users'

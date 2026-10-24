@@ -177,7 +177,24 @@ export interface GrantState {
   appRequests?: Record<string, AppRequestRecord>;
   /** The key the household app derives its opaque IDs from (hex, 32 bytes); made the first time one is needed. */
   appIdKey?: string;
+  /**
+   * Virtual requests whose records were pruned while still counted (see AppQuotaLedger), by member (normalized Jellyfin
+   * ID). Additive like `appRequests`.
+   */
+  appQuotaLedger?: Record<string, AppQuotaLedger>;
 }
+
+/**
+ * A member's counted virtual requests whose records were pruned (GrantStore.writeAppRequests), so that pruning never
+ * changes their quota count. `entries` keeps each one's creation time and units, exactly; those made more than
+ * APP_QUOTA_HORIZON_MS ago are summed into `older`, which counts in full for a lifetime quota and for any window that
+ * reaches back to its oldest, and not at all for a window that starts after its newest.
+ */
+export type AppQuotaLedger = Partial<Record<'movie' | 'tv', {
+  /** `[createdAt (ms since the epoch), units]`, oldest first. */
+  entries: Array<[number, number]>;
+  older?: { units: number; oldest: number; newest: number };
+}>>;
 
 /**
  * What one household app "Get this" did for one household (docs/app-design.md, "Get this"). Each record is both the
@@ -210,6 +227,20 @@ export interface AppRequestRecord {
   /** Seerr's media record for the title when the record was made, to tell its deletion (which frees) apart. */
   seerrMediaId?: number;
   itemIds?: string[];
+  /**
+   * For a series, the seasons of `seasons` Jellyfin now has episodes of (read with JellyPass's key). A series record is
+   * `completed` only once every season it covers is ready; until then it stays as it was and is refreshed.
+   */
+  readySeasons?: number[];
+  /**
+   * A `request` record whose grant must follow the library join rules rather than make a new grant
+   * (docs/app-design.md, "Late requests" and "New seasons of a series Jellyfin has"): `existing-series` when Jellyfin
+   * already had the series (the request is for seasons it lacks), `present-at-settle` when Jellyfin had the title when
+   * the record was written (it arrived while the request was being made).
+   */
+  joinOnGrant?: 'existing-series' | 'present-at-settle';
+  /** When Jellyfin was last read for the title before the request was sent (the request branch's re-check). */
+  checkedAt?: string;
   /** The household was deleted: never shown, joined or `requested` again, still counted towards its member's quota. */
   detached?: true;
 }

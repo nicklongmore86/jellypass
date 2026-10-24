@@ -15,6 +15,7 @@ const MEMBER_JELLYFIN_ID = '00000000-0000-0000-0000-00000000000b';
 const REQUESTER_JELLYFIN_ID = '0000000000000000000000000000000c';
 const NEIGHBOUR_JELLYFIN_ID = '0000000000000000000000000000000d';
 const SHARED_JELLYFIN_ID = '0000000000000000000000000000000e';
+const LIFETIME_JELLYFIN_ID = '0000000000000000000000000000000f';
 
 describe('real Seerr', { timeout: 60_000, skip: !baseUrl || !apiKey }, () => {
   let calls = [];
@@ -278,6 +279,25 @@ describe('real Seerr', { timeout: 60_000, skip: !baseUrl || !apiKey }, () => {
     // The other household, whose member made the request followed, sees nothing of it.
     const mill = await app.get('/jellypass/app/v1/requests', { host: 'jelly-mill.example.test', user: null, headers: { Authorization: 'MediaBrowser Token="token-shared"' } });
     assert.deepEqual(mill.json(), { results: [] });
+  });
+
+  it('counts every request ever made when Seerr\'s quota has no window, as JellyPass then does', async (t) => {
+    const app = await startApp(t, world({
+      tokens: { [LIFETIME_JELLYFIN_ID]: 'token-lifetime' },
+      jellyfinUsers: { [LIFETIME_JELLYFIN_ID]: { Name: 'Lifetime', Policy: { BlockedTags: [], EnableAllFolders: true } } },
+    }), {
+      seerr: { url: baseUrl, apiKey },
+      households: [{ id: 'farmhouse', name: 'Farmhouse', userIds: [LIFETIME_JELLYFIN_ID] }],
+    });
+    // Seerr 3.5.1's own count: no window, so the request made in 2001 still uses the only unit.
+    const quota = await (await originalFetch(`${baseUrl}/api/v1/user/7/quota`, { headers: { Accept: 'application/json', 'X-Api-Key': apiKey } })).json();
+    assert.deepEqual([Boolean(quota.movie.days), quota.movie.limit, quota.movie.used], [false, 1, 1]);
+    calls = [];
+    const answer = await app.post('/jellypass/app/v1/movie/155/get', undefined, { user: null, headers: { Authorization: 'MediaBrowser Token="token-lifetime"' } });
+    await app.background.settled();
+    assert.equal(answer.text, '{"status":"accepted"}');
+    assert.deepEqual(app.store.listAppRequests(), []);
+    assert.ok(!calls.some((call) => call.method === 'POST' || call.url.pathname === '/api/v1/movie/155'));
   });
 
   it('acts as a Seerr user that does not exist as nobody, never the owner', async () => {

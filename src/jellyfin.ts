@@ -187,6 +187,26 @@ export class JellyfinClient {
     return [...found].sort();
   }
 
+  /**
+   * Which of `itemIds` Jellyfin holds as a movie or series item (`mediaType`), read with JellyPass's API key whoever
+   * may see them: for the items Seerr links to a title, which may have no TMDB ID of their own.
+   */
+  public async existingItems(mediaType: 'movie' | 'tv', itemIds: string[]): Promise<string[]> {
+    const wanted = [...new Set(itemIds.map((itemId) => itemId.replace(/-/g, '').toLowerCase()))].filter((itemId) => /^[0-9a-f]{32}$/.test(itemId));
+    if (wanted.length === 0) return [];
+    const parameters = new URLSearchParams({
+      Ids: wanted.join(','),
+      Recursive: 'true',
+      IncludeItemTypes: mediaType === 'movie' ? 'Movie' : 'Series',
+      EnableImages: 'false',
+      EnableUserData: 'false',
+      EnableTotalRecordCount: 'false',
+    });
+    const items = (await this.#request<JellyfinItemQueryResult>(`/Items?${parameters.toString()}`)).Items ?? [];
+    const found = new Set(items.flatMap((item) => typeof item.Id === 'string' ? [item.Id.replace(/-/g, '').toLowerCase()] : []));
+    return wanted.filter((itemId) => found.has(itemId)).sort();
+  }
+
   /** The season numbers of a series Jellyfin has episodes of (not missing ones), read with JellyPass's API key. */
   public async seasonsWithEpisodes(seriesId: string): Promise<number[]> {
     const parameters = new URLSearchParams({ IsMissing: 'false', EnableImages: 'false', EnableUserData: 'false' });

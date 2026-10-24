@@ -217,6 +217,15 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
     assert.deepEqual(await client.findItemsByTmdbId('tv', 424242), []);
     assert.deepEqual(await client.findItemsByTmdbId('movie', 4242), []);
   });
+
+  it('finds the items Seerr links to a title by their IDs, whatever their metadata, the decision input for items without a TMDB ID', async () => {
+    const itemId = fixture.itemId.replaceAll('-', '').toLowerCase();
+    const missing = 'f'.repeat(32);
+    assert.deepEqual(await client.existingItems('movie', [missing, fixture.itemId]), [itemId]);
+    // Only items of the media type asked for.
+    assert.deepEqual(await client.existingItems('tv', [itemId]), []);
+    assert.deepEqual(await client.existingItems('movie', []), []);
+  });
 });
 
 function postWithHost(server, pathname, host, authorization, body) {

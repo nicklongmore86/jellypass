@@ -4,6 +4,7 @@ import path from 'node:path';
 import type {
   AccessGroup,
   AccessRemovals,
+  AppQuotaLedger,
   AppRequestRecord,
   AppRequestStatus,
   GrantRecord,
@@ -19,10 +20,20 @@ import type {
  * partition and one TMDB queue per household, sized for this many (see docs/app-design.md, "Shared upstreams").
  */
 export const MAX_HOUSEHOLDS = 100;
-/** Household app "Get this" records are kept for this long after they were made (see GrantStore.writeAppRequests). */
+/**
+ * Settled household app "Get this" records (completed, declined or deleted) are kept for this long after they were made
+ * (see GrantStore.writeAppRequests); pending records are never pruned, and failed ones are kept this long too.
+ */
 export const APP_REQUEST_RETENTION_MS = 400 * 24 * 60 * 60 * 1000;
-/** The most "Get this" records kept per household; its own oldest are forgotten first. */
+/** The most settled "Get this" records kept per household; its own oldest are pruned first. Pending ones are never. */
 export const MAX_APP_REQUESTS_PER_HOUSEHOLD = 2000;
+/**
+ * A pruned virtual request's own creation time is kept (AppQuotaLedger `entries`) for this long; older ones are summed.
+ * Quota windows up to this long, and lifetime quotas, are therefore counted exactly.
+ */
+export const APP_QUOTA_HORIZON_MS = 400 * 24 * 60 * 60 * 1000;
+/** The most ledger entries kept per member and media type; beyond it the oldest are summed too. */
+export const MAX_APP_QUOTA_ENTRIES = 10_000;
 
 const EMPTY_STATE: GrantState = { version: 7, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [] };
 
@@ -34,6 +45,13 @@ export class GrantStore {
   /** A queued write that has not started yet; saves requested meanwhile share it. */
   #queued: Promise<void> | undefined;
   #closed = false;
+  /** Each household's epoch (see householdEpoch); memory only. */
+  readonly #epochs = new Map<string, number>();
+  #nextEpoch = 1;
+  /** Seerr requests "Get this" made whose records are not written yet (see holdAppRequest); memory only. */
+  readonly #unsettledAppRequests = new Map<string, number>();
+  /** "Get this" record IDs by household and by member, rebuilt after each change (see #appIndex). */
+  #appIndexCache: { byHousehold: Map<string, string[]>; byUser: Map<string, string[]> } | undefined;
 
   public constructor(file: string) {
     this.#file = file;
@@ -333,6 +351,9 @@ export class GrantStore {
     const groupId = normalizeId(groupIdInput);
     if (!this.#state.groups[groupId]) return [];
     delete this.#state.groups[groupId];
+    // A group created later under the same ID is a different household, with a new epoch.
+    this.#epochs.delete(groupId);
+    this.#appIndexCache = undefined;
     // A group created later under the same ID is a different household and starts unmarked.
     for (const [itemId, removals] of Object.entries(this.#state.removedAccess ?? {})) {
       if (removals.groupIds?.includes(groupId)) this.#setRemovals(itemId, { ...removals, groupIds: removals.groupIds.filter((id) => id !== groupId) });
@@ -467,28 +488,103 @@ export class GrantStore {
     return Object.entries(this.#state.appRequests ?? {}).map(([id, record]) => [id, clone(record)]);
   }
 
+  /**
+   * One household's "Get this" records (detached ones included), from an index: the work depends on that household's
+   * own records only, never on how many other households have.
+   */
+  public listAppRequestsForHousehold(householdId: string): Array<[string, AppRequestRecord]> {
+    return this.#indexed(this.#appIndex().byHousehold.get(normalizeId(householdId)));
+  }
+
+  /** One member's "Get this" records, in every household (detached ones included), from an index. */
+  public listAppRequestsForUser(userId: string): Array<[string, AppRequestRecord]> {
+    return this.#indexed(this.#appIndex().byUser.get(normalizeId(userId)));
+  }
+
+  /**
+   * The units of a member's pruned virtual requests for `mediaType` made after `windowStart` (ms since the epoch;
+   * -Infinity for a lifetime quota), from their AppQuotaLedger: exact for the entries; the summed older ones count in
+   * full unless the window starts after the newest of them (a window that starts among them counts them all: stricter,
+   * never looser, and only for windows longer than APP_QUOTA_HORIZON_MS).
+   */
+  public prunedAppQuotaUnits(userId: string, mediaType: 'movie' | 'tv', windowStart: number): number {
+    const ledger = this.#state.appQuotaLedger?.[normalizeId(userId)]?.[mediaType];
+    if (!ledger) return 0;
+    let units = 0;
+    for (const [createdAt, count] of ledger.entries) if (createdAt > windowStart) units += count;
+    if (ledger.older && ledger.older.newest > windowStart) units += ledger.older.units;
+    return units;
+  }
+
   /** The key the household app derives opaque IDs from, or undefined before the first "Get this" record. */
   public getAppIdKey(): string | undefined {
     return this.#state.appIdKey;
   }
 
   /**
-   * Adds household app "Get this" records and changes the status (and joined items) of existing ones, in one write.
-   * Records made more than APP_REQUEST_RETENTION_MS ago are then forgotten, and so are a household's oldest beyond
-   * MAX_APP_REQUESTS_PER_HOUSEHOLD (each household's own, so one household's volume never removes another's). The state
-   * changes before this returns its promise, so a caller can update what it keeps in memory in the same turn.
-   * Resolves with the IDs of the added records.
+   * A number that identifies this household for as long as it exists: a household deleted and created again under the
+   * same ID has another. Undefined when there is no such household. Memory only: a "Get this" never outlives the
+   * process, and a household deleted while JellyPass was down detached its records in the same write.
+   */
+  public householdEpoch(householdId: string): number | undefined {
+    const id = normalizeId(householdId);
+    if (!this.#state.groups[id]) return undefined;
+    let epoch = this.#epochs.get(id);
+    if (epoch === undefined) {
+      epoch = this.#nextEpoch++;
+      this.#epochs.set(id, epoch);
+    }
+    return epoch;
+  }
+
+  /**
+   * Notes that "Get this" made Seerr request `requestId` and has not written its record yet, until the matching
+   * releaseAppRequest: a grant for it meanwhile follows the library join rules (see GrantStore.isAppRequestUnsettled).
+   */
+  public holdAppRequest(requestId: string): void {
+    this.#unsettledAppRequests.set(requestId, (this.#unsettledAppRequests.get(requestId) ?? 0) + 1);
+  }
+
+  public releaseAppRequest(requestId: string): void {
+    const count = (this.#unsettledAppRequests.get(requestId) ?? 0) - 1;
+    if (count > 0) this.#unsettledAppRequests.set(requestId, count);
+    else this.#unsettledAppRequests.delete(requestId);
+  }
+
+  /** Whether "Get this" made `requestId` and has not written its record yet (see holdAppRequest). */
+  public isAppRequestUnsettled(requestId: string): boolean {
+    return this.#unsettledAppRequests.has(requestId);
+  }
+
+  /** Records requests as handled without granting them (a "Get this" request granted as a join); see hasHandledRequest. */
+  public async markRequestsHandled(requestIds: string[]): Promise<void> {
+    this.#assertOpen();
+    const handled = new Set(this.#state.handledRequestIds ?? []);
+    if (requestIds.every((id) => handled.has(id))) return;
+    this.#state.handledRequestIds = [...new Set([...handled, ...requestIds])];
+    await this.#save();
+  }
+
+  /**
+   * Adds household app "Get this" records and changes the status (and joined items or ready seasons) of existing ones,
+   * in one write. Records added with a `householdEpoch` other than their household's current one (it was deleted, or
+   * deleted and created again, while the call ran) are added detached. Then settled records are pruned (see
+   * pruneAppRequests): never a pending one, and a counted one only into its member's AppQuotaLedger, so no quota count
+   * changes. The state changes before this returns its promise, so a caller can update what it keeps in memory in the
+   * same turn. Resolves with the IDs of the added records.
    */
   public async writeAppRequests(input: {
     add?: AppRequestRecord[];
-    update?: Array<{ id: string; status: AppRequestStatus; itemIds?: string[] }>;
+    householdEpoch?: number;
+    update?: Array<{ id: string; status: AppRequestStatus; itemIds?: string[]; readySeasons?: number[] }>;
   }): Promise<string[]> {
     this.#assertOpen();
     const now = new Date().toISOString();
     const records = { ...this.#state.appRequests };
     const added = (input.add ?? []).map((record) => {
       const id = randomUUID();
-      records[id] = clone(record);
+      const stale = input.householdEpoch !== undefined && this.householdEpoch(record.householdId) !== input.householdEpoch;
+      records[id] = stale ? { ...clone(record), detached: true } : clone(record);
       return id;
     });
     for (const change of input.update ?? []) {
@@ -499,12 +595,32 @@ export class GrantStore {
         status: change.status,
         updatedAt: now,
         ...(change.itemIds ? { itemIds: [...new Set([...(record.itemIds ?? []), ...change.itemIds.map(normalizeId)])].sort() } : {}),
+        ...(change.readySeasons ? { readySeasons: [...new Set(change.readySeasons)].sort((left, right) => left - right) } : {}),
       };
     }
-    this.#state.appRequests = pruneAppRequests(records, Date.now());
+    const ledger = clone(this.#state.appQuotaLedger ?? {});
+    this.#state.appRequests = pruneAppRequests(records, ledger, Date.now());
+    if (Object.keys(ledger).length > 0) this.#state.appQuotaLedger = ledger;
     this.#state.appIdKey ??= randomBytes(32).toString('hex');
+    this.#appIndexCache = undefined;
     await this.#save();
     return added;
+  }
+
+  #indexed(ids: string[] | undefined): Array<[string, AppRequestRecord]> {
+    const records = this.#state.appRequests ?? {};
+    return (ids ?? []).flatMap((id) => records[id] ? [[id, clone(records[id])] as [string, AppRequestRecord]] : []);
+  }
+
+  #appIndex(): { byHousehold: Map<string, string[]>; byUser: Map<string, string[]> } {
+    if (this.#appIndexCache) return this.#appIndexCache;
+    const index = { byHousehold: new Map<string, string[]>(), byUser: new Map<string, string[]>() };
+    for (const [id, record] of Object.entries(this.#state.appRequests ?? {})) {
+      index.byHousehold.set(record.householdId, [...index.byHousehold.get(record.householdId) ?? [], id]);
+      index.byUser.set(record.jellyfinUserId, [...index.byUser.get(record.jellyfinUserId) ?? [], id]);
+    }
+    this.#appIndexCache = index;
+    return index;
   }
 
   /** Throws once close() has been called, so a caller can refuse before starting work it could not record. */
@@ -858,17 +974,59 @@ function orphanedSync(previous: SyncStatus, reason: string): SyncStatus {
   };
 }
 
-/** See GrantStore.writeAppRequests. */
-function pruneAppRequests(records: Record<string, AppRequestRecord>, now: number): Record<string, AppRequestRecord> {
-  const kept = Object.entries(records).filter(([, record]) => now - Date.parse(record.createdAt) <= APP_REQUEST_RETENTION_MS);
+/**
+ * See GrantStore.writeAppRequests. A pending record is never pruned (it is still being followed), nor a failed one
+ * younger than APP_REQUEST_RETENTION_MS (a failed request can be retried). Settled records (completed, declined,
+ * deleted) are kept for APP_REQUEST_RETENTION_MS, at most MAX_APP_REQUESTS_PER_HOUSEHOLD of them per household (its own
+ * newest; one household's volume never prunes another's); failed ones past the retention go too. A pruned record that
+ * still counts as a virtual request (a join or interest neither declined nor deleted) moves its creation time and units
+ * to its member's ledger, so every quota count stays the same. Changes `ledger` in place.
+ */
+function pruneAppRequests(
+  records: Record<string, AppRequestRecord>,
+  ledger: Record<string, AppQuotaLedger>,
+  now: number,
+): Record<string, AppRequestRecord> {
+  const kept: Array<[string, AppRequestRecord]> = [];
+  const settled: Array<[string, AppRequestRecord]> = [];
+  for (const entry of Object.entries(records)) {
+    const [, record] = entry;
+    const old = now - Date.parse(record.createdAt) > APP_REQUEST_RETENTION_MS;
+    if (record.status === 'pending' || (record.status === 'failed' && !old)) kept.push(entry);
+    else settled.push(entry);
+  }
   const perHousehold = new Map<string, number>();
-  const newestFirst = kept.sort(([, left], [, right]) => right.createdAt.localeCompare(left.createdAt));
-  return Object.fromEntries(newestFirst.filter(([, record]) => {
-    if (record.detached) return true;
+  settled.sort(([, left], [, right]) => right.createdAt.localeCompare(left.createdAt));
+  for (const entry of settled) {
+    const [, record] = entry;
     const count = (perHousehold.get(record.householdId) ?? 0) + 1;
     perHousehold.set(record.householdId, count);
-    return count <= MAX_APP_REQUESTS_PER_HOUSEHOLD;
-  }));
+    const old = now - Date.parse(record.createdAt) > APP_REQUEST_RETENTION_MS;
+    if (record.status !== 'failed' && !old && count <= MAX_APP_REQUESTS_PER_HOUSEHOLD) {
+      kept.push(entry);
+      continue;
+    }
+    if (record.branch !== 'request' && record.status !== 'declined' && record.status !== 'deleted') {
+      const userLedger = ledger[record.jellyfinUserId] ??= {};
+      const media = userLedger[record.mediaType] ??= { entries: [] };
+      media.entries.push([Date.parse(record.createdAt), record.mediaType === 'movie' ? 1 : record.seasons.length]);
+    }
+  }
+  for (const userLedger of Object.values(ledger)) {
+    for (const media of Object.values(userLedger)) {
+      media.entries.sort(([left], [right]) => left - right);
+      // Summed once past the horizon, and beyond the entry cap (the oldest first).
+      let cut = media.entries.findIndex(([createdAt]) => now - createdAt <= APP_QUOTA_HORIZON_MS);
+      if (cut < 0) cut = media.entries.length;
+      cut = Math.max(cut, media.entries.length - MAX_APP_QUOTA_ENTRIES);
+      for (const [createdAt, units] of media.entries.splice(0, cut)) {
+        media.older = media.older
+          ? { units: media.older.units + units, oldest: Math.min(media.older.oldest, createdAt), newest: Math.max(media.older.newest, createdAt) }
+          : { units, oldest: createdAt, newest: createdAt };
+      }
+    }
+  }
+  return Object.fromEntries(kept);
 }
 
 function clone<T>(value: T): T {
