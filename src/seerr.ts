@@ -91,30 +91,52 @@ export class SeerrClient {
   }
 
   /** A client that acts as the given Seerr user. Throws unless `user` is a valid Seerr user ID. */
-  public asUser(user: SeerrUserId): SeerrUserClient {
-    return new SeerrUserClient(this.#baseUrl, this.#apiKey, user);
+  public asUser(user: SeerrUserId, options?: SeerrUserClientOptions): SeerrUserClient {
+    return new SeerrUserClient(this.#baseUrl, this.#apiKey, user, options);
   }
 
   /**
    * The Seerr user linked to a Jellyfin user, or undefined when Seerr has none (or `jellyfinUserId` is not a Jellyfin
-   * user ID). Throws on any other failed lookup.
+   * user ID). Throws on any other failed lookup. Like every {@link SeerrUserClient} call, it refuses redirects and its
+   * errors carry only the status and the route template.
    */
   public async findUserByJellyfinId(jellyfinUserId: string): Promise<LinkedSeerrUser | undefined> {
     const normalized = normalizeJellyfinUserId(jellyfinUserId);
     if (!normalized) return undefined;
     let user: { id?: unknown; jellyfinUserId?: unknown };
     try {
-      user = await this.#getJson(`/api/v1/user/jellyfin/${normalized}`);
+      user = await this.#guardedGet('/api/v1/user/jellyfin/:jellyfinUserId', `/api/v1/user/jellyfin/${normalized}`) as typeof user;
     } catch (error) {
       if (error instanceof SeerrError && error.status === 404) return undefined;
       throw error;
     }
     // Seerr matches on the normalized ID; anything else in the answer is not the user that was asked for.
-    if (!isSeerrUserId(user.id) || typeof user.jellyfinUserId !== 'string' ||
+    if (!isSeerrUserId(user?.id) || typeof user.jellyfinUserId !== 'string' ||
         normalizeJellyfinUserId(user.jellyfinUserId) !== normalized) {
       return undefined;
     }
     return { id: user.id, jellyfinUserId: normalized };
+  }
+
+  /**
+   * The Jellyfin user (normalized) that Seerr currently links to a Seerr user, or undefined when that Seerr user no
+   * longer exists or has no Jellyfin link. Throws on any other failed lookup; guarded like {@link findUserByJellyfinId}.
+   */
+  public async jellyfinUserIdOf(user: SeerrUserId): Promise<string | undefined> {
+    let answer: { id?: unknown; jellyfinUserId?: unknown };
+    try {
+      answer = await this.#guardedGet('/api/v1/user/:id', `/api/v1/user/${seerrUserId(user)}`) as typeof answer;
+    } catch (error) {
+      if (error instanceof SeerrError && error.status === 404) return undefined;
+      throw error;
+    }
+    if (answer?.id !== user || typeof answer.jellyfinUserId !== 'string') return undefined;
+    return normalizeJellyfinUserId(answer.jellyfinUserId);
+  }
+
+  /** An admin-key GET with the acting-user client's guards: no redirects, capped body, route-only errors. */
+  #guardedGet(route: string, path: string): Promise<unknown> {
+    return guardedSeerrJson(this.#baseUrl, 'GET', route, path, { Accept: 'application/json', 'X-Api-Key': this.#apiKey });
   }
 
   public async getRequest(requestId: string): Promise<SeerrRequest> {
@@ -279,7 +301,16 @@ export type SeerrRequestInput =
   | { mediaType: 'movie'; tmdbId: number }
   | { mediaType: 'tv'; tmdbId: number; seasons: number[] };
 
-const MAX_USER_RESPONSE_BYTES = 4 * 1024 * 1024;
+/** Largest Seerr response body read by the guarded calls, in bytes; reading stops as soon as a body passes it. */
+export const MAX_GUARDED_RESPONSE_BYTES = 4 * 1024 * 1024;
+
+/** Statuses after which Seerr may no longer accept the acting user (unknown, removed or relinked). */
+const USER_REJECTED_STATUSES = new Set([401, 403, 404]);
+
+export interface SeerrUserClientOptions {
+  /** Called when Seerr answers a call with 401, 403 or 404, before the call throws; for invalidating a cached mapping. */
+  onRejected?: (status: number) => void;
+}
 
 /**
  * Seerr's API as one Seerr user sees it. Every call sends that user's ID in `X-API-User`, so Seerr applies their
@@ -294,11 +325,13 @@ export class SeerrUserClient {
   readonly #baseUrl: string;
   readonly #apiKey: string;
   readonly #user: SeerrUserId;
+  readonly #onRejected: ((status: number) => void) | undefined;
 
-  public constructor(baseUrl: string, apiKey: string, user: SeerrUserId) {
+  public constructor(baseUrl: string, apiKey: string, user: SeerrUserId, options: SeerrUserClientOptions = {}) {
     this.#baseUrl = baseUrl;
     this.#apiKey = apiKey;
     this.#user = seerrUserId(user);
+    this.#onRejected = options.onRejected;
   }
 
   public get userId(): SeerrUserId {
@@ -380,28 +413,78 @@ export class SeerrUserClient {
       'X-Api-Key': this.#apiKey,
       'X-API-User': this.#header(),
     };
-    if (body !== undefined) headers['Content-Type'] = 'application/json';
-    const response = await fetch(`${this.#baseUrl}${path}`, {
-      method,
-      signal: AbortSignal.timeout(15_000),
-      // A redirect would carry the API key and acting user to wherever it points.
-      redirect: 'error',
-      headers,
-      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-    });
-    if (!response.ok) {
-      await response.body?.cancel();
-      throw new SeerrError(`Seerr ${method} ${route} returned ${response.status}`, response.status);
-    }
-    const text = await response.text();
-    if (text.length > MAX_USER_RESPONSE_BYTES) throw new SeerrError(`Seerr ${method} ${route} response is too large`, 502);
     try {
-      return JSON.parse(text) as unknown;
-    } catch {
-      // JSON.parse's own message quotes the body.
-      throw new SeerrError(`Seerr ${method} ${route} returned invalid JSON`, 502);
+      return await guardedSeerrJson(this.#baseUrl, method, route, path, headers, body);
+    } catch (error) {
+      if (error instanceof SeerrError && USER_REJECTED_STATUSES.has(error.status)) this.#onRejected?.(error.status);
+      throw error;
     }
   }
+}
+
+/**
+ * A Seerr call for the household app. A redirect is never followed (it would carry the API key, and any acting user,
+ * to wherever it points) and counts as a failure. The body is read up to {@link MAX_GUARDED_RESPONSE_BYTES} bytes
+ * and no further. Errors carry only the status and the route template, never Seerr's body or the IDs in the path.
+ */
+async function guardedSeerrJson(
+  baseUrl: string,
+  method: 'GET' | 'POST',
+  route: string,
+  path: string,
+  headers: Record<string, string>,
+  body?: unknown,
+): Promise<unknown> {
+  const response = await fetch(`${baseUrl}${path}`, {
+    method,
+    signal: AbortSignal.timeout(15_000),
+    redirect: 'manual',
+    headers: body === undefined ? headers : { ...headers, 'Content-Type': 'application/json' },
+    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+  });
+  if (!response.ok) {
+    await response.body?.cancel().catch(() => undefined);
+    // Includes an unfollowed redirect, which Node's fetch hands back as the 3xx itself.
+    throw new SeerrError(`Seerr ${method} ${route} returned ${response.status}`, response.status);
+  }
+  const bytes = await readCapped(response, MAX_GUARDED_RESPONSE_BYTES);
+  if (!bytes) throw new SeerrError(`Seerr ${method} ${route} response is too large`, 502);
+  try {
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown;
+  } catch {
+    // JSON.parse's own message quotes the body.
+    throw new SeerrError(`Seerr ${method} ${route} returned invalid JSON`, 502);
+  }
+}
+
+/** The response body if it is at most `limit` bytes, or undefined (with the rest of the body left unread) if not. */
+async function readCapped(response: Response, limit: number): Promise<Uint8Array | undefined> {
+  const declared = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > limit) {
+    await response.body?.cancel().catch(() => undefined);
+    return undefined;
+  }
+  if (!response.body) return new Uint8Array();
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.byteLength;
+    if (size > limit) {
+      await reader.cancel().catch(() => undefined);
+      return undefined;
+    }
+    chunks.push(value);
+  }
+  const bytes = new Uint8Array(size);
+  let offset = 0;
+  for (const chunk of chunks) {
+    bytes.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return bytes;
 }
 
 function pageNumber(page: number): number {

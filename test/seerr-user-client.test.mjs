@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import {
+  MAX_GUARDED_RESPONSE_BYTES,
   SEERR_DISCOVER_LISTS,
   SeerrClient,
   SeerrError,
@@ -52,6 +54,7 @@ const USER_CALLS = {
 const ADMIN_CALLS = {
   asUser: (client) => client.asUser(seerrUserId(2)),
   findUserByJellyfinId: (client) => client.findUserByJellyfinId(MEMBER_JELLYFIN_ID),
+  jellyfinUserIdOf: (client) => client.jellyfinUserIdOf(seerrUserId(9)),
   getRequest: (client) => client.getRequest('5'),
   getJellyfinItemId: (client) => client.getJellyfinItemId('movie', 900001),
   importJellyfinUser: (client) => client.importJellyfinUser(MEMBER_JELLYFIN_ID),
@@ -104,7 +107,7 @@ describe('acting-user Seerr client', () => {
       assert.equal(request.url.origin, BASE_URL);
       assert.equal(request.headers.get('x-api-key'), API_KEY);
       assert.equal(request.headers.get('x-api-user'), '42');
-      assert.equal(request.redirect, 'error');
+      assert.equal(request.redirect, 'manual');
     });
   }
 
@@ -207,6 +210,138 @@ describe('acting-user Seerr client', () => {
     respond = () => new Response(`"${'x'.repeat(4 * 1024 * 1024)}"`, { status: 200 });
     await assert.rejects(client().search('synthetic'), (error) => error instanceof SeerrError && /too large/.test(error.message));
   });
+
+  it('counts the size limit in bytes, not characters', async () => {
+    assert.equal(MAX_GUARDED_RESPONSE_BYTES, 4 * 1024 * 1024);
+    // Two bytes per character: fewer characters than the limit, more bytes.
+    const over = 'é'.repeat(MAX_GUARDED_RESPONSE_BYTES / 2);
+    respond = () => new Response(`"${over}"`, { status: 200 });
+    await assert.rejects(client().search('synthetic'), (error) => error instanceof SeerrError && /too large/.test(error.message));
+    const under = 'é'.repeat(MAX_GUARDED_RESPONSE_BYTES / 2 - 1);
+    respond = () => new Response(`"${under}"`, { status: 200 });
+    assert.equal(await client().search('synthetic'), under);
+  });
+
+  it('stops reading an oversized body as soon as it passes the limit', async () => {
+    const chunk = new Uint8Array(64 * 1024).fill(0x20);
+    let pulled = 0;
+    let cancelled = false;
+    respond = () => new Response(new ReadableStream({
+      // Four times the limit, then the end: a client that reads it all is slow and wrong, but does not hang.
+      pull(controller) {
+        if (pulled >= 4 * MAX_GUARDED_RESPONSE_BYTES) return controller.close();
+        pulled += chunk.byteLength;
+        controller.enqueue(chunk);
+      },
+      cancel() {
+        cancelled = true;
+      },
+    }), { status: 200 });
+    await assert.rejects(client().quota(), (error) => error instanceof SeerrError && /too large/.test(error.message));
+    assert.equal(cancelled, true);
+    assert.ok(pulled <= MAX_GUARDED_RESPONSE_BYTES + 4 * chunk.byteLength, String(pulled));
+  });
+
+  it('refuses a body whose declared length is over the limit without reading it', async () => {
+    let pulled = false;
+    const body = new ReadableStream({
+      pull(controller) {
+        pulled = true;
+        controller.enqueue(new TextEncoder().encode('{}'));
+        controller.close();
+      },
+    }, { highWaterMark: 0 });
+    respond = () => new Response(body, {
+      status: 200,
+      headers: { 'Content-Length': String(MAX_GUARDED_RESPONSE_BYTES + 1) },
+    });
+    await assert.rejects(client().quota(), (error) => error instanceof SeerrError && /too large/.test(error.message));
+    assert.equal(pulled, false);
+  });
+
+  it('reports a body that is not UTF-8 as invalid JSON', async () => {
+    respond = () => new Response(new Uint8Array([0x22, 0xff, 0x22]), { status: 200 });
+    await assert.rejects(client().quota(), (error) => error instanceof SeerrError && /invalid JSON/.test(error.message));
+  });
+});
+
+/** Two real local servers: Seerr, which redirects, and the redirect's target, which records what reaches it. */
+async function redirectingSeerr() {
+  const reached = [];
+  const target = createServer((request, response) => {
+    reached.push({ url: request.url, headers: request.headers });
+    response.writeHead(503, { 'Content-Type': 'text/plain' }).end('canary private upstream error');
+  });
+  await new Promise((resolve) => target.listen(0, '127.0.0.1', resolve));
+  const seerr = createServer((request, response) => {
+    response.writeHead(302, { Location: `http://127.0.0.1:${target.address().port}/redirected` }).end('canary redirect body');
+  });
+  await new Promise((resolve) => seerr.listen(0, '127.0.0.1', resolve));
+  return {
+    baseUrl: `http://127.0.0.1:${seerr.address().port}`,
+    reached,
+    close: () => Promise.all([seerr, target].map((server) => new Promise((resolve) => {
+      server.close(resolve);
+      server.closeAllConnections();
+    }))),
+  };
+}
+
+describe('Seerr calls made for the household app, against a real redirect', () => {
+  let servers;
+
+  beforeEach(async () => {
+    globalThis.fetch = originalFetch;
+    servers = await redirectingSeerr();
+  });
+
+  afterEach(() => servers.close());
+
+  const GUARDED_CALLS = {
+    findUserByJellyfinId: ({ baseUrl }) => new SeerrClient(baseUrl, API_KEY).findUserByJellyfinId(MEMBER_JELLYFIN_ID),
+    jellyfinUserIdOf: ({ baseUrl }) => new SeerrClient(baseUrl, API_KEY).jellyfinUserIdOf(seerrUserId(9)),
+    ...Object.fromEntries(Object.entries(USER_CALLS).map(([name, call]) => [
+      `SeerrUserClient.${name}`,
+      ({ baseUrl }) => call(new SeerrUserClient(baseUrl, API_KEY, seerrUserId(42))),
+    ])),
+  };
+
+  for (const [name, call] of Object.entries(GUARDED_CALLS)) {
+    it(`${name} never follows a redirect or reports its body`, async () => {
+      const error = await call(servers).catch((caught) => caught);
+      assert.ok(error instanceof SeerrError, String(error));
+      assert.equal(error.status, 302);
+      assert.match(error.message, /^Seerr (GET|POST) \/api\/v1\/[a-z/:]+ returned 302$/i);
+      assert.doesNotMatch(`${error.message}\n${error.stack}`, /canary|redirected|aaaaaaaa|\b9\b|42/);
+      assert.deepEqual(servers.reached, []);
+    });
+  }
+});
+
+describe('Seerr calls made for the household app, on failure', () => {
+  for (const status of [400, 401, 403, 500, 503]) {
+    it(`report ${status} by status and route only`, async () => {
+      respond = () => new Response('canary private upstream error', { status });
+      const admin = new SeerrClient(BASE_URL, API_KEY);
+      for (const [call, route] of [
+        [() => admin.findUserByJellyfinId(MEMBER_JELLYFIN_ID), '/api/v1/user/jellyfin/:jellyfinUserId'],
+        [() => admin.jellyfinUserIdOf(seerrUserId(9)), '/api/v1/user/:id'],
+      ]) {
+        const error = await call().catch((caught) => caught);
+        assert.ok(error instanceof SeerrError);
+        assert.equal(error.status, status);
+        assert.equal(error.message, `Seerr GET ${route} returned ${status}`);
+      }
+      assert.ok(calls.every((request) => request.redirect === 'manual'));
+    });
+  }
+
+  it('leave the existing admin calls as they were', async () => {
+    respond = () => new Response('upstream detail', { status: 503 });
+    const error = await new SeerrClient(BASE_URL, API_KEY).getRequest('5').catch((caught) => caught);
+    assert.equal(error.message, 'Seerr GET /api/v1/request/5 returned 503: upstream detail');
+    assert.equal(calls[0].redirect, undefined);
+  });
 });
 
 describe('admin-key Seerr client', () => {
@@ -263,5 +398,33 @@ describe('Jellyfin user lookup', () => {
   it('throws when Seerr fails, rather than treating the user as unmapped', async () => {
     respond = () => new Response('down', { status: 503 });
     await assert.rejects(new SeerrClient(BASE_URL, API_KEY).findUserByJellyfinId(MEMBER_JELLYFIN_ID), (error) => error.status === 503);
+  });
+});
+
+describe('Seerr user link check', () => {
+  it('answers the normalized Jellyfin ID Seerr links to a Seerr user, whatever its format', async () => {
+    const admin = new SeerrClient(BASE_URL, API_KEY);
+    for (const linked of [MEMBER_JELLYFIN_ID, MEMBER_JELLYFIN_ID.toUpperCase(), MEMBER_JELLYFIN_ID.replaceAll('-', '').toUpperCase()]) {
+      respond = () => Response.json({ id: 9, jellyfinUserId: linked, email: 'canary@example.invalid' });
+      assert.equal(await admin.jellyfinUserIdOf(seerrUserId(9)), 'aaaaaaaabbbbccccddddeeeeeeeeeeee', linked);
+    }
+    assert.ok(calls.every((request) => request.url.pathname === '/api/v1/user/9' && !request.headers.has('x-api-user')));
+  });
+
+  it('answers undefined for a deleted, unlinked or mismatched Seerr user', async () => {
+    const admin = new SeerrClient(BASE_URL, API_KEY);
+    respond = () => Response.json({ message: 'User not found.' }, { status: 404 });
+    assert.equal(await admin.jellyfinUserIdOf(seerrUserId(9)), undefined);
+    for (const body of [{ id: 9 }, { id: 9, jellyfinUserId: null }, { id: 9, jellyfinUserId: 'x' }, { id: 10, jellyfinUserId: MEMBER_JELLYFIN_ID }, null]) {
+      respond = () => Response.json(body);
+      assert.equal(await admin.jellyfinUserIdOf(seerrUserId(9)), undefined, JSON.stringify(body));
+    }
+  });
+
+  it('refuses an ID that is not a Seerr user ID before calling Seerr', async () => {
+    for (const user of [0, -1, '9', undefined]) {
+      await assert.rejects(new SeerrClient(BASE_URL, API_KEY).jellyfinUserIdOf(user), TypeError);
+    }
+    assert.equal(calls.length, 0);
   });
 });
