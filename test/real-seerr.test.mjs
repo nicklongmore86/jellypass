@@ -52,6 +52,22 @@ describe('real Seerr', { timeout: 60_000, skip: !baseUrl || !apiKey }, () => {
     assert.ok(calls.every((call) => !call.headers.has('x-api-user')));
   });
 
+  it('confirms a Seerr user\'s Jellyfin link with the admin key before a verified use', async () => {
+    calls = [];
+    const admin = new SeerrClient(baseUrl, apiKey);
+    assert.equal(await admin.jellyfinUserIdOf(seerrUserId(2)), '0000000000000000000000000000000b');
+    assert.equal(await admin.jellyfinUserIdOf(seerrUserId(99)), undefined);
+    const map = new SeerrUserMap(admin);
+    assert.equal((await map.verifiedClientFor(MEMBER_JELLYFIN_ID))?.userId, 2);
+    assert.deepEqual(calls.map((call) => call.url.pathname), [
+      '/api/v1/user/2',
+      '/api/v1/user/99',
+      '/api/v1/user/jellyfin/0000000000000000000000000000000b',
+      '/api/v1/user/2',
+    ]);
+    assert.ok(calls.every((call) => !call.headers.has('x-api-user')));
+  });
+
   it('acts as the member on every call, so Seerr applies the member\'s permissions', async () => {
     calls = [];
     const member = new SeerrClient(baseUrl, apiKey).asUser(seerrUserId(2));
