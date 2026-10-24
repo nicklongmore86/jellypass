@@ -136,6 +136,75 @@ export class SeerrClient {
     return this.#guardedGet('/api/v1/blocklist', `/api/v1/blocklist?take=${take}&skip=${skip}`);
   }
 
+  /**
+   * What Seerr records about a title's HD and 4K requests (GET /api/v1/movie/:id or /api/v1/tv/:id with the admin key),
+   * reduced to what household app "Get this" decides from in the background: the media record's ID and Jellyfin items,
+   * and each request's ID, status, quality, seasons and requester. Undefined when Seerr (TMDB) does not know the title.
+   * The answer carries every household's records on the title, so it is read only by background work, never for an
+   * answer, and up to {@link MAX_TITLE_RECORD_BYTES}. Guarded like {@link findUserByJellyfinId}.
+   */
+  public titleRequests(mediaType: 'movie' | 'tv', tmdbId: number): Promise<SeerrTitleRecord | undefined> {
+    if (mediaType !== 'movie' && mediaType !== 'tv') throw new TypeError('media type is invalid');
+    return this.#titleRequests(mediaType, tmdbIdentifier(tmdbId));
+  }
+
+  async #titleRequests(mediaType: 'movie' | 'tv', id: number): Promise<SeerrTitleRecord | undefined> {
+    let answer: unknown;
+    try {
+      answer = await guardedSeerrJson(this.#baseUrl, 'GET', `/api/v1/${mediaType}/:id`, `/api/v1/${mediaType}/${id}`,
+        { Accept: 'application/json', 'X-Api-Key': this.#apiKey }, undefined, MAX_TITLE_RECORD_BYTES);
+    } catch (error) {
+      if (error instanceof SeerrError && error.status === 404) return undefined;
+      throw error;
+    }
+    const media = ownField(answer, 'mediaInfo');
+    const requests = ownField(media, 'requests');
+    return {
+      ...optional('mediaId', positiveSafeInteger(ownField(media, 'id'))),
+      ...optional('jellyfinMediaId', jellyfinItemId(ownField(media, 'jellyfinMediaId'))),
+      ...optional('jellyfinMediaId4k', jellyfinItemId(ownField(media, 'jellyfinMediaId4k'))),
+      requests: (Array.isArray(requests) ? requests : []).flatMap((request) => {
+        const requestId = positiveSafeInteger(ownField(request, 'id'));
+        const status = positiveSafeInteger(ownField(request, 'status'));
+        if (requestId === undefined || status === undefined) return [];
+        const seasons = ownField(request, 'seasons');
+        const requester = ownField(ownField(request, 'requestedBy'), 'jellyfinUserId');
+        return [{
+          id: String(requestId),
+          status,
+          is4k: ownField(request, 'is4k') === true,
+          seasons: (Array.isArray(seasons) ? seasons : []).flatMap((season) => {
+            const number = positiveSafeInteger(ownField(season, 'seasonNumber'));
+            return number === undefined ? [] : [number];
+          }),
+          ...optional('requesterJellyfinId', typeof requester === 'string' ? normalizeJellyfinUserId(requester) : undefined),
+        }];
+      }),
+    };
+  }
+
+  /**
+   * One request's status and media record (GET /api/v1/request/:id with the admin key), or undefined when Seerr has
+   * no such request (deleted). Only for requests JellyPass's own records name. Guarded like {@link findUserByJellyfinId}.
+   */
+  public requestState(requestId: string): Promise<{ status: number; mediaId?: number } | undefined> {
+    if (typeof requestId !== 'string' || !/^[1-9][0-9]{0,15}$/.test(requestId)) throw new TypeError('request ID is invalid');
+    return this.#requestState(requestId);
+  }
+
+  async #requestState(requestId: string): Promise<{ status: number; mediaId?: number } | undefined> {
+    let answer: unknown;
+    try {
+      answer = await this.#guardedGet('/api/v1/request/:id', `/api/v1/request/${requestId}`);
+    } catch (error) {
+      if (error instanceof SeerrError && error.status === 404) return undefined;
+      throw error;
+    }
+    const status = positiveSafeInteger(ownField(answer, 'status'));
+    if (status === undefined || String(ownField(answer, 'id')) !== requestId) throw new SeerrError('Seerr GET /api/v1/request/:id returned an unexpected answer', 502);
+    return { status, ...optional('mediaId', positiveSafeInteger(ownField(ownField(answer, 'media'), 'id'))) };
+  }
+
   /** Seerr's GET /api/v1/user/:id as the admin, or undefined when that user does not exist (or is not the one asked for). */
   async #userRecord(user: SeerrUserId): Promise<{ jellyfinUserId?: unknown } | undefined> {
     let answer: { id?: unknown; jellyfinUserId?: unknown };
@@ -313,6 +382,19 @@ export type SeerrRequestInput =
 
 /** Largest Seerr response body read by the guarded calls, in bytes; reading stops as soon as a body passes it. */
 export const MAX_GUARDED_RESPONSE_BYTES = 4 * 1024 * 1024;
+/**
+ * Largest Seerr title answer read by {@link SeerrClient.titleRequests}: its size grows with every household's records on
+ * the title, so it is far above any real one, and a busy title never makes "Get this" fail.
+ */
+export const MAX_TITLE_RECORD_BYTES = 64 * 1024 * 1024;
+
+/** What {@link SeerrClient.titleRequests} reads of a title. Jellyfin IDs are normalized. */
+export interface SeerrTitleRecord {
+  mediaId?: number;
+  jellyfinMediaId?: string;
+  jellyfinMediaId4k?: string;
+  requests: Array<{ id: string; status: number; is4k: boolean; seasons: number[]; requesterJellyfinId?: string }>;
+}
 
 /** Statuses after which Seerr may no longer accept the acting user (unknown, removed or relinked). */
 const USER_REJECTED_STATUSES = new Set([401, 403, 404]);
@@ -487,6 +569,7 @@ async function guardedSeerrJson(
   path: string,
   headers: Record<string, string>,
   body?: unknown,
+  limit = MAX_GUARDED_RESPONSE_BYTES,
 ): Promise<unknown> {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
@@ -500,7 +583,7 @@ async function guardedSeerrJson(
     // Includes an unfollowed redirect, which Node's fetch hands back as the 3xx itself.
     throw new SeerrError(`Seerr ${method} ${route} returned ${response.status}`, response.status);
   }
-  const bytes = await readCappedBody(response, MAX_GUARDED_RESPONSE_BYTES);
+  const bytes = await readCappedBody(response, limit);
   if (!bytes) throw new SeerrError(`Seerr ${method} ${route} response is too large`, 502);
   try {
     return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown;
@@ -538,6 +621,24 @@ export async function readCappedBody(response: Response, limit: number): Promise
     offset += chunk.byteLength;
   }
   return bytes;
+}
+
+/** One own property of a JSON object, or undefined; never anything inherited. */
+function ownField(value: unknown, name: string): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || !Object.hasOwn(value, name)) return undefined;
+  return (value as Record<string, unknown>)[name];
+}
+
+function positiveSafeInteger(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
+function jellyfinItemId(value: unknown): string | undefined {
+  return typeof value === 'string' && /^[0-9a-f]{32}$/i.test(value.replace(/-/g, '')) ? value.replace(/-/g, '').toLowerCase() : undefined;
+}
+
+function optional<K extends string, V>(key: K, value: V | undefined): Partial<Record<K, V>> {
+  return value === undefined ? {} : { [key]: value } as Record<K, V>;
 }
 
 function pageNumber(page: number): number {

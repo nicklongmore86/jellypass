@@ -170,7 +170,51 @@ export interface GrantState {
    * is a new grant decision (see GrantStore.grant).
    */
   removedAccess?: Record<string, AccessRemovals>;
+  /**
+   * Household app "Get this" records, by a random ID that never leaves JellyPass (see AppRequestRecord). Additive: a
+   * 2.2.1 build keeps the field as it is without reading or updating it.
+   */
+  appRequests?: Record<string, AppRequestRecord>;
+  /** The key the household app derives its opaque IDs from (hex, 32 bytes); made the first time one is needed. */
+  appIdKey?: string;
 }
+
+/**
+ * What one household app "Get this" did for one household (docs/app-design.md, "Get this"). Each record is both the
+ * household's attribution record (the only source of the app's `requested` state) and, for the join and interest
+ * branches, one of its member's virtual requests (counted towards their Seerr quota as Seerr counts their own).
+ *
+ * - `request`: JellyPass made `seerrRequestId` as the member (or found the member's own request for the title);
+ *   Seerr counts it, so it is not a virtual request.
+ * - `interest`: the title was already requested by someone else; `seerrRequestId` is that request, if one was found.
+ *   The household is joined to the title's grant when the grant is created.
+ * - `join`: Jellyfin already had the title; the household was joined to the grant of `itemIds` at once.
+ *
+ * Status, as the member's own request would have it: `pending` (pending or approved), `completed`, `failed` (counted),
+ * `declined` and `deleted` (both freed, never counted again).
+ */
+export interface AppRequestRecord {
+  /** The household whose host the call was made on; never changed by membership. */
+  householdId: string;
+  /** The member who asked, normalized (32 lowercase hex digits). */
+  jellyfinUserId: string;
+  mediaType: 'movie' | 'tv';
+  tmdbId: number;
+  /** The seasons this record covers, ascending; empty for a movie. */
+  seasons: number[];
+  createdAt: string;
+  updatedAt: string;
+  branch: 'request' | 'interest' | 'join';
+  status: AppRequestStatus;
+  seerrRequestId?: string;
+  /** Seerr's media record for the title when the record was made, to tell its deletion (which frees) apart. */
+  seerrMediaId?: number;
+  itemIds?: string[];
+  /** The household was deleted: never shown, joined or `requested` again, still counted towards its member's quota. */
+  detached?: true;
+}
+
+export type AppRequestStatus = 'pending' | 'completed' | 'failed' | 'declined' | 'deleted';
 
 /**
  * See GrantState.removedAccess. Kept in the state rather than on the grant so it outlives a grant that is purged or

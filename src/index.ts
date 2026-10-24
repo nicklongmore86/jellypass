@@ -5,6 +5,7 @@ import { JellyfinClient } from './jellyfin.js';
 import { makeServer } from './server.js';
 import { SeerrClient } from './seerr.js';
 import { SeerrUserMap } from './seerr-users.js';
+import { HouseholdRequests } from './household-requests.js';
 import { BackgroundTasks, createShutdown } from './shutdown.js';
 import { GrantStore } from './store.js';
 import { TmdbClient, TmdbError } from './tmdb.js';
@@ -40,6 +41,18 @@ async function main(): Promise<void> {
   const webAuth = new WebAuth(jellyfin);
   // Shutdown aborts this signal: each job stops before its next step and failures from the abort are not logged.
   const background = new BackgroundTasks();
+  const members = seerr ? new SeerrUserMap(seerr) : undefined;
+  // "Get this": its branches run as background work, and its records are brought up to date with each reconciliation.
+  const requests = config.householdAppEnabled && seerr && members ? new HouseholdRequests({
+    store,
+    jellyfin,
+    seerr,
+    members,
+    joins: service,
+    background,
+    record: (result) => service.recordGetThis(result),
+    recordBranch: (branch) => service.recordGetThisBranch(branch),
+  }) : undefined;
   const server = makeServer(service, { webhook: config.webhookToken, admin: config.adminToken }, webAuth, {
     trustedProxies: config.trustedProxies,
     background,
@@ -53,8 +66,8 @@ async function main(): Promise<void> {
         logLevel: config.logLevel,
       },
     } : {}),
-    ...(config.householdAppEnabled && seerr && catalogue ? {
-      householdApp: { catalogue, blocklist: seerr, members: new SeerrUserMap(seerr) },
+    ...(config.householdAppEnabled && seerr && members && catalogue ? {
+      householdApp: { catalogue, blocklist: seerr, members, ...(requests ? { requests } : {}) },
     } : {}),
   });
   const backfillSince = config.requestBackfillEnabled ? config.requestBackfillSince : undefined;
@@ -78,6 +91,8 @@ async function main(): Promise<void> {
   const reconcileTimer = config.reconcileIntervalSeconds > 0
     ? setInterval(() => background.run(async (signal) => {
         await backfillRequests(signal);
+        if (signal.aborted) return;
+        await requests?.refresh({ signal });
         if (signal.aborted) return;
         await service.reconcileAll({ dueOnly: true, signal }).catch((error: unknown) => {
           if (signal.aborted) return;

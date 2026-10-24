@@ -1,9 +1,11 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type {
   AccessGroup,
   AccessRemovals,
+  AppRequestRecord,
+  AppRequestStatus,
   GrantRecord,
   GrantState,
   LibraryCatalogItem,
@@ -17,6 +19,10 @@ import type {
  * partition and one TMDB queue per household, sized for this many (see docs/app-design.md, "Shared upstreams").
  */
 export const MAX_HOUSEHOLDS = 100;
+/** Household app "Get this" records are kept for this long after they were made (see GrantStore.writeAppRequests). */
+export const APP_REQUEST_RETENTION_MS = 400 * 24 * 60 * 60 * 1000;
+/** The most "Get this" records kept per household; its own oldest are forgotten first. */
+export const MAX_APP_REQUESTS_PER_HOUSEHOLD = 2000;
 
 const EMPTY_STATE: GrantState = { version: 7, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [] };
 
@@ -331,6 +337,10 @@ export class GrantStore {
     for (const [itemId, removals] of Object.entries(this.#state.removedAccess ?? {})) {
       if (removals.groupIds?.includes(groupId)) this.#setRemovals(itemId, { ...removals, groupIds: removals.groupIds.filter((id) => id !== groupId) });
     }
+    // Its "Get this" records stay counted towards their members' quotas, but no household sees or joins them again.
+    for (const record of Object.values(this.#state.appRequests ?? {})) {
+      if (record.householdId === groupId) record.detached = true;
+    }
     const results: RevokeResult[] = [];
     for (const previous of Object.values({ ...this.#state.grants })) {
       if (!previous.groupIds.includes(groupId)) continue;
@@ -450,6 +460,51 @@ export class GrantStore {
     if (!grant || grant.active) return;
     delete this.#state.grants[itemId];
     await this.#save();
+  }
+
+  /** Every household app "Get this" record, with its ID (see AppRequestRecord). */
+  public listAppRequests(): Array<[string, AppRequestRecord]> {
+    return Object.entries(this.#state.appRequests ?? {}).map(([id, record]) => [id, clone(record)]);
+  }
+
+  /** The key the household app derives opaque IDs from, or undefined before the first "Get this" record. */
+  public getAppIdKey(): string | undefined {
+    return this.#state.appIdKey;
+  }
+
+  /**
+   * Adds household app "Get this" records and changes the status (and joined items) of existing ones, in one write.
+   * Records made more than APP_REQUEST_RETENTION_MS ago are then forgotten, and so are a household's oldest beyond
+   * MAX_APP_REQUESTS_PER_HOUSEHOLD (each household's own, so one household's volume never removes another's). The state
+   * changes before this returns its promise, so a caller can update what it keeps in memory in the same turn.
+   * Resolves with the IDs of the added records.
+   */
+  public async writeAppRequests(input: {
+    add?: AppRequestRecord[];
+    update?: Array<{ id: string; status: AppRequestStatus; itemIds?: string[] }>;
+  }): Promise<string[]> {
+    this.#assertOpen();
+    const now = new Date().toISOString();
+    const records = { ...this.#state.appRequests };
+    const added = (input.add ?? []).map((record) => {
+      const id = randomUUID();
+      records[id] = clone(record);
+      return id;
+    });
+    for (const change of input.update ?? []) {
+      const record = records[change.id];
+      if (!record) continue;
+      records[change.id] = {
+        ...record,
+        status: change.status,
+        updatedAt: now,
+        ...(change.itemIds ? { itemIds: [...new Set([...(record.itemIds ?? []), ...change.itemIds.map(normalizeId)])].sort() } : {}),
+      };
+    }
+    this.#state.appRequests = pruneAppRequests(records, Date.now());
+    this.#state.appIdKey ??= randomBytes(32).toString('hex');
+    await this.#save();
+    return added;
   }
 
   /** Throws once close() has been called, so a caller can refuse before starting work it could not record. */
@@ -801,6 +856,19 @@ function orphanedSync(previous: SyncStatus, reason: string): SyncStatus {
     lastError: reason.slice(0, 1000),
     ...(previous.lastSuccessAt ? { lastSuccessAt: previous.lastSuccessAt } : {}),
   };
+}
+
+/** See GrantStore.writeAppRequests. */
+function pruneAppRequests(records: Record<string, AppRequestRecord>, now: number): Record<string, AppRequestRecord> {
+  const kept = Object.entries(records).filter(([, record]) => now - Date.parse(record.createdAt) <= APP_REQUEST_RETENTION_MS);
+  const perHousehold = new Map<string, number>();
+  const newestFirst = kept.sort(([, left], [, right]) => right.createdAt.localeCompare(left.createdAt));
+  return Object.fromEntries(newestFirst.filter(([, record]) => {
+    if (record.detached) return true;
+    const count = (perHousehold.get(record.householdId) ?? 0) + 1;
+    perHousehold.set(record.householdId, count);
+    return count <= MAX_APP_REQUESTS_PER_HOUSEHOLD;
+  }));
 }
 
 function clone<T>(value: T): T {

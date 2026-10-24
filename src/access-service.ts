@@ -6,6 +6,8 @@ import { normalizeId, type GrantMove, type GrantRemainder, type GrantStore } fro
 import type {
   AccessGroup,
   AccessRemovals,
+  AppRequestRecord,
+  AppRequestStatus,
   ChangePlan,
   GrantRecord,
   IgnoredWebhook,
@@ -27,6 +29,9 @@ const AVAILABLE_MEDIA_STATUSES = new Set([4, 5]);
 // Seerr (v3.5.0) request statuses: 2 = approved, 5 = completed. Pending (1), declined (3) and failed (4) requests are
 // listed too, and their media can be available through someone else's request.
 const GRANTABLE_REQUEST_STATUSES = new Set([2, 5]);
+
+/** What a household app join did: see AccessService.joinHousehold. */
+export type HouseholdJoinResult = 'joined' | 'already' | 'refused' | 'error' | 'cancelled';
 
 interface PlanContext {
   plan: ChangePlan;
@@ -143,6 +148,16 @@ export class AccessService {
   /** Counts a household app API answer by endpoint and outcome. */
   public recordAppRequest(endpoint: string, outcome: string): void {
     this.#metrics.increment('jfa_app_requests_total', { endpoint, outcome });
+  }
+
+  /** Counts a household app "Get this" call by what its immediate part decided; never by title. */
+  public recordGetThis(result: string): void {
+    this.#metrics.increment('jfa_app_get_this_total', { result });
+  }
+
+  /** Counts what a "Get this" did in the background, by branch; never by title. */
+  public recordGetThisBranch(branch: string): void {
+    this.#metrics.increment('jfa_app_get_this_branches_total', { branch });
   }
 
   public isPasswordless(userId: string): boolean {
@@ -313,6 +328,8 @@ export class AccessService {
             return null;
           }
           await this.#reconcileOrRecover(existing);
+          const current = this.#store.findGrantForRequest(event.request.id);
+          if (current) await this.#settleAppRequests(current, event.request.id);
           this.#metrics.increment('jfa_webhooks_total', { result: 'granted' });
           return this.#store.findGrantForRequest(event.request.id) ?? existing;
         }
@@ -325,6 +342,7 @@ export class AccessService {
           ...(resolved.mediaType ? { mediaType: resolved.mediaType } : {}),
         });
         await this.#reconcileGrant(grant);
+        await this.#settleAppRequests(this.#store.get(grant.itemId) ?? grant, event.request.id);
         this.#metrics.increment('jfa_webhooks_total', { result: 'granted' });
         return this.#store.get(grant.itemId) ?? grant;
       } catch (error) {
@@ -428,6 +446,146 @@ export class AccessService {
       }));
       return finish('error');
     }
+  }
+
+  /**
+   * The household app's join branch of "Get this": adds `householdId` (only the household whose host the call was made
+   * on, never the caller's other households) to the grant of each of `itemIds` through the library join rules (see
+   * GrantStore.joinGrant: only an active grant with a request is joined, an administrator's removal of the household or
+   * of the caller sticks, manual-only grants and items without a grant are left alone) and applies each join. Resolves
+   * `joined` when a grant changed, `already` when the household was already on one, and `refused` otherwise. Like
+   * joinLibrary, it runs in the background, its result must never reach the caller's answer, failures are logged and
+   * reported as `error`, and an aborted `signal` (shutdown) stops it before its next step (`cancelled`).
+   */
+  public async joinHousehold(
+    input: { itemIds: string[]; userId: string; householdId: string },
+    options: { signal?: AbortSignal } = {},
+  ): Promise<HouseholdJoinResult> {
+    const { signal } = options;
+    // Once stored, a join is reported as such even if applying it is cut short: it is applied after restart.
+    let stored: 'joined' | 'already' | 'refused' | undefined;
+    try {
+      throwIfAborted(signal);
+      return await this.#exclusive(async () => {
+        throwIfAborted(signal);
+        const { result, joined } = await this.#joinHouseholdNow(input.itemIds, input.userId, input.householdId);
+        stored = result;
+        for (const grant of joined) {
+          throwIfAborted(signal);
+          try {
+            await this.#reconcileGrant(grant, signal);
+          } catch (error) {
+            rethrowIfCancelled(error, signal);
+            console.error(JSON.stringify({
+              level: 'error',
+              message: 'household app join reconciliation failed',
+              itemId: grant.itemId,
+              detail: error instanceof Error ? error.message : String(error),
+            }));
+          }
+        }
+        return result;
+      });
+    } catch (error) {
+      if (error instanceof OperationCancelledError || signal?.aborted) return stored ?? 'cancelled';
+      console.error(JSON.stringify({
+        level: 'error',
+        message: 'household app join failed',
+        detail: error instanceof Error ? error.message : String(error),
+      }));
+      return stored ?? 'error';
+    }
+  }
+
+  /** The joins of joinHousehold, stored but not yet applied; in the write queue. */
+  async #joinHouseholdNow(itemIds: string[], userId: string, householdId: string): Promise<{
+    result: 'joined' | 'already' | 'refused';
+    joined: GrantRecord[];
+  }> {
+    const groupId = normalizeId(householdId);
+    if (!this.#store.getGroup(groupId)) return { result: 'refused', joined: [] };
+    let result: 'joined' | 'already' | 'refused' = 'refused';
+    const joined: GrantRecord[] = [];
+    for (const itemId of itemIds) {
+      const change = await this.#store.joinGrant({ itemId, userId, groupIds: [groupId] });
+      if (change) {
+        joined.push(change.current);
+        result = 'joined';
+        const join = change.current.joins?.at(-1);
+        console.log(JSON.stringify({ level: 'info', message: 'household app join', userId, itemId: change.current.itemId, groupIds: join?.groupIds ?? [] }));
+        continue;
+      }
+      const grant = this.#store.get(itemId);
+      if (result === 'refused' && grant?.active && grant.groupIds.includes(groupId)) result = 'already';
+    }
+    return { result, joined };
+  }
+
+  /**
+   * Settles household app records once a grant was stored for `requestId` (a webhook or the backfill): a request the
+   * app made is completed, and each household that registered interest in that request (or, for a movie or an interest
+   * that found no request, in the grant's title) joins the grant through the library join rules, so an administrator's
+   * removals stick. An interest whose household could not join is `failed` (still counted, as Seerr counts a failed
+   * request). Runs in the write queue. A failure here is logged and never fails the grant; the app's scheduled refresh
+   * tries interests again.
+   */
+  async #settleAppRequests(grant: GrantRecord, requestId: string, signal?: AbortSignal): Promise<void> {
+    try {
+      const records = this.#store.listAppRequests()
+        .filter(([, record]) => !record.detached && (record.status === 'pending' || record.status === 'failed'));
+      if (records.length === 0) return;
+      let title: { mediaType: 'movie' | 'tv'; tmdbId: number } | undefined | null = null;
+      const updates: Array<{ id: string; status: AppRequestStatus; itemIds?: string[] }> = [];
+      const joined: GrantRecord[] = [];
+      for (const [id, record] of records) {
+        if (record.branch === 'request') {
+          if (record.seerrRequestId === requestId) updates.push({ id, status: 'completed', itemIds: [grant.itemId] });
+          continue;
+        }
+        if (record.branch !== 'interest') continue;
+        let matches = record.seerrRequestId === requestId;
+        if (!matches && (record.mediaType === 'movie' || !record.seerrRequestId)) {
+          if (title === null) title = await this.#itemTitle(grant.itemId);
+          throwIfAborted(signal);
+          matches = title?.mediaType === record.mediaType && title.tmdbId === record.tmdbId;
+        }
+        if (!matches) continue;
+        const outcome = await this.#joinHouseholdNow([grant.itemId], record.jellyfinUserId, record.householdId);
+        throwIfAborted(signal);
+        joined.push(...outcome.joined);
+        updates.push({ id, status: outcome.result === 'refused' ? 'failed' : 'completed', itemIds: [grant.itemId] });
+      }
+      if (updates.length > 0) await this.#store.writeAppRequests({ update: updates });
+      throwIfAborted(signal);
+      const latest = joined.at(-1);
+      if (latest) await this.#reconcileGrant(this.#store.get(latest.itemId) ?? latest, signal);
+    } catch (error) {
+      rethrowIfCancelled(error, signal);
+      console.error(JSON.stringify({
+        level: 'error',
+        message: 'household app records could not be settled for a grant',
+        requestId,
+        itemId: grant.itemId,
+        detail: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }
+
+  /** The TMDB title of a Jellyfin movie or series item, from its provider IDs, or undefined if it has none. */
+  async #itemTitle(itemId: string): Promise<{ mediaType: 'movie' | 'tv'; tmdbId: number } | undefined> {
+    const item = await this.#jellyfin.getItem(itemId);
+    const mediaType = item.Type === 'Movie' ? 'movie' : item.Type === 'Series' ? 'tv' : undefined;
+    const providerIds = item.ProviderIds;
+    const tmdb = providerIds && typeof providerIds === 'object'
+      ? Object.entries(providerIds).find(([name]) => name.toLowerCase() === 'tmdb')?.[1]
+      : undefined;
+    const tmdbId = typeof tmdb === 'string' && /^[1-9][0-9]{0,9}$/.test(tmdb) ? Number(tmdb) : undefined;
+    return mediaType && tmdbId !== undefined ? { mediaType, tmdbId } : undefined;
+  }
+
+  /** Household app "Get this" records (see GrantStore.listAppRequests). */
+  public listAppRequests(): Array<[string, AppRequestRecord]> {
+    return this.#store.listAppRequests();
   }
 
   /** Counts a household "Add to my library" call that was not started because its budget was used up. */
@@ -537,6 +695,8 @@ export class AccessService {
             ...(mediaType ? { mediaType } : {}),
           });
           await this.#reconcileGrant(grant, signal);
+          throwIfAborted(signal);
+          await this.#settleAppRequests(this.#store.get(grant.itemId) ?? grant, requestId, signal);
           throwIfAborted(signal);
           result.granted.push(grant.itemId);
           this.#metrics.increment('jfa_request_backfill_total', { result: 'granted' });

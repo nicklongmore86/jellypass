@@ -200,7 +200,7 @@ JellyPass reads configuration from environment variables at startup.
 | `CATALOG_SYNC_INTERVAL_SECONDS` | No | `3600` | Jellyfin catalog refresh interval; `0` disables scheduling. Maximum `604800`. |
 | `HOUSEHOLD_DOMAIN` | No | — | Enables household hostnames below this DNS domain. |
 | `HOUSEHOLD_HOST_PREFIX` | No | `jelly-` | Prefix placed before each DNS-safe group ID. |
-| `HOUSEHOLD_APP_ENABLED` | No | `false` | Serves the read-only [household app API](#household-app-api) at `/jellypass/app/v1/*`, and the [app](#household-app-pwa) at `/jellypass/app/`, on household hostnames. Requires `HOUSEHOLD_DOMAIN`, Seerr configuration and `TMDB_API_KEY`; startup stops if any is missing. While `false`, those paths answer `404` and are never proxied to Jellyfin. |
+| `HOUSEHOLD_APP_ENABLED` | No | `false` | Serves the [household app API](#household-app-api) (titles, "Get this" and the household's requests) at `/jellypass/app/v1/*`, and the [app](#household-app-pwa) at `/jellypass/app/`, on household hostnames. Requires `HOUSEHOLD_DOMAIN`, Seerr configuration and `TMDB_API_KEY`; startup stops if any is missing. While `false`, those paths answer `404` and are never proxied to Jellyfin. |
 | `REQUEST_BACKFILL_SINCE` | No | — | `YYYY-MM-DD` (UTC midnight) or an ISO 8601 date-time with `Z` or an offset, such as `2026-10-15T08:00:00+02:00`. Impossible dates are rejected. Requests created before it are never imported by the backfill. |
 | `REQUEST_BACKFILL_ENABLED` | No | `true` when `REQUEST_BACKFILL_SINCE` is set, otherwise `false` | Grants available Seerr requests that the webhook missed. Requires Seerr configuration and `REQUEST_BACKFILL_SINCE`. |
 | `WS_IDLE_TIMEOUT_MS` | No | `300000` | Closes a proxied household WebSocket after this many milliseconds with no bytes in either direction; `0` disables. Jellyfin drops sockets after 60 s without a client KeepAlive (clients send one every 30 s), so values at or below `60000` log a startup warning. Maximum `86400000`. |
@@ -606,8 +606,8 @@ the background, normally within seconds.
 ### Household app API
 
 The backend of the household app (a PWA first; see
-[docs/app-design.md](docs/app-design.md)). It is **read-only** in this release
-and **off by default**: set `HOUSEHOLD_APP_ENABLED=true` together with
+[docs/app-design.md](docs/app-design.md)). It is **off by default**: set
+`HOUSEHOLD_APP_ENABLED=true` together with
 `HOUSEHOLD_DOMAIN`, `SEERR_URL`, `SEERR_API_KEY` and `TMDB_API_KEY`.
 These are JSON endpoints under `/jellypass/app/v1` on each household hostname,
 and nowhere else (on the administrator host they do not exist). The
@@ -621,6 +621,9 @@ and nowhere else (on the administrator host they do not exist). The
 | `GET` | `/jellypass/app/v1/movie/{tmdbId}` | One movie. |
 | `GET` | `/jellypass/app/v1/tv/{tmdbId}` | One series, with its seasons. |
 | `GET` | `/jellypass/app/v1/tv/{tmdbId}/season/{n}` | One season, with its episodes. |
+| `POST` | `/jellypass/app/v1/movie/{tmdbId}/get` | ["Get this"](#get-this) for a movie (empty body or `{}`): always `202 {"status":"accepted"}`. |
+| `POST` | `/jellypass/app/v1/tv/{tmdbId}/get` | "Get this" for seasons of a series, `{"seasons": [1, 2]}` (1 to 100 seasons from 1 to 999): always `202 {"status":"accepted"}`. |
+| `GET` | `/jellypass/app/v1/requests` | The household's own titles from "Get this", with a coarse status: `{"results": [{"id", "mediaType", "tmdbId", "status", "seasons", "byYou"}]}`. |
 
 - **Sign-in is Jellyfin's.** Send the member's Jellyfin token as Jellyfin web
   does (`Authorization: MediaBrowser Token="..."`, `X-Emby-Token`, or
@@ -642,16 +645,18 @@ and nowhere else (on the administrator host they do not exist). The
   permissions; only then is `play` set, to `{"itemId", "url"}` with
   `https://<household host>/web/#/details?id=<itemId>`), `unavailable` (an
   administrator blocklisted it in Seerr, or the caller may not request this
-  media type in Seerr, which includes a caller Seerr has no user for), and
-  otherwise `get_this`. Seasons are
+  media type in Seerr, which includes a caller Seerr has no user for),
+  `requested` (someone in this household asked for it with "Get this" and it
+  is still pending or approved), and otherwise `get_this`. Seasons are
   `in_library` when the caller's own Jellyfin view has their episodes,
-  otherwise `unavailable` or `get_this` as their series would be. Nothing
-  depends on what another household holds, has requested or is waiting on: a
-  title another household holds looks exactly like one nobody has. `requested`
-  is reserved and not answered yet: Seerr does not record which household a
-  request was for, and who belongs to which household now cannot say, so no
-  Seerr request is shown in any household until "Get this" records the
-  household with each request it makes.
+  otherwise `unavailable`, `requested` or `get_this` the same way; a series is
+  `requested` while any season is. Nothing depends on what another household
+  holds, has requested or is waiting on: a title another household holds looks
+  exactly like one nobody has. Seerr requests made outside the app are never
+  `requested` anywhere: Seerr does not record which household a request was
+  for, and who belongs to which household now cannot say, so only the
+  household's own "Get this" records count, and they stay with the household
+  whose hostname was used whatever membership does later.
 - **Nothing else** is ever returned: no requester, request or media IDs, Seerr
   status, Jellyfin item IDs other than the caller's own playable one, totals or
   timestamps. Every answer has `Cache-Control: no-store`.
@@ -666,9 +671,63 @@ and nowhere else (on the administrator host they do not exist). The
   `429`, as does a call when its household already has 20 TMDB calls
   waiting.
 - `jfa_app_requests_total{endpoint, outcome}` counts answers, by endpoint
-  (`me`, `search`, `discover`, `movie`, `tv`, `season`, `unknown`) and outcome
-  (`ok`, `unauthorized`, `rate_limited`, `invalid`, `not_found`,
-  `unavailable`); no label names a title.
+  (`me`, `search`, `discover`, `movie`, `tv`, `season`, `get`, `requests`,
+  `unknown`) and outcome (`ok`, `unauthorized`, `rate_limited`, `invalid`,
+  `not_found`, `unavailable`); no label names a title.
+
+#### Get this
+
+"Get this" asks for a title for the caller's household, the same way whatever
+the title's situation, and answers `202 {"status":"accepted"}` at once, before
+anything about the title is looked up. What happens next runs in the
+background and is never part of any answer:
+
+- **Already playable for the caller**, blocklisted, or already asked for by the
+  household: nothing.
+- **Jellyfin already has it** (JellyPass looks it up by TMDB ID with its own
+  key first): the household joins the title's grant by the same rules as
+  [Add to my library](#add-to-my-library): only a grant made from a request,
+  never a manual-only one, and never if an administrator removed the household
+  or the caller. **A title Jellyfin has is never requested in Seerr**, so a
+  late request can no longer make a public title private or undo an
+  administrator's removal. Only the household whose hostname was used joins,
+  not the caller's other households.
+- **Someone already requested it** (pending or approved in Seerr): the
+  household's interest is recorded, and the household joins the grant when the
+  title becomes available (webhook or request backfill), by the same rules.
+- **Otherwise**: a real HD Seerr request is made **as the caller** (their own
+  Seerr user, confirmed before the call; only the title and seasons are sent,
+  never another user, server, profile, folder, tags or 4K).
+
+A series is decided season by season, so one call can join the seasons
+Jellyfin has, follow the seasons someone requested and request the rest.
+
+**Quotas.** Before any of that, JellyPass checks the caller's own Seerr request
+permission and quota for the media type. A join or interest counts against the
+caller's Seerr quota as their own request would (one unit per movie, one per
+season asked for, every status but declined, within Seerr's window), on top
+of Seerr's own count of their requests; a request made by "Get this" is
+counted by Seerr itself. A caller who is not eligible gets the same `202` and
+nothing runs. Declining frees the unit in every case and a failure does not,
+as in Seerr; deleting the title's Seerr media record frees it. No number is
+shown. Calls are also limited to 10 per user, 30 per client address and 30 per
+household in each 10 minutes (`429`), on top of the limits above.
+
+**`GET /requests`** lists the household's own "Get this" titles, newest first
+(at most 200), from JellyPass's records only: `status` is `requested`
+(Requested), `ready` (Ready to watch) or `failed` (We couldn't get this:
+declined or failed), with each season's status for a series; `byYou` says
+whether the caller asked (otherwise someone else in the household); `id` is
+opaque. No requester names, Seerr IDs, counts or dates. Statuses are brought
+up to date by each scheduled reconciliation (`RECONCILE_INTERVAL_SECONDS`) and
+when a grant is created. There are no notifications.
+
+`jfa_app_get_this_total{result="accepted"|"ineligible"}` and
+`jfa_app_get_this_branches_total{branch}` count calls and what their
+background work did; no label names a title. The app's "Get this" button is
+not in this release. See
+["Get this" as implemented](docs/app-design.md#get-this-as-implemented-step-2a)
+for every rule, the leak channels and what remains.
 
 Each call reads titles straight from TMDB with `TMDB_API_KEY` (in English;
 each household reuses an answer for up to 10 minutes), never from Seerr, so
@@ -842,7 +901,10 @@ proxy. Upgrading from 2.1.0 to 2.1.1 changes neither the state file nor any
 setting. Upgrading from 2.1.1 to 2.2.0 changes no setting and keeps the state
 file at schema v7, adding new records to it; see
 [Upgrading from 2.1.1](CHANGELOG.md#upgrading-from-211). Upgrading from 2.2.0
-to 2.2.1 changes neither the state file nor any setting. Rolling back from
+to 2.2.1 changes neither the state file nor any setting. The household app's
+"Get this" (not yet released) keeps the state file at schema v7 and adds
+`appRequests` and `appIdKey`; 2.2.1 loads and keeps them without reading them
+(see [Store, bounds and rollback](docs/app-design.md#get-this-as-implemented-step-2a)). Rolling back from
 2.2.0 to 2.1.1, 2.1.0 or 2.0.0 keeps the state file readable, but those
 versions retry grants marked `orphaned` (see
 [A re-imported title is public](#a-re-imported-title-is-public-or-a-grant-is-orphaned))
@@ -1056,8 +1118,8 @@ On household hostnames, with Seerr configured:
 | `GET` | `/jellypass/add` | The [Add to my library](#add-to-my-library) page. |
 | `POST` | `/jellypass/add` | Add a title to the signed-in Jellyfin user's library; always `202` once authenticated and valid. |
 
-With `HOUSEHOLD_APP_ENABLED=true`, household hostnames also serve the read-only
-[household app API](#household-app-api) under `GET /jellypass/app/v1/`.
+With `HOUSEHOLD_APP_ENABLED=true`, household hostnames also serve the
+[household app API](#household-app-api) under `/jellypass/app/v1/`.
 
 Administrative routes accept `ADMIN_TOKEN` bearer authentication or a valid
 administrator browser session. Request bodies are limited to 64 KiB.

@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Household app "Get this" (API only, off by default).** With
+  `HOUSEHOLD_APP_ENABLED=true`, household hostnames serve
+  `POST /jellypass/app/v1/{movie|tv}/{tmdbId}/get` (series:
+  `{"seasons": [...]}`), which always answers `202 {"status":"accepted"}` at
+  once, before anything about the title is looked up, and then in the
+  background: does nothing if the caller can already play it or the household
+  already asked; joins the household to the title's grant if Jellyfin already
+  has it (by the Add to my library rules: request grants only, administrator
+  removals stick, only the household whose hostname was used), **never
+  requesting a title Jellyfin has**; records the household's interest if
+  someone already requested it, joining the household when the title becomes
+  available; and otherwise makes a real HD Seerr request as the caller.
+  Series are decided season by season. Eligibility comes first and depends
+  only on the caller: their Seerr request permission and quota, with joins and
+  interests counted as the caller's own requests would be (declined frees,
+  failed does not, one unit per season asked for); an ineligible caller gets
+  the same answer and nothing runs. New per-user (10), per-address (30) and
+  per-household (30) limits per 10 minutes. `GET /jellypass/app/v1/requests`
+  lists the household's own titles with a coarse status (`requested`,
+  `ready`, `failed`), an opaque ID and whether the caller asked, from
+  JellyPass's records only. Titles now show `requested` from those records
+  alone, never from Seerr or membership. Records are brought up to date by the
+  scheduled reconciliation and when a grant is created. New metrics
+  `jfa_app_get_this_total{result}` and `jfa_app_get_this_branches_total{branch}`.
+  The state file stays at schema v7 and gains `appRequests` and `appIdKey`,
+  which 2.2.1 keeps without reading. There is no app button yet. See
+  ["Get this" as implemented](docs/app-design.md#get-this-as-implemented-step-2a).
+
 - **Household app page (read-only PWA, off by default).** With
   `HOUSEHOLD_APP_ENABLED=true`, each household hostname also serves an
   installable web app at `/jellypass/app/` (iPhone: Share, Add to Home Screen;
@@ -35,9 +63,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   how long it takes. Each title carries the household's own state:
   `in_library` (the caller's own Jellyfin view has it, with a Play link, even
   without Seerr request permission), `unavailable` (blocklisted in Seerr, or
-  the caller may not request it) or `get_this`; `requested` is reserved for
-  when "Get this" records which household asked, so no Seerr request is shown
-  in any household yet. Answers are built from allowlisted fields only, never
+  the caller may not request it), `requested` (only from the household's own
+  "Get this" records) or `get_this`; no Seerr request made outside the app is
+  shown in any household. Answers are built from allowlisted fields only, never
   depend on what another household holds or asked for, and have fixed error
   bodies and `Cache-Control: no-store`; calls are limited per client address,
   per user and per household, and counted in

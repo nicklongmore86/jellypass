@@ -207,6 +207,16 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
     assert.deepEqual([(await movie()).state, (await movie()).play], ['unavailable', null]);
     assert.deepEqual(seerr.violations, []);
   });
+
+  it('finds a title\'s items by TMDB ID with JellyPass\'s key, the "Get this" decision input for "Jellyfin already has it"', async () => {
+    const original = await client.getItem(fixture.itemId);
+    await client.updateItem({ ...original, ProviderIds: { ...original.ProviderIds, Tmdb: '424242' } });
+    const itemId = fixture.itemId.replaceAll('-', '').toLowerCase();
+    assert.deepEqual(await client.findItemsByTmdbId('movie', 424242), [itemId]);
+    // A series with the same TMDB ID is another title, and another TMDB ID matches nothing.
+    assert.deepEqual(await client.findItemsByTmdbId('tv', 424242), []);
+    assert.deepEqual(await client.findItemsByTmdbId('movie', 4242), []);
+  });
 });
 
 function postWithHost(server, pathname, host, authorization, body) {

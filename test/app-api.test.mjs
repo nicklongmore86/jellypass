@@ -856,7 +856,7 @@ describe('household app API: input, budgets and metrics', { timeout: 30_000 }, (
       assert.equal(answer.status, 400, pathname);
       assert.equal(answer.text, '{"error":"invalid_request"}', pathname);
     }
-    for (const pathname of [`${APP}/movie/404404`, `${APP}/tv/404404`, `${APP}/tv/${T_TV}/season/9`, `${APP}/discover/everything`, `${APP}/requests`, `${APP}/`, `${APP}`]) {
+    for (const pathname of [`${APP}/movie/404404`, `${APP}/tv/404404`, `${APP}/tv/${T_TV}/season/9`, `${APP}/discover/everything`, `${APP}/requests/x`, `${APP}/movie/${T_MOVIE}/get`, `${APP}/`, `${APP}`]) {
       const answer = await app.get(pathname);
       assert.equal(answer.status, 404, pathname);
       assert.equal(answer.text, '{"error":"not_found"}', pathname);

@@ -1,5 +1,14 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { DispatchQueueFullError, FairDispatcher } from './fair-dispatcher.js';
+import {
+  GET_THIS_WINDOW_MS,
+  MAX_GET_THIS_PER_CLIENT,
+  MAX_GET_THIS_PER_HOUSEHOLD,
+  MAX_GET_THIS_PER_USER,
+  type HouseholdRequests,
+  type OwnView,
+  type RequestsDto,
+} from './household-requests.js';
 import { AttemptCounter } from './rate-limit.js';
 import {
   normalizeJellyfinUserId,
@@ -11,8 +20,10 @@ import { MAX_HOUSEHOLDS } from './store.js';
 import { TMDB_TIMEOUT_MS, TmdbError, type TmdbClient, type TmdbDiscoverList } from './tmdb.js';
 
 /**
- * The household app API, served under /jellypass/app/v1 on household hosts only (see docs/app-design.md). Read-only in
- * this version: who the caller is, search, discover and title details, each title with the caller's household state.
+ * The household app API, served under /jellypass/app/v1 on household hosts only (see docs/app-design.md): who the caller
+ * is, search, discover and title details, each title with the caller's household state; "Get this" (see
+ * {@link HouseholdRequests}), whose answer is the same fixed `202` whatever happens to the title; and the household's own
+ * requests with their coarse status.
  *
  * Every answer is built by allowlist shaping: each DTO field is copied from one TMDB or Jellyfin field chosen for it,
  * checked for type, and nothing else is read into a response. Upstream objects are never spread, relayed or stripped.
@@ -76,7 +87,7 @@ const SEERR_REQUEST = 32;
 const SEERR_REQUEST_MOVIE = 262_144;
 const SEERR_REQUEST_TV = 524_288;
 
-export type AppEndpoint = 'me' | 'search' | 'discover' | 'movie' | 'tv' | 'season' | 'unknown';
+export type AppEndpoint = 'me' | 'search' | 'discover' | 'movie' | 'tv' | 'season' | 'get' | 'requests' | 'unknown';
 export type AppOutcome = 'ok' | 'unauthorized' | 'rate_limited' | 'invalid' | 'not_found' | 'unavailable';
 
 /**
@@ -101,10 +112,14 @@ const DISCOVER_LISTS: Record<string, { list: TmdbDiscoverList; mediaType?: Media
 
 export type MediaType = 'movie' | 'tv';
 /**
- * `requested` is part of the contract but never answered in step 1: it will come only from the household attribution
- * records "Get this" writes in step 2 (see docs/app-design.md, "Requested and households").
+ * `requested` comes only from the household's own "Get this" records that are still active (see
+ * docs/app-design.md, "Requested and households"), never from Seerr's requests or from membership.
  */
 export type HouseholdState = 'unavailable' | 'in_library' | 'requested' | 'get_this';
+/** The only answer to "Get this", whatever happens to the title. */
+const GET_THIS_ACCEPTED = { status: 'accepted' };
+const MAX_GET_THIS_BODY_BYTES = 1024;
+const MAX_SEASONS_ASKED = 100;
 
 /** The caller as Jellyfin's GET /Users/Me reports them. */
 export interface JellyfinCaller {
@@ -140,6 +155,8 @@ export interface HouseholdAppOptions {
   blocklist: Pick<SeerrClient, 'blocklist'>;
   /** The caller's own Seerr user, confirmed before every call (a `SeerrUserMap`). */
   members: { member(jellyfinUserId: string): Pick<SeerrMemberClient, 'ownUser'> | undefined };
+  /** "Get this" and the household's own records. Without it, those endpoints answer `404` and nothing is `requested`. */
+  requests?: Pick<HouseholdRequests, 'submit' | 'activeKeys' | 'list'>;
   /** A household's name, or undefined once it no longer exists. */
   householdName: (householdId: string) => string | undefined;
   /** How many households there are. */
@@ -178,18 +195,21 @@ interface HouseholdView {
   library: ReadonlyMap<string, string>;
   blocklist: ReadonlySet<string>;
   eligible: Record<MediaType, boolean>;
+  /** The titles and seasons this household's own active "Get this" records name (see HouseholdRequests.activeKeys). */
+  requested: ReadonlySet<string>;
 }
 
 /**
  * The single place a household state is decided, for every card and title. `in_library` (the caller's own Jellyfin
  * view has it) comes first: playing their own item needs no request permission. Then `unavailable` (blocklisted, or
- * the caller may not request this media type, which includes a caller Seerr has no user for), and otherwise
- * `get_this`. `requested` comes in step 2, from household attribution records only.
+ * the caller may not request this media type, which includes a caller Seerr has no user for), then `requested` (this
+ * household's own active "Get this" record names the title, or one of a series' seasons), and otherwise `get_this`.
  */
 export function titleState(view: HouseholdView, mediaType: MediaType, tmdbId: number): TitleState {
   const itemId = view.library.get(titleKey(mediaType, tmdbId));
   if (itemId) return { state: 'in_library', itemId };
   if (!requestable(view, mediaType, tmdbId)) return { state: 'unavailable' };
+  if (view.requested.has(titleKey(mediaType, tmdbId))) return { state: 'requested' };
   return { state: 'get_this' };
 }
 
@@ -200,11 +220,25 @@ function requestable(view: HouseholdView, mediaType: MediaType, tmdbId: number):
 
 /**
  * A season's state: `in_library` when the caller's view has its episodes, otherwise `unavailable` when the series
- * cannot be requested, otherwise `get_this`.
+ * cannot be requested, otherwise `requested` when this household's own active record names the season, otherwise
+ * `get_this`.
  */
 function seasonState(view: HouseholdView, tmdbId: number, seasonsInLibrary: ReadonlySet<number>, seasonNumber: number): HouseholdState {
   if (seasonsInLibrary.has(seasonNumber)) return 'in_library';
-  return requestable(view, 'tv', tmdbId) ? 'get_this' : 'unavailable';
+  if (!requestable(view, 'tv', tmdbId)) return 'unavailable';
+  return view.requested.has(`${titleKey('tv', tmdbId)}:${seasonNumber}`) ? 'requested' : 'get_this';
+}
+
+/**
+ * Whether a Seerr user may request each media type in HD (Seerr 3.5.1 `MediaRequest.request`): movies with `ADMIN`,
+ * `REQUEST` or `REQUEST_MOVIE`, series with `ADMIN`, `REQUEST` or `REQUEST_TV`. Anything else may request nothing.
+ */
+export function seerrPermissions(user: unknown): Record<MediaType, boolean> {
+  const permissions = field(user, 'permissions');
+  if (typeof permissions !== 'number' || !Number.isSafeInteger(permissions) || permissions < 0) return { movie: false, tv: false };
+  const has = (bit: number) => (permissions & bit) !== 0;
+  const any = has(SEERR_ADMIN) || has(SEERR_REQUEST);
+  return { movie: any || has(SEERR_REQUEST_MOVIE), tv: any || has(SEERR_REQUEST_TV) };
 }
 
 /**
@@ -263,13 +297,16 @@ class AppAnswer extends Error {
 
 interface Route {
   endpoint: AppEndpoint;
-  run: (caller: JellyfinCaller, context: HouseholdAppRequest, url: URL) => Promise<unknown>;
+  run: (caller: JellyfinCaller, context: HouseholdAppRequest, url: URL, request: IncomingMessage) => Promise<unknown>;
+  /** The status of a successful answer; 200 unless set. */
+  status?: number;
 }
 
 export class HouseholdApp implements HouseholdAppHandler {
   readonly #catalogue: HouseholdAppOptions['catalogue'];
   readonly #blocklistSource: HouseholdAppOptions['blocklist'];
   readonly #members: HouseholdAppOptions['members'];
+  readonly #requests: HouseholdAppOptions['requests'];
   readonly #householdName: HouseholdAppOptions['householdName'];
   readonly #householdTotal: HouseholdAppOptions['householdTotal'];
   readonly #record: NonNullable<HouseholdAppOptions['record']>;
@@ -281,6 +318,9 @@ export class HouseholdApp implements HouseholdAppHandler {
   readonly #byClient: AttemptCounter;
   readonly #byUser: AttemptCounter;
   readonly #byHousehold: AttemptCounter;
+  readonly #getThisByUser: AttemptCounter;
+  readonly #getThisByClient: AttemptCounter;
+  readonly #getThisByHousehold: AttemptCounter;
   readonly #partitions = new Map<string, HouseholdCaches>();
   readonly #tmdb: FairDispatcher;
 
@@ -288,6 +328,7 @@ export class HouseholdApp implements HouseholdAppHandler {
     this.#catalogue = options.catalogue;
     this.#blocklistSource = options.blocklist;
     this.#members = options.members;
+    this.#requests = options.requests;
     this.#householdName = options.householdName;
     this.#householdTotal = options.householdTotal;
     this.#record = options.record ?? (() => undefined);
@@ -299,6 +340,9 @@ export class HouseholdApp implements HouseholdAppHandler {
     this.#byClient = new AttemptCounter({ windowMs: APP_BUDGET_WINDOW_MS, maxKeys: MAX_TRACKED, now: this.#now });
     this.#byUser = new AttemptCounter({ windowMs: APP_BUDGET_WINDOW_MS, maxKeys: MAX_TRACKED, now: this.#now });
     this.#byHousehold = new AttemptCounter({ windowMs: APP_BURST_WINDOW_MS, maxKeys: MAX_TRACKED, now: this.#now });
+    this.#getThisByUser = new AttemptCounter({ windowMs: GET_THIS_WINDOW_MS, maxKeys: MAX_TRACKED, now: this.#now });
+    this.#getThisByClient = new AttemptCounter({ windowMs: GET_THIS_WINDOW_MS, maxKeys: MAX_TRACKED, now: this.#now });
+    this.#getThisByHousehold = new AttemptCounter({ windowMs: GET_THIS_WINDOW_MS, maxKeys: MAX_TRACKED, now: this.#now });
     const limits = options.catalogueLimits ?? {};
     const queuePerHousehold = limits.queuePerHousehold ?? TMDB_QUEUE_PER_HOUSEHOLD;
     this.#tmdb = new FairDispatcher({
@@ -348,7 +392,7 @@ export class HouseholdApp implements HouseholdAppHandler {
     const endpoint = route?.endpoint ?? 'unknown';
     const answer = (outcome: AppOutcome, body?: unknown) => {
       this.#record(endpoint, outcome);
-      if (outcome === 'ok') writeAppJson(response, 200, body);
+      if (outcome === 'ok') writeAppJson(response, route?.status ?? 200, body);
       else writeAppJson(response, APP_ERRORS[outcome].status, APP_ERRORS[outcome].body);
     };
     // Counted for every call, signed in or not, before Jellyfin is asked anything.
@@ -367,7 +411,7 @@ export class HouseholdApp implements HouseholdAppHandler {
     if (!route) return answer('not_found');
     let body: unknown;
     try {
-      body = await route.run(caller, context, url);
+      body = await route.run(caller, context, url, request);
     } catch (error) {
       if (error instanceof AppAnswer) return answer(error.outcome);
       this.#logFailure(endpoint, error);
@@ -377,8 +421,20 @@ export class HouseholdApp implements HouseholdAppHandler {
   }
 
   #route(method: string | undefined, pathname: string): Route | undefined {
-    if (method !== 'GET' || !pathname.startsWith(`${APP_API_PREFIX}/`)) return undefined;
+    if (!pathname.startsWith(`${APP_API_PREFIX}/`)) return undefined;
     const path = pathname.slice(APP_API_PREFIX.length);
+    if (method === 'POST') {
+      const get = /^\/(movie|tv)\/([^/]+)\/get$/.exec(path);
+      if (!get || !this.#requests) return undefined;
+      const mediaType = get[1] as MediaType;
+      return {
+        endpoint: 'get',
+        status: 202,
+        run: (caller, context, _url, request) => this.#getThis(caller, context, request, mediaType, get[2] as string),
+      };
+    }
+    if (method !== 'GET') return undefined;
+    if (path === '/requests') return this.#requests ? { endpoint: 'requests', run: (caller, context) => this.#list(caller, context) } : undefined;
     if (path === '/me') return { endpoint: 'me', run: (caller, context) => this.#me(caller, context) };
     if (path === '/search') return { endpoint: 'search', run: (caller, context, url) => this.#search(caller, context, url) };
     const discover = /^\/discover\/([a-z-]+)$/.exec(path);
@@ -524,6 +580,47 @@ export class HouseholdApp implements HouseholdAppHandler {
   }
 
   /**
+   * "Get this" (see {@link HouseholdRequests}). Only the caller decides what happens before the answer: their input,
+   * their own submission budgets (per user, per client address and per household, counted for every valid call and
+   * never given back), and their eligibility (request permission and quota). Then the same `202` always follows, before
+   * anything about the title is looked up, whether the branches were started or the caller was not eligible.
+   */
+  async #getThis(caller: JellyfinCaller, context: HouseholdAppRequest, request: IncomingMessage, mediaType: MediaType, input: string): Promise<unknown> {
+    const requests = this.#requests as NonNullable<HouseholdAppOptions['requests']>;
+    const tmdbId = tmdbParameter(input);
+    const seasons = getThisSeasons(mediaType, await readBody(request));
+    const callerId = normalizedUserId(caller.id);
+    // Each counted only if the previous one admitted the call, so a call refused for the caller's own volume is never
+    // counted against the household's or the address's.
+    if (this.#getThisByUser.increment(callerId) > MAX_GET_THIS_PER_USER
+      || this.#getThisByClient.increment(context.clientId) > MAX_GET_THIS_PER_CLIENT
+      || this.#getThisByHousehold.increment(context.householdId) > MAX_GET_THIS_PER_HOUSEHOLD) {
+      throw new AppAnswer('rate_limited');
+    }
+    await requests.submit({
+      householdId: context.householdId,
+      callerId,
+      mediaType,
+      tmdbId,
+      seasons,
+      ownView: () => this.#ownView(caller, context, mediaType, tmdbId),
+    });
+    return GET_THIS_ACCEPTED;
+  }
+
+  /** The household's own titles with their coarse status (see HouseholdRequests.list). */
+  async #list(caller: JellyfinCaller, context: HouseholdAppRequest): Promise<RequestsDto> {
+    return (this.#requests as NonNullable<HouseholdAppOptions['requests']>).list(context.householdId, normalizedUserId(caller.id));
+  }
+
+  /** What the caller's own Jellyfin view holds of a title, read now with their own credentials (never from a cache). */
+  async #ownView(caller: JellyfinCaller, context: HouseholdAppRequest, mediaType: MediaType, tmdbId: number): Promise<OwnView> {
+    const itemId = (await readLibrary(caller, context)).get(titleKey(mediaType, tmdbId));
+    if (!itemId) return { visible: false, seasons: new Set() };
+    return { visible: true, seasons: mediaType === 'tv' ? await this.#seasonsInLibrary(caller, context, { state: 'in_library', itemId }) : new Set() };
+  }
+
+  /**
    * A TMDB answer, reused by this household for {@link APP_TITLE_TTL_MS}. The key is the request's own parameters; the
    * household only picks the cache. The call waits for the household's turn (see {@link FairDispatcher}). A title TMDB
    * does not know is `not_found`; a household with too many calls already waiting for TMDB is `rate_limited`.
@@ -549,7 +646,7 @@ export class HouseholdApp implements HouseholdAppHandler {
       cached ? cached.get('blocklist', blocklist) : blocklist(),
       this.#eligibility(caller),
     ]);
-    return { library, blocklist: blocked, eligible };
+    return { library, blocklist: blocked, eligible, requested: this.#requests?.activeKeys(context.householdId) ?? new Set() };
   }
 
   /**
@@ -567,11 +664,7 @@ export class HouseholdApp implements HouseholdAppHandler {
       if (error instanceof SeerrUnmappedUserError) return none;
       throw error;
     }
-    const permissions = field(user, 'permissions');
-    if (typeof permissions !== 'number' || !Number.isSafeInteger(permissions) || permissions < 0) return none;
-    const has = (bit: number) => (permissions & bit) !== 0;
-    const any = has(SEERR_ADMIN) || has(SEERR_REQUEST);
-    return { movie: any || has(SEERR_REQUEST_MOVIE), tv: any || has(SEERR_REQUEST_TV) };
+    return seerrPermissions(user);
   }
 
   /**
@@ -747,7 +840,7 @@ function imageUrl(base: string, value: unknown): string | null {
  * The titles on Seerr's blocklist, as `mediaType:tmdbId` keys, paged through with the admin key. Only each entry's
  * `mediaType` and `tmdbId` are read. The blocklist is kept by administrators and is the same for every household.
  */
-async function readBlocklist(seerr: Pick<SeerrClient, 'blocklist'>): Promise<Set<string>> {
+export async function readBlocklist(seerr: Pick<SeerrClient, 'blocklist'>): Promise<Set<string>> {
   const keys = new Set<string>();
   for (let page = 0; page < MAX_BLOCKLIST_PAGES; page += 1) {
     const results = field(await seerr.blocklist(BLOCKLIST_PAGE, page * BLOCKLIST_PAGE), 'results');
@@ -818,6 +911,46 @@ function pageParameter(url: URL): number {
 function tmdbParameter(value: string): number {
   if (!/^[1-9][0-9]{0,9}$/.test(value) || Number(value) > 2_147_483_647) throw new AppAnswer('invalid');
   return Number(value);
+}
+
+/**
+ * The seasons a "Get this" body asks for: none for a movie (an empty body or `{}`), and for a series `{"seasons":
+ * [n, ...]}` with 1 to 100 distinct season numbers from 1 to 999 (specials cannot be requested), sorted. Anything else
+ * is `invalid`.
+ */
+function getThisSeasons(mediaType: MediaType, body: Buffer): number[] {
+  let value: unknown;
+  try {
+    value = body.length === 0 ? {} : JSON.parse(body.toString('utf8')) as unknown;
+  } catch {
+    throw new AppAnswer('invalid');
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new AppAnswer('invalid');
+  const keys = Object.keys(value);
+  if (mediaType === 'movie') {
+    if (keys.length > 0) throw new AppAnswer('invalid');
+    return [];
+  }
+  const seasons = field(value, 'seasons');
+  if (keys.length !== 1 || !Array.isArray(seasons) || seasons.length < 1 || seasons.length > MAX_SEASONS_ASKED
+    || !seasons.every((season) => typeof season === 'number' && Number.isSafeInteger(season) && season >= 1 && season <= 999)
+    || new Set(seasons).size !== seasons.length) {
+    throw new AppAnswer('invalid');
+  }
+  return [...(seasons as number[])].sort((left, right) => left - right);
+}
+
+/** A request body of at most MAX_GET_THIS_BODY_BYTES bytes; a larger one is `invalid`. */
+async function readBody(request: IncomingMessage): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  let size = 0;
+  for await (const chunk of request) {
+    const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string);
+    size += buffer.length;
+    if (size > MAX_GET_THIS_BODY_BYTES) throw new AppAnswer('invalid');
+    chunks.push(buffer);
+  }
+  return Buffer.concat(chunks);
 }
 
 function titleKey(mediaType: MediaType, tmdbId: number): string {
