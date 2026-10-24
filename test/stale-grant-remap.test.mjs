@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { describe, it, mock } from 'node:test';
-import { AccessService, OperationCancelledError, accessTag } from '../dist/access-service.js';
+import { AccessService, ConflictError, OperationCancelledError, accessTag } from '../dist/access-service.js';
 import { makeServer } from '../dist/server.js';
 import { GrantStore } from '../dist/store.js';
 import { parseWebhook } from '../dist/webhook.js';
@@ -75,6 +75,8 @@ function world() {
     writes,
     addItem(id, tags = []) { items.set(id, { Id: id, Name: `Movie ${id}`, Type: 'Movie', Tags: tags }); },
     tags(id) { return items.get(id)?.Tags ?? []; },
+    /** The non-administrators blocked from the item tagged `tag`. */
+    blockedFrom(tag) { return users.filter((user) => !user.Policy.IsAdministrator && user.Policy.BlockedTags.includes(tag)).map((user) => user.Id); },
     blocked(userId) { return users.find((user) => user.Id === userId).Policy.BlockedTags; },
     request(id, media, extra = {}) {
       requests.set(String(id), { id, type: 'movie', requestedBy: { jellyfinUserId: 'alice-id' }, media: { mediaType: 'movie', status: 5, ...media }, ...extra });
@@ -82,8 +84,8 @@ function world() {
   };
 }
 
-async function newStore(t) {
-  const store = new GrantStore(path.join(await makeTempDir(t, 'jellypass-remap-test-'), 'grants.json'));
+async function newStore(t, file) {
+  const store = new GrantStore(file ?? path.join(await makeTempDir(t, 'jellypass-remap-test-'), 'grants.json'));
   await store.load();
   await store.upsertGroup({ id: 'house-a', name: 'House A', userIds: ['alice-id'] });
   await store.upsertGroup({ id: 'farmhouse', name: 'Farmhouse', userIds: ['carol-id'] });
@@ -270,29 +272,122 @@ describe('grants whose Jellyfin item was deleted and re-imported', { timeout: 10
     assert.equal(store.get('item-gone-4k').sync.state, 'orphaned', 'a 4K request without a 4K item does not fall back to HD');
   });
 
-  it('splits requests that now resolve to different items and keeps the manual audience on each', async (t) => {
+  it('keeps a request that resolves to no existing item on the stale grant instead of guessing a destination', async (t) => {
     const w = world();
     const store = await newStore(t);
     const service = new AccessService(w.jellyfin, store, undefined, w.seerr);
+    w.addItem('item-hd');
+    await store.grant({ itemId: 'item-old', requestId: '9', userId: 'alice-id', groupIds: ['house-a'] });
+    await store.grant({ itemId: 'item-old', requestId: '10', userId: 'bob-id' });
+    w.request(9, { jellyfinMediaId: 'item-hd' });
+    // A 4K request whose 4K copy has not been re-imported yet: Seerr names only the HD item.
+    w.request(10, { jellyfinMediaId: 'item-hd' }, { is4k: true, requestedBy: { jellyfinUserId: 'bob-id' } });
+    const { error, errorLogs } = await quietly(() => service.reconcileAll());
+    assert.equal(error, undefined, String(error));
+    assert.deepEqual(store.get('item-hd').requests, { 9: 'alice-id' }, 'the 4K request is not attached to the HD item');
+    assert.deepEqual(store.get('item-hd').groupIds, ['house-a']);
+    assert.equal(store.get('item-hd').sync.state, 'synced');
+    assert.deepEqual(w.blockedFrom(accessTag('item-hd')), ['bob-id', 'carol-id', 'dave-id']);
+    const stale = store.get('item-old');
+    assert.deepEqual(stale.requests, { 10: 'bob-id' }, 'the unresolved request stays for an administrator');
+    assert.equal(stale.sync.state, 'orphaned');
+    assert.match(stale.sync.lastError, /resolve to no existing Jellyfin item were kept here/);
+    assert.equal(errorLogs.filter((line) => line.includes('grant orphaned')).length, 1);
+    assert.match(service.renderMetrics(), /jfa_orphaned_grants 1/);
+  });
+
+  it('splits requests across new items with only their requesters\' households and keeps the rest on the stale grant', async (t) => {
+    const w = world();
+    const store = await newStore(t);
+    const service = new AccessService(w.jellyfin, store, undefined, w.seerr);
+    await store.upsertGroup({ id: 'neighbours', name: 'Neighbours', userIds: ['dave-id'] });
     w.addItem('item-a');
     w.addItem('item-b');
     await store.grant({ itemId: 'item-old', requestId: '1', userId: 'alice-id' });
     await store.grant({ itemId: 'item-old', requestId: '2', userId: 'bob-id' });
     await store.grant({ itemId: 'item-old', requestId: '3', userId: 'carol-id' });
-    await store.grant({ itemId: 'item-old', requestId: '4', userId: 'dave-id' });
-    await store.setManualAccess({ itemId: 'item-old', userIds: ['dave-id'], groupIds: ['farmhouse'] });
+    await store.setManualAccess({ itemId: 'item-old', userIds: ['dave-id'], groupIds: ['farmhouse', 'house-a', 'neighbours'] });
     w.request(1, { jellyfinMediaId: 'item-a' });
-    w.request(2, { jellyfinMediaId: 'item-a' });
-    w.request(3, { jellyfinMediaId: 'item-b' });
-    // Request 4 no longer exists in Seerr: it moves with the item most requests went to.
-    await quietly(() => service.reconcileAll());
+    w.request(2, { jellyfinMediaId: 'item-a' }, { requestedBy: { jellyfinUserId: 'bob-id' } });
+    w.request(3, { jellyfinMediaId: 'item-b' }, { requestedBy: { jellyfinUserId: 'carol-id' } });
+    const { error } = await quietly(() => service.reconcileAll());
+    assert.equal(error, undefined, String(error));
+    const a = store.get('item-a');
+    assert.deepEqual([a.requests, a.manualUserIds, a.groupIds], [{ 1: 'alice-id', 2: 'bob-id' }, [], ['house-a']]);
+    const b = store.get('item-b');
+    assert.deepEqual([b.requests, b.manualUserIds, b.groupIds], [{ 3: 'carol-id' }, [], ['farmhouse']]);
+    assert.deepEqual(w.blockedFrom(accessTag('item-a')), ['carol-id', 'dave-id']);
+    assert.deepEqual(w.blockedFrom(accessTag('item-b')), ['alice-id', 'bob-id', 'dave-id']);
+    const stale = store.get('item-old');
+    assert.deepEqual([stale.requests, stale.manualUserIds, stale.groupIds], [{}, ['dave-id'], ['neighbours']]);
+    assert.equal(stale.sync.state, 'orphaned', 'the unattributable audience waits for an administrator');
+    assert.match(stale.sync.lastError, /moved to several items/);
+  });
+
+  it('carries the whole audience when every request resolves to one item that already has a manual grant', async (t) => {
+    // The Grudge 3: request 172 (Nick, Farmhouse) on the deleted item; the new item already shared with Farmhouse.
+    const w = world();
+    const store = await newStore(t);
+    const service = new AccessService(w.jellyfin, store, undefined, w.seerr);
+    w.addItem('item-old');
+    await store.grant({ itemId: 'item-old', requestId: '172', userId: 'carol-id', groupIds: ['farmhouse'] });
+    await store.setManualAccess({ itemId: 'item-old', userIds: ['dave-id'], groupIds: ['farmhouse', 'house-a'] });
+    await service.reconcileAll();
+    w.items.delete('item-old');
+    w.addItem('item-new');
+    await service.setManualAccess({ itemId: 'item-new', userIds: [], groupIds: ['farmhouse'] });
+    w.request(172, { jellyfinMediaId: 'item-new' }, { requestedBy: { jellyfinUserId: 'carol-id' } });
+    const { error } = await quietly(() => service.reconcileAll({ dueOnly: true }));
+    assert.equal(error, undefined, String(error));
     assert.equal(store.get('item-old'), undefined);
-    assert.deepEqual(store.get('item-a').requests, { 1: 'alice-id', 2: 'bob-id', 4: 'dave-id' });
-    assert.deepEqual(store.get('item-b').requests, { 3: 'carol-id' });
-    for (const id of ['item-a', 'item-b']) {
-      assert.deepEqual(store.get(id).manualUserIds, ['dave-id']);
-      assert.deepEqual(store.get(id).groupIds, ['farmhouse']);
-    }
+    const merged = store.get('item-new');
+    assert.deepEqual([merged.requests, merged.manualUserIds, merged.groupIds], [{ 172: 'carol-id' }, ['dave-id'], ['farmhouse', 'house-a']]);
+    assert.deepEqual(w.blockedFrom(NEW_TAG), ['bob-id']);
+  });
+
+  it('converges with no access lost or gained when restarted between storing the new grant and applying it', async (t) => {
+    const file = path.join(await makeTempDir(t, 'jellypass-remap-crash-'), 'grants.json');
+    const w = world();
+    const store = await newStore(t, file);
+    const service = new AccessService(w.jellyfin, store, undefined, w.seerr);
+    w.addItem('item-old');
+    await store.grant({ itemId: 'item-old', requestId: '7', userId: 'alice-id', groupIds: ['house-a'] });
+    await store.setManualAccess({ itemId: 'item-old', userIds: ['dave-id'], groupIds: ['house-a'] });
+    await service.reconcileAll();
+    w.items.delete('item-old');
+    w.addItem('item-new');
+    await service.setManualAccess({ itemId: 'item-new', userIds: [], groupIds: ['farmhouse'] });
+    w.request(7, { jellyfinMediaId: 'item-new' });
+    const before = w.blockedFrom(NEW_TAG);
+    assert.deepEqual(before, ['alice-id', 'bob-id', 'dave-id']);
+
+    // The process dies while applying the merged grant: the call never returns, and nothing after it runs.
+    const getLocalTrailers = w.jellyfin.getLocalTrailers;
+    w.jellyfin.getLocalTrailers = async (itemId) => {
+      w.calls.push(`getLocalTrailers:${itemId}`);
+      return new Promise(() => {});
+    };
+    w.calls.length = 0;
+    const crashed = quietly(() => service.reconcileAll({ dueOnly: true }));
+    while (!w.calls.includes('getLocalTrailers:item-new')) await new Promise((resolve) => setImmediate(resolve));
+    void crashed;
+
+    const restarted = await newStore(t, file);
+    const onDisk = restarted.get('item-old');
+    assert.deepEqual([onDisk.requests, onDisk.manualUserIds], [{ 7: 'alice-id' }, ['dave-id']], 'the stale grant still records everyone');
+    assert.deepEqual(restarted.get('item-new').owners, ['alice-id', 'carol-id', 'dave-id']);
+    assert.deepEqual(w.blockedFrom(NEW_TAG), before, 'nothing was applied before the crash');
+
+    w.jellyfin.getLocalTrailers = getLocalTrailers;
+    const rerun = new AccessService(w.jellyfin, restarted, undefined, w.seerr);
+    const { error } = await quietly(() => rerun.reconcileAll({ dueOnly: true }));
+    assert.equal(error, undefined, String(error));
+    assert.equal(restarted.get('item-old'), undefined);
+    const merged = restarted.get('item-new');
+    assert.deepEqual([merged.requests, merged.manualUserIds, merged.groupIds], [{ 7: 'alice-id' }, ['dave-id'], ['farmhouse', 'house-a']]);
+    assert.equal(merged.sync.state, 'synced');
+    assert.deepEqual(w.blockedFrom(NEW_TAG), ['bob-id']);
+    assert.deepEqual(w.blockedFrom(OLD_TAG), [], 'the deleted item\'s tag is cleared once the move finished');
   });
 
   it('deletes an inactive grant whose item is gone instead of failing forever', async (t) => {
@@ -365,7 +460,7 @@ describe('admin grant remap', { timeout: 10_000 }, () => {
     assert.match(service.renderMetrics(), /jfa_orphaned_grants 0/);
   });
 
-  it('makes a source item that still exists public again', async (t) => {
+  it('refuses to move a grant whose source item still exists, changing nothing', async (t) => {
     const w = world();
     const store = await newStore(t);
     const service = new AccessService(w.jellyfin, store, undefined, w.seerr);
@@ -373,10 +468,55 @@ describe('admin grant remap', { timeout: 10_000 }, () => {
     w.addItem('item-new');
     await store.grant({ itemId: 'item-old', requestId: '7', userId: 'alice-id' });
     await service.reconcileAll();
-    await quietly(() => service.remapGrant('item-old', 'item-new'));
-    assert.ok(!w.tags('item-old').includes(OLD_TAG));
-    assert.ok(!w.blocked('bob-id').includes(OLD_TAG));
-    assert.ok(w.blocked('bob-id').includes(NEW_TAG));
+    const before = store.list();
+    w.writes.length = 0;
+    for (const dryRun of [true, false]) {
+      await assert.rejects(service.remapGrant('item-old', 'item-new', dryRun), (error) =>
+        error instanceof ConflictError && error.code === 'source_item_exists' && /source item still exists.*revoke its access explicitly first/.test(error.message));
+    }
+    assert.deepEqual(w.writes, []);
+    assert.deepEqual(store.list(), before);
+    assert.ok(w.tags('item-old').includes(OLD_TAG), 'the source item stays private');
+    assert.deepEqual(w.blockedFrom(OLD_TAG), ['bob-id', 'carol-id', 'dave-id']);
+  });
+
+  it('keeps the source grant when applying the target fails, and finishes on a retry', async (t) => {
+    const { w, store, service } = await reimported(t);
+    const updateItem = w.jellyfin.updateItem;
+    w.jellyfin.updateItem = async (item) => {
+      w.writes.push(`updateItem:${item.Id}`);
+      throw httpError(`Jellyfin POST /Items/${item.Id} returned 500`, 500);
+    };
+    const failed = await quietly(() => service.remapGrant('item-old', 'item-new'));
+    assert.match(String(failed.error), /returned 500/);
+    assert.deepEqual(store.get('item-old').requests, { 7: 'alice-id' }, 'the source grant is not removed');
+    assert.ok(w.blocked('bob-id').includes(OLD_TAG), 'its tag is not cleared yet');
+    assert.equal(store.get('item-new').sync.state, 'error');
+
+    w.jellyfin.updateItem = updateItem;
+    const retried = await quietly(() => service.remapGrant('item-old', 'item-new'));
+    assert.equal(retried.error, undefined, String(retried.error));
+    assert.equal(store.get('item-old'), undefined);
+    assert.deepEqual(store.get('item-new').requests, { 7: 'alice-id' });
+    assert.deepEqual(w.blockedFrom(NEW_TAG), ['bob-id', 'carol-id', 'dave-id']);
+    assert.deepEqual(w.blockedFrom(OLD_TAG), []);
+  });
+
+  it('refuses to move a 4K request onto the HD item or an HD request onto the 4K item', async (t) => {
+    const w = world();
+    const store = await newStore(t);
+    const service = new AccessService(w.jellyfin, store, undefined, w.seerr);
+    w.addItem('item-hd');
+    w.addItem('item-4k');
+    await store.grant({ itemId: 'item-old-4k', requestId: '9', userId: 'alice-id' });
+    await store.grant({ itemId: 'item-old-hd', requestId: '10', userId: 'alice-id' });
+    w.request(9, { jellyfinMediaId: 'item-hd' }, { is4k: true });
+    w.request(10, { jellyfinMediaId: 'item-hd', jellyfinMediaId4k: 'item-4k' });
+    await assert.rejects(service.remapGrant('item-old-4k', 'item-hd'), (error) => error instanceof ConflictError && error.code === 'quality_mismatch');
+    await assert.rejects(service.remapGrant('item-old-hd', 'item-4k', true), (error) => error instanceof ConflictError && error.code === 'quality_mismatch');
+    assert.deepEqual(w.writes, []);
+    assert.equal(store.get('item-hd'), undefined);
+    assert.equal(store.get('item-4k'), undefined);
   });
 
   it('rejects a missing source grant, a missing target item and a move onto itself', async (t) => {
@@ -406,7 +546,7 @@ describe('admin grant remap', { timeout: 10_000 }, () => {
   });
 
   it('is served at POST /v1/grants/:itemId/remap', async (t) => {
-    const { store, service } = await reimported(t);
+    const { w, store, service } = await reimported(t);
     const server = makeServer(service, { webhook: 'webhook-token', admin: 'admin-token' });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     t.after(() => new Promise((resolve) => server.close(resolve)));
@@ -416,13 +556,20 @@ describe('admin grant remap', { timeout: 10_000 }, () => {
       headers: { Authorization: 'Bearer admin-token', 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
+    w.addItem('item-live');
+    await store.grant({ itemId: 'item-live', requestId: '8', userId: 'alice-id' });
     const { value: responses } = await quietly(async () => [
+      await post('item-live', { toItemId: 'item-new' }, '?dryRun=true'),
       await post('item-old', { toItemId: 'item-new' }, '?dryRun=true'),
       await post('item-none', { toItemId: 'item-new' }),
       await post('item-old', { toItemId: '../etc' }),
       await post('item-old', { toItemId: 'item-new' }),
     ]);
-    const [planned, missing, invalid, remapped] = responses;
+    const [conflict, planned, missing, invalid, remapped] = responses;
+    assert.equal(conflict.status, 409);
+    const conflictBody = await conflict.json();
+    assert.equal(conflictBody.code, 'source_item_exists');
+    assert.match(conflictBody.error, /source item still exists/);
     assert.equal(planned.status, 200);
     assert.equal((await planned.json()).status, 'planned');
     assert.equal(missing.status, 404);

@@ -608,18 +608,26 @@ export const ADMIN_APP_JS = `
   }
 
   async function remapGrant(grant) {
-    const toItemId = (prompt('Move this grant to Jellyfin item ID (its audience is merged with any grant already on that item):') || '').trim();
+    const toItemId = (prompt('Move this grant to Jellyfin item ID. Only a grant whose item was deleted can be moved; its audience is merged with any grant already on that item:') || '').trim();
     if (!toItemId) return;
     await busy(async () => {
       const path = '/v1/grants/' + encodeURIComponent(grant.itemId) + '/remap';
       const body = JSON.stringify({ toItemId });
-      const preview = await api(path + '?dryRun=true', { method: 'POST', body });
-      showPlan('Move plan', [preview.result.sourcePlan, preview.result.plan]);
-      if (confirm('Move this grant from ' + grant.itemId + ' to ' + toItemId + '?')) {
-        await api(path, { method: 'POST', body });
-        byId('plan-dialog').close();
-        await load();
-        toast('Grant moved');
+      try {
+        const preview = await api(path + '?dryRun=true', { method: 'POST', body });
+        showPlan('Move plan', [preview.result.sourcePlan, preview.result.plan]);
+        if (confirm('Move this grant from ' + grant.itemId + ' to ' + toItemId + '?')) {
+          await api(path, { method: 'POST', body });
+          byId('plan-dialog').close();
+          await load();
+          toast('Grant moved');
+        }
+      } catch (error) {
+        if (error.code === 'source_item_exists') {
+          throw new Error('Not moved: ' + grant.itemId + ' still exists in Jellyfin, and moving its grant would make it visible to every household. Revoke its access explicitly first.');
+        }
+        if (error.code === 'quality_mismatch') throw new Error('Not moved: ' + error.message);
+        throw error;
       }
     });
   }

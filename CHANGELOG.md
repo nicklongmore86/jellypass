@@ -17,8 +17,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   could see it. Reconciliation (including a re-sent `MEDIA_AVAILABLE` webhook
   for the request) now asks Seerr which item each of the grant's requests
   resolves to, keeping 4K and HD items apart, and moves the grant there,
-  merging its requests, manual users and groups into any grant already on the
-  new item. The deleted item's tag is removed from user policies. Only a `404`
+  merging into any grant already on the new item. When every request resolves
+  to the same item (the usual re-import) the whole audience moves, manual users
+  and groups included. When they resolve to several items, each gets only its
+  own requests and those requesters' households (limited to groups the grant
+  already had); manual users and groups that cannot be attributed stay on the
+  old grant, which is marked `orphaned`. A request that resolves to no existing
+  item is never assigned to another one (so a 4K request never lands on an HD
+  item); it too stays on the orphaned grant. The new grants are stored and
+  applied before the old one is removed or reduced, so a restart partway
+  through converges on the next run without anyone gaining or losing access;
+  the deleted item's tag is then removed from user policies. Only a `404`
   counts as deleted; network failures and `5xx` responses keep the usual retry.
 - A grant left with no requests or groups on a deleted item (for example after
   revoking its last request) is now removed instead of failing on the `404`.
@@ -32,10 +41,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gauge instead of `jfa_sync_errors`. A full `POST /v1/reconcile` tries it
   again.
 - **`POST /v1/grants/{itemId}/remap`** (`{"toItemId": "..."}`, supports
-  `?dryRun=true`) and a **Move** action in Grants move a grant to another
-  Jellyfin item with the same merge. The target must exist; the source item may
-  already be gone, and if it still exists it becomes public again.
+  `?dryRun=true`) and a **Move** action in Grants move a grant whose item was
+  deleted to another Jellyfin item, merging its whole audience into any grant
+  already there. The target must exist. A grant whose item still exists is
+  refused with `409` (`code: "source_item_exists"`), since moving it would make
+  that item visible to every household: revoke it explicitly instead. Moving a
+  4K request onto the title's HD item (or HD onto 4K) is refused with `409`
+  (`code: "quality_mismatch"`). The old grant is removed only after the target
+  is applied; if applying fails, it is kept and the move can be repeated.
 - `jfa_grant_remaps_total{result="remapped"|"orphaned",trigger="auto"|"admin"}`.
+
+### Rollback
+
+The state file format is unchanged (schema v7), so 2.1.1 and 2.0.0 still load a
+state file written by this version. They do not know the `orphaned` state,
+though: they retry orphaned grants on every scheduled run, fail on the deleted
+item's `404`, back off to hourly retries and count them in `jfa_sync_errors`
+again. Remap or revoke orphaned grants before rolling back to avoid that.
 
 ## [2.1.1] - 2026-10-16
 

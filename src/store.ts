@@ -307,21 +307,47 @@ export class GrantStore {
   }
 
   /**
-   * Moves a grant to other items in one write: each move is merged into its target's grant (see previewMerge) and the
-   * source grant is deleted. Moved requests stay handled, so the backfill never re-imports them.
+   * The first step of moving a grant: merges each move into its target item's grant (see previewMerge) in one write,
+   * leaving the source grant as it is. A crash before the targets are applied therefore loses nobody: the targets are
+   * stored (pending), the source still records everyone, and merging the same move again changes nothing. Moved
+   * requests stay handled, so the backfill never re-imports them. Finish with retireMovedGrant once the targets are applied.
    */
-  public async moveGrant(fromItemIdInput: string, moves: GrantMove[]): Promise<{ previous: GrantRecord; currents: GrantRecord[] }> {
+  public async mergeGrants(fromItemIdInput: string, moves: GrantMove[]): Promise<GrantRecord[]> {
+    this.#assertOpen();
+    const fromItemId = normalizeId(fromItemIdInput);
+    if (!this.#state.grants[fromItemId]) throw new Error(`grant not found: ${fromItemId}`);
+    const targetIds = moves.map((move) => normalizeId(move.itemId));
+    if (targetIds.length === 0 || targetIds.includes(fromItemId) || new Set(targetIds).size !== targetIds.length) {
+      throw new Error('grant move targets are invalid');
+    }
+    const currents = moves.map((move) => this.#mergedGrant(move));
+    for (const current of currents) this.#state.grants[current.itemId] = current;
+    await this.#save();
+    return currents.map(clone);
+  }
+
+  /**
+   * The last step of moving a grant: deletes the source grant or, given `remainder` (the part of its audience that was
+   * not moved), replaces it with that part and marks it orphaned with `remainder.reason`. Resolves true only when the
+   * grant was newly orphaned.
+   */
+  public async retireMovedGrant(fromItemIdInput: string, remainder?: GrantRemainder): Promise<boolean> {
     this.#assertOpen();
     const fromItemId = normalizeId(fromItemIdInput);
     const previous = this.#state.grants[fromItemId];
-    if (!previous) throw new Error(`grant not found: ${fromItemId}`);
-    const targetIds = moves.map((move) => normalizeId(move.itemId));
-    if (targetIds.includes(fromItemId) || new Set(targetIds).size !== targetIds.length) throw new Error('grant move targets are invalid');
-    const currents = moves.map((move) => this.#mergedGrant(move));
-    delete this.#state.grants[fromItemId];
-    for (const current of currents) this.#state.grants[current.itemId] = current;
+    if (!previous) return false;
+    if (!remainder) {
+      delete this.#state.grants[fromItemId];
+      await this.#save();
+      return false;
+    }
+    const groupIds = [...new Set(remainder.groupIds.map(normalizeId))].filter((id) => this.#state.groups[id]).sort();
+    const manualUserIds = [...new Set(remainder.manualUserIds.map(normalizeId))].sort();
+    const next = this.#makeGrant(fromItemId, { ...remainder.requests }, manualUserIds, groupIds, previous, previous.mediaType);
+    next.sync = orphanedSync(previous.sync, remainder.reason);
+    this.#state.grants[fromItemId] = next;
     await this.#save();
-    return { previous: clone(previous), currents: currents.map(clone) };
+    return previous.sync.state !== 'orphaned';
   }
 
   /** Marks a grant orphaned (see SyncStatus); resolves true only when it was not orphaned already. */
@@ -330,13 +356,7 @@ export class GrantStore {
     const grant = this.#state.grants[normalizeId(itemIdInput)];
     if (!grant) return false;
     const newlyOrphaned = grant.sync.state !== 'orphaned';
-    grant.sync = {
-      state: 'orphaned',
-      attempts: grant.sync.attempts,
-      lastAttemptAt: new Date().toISOString(),
-      lastError: reason.slice(0, 1000),
-      ...(grant.sync.lastSuccessAt ? { lastSuccessAt: grant.sync.lastSuccessAt } : {}),
-    };
+    grant.sync = orphanedSync(grant.sync, reason);
     await this.#save();
     return newlyOrphaned;
   }
@@ -432,13 +452,21 @@ export class GrantStore {
   }
 }
 
-/** Part of a grant moved to another item: merged into that item's grant by GrantStore.moveGrant. */
+/** Part of a grant moved to another item: merged into that item's grant by GrantStore.mergeGrants. */
 export interface GrantMove {
   itemId: string;
   requests: Record<string, string>;
   manualUserIds: string[];
   groupIds: string[];
   mediaType?: string;
+}
+
+/** What stays on a moved grant's deleted item, orphaned, because it could not be attributed to a target. */
+export interface GrantRemainder {
+  requests: Record<string, string>;
+  manualUserIds: string[];
+  groupIds: string[];
+  reason: string;
 }
 
 export function normalizeId(value: string): string {
@@ -450,6 +478,16 @@ function pendingSync(previous?: SyncStatus): SyncStatus {
     state: 'pending',
     attempts: previous?.attempts ?? 0,
     ...(previous?.lastSuccessAt ? { lastSuccessAt: previous.lastSuccessAt } : {}),
+  };
+}
+
+function orphanedSync(previous: SyncStatus, reason: string): SyncStatus {
+  return {
+    state: 'orphaned',
+    attempts: previous.attempts,
+    lastAttemptAt: new Date().toISOString(),
+    lastError: reason.slice(0, 1000),
+    ...(previous.lastSuccessAt ? { lastSuccessAt: previous.lastSuccessAt } : {}),
   };
 }
 

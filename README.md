@@ -581,7 +581,11 @@ upgrade; follow [Upgrading from 1.1.0](CHANGELOG.md#upgrading-from-110) in the
 check [Upgrading from 2.0.0](CHANGELOG.md#upgrading-from-200) in the 2.1.0
 notes if Seerr lookup is not configured or JellyPass runs behind a reverse
 proxy. Upgrading from 2.1.0 to 2.1.1 changes neither the state file nor any
-setting. Upgrades can migrate the state file to a newer schema that older
+setting. Grants marked `orphaned` (see
+[A re-imported title is public](#a-re-imported-title-is-public-or-a-grant-is-orphaned))
+keep the state file readable by 2.1.1 and 2.0.0, but those versions retry them on
+every scheduled run and back off to hourly retries counted in `jfa_sync_errors`;
+remap or revoke them before rolling back. Upgrades can migrate the state file to a newer schema that older
 versions cannot read, so rolling back requires the backup taken before the
 upgrade. Pinning `JELLYPASS_IMAGE` makes rollback explicit:
 
@@ -653,18 +657,32 @@ When Jellyfin deletes and re-imports a title, the new copy gets a new item ID
 and the grant still points at the old one. Reconciliation recovers on its own:
 when Jellyfin answers `404` for a grant's item, JellyPass asks Seerr which item
 each of the grant's requests now resolves to (the 4K item for a 4K request and
-the HD item for an HD request, never the other) and moves the grant there. The
-requests, manual users and groups are merged into any grant already on the new
-item, including a manual one, so nobody loses access; the deleted item's tag is
-removed from user policies and the new item is made private. Requests stay
-handled, so the backfill does not import them again. Seerr re-sending
+the HD item for an HD request, never the other) and moves the grant there,
+merging into any grant already on the new item, including a manual one, so
+nobody loses access. Who moves where follows one rule, so nobody gains access
+to an item they did not have:
+
+- **Every request resolves to the same item** (the usual re-import): the whole
+  grant moves there, manual users and groups included.
+- **Requests resolve to several items:** each item gets only its own requests
+  and those requesters' households (the groups a webhook would assign, limited
+  to groups the grant already had). Manual users and groups that cannot be
+  attributed to one of them stay on the old grant, marked `orphaned`.
+- **A request resolves to no existing item:** it is never assigned to another
+  item; it stays on the old grant, marked `orphaned`, with any manual users and
+  groups (they are not attributable either).
+
+The new grants are stored and applied first; only then is the old grant
+removed (or reduced to what stays, orphaned) and the deleted item's tag removed
+from user policies, so a restart partway through converges on the next run.
+Requests stay handled, so the backfill does not import them again. Seerr re-sending
 `MEDIA_AVAILABLE` for the request triggers the same recovery. Only a definite
 `404` counts as deleted: network failures and `5xx` responses from Jellyfin or
 Seerr are retried with the usual backoff.
 
 If no request resolves to an existing item (Seerr still names the deleted item,
 the request was deleted, the grant is manual-only, or Seerr lookup is not
-configured), the grant is marked `orphaned`: it is kept, logged once as
+configured), or part of a grant stays behind as above, it is marked `orphaned`: it is kept, logged once as
 `grant orphaned`, shown with an `orphaned` status in Grants and
 `sync.state: "orphaned"` in `GET /v1/grants`, and counted by the
 `jfa_orphaned_grants` gauge rather than `jfa_sync_errors`. Scheduled
@@ -672,15 +690,21 @@ reconciliation no longer retries it; a full reconcile (`POST /v1/reconcile`)
 tries again. Move it yourself with **Move** in Grants, or:
 
 ```sh
-# Preview, then apply. The target item must exist; the old one may be gone.
+# Preview, then apply. The target item must exist; the old one must be gone.
 curl -fsS -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
   -d '{"toItemId":"NEW_ITEM_ID"}' 'http://127.0.0.1:8787/v1/grants/OLD_ITEM_ID/remap?dryRun=true'
 curl -fsS -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
   -d '{"toItemId":"NEW_ITEM_ID"}' http://127.0.0.1:8787/v1/grants/OLD_ITEM_ID/remap
 ```
 
-A move uses the same merge as the automatic recovery. If the old item still
-exists it becomes public again. `jfa_grant_remaps_total` counts moves
+A move merges the grant's whole audience into the target, as an explicit
+administrator decision. It is refused with `409` if the old item still exists
+in Jellyfin (`code: "source_item_exists"`): moving its grant would make it
+visible to every household, so revoke it explicitly instead. It is also refused
+with `409` if Seerr says a request is for the other quality's item of the title
+(a 4K request onto the HD item or the reverse, `code: "quality_mismatch"`). The
+old grant is removed only after the target has been applied; if applying fails,
+it is kept and the move can be repeated. `jfa_grant_remaps_total` counts moves
 (`result="remapped"`) and new orphans (`result="orphaned"`) by `trigger`
 (`auto` or `admin`).
 

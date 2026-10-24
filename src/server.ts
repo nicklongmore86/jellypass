@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import { UserProvisioningError, type AccessService } from './access-service.js';
+import { ConflictError, UserProvisioningError, type AccessService } from './access-service.js';
 import { ADMIN_APP_JS, ADMIN_FAVICON_SVG, ADMIN_HTML, ADMIN_STYLES } from './admin-ui.js';
 import { expiredSessionCookie, sessionCookie, type WebAuth } from './auth.js';
 import { ClientIpResolver } from './client-ip.js';
@@ -251,6 +251,7 @@ export function makeServer(
           ...(error.group ? { group: error.group } : {}),
         });
       }
+      if (error instanceof ConflictError) return json(response, 409, { error: error.message, code: error.code });
       const message = error instanceof Error ? error.message : 'unknown error';
       console.error(JSON.stringify({ level: 'error', message }));
       const status = message.includes('not found') ? 404 : isClientError(message) ? 400 : 502;
