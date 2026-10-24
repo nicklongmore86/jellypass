@@ -10,7 +10,7 @@ const BASE = {
   SEERR_URL: 'http://seerr.test',
   SEERR_API_KEY: 'seerr-key',
 };
-const KEYS = [...Object.keys(BASE), 'REQUEST_BACKFILL_SINCE', 'REQUEST_BACKFILL_ENABLED', 'LOG_LEVEL', 'WS_IDLE_TIMEOUT_MS', 'WS_UPSTREAM_IDLE_TIMEOUT_MS', 'JELLYQUEST_BRIDGE_ENABLED', 'TRUSTED_PROXIES'];
+const KEYS = [...Object.keys(BASE), 'REQUEST_BACKFILL_SINCE', 'REQUEST_BACKFILL_ENABLED', 'LOG_LEVEL', 'WS_IDLE_TIMEOUT_MS', 'WS_UPSTREAM_IDLE_TIMEOUT_MS', 'JELLYQUEST_BRIDGE_ENABLED', 'TRUSTED_PROXIES', 'SEERR_CATALOGUE_USER_ID'];
 const saved = Object.fromEntries(KEYS.map((key) => [key, process.env[key]]));
 
 function load(overrides = {}) {
@@ -27,6 +27,26 @@ function restoreEnvironment() {
     else process.env[key] = saved[key];
   }
 }
+
+describe('Seerr catalogue user configuration', () => {
+  afterEach(restoreEnvironment);
+
+  it('is optional, and a positive integer other than the owner when set', () => {
+    assert.equal(load().seerrCatalogueUserId, undefined);
+    assert.equal(load({ SEERR_CATALOGUE_USER_ID: ' 7 ' }).seerrCatalogueUserId, 7);
+    for (const value of ['0', '-2', '1.5', '7a', '07', '1e3', '99999999999999999999']) {
+      assert.throws(() => load({ SEERR_CATALOGUE_USER_ID: value }), /SEERR_CATALOGUE_USER_ID must be a positive integer/, value);
+    }
+    assert.throws(() => load({ SEERR_CATALOGUE_USER_ID: '1' }), /must not be the Seerr owner/);
+  });
+
+  it('requires Seerr', () => {
+    assert.throws(
+      () => load({ SEERR_CATALOGUE_USER_ID: '7', SEERR_URL: undefined, SEERR_API_KEY: undefined }),
+      /SEERR_URL and SEERR_API_KEY are required when SEERR_CATALOGUE_USER_ID/,
+    );
+  });
+});
 
 describe('request backfill configuration', () => {
   afterEach(restoreEnvironment);

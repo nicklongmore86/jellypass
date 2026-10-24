@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Foundation for the household app.** No user-visible change. Adds one
+  optional setting, `SEERR_CATALOGUE_USER_ID` (not used until the app API
+  ships; when set, startup stops if that Seerr user is missing, the owner, has
+  any permission or is linked to a Jellyfin user). Adds Seerr clients that act
+  as one Seerr user and never with a missing or empty `X-API-User` (which Seerr
+  runs as its owner): a member client that holds a Jellyfin user and confirms
+  with Seerr, immediately before every call, which Seerr user is linked to it,
+  and a catalogue client that reads titles as the dedicated catalogue user,
+  confirmed fit for the role before every call, so no member's Seerr
+  preferences shape them. Also a cached Jellyfin-to-Seerr user map that fails
+  closed for unmapped users, synthetic Seerr 3.5.1 fixtures with
+  canary values for privacy tests, and `pnpm test:seerr`, which checks the
+  clients against a throwaway Seerr 3.5.1 container (also run in CI). The
+  design is in [docs/app-design.md](docs/app-design.md).
+
 ## [2.2.1] - 2026-10-24
 
 This is a patch release with one bug fix. There is nothing to do when

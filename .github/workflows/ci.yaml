@@ -37,3 +37,21 @@ jobs:
       # Starts a throwaway jellyfin/jellyfin:10.11.3 container, runs
       # test/real-jellyfin.test.mjs against it, and prints its logs on failure.
       - run: pnpm test:real
+
+  seerr-integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Starts a throwaway ghcr.io/seerr-team/seerr:v3.5.1 container, runs
+      # test/real-seerr.test.mjs against it, and prints its logs on failure.
+      # The TMDB-backed test must run here: it fails rather than skips.
+      - run: pnpm test:seerr
+        env:
+          SEERR_REQUIRE_TMDB: '1'

@@ -1,0 +1,180 @@
+{
+  "page": 1,
+  "totalPages": 7300001,
+  "totalResults": 7300002,
+  "results": [
+    {
+      "id": 900001,
+      "mediaType": "movie",
+      "adult": false,
+      "genreIds": [
+        28,
+        878
+      ],
+      "originalLanguage": "en",
+      "originalTitle": "Synthetic Movie One",
+      "overview": "A synthetic film used only in tests.",
+      "popularity": 12.5,
+      "releaseDate": "2020-05-01",
+      "title": "Synthetic Movie One",
+      "video": false,
+      "voteAverage": 7.1,
+      "voteCount": 1200,
+      "backdropPath": "/synthetic-backdrop-900001.jpg",
+      "posterPath": "/synthetic-poster-900001.jpg",
+      "mediaInfo": {
+        "downloadStatus": [],
+        "downloadStatus4k": [],
+        "id": 7300003,
+        "mediaType": "movie",
+        "tmdbId": 900001,
+        "tvdbId": null,
+        "imdbId": null,
+        "status": 5,
+        "status4k": 1,
+        "createdAt": "2001-02-02T01:01:01.001Z",
+        "updatedAt": "2001-03-03T02:02:02.002Z",
+        "lastSeasonChange": "2001-04-04T03:03:03.003Z",
+        "mediaAddedAt": "2001-05-05T04:04:04.004Z",
+        "serviceId": 7300004,
+        "serviceId4k": null,
+        "externalServiceId": 7300005,
+        "externalServiceId4k": null,
+        "externalServiceSlug": "canary-service-slug",
+        "externalServiceSlug4k": null,
+        "ratingKey": null,
+        "ratingKey4k": null,
+        "jellyfinMediaId": "c0ffee00c0ffee000000000000000101",
+        "jellyfinMediaId4k": "c0ffee00c0ffee000000000000000201",
+        "watchlists": [
+          {
+            "id": 7300006,
+            "ratingKey": "",
+            "mediaType": "movie",
+            "title": "Synthetic Movie One",
+            "tmdbId": 900001,
+            "createdAt": "2001-06-06T05:05:05.005Z",
+            "updatedAt": "2001-07-07T06:06:06.006Z",
+            "requestedBy": {
+              "permissions": 32,
+              "warnings": [],
+              "id": 7300007,
+              "email": "canary-otherhousehold@example.invalid",
+              "plexUsername": "canary-otherhousehold-plex",
+              "jellyfinUsername": "canary-otherhousehold-jellyfin",
+              "username": "canary-otherhousehold",
+              "recoveryLinkExpirationDate": null,
+              "userType": 3,
+              "plexId": null,
+              "jellyfinUserId": "c0ffee00c0ffee000000000000000002",
+              "avatar": "/avatarproxy/canary-otherhousehold-avatar",
+              "avatarETag": "canary-otherhousehold-etag",
+              "avatarVersion": "canary-otherhousehold-avatar-version",
+              "movieQuotaLimit": null,
+              "movieQuotaDays": null,
+              "tvQuotaLimit": null,
+              "tvQuotaDays": null,
+              "createdAt": "2001-08-08T07:07:07.007Z",
+              "updatedAt": "2001-09-09T08:08:08.008Z",
+              "requestCount": 7300008,
+              "displayName": "Canary Otherhousehold"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": 900002,
+      "firstAirDate": "2019-09-01",
+      "genreIds": [
+        18
+      ],
+      "mediaType": "tv",
+      "name": "Synthetic Series Two",
+      "originCountry": [
+        "US"
+      ],
+      "originalLanguage": "en",
+      "originalName": "Synthetic Series Two",
+      "overview": "A synthetic series used only in tests.",
+      "popularity": 8.25,
+      "voteAverage": 6.9,
+      "voteCount": 300,
+      "backdropPath": "/synthetic-backdrop-900002.jpg",
+      "posterPath": "/synthetic-poster-900002.jpg",
+      "mediaInfo": {
+        "downloadStatus": [
+          {
+            "externalId": 7300009,
+            "estimatedCompletionTime": "2001-01-01T09:09:09.009Z",
+            "mediaType": "movie",
+            "size": 7300010,
+            "sizeLeft": 7300011,
+            "status": "downloading",
+            "timeLeft": "00:42:00",
+            "title": "canary download Synthetic Series Two S01E01",
+            "downloadId": "canary-download-id"
+          }
+        ],
+        "downloadStatus4k": [],
+        "id": 7300012,
+        "mediaType": "tv",
+        "tmdbId": 900002,
+        "tvdbId": 800002,
+        "imdbId": null,
+        "status": 3,
+        "status4k": 1,
+        "createdAt": "2001-02-02T00:00:00.000Z",
+        "updatedAt": "2001-03-03T01:01:01.001Z",
+        "lastSeasonChange": "2001-04-04T02:02:02.002Z",
+        "mediaAddedAt": "2001-05-05T03:03:03.003Z",
+        "serviceId": 7300013,
+        "serviceId4k": null,
+        "externalServiceId": 7300014,
+        "externalServiceId4k": null,
+        "externalServiceSlug": "canary-service-slug",
+        "externalServiceSlug4k": null,
+        "ratingKey": null,
+        "ratingKey4k": null,
+        "jellyfinMediaId": "c0ffee00c0ffee000000000000000102",
+        "jellyfinMediaId4k": "c0ffee00c0ffee000000000000000202",
+        "watchlists": []
+      }
+    },
+    {
+      "id": 900003,
+      "mediaType": "movie",
+      "adult": false,
+      "genreIds": [
+        35
+      ],
+      "originalLanguage": "en",
+      "originalTitle": "Synthetic Movie Three",
+      "overview": "Not in Seerr yet.",
+      "popularity": 3.5,
+      "releaseDate": "2024-02-02",
+      "title": "Synthetic Movie Three",
+      "video": false,
+      "voteAverage": 5.5,
+      "voteCount": 40,
+      "backdropPath": null,
+      "posterPath": "/synthetic-poster-900003.jpg"
+    },
+    {
+      "id": 900004,
+      "name": "Synthetic Person",
+      "popularity": 2.5,
+      "adult": false,
+      "mediaType": "person",
+      "profilePath": null,
+      "knownFor": [
+        {
+          "id": 900003,
+          "mediaType": "movie",
+          "title": "Synthetic Movie Three",
+          "posterPath": "/synthetic-poster-900003.jpg"
+        }
+      ]
+    }
+  ]
+}

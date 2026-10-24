@@ -3,7 +3,7 @@ import { WebAuth } from './auth.js';
 import { loadConfig } from './config.js';
 import { JellyfinClient } from './jellyfin.js';
 import { makeServer } from './server.js';
-import { SeerrClient } from './seerr.js';
+import { SeerrCatalogueClient, SeerrCatalogueUserError, SeerrClient, seerrUserId } from './seerr.js';
 import { BackgroundTasks, createShutdown } from './shutdown.js';
 import { GrantStore } from './store.js';
 
@@ -16,6 +16,20 @@ async function main(): Promise<void> {
   const seerr = config.seerrUrl && config.seerrApiKey
     ? new SeerrClient(config.seerrUrl, config.seerrApiKey)
     : undefined;
+  if (seerr && config.seerrCatalogueUserId !== undefined) {
+    // Not used until the household app API is served; checked now so a misconfigured user stops startup early.
+    const catalogue = new SeerrCatalogueClient(seerr, seerrUserId(config.seerrCatalogueUserId));
+    try {
+      await catalogue.validate();
+    } catch (error) {
+      if (error instanceof SeerrCatalogueUserError) throw error;
+      console.warn(JSON.stringify({
+        level: 'warn',
+        message: 'could not check the Seerr catalogue user at startup; it is checked again before it is used',
+        detail: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }
   const service = new AccessService(jellyfin, store, undefined, seerr, { logLevel: config.logLevel });
   const webAuth = new WebAuth(jellyfin);
   // Shutdown aborts this signal: each job stops before its next step and failures from the abort are not logged.

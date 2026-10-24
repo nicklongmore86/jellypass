@@ -35,6 +35,8 @@ export interface Config {
   jellyfinApiKey: string;
   seerrUrl?: string;
   seerrApiKey?: string;
+  /** The Seerr user the household app reads the title catalogue as; see docs/app-design.md. */
+  seerrCatalogueUserId?: number;
   stateFile: string;
   reconcileIntervalSeconds: number;
   catalogSyncIntervalSeconds: number;
@@ -76,6 +78,17 @@ export function loadConfig(): Config {
   const seerrApiKey = process.env.SEERR_API_KEY?.trim();
   if (!!seerrUrl !== !!seerrApiKey) {
     throw new Error('SEERR_URL and SEERR_API_KEY must be configured together');
+  }
+  const catalogueUserInput = process.env.SEERR_CATALOGUE_USER_ID?.trim();
+  const seerrCatalogueUserId = catalogueUserInput ? Number(catalogueUserInput) : undefined;
+  if (catalogueUserInput && (!/^[1-9][0-9]*$/.test(catalogueUserInput) || !Number.isSafeInteger(seerrCatalogueUserId))) {
+    throw new Error('SEERR_CATALOGUE_USER_ID must be a positive integer');
+  }
+  if (seerrCatalogueUserId === 1) {
+    throw new Error('SEERR_CATALOGUE_USER_ID must not be the Seerr owner (user 1)');
+  }
+  if (seerrCatalogueUserId !== undefined && !seerrUrl) {
+    throw new Error('SEERR_URL and SEERR_API_KEY are required when SEERR_CATALOGUE_USER_ID is set');
   }
   if (process.env.JELLYQUEST_BRIDGE_ENABLED?.trim()) {
     console.warn(JSON.stringify({
@@ -119,6 +132,7 @@ export function loadConfig(): Config {
     jellyfinUrl: required('JELLYFIN_URL').replace(/\/+$/, ''),
     jellyfinApiKey: required('JELLYFIN_API_KEY'),
     ...(seerrUrl && seerrApiKey ? { seerrUrl, seerrApiKey } : {}),
+    ...(seerrCatalogueUserId !== undefined ? { seerrCatalogueUserId } : {}),
     stateFile: path.resolve(process.env.STATE_FILE?.trim() || './data/grants.json'),
     reconcileIntervalSeconds,
     catalogSyncIntervalSeconds,

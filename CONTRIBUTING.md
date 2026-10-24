@@ -37,6 +37,14 @@ runs both suites. CI and the release workflow run both, so run `pnpm test:all`
 before opening a pull request that touches webhooks, grants, or the Jellyfin
 client.
 
+`pnpm test:seerr` runs `test/real-seerr.test.mjs` against a throwaway
+`ghcr.io/seerr-team/seerr:v3.5.1` container on `127.0.0.1:15055` (set
+`SEERR_PORT` to change it), seeded with an owner and a member account, and
+removes it afterwards. It needs Docker but no media server or network access,
+and checks that the acting-user Seerr client never runs a call as Seerr's
+owner. CI runs it too; run it before opening a pull request that touches
+`src/seerr.ts` or `src/seerr-users.ts`.
+
 ## Pull requests
 
 1. Fork the repository and create a focused branch from `main`.

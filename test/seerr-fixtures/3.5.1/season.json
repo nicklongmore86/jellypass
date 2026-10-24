@@ -1,0 +1,55 @@
+{
+  "airDate": "2019-09-01",
+  "episodes": [
+    {
+      "id": 900701,
+      "airDate": "2019-09-01",
+      "episodeNumber": 1,
+      "name": "Synthetic Episode 1",
+      "overview": "",
+      "productionCode": "",
+      "seasonNumber": 1,
+      "showId": 900002,
+      "voteAverage": 7,
+      "voteCount": 10,
+      "stillPath": null
+    },
+    {
+      "id": 900702,
+      "airDate": "2019-09-02",
+      "episodeNumber": 2,
+      "name": "Synthetic Episode 2",
+      "overview": "",
+      "productionCode": "",
+      "seasonNumber": 1,
+      "showId": 900002,
+      "voteAverage": 7,
+      "voteCount": 10,
+      "stillPath": null
+    },
+    {
+      "id": 900703,
+      "airDate": "2019-09-03",
+      "episodeNumber": 3,
+      "name": "Synthetic Episode 3",
+      "overview": "",
+      "productionCode": "",
+      "seasonNumber": 1,
+      "showId": 900002,
+      "voteAverage": 7,
+      "voteCount": 10,
+      "stillPath": null
+    }
+  ],
+  "externalIds": {
+    "freebaseId": null,
+    "freebaseMid": null,
+    "tvdbId": 800012,
+    "tvrageId": null
+  },
+  "id": 900601,
+  "name": "Season 1",
+  "overview": "",
+  "seasonNumber": 1,
+  "posterPath": null
+}
