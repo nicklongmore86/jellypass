@@ -12,20 +12,9 @@
 const CACHE_PREFIX = 'jellypass-app-static-';
 const RELEASE = `${CACHE_PREFIX}__CONTENT_HASH__-`;
 const API_PREFIX = '/jellypass/app/v1/';
-const STATIC_PATHS = [
-  '/jellypass/app/',
-  '/jellypass/app/app.css',
-  '/jellypass/app/manifest.webmanifest',
-  '/jellypass/app/tmdb-logo.svg',
-  '/jellypass/app/icons/icon-192.png',
-  '/jellypass/app/icons/icon-512.png',
-  '/jellypass/app/icons/apple-touch-icon.png',
-  '/jellypass/app/js/api.js',
-  '/jellypass/app/js/main.js',
-  '/jellypass/app/js/render.js',
-  '/jellypass/app/js/session.js',
-  '/jellypass/app/js/signin.js',
-];
+// Every file of the release but this worker, filled in by scripts/build-app.mjs with the content-hashed names the page
+// loads (the page at the app's address, the rest as app.<hash>.css and the like).
+const STATIC_PATHS = JSON.parse('__PRECACHE_PATHS__');
 const STATIC = new Set(STATIC_PATHS);
 
 self.addEventListener('install', (event) => {

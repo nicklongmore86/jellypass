@@ -366,7 +366,9 @@ elsewhere; the files are never proxied to Jellyfin.
 
 - **Source and build.** Plain TypeScript, HTML and CSS: no framework and no bundler. The client (`app/src/*.ts`) is
   compiled by `tsc` alone (`tsconfig.app.json`: DOM libraries, ES modules) to `dist/app/js`, and `scripts/build-app.mjs`
-  copies the static files (`app/static`: page, stylesheet, manifest, service worker, icons, TMDB logo) beside it. The
+  writes the served files (`app/static`: page, stylesheet, manifest, service worker, icons, TMDB logo, and the compiled
+  client from `dist/app-js`) to `dist/app`, **content-hashing every file but the page and the worker** (see "Fingerprinted
+  files"). The
   server reads `dist/app` once at startup (`src/app-assets.ts`) and refuses to start the app if it is missing. The
   Dockerfile builds it with the rest. `scripts/make-app-icons.py` regenerates the PNG icons (Pillow; the PNGs are
   committed). The only new dependency is `linkedom`, a dev dependency, for DOM-level tests.
@@ -426,11 +428,25 @@ elsewhere; the files are never proxied to Jellyfin.
   `X-Frame-Options: DENY`; `Cross-Origin-Opener-Policy` and `Cross-Origin-Resource-Policy: same-origin`; a
   `Permissions-Policy` denying the powerful features the app does not use (camera, microphone, geolocation, payment,
   usb, serial, hid, bluetooth, midi, display capture, motion and other sensors, screen wake lock, WebAuthn get, XR and
-  `interest-cohort`; the list is `APP_PERMISSIONS_POLICY`, tested). `Cache-Control: no-cache` plus an `ETag` (304 on match) for the page, script, styles, manifest
-  and service worker; `public, max-age=604800` for icons and the logo. The HTML is identical for every caller and
-  carries no user data (tested), so it is not `no-store`; the API stays `no-store`.
-- **Service worker** (`sw.js`, registered by absolute URL `/jellypass/app/sw.js` with scope `/jellypass/app/`). The app's files are served only at their exact lower-case paths (the gateway matches the rest of the app's paths case-insensitively, so `/JELLYPASS/APP/` is an unknown app path, answered like any other, not the page), so there is one address and one registration. It precaches and serves only the app's own static files (the
-  exact list in `sw.js`, which a test compares with the files served), network first, falling back to its copy when
+  `interest-cohort`; the list is `APP_PERMISSIONS_POLICY`, tested). `Cache-Control: public, max-age=31536000, immutable` (with an `ETag`, 304 on match) for every
+  fingerprinted file; `no-store` (plus `CDN-Cache-Control` and `Cloudflare-CDN-Cache-Control: no-store`, no `ETag`) for the page, the
+  `/jellypass/app` redirect and `sw.js`. The HTML is identical for every caller and carries no user data (tested); it is
+  `no-store` because its address is fixed, not because it is private. The API stays `no-store`.
+- **Fingerprinted files.** `scripts/build-app.mjs` names each file `<name>.<12 hex digits of sha256(content)>.<ext>`
+  and rewrites every reference, quoted and exact: the page's `href`/`src`, module imports (`./api.js`), the manifest's
+  icons and the logo path in `render.ts`. A file's hash is taken after its references are rewritten, so it changes when
+  anything it names changes (a module's name follows its imports; the build orders modules by import and stops on a
+  cycle). Only modules reachable from `main.js` are built. CSS may not use `url()`/`@import` and the build stops if it
+  does; after rewriting, the build also fails if any quoted source name survives or an import reaches no file. The TMDB
+  logo is copied byte for byte. **Why:** a CDN that keeps files by extension (Cloudflare) rewrote `no-cache` + `ETag` to
+  `max-age=14400` on `.css`/`.js` (and stripped the page's ETag), so a browser could run a mix of old and new files for
+  four hours; with fingerprints a page can only load files its own release names. **What Cloudflare honours** (its cache
+  documentation, checked): `Cache-Control: no-store` is never cached at the edge; `Cloudflare-CDN-Cache-Control` (not
+  forwarded) and `CDN-Cache-Control` steer only the CDN's own cache and leave `Cache-Control` as sent; the Browser Cache
+  TTL setting rewrites `Cache-Control` toward browsers on what it caches. So the page and worker send all three
+  `no-store` headers. Unknown or old fingerprints, and the unfingerprinted names, are unknown app paths.
+- **Service worker** (`sw.js`, registered by absolute URL `/jellypass/app/sw.js` with scope `/jellypass/app/` and `updateViaCache: 'none'`, so the browser checks the worker on the network whatever a cache says). The app's files are served only at their exact lower-case paths (the gateway matches the rest of the app's paths case-insensitively, so `/JELLYPASS/APP/` is an unknown app path, answered like any other, not the page), so there is one address and one registration. It precaches and serves only the app's own static files (the
+  exact list, filled into `sw.js` by the build from the fingerprinted files it wrote, which a test compares with the files served), network first, falling back to its copy when
   the network fails. The copy is one release: each install fills a cache of its own, named for a hash of the precached files and of the unstamped worker (computed by
   `scripts/build-app.mjs` and written into `sw.js`, so any changed file, or a worker-only change, is a new release) plus a random id for that install; the
   whole set is installed or none of it, a failed install deletes only its own cache (never one another worker may be serving from), offline answers come from any complete cache of the worker's own release, nothing is added afterwards, and

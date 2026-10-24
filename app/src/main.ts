@@ -401,7 +401,7 @@ doc.addEventListener('visibilitychange', () => {
 
 if ('serviceWorker' in navigator) {
   // Only static app files are ever cached (see sw.js); a failure to register changes nothing else.
-  navigator.serviceWorker.register('/jellypass/app/sw.js', { scope: '/jellypass/app/' }).catch(() => undefined);
+  navigator.serviceWorker.register('/jellypass/app/sw.js', { scope: '/jellypass/app/', updateViaCache: 'none' }).catch(() => undefined);
 }
 
 void render();

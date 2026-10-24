@@ -21,6 +21,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   share one session and **Play** stays signed in. New **Sign out** revokes the
   session and also signs Jellyfin web out on that address. **Open Jellyfin to
   sign in** remains as a fallback.
+- **The app's files can no longer be mixed across releases by a CDN.** Cloudflare
+  rewrote the `Cache-Control: no-cache` on the app's `.css`/`.js` files
+  (including `sw.js`) to `max-age=14400` and stripped the page's `ETag`, so after
+  an update a browser could run old and new files together for up to four hours.
+  Every file the page loads except the page and `sw.js` now has a content hash
+  in its name (`app.<hash>.css`) and is served `public, max-age=31536000,
+  immutable`; the page names exactly its own release's files and an old hash
+  answers `404`. The page, the `/jellypass/app` redirect and `sw.js` are sent
+  `no-store` with `CDN-Cache-Control` and `Cloudflare-CDN-Cache-Control:
+  no-store`, and the worker is registered with `updateViaCache: 'none'` and
+  precaches the hashed names. Purge your CDN's cache for `/jellypass/app/*`
+  once after upgrading.
 
 ## [2.3.0] - 2026-10-24
 

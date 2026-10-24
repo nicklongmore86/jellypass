@@ -5,7 +5,7 @@ RUN corepack enable && pnpm install --frozen-lockfile
 COPY src ./src
 COPY app ./app
 COPY scripts/build-app.mjs ./scripts/build-app.mjs
-RUN pnpm build
+RUN pnpm build && rm -rf dist/app-js
 
 FROM node:24-alpine
 ENV NODE_ENV=production

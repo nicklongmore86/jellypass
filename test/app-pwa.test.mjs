@@ -2,6 +2,7 @@
 // renders from the API's DTOs. DOM-level tests use linkedom (a small DOM for Node, a dev dependency only) to run the
 // real client modules from dist/app against the real API, served from the same fakes as test/app-api.test.mjs.
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,7 +11,7 @@ import { pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import { parseHTML } from 'linkedom';
 import { APP_CONTENT_SECURITY_POLICY, APP_PERMISSIONS_POLICY } from '../dist/app-assets.js';
-import { contentHash, stampWorker } from '../scripts/build-app.mjs';
+import { buildApp, contentHash, stampWorker } from '../scripts/build-app.mjs';
 import { ALICE, ANN, BOB, CAROL, HOST_A, HOST_B, OUTSIDER, OWN_MOVIE, T_MOVIE, T_TV, TOKENS, get, post, startApp, world } from './support/household-app.mjs';
 import { assertNoCanaries } from './support/seerr-fixtures.mjs';
 
@@ -27,6 +28,15 @@ function walk(directory, prefix = '') {
 }
 const FILES = walk(DIST_APP);
 const read = (relative) => readFileSync(path.join(DIST_APP, relative), 'utf8');
+/** The built, fingerprinted name of a source path: `app.css` is `app.<12 hex digits>.css`. Exactly one file has it. */
+const FINGERPRINT = '[0-9a-f]{12}';
+function BUILT(logical) {
+  const ext = path.posix.extname(logical);
+  const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const found = FILES.filter((file) => new RegExp(`^${escape(logical.slice(0, -ext.length))}\\.${FINGERPRINT}${escape(ext)}$`).test(file));
+  assert.equal(found.length, 1, `${logical} is built once: ${found}`);
+  return found[0];
+}
 
 /** What a request answered, minus anything that differs by design between two fixed 404s. */
 const shape = (answer) => ({ status: answer.status, text: answer.text, headers: answer.headers });
@@ -68,14 +78,14 @@ describe('household app page: serving', { timeout: 30_000 }, () => {
 
   it('answers HEAD without a body and a conditional GET with 304', async (t) => {
     const app = await startApp(t);
-    const css = await app.get(`${PAGE}app.css`, { user: null });
+    const css = await app.get(`${PAGE}${BUILT('app.css')}`, { user: null });
     const etag = css.headers.etag;
     assert.match(etag, /^"[A-Za-z0-9_-]{27}"$/);
-    const cached = await app.get(`${PAGE}app.css`, { user: null, headers: { 'If-None-Match': etag } });
+    const cached = await app.get(`${PAGE}${BUILT('app.css')}`, { user: null, headers: { 'If-None-Match': etag } });
     assert.equal(cached.status, 304);
     assert.equal(cached.body.length, 0);
     assert.equal(cached.headers.etag, etag);
-    const stale = await app.get(`${PAGE}app.css`, { user: null, headers: { 'If-None-Match': '"other"' } });
+    const stale = await app.get(`${PAGE}${BUILT('app.css')}`, { user: null, headers: { 'If-None-Match': '"other"' } });
     assert.equal(stale.status, 200);
     const head = await new Promise((resolve, reject) => {
       import('node:http').then(({ request }) => {
@@ -98,7 +108,7 @@ describe('household app page: serving', { timeout: 30_000 }, () => {
     assert.equal(unknownOff.status, 404);
     assert.equal(unknownOff.text, NOT_FOUND);
     // App off: no file, and not the page either; byte-for-byte the same as any other app path, never proxied.
-    for (const file of [PAGE, `${PAGE}sw.js`, `${PAGE}manifest.webmanifest`, `${PAGE}js/main.js`, `${PAGE}app.css`, '/jellypass/app']) {
+    for (const file of [PAGE, `${PAGE}sw.js`, `${PAGE}${BUILT('manifest.webmanifest')}`, `${PAGE}${BUILT('js/main.js')}`, `${PAGE}${BUILT('app.css')}`, '/jellypass/app']) {
       assert.deepEqual(shape(await off.get(file, { user: null })), unknownOff, file);
     }
     assert.equal(off.jellyfin.requests.length, 0);
@@ -108,7 +118,7 @@ describe('household app page: serving', { timeout: 30_000 }, () => {
       for (const headers of [undefined, admin]) {
         const baseline = shape(await on.get('/jellypass/app-no-such-path', { host, user: null, ...(headers ? { headers } : {}) }));
         assert.equal(baseline.status, headers ? 404 : 401);
-        for (const file of [PAGE, `${PAGE}sw.js`, `${PAGE}manifest.webmanifest`, `${PAGE}js/main.js`, '/jellypass/app']) {
+        for (const file of [PAGE, `${PAGE}sw.js`, `${PAGE}${BUILT('manifest.webmanifest')}`, `${PAGE}${BUILT('js/main.js')}`, '/jellypass/app']) {
           const options = { host, user: null, ...(headers ? { headers } : {}) };
           assert.deepEqual(shape(await on.get(file, options)), baseline, `${host} ${file}`);
           assert.deepEqual(shape(await off.get(file, options)), baseline, `${host} ${file} (app off)`);
@@ -202,24 +212,120 @@ describe('household app page: headers', { timeout: 30_000 }, () => {
     for (const feature of features) assert.match(feature, /^[a-z-]+=\(\)$/, 'every feature is switched off for everyone, itself included');
   });
 
+  const IMMUTABLE = 'public, max-age=31536000, immutable';
+  const NEVER_STORED = { 'cache-control': 'no-store', 'cdn-cache-control': 'no-store', 'cloudflare-cdn-cache-control': 'no-store' };
+
   it('sets the right content type and cache rule for each kind of file', async (t) => {
     const app = await startApp(t);
-    const expected = {
-      [PAGE]: ['text/html; charset=utf-8', 'no-cache'],
-      [`${PAGE}app.css`]: ['text/css; charset=utf-8', 'no-cache'],
-      [`${PAGE}js/main.js`]: ['text/javascript; charset=utf-8', 'no-cache'],
-      [`${PAGE}sw.js`]: ['text/javascript; charset=utf-8', 'no-cache'],
-      [`${PAGE}manifest.webmanifest`]: ['application/manifest+json; charset=utf-8', 'no-cache'],
-      [`${PAGE}icons/icon-192.png`]: ['image/png', 'public, max-age=604800'],
-      [`${PAGE}tmdb-logo.svg`]: ['image/svg+xml', 'public, max-age=604800'],
+    const hashed = {
+      [BUILT('app.css')]: 'text/css; charset=utf-8',
+      [BUILT('js/main.js')]: 'text/javascript; charset=utf-8',
+      [BUILT('js/signin.js')]: 'text/javascript; charset=utf-8',
+      [BUILT('manifest.webmanifest')]: 'application/manifest+json; charset=utf-8',
+      [BUILT('icons/icon-192.png')]: 'image/png',
+      [BUILT('tmdb-logo.svg')]: 'image/svg+xml',
     };
-    for (const [served, [type, cache]] of Object.entries(expected)) {
+    // Fingerprinted files never change under their name: kept for a year, immutable, with a validator.
+    for (const [file, type] of Object.entries(hashed)) {
+      const { headers } = await app.get(`${PAGE}${file}`, { user: null });
+      assert.equal(headers['content-type'], type, file);
+      assert.equal(headers['cache-control'], IMMUTABLE, file);
+      assert.match(headers.etag, /^"[A-Za-z0-9_-]{27}"$/, file);
+      assert.equal(headers['cdn-cache-control'], undefined, file);
+    }
+    // The page and the worker keep their addresses, so no browser, CDN or other shared cache may keep either; and they
+    // carry no validator, so nothing can revalidate a stale copy into use.
+    for (const served of [PAGE, `${PAGE}index.html`, `${PAGE}sw.js`, '/jellypass/app']) {
       const { headers } = await app.get(served, { user: null });
-      assert.equal(headers['content-type'], type, served);
-      assert.equal(headers['cache-control'], cache, served);
+      for (const [name, value] of Object.entries(NEVER_STORED)) assert.equal(headers[name], value, `${served} ${name}`);
+      assert.equal(headers.etag, undefined, served);
+      assert.equal(headers['set-cookie'], undefined, served);
+      assert.equal(headers.expires, undefined, served);
+    }
+    assert.equal((await app.get(PAGE, { user: null })).headers['content-type'], 'text/html; charset=utf-8');
+    assert.equal((await app.get(`${PAGE}sw.js`, { user: null })).headers['content-type'], 'text/javascript; charset=utf-8');
+    // A conditional request for the page or worker is answered in full, never 304.
+    for (const [served, file] of [[PAGE, 'index.html'], [`${PAGE}sw.js`, 'sw.js']]) {
+      const etag = `"${createHash('sha256').update(readFileSync(path.join(DIST_APP, file))).digest('base64url').slice(0, 27)}"`;
+      assert.equal((await app.get(served, { user: null, headers: { 'If-None-Match': etag } })).status, 200, `${served} is never answered 304`);
     }
     // The API next door is still never cached.
     assert.equal((await app.get('/jellypass/app/v1/me')).headers['cache-control'], 'no-store');
+  });
+
+  it('serves a file only under the fingerprint of its content: an old or made-up one is an unknown app path', async (t) => {
+    const app = await startApp(t);
+    const css = BUILT('app.css');
+    assert.equal((await app.get(`${PAGE}${css}`, { user: null })).status, 200);
+    const unknown = shape(await app.get('/jellypass/app/no-such-file', { user: null }));
+    for (const name of [
+      'app.css', 'js/main.js', 'manifest.webmanifest', 'icons/icon-192.png', 'tmdb-logo.svg', 'js/session.js',
+      css.replace(/\.[0-9a-f]{12}\./, '.000000000000.'), css.replace(/\.[0-9a-f]{12}\./, '.ffffffffffff.'),
+      css.replace('.css', '.js'), `${css}.map`,
+    ]) {
+      assert.deepEqual(shape(await app.get(`${PAGE}${name}`, { user: null })), unknown, name);
+    }
+    assert.equal((await app.get(`${PAGE}js/nope.${'0'.repeat(12)}.js`)).status, 404);
+  });
+
+  it('fingerprints every file the page loads and names only fingerprinted files', () => {
+    const named = FILES.filter((file) => file !== 'index.html' && file !== 'sw.js');
+    assert.ok(named.length >= 11);
+    for (const file of named) assert.match(file, /^(?:[a-z0-9-]+\/)?[a-z0-9-]+\.[0-9a-f]{12}\.[a-z]+$/, file);
+    const { document } = parseHTML(read('index.html'));
+    const referenced = [
+      ...document.querySelectorAll('script[src], link[href]'),
+    ].map((node) => node.getAttribute('src') ?? node.getAttribute('href'));
+    assert.deepEqual(referenced.sort(), [
+      BUILT('app.css'), BUILT('icons/apple-touch-icon.png'), BUILT('icons/icon-192.png'), BUILT('js/main.js'), BUILT('manifest.webmanifest'),
+    ].sort());
+    // Every module import reaches a built file, and the sources' own names are gone.
+    for (const file of FILES.filter((name) => name.endsWith('.js') && name !== 'sw.js')) {
+      for (const match of read(file).matchAll(/(?:from|import)\s*['"](\.\/[^'"]+)['"]/g)) {
+        assert.ok(FILES.includes(path.posix.join(path.posix.dirname(file), match[1])), `${file} imports ${match[1]}`);
+        assert.match(match[1], new RegExp(`\\.${FINGERPRINT}\\.js$`), `${file} imports ${match[1]}`);
+      }
+    }
+    for (const source of ['app.css', 'js/main.js', 'js/api.js', 'manifest.webmanifest', 'icons/icon-192.png', 'tmdb-logo.svg']) {
+      assert.equal(FILES.includes(source), false, `${source} is only served fingerprinted`);
+    }
+    assert.ok(JSON.parse(read(BUILT('manifest.webmanifest'))).icons.every((icon) => FILES.includes(icon.src)));
+    assert.ok(read(BUILT('js/render.js')).includes(`'${BUILT('tmdb-logo.svg')}'`), 'the logo is named by its fingerprint');
+    // The logo is TMDB's, unmodified.
+    assert.deepEqual(readFileSync(path.join(DIST_APP, BUILT('tmdb-logo.svg'))), readFileSync(path.join(import.meta.dirname, '..', 'app', 'static', 'tmdb-logo.svg')));
+  });
+
+  it('gives a file a new name when it, or anything it names, changes, and the same name when nothing does', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'jellypass-fingerprint-'));
+    try {
+      const staticDir = path.join(root, 'static');
+      const jsDir = path.join(root, 'js');
+      cpSync(path.join(import.meta.dirname, '..', 'app', 'static'), staticDir, { recursive: true });
+      cpSync(path.join(import.meta.dirname, '..', 'dist', 'app-js'), jsDir, { recursive: true });
+      const build = (name) => buildApp({ staticDir, jsDir, outDir: path.join(root, name) });
+      const before = build('one');
+      assert.deepEqual([...build('two')].sort(), [...before].sort(), 'a rebuild gives the same names');
+      assert.deepEqual(walk(path.join(root, 'one')), walk(path.join(root, 'two')));
+      writeFileSync(path.join(staticDir, 'app.css'), `${readFileSync(path.join(staticDir, 'app.css'), 'utf8')}\n.x { color: red; }\n`);
+      const css = build('three');
+      assert.notEqual(css.get('app.css'), before.get('app.css'));
+      assert.equal(css.get('js/api.js'), before.get('js/api.js'), 'unrelated files keep their names');
+      assert.notEqual(read('index.html'), readFileSync(path.join(root, 'three', 'index.html'), 'utf8'), 'the page names the new stylesheet');
+      // A module's name follows what it imports: changing api.js renames main.js and signin.js, which import it.
+      writeFileSync(path.join(jsDir, 'api.js'), `${readFileSync(path.join(jsDir, 'api.js'), 'utf8')}\n// changed\n`);
+      const api = build('four');
+      for (const file of ['js/api.js', 'js/signin.js', 'js/main.js']) assert.notEqual(api.get(file), css.get(file), file);
+      assert.equal(api.get('js/session.js'), css.get('js/session.js'));
+      // The worker's cache name follows the files too.
+      const stamp = (name) => /\$\{CACHE_PREFIX\}([0-9a-f]{16})-/.exec(readFileSync(path.join(root, name, 'sw.js'), 'utf8'))?.[1];
+      assert.notEqual(stamp('four'), stamp('three'));
+      assert.notEqual(stamp('three'), stamp('one'));
+      // A reference the build cannot rewrite stops it.
+      writeFileSync(path.join(staticDir, 'app.css'), 'body { background: url(x.png); }');
+      assert.throws(() => build('five'), /url\(\) or @import/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -247,16 +353,16 @@ describe('household app page: files', () => {
     assert.equal(meta('mobile-web-app-capable'), 'yes');
     assert.equal(meta('apple-mobile-web-app-title'), 'JellyPass');
     assert.ok(meta('apple-mobile-web-app-status-bar-style'));
-    assert.equal(meta('theme-color'), JSON.parse(read('manifest.webmanifest')).theme_color);
-    assert.equal(document.querySelector('link[rel="manifest"]').getAttribute('href'), 'manifest.webmanifest');
-    assert.equal(document.querySelector('link[rel="apple-touch-icon"]').getAttribute('href'), 'icons/apple-touch-icon.png');
+    assert.equal(meta('theme-color'), JSON.parse(read(BUILT('manifest.webmanifest'))).theme_color);
+    assert.equal(document.querySelector('link[rel="manifest"]').getAttribute('href'), BUILT('manifest.webmanifest'));
+    assert.equal(document.querySelector('link[rel="apple-touch-icon"]').getAttribute('href'), BUILT('icons/apple-touch-icon.png'));
     assert.ok(document.querySelector('main'), 'a main landmark');
     assert.ok(document.querySelector('nav[aria-label]'), 'a labelled nav');
     assert.ok(document.querySelector('a.skip-link'), 'a skip link');
   });
 
   it('has a manifest that installs the app as standalone, starting at the app, with real icons', () => {
-    const manifest = JSON.parse(read('manifest.webmanifest'));
+    const manifest = JSON.parse(read(BUILT('manifest.webmanifest')));
     assert.equal(manifest.name, 'JellyPass');
     assert.equal(manifest.display, 'standalone');
     // The scope is the whole household host, not just the app: Jellyfin web (sign-in, and what Play opens) then stays inside
@@ -274,12 +380,12 @@ describe('household app page: files', () => {
       assert.deepEqual([...png.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], icon.src);
       assert.equal(`${png.readUInt32BE(16)}x${png.readUInt32BE(20)}`, icon.sizes, icon.src);
     }
-    const touch = readFileSync(path.join(DIST_APP, 'icons/apple-touch-icon.png'));
+    const touch = readFileSync(path.join(DIST_APP, BUILT('icons/apple-touch-icon.png')));
     assert.equal(`${touch.readUInt32BE(16)}x${touch.readUInt32BE(20)}`, '180x180');
   });
 
   it('bundles the unmodified TMDB logo locally and never loads anything from another origin', () => {
-    const logo = read('tmdb-logo.svg');
+    const logo = read(BUILT('tmdb-logo.svg'));
     assert.match(logo, /^<svg [^>]*viewBox="0 0 273\.42 35\.52"/);
     assert.doesNotMatch(logo, /<script|href=["']https?:|on\w+=/i);
     for (const file of FILES.filter((name) => /\.(js|css|html|webmanifest)$/.test(name))) {
@@ -289,7 +395,7 @@ describe('household app page: files', () => {
         assert.match(url, /^https:\/\/(?:www\.themoviedb\.org\/?|image\.tmdb\.org\/t\/p\/.*|image\\\.tmdb.*)$/, `${file} mentions ${url}`);
       }
     }
-    assert.doesNotMatch(read('app.css'), /@import|url\(/);
+    assert.doesNotMatch(read(BUILT('app.css')), /@import|url\(/);
   });
 
   it('writes nothing it should not: no HTML parsing of text, no eval, no cookies, and storage only in session.js, for two keys', () => {
@@ -297,10 +403,10 @@ describe('household app page: files', () => {
       const source = read(file);
       assert.doesNotMatch(source, /innerHTML|outerHTML|insertAdjacentHTML|document\.write|\beval\(|new Function|srcdoc/, file);
       assert.doesNotMatch(source, /sessionStorage|indexedDB|document\.cookie|caches\./, file);
-      if (file !== 'js/session.js') assert.doesNotMatch(source, /setItem|removeItem|\.clear\(/, `${file} writes browser storage outside session.js`);
+      if (!file.startsWith('js/session.')) assert.doesNotMatch(source, /setItem|removeItem|\.clear\(/, `${file} writes browser storage outside session.js`);
     }
     // The only storage the app writes is Jellyfin web's own credentials (its sign-in) and its own random device ID.
-    const session = read('js/session.js');
+    const session = read(BUILT('js/session.js'));
     const keys = new Set([...session.matchAll(/CREDENTIALS_KEY = '([^']+)'|DEVICE_ID_KEY = '([^']+)'/g)].map((match) => match[1] ?? match[2]));
     assert.deepEqual([...keys].sort(), ['jellyfin_credentials', 'jellypass_device_id']);
     assert.deepEqual([...session.matchAll(/setItem\(([A-Z_]+)/g)].map((match) => match[1]).sort(), ['CREDENTIALS_KEY', 'CREDENTIALS_KEY', 'DEVICE_ID_KEY']);
@@ -312,7 +418,7 @@ describe('household app page: files', () => {
   });
 
   it('keeps every colour pair in the stylesheet at WCAG AA contrast', () => {
-    const css = read('app.css');
+    const css = read(BUILT('app.css'));
     const tokens = Object.fromEntries([...css.matchAll(/--([a-z-]+):\s*(#[0-9a-f]{6});/gi)].map((match) => [match[1], match[2]]));
     const luminance = (hex) => {
       const channels = [1, 3, 5].map((index) => parseInt(hex.slice(index, index + 2), 16) / 255)
@@ -451,7 +557,7 @@ describe('household app page: service worker', () => {
       const { handled } = await fetchEvent(worker, url);
       assert.equal(handled, false, url);
     }
-    assert.equal((await fetchEvent(worker, `${ORIGIN}${PAGE}app.css`, { method: 'POST' })).handled, false);
+    assert.equal((await fetchEvent(worker, `${ORIGIN}${PAGE}${BUILT('app.css')}`, { method: 'POST' })).handled, false);
     for (const url of ['/Users/AuthenticateByName', '/Sessions/Logout']) {
       assert.equal((await fetchEvent(worker, `${ORIGIN}${url}`, { method: 'POST' })).handled, false, `POST ${url}`);
     }
@@ -468,8 +574,8 @@ describe('household app page: service worker', () => {
     const stored = () => [...worker.stores.values()].flatMap((store) => [...store.keys()]).sort();
     const before = stored();
     for (const url of [
-      `${ORIGIN}/jellypass/app/v1/me`, `${ORIGIN}${PAGE}`, `${ORIGIN}${PAGE}js/main.js`, `${ORIGIN}/jellypass/app/v1/discover/trending`,
-      `${ORIGIN}${PAGE}app.css?x=1`, `${ORIGIN}/jellypass/app/V1/me`,
+      `${ORIGIN}/jellypass/app/v1/me`, `${ORIGIN}${PAGE}`, `${ORIGIN}${PAGE}${BUILT('js/main.js')}`, `${ORIGIN}/jellypass/app/v1/discover/trending`,
+      `${ORIGIN}${PAGE}${BUILT('app.css')}?x=1`, `${ORIGIN}/jellypass/app/V1/me`,
     ]) {
       await fetchEvent(worker, url);
     }
@@ -508,7 +614,7 @@ describe('household app page: service worker', () => {
     const waits = [];
     worker.listeners.install({ waitUntil: (promise) => waits.push(promise) });
     await Promise.all(waits);
-    const url = `${ORIGIN}${PAGE}app.css`;
+    const url = `${ORIGIN}${PAGE}${BUILT('app.css')}`;
     assert.equal(await (await fetchEvent(worker, url)).response.text(), 'network 200');
     // A newer answer on the network is not mixed into the stored release: offline is always the installed set.
     online = false;
@@ -544,7 +650,7 @@ describe('household app page: service worker', () => {
       const template = readFileSync(path.join(import.meta.dirname, '..', 'app', 'static', 'sw.js'), 'utf8');
       assert.equal(contentHash(copy, template), hash, 'the unstamped worker is what the build hashes');
       assert.notEqual(contentHash(copy, `${template}\n// worker-only change\n`), hash, 'a worker-only change is a new cache name');
-      for (const file of ['app.css', 'js/main.js', 'index.html', 'icons/icon-192.png']) {
+      for (const file of [BUILT('app.css'), BUILT('js/main.js'), 'index.html', BUILT('icons/icon-192.png')]) {
         const target = path.join(copy, file);
         const original = readFileSync(target);
         writeFileSync(target, Buffer.concat([original, Buffer.from('\n')]));
@@ -560,7 +666,7 @@ describe('household app page: service worker', () => {
 
   it('installs a release whole or not at all, and leaves other releases\' caches alone when it cannot', async () => {
     const worker = runWorker({ failAdd: true });
-    worker.stores.set('jellypass-app-static-previous', new Map([[`${PAGE}app.css`, new Response('old release')]]));
+    worker.stores.set('jellypass-app-static-previous', new Map([[`${PAGE}${BUILT('app.css')}`, new Response('old release')]]));
     const waits = [];
     worker.listeners.install({ waitUntil: (promise) => waits.push(promise) });
     await assert.rejects(Promise.all(waits), /network error while precaching/);
@@ -585,7 +691,7 @@ describe('household app page: service worker', () => {
     assert.deepEqual([...stores.keys()], [name], 'only the failed install\'s own cache was deleted');
     assert.deepEqual(a.log.deleted, []);
     const offline = runWorker({ stores, network: async () => { throw new TypeError('offline'); } });
-    assert.equal(await (await fetchEvent(offline, `${ORIGIN}${PAGE}app.css`)).response.text(), 'precached', 'offline fallback still works');
+    assert.equal(await (await fetchEvent(offline, `${ORIGIN}${PAGE}${BUILT('app.css')}`)).response.text(), 'precached', 'offline fallback still works');
   });
 
   it('keeps every install\'s cache separate, and a restarted worker still finds its release\'s copy', async () => {
@@ -598,7 +704,7 @@ describe('household app page: service worker', () => {
     }
     assert.equal(stores.size, 2, 'distinct names per install');
     const restarted = runWorker({ stores, network: async () => { throw new TypeError('offline'); } });
-    assert.equal(await (await fetchEvent(restarted, `${ORIGIN}${PAGE}js/main.js`)).response.text(), 'precached');
+    assert.equal(await (await fetchEvent(restarted, `${ORIGIN}${PAGE}${BUILT('js/main.js')}`)).response.text(), 'precached');
   });
 
   it('stamps the worker with the hash of the files it precaches, and refuses a worker with nothing to stamp', () => {
@@ -636,8 +742,8 @@ describe('household app page: service worker', () => {
   });
 
   it('is registered by the page at the one canonical absolute URL and scope', () => {
-    const main = read('js/main.js');
-    assert.match(main, /serviceWorker\.register\('\/jellypass\/app\/sw\.js', \{ scope: '\/jellypass\/app\/' \}\)/);
+    const main = read(BUILT('js/main.js'));
+    assert.match(main, /serviceWorker\.register\('\/jellypass\/app\/sw\.js', \{ scope: '\/jellypass\/app\/', updateViaCache: 'none' \}\)/);
   });
 });
 
@@ -654,7 +760,7 @@ describe('household app page: rendering', () => {
 
   async function renderer() {
     const { document, Event } = parseHTML('<!doctype html><html><body></body></html>');
-    const module = await import(pathToFileURL(path.join(DIST_APP, 'js', 'render.js')).href);
+    const module = await import(pathToFileURL(path.join(DIST_APP, BUILT('js/render.js'))).href);
     return { document, Event, ...module };
   }
 
@@ -738,8 +844,8 @@ describe('household app page: rendering', () => {
     assert.equal(image.getAttribute('decoding'), 'async');
     assert.equal(image.getAttribute('width'), '342');
     assert.equal(image.getAttribute('height'), '513');
-    assert.match(read('app.css'), /\.poster \{[^}]*aspect-ratio: 2 \/ 3/);
-    assert.match(read('app.css'), /\.backdrop \{[^}]*aspect-ratio: 780 \/ 439/);
+    assert.match(read(BUILT('app.css')), /\.poster \{[^}]*aspect-ratio: 2 \/ 3/);
+    assert.match(read(BUILT('app.css')), /\.backdrop \{[^}]*aspect-ratio: 780 \/ 439/);
   });
 
   it('renders a movie page, a series page with its seasons and states, and a season with its episodes', async () => {
@@ -813,13 +919,13 @@ describe('household app page: rendering', () => {
     assert.equal(TMDB_NOTICE, 'This product uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB.');
     assert.ok([...about.querySelectorAll('p')].some((paragraph) => paragraph.textContent === TMDB_NOTICE));
     const logo = about.querySelector('img.tmdb-logo');
-    assert.equal(logo.getAttribute('src'), 'tmdb-logo.svg', 'bundled, not hotlinked');
+    assert.equal(logo.getAttribute('src'), BUILT('tmdb-logo.svg'), 'bundled, not hotlinked');
     assert.ok(logo.getAttribute('alt'));
     const links = [...about.querySelectorAll('a')].map((anchor) => anchor.getAttribute('href'));
     assert.deepEqual(links, ['https://www.themoviedb.org/', 'https://www.themoviedb.org/']);
     assert.ok(about.querySelectorAll('h1').length === 1);
     // The logo is less prominent than the app's own name (TMDB's terms): small, in the credits only.
-    assert.match(read('app.css'), /\.tmdb-logo \{ width: 9rem/);
+    assert.match(read(BUILT('app.css')), /\.tmdb-logo \{ width: 9rem/);
   });
 });
 
@@ -872,7 +978,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         else delete globalThis[key];
       }
     });
-    await import(`${pathToFileURL(path.join(DIST_APP, 'js', 'main.js')).href}?page=${Math.random()}`);
+    await import(`${pathToFileURL(path.join(DIST_APP, BUILT('js/main.js'))).href}?page=${Math.random()}`);
     const until = async (condition, what) => {
       for (let waited = 0; waited < 5000; waited += 10) {
         const value = condition();

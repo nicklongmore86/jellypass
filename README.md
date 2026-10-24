@@ -774,8 +774,26 @@ switched off (those answer the same fixed `404`).
   `nosniff`, `Referrer-Policy: no-referrer`, a `Permissions-Policy` that turns off camera, microphone, location, payment, USB/serial/HID/Bluetooth, motion and other sensors, and the like and
   cross-origin isolation headers. The files are the same for everyone and carry
   no user data; the app fetches everything else from the API after loading.
-  Static files are revalidated on each use (`Cache-Control: no-cache` with an
-  `ETag`); icons and the logo are cached for a week.
+  See **CDN caching** below for how long each file may be kept.
+- **CDN caching (Cloudflare and others):** every file the page loads except the
+  page itself and `sw.js` is served under a name carrying a hash of its content
+  (`app.<hash>.css`, `js/main.<hash>.js`, the manifest, icons and logo too), and
+  the page names exactly those files, so a CDN or browser can keep them for good
+  (`Cache-Control: public, max-age=31536000, immutable`) and two releases can
+  never be mixed. An old or unknown hash answers the same fixed `404` as any
+  unknown app path. The page, the `/jellypass/app` redirect and `sw.js` keep
+  their addresses, so they are sent with `Cache-Control: no-store` plus
+  `CDN-Cache-Control: no-store` and `Cloudflare-CDN-Cache-Control: no-store`, and
+  no `ETag`. Per Cloudflare's documentation `no-store` is never cached at its
+  edge, `Cloudflare-CDN-Cache-Control` / `CDN-Cache-Control` are the headers it
+  reads for its own cache (the former is not forwarded to browsers), and its
+  Browser Cache TTL setting only rewrites `Cache-Control` on responses it caches.
+  An earlier release sent `no-cache` with an `ETag`, which Cloudflare rewrote to
+  `max-age=14400` on the `.css`/`.js` files, so a browser could run old and new
+  files together for up to four hours after an update. After upgrading, purge
+  the CDN cache once for `/jellypass/app/*` if you have cached it before; no
+  rule is needed afterwards. The page registers the worker with
+  `updateViaCache: 'none'`, so browsers check `sw.js` on the network.
 
 Filtering the login picker is a privacy and usability boundary, not
 authentication. Users still authenticate with Jellyfin, and Jellyfin policies
