@@ -19,7 +19,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   with TMDB's logo and notice. Each title carries the household's state: **In
   your library** with a Play button, **Available to request soon** (no request
   button yet) or **Can't request**. A service worker caches only the app's own
-  static files, never the API. The files are served with a strict CSP and
+  static files, one complete set per release, never the API. Install and sign-in on a real iPhone are not yet verified. The files are served with a strict CSP and
   security headers, the same for everyone, and only on household hosts. Built
   with `tsc` alone from `app/`; `linkedom` is a new dev dependency for tests.
 - **Household app API (read-only, off by default).** With

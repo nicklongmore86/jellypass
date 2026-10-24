@@ -104,6 +104,11 @@ interface Route {
   query?: string;
 }
 
+/** Only an empty hash or one that starts `#/` names a screen; anything else (the skip link's `#screen`) is not a route. */
+function isRouteHash(hash: string): boolean {
+  return hash === '' || hash === '#' || hash.startsWith('#/');
+}
+
 function parse(hash: string): Route {
   const [path = '', queryString = ''] = hash.replace(/^#/, '').split('?', 2);
   if (path === '/search') return { name: 'search', query: new URLSearchParams(queryString).get('q') ?? '' };
@@ -193,25 +198,8 @@ function rowFailure(heading: string, kind: ApiErrorKind, retry: () => void): HTM
 
 async function search(initial: string, signal: AbortSignal, current: () => boolean): Promise<void> {
   setTitle('Search');
-  const input = el(doc, 'input', {
-    attrs: { id: 'q', type: 'search', name: 'q', autocomplete: 'off', enterkeyhint: 'search', maxlength: String(MAX_QUERY_LENGTH), placeholder: 'Movies and series', value: initial },
-  });
-  const form = el(doc, 'form', { class: 'search-form', attrs: { role: 'search' } }, [
-    el(doc, 'label', { class: 'visually-hidden', text: 'Search movies and series', attrs: { for: 'q' } }),
-    input,
-  ]);
-  // Search is done by the page as you type; the form has nowhere to go.
-  form.addEventListener('submit', (event) => {
-    event.preventDefault();
-    run(input.value);
-  });
-  const results = el(doc, 'div', { class: 'search-results' });
-  show(el(doc, 'h1', { class: 'screen-title', text: 'Search', attrs: { tabindex: '-1' } }), form, results);
-  announce('');
-  focusHeading();
-  await loadMe(signal);
-  if (!current()) return;
-
+  // All of the search's state and handlers exist before the form is on the page, so nothing the member does while
+  // /me is still loading can reach a half-built screen: they search at once, and /me only fills in the header.
   let timer: ReturnType<typeof setTimeout> | undefined;
   let sequence = 0;
   let pending: AbortController | undefined;
@@ -219,6 +207,14 @@ async function search(initial: string, signal: AbortSignal, current: () => boole
     clearTimeout(timer);
     pending?.abort();
   });
+  const input = el(doc, 'input', {
+    attrs: { id: 'q', type: 'search', name: 'q', autocomplete: 'off', enterkeyhint: 'search', maxlength: String(MAX_QUERY_LENGTH), placeholder: 'Movies and series', value: initial },
+  });
+  const form = el(doc, 'form', { class: 'search-form', attrs: { role: 'search' } }, [
+    el(doc, 'label', { class: 'visually-hidden', text: 'Search movies and series', attrs: { for: 'q' } }),
+    input,
+  ]);
+  const results = el(doc, 'div', { class: 'search-results' });
 
   function run(raw: string): void {
     clearTimeout(timer);
@@ -272,11 +268,21 @@ async function search(initial: string, signal: AbortSignal, current: () => boole
     }
   }
 
+  // Search is done by the page as you type; the form has nowhere to go.
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    run(input.value);
+  });
   input.addEventListener('input', () => {
     clearTimeout(timer);
     timer = setTimeout(() => run(input.value), SEARCH_DEBOUNCE_MS);
   });
+
+  show(el(doc, 'h1', { class: 'screen-title', text: 'Search', attrs: { tabindex: '-1' } }), form, results);
+  announce('');
+  focusHeading();
   if (initial.trim()) run(initial);
+  await loadMe(signal);
 }
 
 async function title(route: Route, signal: AbortSignal, current: () => boolean): Promise<void> {
@@ -313,7 +319,15 @@ function resumeIfSignedIn(): void {
   if (jellyfinToken(localStorage, origin) && main.querySelector('a[href="/web/"]')) void render();
 }
 
-window.addEventListener('hashchange', () => void render());
+window.addEventListener('hashchange', () => {
+  if (isRouteHash(location.hash)) void render();
+});
+// The skip link is an in-page anchor (`#screen`, for when scripts are off); with the router on it must not become a
+// route, so it only moves focus.
+doc.querySelector('a.skip-link')?.addEventListener('click', (event) => {
+  event.preventDefault();
+  main.focus();
+});
 window.addEventListener('storage', (event) => {
   if (event.key === 'jellyfin_credentials') resumeIfSignedIn();
 });

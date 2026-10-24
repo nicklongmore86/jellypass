@@ -2,13 +2,15 @@
 // renders from the API's DTOs. DOM-level tests use linkedom (a small DOM for Node, a dev dependency only) to run the
 // real client modules from dist/app against the real API, served from the same fakes as test/app-api.test.mjs.
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import { parseHTML } from 'linkedom';
-import { APP_CONTENT_SECURITY_POLICY } from '../dist/app-assets.js';
+import { APP_CONTENT_SECURITY_POLICY, APP_PERMISSIONS_POLICY } from '../dist/app-assets.js';
+import { contentHash } from '../scripts/build-app.mjs';
 import { ALICE, HOST_A, HOST_B, OWN_MOVIE, T_MOVIE, T_TV, TOKENS, get, startApp, world } from './support/household-app.mjs';
 import { assertNoCanaries } from './support/seerr-fixtures.mjs';
 
@@ -169,9 +171,18 @@ describe('household app page: headers', { timeout: 30_000 }, () => {
       assert.equal(headers['x-frame-options'], 'DENY', served);
       assert.equal(headers['cross-origin-opener-policy'], 'same-origin', served);
       assert.equal(headers['cross-origin-resource-policy'], 'same-origin', served);
-      assert.match(headers['permissions-policy'], /camera=\(\)/, served);
+      assert.equal(headers['permissions-policy'], APP_PERMISSIONS_POLICY, served);
       assert.equal(headers['set-cookie'], undefined, served);
     }
+  });
+
+  it('denies every powerful browser feature the app does not use', () => {
+    const features = APP_PERMISSIONS_POLICY.split(', ');
+    for (const feature of ['camera', 'microphone', 'geolocation', 'payment', 'usb', 'serial', 'hid', 'bluetooth', 'midi',
+      'display-capture', 'accelerometer', 'gyroscope', 'magnetometer', 'screen-wake-lock', 'publickey-credentials-get', 'xr-spatial-tracking']) {
+      assert.ok(features.includes(`${feature}=()`), `${feature} is denied`);
+    }
+    for (const feature of features) assert.match(feature, /^[a-z-]+=\(\)$/, 'every feature is switched off for everyone, itself included');
   });
 
   it('sets the right content type and cache rule for each kind of file', async (t) => {
@@ -307,7 +318,7 @@ describe('household app page: service worker', () => {
   const ORIGIN = 'https://jelly-farmhouse.example.test';
 
   /** Runs sw.js against fake service-worker globals, returning its listeners and everything it cached or fetched. */
-  function runWorker({ network = async () => new Response('fresh', { status: 200 }) } = {}) {
+  function runWorker({ network = async () => new Response('fresh', { status: 200 }), failAdd = false } = {}) {
     const listeners = {};
     const stores = new Map();
     const log = { puts: [], added: [], deleted: [], fetched: [] };
@@ -316,6 +327,7 @@ describe('household app page: service worker', () => {
       const store = stores.get(name);
       return {
         addAll: async (requests) => {
+          if (failAdd) throw new TypeError('network error while precaching');
           for (const request of requests) {
             const key = new URL(request.url ?? request, ORIGIN).pathname;
             log.added.push(key);
@@ -414,21 +426,45 @@ describe('household app page: service worker', () => {
     assert.deepEqual(worker.log.added, []);
   });
 
-  it('caches only the app\'s static files, never the API, whatever is asked in what order', async () => {
+  it('keeps nothing as it goes: only the release\'s precached set is ever stored, and never the API', async () => {
     const worker = runWorker();
+    const waits = [];
+    worker.listeners.install({ waitUntil: (promise) => waits.push(promise) });
+    await Promise.all(waits);
+    const stored = () => [...worker.stores.values()].flatMap((store) => [...store.keys()]).sort();
+    const before = stored();
     for (const url of [
       `${ORIGIN}/jellypass/app/v1/me`, `${ORIGIN}${PAGE}`, `${ORIGIN}${PAGE}js/main.js`, `${ORIGIN}/jellypass/app/v1/discover/trending`,
       `${ORIGIN}${PAGE}app.css?x=1`, `${ORIGIN}/jellypass/app/V1/me`,
     ]) {
       await fetchEvent(worker, url);
     }
-    assert.deepEqual([...new Set(worker.log.puts)].sort(), [PAGE, `${PAGE}app.css`, `${PAGE}js/main.js`].sort());
-    for (const key of [...worker.log.puts, ...[...worker.stores.values()].flatMap((store) => [...store.keys()])]) {
-      assert.doesNotMatch(key, /\/v1(?:\/|$)/i);
+    assert.deepEqual(worker.log.puts, [], 'nothing is added after install');
+    assert.deepEqual(stored(), before);
+    for (const key of stored()) assert.doesNotMatch(key, /\/v1(?:\/|$)/i);
+  });
+
+  it('answers only an exact allowlist of static files, however an API address is spelled', async () => {
+    // Guard against a future "handle everything" change: nothing but the precached paths may be answered by the worker.
+    const worker = runWorker();
+    for (const url of [
+      `${ORIGIN}/jellypass/app/v1/me`, `${ORIGIN}/jellypass/app/v1/me?x=1`, `${ORIGIN}/jellypass/app/v1/`, `${ORIGIN}/jellypass/app/v1`,
+      `${ORIGIN}/jellypass/app/V1/me`, `${ORIGIN}/jellypass/app/%76%31/me`, `${ORIGIN}/jellypass/app//v1/me`,
+      `${ORIGIN}/jellypass/app/./v1/me`, `${ORIGIN}/jellypass/app/js/../v1/me`, `${ORIGIN}/jellypass/app/js/main.js/`,
+      `${ORIGIN}/jellypass/app/js/main.jsx`, `${ORIGIN}/jellypass/app/sw.js`, `${ORIGIN}/jellypass/app/js/`,
+    ]) {
+      assert.equal((await fetchEvent(worker, url)).handled, false, url);
+    }
+    // And the allowlist is the precached set, nothing wider.
+    const waits = [];
+    worker.listeners.install({ waitUntil: (promise) => waits.push(promise) });
+    await Promise.all(waits);
+    for (const key of worker.log.added) {
+      assert.equal((await fetchEvent(worker, `${ORIGIN}${key}`)).handled, true, key);
     }
   });
 
-  it('serves a static file from the network, falling back to its copy only when the network fails, and keeps no failed answers', async () => {
+  it('serves a static file from the network, falling back to the release\'s own copy only when the network fails', async () => {
     let online = true;
     let status = 200;
     const worker = runWorker({ network: async () => {
@@ -439,31 +475,74 @@ describe('household app page: service worker', () => {
     worker.listeners.install({ waitUntil: (promise) => waits.push(promise) });
     await Promise.all(waits);
     const url = `${ORIGIN}${PAGE}app.css`;
-    const live = await fetchEvent(worker, url);
-    assert.equal(await live.response.text(), 'network 200');
+    assert.equal(await (await fetchEvent(worker, url)).response.text(), 'network 200');
+    // A newer answer on the network is not mixed into the stored release: offline is always the installed set.
     online = false;
-    const offline = await fetchEvent(worker, url);
-    assert.equal(await offline.response.text(), 'network 200', 'the copy of the last good answer');
-    // A failed answer is passed on but never replaces the copy.
+    assert.equal(await (await fetchEvent(worker, url)).response.text(), 'precached');
     online = true;
     status = 500;
-    const failed = await fetchEvent(worker, url);
-    assert.equal(failed.response.status, 500);
+    assert.equal((await fetchEvent(worker, url)).response.status, 500);
     online = false;
-    assert.equal(await (await fetchEvent(worker, url)).response.text(), 'network 200');
-    // Nothing cached, nothing to fall back on, no network: an ordinary network error.
+    assert.equal(await (await fetchEvent(worker, url)).response.text(), 'precached');
+    // Nothing installed, nothing to fall back on, no network: an ordinary network error.
     const empty = runWorker({ network: async () => { throw new TypeError('offline'); } });
     assert.equal((await fetchEvent(empty, url)).response.type, 'error');
   });
 
-  it('forgets only its own older caches on activation', async () => {
+  it('names its cache for a hash of the built files, and a changed file is a new cache', async () => {
+    const hash = contentHash(DIST_APP);
+    assert.match(hash, /^[0-9a-f]{16}$/);
+    assert.doesNotMatch(SOURCE, /__CONTENT_HASH__/, 'the build fills in the hash');
+    assert.ok(SOURCE.includes(`\${CACHE_PREFIX}${hash}`), 'the cache is named for the hash');
     const worker = runWorker();
-    worker.stores.set('jellypass-app-static-v0', new Map());
-    worker.stores.set('someone-elses-cache', new Map());
     const waits = [];
+    worker.listeners.install({ waitUntil: (promise) => waits.push(promise) });
+    await Promise.all(waits);
+    assert.deepEqual([...worker.stores.keys()], [`jellypass-app-static-${hash}`]);
+
+    const copy = mkdtempSync(path.join(os.tmpdir(), 'jellypass-hash-'));
+    try {
+      cpSync(DIST_APP, copy, { recursive: true });
+      assert.equal(contentHash(copy), hash, 'the same files give the same hash');
+      writeFileSync(path.join(copy, 'sw.js'), 'changed worker text');
+      assert.equal(contentHash(copy), hash, 'the worker\'s own text (which carries the hash) is not part of it');
+      for (const file of ['app.css', 'js/main.js', 'index.html', 'icons/icon-192.png']) {
+        const target = path.join(copy, file);
+        const original = readFileSync(target);
+        writeFileSync(target, Buffer.concat([original, Buffer.from('\n')]));
+        assert.notEqual(contentHash(copy), hash, `${file} changes the hash`);
+        writeFileSync(target, original);
+      }
+      writeFileSync(path.join(copy, 'extra.js'), '');
+      assert.notEqual(contentHash(copy), hash, 'a new file changes the hash');
+    } finally {
+      rmSync(copy, { recursive: true, force: true });
+    }
+  });
+
+  it('installs a release whole or not at all, and leaves the running release alone when it cannot', async () => {
+    const worker = runWorker({ failAdd: true });
+    worker.stores.set('jellypass-app-static-previous', new Map([[`${PAGE}app.css`, new Response('old release')]]));
+    const waits = [];
+    worker.listeners.install({ waitUntil: (promise) => waits.push(promise) });
+    await assert.rejects(Promise.all(waits), /network error while precaching/);
+    assert.deepEqual([...worker.stores.keys()], ['jellypass-app-static-previous'], 'no partial cache is left behind');
+    assert.equal(worker.log.deleted.length, 1);
+  });
+
+  it('removes older releases\' caches (and only those) once the new one is active', async () => {
+    const worker = runWorker();
+    const waits = [];
+    worker.listeners.install({ waitUntil: (promise) => waits.push(promise) });
+    await Promise.all(waits);
+    const current = [...worker.stores.keys()][0];
+    worker.stores.set('jellypass-app-static-v1', new Map());
+    worker.stores.set('jellypass-app-static-0123456789abcdef', new Map());
+    worker.stores.set('someone-elses-cache', new Map());
     worker.listeners.activate({ waitUntil: (promise) => waits.push(promise) });
     await Promise.all(waits);
-    assert.deepEqual(worker.log.deleted, ['jellypass-app-static-v0']);
+    assert.deepEqual([...worker.stores.keys()].sort(), [current, 'someone-elses-cache'].sort());
+    assert.deepEqual(worker.log.deleted.sort(), ['jellypass-app-static-0123456789abcdef', 'jellypass-app-static-v1']);
   });
 
   it('is registered by the page within its own scope', () => {
@@ -659,14 +738,14 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
    * Loads the real page and client modules into a DOM, signed in as `user` with Jellyfin web's own stored sign-in, and
    * wires `fetch` to the real API on the test server. One page per test (the client keeps its state in module scope).
    */
-  async function openApp(t, app, { user = ALICE, host = HOST_A, signedIn = true, override } = {}) {
+  async function openApp(t, app, { user = ALICE, host = HOST_A, signedIn = true, override, hash = '', holdMe } = {}) {
     const origin = `https://${host}`;
     const { document, Event } = parseHTML(read('index.html'));
     const store = new Map(signedIn ? [['jellyfin_credentials', JSON.stringify({
       Servers: [{ ManualAddress: origin, AccessToken: TOKENS[user], UserId: user }],
     })]] : []);
     const requests = [];
-    const location = { origin, hash: '' };
+    const location = { origin, hash };
     const listeners = {};
     const globals = {
       document,
@@ -677,6 +756,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         fetch: async (url, init = {}) => {
           requests.push({ url, init });
           if (init.signal?.aborted) throw new DOMException('aborted', 'AbortError');
+          if (holdMe && url === '/jellypass/app/v1/me') await holdMe;
           const answer = override?.(url) ?? await get(app.port, url, { Host: host, ...init.headers });
           return new Response(answer.body, { status: answer.status, headers: answer.headers });
         },
@@ -812,6 +892,79 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     input.dispatchEvent(new page.Event('input'));
     await page.until(() => !page.main().querySelector('ul.grid'), 'cleared results');
     assert.equal(page.location.hash, '#/search');
+  });
+
+  it('searches without waiting for /me: submitting and typing while it loads both work', async (t) => {
+    const app = await startApp(t);
+    let release;
+    const holdMe = new Promise((resolve) => { release = resolve; });
+    const page = await openApp(t, app, { hash: '#/search', holdMe });
+    const input = await page.until(() => page.main().querySelector('input[type="search"]'), 'the search box');
+    assert.equal(page.document.getElementById('who').textContent, '', '/me has not answered');
+    const searches = () => page.requests.filter((request) => request.url.startsWith('/jellypass/app/v1/search')).map((request) => request.url);
+    // Submitting (Enter) before /me is back searches at once, instead of throwing.
+    input.value = 'synthetic';
+    const submit = new page.Event('submit', { cancelable: true });
+    assert.doesNotThrow(() => page.main().querySelector('form').dispatchEvent(submit));
+    assert.equal(submit.defaultPrevented, true);
+    await page.until(() => page.main().querySelector('ul.grid'), 'results while /me is still loading');
+    assert.deepEqual(searches(), ['/jellypass/app/v1/search?q=synthetic&page=1']);
+    // Typing is not lost either: the box has its listener from the start, and the debounced search runs.
+    input.value = 'another';
+    input.dispatchEvent(new page.Event('input'));
+    await page.until(() => searches().length === 2, 'the typed search');
+    assert.equal(searches()[1], '/jellypass/app/v1/search?q=another&page=1');
+    assert.equal(page.location.hash, '#/search?q=another');
+    release();
+    await page.until(() => page.document.getElementById('who').textContent.length > 0, 'the header once /me is back');
+    assert.equal(page.main().querySelector('input[type="search"]'), input, 'the screen was not rebuilt');
+    assert.equal(input.value, 'another');
+  });
+
+  it('keeps a query typed before /me answered when the address already carried one', async (t) => {
+    const app = await startApp(t);
+    let release;
+    const holdMe = new Promise((resolve) => { release = resolve; });
+    const page = await openApp(t, app, { hash: '#/search?q=first', holdMe });
+    const input = await page.until(() => page.main().querySelector('input[type="search"]'), 'the search box');
+    await page.until(() => page.main().querySelector('ul.grid'), 'results for the address\'s query');
+    input.value = 'second';
+    input.dispatchEvent(new page.Event('input'));
+    await page.until(() => page.location.hash === '#/search?q=second', 'the typed query');
+    release();
+    await page.until(() => page.document.getElementById('who').textContent.length > 0, 'the header');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    assert.equal(input.value, 'second');
+    assert.equal(page.location.hash, '#/search?q=second', 'the address\'s query did not replace what was typed');
+  });
+
+  it('moves focus to the content from the skip link without leaving the screen', async (t) => {
+    const app = await startApp(t);
+    const page = await openApp(t, app, { hash: '#/about' });
+    await page.until(() => page.main().querySelector('h1'), 'the about screen');
+    const screen = page.main();
+    const heading = screen.querySelector('h1').textContent;
+    let focused = 0;
+    const focus = screen.focus.bind(screen);
+    screen.focus = (...args) => { focused += 1; return focus(...args); };
+    const link = page.document.querySelector('a.skip-link');
+    assert.equal(link.getAttribute('href'), '#screen');
+    assert.equal(screen.getAttribute('tabindex'), '-1');
+    const click = new page.Event('click', { cancelable: true, bubbles: true });
+    link.dispatchEvent(click);
+    assert.equal(click.defaultPrevented, true, 'the browser does not navigate to #screen');
+    assert.equal(focused, 1, 'focus goes to main');
+    assert.equal(page.location.hash, '#/about');
+    assert.equal(screen.querySelector('h1').textContent, heading);
+    // Were the address to change to a non-route hash anyway (scripts off, or another anchor), the screen stays too.
+    const requests = page.requests.length;
+    page.go('#screen');
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(page.main().querySelector('h1').textContent, heading, 'not replaced by Home');
+    assert.equal(page.requests.length, requests);
+    // A real route still navigates.
+    page.go('#/');
+    await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4, 'home');
   });
 
   it('sends a signed-out visitor to the household\'s Jellyfin sign-in, without calling the API', async (t) => {

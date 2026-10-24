@@ -380,8 +380,8 @@ elsewhere; the files are never proxied to Jellyfin.
   `start_url` is the app), not `/jellypass/app/`: an installed iOS web app keeps its storage apart from Safari's, and a
   link out of its scope opens in an in-app Safari view, so a Jellyfin sign-in made there would never reach the app.
   Within scope, Jellyfin web's sign-in and the page **Play** opens stay in the installed app and share its storage.
-  Only the service worker is limited to `/jellypass/app/`. This is unverified on a real iPhone (see "Not in this
-  step").
+  Only the service worker is limited to `/jellypass/app/`. **This is unverified on a real iPhone**: install and sign-in have only been exercised in a simulated browser (see
+  "Not in this step").
 - **Screens.** Home (four rows of 20 titles, each row loaded and failing on its own), Search (debounced 300 ms, one call
   per pause, previous calls aborted, **Load more** by the API's `nextPage`, query kept in the address), movie page,
   series page with a seasons list (each season's state) and a season page with its episodes, About & credits.
@@ -397,16 +397,22 @@ elsewhere; the files are never proxied to Jellyfin.
 - **Headers.** Every app file: `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self';
   img-src 'self' https://image.tmdb.org; connect-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none';
   form-action 'none'; frame-ancestors 'none'`; `X-Content-Type-Options: nosniff`; `Referrer-Policy: no-referrer`;
-  `X-Frame-Options: DENY`; `Cross-Origin-Opener-Policy` and `Cross-Origin-Resource-Policy: same-origin`; a deny-all
-  `Permissions-Policy`. `Cache-Control: no-cache` plus an `ETag` (304 on match) for the page, script, styles, manifest
+  `X-Frame-Options: DENY`; `Cross-Origin-Opener-Policy` and `Cross-Origin-Resource-Policy: same-origin`; a
+  `Permissions-Policy` denying the powerful features the app does not use (camera, microphone, geolocation, payment,
+  usb, serial, hid, bluetooth, midi, display capture, motion and other sensors, screen wake lock, WebAuthn get, XR and
+  `interest-cohort`; the list is `APP_PERMISSIONS_POLICY`, tested). `Cache-Control: no-cache` plus an `ETag` (304 on match) for the page, script, styles, manifest
   and service worker; `public, max-age=604800` for icons and the logo. The HTML is identical for every caller and
   carries no user data (tested), so it is not `no-store`; the API stays `no-store`.
 - **Service worker** (`sw.js`, scope `/jellypass/app/`). It precaches and serves only the app's own static files (the
   exact list in `sw.js`, which a test compares with the files served), network first, falling back to its copy when
-  the network fails, and keeps only successful same-origin answers. Everything else, and in particular anything under
-  `/jellypass/app/v1/`, other origins (TMDB images), non-`GET` requests and every other path, is not handled by the worker
-  at all, so it is never cached or answered offline (tested by running the worker against a fake browser).
-- **Accessibility and layout.** Semantic landmarks (header, main, labelled nav), a skip link, a labelled search field,
+  the network fails. The copy is one release: the cache is named for a hash of the precached files (computed by
+  `scripts/build-app.mjs` and written into `sw.js`, so any changed file changes the worker and its cache name), the
+  whole set is installed or none of it (a failed install deletes its cache), nothing is added to it afterwards, and
+  activation deletes the older releases' caches, so what runs offline is always one coherent release. Requests are
+  answered from an exact allowlist: anything under `/jellypass/app/v1/`, other origins (TMDB images), non-`GET`
+  requests and every other path is not handled by the worker at all, so it is never cached or answered offline (tested
+  by running the worker against a fake browser, including odd spellings of API addresses).
+- **Accessibility and layout.** Semantic landmarks (header, main, labelled nav), a skip link (which only moves focus to the content and does not change the route), a labelled search field,
   focus moved to each screen's heading, polite status announcements, scrollable rows reachable by keyboard, `:focus-visible`
   outlines, 44 px touch targets, text and badge colours checked at WCAG AA contrast by a test, `prefers-reduced-motion`,
   safe-area insets and `viewport-fit=cover` for notched phones, and posters and backdrops with size attributes and an

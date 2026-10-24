@@ -42,6 +42,15 @@ export const APP_CONTENT_SECURITY_POLICY = [
   "frame-ancestors 'none'",
 ].join('; ');
 
+/** Every powerful browser feature the app has no use for, switched off for the page and anything it embeds. */
+export const APP_PERMISSIONS_POLICY = [
+  'accelerometer', 'ambient-light-sensor', 'bluetooth', 'camera', 'display-capture', 'geolocation', 'gyroscope', 'hid',
+  'idle-detection', 'magnetometer', 'microphone', 'midi', 'payment', 'publickey-credentials-get', 'screen-wake-lock',
+  'serial', 'usb', 'xr-spatial-tracking', 'interest-cohort',
+]
+  .map((feature) => `${feature}=()`)
+  .join(', ');
+
 const SECURITY_HEADERS = {
   'Content-Security-Policy': APP_CONTENT_SECURITY_POLICY,
   'Referrer-Policy': 'no-referrer',
@@ -49,7 +58,7 @@ const SECURITY_HEADERS = {
   'X-Frame-Options': 'DENY',
   'Cross-Origin-Opener-Policy': 'same-origin',
   'Cross-Origin-Resource-Policy': 'same-origin',
-  'Permissions-Policy': 'camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()',
+  'Permissions-Policy': APP_PERMISSIONS_POLICY,
 } as const;
 
 interface AppAsset {

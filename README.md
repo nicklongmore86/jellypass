@@ -743,16 +743,20 @@ switched off (those answer the same fixed `404`).
 - **Install on iPhone or iPad:** open the app address in Safari, tap **Share**,
   then **Add to Home Screen**. **Android (Chrome):** menu, **Install app** (or
   **Add to Home screen**). Desktop Chrome and Edge: the install icon in the
-  address bar. It opens full screen with JellyPass's icon.
+  address bar. It opens full screen with JellyPass's icon. **Not yet verified
+  on a real iPhone:** the install and the Jellyfin sign-in inside the installed
+  app have been tested only in a simulated browser, so expect to check them on a
+  device before relying on them.
 - **Offline and privacy:** a service worker keeps only the app's own static
-  files (page, styles, scripts, icons, TMDB logo) so the app opens when the
-  network is slow or down. It never touches `/jellypass/app/v1/*` or anything
+  files (page, styles, scripts, icons, TMDB logo), as one complete set per
+  release (replaced as a whole when the app is updated), so the app opens when
+  the network is slow or down. It never touches `/jellypass/app/v1/*` or anything
   else: no titles, states or household data are ever cached, and without a
   network the app says so.
 - **Page security:** the files are served with a strict
   `Content-Security-Policy` (own origin only, plus `https://image.tmdb.org` for
   posters and backdrops; no inline script or style, no framing, no forms),
-  `nosniff`, `Referrer-Policy: no-referrer`, a deny-all `Permissions-Policy` and
+  `nosniff`, `Referrer-Policy: no-referrer`, a `Permissions-Policy` that turns off camera, microphone, location, payment, USB/serial/HID/Bluetooth, motion and other sensors, and the like and
   cross-origin isolation headers. The files are the same for everyone and carry
   no user data; the app fetches everything else from the API after loading.
   Static files are revalidated on each use (`Cache-Control: no-cache` with an
