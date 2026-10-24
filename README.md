@@ -77,7 +77,8 @@ actively protecting.
 A newly downloaded or newly scanned item does not become a grant merely because
 it appears in the catalog. A grant is created by one of these events:
 
-- JellyPass receives Seerr's `MEDIA_AVAILABLE` webhook for a request.
+- JellyPass receives Seerr's `MEDIA_AVAILABLE` webhook for a request made
+  before the title was available (not a [late request](#late-requests)).
 - The optional request backfill finds an available request created after
   `REQUEST_BACKFILL_SINCE` that the webhook missed.
 - An administrator assigns access from the Library tab or API.
@@ -107,6 +108,49 @@ requester's household can see the title; members of other households cannot.
 - A member of another household can add the title to their own library with
   [Add to my library](#add-to-my-library), which adds their households to the
   grant.
+- Only a request made before the title was available decides a grant. A late
+  request is treated like Add to my library (see below).
+
+### Late requests
+
+Seerr's API accepts a request for a movie that is already available; its
+interface only hides the button. For a user who may auto-approve, Seerr then
+reports the request available at once, with both availability event texts in
+either order, so the webhook and the backfill alone cannot tell it from a
+request that was downloaded. Granting it would let anyone who can
+auto-approve make a public title private to their household, add their
+household back after an administrator removed it, or extend a manual-only
+grant.
+
+JellyPass therefore compares two times that the requester cannot set: when
+Seerr created the request (`createdAt`, set by Seerr's database) and when
+Jellyfin added the requested item (`DateCreated`). A request is new only when
+Jellyfin added the item after it. For a series Jellyfin already had, such as a
+request for the missing seasons of a partly available show, it is new when
+Jellyfin added at least one requested season after it. Anything else is a late
+request, including a request whose times are missing or unreadable, a TV
+request that names no season, and every webhook when Seerr lookup is not
+configured, since the payload carries no request time.
+
+A late request is handled like [Add to my library](#add-to-my-library), never
+as a grant:
+
+- it joins the requester's households (or the requester, when in none) to the
+  item's grant only if that grant came from a request; public titles stay
+  public and manual-only grants are left as they are;
+- it never re-adds a household or user an administrator removed from the item;
+- a 4K late request joins nothing, since joins are for HD items only;
+- the join is recorded in the grant's `joins` and logged as `late request
+  joined`;
+- the request is recorded as handled, so a repeated webhook (`202
+  {"status":"ignored"}`) and later backfill runs do not decide it again.
+
+A late webhook answers `202 {"status":"ignored"}` and counts as
+`jfa_webhooks_total{result="late"}`. Jellyfin's `DateCreated` usually comes
+from the media file. If your downloader keeps old file times (for example an
+unpacked archive on a filesystem without creation times), a new request can
+look late; the title then stays public and you can assign it from the Library
+tab.
 
 ## Requirements
 
@@ -118,9 +162,11 @@ requester's household can see the title; members of other households cannot.
   pnpm for a source installation.
 - A persistent, private location for `grants.json`.
 
-Seerr lookup is optional only if every webhook includes the Jellyfin media and
-user IDs and recent-request cards, the request backfill, and Seerr user import
-are not needed.
+Seerr lookup (`SEERR_URL` and `SEERR_API_KEY`) is needed for webhooks to
+create request grants: without it, JellyPass cannot tell a new request from a
+[late request](#late-requests), so webhooks only join existing request grants.
+Recent-request cards, the request backfill, Add to my library, and Seerr user
+import also need it.
 
 ## Quick start with Docker Compose
 
@@ -228,7 +274,9 @@ at startup). It pages `GET /api/v1/request` and records each request that:
 - targets a Jellyfin item that still exists, and
 - has not already been recorded by a webhook or an earlier backfill run.
 
-If the item has no grant, the request creates a household-scoped one. If the
+A [late request](#late-requests) is recorded but only joins its requester's
+households to a request grant, as a webhook does; it never creates or extends a
+grant. If the item has no grant, the request creates a household-scoped one. If the
 item already has a grant that came from other requests, for example another
 household requesting a different season, the request is added to it along with
 the requester's households. Nothing already on the grant is removed. Items with
@@ -253,11 +301,14 @@ recreated. Each request is counted as exactly one outcome:
 
 - **granted** (`jfa_request_backfill_total{result="granted"}`): the grant was
   stored and applied to Jellyfin.
+- **joined** (`{result="joined"}`): a late request joined its requester's
+  households to a request grant, which was applied to Jellyfin.
 - **error** (`{result="error"}`): the lookup failed, or the grant was stored but
   could not be applied yet. Such a grant stays in an error state and the regular
   reconciliation retries it; it is not also counted as granted.
 - **skipped** (not exported): not approved, not available, before the cutoff,
-  already recorded, unresolvable, or the Jellyfin item was deleted. A deleted
+  already recorded, unresolvable, a late request that changed nothing, or the
+  Jellyfin item was deleted. A deleted
   item is logged once at `debug`, not as an error on every cycle.
 
 A failure on one request never stops the rest of the run.
@@ -393,17 +444,19 @@ In **Settings → Notifications → Webhook**:
 }
 ```
 
-JellyPass trusts the payload's media and user IDs only when both are present
-and `event` identifies an HD request. Seerr sends `Movie Request Now Available`
+When Seerr lookup is configured, JellyPass always asks Seerr for the request,
+because only Seerr knows when it was made (see [Late requests](#late-requests)),
+and uses Seerr's item, requester and 4K flag for it rather than the payload's.
+Without Seerr lookup, JellyPass trusts the payload's media and user IDs only
+when both are present and `event` identifies an HD request, and even then only
+joins existing request grants. Seerr sends `Movie Request Now Available`
 or `Series Request Now Available` when a request becomes available, and `Movie
 Now Available` or `Series Now Available` when a request is approved for media
 that is already available. For a 4K request the same texts start with `4K `.
 Seerr fills `{{media_jellyfinMediaId}}` with the HD item even for a 4K request,
-and no template variable carries the 4K item. So when `event` names a 4K
-request, or the payload has no recognizable `event`, JellyPass asks Seerr for
-the request and grants the 4K item. Without `SEERR_URL` and `SEERR_API_KEY`,
-JellyPass can only use the payload IDs, so it does so only for a recognized HD
-`event`. A 4K event, or a payload whose `event` is missing, empty, unfilled
+and no template variable carries the 4K item, which is another reason Seerr's
+request decides. Without `SEERR_URL` and `SEERR_API_KEY`, JellyPass can only use
+the payload IDs, so it does so only for a recognized HD `event`. A 4K event, or a payload whose `event` is missing, empty, unfilled
 (`{{event}}`) or unrecognized, is rejected with `502` and counted as an error
 rather than granted on what may be the HD item. A payload without both Jellyfin
 IDs still returns `400` ("missing Jellyfin IDs"). A repeated webhook for a
@@ -416,8 +469,8 @@ its grant has been stored, and a handled request is never granted again. If a
 grant still records the request, a repeated webhook only reapplies that grant
 as it stands, so household groups an administrator removed stay removed. If an
 administrator revoked the request, the webhook returns `202` with
-`{"status":"ignored"}` and counts as `jfa_webhooks_total{result="ignored"}`. A
-webhook that failed before its grant was stored, for example because Seerr was
+`{"status":"ignored"}` and counts as `jfa_webhooks_total{result="ignored"}`, as
+does a repeated webhook for a late request. A webhook that failed before its grant was stored, for example because Seerr was
 unreachable, is handled normally when it is retried.
 
 Some Jellyseerr releases do not expose Jellyfin IDs as webhook template
@@ -555,7 +608,8 @@ the background, normally within seconds.
   adding a household they belong to, clears theirs; deleting a group clears
   its own mark from every item but not its former members'. Changing a
   household's membership marks nobody. A new Seerr request still adds its
-  requester's households as before. Joins never touch a grant left behind on a
+  requester's households as before; a [late request](#late-requests) follows
+  these join rules instead. Joins never touch a grant left behind on a
   deleted item (orphaned, or split by a move) while it waits for an
   administrator.
 - **Joins are audited.** Each join that changed a grant is recorded in the
@@ -734,6 +788,8 @@ malformed; re-save the payload through Seerr's webhook form. If
 could not resolve, store or apply the grant; the error is logged. In any case,
 `jfa_request_backfill_total{result="granted"}` shows requests the backfill
 applied instead, and `{result="error"}` counts requests it could not process.
+`jfa_webhooks_total{result="late"}` counts webhooks for
+[late requests](#late-requests), which never create a grant.
 
 ### Webhook returns `401`
 

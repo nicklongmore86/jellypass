@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Security: a request for a title that was already available no longer
+  makes it private or overrides an administrator.** Seerr's API accepts a
+  request for a movie that is already available (its interface only hides
+  the button) and, for a user who may auto-approve, reports it available at
+  once. Any such user could send one request from the browser and have the
+  webhook or the request backfill make a public title private to their
+  household, add their household back to a grant an administrator had
+  removed it from, or add it to a manual-only grant. JellyPass now compares
+  when Seerr created the request with when Jellyfin added the item (for a
+  series Jellyfin already had, the requested seasons). A request made after
+  that, a late request, is treated like
+  [Add to my library](README.md#add-to-my-library): it joins the requester's
+  households to a grant that came from a request, never creates a grant,
+  never touches a manual-only grant, never re-adds a removed household or
+  user, and joins HD items only. It is recorded, so neither a repeated
+  webhook nor the backfill decides it again. It counts as
+  `jfa_webhooks_total{result="late"}`, or in the backfill as
+  `jfa_request_backfill_total{result="joined"}` when it joined a grant. A
+  request made before Jellyfin added the item is granted as before. See
+  [Late requests](README.md#late-requests).
+- **Webhooks now always look the request up in Seerr when Seerr lookup is
+  configured,** because only Seerr knows when a request was made. Seerr's own
+  item, requester and 4K flag for the request are used, not the payload's. A
+  webhook that arrives while Seerr is unreachable fails and is retried, or
+  picked up by the request backfill, as before.
+- **Without Seerr lookup, webhooks no longer create grants.** The payload
+  carries no request time, so a late request cannot be told apart and every
+  request is treated as late: it only joins existing request grants. To keep
+  request grants, configure `SEERR_URL` and `SEERR_API_KEY`.
+
 ## [2.2.1] - 2026-10-24
 
 This is a patch release with one bug fix. There is nothing to do when

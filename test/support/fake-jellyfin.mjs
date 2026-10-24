@@ -1,5 +1,20 @@
 import { createServer } from 'node:http';
 
+export const ITEM_ADDED_AT = '2026-06-01T00:00:00.0000000Z';
+
+/** Seerr's GET /api/v1/request/:id answer for an HD movie request made before the fake items were added. */
+export function seerrRequest(id, { userId = 'alice-id', itemId = 'item-1', createdAt = '2026-05-01T00:00:00.000Z' } = {}) {
+  return {
+    id: Number(id),
+    status: 5,
+    type: 'movie',
+    is4k: false,
+    createdAt,
+    requestedBy: { jellyfinUserId: userId },
+    media: { mediaType: 'movie', status: 5, jellyfinMediaId: itemId },
+  };
+}
+
 export async function createFakeJellyfin() {
   const users = [
     { Id: 'alice-id', Name: 'Alice', Policy: { BlockedTags: [] } },
@@ -9,9 +24,10 @@ export async function createFakeJellyfin() {
   const passwords = new Map();
   const sessions = new Map();
   const state = {
+    // Added to the library after the fake Seerr requests tests send (see seerrRequest), so those are new requests.
     items: {
-      'item-1': { Id: 'item-1', Name: 'Movie', Type: 'Movie', ProductionYear: 2025, Tags: ['existing'] },
-      'item-2': { Id: 'item-2', Name: 'Second Movie', Type: 'Movie', ProductionYear: 2026, Tags: [] },
+      'item-1': { Id: 'item-1', Name: 'Movie', Type: 'Movie', ProductionYear: 2025, DateCreated: ITEM_ADDED_AT, Tags: ['existing'] },
+      'item-2': { Id: 'item-2', Name: 'Second Movie', Type: 'Movie', ProductionYear: 2026, DateCreated: ITEM_ADDED_AT, Tags: [] },
       'trailer-1': { Id: 'trailer-1', Name: 'Movie Trailer', Type: 'Trailer', Tags: [] },
     },
   };

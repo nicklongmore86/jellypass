@@ -28,6 +28,15 @@ const AVAILABLE_MEDIA_STATUSES = new Set([4, 5]);
 // listed too, and their media can be available through someone else's request.
 const GRANTABLE_REQUEST_STATUSES = new Set([2, 5]);
 
+/** A MEDIA_AVAILABLE request resolved to its item and requester; `request` is Seerr's, when Seerr lookup is configured. */
+interface ResolvedRequest {
+  itemId: string;
+  userId: string;
+  is4k: boolean;
+  mediaType?: string;
+  request?: SeerrRequest;
+}
+
 interface PlanContext {
   plan: ChangePlan;
   item: JellyfinItem;
@@ -295,7 +304,9 @@ export class AccessService {
           const existing = this.#store.findGrantForRequest(event.request.id);
           if (!existing) {
             this.#metrics.increment('jfa_webhooks_total', { result: 'ignored' });
-            this.#logDebug('webhook ignored for a request an administrator revoked', { requestId: event.request.id });
+            this.#logDebug('webhook ignored for a handled request no grant records (revoked by an administrator, or late)', {
+              requestId: event.request.id,
+            });
             return null;
           }
           await this.#reconcileOrRecover(existing);
@@ -303,6 +314,13 @@ export class AccessService {
           return this.#store.findGrantForRequest(event.request.id) ?? existing;
         }
         const resolved = await this.#resolveWebhook(event);
+        // Seerr accepts a request for a title that is already available and reports it available at once, so the
+        // event alone does not mean anything was added for this requester (see #isLateRequest).
+        if (await this.#isLateRequest(resolved.request, resolved.itemId)) {
+          await this.#applyLateRequest(event.request.id, resolved);
+          this.#metrics.increment('jfa_webhooks_total', { result: 'late' });
+          return null;
+        }
         const grant = await this.#store.grant({
           itemId: resolved.itemId,
           requestId: event.request.id,
@@ -421,43 +439,105 @@ export class AccessService {
     this.#metrics.increment('jfa_library_joins_total', { result: 'dropped' });
   }
 
-  async #resolveWebhook(event: SeerrWebhook): Promise<{ itemId: string; userId: string; mediaType?: string }> {
+  /**
+   * With Seerr lookup, the request always comes from Seerr: its creation time decides whether it is late (see
+   * #isLateRequest), and its IDs and 4K flag are Seerr's own. Without it, only the payload is known, so the request is
+   * returned undefined and counts as late.
+   */
+  async #resolveWebhook(event: SeerrWebhook): Promise<ResolvedRequest> {
     let itemId = event.media?.jellyfinMediaId;
     let userId = event.request.requestedBy?.jellyfinUserId;
     let mediaType = event.media?.mediaType;
 
     // Seerr's {{media_jellyfinMediaId}} is the HD item whenever one exists, and no template variable
-    // carries the 4K item. The payload's IDs are therefore trusted only when both are present and
-    // the event text shows an HD request; otherwise Seerr's request decides (requestItemId). Without
-    // Seerr, a missing, empty, unfilled or unrecognized event is rejected: it may be a 4K request.
+    // carries the 4K item. Without Seerr, the payload's IDs are therefore trusted only when both are
+    // present and the event text shows an HD request; a missing, empty, unfilled or unrecognized
+    // event is rejected: it may be a 4K request.
     if (!this.#seerr) {
       if (event.request.is4k) throw new Error('webhook is for a 4K request and Seerr lookup is not configured');
       if (!itemId || !userId) throw new Error('webhook is missing Jellyfin IDs and Seerr lookup is not configured');
       if (event.request.is4k !== false) {
         throw new Error('webhook event does not name an HD request and Seerr lookup is not configured');
       }
+      return { itemId, userId, is4k: false, ...(mediaType ? { mediaType } : {}) };
     }
-    let is4k = event.request.is4k === true;
-    if ((!itemId || !userId || event.request.is4k !== false) && this.#seerr) {
-      const request = await this.#seerr.getRequest(event.request.id);
-      itemId = requestItemId(request);
-      is4k = request.is4k === true;
-      userId = request.requestedBy?.jellyfinUserId;
-      mediaType ??= request.media?.mediaType ?? request.type;
-    }
+    const request = await this.#seerr.getRequest(event.request.id);
+    itemId = requestItemId(request);
+    const is4k = request.is4k === true;
+    userId = request.requestedBy?.jellyfinUserId;
+    mediaType ??= request.media?.mediaType ?? request.type;
 
     if (!itemId) throw new Error(`Seerr request ${event.request.id} is missing a ${is4k ? '4K ' : ''}Jellyfin media ID`);
     if (!userId) throw new Error(`Seerr request ${event.request.id} is missing a Jellyfin user ID`);
-    return { itemId, userId, ...(mediaType ? { mediaType } : {}) };
+    return { itemId, userId, is4k, request, ...(mediaType ? { mediaType } : {}) };
+  }
+
+  /**
+   * Whether a request was made after its title was already available ("late"). Seerr accepts a request for a movie
+   * that is already available (its interface only hides the button) and, for a user who may auto-approve, reports it
+   * available at once, so a late request must never be a grant decision: it would make a public title private, re-add
+   * households an administrator removed, or extend a manual-only grant.
+   *
+   * A request is new only when Jellyfin added its item after Seerr created the request: Seerr's `createdAt` is set by
+   * its database when the request is saved, and the item's `DateCreated` by Jellyfin when it adds the item, so neither
+   * is the requester's to choose. For a series that Jellyfin had already (a request for new seasons of a partly
+   * available show), the request is new when Jellyfin added at least one of its requested seasons after it. Everything
+   * that cannot be shown to be new counts as late: no Seerr request (Seerr lookup not configured), a missing or
+   * unparseable date, a TV request without seasons, or seasons none of which is newer than the request.
+   */
+  async #isLateRequest(request: SeerrRequest | undefined, itemId: string, item?: JellyfinItem): Promise<boolean> {
+    const requestedAt = Date.parse(request?.createdAt ?? '');
+    if (!request || !Number.isFinite(requestedAt)) return true;
+    const addedAfterRequest = (entry: JellyfinItem) => Date.parse(entry.DateCreated ?? '') > requestedAt;
+    const current = item ?? await this.#jellyfin.getItem(itemId);
+    if (addedAfterRequest(current)) return false;
+    if ((request.media?.mediaType ?? request.type) !== 'tv') return true;
+    const requestedSeasons = new Set((request.seasons ?? []).flatMap((season) =>
+      Number.isInteger(season.seasonNumber) ? [season.seasonNumber as number] : []));
+    if (requestedSeasons.size === 0) return true;
+    const administrator = (await this.#jellyfin.getUsers()).find((user) => user.Policy.IsAdministrator);
+    if (!administrator) throw new Error('Jellyfin administrator user not found');
+    const seasons = await this.#jellyfin.getSeasons(itemId, administrator.Id);
+    return !seasons.some((season) => requestedSeasons.has(season.IndexNumber ?? -1) && addedAfterRequest(season));
+  }
+
+  /**
+   * Applies a late request (see #isLateRequest) as a household library join would (see GrantStore.recordLateRequest):
+   * an HD request's requester joins the item's request grant, if it has one; a 4K request joins nothing, since joins
+   * are for HD items only. The request is recorded as handled either way. Resolves with the joined grant, or undefined.
+   */
+  async #applyLateRequest(requestId: string, resolved: ResolvedRequest, signal?: AbortSignal): Promise<GrantRecord | undefined> {
+    const joined = await this.#store.recordLateRequest(requestId, resolved.is4k ? undefined : {
+      itemId: resolved.itemId,
+      userId: resolved.userId,
+      groupIds: this.#store.listGroupIdsForUser(resolved.userId),
+    });
+    const fields = { requestId, itemId: normalizeId(resolved.itemId), userId: resolved.userId, is4k: resolved.is4k };
+    if (!joined) {
+      this.#logDebug('late request changed nothing', fields);
+      return undefined;
+    }
+    const join = joined.current.joins?.at(-1);
+    console.log(JSON.stringify({
+      level: 'info',
+      message: 'late request joined',
+      ...fields,
+      groupIds: join?.groupIds ?? [],
+      userAdded: join?.userAdded ?? false,
+    }));
+    await this.#reconcileGrant(joined.current, signal);
+    return this.#store.get(joined.current.itemId) ?? joined.current;
   }
 
   /**
    * Pull-based fallback for missed MEDIA_AVAILABLE webhooks: grants approved or completed Seerr
    * requests for available media created at or after `since`. A request for an item with no grant creates one; a request for
    * an item whose grant came from other requests is added to it (additively, with the
-   * requester's households). Manual-only grants are left alone. Each request counts as exactly
-   * one outcome: granted (stored and reconciled), skipped, or failed (including a grant that was
-   * stored but could not be reconciled yet; reconcileAll retries it). Once `signal` is aborted (shutdown), no further
+   * requester's households). Manual-only grants are left alone. A late request (see #isLateRequest) grants nothing: it
+   * is recorded and only joins its requester's households to a request grant, as webhooks do. Each request counts as
+   * exactly one outcome: granted (stored and reconciled), joined (a late request's join, stored and reconciled),
+   * skipped, or failed (including a grant or join that was stored but could not be reconciled yet; reconcileAll
+   * retries it). Once `signal` is aborted (shutdown), no further
    * request, grant or write is started and the run rejects with OperationCancelledError, counting and logging nothing
    * for the request it was on. A call already in flight is left to finish.
    */
@@ -470,7 +550,7 @@ export class AccessService {
       // Oldest first, so a grant's first request comes from the original requester.
       const requests = (await seerr.listRequestsSince(since)).reverse();
       throwIfAborted(signal);
-      const result: RequestBackfillResult = { scanned: requests.length, granted: [], skipped: 0, failed: 0 };
+      const result: RequestBackfillResult = { scanned: requests.length, granted: [], joined: [], skipped: 0, failed: 0 };
       let knownUserIds: Set<string> | undefined;
       for (const listed of requests) {
         throwIfAborted(signal);
@@ -491,7 +571,7 @@ export class AccessService {
           const itemId = requestItemId(request);
           const userId = request.requestedBy?.jellyfinUserId;
           const existing = itemId ? this.#store.get(itemId) : undefined;
-          if (!itemId || !userId || (existing && (Object.keys(existing.requests).length === 0 || requestId in existing.requests))) {
+          if (!itemId || !userId || (existing && requestId in existing.requests)) {
             result.skipped += 1;
             continue;
           }
@@ -501,8 +581,9 @@ export class AccessService {
             result.skipped += 1;
             continue;
           }
+          let item: JellyfinItem;
           try {
-            await this.#jellyfin.getItem(itemId);
+            item = await this.#jellyfin.getItem(itemId);
           } catch (error) {
             rethrowIfCancelled(error, signal);
             if ((error as { status?: unknown }).status !== 404) throw error;
@@ -514,6 +595,24 @@ export class AccessService {
             continue;
           }
           throwIfAborted(signal);
+          // Decided (and recorded) before the manual-only check, so a late request is never decided again, even
+          // against a re-imported item that Jellyfin added after the request.
+          if (await this.#isLateRequest(request, itemId, item)) {
+            throwIfAborted(signal);
+            const joined = await this.#applyLateRequest(requestId, { itemId, userId, is4k: request.is4k === true }, signal);
+            throwIfAborted(signal);
+            if (joined) {
+              result.joined.push(joined.itemId);
+              this.#metrics.increment('jfa_request_backfill_total', { result: 'joined' });
+            } else {
+              result.skipped += 1;
+            }
+            continue;
+          }
+          if (existing && Object.keys(existing.requests).length === 0) {
+            result.skipped += 1;
+            continue;
+          }
           const mediaType = request.media?.mediaType ?? request.type;
           const grant = await this.#store.grant({
             itemId,

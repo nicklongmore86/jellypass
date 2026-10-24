@@ -153,6 +153,15 @@ export class JellyfinClient {
     )));
   }
 
+  /** A series' seasons, each with its number (IndexNumber) and the date Jellyfin added it (DateCreated). */
+  public async getSeasons(seriesId: string, userId: string): Promise<JellyfinItem[]> {
+    const parameters = new URLSearchParams({ userId, Fields: 'DateCreated' });
+    const result = await this.#request<JellyfinItemQueryResult>(
+      `/Shows/${encodeURIComponent(seriesId)}/Seasons?${parameters.toString()}`,
+    );
+    return result.Items ?? [];
+  }
+
   public async getLocalTrailers(itemId: string, userId: string): Promise<JellyfinItem[]> {
     return this.#request<JellyfinItem[]>(
       `/Items/${encodeURIComponent(itemId)}/LocalTrailers?userId=${encodeURIComponent(userId)}`,

@@ -153,7 +153,8 @@ export class GrantStore {
    * A request an administrator revoked from the item is never recorded on it again (see
    * GrantState.revokedRequests); it still counts as handled. A new request is a new grant
    * decision, so it adds its requester's households even if an administrator removed them
-   * earlier; replays of handled requests never reach here (see processWebhook).
+   * earlier; replays of handled requests never reach here (see processWebhook), and neither
+   * do late requests (see recordLateRequest).
    */
   public async grant(input: {
     itemId: string;
@@ -350,16 +351,39 @@ export class GrantStore {
     this.#assertOpen();
     const planned = this.#planJoin(input);
     if (!planned) return undefined;
-    const { previous, join } = planned;
-    const result = this.#replaceGrant(
+    const result = this.#applyJoin(planned);
+    await this.#save();
+    return result;
+  }
+
+  /**
+   * Records a late request (one made after its title was already available; see AccessService.processWebhook) as
+   * handled and, given `join`, joins its requester's households to the item's grant exactly as joinGrant does, in one
+   * write. A late request is never a grant decision: it creates no grant, never touches a manual-only grant and never
+   * re-adds a user or household an administrator removed. Being handled, it is never decided again by a replayed
+   * webhook or the backfill. Returns the join, or undefined when no grant changed (the request is recorded either way).
+   */
+  public async recordLateRequest(
+    requestId: string,
+    join?: { itemId: string; userId: string; groupIds: string[] },
+  ): Promise<RevokeResult | undefined> {
+    this.#assertOpen();
+    const planned = join ? this.#planJoin(join) : undefined;
+    if (!planned && this.hasHandledRequest(requestId)) return undefined;
+    const result = planned ? this.#applyJoin(planned) : undefined;
+    this.#state.handledRequestIds = [...new Set([...(this.#state.handledRequestIds ?? []), requestId])];
+    await this.#save();
+    return result;
+  }
+
+  #applyJoin({ previous, join }: { previous: GrantRecord; join: LibraryJoin }): RevokeResult {
+    return this.#replaceGrant(
       previous,
       previous.requests,
       join.userAdded ? [...previous.manualUserIds, join.userId].sort() : previous.manualUserIds,
       [...previous.groupIds, ...join.groupIds].sort(),
       { joins: [...(previous.joins ?? []), join] },
     );
-    await this.#save();
-    return result;
   }
 
   /** Whether joinGrant would change the grant now; it reads only, so it needs no turn in the write queue. */

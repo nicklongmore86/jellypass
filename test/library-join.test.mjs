@@ -7,7 +7,7 @@ import { JellyfinClient } from '../dist/jellyfin.js';
 import { makeServer } from '../dist/server.js';
 import { BackgroundTasks, createShutdown } from '../dist/shutdown.js';
 import { GrantStore } from '../dist/store.js';
-import { createFakeJellyfin } from './support/fake-jellyfin.mjs';
+import { createFakeJellyfin, seerrRequest } from './support/fake-jellyfin.mjs';
 import { makeTempDir } from './support/temp-dir.mjs';
 
 const HOUSEHOLD_HOST = 'jelly-farmhouse.example.test';
@@ -27,7 +27,11 @@ describe('household "Add to my library"', { timeout: 10_000 }, () => {
     await store.upsertGroup({ id: 'farmhouse', name: 'Farmhouse', userIds: ['alice-id', 'bob-id'] });
     await store.upsertGroup({ id: 'cottage', name: 'Cottage', userIds: [carol.Id] });
     const lookups = [];
+    const requests = new Map();
     const seerrClient = seerr ? {
+      async getRequest(requestId) {
+        return requests.get(requestId);
+      },
       async getJellyfinItemId(mediaType, tmdbId) {
         lookups.push(`${mediaType}/${tmdbId}`);
         await lookupGate;
@@ -74,6 +78,7 @@ describe('household "Add to my library"', { timeout: 10_000 }, () => {
       body: typeof body === 'string' ? body : JSON.stringify(body),
     });
     const grantForAlice = async (itemId = 'item-1', requestId = '17') => {
+      requests.set(requestId, seerrRequest(requestId, { itemId }));
       const response = await fetch(`${baseUrl}/webhooks/seerr`, {
         method: 'POST',
         headers: { Authorization: 'Bearer webhook-secret', 'Content-Type': 'application/json' },

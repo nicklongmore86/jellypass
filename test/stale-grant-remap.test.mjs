@@ -82,13 +82,21 @@ function world() {
     titles,
     calls,
     writes,
-    addItem(id, tags = []) { items.set(id, { Id: id, Name: `Movie ${id}`, Type: 'Movie', Tags: tags }); },
+    // Items are added to Jellyfin after the requests were made, so the requests are new, not late.
+    addItem(id, tags = []) { items.set(id, { Id: id, Name: `Movie ${id}`, Type: 'Movie', DateCreated: '2026-06-01T00:00:00.000Z', Tags: tags }); },
     tags(id) { return items.get(id)?.Tags ?? []; },
     /** The non-administrators blocked from the item tagged `tag`. */
     blockedFrom(tag) { return users.filter((user) => !user.Policy.IsAdministrator && user.Policy.BlockedTags.includes(tag)).map((user) => user.Id); },
     blocked(userId) { return users.find((user) => user.Id === userId).Policy.BlockedTags; },
     request(id, media, extra = {}) {
-      requests.set(String(id), { id, type: 'movie', requestedBy: { jellyfinUserId: 'alice-id' }, media: { mediaType: 'movie', status: 5, ...media }, ...extra });
+      requests.set(String(id), {
+        id,
+        type: 'movie',
+        createdAt: '2026-05-01T00:00:00.000Z',
+        requestedBy: { jellyfinUserId: 'alice-id' },
+        media: { mediaType: 'movie', status: 5, ...media },
+        ...extra,
+      });
     },
   };
 }
@@ -529,6 +537,7 @@ describe('grants whose Jellyfin item was deleted and re-imported', { timeout: 10
     await quietly(() => service.reconcileAll());
     assert.equal(store.get('item-new'), undefined);
 
+    w.request(8, { jellyfinMediaId: 'item-new' });
     const event = parseWebhook({ notificationType: 'MEDIA_AVAILABLE', event: 'Movie Request Now Available', media: { jellyfinMediaId: 'item-new', mediaType: 'movie' }, request: { id: '8', is4k: false, requestedBy: { jellyfinUserId: 'alice-id' } } });
     const { value, error } = await quietly(() => service.processWebhook(event));
     assert.equal(error, undefined, String(error));

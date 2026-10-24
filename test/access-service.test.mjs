@@ -89,7 +89,7 @@ describe('state file persistence', () => {
       await gate;
       return getItem.call(this, itemId);
     };
-    const service = new AccessService(fake, store);
+    const service = new AccessService(fake, store, undefined, payloadSeerr());
     const order = [];
     const webhookDone = service.processWebhook(parseWebhook(webhook())).then(() => order.push('webhook'));
     const passwordlessDone = service.setUserPasswordless('bob-id', true).then(() => order.push('passwordless'));
@@ -299,7 +299,7 @@ describe('state migration', () => {
     assert.doesNotMatch(JSON.stringify(migrated), /tmdbId|claimedAt|1399/);
 
     // The claimant stays an ordinary manual user when another request lands on the title.
-    const service = new AccessService(fakeJellyfin(), store);
+    const service = new AccessService(fakeJellyfin(), store, undefined, payloadSeerr());
     const grant = await service.processWebhook(parseWebhook(webhook({ requestId: '18' })));
     assert.deepEqual(grant.manualUserIds, ['bob-id']);
     assert.deepEqual(grant.owners, ['alice-id', 'bob-id']);
@@ -357,7 +357,7 @@ describe('grant lifecycle', () => {
     await store.load();
     const fake = fakeJellyfin();
     fake.addLocalTrailer('item-1', { Id: 'trailer-1', Name: 'Movie Trailer', Type: 'Trailer', Tags: ['keep-trailer'] });
-    const service = new AccessService(fake, store);
+    const service = new AccessService(fake, store, undefined, payloadSeerr());
 
     const grant = await service.processWebhook(parseWebhook(webhook()));
     assert.equal(grant.sync.state, 'synced');
@@ -377,7 +377,7 @@ describe('grant lifecycle', () => {
     const store = new GrantStore(await stateFile(t));
     await store.load();
     const fake = fakeJellyfin();
-    const service = new AccessService(fake, store);
+    const service = new AccessService(fake, store, undefined, payloadSeerr());
 
     await service.processWebhook(parseWebhook(webhook()));
     assert.deepEqual(fake.item.Tags, ['keep-me', 'jfa:private:item-1']);
@@ -408,7 +408,7 @@ describe('grant lifecycle', () => {
     await store.load();
     const fake = fakeJellyfin();
     fake.updateItem = async () => { throw new Error('Jellyfin unavailable'); };
-    const service = new AccessService(fake, store);
+    const service = new AccessService(fake, store, undefined, payloadSeerr());
 
     await assert.rejects(() => service.processWebhook(parseWebhook(webhook())), /unavailable/);
     const grant = store.get('item-1');
@@ -428,6 +428,7 @@ describe('grant lifecycle', () => {
         return {
           id: 136,
           is4k: false,
+          createdAt: REQUESTED_AT,
           requestedBy: { jellyfinUserId: 'alice-id' },
           media: { jellyfinMediaId: 'item-1', mediaType: 'movie', tmdbId: 101 },
         };
@@ -473,12 +474,27 @@ describe('webhooks without Seerr lookup', () => {
     assert.match(service.renderMetrics(), /jfa_webhooks_total\{result="error"\} 1/);
   });
 
-  it('grants the payload item only for a recognized HD event', async () => {
-    const { store, service } = await serviceWithoutSeerr();
-    await service.processWebhook(parseWebhook(webhook({ event: 'Movie Now Available' })));
-    await service.processWebhook(parseWebhook(webhook({ event: 'Series Request Now Available', requestId: '18' })));
-    assert.deepEqual(store.get('item-1').requests, { '17': 'alice-id', '18': 'alice-id' });
-    assert.match(service.renderMetrics(), /jfa_webhooks_total\{result="granted"\} 2/);
+  it('treats a recognized HD event as a late request: it joins request grants but never grants', async () => {
+    // Without Seerr there is no request creation time, so a request that came after its title was
+    // already available cannot be told apart from a new one (see the late request tests).
+    const { store, fake, service } = await serviceWithoutSeerr();
+    await service.upsertGroup({ id: 'house-a', name: 'House A', userIds: ['alice-id'] });
+    assert.equal(await service.processWebhook(parseWebhook(webhook({ event: 'Movie Now Available' }))), null);
+    assert.equal(await service.processWebhook(parseWebhook(webhook({ event: 'Series Request Now Available', requestId: '18' }))), null);
+    assert.equal(store.list().length, 0, 'the public title stays public');
+    assert.deepEqual(fake.item.Tags, ['keep-me']);
+    assert.equal(store.hasHandledRequest('17'), true);
+    assert.equal(store.hasHandledRequest('18'), true);
+
+    // A request grant (here from an earlier version) is joined, with the join recorded.
+    await store.grant({ itemId: 'item-2', requestId: '5', userId: 'bob-id' });
+    assert.equal(await service.processWebhook(parseWebhook(webhook({ requestId: '19', mediaId: 'item-2', mediaType: 'tv' }))), null);
+    assert.deepEqual(store.get('item-2').groupIds, ['house-a']);
+    assert.deepEqual(store.get('item-2').requests, { '5': 'bob-id' });
+    assert.equal(store.get('item-2').joins.length, 1);
+    assert.deepEqual(fake.user('alice-id').Policy.BlockedTags, ['other']);
+    assert.match(service.renderMetrics(), /jfa_webhooks_total\{result="late"\} 3/);
+    assert.doesNotMatch(service.renderMetrics(), /result="granted"/);
   });
 
   it('rejects a missing, empty, unfilled or unrecognized event, which may be a 4K request', async () => {
@@ -507,7 +523,7 @@ describe('webhook outcome accounting', () => {
     const store = new GrantStore(await stateFile(t));
     await store.load();
     const fake = fakeJellyfin();
-    const service = new AccessService(fake, store);
+    const service = new AccessService(fake, store, undefined, payloadSeerr());
     store.grant = async () => {
       throw new Error('EACCES: permission denied, open state.json.tmp');
     };
@@ -525,7 +541,7 @@ describe('webhook outcome accounting', () => {
     fake.updateItem = async () => {
       throw new Error('Jellyfin unavailable');
     };
-    const service = new AccessService(fake, store);
+    const service = new AccessService(fake, store, undefined, payloadSeerr());
     await assert.rejects(() => service.processWebhook(parseWebhook(webhook())), /Jellyfin unavailable/);
     const metrics = service.renderMetrics();
     assert.match(metrics, /jfa_webhooks_total\{result="error"\} 1\n/);
@@ -538,7 +554,7 @@ describe('household-scoped request grants', () => {
     const store = new GrantStore(await stateFile());
     await store.load();
     const fake = fakeJellyfin({ extraUsers: [{ Id: 'carol-id', Name: 'Carol' }, { Id: 'dave-id', Name: 'Dave' }] });
-    const service = new AccessService(fake, store);
+    const service = new AccessService(fake, store, undefined, payloadSeerr());
     await service.upsertGroup({ id: 'house-a', name: 'House A', userIds: ['alice-id', 'bob-id'] });
     await service.upsertGroup({ id: 'house-b', name: 'House B', userIds: ['carol-id'] });
     return { store, fake, service };
@@ -593,7 +609,7 @@ describe('replayed webhooks', () => {
     const store = new GrantStore(await stateFile());
     await store.load();
     const fake = fakeJellyfin({ extraUsers: [{ Id: 'carol-id', Name: 'Carol' }] });
-    const service = new AccessService(fake, store);
+    const service = new AccessService(fake, store, undefined, payloadSeerr());
     await service.upsertGroup({ id: 'house-a', name: 'House A', userIds: ['alice-id', 'bob-id'] });
     await service.upsertGroup({ id: 'house-b', name: 'House B', userIds: ['carol-id'] });
     return { store, fake, service };
@@ -733,6 +749,7 @@ describe('household library joins', () => {
     const lookups = [];
     return {
       lookups,
+      getRequest: payloadSeerr().getRequest,
       async getJellyfinItemId(mediaType, tmdbId) {
         lookups.push(`${mediaType}/${tmdbId}`);
         if (tmdbId === 500) throw new Error('Seerr GET /api/v1/movie/500 returned 500');
@@ -1122,7 +1139,8 @@ describe('Seerr request backfill', () => {
 
   it('adds a backfilled request to an existing webhook grant without removing anything', async () => {
     const listed = [seerrRequest(801, { requestedBy: { jellyfinUserId: 'carol-id' } })];
-    await withSeerr(listed, {}, async ({ store, service }) => {
+    const webhookRequest = seerrRequest(17, { requestedBy: { jellyfinUserId: 'bob-id' } });
+    await withSeerr(listed, { 17: webhookRequest }, async ({ store, service }) => {
       await service.processWebhook(parseWebhook(webhook({ userId: 'bob-id' })));
       const result = await service.backfillRequests(since);
       assert.deepEqual(result.granted, ['item-1']);
@@ -1139,14 +1157,15 @@ describe('Seerr request backfill', () => {
       media: { mediaType: 'movie', status: 5, status4k: 5, jellyfinMediaId: 'item-1', jellyfinMediaId4k: 'item-2' },
     });
 
-    it('trusts the payload IDs of an HD request without asking Seerr', async () => {
+    it('asks Seerr even for an HD event with both IDs, and Seerr\'s request decides', async () => {
+      // Seerr's request creation time is what tells a new request from a late one, and its IDs are its own.
       await withSeerr([], { 17: detail4k }, async ({ store, fake, service, calls }) => {
         const grant = await service.processWebhook(parseWebhook(webhook()));
-        assert.deepEqual(calls, []);
-        assert.equal(grant.itemId, 'item-1');
-        assert.deepEqual(grant.requests, { '17': 'alice-id' });
-        assert.equal(store.get('item-2'), undefined);
-        assert.deepEqual(fake.item.Tags, ['keep-me', 'jfa:private:item-1']);
+        assert.deepEqual(calls, ['/api/v1/request/17']);
+        assert.equal(grant.itemId, 'item-2');
+        assert.deepEqual(grant.requests, { '17': 'carol-id' });
+        assert.equal(store.get('item-1'), undefined);
+        assert.deepEqual(fake.item.Tags, ['keep-me']);
       });
     });
 
@@ -1179,10 +1198,10 @@ describe('Seerr request backfill', () => {
     });
 
     it('grants separate HD and 4K requests for a title on their own items', async () => {
-      await withSeerr([], { 20: { ...detail4k, id: 20 } }, async ({ store, fake, service, calls }) => {
+      await withSeerr([], { 17: seerrRequest(17), 20: { ...detail4k, id: 20 } }, async ({ store, fake, service, calls }) => {
         const hd = await service.processWebhook(parseWebhook(webhook()));
         const uhd = await service.processWebhook(parseWebhook(webhook({ requestId: '20', event: '4K Movie Request Now Available' })));
-        assert.deepEqual(calls, ['/api/v1/request/20']);
+        assert.deepEqual(calls, ['/api/v1/request/17', '/api/v1/request/20']);
         assert.equal(hd.itemId, 'item-1');
         assert.equal(uhd.itemId, 'item-2');
         assert.deepEqual(store.get('item-1').requests, { '17': 'alice-id' });
@@ -1264,7 +1283,7 @@ describe('Seerr request backfill', () => {
       assert.match(metrics, /jfa_request_backfill_total\{result="error"\} 1/);
 
       const again = await service.backfillRequests(since);
-      assert.deepEqual(again, { scanned: 1, granted: [], skipped: 1, failed: 0 });
+      assert.deepEqual(again, { scanned: 1, granted: [], joined: [], skipped: 1, failed: 0 });
     });
   });
 
@@ -1283,7 +1302,7 @@ describe('Seerr request backfill', () => {
       console.debug = (line) => logged.push(line);
       try {
         for (let run = 0; run < 2; run += 1) {
-          assert.deepEqual(await service.backfillRequests(since), { scanned: 1, granted: [], skipped: 1, failed: 0 });
+          assert.deepEqual(await service.backfillRequests(since), { scanned: 1, granted: [], joined: [], skipped: 1, failed: 0 });
         }
       } finally {
         console.log = originalLog;
@@ -1355,8 +1374,36 @@ describe('Seerr request backfill', () => {
   });
 });
 
+// Fake requests are created before Jellyfin adds the fake items (DateCreated), so they are new, not late.
+const REQUESTED_AT = '2026-10-15T00:00:00.000Z';
+const ADDED_AT = '2026-10-20T00:00:00.0000000Z';
+/** Seerr's side of each request webhook() builds, by request ID, as GET /api/v1/request/:id returns it. */
+const payloadRequests = new Map();
+
+/** A Seerr client that answers GET /api/v1/request/:id with the request webhook() built last for that ID. */
+function payloadSeerr() {
+  return {
+    async getRequest(requestId) {
+      const request = payloadRequests.get(String(requestId));
+      if (!request) throw Object.assign(new Error(`Seerr GET /api/v1/request/${requestId} returned 404`), { status: 404 });
+      return structuredClone(request);
+    },
+  };
+}
+
 function webhook(overrides = {}) {
   const event = overrides.event === undefined ? 'Movie Request Now Available' : overrides.event;
+  const requestId = overrides.requestId ?? '17';
+  const mediaType = overrides.mediaType ?? 'movie';
+  payloadRequests.set(requestId, {
+    id: Number(requestId),
+    status: 5,
+    type: mediaType,
+    is4k: false,
+    createdAt: overrides.createdAt ?? REQUESTED_AT,
+    requestedBy: { jellyfinUserId: overrides.userId ?? 'alice-id' },
+    media: { mediaType, status: 5, jellyfinMediaId: overrides.mediaId ?? 'item-1' },
+  });
   return {
     notificationType: 'MEDIA_AVAILABLE',
     ...(event === null ? {} : { event }),
@@ -1381,8 +1428,8 @@ function fakeJellyfin({ extraUsers = [] } = {}) {
   const localTrailers = new Map();
   let policyUpdates = 0;
   return {
-    item: { Id: 'item-1', Name: 'Movie', Tags: ['keep-me'] },
-    item2: { Id: 'item-2', Name: 'Series', Tags: [] },
+    item: { Id: 'item-1', Name: 'Movie', DateCreated: ADDED_AT, Tags: ['keep-me'] },
+    item2: { Id: 'item-2', Name: 'Series', DateCreated: ADDED_AT, Tags: [] },
     get policyUpdates() { return policyUpdates; },
     user(id) {
       return users.find((user) => user.Id === id);

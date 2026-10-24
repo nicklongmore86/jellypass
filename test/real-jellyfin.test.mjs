@@ -17,19 +17,41 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
   let client;
   let store;
   let server;
+  let seerrStore;
+  let seerrServer;
+  // Seerr's GET /api/v1/request/:id answers, by request ID. A request made in 2000 predates every item Jellyfin added
+  // (a new request); one made now comes after them (a late request).
+  const requests = new Map();
+  const seerr = { getRequest: async (requestId) => structuredClone(requests.get(String(requestId))) };
+  const seerrRequest = (requestId, createdAt) => {
+    requests.set(requestId, {
+      id: requestId,
+      status: 5,
+      type: 'movie',
+      is4k: false,
+      createdAt,
+      requestedBy: { jellyfinUserId: fixture.aliceId },
+      media: { mediaType: 'movie', status: 5, jellyfinMediaId: fixture.itemId },
+    });
+  };
 
   before(async () => {
     fixture = await setupJellyfin(baseUrl);
     store = new GrantStore(path.join(await makeTempDir(null, 'jfa-real-'), 'grants.json'));
     await store.load();
     client = new JellyfinClient(baseUrl, fixture.token);
-    // No Seerr client: webhooks must carry an HD event to be trusted.
+    // No Seerr client: webhooks must carry an HD event to be trusted, and can only join request grants.
     server = makeServer(new AccessService(client, store), { webhook: webhookToken, admin: 'real-admin-secret' });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+    seerrStore = new GrantStore(path.join(await makeTempDir(null, 'jfa-real-seerr-'), 'grants.json'));
+    await seerrStore.load();
+    seerrServer = makeServer(new AccessService(client, seerrStore, undefined, seerr), { webhook: webhookToken, admin: 'real-admin-secret' });
+    await new Promise((resolve) => seerrServer.listen(0, '127.0.0.1', resolve));
   });
 
   after(async () => {
     if (server) await new Promise((resolve) => server.close(resolve));
+    if (seerrServer) await new Promise((resolve) => seerrServer.close(resolve));
   });
 
   const available = (requestId, event) => ({
@@ -54,16 +76,41 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
     assert.ok(!user(users, fixture.bobId).Policy.BlockedTags.includes(accessTag(fixture.itemId)));
   });
 
+  it('grants nothing for a Seerr-less HD webhook, which cannot be told apart from a late request', async () => {
+    assert.deepEqual(await sendWebhook(server, available('real-16c', 'Movie Request Now Available')), {
+      status: 202,
+      body: { status: 'ignored' },
+    });
+    assert.equal(store.get(fixture.itemId), undefined);
+    assert.ok(!(await client.getItem(fixture.itemId)).Tags.includes(accessTag(fixture.itemId)));
+    assert.ok(!user(await client.getUsers(), fixture.bobId).Policy.BlockedTags.includes(accessTag(fixture.itemId)));
+  });
+
+  it('reports when it added an item, which tells a late request from a new one', async () => {
+    const added = Date.parse((await client.getItem(fixture.itemId)).DateCreated);
+    assert.ok(Number.isFinite(added) && added > Date.parse('2000-01-01T00:00:00.000Z') && added <= Date.now(), String(added));
+
+    // A request made after Jellyfin added the movie leaves it public, whichever availability event Seerr sends first.
+    seerrRequest('real-late', new Date().toISOString());
+    for (const event of ['Movie Now Available', 'Movie Request Now Available']) {
+      assert.deepEqual(await sendWebhook(seerrServer, available('real-late', event)), { status: 202, body: { status: 'ignored' } }, event);
+    }
+    assert.equal(seerrStore.get(fixture.itemId), undefined);
+    assert.ok(!(await client.getItem(fixture.itemId)).Tags.includes(accessTag(fixture.itemId)));
+    assert.ok(!user(await client.getUsers(), fixture.bobId).Policy.BlockedTags.includes(accessTag(fixture.itemId)));
+  });
+
   it('answers an unknown item ID with a 404, the only status JellyPass treats as a deleted item', async () => {
     const unknownId = randomUUID().replaceAll('-', '');
     await assert.rejects(client.getItem(unknownId), (error) => error.status === 404);
   });
 
-  it('grants and revokes access on Jellyfin for an HD Now Available webhook', async () => {
-    const granted = await sendWebhook(server, available('real-17', 'Movie Request Now Available'));
+  it('grants and revokes access on Jellyfin for a new request\'s HD Now Available webhook', async () => {
+    seerrRequest('real-17', '2000-01-01T00:00:00.000Z');
+    const granted = await sendWebhook(seerrServer, available('real-17', 'Movie Request Now Available'));
     assert.equal(granted.status, 200, JSON.stringify(granted.body));
     assert.equal(granted.body.status, 'granted');
-    assert.ok(store.get(fixture.itemId));
+    assert.ok(seerrStore.get(fixture.itemId));
 
     const taggedItem = await client.getItem(fixture.itemId);
     const grantedUsers = await client.getUsers();
@@ -71,7 +118,7 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
     assert.ok(user(grantedUsers, fixture.bobId).Policy.BlockedTags.includes(accessTag(fixture.itemId)));
     assert.ok(!user(grantedUsers, fixture.aliceId).Policy.BlockedTags.includes(accessTag(fixture.itemId)));
 
-    const revoked = await fetch(`${serverUrl(server)}/v1/grants/${fixture.itemId}/requests/real-17`, {
+    const revoked = await fetch(`${serverUrl(seerrServer)}/v1/grants/${fixture.itemId}/requests/real-17`, {
       method: 'DELETE',
       headers: { Authorization: 'Bearer real-admin-secret' },
     });
@@ -87,13 +134,17 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
     const joinStore = new GrantStore(path.join(await makeTempDir(t, 'jfa-real-join-'), 'grants.json'));
     await joinStore.load();
     await joinStore.upsertGroup({ id: 'realhouse', name: 'Real House', userIds: [fixture.aliceId] });
-    const seerr = { getJellyfinItemId: async (mediaType, tmdbId) => (mediaType === 'movie' && tmdbId === 603 ? fixture.itemId : undefined) };
-    const service = new AccessService(client, joinStore, undefined, seerr);
+    const joinSeerr = {
+      ...seerr,
+      getJellyfinItemId: async (mediaType, tmdbId) => (mediaType === 'movie' && tmdbId === 603 ? fixture.itemId : undefined),
+    };
+    const service = new AccessService(client, joinStore, undefined, joinSeerr);
     const gateway = makeServer(service, { webhook: webhookToken, admin: 'real-admin-secret' }, undefined, {
       householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-' },
     });
     await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
     t.after(() => new Promise((resolve) => gateway.close(resolve)));
+    seerrRequest('real-18', '2000-01-01T00:00:00.000Z');
     const granted = await sendWebhook(gateway, available('real-18', 'Movie Request Now Available'));
     assert.equal(granted.status, 200, JSON.stringify(granted.body));
     assert.ok(user(await client.getUsers(), fixture.bobId).Policy.BlockedTags.includes(accessTag(fixture.itemId)));

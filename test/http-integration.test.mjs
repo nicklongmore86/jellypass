@@ -8,7 +8,7 @@ import { WebAuth } from '../dist/auth.js';
 import { JellyfinClient } from '../dist/jellyfin.js';
 import { makeServer } from '../dist/server.js';
 import { GrantStore } from '../dist/store.js';
-import { createFakeJellyfin } from './support/fake-jellyfin.mjs';
+import { createFakeJellyfin, ITEM_ADDED_AT, seerrRequest } from './support/fake-jellyfin.mjs';
 import { makeTempDir } from './support/temp-dir.mjs';
 
 describe('HTTP integration', { timeout: 5_000 }, () => {
@@ -26,6 +26,9 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     const jellyfinClient = new JellyfinClient(jellyfin.url, 'test-key');
     importedUserIds = [];
     const seerr = {
+      async getRequest(requestId) {
+        return seerrRequest(requestId);
+      },
       async getRecentRequests(take, jellyfinItemIds) {
         assert.equal(take, 12);
         assert.equal(jellyfinItemIds.has('item-2'), true);
@@ -646,8 +649,8 @@ describe('webhook resolution errors over HTTP', { timeout: 5_000 }, () => {
     const send = await webhookServer({
       async getRequest(requestId) {
         return requestId === '4'
-          ? { id: 4, is4k: true, requestedBy: { jellyfinUserId: 'alice-id' }, media: { jellyfinMediaId: 'item-1' } }
-          : { id: 5, is4k: false, requestedBy: { jellyfinUserId: 'alice-id' }, media: {} };
+          ? { ...seerrRequest(4), is4k: true }
+          : { ...seerrRequest(5), media: {} };
       },
     });
     assert.deepEqual(await send(available('4', '4K Movie Request Now Available')), {
@@ -669,7 +672,7 @@ describe('webhook resolution errors over HTTP', { timeout: 5_000 }, () => {
 
   it('returns 202 ignored for a replayed webhook whose request an administrator revoked', async () => {
     const jellyfin = {
-      item: { Id: 'item-1', Name: 'Movie', Tags: [] },
+      item: { Id: 'item-1', Name: 'Movie', DateCreated: ITEM_ADDED_AT, Tags: [] },
       users: [
         { Id: 'admin-id', Name: 'Admin', Policy: { IsAdministrator: true, BlockedTags: [] } },
         { Id: 'alice-id', Name: 'Alice', Policy: { BlockedTags: [] } },
@@ -683,7 +686,7 @@ describe('webhook resolution errors over HTTP', { timeout: 5_000 }, () => {
     // Kept until the file finishes: the server using it is closed in the suite's after hook, not by this test.
     const store = new GrantStore(path.join(await makeTempDir(null, 'jfa-http-replay-'), 'grants.json'));
     await store.load();
-    const service = new AccessService(jellyfin, store);
+    const service = new AccessService(jellyfin, store, undefined, { getRequest: async (requestId) => seerrRequest(requestId) });
     const server = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     servers.push(server);
@@ -703,7 +706,7 @@ describe('webhook resolution errors over HTTP', { timeout: 5_000 }, () => {
 
   it('applies a stored grant when Seerr retries a webhook whose Jellyfin update failed', async () => {
     const jellyfin = {
-      item: { Id: 'item-1', Name: 'Movie', Tags: [] },
+      item: { Id: 'item-1', Name: 'Movie', DateCreated: ITEM_ADDED_AT, Tags: [] },
       failUpdates: true,
       users: [
         { Id: 'admin-id', Name: 'Admin', Policy: { IsAdministrator: true, BlockedTags: [] } },
@@ -722,7 +725,7 @@ describe('webhook resolution errors over HTTP', { timeout: 5_000 }, () => {
     // Kept until the file finishes: the server using it is closed in the suite's after hook, not by this test.
     const store = new GrantStore(path.join(await makeTempDir(null, 'jfa-http-retry-'), 'grants.json'));
     await store.load();
-    const service = new AccessService(jellyfin, store);
+    const service = new AccessService(jellyfin, store, undefined, { getRequest: async (requestId) => seerrRequest(requestId) });
     const server = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     servers.push(server);

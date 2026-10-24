@@ -154,7 +154,7 @@ function recordingWorld(abortAt) {
   ];
   const jellyfin = {
     getUsers: async () => record('getUsers', structuredClone(users)),
-    getItem: async (itemId) => record('getItem', { Id: itemId, Name: 'Movie', Type: 'Movie', Tags: [] }),
+    getItem: async (itemId) => record('getItem', { Id: itemId, Name: 'Movie', Type: 'Movie', DateCreated: '2026-06-01T00:00:00.000Z', Tags: [] }),
     getLocalTrailers: async () => record('getLocalTrailers', []),
     updateItem: async () => record('updateItem'),
     updatePolicy: async () => record('updatePolicy'),
@@ -163,7 +163,10 @@ function recordingWorld(abortAt) {
   const seerr = {
     listRequestsSince: async () => record('listRequestsSince', [{ id: 7, status: 2, media: { status: 5 } }]),
     getRequest: async (requestId) => record('getRequest', {
-      id: Number(requestId), media: { status: 5, jellyfinMediaId: 'item-1', mediaType: 'movie' }, requestedBy: { jellyfinUserId: 'alice-id' },
+      id: Number(requestId),
+      createdAt: '2026-05-01T00:00:00.000Z',
+      media: { status: 5, jellyfinMediaId: 'item-1', mediaType: 'movie' },
+      requestedBy: { jellyfinUserId: 'alice-id' },
     }),
   };
   const metrics = {
@@ -400,7 +403,7 @@ describe('household library join stopped by shutdown', { timeout: 10_000 }, () =
     ];
     const jellyfin = {
       getUsers: async () => record('getUsers', structuredClone(users)),
-      getItem: async (itemId) => record('getItem', { Id: itemId, Name: 'Movie', Type: 'Movie', Tags: [] }),
+      getItem: async (itemId) => record('getItem', { Id: itemId, Name: 'Movie', Type: 'Movie', DateCreated: '2026-06-01T00:00:00.000Z', Tags: [] }),
       getLocalTrailers: async () => record('getLocalTrailers', []),
       updateItem: async () => record('updateItem'),
       updatePolicy: async () => record('updatePolicy'),

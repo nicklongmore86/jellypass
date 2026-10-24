@@ -29,7 +29,10 @@ export interface SeerrRequest {
   status?: number;
   type?: string;
   is4k?: boolean;
+  /** Set by Seerr's database when the request is saved; a requester cannot choose it. */
   createdAt?: string;
+  /** The seasons a TV request asked for. */
+  seasons?: Array<{ seasonNumber?: number }>;
   requestedBy?: {
     jellyfinUserId?: string;
   };
@@ -46,6 +49,8 @@ export interface SeerrRequest {
 export interface RequestBackfillResult {
   scanned: number;
   granted: string[];
+  /** Items whose request grant a late request's household joined (see AccessService.backfillRequests). */
+  joined: string[];
   skipped: number;
   failed: number;
 }
@@ -84,7 +89,10 @@ export interface JellyfinItem {
   Type?: string;
   CollectionType?: string;
   ProductionYear?: number;
+  /** When Jellyfin added the item to its library. */
   DateCreated?: string;
+  /** A season's number, on season items. */
+  IndexNumber?: number;
   Tags?: string[];
   [key: string]: unknown;
 }
@@ -156,7 +164,7 @@ export interface GrantState {
   groups: Record<string, AccessGroup>;
   catalog: LibraryCatalog;
   passwordlessUserIds: string[];
-  /** Seerr request IDs that already produced a grant; the backfill never re-imports them. */
+  /** Seerr request IDs that already produced a grant or were recorded as late; the backfill never re-imports them. */
   handledRequestIds?: string[];
   /**
    * Requests an administrator revoked, by request ID, with the items they were revoked from. Moving a grant (recovery
@@ -167,7 +175,7 @@ export interface GrantState {
    * What an administrator removed from each item, by item ID (see AccessRemovals): the one removal record that household
    * library joins and grant moves (recovery or remap, dry runs included) both check, so neither adds a removed user or
    * group to that item again. Webhooks and the request backfill never grant a handled request again, and a new request
-   * is a new grant decision (see GrantStore.grant).
+   * is a new grant decision (see GrantStore.grant); a late request is not (see GrantStore.recordLateRequest).
    */
   removedAccess?: Record<string, AccessRemovals>;
 }

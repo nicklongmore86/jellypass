@@ -40,7 +40,7 @@ async function main(): Promise<void> {
     try {
       const result = await service.backfillRequests(backfillSince, { signal });
       if (signal.aborted) return;
-      if (result.granted.length > 0 || result.failed > 0) {
+      if (result.granted.length > 0 || result.joined.length > 0 || result.failed > 0) {
         console.log(JSON.stringify({ level: 'info', message: 'request backfill finished', ...result }));
       }
     } catch (error) {
