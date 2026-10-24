@@ -16,9 +16,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   as one Seerr user and never with a missing or empty `X-API-User` (which Seerr
   runs as its owner): a member client that holds a Jellyfin user and confirms
   with Seerr, immediately before every call, which Seerr user is linked to it,
-  and a catalogue client that reads titles as the dedicated catalogue user so no
-  member's Seerr preferences shape them. Also a cached Jellyfin-to-Seerr user
-  map that fails closed for unmapped users, synthetic Seerr 3.5.1 fixtures with
+  and a catalogue client that reads titles as the dedicated catalogue user,
+  confirmed fit for the role before every call, so no member's Seerr
+  preferences shape them. Also a cached Jellyfin-to-Seerr user map that fails
+  closed for unmapped users, synthetic Seerr 3.5.1 fixtures with
   canary values for privacy tests, and `pnpm test:seerr`, which checks the
   clients against a throwaway Seerr 3.5.1 container (also run in CI). The
   design is in [docs/app-design.md](docs/app-design.md).

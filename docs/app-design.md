@@ -68,7 +68,11 @@ digits, dashes removed), whatever format Seerr or Jellyfin gives them in.
   candidate and tries once more with a fresh lookup; a second failure fails closed (`SeerrUnmappedUserError`).
 - **Invalidation reaches calls in flight.** `invalidate(jellyfinUserId)` forgets one caller and `clear()` everyone;
   a call whose confirmation was in flight when either ran is confirmed again before it is sent. A lookup in flight
-  answers only the callers already waiting on it: it never fills the cache and is never joined afterwards.
+  answers only the callers already waiting on it: it never fills the cache and is never joined afterwards. The check
+  compares a per-user version taken before the confirmation with one taken after; versions come from one counter that
+  only grows, and a stamp forgotten by `clear()` or by eviction (at most 1000 are kept) becomes the floor every
+  unstamped user reads as, so a user's version never goes down and grows on each of their invalidations: an
+  evicted stamp can never make an invalidated call look unchanged.
 - A 401, 403 or 404 from Seerr on a member call forgets that caller's mapping.
 - The candidate source cannot widen this: `SeerrMemberClient` confirms whatever its resolver proposes, so even a
   forged resolver can only make a call fail closed.
@@ -97,9 +101,12 @@ So titles are never read as a household member:
 - **Checked before use.** `SeerrClient.catalogueUserProblem` reads the user with the admin key and refuses one that is
   missing, the owner, has any permission, or is linked to a Jellyfin user (so no member can ever be mapped to it).
   JellyPass checks it at startup (a misconfigured user stops startup; an unreachable Seerr is logged and retried),
-  and `SeerrCatalogueClient` checks it again before its first call, at least once a minute after, and at once after
-  Seerr refuses it. A failed check fails every catalogue call (`SeerrCatalogueUserError`); nothing falls back to the
-  caller or the admin.
+  and `SeerrCatalogueClient` checks it again immediately before every call, the way member calls are confirmed, with
+  nothing awaited between the check and the send. So once the catalogue user gains a permission or a Jellyfin link (and
+  a member could change the settings that shape its results), the next call fails rather than reading as it. A failed
+  check fails that call (`SeerrCatalogueUserError`); nothing falls back to the caller or the admin. The cost is one
+  more local admin call (`GET /api/v1/user/:id`) per catalogue read; as with member calls, a change landing between
+  the check and the call (one round trip) is not caught.
 - **Per-user facts never come from title answers.** Title DTOs copy no field that depends on the acting user
   (`onUserWatchlist`, `mediaInfo.requests`, `mediaInfo.watchlists`, and anything per-user Seerr adds later). Whether
   the caller may request, has requested or has quota left comes only from member calls.
@@ -311,24 +318,26 @@ Only the v1 endpoints are reachable for a household member, each through its own
 
 ## Test strategy
 
-- **Header guard.** `test/seerr-user-client.test.mjs` calls every public `SeerrMemberClient` method and asserts each is
-  preceded by an admin link check and sends `X-API-User` with the confirmed user; calls every `SeerrCatalogueClient`
-  method and asserts each sends the catalogue user, after a catalogue-user check; and calls every public `SeerrClient`
-  method and asserts none sends one. A test fails if any class gains a method the tables do not cover. Invalid user
-  IDs, Jellyfin IDs and admin clients are refused at construction; a catalogue user that is missing, the owner, has
-  permissions or is linked to Jellyfin is refused before any call. `test/types/seerr-user-client.ts` (run by
-  `pnpm check`) asserts with `@ts-expect-error` that no client fixed to a household member's Seerr user can be
-  obtained (`asUser`, `clientFor`, `verifiedClientFor` are gone; a member client takes a Jellyfin user and exposes no
-  Seerr user), that member and catalogue methods do not cross, and that a catalogue client needs a validated
-  `SeerrUserId`.
+- **Header guard.** `test/seerr-user-client.test.mjs` calls every public `SeerrMemberClient` method and asserts each
+  is preceded by an admin link check and sends `X-API-User` with the confirmed user; calls every
+  `SeerrCatalogueClient` method and asserts each sends the catalogue user, after a catalogue-user check (one per call,
+  concurrent calls included, and a user linked to a member or granted a permission since the last call fails the next
+  one); and calls every public `SeerrClient` method and asserts none sends one. A test fails if any class gains a
+  method the tables do not cover. Invalid user IDs, Jellyfin IDs and admin clients are refused at construction; a
+  catalogue user that is missing, the owner, has permissions or is linked to Jellyfin is refused before any call.
+  `test/types/seerr-user-client.ts` (run by `pnpm check`) asserts with `@ts-expect-error` that no client fixed to a
+  household member's Seerr user can be obtained (`asUser`, `clientFor`, `verifiedClientFor` are gone; a member client
+  takes a Jellyfin user and exposes no Seerr user), that member and catalogue methods do not cross, and that a
+  catalogue client needs a validated `SeerrUserId`.
 - **User map.** `test/seerr-users.test.mjs` runs against a fake Seerr behind `fetch` and covers TTLs, the size cap,
-  uncached failures, shared lookups, the closed failure for unmapped users, and stale mappings: a client kept across
-  a relink acting as the new user on every call (Codex's repro), a kept client acting as nobody once unlinked,
+  uncached failures, shared lookups, the closed failure for unmapped users, and stale mappings: a client kept across a
+  relink acting as the new user on every call (Codex's repro), a kept client acting as nobody once unlinked,
   concurrent calls during a relink each sent as the user Seerr confirmed for it, `invalidate()` and `clear()` landing
   during a confirmation (confirmed again; failing closed if it keeps happening; not fooled by another user's
-  invalidation or an evicted stamp), deletion failing closed, 401/403/404 forgetting the mapping, a forged candidate
-  never acting, `clear()` and `invalidate()` while a lookup is pending, and Jellyfin IDs with or without dashes and in
-  either case.
+  invalidation, and not fooled by an evicted stamp: Codex's repro with one stamp kept, many invalidations, evictions
+  and clears during one confirmation, and a randomized check that versions never go down), deletion failing closed,
+  401/403/404 forgetting the mapping, a forged candidate never acting, `clear()` and `invalidate()` while a lookup is
+  pending, and Jellyfin IDs with or without dashes and in either case.
 - **Guards.** `test/seerr-user-client.test.mjs` runs every guarded call (the admin lookups and checks and every member
   and catalogue method) against a real local server that redirects to a second one: the redirect is never
   followed, so the second server sees nothing, and the error carries neither body text nor the IDs. It also checks
@@ -347,12 +356,15 @@ Only the v1 endpoints are reachable for a household member, each through its own
   links the user to someone else, that an unknown user ID is refused, that the user lookup works and fails closed,
   that `GET /user/:id` gives the link check its Jellyfin ID, that only a permissionless, unlinked, non-owner user is
   accepted as the catalogue user, and that Seerr applies the member's preference to the member's own discover results
-  but not to the catalogue client's (skipped only if Seerr cannot reach TMDB). CI runs it as `seerr-integration`.
+  but not to the catalogue client's. That test needs TMDB: it is skipped only when a probe from inside the Seerr
+  container positively finds TMDB unreachable, and never in CI (`SEERR_REQUIRE_TMDB=1`), where it fails instead. CI
+  runs it as `seerr-integration`.
 - **Mutation checks.** Removing or emptying the header, skipping the constructor check, accepting 0, adding the header
   to admin calls, forwarding `userId`, putting Seerr's body in errors, trusting a mismatched lookup, falling back to the
   owner for unmapped users, or loosening the constructor's type each fail at least one test; so do following
   redirects in the guarded lookups, skipping the per-call link check (or doing it only once per client), ignoring an
-  invalidation during a confirmation, letting a pending lookup fill the cache after `clear()`, accepting a catalogue
+  invalidation during a confirmation, dropping an evicted stamp without raising the floor, confirming the catalogue
+  user only once per client, letting a pending lookup fill the cache after `clear()`, accepting a catalogue
   user with permissions or a Jellyfin link, reading the catalogue as the member, or counting the size limit in
   characters.
 - **TODO (step 2): quota before branching.** With a Seerr quota of 1 movie and the tally mirroring it: after one
