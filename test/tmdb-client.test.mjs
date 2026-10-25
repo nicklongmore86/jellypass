@@ -105,6 +105,17 @@ describe('TMDB client', () => {
     assert.deepEqual(await client().movie(900001), fixture);
   });
 
+  it('lists HBO Max with HBO\'s own series, by TMDB\'s OR of the two networks, and every other network alone', async () => {
+    await client().network(3186, 2);
+    assert.equal(calls[0].url.searchParams.get('with_networks'), '3186|49');
+    assert.match(calls[0].url.search, /[?&]with_networks=3186%7C49&/);
+    for (const network of TMDB_NETWORKS.filter((source) => source.id !== 3186)) await client().network(network.id);
+    assert.deepEqual(calls.slice(1).map((call) => call.url.searchParams.get('with_networks')), TMDB_NETWORKS.filter((source) => source.id !== 3186).map((source) => String(source.id)));
+    assert.deepEqual(TMDB_NETWORKS.filter((source) => source.networkIds).map((source) => [source.id, ...source.networkIds]), [[3186, 3186, 49]]);
+    assert.ok(Object.isFrozen(tmdbSource('network', 3186).networkIds));
+    assert.equal(TMDB_STUDIOS.some((source) => source.networkIds), false);
+  });
+
   it('rejects malformed input before calling TMDB', () => {
     const tmdb = client();
     for (const call of [
@@ -124,6 +135,9 @@ describe('TMDB client', () => {
       // Only the allowlisted networks and studios, never one passed through.
       () => tmdb.network(1),
       () => tmdb.network(41077),
+      // HBO is only part of HBO Max's list, never a list of its own, and never a caller's OR.
+      () => tmdb.network(49),
+      () => tmdb.network('3186|49'),
       () => tmdb.network('213'),
       () => tmdb.network(213, 0),
       () => tmdb.studio(213),
