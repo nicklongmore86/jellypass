@@ -14,12 +14,6 @@ privacy leak. Such changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
-### Fixed
-
-- Household app: going back now returns to where you were. The page scroll, each Home row's horizontal scroll, Search's
-  query, loaded pages and scroll, and My requests' scroll are restored. Nothing from the API is stored on the device
-  for this. Scrolling, touching, typing or changing the search ends it, so a slow response never moves the page.
-
 ### Changed
 
 - Household app: a new look. Dark indigo with a soft glow, a floating glass tab bar (**Home**, **Search**, **My
@@ -28,10 +22,39 @@ privacy leak. Such changes are always listed at the top of the release notes.
   credits** now opens from the (i) button on Home, and **Sign out** moved into About's new Account card (with your name
   and household, which left the header). Cards no longer have a Play button; Play stays on a title's page. Status words,
   **Get this** and what the household can see are unchanged.
-- Household app: every screen except Home has a Back button in the header, which works in the installed app (no
-  browser back button). Opened directly on a screen, Back goes to its parent (a season's series, otherwise Home).
 - Household app: the glass tab bar and header are denser so their labels and icons stay readable (4.5:1 text, 3:1 icons) over
   any poster, and keyboard focus now scrolls a card clear of the bar and header.
+
+## [2.4.1] - 2026-10-25
+
+This is a patch release for the household app (`HOUSEHOLD_APP_ENABLED=true`)
+only. There is nothing to do when upgrading from 2.4.0: settings, webhook
+payloads, the administrator API and the app's endpoints are unchanged, and the
+state file is unchanged (schema v7, with the same fields as 2.4.0), so 2.4.0
+reads a state file written by 2.4.1. No CDN purge is needed: 2.4.0 already
+names the app's files by content hash and sends every other `/jellypass/app`
+answer `no-store`. To roll back, set `JELLYPASS_IMAGE` back to
+`ghcr.io/nicklongmore86/jellypass:2.4.0` and recreate the container. The Back
+button and the restored position have been tested in a simulated browser
+only, not yet on a physical iPhone; see
+[Household app (PWA)](README.md#household-app-pwa).
+
+### Fixed
+
+- **Household app: going back now returns to where you were.** The page
+  scroll, each Home row's horizontal scroll, Search's query, loaded pages and
+  scroll, and My requests' entries shown and scroll are put back. Positions
+  are kept in memory only while the app is open, and nothing from the API is
+  stored on the device for this: the data is fetched again. Scrolling with a
+  wheel, touch or keys, tapping, typing or changing the search ends a
+  restoration still owed, so a slow response never moves the page.
+
+### Changed
+
+- **Household app: every screen except Home has a Back button in the
+  header,** so the installed app, which has no browser back button, can go
+  back. Opened directly on a screen, Back goes to its parent (a season's
+  series, otherwise Home) and stays in the app.
 
 ## [2.4.0] - 2026-10-25
 
@@ -1214,7 +1237,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v2.4.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v2.4.1...HEAD
+[2.4.1]: https://github.com/nicklongmore86/jellypass/compare/v2.4.0...v2.4.1
 [2.4.0]: https://github.com/nicklongmore86/jellypass/compare/v2.3.0...v2.4.0
 [2.3.0]: https://github.com/nicklongmore86/jellypass/compare/v2.2.1...v2.3.0
 [2.2.1]: https://github.com/nicklongmore86/jellypass/compare/v2.2.0...v2.2.1
