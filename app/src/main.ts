@@ -109,15 +109,15 @@ function focusHeading(): void {
   else if (restoreLive(restoring)) appScrollTo(restoring.y);
 }
 
-/** The only place the app moves the page, so the scroll it causes is told apart from the member's own. */
-let expectedY: number | undefined;
-const expectedLeft = new WeakMap<HTMLElement, number>();
+/**
+ * The app moves the page here. A plain `scroll` event is never read as the member's: the browser clamps, re-anchors and
+ * lays out on its own, and fires one each time. Only wheel, touch, pointer and key input (and typing in search) take
+ * a pending restoration away.
+ */
 function appScrollTo(y: number): void {
-  expectedY = y;
   window.scrollTo(0, y);
 }
 function appScrollLeft(list: HTMLElement, left: number): void {
-  expectedLeft.set(list, left);
   list.scrollLeft = left;
 }
 
@@ -678,21 +678,8 @@ async function signOut(): Promise<void> {
 }
 
 backButton.addEventListener('click', goBack);
-// Anything the member does with the page or a row ends a restoration still owed; the scroll the app itself causes does not.
+// Anything the member does with the page or a row ends a restoration still owed; scroll events alone do not.
 for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown']) window.addEventListener(type, () => { restoreCancelled = true; }, { capture: true, passive: true });
-window.addEventListener(
-  'scroll',
-  (event) => {
-    const target = event.target as unknown;
-    if (target && typeof target === 'object' && 'scrollLeft' in target) {
-      const list = target as HTMLElement;
-      if (expectedLeft.get(list) !== Math.round(list.scrollLeft)) restoreCancelled = true;
-    } else if (expectedY !== Math.round(window.scrollY || 0)) {
-      restoreCancelled = true;
-    }
-  },
-  { capture: true, passive: true },
-);
 window.addEventListener('hashchange', () => {
   if (isRouteHash(location.hash)) void render();
 });
