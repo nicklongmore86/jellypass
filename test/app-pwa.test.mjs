@@ -1363,6 +1363,32 @@ describe('household app page: rendering', () => {
     });
     const click = (node, Event) => node.dispatchEvent(new Event('click'));
 
+    it('lays the detail head out in two columns only where there is a poster to put in the first', async () => {
+      const { document, titleDetail, seasonView } = await renderer();
+      const css = readFileSync(path.join(DIST_APP, BUILT('app.css')), 'utf8');
+      assert.match(css, /\.detail-head-poster \{ display: grid; grid-template-columns: 9rem minmax\(0, 1fr\)/);
+      assert.equal(/\.detail-head \{ display: grid/.test(css), false, 'the bare head is never a grid');
+      const headOf = (node) => node.querySelector('.detail-head');
+      for (const posterUrl of [poster, null]) {
+        const head = headOf(titleDetail(document, { ...card({ posterUrl }), genres: [], runtime: 90 }, origin));
+        assert.ok(head.classList.contains('detail-head-poster'), `movie, poster ${posterUrl}`);
+        assert.equal(head.querySelectorAll(':scope > .poster').length, 1, 'a poster frame (empty or not) fills the first column');
+      }
+      const seasonHead = headOf(seasonView(document, { tmdbId: 900002, seasonNumber: 2, name: 'Season 2', overview: '', episodes: [], state: 'get_this' }, 'Synthetic Series Two', {}));
+      assert.equal(seasonHead.classList.contains('detail-head-poster'), false);
+      assert.equal(seasonHead.children.length, 1, 'one child, so it spans the whole width');
+      assert.equal(seasonHead.querySelectorAll('.poster').length, 0);
+    });
+
+    it('styles the header from the scroll offset at most once a frame, writing the body only when it crosses 40px', () => {
+      const main = readFileSync(path.join(import.meta.dirname, '..', 'app', 'src', 'main.ts'), 'utf8');
+      assert.match(main, /window\.addEventListener\('scroll', onScroll, \{ passive: true \}\)/);
+      assert.equal(/addEventListener\('scroll', markScrolled/.test(main), false);
+      assert.match(main, /function onScroll\(\): void \{\s*if \(scrollFrame\) return;[^]*?scrollFrame = window\.requestAnimationFrame/);
+      assert.match(main, /if \(scrolled === scrolledState\) return;/);
+      assert.equal((main.match(/setAttribute\('data-scrolled'/g) ?? []).length, 1);
+    });
+
     it('accepts TMDB images at w342, w780 and w1280 only', async () => {
       const { safeImageUrl } = await renderer();
       for (const size of ['w342', 'w780', 'w1280']) {

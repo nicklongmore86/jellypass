@@ -3,6 +3,9 @@ import { connect } from 'node:net';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { describe, it } from 'node:test';
+import { readdirSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
+import { parseHTML } from 'linkedom';
 import { setTimeout as delay } from 'node:timers/promises';
 import { GrantStore } from '../dist/store.js';
 import { assertNoCanaries } from './support/seerr-fixtures.mjs';
@@ -406,6 +409,34 @@ describe('household app API: other households are invisible', { timeout: 60_000 
       for (const user of [ALICE, ANN]) {
         assert.equal(serialized(await changed.get(pathname, { user })), serialized(await baseline.get(pathname, { user })), `${user} ${pathname}`);
       }
+    }
+  });
+
+  it('draws Home\'s hero byte for byte the same in every other-household world', async (t) => {
+    const dir = path.join(import.meta.dirname, '..', 'dist', 'app', 'js');
+    const file = readdirSync(dir).filter((name) => /^render\.[0-9a-f]{12}\.js$/.test(name));
+    assert.equal(file.length, 1, `render.js is built once: ${file}`);
+    const { heroCarousel } = await import(pathToFileURL(path.join(dir, file[0])).href);
+    const hero = async (state) => {
+      const app = await startApp(t, state);
+      const page = (await app.get(`${APP}/discover/trending`)).json();
+      const { document } = parseHTML('<!doctype html><html><body></body></html>');
+      const node = heroCarousel(document, page.results);
+      assert.ok(node, 'the hero is drawn');
+      const parts = (selector, read) => [...node.querySelectorAll(selector)].map(read).join('|');
+      // Everything the hero says or links to, as strings (never DOM nodes).
+      return JSON.stringify({
+        html: node.outerHTML,
+        pills: parts('.badge, .pill', (n) => n.textContent),
+        text: node.textContent,
+        links: parts('a', (n) => n.getAttribute('href')),
+        buttons: parts('button', (n) => `${n.getAttribute('aria-label')}`),
+      });
+    };
+    const expected = await hero(world());
+    assert.match(expected, /hero-slide/);
+    for (const [name, state] of Object.entries(otherHouseholdWorlds())) {
+      assert.equal(await hero(state), expected, name);
     }
   });
 

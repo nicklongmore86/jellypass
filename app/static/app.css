@@ -414,7 +414,8 @@ body[data-chrome] .home-row { max-width: 72rem; margin: 0 auto; padding: 0 var(-
 @media (min-width: 48rem) {
   .row-list > .card { flex-basis: 10.5rem; }
   .grid, .skeleton-grid { grid-template-columns: repeat(auto-fill, minmax(10rem, 1fr)); }
-  .detail-head { display: grid; grid-template-columns: 9rem minmax(0, 1fr); gap: 1.5rem; align-items: end; }
+  /* Two columns only where there is a poster frame to put in the first; a season page's text spans the full width. */
+  .detail-head-poster { display: grid; grid-template-columns: 9rem minmax(0, 1fr); gap: 1.5rem; align-items: end; }
   .poster-detail { display: block; }
   .hero-slide { height: min(var(--hero-height), 32rem); }
   .hero-skeleton { height: min(var(--hero-height), 32rem); }

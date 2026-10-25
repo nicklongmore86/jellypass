@@ -147,9 +147,23 @@ function setChrome(kind?: 'home' | 'detail'): void {
   else doc.body.removeAttribute('data-chrome');
 }
 /** A plain `scroll` listener only styles the header; it is never read as the member taking over a restoration. */
+let scrolledState = false;
+let scrollFrame = 0;
 function markScrolled(): void {
-  if ((window.scrollY || 0) > 40) doc.body.setAttribute('data-scrolled', '');
+  const scrolled = (window.scrollY || 0) > 40;
+  if (scrolled === scrolledState) return;
+  scrolledState = scrolled;
+  if (scrolled) doc.body.setAttribute('data-scrolled', '');
   else doc.body.removeAttribute('data-scrolled');
+}
+/** The scroll listener: at most one check per frame, and the body is written only when the offset crosses 40px. */
+function onScroll(): void {
+  if (scrollFrame) return;
+  if (typeof window.requestAnimationFrame !== 'function') return markScrolled();
+  scrollFrame = window.requestAnimationFrame(() => {
+    scrollFrame = 0;
+    markScrolled();
+  });
 }
 
 /**
@@ -741,7 +755,7 @@ async function signOut(button: HTMLButtonElement): Promise<void> {
 backButton.addEventListener('click', goBack);
 // Anything the member does with the page or a row ends a restoration still owed; scroll events alone do not.
 for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown']) window.addEventListener(type, () => { restoreCancelled = true; }, { capture: true, passive: true });
-window.addEventListener('scroll', markScrolled, { passive: true });
+window.addEventListener('scroll', onScroll, { passive: true });
 window.addEventListener('hashchange', () => {
   if (isRouteHash(location.hash)) void render();
 });

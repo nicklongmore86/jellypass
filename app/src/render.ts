@@ -524,7 +524,7 @@ export function titleDetail(doc: Document, title: Movie | Series, origin: string
   const genres = title.genres.length
     ? el(doc, 'ul', { class: 'genres', attrs: { 'aria-label': 'Genres' } }, title.genres.map((genre) => el(doc, 'li', { text: genre })))
     : undefined;
-  const head = el(doc, 'div', { class: 'detail-head' }, [
+  const head = el(doc, 'div', { class: 'detail-head detail-head-poster' }, [
     poster(doc, title.posterUrl, `Poster for ${title.title}`, 'detail'),
     el(doc, 'div', { class: 'detail-text' }, [
       el(doc, 'h1', { class: 'screen-title detail-title', text: title.title, attrs: { tabindex: '-1' } }),
