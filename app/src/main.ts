@@ -36,6 +36,7 @@ const main = doc.getElementById('screen') as HTMLElement;
 const who = doc.getElementById('who') as HTMLElement;
 const status = doc.getElementById('status') as HTMLElement;
 const signOutButton = doc.getElementById('signout') as HTMLButtonElement;
+const backButton = doc.getElementById('back') as HTMLButtonElement;
 const origin = location.origin;
 
 const api: Api = createApi({
@@ -103,7 +104,88 @@ function focusHeading(): void {
   }
   const heading = main.querySelector<HTMLElement>('h1');
   heading?.focus({ preventScroll: true });
-  window.scrollTo(0, 0);
+  window.scrollTo(0, restoring?.y ?? 0);
+}
+
+/**
+ * Where the member was on each screen they left, kept in memory only and keyed by the app's own history entry. It holds
+ * scroll offsets and how much was loaded, never anything the API returned: the data itself is fetched again.
+ */
+interface Position {
+  y: number;
+  /** Each discover row's horizontal scroll, by the row list's `aria-labelledby`. */
+  rows?: Record<string, number>;
+  /** Search: result pages loaded. My requests: entries shown. */
+  loaded?: number;
+}
+const positions = new Map<number, Position>();
+/** This history entry's place among the entries the app itself pushed; 0 is where the app was opened. */
+let depth = 0;
+let lastDepth = -1;
+/** Set when Back replaces the entry with its parent, so the parent is entry 0 and the next Back leaves nothing behind. */
+let replacingEntry = false;
+let shownDepth: number | undefined;
+let shownRoute: Route | undefined;
+/** What the screen being drawn should come back to, when the member got here by going back (or forward). */
+let restoring: Position | undefined;
+let searchPages = 1;
+let requestsShown = 0;
+
+try {
+  // The page puts the scroll back itself, once its screen is drawn; the browser's own guess would fight it.
+  history.scrollRestoration = 'manual';
+} catch {
+  // Not every browser lets the page choose.
+}
+
+/** Reads the screen that is about to be replaced; run first, while its scroll offsets are still in the page. */
+function capturePosition(): void {
+  if (shownDepth === undefined || shownRoute === undefined) return;
+  if (main.getAttribute('aria-busy') !== 'false' || main.querySelector('.skeleton')) return;
+  const position: Position = { y: Math.max(0, Math.round(window.scrollY || 0)) };
+  const rows: Record<string, number> = {};
+  for (const list of main.querySelectorAll<HTMLElement>('ul.row-list[aria-labelledby]')) {
+    const id = list.getAttribute('aria-labelledby') ?? '';
+    if (id) rows[id] = Math.max(0, Math.round(list.scrollLeft || 0));
+  }
+  if (Object.keys(rows).length) position.rows = rows;
+  if (shownRoute.name === 'search') position.loaded = searchPages;
+  if (shownRoute.name === 'requests') position.loaded = requestsShown;
+  positions.set(shownDepth, position);
+}
+
+/** Numbers this history entry. An entry the app has not seen is a new one (or Back's replacement) and drops what lay ahead. */
+function stampHistory(): void {
+  const state: unknown = history.state;
+  const stamped = state && typeof state === 'object' ? (state as { jp?: unknown }).jp : undefined;
+  if (typeof stamped === 'number') {
+    depth = stamped;
+  } else {
+    depth = replacingEntry ? 0 : lastDepth + 1;
+    try {
+      history.replaceState({ jp: depth }, '');
+    } catch {
+      // The number is still known in memory.
+    }
+    for (const key of [...positions.keys()]) if (key >= depth) positions.delete(key);
+  }
+  replacingEntry = false;
+  lastDepth = depth;
+}
+
+/** Where Back goes when the app was opened on this screen and there is nothing in the app to go back to. */
+function parentHash(route: Route): string {
+  return route.name === 'season' ? `#/tv/${route.id}` : '#/';
+}
+
+function goBack(): void {
+  if (depth > 0) {
+    history.back();
+    return;
+  }
+  const route = shownRoute ?? parse(location.hash);
+  replacingEntry = true;
+  location.replace(parentHash(route));
 }
 
 async function loadMe(signal: AbortSignal): Promise<void> {
@@ -184,6 +266,12 @@ async function render(): Promise<void> {
   const mine = ++navigation;
   const current = () => mine === navigation;
   const route = parse(location.hash);
+  capturePosition();
+  stampHistory();
+  restoring = positions.get(depth);
+  shownDepth = depth;
+  shownRoute = route;
+  backButton.hidden = route.name === 'home';
   markNav(route);
   const retry = () => void render();
   signOutButton.hidden = !jellyfinToken(localStorage, origin);
@@ -224,7 +312,11 @@ async function home(signal: AbortSignal, current: () => boolean): Promise<void> 
       const slot = slots[index] as HTMLElement;
       try {
         const page = await api.discover(row.list, signal);
-        if (current()) slot.replaceChildren(titleRow(doc, `row-${row.list}`, row.heading, page, origin));
+        if (!current()) return;
+        slot.replaceChildren(titleRow(doc, `row-${row.list}`, row.heading, page, origin));
+        const list = slot.querySelector<HTMLElement>('ul.row-list');
+        const left = restoring?.rows?.[`row-${row.list}-heading`];
+        if (list && left) list.scrollLeft = left;
       } catch (error) {
         if (!current() || signal.aborted) return;
         const kind = kindOf(error);
@@ -254,6 +346,10 @@ async function search(initial: string, signal: AbortSignal, current: () => boole
   let timer: ReturnType<typeof setTimeout> | undefined;
   let sequence = 0;
   let pending: AbortController | undefined;
+  /** Coming back: this many pages are fetched again, then the screen is put back where it was. */
+  let wanted = restoring?.loaded ?? 1;
+  let scrollBack = restoring;
+  searchPages = 1;
   signal.addEventListener('abort', () => {
     clearTimeout(timer);
     pending?.abort();
@@ -271,8 +367,9 @@ async function search(initial: string, signal: AbortSignal, current: () => boole
     clearTimeout(timer);
     pending?.abort();
     const query = raw.trim().slice(0, MAX_QUERY_LENGTH);
-    history.replaceState(null, '', query ? `#/search?q=${encodeURIComponent(query)}` : '#/search');
+    history.replaceState(history.state, '', query ? `#/search?q=${encodeURIComponent(query)}` : '#/search');
     const mine = ++sequence;
+    searchPages = 1;
     if (!query) {
       results.replaceChildren();
       announce('');
@@ -285,7 +382,15 @@ async function search(initial: string, signal: AbortSignal, current: () => boole
     void fetchPage(query, 1, controller, mine, false);
   }
 
+  function settled(): void {
+    // Once, after the pages that were showing are back; later pages are the member's own.
+    if (scrollBack) window.scrollTo(0, scrollBack.y);
+    scrollBack = undefined;
+    wanted = 1;
+  }
+
   async function fetchPage(query: string, page: number, controller: AbortController, mine: number, append: boolean): Promise<void> {
+    const resuming = Boolean(scrollBack);
     try {
       const answer = await api.search(query, page, controller.signal);
       if (mine !== sequence || !current()) return;
@@ -298,7 +403,13 @@ async function search(initial: string, signal: AbortSignal, current: () => boole
         const empty = searchStatusText(answer.results.length, query);
         results.replaceChildren(empty ? el(doc, 'p', { class: 'muted', text: empty }) : fresh);
       }
+      searchPages = page;
       announce(append ? 'More results loaded.' : answer.results.length ? 'Results loaded.' : '');
+      if (answer.nextPage && page < wanted) {
+        await fetchPage(query, answer.nextPage, controller, mine, true);
+        return;
+      }
+      if (scrollBack && !answer.nextPage) settled();
       if (answer.nextPage) {
         const more = el(doc, 'button', { class: 'button button-secondary load-more', text: 'Load more', attrs: { type: 'button' } });
         more.addEventListener('click', () => {
@@ -307,8 +418,9 @@ async function search(initial: string, signal: AbortSignal, current: () => boole
           void fetchPage(query, answer.nextPage as number, controller, mine, true);
         });
         results.append(more);
+        if (scrollBack) settled();
       }
-      if (append) firstNew?.focus();
+      if (append && !resuming) firstNew?.focus();
     } catch (error) {
       if (mine !== sequence || !current() || controller.signal.aborted) return;
       const kind = kindOf(error);
@@ -455,15 +567,18 @@ async function requestsScreen(signal: AbortSignal, current: () => boolean): Prom
     focusHeading();
     return;
   }
+  const back = restoring;
   const list = el(doc, 'ul', { class: 'request-list' });
   const more = el(doc, 'button', { class: 'button button-secondary load-more', text: 'Load more', attrs: { type: 'button' } });
   let shown = 0;
 
-  async function showMore(): Promise<void> {
-    const batch = entries.slice(shown, shown + REQUESTS_PER_PAGE);
+  async function showMore(size = REQUESTS_PER_PAGE): Promise<void> {
+    const batch = entries.slice(shown, shown + size);
     shown += batch.length;
+    requestsShown = shown;
     const items = batch.map((entry) => requestItem(doc, entry));
     list.append(...items);
+    if (size > REQUESTS_PER_PAGE) window.scrollTo(0, back?.y ?? 0);
     more.hidden = shown >= entries.length;
     more.disabled = false;
     more.textContent = 'Load more';
@@ -495,7 +610,11 @@ async function requestsScreen(signal: AbortSignal, current: () => boolean): Prom
   show(heading, list, more);
   announce('');
   focusHeading();
-  await showMore();
+  // Coming back, the entries that were showing are drawn at once (their titles follow) and the scroll put back.
+  const again = Math.max(REQUESTS_PER_PAGE, back?.loaded ?? 0);
+  requestsShown = 0;
+  await showMore(again);
+  if (again === REQUESTS_PER_PAGE && back) window.scrollTo(0, back.y);
 }
 
 // Signing in or out on the same address (in another tab, or in Jellyfin web) is picked up without a reload.
@@ -523,6 +642,7 @@ async function signOut(): Promise<void> {
   void render();
 }
 
+backButton.addEventListener('click', goBack);
 window.addEventListener('hashchange', () => {
   if (isRouteHash(location.hash)) void render();
 });

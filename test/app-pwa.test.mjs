@@ -1229,12 +1229,24 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       Servers: [{ ManualAddress: origin, AccessToken: TOKENS[user], UserId: user }],
     })]] : []));
     const requests = [];
-    const location = { origin, hash };
+    const location = {
+      origin,
+      hash,
+      // Back's fallback replaces the entry it is on with the parent's address.
+      replace(url) { entries[index] = { hash: String(url), state: null }; location.hash = String(url); fire(); },
+    };
     const listeners = {};
+    // A session history like the browser's: entries with a hash and a state, a cursor, and back/forward events.
+    const entries = [{ hash, state: null }];
+    let index = 0;
+    const fire = () => { for (const listener of listeners.hashchange ?? []) listener({}); };
+    const scroll = { y: 0 };
+    const sessionWrites = [];
     const globals = {
       document,
       window: {
-        scrollTo() {},
+        scrollTo(_x, y) { scroll.y = y ?? 0; },
+        get scrollY() { return scroll.y; },
         addEventListener(type, listener) { (listeners[type] ??= []).push(listener); },
         // The page's network is the test server; Node's own fetch (used by the server itself) is left alone.
         fetch: async (url, init = {}) => {
@@ -1248,7 +1260,24 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         },
       },
       location,
-      history: { replaceState(_state, _title, url) { location.hash = String(url).slice(String(url).indexOf('#')); } },
+      history: {
+        get state() { return entries[index].state; },
+        scrollRestoration: 'auto',
+        replaceState(state, _title, url) {
+          entries[index].state = state;
+          if (url !== undefined) {
+            location.hash = String(url).slice(String(url).indexOf('#'));
+            entries[index].hash = location.hash;
+          }
+        },
+        back() {
+          if (index === 0) return;
+          index -= 1;
+          location.hash = entries[index].hash;
+          fire();
+        },
+      },
+      sessionStorage: { setItem: (key, value) => { sessionWrites.push([key, String(value)]); }, getItem: () => null },
       localStorage: {
         getItem: (key) => store.get(key) ?? null,
         setItem: (key, value) => {
@@ -1276,11 +1305,15 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.fail(`timed out waiting for ${what}\n${document.getElementById('screen').outerHTML.slice(0, 600)}`);
     };
     const go = (hash) => {
+      entries.splice(index + 1);
+      entries.push({ hash, state: null });
+      index += 1;
       location.hash = hash;
-      for (const listener of listeners.hashchange ?? []) listener({});
+      fire();
     };
     const main = () => document.getElementById('screen');
-    return { document, Event, until, go, main, requests, store, location, serialize: () => document.documentElement.outerHTML, listeners, focused: () => focused };
+    const back = () => document.getElementById('back');
+    return { document, Event, until, go, main, requests, store, location, back, entries, cursor: () => index, scroll, sessionWrites, history: globals.history, window: globals.window, serialize: () => document.documentElement.outerHTML, listeners, focused: () => focused };
   }
 
   it('shows the household and the four discover rows with each title\'s badge and Play link', async (t) => {
@@ -1347,6 +1380,185 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     await page.until(() => page.main().querySelector('.tmdb-logo'), 'about');
     assert.match(page.main().textContent, /uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB/);
     assert.equal(page.document.querySelector('nav a[aria-current="page"]').dataset.nav, 'about');
+  });
+
+  describe('in-app Back and restoring where you were', () => {
+    // Plain strings and numbers only are compared here: a failing assertion on a DOM node would try to print the page.
+    const homeReady = (page) => page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4, 'home');
+
+    it('shows Back on every screen but Home, as a labelled button of at least 44px that the keyboard reaches', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app);
+      await homeReady(page);
+      assert.equal(page.back().hidden, true, 'no Back on Home');
+      for (const [hash, ready] of [
+        [`#/movie/${OWN_MOVIE}`, 'article.detail'],
+        [`#/tv/${T_TV}`, '.season-list'],
+        [`#/tv/${T_TV}/season/1`, '.episode-list'],
+        ['#/search', 'input[type="search"]'],
+        ['#/requests', '.request-list, p.muted'],
+        ['#/about', '.tmdb-logo'],
+      ]) {
+        page.go(hash);
+        await page.until(() => page.main().querySelector(ready), hash);
+        assert.equal(page.back().hidden, false, `Back on ${hash}`);
+      }
+      const button = page.back();
+      assert.equal(button.tagName, 'BUTTON');
+      assert.equal(button.getAttribute('type'), 'button');
+      assert.equal(button.getAttribute('aria-label'), 'Back');
+      assert.equal(button.hasAttribute('tabindex'), false, 'in the tab order');
+      assert.match(read(BUILT('app.css')), /\.back-button \{[^}]*min-width: 2\.75rem; min-height: 2\.75rem/, '44px tap target');
+      assert.match(read('index.html'), /<header class="app-header">\s*<button id="back"/, 'first in the header, so first in the tab order');
+      page.go('#/');
+      await homeReady(page);
+      assert.equal(page.back().hidden, true);
+    });
+
+    it('goes back through the app\'s own history, and to the logical parent when the app was opened on the screen', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app);
+      await homeReady(page);
+      page.go(`#/tv/${T_TV}`);
+      await page.until(() => page.main().querySelector('.season-list'), 'series');
+      page.go(`#/tv/${T_TV}/season/1`);
+      await page.until(() => page.main().querySelector('.episode-list'), 'season');
+      page.back().dispatchEvent(new page.Event('click'));
+      await page.until(() => page.main().querySelector('.season-list'), 'back to the series');
+      assert.equal(page.location.hash, `#/tv/${T_TV}`);
+      assert.equal(page.cursor(), 1);
+      page.back().dispatchEvent(new page.Event('click'));
+      await homeReady(page);
+      assert.equal(page.location.hash, '');
+      assert.equal(page.back().hidden, true);
+
+      // Opened on a season (deep link): Back is its series, without leaving the app, and replaces rather than adds.
+      const season = await openApp(t, app, { hash: `#/tv/${T_TV}/season/1` });
+      await season.until(() => season.main().querySelector('.episode-list'), 'the season');
+      season.back().dispatchEvent(new season.Event('click'));
+      await season.until(() => season.main().querySelector('.season-list'), 'the series');
+      assert.equal(season.location.hash, `#/tv/${T_TV}`);
+      assert.equal(season.entries.length, 1, 'no entry was added');
+      season.back().dispatchEvent(new season.Event('click'));
+      await homeReady(season);
+      assert.equal(season.location.hash, '#/');
+      assert.equal(season.entries.length, 1);
+
+      for (const hash of [`#/movie/${OWN_MOVIE}`, '#/requests', '#/about', '#/search']) {
+        const deep = await openApp(t, app, { hash });
+        await deep.until(() => deep.back().hidden === false && deep.main().getAttribute('aria-busy') === 'false', hash);
+        deep.back().dispatchEvent(new deep.Event('click'));
+        await homeReady(deep);
+        assert.equal(deep.location.hash, '#/', hash);
+      }
+    });
+
+    it('pops once after Get this: the confirmation adds no history entry', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app);
+      await homeReady(page);
+      page.go(`#/movie/${T_MOVIE}`);
+      const button = await page.until(() => page.main().querySelector('button'), 'Get this');
+      const entries = page.entries.length;
+      button.dispatchEvent(new page.Event('click'));
+      await page.until(() => page.main().querySelector('.get-message')?.textContent, 'the confirmation');
+      await app.background.settled();
+      assert.equal(page.entries.length, entries, 'no entry added');
+      assert.equal(page.cursor(), 1);
+      page.back().dispatchEvent(new page.Event('click'));
+      await homeReady(page);
+      assert.equal(page.cursor(), 0, 'one Back reached Home');
+      assert.equal(page.location.hash, '');
+    });
+
+    it('puts Home\'s page scroll and each row\'s scroll back after a title and Back', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app);
+      await homeReady(page);
+      const rows = [...page.document.querySelectorAll('ul.row-list[aria-labelledby]')];
+      const lefts = [120, 8, 340, 55];
+      rows.forEach((row, index) => { row.scrollLeft = lefts[index]; });
+      page.scroll.y = 640;
+      page.go(`#/movie/${OWN_MOVIE}`);
+      await page.until(() => page.main().querySelector('article.detail'), 'the movie');
+      assert.equal(page.scroll.y, 0, 'a new screen starts at the top');
+      page.history.back();
+      await homeReady(page);
+      await page.until(() => page.scroll.y === 640, 'the page scroll');
+      assert.deepEqual([...page.document.querySelectorAll('ul.row-list[aria-labelledby]')].map((row) => row.scrollLeft), lefts);
+      assert.equal(page.history.scrollRestoration, 'manual', 'the browser does not fight the restore');
+      // A detail screen's own scroll comes back too.
+      page.go(`#/tv/${T_TV}`);
+      await page.until(() => page.main().querySelector('.season-list'), 'the series');
+      page.scroll.y = 275;
+      page.go(`#/tv/${T_TV}/season/1`);
+      await page.until(() => page.main().querySelector('.episode-list'), 'the season');
+      page.back().dispatchEvent(new page.Event('click'));
+      await page.until(() => page.main().querySelector('.season-list') && page.scroll.y === 275, 'the series scroll');
+    });
+
+    it('puts the search query, the pages loaded and the scroll back', async (t) => {
+      const app = await startApp(t, world({ extraResults: 45 }));
+      const page = await openApp(t, app);
+      await homeReady(page);
+      page.go('#/search');
+      const input = await page.until(() => page.main().querySelector('input[type="search"]'), 'the search box');
+      input.value = 'synthetic';
+      input.dispatchEvent(new page.Event('input'));
+      await page.until(() => page.main().querySelector('button.load-more'), 'results');
+      page.main().querySelector('button.load-more').dispatchEvent(new page.Event('click'));
+      await page.until(() => page.requests.some((request) => request.url === '/jellypass/app/v1/search?q=synthetic&page=2'), 'page 2');
+      await page.until(() => page.main().querySelector('button.load-more:not([disabled])'), 'page 2 shown');
+      const shown = page.main().querySelectorAll('.card').length;
+      page.scroll.y = 910;
+      page.main().querySelector('a.card-link').dispatchEvent(new page.Event('click'));
+      page.go(`#/movie/${OWN_MOVIE}`);
+      await page.until(() => page.main().querySelector('article.detail'), 'the movie');
+      page.back().dispatchEvent(new page.Event('click'));
+      await page.until(() => page.main().querySelectorAll('.card').length === shown && page.scroll.y === 910, 'the same results and scroll');
+      assert.equal(page.main().querySelector('input[type="search"]').value, 'synthetic');
+      assert.equal(page.location.hash, '#/search?q=synthetic');
+      const pages = page.requests.filter((request) => request.url.startsWith('/jellypass/app/v1/search')).map((request) => request.url.replace(/.*page=/, ''));
+      assert.deepEqual(pages, ['1', '2', '1', '2']);
+      assert.equal(page.cursor(), 1, 'typing replaced the entry, it did not add one');
+    });
+
+    it('puts My requests\' scroll and the entries shown back', async (t) => {
+      const app = await startApp(t);
+      const results = Array.from({ length: 25 }, (_, index) => ({
+        id: `id${index}`, mediaType: 'movie', tmdbId: index % 2 ? T_MOVIE : OWN_MOVIE, status: 'requested', seasons: [], byYou: true,
+      }));
+      const page = await openApp(t, app, { hash: '', override: (url) => (url === '/jellypass/app/v1/requests' ? { status: 200, body: Buffer.from(JSON.stringify({ results })), headers: { 'content-type': 'application/json' } } : undefined) });
+      await homeReady(page);
+      page.go('#/requests');
+      await page.until(() => page.main().querySelectorAll('.request').length === 10, 'ten');
+      page.main().querySelector('button.load-more').dispatchEvent(new page.Event('click'));
+      await page.until(() => page.main().querySelectorAll('.request').length === 20, 'twenty');
+      page.scroll.y = 1500;
+      page.go(`#/movie/${OWN_MOVIE}`);
+      await page.until(() => page.main().querySelector('article.detail'), 'the movie');
+      page.back().dispatchEvent(new page.Event('click'));
+      await page.until(() => page.main().querySelectorAll('.request').length === 20, 'twenty again');
+      await page.until(() => page.scroll.y === 1500, 'the scroll');
+    });
+
+    it('keeps only scroll and query state in the browser: no API data in storage, and no new storage keys', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app);
+      await homeReady(page);
+      const keys = [...page.store.keys()];
+      page.go(`#/movie/${OWN_MOVIE}`);
+      await page.until(() => page.main().querySelector('article.detail'), 'the movie');
+      page.history.back();
+      await homeReady(page);
+      assert.deepEqual([...page.store.keys()], keys, 'localStorage gained no key');
+      assert.equal(page.sessionWrites.length, 0, 'sessionStorage was not written');
+      // The only thing kept in history.state is the entry's number.
+      for (const entry of page.entries) assert.match(JSON.stringify(entry.state), /^(null|\{"jp":\d+\})$/);
+      for (const text of [JSON.stringify([...page.store.values()].filter((value) => !value.includes('AccessToken'))), JSON.stringify(page.sessionWrites)]) {
+        assert.doesNotMatch(text, /Synthetic|farmhouse|tmdb/i);
+      }
+    });
   });
 
   it('searches as you type, once, and loads more with the API\'s nextPage', async (t) => {

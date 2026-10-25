@@ -14,6 +14,17 @@ privacy leak. Such changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Fixed
+
+- Household app: going back now returns to where you were. The page scroll, each Home row's horizontal scroll, Search's
+  query, loaded pages and scroll, and My requests' scroll are restored. Nothing from the API is stored on the device
+  for this.
+
+### Changed
+
+- Household app: every screen except Home has a Back button in the header, which works in the installed app (no
+  browser back button). Opened directly on a screen, Back goes to its parent (a season's series, otherwise Home).
+
 ## [2.4.0] - 2026-10-25
 
 This is a minor release. The household sign-in changes below alter only failure
