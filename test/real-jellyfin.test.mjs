@@ -285,9 +285,11 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
       await assert.rejects(api.signIn(name, name === 'admin' ? 'test-password' : ''), (error) => error instanceof SignInError && error.kind === 'invalid');
     }
 
-    // Signing out revokes the token at Jellyfin and takes it out of storage.
+    // Signing out revokes the token at Jellyfin and takes it out of storage, and the app API forgets it at once.
     await api.signOut(result.token);
     assert.equal((await fetch(`${baseUrl}/Users/Me`, { headers: { Authorization: `MediaBrowser Token="${result.token}"` } })).status, 401);
+    const after = await getWithHeaders(port, '/jellypass/app/v1/me', { Host: host, Authorization: `MediaBrowser Token="${result.token}"` });
+    assert.deepEqual([after.status, after.text], [401, '{"error":"unauthorized"}']);
     assert.equal(clearSignIn(storage, origin), true);
     assert.equal(jellyfinToken(storage, origin), undefined);
   });
@@ -344,6 +346,7 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
     const me = await getWithHeaders(port, '/jellypass/app/v1/me', { Host: host, Authorization: `MediaBrowser Token="${result.token}"` });
     assert.deepEqual(me.json(), { name: 'Hilda', household: 'Hidden House' });
     await api.signOut(result.token);
+    assert.equal((await getWithHeaders(port, '/jellypass/app/v1/me', { Host: host, Authorization: `MediaBrowser Token="${result.token}"` })).status, 401);
 
     // Jellyfin web's own manual login on the household host signs her in too.
     const WEB = 'MediaBrowser Client="Jellyfin Web", Device="Firefox", DeviceId="jellypass-real-hidden-web", Version="10.11.3"';
@@ -351,7 +354,11 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
     const signedIn = await web('Hilda', 'hilda-pass');
     assert.equal(signedIn.status, 200);
     assert.equal(same(signedIn.json().User.Id), same(hilda.Id));
-    await request(baseUrl, '/Sessions/Logout', { method: 'POST', authorization: `${WEB}, Token="${signedIn.json().AccessToken}"` });
+    // Signed in on the app with that token, then out as Jellyfin web signs out, through the household host: forgotten at once.
+    const webToken = { Host: host, Authorization: `MediaBrowser Token="${signedIn.json().AccessToken}"` };
+    assert.equal((await getWithHeaders(port, '/jellypass/app/v1/me', webToken)).status, 200);
+    assert.equal((await postWithHeaders(port, '/Sessions/Logout', { Host: host, Authorization: `${WEB}, Token="${signedIn.json().AccessToken}"` }, undefined)).status, 204);
+    assert.equal((await getWithHeaders(port, '/jellypass/app/v1/me', webToken)).status, 401);
 
     // A wrong password, and any name that is not this household's member's, get one and the same answer, never sooner than DELAY.
     const seen = (answer) => ({ status: answer.status, text: answer.text, headers: { ...answer.headers, date: undefined } });

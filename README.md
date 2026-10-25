@@ -639,7 +639,19 @@ and nowhere else (on the administrator host they do not exist). The
 - **Sign-in is Jellyfin's.** Send the member's Jellyfin token as Jellyfin web
   does (`Authorization: MediaBrowser Token="..."`, `X-Emby-Token`, or
   `api_key`). JellyPass checks it with Jellyfin's `GET /Users/Me` and trusts
-  the answer for at most 5 minutes. The caller must be an enabled member of
+  the answer for at most 5 minutes, but a sign-out through any household host
+  (`POST /Sessions/Logout`) forgets that token at once, whatever Jellyfin
+  answers, and does not cache it again while the sign-out is at Jellyfin
+  (until Jellyfin answers, fails or 15 seconds pass, even if the client
+  leaves) or for a minute after, so its next call is refused once Jellyfin
+  has revoked it. At most 8 sign-outs per client, 32 per household and 512 in
+  all are sent to Jellyfin at once (past that one is answered 503); the minute
+  after is kept for at most 10 sign-outs per client and 30 per household a
+  minute, except for tokens JellyPass verified and sign-outs Jellyfin did not
+  answer, which always have it. A sign-out never affects any token it does not
+  carry. A token revoked outside JellyPass (a device deleted in Jellyfin's
+  dashboard, or a sign-out sent straight to
+  Jellyfin) can still be accepted for the rest of those 5 minutes. The caller must be an enabled member of
   the household whose hostname they called; household membership is checked on
   every call. A missing, invalid or disabled token and a member of another
   household all get the same `401 {"error":"unauthorized"}`.
@@ -845,9 +857,8 @@ switched off (those answer the same fixed `404`).
   `/web/` signs the app in. The only other thing the app stores is a random
   device ID of its own. **Sign out** (top right) revokes the session at
   Jellyfin and clears it from the browser, so it **also signs Jellyfin web out**
-  on that address (they are one session). The app API keeps trusting a token it
-  has just verified for up to five minutes, so a signed-out token can still
-  open the app API briefly; it is already refused by Jellyfin. **Open Jellyfin to sign in** stays under the picker as a
+  on that address (they are one session). The app API forgets the token as
+  the sign-out passes through, so it is refused at once there too. **Open Jellyfin to sign in** stays under the picker as a
   fallback.
 - **iPhone and iPad:** an app added to the Home Screen has storage apart from
   Safari's, so signing in in Safari does not sign the installed app in. Sign in

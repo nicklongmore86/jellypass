@@ -545,22 +545,41 @@ export async function createFakeJellyfinForApp(state) {
         return send(response, 200, { User: { Id: entry[0], Name: entry[1].Name }, AccessToken: minted, ServerId: 'server' });
       });
     }
-    if (url.pathname === '/Sessions/Logout' && request.method === 'POST') {
-      const logoutToken = /Token="([^"]+)"/.exec(request.headers.authorization ?? '')?.[1];
-      const session = minted_.find((entry) => entry.token === logoutToken && !entry.revoked);
-      if (!session) return send(response, 401, {});
-      session.revoked = true;
-      logouts.push(logoutToken);
-      return send(response, 204, undefined);
+    // As ASP.NET Core routes it: percent-decoded, in any case, with any trailing slashes.
+    if (routePath(url.pathname) === '/sessions/logout' && request.method === 'POST') {
+      // Jellyfin signs out the first of the request's tokens it knows. `state.holdLogout`, when set, holds it (before
+      // it is revoked) until the promise it returns settles, and is passed the request so a test can break it.
+      // `state.revokeLate`, when set, answers first and revokes only once the promise it returns settles.
+      const signOut = async () => {
+        const session = tokensOf(request, url).map((token) => minted_.find((entry) => entry.token === token && !entry.revoked)).find(Boolean);
+        if (!session) return send(response, 401, {});
+        const revoke = () => {
+          session.revoked = true;
+          logouts.push(session.token);
+        };
+        if (!state.revokeLate) {
+          revoke();
+          return send(response, 204, undefined);
+        }
+        const late = state.revokeLate();
+        send(response, 204, undefined);
+        await late;
+        revoke();
+      };
+      return state.holdLogout ? state.holdLogout(request, response).then(signOut) : signOut();
     }
-    const token = /Token="([^"]+)"/.exec(request.headers.authorization ?? '')?.[1] ?? request.headers['x-emby-token'] ?? url.searchParams.get('api_key');
+    const token = authorizationToken(request.headers.authorization ?? '') ?? request.headers['x-emby-token'] ?? url.searchParams.get('api_key');
     // JellyPass's own API key: users and every item, as an administrator sees them, and the updates reconciliation makes.
     if (token === 'jellyfin-key') return administer(request, response, url);
     const userId = minted_.find((entry) => entry.token === token && !entry.revoked)?.userId
       ?? Object.entries(state.tokens ?? TOKENS).find(([, value]) => value === token)?.[0];
     const user = userId && state.jellyfinUsers[userId];
     if (!user) return send(response, 401, {});
-    if (url.pathname === '/Users/Me') return send(response, 200, { Id: userId, Name: user.Name, Policy: user.Policy, ServerId: 'server' });
+    if (url.pathname === '/Users/Me') {
+      const me = { Id: userId, Name: user.Name, Policy: user.Policy, ServerId: 'server' };
+      // `state.holdMe`, when set, holds the answer (decided now) until the promise it returns settles.
+      return state.holdMe ? state.holdMe().then(() => send(response, 200, me)) : send(response, 200, me);
+    }
     const parameter = (name) => [...url.searchParams].find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1];
     if (parameter('userId') !== userId) return send(response, 403, {});
     if (url.pathname === '/Items') {
@@ -646,6 +665,34 @@ export async function createFakeJellyfinForApp(state) {
   };
 }
 
+/**
+ * The `Token` of a `MediaBrowser ...` header as Jellyfin 10.11 reads it (AuthorizationContext.GetParts): commas inside
+ * quotes are part of a value, the last `Token` given wins, and its value is URL-decoded with `+` as a space.
+ */
+function authorizationToken(header) {
+  const match = /^(?:mediabrowser|emby) (.*)$/is.exec(header);
+  if (!match) return undefined;
+  const fields = [...match[1].matchAll(/\s*([^=,"]*?)\s*=\s*("[^"]*"|[^,]*)\s*(?:,|$)/g)];
+  const value = fields.filter(([, key]) => key === 'Token').at(-1)?.[2].replace(/^"|"$/g, '');
+  return value ? decodeURIComponent(value.replace(/\+/g, ' ')) : undefined;
+}
+
+function routePath(pathname) {
+  return decodeURIComponent(pathname).toLowerCase().replace(/\/+$/, '');
+}
+
+/** Every token a request carries, as Jellyfin reads them: `Token` in either authorization header, `X-Emby-Token`, `X-MediaBrowser-Token`, and the token query parameters in any case. */
+function tokensOf(request, url) {
+  const tokens = [];
+  for (const name of ['authorization', 'x-emby-authorization']) {
+    const token = authorizationToken(request.headers[name] ?? '');
+    if (token) tokens.push(token);
+  }
+  for (const name of ['x-emby-token', 'x-mediabrowser-token']) if (request.headers[name]) tokens.push(request.headers[name]);
+  for (const [key, value] of url.searchParams) if (['api_key', 'apikey', 'access_token'].includes(key.toLowerCase())) tokens.push(value);
+  return tokens;
+}
+
 function sees(user, item) {
   const blocked = (item.Tags ?? []).some((tag) => user.Policy.BlockedTags?.some((blockedTag) => blockedTag.toLowerCase() === tag.toLowerCase()));
   const library = !item.library || user.Policy.EnableAllFolders || user.Policy.EnabledFolders?.includes(item.library);
@@ -716,7 +763,7 @@ export async function startApp(t, state = world(), options = {}) {
   const server = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' }, undefined, {
     background,
     ...(options.trustedProxies ? { trustedProxies: options.trustedProxies } : {}),
-    householdGateway: { jellyfinUrl: jellyfin.url, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: options.loginFailureDelayMs ?? 0, ...(options.loginTimeoutMs ? { loginTimeoutMs: options.loginTimeoutMs } : {}) },
+    householdGateway: { jellyfinUrl: jellyfin.url, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: options.loginFailureDelayMs ?? 0, ...(options.loginTimeoutMs ? { loginTimeoutMs: options.loginTimeoutMs } : {}), ...(options.signOutTimeoutMs ? { signOutTimeoutMs: options.signOutTimeoutMs } : {}) },
     ...(options.app === false ? {} : {
       householdApp: {
         catalogue: new TmdbClient(TMDB_KEY, { baseUrl: tmdb.url, ...(options.now ? { now: options.now } : {}) }),
@@ -728,6 +775,7 @@ export async function startApp(t, state = world(), options = {}) {
         ...(options.titleTtlMs !== undefined ? { titleTtlMs: options.titleTtlMs } : {}),
         ...(options.blocklistTtlMs !== undefined ? { blocklistTtlMs: options.blocklistTtlMs } : {}),
         catalogueLimits: options.catalogueLimits ?? { perSecond: 1000, burst: 1000 },
+        ...(options.signOutLimits ? { signOutLimits: options.signOutLimits } : {}),
       },
     }),
   });
