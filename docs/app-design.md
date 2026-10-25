@@ -946,8 +946,14 @@ only: `jfa_app_safety_markers{kind}`, `jfa_app_request_intents{status}` and `jfa
 - **Failures.** A Seerr failure between the lookups and the request (or a refusal Seerr makes then) leaves nothing
   recorded, while the other branches do not call Seerr at that point.
 
-**Deferred to step 2b:** the "Get this" button and request screens in the PWA, which show `unavailable` as "Can't
-request".
+**The PWA's button (step 2b).** A title (or season) the API marks `get_this` has a **Get this** button, with a season
+picker for a series. Whatever the API accepted, the screen shows the same one sentence ("Thanks — we'll get this for your
+household.") the moment the call is accepted, then reads its own data again; nothing the app shows or sends depends on
+which branch ran. If that second read fails, the confirmation stays, nothing that could send again is offered, and the
+screen shows its fixed "Something went wrong" line with a **Try again** that only loads the page again.
+**A title the household asked for that failed** ("We couldn't get this") has no Get this button: while the failed record
+stands the API does not ask again, so the app says so in one fixed line, "Ask your JellyPass admin to try again." (a
+failed season of a series is left out of the picker the same way). `unavailable` still shows as "Can't request".
 
 ## Coarse statuses
 

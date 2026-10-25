@@ -4,8 +4,12 @@ import {
   cardList,
   el,
   errorState,
+  type GetThisHandler,
+  REQUESTS_TEXT,
+  requestItem,
   searchStatusText,
   seasonView,
+  setRequestTitle,
   skeletonDetail,
   skeletonRow,
   titleDetail,
@@ -13,7 +17,7 @@ import {
 } from './render.js';
 import { clearSignIn, deviceId, jellyfinToken } from './session.js';
 import { showSignIn } from './signin.js';
-import type { DiscoverList, Me } from './types.js';
+import type { DiscoverList, MediaType, Me, RequestEntry } from './types.js';
 
 const ROWS: Array<{ list: DiscoverList; heading: string }> = [
   { list: 'trending', heading: 'Trending' },
@@ -23,6 +27,9 @@ const ROWS: Array<{ list: DiscoverList; heading: string }> = [
 ];
 const SEARCH_DEBOUNCE_MS = 300;
 const MAX_QUERY_LENGTH = 100;
+/** "My requests" names its titles from TMDB a few at a time, so a long list is never a burst of calls. */
+const REQUESTS_PER_PAGE = 10;
+const REQUEST_TITLE_CALLS = 4;
 
 const doc = document;
 const main = doc.getElementById('screen') as HTMLElement;
@@ -139,7 +146,7 @@ function failure(kind: ApiErrorKind, retry: () => void): void {
 }
 
 interface Route {
-  name: 'home' | 'search' | 'movie' | 'tv' | 'season' | 'about';
+  name: 'home' | 'search' | 'requests' | 'movie' | 'tv' | 'season' | 'about';
   id?: number;
   season?: number;
   query?: string;
@@ -154,6 +161,7 @@ function parse(hash: string): Route {
   const [path = '', queryString = ''] = hash.replace(/^#/, '').split('?', 2);
   if (path === '/search') return { name: 'search', query: new URLSearchParams(queryString).get('q') ?? '' };
   if (path === '/about') return { name: 'about' };
+  if (path === '/requests') return { name: 'requests' };
   const season = /^\/tv\/(\d{1,10})\/season\/(\d{1,4})$/.exec(path);
   if (season) return { name: 'season', id: Number(season[1]), season: Number(season[2]) };
   const title = /^\/(movie|tv)\/(\d{1,10})$/.exec(path);
@@ -162,7 +170,7 @@ function parse(hash: string): Route {
 }
 
 function markNav(route: Route): void {
-  const current = route.name === 'search' ? 'search' : route.name === 'about' ? 'about' : 'home';
+  const current = route.name === 'search' || route.name === 'requests' || route.name === 'about' ? route.name : 'home';
   for (const link of doc.querySelectorAll<HTMLAnchorElement>('nav a[data-nav]')) {
     if (link.dataset['nav'] === current) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
@@ -192,6 +200,7 @@ async function render(): Promise<void> {
   try {
     if (route.name === 'home') await home(abort.signal, current);
     else if (route.name === 'search') await search(route.query ?? '', abort.signal, current);
+    else if (route.name === 'requests') await requestsScreen(abort.signal, current);
     else if (route.name === 'movie' || route.name === 'tv') await title(route, abort.signal, current);
     else await season(route, abort.signal, current);
   } catch (error) {
@@ -327,15 +336,80 @@ async function search(initial: string, signal: AbortSignal, current: () => boole
   await loadMe(signal);
 }
 
+/**
+ * "Get this" for one screen. It asks the API, and says only whether the call was accepted: the answer to a call the API
+ * accepted is the same whatever followed. On `accepted` the screen's own data is read again and the screen redrawn
+ * with the one fixed confirmation. A 401 replaces the screen with the sign-in state.
+ */
+function getThisFor(
+  mediaType: MediaType,
+  id: number,
+  signal: AbortSignal,
+  current: () => boolean,
+  redraw: (asked: ReadonlySet<number>) => Promise<void>,
+): GetThisHandler {
+  const asked = new Set<number>();
+  return async (seasons, onAccepted) => {
+    let kind: ApiErrorKind | 'accepted' = 'accepted';
+    try {
+      await api.getThis(mediaType, id, seasons, signal);
+    } catch (error) {
+      if (signal.aborted) return 'unavailable';
+      kind = kindOf(error);
+    }
+    if (kind === 'unauthorized' && current()) failure(kind, () => void render());
+    if (kind !== 'accepted') return kind;
+    for (const season of seasons.length ? seasons : [0]) asked.add(season);
+    onAccepted();
+    // The screen is read again; if that fails the confirmation stays, with the one fixed refresh error and a retry.
+    try {
+      await redraw(asked);
+    } catch (error) {
+      if (signal.aborted || !current()) return 'accepted';
+      if (kindOf(error) === 'unauthorized') {
+        failure('unauthorized', () => void render());
+        return 'unauthorized';
+      }
+      return 'refresh_failed';
+    }
+    return 'accepted';
+  };
+}
+
+/** The seasons (0 for a movie) of a title the household asked for that did not work out. Best effort: never an error. */
+async function failedSeasons(mediaType: MediaType, id: number, signal: AbortSignal): Promise<Set<number>> {
+  try {
+    const list = await api.requests(signal);
+    const entry = list.results.find((candidate) => candidate.mediaType === mediaType && candidate.tmdbId === id);
+    if (!entry) return new Set();
+    return new Set(mediaType === 'movie'
+      ? entry.status === 'failed' ? [0] : []
+      : entry.seasons.filter((season) => season.status === 'failed').map((season) => season.seasonNumber));
+  } catch (error) {
+    if (kindOf(error) === 'unauthorized') throw error;
+    return new Set();
+  }
+}
+
 async function title(route: Route, signal: AbortSignal, current: () => boolean): Promise<void> {
   busy(skeletonDetail(doc));
   setTitle();
   await loadMe(signal);
   const id = route.id as number;
-  const answer = route.name === 'tv' ? await api.tv(id, signal) : await api.movie(id, signal);
+  const mediaType: MediaType = route.name === 'tv' ? 'tv' : 'movie';
+  const load = () => Promise.all([mediaType === 'tv' ? api.tv(id, signal) : api.movie(id, signal), failedSeasons(mediaType, id, signal)]);
+  let [answer, failed] = await load();
   if (!current()) return;
+  const draw = (asked: ReadonlySet<number>, confirmed: boolean) => {
+    show(titleDetail(doc, answer, origin, { onGet, asked, failed, confirmed, onReload: () => void render() }));
+    if (confirmed) main.querySelector<HTMLElement>('.get-message')?.focus({ preventScroll: true });
+  };
+  const onGet = getThisFor(mediaType, id, signal, current, async (asked) => {
+    [answer, failed] = await load();
+    if (current()) draw(asked, true);
+  });
   setTitle(answer.title);
-  show(titleDetail(doc, answer, origin));
+  draw(new Set(), false);
   announce('');
   focusHeading();
 }
@@ -345,15 +419,83 @@ async function season(route: Route, signal: AbortSignal, current: () => boolean)
   setTitle();
   await loadMe(signal);
   const id = route.id as number;
-  const [answer, series] = await Promise.all([
-    api.season(id, route.season as number, signal),
+  const number = route.season as number;
+  const load = () => Promise.all([
+    api.season(id, number, signal),
     api.tv(id, signal).then((value) => value, () => undefined),
+    failedSeasons('tv', id, signal),
   ]);
+  let [answer, series, failed] = await load();
   if (!current()) return;
+  const draw = (asked: ReadonlySet<number>, confirmed: boolean) => {
+    show(seasonView(doc, answer, series?.title, { onGet, asked, failed, confirmed, onReload: () => void render() }));
+    if (confirmed) main.querySelector<HTMLElement>('.get-message')?.focus({ preventScroll: true });
+  };
+  const onGet = getThisFor('tv', id, signal, current, async (asked) => {
+    [answer, series, failed] = await load();
+    if (current()) draw(asked, true);
+  });
   setTitle(`${series ? `${series.title}: ` : ''}${answer.name}`);
-  show(seasonView(doc, answer, series?.title));
+  draw(new Set(), false);
   announce('');
   focusHeading();
+}
+
+/** The household's requests, with their titles read from TMDB (through the API) ten at a time. */
+async function requestsScreen(signal: AbortSignal, current: () => boolean): Promise<void> {
+  setTitle(REQUESTS_TEXT.title);
+  busy(el(doc, 'h1', { class: 'screen-title', text: REQUESTS_TEXT.title, attrs: { tabindex: '-1' } }), skeletonRow(doc));
+  await loadMe(signal);
+  const entries: RequestEntry[] = (await api.requests(signal)).results;
+  if (!current()) return;
+  const heading = el(doc, 'h1', { class: 'screen-title', text: REQUESTS_TEXT.title, attrs: { tabindex: '-1' } });
+  if (entries.length === 0) {
+    show(heading, el(doc, 'p', { class: 'muted', text: REQUESTS_TEXT.empty }));
+    announce('');
+    focusHeading();
+    return;
+  }
+  const list = el(doc, 'ul', { class: 'request-list' });
+  const more = el(doc, 'button', { class: 'button button-secondary load-more', text: 'Load more', attrs: { type: 'button' } });
+  let shown = 0;
+
+  async function showMore(): Promise<void> {
+    const batch = entries.slice(shown, shown + REQUESTS_PER_PAGE);
+    shown += batch.length;
+    const items = batch.map((entry) => requestItem(doc, entry));
+    list.append(...items);
+    more.hidden = shown >= entries.length;
+    more.disabled = false;
+    more.textContent = 'Load more';
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      while (next < batch.length && current()) {
+        const index = next++;
+        const entry = batch[index] as RequestEntry;
+        try {
+          const found = entry.mediaType === 'tv' ? await api.tv(entry.tmdbId, signal) : await api.movie(entry.tmdbId, signal);
+          if (current()) setRequestTitle(items[index] as HTMLElement, found);
+        } catch (error) {
+          if (!current() || signal.aborted) return;
+          if (kindOf(error) === 'unauthorized') return failure('unauthorized', () => void render());
+          // The status stays; only the name could not be read.
+          setRequestTitle(items[index] as HTMLElement, undefined);
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(REQUEST_TITLE_CALLS, batch.length) }, worker));
+  }
+
+  more.addEventListener('click', () => {
+    more.disabled = true;
+    more.textContent = 'Loading…';
+    const first = shown;
+    void showMore().then(() => (list.children[first] as HTMLElement | undefined)?.querySelector('a')?.focus());
+  });
+  show(heading, list, more);
+  announce('');
+  focusHeading();
+  await showMore();
 }
 
 // Signing in or out on the same address (in another tab, or in Jellyfin web) is picked up without a reload.

@@ -12,7 +12,7 @@ import vm from 'node:vm';
 import { parseHTML } from 'linkedom';
 import { APP_CONTENT_SECURITY_POLICY, APP_PERMISSIONS_POLICY } from '../dist/app-assets.js';
 import { buildApp, contentHash, stampWorker } from '../scripts/build-app.mjs';
-import { ALICE, ANN, BOB, CAROL, HOST_A, HOST_B, OUTSIDER, OWN_MOVIE, T_MOVIE, T_TV, TOKENS, get, post, startApp, world } from './support/household-app.mjs';
+import { ALICE, ANN, BOB, CAROL, HOST_A, HOST_B, OUTSIDER, OWN_MOVIE, T_MOVIE, T_TV, TOKENS, get, otherHouseholdWorlds, post, startApp, world } from './support/household-app.mjs';
 import { assertNoCanaries } from './support/seerr-fixtures.mjs';
 
 const DIST_APP = path.join(import.meta.dirname, '..', 'dist', 'app');
@@ -820,8 +820,8 @@ describe('household app page: rendering', () => {
   it('shows each household state as its own coarse badge, and Play only for a title in the library', async () => {
     const { document, cardItem, STATE_LABELS } = await renderer();
     assert.deepEqual(STATE_LABELS, {
-      in_library: 'In your library',
-      get_this: 'Available to request soon',
+      in_library: 'Ready to watch',
+      get_this: 'Available to get',
       unavailable: "Can't request",
       requested: 'Requested',
     });
@@ -907,7 +907,7 @@ describe('household app page: rendering', () => {
     assert.equal(movie.querySelector('h1').textContent, 'Synthetic Movie Three');
     assert.equal(movie.querySelector('.meta').textContent, '2021 · 1 h 58 min · ★ 7.5');
     assert.deepEqual([...movie.querySelectorAll('.genres li')].map((li) => li.textContent), ['Drama', 'Mystery']);
-    assert.equal(movie.querySelector('.badge').textContent, 'In your library');
+    assert.equal(movie.querySelector('.badge').textContent, 'Ready to watch');
     assert.equal(movie.querySelector('a.button').getAttribute('href'), play.url);
     assert.ok(movie.querySelector('.seasons') === null);
 
@@ -919,15 +919,15 @@ describe('household app page: rendering', () => {
         { seasonNumber: 3, name: '', episodeCount: null, state: 'unavailable' },
       ],
     }, origin);
-    assert.ok(series.querySelector('a.button') === null, 'no Play, and no request button, without the title in the library');
-    assert.ok(series.querySelector('button') === null);
+    assert.ok(series.querySelector('a.button') === null, 'no Play without the title in the library');
+    assert.ok(series.querySelector('button') === null, 'and no request button unless the screen can ask');
     const seasons = [...series.querySelectorAll('.season')];
-    assert.deepEqual(seasons.map((season) => season.querySelector('.badge').textContent), ['In your library', 'Available to request soon', "Can't request"]);
+    assert.deepEqual(seasons.map((season) => season.querySelector('.badge').textContent), ['Ready to watch', 'Available to get', "Can't request"]);
     assert.deepEqual(seasons.map((season) => season.querySelector('a').getAttribute('href')),
       ['#/tv/900002/season/1', '#/tv/900002/season/2', '#/tv/900002/season/3']);
     assert.deepEqual(seasons.map((season) => season.querySelector('.card-meta').textContent), ['8 episodes', '1 episode', '']);
     assert.equal(seasons[2].querySelector('.season-name').textContent, 'Season 3');
-    assert.match(series.querySelector('.detail-text .muted').textContent, /Requesting isn't switched on yet/);
+    assert.ok(series.querySelector('.detail-text .muted') === null, 'no "soon" note any more');
 
     const season = seasonView(document, {
       tmdbId: 900002, seasonNumber: 1, name: 'Season 1', overview: 'Season text.', state: 'in_library',
@@ -935,7 +935,7 @@ describe('household app page: rendering', () => {
     }, 'Synthetic Series Two');
     assert.equal(season.querySelector('a.back').getAttribute('href'), '#/tv/900002');
     assert.equal(season.querySelector('h1').textContent, 'Season 1');
-    assert.equal(season.querySelector('.badge').textContent, 'In your library');
+    assert.equal(season.querySelector('.badge').textContent, 'Ready to watch');
     assert.deepEqual([...season.querySelectorAll('.episode-title')].map((title) => title.textContent), ['1. Pilot', '2. Episode 2']);
     assert.ok(season.querySelector('a.button') === null);
   });
@@ -964,6 +964,229 @@ describe('household app page: rendering', () => {
     assert.equal(errorState(document, 'canary-upstream-text').querySelector('h1').textContent, ERROR_TEXT.unavailable.title);
     assert.equal(ERROR_TEXT.rate_limited.title, 'Too many requests');
     assert.equal(ERROR_TEXT.unavailable.body, 'Something went wrong. Try again in a moment.');
+  });
+
+  describe('"Get this" and "My requests" markup', () => {
+    const series = (overrides = {}) => ({
+      ...card({ mediaType: 'tv', tmdbId: 900002, title: 'Synthetic Series Two', state: 'get_this' }), genres: [], runtime: 45,
+      seasons: [
+        { seasonNumber: 0, name: 'Specials', episodeCount: 2, state: 'get_this' },
+        { seasonNumber: 1, name: 'Season 1', episodeCount: 8, state: 'in_library' },
+        { seasonNumber: 2, name: 'Season 2', episodeCount: 6, state: 'get_this' },
+        { seasonNumber: 3, name: '', episodeCount: null, state: 'get_this' },
+        { seasonNumber: 4, name: 'Season 4', episodeCount: 1, state: 'requested' },
+        { seasonNumber: 5, name: 'Season 5', episodeCount: 1, state: 'unavailable' },
+      ],
+      ...overrides,
+    });
+    const click = (document, Event, node) => node.dispatchEvent(new Event('click'));
+
+    it('offers a button for a requestable movie only when the screen can ask, and none for any other state', async () => {
+      const { document, Event, titleDetail, GET_THIS_TEXT } = await renderer();
+      const movie = (state, extras) => titleDetail(document, { ...card({ state, play: state === 'in_library' ? play : null }), genres: [], runtime: 90 }, origin, extras);
+      const calls = [];
+      const onGet = async (seasons) => { calls.push(seasons); return 'accepted'; };
+      const detail = movie('get_this', { onGet });
+      const button = detail.querySelector('button');
+      assert.equal(button.textContent, 'Get this');
+      assert.equal(button.getAttribute('aria-label'), 'Get this: Synthetic Movie Three');
+      assert.equal(button.getAttribute('type'), 'button');
+      assert.ok(detail.querySelector('.get-seasons') === null);
+      assert.equal(detail.querySelector('.get-message').getAttribute('role'), 'status');
+      assert.equal(detail.querySelector('.get-message').textContent, '');
+      click(document, Event, button);
+      assert.deepEqual(calls, [[]], 'a movie asks for no seasons');
+      for (const state of ['in_library', 'requested', 'unavailable']) assert.ok(movie(state, { onGet }).querySelector('button') === null, state);
+      assert.ok(movie('get_this', {}).querySelector('button') === null, 'a screen that cannot ask shows none');
+      assert.ok(movie('get_this', {}).querySelector('.get-this') === null);
+      assert.equal(GET_THIS_TEXT.button, 'Get this');
+    });
+
+    it('disables the button while a call is in flight and shows each failure in its own fixed words', async () => {
+      const { document, Event, titleDetail, GET_THIS_TEXT } = await renderer();
+      const expected = {
+        rate_limited: 'Too many tries, try again in a few minutes.',
+        offline: "You're offline. Check your connection, then try again.",
+        unavailable: "We couldn't send that just now. Try again in a moment.",
+        not_found: "We couldn't send that just now. Try again in a moment.",
+      };
+      for (const [kind, text] of Object.entries(expected)) {
+        let release;
+        const gate = new Promise((resolve) => { release = resolve; });
+        const detail = titleDetail(document, { ...card(), genres: [], runtime: 90 }, origin, { onGet: async () => { await gate; return kind; } });
+        const button = detail.querySelector('button');
+        click(document, Event, button);
+        assert.equal(button.disabled, true, `${kind}: in flight`);
+        assert.equal(button.textContent, GET_THIS_TEXT.sending);
+        assert.equal(button.getAttribute('aria-busy'), 'true');
+        click(document, Event, button);
+        release();
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        assert.equal(button.disabled, false, `${kind}: can try again`);
+        assert.equal(button.textContent, 'Get this');
+        assert.equal(button.getAttribute('aria-busy'), null);
+        assert.equal(detail.querySelector('.get-message').textContent, text, kind);
+        assert.ok(detail.querySelector('.get-message').classList.contains('get-error'));
+      }
+      // 401 is not shown here: main replaces the screen with the sign-in state.
+      const detail = titleDetail(document, { ...card(), genres: [], runtime: 90 }, origin, { onGet: async () => 'unauthorized' });
+      click(document, Event, detail.querySelector('button'));
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      assert.equal(detail.querySelector('.get-message').textContent, '');
+    });
+
+    it('shows one fixed confirmation, whatever the screen was redrawn for', async () => {
+      const { document, titleDetail, seasonView, GET_THIS_TEXT } = await renderer();
+      assert.equal(GET_THIS_TEXT.confirmation, "Thanks — we'll get this for your household.");
+      const onGet = async () => 'accepted';
+      const confirmations = [
+        titleDetail(document, { ...card({ state: 'get_this' }), genres: [], runtime: 90 }, origin, { onGet, confirmed: true, asked: new Set() }),
+        titleDetail(document, { ...card({ state: 'requested' }), genres: [], runtime: 90 }, origin, { onGet, confirmed: true, asked: new Set([0]) }),
+        titleDetail(document, { ...card({ state: 'in_library', play }), genres: [], runtime: 90 }, origin, { onGet, confirmed: true, asked: new Set([0]) }),
+        titleDetail(document, series(), origin, { onGet, confirmed: true, asked: new Set([2, 3]) }),
+        seasonView(document, { tmdbId: 900002, seasonNumber: 2, name: 'Season 2', overview: '', episodes: [], state: 'requested' }, 'Synthetic Series Two', { onGet, confirmed: true, asked: new Set([2]) }),
+      ].map((screen) => screen.querySelector('.get-message').textContent);
+      assert.deepEqual(new Set(confirmations), new Set([GET_THIS_TEXT.confirmation]));
+      // Without a redraw for an ask, no confirmation is there.
+      assert.equal(titleDetail(document, { ...card(), genres: [], runtime: 90 }, origin, { onGet }).querySelector('.get-message').textContent, '');
+      // A requested or held title keeps its coarse state and no hint of what an ask did.
+      const words = Object.values(GET_THIS_TEXT).join(' ');
+      assert.doesNotMatch(words, /already|joined|held|someone|other household|duplicate|existing|in your library|pending|approved|declined/i);
+    });
+
+    it('lets a series pick among the seasons the API marks requestable, never a special or a season it does not', async () => {
+      const { document, Event, titleDetail } = await renderer();
+      const asked = [];
+      const detail = titleDetail(document, series(), origin, { onGet: async (seasons) => { asked.push(seasons); return 'accepted'; } });
+      const fieldset = detail.querySelector('fieldset.get-seasons');
+      assert.equal(fieldset.querySelector('legend').textContent, 'Choose the seasons you want');
+      const labels = [...fieldset.querySelectorAll('label.choice')];
+      assert.deepEqual(labels.map((label) => label.textContent), ['Season 2', 'Season 3'], 'only season 2 and 3, named; not the special, held, requested or unavailable ones');
+      const boxes = [...fieldset.querySelectorAll('input[type="checkbox"]')];
+      assert.deepEqual(boxes.map((box) => box.value), ['2', '3']);
+      const button = detail.querySelector('button');
+      assert.equal(button.disabled, true, 'nothing chosen, nothing to send');
+      boxes[1].checked = true;
+      boxes[1].dispatchEvent(new Event('change'));
+      assert.equal(button.disabled, false);
+      boxes[0].checked = true;
+      boxes[0].dispatchEvent(new Event('change'));
+      click(document, Event, button);
+      assert.deepEqual(asked, [[2, 3]]);
+      assert.equal(boxes.every((box) => box.disabled), true, 'locked while in flight');
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      // The series' own state is `get_this` here, and a series `requested` for one season still lets the rest be chosen.
+      const partly = titleDetail(document, series({ state: 'requested' }), origin, { onGet: async () => 'accepted' });
+      assert.equal(partly.querySelectorAll('input[type="checkbox"]').length, 2);
+      assert.equal(partly.querySelectorAll('.season .badge')[0].textContent, 'Available to get');
+      // No requestable season, no picker; seasons just asked for are not offered again.
+      const none = titleDetail(document, series({ state: 'unavailable', seasons: [{ seasonNumber: 1, name: 'Season 1', episodeCount: 1, state: 'unavailable' }] }), origin, { onGet: async () => 'accepted' });
+      assert.ok(none.querySelector('.get-this') === null);
+      const again = titleDetail(document, series(), origin, { onGet: async () => 'accepted', asked: new Set([2]) });
+      assert.deepEqual([...again.querySelectorAll('input[type="checkbox"]')].map((box) => box.value), ['3']);
+    });
+
+    it('asks for one season from its own page, and only when that season is requestable', async () => {
+      const { document, Event, seasonView } = await renderer();
+      const asked = [];
+      const view = (state, extras = {}) => seasonView(document, { tmdbId: 900002, seasonNumber: 2, name: 'Season 2', overview: '', episodes: [], state }, 'Synthetic Series Two',
+        { onGet: async (seasons) => { asked.push(seasons); return 'accepted'; }, ...extras });
+      const screen = view('get_this');
+      const button = screen.querySelector('button');
+      assert.equal(button.getAttribute('aria-label'), 'Get this: Synthetic Series Two Season 2');
+      assert.ok(screen.querySelector('fieldset') === null, 'one season needs no picker');
+      assert.equal(button.disabled, false);
+      click(document, Event, button);
+      assert.deepEqual(asked, [[2]]);
+      for (const state of ['in_library', 'requested', 'unavailable']) assert.ok(view(state).querySelector('button') === null, state);
+      assert.ok(view('get_this', { onGet: undefined }).querySelector('button') === null);
+    });
+
+    it('shows "We couldn\'t get this" where the household asked and it did not work out, and the other coarse states as the API gives them', async () => {
+      const { document, titleDetail, seasonView, requestBadge, REQUEST_LABELS, STATE_LABELS } = await renderer();
+      assert.deepEqual(REQUEST_LABELS, { requested: 'Requested', ready: 'Ready to watch', failed: "We couldn't get this" });
+      assert.equal(requestBadge(document, 'failed').textContent, "We couldn't get this");
+      assert.equal(STATE_LABELS.in_library, 'Ready to watch');
+      assert.equal(STATE_LABELS.unavailable, "Can't request");
+      assert.equal(STATE_LABELS.requested, 'Requested');
+      const onGet = async () => 'accepted';
+      const movie = titleDetail(document, { ...card(), genres: [], runtime: 90 }, origin, { onGet, failed: new Set([0]) });
+      assert.deepEqual([...movie.querySelectorAll('.badge')].map((badge) => badge.textContent), ["We couldn't get this"]);
+      assert.ok(movie.querySelector('button') === null, 'and it is not offered again: the backend holds the failed record');
+      assert.equal(movie.querySelector('.failed-note').textContent, 'Ask your JellyPass admin to try again.');
+      const seasons = titleDetail(document, series(), origin, { onGet, failed: new Set([3]) });
+      assert.deepEqual([...seasons.querySelectorAll('.season .badge')].map((badge) => badge.textContent),
+        ['Available to get', 'Ready to watch', 'Available to get', "We couldn't get this", 'Requested', "Can't request"]);
+      const season = seasonView(document, { tmdbId: 900002, seasonNumber: 3, name: 'Season 3', overview: '', episodes: [], state: 'get_this' }, 'S', { failed: new Set([3]) });
+      assert.equal(season.querySelector('.badge').textContent, "We couldn't get this");
+      assert.ok(season.querySelector('button') === null);
+      assert.equal(season.querySelector('.failed-note').textContent, 'Ask your JellyPass admin to try again.');
+      assert.deepEqual([...seasons.querySelectorAll('input[type="checkbox"]')].map((box) => box.value), ['2'], 'a failed season is not a choice');
+      assert.equal(seasons.querySelectorAll('.failed-note').length, 1);
+      // A held title is not "couldn't get" even if the household once failed to ask.
+      const held = titleDetail(document, { ...card({ state: 'in_library', play }), genres: [], runtime: 90 }, origin, { onGet, failed: new Set([0]) });
+      assert.deepEqual([...held.querySelectorAll('.badge')].map((badge) => badge.textContent), ['Ready to watch']);
+      assert.equal(held.querySelector('a.button').textContent, 'Play');
+    });
+
+    it('lists a request with its coarse status, its seasons and who asked, and sets the title as text', async () => {
+      const { document, requestItem, setRequestTitle, REQUESTS_TEXT } = await renderer();
+      const entry = { id: 'opaqueidopaqueidopaqueid', mediaType: 'tv', tmdbId: 900002, status: 'requested', byYou: true,
+        seasons: [{ seasonNumber: 1, status: 'ready' }, { seasonNumber: 2, status: 'requested' }, { seasonNumber: 3, status: 'failed' }] };
+      const item = requestItem(document, entry);
+      assert.equal(item.querySelector('.request-link').getAttribute('href'), '#/tv/900002');
+      assert.equal(item.querySelector('.card-title').textContent, REQUESTS_TEXT.loading);
+      assert.equal(item.querySelector(':scope > .badge').textContent, 'Requested');
+      assert.equal(item.querySelector('.request-who').textContent, 'Asked for by you');
+      assert.deepEqual([...item.querySelectorAll('.request-season')].map((season) => season.textContent),
+        ['Season 1Ready to watch', 'Season 2Requested', "Season 3We couldn't get this"]);
+      assert.equal(requestItem(document, { ...entry, byYou: false }).querySelector('.request-who').textContent, 'Asked for by someone in your household');
+      const hostile = '<img src=x onerror=alert(1)>';
+      setRequestTitle(item, { title: hostile, year: 2020, mediaType: 'tv' });
+      assert.equal(item.querySelector('.card-title').textContent, hostile);
+      assert.equal(item.querySelector('.card-meta').textContent, '2020 · Series');
+      assert.equal(item.querySelectorAll('img, script, [onerror]').length, 0);
+      setRequestTitle(item, undefined);
+      assert.equal(item.querySelector('.card-title').textContent, 'Title unavailable');
+      const movie = requestItem(document, { id: 'x', mediaType: 'movie', tmdbId: 5, status: 'failed', byYou: false, seasons: [] });
+      assert.ok(movie.querySelector('.request-seasons') === null);
+      assert.equal(movie.querySelector(':scope > .badge').textContent, "We couldn't get this");
+      assert.equal(movie.querySelector('.card-meta').textContent, 'Movie');
+      // An unknown status (never sent) is shown as the safe one rather than as raw text.
+      assert.equal(requestItem(document, { ...entry, status: 'canary-status' }).querySelector(':scope > .badge').textContent, "We couldn't get this");
+    });
+
+    it('shows no Seerr ID, name, count, date or progress anywhere in the new markup', async () => {
+      const { document, titleDetail, seasonView, requestItem, setRequestTitle } = await renderer();
+      const traps = ['canary', 'seerr', 'opaqueidopaqueidopaqueid', '7300', 'jellyseerr'];
+      const entry = { id: 'opaqueidopaqueidopaqueid', mediaType: 'tv', tmdbId: 900002, status: 'ready', byYou: false,
+        seasons: [{ seasonNumber: 1, status: 'ready' }, { seasonNumber: 2, status: 'failed' }] };
+      const item = requestItem(document, entry);
+      setRequestTitle(item, { title: 'Synthetic Series Two', year: 2020, mediaType: 'tv' });
+      const nodes = [
+        item,
+        titleDetail(document, series(), origin, { onGet: async () => 'rate_limited', confirmed: true, failed: new Set([2]) }),
+        titleDetail(document, { ...card(), genres: [], runtime: 90 }, origin, { onGet: async () => 'accepted', confirmed: true }),
+        seasonView(document, { tmdbId: 900002, seasonNumber: 2, name: 'Season 2', overview: '', episodes: [], state: 'get_this' }, 'Synthetic Series Two', { onGet: async () => 'accepted' }),
+      ];
+      for (const node of nodes) {
+        const html = node.outerHTML;
+        for (const trap of traps) assert.ok(!html.toLowerCase().includes(trap), `${trap} in ${html.slice(0, 100)}`);
+        // No dates, percentages, progress or counts of requests.
+        assert.doesNotMatch(node.textContent.replace(/\b(19|20)\d{2}\b/g, ''), /\d{4}-\d{2}|\d+\s*%|progress|\bETA\b|\d+ (?:requests?|people|members)/i);
+      }
+    });
+
+    it('styles the new states within the stylesheet\'s existing, contrast-checked colours', () => {
+      const css = read(BUILT('app.css'));
+      for (const rule of ['.badge-request-ready', '.badge-request-failed', '.badge-request-requested', '.get-error', '.get-seasons', '.choice', '.request-list']) {
+        assert.ok(css.includes(rule), rule);
+      }
+      assert.match(css, /\.choice \{[^}]*min-height: 2\.75rem/, '44 px touch target');
+      // No new colour literals: the new rules use the checked tokens only.
+      const added = css.slice(css.indexOf('.get-this {'), css.indexOf('.credits {'));
+      assert.doesNotMatch(added, /#[0-9a-f]{3,6}\b/i);
+    });
   });
 
   it('credits TMDB with its logo, the required notice and a link to themoviedb.org', async () => {
@@ -1018,7 +1241,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
           requests.push({ url, init });
           if (init.signal?.aborted) throw new DOMException('aborted', 'AbortError');
           if (holdMe && url === '/jellypass/app/v1/me') await holdMe;
-          const answer = override?.(url, init) ?? await (init.method === 'POST'
+          const answer = (await override?.(url, init)) ?? await (init.method === 'POST'
             ? post(app.port, url, { Host: host, ...init.headers }, init.body ? JSON.parse(init.body) : undefined)
             : get(app.port, url, { Host: host, ...init.headers }));
           return new Response(answer.body, { status: answer.status, headers: answer.headers });
@@ -1072,7 +1295,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     assert.deepEqual(cards.map((item) => item.querySelector('.card-title').textContent),
       ['Synthetic Movie One', 'Synthetic Series Two', 'Synthetic Movie Three'], 'the person in the results is dropped');
     assert.deepEqual(cards.map((item) => item.querySelector('.badge').textContent),
-      ['Available to request soon', 'Available to request soon', 'In your library']);
+      ['Available to get', 'Available to get', 'Ready to watch']);
     const own = cards[2];
     const playLink = [...own.querySelectorAll('a')].find((anchor) => anchor.textContent === 'Play');
     assert.equal(playLink.getAttribute('href'), `https://${HOST_A}/web/#/details?id=33330000333300003333000033330000`);
@@ -1099,7 +1322,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     page.go(`#/movie/${OWN_MOVIE}`);
     await page.until(() => page.main().querySelector('article.detail'), 'the movie');
     assert.equal(page.main().querySelector('h1').textContent, 'Synthetic Movie Three');
-    assert.equal(page.main().querySelector('.badge').textContent, 'In your library');
+    assert.equal(page.main().querySelector('.badge').textContent, 'Ready to watch');
     assert.equal(page.main().querySelector('a.button').textContent, 'Play');
     assert.equal(page.document.title, 'Synthetic Movie Three – JellyPass');
     assertNoCanaries(page.serialize(), 'movie page');
@@ -1110,7 +1333,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     assert.ok(page.main().querySelector('a.button') === null);
     const seasons = [...page.main().querySelectorAll('.season')];
     assert.ok(seasons.length >= 1);
-    for (const season of seasons) assert.equal(season.querySelector('.badge').textContent, 'Available to request soon');
+    for (const season of seasons) assert.equal(season.querySelector('.badge').textContent, 'Available to get');
     assertNoCanaries(page.serialize(), 'series page');
 
     page.go(`#/tv/${T_TV}/season/1`);
@@ -1665,5 +1888,365 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     missing.go('#/movie/1');
     await missing.until(() => missing.main().querySelector('h1')?.textContent === 'Not found', 'the not-found state');
     assert.ok(missing.main().querySelector('button') === null);
+  });
+
+  describe('"Get this" and "My requests" against the API', () => {
+    const POST_HEADERS = { Authorization: 'MediaBrowser Token="token-alice"', 'Content-Type': 'application/json' };
+    const posts = (page) => page.requests.filter((request) => request.init.method === 'POST');
+    const hold = () => {
+      let release;
+      const gate = new Promise((resolve) => { release = resolve; });
+      return { gate, release };
+    };
+    const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+
+    it('asks for a movie: disables the button while the call is in flight, confirms, and shows the state afterwards', async (t) => {
+      const app = await startApp(t);
+      const { gate, release } = hold();
+      const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}`, override: async (url, init) => { if (init.method === 'POST') await gate; return undefined; } });
+      const button = await page.until(() => page.main().querySelector('button'), 'the Get this button');
+      assert.equal(button.textContent, 'Get this');
+      assert.equal(page.main().querySelector('.badge').textContent, 'Available to get');
+      assert.equal(page.main().textContent.includes('soon'), false);
+      button.dispatchEvent(new page.Event('click'));
+      assert.equal(button.disabled, true);
+      assert.equal(button.textContent, 'Sending…');
+      button.dispatchEvent(new page.Event('click'));
+      await page.until(() => posts(page).length === 1, 'the call');
+      release();
+      await page.until(() => page.main().querySelector('.get-message')?.textContent, 'the confirmation');
+      assert.equal(page.main().querySelector('.get-message').textContent, "Thanks — we'll get this for your household.");
+      assert.equal(posts(page).length, 1, 'a second press while in flight sent nothing');
+      const [post] = posts(page);
+      assert.equal(post.url, `/jellypass/app/v1/movie/${T_MOVIE}/get`);
+      assert.equal(post.init.body, '{}');
+      assert.equal(post.init.cache, 'no-store');
+      assert.equal(post.init.credentials, 'omit');
+      assert.deepEqual({ ...post.init.headers }, { Accept: 'application/json', ...POST_HEADERS });
+      // The title is read again after the accepted answer.
+      assert.ok(page.requests.filter((request) => request.url === `/jellypass/app/v1/movie/${T_MOVIE}`).length >= 2);
+      assert.equal(page.focused()?.className, 'get-message');
+      await app.background.settled();
+      // Once the household has asked, the title says so, in the one coarse word.
+      page.go('#/');
+      page.go(`#/movie/${T_MOVIE}`);
+      await page.until(() => page.main().querySelector('.badge')?.textContent === 'Requested', 'Requested');
+      assert.ok(page.main().querySelector('button') === null);
+      assert.ok(page.main().querySelector('.get-message') === null);
+      assertNoCanaries(page.serialize(), 'after Get this');
+    });
+
+    it('gives the same confirmation whatever the household, the title or Seerr already had', async (t) => {
+      const worlds = { baseline: world(), ...Object.fromEntries(Object.entries(otherHouseholdWorlds()).filter(([name]) => !name.startsWith('large'))) };
+      const seen = {};
+      const shapes = {};
+      for (const [name, state] of Object.entries(worlds)) {
+        const app = await startApp(t, state, { reconcile: true });
+        const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}` });
+        const button = await page.until(() => page.main().querySelector('button'), `${name}: the button`);
+        button.dispatchEvent(new page.Event('click'));
+        await page.until(() => page.main().querySelector('.get-message')?.textContent, `${name}: the confirmation`);
+        seen[name] = page.main().querySelector('.get-message').textContent;
+        shapes[name] = { role: page.main().querySelector('.get-message').getAttribute('role'), error: page.main().querySelector('.get-error') !== null, posts: posts(page).length };
+        await app.background.settled();
+      }
+      assert.ok(Object.keys(seen).length >= 5, Object.keys(seen).join());
+      for (const [name, text] of Object.entries(seen)) assert.equal(text, "Thanks — we'll get this for your household.", name);
+      for (const [name, shape] of Object.entries(shapes)) assert.deepEqual(shape, { role: 'status', error: false, posts: 1 }, name);
+    });
+
+    it('is indistinguishable for every backend outcome: the same DOM, the same follow-up requests, the same refresh', async (t) => {
+      const others = otherHouseholdWorlds();
+      const outcomes = {
+        'a real request': world(),
+        'a join': others['a private grant'],
+        'an interest': others['a pending request'],
+        'nothing to do': world(),
+      };
+      // The page's own account of what it did: every request, how it was made, minus the abort signal.
+      const trace = (page) => page.requests.map(({ url, init }) => JSON.stringify({
+        url, method: init.method ?? 'GET', body: init.body ?? null, cache: init.cache ?? null, credentials: init.credentials ?? null,
+        headers: { ...init.headers },
+      }));
+      // The title as it reads before anything happened, to open a page that still offers Get this for 'nothing to do'.
+      const fresh = await startApp(t);
+      const stale = await get(fresh.port, `/jellypass/app/v1/movie/${T_MOVIE}`, { Host: HOST_A, Authorization: POST_HEADERS.Authorization });
+      assert.equal(stale.status, 200);
+      const seen = {};
+      for (const [name, state] of Object.entries(outcomes)) {
+        const app = await startApp(t, state, { reconcile: true });
+        if (name === 'nothing to do') {
+          // The household asked a moment ago (another tab); this page was loaded before and still offers the button.
+          await post(app.port, `/jellypass/app/v1/movie/${T_MOVIE}/get`, { Host: HOST_A, ...POST_HEADERS }, undefined);
+          await app.background.settled();
+        }
+        // What the server says about the title is its own matter (and tested against the API). The app is held to what
+        // it does with an accepted call, so every follow-up read of the title gets the same answer here.
+        let asked = false;
+        let loaded = name !== 'nothing to do';
+        const override = (url, init) => {
+          if (init.method === 'POST') { asked = true; return undefined; }
+          if (url !== `/jellypass/app/v1/movie/${T_MOVIE}`) return undefined;
+          if (asked || !loaded) { loaded = true; return stale; }
+          return undefined;
+        };
+        const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}`, override });
+        const button = await page.until(() => page.main().querySelector('button'), `${name}: the button`);
+        const before = page.requests.length;
+        button.dispatchEvent(new page.Event('click'));
+        await page.until(() => page.main().querySelector('.get-message')?.textContent && page.requests.length > before + 1, `${name}: the confirmation and the refresh`);
+        await app.background.settled();
+        await settle();
+        seen[name] = { html: page.serialize(), calls: trace(page), after: trace(page).slice(before) };
+      }
+      const [first, ...rest] = Object.entries(seen);
+      assert.ok(first[1].after.length >= 2, 'the POST and at least one refresh');
+      assert.ok(first[1].after[0].includes('"method":"POST"'));
+      assert.ok(first[1].after.slice(1).every((call) => call.includes('"method":"GET"')));
+      for (const [name, outcome] of rest) {
+        assert.deepEqual(outcome.calls, first[1].calls, `${name}: the requests the app made`);
+        assert.deepEqual(outcome.after, first[1].after, `${name}: the follow-up requests`);
+        if (outcome.html !== first[1].html) {
+          const at = [...outcome.html].findIndex((char, index) => char !== first[1].html[index]);
+          assert.fail(`${name}: the rendered DOM differs from ${first[0]} at ${at}: ${outcome.html.slice(at - 200, at + 200)} <> ${first[1].html.slice(at - 200, at + 200)}`);
+        }
+      }
+    });
+
+    it('keeps the confirmation, offers nothing that would send again and a retry when the call was accepted but the refresh failed', async (t) => {
+      const app = await startApp(t);
+      let accepted = false;
+      let broken = true;
+      const page = await openApp(t, app, {
+        hash: `#/movie/${T_MOVIE}`,
+        override: (url, init) => {
+          if (init.method === 'POST') { accepted = true; return undefined; }
+          if (accepted && broken && url === `/jellypass/app/v1/movie/${T_MOVIE}`) return { status: 502, body: Buffer.from('{"error":"canary upstream text"}'), headers: {} };
+          return undefined;
+        },
+      });
+      const button = await page.until(() => page.main().querySelector('button'), 'the button');
+      button.dispatchEvent(new page.Event('click'));
+      const retry = await page.until(() => page.main().querySelector('.get-refresh') && page.main().querySelector('button'), 'the refresh error and the retry');
+      assert.equal(page.main().querySelector('.get-message').textContent, "Thanks — we'll get this for your household.");
+      assert.equal(page.main().querySelector('.get-refresh').textContent, 'Something went wrong. Try again in a moment.');
+      assert.equal(page.main().querySelector('.get-error'), null);
+      assert.equal(page.main().querySelectorAll('button').length, 1, 'only the retry');
+      assert.equal(retry.textContent, 'Try again');
+      assert.ok(retry !== button && page.main().textContent.includes('Sending') === false);
+      assert.doesNotMatch(page.serialize(), /canary|upstream/i);
+      assert.equal(posts(page).length, 1);
+      broken = false;
+      retry.dispatchEvent(new page.Event('click'));
+      await page.until(() => page.main().querySelector('.badge') && page.main().querySelector('.get-refresh') === null, 'the page loaded again');
+      assert.ok(!page.main().textContent.includes('Thanks'), 'a page loaded again carries no confirmation');
+      assert.equal(posts(page).length, 1, 'the retry sent nothing');
+      await app.background.settled();
+    });
+
+    it('asks for chosen seasons of a series, and only those the API marks requestable', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app, { hash: `#/tv/${T_TV}` });
+      await page.until(() => page.main().querySelector('fieldset.get-seasons'), 'the season picker');
+      const boxes = [...page.main().querySelectorAll('input[type="checkbox"]')];
+      assert.deepEqual(boxes.map((box) => box.value), ['1', '2']);
+      const button = page.main().querySelector('button');
+      assert.equal(button.disabled, true);
+      boxes[1].checked = true;
+      boxes[1].dispatchEvent(new page.Event('change'));
+      button.dispatchEvent(new page.Event('click'));
+      await page.until(() => page.main().querySelector('.get-message')?.textContent, 'the confirmation');
+      assert.equal(page.main().querySelector('.get-message').textContent, "Thanks — we'll get this for your household.");
+      assert.equal(posts(page).length, 1);
+      assert.equal(posts(page)[0].url, `/jellypass/app/v1/tv/${T_TV}/get`);
+      assert.equal(posts(page)[0].init.body, '{"seasons":[2]}');
+      // Season 2 was just asked for: only season 1 is offered again on this screen.
+      assert.deepEqual([...page.main().querySelectorAll('input[type="checkbox"]')].map((box) => box.value), ['1']);
+      await app.background.settled();
+    });
+
+    it('asks for a season from its page', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app, { hash: `#/tv/${T_TV}/season/1` });
+      const button = await page.until(() => page.main().querySelector('button'), 'the season button');
+      assert.ok(page.main().querySelector('fieldset') === null);
+      button.dispatchEvent(new page.Event('click'));
+      await page.until(() => page.main().querySelector('.get-message')?.textContent, 'the confirmation');
+      assert.equal(posts(page)[0].init.body, '{"seasons":[1]}');
+      assert.equal(page.main().querySelector('h1').textContent, 'Season 1');
+      await app.background.settled();
+    });
+
+    it('shows no button for a title the caller can already play, and none where the API says it cannot be requested', async (t) => {
+      const app = await startApp(t);
+      const held = await openApp(t, app, { hash: `#/movie/${OWN_MOVIE}` });
+      await held.until(() => held.main().querySelector('a.button'), 'Play');
+      assert.ok(held.main().querySelector('button') === null);
+      assert.equal(held.main().querySelector('.badge').textContent, 'Ready to watch');
+      const blocked = await startApp(t, world({ seerrUsers: { 11: { jellyfinUserId: ALICE, permissions: 0 } } }));
+      const page = await openApp(t, blocked, { hash: `#/movie/${T_MOVIE}` });
+      await page.until(() => page.main().querySelector('.badge'), 'the badge');
+      assert.equal(page.main().querySelector('.badge').textContent, "Can't request");
+      assert.ok(page.main().querySelector('button') === null);
+      assert.equal(posts(page).length, 0);
+    });
+
+    it('answers 401, 429, offline and server errors with fixed words, and lets the person try again', async (t) => {
+      const app = await startApp(t);
+      const answer = (status) => ({ status, body: Buffer.from('{"error":"canary upstream text"}'), headers: {} });
+      let mode = 'limited';
+      const page = await openApp(t, app, {
+        hash: `#/movie/${T_MOVIE}`,
+        override: (url, init) => {
+          if (init.method !== 'POST') return undefined;
+          if (mode === 'limited') return answer(429);
+          if (mode === 'server') return answer(502);
+          if (mode === 'invalid') return answer(400);
+          if (mode === 'offline') throw new TypeError('network canary');
+          if (mode === 'unauthorized') return answer(401);
+          return undefined;
+        },
+      });
+      const button = await page.until(() => page.main().querySelector('button'), 'the button');
+      const press = async () => {
+        const before = posts(page).length;
+        page.main().querySelector('button').dispatchEvent(new page.Event('click'));
+        await page.until(() => posts(page).length > before, 'the call');
+        await page.until(() => !page.main().querySelector('button')?.disabled, 'the answer');
+        return page.main().querySelector('.get-message').textContent;
+      };
+      assert.equal(await press(), 'Too many tries, try again in a few minutes.');
+      mode = 'offline';
+      assert.equal(await press(), "You're offline. Check your connection, then try again.");
+      for (const failing of ['server', 'invalid']) {
+        mode = failing;
+        assert.equal(await press(), "We couldn't send that just now. Try again in a moment.", failing);
+      }
+      assert.ok(page.main().querySelector('button') === button, 'the same button, ready again');
+      assert.equal(button.textContent, 'Get this');
+      assert.doesNotMatch(page.serialize(), /canary|upstream/i);
+      // Then it works, with the same confirmation.
+      mode = 'ok';
+      button.dispatchEvent(new page.Event('click'));
+      await page.until(() => page.main().querySelector('.get-message')?.textContent, 'the confirmation');
+      assert.equal(page.main().querySelector('.get-message').textContent, "Thanks — we'll get this for your household.");
+      await app.background.settled();
+
+      // A 401 sends the person back to sign-in.
+      mode = 'unauthorized';
+      const signedOut = await openApp(t, await startApp(t), { hash: `#/movie/${T_MOVIE}`, override: (url, init) => (init.method === 'POST' ? answer(401) : undefined) });
+      (await signedOut.until(() => signedOut.main().querySelector('button'), 'the button')).dispatchEvent(new signedOut.Event('click'));
+      await signedOut.until(() => signedOut.main().querySelector('[data-screen="signin"] h1')?.textContent === 'Sign in', 'the sign-in state');
+    });
+
+    it('lists the household\'s requests with coarse states, per season, and who asked', async (t) => {
+      const app = await startApp(t);
+      const asker = await openApp(t, app, { hash: `#/movie/${T_MOVIE}` });
+      (await asker.until(() => asker.main().querySelector('button'), 'the button')).dispatchEvent(new asker.Event('click'));
+      await asker.until(() => asker.main().querySelector('.get-message')?.textContent, 'the confirmation');
+      asker.go(`#/tv/${T_TV}`);
+      const picker = await asker.until(() => asker.main().querySelector('input[type="checkbox"]'), 'the series');
+      picker.checked = true;
+      picker.dispatchEvent(new asker.Event('change'));
+      asker.main().querySelector('button').dispatchEvent(new asker.Event('click'));
+      await asker.until(() => asker.main().querySelector('.get-message')?.textContent, 'the series confirmation');
+      await app.background.settled();
+
+      const page = await openApp(t, app, { hash: '#/requests' });
+      await page.until(() => page.main().querySelectorAll('.request .card-title').length === 2
+        && [...page.main().querySelectorAll('.request .card-title')].every((title) => title.textContent !== 'Loading title…'), 'the requests');
+      assert.equal(page.main().querySelector('h1').textContent, 'My requests');
+      assert.equal(page.document.title, 'My requests – JellyPass');
+      assert.equal(page.document.querySelector('nav a[aria-current="page"]').dataset.nav, 'requests');
+      assert.equal(page.document.querySelector('nav a[data-nav="requests"]').textContent, 'My requests');
+      const items = [...page.main().querySelectorAll('.request')];
+      const byTitle = Object.fromEntries(items.map((item) => [item.querySelector('.card-title').textContent, item]));
+      assert.deepEqual(Object.keys(byTitle).sort(), ['Synthetic Movie One', 'Synthetic Series Two']);
+      const movie = byTitle['Synthetic Movie One'];
+      assert.equal(movie.querySelector(':scope > .badge').textContent, 'Requested');
+      assert.equal(movie.querySelector('.request-who').textContent, 'Asked for by you');
+      assert.equal(movie.querySelector('.request-link').getAttribute('href'), `#/movie/${T_MOVIE}`);
+      const series = byTitle['Synthetic Series Two'];
+      assert.deepEqual([...series.querySelectorAll('.request-season')].map((season) => season.textContent), ['Season 1Requested']);
+      assert.equal(page.main().querySelector('button.load-more').hidden, true, 'one page of two needs no Load more');
+      assert.ok(page.requests.some((request) => request.url === '/jellypass/app/v1/requests'));
+      assertNoCanaries(page.serialize(), 'My requests');
+
+      // Another member of the household sees the same list, not marked as theirs.
+      const ann = await openApp(t, app, { hash: '#/requests', user: ANN });
+      await ann.until(() => ann.main().querySelectorAll('.request-who').length === 2, 'Ann\'s list');
+      assert.deepEqual([...ann.main().querySelectorAll('.request-who')].map((who) => who.textContent), ['Asked for by someone in your household', 'Asked for by someone in your household']);
+    });
+
+    it('shows an empty state, a retry on error, and loads a long list ten titles at a time', async (t) => {
+      const app = await startApp(t);
+      const empty = await openApp(t, app, { hash: '#/requests' });
+      await empty.until(() => empty.main().querySelector('p.muted'), 'the empty state');
+      assert.equal(empty.main().querySelector('p.muted').textContent, 'Nothing requested yet. Press Get this on a title to ask for it.');
+      assert.equal(empty.main().querySelector('h1').textContent, 'My requests');
+
+      let failing = true;
+      const flaky = await openApp(t, app, { hash: '#/requests', override: (url) => (failing && url === '/jellypass/app/v1/requests' ? { status: 502, body: Buffer.from('{"error":"canary"}'), headers: {} } : undefined) });
+      await flaky.until(() => flaky.main().querySelector('[role="alert"]'), 'the error');
+      assert.equal(flaky.main().querySelector('h1').textContent, "Can't load this right now");
+      assert.doesNotMatch(flaky.serialize(), /canary/i);
+      failing = false;
+      flaky.main().querySelector('.notice button').dispatchEvent(new flaky.Event('click'));
+      await flaky.until(() => flaky.main().querySelector('p.muted')?.textContent.startsWith('Nothing requested'), 'the list after a retry');
+
+      const results = Array.from({ length: 25 }, (_, index) => ({
+        id: `id${index}`, mediaType: 'movie', tmdbId: index % 2 ? T_MOVIE : OWN_MOVIE, status: ['requested', 'ready', 'failed'][index % 3], seasons: [], byYou: index % 2 === 0,
+      }));
+      const long = await openApp(t, app, { hash: '#/requests', override: (url) => (url === '/jellypass/app/v1/requests' ? { status: 200, body: Buffer.from(JSON.stringify({ results })), headers: { 'content-type': 'application/json' } } : undefined) });
+      await long.until(() => long.main().querySelectorAll('.request').length === 10, 'ten requests');
+      await long.until(() => [...long.main().querySelectorAll('.request .card-title')].every((title) => title.textContent !== 'Loading title…'), 'their titles');
+      const titleCalls = () => long.requests.filter((request) => /\/movie\/\d+$/.test(request.url)).length;
+      assert.equal(titleCalls(), 10, 'titles are read ten at a time');
+      assert.deepEqual([...long.main().querySelectorAll(':scope .request > .badge')].slice(0, 3).map((badge) => badge.textContent), ['Requested', 'Ready to watch', "We couldn't get this"]);
+      const more = long.main().querySelector('button.load-more');
+      assert.equal(more.hidden, false);
+      more.dispatchEvent(new long.Event('click'));
+      await long.until(() => long.main().querySelectorAll('.request').length === 20, 'twenty requests');
+      more.dispatchEvent(new long.Event('click'));
+      await long.until(() => long.main().querySelectorAll('.request').length === 25, 'all requests');
+      assert.equal(more.hidden, true);
+      assert.ok(long.main().querySelectorAll('.request .card-title').length === 25);
+      await long.until(() => [...long.main().querySelectorAll('.request .card-title')].every((title) => title.textContent !== 'Loading title…'), 'all titles');
+    });
+
+    it('marks a title the household asked for that failed as "We couldn\'t get this", and keeps working without the list', async (t) => {
+      const app = await startApp(t);
+      const failed = { results: [{ id: 'x', mediaType: 'movie', tmdbId: T_MOVIE, status: 'failed', seasons: [], byYou: true }] };
+      const body = (value) => ({ status: 200, body: Buffer.from(JSON.stringify(value)), headers: { 'content-type': 'application/json' } });
+      const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}`, override: (url) => (url === '/jellypass/app/v1/requests' ? body(failed) : undefined) });
+      await page.until(() => page.main().querySelector('.failed-note'), 'the note');
+      assert.equal(page.main().querySelector('.badge').textContent, "We couldn't get this");
+      assert.ok(page.main().querySelector('button') === null, 'no Get this for a failed title');
+      // A failing list never breaks the title.
+      const broken = await openApp(t, app, { hash: `#/movie/${T_MOVIE}`, override: (url) => (url === '/jellypass/app/v1/requests' ? { status: 502, body: Buffer.from('{}'), headers: {} } : undefined) });
+      await broken.until(() => broken.main().querySelector('button'), 'the button');
+      assert.equal(broken.main().querySelector('.badge').textContent, 'Available to get');
+      assert.ok(broken.main().querySelector('[role="alert"]') === null);
+      const seasonsFailed = { results: [{ id: 'y', mediaType: 'tv', tmdbId: T_TV, status: 'failed', seasons: [{ seasonNumber: 2, status: 'failed' }], byYou: false }] };
+      const series = await openApp(t, app, { hash: `#/tv/${T_TV}`, override: (url) => (url === '/jellypass/app/v1/requests' ? body(seasonsFailed) : undefined) });
+      await series.until(() => series.main().querySelector('.season-list'), 'the series');
+      assert.deepEqual([...series.main().querySelectorAll('.season .badge')].map((badge) => badge.textContent), ['Available to get', "We couldn't get this"]);
+      assert.deepEqual([...series.main().querySelectorAll('input[type="checkbox"]')].map((box) => box.value), ['1']);
+      assert.equal(series.main().querySelector('.failed-note').textContent, 'Ask your JellyPass admin to try again.');
+      await settle();
+    });
+
+    it('keeps the service worker, scope and API caching rules: nothing under the API is cached or fingerprinted', async (t) => {
+      const worker = read('sw.js');
+      assert.match(worker, /const API_PREFIX = '\/jellypass\/app\/v1\/'/);
+      assert.doesNotMatch(worker, /requests/, 'the worker names no API path');
+      assert.match(read('index.html'), /data-nav="requests"/);
+      assert.equal(JSON.parse(read(BUILT('manifest.webmanifest'))).scope, '/');
+      const sources = FILES.filter((name) => name.startsWith('js/')).map((name) => read(name)).join('\n');
+      assert.doesNotMatch(sources, /innerHTML|outerHTML|insertAdjacentHTML|document\.write|eval\(|new Function/);
+      assert.doesNotMatch(sources, /localStorage\.setItem|sessionStorage|indexedDB|caches\./, 'the app still keeps nothing');
+      await settle();
+      t.diagnostic('checked');
+    });
   });
 });

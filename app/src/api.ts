@@ -1,4 +1,4 @@
-import type { DiscoverList, Me, Movie, Page, Season, Series } from './types.js';
+import type { DiscoverList, MediaType, Me, Movie, Page, RequestList, Season, Series } from './types.js';
 
 export const API_PREFIX = '/jellypass/app/v1';
 
@@ -24,6 +24,9 @@ export interface Api {
   movie(tmdbId: number, signal?: AbortSignal): Promise<Movie>;
   tv(tmdbId: number, signal?: AbortSignal): Promise<Series>;
   season(tmdbId: number, seasonNumber: number, signal?: AbortSignal): Promise<Season>;
+  /** "Get this": resolves once the API accepted the call (it always answers the same), and says nothing about what follows. */
+  getThis(mediaType: MediaType, tmdbId: number, seasons: readonly number[], signal?: AbortSignal): Promise<void>;
+  requests(signal?: AbortSignal): Promise<RequestList>;
 }
 
 function kindOf(status: number): ApiErrorKind {
@@ -34,13 +37,19 @@ function kindOf(status: number): ApiErrorKind {
 }
 
 export function createApi(options: ApiOptions): Api {
-  async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
+  async function call(path: string, init: { body?: unknown }, signal?: AbortSignal): Promise<Response> {
     const token = options.token();
     if (!token) throw new ApiError('unauthorized');
     let response: Response;
     try {
       response = await options.fetch(`${API_PREFIX}${path}`, {
-        headers: { Accept: 'application/json', Authorization: `MediaBrowser Token="${encodeURIComponent(token).replace(/"/g, '%22')}"` },
+        method: init.body === undefined ? 'GET' : 'POST',
+        headers: {
+          Accept: 'application/json',
+          Authorization: `MediaBrowser Token="${encodeURIComponent(token).replace(/"/g, '%22')}"`,
+          ...(init.body === undefined ? {} : { 'Content-Type': 'application/json' }),
+        },
+        ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
         // The API is no-store; the app asks for the same, sends no cookies and keeps nothing.
         cache: 'no-store',
         credentials: 'omit',
@@ -55,6 +64,11 @@ export function createApi(options: ApiOptions): Api {
       await response.body?.cancel().catch(() => undefined);
       throw new ApiError(kindOf(response.status));
     }
+    return response;
+  }
+
+  async function get<T>(path: string, signal?: AbortSignal): Promise<T> {
+    const response = await call(path, {}, signal);
     try {
       return (await response.json()) as T;
     } catch {
@@ -69,6 +83,12 @@ export function createApi(options: ApiOptions): Api {
     movie: (tmdbId, signal) => get<Movie>(`/movie/${tmdbId}`, signal),
     tv: (tmdbId, signal) => get<Series>(`/tv/${tmdbId}`, signal),
     season: (tmdbId, seasonNumber, signal) => get<Season>(`/tv/${tmdbId}/season/${seasonNumber}`, signal),
+    getThis: async (mediaType, tmdbId, seasons, signal) => {
+      // A movie sends an empty object, a series the seasons asked for; the answer is the same fixed 202 either way.
+      const response = await call(`/${mediaType}/${tmdbId}/get`, { body: mediaType === 'tv' ? { seasons } : {} }, signal);
+      await response.body?.cancel().catch(() => undefined);
+    },
+    requests: (signal) => get<RequestList>('/requests', signal),
   };
 }
 

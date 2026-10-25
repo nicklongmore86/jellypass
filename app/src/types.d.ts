@@ -67,3 +67,21 @@ export interface Season {
 }
 
 export type DiscoverList = 'trending' | 'popular-movies' | 'popular-tv' | 'upcoming';
+
+/** A request's coarse status in `GET /requests`: nothing finer is ever sent. */
+export type CoarseStatus = 'requested' | 'ready' | 'failed';
+
+export interface RequestEntry {
+  /** Opaque; used only as a list key. */
+  id: string;
+  mediaType: MediaType;
+  tmdbId: number;
+  status: CoarseStatus;
+  seasons: Array<{ seasonNumber: number; status: CoarseStatus }>;
+  /** Whether the caller made any of the household's records for the title. */
+  byYou: boolean;
+}
+
+export interface RequestList {
+  results: RequestEntry[];
+}

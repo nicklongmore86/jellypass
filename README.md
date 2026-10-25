@@ -751,7 +751,7 @@ background work did; no label names a title. The gauges
 flight, and the admin-only `GET /v1/app/outstanding` lists it (counts by kind,
 oldest age, TMDB IDs and households, `clear` once all are 0); household hosts
 never serve it. The app's "Get this" button is
-not in this release. See
+described under [Household app (PWA)](#household-app-pwa). See
 ["Get this" as implemented](docs/app-design.md#get-this-as-implemented-step-2a)
 for every rule, the leak channels and what remains.
 
@@ -802,9 +802,13 @@ Without Seerr, `/jellypass/add` paths are proxied to Jellyfin like any other.
 With `HOUSEHOLD_APP_ENABLED=true`, each household hostname also serves the
 app itself at `https://jelly-<household>.<HOUSEHOLD_DOMAIN>/jellypass/app/`: an
 installable web app (a PWA) to browse what is in the household's Jellyfin
-library and find more to watch. It is **read-only** for now: it shows each
-title's state (`In your library` with a **Play** button, `Available to request
-soon`, or `Can't request`) and has no request button yet. Nothing about it
+library and find more to watch. It shows each title's state (`In your library`
+with a **Play** button, `Available to get`, or `Can't request`) and offers
+**Get this** where a title can be asked for; the confirmation is the same
+sentence whatever happens afterwards. A title the household asked for that
+failed shows `We couldn't get this` with no button and the line "Ask your
+JellyPass admin to try again.", because the API does not ask again while the
+failed record stands. Nothing about it
 exists on the administrator host, or on household hosts while the app is
 switched off (those answer the same fixed `404`).
 

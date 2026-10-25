@@ -71,7 +71,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   requests while rolled back, and a marker naming a request not handled yet
   lasts until it is, up to 400 days, not 30 (see
   [Store, bounds and rollback](docs/app-design.md#get-this-as-implemented-step-2a)).
-  There is no app button yet. See
+  The app's **Get this** button gives one fixed confirmation as soon as the call
+  is accepted (kept if reading the page again then fails, with a retry that only
+  reloads the page). A title the household asked for that failed shows **We
+  couldn't get this** with no button and "Ask your JellyPass admin to try
+  again.", since the API does not ask again while the failed record stands. See
   ["Get this" as implemented](docs/app-design.md#get-this-as-implemented-step-2a).
 - **"Ready to watch" only for members who can play it.** A title (or season)
   the household's "Get this" record says is ready shows `ready` in
