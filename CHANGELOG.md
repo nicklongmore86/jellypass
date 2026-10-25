@@ -46,9 +46,28 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in a bounded worker thread, stopped at shutdown. New metrics
   `jfa_app_get_this_total{result}` and `jfa_app_get_this_branches_total{branch}`,
   and a `deferred` result for `jfa_webhooks_total` and
-  `jfa_request_backfill_total`. The state file stays at schema v7 and gains
-  `appRequests`, `appIdKey`, `appRequestIntents` and `deferredWebhooks`, which
-  2.2.1 and 2.3.0 keep without reading. There is no app button yet. See
+  `jfa_request_backfill_total`. **When in doubt, the join rules:** a request
+  "Get this" made, or may have made, whose grant must not be private is kept
+  as a safety tombstone apart from the records (so pruning a record never
+  loosens it); an intent whose request cannot be told apart (several or a
+  declined one found, none found in time, its household replaced, or Seerr or
+  Jellyfin unreadable for 30 minutes) records nothing for the household and
+  makes the member's requests for the title joins for 30 days, and after 30
+  minutes no longer holds up anyone else's grant. Deferred webhooks are
+  granted genuine ones first, and a join that finds no grant waits for one.
+  Jellyfin's search by name is read in full (up to 2,000 items a name, more
+  counts as present) and an item without metadata whose name contains the
+  title's counts too. The title worker's timeout runs from when the oldest
+  answer was handed over. The state file stays at schema v7 and gains
+  `appRequests`, `appIdKey`, `appRequestIntents`, `deferredWebhooks`,
+  `appSafetyTombstones`, `householdEpochs` and `nextHouseholdEpoch`, which 2.2.1
+  and 2.3.0 keep without reading. **Before rolling back**, drain: stop new
+  "Get this" calls, wait until the state file has no `appRequestIntents` and
+  no `deferredWebhooks` (at most 30 minutes plus one reconciliation interval),
+  and note that requests covered by `appSafetyTombstones` are granted as
+  ordinary requests while rolled back (see
+  [Store, bounds and rollback](docs/app-design.md#get-this-as-implemented-step-2a)).
+  There is no app button yet. See
   ["Get this" as implemented](docs/app-design.md#get-this-as-implemented-step-2a).
 
 ## [2.3.0] - 2026-10-24

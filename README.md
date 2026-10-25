@@ -926,10 +926,15 @@ to 2.3.0 keeps the state file at schema v7, adds optional settings for the
 household app (off by default), which limits households to 100 while it is
 enabled; see [Upgrading from 2.2.1](CHANGELOG.md#upgrading-from-221).
 Rolling back from 2.3.0 to 2.2.1 needs no state-file change. The household app's "Get this" (not yet released) keeps the state file at
-schema v7 and adds `appRequests`, `appIdKey`, `appRequestIntents` and
-`deferredWebhooks`; 2.3.0 and 2.2.1 load and keep them without reading them
-(roll back with no "Get this" request in flight; see
-[Store, bounds and rollback](docs/app-design.md#get-this-as-implemented-step-2a)). Rolling back from
+schema v7 and adds `appRequests`, `appIdKey`, `appRequestIntents`,
+`deferredWebhooks`, `appSafetyTombstones`, `householdEpochs` and
+`nextHouseholdEpoch`; 2.3.0 and 2.2.1 load and keep them without reading them.
+Drain before rolling back: stop new "Get this" calls, wait until
+`jq '[(.appRequestIntents // {} | length), (.deferredWebhooks // [] | length)]' grants.json`
+prints `[0,0]` (at most 30 minutes plus one reconciliation interval, or restart
+JellyPass to reconcile at once), and note that requests covered by
+`appSafetyTombstones` are granted as ordinary requests while rolled back; see
+[Store, bounds and rollback](docs/app-design.md#get-this-as-implemented-step-2a). Rolling back from
 2.2.0 to 2.1.1, 2.1.0 or 2.0.0 keeps the state file readable, but those
 versions retry grants marked `orphaned` (see
 [A re-imported title is public](#a-re-imported-title-is-public-or-a-grant-is-orphaned))
