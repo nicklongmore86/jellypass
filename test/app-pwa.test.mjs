@@ -445,7 +445,7 @@ describe('household app page: files', () => {
       const source = read(file);
       // The only absolute URLs are links the person follows (TMDB's site), TMDB's image host and the SVG namespace.
       for (const url of source.match(/https?:\/\/[^\s"'`)]+/g) ?? []) {
-        assert.match(url, /^https:\/\/(?:www\.themoviedb\.org\/?|image\.tmdb\.org\/t\/p\/.*|image\\\.tmdb.*)$/, `${file} mentions ${url}`);
+        assert.match(url, /^(?:https:\/\/(?:www\.themoviedb\.org\/?|image\.tmdb\.org\/t\/p\/.*|image\\\.tmdb.*)|http:\/\/www\.w3\.org\/2000\/svg)$/, `${file} mentions ${url}`);
       }
     }
     assert.doesNotMatch(read(BUILT('app.css')), /@import|url\(/);
@@ -472,29 +472,79 @@ describe('household app page: files', () => {
 
   it('keeps every colour pair in the stylesheet at WCAG AA contrast', () => {
     const css = read(BUILT('app.css'));
-    const tokens = Object.fromEntries([...css.matchAll(/--([a-z-]+):\s*(#[0-9a-f]{6});/gi)].map((match) => [match[1], match[2]]));
+    const tokens = Object.fromEntries([...css.matchAll(/--([a-z0-9-]+):\s*(#[0-9a-f]{6});/gi)].map((match) => [match[1], match[2]]));
     const luminance = (hex) => {
       const channels = [1, 3, 5].map((index) => parseInt(hex.slice(index, index + 2), 16) / 255)
         .map((value) => (value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4));
       return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
     };
-    const ratio = (a, b) => {
-      const [high, low] = [luminance(tokens[a]), luminance(tokens[b])].sort((x, y) => y - x);
+    const contrast = (a, b) => {
+      const [high, low] = [luminance(a), luminance(b)].sort((x, y) => y - x);
       return (high + 0.05) / (low + 0.05);
     };
+    const ratio = (a, b) => contrast(tokens[a], tokens[b]);
     const pairs = [
-      ['text', 'bg'], ['text', 'surface'], ['text', 'surface-raised'], ['muted', 'bg'], ['muted', 'surface'], ['muted', 'surface-raised'],
-      ['accent', 'bg'], ['accent', 'surface'], ['on-accent', 'accent'],
-      ['badge-library-text', 'badge-library-bg'], ['badge-soon-text', 'badge-soon-bg'], ['badge-no-text', 'badge-no-bg'],
-      ['badge-requested-text', 'badge-requested-bg'],
+      // Text on the page, on its glow and on cards.
+      ['text', 'bg'], ['text', 'bg-glow'], ['text', 'surface'], ['text', 'surface-raised'],
+      ['muted', 'bg'], ['muted', 'bg-glow'], ['muted', 'surface'], ['muted', 'surface-raised'],
+      // The accent as text (the active tab, links) and as the button: dark text on both ends of the gradient.
+      ['accent', 'bg'], ['accent', 'bg-glow'], ['accent', 'surface'],
+      ['on-accent', 'accent'], ['on-accent', 'accent-2'],
+      // Status pills.
+      ['pill-ok-text', 'pill-ok-bg'], ['pill-neutral-text', 'pill-neutral-bg'], ['pill-bad-text', 'pill-bad-bg'], ['pill-warn-text', 'pill-warn-bg'],
+      // Error text on the page and on cards.
+      ['pill-bad-text', 'bg'], ['pill-bad-text', 'surface'],
     ];
     for (const [foreground, background] of pairs) {
       assert.ok(tokens[foreground] && tokens[background], `${foreground} on ${background} are tokens`);
       assert.ok(ratio(foreground, background) >= 4.5, `${foreground} on ${background}: ${ratio(foreground, background).toFixed(2)}`);
     }
+    // The gradient button is made of exactly the two accents the pairs above were checked against.
+    assert.match(css, /--accent-gradient: linear-gradient\(135deg, var\(--accent\), var\(--accent-2\)\)/);
+    assert.match(css, /\.button \{[^}]*background: var\(--accent-gradient\); color: var\(--on-accent\)/);
+
+    // The glass: a translucent rgb() token must be its opaque pair's colour, and its text must hold up even on a white poster behind it.
+    const glass = Object.fromEntries([...css.matchAll(/--(pill-[a-z]+)-glass:\s*rgb\((\d+) (\d+) (\d+) \/ ([0-9.]+)\);/g)]
+      .map((match) => [match[1], { rgb: match.slice(2, 5).map(Number), alpha: Number(match[5]) }]));
+    assert.deepEqual(Object.keys(glass).sort(), ['pill-bad', 'pill-neutral', 'pill-ok', 'pill-warn']);
+    for (const [name, { rgb, alpha }] of Object.entries(glass)) {
+      const hex = `#${rgb.map((value) => value.toString(16).padStart(2, '0')).join('')}`;
+      assert.equal(hex, tokens[`${name}-bg`], `${name}-glass is ${name}-bg`);
+      const overWhite = `#${rgb.map((value) => Math.round(value * alpha + 255 * (1 - alpha)).toString(16).padStart(2, '0')).join('')}`;
+      assert.ok(contrast(tokens[`${name}-text`], overWhite) >= 4.5, `${name} text over a white poster: ${contrast(tokens[`${name}-text`], overWhite).toFixed(2)}`);
+    }
+    // The tab bar's glass is the surface colour, so the opaque fallback (no backdrop blur) gives the same pairs.
+    const material = /--material:\s*rgb\((\d+) (\d+) (\d+) \/ [0-9.]+\)/.exec(css);
+    assert.equal(`#${material.slice(1, 4).map((value) => Number(value).toString(16).padStart(2, '0')).join('')}`, tokens.surface);
+    assert.match(css, /@supports not \(\(-webkit-backdrop-filter: blur\(1px\)\) or \(backdrop-filter: blur\(1px\)\)\)[^@]*\.tabbar[^@]*background: var\(--surface\)/);
+    // The page's colours are the installed app's: the status bar and the splash.
+    const manifest = JSON.parse(read(BUILT('manifest.webmanifest')));
+    assert.equal(manifest.background_color, tokens.bg);
+    assert.equal(manifest.theme_color, tokens.bg);
     assert.match(css, /prefers-reduced-motion: reduce/);
     assert.match(css, /env\(safe-area-inset-bottom\)/);
     assert.match(css, /:focus-visible/);
+  });
+
+  it('draws the tab bar as a floating glass pill of 44px targets, with the blur prefixed and a safe-area gap', () => {
+    const css = read(BUILT('app.css'));
+    const tabbar = /\.tabbar \{([^}]*)\}/.exec(css)[1];
+    assert.match(tabbar, /position: fixed/);
+    assert.match(tabbar, /bottom: calc\(var\(--tabbar-gap\) \+ env\(safe-area-inset-bottom\)\)/);
+    assert.match(tabbar, /border-radius: var\(--radius-pill\)/);
+    assert.match(css, /--blur: saturate\(180%\) blur\(20px\)/);
+    assert.match(css, /-webkit-backdrop-filter: var\(--blur\); backdrop-filter: var\(--blur\)/);
+    // Each tab is at least 44px (2.75rem) tall: 3rem here.
+    const tab = /\.tabbar a \{([^}]*)\}/.exec(css)[1];
+    assert.ok(Number(/min-height: ([0-9.]+)rem/.exec(tab)[1]) >= 2.75);
+    assert.match(css, /\.tabbar a\[aria-current='page'\] \{ color: var\(--accent\); \}/);
+    assert.match(css, /\.tabbar a\[aria-current='page'\]::after \{[^}]*border-radius: 50%/, 'the active dot');
+    // Status pills sit on the poster's corner; search is three columns, two on a very narrow screen.
+    assert.match(css, /\.card > \.badge \{[^}]*position: absolute; top: [0-9.]+rem; right: [0-9.]+rem/);
+    assert.match(css, /\.grid, \.skeleton-grid \{[^}]*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/);
+    assert.match(css, /@media \(max-width: 21rem\) \{\s*\.grid, \.skeleton-grid \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+    assert.match(css, /--radius-poster: 10px;[\s\S]*--radius-card: 14px;[\s\S]*--radius-sheet: 20px;[\s\S]*--radius-pill: 999px;/);
+    assert.match(css, /--font: -apple-system, /);
   });
 });
 
@@ -817,7 +867,7 @@ describe('household app page: rendering', () => {
     return { document, Event, ...module };
   }
 
-  it('shows each household state as its own coarse badge, and Play only for a title in the library', async () => {
+  it('shows each household state as its own coarse badge on the card, and no Play button on any card', async () => {
     const { document, cardItem, STATE_LABELS } = await renderer();
     assert.deepEqual(STATE_LABELS, {
       in_library: 'Ready to watch',
@@ -825,29 +875,25 @@ describe('household app page: rendering', () => {
       unavailable: "Can't request",
       requested: 'Requested',
     });
+    // Play stays on the title's own page; a card is one link to it, whatever the DTO carries.
     const cases = [
-      ['in_library', play, true],
-      ['get_this', null, false],
-      ['unavailable', null, false],
-      ['requested', null, false],
-      // A link the API never builds for a state that has none is not shown, whatever the DTO carries.
-      ['get_this', play, false],
-      ['unavailable', play, false],
+      ['in_library', play],
+      ['get_this', null],
+      ['unavailable', null],
+      ['requested', null],
+      ['get_this', play],
+      ['unavailable', play],
     ];
-    for (const [state, link, expectPlay] of cases) {
-      const item = cardItem(document, card({ state, play: link }), origin);
+    for (const [state, link] of cases) {
+      const item = cardItem(document, card({ state, play: link }));
       const badges = item.querySelectorAll('.badge');
       assert.equal(badges.length, 1, state);
       assert.equal(badges[0].textContent, STATE_LABELS[state]);
       assert.ok(badges[0].classList.contains(`badge-${state}`));
-      const button = [...item.querySelectorAll('a')].find((anchor) => anchor.textContent === 'Play');
-      assert.equal(Boolean(button), expectPlay, `${state} play`);
-      if (button) {
-        assert.equal(button.getAttribute('href'), `${origin}/web/#/details?id=${itemId}`);
-        assert.equal(button.getAttribute('aria-label'), 'Play Synthetic Movie Three');
-        assert.equal(button.getAttribute('rel'), 'noopener');
-      }
+      assert.equal(item.querySelectorAll('a').length, 1, `${state}: only the link to the title`);
+      assert.equal([...item.querySelectorAll('a, button')].filter((node) => node.textContent === 'Play').length, 0, `${state} play`);
       assert.equal(item.querySelector('.card-link').getAttribute('href'), '#/movie/900003');
+      assert.equal(item.querySelector('.card-meta').textContent, '2021 · Movie');
     }
     assert.doesNotMatch(STATE_LABELS.get_this, /other|household|someone|requested by/i);
   });
@@ -863,7 +909,7 @@ describe('household app page: rendering', () => {
       { itemId: 7, url: 'x' },
     ]) {
       assert.equal(safePlayUrl(bad, origin), undefined, JSON.stringify(bad));
-      assert.equal(cardItem(document, card({ state: 'in_library', play: bad }), origin).querySelectorAll('a').length, 1);
+      assert.equal(cardItem(document, card({ state: 'in_library', play: bad })).querySelectorAll('a').length, 1);
     }
     assert.equal(safePlayUrl(play, origin), play.url);
     for (const bad of ['https://evil.example.test/p.jpg', 'http://image.tmdb.org/t/p/w342/a.jpg', 'https://image.tmdb.org/t/p/original/a.jpg',
@@ -1203,6 +1249,75 @@ describe('household app page: rendering', () => {
     // The logo is less prominent than the app's own name (TMDB's terms): small, in the credits only.
     assert.match(read(BUILT('app.css')), /\.tmdb-logo \{ width: 9rem/);
   });
+
+  it('puts the account and Sign out in grouped About cards, only while signed in, and keeps the TMDB credit', async () => {
+    const { document, aboutView, accountText, TMDB_NOTICE } = await renderer();
+    let signedOutBy = 0;
+    const view = aboutView(document, { me: { name: 'Alice', household: 'Farmhouse' }, onSignOut: (button) => { if (button.id === 'signout') signedOutBy += 1; } });
+    assert.deepEqual([...view.querySelectorAll('h2')].map((heading) => heading.textContent), ['Account', 'About', 'Credits']);
+    assert.equal(view.querySelector('.account .account-name').textContent, 'Alice · Farmhouse');
+    const signOut = view.querySelector('.account button#signout');
+    assert.equal(signOut.textContent, 'Sign out');
+    assert.equal(signOut.getAttribute('type'), 'button');
+    signOut.dispatchEvent(new (document.defaultView.Event)('click'));
+    assert.equal(signedOutBy, 1);
+    assert.equal(view.querySelectorAll('.inset-card').length, 3);
+    assert.ok([...view.querySelectorAll('p')].some((paragraph) => paragraph.textContent === TMDB_NOTICE), 'the notice is still there');
+    assert.ok(view.querySelector('img.tmdb-logo'));
+    assert.equal(accountText(undefined), 'Signed in', 'before /me answers');
+    assert.equal(accountText({ name: 'Alice', household: '' }), 'Alice');
+    // No account: no Account card and no Sign out; signed out, a way back to the sign-in on Home.
+    const anonymous = aboutView(document);
+    assert.deepEqual([...anonymous.querySelectorAll('h2')].map((heading) => heading.textContent), ['About', 'Credits']);
+    assert.equal(anonymous.querySelector('#signout'), null);
+    const out = aboutView(document, undefined, true);
+    assert.equal(out.querySelector('#signout'), null);
+    assert.equal(out.querySelector('.account-out a.button').getAttribute('href'), '#/');
+  });
+
+  it('draws a request with a poster-shaped thumbnail that fills in from the title, and only from an allowlisted TMDB image', async () => {
+    const { document, requestItem, setRequestTitle, skeletonGrid, skeletonRequests } = await renderer();
+    const { icon } = await import(pathToFileURL(path.join(DIST_APP, BUILT('js/icons.js'))).href);
+    const entry = { id: 'r1', mediaType: 'movie', tmdbId: 900003, status: 'requested', seasons: [], byYou: true };
+    const item = requestItem(document, entry);
+    const thumb = item.querySelector(':scope > .request-thumb');
+    assert.ok(thumb.classList.contains('poster-empty'), 'a frame of the right shape before the image arrives');
+    assert.equal(thumb.querySelector('img'), null);
+    assert.equal(item.querySelector(':scope > .badge').textContent, 'Requested');
+    assert.equal(item.querySelector('.request-who').textContent, 'Asked for by you');
+    setRequestTitle(item, { title: 'Synthetic Movie Three', year: 2021, mediaType: 'movie', posterUrl: poster });
+    assert.equal(item.querySelector('.card-title').textContent, 'Synthetic Movie Three');
+    assert.equal(item.querySelector('.card-meta').textContent, '2021 · Movie');
+    assert.equal(thumb.querySelector('img').getAttribute('src'), poster);
+    assert.equal(thumb.querySelector('img').getAttribute('alt'), '');
+    assert.ok(!thumb.classList.contains('poster-empty'));
+    const other = requestItem(document, { ...entry, byYou: false });
+    assert.equal(other.querySelector('.request-who').textContent, 'Asked for by someone in your household');
+    for (const posterUrl of ['https://evil.example.test/p.jpg', 'https://image.tmdb.org/t/p/original/a.jpg', 'data:image/png;base64,AAAA', null, undefined]) {
+      const bare = requestItem(document, entry);
+      setRequestTitle(bare, { title: 'Synthetic Movie Three', year: null, mediaType: 'movie', posterUrl });
+      assert.equal(bare.querySelector('.request-thumb img'), null, String(posterUrl));
+    }
+    // The skeletons for the new shapes are hidden from assistive technology and are not the real lists.
+    const grid = skeletonGrid(document);
+    assert.equal(grid.getAttribute('aria-hidden'), 'true');
+    assert.ok(!grid.classList.contains('grid'));
+    assert.equal(grid.querySelectorAll('.skeleton-card').length, 6);
+    const requests = skeletonRequests(document);
+    assert.equal(requests.getAttribute('aria-hidden'), 'true');
+    assert.ok(!requests.classList.contains('request-list') || requests.querySelectorAll('.request').length === 0);
+    assert.equal(requests.querySelectorAll('.skeleton-request .skeleton-thumb').length, 4);
+    // Icons are built node by node in the SVG namespace, hidden from assistive technology, in the text colour.
+    for (const name of ['home', 'search', 'requests', 'info', 'back']) {
+      const svg = icon(document, name);
+      assert.equal(svg.namespaceURI, 'http://www.w3.org/2000/svg', name);
+      assert.equal(svg.getAttribute('aria-hidden'), 'true');
+      assert.equal(svg.getAttribute('viewBox'), '0 0 24 24');
+      assert.ok(svg.children.length >= 1, name);
+      for (const child of svg.children) assert.equal(child.namespaceURI, 'http://www.w3.org/2000/svg');
+      assert.equal(svg.hasAttribute('style'), false);
+    }
+  });
 });
 
 describe('household app page: running against the API', { timeout: 60_000 }, () => {
@@ -1316,11 +1431,10 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     return { document, Event, until, go, main, requests, store, location, back, entries, cursor: () => index, scroll, sessionWrites, history: globals.history, window: globals.window, serialize: () => document.documentElement.outerHTML, listeners, focused: () => focused };
   }
 
-  it('shows the household and the four discover rows with each title\'s badge and Play link', async (t) => {
+  it('shows the four discover rows with each title\'s badge and no Play button on the cards', async (t) => {
     const app = await startApp(t);
     const page = await openApp(t, app);
     await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4, 'four discover rows');
-    assert.equal(page.document.getElementById('who').textContent, 'Alice · Farmhouse');
     assert.deepEqual([...page.document.querySelectorAll('.row-heading')].map((heading) => heading.textContent),
       ['Trending', 'Popular movies', 'Popular series', 'Upcoming movies']);
     const trending = page.document.querySelector('#row-trending-heading').parentElement;
@@ -1329,10 +1443,9 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       ['Synthetic Movie One', 'Synthetic Series Two', 'Synthetic Movie Three'], 'the person in the results is dropped');
     assert.deepEqual(cards.map((item) => item.querySelector('.badge').textContent),
       ['Available to get', 'Available to get', 'Ready to watch']);
-    const own = cards[2];
-    const playLink = [...own.querySelectorAll('a')].find((anchor) => anchor.textContent === 'Play');
-    assert.equal(playLink.getAttribute('href'), `https://${HOST_A}/web/#/details?id=33330000333300003333000033330000`);
-    assert.equal(cards.flatMap((item) => [...item.querySelectorAll('a')]).filter((anchor) => anchor.textContent === 'Play').length, 1);
+    // The title in the library has its Play button on its own page (below), not on the card.
+    assert.equal(page.document.querySelectorAll('.row-list a.button, .row-list button').length, 0, 'no Play on any card');
+    assert.equal([...page.document.querySelectorAll('.row-list a')].filter((anchor) => anchor.textContent === 'Play').length, 0);
     assert.ok(page.document.querySelector('[role="alert"]') === null);
     assert.equal(page.document.getElementById('screen').getAttribute('aria-busy'), 'false');
     // Calls: me + four lists, each with the token, never cached by the browser, no cookies.
@@ -1346,6 +1459,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.equal(init.headers.Authorization, 'MediaBrowser Token="token-alice"');
     }
     assertNoCanaries(page.serialize(), 'the page shows data that is not in a DTO');
+    assert.equal(await accountName(page), 'Alice · Farmhouse', 'the household and name are on About, not in the header');
   });
 
   it('opens a title, its seasons and a season, and keeps to what the DTOs hold', async (t) => {
@@ -1379,7 +1493,71 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     page.go('#/about');
     await page.until(() => page.main().querySelector('.tmdb-logo'), 'about');
     assert.match(page.main().textContent, /uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB/);
-    assert.equal(page.document.querySelector('nav a[aria-current="page"]').dataset.nav, 'about');
+    assert.equal(page.document.querySelector('nav a[aria-current="page"]'), null, 'About is not a tab, so no tab is marked');
+  });
+
+  it('has three labelled tabs, and reaches About (with its TMDB credit) from the (i) button in Home\'s top row', async (t) => {
+    const app = await startApp(t);
+    const page = await openApp(t, app);
+    await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4, 'home');
+    const tabs = [...page.document.querySelectorAll('nav[aria-label="Main"] a')];
+    assert.deepEqual(tabs.map((tab) => tab.textContent), ['Home', 'Search', 'My requests']);
+    assert.deepEqual(tabs.map((tab) => tab.getAttribute('href')), ['#/', '#/search', '#/requests']);
+    assert.deepEqual(tabs.map((tab) => tab.querySelectorAll('svg[aria-hidden="true"]').length), [1, 1, 1], 'an icon on each tab, hidden from screen readers');
+    assert.equal(page.document.querySelector('nav a[data-nav="about"]'), null, 'About is not a tab');
+    assert.equal(page.document.querySelector('nav a[aria-current="page"]').dataset.nav, 'home');
+    // Home's top row: the brand and the (i) that opens About; nowhere else, and not the signed-in name or Sign out.
+    const header = page.document.querySelector('header.app-header');
+    const info = header.querySelector('a#about-link');
+    assert.equal(info.hidden, false);
+    assert.equal(info.getAttribute('href'), '#/about');
+    assert.equal(info.getAttribute('aria-label'), 'About and credits');
+    assert.equal(info.querySelectorAll('svg').length, 1);
+    assert.equal(header.querySelector('.brand').textContent, 'JellyPass');
+    assert.equal(header.querySelector('#signout'), null, 'no Sign out in the header');
+    assert.equal(header.querySelector('#who'), null);
+    assert.equal(/Sign out/.test(header.textContent), false);
+    page.go(info.getAttribute('href'));
+    await page.until(() => page.main().querySelector('.tmdb-logo'), 'about');
+    assert.match(page.main().textContent, /uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB/);
+    assert.equal(info.hidden, true, 'the (i) is Home\'s own');
+    assert.equal(page.back().hidden, false);
+    page.go('#/search');
+    await page.until(() => page.main().querySelector('input[type="search"]'), 'search');
+    assert.equal(info.hidden, true);
+    assert.equal(page.document.querySelector('nav a[aria-current="page"]').dataset.nav, 'search');
+    assert.equal(page.main().querySelectorAll('.search-field svg').length, 1, 'the magnifier is inside the field');
+  });
+
+  it('shows Sign out only in About\'s Account card, with the name and household, and signed out offers the way back', async (t) => {
+    const app = await startApp(t);
+    const page = await openApp(t, app, { hash: '#/about' });
+    await page.until(() => page.main().querySelector('.account-name')?.textContent === 'Alice · Farmhouse', 'the account card');
+    assert.deepEqual([...page.main().querySelectorAll('h2')].map((heading) => heading.textContent), ['Account', 'About', 'Credits']);
+    assert.equal(page.main().querySelectorAll('button#signout').length, 1);
+    assert.equal(page.document.querySelector('header #signout'), null);
+    assert.equal(page.document.querySelectorAll('#signout').length, 1);
+    assert.equal(page.document.querySelector('.tmdb-logo') !== null, true);
+    const signedOut = await openApp(t, app, { hash: '#/about', signedIn: false });
+    await signedOut.until(() => signedOut.main().querySelector('.tmdb-logo'), 'about, signed out');
+    assert.equal(signedOut.main().querySelector('#signout'), null, 'nothing to sign out of');
+    assert.equal(signedOut.main().querySelector('.account'), null);
+    assert.equal(signedOut.main().querySelector('.account-out a').getAttribute('href'), '#/');
+    assert.equal(signedOut.requests.length, 0, 'About asks the API for nothing when signed out');
+  });
+
+  it('keeps Play on the title\'s own page when it is in the library, and shows none where it is not', async (t) => {
+    const app = await startApp(t);
+    const page = await openApp(t, app);
+    await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4, 'home');
+    page.go(`#/movie/${OWN_MOVIE}`);
+    await page.until(() => page.main().querySelector('article.detail'), 'the movie');
+    const play = [...page.main().querySelectorAll('a.button')].filter((anchor) => anchor.textContent === 'Play');
+    assert.equal(play.length, 1);
+    assert.equal(play[0].getAttribute('href'), `https://${HOST_A}/web/#/details?id=33330000333300003333000033330000`);
+    page.go(`#/tv/${T_TV}`);
+    await page.until(() => page.main().querySelector('.season-list'), 'the series');
+    assert.equal([...page.main().querySelectorAll('a.button')].filter((anchor) => anchor.textContent === 'Play').length, 0);
   });
 
   describe('in-app Back and restoring where you were', () => {
@@ -1408,7 +1586,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.equal(button.getAttribute('type'), 'button');
       assert.equal(button.getAttribute('aria-label'), 'Back');
       assert.equal(button.hasAttribute('tabindex'), false, 'in the tab order');
-      assert.match(read(BUILT('app.css')), /\.back-button \{[^}]*min-width: 2\.75rem; min-height: 2\.75rem/, '44px tap target');
+      assert.match(read(BUILT('app.css')), /\.back-button, \.icon-button \{[^}]*min-width: 2\.75rem; min-height: 2\.75rem/, '44px tap target');
       assert.match(read('index.html'), /<header class="app-header">\s*<button id="back"/, 'first in the header, so first in the tab order');
       page.go('#/');
       await homeReady(page);
@@ -1720,7 +1898,6 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     const holdMe = new Promise((resolve) => { release = resolve; });
     const page = await openApp(t, app, { hash: '#/search', holdMe });
     const input = await page.until(() => page.main().querySelector('input[type="search"]'), 'the search box');
-    assert.equal(page.document.getElementById('who').textContent, '', '/me has not answered');
     const searches = () => page.requests.filter((request) => request.url.startsWith('/jellypass/app/v1/search')).map((request) => request.url);
     // Submitting (Enter) before /me is back searches at once, instead of throwing.
     input.value = 'synthetic';
@@ -1736,7 +1913,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     assert.equal(searches()[1], '/jellypass/app/v1/search?q=another&page=1');
     assert.equal(page.location.hash, '#/search?q=another');
     release();
-    await page.until(() => page.document.getElementById('who').textContent.length > 0, 'the header once /me is back');
+    await new Promise((resolve) => setTimeout(resolve, 50));
     assert.ok(page.main().querySelector('input[type="search"]') === input, 'the screen was not rebuilt');
     assert.equal(input.value, 'another');
   });
@@ -1752,7 +1929,6 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     input.dispatchEvent(new page.Event('input'));
     await page.until(() => page.location.hash === '#/search?q=second', 'the typed query');
     release();
-    await page.until(() => page.document.getElementById('who').textContent.length > 0, 'the header');
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.equal(input.value, 'second');
     assert.equal(page.location.hash, '#/search?q=second', 'the address\'s query did not replace what was typed');
@@ -1789,6 +1965,23 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
 
   const credentials = (page) => JSON.parse(page.store.get('jellyfin_credentials'));
   const click = (page, node) => node.dispatchEvent(new page.Event('click', { bubbles: true, cancelable: true }));
+  /** The signed-in "name · household", read from About's Account card (the header no longer shows it). */
+  const accountName = async (page) => {
+    page.go('#/about');
+    return page.until(() => {
+      const name = page.main().querySelector('.account-name');
+      return name && name.textContent !== 'Signed in' ? name.textContent : '';
+    }, 'the account card');
+  };
+  /** Signs out the only way the app offers: the Sign out button in About's Account card. Ends on Home's picker. */
+  const signOutFromAbout = async (page) => {
+    page.go('#/about');
+    const button = await page.until(() => page.main().querySelector('#signout'), 'the Sign out button');
+    click(page, button);
+    await page.until(() => page.main().querySelector('.account-out'), 'About after signing out');
+    page.go('#/');
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker after signing out');
+  };
   const profileButton = (page, name) => [...page.main().querySelectorAll('button.profile')].find((button) => button.textContent.includes(name));
   const enterPassword = (page, password) => {
     const input = page.main().querySelector('input[type="password"]');
@@ -1815,12 +2008,11 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     assert.deepEqual([...page.main().querySelectorAll('.profile-name')].map((name) => name.textContent), ['Alice', 'Ann']);
     assert.deepEqual([...page.main().querySelectorAll('button.profile')].map((button) => button.getAttribute('type')), ['button', 'button']);
     assert.deepEqual(page.requests.map((request) => [request.init.method ?? 'GET', request.url]), [['GET', '/Users/Public']]);
-    assert.equal(page.document.getElementById('signout').hidden, true, 'nothing to sign out of');
+    assert.equal(page.document.getElementById('signout'), null, 'nothing to sign out of');
     // Jellyfin web is only a fallback, below the picker.
     const links = [...page.main().querySelectorAll('a')];
     assert.deepEqual(links.map((link) => [link.textContent, link.getAttribute('href')]), [['Open Jellyfin to sign in', '/web/']]);
     assert.equal(page.main().querySelectorAll('a.button').length, 0);
-    assert.equal(page.document.getElementById('who').textContent, '');
     const other = await openApp(t, app, { signedIn: false, host: HOST_B });
     await other.until(() => other.main().querySelector('ul.profiles'), 'household B\'s picker');
     assert.deepEqual([...other.main().querySelectorAll('.profile-name')].map((name) => name.textContent), ['Bob']);
@@ -1842,8 +2034,8 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     const requests = page.requests.length;
     enterPassword(page, 'alice-pass');
     await homeLoaded(page);
-    assert.equal(page.document.getElementById('who').textContent, 'Alice · Farmhouse');
-    assert.equal(page.document.getElementById('signout').hidden, false);
+    assert.equal(page.document.getElementById('signout'), null, 'Sign out is not in the header');
+    assert.equal(await accountName(page), 'Alice · Farmhouse');
 
     // One call signed in, with the headers Jellyfin web sends; the password is only in that body.
     const login = page.requests[requests];
@@ -1917,7 +2109,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     click(page, profileButton(page, 'Ann'));
     await homeLoaded(page);
     assert.ok(page.main().querySelector('input[type="password"]') === null, 'no password step');
-    assert.equal(page.document.getElementById('who').textContent, 'Ann · Farmhouse');
+    assert.equal(await accountName(page), 'Ann · Farmhouse');
     const login = page.requests.find((request) => request.url === '/Users/AuthenticateByName');
     assert.deepEqual(JSON.parse(login.init.body), { Username: 'Ann', Pw: '' });
     assert.equal(credentials(page).Servers[0].UserId, ANN);
@@ -1964,7 +2156,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     const requests = page.requests.length;
     enterName(page, ' ann ', 'ann-pass');
     await homeLoaded(page);
-    assert.equal(page.document.getElementById('who').textContent, 'Ann · Farmhouse');
+    assert.equal(await accountName(page), 'Ann · Farmhouse');
     const login = page.requests[requests];
     assert.equal(login.url, '/Users/AuthenticateByName');
     assert.deepEqual(JSON.parse(login.init.body), { Username: 'ann', Pw: 'ann-pass' });
@@ -2019,7 +2211,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     assert.ok(page.focused() !== username, 'the first screen keeps the page\'s own focus');
     enterName(page, 'Bob', 'bob-pass');
     await homeLoaded(page);
-    assert.equal(page.document.getElementById('who').textContent, 'Bob · Mill');
+    assert.equal(await accountName(page), 'Bob · Mill');
   });
 
   it('asks for a password when a one-tap member has gained one, instead of failing', async (t) => {
@@ -2093,7 +2285,6 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     click(refusing, profileButton(refusing, 'Ann'));
     await refusing.until(() => message(refusing), 'the storage message');
     assert.equal(message(refusing), "Can't keep your sign-in on this device. Allow site data for this page in your browser settings, then try again.");
-    assert.equal(refusing.document.getElementById('who').textContent, '');
     assert.equal(refusing.requests.some((request) => request.url.startsWith('/jellypass/app/v1/')), false);
   });
 
@@ -2121,7 +2312,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     })]]) });
     await page.until(() => page.main().querySelector('ul.profiles'), 'the picker');
     assert.match(page.main().textContent, /Your sign-in has expired/);
-    assert.equal(page.document.getElementById('signout').hidden, true);
+    assert.equal(page.document.getElementById('signout'), null);
     click(page, profileButton(page, 'Ann'));
     await homeLoaded(page);
     assert.equal(credentials(page).Servers[0].AccessToken, app.jellyfin.signIns[0].token);
@@ -2136,8 +2327,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     await homeLoaded(page);
     const { token } = app.jellyfin.signIns[0];
     assert.equal((await app.get('/jellypass/app/v1/me', { headers: { Authorization: `MediaBrowser Token="${token}"` }, user: null })).status, 200);
-    click(page, page.document.getElementById('signout'));
-    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker after signing out');
+    await signOutFromAbout(page);
     assert.deepEqual(app.jellyfin.logouts, [token]);
     const logout = page.requests.find((request) => request.url === '/Sessions/Logout');
     assert.equal(logout.init.method, 'POST');
@@ -2149,8 +2339,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     assert.equal(server.ManualAddress, page.location.origin);
     assert.equal(server.AccessToken, undefined);
     assert.equal(server.UserId, undefined);
-    assert.equal(page.document.getElementById('who').textContent, '');
-    assert.equal(page.document.getElementById('signout').hidden, true);
+    assert.equal(page.document.getElementById('signout'), null, 'no Sign out once signed out');
     // Dead at Jellyfin, and so for Jellyfin web (the app API keeps trusting a token it has just verified for a few minutes).
     assert.equal((await app.get('/Users/Me', { headers: { Authorization: `MediaBrowser Token="${token}"` }, user: null })).status, 401, 'the token is dead at Jellyfin');
     // The device ID stays, so the next sign-in is the same device.
@@ -2161,8 +2350,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     const app = await signInApp(t);
     const page = await openApp(t, app, { override: (url) => { if (url === '/Sessions/Logout') throw new TypeError('network'); } });
     await homeLoaded(page);
-    click(page, page.document.getElementById('signout'));
-    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker after signing out');
+    await signOutFromAbout(page);
     assert.equal(credentials(page).Servers[0].AccessToken, undefined);
   });
 
@@ -2189,7 +2377,6 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     await expired.until(() => expired.main().querySelector('ul.profiles'), 'the sign-in state');
     assert.equal(expired.main().querySelector('h1').textContent, 'Sign in');
     assert.equal(expired.main().querySelector('a').getAttribute('href'), '/web/');
-    assert.equal(expired.document.getElementById('who').textContent, '');
 
     // 502: TMDB is failing, so every row says so in fixed words (and the app answered 502 with its fixed body).
     const failing = await openApp(t, app);
