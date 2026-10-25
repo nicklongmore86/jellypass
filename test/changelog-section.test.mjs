@@ -53,6 +53,22 @@ function assertSection(notes, { version, nextVersion, subheadings }) {
 }
 
 describe('changelogSection with the real CHANGELOG.md', () => {
+  it('extracts 2.4.1 without its heading, up to the 2.4.0 section', () => {
+    const notes = changelogSection(CHANGELOG, '2.4.1');
+    assertSection(notes, {
+      version: '2.4.1',
+      nextVersion: '2.4.0',
+      subheadings: ['Fixed', 'Changed'],
+    });
+    assert.match(notes, /^This is a patch release/);
+    const flat = notes.replace(/\s+/g, ' ');
+    assert.match(flat, /There is nothing to do when upgrading from 2\.4\.0/);
+    assert.match(flat, /`ghcr\.io\/nicklongmore86\/jellypass:2\.4\.0`/);
+    assert.match(flat, /not yet on a physical iPhone/);
+    assert.doesNotMatch(notes, /### Upgrading from/);
+    assert.deepEqual(split(notes).definitions, []);
+  });
+
   it('extracts 2.4.0 without its heading, up to the 2.3.0 section', () => {
     const notes = changelogSection(CHANGELOG, '2.4.0');
     assertSection(notes, {

@@ -159,10 +159,10 @@ as semantic-version tags. For predictable production upgrades, set
 `JELLYPASS_IMAGE` in `.env` to a versioned image such as:
 
 ```dotenv
-JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:2.4.0
+JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:2.4.1
 ```
 
-Each release is published as a semantic-version image tag, such as `2.4.0`,
+Each release is published as a semantic-version image tag, such as `2.4.1`,
 plus floating `2.4` and `2` tags that move to the newest release in that minor
 or major line; see [CHANGELOG.md](CHANGELOG.md) for what each one contains. `latest` is rebuilt on
 every push to `main` and may include unreleased changes, so use it, or build
@@ -864,9 +864,9 @@ switched off (those answer the same fixed `404`).
   then **Add to Home Screen**. **Android (Chrome):** menu, **Install app** (or
   **Add to Home screen**). Desktop Chrome and Edge: the install icon in the
   address bar. It opens full screen with JellyPass's icon. **Not yet verified
-  on a real iPhone:** the install and the in-app sign-in have been tested only
-  in a simulated browser and against a real Jellyfin, so expect to check them on
-  a device before relying on them.
+  on a real iPhone:** the install, the in-app sign-in, and Back with the
+  restored position have been tested only in a simulated browser and against a
+  real Jellyfin, so expect to check them on a device before relying on them.
 - **Offline and privacy:** a service worker keeps only the app's own static
   files (page, styles, scripts, icons, TMDB logo), as one complete set per
   release (replaced as a whole when the app is updated), so the app opens when
@@ -997,6 +997,7 @@ file at schema v7, and the household app's "Get this" adds `appRequests`,
 `householdEpochs` and `nextHouseholdEpoch`; 2.3.0 and 2.2.1 load and keep them
 without reading them (see
 [Rolling back to 2.3.0](CHANGELOG.md#rolling-back-to-230)).
+Upgrading from 2.4.0 to 2.4.1 changes neither the state file nor any setting.
 Drain before rolling back to 2.3.x or 2.2.1: stop new "Get this" calls, wait
 until no request intents or deferred webhooks are left (at most 30 minutes plus
 one reconciliation interval, or restart JellyPass to reconcile at once), then
