@@ -513,6 +513,32 @@ describe('household app page: files', () => {
       const overWhite = `#${rgb.map((value) => Math.round(value * alpha + 255 * (1 - alpha)).toString(16).padStart(2, '0')).join('')}`;
       assert.ok(contrast(tokens[`${name}-text`], overWhite) >= 4.5, `${name} text over a white poster: ${contrast(tokens[`${name}-text`], overWhite).toFixed(2)}`);
     }
+    // The pills are also readable over a black poster.
+    for (const [name, { rgb, alpha }] of Object.entries(glass)) {
+      const overBlack = `#${rgb.map((value) => Math.round(value * alpha).toString(16).padStart(2, '0')).join('')}`;
+      assert.ok(contrast(tokens[`${name}-text`], overBlack) >= 4.5, `${name} text over a black poster: ${contrast(tokens[`${name}-text`], overBlack).toFixed(2)}`);
+    }
+    // The tab bar and the header are glass too: whatever is scrolled behind them, at worst pure white or pure black, composited at their real alpha.
+    const composite = (name, backdrop) => {
+      const found = new RegExp(`--${name}:\\s*rgb\\((\\d+) (\\d+) (\\d+) / ([0-9.]+)\\)`).exec(css);
+      assert.ok(found, `${name} is a translucent rgb() token`);
+      const alpha = Number(found[4]);
+      return `#${found.slice(1, 4).map((value) => Math.round(Number(value) * alpha + backdrop * (1 - alpha)).toString(16).padStart(2, '0')).join('')}`;
+    };
+    for (const [surface, backdrop] of [['material', 255], ['material', 0], ['material-header', 255], ['material-header', 0]]) {
+      const under = composite(surface, backdrop);
+      const where = `${surface} over ${backdrop ? 'white' : 'black'} (${under})`;
+      // Text: tab labels (inactive and active), the brand and the placeholder.
+      for (const text of ['muted', 'text', 'accent-text']) {
+        assert.ok(contrast(tokens[text], under) >= 4.5, `${text} on ${where}: ${contrast(tokens[text], under).toFixed(2)}`);
+      }
+      // Non-text: the back and search icons, and the active tab's dot.
+      for (const graphic of ['text', 'accent']) {
+        assert.ok(contrast(tokens[graphic], under) >= 3, `${graphic} icon on ${where}: ${contrast(tokens[graphic], under).toFixed(2)}`);
+      }
+    }
+    assert.match(css, /\.tabbar a\[aria-current='page'\] \{ color: var\(--accent-text\); \}/);
+    assert.match(css, /\.tabbar a \{[^}]*color: var\(--muted\)/);
     // The tab bar's glass is the surface colour, so the opaque fallback (no backdrop blur) gives the same pairs.
     const material = /--material:\s*rgb\((\d+) (\d+) (\d+) \/ [0-9.]+\)/.exec(css);
     assert.equal(`#${material.slice(1, 4).map((value) => Number(value).toString(16).padStart(2, '0')).join('')}`, tokens.surface);
@@ -526,6 +552,18 @@ describe('household app page: files', () => {
     assert.match(css, /:focus-visible/);
   });
 
+  it('keeps a focused card clear of the glass header and the floating tab bar', () => {
+    const css = read(BUILT('app.css'));
+    const html = /(?:^|\n)html \{([^}]*)\}/.exec(css)[1];
+    const bottom = /scroll-padding-bottom: ([^;]+);/.exec(html)[1];
+    const top = /scroll-padding-top: ([^;]+);/.exec(html)[1];
+    for (const part of ['var(--tabbar-height)', 'var(--tabbar-gap)', 'env(safe-area-inset-bottom)']) assert.ok(bottom.includes(part), `bottom clearance has ${part}: ${bottom}`);
+    assert.ok(top.includes('env(safe-area-inset-top)'), `top clearance has the safe area: ${top}`);
+    // Never less than the bar itself: the clearance is the bar's height and gap plus a margin, never the padding alone.
+    assert.match(bottom, /\+ 0\.[0-9]+rem\)$/);
+    assert.match(css, /--tabbar-height: 3\.5rem;/);
+  });
+
   it('draws the tab bar as a floating glass pill of 44px targets, with the blur prefixed and a safe-area gap', () => {
     const css = read(BUILT('app.css'));
     const tabbar = /\.tabbar \{([^}]*)\}/.exec(css)[1];
@@ -537,7 +575,6 @@ describe('household app page: files', () => {
     // Each tab is at least 44px (2.75rem) tall: 3rem here.
     const tab = /\.tabbar a \{([^}]*)\}/.exec(css)[1];
     assert.ok(Number(/min-height: ([0-9.]+)rem/.exec(tab)[1]) >= 2.75);
-    assert.match(css, /\.tabbar a\[aria-current='page'\] \{ color: var\(--accent\); \}/);
     assert.match(css, /\.tabbar a\[aria-current='page'\]::after \{[^}]*border-radius: 50%/, 'the active dot');
     // Status pills sit on the poster's corner; search is three columns, two on a very narrow screen.
     assert.match(css, /\.card > \.badge \{[^}]*position: absolute; top: [0-9.]+rem; right: [0-9.]+rem/);
@@ -1344,6 +1381,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       Servers: [{ ManualAddress: origin, AccessToken: TOKENS[user], UserId: user }],
     })]] : []));
     const requests = [];
+    let meRead = false;
     const location = {
       origin,
       hash,
@@ -1384,7 +1422,13 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
           const answer = (await override?.(url, init)) ?? await (init.method === 'POST'
             ? post(app.port, url, { Host: host, ...init.headers }, init.body ? JSON.parse(init.body) : undefined)
             : get(app.port, url, { Host: host, ...init.headers }));
-          return new Response(answer.body, { status: answer.status, headers: answer.headers });
+          const response = new Response(answer.body, { status: answer.status, headers: answer.headers });
+          if (url === '/jellypass/app/v1/me') {
+            // The signal that /me is fully back: the page has read its body. `until` polls on timers, so the page's continuation has run by the time it sees this.
+            const json = response.json.bind(response);
+            response.json = async () => { const value = await json(); meRead = true; return value; };
+          }
+          return response;
         },
       },
       location,
@@ -1446,7 +1490,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       screen.replaceChildren = function (...nodes) { replace.apply(this, nodes); clampScroll(); };
     }
     const back = () => document.getElementById('back');
-    return { document, Event, until, go, main, requests, store, location, back, entries, cursor: () => index, scroll, sessionWrites, history: globals.history, window: globals.window, serialize: () => document.documentElement.outerHTML, listeners, focused: () => focused };
+    return { document, Event, until, go, main, requests, meRead: () => meRead, store, location, back, entries, cursor: () => index, scroll, sessionWrites, history: globals.history, window: globals.window, serialize: () => document.documentElement.outerHTML, listeners, focused: () => focused };
   }
 
   it('shows the four discover rows with each title\'s badge and no Play button on the cards', async (t) => {
@@ -1954,7 +1998,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     assert.equal(searches()[1], '/jellypass/app/v1/search?q=another&page=1');
     assert.equal(page.location.hash, '#/search?q=another');
     release();
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await page.until(() => page.meRead(), '/me read by the page');
     assert.ok(page.main().querySelector('input[type="search"]') === input, 'the screen was not rebuilt');
     assert.equal(input.value, 'another');
   });
@@ -1970,7 +2014,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     input.dispatchEvent(new page.Event('input'));
     await page.until(() => page.location.hash === '#/search?q=second', 'the typed query');
     release();
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await page.until(() => page.meRead(), '/me read by the page');
     assert.equal(input.value, 'second');
     assert.equal(page.location.hash, '#/search?q=second', 'the address\'s query did not replace what was typed');
   });

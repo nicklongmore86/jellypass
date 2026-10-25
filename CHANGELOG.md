@@ -30,6 +30,8 @@ privacy leak. Such changes are always listed at the top of the release notes.
   **Get this** and what the household can see are unchanged.
 - Household app: every screen except Home has a Back button in the header, which works in the installed app (no
   browser back button). Opened directly on a screen, Back goes to its parent (a season's series, otherwise Home).
+- Household app: the glass tab bar and header are denser so their labels and icons stay readable (4.5:1 text, 3:1 icons) over
+  any poster, and keyboard focus now scrolls a card clear of the bar and header.
 
 ## [2.4.0] - 2026-10-25
 
