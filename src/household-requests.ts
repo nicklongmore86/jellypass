@@ -39,6 +39,8 @@ export const MAX_REFRESH_READS = 50;
 export const RECORD_DELAY_MS = 2000;
 /** Most titles GET /requests lists, newest first. */
 export const MAX_LISTED_TITLES = 200;
+/** Most of the caller's own Jellyfin views GET /requests reads at once (one per listed title), to tell whether a ready title is theirs to play. */
+export const OWN_VIEW_READS = 8;
 /**
  * A `submitting` intent whose request Seerr does not list this long after it was written is taken as never made (the
  * request's own timeout is 15 seconds): it gives way to a safety tombstone (see #retire), so a request Seerr made late
@@ -110,7 +112,7 @@ export class GetThisRefusedError extends Error {
 export interface HouseholdRequestsOptions {
   store: Pick<GrantStore,
     | 'listAppRequests' | 'listAppRequestsForHousehold' | 'writeAppRequests' | 'getAppIdKey' | 'householdEpoch'
-    | 'hasHandledRequest' | 'listAppRequestIntents' | 'addAppRequestIntent' | 'getGroup'>;
+    | 'hasHandledRequest' | 'listAppRequestIntents' | 'addAppRequestIntent' | 'isAppRequestIntentDurable' | 'getGroup'>;
   /** Jellyfin with JellyPass's own key: the decision input for "Jellyfin already has it". */
   jellyfin: Pick<JellyfinClient, 'findItemsByTmdbId' | 'existingItems' | 'findItemsByName' | 'seasonsWithEpisodes'>;
   /** Seerr with the admin key: the blocklist, a title's requests, and the status of requests JellyPass recorded. */
@@ -153,6 +155,15 @@ interface Outcome {
   /** Requests whose grant follows the join rules (see AppSafetyTombstone). */
   tombstones: AppSafetyTombstone[];
   exempt: Exemption[];
+}
+
+/** One title of a household's list (see HouseholdRequests.list). */
+interface ListedTitle {
+  mediaType: MediaType;
+  tmdbId: number;
+  latest: string;
+  byYou: boolean;
+  seasons: Map<number, CoarseStatus>;
 }
 
 /** What Jellyfin holds of a title (see #presence). */
@@ -412,8 +423,9 @@ export class HouseholdRequests {
    * 3. Jellyfin is read again (the re-check), the last step awaited: the request is sent right after it, with nothing
    *    else awaited in between, and a title (or season) that arrived since the branch's first read is joined instead.
    *
-   * What is left is the request's own round trip, in which a title arriving would still be requested; the request is
-   * settled by reading Jellyfin once more after Seerr answers (see #settle), and its intent stays until it is, so its
+   * The request is sent only if the state file holds the intent then (GrantStore.isAppRequestIntentDurable): otherwise
+   * nothing is sent (`request_unsaved`). What is left is the request's own round trip, in which a title arriving would
+   * still be requested; the request is settled by reading Jellyfin once more after Seerr answers (see #settle), and its intent stays until it is, so its
    * grant follows the join rules if the title is there or cannot be read. A failure Seerr may have made the request
    * through (no answer, a 5xx) leaves the intent to be reconciled (see #reconcileIntents).
    */
@@ -460,6 +472,14 @@ export class HouseholdRequests {
     let created: unknown;
     let failure: unknown;
     if (requested.length > 0 && !signal.aborted) {
+      // The intent must be in the state file before the request leaves (step 1): checked here, with nothing awaited
+      // between this check and the request, so a regression that stops awaiting its write sends nothing.
+      if (!this.#store.isAppRequestIntentDurable(intentId)) {
+        outcome.removeIntents.push(intentId);
+        this.#recordBranch('request_unsaved');
+        console.error(JSON.stringify({ level: 'error', message: 'household app request not sent: its intent is not in the state file' }));
+        return;
+      }
       try {
         created = await requester.createRequest(input.mediaType === 'movie'
           ? { mediaType: 'movie', tmdbId: input.tmdbId }
@@ -658,14 +678,85 @@ export class HouseholdRequests {
   }
 
   /**
+   * The titles (`movie:<id>`, `tv:<id>`) and seasons (`tv:<id>:<n>`) whose latest record in this household is ready
+   * (see #titles). The household app shows them as `requested` unless the caller's own Jellyfin view has them (it
+   * decides `in_library` first): "Ready to watch" is never shown to a member who cannot play the title.
+   */
+  public readyKeys(householdId: string): Set<string> {
+    const keys = new Set<string>();
+    for (const entry of this.#titles(householdId).values()) {
+      for (const [season, status] of entry.seasons) {
+        if (status !== 'ready') continue;
+        keys.add(`${entry.mediaType}:${entry.tmdbId}`);
+        if (entry.mediaType === 'tv') keys.add(`tv:${entry.tmdbId}:${season}`);
+      }
+    }
+    return keys;
+  }
+
+  /**
    * This household's titles with their coarse status, from its own records only: no Seerr ID, no requester beyond
    * whether it was the caller, no count but the entries listed. A title's latest record decides each season (or the
    * movie); a season Jellyfin already has episodes of for a record still waiting on others is `ready`; a series is
    * `requested` while any season is, otherwise `ready` if any season is. Records whose request or media Seerr deleted are
    * not listed, as Seerr no longer lists such a request either.
+   *
+   * `ready` is never optimistic: a movie (or season) is `ready` only when `ownView`, the caller's own Jellyfin view
+   * (their library access, parental limits and the household's blocked tags), has it; otherwise it stays `requested`.
+   * `ownView` is asked about every listed title, ready or not, at most {@link OWN_VIEW_READS} at a time, and a title it
+   * fails for is shown as if the caller's view did not have it (its ready seasons `requested`): which reads the list
+   * makes, and how it answers when they fail, depend only on the caller's own view and the household's own listed
+   * records, never on whether a title arrived somewhere the caller cannot see. The cost is bounded by
+   * {@link MAX_LISTED_TITLES} views (with the caller's library cached, a movie's needs no Jellyfin call and a series'
+   * one episode read, only when the caller's own view has the series).
    */
-  public list(householdId: string, callerId: string): RequestsDto {
-    const titles = new Map<string, { mediaType: MediaType; tmdbId: number; latest: string; byYou: boolean; seasons: Map<number, CoarseStatus> }>();
+  public async list(householdId: string, callerId: string, ownView: (mediaType: MediaType, tmdbId: number) => Promise<OwnView>): Promise<RequestsDto> {
+    const key = this.#store.getAppIdKey() ?? '';
+    const listed = [...this.#titles(householdId, callerId).values()]
+      .sort((left, right) => right.latest.localeCompare(left.latest) || left.tmdbId - right.tmdbId)
+      .slice(0, MAX_LISTED_TITLES);
+    for (let index = 0; index < listed.length; index += OWN_VIEW_READS) {
+      await Promise.all(listed.slice(index, index + OWN_VIEW_READS).map(async (entry) => {
+        let view: OwnView;
+        try {
+          view = await ownView(entry.mediaType, entry.tmdbId);
+        } catch (error) {
+          console.error(JSON.stringify({
+            level: 'error',
+            message: 'household app own view read failed; its ready seasons are listed as requested',
+            detail: error instanceof Error ? error.message : String(error),
+          }));
+          view = { visible: false, seasons: new Set() };
+        }
+        for (const [season, status] of entry.seasons) {
+          const visible = entry.mediaType === 'movie' ? view.visible : view.seasons.has(season);
+          if (status === 'ready' && !visible) entry.seasons.set(season, 'requested');
+        }
+      }));
+    }
+    return {
+      results: listed.map((entry) => {
+        const statuses = [...entry.seasons.values()];
+        const status: CoarseStatus = statuses.includes('requested') ? 'requested' : statuses.includes('ready') ? 'ready' : 'failed';
+        return {
+          id: createHmac('sha256', key).update(`${householdId}\n${entry.mediaType}\n${entry.tmdbId}`).digest('base64url').slice(0, 22),
+          mediaType: entry.mediaType,
+          tmdbId: entry.tmdbId,
+          status,
+          seasons: entry.mediaType === 'movie' ? [] : [...entry.seasons].sort(([left], [right]) => left - right)
+            .map(([seasonNumber, seasonStatus]) => ({ seasonNumber, status: seasonStatus })),
+          byYou: entry.byYou,
+        };
+      }),
+    };
+  }
+
+  /**
+   * This household's titles, each season (`0` for a movie) with the coarse status its latest record gives it, from the
+   * household's own records only (see list); `byYou` when `callerId` made any of them.
+   */
+  #titles(householdId: string, callerId?: string): Map<string, ListedTitle> {
+    const titles = new Map<string, ListedTitle>();
     const records = this.#store.listAppRequestsForHousehold(householdId).map(([, record]) => record)
       .filter((record) => !record.detached && record.status !== 'deleted')
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
@@ -680,25 +771,7 @@ export class HouseholdRequests {
       }
       titles.set(key, entry);
     }
-    const key = this.#store.getAppIdKey() ?? '';
-    return {
-      results: [...titles.values()]
-        .sort((left, right) => right.latest.localeCompare(left.latest) || left.tmdbId - right.tmdbId)
-        .slice(0, MAX_LISTED_TITLES)
-        .map((entry) => {
-          const statuses = [...entry.seasons.values()];
-          const status: CoarseStatus = statuses.includes('requested') ? 'requested' : statuses.includes('ready') ? 'ready' : 'failed';
-          return {
-            id: createHmac('sha256', key).update(`${householdId}\n${entry.mediaType}\n${entry.tmdbId}`).digest('base64url').slice(0, 22),
-            mediaType: entry.mediaType,
-            tmdbId: entry.tmdbId,
-            status,
-            seasons: entry.mediaType === 'movie' ? [] : [...entry.seasons].sort(([left], [right]) => left - right)
-              .map(([seasonNumber, seasonStatus]) => ({ seasonNumber, status: seasonStatus })),
-            byYou: entry.byYou,
-          };
-        }),
-    };
+    return titles;
   }
 
   /**

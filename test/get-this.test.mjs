@@ -673,6 +673,100 @@ describe('household app "Get this": what the household sees afterwards', { timeo
     }
   });
 
+  /** Alice's "Get this" request completes, with `items` and `episodes` now in Jellyfin; the records are brought up to date. */
+  async function completed(app, items, episodes = []) {
+    app.seerr.state.requests[SEERR_IDS[ALICE]][0].status = 5;
+    app.jellyfin.state.items.push(...items);
+    app.jellyfin.state.episodes.push(...episodes);
+    await app.requests.refresh();
+    assert.equal(app.store.listAppRequests()[0][1].status, 'completed');
+  }
+
+  it('shows a ready title as Requested to a member whose own libraries do not include it, and Ready to one whose do', async (t) => {
+    const seen = {};
+    for (const library of ['shared', 'mill-only']) {
+      const app = await start(t, world({ tmdbMovies }));
+      await getThis(app);
+      await completed(app, [movieItem({ library })]);
+      seen[library] = [(await app.get(`${APP}/requests`)).json().results[0].status, (await app.get(`${APP}/movie/${T_MOVIE}`)).json().state];
+    }
+    assert.deepEqual(seen, { shared: ['ready', 'in_library'], 'mill-only': ['requested', 'requested'] });
+  });
+
+  it('shows a ready title as Requested to a member whose parental limit hides it, and Ready to the rest of the household', async (t) => {
+    const app = await start(t, world({ tmdbMovies, jellyfinUsers: {
+      [ANN]: { Name: 'Ann', Policy: { BlockedTags: ['jellypass-held-elsewhere'], EnabledFolders: ['shared'], MaxParentalRating: 12 } },
+    } }));
+    await getThis(app);
+    await completed(app, [movieItem({ ParentalRating: 18 })]);
+    const seen = async (user) => [(await app.get(`${APP}/requests`, { user })).json().results[0].status, (await app.get(`${APP}/movie/${T_MOVIE}`, { user })).json().state];
+    assert.deepEqual(await seen(ALICE), ['ready', 'in_library']);
+    assert.deepEqual(await seen(ANN), ['requested', 'requested']);
+  });
+
+  it('shows a ready series as Requested while a season it covers is hidden from the caller, season by season', async (t) => {
+    const app = await start(t, world({ tmdbMovies, jellyfinUsers: {
+      [ALICE]: { Name: 'Alice', Policy: { BlockedTags: ['jellypass-held-elsewhere'], EnabledFolders: ['shared'], MaxParentalRating: 12 } },
+    } }));
+    await getThis(app, GET_TV, { seasons: [1, 2] });
+    const [first, second] = episodesOf(1, 2);
+    await completed(app, [seriesItem()], [first, { ...second, ParentalRating: 18 }]);
+    const listed = (await app.get(`${APP}/requests`)).json().results[0];
+    assert.deepEqual([listed.status, listed.seasons], ['requested', [{ seasonNumber: 1, status: 'ready' }, { seasonNumber: 2, status: 'requested' }]]);
+    const series = (await app.get(`${APP}/tv/${T_TV}`)).json();
+    assert.equal(series.state, 'in_library');
+    assert.deepEqual(series.seasons.filter((season) => season.seasonNumber <= 2).map((season) => season.state), ['in_library', 'requested']);
+    assert.equal((await app.get(`${APP}/tv/${T_TV}/season/2`)).json().state, 'requested');
+    // Ann, who has no parental limit, sees it all ready.
+    assert.equal((await app.get(`${APP}/requests`, { user: ANN })).json().results[0].status, 'ready');
+  });
+
+  it('reads the same of the caller\'s own view, and answers the same, before and after a season arrives in a library they cannot see', async (t) => {
+    const [first, second] = episodesOf(1, 2);
+    const app = await start(t, world({
+      items: [seriesItem()],
+      episodes: [{ ...first, library: 'shared' }],
+      jellyfinUsers: { [ALICE]: { Name: 'Alice', Policy: { BlockedTags: ['jellypass-held-elsewhere'], EnabledFolders: ['shared'], MaxParentalRating: 12 } } },
+    }));
+    await getThis(app, GET_TV, { seasons: [2] });
+    const originalFetch = globalThis.fetch;
+    let failEpisodes = false;
+    globalThis.fetch = async (url, options) => (failEpisodes && String(url).includes('/Episodes')
+      ? new Response('{}', { status: 503 })
+      : originalFetch(url, options));
+    t.after(() => { globalThis.fetch = originalFetch; });
+    /** `/requests` as Alice, with Jellyfin's episode endpoint up and then failing: its answer and what it read. */
+    const sample = async () => {
+      const seen = {};
+      for (const failing of [false, true]) {
+        failEpisodes = failing;
+        const before = app.jellyfin.requests.length;
+        const answer = await app.get(`${APP}/requests`);
+        seen[failing ? 'episodes failing' : 'episodes up'] = {
+          status: answer.status,
+          body: answer.text,
+          reads: app.jellyfin.requests.slice(before).map((request) => request.pathname),
+        };
+      }
+      failEpisodes = false;
+      return seen;
+    };
+    // The first sample fills the household's library cache, so both compared samples read from it alike.
+    await sample();
+    const waiting = await sample();
+    // Season 2 arrives, in a library Alice cannot see: the household's record now says it is ready.
+    app.jellyfin.state.episodes.push({ ...second, library: 'mill-only' });
+    app.seerr.state.requests[SEERR_IDS[ALICE]][0].status = 5;
+    await app.store.markRequestsHandled([app.store.listAppRequests()[0][1].seerrRequestId]);
+    await app.requests.refresh();
+    assert.deepEqual(app.store.listAppRequests()[0][1].readySeasons, [2]);
+    assert.deepEqual(await sample(), waiting);
+    assert.equal(waiting['episodes up'].status, 200);
+    assert.equal(waiting['episodes failing'].status, 200);
+    assert.ok(waiting['episodes up'].reads.some((pathname) => pathname.endsWith('/Episodes')));
+    assert.match(waiting['episodes failing'].body, /"status":"requested"/);
+  });
+
   it('derives the same opaque ID from the same household and title, and different ones otherwise', async (t) => {
     const app = await start(t, world({ tmdbMovies }));
     await getThis(app);

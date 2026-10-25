@@ -6,7 +6,9 @@ import assert from 'node:assert/strict';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, it } from 'node:test';
+import { makeTempDir } from './support/temp-dir.mjs';
 import { APP_INTENT_TIMEOUT_MS, APP_SETTLE_DEADLINE_MS } from '../dist/household-requests.js';
+import { GrantStore } from '../dist/store.js';
 import {
   ALICE,
   BOB,
@@ -14,6 +16,7 @@ import {
   SEERR_IDS,
   T_MOVIE,
   T_TV,
+  UNSAVED_INTENT,
   seerrRequest,
   startApp,
   world,
@@ -391,5 +394,67 @@ describe('"Get this": the request branch\'s last steps (Codex 5)', { timeout: 60
     assert.deepEqual(app.store.listAppRequestIntents(), []);
     assert.deepEqual(app.store.listAppRequests(), []);
     assert.equal(metric(app, 'jfa_app_get_this_branches_total', 'branch="request_refused"'), 1);
+  });
+});
+
+describe('"Get this": the intent is on disk before its request is sent', { timeout: 60_000 }, () => {
+  const intent = () => ({
+    householdId: 'farmhouse', jellyfinUserId: ALICE, mediaType: 'movie', tmdbId: T_MOVIE, seasons: [],
+    observedAbsentAt: new Date().toISOString(), createdAt: new Date().toISOString(), status: 'submitting',
+  });
+
+  it('knows which intents the state file holds: none while a write is in flight or failed, each once it is renamed into place', async (t) => {
+    const stateFile = path.join(await makeTempDir(t, 'jfa-intents-'), 'grants.json');
+    const store = new GrantStore(stateFile);
+    await store.load();
+    const writing = store.addAppRequestIntent(intent());
+    const [[id]] = store.listAppRequestIntents();
+    assert.equal(store.isAppRequestIntentDurable(id), false);
+    assert.equal(await writing, id);
+    assert.equal(store.isAppRequestIntentDurable(id), true);
+    // Loaded from disk, it is there.
+    const reloaded = new GrantStore(stateFile);
+    await reloaded.load();
+    assert.equal(reloaded.isAppRequestIntentDurable(id), true);
+    // A write that fails leaves the new intent in memory only.
+    await rm(stateFile);
+    await mkdir(stateFile);
+    await writeFile(path.join(stateFile, 'in-the-way'), '');
+    await assert.rejects(reloaded.addAppRequestIntent(intent()));
+    const unsaved = reloaded.listAppRequestIntents().map(([entry]) => entry).find((entry) => entry !== id);
+    assert.equal(reloaded.isAppRequestIntentDurable(unsaved), false);
+    assert.equal(reloaded.isAppRequestIntentDurable(id), true);
+  });
+
+  it('sends nothing if the intent\'s write was not awaited and did not reach the disk', async (t) => {
+    const app = await start(t, world({ tmdbMovies }));
+    // The regression this guards against: the intent's write is no longer awaited (and here it fails).
+    const write = app.store.addAppRequestIntent.bind(app.store);
+    app.store.addAppRequestIntent = async (entry) => {
+      const before = new Set(app.store.listAppRequestIntents().map(([id]) => id));
+      write(entry).catch(() => undefined);
+      return app.store.listAppRequestIntents().map(([id]) => id).find((id) => !before.has(id));
+    };
+    await rm(app.stateFile);
+    await mkdir(app.stateFile);
+    await writeFile(path.join(app.stateFile, 'in-the-way'), '');
+    await getThis(app);
+    assert.deepEqual(app.seerr.posts, []);
+    assert.equal(metric(app, 'jfa_app_get_this_branches_total', 'branch="request_unsaved"'), 1);
+    assert.deepEqual(app.store.listAppRequests(), []);
+  });
+
+  it('fails any test in which a request reaches Seerr before an intent for its title is on disk', async (t) => {
+    const app = await start(t, world({ tmdbMovies }));
+    // A request sent as the member with no intent at all, as a regression in the request branch would.
+    const sender = await app.members.member(ALICE).confirmRequester();
+    await sender.createRequest({ mediaType: 'movie', tmdbId: T_MOVIE });
+    assert.deepEqual(app.seerr.violations, [UNSAVED_INTENT]);
+    // Cleared, or this test would fail as the check means it to.
+    app.seerr.violations.length = 0;
+    // A request "Get this" sends is checked the same way, and passes.
+    await getThis(app, `${APP}/movie/${OTHER_MOVIE}/get`);
+    assert.equal(app.seerr.posts.length, 2);
+    assert.deepEqual(app.seerr.violations, []);
   });
 });

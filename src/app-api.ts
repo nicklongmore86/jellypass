@@ -157,7 +157,7 @@ export interface HouseholdAppOptions {
   /** The caller's own Seerr user, confirmed before every call (a `SeerrUserMap`). */
   members: { member(jellyfinUserId: string): Pick<SeerrMemberClient, 'ownUser' | 'quota'> | undefined };
   /** "Get this" and the household's own records. Without it, those endpoints answer `404` and nothing is `requested`. */
-  requests?: Pick<HouseholdRequests, 'submit' | 'activeKeys' | 'list'>;
+  requests?: Pick<HouseholdRequests, 'submit' | 'activeKeys' | 'readyKeys' | 'list'>;
   /** A household's name, or undefined once it no longer exists. */
   householdName: (householdId: string) => string | undefined;
   /** How many households there are. */
@@ -196,7 +196,11 @@ interface HouseholdView {
   library: ReadonlyMap<string, string>;
   blocklist: ReadonlySet<string>;
   eligible: Record<MediaType, boolean>;
-  /** The titles and seasons this household's own active "Get this" records name (see HouseholdRequests.activeKeys). */
+  /**
+   * The titles and seasons this household's own active "Get this" records name (see HouseholdRequests.activeKeys), and
+   * those its records say are ready (HouseholdRequests.readyKeys): a ready title the caller's own view does not have
+   * (another library, a parental limit) is still `requested` for them, never `get_this`.
+   */
   requested: ReadonlySet<string>;
 }
 
@@ -636,9 +640,18 @@ export class HouseholdApp implements HouseholdAppHandler {
     return GET_THIS_ACCEPTED;
   }
 
-  /** The household's own titles with their coarse status (see HouseholdRequests.list). */
+  /**
+   * The household's own titles with their coarse status (see HouseholdRequests.list), `ready` only for what the
+   * caller's own Jellyfin view has: the same view the title pages decide `in_library` from (the caller's library,
+   * reused as for them, and a series' seasons with episodes).
+   */
   async #list(caller: JellyfinCaller, context: HouseholdAppRequest): Promise<RequestsDto> {
-    return (this.#requests as NonNullable<HouseholdAppOptions['requests']>).list(context.householdId, normalizedUserId(caller.id));
+    const library = await this.#library(caller, context);
+    return (this.#requests as NonNullable<HouseholdAppOptions['requests']>).list(context.householdId, normalizedUserId(caller.id), async (mediaType, tmdbId) => {
+      const itemId = library.get(titleKey(mediaType, tmdbId));
+      if (!itemId) return { visible: false, seasons: new Set() };
+      return { visible: true, seasons: mediaType === 'tv' ? await this.#seasonsInLibrary(caller, context, { state: 'in_library', itemId }) : new Set() };
+    });
   }
 
   /** What the caller's own Jellyfin view holds of a title, read now with their own credentials (never from a cache). */
@@ -674,7 +687,10 @@ export class HouseholdApp implements HouseholdAppHandler {
       cached ? cached.get('blocklist', blocklist) : blocklist(),
       this.#eligibility(caller),
     ]);
-    return { library, blocklist: blocked, eligible, requested: this.#requests?.activeKeys(context.householdId) ?? new Set() };
+    const requested = this.#requests
+      ? new Set([...this.#requests.activeKeys(context.householdId), ...this.#requests.readyKeys(context.householdId)])
+      : new Set<string>();
+    return { library, blocklist: blocked, eligible, requested };
   }
 
   /**

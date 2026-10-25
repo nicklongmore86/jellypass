@@ -43,6 +43,11 @@ export class GrantStore {
   /** A queued write that has not started yet; saves requested meanwhile share it. */
   #queued: Promise<void> | undefined;
   #closed = false;
+  /**
+   * The request intents the state file on disk holds: those it was loaded with, then those of the last completed write.
+   * See isAppRequestIntentDurable.
+   */
+  #durableIntents = new Set<string>();
   /** "Get this" record IDs by household, rebuilt after each change (see #appIndex). */
   #appIndexCache: Map<string, string[]> | undefined;
   readonly #limitHouseholds: boolean;
@@ -73,6 +78,7 @@ export class GrantStore {
     this.#assertOpen();
     const migrated = migrateState(JSON.parse(text) as unknown);
     this.#state = migrated.state;
+    this.#durableIntents = new Set(Object.keys(this.#state.appRequestIntents ?? {}));
     // Written only by unreleased builds of "Get this" that counted quotas; dropped with the next write.
     delete (this.#state as { appQuotaLedger?: unknown }).appQuotaLedger;
     this.#appIndexCache = undefined;
@@ -522,6 +528,19 @@ export class GrantStore {
     return Object.values(this.#state.appRequestIntents ?? {}).some((intent) => intent.mediaType === mediaType && intent.tmdbId === tmdbId);
   }
 
+  /**
+   * Whether the state file on disk holds this request intent: written and renamed into place, not merely in memory.
+   * "Get this" checks it immediately before sending the intent's Seerr request (see HouseholdRequests), so a request is
+   * never sent before the decision that protects its grant would survive a crash.
+   *
+   * "On disk" means the atomic write-and-rename completed, not power-loss durability: neither the file nor its directory
+   * is fsynced, so an OS crash or power cut right after the rename can still lose the intent (a documented leftover, see
+   * docs/app-design.md); a process crash cannot.
+   */
+  public isAppRequestIntentDurable(id: string): boolean {
+    return this.#durableIntents.has(id);
+  }
+
   /** The key the household app derives opaque IDs from, or undefined before the first "Get this" record. */
   public getAppIdKey(): string | undefined {
     return this.#state.appIdKey;
@@ -550,6 +569,15 @@ export class GrantStore {
     return Object.values(this.#state.appSafetyTombstones ?? {}).map(clone);
   }
 
+  /**
+   * The safety tombstones that still decide a grant (see outstandingTombstone), as of `now`: what a version that does
+   * not read them would decide differently, so a rollback waits until there are none.
+   */
+  public listOutstandingAppSafetyTombstones(now = Date.now()): AppSafetyTombstone[] {
+    const handled = new Set(this.#state.handledRequestIds ?? []);
+    return Object.values(this.#state.appSafetyTombstones ?? {}).filter((tombstone) => outstandingTombstone(tombstone, handled, now)).map(clone);
+  }
+
   /** Records requests as handled without granting them (a "Get this" request granted as a join); see hasHandledRequest. */
   public async markRequestsHandled(requestIds: string[]): Promise<void> {
     this.#assertOpen();
@@ -561,7 +589,7 @@ export class GrantStore {
 
   /**
    * Writes a "Get this" request intent (see AppRequestIntent) and resolves once the state file has it: only then may
-   * the request be sent. Resolves with its ID.
+   * the request be sent. Resolves with its ID (see isAppRequestIntentDurable).
    */
   public async addAppRequestIntent(intent: AppRequestIntent): Promise<string> {
     this.#assertOpen();
@@ -999,9 +1027,12 @@ export class GrantStore {
     await mkdir(path.dirname(this.#file), { recursive: true });
     // A unique name per write, so a stray concurrent writer can never rename another's file.
     const temporary = `${this.#file}.${randomUUID()}.tmp`;
+    // The intents this write holds, taken with the state it serializes.
+    const intents = Object.keys(this.#state.appRequestIntents ?? {});
     try {
       await writeFile(temporary, `${JSON.stringify(this.#state, null, 2)}\n`, { mode: 0o600 });
       await rename(temporary, this.#file);
+      this.#durableIntents = new Set(intents);
     } catch (error) {
       await rm(temporary, { force: true }).catch(() => undefined);
       throw error;
@@ -1081,6 +1112,16 @@ function pruneAppRequests(records: Record<string, AppRequestRecord>, now: number
 function pruneTombstones(tombstones: Record<string, AppSafetyTombstone>, handled: ReadonlySet<string>, now: number): Record<string, AppSafetyTombstone> {
   return Object.fromEntries(Object.entries(tombstones).filter(([, tombstone]) => now < Date.parse(tombstone.expiresAt)
     || (tombstone.requestIds.some((id) => !handled.has(id)) && now - Date.parse(tombstone.createdAt) <= APP_REQUEST_RETENTION_MS)));
+}
+
+/**
+ * Whether a tombstone still decides a grant: it names a request not handled yet (until it is pruned, at most
+ * APP_REQUEST_RETENTION_MS after it was made), or it is member-wide and before its `expiresAt` (the member's later
+ * requests for the title are still joins). One that is neither is kept only until the next write prunes it.
+ */
+function outstandingTombstone(tombstone: AppSafetyTombstone, handled: ReadonlySet<string>, now: number): boolean {
+  return (tombstone.requestIds.some((id) => !handled.has(id)) && now - Date.parse(tombstone.createdAt) <= APP_REQUEST_RETENTION_MS)
+    || (tombstone.jellyfinUserId !== undefined && now < Date.parse(tombstone.expiresAt));
 }
 
 function clone<T>(value: T): T {

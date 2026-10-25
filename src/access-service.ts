@@ -34,6 +34,34 @@ const GRANTABLE_REQUEST_STATUSES = new Set([2, 5]);
 /** What a household app join did: see AccessService.joinHousehold. */
 export type HouseholdJoinResult = 'joined' | 'already' | 'refused' | 'ungranted' | 'error' | 'cancelled';
 
+/** Most entries {@link AccessService.appOutstanding} lists of each kind, oldest first; the counts are always complete. */
+export const MAX_OUTSTANDING_ENTRIES = 200;
+
+/**
+ * What "Get this" still has in flight or still protects, for the administrator (admin host only): the safety
+ * tombstones that still decide a grant, the request intents not settled yet and the webhooks deferred for them. A
+ * version that does not read these (2.3.0, 2.2.1) would grant those requests as ordinary ones, so a rollback waits
+ * until every count is 0 (`clear`). Names titles by TMDB ID and intents by household, never a member.
+ */
+export interface AppOutstanding {
+  clear: boolean;
+  safetyMarkers: {
+    total: number;
+    /** `request`: names the requests it covers; `member`: also covers the member's later requests for the title. */
+    byKind: { request: number; member: number };
+    oldestAgeSeconds: number | null;
+    entries: Array<{ kind: 'request' | 'member'; mediaType: string; tmdbId: number; createdAt: string; expiresAt: string }>;
+  };
+  requestIntents: {
+    total: number;
+    byKind: { submitting: number; settling: number };
+    oldestAgeSeconds: number | null;
+    entries: Array<{ kind: 'submitting' | 'settling'; mediaType: string; tmdbId: number; householdId: string; createdAt: string }>;
+  };
+  /** Kept without a time, so no age. */
+  deferredWebhooks: { total: number };
+}
+
 interface PlanContext {
   plan: ChangePlan;
   item: JellyfinItem;
@@ -149,6 +177,44 @@ export class AccessService {
   /** Counts a household app API answer by endpoint and outcome. */
   public recordAppRequest(endpoint: string, outcome: string): void {
     this.#metrics.increment('jfa_app_requests_total', { endpoint, outcome });
+  }
+
+  /** See {@link AppOutstanding}. */
+  public appOutstanding(now = Date.now()): AppOutstanding {
+    const age = (times: string[]) => times.length === 0 ? null : Math.max(0, Math.floor((now - Math.min(...times.map(Date.parse))) / 1000));
+    const oldestFirst = <T extends { createdAt: string }>(entries: T[]) =>
+      [...entries].sort((left, right) => left.createdAt.localeCompare(right.createdAt)).slice(0, MAX_OUTSTANDING_ENTRIES);
+    const markers = this.#store.listOutstandingAppSafetyTombstones(now).map((tombstone) => ({
+      kind: tombstone.jellyfinUserId === undefined ? 'request' as const : 'member' as const,
+      mediaType: tombstone.mediaType,
+      tmdbId: tombstone.tmdbId,
+      createdAt: tombstone.createdAt,
+      expiresAt: tombstone.expiresAt,
+    }));
+    const intents = this.#store.listAppRequestIntents().map(([, intent]) => ({
+      kind: intent.status,
+      mediaType: intent.mediaType,
+      tmdbId: intent.tmdbId,
+      householdId: intent.householdId,
+      createdAt: intent.createdAt,
+    }));
+    const deferred = this.#store.listDeferredWebhooks().length;
+    return {
+      clear: markers.length === 0 && intents.length === 0 && deferred === 0,
+      safetyMarkers: {
+        total: markers.length,
+        byKind: { request: markers.filter((marker) => marker.kind === 'request').length, member: markers.filter((marker) => marker.kind === 'member').length },
+        oldestAgeSeconds: age(markers.map((marker) => marker.createdAt)),
+        entries: oldestFirst(markers),
+      },
+      requestIntents: {
+        total: intents.length,
+        byKind: { submitting: intents.filter((intent) => intent.kind === 'submitting').length, settling: intents.filter((intent) => intent.kind === 'settling').length },
+        oldestAgeSeconds: age(intents.map((intent) => intent.createdAt)),
+        entries: oldestFirst(intents),
+      },
+      deferredWebhooks: { total: deferred },
+    };
   }
 
   /** Counts a household app "Get this" call by what its eligibility check decided; never by title. */
@@ -1566,6 +1632,11 @@ export class AccessService {
     this.#metrics.gauge('jfa_grants', grants.filter((grant) => grant.active).length);
     this.#metrics.gauge('jfa_sync_errors', grants.filter((grant) => grant.sync.state === 'error').length);
     this.#metrics.gauge('jfa_orphaned_grants', grants.filter((grant) => grant.sync.state === 'orphaned').length);
+    // Counts only: the titles and households are in the admin readout (appOutstanding).
+    const outstanding = this.appOutstanding();
+    for (const [kind, count] of Object.entries(outstanding.safetyMarkers.byKind)) this.#metrics.gauge(`jfa_app_safety_markers{kind="${kind}"}`, count);
+    for (const [status, count] of Object.entries(outstanding.requestIntents.byKind)) this.#metrics.gauge(`jfa_app_request_intents{status="${status}"}`, count);
+    this.#metrics.gauge('jfa_app_deferred_webhooks', outstanding.deferredWebhooks.total);
   }
 
   #exclusive<T>(operation: () => Promise<T>): Promise<T> {
