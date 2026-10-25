@@ -368,6 +368,24 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
       assert.deepEqual(await timed(username, password), wrongPassword, username);
     }
     await assert.rejects(api.signIn('admin', 'test-password'), (error) => error instanceof SignInError && error.kind === 'invalid');
+
+    // A sign-in Jellyfin would refuse whoever it named (here with a 400, for a request naming no client) is answered alike
+    // for a member and for any other name, and no sooner either: Codex had Hilda's answered in 20 ms, nobody's in 1 s.
+    const malformed = async (headers, body) => {
+      const answers = [];
+      for (const username of ['Hilda', 'nobody']) {
+        const started = performance.now();
+        answers.push(seen(await postWithHeaders(port, '/Users/AuthenticateByName', { Host: host, ...headers }, body(username))));
+        const ms = performance.now() - started;
+        assert.ok(ms >= DELAY - 5, `${username}: ${ms} ms`);
+      }
+      assert.deepEqual(answers[0], answers[1]);
+      return answers[0];
+    };
+    const noClient = await malformed({}, (username) => ({ Username: username, Pw: 'wrong' }));
+    assert.deepEqual([noClient.status, noClient.text], [400, '{"error":"invalid_request"}']);
+    assert.deepEqual(await malformed({ Authorization: 'MediaBrowser Token="x"' }, (username) => ({ Username: username, Pw: 'wrong' })), noClient);
+    assert.deepEqual(await malformed({ Authorization: WEB }, (username) => ({ Username: username })), noClient);
   });
 
   it('finds a title\'s items by TMDB ID with JellyPass\'s key, the "Get this" decision input for "Jellyfin already has it"', async () => {

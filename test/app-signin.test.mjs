@@ -3,12 +3,15 @@
 // returns is the one the app API accepts. These tests drive the gateway over HTTP; the page itself is tested in
 // test/app-pwa.test.mjs and the same flow against a real Jellyfin in test/real-jellyfin.test.mjs.
 import assert from 'node:assert/strict';
+import { request as httpRequest } from 'node:http';
 import { describe, it } from 'node:test';
 import { performance } from 'node:perf_hooks';
 import { ALICE, ANN, BOB, CAROL, HOST_A, HOST_B, OUTSIDER, get, post, startApp, world } from './support/household-app.mjs';
 
 const AUTHORIZATION = 'MediaBrowser Client="JellyPass", Device="Browser", DeviceId="jellypass-test-device-0001", Version="1.0"';
 const NOT_A_MEMBER = '{"error":"invalid_credentials"}';
+const MALFORMED = '{"error":"invalid_request"}';
+const UNAVAILABLE = '{"error":"jellyfin_unavailable"}';
 /** Jellyfin web's own sign-in, as /web/ on a household host sends it from its manual login form. */
 const WEB_AUTHORIZATION = 'MediaBrowser Client="Jellyfin Web", Device="Firefox", DeviceId="TW96aWxsYS81LjAgKFgxMTsgTGludXg", Version="10.11.3"';
 /** A Jellyfin administrator, in no household. */
@@ -83,10 +86,10 @@ describe('household app sign-in through the gateway', { timeout: 30_000 }, () =>
     // A non-member is refused before Jellyfin is asked to authenticate anyone.
     assert.equal(authentications(app).length, before);
     assert.equal(app.jellyfin.signIns.length, 1);
-    // A body that is not a name is refused the same way.
-    for (const body of [{}, { Username: 5 }, { Username: ['Alice'] }]) {
+    // A body that is not a name and a password is refused as malformed, whatever the name.
+    for (const body of [{}, { Username: 5, Pw: '' }, { Username: ['Alice'], Pw: '' }, { Username: 'Alice' }]) {
       const answer = await post(app.port, '/Users/AuthenticateByName', { Host: HOST_A, Authorization: AUTHORIZATION }, body);
-      assert.deepEqual([answer.status, answer.text], [401, NOT_A_MEMBER]);
+      assert.deepEqual([answer.status, answer.text], [400, MALFORMED]);
     }
   });
 
@@ -214,5 +217,102 @@ describe('household app sign-in through the gateway', { timeout: 30_000 }, () =>
     assert.ok(outsider, 'Jellyfin signed the outsider in');
     assert.deepEqual(app.jellyfin.logouts, [outsider.token], 'and that session was signed out at once');
     assert.equal(outsider.revoked, true);
+  });
+
+  describe('tells no member from a non-member by any failure', () => {
+    const DELAY = 300;
+    /** Ann (a hidden member of household A) and 'nobody' (no user's name), each sent exactly the same way. */
+    const NAMES = ['Ann', 'nobody'];
+    const attempt = async (app, username, { headers = { Authorization: WEB_AUTHORIZATION }, body = { Username: username, Pw: 'wrong' } } = {}) => {
+      const started = performance.now();
+      const answer = await post(app.port, '/Users/AuthenticateByName', { Host: HOST_A, ...headers }, body);
+      return { answer: seen(answer), ms: performance.now() - started };
+    };
+    /** Sends the same attempt for a member and a non-member and checks both get `expected`, no sooner than DELAY. */
+    const same = async (app, expected, options, label) => {
+      const answers = [];
+      for (const username of NAMES) {
+        const { answer, ms } = await attempt(app, username, typeof options === 'function' ? options(username) : options);
+        assert.ok(ms >= DELAY - 5, `${label}, ${username}: ${ms} ms`);
+        answers.push(answer);
+      }
+      assert.deepEqual(answers[0], answers[1], `${label}: a member and a non-member are answered alike`);
+      assert.deepEqual([answers[0].status, answers[0].text], expected, label);
+    };
+
+    it('answers a sign-in without client metadata alike for a member and a non-member (Codex: 400 in 20 ms against 401 in 1 s)', async (t) => {
+      const app = await startApp(t, hiddenWorld(), { loginFailureDelayMs: DELAY });
+      await same(app, [400, MALFORMED], { headers: {} }, 'no Authorization header');
+      assert.equal(app.jellyfin.signInAttempts.length, 0, 'decided before Jellyfin is asked');
+    });
+
+    it('answers every malformed sign-in alike, before any name is looked up', async (t) => {
+      const app = await startApp(t, hiddenWorld(), { loginFailureDelayMs: DELAY });
+      for (const [label, headers] of [
+        ['a token but no client', { Authorization: 'MediaBrowser Token="abc"' }],
+        ['another scheme', { Authorization: 'Bearer Client="a", Device="b", DeviceId="c", Version="d"' }],
+        ['no DeviceId', { Authorization: 'MediaBrowser Client="a", Device="b", Version="d"' }],
+        ['an empty Version', { Authorization: 'MediaBrowser Client="a", Device="b", DeviceId="c", Version=""' }],
+        ['a bad X-Emby-Authorization beside a good Authorization', { Authorization: WEB_AUTHORIZATION, 'X-Emby-Authorization': 'MediaBrowser Client="a"' }],
+      ]) await same(app, [400, MALFORMED], { headers }, label);
+      for (const [label, body] of [
+        ['no password', (username) => ({ Username: username })],
+        ['a password that is not a string', (username) => ({ Username: username, Pw: 5 })],
+        ['a list', (username) => [username]],
+      ]) await same(app, [400, MALFORMED], (username) => ({ body: body(username) }), label);
+      const answers = [];
+      for (const username of NAMES) {
+        const started = performance.now();
+        const answer = await new Promise((resolve, reject) => {
+          const request = httpRequest({ hostname: '127.0.0.1', port: app.port, path: '/Users/AuthenticateByName', method: 'POST', headers: { Host: HOST_A, Authorization: WEB_AUTHORIZATION, 'Content-Type': 'application/json' } }, (response) => {
+            const chunks = [];
+            response.on('data', (chunk) => chunks.push(chunk));
+            response.on('end', () => resolve({ status: response.statusCode, headers: response.headers, text: Buffer.concat(chunks).toString('utf8') }));
+          });
+          request.on('error', reject);
+          request.end(`{"Username":"${username}","Pw":`);
+        });
+        assert.ok(performance.now() - started >= DELAY - 5, `JSON that does not parse, ${username}`);
+        answers.push(seen(answer));
+      }
+      assert.deepEqual(answers[0], answers[1]);
+      assert.deepEqual([answers[0].status, answers[0].text], [400, MALFORMED]);
+      assert.equal(app.jellyfin.signInAttempts.length, 0, 'Jellyfin was never asked');
+    });
+
+    it('answers a wrong password and any status Jellyfin gives a member as it answers a non-member', async (t) => {
+      const app = await startApp(t, hiddenWorld(), { loginFailureDelayMs: DELAY });
+      await same(app, [401, NOT_A_MEMBER], {}, 'a wrong password');
+      for (const status of [400, 403, 404, 429, 500, 503]) {
+        app.jellyfin.state.signInStatus = status;
+        await same(app, [401, NOT_A_MEMBER], {}, `Jellyfin answers ${status}`);
+      }
+      assert.ok(app.jellyfin.signInAttempts.every(({ username }) => username === 'Ann'), 'only the member\'s attempts reached Jellyfin');
+      assert.equal(app.jellyfin.signInAttempts.length, 7);
+    });
+
+    it('answers a member whose sign-in Jellyfin never answers as it answers a non-member', async (t) => {
+      const app = await startApp(t, hiddenWorld(), { loginFailureDelayMs: DELAY, loginTimeoutMs: 100 });
+      app.jellyfin.state.signInHangs = true;
+      await same(app, [401, NOT_A_MEMBER], {}, 'Jellyfin does not answer the sign-in');
+      assert.equal(app.jellyfin.signInAttempts.length, 1);
+    });
+
+    it('answers alike while Jellyfin is down, with the user list reused or not (Codex: 503 against 502)', async (t) => {
+      const app = await startApp(t, hiddenWorld(), { loginFailureDelayMs: DELAY });
+      // Cold: nothing reused, so the list is read for each attempt and cannot be.
+      app.jellyfin.down = true;
+      await same(app, [502, UNAVAILABLE], {}, 'down, cold');
+      // Warm: a sign-in reads the list, then Jellyfin goes down while it is still reused.
+      app.jellyfin.down = false;
+      assert.equal((await signIn(app, HOST_A, 'Ann', 'ann-pass')).status, 200);
+      app.jellyfin.down = true;
+      await same(app, [502, UNAVAILABLE], {}, 'down, warm');
+      // Gone altogether: no connection at all, the list still reused.
+      app.jellyfin.down = false;
+      assert.equal((await signIn(app, HOST_A, 'Ann', 'ann-pass')).status, 200);
+      await app.jellyfin.close();
+      await same(app, [502, UNAVAILABLE], {}, 'unreachable, warm');
+    });
   });
 });

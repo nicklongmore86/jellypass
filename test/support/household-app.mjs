@@ -536,6 +536,9 @@ export async function createFakeJellyfinForApp(state) {
         attempts_.push({ username: body.Username, password: body.Pw, header });
         const entry = Object.entries(state.jellyfinUsers).find(([, user]) => user.Name.toLowerCase() === String(body.Username).toLowerCase());
         if (state.signInDown) return send(response, 503, { message: 'upstream detail that must never be shown' });
+        // Any other answer Jellyfin might give a member's sign-in, or none at all.
+        if (state.signInStatus) return send(response, state.signInStatus, { message: 'upstream detail that must never be shown' });
+        if (state.signInHangs) return undefined;
         if (!entry || entry[1].Policy.IsDisabled || (state.passwords?.[entry[0]] ?? '') !== body.Pw) return send(response, 401, { message: 'upstream detail that must never be shown' });
         const minted = `signin-token-${entry[0].slice(0, 4)}-${minted_.length + 1}`;
         minted_.push({ token: minted, userId: entry[0], header });
@@ -658,8 +661,8 @@ function sees(user, item) {
  * `libraryTtlMs`, `titleTtlMs` or `blocklistTtlMs` to set the app's clock and cache lifetimes, `catalogueLimits` to
  * set its share of TMDB calls (by default high enough that tests not about it never wait for one), `reconcile` to apply
  * the world's grants to Jellyfin first, `recordDelayMs` to delay "Get this" records (none by default),
- * `requests: false` to serve no "Get this", and `loginFailureDelayMs` for the least time a refused household sign-in
- * takes (default 0, so tests not about it never wait).
+ * `requests: false` to serve no "Get this", `loginFailureDelayMs` for the least time a refused household sign-in
+ * takes (default 0, so tests not about it never wait), and `loginTimeoutMs` for how long a sign-in waits for Jellyfin.
  */
 export async function startApp(t, state = world(), options = {}) {
   const seerr = options.seerr ? { ...options.seerr, close: async () => undefined } : await createFakeSeerr(state);
@@ -713,7 +716,7 @@ export async function startApp(t, state = world(), options = {}) {
   const server = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' }, undefined, {
     background,
     ...(options.trustedProxies ? { trustedProxies: options.trustedProxies } : {}),
-    householdGateway: { jellyfinUrl: jellyfin.url, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: options.loginFailureDelayMs ?? 0 },
+    householdGateway: { jellyfinUrl: jellyfin.url, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: options.loginFailureDelayMs ?? 0, ...(options.loginTimeoutMs ? { loginTimeoutMs: options.loginTimeoutMs } : {}) },
     ...(options.app === false ? {} : {
       householdApp: {
         catalogue: new TmdbClient(TMDB_KEY, { baseUrl: tmdb.url, ...(options.now ? { now: options.now } : {}) }),

@@ -1521,14 +1521,15 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     const app = await signInApp(t);
     const outage = await openApp(t, app, { signedIn: false });
     await outage.until(() => outage.main().querySelector('ul.profiles'), 'the picker');
-    app.jellyfin.state.signInDown = true;
+    // Jellyfin goes down after the picker loaded: the gateway cannot check the name, for a member as for anyone.
+    app.jellyfin.down = true;
     click(outage, profileButton(outage, 'Ann'));
     await outage.until(() => message(outage), 'the outage message');
     assert.equal(message(outage), "Can't sign in right now. Try again in a moment.");
     assert.ok(outage.main().querySelector('ul.profiles'), 'the picker stays, with its buttons usable again');
     assert.ok([...outage.main().querySelectorAll('button.profile')].every((button) => !button.disabled));
     assert.doesNotMatch(outage.serialize(), /upstream detail/);
-    app.jellyfin.state.signInDown = false;
+    app.jellyfin.down = false;
 
     const offline = await openApp(t, app, { signedIn: false, override: (url) => { if (url === '/Users/AuthenticateByName') throw new TypeError('network'); } });
     await offline.until(() => offline.main().querySelector('ul.profiles'), 'the picker');

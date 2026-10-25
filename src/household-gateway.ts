@@ -27,6 +27,10 @@ const MAX_LOGIN_RESPONSE_BYTES = 1024 * 1024;
 const LOGIN_USERS_TTL_MS = 10_000;
 /** The least time a refused household sign-in takes, so its timing does not tell why it was refused. */
 const DEFAULT_LOGIN_FAILURE_DELAY_MS = 1000;
+/** How long a household sign-in waits for Jellyfin's answer before it counts as no answer. */
+const DEFAULT_LOGIN_TIMEOUT_MS = 15_000;
+/** The client metadata Jellyfin requires of every sign-in: without any of it Jellyfin refuses with a 400. */
+const LOGIN_CLIENT_FIELDS = ['client', 'device', 'deviceid', 'version'];
 const LIBRARY_JOIN_PATH = '/jellypass/add';
 const APP_PATH = '/jellypass/app';
 /** Largest Jellyfin answer read for the household app with the caller's own credentials, in bytes. */
@@ -91,6 +95,8 @@ export interface HouseholdGatewayOptions {
   users?: () => Promise<Array<{ Id: string; Name: string }>>;
   /** The least time a refused household sign-in takes, in milliseconds (default DEFAULT_LOGIN_FAILURE_DELAY_MS). */
   loginFailureDelayMs?: number;
+  /** How long a household sign-in waits for Jellyfin, in milliseconds (default DEFAULT_LOGIN_TIMEOUT_MS). */
+  loginTimeoutMs?: number;
   /** Close an upgraded connection after this long with no bytes in either direction; 0 disables. */
   webSocketIdleTimeoutMs?: number;
   /** Close an upgraded connection after this long with no bytes from Jellyfin, even if the client keeps talking; 0 disables. */
@@ -137,6 +143,7 @@ export class HouseholdGateway {
   readonly #isPasswordless: NonNullable<HouseholdGatewayOptions['isPasswordless']>;
   readonly #users: HouseholdGatewayOptions['users'];
   readonly #loginFailureDelayMs: number;
+  readonly #loginTimeoutMs: number;
   #loginUsers: { list: Promise<Array<{ Id: string; Name: string }>>; expires: number } | undefined;
   readonly #loginAttempts = new AttemptCounter({ windowMs: LOGIN_ATTEMPT_WINDOW_MS, maxKeys: MAX_LOGIN_CLIENTS });
   readonly #libraryJoinAttempts = new AttemptCounter({ windowMs: LIBRARY_JOIN_WINDOW_MS, maxKeys: MAX_LOGIN_CLIENTS });
@@ -164,6 +171,7 @@ export class HouseholdGateway {
     this.#isPasswordless = options.isPasswordless ?? (() => false);
     this.#users = options.users;
     this.#loginFailureDelayMs = options.loginFailureDelayMs ?? DEFAULT_LOGIN_FAILURE_DELAY_MS;
+    this.#loginTimeoutMs = options.loginTimeoutMs ?? DEFAULT_LOGIN_TIMEOUT_MS;
     this.#webSocketIdleTimeoutMs = options.webSocketIdleTimeoutMs ?? DEFAULT_WS_IDLE_TIMEOUT_MS;
     this.#webSocketUpstreamIdleTimeoutMs = options.webSocketUpstreamIdleTimeoutMs ?? DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS;
     this.#debug = options.logLevel === 'debug';
@@ -268,15 +276,14 @@ export class HouseholdGateway {
       socket.destroy();
     });
     if (this.#closing) {
-      socket.end('HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\n\r\n');
+      socket.end(`HTTP/1.1 503 Service Unavailable\r\n${neverStoreHeaders()}Connection: close\r\n\r\n`);
       return;
     }
     const pathname = new URL(request.url ?? '/', 'http://localhost').pathname.toLowerCase();
     const appPath = pathname === APP_PATH || pathname.startsWith(`${APP_PATH}/`);
     // The app API has no WebSockets, and its paths are never proxied to Jellyfin.
     if (!this.#memberIds(householdId) || appPath) {
-      const neverStore = appPath ? Object.entries(NEVER_STORE).map(([name, value]) => `${name}: ${value}\r\n`).join('') : '';
-      socket.end(`HTTP/1.1 404 Not Found\r\n${neverStore}Connection: close\r\n\r\n`);
+      socket.end(`HTTP/1.1 404 Not Found\r\n${appPath ? neverStoreHeaders() : ''}Connection: close\r\n\r\n`);
       return;
     }
     const upstream = this.#transport().request(this.#requestOptions(request));
@@ -502,9 +509,16 @@ export class HouseholdGateway {
    * member of this household: it is looked up in Jellyfin's full user list, so a hidden member (left off the picker)
    * signs in by typing their name, matched case-insensitively as Jellyfin matches names. Jellyfin is then asked to sign
    * in that member by their own name, and the user it signs in must be that member, or the new session is revoked and
-   * the sign-in refused. A name that is no member's, a wrong password and a body without a name all get the same answer,
-   * no sooner than #loginFailureDelayMs after the attempt arrived, so neither the answer nor its timing tells whether a
-   * name exists or is a member.
+   * the sign-in refused.
+   *
+   * Only a sign-in that works is answered by Jellyfin. Every other attempt gets one of three fixed answers, no sooner
+   * than #loginFailureDelayMs after it arrived, and none of them depends on whether the name is a member's:
+   * - invalid_request, for a request Jellyfin would refuse whoever it named (no client metadata, or a body that is not
+   *   a name and a password), decided before any name is looked up;
+   * - jellyfin_unavailable, when Jellyfin's user list cannot be read, which is tried for a member and a non-member alike
+   *   (a member's sign-in that Jellyfin fails to answer reads the list afresh, as a name not found in a reused one does);
+   * - invalid_credentials, for everything else: a name that is no member's, and any answer Jellyfin gives a member but
+   *   success, whatever its status.
    */
   async #proxyHouseholdLogin(request: IncomingMessage, response: ServerResponse, memberIds: string[]): Promise<void> {
     if (!this.#allowLoginAttempt(this.#clientAddress(request))) {
@@ -512,49 +526,45 @@ export class HouseholdGateway {
       return;
     }
     const started = performance.now();
-    const refuse = async () => {
+    const fail = async (status: number, error: string) => {
       await delay(Math.max(0, this.#loginFailureDelayMs - (performance.now() - started)));
-      writeJson(response, 401, { error: 'invalid_credentials' });
+      writeJson(response, status, { error });
     };
-    let body: Buffer;
+    const refuse = () => fail(401, 'invalid_credentials');
+    const unavailable = () => fail(502, 'jellyfin_unavailable');
+    let credentials: { Username: string; Pw: string } | undefined;
     try {
-      body = await readLimitedBody(request, MAX_LOGIN_BODY_BYTES);
-    } catch {
-      writeJson(response, 400, { error: 'invalid_request_body' });
-      return;
-    }
-    let credentials: Record<string, unknown> | undefined;
-    try {
-      const parsed = JSON.parse(body.toString('utf8')) as unknown;
-      if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) credentials = parsed as Record<string, unknown>;
+      credentials = loginCredentials(JSON.parse((await readLimitedBody(request, MAX_LOGIN_BODY_BYTES)).toString('utf8')) as unknown);
     } catch {
       credentials = undefined;
     }
-    const username = credentials?.Username;
-    if (!credentials || typeof username !== 'string') return refuse();
+    if (!credentials || !hasLoginClient(request.headers)) return fail(400, 'invalid_request');
     let member: { Id: string; Name: string } | undefined;
     try {
-      member = await this.#householdMember(memberIds, username);
+      member = await this.#householdMember(memberIds, credentials.Username);
     } catch {
-      writeJson(response, 502, { error: 'jellyfin_unavailable' });
-      return;
+      return unavailable();
     }
     if (!member) return refuse();
-    const answer = await this.#authenticate(request, Buffer.from(JSON.stringify({ ...credentials, Username: member.Name })));
-    if (!answer) {
-      writeJson(response, 502, { error: 'jellyfin_unavailable' });
-      return;
-    }
-    if (answer.status === 401) return refuse();
-    if (answer.status === 200) {
+    const answer = await this.#authenticate(request, Buffer.from(JSON.stringify({ Username: member.Name, Pw: credentials.Pw })));
+    if (answer?.status === 200) {
       const signedIn = signedInUser(answer.body);
-      if (signedIn?.userId.toLowerCase() !== member.Id.toLowerCase()) {
-        if (signedIn) await this.#revoke(signedIn.token);
-        return refuse();
+      if (signedIn?.userId.toLowerCase() === member.Id.toLowerCase()) {
+        response.writeHead(answer.status, answer.headers);
+        response.end(answer.body);
+        return;
       }
+      if (signedIn) await this.#revoke(signedIn.token);
+      return refuse();
     }
-    response.writeHead(answer.status, answer.headers);
-    response.end(answer.body);
+    if (answer && answer.status < 500) return refuse();
+    // Jellyfin did not answer, or failed: whether it is unavailable is decided as for a name that is no member's.
+    try {
+      await this.#jellyfinUsers(true);
+    } catch {
+      return unavailable();
+    }
+    return refuse();
   }
 
   /**
@@ -590,12 +600,21 @@ export class HouseholdGateway {
 
   /**
    * Sends a sign-in to Jellyfin with the client's own headers and reads the whole answer, or undefined if Jellyfin could
-   * not be reached or its answer was too large.
+   * not be reached, did not answer within #loginTimeoutMs or its answer was too large.
    */
   async #authenticate(request: IncomingMessage, body: Buffer): Promise<{ status: number; headers: IncomingHttpHeaders; body: Buffer } | undefined> {
     const exchange = this.#exchange();
     return new Promise((resolve) => {
-      const headers: IncomingHttpHeaders = { ...request.headers, 'content-length': String(body.length), 'accept-encoding': 'identity' };
+      const headers: IncomingHttpHeaders = {
+        ...request.headers,
+        'content-type': 'application/json',
+        'content-length': String(body.length),
+        accept: 'application/json',
+        'accept-encoding': 'identity',
+      };
+      delete headers['content-encoding'];
+      delete headers['transfer-encoding'];
+      delete headers.expect;
       const upstream = this.#transport().request(this.#requestOptions(request, headers), (upstreamResponse) => {
         const chunks: Buffer[] = [];
         let size = 0;
@@ -619,6 +638,7 @@ export class HouseholdGateway {
           resolve({ status: upstreamResponse.statusCode ?? 502, headers: relayed, body: answer });
         });
       });
+      upstream.setTimeout(this.#loginTimeoutMs, () => upstream.destroy(new Error('household login timed out')));
       upstream.on('error', (error) => {
         exchange.error('upstream', 'household login request', error);
         resolve(undefined);
@@ -1019,6 +1039,35 @@ function credentialKey(credentials: JellyfinCredentials): string | undefined {
 }
 
 /** The user and token in a successful AuthenticateByName answer, or undefined if it has none. */
+/** A sign-in body Jellyfin takes: a name and a password, both strings. Anything else in it is dropped. */
+function loginCredentials(value: unknown): { Username: string; Pw: string } | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const { Username, Pw } = value as Record<string, unknown>;
+  return typeof Username === 'string' && typeof Pw === 'string' ? { Username, Pw } : undefined;
+}
+
+/**
+ * Whether a sign-in names its client as Jellyfin requires: every Authorization or X-Emby-Authorization header given
+ * (at least one) uses the MediaBrowser (or Emby) scheme and has a non-empty Client, Device, DeviceId and Version.
+ */
+function hasLoginClient(headers: IncomingHttpHeaders): boolean {
+  const given = [headers.authorization, headers['x-emby-authorization']].flat().filter((value) => value !== undefined);
+  return given.length > 0 && given.every((value) => {
+    const match = /^\s*(mediabrowser|emby)\s+(.*)$/is.exec(value);
+    if (!match) return false;
+    const fields = new Map<string, string>();
+    for (const part of (match[2] as string).split(',')) {
+      const field = /^\s*([a-z]+)\s*=\s*"?([^"]*)"?\s*$/i.exec(part);
+      if (field) fields.set((field[1] as string).toLowerCase(), (field[2] as string).trim());
+    }
+    return LOGIN_CLIENT_FIELDS.every((name) => Boolean(fields.get(name)));
+  });
+}
+
+function neverStoreHeaders(): string {
+  return Object.entries(NEVER_STORE).map(([name, value]) => `${name}: ${value}\r\n`).join('');
+}
+
 function signedInUser(body: Buffer): { userId: string; token: string } | undefined {
   let answer: unknown;
   try {

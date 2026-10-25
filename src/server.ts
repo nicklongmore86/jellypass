@@ -32,6 +32,8 @@ export interface ServerOptions {
     logLevel?: LogLevel;
     /** The least time a refused household sign-in takes, in milliseconds (default one second). */
     loginFailureDelayMs?: number;
+    /** How long a household sign-in waits for Jellyfin, in milliseconds (default 15 seconds). */
+    loginTimeoutMs?: number;
   };
   /**
    * Runs household "Add to my library" joins after their answer. Pass the BackgroundTasks shutdown stops, so it can

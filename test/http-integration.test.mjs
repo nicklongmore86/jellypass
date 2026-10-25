@@ -112,7 +112,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.equal(forgotPasswordPin.status, 403);
     const nonHouseholdLogin = await fetchWithHost(bridgeUrl, '/Users/AuthenticateByName', 'jelly-farmhouse.example.test', {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { Authorization: jellyfinAuthorization(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ Username: 'Admin', Pw: 'admin-password' }),
     });
     assert.equal(nonHouseholdLogin.status, 401, 'a household hostname must not proxy logins for users outside that household');

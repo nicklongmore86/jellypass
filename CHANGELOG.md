@@ -122,6 +122,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   A typed name is checked against the household's members whether or not they
   are hidden; any other name gets exactly the answer a wrong password gets, no
   sooner than one second after the attempt, under the same per-client limit.
+  No failed sign-in tells a member from anyone else: a request Jellyfin would
+  refuse whoever it named (no client metadata in `Authorization`, or a body
+  that is not a name and a password) is refused before the name is looked up,
+  any answer but success that Jellyfin gives a member is a wrong password, and
+  "Jellyfin unavailable" means its user list could not be read, for any name.
+- **The WebSocket refusal during shutdown is never stored by a CDN** either.
 - **No CDN keeps any `/jellypass/app` answer.** Errors, unknown paths, API
   answers, refusals and the WebSocket refusal under `/jellypass/app` are now
   sent with `Cache-Control`, `CDN-Cache-Control` and

@@ -7,6 +7,8 @@ import { makeServer } from '../dist/server.js';
 
 const HOUSEHOLD_HOST = 'jelly-farmhouse.example.test';
 const LOCAL = '127.0.0.1';
+/** The client metadata Jellyfin requires of a sign-in; without it the gateway refuses one before Jellyfin sees it. */
+const CLIENT = 'MediaBrowser Client="JellyPass Test", Device="Test", DeviceId="jellypass-forwarded-test", Version="1.0.0"';
 
 describe('forwarded client addresses', { timeout: 10_000 }, () => {
   let upstream;
@@ -82,6 +84,7 @@ describe('forwarded client addresses', { timeout: 10_000 }, () => {
     const login = await upstreamHeaders(port, '/Users/AuthenticateByName', {
       'x-forwarded-for': '203.0.113.5',
       'content-type': 'application/json',
+      authorization: CLIENT,
     }, { method: 'POST', body: JSON.stringify({ Username: 'Alice', Pw: 'wrong' }) });
     assert.equal(login['x-forwarded-for'], `203.0.113.5, ${LOCAL}`);
   });
@@ -137,6 +140,7 @@ describe('forwarded client addresses', { timeout: 10_000 }, () => {
       host: HOUSEHOLD_HOST,
       'x-forwarded-for': client,
       'content-type': 'application/json',
+      authorization: CLIENT,
     }, { method: 'POST', body: JSON.stringify({ Username: 'Alice', Pw: 'wrong' }) });
     for (let index = 0; index < 20; index += 1) assert.equal((await attempt('203.0.113.5')).status, 401);
     assert.equal((await attempt('203.0.113.5')).status, 429);
@@ -149,6 +153,7 @@ describe('forwarded client addresses', { timeout: 10_000 }, () => {
       host: HOUSEHOLD_HOST,
       'x-forwarded-for': client,
       'content-type': 'application/json',
+      authorization: CLIENT,
     }, { method: 'POST', body: JSON.stringify({ Username: 'Alice', Pw: 'wrong' }) });
     for (let index = 0; index < 10; index += 1) assert.equal((await attempt('2001:DB8::5')).status, 401);
     for (let index = 0; index < 10; index += 1) assert.equal((await attempt('2001:db8:0:0:0:0:0:5')).status, 401);
@@ -161,6 +166,7 @@ describe('forwarded client addresses', { timeout: 10_000 }, () => {
       host: HOUSEHOLD_HOST,
       'x-forwarded-for': client,
       'content-type': 'application/json',
+      authorization: CLIENT,
     }, { method: 'POST', body: JSON.stringify({ Username: 'Alice', Pw: 'wrong' }) });
     for (let index = 0; index < 20; index += 1) assert.equal((await attempt('203.0.113.5')).status, 401);
     assert.equal((await attempt('203.0.113.6')).status, 429);
