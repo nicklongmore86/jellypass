@@ -53,6 +53,28 @@ function assertSection(notes, { version, nextVersion, subheadings }) {
 }
 
 describe('changelogSection with the real CHANGELOG.md', () => {
+  it('extracts 2.6.0 without its heading, up to the 2.5.0 section', () => {
+    const notes = changelogSection(CHANGELOG, '2.6.0');
+    assertSection(notes, {
+      version: '2.6.0',
+      nextVersion: '2.5.0',
+      subheadings: ['Added', 'Fixed'],
+    });
+    assert.match(notes, /^This is a minor release for the household app/);
+    const flat = notes.replace(/\s+/g, ' ');
+    assert.match(flat, /There is nothing to configure/);
+    assert.match(flat, /2\.5\.0 reads a state file written by 2\.6\.0/);
+    assert.match(flat, /same four TMDB calls before anything is drawn/);
+    assert.match(flat, /`https:\/\/image\.tmdb\.org\/t\/p\/w300`/);
+    assert.match(flat, /No CDN purge is needed/);
+    assert.match(flat, /`ghcr\.io\/nicklongmore86\/jellypass:2\.5\.0`/);
+    assert.match(flat, /`GET \/jellypass\/app\/v1\/discover\/sources`/);
+    assert.match(flat, /`with_networks=3186\|49`|`3186\|49`/);
+    assert.ok(notes.indexOf('**More TMDB calls, but only as members scroll.**') < notes.indexOf('### Added'), 'upgrade notes come first');
+    assert.doesNotMatch(notes, /### Upgrading from/);
+    assert.deepEqual(split(notes).definitions, []);
+  });
+
   it('extracts 2.5.0 without its heading, up to the 2.4.1 section', () => {
     const notes = changelogSection(CHANGELOG, '2.5.0');
     assertSection(notes, {

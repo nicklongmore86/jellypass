@@ -14,6 +14,41 @@ privacy leak. Such changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+## [2.6.0] - 2026-10-25
+
+This is a minor release for the household app (`HOUSEHOLD_APP_ENABLED=true`)
+only: with the app off (the default), nothing changes. It adds rows, pages and
+app endpoints; existing screens and endpoints work as before. There is nothing
+to configure: no setting is added, removed or renamed, webhook payloads, the
+administrator API and the existing app endpoints are unchanged, and the state
+file is unchanged (schema v7, with the same fields as 2.5.0), so 2.5.0 reads a
+state file written by 2.6.0. Read these before upgrading:
+
+- **More TMDB calls, but only as members scroll.** Opening Home still makes
+  the same four TMDB calls before anything is drawn; the list of networks and
+  studios comes from JellyPass itself and costs none. Each new row below
+  those four (Upcoming series and the eight **Popular on** rows) is fetched
+  once, when it comes within 400 px of the screen (at once on a screen tall
+  enough to reach it), so scrolling to the bottom
+  of Home adds at most nine calls, and each network or studio page adds one
+  per page of titles. These calls are cached per household and share TMDB's
+  rate limit like every other, as before.
+- **New images from TMDB.** Network and studio logos are TMDB's own files at
+  `https://image.tmdb.org/t/p/w300`, loaded by the browser straight from
+  TMDB, not through JellyPass, like posters and backdrops. The app's Content
+  Security Policy is unchanged.
+- **No CDN purge is needed:** the app's files are still named by content hash
+  and every other `/jellypass/app` answer, the new endpoints included, is sent
+  `no-store`, so the new files have new addresses.
+- **To roll back,** set `JELLYPASS_IMAGE` back to
+  `ghcr.io/nicklongmore86/jellypass:2.5.0` and recreate the container. A
+  `#/network/:id` or `#/studio/:id` link opened on 2.5.0 shows Home.
+- **Tested in a simulated browser:** the new rows, the lazy loading and the
+  network and studio pages are covered by the app's tests in a simulated
+  browser (the network and studio IDs and HBO Max's `3186|49` were checked
+  against TMDB's live API), not yet on a physical phone; see
+  [Household app (PWA)](README.md#household-app-pwa).
+
 ### Added
 
 - Household app: Seerr-style rows on Home. After the four existing rows come **Upcoming series**, a **Studios** strip
@@ -22,13 +57,20 @@ privacy leak. Such changes are always listed at the top of the release notes.
   also lists HBO's own series (TMDB files them under HBO, so The Last of Us and House of the Dragon would otherwise be
   missing): one row, under HBO Max's name, logo and ID, with no separate HBO row. Each network and
   studio has its own page (`#/network/:id`, `#/studio/:id`) with **Load more**, and Back puts its pages and scroll back.
-  Rows below the first four are fetched only as they come near the screen, so opening Home still makes the same four
-  TMDB calls as before.
+  Rows below the first four are fetched only as they come within 400 px of the screen, so opening Home still makes the
+  same four TMDB calls as before (a screen tall enough to reach the next row fetches that row at once).
 - Household app API: `GET /jellypass/app/v1/discover/upcoming-tv`, `GET /jellypass/app/v1/discover/sources` (the
   networks and studios offered, with their TMDB logos, answered without calling TMDB), and
   `GET /jellypass/app/v1/discover/{network,studio}/:id?page=` for those networks and studios only: any other ID is a
   `400 invalid_request`, before TMDB is asked. Titles still come from TMDB, with the same caching per household and the
   same share of TMDB's rate limit.
+
+### Fixed
+
+- Documentation: an old or unknown fingerprinted app file is answered by the app API, so it gets `401
+  {"error":"unauthorized"}` without a Jellyfin token (as when the browser itself loads a file) and `404
+  {"error":"not_found"}` only with a valid one. The README said it always answered `404`; the behaviour itself is
+  unchanged in this release.
 
 ## [2.5.0] - 2026-10-25
 
@@ -1328,7 +1370,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v2.5.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v2.6.0...HEAD
+[2.6.0]: https://github.com/nicklongmore86/jellypass/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/nicklongmore86/jellypass/compare/v2.4.1...v2.5.0
 [2.4.1]: https://github.com/nicklongmore86/jellypass/compare/v2.4.0...v2.4.1
 [2.4.0]: https://github.com/nicklongmore86/jellypass/compare/v2.3.0...v2.4.0
