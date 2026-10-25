@@ -18,13 +18,17 @@ import {
   skeletonGrid,
   skeletonRequests,
   skeletonRow,
+  SOURCE_TEXT,
+  sourceHeading,
+  sourceRow,
+  studioStrip,
   titleDetail,
   titleRow,
 } from './render.js';
 import { icon } from './icons.js';
 import { clearSignIn, deviceId, jellyfinToken } from './session.js';
 import { showSignIn } from './signin.js';
-import type { DiscoverList, MediaType, Me, RequestEntry } from './types.js';
+import type { DiscoverList, MediaType, Me, Page, RequestEntry, Source, SourceKind, Sources } from './types.js';
 
 const ROWS: Array<{ list: DiscoverList; heading: string }> = [
   { list: 'trending', heading: 'Trending' },
@@ -32,6 +36,10 @@ const ROWS: Array<{ list: DiscoverList; heading: string }> = [
   { list: 'popular-tv', heading: 'Popular series' },
   { list: 'upcoming', heading: 'Upcoming movies' },
 ];
+/** Home's rows below the first four: each is fetched only once it comes near the screen (see {@link lazyLoader}). */
+const UPCOMING_TV_ROW = { list: 'upcoming-tv', heading: 'Upcoming series' } as const;
+/** How far below (or above) the screen a lazy row starts loading, so it is usually there by the time it scrolls in. */
+const LAZY_MARGIN_PX = 400;
 const SEARCH_DEBOUNCE_MS = 300;
 const MAX_QUERY_LENGTH = 100;
 /** "My requests" names its titles from TMDB a few at a time, so a long list is never a burst of calls. */
@@ -176,8 +184,10 @@ interface Position {
   rows?: Record<string, number>;
   /** Home's hero carousel's horizontal scroll. */
   hero?: number;
-  /** Search: result pages loaded. My requests: entries shown. */
+  /** Search, a network's or a studio's page: result pages loaded. My requests: entries shown. */
   loaded?: number;
+  /** Home: the lazy rows that had been fetched (by their slot's key), fetched again at once on coming back. */
+  lazy?: string[];
 }
 const positions = new Map<number, Position>();
 /** This history entry's place among the entries the app itself pushed; 0 is where the app was opened. */
@@ -199,6 +209,7 @@ function restoreLive(position: Position | undefined): position is Position {
 const MAX_POSITIONS = 50;
 let searchPages = 1;
 let requestsShown = 0;
+let sourcePages = 1;
 
 try {
   // The page puts the scroll back itself, once its screen is drawn; the browser's own guess would fight it.
@@ -210,10 +221,12 @@ try {
 /** Reads the screen that is about to be replaced; run first, while its scroll offsets are still in the page. */
 function capturePosition(): void {
   if (shownDepth === undefined || shownRoute === undefined) return;
-  if (main.getAttribute('aria-busy') !== 'false' || main.querySelector('.skeleton')) return;
+  if (main.getAttribute('aria-busy') !== 'false') return;
+  // A lazy row still waiting to come near the screen is a skeleton by design; any other skeleton is a screen still loading.
+  if (Array.from(main.querySelectorAll('.skeleton')).some((node) => !node.closest('[data-lazy]'))) return;
   const position: Position = { y: Math.max(0, Math.round(window.scrollY || 0)) };
   const rows: Record<string, number> = {};
-  for (const list of main.querySelectorAll<HTMLElement>('ul.row-list[aria-labelledby]')) {
+  for (const list of main.querySelectorAll<HTMLElement>('ul.row-list[aria-labelledby], ul.logo-list[aria-labelledby]')) {
     const id = list.getAttribute('aria-labelledby') ?? '';
     if (id) rows[id] = Math.max(0, Math.round(list.scrollLeft || 0));
   }
@@ -222,6 +235,9 @@ function capturePosition(): void {
   if (hero) position.hero = Math.max(0, Math.round(hero.scrollLeft || 0));
   if (shownRoute.name === 'search') position.loaded = searchPages;
   if (shownRoute.name === 'requests') position.loaded = requestsShown;
+  if (shownRoute.name === 'network' || shownRoute.name === 'studio') position.loaded = sourcePages;
+  const lazy = Array.from(main.querySelectorAll<HTMLElement>('[data-lazy="loaded"], [data-lazy="loading"]')).map((slot) => slot.dataset['key'] ?? '');
+  if (lazy.length) position.lazy = lazy;
   positions.delete(shownDepth);
   positions.set(shownDepth, position);
   while (positions.size > MAX_POSITIONS) positions.delete(positions.keys().next().value as number);
@@ -300,7 +316,7 @@ function failure(kind: ApiErrorKind, retry: () => void): void {
 }
 
 interface Route {
-  name: 'home' | 'search' | 'requests' | 'movie' | 'tv' | 'season' | 'about';
+  name: 'home' | 'search' | 'requests' | 'movie' | 'tv' | 'season' | 'about' | SourceKind;
   id?: number;
   season?: number;
   query?: string;
@@ -318,6 +334,8 @@ function parse(hash: string): Route {
   if (path === '/requests') return { name: 'requests' };
   const season = /^\/tv\/(\d{1,10})\/season\/(\d{1,4})$/.exec(path);
   if (season) return { name: 'season', id: Number(season[1]), season: Number(season[2]) };
+  const source = /^\/(network|studio)\/(\d{1,10})$/.exec(path);
+  if (source) return { name: source[1] === 'studio' ? 'studio' : 'network', id: Number(source[2]) };
   const title = /^\/(movie|tv)\/(\d{1,10})$/.exec(path);
   if (title) return { name: title[1] === 'tv' ? 'tv' : 'movie', id: Number(title[2]) };
   return { name: 'home' };
@@ -376,6 +394,7 @@ async function render(): Promise<void> {
     else if (route.name === 'search') await search(route.query ?? '', abort.signal, current);
     else if (route.name === 'requests') await requestsScreen(abort.signal, current);
     else if (route.name === 'movie' || route.name === 'tv') await title(route, abort.signal, current);
+    else if (route.name === 'network' || route.name === 'studio') await sourceScreen(route, abort.signal, current);
     else await season(route, abort.signal, current);
   } catch (error) {
     if (!current() || abort.signal.aborted) return;
@@ -391,7 +410,10 @@ async function home(signal: AbortSignal, current: () => boolean): Promise<void> 
   const slots = ROWS.map(() => el(doc, 'div', { class: 'home-row' }));
   const heading = el(doc, 'h1', { class: 'visually-hidden', text: 'Home', attrs: { tabindex: '-1' } });
   const heroSlot = el(doc, 'div', {}, [skeletonHero(doc)]);
-  show(heading, heroSlot, ...slots);
+  const upcomingTv = lazySlot(`row-${UPCOMING_TV_ROW.list}`);
+  const studiosSlot = el(doc, 'div', { class: 'home-row' });
+  const networksSlot = el(doc, 'div');
+  show(heading, heroSlot, ...slots, upcomingTv, studiosSlot, networksSlot);
   /** Without a hero (the first row failed or is empty) the header is its own bar again. */
   const noHero = () => {
     heroSlot.remove();
@@ -400,8 +422,47 @@ async function home(signal: AbortSignal, current: () => boolean): Promise<void> 
   slots.forEach((slot) => slot.append(skeletonRow(doc)));
   let unauthorized = false;
   const restore = restoring;
-  await Promise.all(
-    ROWS.map(async (row, index) => {
+  const lazy = lazyLoader(signal);
+  /** Lazy rows fetched again at once because the member is coming back to where they were; awaited before the scroll is put back. */
+  const again: Array<Promise<void>> = [];
+  const watch = (slot: HTMLElement, load: () => Promise<Page>, draw: (page: Page) => HTMLElement, heading: string) => {
+    const run = () => lazyRow(slot, load, draw, heading, signal, current, restore);
+    if (restore?.lazy?.includes(slot.dataset['key'] ?? '') && restoreLive(restore)) again.push(run());
+    else lazy.watch(slot, () => void run());
+  };
+  watch(upcomingTv, () => api.discover(UPCOMING_TV_ROW.list, signal), (page) => titleRow(doc, upcomingTv.dataset['key'] as string, UPCOMING_TV_ROW.heading, page),
+    UPCOMING_TV_ROW.heading);
+  /** The studios' strip and the networks' rows, once the API has said which there are (no TMDB call). */
+  const sources = async (): Promise<void> => {
+    let found: Sources;
+    try {
+      found = await api.sources(signal);
+    } catch (error) {
+      if (!current() || signal.aborted) return;
+      const kind = kindOf(error);
+      if (kind === 'unauthorized') unauthorized = true;
+      else studiosSlot.replaceChildren(rowFailure('Studios and networks', kind, () => void render()));
+      return;
+    }
+    if (!current()) return;
+    if (found.studios.length) {
+      const strip = studioStrip(doc, 'row-studios', found.studios);
+      studiosSlot.replaceChildren(strip);
+      const list = strip.querySelector<HTMLElement>('ul.logo-list');
+      const left = restore?.rows?.['row-studios-heading'];
+      if (list && left && restoreLive(restore)) appScrollLeft(list, left);
+    }
+    for (const network of found.networks) {
+      const slot = lazySlot(`row-network-${network.id}`);
+      networksSlot.append(slot);
+      watch(slot, () => api.source('network', network.id, 1, signal), (page) => sourceRow(doc, slot.dataset['key'] as string, 'network', network, page),
+        SOURCE_TEXT.heading('network', network.name));
+    }
+    await Promise.all(again);
+  };
+  await Promise.all([
+    sources(),
+    ...ROWS.map(async (row, index) => {
       const slot = slots[index] as HTMLElement;
       try {
         const page = await api.discover(row.list, signal);
@@ -427,11 +488,110 @@ async function home(signal: AbortSignal, current: () => boolean): Promise<void> 
         else slot.replaceChildren(rowFailure(row.heading, kind, () => void render()));
       }
     }),
-  );
+    ...again,
+  ]);
   if (!current()) return;
   if (unauthorized) throw new ApiError('unauthorized');
   announce('');
   focusHeading();
+  lazy.start();
+}
+
+/** A Home row that is fetched only when it comes near the screen: a row-shaped skeleton until then, so nothing shifts. */
+function lazySlot(key: string): HTMLElement {
+  return el(doc, 'div', { class: 'home-row', attrs: { 'data-lazy': 'waiting', 'data-key': key } }, [skeletonRow(doc)]);
+}
+
+/** Fetches and draws one lazy row into its slot; a failure shows the row's own error with a retry for that row alone. */
+async function lazyRow(
+  slot: HTMLElement,
+  load: () => Promise<Page>,
+  draw: (page: Page) => HTMLElement,
+  heading: string,
+  signal: AbortSignal,
+  current: () => boolean,
+  restore: Position | undefined,
+): Promise<void> {
+  slot.setAttribute('data-lazy', 'loading');
+  try {
+    const page = await load();
+    if (!current()) return;
+    slot.replaceChildren(draw(page));
+    slot.setAttribute('data-lazy', 'loaded');
+    const list = slot.querySelector<HTMLElement>('ul.row-list');
+    const left = restore?.rows?.[`${slot.dataset['key']}-heading`];
+    if (list && left && restoreLive(restore)) appScrollLeft(list, left);
+  } catch (error) {
+    if (!current() || signal.aborted) return;
+    const kind = kindOf(error);
+    if (kind === 'unauthorized') return failure(kind, () => void render());
+    slot.setAttribute('data-lazy', 'failed');
+    slot.replaceChildren(rowFailure(heading, kind, () => void lazyRow(slot, load, draw, heading, signal, current, restore)));
+  }
+}
+
+/**
+ * Runs each watched slot's `load` once, when the slot comes within {@link LAZY_MARGIN_PX} of the screen, so Home never
+ * asks for all of its rows at once. With IntersectionObserver the browser says when; without it, the slots are checked
+ * on scroll (at most once a frame) and once when Home is drawn. Nothing is watched before `start()` (Home is drawn and
+ * any position put back first), and nothing after the navigation is over.
+ */
+function lazyLoader(signal: AbortSignal): { watch(slot: HTMLElement, load: () => void): void; start(): void } {
+  const pending = new Map<Element, () => void>();
+  let started = false;
+  const fire = (slot: Element) => {
+    const load = pending.get(slot);
+    pending.delete(slot);
+    if (load && !signal.aborted) load();
+  };
+  if (typeof IntersectionObserver === 'function') {
+    const observer = new IntersectionObserver((entries) => {
+      for (const entry of entries) {
+        if (!entry.isIntersecting) continue;
+        observer.unobserve(entry.target);
+        fire(entry.target);
+      }
+    }, { rootMargin: `${LAZY_MARGIN_PX}px 0px` });
+    signal.addEventListener('abort', () => observer.disconnect());
+    return {
+      watch(slot, load) {
+        pending.set(slot, load);
+        if (started) observer.observe(slot);
+      },
+      start() {
+        started = true;
+        for (const slot of pending.keys()) observer.observe(slot);
+      },
+    };
+  }
+  let frame = false;
+  const near = (slot: Element) => {
+    const height = window.innerHeight || doc.documentElement.clientHeight || 0;
+    return slot.getBoundingClientRect().top < height + LAZY_MARGIN_PX;
+  };
+  const check = () => {
+    frame = false;
+    if (signal.aborted || !started) return;
+    for (const slot of [...pending.keys()]) if (near(slot)) fire(slot);
+  };
+  const onScroll = () => {
+    if (frame) return;
+    frame = true;
+    if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(check);
+    else check();
+  };
+  window.addEventListener('scroll', onScroll, { passive: true });
+  signal.addEventListener('abort', () => window.removeEventListener?.('scroll', onScroll));
+  return {
+    watch(slot, load) {
+      pending.set(slot, load);
+      if (started && near(slot)) fire(slot);
+    },
+    start() {
+      started = true;
+      check();
+    },
+  };
 }
 
 function rowFailure(heading: string, kind: ApiErrorKind, retry: () => void): HTMLElement {
@@ -658,6 +818,78 @@ async function season(route: Route, signal: AbortSignal, current: () => boolean)
   });
   setTitle(`${series ? `${series.title}: ` : ''}${answer.name}`);
   draw(new Set(), false);
+  announce('');
+  focusHeading();
+}
+
+/**
+ * A network's popular series or a studio's popular movies, as a grid with **Load more** (the API's `nextPage`). Only
+ * the networks and studios the API lists have a page; any other is "Not found" without asking for titles. Coming back,
+ * the pages that were showing are fetched again and the scroll put back.
+ */
+async function sourceScreen(route: Route, signal: AbortSignal, current: () => boolean): Promise<void> {
+  const kind = route.name as SourceKind;
+  const id = route.id as number;
+  setTitle();
+  busy(el(doc, 'div', { class: 'skeleton skeleton-heading', attrs: { 'aria-hidden': 'true' } }), skeletonGrid(doc));
+  await loadMe(signal);
+  const sources = await api.sources(signal);
+  const source: Source | undefined = (kind === 'network' ? sources.networks : sources.studios).find((candidate) => candidate.id === id);
+  if (!source) throw new ApiError('not_found');
+  const back = restoring;
+  const wanted = back?.loaded ?? 1;
+  sourcePages = 1;
+  let answer = await api.source(kind, id, 1, signal);
+  if (!current()) return;
+  const grid = cardList(doc, answer.results, 'grid');
+  const results = el(doc, 'div', { class: 'search-results' }, [
+    answer.results.length ? grid : el(doc, 'p', { class: 'muted', text: 'Nothing to show here right now.' }),
+  ]);
+  const more = el(doc, 'button', { class: 'button button-secondary load-more', text: 'Load more', attrs: { type: 'button' } });
+  setTitle(SOURCE_TEXT.heading(kind, source.name));
+  show(sourceHeading(doc, kind, source), results);
+  const append = (page: Page) => {
+    const fresh = cardList(doc, page.results, 'grid');
+    const firstNew = fresh.querySelector<HTMLElement>('a.card-link');
+    grid.append(...Array.from(fresh.children));
+    return firstNew;
+  };
+  // Coming back: the pages that were showing, one after another, before the scroll is put back.
+  while (answer.nextPage && sourcePages < wanted && restoreLive(back)) {
+    answer = await api.source(kind, id, answer.nextPage, signal);
+    if (!current()) return;
+    append(answer);
+    sourcePages = answer.page;
+  }
+  const offerMore = () => {
+    more.remove();
+    if (!answer.nextPage) return;
+    more.disabled = false;
+    more.textContent = 'Load more';
+    results.append(more);
+  };
+  more.addEventListener('click', () => {
+    if (!answer.nextPage) return;
+    more.disabled = true;
+    more.textContent = 'Loading…';
+    void api.source(kind, id, answer.nextPage, signal).then((page) => {
+      if (!current()) return;
+      answer = page;
+      const firstNew = append(page);
+      sourcePages = page.page;
+      announce('More results loaded.');
+      offerMore();
+      firstNew?.focus();
+    }, (error: unknown) => {
+      if (!current() || signal.aborted) return;
+      const failed = kindOf(error);
+      if (failed === 'unauthorized') return failure(failed, () => void render());
+      announce('');
+      more.remove();
+      results.append(errorState(doc, failed, () => void render()));
+    });
+  });
+  offerMore();
   announce('');
   focusHeading();
 }

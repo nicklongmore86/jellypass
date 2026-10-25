@@ -18,6 +18,7 @@ import { assertNoCanaries } from './support/seerr-fixtures.mjs';
 const DIST_APP = path.join(import.meta.dirname, '..', 'dist', 'app');
 const PAGE = '/jellypass/app/';
 const NOT_FOUND = '{"error":"not_found"}';
+const pause = (ms = 60) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function walk(directory, prefix = '') {
   return readdirSync(directory).flatMap((name) => {
@@ -494,6 +495,8 @@ describe('household app page: files', () => {
       ['pill-ok-text', 'pill-ok-bg'], ['pill-neutral-text', 'pill-neutral-bg'], ['pill-bad-text', 'pill-bad-bg'], ['pill-warn-text', 'pill-warn-bg'],
       // Error text on the page and on cards.
       ['pill-bad-text', 'bg'], ['pill-bad-text', 'surface'],
+      // A network's or studio's name, shown on its logo tile when there is no logo.
+      ['logo-text', 'logo-tile'],
     ];
     for (const [foreground, background] of pairs) {
       assert.ok(tokens[foreground] && tokens[background], `${foreground} on ${background} are tokens`);
@@ -1735,7 +1738,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
    * Loads the real page and client modules into a DOM, signed in as `user` with Jellyfin web's own stored sign-in, and
    * wires `fetch` to the real API on the test server. One page per test (the client keeps its state in module scope).
    */
-  async function openApp(t, app, { user = ALICE, host = HOST_A, signedIn = true, override, hash = '', holdMe, store: initialStore, storageFails = false, userAgent = '', clamp = false } = {}) {
+  async function openApp(t, app, { user = ALICE, host = HOST_A, signedIn = true, override, hash = '', holdMe, store: initialStore, storageFails = false, userAgent = '', clamp = false, intersection = true, rect } = {}) {
     const origin = `https://${host}`;
     const { document, Event, HTMLElement } = parseHTML(read('index.html'));
     // linkedom keeps no focus (it has no document.activeElement): the last element of this page focus() was called on stands in.
@@ -1750,6 +1753,15 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       if (ownFocus) Object.defineProperty(HTMLElement.prototype, 'focus', ownFocus);
       else delete HTMLElement.prototype.focus;
     });
+    // With `rect`, where each element is on the screen (only its `top` is read): for the lazy rows' scroll fallback.
+    if (rect) {
+      const ownRect = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'getBoundingClientRect');
+      HTMLElement.prototype.getBoundingClientRect = function () { return { top: rect(this), bottom: 0, left: 0, right: 0, width: 0, height: 0, x: 0, y: 0 }; };
+      t.after(() => {
+        if (ownRect) Object.defineProperty(HTMLElement.prototype, 'getBoundingClientRect', ownRect);
+        else delete HTMLElement.prototype.getBoundingClientRect;
+      });
+    }
     const store = new Map(initialStore ?? (signedIn ? [['jellyfin_credentials', JSON.stringify({
       Servers: [{ ManualAddress: origin, AccessToken: TOKENS[user], UserId: user }],
     })]] : []));
@@ -1777,7 +1789,27 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         for (const listener of listeners.scroll ?? []) listener({ type: 'scroll', target: document });
       }
     };
+    // Home's lazy rows: an IntersectionObserver that reports a slot as near the screen only when the test says so
+    // (`reveal`). With `intersection: false` there is none, and the page falls back to checking on scroll.
+    const observers = [];
+    class FakeIntersectionObserver {
+      constructor(callback, options) { this.callback = callback; this.options = options; this.targets = new Set(); observers.push(this); }
+      observe(target) { this.targets.add(target); }
+      unobserve(target) { this.targets.delete(target); }
+      disconnect() { this.targets.clear(); }
+    }
+    /** The lazy slots being watched now, by key (strings only). */
+    const watched = () => observers.flatMap((observer) => [...observer.targets].map((target) => target.getAttribute('data-key'))).sort();
+    /** Says the lazy slot with this key has come near the screen. */
+    const reveal = (key) => {
+      for (const observer of observers) {
+        for (const target of [...observer.targets]) {
+          if (target.getAttribute('data-key') === key) observer.callback([{ target, isIntersecting: true }], observer);
+        }
+      }
+    };
     const globals = {
+      ...(intersection ? { IntersectionObserver: FakeIntersectionObserver } : {}),
       document,
       window: {
         scrollTo(_x, y) {
@@ -1786,6 +1818,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
           if (clamp) clampScroll();
         },
         get scrollY() { return scroll.y; },
+        innerHeight: 844,
         addEventListener(type, listener) { (listeners[type] ??= []).push(listener); },
         // The page's network is the test server; Node's own fetch (used by the server itself) is left alone.
         fetch: async (url, init = {}) => {
@@ -1863,15 +1896,15 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       screen.replaceChildren = function (...nodes) { replace.apply(this, nodes); clampScroll(); };
     }
     const back = () => document.getElementById('back');
-    return { document, Event, until, go, main, requests, meRead: () => meRead, store, location, back, entries, cursor: () => index, scroll, sessionWrites, history: globals.history, window: globals.window, serialize: () => document.documentElement.outerHTML, listeners, focused: () => focused };
+    return { document, Event, until, go, main, requests, watched, reveal, observers, meRead: () => meRead, store, location, back, entries, cursor: () => index, scroll, sessionWrites, history: globals.history, window: globals.window, serialize: () => document.documentElement.outerHTML, listeners, focused: () => focused };
   }
 
   it('shows the four discover rows with each title\'s badge and no Play button on the cards', async (t) => {
     const app = await startApp(t);
     const page = await openApp(t, app);
-    await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4, 'four discover rows');
+    await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4 && page.document.querySelector('ul.logo-list'), 'four discover rows and the studios');
     assert.deepEqual([...page.document.querySelectorAll('.row-heading')].map((heading) => heading.textContent),
-      ['Trending', 'Popular movies', 'Popular series', 'Upcoming movies']);
+      ['Trending', 'Popular movies', 'Popular series', 'Upcoming movies', 'Studios']);
     const trending = page.document.querySelector('#row-trending-heading').parentElement;
     const cards = [...trending.querySelectorAll('.card')];
     assert.deepEqual(cards.map((item) => item.querySelector('.card-title').textContent),
@@ -1883,10 +1916,12 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     assert.equal([...page.document.querySelectorAll('.row-list a')].filter((anchor) => anchor.textContent === 'Play').length, 0);
     assert.ok(page.document.querySelector('[role="alert"]') === null);
     assert.equal(page.document.getElementById('screen').getAttribute('aria-busy'), 'false');
-    // Calls: me + four lists, each with the token, never cached by the browser, no cookies.
+    // Calls: me, four lists and the networks and studios (no TMDB call), each with the token, never cached by the
+    // browser, no cookies. The rows further down wait until they come near the screen.
+    await page.until(() => page.requests.some((request) => request.url === '/jellypass/app/v1/discover/sources'), 'the sources');
     assert.deepEqual(page.requests.map((request) => request.url.replace(/\?.*/, '')).sort(), [
-      '/jellypass/app/v1/discover/popular-movies', '/jellypass/app/v1/discover/popular-tv', '/jellypass/app/v1/discover/trending',
-      '/jellypass/app/v1/discover/upcoming', '/jellypass/app/v1/me',
+      '/jellypass/app/v1/discover/popular-movies', '/jellypass/app/v1/discover/popular-tv', '/jellypass/app/v1/discover/sources',
+      '/jellypass/app/v1/discover/trending', '/jellypass/app/v1/discover/upcoming', '/jellypass/app/v1/me',
     ]);
     for (const { init } of page.requests) {
       assert.equal(init.cache, 'no-store');
@@ -1895,6 +1930,120 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     }
     assertNoCanaries(page.serialize(), 'the page shows data that is not in a DTO');
     assert.equal(await accountName(page), 'Alice · Farmhouse', 'the household and name are on About, not in the header');
+  });
+
+  it('fetches Home\'s rows below the fold only as they come near the screen, one call each', async (t) => {
+    const app = await startApp(t);
+    const page = await openApp(t, app);
+    await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4 && page.watched().length === 9, 'Home');
+    const urls = () => page.requests.map((request) => request.url).sort();
+    const tmdb = () => app.tmdb.calls.filter((call) => call.pathname !== '/3/authentication').length;
+    // First load: the same four TMDB calls as before the network rows; the networks and studios cost none.
+    assert.deepEqual(urls(), [
+      '/jellypass/app/v1/discover/popular-movies', '/jellypass/app/v1/discover/popular-tv', '/jellypass/app/v1/discover/sources',
+      '/jellypass/app/v1/discover/trending', '/jellypass/app/v1/discover/upcoming', '/jellypass/app/v1/me',
+    ]);
+    assert.equal(tmdb(), 4);
+    assert.deepEqual(page.watched(), [
+      'row-network-1024', 'row-network-213', 'row-network-2552', 'row-network-2739', 'row-network-3186', 'row-network-3353',
+      'row-network-4330', 'row-network-453', 'row-upcoming-tv',
+    ]);
+    assert.equal(page.observers.at(-1).options.rootMargin, '400px 0px', 'a row starts loading a little before it scrolls in');
+    // Each waiting row holds a row-shaped skeleton, hidden from assistive technology.
+    assert.equal(page.main().querySelectorAll('[data-lazy="waiting"] section.row[aria-hidden="true"] .skeleton').length, 9 * 13);
+    // The Studios strip needs no title: it is drawn at once, each logo a link with the studio's name.
+    assert.deepEqual([...page.main().querySelectorAll('ul.logo-list a')].map((link) => `${link.getAttribute('href')} ${link.getAttribute('aria-label')}`).slice(0, 3),
+      ['#/studio/2 Disney movies', '#/studio/127928 20th Century Studios movies', '#/studio/34 Sony Pictures movies']);
+    for (const image of page.main().querySelectorAll('ul.logo-list img')) {
+      assert.match(image.getAttribute('src'), /^https:\/\/image\.tmdb\.org\/t\/p\/w300\/[A-Za-z0-9_-]+\.png$/);
+      assert.equal(image.getAttribute('loading'), 'lazy');
+    }
+
+    page.reveal('row-upcoming-tv');
+    await page.until(() => page.document.querySelector('#row-upcoming-tv-heading'), 'Upcoming series');
+    assert.equal(page.document.querySelector('#row-upcoming-tv-heading').textContent, 'Upcoming series');
+    page.reveal('row-network-213');
+    const heading = await page.until(() => page.document.querySelector('#row-network-213-heading'), 'Popular on Netflix');
+    const link = heading.querySelector('a');
+    assert.equal(link.getAttribute('href'), '#/network/213');
+    // The heading reads "Popular on Netflix": the visible words, then the logo's text alternative.
+    assert.equal(link.querySelector('span').textContent, 'Popular on');
+    assert.equal(link.querySelector('img').getAttribute('alt'), 'Netflix');
+    assert.equal(link.querySelector('img').getAttribute('src'), 'https://image.tmdb.org/t/p/w300/wwemzKWzjKYJFfCeiB57q3r4Bcm.png');
+    assert.deepEqual([...page.document.querySelector('ul[aria-labelledby="row-network-213-heading"]').querySelectorAll('.card-title')].map((title) => title.textContent),
+      ['Synthetic Series Two']);
+    // Revealed again (or watched by an observer that fires twice), a row is never fetched twice.
+    page.reveal('row-network-213');
+    await pause(50);
+    assert.equal(page.requests.filter((request) => request.url === '/jellypass/app/v1/discover/network/213').length, 1);
+    assert.equal(page.requests.filter((request) => request.url === '/jellypass/app/v1/discover/upcoming-tv').length, 1);
+    assert.equal(page.requests.length, 8);
+    assert.equal(tmdb(), 6);
+    assert.equal(page.watched().length, 7);
+    assertNoCanaries(page.serialize(), 'the page shows data that is not in a DTO');
+  });
+
+  it('without IntersectionObserver, fetches a lazy row once a scroll brings it near the screen', async (t) => {
+    const app = await startApp(t);
+    const tops = new Map();
+    const page = await openApp(t, app, { intersection: false, rect: (element) => tops.get(element.getAttribute('data-key')) ?? 3000 });
+    await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4 && page.main().querySelectorAll('[data-lazy]').length === 9, 'Home');
+    await pause(50);
+    assert.equal(page.requests.length, 6, 'nothing below the fold yet');
+    tops.set('row-upcoming-tv', 1200);
+    for (const listener of page.listeners.scroll ?? []) listener({ type: 'scroll' });
+    await page.until(() => page.document.querySelector('#row-upcoming-tv-heading'), 'Upcoming series, within 400px of the 844px screen');
+    // Just past the margin (844 + 400): still waiting.
+    tops.set('row-network-213', 1250);
+    for (const listener of page.listeners.scroll ?? []) listener({ type: 'scroll' });
+    await pause(50);
+    assert.equal(page.requests.length, 7);
+    tops.set('row-network-213', 1240);
+    for (const listener of page.listeners.scroll ?? []) listener({ type: 'scroll' });
+    await page.until(() => page.document.querySelector('#row-network-213-heading'), 'Netflix');
+    await pause(50);
+    assert.deepEqual(page.requests.slice(6).map((request) => request.url), ['/jellypass/app/v1/discover/upcoming-tv', '/jellypass/app/v1/discover/network/213']);
+  });
+
+  it('shows a network\'s page with its logo and the grid, and refuses one the API does not list without asking for titles', async (t) => {
+    const app = await startApp(t);
+    const page = await openApp(t, app, { hash: '#/network/213' });
+    await page.until(() => page.main().querySelector('ul.grid .card'), 'the network page');
+    assert.equal(page.main().querySelector('h1').textContent, 'Popular on Netflix');
+    const logo = page.main().querySelector('.source-head img');
+    assert.equal(logo.getAttribute('alt'), '', 'the heading already names the network');
+    assert.equal(logo.getAttribute('src'), 'https://image.tmdb.org/t/p/w300/wwemzKWzjKYJFfCeiB57q3r4Bcm.png');
+    assert.deepEqual([...page.main().querySelectorAll('ul.grid .card .badge')].map((badge) => badge.textContent), ['Available to get']);
+    assert.equal(page.main().querySelector('button.load-more'), null, 'no next page after a short one');
+    assert.equal(page.document.querySelector('nav a[aria-current="page"]').dataset.nav, 'home');
+    for (const hash of ['#/network/49', '#/studio/213', '#/network/41077']) {
+      const missing = await openApp(t, app, { hash });
+      await missing.until(() => missing.main().querySelector('h1')?.textContent === 'Not found', hash);
+      assert.deepEqual(missing.requests.map((request) => request.url).filter((url) => url !== '/jellypass/app/v1/me'), ['/jellypass/app/v1/discover/sources'], hash);
+    }
+  });
+
+  it('shows only allowlisted TMDB logos: anything else is the name as text, and markup in a name is never parsed', async (t) => {
+    const app = await startApp(t);
+    const bad = ['https://image.tmdb.org/t/p/original/x.png', 'https://image.tmdb.org/t/p/w342/x.png', 'https://evil.example/t/p/w300/x.png',
+      'https://image.tmdb.org/t/p/w300/x.svg', 'https://image.tmdb.org/t/p/w300/../x.png', 'javascript:alert(1)', null];
+    const sources = {
+      networks: bad.map((logoUrl, index) => ({ id: 213 + index, name: `<b>Net ${index}</b>`, logoUrl })),
+      studios: [{ id: 2, name: 'Good', logoUrl: 'https://image.tmdb.org/t/p/w300/abc_DEF-1.png' }],
+    };
+    const page = await openApp(t, app, {
+      override: (url) => (url === '/jellypass/app/v1/discover/sources' ? { status: 200, body: Buffer.from(JSON.stringify(sources)), headers: { 'content-type': 'application/json' } } : undefined),
+    });
+    await page.until(() => page.main().querySelector('ul.logo-list') && page.watched().length === bad.length + 1, 'Home');
+    page.reveal('row-network-213');
+    const heading = await page.until(() => page.document.querySelector('#row-network-213-heading'), 'the first network row');
+    assert.equal(heading.querySelector('img'), null);
+    assert.equal(heading.querySelector('.logo-text').textContent, '<b>Net 0</b>');
+    assert.equal(heading.querySelectorAll('b').length, 0);
+    assert.deepEqual([...page.main().querySelectorAll('ul.logo-list img')].map((image) => image.getAttribute('src')), ['https://image.tmdb.org/t/p/w300/abc_DEF-1.png']);
+    const { safeLogoUrl } = await import(pathToFileURL(path.join(DIST_APP, BUILT('js/render.js'))).href);
+    for (const url of bad) assert.equal(safeLogoUrl(url), undefined, String(url));
+    assert.equal(safeLogoUrl('https://image.tmdb.org/t/p/w300/wwemzKWzjKYJFfCeiB57q3r4Bcm.png'), 'https://image.tmdb.org/t/p/w300/wwemzKWzjKYJFfCeiB57q3r4Bcm.png');
   });
 
   it('opens a title, its seasons and a season, and keeps to what the DTOs hold', async (t) => {
@@ -2020,19 +2169,19 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.deepEqual(slides.map((slide) => slide.querySelectorAll('img').length), [1, 1, 0, 1, 1]);
       assert.equal(page.document.querySelectorAll('button.hero-dot').length, 5);
       assert.deepEqual([...page.document.querySelectorAll('.hero-nav')].map((button) => button.getAttribute('aria-label')), ['Previous title', 'Next title']);
-      // The row beneath still lists every title, and the hero cost nothing: me and the four lists, as before.
+      // The row beneath still lists every title, and the hero cost nothing: me, the four lists and the (TMDB-free) sources.
       assert.equal(page.document.querySelector('#row-trending-heading').parentElement.querySelectorAll('.card').length, 8);
-      assert.equal(page.requests.length, 5);
+      assert.equal(page.requests.length, 6);
       assert.deepEqual(page.requests.map((request) => request.url.replace(/\?.*/, '')).sort(), [
-        '/jellypass/app/v1/discover/popular-movies', '/jellypass/app/v1/discover/popular-tv', '/jellypass/app/v1/discover/trending',
-        '/jellypass/app/v1/discover/upcoming', '/jellypass/app/v1/me',
+        '/jellypass/app/v1/discover/popular-movies', '/jellypass/app/v1/discover/popular-tv', '/jellypass/app/v1/discover/sources',
+        '/jellypass/app/v1/discover/trending', '/jellypass/app/v1/discover/upcoming', '/jellypass/app/v1/me',
       ]);
       assert.equal(chrome(page), 'home');
       const active = () => [...page.document.querySelectorAll('.hero-dot')].map((dot) => dot.getAttribute('aria-current') === 'true' ? 1 : 0).join('');
       assert.equal(active(), '10000');
       await pause(1500);
       assert.equal(active(), '10000', 'still on the first title: no autoplay');
-      assert.equal(page.requests.length, 5);
+      assert.equal(page.requests.length, 6);
       assert.equal(intervals.length, 0);
       // The hero's title opens the title's page.
       assert.equal(slides[0].querySelector('.hero-link').getAttribute('href'), '#/movie/710000');
@@ -2043,7 +2192,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     it('has no hero, and the header is its own bar, when the first row is empty or fails', async (t) => {
       const app = await startApp(t);
       const empty = await openApp(t, app, { override: trending(0) });
-      await empty.until(() => empty.main().getAttribute('aria-busy') === 'false' && empty.document.querySelectorAll('.skeleton').length === 0 && empty.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 3, 'Home without a first row');
+      await empty.until(() => empty.main().getAttribute('aria-busy') === 'false' && [...empty.document.querySelectorAll('.skeleton')].every((node) => node.closest('[data-lazy]')) && empty.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 3, 'Home without a first row');
       assert.equal(empty.document.querySelectorAll('.hero, .hero-slide').length, 0);
       assert.equal(chrome(empty), null);
       const failing = await openApp(t, app, { override: (url) => (url.startsWith('/jellypass/app/v1/discover/trending') ? { status: 502, body: Buffer.from('{"error":"unavailable"}'), headers: {} } : undefined) });
@@ -2239,6 +2388,63 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       await page.until(() => page.main().querySelector('.episode-list'), 'the season');
       page.back().dispatchEvent(new page.Event('click'));
       await page.until(() => page.main().querySelector('.season-list') && page.scroll.y === 275, 'the series scroll');
+    });
+
+    it('fetches a lazy row again at once on coming back, and puts its scroll and the page\'s back', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app);
+      await homeReady(page);
+      await page.until(() => page.watched().length === 9, 'the lazy rows watched');
+      page.reveal('row-network-213');
+      const netflix = await page.until(() => page.document.querySelector('ul.row-list[aria-labelledby="row-network-213-heading"]'), 'the Netflix row');
+      netflix.scrollLeft = 210;
+      page.scroll.y = 1900;
+      page.go(`#/tv/${T_TV}`);
+      await page.until(() => page.main().querySelector('.season-list'), 'the series');
+      const before = page.requests.length;
+      page.back().dispatchEvent(new page.Event('click'));
+      await page.until(() => page.scroll.y === 1900, 'the page scroll');
+      const fetched = page.requests.slice(before).map((request) => request.url).sort();
+      // The Netflix row was showing, so it is fetched with Home at once; the rows never reached are still waiting.
+      assert.deepEqual(fetched, [
+        '/jellypass/app/v1/discover/network/213', '/jellypass/app/v1/discover/popular-movies', '/jellypass/app/v1/discover/popular-tv',
+        '/jellypass/app/v1/discover/sources', '/jellypass/app/v1/discover/trending', '/jellypass/app/v1/discover/upcoming',
+      ]);
+      assert.equal(page.document.querySelector('ul.row-list[aria-labelledby="row-network-213-heading"]').scrollLeft, 210, 'the row is where it was');
+      assert.equal(page.main().querySelector('[data-key="row-network-213"]').getAttribute('data-lazy'), 'loaded');
+      await page.until(() => page.watched().length === 8, 'the other lazy rows watched again');
+      assert.equal(page.watched().includes('row-network-213'), false);
+    });
+
+    it('opens a studio\'s page from the strip, loads more, and puts the pages and scroll back after a title', async (t) => {
+      const app = await startApp(t, world({ extraResults: 45 }));
+      const page = await openApp(t, app);
+      await homeReady(page);
+      const pixar = await page.until(() => page.main().querySelector('ul.logo-list a[href="#/studio/3"]'), 'the studios strip');
+      assert.equal(pixar.getAttribute('aria-label'), 'Pixar movies');
+      page.go('#/studio/3');
+      await page.until(() => page.main().querySelector('button.load-more'), 'the studio page');
+      assert.equal(page.main().querySelector('h1').textContent, 'Pixar movies');
+      assert.equal(page.document.title, 'Pixar movies – JellyPass');
+      assert.equal(page.back().hidden, false);
+      assert.equal(page.main().querySelectorAll('ul.grid .card').length, 47);
+      page.main().querySelector('button.load-more').dispatchEvent(new page.Event('click'));
+      await page.until(() => page.main().querySelectorAll('ul.grid .card').length === 94 && page.main().querySelector('button.load-more:not([disabled])'), 'page 2');
+      page.scroll.y = 1234;
+      page.go(`#/movie/${OWN_MOVIE}`);
+      await page.until(() => page.main().querySelector('article.detail'), 'the movie');
+      const before = page.requests.length;
+      page.back().dispatchEvent(new page.Event('click'));
+      await page.until(() => page.main().querySelectorAll('ul.grid .card').length === 94 && page.scroll.y === 1234, 'both pages and the scroll');
+      assert.deepEqual(page.requests.slice(before).map((request) => request.url), [
+        '/jellypass/app/v1/discover/sources', '/jellypass/app/v1/discover/studio/3', '/jellypass/app/v1/discover/studio/3?page=2',
+      ]);
+      // Opened on the page itself, Back is Home.
+      const deep = await openApp(t, app, { hash: '#/network/2552' });
+      await deep.until(() => deep.main().querySelector('h1')?.textContent === 'Popular on Apple TV', 'the network page');
+      deep.back().dispatchEvent(new deep.Event('click'));
+      await homeReady(deep);
+      assert.equal(deep.location.hash, '#/');
     });
 
     it('puts the search query, the pages loaded and the scroll back', async (t) => {
@@ -3010,7 +3216,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     const failing = await openApp(t, app);
     await failing.until(() => failing.main().querySelectorAll('.row .notice').length === 4, 'four failed rows');
     for (const title of failing.main().querySelectorAll('.notice-title')) assert.equal(title.textContent, "Can't load this right now");
-    assert.equal(failing.main().querySelectorAll('.row-heading').length, 4, 'each row keeps its name');
+    assert.equal([...failing.main().querySelectorAll('.row')].filter((row) => row.querySelector('.notice') && row.querySelector('.row-heading')).length, 4, 'each row keeps its name');
     assert.equal(failing.main().querySelectorAll('.notice button').length, 4, 'and its own retry');
     assert.doesNotMatch(failing.serialize(), /canary|upstream/i);
     const before = failing.requests.length;

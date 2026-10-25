@@ -66,7 +66,22 @@ export interface Season {
   state: HouseholdState;
 }
 
-export type DiscoverList = 'trending' | 'popular-movies' | 'popular-tv' | 'upcoming';
+export type DiscoverList = 'trending' | 'popular-movies' | 'popular-tv' | 'upcoming' | 'upcoming-tv';
+
+/** A network's popular series, or a studio's popular movies. */
+export type SourceKind = 'network' | 'studio';
+
+/** A network or studio the API lists (an allowlist kept by JellyPass), with its TMDB logo. */
+export interface Source {
+  id: number;
+  name: string;
+  logoUrl: string | null;
+}
+
+export interface Sources {
+  networks: Source[];
+  studios: Source[];
+}
 
 /** A request's coarse status in `GET /requests`: nothing finer is ever sent. */
 export type CoarseStatus = 'requested' | 'ready' | 'failed';

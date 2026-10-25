@@ -23,6 +23,9 @@
   --pill-bad-text: #fecdd3;
   --pill-neutral-bg: #1f2a4d;
   --pill-neutral-text: #cfe0ff;
+  /* Network and studio logos sit on a light tile, as TMDB draws them; a name shown in place of a logo is dark on it. */
+  --logo-tile: #f5f5fa;
+  --logo-text: #0d0f24;
   /* The same pill colours, translucent for use over a poster (the test checks they match the opaque pairs above). */
   --pill-ok-glass: rgb(15 61 43 / 0.86);
   --pill-warn-glass: rgb(74 58 10 / 0.86);
@@ -178,6 +181,30 @@ main {
 .row-list::-webkit-scrollbar { display: none; }
 .row-list > .card { flex: 0 0 8.25rem; scroll-snap-align: start; }
 .row-list > .card:last-child { margin-right: var(--gutter-end); }
+
+/* Network and studio logos: TMDB's own files, unmodified, on a light tile of one shape so nothing shifts as they load. */
+.logo-tile {
+  display: inline-flex; align-items: center; justify-content: center; flex: none; width: 6.5rem; height: 2.25rem;
+  padding: 0.3rem 0.55rem; border-radius: var(--radius-poster); background: var(--logo-tile); color: var(--logo-text);
+}
+.logo-img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.logo-text { font-size: 0.8rem; font-weight: 700; line-height: 1.1; text-align: center; overflow: hidden; }
+.row-heading-source::before { display: none; }
+.row-heading-link {
+  display: inline-flex; align-items: center; gap: 0.55rem; min-height: 2.75rem; color: var(--text); text-decoration: none;
+}
+.row-heading-link .icon { width: 1.1rem; height: 1.1rem; color: var(--muted); }
+.logo-list {
+  display: flex; gap: 0.75rem; overflow-x: auto; padding: 0 0 0.75rem; margin: 0 calc(-1 * var(--gutter-end)) 0 0; list-style: none;
+  scroll-snap-type: x proximity; overscroll-behavior-x: contain; scrollbar-width: none;
+}
+.logo-list::-webkit-scrollbar { display: none; }
+.logo-card { flex: none; scroll-snap-align: start; }
+.logo-card:last-child { margin-right: var(--gutter-end); }
+.logo-link { display: block; border-radius: var(--radius-card); }
+.logo-link .logo-tile { width: 8.5rem; height: 4.5rem; padding: 0.75rem 1rem; border-radius: var(--radius-card); }
+.source-head { display: flex; align-items: center; gap: 0.85rem; margin-bottom: 0.75rem; }
+.source-head .screen-title { margin: 0; }
 /* Three columns on a phone, two on a very narrow one, more on a wide screen. */
 .grid, .skeleton-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem 0.6rem; margin-bottom: 1rem; }
 .card { position: relative; display: grid; align-content: start; gap: 0.35rem; min-width: 0; }
@@ -428,5 +455,5 @@ body[data-chrome] .home-row { max-width: 72rem; margin: 0 auto; padding: 0 var(-
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; }
-  .row-list { scroll-snap-type: none; }
+  .row-list, .logo-list { scroll-snap-type: none; }
 }

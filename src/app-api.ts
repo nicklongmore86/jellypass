@@ -19,7 +19,16 @@ import {
   type SeerrMemberClient,
 } from './seerr.js';
 import { MAX_HOUSEHOLDS } from './store.js';
-import { TMDB_TIMEOUT_MS, TmdbError, type TmdbClient, type TmdbDiscoverList } from './tmdb.js';
+import {
+  TMDB_NETWORKS,
+  TMDB_STUDIOS,
+  TMDB_TIMEOUT_MS,
+  TmdbError,
+  tmdbSource,
+  type TmdbClient,
+  type TmdbDiscoverList,
+  type TmdbSource,
+} from './tmdb.js';
 
 /**
  * The household app API, served under /jellypass/app/v1 on household hosts only (see docs/app-design.md): who the caller
@@ -112,6 +121,8 @@ const LIBRARY_PAGE = 1000;
 const MAX_LIBRARY_PAGES = 50;
 const TMDB_POSTER_BASE = 'https://image.tmdb.org/t/p/w342';
 const TMDB_BACKDROP_BASE = 'https://image.tmdb.org/t/p/w780';
+/** Network and studio logos, at one fixed width. */
+const TMDB_LOGO_BASE = 'https://image.tmdb.org/t/p/w300';
 
 /** Seerr permission bits (Seerr 3.5.1 `server/lib/permissions.ts`) that allow an HD request. */
 const SEERR_ADMIN = 2;
@@ -140,6 +151,7 @@ const DISCOVER_LISTS: Record<string, { list: TmdbDiscoverList; mediaType?: Media
   'popular-movies': { list: 'popular-movies', mediaType: 'movie' },
   'popular-tv': { list: 'popular-tv', mediaType: 'tv' },
   upcoming: { list: 'upcoming', mediaType: 'movie' },
+  'upcoming-tv': { list: 'upcoming-tv', mediaType: 'tv' },
 };
 
 export type MediaType = 'movie' | 'tv';
@@ -203,7 +215,7 @@ interface SignOutLimits {
 
 export interface HouseholdAppOptions {
   /** Titles, from TMDB. */
-  catalogue: Pick<TmdbClient, 'search' | 'discover' | 'movie' | 'tv' | 'season'>;
+  catalogue: Pick<TmdbClient, 'search' | 'discover' | 'network' | 'studio' | 'movie' | 'tv' | 'season'>;
   /** Seerr's administrator blocklist, read with the admin key. */
   blocklist: Pick<SeerrClient, 'blocklist'>;
   /** The caller's own Seerr user, confirmed before every call (a `SeerrUserMap`). */
@@ -645,6 +657,12 @@ export class HouseholdApp implements HouseholdAppHandler {
     if (path === '/requests') return this.#requests ? { endpoint: 'requests', run: (caller, context) => this.#list(caller, context) } : undefined;
     if (path === '/me') return { endpoint: 'me', run: (caller, context) => this.#me(caller, context) };
     if (path === '/search') return { endpoint: 'search', run: (caller, context, url) => this.#search(caller, context, url) };
+    if (path === '/discover/sources') return { endpoint: 'discover', run: async () => sourcesDto() };
+    const source = /^\/discover\/(network|studio)\/([^/]+)$/.exec(path);
+    if (source) {
+      const kind = source[1] as 'network' | 'studio';
+      return { endpoint: 'discover', run: (caller, context, url) => this.#source(caller, context, url, kind, source[2] as string) };
+    }
     const discover = /^\/discover\/([a-z-]+)$/.exec(path);
     if (discover) {
       const list = Object.hasOwn(DISCOVER_LISTS, discover[1] as string) ? DISCOVER_LISTS[discover[1] as string] : undefined;
@@ -726,6 +744,21 @@ export class HouseholdApp implements HouseholdAppHandler {
       this.#view(caller, context),
     ]);
     return pageOf(answer, page, list.mediaType, view, context.origin);
+  }
+
+  /**
+   * A network's popular series or a studio's popular movies, only for an allowlisted ID ({@link TMDB_NETWORKS},
+   * {@link TMDB_STUDIOS}). Any other ID is `invalid` before TMDB, the cache or the caller's view is asked anything.
+   */
+  async #source(caller: JellyfinCaller, context: HouseholdAppRequest, url: URL, kind: 'network' | 'studio', input: string): Promise<PageDto> {
+    const id = sourceParameter(kind, input);
+    const page = pageParameter(url);
+    const [answer, view] = await Promise.all([
+      this.#title(context, `${kind}\n${id}\n${page}`, (signal) =>
+        kind === 'network' ? this.#catalogue.network(id, page, { signal }) : this.#catalogue.studio(id, page, { signal })),
+      this.#view(caller, context),
+    ]);
+    return pageOf(answer, page, kind === 'network' ? 'tv' : 'movie', view, context.origin);
   }
 
   async #movie(caller: JellyfinCaller, context: HouseholdAppRequest, input: string): Promise<MovieDto> {
@@ -967,6 +1000,18 @@ export interface PageDto {
   results: CardDto[];
 }
 
+/** A network or studio the app lists, from JellyPass's own allowlist: no TMDB call, the same for everyone. */
+export interface SourceDto {
+  id: number;
+  name: string;
+  logoUrl: string | null;
+}
+
+export interface SourcesDto {
+  networks: SourceDto[];
+  studios: SourceDto[];
+}
+
 export interface SeasonSummaryDto {
   seasonNumber: number;
   name: string;
@@ -1143,6 +1188,21 @@ function pageParameter(url: URL): number {
   if (value === null) return 1;
   if (!/^[1-9][0-9]{0,2}$/.test(value) || Number(value) > MAX_PAGE) throw new AppAnswer('invalid');
   return Number(value);
+}
+
+/** An allowlisted network or studio ID, or `invalid` (any other number, or anything that is not one). */
+function sourceParameter(kind: 'network' | 'studio', value: string): number {
+  if (!/^[1-9][0-9]{0,9}$/.test(value) || !tmdbSource(kind, Number(value))) throw new AppAnswer('invalid');
+  return Number(value);
+}
+
+function sourceDto(source: TmdbSource): SourceDto {
+  return { id: source.id, name: source.name, logoUrl: imageUrl(TMDB_LOGO_BASE, source.logoPath) };
+}
+
+/** The allowlisted networks and studios, in the order Home shows them. */
+function sourcesDto(): SourcesDto {
+  return { networks: TMDB_NETWORKS.map(sourceDto), studios: TMDB_STUDIOS.map(sourceDto) };
 }
 
 function tmdbParameter(value: string): number {

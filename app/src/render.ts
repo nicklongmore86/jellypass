@@ -1,6 +1,6 @@
 import type { ApiErrorKind, Profile, SignInErrorKind } from './api.js';
 import { icon } from './icons.js';
-import type { Card, CoarseStatus, HouseholdState, Movie, Page, RequestEntry, Season, SeasonSummary, Series } from './types.js';
+import type { Card, CoarseStatus, HouseholdState, Movie, Page, RequestEntry, Season, SeasonSummary, Series, Source, SourceKind } from './types.js';
 
 /**
  * Rendering: DTOs in, DOM out. Everything shown is a fixed string or a DTO field set with `textContent`; nothing is
@@ -9,6 +9,8 @@ import type { Card, CoarseStatus, HouseholdState, Movie, Page, RequestEntry, Sea
  */
 
 const TMDB_IMAGE = /^https:\/\/image\.tmdb\.org\/t\/p\/(?:w342|w780|w1280)\/[A-Za-z0-9_-]{1,100}\.(?:jpg|jpeg|png|webp)$/;
+/** Network and studio logos: TMDB's own files at the one width the API sends, and nothing else. */
+const TMDB_LOGO = /^https:\/\/image\.tmdb\.org\/t\/p\/w300\/[A-Za-z0-9_-]{1,100}\.(?:jpg|jpeg|png|webp)$/;
 const ITEM_ID = /^[A-Za-z0-9-]{1,64}$/;
 
 export const STATE_LABELS: Record<HouseholdState, string> = {
@@ -87,6 +89,11 @@ export function el<K extends keyof HTMLElementTagNameMap>(
 /** An image URL the API returned, only if it is one of TMDB's allowlisted poster or backdrop URLs. */
 export function safeImageUrl(url: unknown): string | undefined {
   return typeof url === 'string' && TMDB_IMAGE.test(url) ? url : undefined;
+}
+
+/** A logo URL the API returned, only if it is one of TMDB's allowlisted logo URLs. */
+export function safeLogoUrl(url: unknown): string | undefined {
+  return typeof url === 'string' && TMDB_LOGO.test(url) ? url : undefined;
 }
 
 /**
@@ -284,6 +291,67 @@ export function titleRow(doc: Document, id: string, heading: string, page: Page)
   const section = el(doc, 'section', { class: 'row' }, [el(doc, 'h2', { class: 'row-heading', text: heading, attrs: { id: `${id}-heading` } })]);
   section.append(page.results.length ? list : el(doc, 'p', { class: 'muted', text: 'Nothing to show here right now.' }));
   return section;
+}
+
+/** The words of the network and studio rows and pages. */
+export const SOURCE_TEXT = {
+  studios: 'Studios',
+  networkPrefix: 'Popular on',
+  heading: (kind: SourceKind, name: string) => (kind === 'network' ? `Popular on ${name}` : `${name} movies`),
+} as const;
+
+export function sourceHref(kind: SourceKind, source: Pick<Source, 'id'>): string {
+  return `#/${kind}/${source.id}`;
+}
+
+/**
+ * A network's or studio's logo on its light tile (TMDB's logos are drawn for a light background), or its name as text
+ * when the API sent no allowlisted logo. `alt` is the name, or empty where the name is already said next to it.
+ */
+export function sourceLogo(doc: Document, source: Source, alt: string, loading: 'lazy' | 'eager' = 'lazy'): HTMLElement {
+  const src = safeLogoUrl(source.logoUrl);
+  const tile = el(doc, 'span', { class: 'logo-tile' });
+  if (src) tile.append(el(doc, 'img', { class: 'logo-img', attrs: { src, alt, width: '300', height: '100', loading, decoding: 'async' } }));
+  else tile.append(el(doc, 'span', { class: 'logo-text', text: source.name, ...(alt ? {} : { attrs: { 'aria-hidden': 'true' } }) }));
+  return tile;
+}
+
+/**
+ * A network's row: the heading is a link to the network's own page and reads "Popular on <name>", the name given by the
+ * logo's text alternative; then the same scrolling list as any discover row.
+ */
+export function sourceRow(doc: Document, id: string, kind: SourceKind, source: Source, page: Page): HTMLElement {
+  const link = el(doc, 'a', { class: 'row-heading-link', attrs: { href: sourceHref(kind, source) } }, [
+    kind === 'network' ? el(doc, 'span', { text: SOURCE_TEXT.networkPrefix }) : undefined,
+    sourceLogo(doc, source, source.name),
+    kind === 'studio' ? el(doc, 'span', { text: 'movies' }) : undefined,
+    icon(doc, 'next'),
+  ]);
+  const section = titleRow(doc, id, '', page);
+  const heading = section.querySelector('h2') as HTMLElement;
+  heading.classList.add('row-heading-source');
+  heading.replaceChildren(link);
+  return section;
+}
+
+/** The studios as a strip of logo links, each to the studio's own page. No title is fetched for it. */
+export function studioStrip(doc: Document, id: string, studios: readonly Source[]): HTMLElement {
+  const items = studios.map((studio) =>
+    el(doc, 'li', { class: 'logo-card' }, [
+      el(doc, 'a', { class: 'logo-link', attrs: { href: sourceHref('studio', studio), 'aria-label': SOURCE_TEXT.heading('studio', studio.name) } }, [
+        sourceLogo(doc, studio, ''),
+      ]),
+    ]));
+  const list = el(doc, 'ul', { class: 'logo-list', attrs: { tabindex: '0', 'aria-labelledby': `${id}-heading` } }, items);
+  return el(doc, 'section', { class: 'row' }, [el(doc, 'h2', { class: 'row-heading', text: SOURCE_TEXT.studios, attrs: { id: `${id}-heading` } }), list]);
+}
+
+/** A network's or studio's page heading: its logo (decorative: the heading says the name) and "Popular on <name>". */
+export function sourceHeading(doc: Document, kind: SourceKind, source: Source): HTMLElement {
+  return el(doc, 'div', { class: 'source-head' }, [
+    sourceLogo(doc, source, '', 'eager'),
+    el(doc, 'h1', { class: 'screen-title', text: SOURCE_TEXT.heading(kind, source.name), attrs: { tabindex: '-1' } }),
+  ]);
 }
 
 export function skeletonRow(doc: Document): HTMLElement {

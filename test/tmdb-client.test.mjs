@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { MAX_GUARDED_RESPONSE_BYTES } from '../dist/seerr.js';
-import { TMDB_API_URL, TMDB_DISCOVER_LISTS, TmdbClient, TmdbError, isTmdbCredential } from '../dist/tmdb.js';
+import { TMDB_API_URL, TMDB_DISCOVER_LISTS, TMDB_NETWORKS, TMDB_STUDIOS, TmdbClient, TmdbError, isTmdbCredential, tmdbSource } from '../dist/tmdb.js';
 import { tmdbFixture } from './support/tmdb-fixtures.mjs';
 
 const V3_KEY = 'f00dfeedf00dfeedf00dfeedf00dfeed';
@@ -14,6 +14,8 @@ const CALLS = {
   validate: (client) => client.validate(),
   search: (client) => client.search('synthetic title', 2),
   discover: (client) => client.discover('trending', 1),
+  network: (client) => client.network(213, 2),
+  studio: (client) => client.studio(41077, 1),
   movie: (client) => client.movie(900001),
   tv: (client) => client.tv(900002),
   season: (client) => client.season(900002, 1),
@@ -69,6 +71,9 @@ describe('TMDB client', () => {
       `GET ${TMDB_API_URL}/3/authentication?language=en-US`,
       `GET ${TMDB_API_URL}/3/search/multi?query=synthetic title&page=2&include_adult=false&language=en-US`,
       `GET ${TMDB_API_URL}/3/trending/all/day?page=1&language=en-US`,
+      // A network's series and a studio's movies, by popularity, as Seerr 3.5.1 builds them.
+      `GET ${TMDB_API_URL}/3/discover/tv?page=2&sort_by=popularity.desc&include_null_first_air_dates=false&with_networks=213&language=en-US`,
+      `GET ${TMDB_API_URL}/3/discover/movie?page=1&sort_by=popularity.desc&include_adult=false&with_companies=41077&language=en-US`,
       `GET ${TMDB_API_URL}/3/movie/900001?language=en-US`,
       `GET ${TMDB_API_URL}/3/tv/900002?language=en-US`,
       `GET ${TMDB_API_URL}/3/tv/900002/season/1?language=en-US`,
@@ -77,6 +82,8 @@ describe('TMDB client', () => {
       `GET ${TMDB_API_URL}/3/discover/tv?page=3&sort_by=popularity.desc&include_null_first_air_dates=false&language=en-US`,
       // Upcoming: released today (UTC) or later.
       `GET ${TMDB_API_URL}/3/discover/movie?page=3&sort_by=popularity.desc&include_adult=false&primary_release_date.gte=2026-10-24&language=en-US`,
+      // Upcoming series: first airing from today (UTC) to a year and a half on, Seerr's default upper bound.
+      `GET ${TMDB_API_URL}/3/discover/tv?page=3&sort_by=popularity.desc&include_null_first_air_dates=false&first_air_date.gte=2026-10-24&first_air_date.lte=2028-04-24&language=en-US`,
     ]);
     for (const call of calls) {
       assert.equal(call.url.searchParams.get('api_key'), V3_KEY);
@@ -114,8 +121,34 @@ describe('TMDB client', () => {
       () => tmdb.tv(-1),
       () => tmdb.season(1, -1),
       () => tmdb.season(1, '1/../../account'),
+      // Only the allowlisted networks and studios, never one passed through.
+      () => tmdb.network(1),
+      () => tmdb.network(41077),
+      () => tmdb.network('213'),
+      () => tmdb.network(213, 0),
+      () => tmdb.studio(213),
+      () => tmdb.studio(0),
+      () => tmdb.studio('2'),
     ]) assert.throws(call, TypeError, String(call));
     assert.equal(calls.length, 0);
+  });
+
+  it('allowlists the eight US streamers and Seerr\'s eleven studios, each with an allowlisted TMDB logo file', () => {
+    assert.deepEqual(TMDB_NETWORKS.map((network) => `${network.id} ${network.name}`), [
+      '213 Netflix', '2739 Disney+', '2552 Apple TV', '1024 Prime Video', '3186 HBO Max', '453 Hulu', '4330 Paramount+', '3353 Peacock',
+    ]);
+    assert.deepEqual(TMDB_STUDIOS.map((studio) => `${studio.id} ${studio.name}`), [
+      '2 Disney', '127928 20th Century Studios', '34 Sony Pictures', '174 Warner Bros. Pictures', '33 Universal', '4 Paramount', '3 Pixar',
+      '521 DreamWorks', '420 Marvel Studios', '9993 DC', '41077 A24',
+    ]);
+    for (const source of [...TMDB_NETWORKS, ...TMDB_STUDIOS]) {
+      assert.match(source.logoPath, /^\/[A-Za-z0-9_-]{1,100}\.(?:jpg|jpeg|png|webp)$/, source.name);
+      assert.ok(Object.isFrozen(source), source.name);
+    }
+    assert.ok(Object.isFrozen(TMDB_NETWORKS) && Object.isFrozen(TMDB_STUDIOS));
+    assert.equal(tmdbSource('network', 213)?.name, 'Netflix');
+    assert.equal(tmdbSource('studio', 213), undefined);
+    assert.equal(tmdbSource('network', 2), undefined);
   });
 
   it('reports a failure by status and route only, never TMDB\'s text, the IDs asked for or the key', async () => {
