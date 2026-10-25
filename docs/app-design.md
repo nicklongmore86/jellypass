@@ -2,8 +2,9 @@
 
 ## Status
 
-Steps 0 to 2b of 4 are done (the "Get this" API and the app's **Get this** button and **My requests**); step 3 and the
-cut-over (step 4) are still to come. Step 0 added the acting-user Seerr client (`SeerrMemberClient` in `src/seerr.ts`), the
+Steps 0 to 3 of 4 are done (the "Get this" API, the app's **Get this** button and **My requests**, and the PWA itself,
+delivered across steps 1b and 2b); the cut-over (step 4) is still to come, as is testing the installed app on a real
+iPhone and Android phone. Step 0 added the acting-user Seerr client (`SeerrMemberClient` in `src/seerr.ts`), the
 Jellyfin-to-Seerr user map (`SeerrUserMap` in `src/seerr-users.ts`), recorded-shape Seerr fixtures with canaries, and a
 real-Seerr test. Step 1a serves the app API's reads (`HouseholdApp` in `src/app-api.ts`, see "App API (step 1a)"):
 who the caller is, search, discover, and movie, series and season details, each title with its household state. Titles
@@ -1018,7 +1019,8 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
    households"): (2a, done) the API, records, `requested` and the household's requests (see '"Get this" as
    implemented (step 2a)'); (2b, done) the PWA's **Get this** button with its season picker and **My requests** (see
    "The PWA's button (step 2b)").
-3. **PWA**: the household app itself, served on household hosts.
+3. **PWA**: (done) the household app itself, served on household hosts. It was delivered by steps 1b (screens, install,
+   sign-in) and 2b (**Get this**, **My requests**); what remains is testing the installed app on real phones.
 4. **Cut-over**: the Seerr website restricted to administrators. Required: it closes late requests made directly to
    Seerr (see "Late requests").
 

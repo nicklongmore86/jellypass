@@ -17,11 +17,12 @@ privacy leak. Such changes are always listed at the top of the release notes.
 ## [2.4.0] - 2026-10-25
 
 This is a minor release. The household sign-in changes below alter only failure
-responses on a relayed Jellyfin endpoint, which the versioning policy above
-keeps outside the public interface. With `HOUSEHOLD_APP_ENABLED=true`, the
+responses on a relayed Jellyfin endpoint. JellyPass's versioning policy (at the
+top of `CHANGELOG.md`) keeps those outside the public interface: they may change
+in a minor or patch release to close a security or privacy leak, and are always
+listed first in the release notes. With `HOUSEHOLD_APP_ENABLED=true`, the
 household app now requests titles (**Get this**), lists the household's
-requests and signs
-members in inside the app. With the app off (the default), only household
+requests and signs members in inside the app. With the app off (the default), only household
 hostnames change: how sign-in there answers (see below) and the caching
 headers of `/jellypass/app` answers. No setting is added, removed or renamed,
 the state file stays at schema v7, and the administrator API only gains
