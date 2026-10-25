@@ -135,7 +135,11 @@ So `TmdbClient` (`src/tmdb.ts`) reads TMDB's v3 API directly, with JellyPass's o
 - **Endpoints**, one method each, no pass-through: `GET /3/search/multi` (`include_adult=false`);
   `GET /3/trending/all/day` (trending); `GET /3/discover/movie` and `GET /3/discover/tv` by `popularity.desc`
   (popular movies and series); `GET /3/discover/movie` by `popularity.desc` with `primary_release_date.gte` today in
-  UTC (upcoming); `GET /3/movie/:id`; `GET /3/tv/:id`; `GET /3/tv/:id/season/:n`. The discover lists are built the way
+  UTC (upcoming); `GET /3/discover/tv` by `popularity.desc` with `first_air_date.gte` today and `first_air_date.lte` a
+  year and a half on, in UTC (upcoming series, Seerr's `discover/tv/upcoming` with its default upper bound);
+  `GET /3/discover/tv` by `popularity.desc` with `with_networks` (a network's series) and `GET /3/discover/movie` by
+  `popularity.desc` with `with_companies` (a studio's movies), each only for an allowlisted ID (see "Networks and
+  studios"); `GET /3/movie/:id`; `GET /3/tv/:id`; `GET /3/tv/:id/season/:n`. The discover lists are built the way
   Seerr 3.5.1 builds its own (`server/routes/discover.ts` and `server/api/themoviedb`), so the lists match what
   members saw in Seerr, minus per-user region and language.
 - **The same for everyone.** Every call carries `language=en-US` and nothing about the caller: no region, no user, no
@@ -160,7 +164,11 @@ So `TmdbClient` (`src/tmdb.ts`) reads TMDB's v3 API directly, with JellyPass's o
   (`https://image.tmdb.org/t/p/{w342,w780,w1280}` plus a file name matching `^/[A-Za-z0-9_-]{1,100}\.(jpg|jpeg|png|webp)$`).
   The API sends posters at `w342` and backdrops at `w780`, exactly as before; the app re-checks every URL against that
   allowlist and, for a backdrop, also offers the same file at `w1280` in a `srcset` (same host, same path), so a phone's
-  browser takes the sharper one by its own width and density. No other size is accepted.
+  browser takes the sharper one by its own width and density. No other size is accepted for posters and backdrops.
+  Network and studio **logos** are TMDB's own files at `https://image.tmdb.org/t/p/w300` (same file-name pattern),
+  checked by the app against an allowlist of their own (`w300` only), so a poster or backdrop URL can never be a logo
+  and a logo URL never a poster. They are shown unmodified on a light tile. The CSP is unchanged (`img-src 'self'
+  https://image.tmdb.org`).
 - **Attribution.** TMDB's API terms require attribution: the README carries TMDB's notice ("This product uses the TMDB
   API but is not endorsed or certified by TMDB"). Step 1b's About & credits screen shows TMDB's
   notice (the wording on TMDB's API terms page: "This product uses TMDB and the TMDB APIs but is not endorsed,
@@ -311,7 +319,10 @@ On the administrator host the paths do not exist (the admin API's own `401`/`404
 |---|---|
 | `GET /jellypass/app/v1/me` | `{name, household}` (no Seerr call) |
 | `GET /jellypass/app/v1/search?q=&page=` | `Page` (`q` 1 to 100 characters, `page` 1 to 500) |
-| `GET /jellypass/app/v1/discover/{trending,popular-movies,popular-tv,upcoming}?page=` | `Page` (`upcoming` is upcoming movies) |
+| `GET /jellypass/app/v1/discover/{trending,popular-movies,popular-tv,upcoming,upcoming-tv}?page=` | `Page` (`upcoming` is upcoming movies, `upcoming-tv` upcoming series) |
+| `GET /jellypass/app/v1/discover/sources` | `Sources` (no TMDB call) |
+| `GET /jellypass/app/v1/discover/network/:id?page=` | `Page` of the network's popular series (allowlisted IDs only) |
+| `GET /jellypass/app/v1/discover/studio/:id?page=` | `Page` of the studio's popular movies (allowlisted IDs only) |
 | `GET /jellypass/app/v1/movie/:tmdbId` | `Movie` |
 | `GET /jellypass/app/v1/tv/:tmdbId` | `Series` |
 | `GET /jellypass/app/v1/tv/:tmdbId/season/:n` | `Season` |
@@ -327,11 +338,30 @@ DTOs (every key always present; missing values `null`, or `""` for text):
 - `Movie`: the card's keys plus `genres` (names) and `runtime` (minutes). `Series`: also `seasons`
   (`{seasonNumber, name, episodeCount, state}`), with `runtime` the first episode run time.
 - `Season`: `tmdbId`, `seasonNumber`, `name`, `overview`, `episodes` (`{episodeNumber, name, overview}`), `state`.
+- `Sources`: `networks` and `studios`, each a list of `{id, name, logoUrl}` (`logoUrl` is
+  `https://image.tmdb.org/t/p/w300` plus the allowlisted file pattern, or `null`), in the order Home shows them.
 
 Every DTO is built by copying named TMDB fields (`title`/`name`, `release_date`/`first_air_date`, `overview`,
 `poster_path`, `backdrop_path`, `vote_average`, `genres[].name`, `runtime`, `episode_run_time[0]`,
 `seasons[].{season_number,name,episode_count}`, `episodes[].{episode_number,name,overview}`), each type-checked and
 length-capped, through an own-property reader; no TMDB, Seerr or Jellyfin object is spread, relayed or stripped.
+
+#### Networks and studios
+
+The networks and studios the app lists are a fixed allowlist in `src/tmdb.ts` (`TMDB_NETWORKS`, `TMDB_STUDIOS`), with
+the name and TMDB logo file of each; nothing about them is read from TMDB or Seerr while answering, so `GET
+/discover/sources` makes no upstream call and is the same for everyone. **Networks** (TMDB network IDs, checked with
+`GET /3/network/:id` on 2026-10-25): Netflix 213, Disney+ 2739, Apple TV 2552, Prime Video 1024, HBO Max 3186, Hulu
+453, Paramount+ 4330, Peacock 3353; all but HBO Max are the IDs Seerr 3.5.1's Networks slider uses
+(`src/components/Discover/NetworkSlider`, which lists HBO, 49, but not HBO Max). **Studios** are Seerr 3.5.1's Studios
+slider (`src/components/Discover/StudioSlider`), in its order and with its names (TMDB company IDs): Disney 2, 20th
+Century Studios 127928, Sony Pictures 34, Warner Bros. Pictures 174, Universal 33, Paramount 4, Pixar 3, DreamWorks
+521, Marvel Studios 420, DC 9993, A24 41077; logo files are TMDB's current ones (`GET /3/company/:id`), not Seerr's
+recoloured copies. A network or studio ID that is not on the list (or is not a plain decimal number) is answered with
+the fixed `400 invalid_request` after the caller is checked and before TMDB, the cache or the caller's view is asked
+anything; `TmdbClient.network` and `.studio` refuse such an ID too. A network or studio page is cached like any other
+TMDB answer, keyed by kind, ID and page, in the household's own 500 entries, and waits for the household's turn at
+TMDB like any other call.
 
 Errors are fixed and the same for every endpoint and title: `400 invalid_request`, `401 unauthorized` (missing,
 invalid or disabled token, or a caller from another household, all identical), `404 not_found` (unknown path, or a
@@ -433,7 +463,7 @@ elsewhere; the files are never proxied to Jellyfin.
   Dockerfile builds it with the rest. `scripts/make-app-icons.py` regenerates the PNG icons (Pillow; the PNGs are
   committed). The only new dependency is `linkedom`, a dev dependency, for DOM-level tests.
 - **Routing.** One page, with screens chosen by the URL hash (`#/`, `#/search?q=`, `#/movie/:id`, `#/tv/:id`,
-  `#/tv/:id/season/:n`, `#/requests` (since step 2b), `#/about`), so the server needs no fallback route and a deep link is just the page.
+  `#/tv/:id/season/:n`, `#/requests` (since step 2b), `#/network/:id` and `#/studio/:id` (the discover rows), `#/about`), so the server needs no fallback route and a deep link is just the page.
 - **Sign-in.** The page sits on the household host next to the proxied Jellyfin web client, so it signs in the way
   Jellyfin web does, through the household gateway, and keeps the result where Jellyfin web keeps its own.
   *Flow:* with no token (or a `401` from the API) the app shows a profile picker built from `GET /Users/Public`, which
@@ -470,11 +500,26 @@ elsewhere; the files are never proxied to Jellyfin.
   and share its storage. Only the service worker is limited to `/jellypass/app/`. `GET /me` provides the name and
   household shown in About's Account card. **Unverified on a real iPhone**: install and sign-in have only been exercised in a
   simulated browser and against a real Jellyfin 10.11.3.
-- **Screens.** Home (four rows of 20 titles, each row loaded and failing on its own), Search (debounced 300 ms, one call
+- **Screens.** Home (see "Home's rows" below), Search (debounced 300 ms, one call
   per pause, previous calls aborted, **Load more** by the API's `nextPage`, query kept in the address), movie page,
   series page with a seasons list (each season's state) and a season page with its episodes, **My requests** (since step
   2b: the household's requests from `GET /requests`, each with its coarse status, per season for a series, and whether the
   caller or someone else in the household asked; titles are named from TMDB ten at a time), About & credits.
+- **Home's rows.** In order: the hero (from Trending's answer), **Trending**, **Popular movies**, **Popular series**,
+  **Upcoming movies** (these four fetched at once, as before), **Upcoming series**, a **Studios** strip (each studio's
+  logo, a link named "<studio> movies" to its page; drawn from `GET /discover/sources`, no title fetched), then
+  **Popular on** Netflix, Disney+, Apple TV, Prime Video, HBO Max, Hulu, Paramount+ and Peacock. A network row's
+  heading is a link to the network's page reading "Popular on" followed by the network's logo, whose `alt` is the
+  network's name (its name as text when there is no allowlisted logo). Each row loads and fails on its own, with its own
+  retry. **Lazy rows:** Upcoming series and the network rows hold a row-shaped skeleton (hidden from assistive
+  technology) and are fetched only when they come within 400 px of the screen: an `IntersectionObserver` with that
+  root margin, or without one, a check on scroll (at most once a frame) and once when Home is drawn. Nothing is watched
+  until the first four rows are drawn and any position is put back, each row is fetched once per visit, and leaving Home
+  stops the watching. So a first Home load makes the same four TMDB calls as before (plus `GET /me` and `GET
+  /discover/sources`, neither of which calls TMDB); scrolling to the bottom adds at most nine, one per row as it nears
+  the screen, never all at once. **Network and studio pages** show the logo (decorative: the heading names it) and
+  "Popular on <network>" or "<studio> movies" over the same poster grid as Search, with **Load more** by the API's
+  `nextPage`; a hash naming a network or studio the API does not list shows "Not found" without asking for titles.
 - **Navigation and look (restyle, PR 1).** Three tabs in a floating glass pill above the bottom safe area: **Home**,
   **Search**, **My requests** (own inline icons built with `createElementNS`, visible labels, active tab = accent colour
   and a dot, each at least 44 px). **About & credits** is not a tab: it opens from the small (i) button in Home's top row
@@ -531,8 +576,10 @@ elsewhere; the files are never proxied to Jellyfin.
   nothing else). With `n > 0` Back is `history.back()`, so hardware back and swipe-back are identical; opened on a screen
   (`n = 0`) it replaces the entry with the logical parent (a season's series, otherwise Home) and never leaves the app.
   **Get this** adds no history entry. Scroll offsets are kept in memory per entry and put back on returning: the page
-  scroll, each Home row's `scrollLeft`, Search's query (already in the address) with the pages loaded, and My requests'
-  entries shown. Data is fetched again, never kept; nothing from the API is written to `sessionStorage`,
+  scroll, each Home row's `scrollLeft` (the Studios strip's too), which of Home's lazy rows had been fetched (fetched
+  again at once on coming back, before the scroll is put back; the others wait to be scrolled to again), Search's query
+  (already in the address) with the pages loaded, a network's or studio's pages loaded, and My requests' entries
+  shown. A lazy row still waiting is not a screen still loading, so it never stops the position being kept. Data is fetched again, never kept; nothing from the API is written to `sessionStorage`,
   `localStorage` or Cache Storage, and `history.scrollRestoration` is `manual`. Checked by the owner on a real iPhone
   (2.4.1): the in-app Back and swipe-back, with the position put back, including the poster rows' `scrollLeft`.
 - **States.** Shown exactly as the DTO says, coarsely: `in_library` is "Ready to watch" with a **Play** button (only

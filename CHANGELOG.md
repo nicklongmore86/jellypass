@@ -14,6 +14,20 @@ privacy leak. Such changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Added
+
+- Household app: Seerr-style rows on Home. After the four existing rows come **Upcoming series**, a **Studios** strip
+  (Seerr's eleven studios as logo links) and **Popular on** rows for eight US streamers (Netflix, Disney+, Apple TV,
+  Prime Video, HBO Max, Hulu, Paramount+ and Peacock), each heading showing the network's TMDB logo. Each network and
+  studio has its own page (`#/network/:id`, `#/studio/:id`) with **Load more**, and Back puts its pages and scroll back.
+  Rows below the first four are fetched only as they come near the screen, so opening Home still makes the same four
+  TMDB calls as before.
+- Household app API: `GET /jellypass/app/v1/discover/upcoming-tv`, `GET /jellypass/app/v1/discover/sources` (the
+  networks and studios offered, with their TMDB logos, answered without calling TMDB), and
+  `GET /jellypass/app/v1/discover/{network,studio}/:id?page=` for those networks and studios only: any other ID is a
+  `400 invalid_request`, before TMDB is asked. Titles still come from TMDB, with the same caching per household and the
+  same share of TMDB's rate limit.
+
 ## [2.5.0] - 2026-10-25
 
 This is a minor release for the household app (`HOUSEHOLD_APP_ENABLED=true`)

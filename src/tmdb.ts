@@ -16,8 +16,58 @@ export const TMDB_API_URL = 'https://api.themoviedb.org';
 export const TMDB_LANGUAGE = 'en-US';
 
 /** The discover lists the household app offers, by their app path segment. */
-export const TMDB_DISCOVER_LISTS = ['trending', 'popular-movies', 'popular-tv', 'upcoming'] as const;
+export const TMDB_DISCOVER_LISTS = ['trending', 'popular-movies', 'popular-tv', 'upcoming', 'upcoming-tv'] as const;
 export type TmdbDiscoverList = typeof TMDB_DISCOVER_LISTS[number];
+
+/** A TMDB network or production company the app offers a list of, with its name and TMDB logo file. */
+export interface TmdbSource {
+  id: number;
+  name: string;
+  logoPath: string;
+}
+
+/**
+ * The only networks whose series the app lists (TMDB `discover/tv` with `with_networks`): the major US streamers. IDs,
+ * names and logo files checked against TMDB's `GET /3/network/:id` (2026-10-25); Seerr 3.5.1's Networks slider
+ * (`src/components/Discover/NetworkSlider`) uses the same IDs for all of them but HBO Max, which it does not list.
+ */
+export const TMDB_NETWORKS: readonly TmdbSource[] = Object.freeze([
+  { id: 213, name: 'Netflix', logoPath: '/wwemzKWzjKYJFfCeiB57q3r4Bcm.png' },
+  { id: 2739, name: 'Disney+', logoPath: '/1edZOYAfoyZyZ3rklNSiUpXX30Q.png' },
+  { id: 2552, name: 'Apple TV', logoPath: '/bngHRFi794mnMq34gfVcm9nDxN1.png' },
+  { id: 1024, name: 'Prime Video', logoPath: '/w7HfLNm9CWwRmAMU58udl2L7We7.png' },
+  { id: 3186, name: 'HBO Max', logoPath: '/nmU0UMDJB3dRRQSTUqawzF2Od1a.png' },
+  { id: 453, name: 'Hulu', logoPath: '/pqUTCleNUiTLAVlelGxUgWn1ELh.png' },
+  { id: 4330, name: 'Paramount+', logoPath: '/fi83B1oztoS47xxcemFdPMhIzK.png' },
+  { id: 3353, name: 'Peacock', logoPath: '/gIAcGTjKKr0KOHL5s4O36roJ8p7.png' },
+].map((source) => Object.freeze(source)));
+
+/**
+ * The only production companies whose movies the app lists (TMDB `discover/movie` with `with_companies`): Seerr 3.5.1's
+ * Studios slider (`src/components/Discover/StudioSlider`), in its order and with its names. Logo files are TMDB's
+ * current ones from `GET /3/company/:id` (2026-10-25).
+ */
+export const TMDB_STUDIOS: readonly TmdbSource[] = Object.freeze([
+  { id: 2, name: 'Disney', logoPath: '/wdrCwmRnLFJhEoH8GSfymY85KHT.png' },
+  { id: 127928, name: '20th Century Studios', logoPath: '/h0rjX5vjW5r8yEnUBStFarjcLT4.png' },
+  { id: 34, name: 'Sony Pictures', logoPath: '/xAb1o9HrSvKBo9mnXC8fJKDNu00.png' },
+  { id: 174, name: 'Warner Bros. Pictures', logoPath: '/zhD3hhtKB5qyv7ZeL4uLpNxgMVU.png' },
+  { id: 33, name: 'Universal', logoPath: '/8lvHyhjr8oUKOOy2dKXoALWKdp0.png' },
+  { id: 4, name: 'Paramount', logoPath: '/jay6WcMgagAklUt7i9Euwj1pzTF.png' },
+  { id: 3, name: 'Pixar', logoPath: '/1TjvGVDMYsj6JBxOAkUHpPEwLf7.png' },
+  { id: 521, name: 'DreamWorks', logoPath: '/3BPX5VGBov8SDqTV7wC1L1xShAS.png' },
+  { id: 420, name: 'Marvel Studios', logoPath: '/hUzeosd33nzE5MCNsZxCGEKTXaQ.png' },
+  { id: 9993, name: 'DC', logoPath: '/2Tc1P3Ac8M479naPp1kYT3izLS5.png' },
+  { id: 41077, name: 'A24', logoPath: '/1ZXsGaFPgrgS6ZZGS37AqD5uU12.png' },
+].map((source) => Object.freeze(source)));
+
+/** The allowlisted network or studio with this TMDB ID, or undefined. */
+export function tmdbSource(kind: 'network' | 'studio', id: number): TmdbSource | undefined {
+  return (kind === 'network' ? TMDB_NETWORKS : TMDB_STUDIOS).find((source) => source.id === id);
+}
+
+/** Upcoming series first air within this long of now: Seerr 3.5.1's default upper bound, a year and a half. */
+const UPCOMING_TV_SPAN_MS = 1000 * 60 * 60 * 24 * (365 * 1.5);
 
 /**
  * A TMDB API call that failed, by status and route only. A `429` carries how long TMDB asked to wait (its
@@ -78,7 +128,8 @@ export class TmdbClient {
   /**
    * One discover list, built the way Seerr 3.5.1 builds its own (`server/routes/discover.ts`): trending is today's
    * trending titles; popular movies and series are TMDB discover by popularity; upcoming is movies by popularity whose
-   * primary release is today (UTC) or later.
+   * primary release is today (UTC) or later; upcoming series are series by popularity first airing from today (UTC)
+   * to a year and a half from now (Seerr's `discover/tv/upcoming` with its default upper bound).
    */
   public discover(list: TmdbDiscoverList, page = 1, options: TmdbCallOptions = {}): Promise<unknown> {
     const parameters = { page: pageNumber(page) };
@@ -94,7 +145,46 @@ export class TmdbClient {
       return this.#get('/3/discover/movie', '/3/discover/movie',
         { ...parameters, sort_by: 'popularity.desc', include_adult: 'false', 'primary_release_date.gte': today }, options);
     }
+    if (list === 'upcoming-tv') {
+      const today = new Date(this.#now());
+      const until = new Date(today.getTime() + UPCOMING_TV_SPAN_MS);
+      return this.#get('/3/discover/tv', '/3/discover/tv', {
+        ...parameters,
+        sort_by: 'popularity.desc',
+        include_null_first_air_dates: 'false',
+        'first_air_date.gte': today.toISOString().slice(0, 10),
+        'first_air_date.lte': until.toISOString().slice(0, 10),
+      }, options);
+    }
     throw new TypeError('discover list is invalid');
+  }
+
+  /**
+   * Popular series of one allowlisted network ({@link TMDB_NETWORKS}), as Seerr 3.5.1's `discover/tv/network/:id`:
+   * TMDB discover by popularity with `with_networks`. Throws a TypeError for any other network.
+   */
+  public network(networkId: number, page = 1, options: TmdbCallOptions = {}): Promise<unknown> {
+    if (!tmdbSource('network', networkId)) throw new TypeError('network is not allowed');
+    return this.#get('/3/discover/tv', '/3/discover/tv', {
+      page: pageNumber(page),
+      sort_by: 'popularity.desc',
+      include_null_first_air_dates: 'false',
+      with_networks: networkId,
+    }, options);
+  }
+
+  /**
+   * Popular movies of one allowlisted studio ({@link TMDB_STUDIOS}), as Seerr 3.5.1's `discover/movies/studio/:id`:
+   * TMDB discover by popularity with `with_companies`. Throws a TypeError for any other company.
+   */
+  public studio(companyId: number, page = 1, options: TmdbCallOptions = {}): Promise<unknown> {
+    if (!tmdbSource('studio', companyId)) throw new TypeError('studio is not allowed');
+    return this.#get('/3/discover/movie', '/3/discover/movie', {
+      page: pageNumber(page),
+      sort_by: 'popularity.desc',
+      include_adult: 'false',
+      with_companies: companyId,
+    }, options);
   }
 
   public movie(tmdbId: number, options: TmdbCallOptions = {}): Promise<unknown> {
