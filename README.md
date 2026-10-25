@@ -734,8 +734,10 @@ limits above.
 
 **`GET /requests`** lists the household's own "Get this" titles, newest first
 (at most 200), from JellyPass's records only: `status` is `requested`
-(Requested), `ready` (Ready to watch) or `failed` (We couldn't get this:
-declined or failed), with each season's status for a series; `byYou` says
+(Requested), `ready` (Ready to watch, and only for a caller whose own Jellyfin
+view has the title or season: anyone else in the household, kept from it by a
+library, a parental limit or a blocked tag, sees `requested`) or `failed` (We
+couldn't get this: declined or failed), with each season's status for a series; `byYou` says
 whether the caller asked (otherwise someone else in the household); `id` is
 opaque. No requester names, Seerr IDs, counts or dates. Statuses are brought
 up to date by each scheduled reconciliation (`RECONCILE_INTERVAL_SECONDS`) and

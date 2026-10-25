@@ -69,6 +69,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   [Store, bounds and rollback](docs/app-design.md#get-this-as-implemented-step-2a)).
   There is no app button yet. See
   ["Get this" as implemented](docs/app-design.md#get-this-as-implemented-step-2a).
+- **"Ready to watch" only for members who can play it.** A title (or season)
+  the household's "Get this" record says is ready shows `ready` in
+  `GET /jellypass/app/v1/requests`, and `in_library` on its page, only to a
+  member whose own Jellyfin view has it; to a member another library, a
+  parental limit or a blocked tag hides it from, it stays `requested` (before:
+  `ready` in the list and `get_this` on the page).
 
 ## [2.3.0] - 2026-10-24
 

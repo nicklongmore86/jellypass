@@ -223,6 +223,11 @@ household's own active record names the season, otherwise `get_this`. A series i
 is. So a caller
 without series permission sees the seasons they have as `in_library` and the rest as `unavailable`.
 
+**Ready is never optimistic.** A title (or season) the household's own record says is ready is `in_library` only for a
+caller whose own view has it (above); for anyone else in the household (another library, a parental limit, a blocked
+tag) it stays `requested`, never `get_this`, and `GET /requests` shows it `requested` too (see '"Get this" as
+implemented (step 2a)'). Both are decided from the household's own records and the caller's own view only.
+
 ### Requested and households
 
 Seerr records who made a request, not which household it was for, and a Jellyfin user can belong to several
@@ -590,7 +595,7 @@ the intent's member's by the join rules.
 **Replay order.** Deferred webhooks are granted genuine ones first, then those that follow the join rules, so a join
 finds the grant it joins whatever order they arrived in. And a record whose grant follows the join rules (or an
 interest) that finds no grant to join (the title was public) is never `completed` against the public title: it stays
-`pending` (its seasons `ready` in `GET /requests`, no longer `requested`), awaiting a grant
+`pending` (its seasons `ready` in `GET /requests` for a caller who can play them), awaiting a grant
 (`AppRequestRecord.awaitingGrant`): it joins the grant created for its item (by a webhook or the backfill), or the
 next refresh finds one, for 30 days, after which it is `completed`.
 
@@ -713,8 +718,11 @@ title's media record is. Last, it grants the webhooks deferred for intents that 
 
 **Readiness, season by season.** A series record is `completed` only once Jellyfin (read with JellyPass's key) has
 episodes of every season it covers; until then it stays `pending` with `readySeasons`, those seasons show `ready` in
-`GET /requests` and leave `requested` and the seasons the household is waiting on, and the refresh reads it again
-until every season is there. A movie is ready with its item.
+`GET /requests` and leave the seasons the household is waiting on, and the refresh reads it again
+until every season is there. A movie is ready with its item. Ready is read with JellyPass's key, but **shown** per
+caller: a ready movie or season shows `ready` in `GET /requests`, and `in_library` in the title state, only to a
+caller whose own Jellyfin view has it (the view the title pages use: their library, reused for up to a minute, and a
+series' episodes, read as them); to anyone else in the household it stays `requested`.
 
 **When a grant is created** (a `MEDIA_AVAILABLE` webhook, its replay, a deferred webhook granted, or the request
 backfill), `AccessService` first decides how (see "Safety tombstones"): deferred if an intent names its title (the
@@ -737,8 +745,10 @@ tombstones", "Replay order"). A request a tombstone covers is granted the same w
 
 **`GET /requests`** answers the household's own titles from its own records only, newest first, at most 200:
 `{id, mediaType, tmdbId, status, seasons, byYou}`. `status` is coarse: `requested` (Requested: pending or approved),
-`ready` (Ready to watch: completed) or `failed` (We couldn't get this: declined or failed); `deleted` records are not
-listed. A title's latest record decides each season (or the movie); a series is `requested` while any season is,
+`ready` (Ready to watch: completed, and in the caller's own view; otherwise `requested`, see "Readiness") or `failed`
+(We couldn't get this: declined or failed); `deleted` records are not
+listed. The caller's view is read only for listed titles with a ready season (at most 8 at a time): a series' episodes
+as them, the rest from their library. A title's latest record decides each season (or the movie); a series is `requested` while any season is,
 otherwise `ready` if any season is, otherwise `failed`; `seasons` is `[{seasonNumber, status}]` (empty for a movie).
 `id` is opaque: an HMAC-SHA256 of the household and the title with a key kept in the state file (`appIdKey`, made with
 the first record), base64url, 22 characters: the same for every member of the household, different for each household

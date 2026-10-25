@@ -39,6 +39,8 @@ export const MAX_REFRESH_READS = 50;
 export const RECORD_DELAY_MS = 2000;
 /** Most titles GET /requests lists, newest first. */
 export const MAX_LISTED_TITLES = 200;
+/** Most of the caller's own Jellyfin views GET /requests reads at once, to tell whether a ready title is theirs to play. */
+export const OWN_VIEW_READS = 8;
 /**
  * A `submitting` intent whose request Seerr does not list this long after it was written is taken as never made (the
  * request's own timeout is 15 seconds): it gives way to a safety tombstone (see #retire), so a request Seerr made late
@@ -153,6 +155,15 @@ interface Outcome {
   /** Requests whose grant follows the join rules (see AppSafetyTombstone). */
   tombstones: AppSafetyTombstone[];
   exempt: Exemption[];
+}
+
+/** One title of a household's list (see HouseholdRequests.list). */
+interface ListedTitle {
+  mediaType: MediaType;
+  tmdbId: number;
+  latest: string;
+  byYou: boolean;
+  seasons: Map<number, CoarseStatus>;
 }
 
 /** What Jellyfin holds of a title (see #presence). */
@@ -658,14 +669,71 @@ export class HouseholdRequests {
   }
 
   /**
+   * The titles (`movie:<id>`, `tv:<id>`) and seasons (`tv:<id>:<n>`) whose latest record in this household is ready
+   * (see #titles). The household app shows them as `requested` unless the caller's own Jellyfin view has them (it
+   * decides `in_library` first): "Ready to watch" is never shown to a member who cannot play the title.
+   */
+  public readyKeys(householdId: string): Set<string> {
+    const keys = new Set<string>();
+    for (const entry of this.#titles(householdId).values()) {
+      for (const [season, status] of entry.seasons) {
+        if (status !== 'ready') continue;
+        keys.add(`${entry.mediaType}:${entry.tmdbId}`);
+        if (entry.mediaType === 'tv') keys.add(`tv:${entry.tmdbId}:${season}`);
+      }
+    }
+    return keys;
+  }
+
+  /**
    * This household's titles with their coarse status, from its own records only: no Seerr ID, no requester beyond
    * whether it was the caller, no count but the entries listed. A title's latest record decides each season (or the
    * movie); a season Jellyfin already has episodes of for a record still waiting on others is `ready`; a series is
    * `requested` while any season is, otherwise `ready` if any season is. Records whose request or media Seerr deleted are
    * not listed, as Seerr no longer lists such a request either.
+   *
+   * `ready` is never optimistic: a movie (or season) is `ready` only when `ownView`, the caller's own Jellyfin view
+   * (their library access, parental limits and the household's blocked tags), has it; otherwise it stays `requested`.
+   * `ownView` is asked only about listed titles with a ready season, at most {@link OWN_VIEW_READS} at a time.
    */
-  public list(householdId: string, callerId: string): RequestsDto {
-    const titles = new Map<string, { mediaType: MediaType; tmdbId: number; latest: string; byYou: boolean; seasons: Map<number, CoarseStatus> }>();
+  public async list(householdId: string, callerId: string, ownView: (mediaType: MediaType, tmdbId: number) => Promise<OwnView>): Promise<RequestsDto> {
+    const key = this.#store.getAppIdKey() ?? '';
+    const listed = [...this.#titles(householdId, callerId).values()]
+      .sort((left, right) => right.latest.localeCompare(left.latest) || left.tmdbId - right.tmdbId)
+      .slice(0, MAX_LISTED_TITLES);
+    const pending = listed.filter((entry) => [...entry.seasons.values()].includes('ready'));
+    for (let index = 0; index < pending.length; index += OWN_VIEW_READS) {
+      await Promise.all(pending.slice(index, index + OWN_VIEW_READS).map(async (entry) => {
+        const view = await ownView(entry.mediaType, entry.tmdbId);
+        for (const [season, status] of entry.seasons) {
+          const visible = entry.mediaType === 'movie' ? view.visible : view.seasons.has(season);
+          if (status === 'ready' && !visible) entry.seasons.set(season, 'requested');
+        }
+      }));
+    }
+    return {
+      results: listed.map((entry) => {
+        const statuses = [...entry.seasons.values()];
+        const status: CoarseStatus = statuses.includes('requested') ? 'requested' : statuses.includes('ready') ? 'ready' : 'failed';
+        return {
+          id: createHmac('sha256', key).update(`${householdId}\n${entry.mediaType}\n${entry.tmdbId}`).digest('base64url').slice(0, 22),
+          mediaType: entry.mediaType,
+          tmdbId: entry.tmdbId,
+          status,
+          seasons: entry.mediaType === 'movie' ? [] : [...entry.seasons].sort(([left], [right]) => left - right)
+            .map(([seasonNumber, seasonStatus]) => ({ seasonNumber, status: seasonStatus })),
+          byYou: entry.byYou,
+        };
+      }),
+    };
+  }
+
+  /**
+   * This household's titles, each season (`0` for a movie) with the coarse status its latest record gives it, from the
+   * household's own records only (see list); `byYou` when `callerId` made any of them.
+   */
+  #titles(householdId: string, callerId?: string): Map<string, ListedTitle> {
+    const titles = new Map<string, ListedTitle>();
     const records = this.#store.listAppRequestsForHousehold(householdId).map(([, record]) => record)
       .filter((record) => !record.detached && record.status !== 'deleted')
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
@@ -680,25 +748,7 @@ export class HouseholdRequests {
       }
       titles.set(key, entry);
     }
-    const key = this.#store.getAppIdKey() ?? '';
-    return {
-      results: [...titles.values()]
-        .sort((left, right) => right.latest.localeCompare(left.latest) || left.tmdbId - right.tmdbId)
-        .slice(0, MAX_LISTED_TITLES)
-        .map((entry) => {
-          const statuses = [...entry.seasons.values()];
-          const status: CoarseStatus = statuses.includes('requested') ? 'requested' : statuses.includes('ready') ? 'ready' : 'failed';
-          return {
-            id: createHmac('sha256', key).update(`${householdId}\n${entry.mediaType}\n${entry.tmdbId}`).digest('base64url').slice(0, 22),
-            mediaType: entry.mediaType,
-            tmdbId: entry.tmdbId,
-            status,
-            seasons: entry.mediaType === 'movie' ? [] : [...entry.seasons].sort(([left], [right]) => left - right)
-              .map(([seasonNumber, seasonStatus]) => ({ seasonNumber, status: seasonStatus })),
-            byYou: entry.byYou,
-          };
-        }),
-    };
+    return titles;
   }
 
   /**
