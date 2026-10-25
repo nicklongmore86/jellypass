@@ -24,6 +24,14 @@ privacy leak. Such changes are always listed at the top of the release notes.
   **Get this** and what the household can see are unchanged.
 - Household app: the glass tab bar and header are denser so their labels and icons stay readable (4.5:1 text, 3:1 icons) over
   any poster, and keyboard focus now scrolls a card clear of the bar and header.
+- Household app: Home opens on a hero of the five top trending titles, edge to edge under the status bar, with the
+  backdrop, title, year, TMDB rating, a status pill and a two-line overview. Swipe it, or use the Previous and Next
+  buttons or the labelled dots; it never moves by itself and respects reduced motion. It uses the trending row Home
+  already loads, so it costs no extra calls, and Back puts it where you left it. Movie, series and season pages are now
+  full-bleed: a tall backdrop under the status bar fading into the page, a bold title with year, runtime (or seasons)
+  and rating chips, genres, the status pill, and one full-width **Play** or **Get this** button. Seasons are cards with
+  round checkboxes and a **Select all** that only ticks the boxes. Backdrops are sharper (TMDB `w1280`, chosen by the
+  phone through `srcset`). Status words, **Get this** outcomes and what the household can see are unchanged.
 
 ## [2.4.1] - 2026-10-25
 

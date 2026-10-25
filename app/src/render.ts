@@ -8,7 +8,7 @@ import type { Card, CoarseStatus, HouseholdState, Movie, Page, RequestEntry, Sea
  * runs in the browser and under a test DOM.
  */
 
-const TMDB_IMAGE = /^https:\/\/image\.tmdb\.org\/t\/p\/(?:w342|w780)\/[A-Za-z0-9_-]{1,100}\.(?:jpg|jpeg|png|webp)$/;
+const TMDB_IMAGE = /^https:\/\/image\.tmdb\.org\/t\/p\/(?:w342|w780|w1280)\/[A-Za-z0-9_-]{1,100}\.(?:jpg|jpeg|png|webp)$/;
 const ITEM_ID = /^[A-Za-z0-9-]{1,64}$/;
 
 export const STATE_LABELS: Record<HouseholdState, string> = {
@@ -30,6 +30,9 @@ export const GET_THIS_TEXT = {
   button: 'Get this',
   sending: 'Sending…',
   chooseSeasons: 'Choose the seasons you want',
+  chooseBelow: 'Choose the seasons you want below.',
+  selectAll: 'Select all',
+  clearAll: 'Clear all',
   confirmation: "Thanks — we'll get this for your household.",
   failedNote: 'Ask your JellyPass admin to try again.',
   rate_limited: 'Too many tries, try again in a few minutes.',
@@ -145,6 +148,134 @@ export function cardList(doc: Document, cards: readonly Card[], className: strin
   return el(doc, 'ul', { class: className }, cards.map((card) => cardItem(doc, card)));
 }
 
+/** The same TMDB backdrop file at the two widths the app uses; a phone's browser picks one by its own width and density. */
+const BACKDROP_URL = /^(https:\/\/image\.tmdb\.org\/t\/p\/)w(?:780|1280)(\/[A-Za-z0-9_-]{1,100}\.(?:jpg|jpeg|png|webp))$/;
+
+/** A backdrop `<img>` (never a CSS `url()`), only for an allowlisted TMDB URL. w780 is the fallback `src`, w1280 the sharper candidate. */
+function backdropImage(doc: Document, url: string | null | undefined, className: string, loading: 'lazy' | 'eager'): HTMLElement | undefined {
+  const src = safeImageUrl(url);
+  if (!src) return undefined;
+  const attrs: Record<string, string> = { src, alt: '', width: '780', height: '439', loading, decoding: 'async' };
+  const parts = BACKDROP_URL.exec(src);
+  if (parts) {
+    const small = `${parts[1]}w780${parts[2]}`;
+    const large = `${parts[1]}w1280${parts[2]}`;
+    attrs['src'] = small;
+    attrs['srcset'] = `${small} 780w, ${large} 1280w`;
+    attrs['sizes'] = '100vw';
+  }
+  return el(doc, 'img', { class: className, attrs });
+}
+
+export const HERO_TEXT = {
+  label: 'Trending now',
+  previous: 'Previous title',
+  next: 'Next title',
+} as const;
+/** The hero shows the first few titles of the first Home row, from the answer Home already has. */
+export const HERO_MAX = 5;
+
+/** The "★ 7.8" text of a TMDB rating, with the source named where there is room. */
+function ratingText(rating: number): string {
+  return `★ ${rating.toFixed(1)}`;
+}
+
+function ratingLabel(rating: number): string {
+  return `TMDB rating ${rating.toFixed(1)} out of 10`;
+}
+
+function heroSlide(doc: Document, card: Card, index: number, total: number): HTMLElement {
+  const media = el(doc, 'div', { class: 'hero-media' });
+  const image = backdropImage(doc, card.backdropUrl, 'hero-img', index === 0 ? 'eager' : 'lazy');
+  if (image) media.append(image);
+  const facts = el(doc, 'p', { class: 'hero-facts' });
+  if (card.year) facts.append(el(doc, 'span', { class: 'hero-year', text: String(card.year) }));
+  if (typeof card.rating === 'number') {
+    facts.append(el(doc, 'span', { class: 'hero-rating', text: `${ratingText(card.rating)} TMDB`, attrs: { 'aria-label': ratingLabel(card.rating) } }));
+  }
+  facts.append(stateBadge(doc, card.state));
+  return el(doc, 'div', {
+    class: `hero-slide${image ? '' : ' hero-slide-plain'}`,
+    attrs: { role: 'group', 'aria-roledescription': 'slide', 'aria-label': `${index + 1} of ${total}` },
+  }, [
+    media,
+    el(doc, 'div', { class: 'hero-scrim', attrs: { 'aria-hidden': 'true' } }),
+    el(doc, 'div', { class: 'hero-text' }, [
+      el(doc, 'p', { class: 'hero-title' }, [el(doc, 'a', { class: 'hero-link', text: card.title, attrs: { href: href(card) } })]),
+      facts,
+      card.overview ? el(doc, 'p', { class: 'hero-overview', text: card.overview }) : undefined,
+    ]),
+  ]);
+}
+
+/**
+ * Home's hero: the first few trending titles, one per screen-wide slide in a CSS scroll-snap track. It never moves by
+ * itself. Swiping works as it does in any scroller; the Previous and Next buttons and the dots (each a labelled
+ * button) do the same for those who cannot swipe, and scroll smoothly unless the member prefers reduced motion.
+ */
+export function heroCarousel(doc: Document, cards: readonly Card[]): HTMLElement | undefined {
+  const shown = cards.slice(0, HERO_MAX);
+  if (shown.length === 0) return undefined;
+  const slides = shown.map((card, index) => heroSlide(doc, card, index, shown.length));
+  const track = el(doc, 'div', { class: 'hero-track' }, slides);
+  const section = el(doc, 'section', { class: 'hero', attrs: { 'aria-roledescription': 'carousel', 'aria-label': HERO_TEXT.label } }, [track]);
+  if (shown.length === 1) return section;
+
+  const live = el(doc, 'span', { class: 'visually-hidden', attrs: { 'aria-live': 'polite' } });
+  const dots = shown.map((card, index) => {
+    const dot = el(doc, 'button', {
+      class: 'hero-dot',
+      attrs: { type: 'button', 'aria-label': `Show title ${index + 1} of ${shown.length}: ${card.title}` },
+    });
+    if (index === 0) dot.setAttribute('aria-current', 'true');
+    dot.addEventListener('click', () => goTo(index));
+    return dot;
+  });
+  const nav = (name: 'prev' | 'next', label: string, step: number) => {
+    const button = el(doc, 'button', { class: `hero-nav hero-${name}`, attrs: { type: 'button', 'aria-label': label } }, [icon(doc, name)]);
+    button.addEventListener('click', () => goTo((current + step + shown.length) % shown.length));
+    return button;
+  };
+  let current = 0;
+  const show = (index: number) => {
+    if (index === current) return;
+    current = index;
+    dots.forEach((dot, at) => {
+      if (at === index) dot.setAttribute('aria-current', 'true');
+      else dot.removeAttribute('aria-current');
+    });
+    live.textContent = `Showing ${index + 1} of ${shown.length}: ${(shown[index] as Card).title}`;
+  };
+  const reduced = () => doc.defaultView?.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true;
+  function goTo(index: number): void {
+    track.scrollTo?.({ left: index * track.clientWidth, behavior: reduced() ? 'auto' : 'smooth' });
+    show(index);
+  }
+  // Swiping moves the track; the dot follows whichever slide is mostly in view.
+  track.addEventListener('scroll', () => {
+    const width = track.clientWidth;
+    if (width > 0) show(Math.min(shown.length - 1, Math.max(0, Math.round(track.scrollLeft / width))));
+  }, { passive: true });
+
+  section.append(
+    el(doc, 'div', { class: 'hero-controls' }, [nav('prev', HERO_TEXT.previous, -1), el(doc, 'div', { class: 'hero-dots' }, dots), nav('next', HERO_TEXT.next, 1)]),
+    live,
+  );
+  return section;
+}
+
+/** The hero while Home loads: the same height, with lines where the title and facts will be. */
+export function skeletonHero(doc: Document): HTMLElement {
+  return el(doc, 'div', { class: 'hero hero-skeleton', attrs: { 'aria-hidden': 'true' } }, [
+    el(doc, 'div', { class: 'skeleton hero-skeleton-media' }),
+    el(doc, 'div', { class: 'hero-text' }, [
+      el(doc, 'span', { class: 'skeleton skeleton-line hero-skeleton-title' }),
+      el(doc, 'span', { class: 'skeleton skeleton-line hero-skeleton-facts' }),
+      el(doc, 'span', { class: 'skeleton skeleton-line' }),
+    ]),
+  ]);
+}
+
 /** A discover row: a heading and a horizontally scrolling list, reachable and scrollable from the keyboard. */
 export function titleRow(doc: Document, id: string, heading: string, page: Page): HTMLElement {
   const list = cardList(doc, page.results, 'row-list');
@@ -184,12 +315,16 @@ export function skeletonRequests(doc: Document): HTMLElement {
   return el(doc, 'ul', { class: 'request-list', attrs: { 'aria-hidden': 'true' } }, items);
 }
 
+/** A detail page while it loads: the full-bleed backdrop, then the title, chips, the one action and the overview. */
 export function skeletonDetail(doc: Document): HTMLElement {
-  return el(doc, 'div', { class: 'detail', attrs: { 'aria-hidden': 'true' } }, [
-    el(doc, 'div', { class: 'backdrop skeleton' }),
-    el(doc, 'div', { class: 'skeleton skeleton-heading' }),
-    el(doc, 'div', { class: 'skeleton skeleton-line' }),
-    el(doc, 'div', { class: 'skeleton skeleton-block' }),
+  return el(doc, 'div', { class: 'detail detail-full detail-skeleton', attrs: { 'aria-hidden': 'true' } }, [
+    el(doc, 'div', { class: 'detail-hero skeleton' }),
+    el(doc, 'div', { class: 'detail-main' }, [
+      el(doc, 'div', { class: 'skeleton skeleton-title' }),
+      el(doc, 'div', { class: 'skeleton skeleton-line skeleton-chips' }),
+      el(doc, 'div', { class: 'skeleton skeleton-action' }),
+      el(doc, 'div', { class: 'skeleton skeleton-block' }),
+    ]),
   ]);
 }
 
@@ -200,24 +335,27 @@ export function runtimeText(minutes: number | null): string {
   return hours ? `${hours} h${rest ? ` ${rest} min` : ''}` : `${rest} min`;
 }
 
-function metaLine(doc: Document, title: Movie | Series): HTMLElement {
-  const parts: Array<string | HTMLElement> = [];
-  if (title.year) parts.push(String(title.year));
-  const runtime = runtimeText(title.runtime);
-  if (runtime) parts.push(runtime);
+/** The detail page's chip row: year, runtime (a movie) or "N seasons" (a series), and the TMDB rating. */
+function detailChips(doc: Document, title: Movie | Series): HTMLElement | undefined {
+  const chips: HTMLElement[] = [];
+  if (title.year) chips.push(el(doc, 'li', { class: 'chip', text: String(title.year) }));
+  const seasons = title.mediaType === 'tv' ? title.seasons.filter((season) => season.seasonNumber >= 1).length : 0;
+  const length = seasons > 0 ? `${seasons} ${seasons === 1 ? 'season' : 'seasons'}` : runtimeText(title.runtime);
+  if (length) chips.push(el(doc, 'li', { class: 'chip', text: length }));
   if (typeof title.rating === 'number') {
-    parts.push(el(doc, 'span', { text: `★ ${title.rating.toFixed(1)}`, attrs: { 'aria-label': `TMDB rating ${title.rating.toFixed(1)} out of 10` } }));
+    chips.push(el(doc, 'li', { class: 'chip chip-rating', text: `${ratingText(title.rating)} TMDB`, attrs: { 'aria-label': ratingLabel(title.rating) } }));
   }
-  const line = el(doc, 'p', { class: 'meta' });
-  parts.forEach((part, index) => {
-    if (index) line.append(doc.createTextNode(' · '));
-    line.append(part);
-  });
-  return line;
+  return chips.length ? el(doc, 'ul', { class: 'chips', attrs: { 'aria-label': 'Details' } }, chips) : undefined;
 }
 
+/** What a title in the household's state says besides its pill; a state with a button needs none. */
+export const STATE_NOTES = {
+  unavailable: "This title can't be requested.",
+  requested: 'Check My requests to follow it.',
+} as const;
+
 export function stateNote(doc: Document, state: HouseholdState): HTMLElement | undefined {
-  if (state === 'unavailable') return el(doc, 'p', { class: 'muted', text: "This title can't be requested." });
+  if (state === 'unavailable' || state === 'requested') return el(doc, 'p', { class: 'muted', text: STATE_NOTES[state] });
   return undefined;
 }
 
@@ -243,51 +381,74 @@ export interface GetThisExtras {
   onReload?: () => void;
 }
 
+/** A season page also draws its series' backdrop, when the series could be read. */
+export interface DetailExtras extends GetThisExtras {
+  backdropUrl?: string | null | undefined;
+}
+
 interface Choice {
   season: number;
   label: string;
 }
 
+/** The pieces of a "Get this" control: the action goes under the title; a series puts the checkboxes in its season cards. */
+export interface GetThisParts {
+  /** The one full-width button, its hint, and the status line that says what happened. */
+  action: HTMLElement;
+  /** The season checkboxes by season number (a series page only), real checkboxes the screen places in its season cards. */
+  boxes: Map<number, HTMLInputElement>;
+  /** Checks or clears every season's box and nothing else: it asks for nothing. Only when there is more than one to pick. */
+  selectAll?: HTMLButtonElement;
+}
+
 /**
- * The "Get this" button, with a season picker for a series. While a call is in flight the button is disabled; the
- * answer is the same fixed confirmation whatever followed, and each failure has its own fixed words.
+ * The "Get this" button, with checkboxes for the seasons of a series. While a call is in flight the button is disabled;
+ * the answer is the same fixed confirmation whatever followed, and each failure has its own fixed words.
  */
-export function getThisControl(doc: Document, subject: string, choices: Choice[], extras: GetThisExtras): HTMLElement | undefined {
+export function getThisParts(doc: Document, subject: string, choices: Choice[], extras: GetThisExtras): GetThisParts | undefined {
   const message = el(doc, 'p', { class: 'get-message', attrs: { role: 'status', tabindex: '-1' } });
   if (extras.confirmed) message.textContent = GET_THIS_TEXT.confirmation;
   const box = el(doc, 'div', { class: 'get-this' });
+  const boxes = new Map<number, HTMLInputElement>();
   const onGet = extras.onGet;
-  if (!onGet || choices.length === 0) return extras.confirmed ? el(doc, 'div', { class: 'get-this' }, [message]) : undefined;
-  const picking = extras.pick === true && choices.length > 0;
-  const boxes = picking
-    ? choices.map((choice) => el(doc, 'input', { attrs: { type: 'checkbox', value: String(choice.season) } }))
-    : [];
+  if (!onGet || choices.length === 0) return extras.confirmed ? { action: el(doc, 'div', { class: 'get-this' }, [message]), boxes } : undefined;
+  const picking = extras.pick === true;
+  if (picking) {
+    for (const choice of choices) {
+      boxes.set(choice.season, el(doc, 'input', { attrs: { type: 'checkbox', value: String(choice.season) } }));
+    }
+  }
+  const inputs = [...boxes.values()];
   const button = el(doc, 'button', {
-    class: 'button',
+    class: 'button button-primary',
     text: GET_THIS_TEXT.button,
     attrs: { type: 'button', 'aria-label': `${GET_THIS_TEXT.button}: ${subject}` },
   });
+  const hint = el(doc, 'p', { class: 'muted get-hint', text: GET_THIS_TEXT.chooseBelow, attrs: picking ? {} : { hidden: '' } });
   const only = choices.filter((choice) => choice.season > 0).map((choice) => choice.season);
-  const chosen = (): number[] => (picking ? boxes.filter((box) => box.checked).map((box) => Number(box.value)) : only);
+  const chosen = (): number[] => (picking ? inputs.filter((input) => input.checked).map((input) => Number(input.value)) : only);
+  const selectAll = picking && inputs.length > 1
+    ? el(doc, 'button', { class: 'button button-small button-secondary select-all', text: GET_THIS_TEXT.selectAll, attrs: { type: 'button' } })
+    : undefined;
   const update = () => {
     button.disabled = picking && chosen().length === 0;
+    hint.hidden = !picking || chosen().length > 0;
+    if (selectAll) selectAll.textContent = inputs.every((input) => input.checked) ? GET_THIS_TEXT.clearAll : GET_THIS_TEXT.selectAll;
   };
   update();
-  let fieldsetNode: HTMLElement | undefined;
-  if (picking) {
-    const fieldset = el(doc, 'fieldset', { class: 'get-seasons' }, [
-      el(doc, 'legend', { text: GET_THIS_TEXT.chooseSeasons }),
-      ...choices.map((choice, index) => el(doc, 'label', { class: 'choice' }, [boxes[index], el(doc, 'span', { text: choice.label })])),
-    ]);
-    for (const input of boxes) input.addEventListener('change', update);
-    fieldsetNode = fieldset;
-    box.append(fieldset);
-  }
+  for (const input of inputs) input.addEventListener('change', update);
+  // Select all only moves the checkmarks; "Get this" is still the one thing that asks, and it asks exactly as before.
+  selectAll?.addEventListener('click', () => {
+    const next = !inputs.every((input) => input.checked);
+    for (const input of inputs) if (!input.disabled) input.checked = next;
+    update();
+  });
   button.addEventListener('click', () => {
     if (button.disabled) return;
     const seasons = chosen();
     button.disabled = true;
-    for (const input of boxes) input.disabled = true;
+    for (const input of inputs) input.disabled = true;
+    if (selectAll) selectAll.disabled = true;
     button.textContent = GET_THIS_TEXT.sending;
     button.setAttribute('aria-busy', 'true');
     message.className = 'get-message';
@@ -300,7 +461,9 @@ export function getThisControl(doc: Document, subject: string, choices: Choice[]
       message.className = 'get-message';
       message.textContent = GET_THIS_TEXT.confirmation;
       button.remove();
-      fieldsetNode?.remove();
+      hint.remove();
+      selectAll?.remove();
+      for (const input of inputs) input.remove();
       message.focus({ preventScroll: true });
     }).then((outcome) => {
       // Accepted: the screen is redrawn with the confirmation. Unauthorized: the screen is replaced by the sign-in state.
@@ -319,54 +482,66 @@ export function getThisControl(doc: Document, subject: string, choices: Choice[]
       message.textContent = outcome === 'rate_limited' ? GET_THIS_TEXT.rate_limited : outcome === 'offline' ? GET_THIS_TEXT.offline : GET_THIS_TEXT.unavailable;
       button.textContent = GET_THIS_TEXT.button;
       button.removeAttribute('aria-busy');
-      for (const input of boxes) input.disabled = false;
+      for (const input of inputs) input.disabled = false;
+      if (selectAll) selectAll.disabled = false;
       update();
     });
   });
-  box.append(button, message);
-  return box;
+  box.append(button);
+  if (picking) box.append(hint);
+  box.append(message);
+  return { action: box, boxes, ...(selectAll ? { selectAll } : {}) };
+}
+
+/** The backdrop that runs full-bleed under the status bar, fading into the page; a plain glow when a title has none. */
+function detailHero(doc: Document, backdropUrl: string | null | undefined): HTMLElement {
+  const frame = el(doc, 'div', { class: 'detail-hero' });
+  const image = backdropImage(doc, backdropUrl, 'hero-img', 'eager');
+  if (image) frame.append(image);
+  frame.append(el(doc, 'div', { class: 'detail-scrim', attrs: { 'aria-hidden': 'true' } }));
+  return frame;
+}
+
+/** The status pill, its note, and the one action: Play (in the library) or Get this (available to get), never both as primaries. */
+function detailAction(doc: Document, play: HTMLElement | undefined, parts: GetThisParts | undefined): HTMLElement | undefined {
+  // A series partly held can still ask for the rest: then Play is the primary and Get this steps back to the glass style.
+  if (play && parts) parts.action.querySelector('button')?.classList.replace('button-primary', 'button-secondary');
+  return play || parts ? el(doc, 'div', { class: 'detail-action' }, [play, parts?.action]) : undefined;
 }
 
 /** A movie or series page. A series also lists its seasons, each with the household's state for it. */
 export function titleDetail(doc: Document, title: Movie | Series, origin: string, extras: GetThisExtras = {}): HTMLElement {
-  const backdrop = safeImageUrl(title.backdropUrl);
   const own = extras.asked?.has(0) || extras.failed?.has(0) ? undefined : title.state === 'get_this' && title.mediaType === 'movie' ? [{ season: 0, label: '' }] : undefined;
   const failedSeason = (season: SeasonSummary) => season.state === 'get_this' && extras.failed?.has(season.seasonNumber) === true;
   const seasonChoices = title.mediaType === 'tv'
     ? title.seasons.filter((season) => season.state === 'get_this' && season.seasonNumber >= 1 && !extras.asked?.has(season.seasonNumber) && !failedSeason(season))
       .map((season) => ({ season: season.seasonNumber, label: season.name || `Season ${season.seasonNumber}` }))
     : [];
-  const control = getThisControl(doc, title.title, own ?? seasonChoices, { ...extras, pick: title.mediaType === 'tv' });
+  const parts = getThisParts(doc, title.title, own ?? seasonChoices, { ...extras, pick: title.mediaType === 'tv' });
   const failedMovie = title.state === 'get_this' && title.mediaType === 'movie' && extras.failed?.has(0) === true;
   const failedAny = failedMovie || (title.mediaType === 'tv' && title.seasons.some(failedSeason));
-  const actions = el(doc, 'div', { class: 'actions' }, [
-    failedMovie ? requestBadge(doc, 'failed') : stateBadge(doc, title.state),
-    title.state === 'in_library' ? playButton(doc, title, origin) : undefined,
-  ]);
+  const play = title.state === 'in_library' ? playButton(doc, title, origin, 'button button-primary') : undefined;
   const genres = title.genres.length
     ? el(doc, 'ul', { class: 'genres', attrs: { 'aria-label': 'Genres' } }, title.genres.map((genre) => el(doc, 'li', { text: genre })))
     : undefined;
-  const head = el(doc, 'div', { class: 'detail-head' }, [
+  const head = el(doc, 'div', { class: 'detail-head detail-head-poster' }, [
     poster(doc, title.posterUrl, `Poster for ${title.title}`, 'detail'),
     el(doc, 'div', { class: 'detail-text' }, [
-      el(doc, 'h1', { class: 'screen-title', text: title.title, attrs: { tabindex: '-1' } }),
-      metaLine(doc, title),
+      el(doc, 'h1', { class: 'screen-title detail-title', text: title.title, attrs: { tabindex: '-1' } }),
+      detailChips(doc, title),
       genres,
-      actions,
+      el(doc, 'div', { class: 'actions' }, [failedMovie ? requestBadge(doc, 'failed') : stateBadge(doc, title.state)]),
       stateNote(doc, title.state),
       failedAny ? failedNote(doc) : undefined,
-      control,
+      detailAction(doc, play, parts),
     ]),
   ]);
-  const backdropFrame = el(doc, 'div', { class: 'backdrop' });
-  if (backdrop) backdropFrame.append(el(doc, 'img', { attrs: { src: backdrop, alt: '', width: '780', height: '439', decoding: 'async' } }));
-  const detail = el(doc, 'article', { class: 'detail' }, [
-    backdropFrame,
+  const main = el(doc, 'div', { class: 'detail-main' }, [
     head,
     title.overview ? el(doc, 'p', { class: 'overview', text: title.overview }) : undefined,
   ]);
-  if (title.mediaType === 'tv') detail.append(seasonList(doc, title, extras.failed));
-  return detail;
+  if (title.mediaType === 'tv') main.append(seasonList(doc, title, extras.failed, parts));
+  return el(doc, 'article', { class: 'detail detail-full' }, [detailHero(doc, title.backdropUrl), main]);
 }
 
 /** A title the household asked for that failed is not asked for again from here: the backend holds the failed record. */
@@ -374,46 +549,69 @@ function failedNote(doc: Document): HTMLElement {
   return el(doc, 'p', { class: 'muted failed-note', text: GET_THIS_TEXT.failedNote });
 }
 
-export function seasonList(doc: Document, series: Series, failed?: ReadonlySet<number>): HTMLElement {
+/**
+ * The seasons as cards: name, episode count and the state's pill, a link to the season, and, for a season the
+ * household can ask for, a round selection control that is still a real checkbox. Those checkboxes and their legend
+ * share one fieldset, so the group is announced as one.
+ */
+export function seasonList(doc: Document, series: Series, failed?: ReadonlySet<number>, parts?: GetThisParts): HTMLElement {
   const items = series.seasons.map((season: SeasonSummary) => {
     const count = season.episodeCount === null ? '' : `${season.episodeCount} ${season.episodeCount === 1 ? 'episode' : 'episodes'}`;
-    return el(doc, 'li', { class: 'season' }, [
+    const name = season.name || `Season ${season.seasonNumber}`;
+    const input = parts?.boxes.get(season.seasonNumber);
+    return el(doc, 'li', { class: `season${input ? ' season-pick' : ''}` }, [
       el(doc, 'a', { class: 'season-link', attrs: { href: `#/tv/${series.tmdbId}/season/${season.seasonNumber}` } }, [
-        el(doc, 'span', { class: 'season-name', text: season.name || `Season ${season.seasonNumber}` }),
+        el(doc, 'span', { class: 'season-name', text: name }),
         el(doc, 'span', { class: 'card-meta', text: count }),
       ]),
       season.state === 'get_this' && failed?.has(season.seasonNumber) ? requestBadge(doc, 'failed') : stateBadge(doc, season.state),
+      input ? el(doc, 'label', { class: 'choice' }, [input, el(doc, 'span', { class: 'visually-hidden', text: name })]) : undefined,
     ]);
   });
+  const list = items.length ? el(doc, 'ul', { class: 'season-list' }, items) : el(doc, 'p', { class: 'muted', text: 'No seasons listed.' });
+  const picking = parts !== undefined && parts.boxes.size > 0;
   return el(doc, 'section', { class: 'seasons' }, [
     el(doc, 'h2', { class: 'row-heading', text: 'Seasons' }),
-    items.length ? el(doc, 'ul', { class: 'season-list' }, items) : el(doc, 'p', { class: 'muted', text: 'No seasons listed.' }),
+    picking
+      ? el(doc, 'fieldset', { class: 'get-seasons' }, [el(doc, 'legend', { text: GET_THIS_TEXT.chooseSeasons }), parts?.selectAll, list])
+      : list,
   ]);
 }
 
-export function seasonView(doc: Document, season: Season, seriesTitle: string | undefined, extras: GetThisExtras = {}): HTMLElement {
+export function seasonView(doc: Document, season: Season, seriesTitle: string | undefined, extras: DetailExtras = {}): HTMLElement {
   const back = el(doc, 'a', { class: 'back', text: seriesTitle ? `← ${seriesTitle}` : '← Series', attrs: { href: `#/tv/${season.tmdbId}` } });
+  const name = season.name || `Season ${season.seasonNumber}`;
   const episodes = season.episodes.map((episode) =>
     el(doc, 'li', { class: 'episode' }, [
       el(doc, 'h3', { class: 'episode-title', text: `${episode.episodeNumber}. ${episode.name || `Episode ${episode.episodeNumber}`}` }),
       episode.overview ? el(doc, 'p', { class: 'muted', text: episode.overview }) : undefined,
     ]),
   );
-  return el(doc, 'article', { class: 'detail season-view' }, [
+  const failedHere = season.state === 'get_this' && extras.failed?.has(season.seasonNumber) === true;
+  const parts = getThisParts(
+    doc,
+    [seriesTitle, name].filter(Boolean).join(' '),
+    season.state === 'get_this' && season.seasonNumber >= 1 && !extras.asked?.has(season.seasonNumber) && !extras.failed?.has(season.seasonNumber)
+      ? [{ season: season.seasonNumber, label: name }] : [],
+    extras,
+  );
+  const count = season.episodes.length;
+  const text = el(doc, 'div', { class: 'detail-text' }, [
     back,
-    el(doc, 'h1', { class: 'screen-title', text: season.name || `Season ${season.seasonNumber}`, attrs: { tabindex: '-1' } }),
-    el(doc, 'div', { class: 'actions' }, [season.state === 'get_this' && extras.failed?.has(season.seasonNumber) ? requestBadge(doc, 'failed') : stateBadge(doc, season.state)]),
+    el(doc, 'h1', { class: 'screen-title detail-title', text: name, attrs: { tabindex: '-1' } }),
+    count ? el(doc, 'ul', { class: 'chips', attrs: { 'aria-label': 'Details' } }, [el(doc, 'li', { class: 'chip', text: `${count} ${count === 1 ? 'episode' : 'episodes'}` })]) : undefined,
+    el(doc, 'div', { class: 'actions' }, [failedHere ? requestBadge(doc, 'failed') : stateBadge(doc, season.state)]),
     stateNote(doc, season.state),
-    season.state === 'get_this' && extras.failed?.has(season.seasonNumber) ? failedNote(doc) : undefined,
-    getThisControl(
-      doc,
-      [seriesTitle, season.name || `Season ${season.seasonNumber}`].filter(Boolean).join(' '),
-      season.state === 'get_this' && season.seasonNumber >= 1 && !extras.asked?.has(season.seasonNumber) && !extras.failed?.has(season.seasonNumber)
-        ? [{ season: season.seasonNumber, label: season.name || `Season ${season.seasonNumber}` }] : [],
-      extras,
-    ),
-    season.overview ? el(doc, 'p', { class: 'overview', text: season.overview }) : undefined,
-    episodes.length ? el(doc, 'ol', { class: 'episode-list' }, episodes) : el(doc, 'p', { class: 'muted', text: 'No episodes listed.' }),
+    failedHere ? failedNote(doc) : undefined,
+    detailAction(doc, undefined, parts),
+  ]);
+  return el(doc, 'article', { class: 'detail detail-full season-view' }, [
+    detailHero(doc, extras.backdropUrl),
+    el(doc, 'div', { class: 'detail-main' }, [
+      el(doc, 'div', { class: 'detail-head' }, [text]),
+      season.overview ? el(doc, 'p', { class: 'overview', text: season.overview }) : undefined,
+      episodes.length ? el(doc, 'ol', { class: 'episode-list' }, episodes) : el(doc, 'p', { class: 'muted', text: 'No episodes listed.' }),
+    ]),
   ]);
 }
 

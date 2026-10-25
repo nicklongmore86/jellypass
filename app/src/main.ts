@@ -6,6 +6,7 @@ import {
   el,
   errorState,
   type GetThisHandler,
+  heroCarousel,
   REQUESTS_TEXT,
   requestItem,
   searchForm,
@@ -13,6 +14,7 @@ import {
   seasonView,
   setRequestTitle,
   skeletonDetail,
+  skeletonHero,
   skeletonGrid,
   skeletonRequests,
   skeletonRow,
@@ -130,9 +132,38 @@ function focusHeading(): void {
  */
 function appScrollTo(y: number): void {
   window.scrollTo(0, y);
+  markScrolled();
 }
 function appScrollLeft(list: HTMLElement, left: number): void {
   list.scrollLeft = left;
+}
+
+/**
+ * How the header sits over the screen: over Home's hero (`home`) or a title's backdrop (`detail`), both of which run
+ * under the status bar, or as its own bar. Over a hero it is clear until the page is scrolled, then it is the glass bar.
+ */
+function setChrome(kind?: 'home' | 'detail'): void {
+  if (kind) doc.body.setAttribute('data-chrome', kind);
+  else doc.body.removeAttribute('data-chrome');
+}
+/** A plain `scroll` listener only styles the header; it is never read as the member taking over a restoration. */
+let scrolledState = false;
+let scrollFrame = 0;
+function markScrolled(): void {
+  const scrolled = (window.scrollY || 0) > 40;
+  if (scrolled === scrolledState) return;
+  scrolledState = scrolled;
+  if (scrolled) doc.body.setAttribute('data-scrolled', '');
+  else doc.body.removeAttribute('data-scrolled');
+}
+/** The scroll listener: at most one check per frame, and the body is written only when the offset crosses 40px. */
+function onScroll(): void {
+  if (scrollFrame) return;
+  if (typeof window.requestAnimationFrame !== 'function') return markScrolled();
+  scrollFrame = window.requestAnimationFrame(() => {
+    scrollFrame = 0;
+    markScrolled();
+  });
 }
 
 /**
@@ -143,6 +174,8 @@ interface Position {
   y: number;
   /** Each discover row's horizontal scroll, by the row list's `aria-labelledby`. */
   rows?: Record<string, number>;
+  /** Home's hero carousel's horizontal scroll. */
+  hero?: number;
   /** Search: result pages loaded. My requests: entries shown. */
   loaded?: number;
 }
@@ -185,6 +218,8 @@ function capturePosition(): void {
     if (id) rows[id] = Math.max(0, Math.round(list.scrollLeft || 0));
   }
   if (Object.keys(rows).length) position.rows = rows;
+  const hero = main.querySelector<HTMLElement>('.hero-track');
+  if (hero) position.hero = Math.max(0, Math.round(hero.scrollLeft || 0));
   if (shownRoute.name === 'search') position.loaded = searchPages;
   if (shownRoute.name === 'requests') position.loaded = requestsShown;
   positions.delete(shownDepth);
@@ -234,6 +269,7 @@ async function loadMe(signal: AbortSignal): Promise<void> {
 /** The sign-in screen, in place of whatever was showing; `expired` when a sign-in the app held was refused. */
 function signIn(signal: AbortSignal, current: () => boolean, expired: boolean): void {
   me = undefined;
+  setChrome();
   void showSignIn({
     doc,
     api: signInApi,
@@ -257,6 +293,7 @@ function failure(kind: ApiErrorKind, retry: () => void): void {
     return;
   }
   setTitle('Error');
+  setChrome();
   show(errorState(doc, kind, retry));
   announce('');
   focusHeading();
@@ -308,6 +345,7 @@ async function render(): Promise<void> {
   restoreCancelled = false;
   shownDepth = depth;
   shownRoute = route;
+  setChrome(route.name === 'home' ? 'home' : route.name === 'movie' || route.name === 'tv' || route.name === 'season' ? 'detail' : undefined);
   backButton.hidden = route.name === 'home';
   aboutLink.hidden = route.name !== 'home';
   markNav(route);
@@ -347,12 +385,18 @@ async function render(): Promise<void> {
 
 async function home(signal: AbortSignal, current: () => boolean): Promise<void> {
   setTitle();
-  busy(el(doc, 'h1', { class: 'visually-hidden', text: 'Home', attrs: { tabindex: '-1' } }), ...ROWS.map(() => skeletonRow(doc)));
+  busy(el(doc, 'h1', { class: 'visually-hidden', text: 'Home', attrs: { tabindex: '-1' } }), skeletonHero(doc), ...ROWS.map(() => skeletonRow(doc)));
   await loadMe(signal);
   if (!current()) return;
-  const slots = ROWS.map(() => el(doc, 'div'));
+  const slots = ROWS.map(() => el(doc, 'div', { class: 'home-row' }));
   const heading = el(doc, 'h1', { class: 'visually-hidden', text: 'Home', attrs: { tabindex: '-1' } });
-  show(heading, ...slots);
+  const heroSlot = el(doc, 'div', {}, [skeletonHero(doc)]);
+  show(heading, heroSlot, ...slots);
+  /** Without a hero (the first row failed or is empty) the header is its own bar again. */
+  const noHero = () => {
+    heroSlot.remove();
+    setChrome();
+  };
   slots.forEach((slot) => slot.append(skeletonRow(doc)));
   let unauthorized = false;
   const restore = restoring;
@@ -363,12 +407,22 @@ async function home(signal: AbortSignal, current: () => boolean): Promise<void> 
         const page = await api.discover(row.list, signal);
         if (!current()) return;
         slot.replaceChildren(titleRow(doc, `row-${row.list}`, row.heading, page));
+        if (index === 0) {
+          // The hero is drawn from the first row's own answer: it asks for nothing more.
+          const hero = heroCarousel(doc, page.results);
+          if (hero) {
+            heroSlot.replaceChildren(hero);
+            const track = hero.querySelector<HTMLElement>('.hero-track');
+            if (track && restore?.hero && restoreLive(restore)) appScrollLeft(track, restore.hero);
+          } else noHero();
+        }
         const list = slot.querySelector<HTMLElement>('ul.row-list');
         const left = restore?.rows?.[`row-${row.list}-heading`];
         if (list && left && restoreLive(restore)) appScrollLeft(list, left);
       } catch (error) {
         if (!current() || signal.aborted) return;
         const kind = kindOf(error);
+        if (index === 0) noHero();
         if (kind === 'unauthorized') unauthorized = true;
         else slot.replaceChildren(rowFailure(row.heading, kind, () => void render()));
       }
@@ -595,7 +649,7 @@ async function season(route: Route, signal: AbortSignal, current: () => boolean)
   let [answer, series, failed] = await load();
   if (!current()) return;
   const draw = (asked: ReadonlySet<number>, confirmed: boolean) => {
-    show(seasonView(doc, answer, series?.title, { onGet, asked, failed, confirmed, onReload: () => void render() }));
+    show(seasonView(doc, answer, series?.title, { onGet, asked, failed, confirmed, backdropUrl: series?.backdropUrl, onReload: () => void render() }));
     if (confirmed) main.querySelector<HTMLElement>('.get-message')?.focus({ preventScroll: true });
   };
   const onGet = getThisFor('tv', id, signal, current, async (asked) => {
@@ -701,6 +755,7 @@ async function signOut(button: HTMLButtonElement): Promise<void> {
 backButton.addEventListener('click', goBack);
 // Anything the member does with the page or a row ends a restoration still owed; scroll events alone do not.
 for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown']) window.addEventListener(type, () => { restoreCancelled = true; }, { capture: true, passive: true });
+window.addEventListener('scroll', onScroll, { passive: true });
 window.addEventListener('hashchange', () => {
   if (isRouteHash(location.hash)) void render();
 });

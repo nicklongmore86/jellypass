@@ -552,6 +552,69 @@ describe('household app page: files', () => {
     assert.match(css, /:focus-visible/);
   });
 
+  it('keeps text over a backdrop at 4.5:1 even when the backdrop is pure white, through the scrims', () => {
+    const css = read(BUILT('app.css'));
+    const tokens = Object.fromEntries([...css.matchAll(/--([a-z0-9-]+):\s*(#[0-9a-f]{6});/gi)].map((match) => [match[1], match[2]]));
+    const hex = (value) => [1, 3, 5].map((index) => parseInt(value.slice(index, index + 2), 16));
+    const luminance = (rgb) => {
+      const [r, g, b] = rgb.map((value) => value / 255).map((value) => (value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4));
+      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+    };
+    const contrast = (a, b) => {
+      const [high, low] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+      return (high + 0.05) / (low + 0.05);
+    };
+    const translucent = (name) => {
+      const found = new RegExp(`--${name}:\\s*rgb\\((\\d+) (\\d+) (\\d+) / ([0-9.]+)\\)`).exec(css);
+      assert.ok(found, `${name} is a translucent rgb() token`);
+      return { rgb: found.slice(1, 4).map(Number), alpha: Number(found[4]) };
+    };
+    const over = ({ rgb, alpha }, behind) => rgb.map((value, index) => value * alpha + behind[index] * (1 - alpha));
+    const WHITE = [255, 255, 255];
+    const BLACK = [0, 0, 0];
+    const scrimText = translucent('scrim-text');
+    const scrimTop = translucent('scrim-top');
+    // Under the hero's and the detail page's text: the page colour at a fixed alpha, over a backdrop at worst pure white (or black).
+    for (const [backdrop, name] of [[WHITE, 'white'], [BLACK, 'black']]) {
+      const under = over(scrimText, backdrop);
+      for (const text of ['text', 'muted', 'accent-text']) {
+        assert.ok(contrast(hex(tokens[text]), under) >= 4.5, `${text} on the text scrim over ${name}: ${contrast(hex(tokens[text]), under).toFixed(2)}`);
+      }
+      // The chips are glass over that scrim, and the pills are too.
+      const chip = over(translucent('material'), under);
+      assert.ok(contrast(hex(tokens.text), chip) >= 4.5, `chip text over ${name}`);
+      for (const pill of ['ok', 'neutral', 'bad', 'warn']) {
+        const glass = new RegExp(`--pill-${pill}-glass:\\s*rgb\\((\\d+) (\\d+) (\\d+) / ([0-9.]+)\\)`).exec(css);
+        const behind = over({ rgb: glass.slice(1, 4).map(Number), alpha: Number(glass[4]) }, under);
+        assert.ok(contrast(hex(tokens[`pill-${pill}-text`]), behind) >= 4.5, `${pill} pill over the scrim over ${name}`);
+      }
+      // The brand sits under the header's scrim.
+      assert.ok(contrast(hex(tokens.text), over(scrimTop, backdrop)) >= 4.5, `the brand on the top scrim over ${name}`);
+    }
+    // The scrim is solid under the text: from the foot up past where the title block starts, then it fades out.
+    const overlap = Number(/--detail-overlap:\s*(\d+(?:\.\d+)?)rem/.exec(css)?.[1]);
+    const detailSolid = Number(/\.detail-scrim \{[^}]*linear-gradient\(to top, var\(--bg\) 0, var\(--scrim-text\) 5rem, var\(--scrim-text\) (\d+)rem, transparent \d+rem\)/.exec(css)?.[1]);
+    assert.ok(detailSolid >= overlap + 2, `the detail scrim is solid for ${detailSolid}rem and the title starts ${overlap}rem up`);
+    // A two-line title, the facts row, a two-line overview and the controls' strip all fit inside the hero's solid part.
+    const heroSolid = Number(/\.hero-scrim \{[^}]*linear-gradient\(to top, var\(--bg\) 0, var\(--scrim-text\) 6rem, var\(--scrim-text\) (\d+)rem, transparent \d+rem\)/.exec(css)?.[1]);
+    const strip = Number(/\.hero-text \{[^}]*padding: 0 var\(--gutter-end\) (\d+(?:\.\d+)?)rem/.exec(css)?.[1]);
+    const title = 2 * 2.4 * 1.15;
+    const facts = 0.5 + 0.9 * 1.5 + 0.35;
+    const overview = 0.5 + 2 * 0.95 * 1.4;
+    assert.ok(strip + title + facts + overview <= heroSolid, `${(strip + title + facts + overview).toFixed(1)}rem of hero text in ${heroSolid}rem of solid scrim`);
+    assert.match(css, /\.app-header::before \{[^}]*\}/);
+    assert.match(css, /body\[data-chrome='home'\]:not\(\[data-scrolled\]\) \.app-header::before \{[^}]*var\(--scrim-top\) 0, var\(--scrim-top\) 55%/);
+    // The text on the backdrop is the checked tokens, and nothing else is laid over the scrims.
+    assert.match(css, /\.hero-link \{ color: var\(--text\)/);
+    assert.match(css, /\.hero-overview \{[^}]*color: var\(--muted\)/);
+    assert.match(css, /\.chip \{[^}]*background: var\(--material\); color: var\(--text\)/);
+    assert.match(css, /\.back \{[^}]*color: var\(--accent-text\)/);
+    // Scrolled, the header is the glass bar again (checked above for the tab bar and header alike).
+    assert.match(css, /body\[data-chrome\]\[data-scrolled\] \.app-header \{ background: var\(--material-header\)/);
+    // Past the new header and over the hero, a focused element still stops clear of it.
+    assert.match(css, /scroll-padding-top: calc\(3\.75rem \+ env\(safe-area-inset-top\) \+ 0\.5rem\)/);
+  });
+
   it('keeps a focused card clear of the glass header and the floating tab bar', () => {
     const css = read(BUILT('app.css'));
     const html = /(?:^|\n)html \{([^}]*)\}/.exec(css)[1];
@@ -974,21 +1037,30 @@ describe('household app page: rendering', () => {
   });
 
   it('keeps posters from shifting the page: size attributes, lazy loading and an aspect-ratio frame', async () => {
-    const { document, cardItem } = await renderer();
+    const { document, cardItem, titleDetail } = await renderer();
     const image = cardItem(document, card(), origin).querySelector('img');
     assert.equal(image.getAttribute('loading'), 'lazy');
     assert.equal(image.getAttribute('decoding'), 'async');
     assert.equal(image.getAttribute('width'), '342');
     assert.equal(image.getAttribute('height'), '513');
     assert.match(read(BUILT('app.css')), /\.poster \{[^}]*aspect-ratio: 2 \/ 3/);
-    assert.match(read(BUILT('app.css')), /\.backdrop \{[^}]*aspect-ratio: 780 \/ 439/);
+    // A backdrop is an <img> with its own size attributes inside a frame of fixed height (dvh where the browser has it).
+    const backdrop = titleDetail(document, { ...card(), genres: [], runtime: 90 }, origin).querySelector('.detail-hero img');
+    assert.equal(backdrop.getAttribute('width'), '780');
+    assert.equal(backdrop.getAttribute('height'), '439');
+    assert.equal(backdrop.getAttribute('loading'), 'eager');
+    const css = read(BUILT('app.css'));
+    assert.match(css, /\.detail-hero \{[^}]*height: var\(--detail-hero-height\)/);
+    assert.match(css, /@supports \(height: 100dvh\) \{\s*:root \{[^}]*--detail-hero-height: 60dvh/);
+    assert.match(css, /--detail-hero-height: 60vh;/, 'and 60vh where dvh is unknown');
   });
 
   it('renders a movie page, a series page with its seasons and states, and a season with its episodes', async () => {
     const { document, titleDetail, seasonView } = await renderer();
     const movie = titleDetail(document, { ...card({ state: 'in_library', play }), genres: ['Drama', 'Mystery'], runtime: 118, seasons: undefined }, origin);
     assert.equal(movie.querySelector('h1').textContent, 'Synthetic Movie Three');
-    assert.equal(movie.querySelector('.meta').textContent, '2021 · 1 h 58 min · ★ 7.5');
+    assert.deepEqual([...movie.querySelectorAll('.chips .chip')].map((chip) => chip.textContent), ['2021', '1 h 58 min', '★ 7.5 TMDB']);
+    assert.equal(movie.querySelector('.chip-rating').getAttribute('aria-label'), 'TMDB rating 7.5 out of 10');
     assert.deepEqual([...movie.querySelectorAll('.genres li')].map((li) => li.textContent), ['Drama', 'Mystery']);
     assert.equal(movie.querySelector('.badge').textContent, 'Ready to watch');
     assert.equal(movie.querySelector('a.button').getAttribute('href'), play.url);
@@ -1269,6 +1341,307 @@ describe('household app page: rendering', () => {
       // No new colour literals: the new rules use the checked tokens only.
       const added = css.slice(css.indexOf('.get-this {'), css.indexOf('.credits {'));
       assert.doesNotMatch(added, /#[0-9a-f]{3,6}\b/i);
+    });
+  });
+
+  describe('hero, full-bleed detail pages and season cards', () => {
+    const heroCards = (count, over = () => ({})) => Array.from({ length: count }, (_, index) => card({
+      tmdbId: 700000 + index, title: `Synthetic Hero ${index + 1}`, year: 2020 + index, rating: 7.8 - index, overview: `Synthetic hero overview ${index + 1}.`,
+      backdropUrl: `https://image.tmdb.org/t/p/w780/synthetic-hero-${index}.jpg`, state: ['get_this', 'in_library', 'requested', 'unavailable', 'get_this'][index % 5],
+      ...over(index),
+    }));
+    const tv = (overrides = {}) => ({
+      ...card({ mediaType: 'tv', tmdbId: 900002, title: 'Synthetic Series Two', state: 'get_this' }), genres: ['Drama'], runtime: 45,
+      seasons: [
+        { seasonNumber: 0, name: 'Specials', episodeCount: 2, state: 'get_this' },
+        { seasonNumber: 1, name: 'Season 1', episodeCount: 8, state: 'in_library' },
+        { seasonNumber: 2, name: 'Season 2', episodeCount: 6, state: 'get_this' },
+        { seasonNumber: 3, name: 'Season 3', episodeCount: 1, state: 'get_this' },
+        { seasonNumber: 4, name: 'Season 4', episodeCount: 4, state: 'requested' },
+      ],
+      ...overrides,
+    });
+    const click = (node, Event) => node.dispatchEvent(new Event('click'));
+
+    it('lays the detail head out in two columns only where there is a poster to put in the first', async () => {
+      const { document, titleDetail, seasonView } = await renderer();
+      const css = readFileSync(path.join(DIST_APP, BUILT('app.css')), 'utf8');
+      assert.match(css, /\.detail-head-poster \{ display: grid; grid-template-columns: 9rem minmax\(0, 1fr\)/);
+      assert.equal(/\.detail-head \{ display: grid/.test(css), false, 'the bare head is never a grid');
+      const headOf = (node) => node.querySelector('.detail-head');
+      for (const posterUrl of [poster, null]) {
+        const head = headOf(titleDetail(document, { ...card({ posterUrl }), genres: [], runtime: 90 }, origin));
+        assert.ok(head.classList.contains('detail-head-poster'), `movie, poster ${posterUrl}`);
+        assert.equal(head.querySelectorAll(':scope > .poster').length, 1, 'a poster frame (empty or not) fills the first column');
+      }
+      const seasonHead = headOf(seasonView(document, { tmdbId: 900002, seasonNumber: 2, name: 'Season 2', overview: '', episodes: [], state: 'get_this' }, 'Synthetic Series Two', {}));
+      assert.equal(seasonHead.classList.contains('detail-head-poster'), false);
+      assert.equal(seasonHead.children.length, 1, 'one child, so it spans the whole width');
+      assert.equal(seasonHead.querySelectorAll('.poster').length, 0);
+    });
+
+    it('styles the header from the scroll offset at most once a frame, writing the body only when it crosses 40px', () => {
+      const main = readFileSync(path.join(import.meta.dirname, '..', 'app', 'src', 'main.ts'), 'utf8');
+      assert.match(main, /window\.addEventListener\('scroll', onScroll, \{ passive: true \}\)/);
+      assert.equal(/addEventListener\('scroll', markScrolled/.test(main), false);
+      assert.match(main, /function onScroll\(\): void \{\s*if \(scrollFrame\) return;[^]*?scrollFrame = window\.requestAnimationFrame/);
+      assert.match(main, /if \(scrolled === scrolledState\) return;/);
+      assert.equal((main.match(/setAttribute\('data-scrolled'/g) ?? []).length, 1);
+    });
+
+    it('accepts TMDB images at w342, w780 and w1280 only', async () => {
+      const { safeImageUrl } = await renderer();
+      for (const size of ['w342', 'w780', 'w1280']) {
+        const url = `https://image.tmdb.org/t/p/${size}/synthetic-a_B-1.jpg`;
+        assert.equal(safeImageUrl(url), url, size);
+      }
+      for (const bad of ['w500', 'w185', 'w300', 'w1920', 'w12800', 'w128', 'original', 'w1280x', 'W1280', '1280']) {
+        assert.equal(safeImageUrl(`https://image.tmdb.org/t/p/${bad}/a.jpg`), undefined, bad);
+      }
+      for (const bad of ['https://image.tmdb.org/t/p/w1280/a.jpg?x=1', 'https://image.tmdb.org/t/p/w1280/a/b.jpg', 'https://image.tmdb.org/t/p/w1280/a.gif',
+        'http://image.tmdb.org/t/p/w1280/a.jpg', 'https://image.tmdb.org.evil.test/t/p/w1280/a.jpg', 'https://evil.test/t/p/w1280/a.jpg']) {
+        assert.equal(safeImageUrl(bad), undefined, bad);
+      }
+    });
+
+    it('draws a backdrop as an img offering w780 and w1280, never as a CSS url or an inline style', async () => {
+      const { document, titleDetail, heroCarousel } = await renderer();
+      const w780 = 'https://image.tmdb.org/t/p/w780/synthetic-backdrop.jpg';
+      const w1280 = 'https://image.tmdb.org/t/p/w1280/synthetic-backdrop.jpg';
+      for (const backdropUrl of [w780, w1280]) {
+        const detail = titleDetail(document, { ...card({ backdropUrl }), genres: [], runtime: 90 }, origin);
+        const image = detail.querySelector('.detail-hero img');
+        assert.equal(image.getAttribute('src'), w780, 'the fallback is the smaller file');
+        assert.equal(image.getAttribute('srcset'), `${w780} 780w, ${w1280} 1280w`);
+        assert.equal(image.getAttribute('sizes'), '100vw');
+        assert.equal(image.getAttribute('alt'), '');
+        assert.equal(detail.querySelectorAll('[style]').length, 0);
+        const hero = heroCarousel(document, [card({ backdropUrl })]);
+        assert.equal(hero.querySelector('img').getAttribute('srcset'), `${w780} 780w, ${w1280} 1280w`);
+        assert.equal(hero.querySelectorAll('[style]').length, 0);
+      }
+      // Posters stay at w342.
+      assert.equal(titleDetail(document, { ...card(), genres: [], runtime: 90 }, origin).querySelector('.poster img').getAttribute('src'), poster);
+      // Anything else is not drawn at all.
+      for (const backdropUrl of ['https://image.tmdb.org/t/p/original/a.jpg', 'https://image.tmdb.org/t/p/w500/a.jpg', 'https://evil.example.test/a.jpg', null]) {
+        assert.equal(titleDetail(document, { ...card({ backdropUrl }), genres: [], runtime: 90 }, origin).querySelectorAll('.detail-hero img').length, 0, String(backdropUrl));
+      }
+      assert.doesNotMatch(read(BUILT('app.css')), /url\(|@import/);
+    });
+
+    it('draws the hero from up to five titles, with a labelled button for each control and a plain slide where there is no backdrop', async () => {
+      const { document, heroCarousel, HERO_TEXT, HERO_MAX } = await renderer();
+      assert.equal(HERO_MAX, 5);
+      const shown = heroCarousel(document, heroCards(8, (index) => (index === 2 ? { backdropUrl: null } : {})));
+      const slides = [...shown.querySelectorAll('.hero-slide')];
+      assert.equal(slides.length, 5);
+      assert.equal(shown.getAttribute('aria-label'), HERO_TEXT.label);
+      assert.equal(shown.getAttribute('aria-roledescription'), 'carousel');
+      assert.deepEqual(slides.map((slide) => slide.querySelector('.hero-link').textContent), [1, 2, 3, 4, 5].map((n) => `Synthetic Hero ${n}`));
+      assert.deepEqual(slides.map((slide) => slide.querySelector('.hero-link').getAttribute('href')), [0, 1, 2, 3, 4].map((n) => `#/movie/${700000 + n}`));
+      assert.deepEqual(slides.map((slide) => slide.getAttribute('aria-label')), ['1 of 5', '2 of 5', '3 of 5', '4 of 5', '5 of 5']);
+      assert.deepEqual(slides.map((slide) => slide.querySelector('.hero-year').textContent), ['2020', '2021', '2022', '2023', '2024']);
+      assert.deepEqual(slides.map((slide) => slide.querySelector('.hero-rating').textContent), ['★ 7.8 TMDB', '★ 6.8 TMDB', '★ 5.8 TMDB', '★ 4.8 TMDB', '★ 3.8 TMDB']);
+      assert.deepEqual(slides.map((slide) => slide.querySelector('.hero-rating').getAttribute('aria-label')), ['TMDB rating 7.8 out of 10', 'TMDB rating 6.8 out of 10', 'TMDB rating 5.8 out of 10', 'TMDB rating 4.8 out of 10', 'TMDB rating 3.8 out of 10']);
+      assert.deepEqual(slides.map((slide) => slide.querySelector('.hero-overview').textContent), [1, 2, 3, 4, 5].map((n) => `Synthetic hero overview ${n}.`));
+      assert.deepEqual(slides.map((slide) => slide.querySelector('.badge').textContent), ['Available to get', 'Ready to watch', 'Requested', "Can't request", 'Available to get']);
+      assert.deepEqual(slides.map((slide) => slide.querySelectorAll('img').length), [1, 1, 0, 1, 1], 'no backdrop, no image');
+      assert.ok(slides[2].classList.contains('hero-slide-plain'));
+      assert.equal(slides[0].querySelector('img').getAttribute('loading'), 'eager');
+      assert.equal(slides[1].querySelector('img').getAttribute('loading'), 'lazy');
+      // Controls: real buttons, each named.
+      assert.equal(shown.querySelector('.hero-prev').getAttribute('aria-label'), 'Previous title');
+      assert.equal(shown.querySelector('.hero-next').getAttribute('aria-label'), 'Next title');
+      const dots = [...shown.querySelectorAll('button.hero-dot')];
+      assert.equal(dots.length, 5);
+      assert.deepEqual(dots.map((dot) => dot.tagName), Array(5).fill('BUTTON'));
+      assert.deepEqual(dots.map((dot) => dot.getAttribute('type')), Array(5).fill('button'));
+      assert.deepEqual(dots.map((dot) => dot.getAttribute('aria-label')), [1, 2, 3, 4, 5].map((n) => `Show title ${n} of 5: Synthetic Hero ${n}`));
+      assert.deepEqual(dots.map((dot) => dot.getAttribute('aria-current')), ['true', null, null, null, null]);
+      assert.equal(shown.querySelectorAll('[style]').length, 0);
+      // A single title needs no controls; no title, no hero.
+      assert.equal(heroCarousel(document, heroCards(1)).querySelectorAll('button').length, 0);
+      assert.equal(heroCarousel(document, []), undefined);
+    });
+
+    it('moves only when told to: no timers, buttons and dots scroll the track, and reduced motion scrolls without animating', async () => {
+      const { document, Event, heroCarousel } = await renderer();
+      const timers = [];
+      const names = ['setTimeout', 'setInterval', 'requestAnimationFrame'];
+      const real = Object.fromEntries(names.map((name) => [name, globalThis[name]]));
+      for (const name of names) globalThis[name] = (...args) => { timers.push(name); return real[name]?.(...args); };
+      try {
+        const shown = heroCarousel(document, heroCards(5));
+        const track = shown.querySelector('.hero-track');
+        Object.defineProperty(track, 'clientWidth', { value: 390 });
+        const scrolls = [];
+        track.scrollTo = (options) => scrolls.push(`${options.left}:${options.behavior}`);
+        const current = () => [...shown.querySelectorAll('.hero-dot')].map((dot) => dot.getAttribute('aria-current') === 'true' ? 1 : 0).join('');
+        click(shown.querySelector('.hero-next'), Event);
+        click(shown.querySelector('.hero-next'), Event);
+        click(shown.querySelector('.hero-prev'), Event);
+        click(shown.querySelectorAll('.hero-dot')[4], Event);
+        click(shown.querySelector('.hero-next'), Event);
+        assert.deepEqual(scrolls, ['390:smooth', '780:smooth', '390:smooth', '1560:smooth', '0:smooth'], 'next and previous wrap round');
+        assert.equal(current(), '10000');
+        assert.equal(shown.querySelector('[aria-live]').textContent, 'Showing 1 of 5: Synthetic Hero 1');
+        // Swiping moves the track, and the dot follows the slide mostly in view.
+        track.scrollLeft = 780;
+        track.dispatchEvent(new Event('scroll'));
+        assert.equal(current(), '00100');
+        assert.equal(shown.querySelector('[aria-live]').textContent, 'Showing 3 of 5: Synthetic Hero 3');
+        // Reduced motion: the same move, instantly.
+        document.defaultView.matchMedia = (query) => ({ matches: query === '(prefers-reduced-motion: reduce)' });
+        scrolls.length = 0;
+        click(shown.querySelector('.hero-next'), Event);
+        assert.deepEqual(scrolls, ['1170:auto']);
+        assert.deepEqual(timers, [], 'nothing was scheduled: no autoplay');
+      } finally {
+        for (const name of names) globalThis[name] = real[name];
+        delete document.defaultView.matchMedia;
+      }
+      // The built client has no timer or animation frame at all in the rendering code, and the stylesheet no autoplay either.
+      assert.doesNotMatch(read(BUILT('js/render.js')), /setInterval|setTimeout|requestAnimationFrame|autoplay/i);
+      const css = read(BUILT('app.css'));
+      assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{[^@]*animation: none !important; transition: none !important; scroll-behavior: auto !important/);
+      assert.match(css, /\.hero-track \{[^}]*scroll-snap-type: x mandatory/);
+      assert.doesNotMatch(css, /\.hero[^{]*\{[^}]*animation:/, 'the hero itself animates nothing');
+    });
+
+    it('shows Play for a title in the library, Get this for one available to get, and neither (a pill and a note) for the rest', async () => {
+      const { document, titleDetail, seasonView, STATE_LABELS } = await renderer();
+      const onGet = async () => 'accepted';
+      const movie = (state, extras = { onGet }, overrides = {}) => titleDetail(document, { ...card({ state, play: state === 'in_library' ? play : null, ...overrides }), genres: ['Drama'], runtime: 90 }, origin, extras);
+      const primaries = (detail) => [...detail.querySelectorAll('.button-primary')].map((node) => `${node.tagName} ${node.textContent}`);
+      assert.deepEqual(primaries(movie('in_library')), ['A Play']);
+      assert.equal(movie('in_library').querySelector('a.button-primary').getAttribute('href'), play.url);
+      assert.equal(movie('in_library').querySelector('a.button-primary').getAttribute('aria-label'), 'Play Synthetic Movie Three');
+      assert.deepEqual(primaries(movie('get_this')), ['BUTTON Get this']);
+      for (const state of ['requested', 'unavailable']) {
+        const detail = movie(state);
+        assert.deepEqual(primaries(detail), [], state);
+        assert.equal(detail.querySelectorAll('button, a.button').length, 0, `${state}: no button`);
+        assert.equal(detail.querySelector('.badge').textContent, STATE_LABELS[state]);
+        assert.equal(detail.querySelectorAll('.detail-text .muted').length, 1, `${state}: a muted note`);
+      }
+      assert.equal(movie('unavailable').querySelector('.detail-text .muted').textContent, "This title can't be requested.");
+      assert.equal(movie('requested').querySelector('.detail-text .muted').textContent, 'Check My requests to follow it.');
+      // A title the household asked for that failed: the pill and the one fixed note, no button.
+      const failed = movie('get_this', { onGet, failed: new Set([0]) });
+      assert.deepEqual(primaries(failed), []);
+      assert.equal(failed.querySelectorAll('button').length, 0);
+      assert.equal(failed.querySelector('.badge').textContent, "We couldn't get this");
+      assert.equal(failed.querySelector('.detail-text .muted').textContent, 'Ask your JellyPass admin to try again.');
+      // Without a way to ask, a requestable title has no action either; Play needs the household's own Jellyfin link.
+      assert.deepEqual(primaries(movie('get_this', {})), []);
+      assert.deepEqual(primaries(titleDetail(document, { ...card({ state: 'in_library', play: { itemId, url: 'https://evil.example.test/x' } }), genres: [], runtime: 90 }, origin)), []);
+      // The action sits under the title and above the overview; one primary per page.
+      const detail = movie('get_this');
+      const order = [...detail.querySelectorAll('h1, .chips, .genres, .badge, .detail-action, .overview')].map((node) => node.className.split(' ')[0] || node.tagName);
+      assert.deepEqual(order, ['screen-title', 'chips', 'genres', 'badge', 'detail-action', 'overview']);
+      // A series: Get this when seasons can be asked for; a series partly held has Play as its one primary and Get this steps back.
+      assert.deepEqual(primaries(titleDetail(document, tv(), origin, { onGet })), ['BUTTON Get this']);
+      const held = titleDetail(document, tv({ state: 'in_library', play }), origin, { onGet });
+      assert.deepEqual(primaries(held), ['A Play']);
+      assert.equal(held.querySelector('.detail-action button').textContent, 'Get this');
+      assert.ok(held.querySelector('.detail-action button').classList.contains('button-secondary'));
+      // A season page: Get this only for a season that can be asked for.
+      const season = (state, extras = { onGet }) => seasonView(document, { tmdbId: 900002, seasonNumber: 2, name: 'Season 2', overview: '', episodes: [], state }, 'Synthetic Series Two', extras);
+      assert.deepEqual(primaries(season('get_this')), ['BUTTON Get this']);
+      for (const state of ['in_library', 'requested', 'unavailable']) assert.deepEqual(primaries(season(state)), [], state);
+    });
+
+    it('lays a title out as chips (year, runtime or seasons, TMDB rating), genre pills and the status pill, with the poster kept off phones', async () => {
+      const { document, titleDetail, seasonView } = await renderer();
+      const chips = (detail) => [...detail.querySelectorAll('.chips .chip')].map((chip) => chip.textContent);
+      assert.deepEqual(chips(titleDetail(document, { ...card(), genres: [], runtime: 118 }, origin)), ['2021', '1 h 58 min', '★ 7.5 TMDB']);
+      assert.deepEqual(chips(titleDetail(document, tv(), origin)), ['2021', '4 seasons', '★ 7.5 TMDB'], 'specials are not a season');
+      assert.deepEqual(chips(titleDetail(document, tv({ seasons: [{ seasonNumber: 1, name: 'Season 1', episodeCount: 8, state: 'get_this' }] }), origin)), ['2021', '1 season', '★ 7.5 TMDB']);
+      assert.deepEqual(chips(titleDetail(document, { ...card({ year: null, rating: null }), genres: [], runtime: null }, origin)), []);
+      assert.equal(titleDetail(document, { ...card({ year: null, rating: null }), genres: [], runtime: null }, origin).querySelector('.chips'), null);
+      assert.deepEqual(chips(seasonView(document, { tmdbId: 900002, seasonNumber: 1, name: 'Season 1', overview: '', state: 'in_library',
+        episodes: [{ episodeNumber: 1, name: 'Pilot', overview: '' }, { episodeNumber: 2, name: '', overview: '' }] }, 'S')), ['2 episodes']);
+      const css = read(BUILT('app.css'));
+      assert.match(css, /\.poster-detail \{ display: none; \}/, 'no poster on a phone');
+      assert.match(css, /@media \(min-width: 48rem\) \{[^@]*\.poster-detail \{ display: block; \}/, 'a small one on a wide screen');
+      assert.match(css, /\.detail-main \{[^}]*margin: calc\(-1 \* var\(--detail-overlap\)\) auto 0/, 'the title block overlaps the backdrop');
+      assert.match(css, /\.detail-title \{[^}]*font-weight: 800/);
+      assert.match(css, /\.button-primary \{ width: 100%; min-height: 3\.25rem/, 'a full-width capsule');
+    });
+
+    it('draws seasons as cards with a round checkbox inside one fieldset, and Select all only moves the checkmarks', async () => {
+      const { document, Event, titleDetail, GET_THIS_TEXT } = await renderer();
+      const asked = [];
+      const detail = titleDetail(document, tv(), origin, { onGet: async (seasons) => { asked.push(seasons); return 'accepted'; } });
+      const cards = [...detail.querySelectorAll('.season')];
+      assert.deepEqual(cards.map((item) => item.querySelector('.season-name').textContent), ['Specials', 'Season 1', 'Season 2', 'Season 3', 'Season 4']);
+      assert.deepEqual(cards.map((item) => item.querySelector('.card-meta').textContent), ['2 episodes', '8 episodes', '6 episodes', '1 episode', '4 episodes']);
+      assert.deepEqual(cards.map((item) => item.querySelector('.badge').textContent), ['Available to get', 'Ready to watch', 'Available to get', 'Available to get', 'Requested']);
+      // Real checkboxes, in the fieldset with its legend, in the cards of the seasons that can be asked for (never a special).
+      const fieldset = detail.querySelector('fieldset.get-seasons');
+      assert.equal(fieldset.querySelector('legend').textContent, GET_THIS_TEXT.chooseSeasons);
+      assert.equal(fieldset.querySelectorAll('.season').length, 5, 'all the cards are in the fieldset');
+      const boxes = [...fieldset.querySelectorAll('input[type="checkbox"]')];
+      assert.deepEqual(boxes.map((box) => box.value), ['2', '3']);
+      assert.deepEqual(boxes.map((box) => box.closest('.season').querySelector('.season-name').textContent), ['Season 2', 'Season 3']);
+      assert.deepEqual([...fieldset.querySelectorAll('label.choice')].map((label) => label.textContent), ['Season 2', 'Season 3'], 'each one is named');
+      assert.equal(fieldset.querySelectorAll('[style]').length, 0);
+      const all = fieldset.querySelector('button.select-all');
+      assert.equal(all.textContent, 'Select all');
+      assert.equal(all.getAttribute('type'), 'button');
+      const get = detail.querySelector('.detail-action button');
+      assert.equal(get.disabled, true, 'nothing chosen yet');
+      assert.equal(detail.querySelector('.get-hint').hidden, false);
+      const checked = () => boxes.map((box) => (box.checked ? 1 : 0)).join('');
+      click(all, Event);
+      assert.equal(checked(), '11');
+      assert.equal(all.textContent, 'Clear all');
+      assert.equal(get.disabled, false);
+      assert.equal(detail.querySelector('.get-hint').hidden, true);
+      click(all, Event);
+      assert.equal(checked(), '00');
+      assert.equal(all.textContent, 'Select all');
+      assert.equal(get.disabled, true);
+      boxes[0].checked = true;
+      boxes[0].dispatchEvent(new Event('change'));
+      click(all, Event);
+      assert.equal(checked(), '11', 'from some to all');
+      assert.deepEqual(asked, [], 'toggling asked for nothing');
+      assert.equal(get.textContent, 'Get this');
+      // Get this is the one thing that asks, with exactly the chosen seasons.
+      click(get, Event);
+      assert.deepEqual(asked, [[2, 3]]);
+      assert.deepEqual(boxes.map((box) => box.disabled), [true, true]);
+      assert.equal(all.disabled, true, 'locked while in flight');
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      // One requestable season has nothing to select all of; a held-back one is no choice at all.
+      const one = titleDetail(document, tv({ seasons: [{ seasonNumber: 2, name: 'Season 2', episodeCount: 6, state: 'get_this' }] }), origin, { onGet: async () => 'accepted' });
+      assert.equal(one.querySelectorAll('input[type="checkbox"]').length, 1);
+      assert.equal(one.querySelector('.select-all'), null);
+      const none = titleDetail(document, tv({ state: 'requested', seasons: [{ seasonNumber: 1, name: 'Season 1', episodeCount: 8, state: 'in_library' }] }), origin, { onGet: async () => 'accepted' });
+      assert.equal(none.querySelector('fieldset'), null);
+      assert.equal(none.querySelector('.select-all'), null);
+      assert.equal(none.querySelectorAll('.season').length, 1);
+      // The control is a custom round one built on the real checkbox.
+      const css = read(BUILT('app.css'));
+      assert.match(css, /\.choice input \{[^}]*appearance: none;[^}]*border-radius: 50%/);
+      assert.match(css, /\.choice input:checked \{[^}]*background: var\(--accent-gradient\)/);
+      assert.match(css, /\.choice input:focus-visible \{ outline: 3px solid var\(--accent\)/);
+      assert.match(css, /\.choice \{[^}]*min-width: 2\.75rem; min-height: 2\.75rem/);
+    });
+
+    it('gives the hero and a detail page their own skeletons, hidden from assistive technology and free of controls', async () => {
+      const { document, skeletonHero, skeletonDetail } = await renderer();
+      for (const [name, node] of [['hero', skeletonHero(document)], ['detail', skeletonDetail(document)]]) {
+        assert.equal(node.getAttribute('aria-hidden'), 'true', name);
+        assert.equal(node.querySelectorAll('a, button, input, img, h1, h2').length, 0, `${name}: nothing to focus or announce`);
+        assert.ok(node.querySelectorAll('.skeleton').length >= 3, name);
+        assert.equal(node.querySelectorAll('[style]').length, 0, name);
+      }
+      assert.equal(skeletonHero(document).querySelectorAll('.hero-slide').length, 0, 'not the real hero');
+      assert.ok(skeletonDetail(document).querySelector('.detail-hero.skeleton'), 'the backdrop\'s shape');
+      const css = read(BUILT('app.css'));
+      assert.match(css, /\.hero-skeleton \{[^}]*height: var\(--hero-height\)/);
     });
   });
 
@@ -1622,6 +1995,137 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     assert.equal([...page.main().querySelectorAll('a.button')].filter((anchor) => anchor.textContent === 'Play').length, 0);
   });
 
+  describe('hero and full-bleed pages against the API', () => {
+    const homeReady = (page) => page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4, 'home');
+    const pause = (ms = 60) => new Promise((resolve) => setTimeout(resolve, ms));
+    const trendingCards = (count) => Array.from({ length: count }, (_, index) => ({
+      mediaType: 'movie', tmdbId: 710000 + index, title: `Synthetic Trend ${index + 1}`, year: 2020, overview: 'Synthetic.', posterUrl: null,
+      backdropUrl: index === 2 ? null : `https://image.tmdb.org/t/p/w780/synthetic-trend-${index}.jpg`, rating: 8, state: 'get_this', play: null,
+    }));
+    const trending = (count) => (url) => (url.startsWith('/jellypass/app/v1/discover/trending')
+      ? { status: 200, body: Buffer.from(JSON.stringify({ page: 1, nextPage: null, results: trendingCards(count) })), headers: { 'content-type': 'application/json' } }
+      : undefined);
+    const chrome = (page) => page.document.body.getAttribute('data-chrome');
+
+    it('draws Home\'s hero from the first row\'s own answer: five titles, no extra calls, nothing that moves by itself', async (t) => {
+      const app = await startApp(t);
+      const intervals = [];
+      const realInterval = globalThis.setInterval;
+      globalThis.setInterval = (...args) => { intervals.push(1); return realInterval(...args); };
+      t.after(() => { globalThis.setInterval = realInterval; });
+      const page = await openApp(t, app, { override: trending(8) });
+      await homeReady(page);
+      const slides = [...page.document.querySelectorAll('.hero-slide')];
+      assert.deepEqual(slides.map((slide) => slide.querySelector('.hero-link').textContent), [1, 2, 3, 4, 5].map((n) => `Synthetic Trend ${n}`));
+      assert.deepEqual(slides.map((slide) => slide.querySelectorAll('img').length), [1, 1, 0, 1, 1]);
+      assert.equal(page.document.querySelectorAll('button.hero-dot').length, 5);
+      assert.deepEqual([...page.document.querySelectorAll('.hero-nav')].map((button) => button.getAttribute('aria-label')), ['Previous title', 'Next title']);
+      // The row beneath still lists every title, and the hero cost nothing: me and the four lists, as before.
+      assert.equal(page.document.querySelector('#row-trending-heading').parentElement.querySelectorAll('.card').length, 8);
+      assert.equal(page.requests.length, 5);
+      assert.deepEqual(page.requests.map((request) => request.url.replace(/\?.*/, '')).sort(), [
+        '/jellypass/app/v1/discover/popular-movies', '/jellypass/app/v1/discover/popular-tv', '/jellypass/app/v1/discover/trending',
+        '/jellypass/app/v1/discover/upcoming', '/jellypass/app/v1/me',
+      ]);
+      assert.equal(chrome(page), 'home');
+      const active = () => [...page.document.querySelectorAll('.hero-dot')].map((dot) => dot.getAttribute('aria-current') === 'true' ? 1 : 0).join('');
+      assert.equal(active(), '10000');
+      await pause(1500);
+      assert.equal(active(), '10000', 'still on the first title: no autoplay');
+      assert.equal(page.requests.length, 5);
+      assert.equal(intervals.length, 0);
+      // The hero's title opens the title's page.
+      assert.equal(slides[0].querySelector('.hero-link').getAttribute('href'), '#/movie/710000');
+      // The hero reads like Home's own rows when the page is serialised: no inline style, no script.
+      assert.doesNotMatch(page.serialize().replace(/<style[^]*?<\/style>/gi, ''), /\sstyle=|<script[^>]*>[^<]/i);
+    });
+
+    it('has no hero, and the header is its own bar, when the first row is empty or fails', async (t) => {
+      const app = await startApp(t);
+      const empty = await openApp(t, app, { override: trending(0) });
+      await empty.until(() => empty.main().getAttribute('aria-busy') === 'false' && empty.document.querySelectorAll('.skeleton').length === 0 && empty.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 3, 'Home without a first row');
+      assert.equal(empty.document.querySelectorAll('.hero, .hero-slide').length, 0);
+      assert.equal(chrome(empty), null);
+      const failing = await openApp(t, app, { override: (url) => (url.startsWith('/jellypass/app/v1/discover/trending') ? { status: 502, body: Buffer.from('{"error":"unavailable"}'), headers: {} } : undefined) });
+      await failing.until(() => failing.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 3 && failing.main().querySelector('.notice'), 'three rows and one failure');
+      assert.equal(failing.document.querySelectorAll('.hero, .hero-slide').length, 0);
+      assert.equal(chrome(failing), null);
+    });
+
+    it('lets the header float over a hero or a backdrop only on the screens that have one', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app);
+      await homeReady(page);
+      assert.equal(chrome(page), 'home');
+      for (const [hash, expected] of [[`#/movie/${OWN_MOVIE}`, 'detail'], [`#/tv/${T_TV}`, 'detail'], [`#/tv/${T_TV}/season/1`, 'detail'], ['#/search', null], ['#/requests', null], ['#/about', null], ['#/', 'home']]) {
+        page.go(hash);
+        await page.until(() => chrome(page) === expected && page.main().getAttribute('aria-busy') === 'false', `${hash}: ${expected}`);
+        assert.equal(chrome(page), expected, hash);
+      }
+      // Scrolling past the top turns it into the glass bar; the app's own scroll to the top turns it back.
+      page.scroll.y = 400;
+      for (const listener of page.listeners.scroll ?? []) listener({ type: 'scroll' });
+      assert.equal(page.document.body.hasAttribute('data-scrolled'), true);
+      page.scroll.y = 0;
+      for (const listener of page.listeners.scroll ?? []) listener({ type: 'scroll' });
+      assert.equal(page.document.body.hasAttribute('data-scrolled'), false);
+      // An error on a detail page is an ordinary screen, not drawn under a floating header.
+      const missing = await openApp(t, app, { hash: '#/movie/999999' });
+      await missing.until(() => missing.main().querySelector('[role="alert"]'), 'the error');
+      assert.equal(chrome(missing), null);
+    });
+
+    it('draws a movie, a series and a season full-bleed, with the one action and the seasons as cards', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}` });
+      await page.until(() => page.main().querySelector('article.detail-full'), 'the movie');
+      assert.equal(page.main().querySelector('.detail-hero img').getAttribute('src'), `https://image.tmdb.org/t/p/w780/synthetic-backdrop-${T_MOVIE}.jpg`);
+      assert.equal(page.main().querySelector('.detail-hero img').getAttribute('srcset'), `https://image.tmdb.org/t/p/w780/synthetic-backdrop-${T_MOVIE}.jpg 780w, https://image.tmdb.org/t/p/w1280/synthetic-backdrop-${T_MOVIE}.jpg 1280w`);
+      assert.equal(page.main().querySelectorAll('.button-primary').length, 1);
+      assert.equal(page.main().querySelector('.button-primary').textContent, 'Get this');
+      assert.equal(page.main().querySelector('h1').textContent, 'Synthetic Movie One');
+      const own = await openApp(t, app, { hash: `#/movie/${OWN_MOVIE}` });
+      await own.until(() => own.main().querySelector('a.button-primary'), 'Play');
+      assert.equal(own.main().querySelector('a.button-primary').textContent, 'Play');
+      assert.equal(own.main().querySelectorAll('.button-primary').length, 1);
+      assert.ok(own.main().querySelector('.detail-hero .detail-scrim'));
+      const series = await openApp(t, app, { hash: `#/tv/${T_TV}` });
+      await series.until(() => series.main().querySelector('fieldset.get-seasons'), 'the series');
+      assert.ok(series.main().querySelectorAll('fieldset .season').length >= 2);
+      assert.equal(series.main().querySelectorAll('.button-primary').length, 1);
+      // A season page draws its series' backdrop.
+      const season = await openApp(t, app, { hash: `#/tv/${T_TV}/season/1` });
+      await season.until(() => season.main().querySelector('.episode-list'), 'the season');
+      assert.equal(season.main().querySelector('.detail-hero img').getAttribute('src'), `https://image.tmdb.org/t/p/w780/synthetic-backdrop-${T_TV}.jpg`);
+      assert.equal(season.main().querySelector('h1').textContent, 'Season 1');
+    });
+
+    it('selects all seasons without asking for anything, then asks exactly as before and says the same fixed thing', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app, { hash: `#/tv/${T_TV}` });
+      await page.until(() => page.main().querySelector('fieldset.get-seasons'), 'the series');
+      const boxes = () => [...page.main().querySelectorAll('input[type="checkbox"]')];
+      const values = boxes().map((box) => box.value);
+      assert.ok(values.length >= 2, values.join());
+      const before = page.requests.length;
+      const all = page.main().querySelector('button.select-all');
+      all.dispatchEvent(new page.Event('click'));
+      assert.deepEqual(boxes().map((box) => box.checked), values.map(() => true));
+      all.dispatchEvent(new page.Event('click'));
+      assert.deepEqual(boxes().map((box) => box.checked), values.map(() => false));
+      all.dispatchEvent(new page.Event('click'));
+      assert.equal(page.requests.length, before, 'select all made no call');
+      assert.equal(page.requests.filter((request) => request.init.method === 'POST').length, 0);
+      page.main().querySelector('.detail-action button').dispatchEvent(new page.Event('click'));
+      await page.until(() => page.main().querySelector('.get-message')?.textContent, 'the confirmation');
+      const posts = page.requests.filter((request) => request.init.method === 'POST');
+      assert.equal(posts.length, 1);
+      assert.equal(posts[0].init.body, JSON.stringify({ seasons: values.map(Number) }));
+      assert.equal(page.main().querySelector('.get-message').textContent, "Thanks — we'll get this for your household.");
+      await app.background.settled();
+    });
+  });
+
   describe('in-app Back and restoring where you were', () => {
     // Plain strings and numbers only are compared here: a failing assertion on a DOM node would try to print the page.
     const homeReady = (page) => page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4, 'home');
@@ -1648,7 +2152,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.equal(button.getAttribute('type'), 'button');
       assert.equal(button.getAttribute('aria-label'), 'Back');
       assert.equal(button.hasAttribute('tabindex'), false, 'in the tab order');
-      assert.match(read(BUILT('app.css')), /\.back-button, \.icon-button \{[^}]*min-width: 2\.75rem; min-height: 2\.75rem/, '44px tap target');
+      assert.match(read(BUILT('app.css')), /\.back-button, \.icon-button, \.hero-nav \{[^}]*min-width: 2\.75rem; min-height: 2\.75rem/, '44px tap target');
       assert.match(read('index.html'), /<header class="app-header">\s*<button id="back"/, 'first in the header, so first in the tab order');
       page.go('#/');
       await homeReady(page);
@@ -1852,6 +2356,45 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       await page.until(() => page.requests.filter((request) => request.url === '/jellypass/app/v1/search?q=synthetic&page=2').length === 2, 'page 2 asked for again');
       return page;
     }
+
+    it('puts the hero\'s swipe position back with Home, unless the member took over first', async (t) => {
+      const heroTrending = (count) => (url) => (url.startsWith('/jellypass/app/v1/discover/trending')
+        ? { status: 200, body: Buffer.from(JSON.stringify({ page: 1, nextPage: null, results: Array.from({ length: count }, (_, index) => ({
+          mediaType: 'movie', tmdbId: 720000 + index, title: `Synthetic Swipe ${index + 1}`, year: 2020, overview: 'x', posterUrl: null, backdropUrl: null, rating: 7, state: 'get_this', play: null,
+        })) })), headers: { 'content-type': 'application/json' } }
+        : undefined);
+      const app = await startApp(t);
+      const page = await openApp(t, app, { override: heroTrending(6) });
+      await homeReady(page);
+      const rows = [...page.document.querySelectorAll('ul.row-list[aria-labelledby]')];
+      rows.forEach((row, index) => { row.scrollLeft = [120, 8, 340, 55][index]; });
+      page.document.querySelector('.hero-track').scrollLeft = 780;
+      page.scroll.y = 520;
+      page.go(`#/movie/${OWN_MOVIE}`);
+      await page.until(() => page.main().querySelector('article.detail'), 'the movie');
+      page.history.back();
+      await homeReady(page);
+      await page.until(() => page.scroll.y === 520, 'the page scroll');
+      assert.equal(page.document.querySelector('.hero-track').scrollLeft, 780, 'the hero is where it was');
+      assert.deepEqual([...page.document.querySelectorAll('ul.row-list[aria-labelledby]')].map((row) => row.scrollLeft), [120, 8, 340, 55], 'and so are the rows');
+      assert.equal(page.requests.filter((request) => request.url.startsWith('/jellypass/app/v1/discover/trending')).length, 2, 'the data was fetched again, not kept');
+      // A member who touches the page before the hero is back keeps their own place (the rule is the rows' rule, unchanged).
+      const gate = { held: undefined };
+      const held = await openApp(t, app, { override: (url, init) => (gate.held && url.startsWith('/jellypass/app/v1/discover/trending') ? gate.held.promise.then(() => heroTrending(6)(url, init)) : heroTrending(6)(url, init)) });
+      await homeReady(held);
+      held.document.querySelector('.hero-track').scrollLeft = 780;
+      held.go(`#/movie/${OWN_MOVIE}`);
+      await held.until(() => held.main().querySelector('article.detail'), 'the movie');
+      gate.held = deferred();
+      held.history.back();
+      await held.until(() => held.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 3, 'three rows');
+      fire(held, 'touchstart');
+      gate.held.release();
+      await homeReady(held);
+      await held.until(() => held.document.querySelector('.hero-track'), 'the hero');
+      await pause();
+      assert.equal(held.document.querySelector('.hero-track').scrollLeft || 0, 0, 'the member took over: the hero stays at the start');
+    });
 
     it('restores a search whose first attempts the browser clamps, with the detail page left scrolled', async (t) => {
       const app = await startApp(t, world({ extraResults: 45 }));
