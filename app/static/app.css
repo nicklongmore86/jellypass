@@ -58,6 +58,13 @@ main:focus { outline: none; }
   padding: calc(0.6rem + env(safe-area-inset-top)) var(--gutter-end) 0.6rem var(--gutter);
   background: var(--bg); border-bottom: 1px solid var(--border);
 }
+.back-button {
+  min-width: 2.75rem; min-height: 2.75rem; margin: -0.4rem 0 -0.4rem -0.6rem; padding: 0 0.6rem;
+  border: 0; border-radius: var(--radius); background: transparent; color: var(--text);
+  font: inherit; font-size: 1.9rem; line-height: 1; cursor: pointer;
+}
+.back-button[hidden] { display: none; }
+.back-button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .brand { font-weight: 700; font-size: 1.15rem; letter-spacing: 0.01em; }
 .who { color: var(--muted); font-size: 0.875rem; text-align: right; }
 

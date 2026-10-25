@@ -444,6 +444,14 @@ elsewhere; the files are never proxied to Jellyfin.
   series page with a seasons list (each season's state) and a season page with its episodes, **My requests** (since step
   2b: the household's requests from `GET /requests`, each with its coarse status, per season for a series, and whether the
   caller or someone else in the household asked; titles are named from TMDB ten at a time), About & credits.
+- **Back and position.** Every screen but Home has a **Back** button first in the header (44 px, `aria-label="Back"`),
+  because the installed app has no browser chrome. The app numbers its own history entries in `history.state` (`{jp: n}`,
+  nothing else). With `n > 0` Back is `history.back()`, so hardware back and swipe-back are identical; opened on a screen
+  (`n = 0`) it replaces the entry with the logical parent (a season's series, otherwise Home) and never leaves the app.
+  **Get this** adds no history entry. Scroll offsets are kept in memory per entry and put back on returning: the page
+  scroll, each Home row's `scrollLeft`, Search's query (already in the address) with the pages loaded, and My requests'
+  entries shown. Data is fetched again, never kept; nothing from the API is written to `sessionStorage`,
+  `localStorage` or Cache Storage, and `history.scrollRestoration` is `manual`.
 - **States.** Shown exactly as the DTO says, coarsely: `in_library` is "Ready to watch" with a **Play** button (only
   when `play.url` is exactly the household host's own `/web/#/details?id=<itemId>`), `get_this` is "Available to get"
   with a **Get this** button (since step 2b, a season picker on a series page; the wording says nothing about other
