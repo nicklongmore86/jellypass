@@ -22,6 +22,12 @@ privacy leak. Such changes are always listed at the top of the release notes.
 
 ### Changed
 
+- Household app: a new look. Dark indigo with a soft glow, a floating glass tab bar (**Home**, **Search**, **My
+  requests**), a glass header with a round Back button, rounded poster cards with the status pill on the poster, a
+  three-column Search grid under a capsule field, request cards with a poster thumbnail, and new app icons. **About &
+  credits** now opens from the (i) button on Home, and **Sign out** moved into About's new Account card (with your name
+  and household, which left the header). Cards no longer have a Play button; Play stays on a title's page. Status words,
+  **Get this** and what the household can see are unchanged.
 - Household app: every screen except Home has a Back button in the header, which works in the installed app (no
   browser back button). Opened directly on a screen, Back goes to its parent (a season's series, otherwise Home).
 
