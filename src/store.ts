@@ -1,14 +1,19 @@
-import { randomUUID } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type {
   AccessGroup,
   AccessRemovals,
+  AppRequestIntent,
+  AppRequestRecord,
+  AppRequestStatus,
+  AppSafetyTombstone,
   GrantRecord,
   GrantState,
   LibraryCatalogItem,
   LibraryJoin,
   RevokeResult,
+  SeerrWebhook,
   SyncStatus,
 } from './types.js';
 
@@ -18,6 +23,15 @@ import type {
  * upstreams"). With the app off there is no limit, as before 2.3.0.
  */
 export const MAX_HOUSEHOLDS = 100;
+/**
+ * Settled household app "Get this" records (completed, declined, deleted or failed) are kept for this long after they
+ * were made (see GrantStore.writeAppRequests); pending records are never pruned.
+ */
+export const APP_REQUEST_RETENTION_MS = 400 * 24 * 60 * 60 * 1000;
+/** The most settled "Get this" records kept per household; its own oldest are pruned first. Pending ones are never. */
+export const MAX_APP_REQUESTS_PER_HOUSEHOLD = 2000;
+/** The most deferred webhooks remembered (see GrantStore.deferWebhook); beyond it the oldest are left to the backfill. */
+export const MAX_DEFERRED_REQUESTS = 1000;
 
 const EMPTY_STATE: GrantState = { version: 7, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [] };
 
@@ -29,6 +43,8 @@ export class GrantStore {
   /** A queued write that has not started yet; saves requested meanwhile share it. */
   #queued: Promise<void> | undefined;
   #closed = false;
+  /** "Get this" record IDs by household, rebuilt after each change (see #appIndex). */
+  #appIndexCache: Map<string, string[]> | undefined;
   readonly #limitHouseholds: boolean;
 
   /** `limitHouseholds` (set when the household app is enabled) refuses new groups beyond {@link MAX_HOUSEHOLDS}. */
@@ -57,6 +73,9 @@ export class GrantStore {
     this.#assertOpen();
     const migrated = migrateState(JSON.parse(text) as unknown);
     this.#state = migrated.state;
+    // Written only by unreleased builds of "Get this" that counted quotas; dropped with the next write.
+    delete (this.#state as { appQuotaLedger?: unknown }).appQuotaLedger;
+    this.#appIndexCache = undefined;
     const lifted = liftRemovals(this.#state);
     // Requests already on grants (including ones recorded before handledRequestIds existed)
     // count as handled, so the backfill never re-imports one an administrator later removed.
@@ -338,9 +357,18 @@ export class GrantStore {
     const groupId = normalizeId(groupIdInput);
     if (!this.#state.groups[groupId]) return [];
     delete this.#state.groups[groupId];
+    // A group created later under the same ID is a different household, with a new epoch.
+    const { [groupId]: _, ...epochs } = this.#state.householdEpochs ?? {};
+    if (Object.keys(epochs).length > 0) this.#state.householdEpochs = epochs;
+    else delete this.#state.householdEpochs;
+    this.#appIndexCache = undefined;
     // A group created later under the same ID is a different household and starts unmarked.
     for (const [itemId, removals] of Object.entries(this.#state.removedAccess ?? {})) {
       if (removals.groupIds?.includes(groupId)) this.#setRemovals(itemId, { ...removals, groupIds: removals.groupIds.filter((id) => id !== groupId) });
+    }
+    // Its "Get this" records are kept (a request's grant still follows its record), but no household sees or joins them again.
+    for (const record of Object.values(this.#state.appRequests ?? {})) {
+      if (record.householdId === groupId) record.detached = true;
     }
     const results: RevokeResult[] = [];
     for (const previous of Object.values({ ...this.#state.grants })) {
@@ -461,6 +489,217 @@ export class GrantStore {
     if (!grant || grant.active) return;
     delete this.#state.grants[itemId];
     await this.#save();
+  }
+
+  /** Every household app "Get this" record, with its ID (see AppRequestRecord). */
+  public listAppRequests(): Array<[string, AppRequestRecord]> {
+    return Object.entries(this.#state.appRequests ?? {}).map(([id, record]) => [id, clone(record)]);
+  }
+
+  /**
+   * One household's "Get this" records (detached ones included), from an index: the work depends on that household's
+   * own records only, never on how many other households have.
+   */
+  public listAppRequestsForHousehold(householdId: string): Array<[string, AppRequestRecord]> {
+    const records = this.#state.appRequests ?? {};
+    const epoch = this.#state.householdEpochs?.[normalizeId(householdId)];
+    return (this.#appIndex().get(normalizeId(householdId)) ?? []).flatMap((id) => {
+      if (!records[id]) return [];
+      const record = clone(records[id]);
+      // Made for a household since replaced under the same ID.
+      if (record.householdEpoch !== undefined && record.householdEpoch !== epoch) record.detached = true;
+      return [[id, record] as [string, AppRequestRecord]];
+    });
+  }
+
+  /** Every "Get this" request intent, with its ID (see AppRequestIntent). */
+  public listAppRequestIntents(): Array<[string, AppRequestIntent]> {
+    return Object.entries(this.#state.appRequestIntents ?? {}).map(([id, intent]) => [id, clone(intent)]);
+  }
+
+  /** Whether an intent names this title (see AppRequestIntent): webhooks and the backfill grant none of its requests. */
+  public hasAppRequestIntent(mediaType: string, tmdbId: number): boolean {
+    return Object.values(this.#state.appRequestIntents ?? {}).some((intent) => intent.mediaType === mediaType && intent.tmdbId === tmdbId);
+  }
+
+  /** The key the household app derives opaque IDs from, or undefined before the first "Get this" record. */
+  public getAppIdKey(): string | undefined {
+    return this.#state.appIdKey;
+  }
+
+  /**
+   * A number that identifies this household for as long as it exists: a household deleted and created again under the
+   * same ID has another. Undefined when there is no such household. Kept in the state file (given the first time it is
+   * asked for, and written with the next write, such as the intent that names it), so an intent reconciled after a
+   * restart tells a household replaced meanwhile from the one it was made for.
+   */
+  public householdEpoch(householdId: string): number | undefined {
+    const id = normalizeId(householdId);
+    if (!this.#state.groups[id]) return undefined;
+    let epoch = this.#state.householdEpochs?.[id];
+    if (epoch === undefined) {
+      epoch = Math.max(this.#state.nextHouseholdEpoch ?? 1, ...Object.values(this.#state.householdEpochs ?? {}).map((value) => value + 1));
+      this.#state.nextHouseholdEpoch = epoch + 1;
+      this.#state.householdEpochs = { ...this.#state.householdEpochs, [id]: epoch };
+    }
+    return epoch;
+  }
+
+  /** Every household app safety tombstone (see AppSafetyTombstone). */
+  public listAppSafetyTombstones(): AppSafetyTombstone[] {
+    return Object.values(this.#state.appSafetyTombstones ?? {}).map(clone);
+  }
+
+  /** Records requests as handled without granting them (a "Get this" request granted as a join); see hasHandledRequest. */
+  public async markRequestsHandled(requestIds: string[]): Promise<void> {
+    this.#assertOpen();
+    const handled = new Set(this.#state.handledRequestIds ?? []);
+    if (requestIds.every((id) => handled.has(id))) return;
+    this.#state.handledRequestIds = [...new Set([...handled, ...requestIds])];
+    await this.#save();
+  }
+
+  /**
+   * Writes a "Get this" request intent (see AppRequestIntent) and resolves once the state file has it: only then may
+   * the request be sent. Resolves with its ID.
+   */
+  public async addAppRequestIntent(intent: AppRequestIntent): Promise<string> {
+    this.#assertOpen();
+    const id = randomUUID();
+    this.#state.appRequestIntents = { ...this.#state.appRequestIntents, [id]: clone(intent) };
+    await this.#save();
+    return id;
+  }
+
+  /**
+   * Adds household app "Get this" records, changes the status (and joined items, ready seasons, grant rule or whether
+   * it awaits a grant) of existing ones, settles or removes request intents, and adds safety tombstones (see
+   * AppSafetyTombstone) and exemptions from them, in one write. Records added with a `householdEpoch` other than their
+   * household's current one (it was deleted, or deleted and created again, while the call ran) are added detached.
+   * Then settled records are pruned (see pruneAppRequests): never a pending one; and tombstones that can no longer
+   * matter (see pruneTombstones), never by how many records there are. The state changes before this returns its
+   * promise. Resolves with the IDs of the added records.
+   */
+  public async writeAppRequests(input: {
+    add?: AppRequestRecord[];
+    householdEpoch?: number;
+    update?: Array<{
+      id: string;
+      status?: AppRequestStatus;
+      itemIds?: string[];
+      readySeasons?: number[];
+      joinOnGrant?: AppRequestRecord['joinOnGrant'];
+      awaitingGrant?: boolean;
+    }>;
+    /** Intents now `settling`: their request is recorded, Jellyfin could not be read yet. */
+    settleIntents?: Array<{ id: string; seerrRequestId: string }>;
+    /** Intents resolved: their request is recorded and settled, or was never made, or a tombstone covers it. */
+    removeIntents?: string[];
+    tombstones?: AppSafetyTombstone[];
+    /** Requests "Get this" made and settled as genuine: no member-wide tombstone for the member and title covers them. */
+    exempt?: Array<{ mediaType: 'movie' | 'tv'; tmdbId: number; jellyfinUserId: string; requestId: string }>;
+  }): Promise<string[]> {
+    this.#assertOpen();
+    const now = new Date().toISOString();
+    const records = { ...this.#state.appRequests };
+    const added = (input.add ?? []).map((record) => {
+      const id = randomUUID();
+      const stale = input.householdEpoch !== undefined && this.householdEpoch(record.householdId) !== input.householdEpoch;
+      records[id] = stale
+        ? { ...clone(record), detached: true }
+        : { ...clone(record), ...(input.householdEpoch !== undefined ? { householdEpoch: input.householdEpoch } : {}) };
+      return id;
+    });
+    for (const change of input.update ?? []) {
+      const record = records[change.id];
+      if (!record) continue;
+      const { awaitingGrant: _, ...rest } = record;
+      const awaiting = change.awaitingGrant ?? record.awaitingGrant === true;
+      records[change.id] = {
+        ...rest,
+        updatedAt: now,
+        ...(change.status ? { status: change.status } : {}),
+        ...(change.itemIds ? { itemIds: [...new Set([...(record.itemIds ?? []), ...change.itemIds.map(normalizeId)])].sort() } : {}),
+        ...(change.readySeasons ? { readySeasons: [...new Set(change.readySeasons)].sort((left, right) => left - right) } : {}),
+        ...(change.joinOnGrant ? { joinOnGrant: change.joinOnGrant } : {}),
+        ...(awaiting ? { awaitingGrant: true as const } : {}),
+      };
+    }
+    const tombstones = { ...this.#state.appSafetyTombstones };
+    for (const tombstone of input.tombstones ?? []) tombstones[randomUUID()] = clone(tombstone);
+    for (const exemption of input.exempt ?? []) {
+      for (const [id, tombstone] of Object.entries(tombstones)) {
+        if (tombstone.jellyfinUserId !== normalizeId(exemption.jellyfinUserId) || tombstone.mediaType !== exemption.mediaType
+          || tombstone.tmdbId !== exemption.tmdbId || tombstone.requestIds.includes(exemption.requestId)) continue;
+        tombstones[id] = { ...tombstone, exemptRequestIds: [...new Set([...(tombstone.exemptRequestIds ?? []), exemption.requestId])].sort() };
+      }
+    }
+    const kept = pruneTombstones(tombstones, new Set(this.#state.handledRequestIds ?? []), Date.now());
+    if (Object.keys(kept).length > 0) this.#state.appSafetyTombstones = kept;
+    else delete this.#state.appSafetyTombstones;
+    const intents = { ...this.#state.appRequestIntents };
+    for (const { id, seerrRequestId } of input.settleIntents ?? []) {
+      const intent = intents[id];
+      if (intent) intents[id] = { ...intent, status: 'settling', seerrRequestId };
+    }
+    for (const id of input.removeIntents ?? []) delete intents[id];
+    if (Object.keys(intents).length > 0) this.#state.appRequestIntents = intents;
+    else delete this.#state.appRequestIntents;
+    this.#state.appRequests = pruneAppRequests(records, Date.now());
+    this.#state.appIdKey ??= randomBytes(32).toString('hex');
+    this.#appIndexCache = undefined;
+    await this.#save();
+    return added;
+  }
+
+  /** The webhooks deferred for a "Get this" request intent (see GrantState.deferredWebhooks), oldest first. */
+  public listDeferredWebhooks(): SeerrWebhook[] {
+    return clone(this.#state.deferredWebhooks ?? []);
+  }
+
+  /**
+   * Remembers a deferred webhook (only what granting it reads), replacing an earlier one for the same request, at most
+   * {@link MAX_DEFERRED_REQUESTS} of them (the oldest are forgotten, left to the backfill).
+   */
+  public async deferWebhook(event: SeerrWebhook): Promise<void> {
+    this.#assertOpen();
+    const kept: SeerrWebhook = {
+      notificationType: event.notificationType,
+      ...(event.media ? { media: {
+        ...(event.media.jellyfinMediaId ? { jellyfinMediaId: event.media.jellyfinMediaId } : {}),
+        ...(event.media.mediaType ? { mediaType: event.media.mediaType } : {}),
+      } } : {}),
+      request: {
+        id: event.request.id,
+        ...(event.request.is4k !== undefined ? { is4k: event.request.is4k } : {}),
+        ...(event.request.requestedBy?.jellyfinUserId ? { requestedBy: { jellyfinUserId: event.request.requestedBy.jellyfinUserId } } : {}),
+      },
+    };
+    const deferred = (this.#state.deferredWebhooks ?? []).filter((entry) => entry.request.id !== event.request.id);
+    this.#state.deferredWebhooks = [...deferred, kept].slice(-MAX_DEFERRED_REQUESTS);
+    await this.#save();
+  }
+
+  /** Forgets deferred webhooks that were granted (or need nothing any more), by request ID. */
+  public async forgetDeferredWebhooks(requestIds: string[]): Promise<void> {
+    this.#assertOpen();
+    const forget = new Set(requestIds);
+    const before = this.#state.deferredWebhooks ?? [];
+    const deferred = before.filter((entry) => !forget.has(entry.request.id));
+    if (deferred.length === before.length) return;
+    if (deferred.length > 0) this.#state.deferredWebhooks = deferred;
+    else delete this.#state.deferredWebhooks;
+    await this.#save();
+  }
+
+  #appIndex(): Map<string, string[]> {
+    if (this.#appIndexCache) return this.#appIndexCache;
+    const index = new Map<string, string[]>();
+    for (const [id, record] of Object.entries(this.#state.appRequests ?? {})) {
+      index.set(record.householdId, [...index.get(record.householdId) ?? [], id]);
+    }
+    this.#appIndexCache = index;
+    return index;
   }
 
   /** Throws once close() has been called, so a caller can refuse before starting work it could not record. */
@@ -812,6 +1051,36 @@ function orphanedSync(previous: SyncStatus, reason: string): SyncStatus {
     lastError: reason.slice(0, 1000),
     ...(previous.lastSuccessAt ? { lastSuccessAt: previous.lastSuccessAt } : {}),
   };
+}
+
+/**
+ * See GrantStore.writeAppRequests. A pending record is never pruned (it is still being followed). Settled records
+ * (completed, declined, deleted, failed) are kept for APP_REQUEST_RETENTION_MS, at most MAX_APP_REQUESTS_PER_HOUSEHOLD
+ * of them per household (its own newest; one household's volume never prunes another's).
+ */
+function pruneAppRequests(records: Record<string, AppRequestRecord>, now: number): Record<string, AppRequestRecord> {
+  const kept: Array<[string, AppRequestRecord]> = [];
+  const settled: Array<[string, AppRequestRecord]> = [];
+  for (const entry of Object.entries(records)) (entry[1].status === 'pending' ? kept : settled).push(entry);
+  const perHousehold = new Map<string, number>();
+  settled.sort(([, left], [, right]) => right.createdAt.localeCompare(left.createdAt));
+  for (const entry of settled) {
+    const [, record] = entry;
+    const count = (perHousehold.get(record.householdId) ?? 0) + 1;
+    perHousehold.set(record.householdId, count);
+    if (now - Date.parse(record.createdAt) <= APP_REQUEST_RETENTION_MS && count <= MAX_APP_REQUESTS_PER_HOUSEHOLD) kept.push(entry);
+  }
+  return Object.fromEntries(kept);
+}
+
+/**
+ * See GrantStore.writeAppRequests. A tombstone is kept until its `expiresAt`, and after it while any of its
+ * `requestIds` is not handled yet (once handled, a request is never granted again), at most APP_REQUEST_RETENTION_MS
+ * after it was made.
+ */
+function pruneTombstones(tombstones: Record<string, AppSafetyTombstone>, handled: ReadonlySet<string>, now: number): Record<string, AppSafetyTombstone> {
+  return Object.fromEntries(Object.entries(tombstones).filter(([, tombstone]) => now < Date.parse(tombstone.expiresAt)
+    || (tombstone.requestIds.some((id) => !handled.has(id)) && now - Date.parse(tombstone.createdAt) <= APP_REQUEST_RETENTION_MS)));
 }
 
 function clone<T>(value: T): T {

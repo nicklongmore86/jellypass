@@ -7,6 +7,69 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Household app "Get this" (API only, off by default).** With
+  `HOUSEHOLD_APP_ENABLED=true`, household hostnames serve
+  `POST /jellypass/app/v1/{movie|tv}/{tmdbId}/get` (series:
+  `{"seasons": [...]}`), which always answers `202 {"status":"accepted"}` at
+  once, before anything about the caller or the title is looked up, and then
+  in the background: does nothing if the caller can already play it or the
+  household already asked; joins the household to the title's grant if
+  Jellyfin already has it (found by TMDB ID, by the item Seerr links to the
+  title, or by name and year, so items without TMDB metadata count; by the Add
+  to my library rules: request grants only, administrator removals stick, only
+  the household whose hostname was used), **never requesting a title Jellyfin
+  has**; records the household's interest if someone already requested it,
+  joining the household when the title becomes available; and otherwise makes
+  a real HD Seerr request as the caller. Before that request is sent, a request
+  intent is written to the state file and the caller is confirmed, and
+  Jellyfin is read once more as the last step; until the request is recorded
+  and settled, no webhook or backfill grants a request for the title (webhooks
+  are acknowledged and granted afterwards, also after a restart). A request
+  whose title arrived while it was being made (or whose settle-time check
+  could not be read in time), and a request for new seasons of a series
+  Jellyfin already has, are granted by the join rules, never as a new private
+  grant: a public title stays public. Series are decided season by season and
+  are ready once every season asked for has episodes. **Seerr request quotas
+  are not supported yet:** a caller with a quota sees every title they cannot
+  play as `unavailable` ("Can't request") and their "Get this" does nothing;
+  they still request in Seerr. New per-user (10), per-address (30) and
+  per-household (30) limits per 10 minutes. `GET /jellypass/app/v1/requests`
+  lists the household's own titles with a coarse status (`requested`, `ready`,
+  `failed`, per season for a series), an opaque ID and whether the caller
+  asked, from JellyPass's records only. Titles now show `requested` from those
+  records alone, never from Seerr or membership. Records are brought up to
+  date by the scheduled reconciliation and when a grant is created; a
+  household deleted while a call runs (even if created again under the same
+  ID) never gets that call's records or joins. Seerr title answers are parsed
+  in a bounded worker thread, stopped at shutdown. New metrics
+  `jfa_app_get_this_total{result}` and `jfa_app_get_this_branches_total{branch}`,
+  and a `deferred` result for `jfa_webhooks_total` and
+  `jfa_request_backfill_total`. **When in doubt, the join rules:** a request
+  "Get this" made, or may have made, whose grant must not be private is kept
+  as a safety tombstone apart from the records (so pruning a record never
+  loosens it); an intent whose request cannot be told apart (several or a
+  declined one found, none found in time, its household replaced, or Seerr or
+  Jellyfin unreadable for 30 minutes) records nothing for the household and
+  makes the member's requests for the title joins for 30 days, and after 30
+  minutes no longer holds up anyone else's grant. Deferred webhooks are
+  granted genuine ones first, and a join that finds no grant waits for one.
+  Jellyfin's search by name is read in full (up to 2,000 items a name, more
+  counts as present) and an item without metadata whose name contains the
+  title's counts too. The title worker's timeout runs from when the oldest
+  answer was handed over. The state file stays at schema v7 and gains
+  `appRequests`, `appIdKey`, `appRequestIntents`, `deferredWebhooks`,
+  `appSafetyTombstones`, `householdEpochs` and `nextHouseholdEpoch`, which 2.2.1
+  and 2.3.0 keep without reading. **Before rolling back**, drain: stop new
+  "Get this" calls, wait until the state file has no `appRequestIntents` and
+  no `deferredWebhooks` (at most 30 minutes plus one reconciliation interval),
+  and note that requests covered by `appSafetyTombstones` are granted as
+  ordinary requests while rolled back (see
+  [Store, bounds and rollback](docs/app-design.md#get-this-as-implemented-step-2a)).
+  There is no app button yet. See
+  ["Get this" as implemented](docs/app-design.md#get-this-as-implemented-step-2a).
+
 ## [2.3.0] - 2026-10-24
 
 This is a minor release. It adds the household app, which is **off by

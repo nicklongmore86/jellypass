@@ -170,7 +170,148 @@ export interface GrantState {
    * is a new grant decision (see GrantStore.grant).
    */
   removedAccess?: Record<string, AccessRemovals>;
+  /**
+   * Household app "Get this" records, by a random ID that never leaves JellyPass (see AppRequestRecord). Additive: a
+   * 2.2.1 build keeps the field as it is without reading or updating it.
+   */
+  appRequests?: Record<string, AppRequestRecord>;
+  /** The key the household app derives its opaque IDs from (hex, 32 bytes); made the first time one is needed. */
+  appIdKey?: string;
+  /**
+   * Household app "Get this" requests about to be sent to Seerr, or sent and not yet settled, by a random ID (see
+   * AppRequestIntent). Additive like `appRequests`.
+   */
+  appRequestIntents?: Record<string, AppRequestIntent>;
+  /**
+   * `MEDIA_AVAILABLE` webhooks acknowledged without a grant because a "Get this" request for their title was not yet
+   * settled (see AppRequestIntent), oldest first, one per request; granted once it is. Additive like `appRequests`.
+   */
+  deferredWebhooks?: SeerrWebhook[];
+  /**
+   * Household app safety tombstones, by a random ID (see AppSafetyTombstone): the grant decisions "Get this" made,
+   * kept apart from its records so pruning records never loosens one. Additive like `appRequests`.
+   */
+  appSafetyTombstones?: Record<string, AppSafetyTombstone>;
+  /**
+   * Each household's epoch (see GrantStore.householdEpoch), by group ID, and the next one to give: a household deleted
+   * and created again under the same ID has another. Additive like `appRequests`.
+   */
+  householdEpochs?: Record<string, number>;
+  nextHouseholdEpoch?: number;
 }
+
+/**
+ * A grant decision "Get this" made (docs/app-design.md, "Safety tombstones"): a Seerr request it made, or may have
+ * made, whose grant must follow the library join rules, never a new (private) grant. Kept apart from the records,
+ * which are display and attribution only and may be pruned.
+ *
+ * - `requestIds`: these requests follow the join rules, whoever made them.
+ * - `jellyfinUserId` (with `since`): so does any request for the title by that member, or whose requester cannot be
+ *   read, made no earlier than `since` (or whose creation time cannot be read), except `exemptRequestIds`: an intent
+ *   whose request could not be told apart (lost, timed out or ambiguous), so whichever request it made is covered.
+ *
+ * Kept until `expiresAt`, and after it for as long as one of `requestIds` is not handled yet (at most
+ * APP_REQUEST_RETENTION_MS after it was made).
+ */
+export interface AppSafetyTombstone {
+  mediaType: 'movie' | 'tv';
+  tmdbId: number;
+  requestIds: string[];
+  jellyfinUserId?: string;
+  since?: string;
+  exemptRequestIds?: string[];
+  createdAt: string;
+  expiresAt: string;
+}
+
+/**
+ * A Seerr request "Get this" is about to make, or made and has not settled yet (docs/app-design.md, "Late requests"):
+ * written atomically before the request is sent, so neither a webhook arriving before Seerr's answer nor a restart can
+ * grant the request privately. While any intent names a title, webhooks and the backfill grant no request for that
+ * title (they are deferred); the intent is removed once the request is recorded and settled (its grant then follows
+ * its record), or once it is known that no request was made.
+ *
+ * - `submitting`: the request is about to be, or was, sent; Seerr's answer is not recorded. On restart (or after an
+ *   uncertain failure) the request is looked up in Seerr by the member and title: exactly one found, for the household
+ *   it was made for, it is recorded; anything else (several, a declined one, none once APP_INTENT_TIMEOUT_MS has
+ *   passed, or unreadable once APP_SETTLE_DEADLINE_MS has) replaces the intent with a safety tombstone
+ *   (AppSafetyTombstone).
+ * - `settling`: the request (`seerrRequestId`) is recorded, but whether the title was in Jellyfin when it was made could
+ *   not be read yet; it is read again, and once APP_SETTLE_DEADLINE_MS has passed the grant follows the join rules.
+ */
+export interface AppRequestIntent {
+  householdId: string;
+  /** The member it is made as, normalized. */
+  jellyfinUserId: string;
+  mediaType: 'movie' | 'tv';
+  tmdbId: number;
+  /** The seasons it asks for, ascending; empty for a movie. */
+  seasons: number[];
+  /** When Jellyfin was read and did not have the title (or these seasons): the read the request branch was chosen on. */
+  observedAbsentAt: string;
+  createdAt: string;
+  status: 'submitting' | 'settling';
+  seerrRequestId?: string;
+  /** The household's epoch when the call was accepted (GrantStore.householdEpoch): another means it was replaced. */
+  householdEpoch?: number;
+}
+
+/**
+ * What one household app "Get this" did for one household (docs/app-design.md, "Get this"): the household's
+ * attribution record, the only source of the app's `requested` state and of the readiness it shows.
+ *
+ * - `request`: JellyPass made `seerrRequestId` as the member (or found the member's own request for the title).
+ * - `interest`: the title was already requested by someone else; `seerrRequestId` is that request, if one was found.
+ *   The household is joined to the title's grant when the grant is created.
+ * - `join`: Jellyfin already had the title; the household was joined to the grant of `itemIds` at once.
+ *
+ * Status, as the member's own request would have it: `pending` (pending or approved), `completed`, `failed`,
+ * `declined` and `deleted`.
+ */
+export interface AppRequestRecord {
+  /** The household whose host the call was made on; never changed by membership. */
+  householdId: string;
+  /** The member who asked, normalized (32 lowercase hex digits). */
+  jellyfinUserId: string;
+  mediaType: 'movie' | 'tv';
+  tmdbId: number;
+  /** The seasons this record covers, ascending; empty for a movie. */
+  seasons: number[];
+  createdAt: string;
+  updatedAt: string;
+  branch: 'request' | 'interest' | 'join';
+  status: AppRequestStatus;
+  seerrRequestId?: string;
+  /** Seerr's media record for the title when the record was made, to tell its deletion apart. */
+  seerrMediaId?: number;
+  itemIds?: string[];
+  /**
+   * For a series, the seasons of `seasons` Jellyfin now has episodes of (read with JellyPass's key). A series record is
+   * `completed` only once every season it covers is ready; until then it stays as it was and is refreshed.
+   */
+  readySeasons?: number[];
+  /**
+   * A `request` record whose grant must follow the library join rules rather than make a new grant
+   * (docs/app-design.md, "Late requests" and "New seasons of a series Jellyfin has"): `existing-series` when Jellyfin
+   * already had the series (the request is for seasons it lacks), `present-at-settle` when Jellyfin had the title when
+   * the request was settled (it arrived while the request was being made), `unverified` when Jellyfin could not be read
+   * to settle it within APP_SETTLE_DEADLINE_MS.
+   */
+  joinOnGrant?: 'existing-series' | 'present-at-settle' | 'unverified';
+  /** When Jellyfin was last read for the title before the request was sent (the request branch's last step). */
+  checkedAt?: string;
+  /** The household was deleted: never shown, joined or `requested` again. */
+  detached?: true;
+  /** The household's epoch when the record was made (GrantStore.householdEpoch): another means it was replaced. */
+  householdEpoch?: number;
+  /**
+   * A record whose grant follows the join rules (or an interest) found no grant to join: the title was public. It
+   * stays `pending` (with `itemIds` and its ready seasons) and joins the grant once one is created for those items.
+   */
+  awaitingGrant?: true;
+}
+
+export type AppRequestStatus = 'pending' | 'completed' | 'failed' | 'declined' | 'deleted';
 
 /**
  * See GrantState.removedAccess. Kept in the state rather than on the grant so it outlives a grant that is purged or
