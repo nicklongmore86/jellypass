@@ -568,7 +568,9 @@ elsewhere; the files are never proxied to Jellyfin.
   documentation, checked): `Cache-Control: no-store` is never cached at the edge; `Cloudflare-CDN-Cache-Control` (not
   forwarded) and `CDN-Cache-Control` steer only the CDN's own cache and leave `Cache-Control` as sent; the Browser Cache
   TTL setting rewrites `Cache-Control` toward browsers on what it caches. So the page and worker send all three
-  `no-store` headers. Unknown or old fingerprints, and the unfingerprinted names, are unknown app paths.
+  `no-store` headers. Unknown or old fingerprints, and the unfingerprinted names, are unknown app paths: the app API
+  answers them, `401 unauthorized` without a valid token (so when the browser itself loads them) and `404 not_found`
+  only with one (tested in `test/app-pwa.test.mjs`).
 - **Service worker** (`sw.js`, registered by absolute URL `/jellypass/app/sw.js` with scope `/jellypass/app/` and `updateViaCache: 'none'`, so the browser checks the worker on the network whatever a cache says). The app's files are served only at their exact lower-case paths (the gateway matches the rest of the app's paths case-insensitively, so `/JELLYPASS/APP/` is an unknown app path, answered like any other, not the page), so there is one address and one registration. It precaches and serves only the app's own static files (the
   exact list, filled into `sw.js` by the build from the fingerprinted files it wrote, which a test compares with the files served), network first, falling back to its copy when
   the network fails. The copy is one release: each install fills a cache of its own, named for a hash of the precached files and of the unstamped worker (computed by

@@ -903,11 +903,14 @@ switched off (those answer the same fixed `404`).
   (`app.<hash>.css`, `js/main.<hash>.js`, the manifest, icons and logo too), and
   the page names exactly those files, so a CDN or browser can keep them for good
   (`Cache-Control: public, max-age=31536000, immutable`) and two releases can
-  never be mixed. An old or unknown hash answers the same fixed `404` as any
-  unknown app path. The page, the `/jellypass/app` redirect and `sw.js` keep
-  their addresses, so they are sent with `Cache-Control: no-store` plus
-  `CDN-Cache-Control: no-store` and `Cloudflare-CDN-Cache-Control: no-store`, and
-  no `ETag`. Per Cloudflare's documentation `no-store` is never cached at its
+  never be mixed. An old or unknown hash is not a file: it is answered like any
+  other unknown app path, by the app API, so it gets `401
+  {"error":"unauthorized"}` without a Jellyfin token (as when the browser
+  itself loads a file, which sends none) and `404 {"error":"not_found"}` only
+  with a valid one, both `no-store`. The page, the `/jellypass/app` redirect
+  and `sw.js` keep their addresses, so they are sent with
+  `Cache-Control: no-store` plus `CDN-Cache-Control: no-store` and
+  `Cloudflare-CDN-Cache-Control: no-store`, and no `ETag`. Per Cloudflare's documentation `no-store` is never cached at its
   edge, `Cloudflare-CDN-Cache-Control` / `CDN-Cache-Control` are the headers it
   reads for its own cache (the former is not forwarded to browsers), and its
   Browser Cache TTL setting only rewrites `Cache-Control` on responses it caches.
