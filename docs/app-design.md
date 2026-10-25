@@ -537,6 +537,12 @@ Step 2a implements the first two rules (see '"Get this" as implemented (step 2a)
   and awaited); the caller's Seerr user is confirmed; Jellyfin is read again, and that read is the **last step awaited
   before the request is sent**: nothing else is awaited between its answer and the request leaving. A title (or
   season) that arrived since the first read is joined instead.
+- **Durable first, checked.** Immediately before the request leaves (nothing awaited in between), the store is asked
+  whether the state file on disk holds the intent (`GrantStore.isAppRequestIntentDurable`: written and renamed into
+  place, not merely in memory). If not, nothing is sent and the intent is dropped (`request_unsaved`): a change that
+  stopped awaiting the intent's write sends nothing rather than a request a crash would leave unprotected. Every app
+  test runs under the same invariant from the other side: the fake Seerr reads the state file when a request arrives
+  and fails the test unless an intent for its title is there.
 - **What is left is exactly the request's own round trip to Seerr** (at most its 15-second timeout, typically tens of
   milliseconds): a title arriving in Jellyfin then still reaches Seerr's request endpoint. Its grant is closed too.
   While any intent names a title, no webhook or backfill grants a request for that title, whoever made it: a webhook is
@@ -803,8 +809,8 @@ running when it is deleted are added detached (see 5 above).
 `jfa_app_get_this_total{result="accepted"|"ineligible"|"error"}` (decided in the background) and
 `jfa_app_get_this_branches_total{branch}` (`visible`, `refused`, `join_joined`, `join_already`, `join_refused`,
 `join_ungranted`, `join_error`, `join_cancelled`, `interest`, `own_request`, `request`, `request_late`,
-`request_refused`, `request_uncertain`, `intent_recovered`, `intent_cancelled` (none found in time),
-`intent_ambiguous`, `intent_detached` (household replaced), `intent_abandoned` (unreadable past the deadline),
+`request_refused`, `request_uncertain`, `request_unsaved` (its intent was not on disk: nothing sent),
+`intent_recovered`, `intent_cancelled` (none found in time), `intent_ambiguous`, `intent_detached` (household replaced), `intent_abandoned` (unreadable past the deadline),
 `settled`, `settle_unverified`, `error`, `cancelled`).
 
 #### Leak channels in step 2a

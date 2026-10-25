@@ -75,6 +75,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   member whose own Jellyfin view has it; to a member another library, a
   parental limit or a blocked tag hides it from, it stays `requested` (before:
   `ready` in the list and `get_this` on the page).
+- **A "Get this" request is never sent before its intent is on disk.** Just
+  before the Seerr request leaves, JellyPass checks that the state file holds
+  the request intent that protects its grant (written and renamed into place);
+  if it does not, nothing is sent (new branch `request_unsaved` in
+  `jfa_app_get_this_branches_total`). The test suite checks the same from
+  Seerr's side for every request.
 
 ## [2.3.0] - 2026-10-24
 

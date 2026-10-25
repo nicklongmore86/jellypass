@@ -43,6 +43,11 @@ export class GrantStore {
   /** A queued write that has not started yet; saves requested meanwhile share it. */
   #queued: Promise<void> | undefined;
   #closed = false;
+  /**
+   * The request intents the state file on disk holds: those it was loaded with, then those of the last completed write.
+   * See isAppRequestIntentDurable.
+   */
+  #durableIntents = new Set<string>();
   /** "Get this" record IDs by household, rebuilt after each change (see #appIndex). */
   #appIndexCache: Map<string, string[]> | undefined;
   readonly #limitHouseholds: boolean;
@@ -73,6 +78,7 @@ export class GrantStore {
     this.#assertOpen();
     const migrated = migrateState(JSON.parse(text) as unknown);
     this.#state = migrated.state;
+    this.#durableIntents = new Set(Object.keys(this.#state.appRequestIntents ?? {}));
     // Written only by unreleased builds of "Get this" that counted quotas; dropped with the next write.
     delete (this.#state as { appQuotaLedger?: unknown }).appQuotaLedger;
     this.#appIndexCache = undefined;
@@ -522,6 +528,15 @@ export class GrantStore {
     return Object.values(this.#state.appRequestIntents ?? {}).some((intent) => intent.mediaType === mediaType && intent.tmdbId === tmdbId);
   }
 
+  /**
+   * Whether the state file on disk holds this request intent: written and renamed into place, not merely in memory.
+   * "Get this" checks it immediately before sending the intent's Seerr request (see HouseholdRequests), so a request is
+   * never sent before the decision that protects its grant would survive a crash.
+   */
+  public isAppRequestIntentDurable(id: string): boolean {
+    return this.#durableIntents.has(id);
+  }
+
   /** The key the household app derives opaque IDs from, or undefined before the first "Get this" record. */
   public getAppIdKey(): string | undefined {
     return this.#state.appIdKey;
@@ -561,7 +576,7 @@ export class GrantStore {
 
   /**
    * Writes a "Get this" request intent (see AppRequestIntent) and resolves once the state file has it: only then may
-   * the request be sent. Resolves with its ID.
+   * the request be sent. Resolves with its ID (see isAppRequestIntentDurable).
    */
   public async addAppRequestIntent(intent: AppRequestIntent): Promise<string> {
     this.#assertOpen();
@@ -999,9 +1014,12 @@ export class GrantStore {
     await mkdir(path.dirname(this.#file), { recursive: true });
     // A unique name per write, so a stray concurrent writer can never rename another's file.
     const temporary = `${this.#file}.${randomUUID()}.tmp`;
+    // The intents this write holds, taken with the state it serializes.
+    const intents = Object.keys(this.#state.appRequestIntents ?? {});
     try {
       await writeFile(temporary, `${JSON.stringify(this.#state, null, 2)}\n`, { mode: 0o600 });
       await rename(temporary, this.#file);
+      this.#durableIntents = new Set(intents);
     } catch (error) {
       await rm(temporary, { force: true }).catch(() => undefined);
       throw error;

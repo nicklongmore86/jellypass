@@ -1,6 +1,7 @@
 // A household app under test: a fake TMDB, a fake Seerr and a fake Jellyfin (all real HTTP servers), and a JellyPass
 // server whose household gateway serves the app API from them. TMDB answers are the canary-laden TMDB fixtures; Seerr
 // answers are built from the canary-laden Seerr 3.5.1 fixtures.
+import { readFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { request as httpRequest, createServer } from 'node:http';
 import path from 'node:path';
@@ -212,12 +213,16 @@ export function otherHouseholdWorlds() {
   };
 }
 
-/** Starts a fake Seerr serving `state` (see {@link world}); `calls` records every call, `violations` misuse. */
+/**
+ * Starts a fake Seerr serving `state` (see {@link world}); `calls` records every call, `violations` misuse. Set
+ * `onRequest` to check each POST /api/v1/request as it arrives: what it returns, if anything, is a violation.
+ */
 export async function createFakeSeerr(state) {
   const calls = [];
   const violations = [];
   // Every POST /api/v1/request that reached Seerr, with its acting user and body.
   const posts = [];
+  let onRequest;
   let nextRequestId = 7350001;
   const server = createServer((request, response) => {
     const url = new URL(request.url, 'http://localhost');
@@ -297,6 +302,8 @@ export async function createFakeSeerr(state) {
     for await (const chunk of request) chunks.push(chunk);
     const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
     posts.push({ actingUser: acting, body });
+    const violation = onRequest?.(body);
+    if (violation) violations.push(violation);
     if (Object.keys(body).some((key) => !['mediaType', 'mediaId', 'seasons', 'is4k'].includes(key)) || body.is4k !== false) {
       violations.push(`request with ${JSON.stringify(body)}`);
     }
@@ -383,7 +390,34 @@ export async function createFakeSeerr(state) {
   }
 
   await listen(server);
-  return { url: `http://127.0.0.1:${server.address().port}`, calls, violations, posts, state, close: () => close(server) };
+  return {
+    url: `http://127.0.0.1:${server.address().port}`,
+    calls,
+    violations,
+    posts,
+    state,
+    set onRequest(check) { onRequest = check; },
+    close: () => close(server),
+  };
+}
+
+/** The violation the fake Seerr records for a request sent before an intent for its title was in the state file. */
+export const UNSAVED_INTENT = 'request sent before its intent was in the state file';
+
+/**
+ * The invariant every app test runs under (see startApp): when a request reaches Seerr, the state file on disk already
+ * holds a "Get this" intent for its title, so the decision that protects its grant survives a crash.
+ */
+function intentOnDisk(stateFile) {
+  return (body) => {
+    let intents;
+    try {
+      intents = Object.values(JSON.parse(readFileSync(stateFile, 'utf8')).appRequestIntents ?? {});
+    } catch {
+      intents = [];
+    }
+    return intents.some((intent) => intent.mediaType === body.mediaType && intent.tmdbId === body.mediaId) ? undefined : UNSAVED_INTENT;
+  };
 }
 
 /**
@@ -589,6 +623,7 @@ export async function startApp(t, state = world(), options = {}) {
   const jellyfin = await createFakeJellyfinForApp(state);
   const stateFile = path.join(await makeTempDir(t, 'jfa-app-'), 'grants.json');
   if (options.stateFile) await writeFile(stateFile, JSON.stringify(options.stateFile));
+  if (!options.seerr) seerr.onRequest = intentOnDisk(stateFile);
   const store = new GrantStore(stateFile, { limitHouseholds: options.app !== false });
   await store.load();
   for (const household of options.households ?? HOUSEHOLDS) await store.upsertGroup(household);
@@ -653,6 +688,8 @@ export async function startApp(t, state = world(), options = {}) {
   t.after(async () => {
     server.closeAllConnections();
     await Promise.all([close(server), seerr.close(), tmdb.close(), jellyfin.close()]);
+    // Checked for every test: a request sent before its intent was on disk fails it (see intentOnDisk).
+    if (seerr.violations?.includes(UNSAVED_INTENT)) throw new Error(UNSAVED_INTENT);
   });
   const port = server.address().port;
   return {

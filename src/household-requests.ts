@@ -112,7 +112,7 @@ export class GetThisRefusedError extends Error {
 export interface HouseholdRequestsOptions {
   store: Pick<GrantStore,
     | 'listAppRequests' | 'listAppRequestsForHousehold' | 'writeAppRequests' | 'getAppIdKey' | 'householdEpoch'
-    | 'hasHandledRequest' | 'listAppRequestIntents' | 'addAppRequestIntent' | 'getGroup'>;
+    | 'hasHandledRequest' | 'listAppRequestIntents' | 'addAppRequestIntent' | 'isAppRequestIntentDurable' | 'getGroup'>;
   /** Jellyfin with JellyPass's own key: the decision input for "Jellyfin already has it". */
   jellyfin: Pick<JellyfinClient, 'findItemsByTmdbId' | 'existingItems' | 'findItemsByName' | 'seasonsWithEpisodes'>;
   /** Seerr with the admin key: the blocklist, a title's requests, and the status of requests JellyPass recorded. */
@@ -423,8 +423,9 @@ export class HouseholdRequests {
    * 3. Jellyfin is read again (the re-check), the last step awaited: the request is sent right after it, with nothing
    *    else awaited in between, and a title (or season) that arrived since the branch's first read is joined instead.
    *
-   * What is left is the request's own round trip, in which a title arriving would still be requested; the request is
-   * settled by reading Jellyfin once more after Seerr answers (see #settle), and its intent stays until it is, so its
+   * The request is sent only if the state file holds the intent then (GrantStore.isAppRequestIntentDurable): otherwise
+   * nothing is sent (`request_unsaved`). What is left is the request's own round trip, in which a title arriving would
+   * still be requested; the request is settled by reading Jellyfin once more after Seerr answers (see #settle), and its intent stays until it is, so its
    * grant follows the join rules if the title is there or cannot be read. A failure Seerr may have made the request
    * through (no answer, a 5xx) leaves the intent to be reconciled (see #reconcileIntents).
    */
@@ -471,6 +472,14 @@ export class HouseholdRequests {
     let created: unknown;
     let failure: unknown;
     if (requested.length > 0 && !signal.aborted) {
+      // The intent must be in the state file before the request leaves (step 1): checked here, with nothing awaited
+      // between this check and the request, so a regression that stops awaiting its write sends nothing.
+      if (!this.#store.isAppRequestIntentDurable(intentId)) {
+        outcome.removeIntents.push(intentId);
+        this.#recordBranch('request_unsaved');
+        console.error(JSON.stringify({ level: 'error', message: 'household app request not sent: its intent is not in the state file' }));
+        return;
+      }
       try {
         created = await requester.createRequest(input.mediaType === 'movie'
           ? { mediaType: 'movie', tmdbId: input.tmdbId }
