@@ -771,24 +771,27 @@ stays unchanged until the first "Get this".
 | `appIdKey` | Keeps it as it is | Unused; upgrading again keeps every opaque ID the same. |
 | `appRequestIntents` | Keeps it as it is | Unused: webhooks and the backfill grant a request whose intent was not resolved as an ordinary request (roll back with no "Get this" in flight); upgrading again reconciles what is left. |
 | `deferredWebhooks` | Keeps it as it is | Unused: the backfill (if enabled) grants those requests; upgrading again grants what is left. |
-| `appSafetyTombstones` | Keeps it as it is | Unused: a request a tombstone covers is granted as an ordinary (private) request by a webhook or the backfill (see the drain below); upgrading again applies them to what is not handled yet. |
+| `appSafetyTombstones` | Keeps it as it is | Unused: a request a tombstone covers is granted as an ordinary (private) request by a webhook or the backfill (see the drain below: a tombstone naming a request not handled yet lasts up to 400 days); upgrading again applies them to what is not handled yet. |
 | `householdEpochs`, `nextHouseholdEpoch` | Keeps them as they are | Unused; a household deleted while rolled back keeps its entry, so one created again under its ID then shares its epoch after upgrading again. |
 
-**Drain before rolling back.** Intents, deferred webhooks and tombstones are what makes a late request a join; 2.3.0
-and 2.2.1 do not read them. Before rolling back:
+**Drain before rolling back.** Intents, deferred webhooks and tombstones are what makes a late request a join; 2.3.x
+and 2.2.1 do not read them. Before rolling back to 2.3.x or 2.2.1:
 
 1. Stop new "Get this" calls: block `POST /jellypass/app/v1/movie/*/get` and `/tv/*/get` at the reverse proxy (or pick
    a time no one uses the app), and leave this version running with `RECONCILE_INTERVAL_SECONDS` above 0.
-2. Wait until the state file holds no intents and no deferred webhooks:
-   `jq '[(.appRequestIntents // {} | length), (.deferredWebhooks // [] | length)]' grants.json` prints `[0,0]`. Each
-   intent is resolved within 30 minutes of being written, at the scheduled reconciliation after that (or at once by a
-   restart, which reconciles and replays at startup); deferred webhooks are granted once no intent names their title.
-   A deferred webhook that keeps failing (Seerr unreachable) stays: the backfill, if enabled, grants it after the
-   rollback.
-3. Check the tombstones: `jq '.appSafetyTombstones // {} | length' grants.json`. Requests they cover are granted as
-   ordinary requests while rolled back; with `REQUEST_BACKFILL_ENABLED=false` only a webhook for one of them can, and
-   a public title it makes private can be made public again by revoking that request in the admin UI. There is no way
-   to drain them early (they last 30 days): if that is not acceptable, wait.
+2. Wait until no intents and no deferred webhooks are left (`requestIntents.total` and `deferredWebhooks.total` 0 in
+   `GET /v1/app/outstanding`, see "What is outstanding"). Each intent is resolved within 30 minutes of being written,
+   at the scheduled reconciliation after that (or at once by a restart, which reconciles and replays at startup);
+   deferred webhooks are granted once no intent names their title. A deferred webhook that keeps failing (Seerr
+   unreachable) stays: the backfill, if enabled, grants it after the rollback.
+3. **Check, then roll back only when clear:** `GET /v1/app/outstanding` answers `"clear": true` (no safety marker that
+   still decides a grant, no intent, no deferred webhook; `jfa_app_safety_markers`, `jfa_app_request_intents` and
+   `jfa_app_deferred_webhooks` all 0). A safety marker is not a fixed 30 days: a member-wide one covers the member's
+   new requests for 30 days, but **any marker naming a request not handled yet (pending, declined, never available)
+   lasts until that request is handled, up to 400 days.** There is no way to drain them early. Requests an
+   outstanding marker covers are granted as ordinary (private) requests while rolled back; with
+   `REQUEST_BACKFILL_ENABLED=false` only a webhook for one of them can, and a public title it makes private can be made
+   public again by revoking that request in the admin UI. If that is not acceptable, wait until the readout is clear.
 
 A state file written by an unreleased build of this branch may also hold `appQuotaLedger` (the dropped quota ledger):
 it loads, is never read, and is dropped with the next write.
@@ -882,7 +885,8 @@ only: `jfa_app_safety_markers{kind}`, `jfa_app_request_intents{status}` and `jfa
   requests for the title, made outside the app within 30 days, joins too (stricter, never looser), and an intent
   resolved that way records nothing for its household: the title is not `requested` for them and they are not joined
   to its grant. A record awaiting a grant shows its seasons `ready` (the title is public) and is checked for a grant for
-  30 days. Rolling back without draining (see "Store, bounds and rollback") loses the tombstones' effect.
+  30 days. Rolling back without draining (see "Store, bounds and rollback") loses the tombstones' effect; one naming a
+  request not handled yet lasts up to 400 days, so check the readout before rolling back.
 - **Identity in the last steps.** The caller's Seerr user is confirmed before the last Jellyfin read rather than
   immediately before the request: a relink made in Seerr during that read (tens of milliseconds) that JellyPass is not
   told of sends the request as the Seerr user that was linked to the member when it was confirmed. A relink JellyPass

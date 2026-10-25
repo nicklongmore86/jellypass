@@ -52,8 +52,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   loosens it); an intent whose request cannot be told apart (several or a
   declined one found, none found in time, its household replaced, or Seerr or
   Jellyfin unreadable for 30 minutes) records nothing for the household and
-  makes the member's requests for the title joins for 30 days, and after 30
-  minutes no longer holds up anyone else's grant. Deferred webhooks are
+  makes the member's requests for the title joins for 30 days (a tombstone
+  naming a request not handled yet is kept until it is, up to 400 days), and
+  after 30 minutes no longer holds up anyone else's grant. Deferred webhooks are
   granted genuine ones first, and a join that finds no grant waits for one.
   Jellyfin's search by name is read in full (up to 2,000 items a name, more
   counts as present) and an item without metadata whose name contains the
@@ -61,11 +62,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   answer was handed over. The state file stays at schema v7 and gains
   `appRequests`, `appIdKey`, `appRequestIntents`, `deferredWebhooks`,
   `appSafetyTombstones`, `householdEpochs` and `nextHouseholdEpoch`, which 2.2.1
-  and 2.3.0 keep without reading. **Before rolling back**, drain: stop new
-  "Get this" calls, wait until the state file has no `appRequestIntents` and
-  no `deferredWebhooks` (at most 30 minutes plus one reconciliation interval),
-  and note that requests covered by `appSafetyTombstones` are granted as
-  ordinary requests while rolled back (see
+  and 2.3.0 keep without reading. **Before rolling back** to 2.3.x or 2.2.1,
+  drain: stop new "Get this" calls, wait until no `appRequestIntents` or
+  `deferredWebhooks` are left (at most 30 minutes plus one reconciliation
+  interval), then roll back only once the admin-only
+  `GET /v1/app/outstanding` answers `"clear": true`. Requests covered by an
+  outstanding safety marker (`appSafetyTombstones`) are granted as ordinary
+  requests while rolled back, and a marker naming a request not handled yet
+  lasts until it is, up to 400 days, not 30 (see
   [Store, bounds and rollback](docs/app-design.md#get-this-as-implemented-step-2a)).
   There is no app button yet. See
   ["Get this" as implemented](docs/app-design.md#get-this-as-implemented-step-2a).

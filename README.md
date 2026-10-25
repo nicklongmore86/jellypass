@@ -940,11 +940,15 @@ Rolling back from 2.3.0 to 2.2.1 needs no state-file change. The household app's
 schema v7 and adds `appRequests`, `appIdKey`, `appRequestIntents`,
 `deferredWebhooks`, `appSafetyTombstones`, `householdEpochs` and
 `nextHouseholdEpoch`; 2.3.0 and 2.2.1 load and keep them without reading them.
-Drain before rolling back: stop new "Get this" calls, wait until
-`jq '[(.appRequestIntents // {} | length), (.deferredWebhooks // [] | length)]' grants.json`
-prints `[0,0]` (at most 30 minutes plus one reconciliation interval, or restart
-JellyPass to reconcile at once), and note that requests covered by
-`appSafetyTombstones` are granted as ordinary requests while rolled back; see
+Drain before rolling back to 2.3.x or 2.2.1: stop new "Get this" calls, wait
+until no request intents or deferred webhooks are left (at most 30 minutes plus
+one reconciliation interval, or restart JellyPass to reconcile at once), then
+check the admin-only `GET /v1/app/outstanding` and roll back only once it
+answers `"clear": true`. Requests an outstanding safety marker
+(`appSafetyTombstones`) covers are granted as ordinary requests while rolled
+back, and a marker is not limited to 30 days: one naming a request not handled
+yet (pending, declined or never available) lasts until it is, up to 400 days;
+see
 [Store, bounds and rollback](docs/app-design.md#get-this-as-implemented-step-2a). Rolling back from
 2.2.0 to 2.1.1, 2.1.0 or 2.0.0 keeps the state file readable, but those
 versions retry grants marked `orphaned` (see
