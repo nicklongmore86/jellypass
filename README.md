@@ -734,8 +734,10 @@ limits above.
 
 **`GET /requests`** lists the household's own "Get this" titles, newest first
 (at most 200), from JellyPass's records only: `status` is `requested`
-(Requested), `ready` (Ready to watch) or `failed` (We couldn't get this:
-declined or failed), with each season's status for a series; `byYou` says
+(Requested), `ready` (Ready to watch, and only for a caller whose own Jellyfin
+view has the title or season: anyone else in the household, kept from it by a
+library, a parental limit or a blocked tag, sees `requested`) or `failed` (We
+couldn't get this: declined or failed), with each season's status for a series; `byYou` says
 whether the caller asked (otherwise someone else in the household); `id` is
 opaque. No requester names, Seerr IDs, counts or dates. Statuses are brought
 up to date by each scheduled reconciliation (`RECONCILE_INTERVAL_SECONDS`) and
@@ -743,7 +745,12 @@ when a grant is created. There are no notifications.
 
 `jfa_app_get_this_total{result="accepted"|"ineligible"|"error"}` and
 `jfa_app_get_this_branches_total{branch}` count calls and what their
-background work did; no label names a title. The app's "Get this" button is
+background work did; no label names a title. The gauges
+`jfa_app_safety_markers{kind}`, `jfa_app_request_intents{status}` and
+`jfa_app_deferred_webhooks` count what "Get this" still protects or has in
+flight, and the admin-only `GET /v1/app/outstanding` lists it (counts by kind,
+oldest age, TMDB IDs and households, `clear` once all are 0); household hosts
+never serve it. The app's "Get this" button is
 not in this release. See
 ["Get this" as implemented](docs/app-design.md#get-this-as-implemented-step-2a)
 for every rule, the leak channels and what remains.
@@ -867,6 +874,10 @@ All examples except health require `Authorization: Bearer $ADMIN_TOKEN`.
 curl -H "Authorization: Bearer $ADMIN_TOKEN" \
   http://127.0.0.1:8787/v1/grants
 
+# What household app "Get this" still protects or has in flight (check before a rollback).
+curl -H "Authorization: Bearer $ADMIN_TOKEN" \
+  http://127.0.0.1:8787/v1/app/outstanding
+
 # Preview reconciliation without changing Jellyfin.
 curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
   'http://127.0.0.1:8787/v1/reconcile?dryRun=true'
@@ -929,11 +940,15 @@ Rolling back from 2.3.0 to 2.2.1 needs no state-file change. The household app's
 schema v7 and adds `appRequests`, `appIdKey`, `appRequestIntents`,
 `deferredWebhooks`, `appSafetyTombstones`, `householdEpochs` and
 `nextHouseholdEpoch`; 2.3.0 and 2.2.1 load and keep them without reading them.
-Drain before rolling back: stop new "Get this" calls, wait until
-`jq '[(.appRequestIntents // {} | length), (.deferredWebhooks // [] | length)]' grants.json`
-prints `[0,0]` (at most 30 minutes plus one reconciliation interval, or restart
-JellyPass to reconcile at once), and note that requests covered by
-`appSafetyTombstones` are granted as ordinary requests while rolled back; see
+Drain before rolling back to 2.3.x or 2.2.1: stop new "Get this" calls, wait
+until no request intents or deferred webhooks are left (at most 30 minutes plus
+one reconciliation interval, or restart JellyPass to reconcile at once), then
+check the admin-only `GET /v1/app/outstanding` and roll back only once it
+answers `"clear": true`. Requests an outstanding safety marker
+(`appSafetyTombstones`) covers are granted as ordinary requests while rolled
+back, and a marker is not limited to 30 days: one naming a request not handled
+yet (pending, declined or never available) lasts until it is, up to 400 days;
+see
 [Store, bounds and rollback](docs/app-design.md#get-this-as-implemented-step-2a). Rolling back from
 2.2.0 to 2.1.1, 2.1.0 or 2.0.0 keeps the state file readable, but those
 versions retry grants marked `orphaned` (see

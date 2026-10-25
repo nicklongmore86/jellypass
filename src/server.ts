@@ -158,6 +158,9 @@ export function makeServer(
       if (request.method === 'GET' && url.pathname === '/metrics') {
         return text(response, 200, service.renderMetrics(), 'text/plain; version=0.0.4; charset=utf-8');
       }
+      if (request.method === 'GET' && url.pathname === '/v1/app/outstanding') {
+        return json(response, 200, service.appOutstanding());
+      }
       if (request.method === 'GET' && url.pathname === '/v1/grants') {
         return json(response, 200, { grants: service.listGrants() });
       }

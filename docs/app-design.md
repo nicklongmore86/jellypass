@@ -223,6 +223,11 @@ household's own active record names the season, otherwise `get_this`. A series i
 is. So a caller
 without series permission sees the seasons they have as `in_library` and the rest as `unavailable`.
 
+**Ready is never optimistic.** A title (or season) the household's own record says is ready is `in_library` only for a
+caller whose own view has it (above); for anyone else in the household (another library, a parental limit, a blocked
+tag) it stays `requested`, never `get_this`, and `GET /requests` shows it `requested` too (see '"Get this" as
+implemented (step 2a)'). Both are decided from the household's own records and the caller's own view only.
+
 ### Requested and households
 
 Seerr records who made a request, not which household it was for, and a Jellyfin user can belong to several
@@ -532,6 +537,14 @@ Step 2a implements the first two rules (see '"Get this" as implemented (step 2a)
   and awaited); the caller's Seerr user is confirmed; Jellyfin is read again, and that read is the **last step awaited
   before the request is sent**: nothing else is awaited between its answer and the request leaving. A title (or
   season) that arrived since the first read is joined instead.
+- **Durable first, checked.** Immediately before the request leaves (nothing awaited in between), the store is asked
+  whether the state file on disk holds the intent (`GrantStore.isAppRequestIntentDurable`: written and renamed into
+  place, not merely in memory). "Durable" here means the atomic replacement completed, not that it survives a power
+  loss: the write-and-rename does not fsync the file or its directory, so an OS crash or power cut just after the rename
+  can still lose it (a documented leftover; a process crash cannot). If not, nothing is sent and the intent is dropped (`request_unsaved`): a change that
+  stopped awaiting the intent's write sends nothing rather than a request a crash would leave unprotected. Every app
+  test runs under the same invariant from the other side: the fake Seerr reads the state file when a request arrives
+  and fails the test unless an intent for its title is there.
 - **What is left is exactly the request's own round trip to Seerr** (at most its 15-second timeout, typically tens of
   milliseconds): a title arriving in Jellyfin then still reaches Seerr's request endpoint. Its grant is closed too.
   While any intent names a title, no webhook or backfill grants a request for that title, whoever made it: a webhook is
@@ -590,7 +603,7 @@ the intent's member's by the join rules.
 **Replay order.** Deferred webhooks are granted genuine ones first, then those that follow the join rules, so a join
 finds the grant it joins whatever order they arrived in. And a record whose grant follows the join rules (or an
 interest) that finds no grant to join (the title was public) is never `completed` against the public title: it stays
-`pending` (its seasons `ready` in `GET /requests`, no longer `requested`), awaiting a grant
+`pending` (its seasons `ready` in `GET /requests` for a caller who can play them), awaiting a grant
 (`AppRequestRecord.awaitingGrant`): it joins the grant created for its item (by a webhook or the backfill), or the
 next refresh finds one, for 30 days, after which it is `completed`.
 
@@ -713,8 +726,11 @@ title's media record is. Last, it grants the webhooks deferred for intents that 
 
 **Readiness, season by season.** A series record is `completed` only once Jellyfin (read with JellyPass's key) has
 episodes of every season it covers; until then it stays `pending` with `readySeasons`, those seasons show `ready` in
-`GET /requests` and leave `requested` and the seasons the household is waiting on, and the refresh reads it again
-until every season is there. A movie is ready with its item.
+`GET /requests` and leave the seasons the household is waiting on, and the refresh reads it again
+until every season is there. A movie is ready with its item. Ready is read with JellyPass's key, but **shown** per
+caller: a ready movie or season shows `ready` in `GET /requests`, and `in_library` in the title state, only to a
+caller whose own Jellyfin view has it (the view the title pages use: their library, reused for up to a minute, and a
+series' episodes, read as them); to anyone else in the household it stays `requested`.
 
 **When a grant is created** (a `MEDIA_AVAILABLE` webhook, its replay, a deferred webhook granted, or the request
 backfill), `AccessService` first decides how (see "Safety tombstones"): deferred if an intent names its title (the
@@ -737,8 +753,15 @@ tombstones", "Replay order"). A request a tombstone covers is granted the same w
 
 **`GET /requests`** answers the household's own titles from its own records only, newest first, at most 200:
 `{id, mediaType, tmdbId, status, seasons, byYou}`. `status` is coarse: `requested` (Requested: pending or approved),
-`ready` (Ready to watch: completed) or `failed` (We couldn't get this: declined or failed); `deleted` records are not
-listed. A title's latest record decides each season (or the movie); a series is `requested` while any season is,
+`ready` (Ready to watch: completed, and in the caller's own view; otherwise `requested`, see "Readiness") or `failed`
+(We couldn't get this: declined or failed); `deleted` records are not
+listed. The caller's view is read for **every** listed title, ready or not (at most 8 at a time): a movie from their
+cached library (no Jellyfin call), a series' episodes as them only when their own view has the series (one read per
+such series, so at most 200 per call). A title whose read fails is listed as if the caller's view did not have it (its
+ready seasons `requested`), not answered `502`. So which reads the list makes, and how it answers when they fail,
+depend only on the caller's own view and the household's own listed records, never on whether a title arrived in a
+library the caller cannot see (Codex's repro: reading the view only for a ready title made a season arriving in a
+hidden library change the list's Jellyfin reads and, with the episode endpoint failing, its answer from `200` to `502`). A title's latest record decides each season (or the movie); a series is `requested` while any season is,
 otherwise `ready` if any season is, otherwise `failed`; `seasons` is `[{seasonNumber, status}]` (empty for a movie).
 `id` is opaque: an HMAC-SHA256 of the household and the title with a key kept in the state file (`appIdKey`, made with
 the first record), base64url, 22 characters: the same for every member of the household, different for each household
@@ -755,24 +778,27 @@ stays unchanged until the first "Get this".
 | `appIdKey` | Keeps it as it is | Unused; upgrading again keeps every opaque ID the same. |
 | `appRequestIntents` | Keeps it as it is | Unused: webhooks and the backfill grant a request whose intent was not resolved as an ordinary request (roll back with no "Get this" in flight); upgrading again reconciles what is left. |
 | `deferredWebhooks` | Keeps it as it is | Unused: the backfill (if enabled) grants those requests; upgrading again grants what is left. |
-| `appSafetyTombstones` | Keeps it as it is | Unused: a request a tombstone covers is granted as an ordinary (private) request by a webhook or the backfill (see the drain below); upgrading again applies them to what is not handled yet. |
+| `appSafetyTombstones` | Keeps it as it is | Unused: a request a tombstone covers is granted as an ordinary (private) request by a webhook or the backfill (see the drain below: a tombstone naming a request not handled yet lasts up to 400 days); upgrading again applies them to what is not handled yet. |
 | `householdEpochs`, `nextHouseholdEpoch` | Keeps them as they are | Unused; a household deleted while rolled back keeps its entry, so one created again under its ID then shares its epoch after upgrading again. |
 
-**Drain before rolling back.** Intents, deferred webhooks and tombstones are what makes a late request a join; 2.3.0
-and 2.2.1 do not read them. Before rolling back:
+**Drain before rolling back.** Intents, deferred webhooks and tombstones are what makes a late request a join; 2.3.x
+and 2.2.1 do not read them. Before rolling back to 2.3.x or 2.2.1:
 
 1. Stop new "Get this" calls: block `POST /jellypass/app/v1/movie/*/get` and `/tv/*/get` at the reverse proxy (or pick
    a time no one uses the app), and leave this version running with `RECONCILE_INTERVAL_SECONDS` above 0.
-2. Wait until the state file holds no intents and no deferred webhooks:
-   `jq '[(.appRequestIntents // {} | length), (.deferredWebhooks // [] | length)]' grants.json` prints `[0,0]`. Each
-   intent is resolved within 30 minutes of being written, at the scheduled reconciliation after that (or at once by a
-   restart, which reconciles and replays at startup); deferred webhooks are granted once no intent names their title.
-   A deferred webhook that keeps failing (Seerr unreachable) stays: the backfill, if enabled, grants it after the
-   rollback.
-3. Check the tombstones: `jq '.appSafetyTombstones // {} | length' grants.json`. Requests they cover are granted as
-   ordinary requests while rolled back; with `REQUEST_BACKFILL_ENABLED=false` only a webhook for one of them can, and
-   a public title it makes private can be made public again by revoking that request in the admin UI. There is no way
-   to drain them early (they last 30 days): if that is not acceptable, wait.
+2. Wait until no intents and no deferred webhooks are left (`requestIntents.total` and `deferredWebhooks.total` 0 in
+   `GET /v1/app/outstanding`, see "What is outstanding"). Each intent is resolved within 30 minutes of being written,
+   at the scheduled reconciliation after that (or at once by a restart, which reconciles and replays at startup);
+   deferred webhooks are granted once no intent names their title. A deferred webhook that keeps failing (Seerr
+   unreachable) stays: the backfill, if enabled, grants it after the rollback.
+3. **Check, then roll back only when clear:** `GET /v1/app/outstanding` answers `"clear": true` (no safety marker that
+   still decides a grant, no intent, no deferred webhook; `jfa_app_safety_markers`, `jfa_app_request_intents` and
+   `jfa_app_deferred_webhooks` all 0). A safety marker is not a fixed 30 days: a member-wide one covers the member's
+   new requests for 30 days, but **any marker naming a request not handled yet (pending, declined, never available)
+   lasts until that request is handled, up to 400 days.** There is no way to drain them early. Requests an
+   outstanding marker covers are granted as ordinary (private) requests while rolled back; with
+   `REQUEST_BACKFILL_ENABLED=false` only a webhook for one of them can, and a public title it makes private can be made
+   public again by revoking that request in the admin UI. If that is not acceptable, wait until the readout is clear.
 
 A state file written by an unreleased build of this branch may also hold `appQuotaLedger` (the dropped quota ledger):
 it loads, is never read, and is dropped with the next write.
@@ -793,9 +819,21 @@ running when it is deleted are added detached (see 5 above).
 `jfa_app_get_this_total{result="accepted"|"ineligible"|"error"}` (decided in the background) and
 `jfa_app_get_this_branches_total{branch}` (`visible`, `refused`, `join_joined`, `join_already`, `join_refused`,
 `join_ungranted`, `join_error`, `join_cancelled`, `interest`, `own_request`, `request`, `request_late`,
-`request_refused`, `request_uncertain`, `intent_recovered`, `intent_cancelled` (none found in time),
-`intent_ambiguous`, `intent_detached` (household replaced), `intent_abandoned` (unreadable past the deadline),
+`request_refused`, `request_uncertain`, `request_unsaved` (its intent was not on disk: nothing sent),
+`intent_recovered`, `intent_cancelled` (none found in time), `intent_ambiguous`, `intent_detached` (household replaced), `intent_abandoned` (unreadable past the deadline),
 `settled`, `settle_unverified`, `error`, `cancelled`).
+
+**What is outstanding (administrators).** `GET /v1/app/outstanding`, on the admin host only and with the admin token
+or session (household hosts never route it: every path there goes to the household gateway), answers what "Get this"
+still has in flight or still protects: `{clear, safetyMarkers, requestIntents, deferredWebhooks}`. `safetyMarkers` are
+the tombstones that **still decide a grant**: one naming a request not handled yet (until it is pruned, at most 400
+days after it was made), or a member-wide one before its `expiresAt` (30 days); a tombstone that does neither is only
+waiting for the next write to prune it and is not counted. `requestIntents` are the intents not settled yet. Each has
+`total`, `byKind` (`request`/`member`; `submitting`/`settling`), `oldestAgeSeconds` (`null` when there are none) and
+up to 200 `entries`, oldest first, naming the title (`mediaType`, `tmdbId`), the times and, for an intent, the
+household: never a member or a Seerr ID. `deferredWebhooks` has only `total` (they are kept without a time). `clear` is
+true when all three are 0: what a rollback waits for (see "Drain before rolling back"). The metrics carry the counts
+only: `jfa_app_safety_markers{kind}`, `jfa_app_request_intents{status}` and `jfa_app_deferred_webhooks` (gauges).
 
 #### Leak channels in step 2a
 
@@ -854,7 +892,8 @@ running when it is deleted are added detached (see 5 above).
   requests for the title, made outside the app within 30 days, joins too (stricter, never looser), and an intent
   resolved that way records nothing for its household: the title is not `requested` for them and they are not joined
   to its grant. A record awaiting a grant shows its seasons `ready` (the title is public) and is checked for a grant for
-  30 days. Rolling back without draining (see "Store, bounds and rollback") loses the tombstones' effect.
+  30 days. Rolling back without draining (see "Store, bounds and rollback") loses the tombstones' effect; one naming a
+  request not handled yet lasts up to 400 days, so check the readout before rolling back.
 - **Identity in the last steps.** The caller's Seerr user is confirmed before the last Jellyfin read rather than
   immediately before the request: a relink made in Seerr during that read (tens of milliseconds) that JellyPass is not
   told of sends the request as the Seerr user that was linked to the member when it was confirmed. A relink JellyPass
