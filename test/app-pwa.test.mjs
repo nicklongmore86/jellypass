@@ -2661,7 +2661,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.equal(posts(page)[0].url, `/jellypass/app/v1/tv/${T_TV}/get`);
       assert.equal(posts(page)[0].init.body, '{"seasons":[2]}');
       // Season 2 was just asked for: only season 1 is offered again on this screen.
-      assert.deepEqual([...page.main().querySelectorAll('input[type="checkbox"]')].map((box) => box.value), ['1']);
+      await page.until(() => [...page.main().querySelectorAll('input[type="checkbox"]')].map((box) => box.value).join() === '1', 'only season 1 offered again');
       await app.background.settled();
     });
 
