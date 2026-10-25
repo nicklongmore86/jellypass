@@ -30,6 +30,7 @@ export const GET_THIS_TEXT = {
   sending: 'Sending…',
   chooseSeasons: 'Choose the seasons you want',
   confirmation: "Thanks — we'll get this for your household.",
+  failedNote: 'Ask your JellyPass admin to try again.',
   rate_limited: 'Too many tries, try again in a few minutes.',
   offline: "You're offline. Check your connection, then try again.",
   unavailable: "We couldn't send that just now. Try again in a moment.",
@@ -197,7 +198,11 @@ export function stateNote(doc: Document, state: HouseholdState): HTMLElement | u
   return undefined;
 }
 
-export type GetThisHandler = (seasons: number[]) => Promise<'accepted' | ApiErrorKind>;
+/**
+ * `accepted` once the call was accepted and the screen redrawn; `refresh_failed` when it was accepted but the screen
+ * could not be read again. `onAccepted` runs the moment the call is accepted, before the screen is read again.
+ */
+export type GetThisHandler = (seasons: number[], onAccepted: () => void) => Promise<'accepted' | 'refresh_failed' | ApiErrorKind>;
 
 /** What a "Get this" control needs from the screen that shows it. */
 export interface GetThisExtras {
@@ -211,6 +216,8 @@ export interface GetThisExtras {
   pick?: boolean;
   /** Seasons (0 for a movie) of a title still not held that the household asked for and could not get. */
   failed?: ReadonlySet<number>;
+  /** Loads the screen again (for the retry shown when an accepted call's screen could not be read again). */
+  onReload?: () => void;
 }
 
 interface Choice {
@@ -243,12 +250,14 @@ export function getThisControl(doc: Document, subject: string, choices: Choice[]
     button.disabled = picking && chosen().length === 0;
   };
   update();
+  let fieldsetNode: HTMLElement | undefined;
   if (picking) {
     const fieldset = el(doc, 'fieldset', { class: 'get-seasons' }, [
       el(doc, 'legend', { text: GET_THIS_TEXT.chooseSeasons }),
       ...choices.map((choice, index) => el(doc, 'label', { class: 'choice' }, [boxes[index], el(doc, 'span', { text: choice.label })])),
     ]);
     for (const input of boxes) input.addEventListener('change', update);
+    fieldsetNode = fieldset;
     box.append(fieldset);
   }
   button.addEventListener('click', () => {
@@ -260,9 +269,29 @@ export function getThisControl(doc: Document, subject: string, choices: Choice[]
     button.setAttribute('aria-busy', 'true');
     message.className = 'get-message';
     message.textContent = '';
-    void onGet(seasons).then((outcome) => {
+    let accepted = false;
+    void onGet(seasons, () => {
+      // The call was accepted: the confirmation is shown at once, whatever the screen read afterwards does. Nothing
+      // here can send again.
+      accepted = true;
+      message.className = 'get-message';
+      message.textContent = GET_THIS_TEXT.confirmation;
+      button.remove();
+      fieldsetNode?.remove();
+      message.focus({ preventScroll: true });
+    }).then((outcome) => {
       // Accepted: the screen is redrawn with the confirmation. Unauthorized: the screen is replaced by the sign-in state.
-      if (outcome === 'accepted' || outcome === 'unauthorized') return;
+      if (outcome === 'unauthorized') return;
+      if (outcome === 'refresh_failed') {
+        box.append(el(doc, 'p', { class: 'muted get-refresh', text: ERROR_TEXT.unavailable.body }));
+        if (extras.onReload) {
+          const retry = el(doc, 'button', { class: 'button', text: 'Try again', attrs: { type: 'button' } });
+          retry.addEventListener('click', extras.onReload);
+          box.append(retry);
+        }
+        return;
+      }
+      if (outcome === 'accepted' || accepted) return;
       message.className = 'get-message get-error';
       message.textContent = outcome === 'rate_limited' ? GET_THIS_TEXT.rate_limited : outcome === 'offline' ? GET_THIS_TEXT.offline : GET_THIS_TEXT.unavailable;
       button.textContent = GET_THIS_TEXT.button;
@@ -278,13 +307,15 @@ export function getThisControl(doc: Document, subject: string, choices: Choice[]
 /** A movie or series page. A series also lists its seasons, each with the household's state for it. */
 export function titleDetail(doc: Document, title: Movie | Series, origin: string, extras: GetThisExtras = {}): HTMLElement {
   const backdrop = safeImageUrl(title.backdropUrl);
-  const own = extras.asked?.has(0) ? undefined : title.state === 'get_this' && title.mediaType === 'movie' ? [{ season: 0, label: '' }] : undefined;
+  const own = extras.asked?.has(0) || extras.failed?.has(0) ? undefined : title.state === 'get_this' && title.mediaType === 'movie' ? [{ season: 0, label: '' }] : undefined;
+  const failedSeason = (season: SeasonSummary) => season.state === 'get_this' && extras.failed?.has(season.seasonNumber) === true;
   const seasonChoices = title.mediaType === 'tv'
-    ? title.seasons.filter((season) => season.state === 'get_this' && season.seasonNumber >= 1 && !extras.asked?.has(season.seasonNumber))
+    ? title.seasons.filter((season) => season.state === 'get_this' && season.seasonNumber >= 1 && !extras.asked?.has(season.seasonNumber) && !failedSeason(season))
       .map((season) => ({ season: season.seasonNumber, label: season.name || `Season ${season.seasonNumber}` }))
     : [];
   const control = getThisControl(doc, title.title, own ?? seasonChoices, { ...extras, pick: title.mediaType === 'tv' });
-  const failedMovie = title.state === 'get_this' && extras.failed?.has(0);
+  const failedMovie = title.state === 'get_this' && title.mediaType === 'movie' && extras.failed?.has(0) === true;
+  const failedAny = failedMovie || (title.mediaType === 'tv' && title.seasons.some(failedSeason));
   const actions = el(doc, 'div', { class: 'actions' }, [
     failedMovie ? requestBadge(doc, 'failed') : stateBadge(doc, title.state),
     title.state === 'in_library' ? playButton(doc, title, origin) : undefined,
@@ -300,6 +331,7 @@ export function titleDetail(doc: Document, title: Movie | Series, origin: string
       genres,
       actions,
       stateNote(doc, title.state),
+      failedAny ? failedNote(doc) : undefined,
       control,
     ]),
   ]);
@@ -312,6 +344,11 @@ export function titleDetail(doc: Document, title: Movie | Series, origin: string
   ]);
   if (title.mediaType === 'tv') detail.append(seasonList(doc, title, extras.failed));
   return detail;
+}
+
+/** A title the household asked for that failed is not asked for again from here: the backend holds the failed record. */
+function failedNote(doc: Document): HTMLElement {
+  return el(doc, 'p', { class: 'muted failed-note', text: GET_THIS_TEXT.failedNote });
 }
 
 export function seasonList(doc: Document, series: Series, failed?: ReadonlySet<number>): HTMLElement {
@@ -344,10 +381,11 @@ export function seasonView(doc: Document, season: Season, seriesTitle: string | 
     el(doc, 'h1', { class: 'screen-title', text: season.name || `Season ${season.seasonNumber}`, attrs: { tabindex: '-1' } }),
     el(doc, 'div', { class: 'actions' }, [season.state === 'get_this' && extras.failed?.has(season.seasonNumber) ? requestBadge(doc, 'failed') : stateBadge(doc, season.state)]),
     stateNote(doc, season.state),
+    season.state === 'get_this' && extras.failed?.has(season.seasonNumber) ? failedNote(doc) : undefined,
     getThisControl(
       doc,
       [seriesTitle, season.name || `Season ${season.seasonNumber}`].filter(Boolean).join(' '),
-      season.state === 'get_this' && season.seasonNumber >= 1 && !extras.asked?.has(season.seasonNumber)
+      season.state === 'get_this' && season.seasonNumber >= 1 && !extras.asked?.has(season.seasonNumber) && !extras.failed?.has(season.seasonNumber)
         ? [{ season: season.seasonNumber, label: season.name || `Season ${season.seasonNumber}` }] : [],
       extras,
     ),

@@ -1112,12 +1112,17 @@ describe('household app page: rendering', () => {
       const onGet = async () => 'accepted';
       const movie = titleDetail(document, { ...card(), genres: [], runtime: 90 }, origin, { onGet, failed: new Set([0]) });
       assert.deepEqual([...movie.querySelectorAll('.badge')].map((badge) => badge.textContent), ["We couldn't get this"]);
-      assert.ok(movie.querySelector('button'), 'and it can be asked for again');
+      assert.ok(movie.querySelector('button') === null, 'and it is not offered again: the backend holds the failed record');
+      assert.equal(movie.querySelector('.failed-note').textContent, 'Ask your JellyPass admin to try again.');
       const seasons = titleDetail(document, series(), origin, { onGet, failed: new Set([3]) });
       assert.deepEqual([...seasons.querySelectorAll('.season .badge')].map((badge) => badge.textContent),
         ['Available to get', 'Ready to watch', 'Available to get', "We couldn't get this", 'Requested', "Can't request"]);
       const season = seasonView(document, { tmdbId: 900002, seasonNumber: 3, name: 'Season 3', overview: '', episodes: [], state: 'get_this' }, 'S', { failed: new Set([3]) });
       assert.equal(season.querySelector('.badge').textContent, "We couldn't get this");
+      assert.ok(season.querySelector('button') === null);
+      assert.equal(season.querySelector('.failed-note').textContent, 'Ask your JellyPass admin to try again.');
+      assert.deepEqual([...seasons.querySelectorAll('input[type="checkbox"]')].map((box) => box.value), ['2'], 'a failed season is not a choice');
+      assert.equal(seasons.querySelectorAll('.failed-note').length, 1);
       // A held title is not "couldn't get" even if the household once failed to ask.
       const held = titleDetail(document, { ...card({ state: 'in_library', play }), genres: [], runtime: 90 }, origin, { onGet, failed: new Set([0]) });
       assert.deepEqual([...held.querySelectorAll('.badge')].map((badge) => badge.textContent), ['Ready to watch']);
@@ -1950,6 +1955,95 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       for (const [name, shape] of Object.entries(shapes)) assert.deepEqual(shape, { role: 'status', error: false, posts: 1 }, name);
     });
 
+    it('is indistinguishable for every backend outcome: the same DOM, the same follow-up requests, the same refresh', async (t) => {
+      const others = otherHouseholdWorlds();
+      const outcomes = {
+        'a real request': world(),
+        'a join': others['a private grant'],
+        'an interest': others['a pending request'],
+        'nothing to do': world(),
+      };
+      // The page's own account of what it did: every request, how it was made, minus the abort signal.
+      const trace = (page) => page.requests.map(({ url, init }) => JSON.stringify({
+        url, method: init.method ?? 'GET', body: init.body ?? null, cache: init.cache ?? null, credentials: init.credentials ?? null,
+        headers: { ...init.headers },
+      }));
+      // The title as it reads before anything happened, to open a page that still offers Get this for 'nothing to do'.
+      const fresh = await startApp(t);
+      const stale = await get(fresh.port, `/jellypass/app/v1/movie/${T_MOVIE}`, { Host: HOST_A, Authorization: POST_HEADERS.Authorization });
+      assert.equal(stale.status, 200);
+      const seen = {};
+      for (const [name, state] of Object.entries(outcomes)) {
+        const app = await startApp(t, state, { reconcile: true });
+        if (name === 'nothing to do') {
+          // The household asked a moment ago (another tab); this page was loaded before and still offers the button.
+          await post(app.port, `/jellypass/app/v1/movie/${T_MOVIE}/get`, { Host: HOST_A, ...POST_HEADERS }, undefined);
+          await app.background.settled();
+        }
+        // What the server says about the title is its own matter (and tested against the API). The app is held to what
+        // it does with an accepted call, so every follow-up read of the title gets the same answer here.
+        let asked = false;
+        let loaded = name !== 'nothing to do';
+        const override = (url, init) => {
+          if (init.method === 'POST') { asked = true; return undefined; }
+          if (url !== `/jellypass/app/v1/movie/${T_MOVIE}`) return undefined;
+          if (asked || !loaded) { loaded = true; return stale; }
+          return undefined;
+        };
+        const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}`, override });
+        const button = await page.until(() => page.main().querySelector('button'), `${name}: the button`);
+        const before = page.requests.length;
+        button.dispatchEvent(new page.Event('click'));
+        await page.until(() => page.main().querySelector('.get-message')?.textContent && page.requests.length > before + 1, `${name}: the confirmation and the refresh`);
+        await app.background.settled();
+        await settle();
+        seen[name] = { html: page.serialize(), calls: trace(page), after: trace(page).slice(before) };
+      }
+      const [first, ...rest] = Object.entries(seen);
+      assert.ok(first[1].after.length >= 2, 'the POST and at least one refresh');
+      assert.ok(first[1].after[0].includes('"method":"POST"'));
+      assert.ok(first[1].after.slice(1).every((call) => call.includes('"method":"GET"')));
+      for (const [name, outcome] of rest) {
+        assert.deepEqual(outcome.calls, first[1].calls, `${name}: the requests the app made`);
+        assert.deepEqual(outcome.after, first[1].after, `${name}: the follow-up requests`);
+        if (outcome.html !== first[1].html) {
+          const at = [...outcome.html].findIndex((char, index) => char !== first[1].html[index]);
+          assert.fail(`${name}: the rendered DOM differs from ${first[0]} at ${at}: ${outcome.html.slice(at - 200, at + 200)} <> ${first[1].html.slice(at - 200, at + 200)}`);
+        }
+      }
+    });
+
+    it('keeps the confirmation, offers nothing that would send again and a retry when the call was accepted but the refresh failed', async (t) => {
+      const app = await startApp(t);
+      let accepted = false;
+      let broken = true;
+      const page = await openApp(t, app, {
+        hash: `#/movie/${T_MOVIE}`,
+        override: (url, init) => {
+          if (init.method === 'POST') { accepted = true; return undefined; }
+          if (accepted && broken && url === `/jellypass/app/v1/movie/${T_MOVIE}`) return { status: 502, body: Buffer.from('{"error":"canary upstream text"}'), headers: {} };
+          return undefined;
+        },
+      });
+      const button = await page.until(() => page.main().querySelector('button'), 'the button');
+      button.dispatchEvent(new page.Event('click'));
+      const retry = await page.until(() => page.main().querySelector('.get-refresh') && page.main().querySelector('button'), 'the refresh error and the retry');
+      assert.equal(page.main().querySelector('.get-message').textContent, "Thanks — we'll get this for your household.");
+      assert.equal(page.main().querySelector('.get-refresh').textContent, 'Something went wrong. Try again in a moment.');
+      assert.equal(page.main().querySelector('.get-error'), null);
+      assert.equal(page.main().querySelectorAll('button').length, 1, 'only the retry');
+      assert.equal(retry.textContent, 'Try again');
+      assert.ok(retry !== button && page.main().textContent.includes('Sending') === false);
+      assert.doesNotMatch(page.serialize(), /canary|upstream/i);
+      assert.equal(posts(page).length, 1);
+      broken = false;
+      retry.dispatchEvent(new page.Event('click'));
+      await page.until(() => page.main().querySelector('.badge') && page.main().querySelector('.get-refresh') === null, 'the page loaded again');
+      assert.ok(!page.main().textContent.includes('Thanks'), 'a page loaded again carries no confirmation');
+      assert.equal(posts(page).length, 1, 'the retry sent nothing');
+      await app.background.settled();
+    });
+
     it('asks for chosen seasons of a series, and only those the API marks requestable', async (t) => {
       const app = await startApp(t);
       const page = await openApp(t, app, { hash: `#/tv/${T_TV}` });
@@ -2125,8 +2219,9 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       const failed = { results: [{ id: 'x', mediaType: 'movie', tmdbId: T_MOVIE, status: 'failed', seasons: [], byYou: true }] };
       const body = (value) => ({ status: 200, body: Buffer.from(JSON.stringify(value)), headers: { 'content-type': 'application/json' } });
       const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}`, override: (url) => (url === '/jellypass/app/v1/requests' ? body(failed) : undefined) });
-      await page.until(() => page.main().querySelector('button'), 'the button');
+      await page.until(() => page.main().querySelector('.failed-note'), 'the note');
       assert.equal(page.main().querySelector('.badge').textContent, "We couldn't get this");
+      assert.ok(page.main().querySelector('button') === null, 'no Get this for a failed title');
       // A failing list never breaks the title.
       const broken = await openApp(t, app, { hash: `#/movie/${T_MOVIE}`, override: (url) => (url === '/jellypass/app/v1/requests' ? { status: 502, body: Buffer.from('{}'), headers: {} } : undefined) });
       await broken.until(() => broken.main().querySelector('button'), 'the button');
@@ -2136,6 +2231,8 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       const series = await openApp(t, app, { hash: `#/tv/${T_TV}`, override: (url) => (url === '/jellypass/app/v1/requests' ? body(seasonsFailed) : undefined) });
       await series.until(() => series.main().querySelector('.season-list'), 'the series');
       assert.deepEqual([...series.main().querySelectorAll('.season .badge')].map((badge) => badge.textContent), ['Available to get', "We couldn't get this"]);
+      assert.deepEqual([...series.main().querySelectorAll('input[type="checkbox"]')].map((box) => box.value), ['1']);
+      assert.equal(series.main().querySelector('.failed-note').textContent, 'Ask your JellyPass admin to try again.');
       await settle();
     });
 

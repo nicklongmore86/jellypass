@@ -349,7 +349,7 @@ function getThisFor(
   redraw: (asked: ReadonlySet<number>) => Promise<void>,
 ): GetThisHandler {
   const asked = new Set<number>();
-  return async (seasons) => {
+  return async (seasons, onAccepted) => {
     let kind: ApiErrorKind | 'accepted' = 'accepted';
     try {
       await api.getThis(mediaType, id, seasons, signal);
@@ -360,10 +360,18 @@ function getThisFor(
     if (kind === 'unauthorized' && current()) failure(kind, () => void render());
     if (kind !== 'accepted') return kind;
     for (const season of seasons.length ? seasons : [0]) asked.add(season);
-    // The screen is read again; if that fails the confirmation stays and the next visit shows the state.
-    await redraw(asked).catch((error: unknown) => {
-      if (kindOf(error) === 'unauthorized' && current()) failure('unauthorized', () => void render());
-    });
+    onAccepted();
+    // The screen is read again; if that fails the confirmation stays, with the one fixed refresh error and a retry.
+    try {
+      await redraw(asked);
+    } catch (error) {
+      if (signal.aborted || !current()) return 'accepted';
+      if (kindOf(error) === 'unauthorized') {
+        failure('unauthorized', () => void render());
+        return 'unauthorized';
+      }
+      return 'refresh_failed';
+    }
     return 'accepted';
   };
 }
@@ -393,7 +401,7 @@ async function title(route: Route, signal: AbortSignal, current: () => boolean):
   let [answer, failed] = await load();
   if (!current()) return;
   const draw = (asked: ReadonlySet<number>, confirmed: boolean) => {
-    show(titleDetail(doc, answer, origin, { onGet, asked, failed, confirmed }));
+    show(titleDetail(doc, answer, origin, { onGet, asked, failed, confirmed, onReload: () => void render() }));
     if (confirmed) main.querySelector<HTMLElement>('.get-message')?.focus({ preventScroll: true });
   };
   const onGet = getThisFor(mediaType, id, signal, current, async (asked) => {
@@ -420,7 +428,7 @@ async function season(route: Route, signal: AbortSignal, current: () => boolean)
   let [answer, series, failed] = await load();
   if (!current()) return;
   const draw = (asked: ReadonlySet<number>, confirmed: boolean) => {
-    show(seasonView(doc, answer, series?.title, { onGet, asked, failed, confirmed }));
+    show(seasonView(doc, answer, series?.title, { onGet, asked, failed, confirmed, onReload: () => void render() }));
     if (confirmed) main.querySelector<HTMLElement>('.get-message')?.focus({ preventScroll: true });
   };
   const onGet = getThisFor('tv', id, signal, current, async (asked) => {
