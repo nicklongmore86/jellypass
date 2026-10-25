@@ -2,17 +2,20 @@
 
 ## Status
 
-Step 2a of 4 ("Get this" API). Step 0 added the acting-user Seerr client (`SeerrMemberClient` in `src/seerr.ts`), the
+Steps 0 to 2b of 4 are done (the "Get this" API and the app's **Get this** button and **My requests**); step 3 and the
+cut-over (step 4) are still to come. Step 0 added the acting-user Seerr client (`SeerrMemberClient` in `src/seerr.ts`), the
 Jellyfin-to-Seerr user map (`SeerrUserMap` in `src/seerr-users.ts`), recorded-shape Seerr fixtures with canaries, and a
-real-Seerr test. Step 1a serves the read-only app API (`HouseholdApp` in `src/app-api.ts`, see "App API (step 1a)"):
+real-Seerr test. Step 1a serves the app API's reads (`HouseholdApp` in `src/app-api.ts`, see "App API (step 1a)"):
 who the caller is, search, discover, and movie, series and season details, each title with its household state. Titles
 come from TMDB (`TmdbClient` in `src/tmdb.ts`, `TMDB_API_KEY`; see "Catalogue source"), which replaced step 0's Seerr
 catalogue client and its `SEERR_CATALOGUE_USER_ID` before either was released. The app API is off unless
-`HOUSEHOLD_APP_ENABLED` is true. Step 1b serves the read-only PWA over it at `/jellypass/app/` (see "App page (step
-1b)"); it has no "Get this" button yet. Step 2a serves "Get this" itself, `POST /jellypass/app/v1/{movie|tv}/:tmdbId/get`,
+`HOUSEHOLD_APP_ENABLED` is true. Step 1b serves the PWA over it at `/jellypass/app/` (see "App page (step
+1b)"), read-only in that step. Step 2a serves "Get this" itself, `POST /jellypass/app/v1/{movie|tv}/:tmdbId/get`,
 the household's attribution records that are the only source of `requested`, and `GET /jellypass/app/v1/requests` (see
-'"Get this" as implemented (step 2a)'); the PWA's button and request screens are step 2b. This document is the contract
-the later steps are built and reviewed against.
+'"Get this" as implemented (step 2a)'). Step 2b adds the PWA's **Get this** button, with a season picker for a series,
+and its **My requests** screen (see "The PWA's button (step 2b)" and "App page (step 1b)"). Not yet: notifications, and
+the Seerr website restricted to administrators (step 4). This document is the contract the later steps are built and
+reviewed against.
 
 ## Goal
 
@@ -384,7 +387,7 @@ key for JellyPass alone.
 
 ## App page (step 1b)
 
-The read-only PWA is served by the household gateway at `/jellypass/app/`, on household hosts only and only with
+The PWA (read-only in step 1b; **Get this** and **My requests** since step 2b) is served by the household gateway at `/jellypass/app/`, on household hosts only and only with
 `HOUSEHOLD_APP_ENABLED=true`. With the app off, on the administrator host, and on a host for no household, every
 `/jellypass/app` path answers what it did before: a fixed `404` on household hosts, and the admin API's own answer
 elsewhere; the files are never proxied to Jellyfin.
@@ -398,7 +401,7 @@ elsewhere; the files are never proxied to Jellyfin.
   Dockerfile builds it with the rest. `scripts/make-app-icons.py` regenerates the PNG icons (Pillow; the PNGs are
   committed). The only new dependency is `linkedom`, a dev dependency, for DOM-level tests.
 - **Routing.** One page, with screens chosen by the URL hash (`#/`, `#/search?q=`, `#/movie/:id`, `#/tv/:id`,
-  `#/tv/:id/season/:n`, `#/about`), so the server needs no fallback route and a deep link is just the page.
+  `#/tv/:id/season/:n`, `#/requests` (since step 2b), `#/about`), so the server needs no fallback route and a deep link is just the page.
 - **Sign-in.** The page sits on the household host next to the proxied Jellyfin web client, so it signs in the way
   Jellyfin web does, through the household gateway, and keeps the result where Jellyfin web keeps its own.
   *Flow:* with no token (or a `401` from the API) the app shows a profile picker built from `GET /Users/Public`, which
@@ -437,12 +440,16 @@ elsewhere; the files are never proxied to Jellyfin.
   simulated browser and against a real Jellyfin 10.11.3.
 - **Screens.** Home (four rows of 20 titles, each row loaded and failing on its own), Search (debounced 300 ms, one call
   per pause, previous calls aborted, **Load more** by the API's `nextPage`, query kept in the address), movie page,
-  series page with a seasons list (each season's state) and a season page with its episodes, About & credits.
-- **States.** Shown exactly as the DTO says, coarsely: `in_library` is "In your library" with a **Play** button (only
-  when `play.url` is exactly the household host's own `/web/#/details?id=<itemId>`), `get_this` is "Available to request
-  soon" (informational: there is no request button until step 2, and the wording says nothing about other households),
-  `unavailable` is "Can't request", and `requested` (answered since step 2a) is "Requested". Nothing is shown that is not
-  a DTO field.
+  series page with a seasons list (each season's state) and a season page with its episodes, **My requests** (since step
+  2b: the household's requests from `GET /requests`, each with its coarse status, per season for a series, and whether the
+  caller or someone else in the household asked; titles are named from TMDB ten at a time), About & credits.
+- **States.** Shown exactly as the DTO says, coarsely: `in_library` is "Ready to watch" with a **Play** button (only
+  when `play.url` is exactly the household host's own `/web/#/details?id=<itemId>`), `get_this` is "Available to get"
+  with a **Get this** button (since step 2b, a season picker on a series page; the wording says nothing about other
+  households), `unavailable` is "Can't request", and `requested` (answered since step 2a) is "Requested". A title or
+  season whose household record in `GET /requests` is `failed` shows "We couldn't get this" with no button (see "The
+  PWA's button (step 2b)"). Step 1b called `in_library` "In your library" and `get_this` "Available to request soon",
+  with no button. Nothing is shown that is not a DTO field.
 - **Rendering.** Every string is a fixed one or a DTO field set with `textContent`; no HTML is ever parsed (no
   `innerHTML`). Image URLs are re-checked against the allowlisted TMDB pattern before use. Errors are three fixed
   states, plus offline: `401` the sign-in picker (above), `429` "Too many requests", `502` "Can't load this right now", and
@@ -484,9 +491,9 @@ elsewhere; the files are never proxied to Jellyfin.
   outlines, 44 px touch targets, text and badge colours checked at WCAG AA contrast by a test, `prefers-reduced-motion`,
   safe-area insets and `viewport-fit=cover` for notched phones, and posters and backdrops with size attributes and an
   aspect-ratio frame so nothing shifts as images load (posters below the fold load lazily).
-- **Not in this step:** a link from Jellyfin web back to the app (the sign-in page could carry one through the branding
-  configuration the gateway already rewrites), a check on a real iPhone of the install and sign-in flow, any request action ("Get this", step 2), the user's own requests, the Seerr cut-over (step 4),
-  notifications, Quick Connect in the app's picker (the gateway reports it disabled on household hosts), and profile pictures.
+- **Not in step 1b:** a link from Jellyfin web back to the app (the sign-in page could carry one through the branding
+  configuration the gateway already rewrites), a check on a real iPhone of the install and sign-in flow, any request action ("Get this") and the household's requests (both added in step 2b), the Seerr cut-over
+  (step 4), notifications, Quick Connect in the app's picker (the gateway reports it disabled on household hosts), and profile pictures.
 
 ### Leak channels in step 1a
 
@@ -655,7 +662,8 @@ the join rules), and a record whose epoch is not its household's is treated as d
 ### "Get this" as implemented (step 2a)
 
 Served by `HouseholdApp` (`src/app-api.ts`) and `HouseholdRequests` (`src/household-requests.ts`), on household hosts
-only, with `HOUSEHOLD_APP_ENABLED=true`. There is no app button yet (step 2b).
+only, with `HOUSEHOLD_APP_ENABLED=true`. The app's button and **My requests** screen over it are step 2b (see "The
+PWA's button (step 2b)").
 
 | Endpoint | Answer |
 |---|---|
@@ -1008,7 +1016,8 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
    over it (see "App page (step 1b)"). Endpoints for the caller's own requests and quota are not in 1a; they come with step 2, which needs them.
 2. **"Get this"**: the uniform background action above, with the household attribution record (see "Requested and
    households"): (2a, done) the API, records, `requested` and the household's requests (see '"Get this" as
-   implemented (step 2a)'); (2b) the PWA's button and request screens.
+   implemented (step 2a)'); (2b, done) the PWA's **Get this** button with its season picker and **My requests** (see
+   "The PWA's button (step 2b)").
 3. **PWA**: the household app itself, served on household hosts.
 4. **Cut-over**: the Seerr website restricted to administrators. Required: it closes late requests made directly to
    Seerr (see "Late requests").

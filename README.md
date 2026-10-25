@@ -517,7 +517,8 @@ Jellyfin web's **Manual Login** and type their name). A malformed sign-in (no
 with `400`, every other failure with a fixed `401` (`invalid_credentials`) or,
 when Jellyfin's user list cannot be read, `502`, each no sooner than one
 second after the attempt, so no answer tells a member's name from anyone
-else's. See [the household access design](docs/household-access.md).
+else's. The exception is the sign-in rate limit: `429`
+(`too_many_login_attempts`) still answers at once. See [the household access design](docs/household-access.md).
 
 Unknown household hostnames fail closed with `404`. Group IDs used as household
 IDs must contain lowercase letters, numbers, and hyphens and be no longer than
