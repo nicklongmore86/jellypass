@@ -159,11 +159,11 @@ as semantic-version tags. For predictable production upgrades, set
 `JELLYPASS_IMAGE` in `.env` to a versioned image such as:
 
 ```dotenv
-JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:2.3.0
+JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:2.4.0
 ```
 
-Each release is published as a semantic-version image tag, such as `2.3.0`,
-plus floating `2.3` and `2` tags that move to the newest release in that minor
+Each release is published as a semantic-version image tag, such as `2.4.0`,
+plus floating `2.4` and `2` tags that move to the newest release in that minor
 or major line; see [CHANGELOG.md](CHANGELOG.md) for what each one contains. `latest` is rebuilt on
 every push to `main` and may include unreleased changes, so use it, or build
 from source, only to test ahead of a release.
@@ -509,6 +509,16 @@ Deployment requirements:
   proxies; see [Running behind a reverse proxy](#running-behind-a-reverse-proxy).
 - Keep a separate normal Jellyfin administrator/recovery origin.
 
+Signing in on a household hostname (`POST /Users/AuthenticateByName`, from
+Jellyfin web, the [household app](#household-app-pwa) or any Jellyfin client)
+works only for that household's members, hidden ones included (they use
+Jellyfin web's **Manual Login** and type their name). A malformed sign-in (no
+`Authorization` client fields, or no string `Username` and `Pw`) is refused
+with `400`, every other failure with a fixed `401` (`invalid_credentials`) or,
+when Jellyfin's user list cannot be read, `502`, each no sooner than one
+second after the attempt, so no answer tells a member's name from anyone
+else's. See [the household access design](docs/household-access.md).
+
 Unknown household hostnames fail closed with `404`. Group IDs used as household
 IDs must contain lowercase letters, numbers, and hyphens and be no longer than
 63 characters.
@@ -802,8 +812,8 @@ Without Seerr, `/jellypass/add` paths are proxied to Jellyfin like any other.
 With `HOUSEHOLD_APP_ENABLED=true`, each household hostname also serves the
 app itself at `https://jelly-<household>.<HOUSEHOLD_DOMAIN>/jellypass/app/`: an
 installable web app (a PWA) to browse what is in the household's Jellyfin
-library and find more to watch. It shows each title's state (`In your library`
-with a **Play** button, `Available to get`, or `Can't request`) and offers
+library and find more to watch. It shows each title's state (`Ready to watch`
+with a **Play** button, `Available to get`, `Requested` or `Can't request`) and offers
 **Get this** where a title can be asked for; the confirmation is the same
 sentence whatever happens afterwards. A title the household asked for that
 failed shows `We couldn't get this` with no button and the line "Ask your
@@ -820,7 +830,9 @@ switched off (those answer the same fixed `404`).
   the household's profile picker (the same list Jellyfin's own picker shows on
   this address, which the gateway already limits to the household's members):
   tap a profile, then enter its Jellyfin password, or just tap if the member is
-  marked passwordless in JellyPass. It makes the calls Jellyfin web makes, through
+  marked passwordless in JellyPass. **Sign in with a different name** (where the
+  picker starts when it lists nobody) is how a hidden member, whom Jellyfin
+  leaves off the picker, signs in by typing their name. It makes the calls Jellyfin web makes, through
   the household gateway, so household scoping and the sign-in rate limit apply
   exactly as they do on `/web/`; wrong password, too many attempts and
   "unavailable" each have one fixed message and never show Jellyfin's text.
@@ -843,7 +855,10 @@ switched off (those answer the same fixed `404`).
 - **Screens:** Home (Trending, Popular movies, Popular series and Upcoming
   movies as scrolling rows), Search (as you type, with **Load more**), a movie
   page, a series page with its seasons (each with its own state) and a season
-  page with its episodes, and About & credits (TMDB's logo and notice).
+  page with its episodes (**Get this** on each title or season that can be
+  asked for, with a season picker on a series page), **My requests** (the
+  household's requests and their status, per season for a series), and About
+  & credits (TMDB's logo and notice).
 - **Install on iPhone or iPad:** open the app address in Safari, tap **Share**,
   then **Add to Home Screen**. **Android (Chrome):** menu, **Install app** (or
   **Add to Home screen**). Desktop Chrome and Edge: the install icon in the
@@ -972,10 +987,15 @@ to 2.2.1 changes neither the state file nor any setting. Upgrading from 2.2.1
 to 2.3.0 keeps the state file at schema v7, adds optional settings for the
 household app (off by default), which limits households to 100 while it is
 enabled; see [Upgrading from 2.2.1](CHANGELOG.md#upgrading-from-221).
-Rolling back from 2.3.0 to 2.2.1 needs no state-file change. The household app's "Get this" (not yet released) keeps the state file at
-schema v7 and adds `appRequests`, `appIdKey`, `appRequestIntents`,
-`deferredWebhooks`, `appSafetyTombstones`, `householdEpochs` and
-`nextHouseholdEpoch`; 2.3.0 and 2.2.1 load and keep them without reading them.
+Rolling back from 2.3.0 to 2.2.1 needs no state-file change. Upgrading from
+2.3.0 to 2.4.0 changes no setting, changes how sign-in on household hostnames
+answers, and needs one CDN purge of `/jellypass/app/*`; see
+[Upgrading from 2.3.0](CHANGELOG.md#upgrading-from-230). It keeps the state
+file at schema v7, and the household app's "Get this" adds `appRequests`,
+`appIdKey`, `appRequestIntents`, `deferredWebhooks`, `appSafetyTombstones`,
+`householdEpochs` and `nextHouseholdEpoch`; 2.3.0 and 2.2.1 load and keep them
+without reading them (see
+[Rolling back to 2.3.0](CHANGELOG.md#rolling-back-to-230)).
 Drain before rolling back to 2.3.x or 2.2.1: stop new "Get this" calls, wait
 until no request intents or deferred webhooks are left (at most 30 minutes plus
 one reconciliation interval, or restart JellyPass to reconcile at once), then
@@ -1170,6 +1190,7 @@ blocked-tag policy.
 | --- | --- | --- |
 | `GET` | `/health` | Public process liveness. |
 | `POST` | `/webhooks/seerr` | Authenticated Seerr availability webhook. |
+| `GET` | `/v1/app/outstanding` | What household app "Get this" still protects or has in flight: safety markers, request intents and deferred webhooks, with `"clear": true` once all are 0. Check it before rolling back. |
 | `GET` | `/v1/grants` | List grants and synchronization state. |
 | `GET` | `/v1/grants/{itemId}/plan` | Preview changes for one grant. |
 | `DELETE` | `/v1/grants/{itemId}/requests/{requestId}` | Revoke one request owner; supports `?dryRun=true`. |

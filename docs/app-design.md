@@ -809,7 +809,7 @@ and title, never a Seerr ID. **Requester: only `byYou`** (whether the caller mad
 the title; otherwise someone in the household): no name, no member ID, nothing about members who left. No count but
 the entries listed. `Cache-Control: no-store`, like every answer.
 
-**Store, bounds and rollback.** The schema stays v7; four fields are added, and a state file without them loads and
+**Store, bounds and rollback.** The schema stays v7; seven fields are added, and a state file without them loads and
 stays unchanged until the first "Get this".
 
 | Field | What 2.2.1 and 2.3.0 do with it | After rolling back to 2.3.0 or 2.2.1 |
