@@ -207,6 +207,44 @@ export class JellyfinClient {
     return wanted.filter((itemId) => found.has(itemId)).sort();
   }
 
+  /**
+   * The movie or series items (`mediaType`) Jellyfin holds that plausibly are a title known by `names`, in any library
+   * and whoever may see them, read with JellyPass's API key: for titles whose items have no TMDB ID and that Seerr links
+   * to no item. Conservative, so a title Jellyfin has is never requested: an item matches when its name or original
+   * name equals one of `names` once case, accents and punctuation are ignored, and, for a movie with a `year`, its
+   * production year (when it has one) is within a year of it. An item with another TMDB ID is another title and never
+   * matches. A different title of the same name (and year) can match: the caller then gets a join rather than a request.
+   */
+  public async findItemsByName(mediaType: 'movie' | 'tv', tmdbId: number, names: string[], year?: number): Promise<string[]> {
+    const wanted = new Set(names.map(comparableName).filter((name) => name.length > 0));
+    const found = new Set<string>();
+    for (const name of names.slice(0, 4)) {
+      const parameters = new URLSearchParams({
+        Recursive: 'true',
+        IncludeItemTypes: mediaType === 'movie' ? 'Movie' : 'Series',
+        SearchTerm: name,
+        Fields: 'ProviderIds,OriginalTitle',
+        EnableImages: 'false',
+        EnableUserData: 'false',
+        EnableTotalRecordCount: 'false',
+        Limit: '200',
+      });
+      for (const item of (await this.#request<JellyfinItemQueryResult>(`/Items?${parameters.toString()}`)).Items ?? []) {
+        if (typeof item.Id !== 'string') continue;
+        const providerIds = item.ProviderIds;
+        const tmdb = providerIds && typeof providerIds === 'object'
+          ? Object.entries(providerIds).find(([key]) => key.toLowerCase() === 'tmdb')?.[1]
+          : undefined;
+        if (typeof tmdb === 'string' && tmdb.trim() !== '' && tmdb.trim() !== String(tmdbId)) continue;
+        const itemNames = [item.Name, item.OriginalTitle].filter((value): value is string => typeof value === 'string').map(comparableName);
+        if (!itemNames.some((itemName) => wanted.has(itemName))) continue;
+        if (mediaType === 'movie' && year !== undefined && typeof item.ProductionYear === 'number' && Math.abs(item.ProductionYear - year) > 1) continue;
+        found.add(item.Id.replace(/-/g, '').toLowerCase());
+      }
+    }
+    return [...found].sort();
+  }
+
   /** The season numbers of a series Jellyfin has episodes of (not missing ones), read with JellyPass's API key. */
   public async seasonsWithEpisodes(seriesId: string): Promise<number[]> {
     const parameters = new URLSearchParams({ IsMissing: 'false', EnableImages: 'false', EnableUserData: 'false' });
@@ -293,4 +331,9 @@ function authorizationHeader(device: string, deviceId: string, token?: string): 
 
 function mediaBrowserAuthorization(parameters: Array<[string, string]>): string {
   return `MediaBrowser ${parameters.map(([name, value]) => `${name}="${encodeURIComponent(value)}"`).join(', ')}`;
+}
+
+/** A title's name for comparison: accents, case, punctuation and spacing ignored. */
+function comparableName(name: string): string {
+  return name.normalize('NFKD').replace(/\p{M}/gu, '').toLowerCase().replace(/[^\p{L}\p{N}]+/gu, '');
 }

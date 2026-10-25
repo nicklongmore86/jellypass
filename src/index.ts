@@ -134,11 +134,16 @@ async function main(): Promise<void> {
     if (service.getLibraryCatalog().items.length === 0) syncCatalog();
     // Catch up on missed webhooks now rather than one reconcile interval after startup.
     if (backfillSince) backfillTimer = setTimeout(() => background.run(backfillRequests), 5_000).unref();
+    // Requests "Get this" was making when JellyPass last stopped are reconciled now (see AppRequestIntent).
+    if (requests) background.run((signal) => requests.refresh({ signal }));
   });
 
   const shutdown = createShutdown({
     servers: [server],
-    closeStore: () => store.close(),
+    closeStore: async () => {
+      await seerr?.close();
+      await store.close();
+    },
     timers: () => [reconcileTimer, catalogSyncTimer, backfillTimer],
     background,
   });

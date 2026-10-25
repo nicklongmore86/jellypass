@@ -15,7 +15,15 @@ export function parseTitleAnswer(bytes: Uint8Array): SeerrTitleRecord {
   }
   const media = ownField(answer, 'mediaInfo');
   const requests = ownField(media, 'requests');
+  // A movie's TMDB title and release date, or a series' name and first air date (Seerr copies them from TMDB).
+  const names = [...new Set(['title', 'originalTitle', 'name', 'originalName']
+    .map((name) => ownField(answer, name))
+    .filter((name): name is string => typeof name === 'string' && name.trim().length > 0 && name.length <= 500))];
+  const date = ownField(answer, 'releaseDate') ?? ownField(answer, 'firstAirDate');
+  const year = typeof date === 'string' && /^[0-9]{4}-/.test(date) ? Number(date.slice(0, 4)) : undefined;
   return {
+    names,
+    ...optional('year', year),
     ...optional('mediaId', positiveSafeInteger(ownField(media, 'id'))),
     ...optional('jellyfinMediaId', jellyfinItemId(ownField(media, 'jellyfinMediaId'))),
     ...optional('jellyfinMediaId4k', jellyfinItemId(ownField(media, 'jellyfinMediaId4k'))),
@@ -25,6 +33,8 @@ export function parseTitleAnswer(bytes: Uint8Array): SeerrTitleRecord {
       if (requestId === undefined || status === undefined) return [];
       const seasons = ownField(request, 'seasons');
       const requester = ownField(ownField(request, 'requestedBy'), 'jellyfinUserId');
+      const createdAt = ownField(request, 'createdAt');
+      const created = typeof createdAt === 'string' ? Date.parse(createdAt) : Number.NaN;
       return [{
         id: String(requestId),
         status,
@@ -34,6 +44,7 @@ export function parseTitleAnswer(bytes: Uint8Array): SeerrTitleRecord {
           return number === undefined ? [] : [number];
         }),
         ...optional('requesterJellyfinId', typeof requester === 'string' ? jellyfinItemId(requester) : undefined),
+        ...optional('createdAt', Number.isFinite(created) ? created : undefined),
       }];
     }),
   };

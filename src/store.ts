@@ -4,7 +4,7 @@ import path from 'node:path';
 import type {
   AccessGroup,
   AccessRemovals,
-  AppQuotaLedger,
+  AppRequestIntent,
   AppRequestRecord,
   AppRequestStatus,
   GrantRecord,
@@ -12,6 +12,7 @@ import type {
   LibraryCatalogItem,
   LibraryJoin,
   RevokeResult,
+  SeerrWebhook,
   SyncStatus,
 } from './types.js';
 
@@ -22,19 +23,14 @@ import type {
  */
 export const MAX_HOUSEHOLDS = 100;
 /**
- * Settled household app "Get this" records (completed, declined or deleted) are kept for this long after they were made
- * (see GrantStore.writeAppRequests); pending records are never pruned, and failed ones are kept this long too.
+ * Settled household app "Get this" records (completed, declined, deleted or failed) are kept for this long after they
+ * were made (see GrantStore.writeAppRequests); pending records are never pruned.
  */
 export const APP_REQUEST_RETENTION_MS = 400 * 24 * 60 * 60 * 1000;
 /** The most settled "Get this" records kept per household; its own oldest are pruned first. Pending ones are never. */
 export const MAX_APP_REQUESTS_PER_HOUSEHOLD = 2000;
-/**
- * A pruned virtual request's own creation time is kept (AppQuotaLedger `entries`) for this long; older ones are summed.
- * Quota windows up to this long, and lifetime quotas, are therefore counted exactly.
- */
-export const APP_QUOTA_HORIZON_MS = 400 * 24 * 60 * 60 * 1000;
-/** The most ledger entries kept per member and media type; beyond it the oldest are summed too. */
-export const MAX_APP_QUOTA_ENTRIES = 10_000;
+/** The most deferred webhooks remembered (see GrantStore.deferWebhook); beyond it the oldest are left to the backfill. */
+export const MAX_DEFERRED_REQUESTS = 1000;
 
 const EMPTY_STATE: GrantState = { version: 7, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [] };
 
@@ -49,10 +45,8 @@ export class GrantStore {
   /** Each household's epoch (see householdEpoch); memory only. */
   readonly #epochs = new Map<string, number>();
   #nextEpoch = 1;
-  /** Seerr requests "Get this" made whose records are not written yet (see holdAppRequest); memory only. */
-  readonly #unsettledAppRequests = new Map<string, number>();
-  /** "Get this" record IDs by household and by member, rebuilt after each change (see #appIndex). */
-  #appIndexCache: { byHousehold: Map<string, string[]>; byUser: Map<string, string[]> } | undefined;
+  /** "Get this" record IDs by household, rebuilt after each change (see #appIndex). */
+  #appIndexCache: Map<string, string[]> | undefined;
   readonly #limitHouseholds: boolean;
 
   /** `limitHouseholds` (set when the household app is enabled) refuses new groups beyond {@link MAX_HOUSEHOLDS}. */
@@ -81,6 +75,8 @@ export class GrantStore {
     this.#assertOpen();
     const migrated = migrateState(JSON.parse(text) as unknown);
     this.#state = migrated.state;
+    // Written only by unreleased builds of "Get this" that counted quotas; dropped with the next write.
+    delete (this.#state as { appQuotaLedger?: unknown }).appQuotaLedger;
     this.#appIndexCache = undefined;
     const lifted = liftRemovals(this.#state);
     // Requests already on grants (including ones recorded before handledRequestIds existed)
@@ -370,7 +366,7 @@ export class GrantStore {
     for (const [itemId, removals] of Object.entries(this.#state.removedAccess ?? {})) {
       if (removals.groupIds?.includes(groupId)) this.#setRemovals(itemId, { ...removals, groupIds: removals.groupIds.filter((id) => id !== groupId) });
     }
-    // Its "Get this" records stay counted towards their members' quotas, but no household sees or joins them again.
+    // Its "Get this" records are kept (a request's grant still follows its record), but no household sees or joins them again.
     for (const record of Object.values(this.#state.appRequests ?? {})) {
       if (record.householdId === groupId) record.detached = true;
     }
@@ -505,27 +501,19 @@ export class GrantStore {
    * own records only, never on how many other households have.
    */
   public listAppRequestsForHousehold(householdId: string): Array<[string, AppRequestRecord]> {
-    return this.#indexed(this.#appIndex().byHousehold.get(normalizeId(householdId)));
+    const records = this.#state.appRequests ?? {};
+    return (this.#appIndex().get(normalizeId(householdId)) ?? [])
+      .flatMap((id) => records[id] ? [[id, clone(records[id])] as [string, AppRequestRecord]] : []);
   }
 
-  /** One member's "Get this" records, in every household (detached ones included), from an index. */
-  public listAppRequestsForUser(userId: string): Array<[string, AppRequestRecord]> {
-    return this.#indexed(this.#appIndex().byUser.get(normalizeId(userId)));
+  /** Every "Get this" request intent, with its ID (see AppRequestIntent). */
+  public listAppRequestIntents(): Array<[string, AppRequestIntent]> {
+    return Object.entries(this.#state.appRequestIntents ?? {}).map(([id, intent]) => [id, clone(intent)]);
   }
 
-  /**
-   * The units of a member's pruned virtual requests for `mediaType` made after `windowStart` (ms since the epoch;
-   * -Infinity for a lifetime quota), from their AppQuotaLedger: exact for the entries; the summed older ones count in
-   * full unless the window starts after the newest of them (a window that starts among them counts them all: stricter,
-   * never looser, and only for windows longer than APP_QUOTA_HORIZON_MS).
-   */
-  public prunedAppQuotaUnits(userId: string, mediaType: 'movie' | 'tv', windowStart: number): number {
-    const ledger = this.#state.appQuotaLedger?.[normalizeId(userId)]?.[mediaType];
-    if (!ledger) return 0;
-    let units = 0;
-    for (const [createdAt, count] of ledger.entries) if (createdAt > windowStart) units += count;
-    if (ledger.older && ledger.older.newest > windowStart) units += ledger.older.units;
-    return units;
+  /** Whether an intent names this title (see AppRequestIntent): webhooks and the backfill grant none of its requests. */
+  public hasAppRequestIntent(mediaType: string, tmdbId: number): boolean {
+    return Object.values(this.#state.appRequestIntents ?? {}).some((intent) => intent.mediaType === mediaType && intent.tmdbId === tmdbId);
   }
 
   /** The key the household app derives opaque IDs from, or undefined before the first "Get this" record. */
@@ -549,25 +537,6 @@ export class GrantStore {
     return epoch;
   }
 
-  /**
-   * Notes that "Get this" made Seerr request `requestId` and has not written its record yet, until the matching
-   * releaseAppRequest: a grant for it meanwhile follows the library join rules (see GrantStore.isAppRequestUnsettled).
-   */
-  public holdAppRequest(requestId: string): void {
-    this.#unsettledAppRequests.set(requestId, (this.#unsettledAppRequests.get(requestId) ?? 0) + 1);
-  }
-
-  public releaseAppRequest(requestId: string): void {
-    const count = (this.#unsettledAppRequests.get(requestId) ?? 0) - 1;
-    if (count > 0) this.#unsettledAppRequests.set(requestId, count);
-    else this.#unsettledAppRequests.delete(requestId);
-  }
-
-  /** Whether "Get this" made `requestId` and has not written its record yet (see holdAppRequest). */
-  public isAppRequestUnsettled(requestId: string): boolean {
-    return this.#unsettledAppRequests.has(requestId);
-  }
-
   /** Records requests as handled without granting them (a "Get this" request granted as a join); see hasHandledRequest. */
   public async markRequestsHandled(requestIds: string[]): Promise<void> {
     this.#assertOpen();
@@ -578,17 +547,32 @@ export class GrantStore {
   }
 
   /**
-   * Adds household app "Get this" records and changes the status (and joined items or ready seasons) of existing ones,
-   * in one write. Records added with a `householdEpoch` other than their household's current one (it was deleted, or
-   * deleted and created again, while the call ran) are added detached. Then settled records are pruned (see
-   * pruneAppRequests): never a pending one, and a counted one only into its member's AppQuotaLedger, so no quota count
-   * changes. The state changes before this returns its promise, so a caller can update what it keeps in memory in the
-   * same turn. Resolves with the IDs of the added records.
+   * Writes a "Get this" request intent (see AppRequestIntent) and resolves once the state file has it: only then may
+   * the request be sent. Resolves with its ID.
+   */
+  public async addAppRequestIntent(intent: AppRequestIntent): Promise<string> {
+    this.#assertOpen();
+    const id = randomUUID();
+    this.#state.appRequestIntents = { ...this.#state.appRequestIntents, [id]: clone(intent) };
+    await this.#save();
+    return id;
+  }
+
+  /**
+   * Adds household app "Get this" records, changes the status (and joined items, ready seasons or grant rule) of
+   * existing ones, and settles or removes request intents, in one write. Records added with a `householdEpoch` other
+   * than their household's current one (it was deleted, or deleted and created again, while the call ran) are added
+   * detached. Then settled records are pruned (see pruneAppRequests): never a pending one. The state changes before
+   * this returns its promise. Resolves with the IDs of the added records.
    */
   public async writeAppRequests(input: {
     add?: AppRequestRecord[];
     householdEpoch?: number;
-    update?: Array<{ id: string; status: AppRequestStatus; itemIds?: string[]; readySeasons?: number[] }>;
+    update?: Array<{ id: string; status?: AppRequestStatus; itemIds?: string[]; readySeasons?: number[]; joinOnGrant?: AppRequestRecord['joinOnGrant'] }>;
+    /** Intents now `settling`: their request is recorded, Jellyfin could not be read yet. */
+    settleIntents?: Array<{ id: string; seerrRequestId: string }>;
+    /** Intents resolved: their request is recorded and settled, or was never made. */
+    removeIntents?: string[];
   }): Promise<string[]> {
     this.#assertOpen();
     const now = new Date().toISOString();
@@ -604,32 +588,73 @@ export class GrantStore {
       if (!record) continue;
       records[change.id] = {
         ...record,
-        status: change.status,
         updatedAt: now,
+        ...(change.status ? { status: change.status } : {}),
         ...(change.itemIds ? { itemIds: [...new Set([...(record.itemIds ?? []), ...change.itemIds.map(normalizeId)])].sort() } : {}),
         ...(change.readySeasons ? { readySeasons: [...new Set(change.readySeasons)].sort((left, right) => left - right) } : {}),
+        ...(change.joinOnGrant ? { joinOnGrant: change.joinOnGrant } : {}),
       };
     }
-    const ledger = clone(this.#state.appQuotaLedger ?? {});
-    this.#state.appRequests = pruneAppRequests(records, ledger, Date.now());
-    if (Object.keys(ledger).length > 0) this.#state.appQuotaLedger = ledger;
+    const intents = { ...this.#state.appRequestIntents };
+    for (const { id, seerrRequestId } of input.settleIntents ?? []) {
+      const intent = intents[id];
+      if (intent) intents[id] = { ...intent, status: 'settling', seerrRequestId };
+    }
+    for (const id of input.removeIntents ?? []) delete intents[id];
+    if (Object.keys(intents).length > 0) this.#state.appRequestIntents = intents;
+    else delete this.#state.appRequestIntents;
+    this.#state.appRequests = pruneAppRequests(records, Date.now());
     this.#state.appIdKey ??= randomBytes(32).toString('hex');
     this.#appIndexCache = undefined;
     await this.#save();
     return added;
   }
 
-  #indexed(ids: string[] | undefined): Array<[string, AppRequestRecord]> {
-    const records = this.#state.appRequests ?? {};
-    return (ids ?? []).flatMap((id) => records[id] ? [[id, clone(records[id])] as [string, AppRequestRecord]] : []);
+  /** The webhooks deferred for a "Get this" request intent (see GrantState.deferredWebhooks), oldest first. */
+  public listDeferredWebhooks(): SeerrWebhook[] {
+    return clone(this.#state.deferredWebhooks ?? []);
   }
 
-  #appIndex(): { byHousehold: Map<string, string[]>; byUser: Map<string, string[]> } {
+  /**
+   * Remembers a deferred webhook (only what granting it reads), replacing an earlier one for the same request, at most
+   * {@link MAX_DEFERRED_REQUESTS} of them (the oldest are forgotten, left to the backfill).
+   */
+  public async deferWebhook(event: SeerrWebhook): Promise<void> {
+    this.#assertOpen();
+    const kept: SeerrWebhook = {
+      notificationType: event.notificationType,
+      ...(event.media ? { media: {
+        ...(event.media.jellyfinMediaId ? { jellyfinMediaId: event.media.jellyfinMediaId } : {}),
+        ...(event.media.mediaType ? { mediaType: event.media.mediaType } : {}),
+      } } : {}),
+      request: {
+        id: event.request.id,
+        ...(event.request.is4k !== undefined ? { is4k: event.request.is4k } : {}),
+        ...(event.request.requestedBy?.jellyfinUserId ? { requestedBy: { jellyfinUserId: event.request.requestedBy.jellyfinUserId } } : {}),
+      },
+    };
+    const deferred = (this.#state.deferredWebhooks ?? []).filter((entry) => entry.request.id !== event.request.id);
+    this.#state.deferredWebhooks = [...deferred, kept].slice(-MAX_DEFERRED_REQUESTS);
+    await this.#save();
+  }
+
+  /** Forgets deferred webhooks that were granted (or need nothing any more), by request ID. */
+  public async forgetDeferredWebhooks(requestIds: string[]): Promise<void> {
+    this.#assertOpen();
+    const forget = new Set(requestIds);
+    const before = this.#state.deferredWebhooks ?? [];
+    const deferred = before.filter((entry) => !forget.has(entry.request.id));
+    if (deferred.length === before.length) return;
+    if (deferred.length > 0) this.#state.deferredWebhooks = deferred;
+    else delete this.#state.deferredWebhooks;
+    await this.#save();
+  }
+
+  #appIndex(): Map<string, string[]> {
     if (this.#appIndexCache) return this.#appIndexCache;
-    const index = { byHousehold: new Map<string, string[]>(), byUser: new Map<string, string[]>() };
+    const index = new Map<string, string[]>();
     for (const [id, record] of Object.entries(this.#state.appRequests ?? {})) {
-      index.byHousehold.set(record.householdId, [...index.byHousehold.get(record.householdId) ?? [], id]);
-      index.byUser.set(record.jellyfinUserId, [...index.byUser.get(record.jellyfinUserId) ?? [], id]);
+      index.set(record.householdId, [...index.get(record.householdId) ?? [], id]);
     }
     this.#appIndexCache = index;
     return index;
@@ -987,56 +1012,21 @@ function orphanedSync(previous: SyncStatus, reason: string): SyncStatus {
 }
 
 /**
- * See GrantStore.writeAppRequests. A pending record is never pruned (it is still being followed), nor a failed one
- * younger than APP_REQUEST_RETENTION_MS (a failed request can be retried). Settled records (completed, declined,
- * deleted) are kept for APP_REQUEST_RETENTION_MS, at most MAX_APP_REQUESTS_PER_HOUSEHOLD of them per household (its own
- * newest; one household's volume never prunes another's); failed ones past the retention go too. A pruned record that
- * still counts as a virtual request (a join or interest neither declined nor deleted) moves its creation time and units
- * to its member's ledger, so every quota count stays the same. Changes `ledger` in place.
+ * See GrantStore.writeAppRequests. A pending record is never pruned (it is still being followed). Settled records
+ * (completed, declined, deleted, failed) are kept for APP_REQUEST_RETENTION_MS, at most MAX_APP_REQUESTS_PER_HOUSEHOLD
+ * of them per household (its own newest; one household's volume never prunes another's).
  */
-function pruneAppRequests(
-  records: Record<string, AppRequestRecord>,
-  ledger: Record<string, AppQuotaLedger>,
-  now: number,
-): Record<string, AppRequestRecord> {
+function pruneAppRequests(records: Record<string, AppRequestRecord>, now: number): Record<string, AppRequestRecord> {
   const kept: Array<[string, AppRequestRecord]> = [];
   const settled: Array<[string, AppRequestRecord]> = [];
-  for (const entry of Object.entries(records)) {
-    const [, record] = entry;
-    const old = now - Date.parse(record.createdAt) > APP_REQUEST_RETENTION_MS;
-    if (record.status === 'pending' || (record.status === 'failed' && !old)) kept.push(entry);
-    else settled.push(entry);
-  }
+  for (const entry of Object.entries(records)) (entry[1].status === 'pending' ? kept : settled).push(entry);
   const perHousehold = new Map<string, number>();
   settled.sort(([, left], [, right]) => right.createdAt.localeCompare(left.createdAt));
   for (const entry of settled) {
     const [, record] = entry;
     const count = (perHousehold.get(record.householdId) ?? 0) + 1;
     perHousehold.set(record.householdId, count);
-    const old = now - Date.parse(record.createdAt) > APP_REQUEST_RETENTION_MS;
-    if (record.status !== 'failed' && !old && count <= MAX_APP_REQUESTS_PER_HOUSEHOLD) {
-      kept.push(entry);
-      continue;
-    }
-    if (record.branch !== 'request' && record.status !== 'declined' && record.status !== 'deleted') {
-      const userLedger = ledger[record.jellyfinUserId] ??= {};
-      const media = userLedger[record.mediaType] ??= { entries: [] };
-      media.entries.push([Date.parse(record.createdAt), record.mediaType === 'movie' ? 1 : record.seasons.length]);
-    }
-  }
-  for (const userLedger of Object.values(ledger)) {
-    for (const media of Object.values(userLedger)) {
-      media.entries.sort(([left], [right]) => left - right);
-      // Summed once past the horizon, and beyond the entry cap (the oldest first).
-      let cut = media.entries.findIndex(([createdAt]) => now - createdAt <= APP_QUOTA_HORIZON_MS);
-      if (cut < 0) cut = media.entries.length;
-      cut = Math.max(cut, media.entries.length - MAX_APP_QUOTA_ENTRIES);
-      for (const [createdAt, units] of media.entries.splice(0, cut)) {
-        media.older = media.older
-          ? { units: media.older.units + units, oldest: Math.min(media.older.oldest, createdAt), newest: Math.max(media.older.newest, createdAt) }
-          : { units, oldest: createdAt, newest: createdAt };
-      }
-    }
+    if (now - Date.parse(record.createdAt) <= APP_REQUEST_RETENTION_MS && count <= MAX_APP_REQUESTS_PER_HOUSEHOLD) kept.push(entry);
   }
   return Object.fromEntries(kept);
 }

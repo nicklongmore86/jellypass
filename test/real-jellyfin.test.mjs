@@ -218,6 +218,23 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
     assert.deepEqual(await client.findItemsByTmdbId('movie', 4242), []);
   });
 
+  it('finds a title\'s items by name (and year) with JellyPass\'s key, the decision input for items without TMDB metadata or a Seerr link', async () => {
+    const original = await client.getItem(fixture.itemId);
+    const itemId = fixture.itemId.replaceAll('-', '').toLowerCase();
+    await client.updateItem({ ...original, ProviderIds: {} });
+    const { ProductionYear: year } = await client.getItem(fixture.itemId);
+    assert.deepEqual(await client.findItemsByName('movie', 4242, [original.Name], year), [itemId]);
+    assert.deepEqual(await client.findItemsByName('movie', 4242, ['An Unrelated Title', original.Name.toLowerCase()]), [itemId]);
+    // Another year, another media type or another name is another title.
+    if (typeof year === 'number') assert.deepEqual(await client.findItemsByName('movie', 4242, [original.Name], year + 5), []);
+    assert.deepEqual(await client.findItemsByName('tv', 4242, [original.Name]), []);
+    assert.deepEqual(await client.findItemsByName('movie', 4242, ['An Unrelated Title']), []);
+    // An item with another TMDB ID is another title, whatever its name.
+    await client.updateItem({ ...original, ProviderIds: { ...original.ProviderIds, Tmdb: '424242' } });
+    assert.deepEqual(await client.findItemsByName('movie', 4242, [original.Name], year), []);
+    assert.deepEqual(await client.findItemsByName('movie', 424242, [original.Name], year), [itemId]);
+  });
+
   it('finds the items Seerr links to a title by their IDs, whatever their metadata, the decision input for items without a TMDB ID', async () => {
     const itemId = fixture.itemId.replaceAll('-', '').toLowerCase();
     const missing = 'f'.repeat(32);

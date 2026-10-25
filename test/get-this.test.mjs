@@ -113,7 +113,8 @@ describe('household app "Get this": the immediate answer', { timeout: 60_000 }, 
     for (const [name, changes] of Object.entries({
       'no request permission': { seerrUsers: { [SEERR_IDS[ALICE]]: { jellyfinUserId: ALICE, permissions: 0 } } },
       'no Seerr user': { seerrUsers: { [SEERR_IDS[ALICE]]: { jellyfinUserId: 'f'.repeat(32), permissions: REQUEST } } },
-      'quota used up': { quotas: { [SEERR_IDS[ALICE]]: { movie: { limit: 1, days: 7 } } }, requests: { [SEERR_IDS[ALICE]]: [request({ id: 7300701, seerrUser: SEERR_IDS[ALICE], tmdbId: 900020, status: 2, recent: true })] } },
+      'a movie quota': { quotas: { [SEERR_IDS[ALICE]]: { movie: { limit: 5, days: 7 } } } },
+      'a series quota': { quotas: { [SEERR_IDS[ALICE]]: { tv: { limit: 5, days: 7 } } } },
     })) {
       const app = await start(t, world({ tmdbMovies, ...changes }));
       answers[`ineligible: ${name}`] = serialized(await getThis(app));
@@ -200,18 +201,14 @@ describe('household app "Get this": branches', { timeout: 60_000 }, () => {
     }
   });
 
-  it('follows the caller\'s own request made outside the app as theirs, without counting it twice', async (t) => {
+  it('follows the caller\'s own request made outside the app as theirs', async (t) => {
     const app = await start(t, world({
       tmdbMovies,
-      quotas: { [SEERR_IDS[ALICE]]: { movie: { limit: 2, days: 7 } } },
       requests: { [SEERR_IDS[ALICE]]: [request({ id: 7300801, seerrUser: SEERR_IDS[ALICE], status: 1, recent: true })] },
     }));
     await getThis(app);
     assert.deepEqual(app.seerr.posts, []);
     assert.deepEqual(records(app).map((record) => [record.branch, record.seerrRequestId]), [['request', '7300801']]);
-    // Seerr counts her request once; the second unit is still hers to use.
-    await getThis(app, OTHER_GET);
-    assert.equal(app.seerr.posts.length, 1);
   });
 
   it('does nothing for what the household already asked for', async (t) => {
@@ -228,7 +225,6 @@ describe('household app "Get this": branches', { timeout: 60_000 }, () => {
       episodes: episodesOf(1),
       grants: [{ request: { itemId: ITEMS.tSeries, mediaType: 'tv', requestId: '7300502', userId: BOB, groupIds: ['mill'] } }],
       requests: { [SEERR_IDS[BOB]]: [request({ id: 7300502, seerrUser: SEERR_IDS[BOB], type: 'tv', status: 5, seasons: [1] }), request({ id: 7300602, seerrUser: SEERR_IDS[BOB], type: 'tv', status: 1, seasons: [2] })] },
-      quotas: { [SEERR_IDS[ALICE]]: { tv: { limit: 3, days: 7 } } },
     }));
     assert.equal((await getThis(app, GET_TV, { seasons: [3, 1, 2] })).status, 202);
     assert.deepEqual(app.seerr.posts, [{ actingUser: SEERR_IDS[ALICE], body: { mediaType: 'tv', mediaId: T_TV, seasons: [3], is4k: false } }]);
@@ -247,11 +243,6 @@ describe('household app "Get this": branches', { timeout: 60_000 }, () => {
       mediaType: 'tv', tmdbId: T_TV, status: 'requested', byYou: true,
       seasons: [{ seasonNumber: 1, status: 'ready' }, { seasonNumber: 2, status: 'requested' }, { seasonNumber: 3, status: 'requested' }],
     }]);
-    // One unit per season asked for, whichever branch served it: the limit of 3 is used up.
-    const before = app.seerr.calls.length;
-    await getThis(app, GET_TV, { seasons: [4] });
-    assert.equal(app.seerr.posts.length, 1);
-    assert.ok(!app.seerr.calls.slice(before).some((call) => call.pathname === `/api/v1/tv/${T_TV}`));
   });
 
   it('follows a request made meanwhile when Seerr refuses its own as a duplicate (409) or has no season left (202)', async (t) => {
@@ -318,49 +309,83 @@ describe('household app "Get this": branches', { timeout: 60_000 }, () => {
   });
 });
 
-describe('household app "Get this": quota before branching', { timeout: 60_000 }, () => {
-  for (const [name, { state, branch }] of Object.entries(getThisWorlds({ quotas: { [SEERR_IDS[ALICE]]: { movie: { limit: 1, days: 7 } } } }))) {
-    if (branch === 'none' || branch === 'visible') continue;
-    it(`runs no branch once the ${branch} branch used the caller's last unit (${name})`, async (t) => {
-      const app = await start(t, state);
-      const first = await getThis(app);
-      const posts = app.seerr.posts.length;
-      const made = records(app);
-      assert.equal(made.length, 1);
-      const seerrCalls = app.seerr.calls.length;
-      const jellyfinCalls = app.jellyfin.requests.length;
-      const second = await getThis(app, OTHER_GET);
-      assert.equal(serialized(second), serialized(first));
-      // Nothing about the title was looked up and nothing was recorded, joined or requested.
-      assert.equal(app.seerr.posts.length, posts);
-      assert.deepEqual(records(app), made);
-      assert.deepEqual(app.seerr.calls.slice(seerrCalls).map((call) => call.pathname).filter((pathname) => !/^\/api\/v1\/(user\/(jellyfin\/[0-9a-f]{32}|[0-9]+|11\/quota)|auth\/me)$/.test(pathname)), []);
-      assert.deepEqual(app.jellyfin.requests.slice(jellyfinCalls).map((request) => request.pathname).filter((pathname) => pathname !== '/Users/Me'), []);
-    });
-  }
+describe('household app "Get this": callers with a Seerr quota', { timeout: 60_000 }, () => {
+  // Any limit at all, used or not, for either media type: "Get this" is not offered.
+  const quotaKinds = {
+    'a movie quota': { movie: { limit: 3, days: 7 } },
+    'a series quota with no window': { tv: { limit: 1, days: 0 } },
+    'both, none of it used': { movie: { limit: 100, days: 30 }, tv: { limit: 100, days: 30 } },
+  };
+  /** Only the caller's own Seerr user and quota, and their confirmations: nothing about a title. */
+  const ownSeerrCall = /^\/api\/v1\/(user\/(jellyfin\/[0-9a-f]{32}|[0-9]+|[0-9]+\/quota)|auth\/me|blocklist)$/;
 
-  it('lets concurrent calls at the limit run at most one branch', async (t) => {
-    const app = await start(t, world({ tmdbMovies: { ...tmdbMovies, 900011: { title: 'Synthetic Movie Eleven' } }, quotas: { [SEERR_IDS[ALICE]]: { movie: { limit: 1, days: 7 } } } }));
-    const answers = await Promise.all([GET_MOVIE, OTHER_GET, `${APP}/movie/900011/get`].map((pathname) => app.post(pathname)));
-    await app.background.settled();
-    assert.ok(answers.every((answer) => answer.text === ACCEPTED));
-    assert.equal(app.seerr.posts.length, 1);
-    assert.equal(records(app).length, 1);
+  it('shows every title they cannot play as unavailable, the same in every world, as for a caller who may not request', async (t) => {
+    const noPermission = await start(t, world({ tmdbMovies, seerrUsers: { [SEERR_IDS[ALICE]]: { jellyfinUserId: ALICE, permissions: 0 } } }));
+    const pages = [`${APP}/movie/${T_MOVIE}`, `${APP}/tv/${T_TV}`, `${APP}/tv/${T_TV}/season/1`, `${APP}/movie/${OTHER_MOVIE}`, `${APP}/search?q=synthetic`, `${APP}/discover/popular-movies`];
+    const expected = await Promise.all(pages.map(async (pathname) => serialized(await noPermission.get(pathname))));
+    for (const [kind, quota] of Object.entries(quotaKinds)) {
+      for (const [name, { state, branch }] of Object.entries(getThisWorlds({ quotas: { [SEERR_IDS[ALICE]]: quota } }))) {
+        const app = await start(t, state);
+        const seen = await Promise.all(pages.map(async (pathname) => serialized(await app.get(pathname))));
+        // The caller's own view still decides `in_library` first: playing what they can see needs no request.
+        if (branch === 'visible') {
+          assert.equal((await app.get(pages[0])).json().state, 'in_library', `${kind} ${name}`);
+          assert.deepEqual(seen.slice(1, 4), expected.slice(1, 4), `${kind} ${name}`);
+          continue;
+        }
+        assert.deepEqual(seen, expected, `${kind} ${name}`);
+        assert.equal((await app.get(pages[0])).json().state, 'unavailable');
+        const cards = (await app.get(pages[4])).json().results;
+        // Every card but those the caller's own view has.
+        assert.ok(cards.some((card) => card.state === 'unavailable'), `${kind} ${name}`);
+        assert.ok(cards.every((card) => card.state === 'unavailable' || card.state === 'in_library'), `${kind} ${name}`);
+      }
+    }
+    assert.match(expected[0], /"state":"unavailable"/);
   });
 
-  it('charges a series one unit per season asked for, however many seasons another household asked for', async (t) => {
-    for (const requested of [[], [1], [1, 2]]) {
-      const app = await start(t, world({
-        quotas: { [SEERR_IDS[ALICE]]: { tv: { limit: 2, days: 7 } } },
-        requests: requested.length ? { [SEERR_IDS[BOB]]: [request({ id: 7300606, seerrUser: SEERR_IDS[BOB], type: 'tv', status: 1, seasons: requested })] } : {},
-      }));
-      await getThis(app, GET_TV, { seasons: [1, 2] });
-      assert.deepEqual(records(app).flatMap((record) => record.seasons).sort(), [1, 2], String(requested));
-      const posts = app.seerr.posts.length;
-      await getThis(app, GET_TV, { seasons: [3] });
-      assert.equal(app.seerr.posts.length, posts, String(requested));
-      assert.equal(records(app).length, requested.length === 1 ? 2 : 1, String(requested));
+  it('runs nothing for their "Get this", in every world: the same 202, no title read, no join, no interest, no request', async (t) => {
+    let expected;
+    for (const [kind, quota] of Object.entries(quotaKinds)) {
+      for (const [name, { state }] of Object.entries(getThisWorlds({ quotas: { [SEERR_IDS[ALICE]]: quota } }))) {
+        const app = await start(t, state);
+        const grants = JSON.stringify(app.service.listGrants());
+        const seerrCalls = app.seerr.calls.length;
+        const jellyfinCalls = app.jellyfin.requests.length;
+        const answers = [await getThis(app), await getThis(app, GET_TV, { seasons: [1, 2] }), await getThis(app, OTHER_GET)];
+        expected ??= serialized(answers[0]);
+        for (const answer of answers) assert.equal(serialized(answer), expected, `${kind} ${name}`);
+        assert.deepEqual(app.seerr.posts, [], `${kind} ${name}`);
+        assert.deepEqual(records(app), [], `${kind} ${name}`);
+        assert.deepEqual(app.store.listAppRequestIntents(), [], `${kind} ${name}`);
+        assert.equal(JSON.stringify(app.service.listGrants()), grants, `${kind} ${name}`);
+        assert.deepEqual(app.seerr.calls.slice(seerrCalls).map((call) => call.pathname).filter((pathname) => !ownSeerrCall.test(pathname)), [], `${kind} ${name}`);
+        assert.deepEqual(app.jellyfin.requests.slice(jellyfinCalls).map((request) => request.pathname).filter((pathname) => pathname !== '/Users/Me'), [], `${kind} ${name}`);
+        assert.equal(app.service.renderMetrics().match(/jfa_app_get_this_total\{result="ineligible"\} (\d+)/)?.[1], '3', `${kind} ${name}`);
+      }
     }
+    assert.equal(expected.split('\n')[0], '202');
+  });
+
+  it('is decided by each caller\'s own quota: a member without one still gets this, and the one with one sees no difference', async (t) => {
+    const app = await start(t, world({ tmdbMovies, quotas: { [SEERR_IDS[ALICE]]: { movie: { limit: 1, days: 7 } } } }));
+    const before = serialized(await app.get(`${APP}/movie/${T_MOVIE}`));
+    assert.equal((await app.get(`${APP}/movie/${T_MOVIE}`, { user: ANN })).json().state, 'get_this');
+    await getThis(app);
+    assert.deepEqual(app.seerr.posts, []);
+    await getThis(app, GET_MOVIE, undefined, { user: ANN });
+    assert.equal(app.seerr.posts.length, 1);
+    assert.equal((await app.get(`${APP}/movie/${T_MOVIE}`, { user: ANN })).json().state, 'requested');
+    // Alice sees the title as before: what her household asked for does not make it requestable for her.
+    assert.equal(serialized(await app.get(`${APP}/movie/${T_MOVIE}`)), before);
+  });
+
+  it('leaves a caller Seerr gives no limit (0, as for a caller who bypasses quotas) eligible', async (t) => {
+    const app = await start(t, world({ tmdbMovies, quotas: { [SEERR_IDS[ALICE]]: { movie: { limit: 0, days: 7 }, tv: { limit: 0 } } } }));
+    assert.equal((await app.get(`${APP}/movie/${T_MOVIE}`)).json().state, 'get_this');
+    await getThis(app);
+    await getThis(app, OTHER_GET);
+    assert.equal(app.seerr.posts.length, 2);
   });
 
   it('refuses a caller without request permission for the media type, running no branch', async (t) => {
@@ -371,25 +396,17 @@ describe('household app "Get this": quota before branching', { timeout: 60_000 }
     assert.equal(records(app).length, 1);
   });
 
-  it('leaves a caller without a quota limit always eligible, as Seerr does', async (t) => {
-    const app = await start(t, world({ tmdbMovies }));
-    await getThis(app);
-    await getThis(app, OTHER_GET);
-    assert.equal(app.seerr.posts.length, 2);
+  it('decides concurrent calls of a caller without a quota independently: each title once', async (t) => {
+    const app = await start(t, world({ tmdbMovies: { ...tmdbMovies, 900011: { title: 'Synthetic Movie Eleven' } } }));
+    const answers = await Promise.all([GET_MOVIE, OTHER_GET, `${APP}/movie/900011/get`, GET_MOVIE].map((pathname) => app.post(pathname)));
+    await app.background.settled();
+    assert.ok(answers.every((answer) => answer.text === ACCEPTED));
+    assert.deepEqual(app.seerr.posts.map((post) => post.body.mediaId).sort(), [T_MOVIE, OTHER_MOVIE, 900011].sort());
+    assert.equal(records(app).length, 3);
   });
 });
 
-describe('household app "Get this": every outcome counted as Seerr counts the caller\'s own', { timeout: 60_000 }, () => {
-  const quotas = { [SEERR_IDS[ALICE]]: { movie: { limit: 1, days: 7 } } };
-
-  /** Whether Alice may ask for one more movie: a "Get this" for another one reaches Seerr. */
-  async function eligible(app) {
-    const posts = app.seerr.posts.length;
-    const made = app.store.listAppRequests().length;
-    await getThis(app, OTHER_GET);
-    return app.seerr.posts.length > posts || app.store.listAppRequests().length > made;
-  }
-
+describe('household app "Get this": every outcome follows the request', { timeout: 60_000 }, () => {
   /** Changes the Seerr request a record follows, then brings the records up to date. */
   async function outcome(app, change) {
     change(app.seerr.state);
@@ -402,28 +419,26 @@ describe('household app "Get this": every outcome counted as Seerr counts the ca
     if (status === 5) seerr.items.push(movieItem());
   };
 
-  for (const [event, status, freed, shown] of [['declined', 3, true, 'failed'], ['failed', 4, false, 'failed'], ['approved', 2, false, 'requested'], ['completed', 5, false, 'ready']]) {
-    it(`frees the unit ${freed ? '' : 'in neither branch '}when the request is ${event}, in the request and interest branches alike`, async (t) => {
+  for (const [event, status, shown] of [['declined', 3, 'failed'], ['failed', 4, 'failed'], ['approved', 2, 'requested'], ['completed', 5, 'ready']]) {
+    it(`shows the request as ${shown} when it is ${event}, in the request and interest branches alike`, async (t) => {
       const results = {};
       for (const [branch, state, seerrUser, id] of [
-        ['request', world({ tmdbMovies, quotas }), SEERR_IDS[ALICE], 7350001],
-        ['interest', world({ tmdbMovies, quotas, requests: { [SEERR_IDS[BOB]]: [request({ id: 7300601, seerrUser: SEERR_IDS[BOB] })] } }), SEERR_IDS[BOB], 7300601],
+        ['request', world({ tmdbMovies }), SEERR_IDS[ALICE], 7350001],
+        ['interest', world({ tmdbMovies, requests: { [SEERR_IDS[BOB]]: [request({ id: 7300601, seerrUser: SEERR_IDS[BOB] })] } }), SEERR_IDS[BOB], 7300601],
       ]) {
         const app = await start(t, state);
         await getThis(app);
         await outcome(app, setStatus(status, seerrUser, id));
-        const listed = (await app.get(`${APP}/requests`)).json().results;
-        results[branch] = { status: listed[0]?.status, eligible: await eligible(app) };
+        results[branch] = (await app.get(`${APP}/requests`)).json().results[0]?.status;
       }
       // A completed interest is "Ready" only once its household joined the grant (see the grant tests).
-      const interestShown = event === 'completed' ? 'requested' : shown;
-      assert.deepEqual(results, { request: { status: shown, eligible: freed }, interest: { status: interestShown, eligible: freed } });
+      assert.deepEqual(results, { request: shown, interest: event === 'completed' ? 'requested' : shown });
     });
   }
 
-  it('keeps a failed then retried request counted, following it back to Requested', async (t) => {
+  it('follows a failed then retried request back to Requested', async (t) => {
     let now = Date.now();
-    const app = await start(t, world({ tmdbMovies, quotas, requests: { [SEERR_IDS[BOB]]: [request({ id: 7300601, seerrUser: SEERR_IDS[BOB] })] } }), { now: () => now });
+    const app = await start(t, world({ tmdbMovies, requests: { [SEERR_IDS[BOB]]: [request({ id: 7300601, seerrUser: SEERR_IDS[BOB] })] } }), { now: () => now });
     await getThis(app);
     await outcome(app, setStatus(4, SEERR_IDS[BOB], 7300601));
     assert.equal((await app.get(`${APP}/requests`)).json().results[0].status, 'failed');
@@ -434,58 +449,45 @@ describe('household app "Get this": every outcome counted as Seerr counts the ca
     await app.requests.refresh();
     assert.equal((await app.get(`${APP}/requests`)).json().results[0].status, 'requested');
     assert.equal((await app.get(`${APP}/movie/${T_MOVIE}`)).json().state, 'requested');
-    assert.equal(await eligible(app), false);
   });
 
-  it('counts an interest as failed (still counted) once someone deletes its request, and frees it once the title\'s media record goes', async (t) => {
-    for (const [what, change, status, freed] of [
+  it('shows an interest as failed once someone deletes its request, and drops it once the title\'s media record goes', async (t) => {
+    for (const [what, change, status] of [
       ['the request', (seerr) => {
         seerr.requests[SEERR_IDS[BOB]] = [];
         seerr.media[T_MOVIE] = { id: 7360001, mediaType: 'movie', tmdbId: T_MOVIE, status: 2, requests: [] };
-      }, 'failed', false],
+      }, 'failed'],
       ['the media record', (seerr) => {
         seerr.requests[SEERR_IDS[BOB]] = [];
-      }, 'deleted', true],
+      }, 'deleted'],
     ]) {
-      const app = await start(t, world({ tmdbMovies, quotas, requests: { [SEERR_IDS[BOB]]: [request({ id: 7300601, seerrUser: SEERR_IDS[BOB] })] } }));
+      const app = await start(t, world({ tmdbMovies, requests: { [SEERR_IDS[BOB]]: [request({ id: 7300601, seerrUser: SEERR_IDS[BOB] })] } }));
       await getThis(app);
       await outcome(app, change);
       assert.equal(app.store.listAppRequests()[0][1].status, status, what);
       // A deleted request is no longer listed, as Seerr no longer lists it; a failed one shows "We couldn't get this".
       assert.deepEqual((await app.get(`${APP}/requests`)).json().results.map((entry) => entry.status), status === 'deleted' ? [] : ['failed'], what);
-      assert.equal(await eligible(app), freed, what);
     }
   });
 
-  it('frees a join once the title\'s Seerr media record is deleted, and counts it until then', async (t) => {
-    const { state } = getThisWorlds({ quotas })['held by household B through its request'];
+  it('drops a join once the title\'s Seerr media record is deleted', async (t) => {
+    const { state } = getThisWorlds()['held by household B through its request'];
     const app = await start(t, state);
     await getThis(app);
-    assert.equal(await eligible(app), false);
     await outcome(app, (seerr) => {
       seerr.requests[SEERR_IDS[BOB]] = [];
     });
     assert.equal(app.store.listAppRequests().find(([, record]) => record.branch === 'join')[1].status, 'deleted');
-    assert.equal(await eligible(app), true);
   });
 
-  it('frees the request branch\'s unit when Seerr deletes the caller\'s request with its media', async (t) => {
-    const app = await start(t, world({ tmdbMovies, quotas }));
+  it('drops the request branch\'s record when Seerr deletes the caller\'s request with its media', async (t) => {
+    const app = await start(t, world({ tmdbMovies }));
     await getThis(app);
     await outcome(app, (seerr) => {
       seerr.requests[SEERR_IDS[ALICE]] = [];
     });
     assert.equal(app.store.listAppRequests()[0][1].status, 'deleted');
-    assert.equal(await eligible(app), true);
-  });
-
-  it('counts only virtual requests inside the quota window, as Seerr counts its own', async (t) => {
-    let now = Date.now();
-    const app = await start(t, world({ tmdbMovies, quotas, requests: { [SEERR_IDS[BOB]]: [request({ id: 7300601, seerrUser: SEERR_IDS[BOB] })] } }), { now: () => now });
-    await getThis(app);
-    assert.equal(await eligible(app), false);
-    now += 8 * 24 * 60 * 60 * 1000;
-    assert.equal(await eligible(app), true);
+    assert.deepEqual((await app.get(`${APP}/requests`)).json().results, []);
   });
 });
 
@@ -624,7 +626,7 @@ describe('household app "Get this": households', { timeout: 60_000 }, () => {
     await app.store.upsertGroup({ id: 'farmhouse', name: 'Farmhouse again', userIds: [ALICE, ANN] });
     assert.deepEqual((await app.get(`${APP}/requests`)).json(), { results: [] });
     assert.equal((await app.get(`${APP}/movie/${T_MOVIE}`)).json().state, 'get_this');
-    // Still Alice's own: it counts towards her quota as Seerr counts her request.
+    // Kept, detached: the request's grant still follows its record.
     assert.equal(app.store.listAppRequests()[0][1].detached, true);
   });
 });

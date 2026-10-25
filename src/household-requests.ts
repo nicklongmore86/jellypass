@@ -1,27 +1,25 @@
 import { createHmac } from 'node:crypto';
 import type { HouseholdJoinResult } from './access-service.js';
-import { readBlocklist, seerrPermissions, type MediaType } from './app-api.js';
+import { getThisEligibility, readBlocklist, type MediaType } from './app-api.js';
 import type { JellyfinClient } from './jellyfin.js';
 import { SeerrError, SeerrUnmappedUserError, type SeerrClient, type SeerrMemberClient, type SeerrTitleRecord } from './seerr.js';
 import type { BackgroundTasks } from './shutdown.js';
 import type { GrantStore } from './store.js';
-import type { AppRequestRecord, AppRequestStatus } from './types.js';
+import type { AppRequestIntent, AppRequestRecord, AppRequestStatus } from './types.js';
 
 /**
  * Household app "Get this" (docs/app-design.md, "Get this"). The answer depends on nothing but the call itself: it is
  * the same `202` once the call is accepted. Everything else runs afterwards, in the background, and its outcome is never
- * part of any answer: first the caller's request permission and quota eligibility, checked under a per-user lock against
- * Seerr's own count of their requests plus the virtual requests JellyPass recorded for them (the same lock every Seerr
- * request made as the caller is sent under, so a quota read never overlaps one); then, serialized per title:
+ * part of any answer: first the caller's eligibility, from their own Seerr user and quota only (a caller with a Seerr
+ * quota is never eligible: see getThisEligibility); then, serialized per title:
  *
  * - the caller can already see the title (or the seasons asked for): nothing;
  * - Jellyfin already has it: the household joins its grant through the library join rules, never a Seerr request;
  * - Seerr has an active HD request for it from anyone: the household's interest is recorded, and the household joins
  *   the grant when it is created;
- * - otherwise: a real HD Seerr request as the caller.
+ * - otherwise: a real HD Seerr request as the caller, behind a request intent (see AppRequestIntent).
  *
- * A series is decided season by season. Join and interest are counted as virtual requests, one unit per movie or per
- * season, exactly as Seerr would count the caller's own request (see {@link AppRequestRecord}).
+ * A series is decided season by season.
  */
 
 /** "Get this" calls allowed per user, per client address and per household in each window of GET_THIS_WINDOW_MS. */
@@ -36,12 +34,20 @@ export const REFRESH_MEDIA_EVERY_MS = 6 * 60 * 60 * 1000;
 export const MAX_REFRESH_READS = 50;
 /**
  * A call's records are written no sooner than this after it was accepted, so how soon a title shows as `requested`
- * does not tell the request branch (one more Seerr call) from the interest branch, while Seerr answers within it.
+ * does not tell the request branch (more Seerr and Jellyfin calls) from the interest branch, while they finish within it.
  */
 export const RECORD_DELAY_MS = 2000;
 /** Most titles GET /requests lists, newest first. */
 export const MAX_LISTED_TITLES = 200;
-const DAY_MS = 24 * 60 * 60 * 1000;
+/**
+ * A `submitting` intent whose request Seerr does not list this long after it was written was never made (the request's
+ * own timeout is 15 seconds), and is removed (see AppRequestIntent).
+ */
+export const APP_INTENT_TIMEOUT_MS = 2 * 60 * 1000;
+/** A request whose settle-time Jellyfin read has not succeeded this long after its intent was written follows the join rules. */
+export const APP_SETTLE_DEADLINE_MS = 30 * 60 * 1000;
+/** How much earlier than its intent Seerr's clock may date the request it made, when an intent is recovered. */
+const INTENT_CLOCK_SKEW_MS = 5 * 60 * 1000;
 /** Seerr request statuses: pending and approved requests are active. */
 const ACTIVE_REQUEST_STATUSES = new Set([1, 2]);
 const DECLINED = 3;
@@ -93,20 +99,21 @@ export class GetThisRefusedError extends Error {
 
 export interface HouseholdRequestsOptions {
   store: Pick<GrantStore,
-    | 'listAppRequests' | 'listAppRequestsForHousehold' | 'listAppRequestsForUser' | 'prunedAppQuotaUnits' | 'writeAppRequests'
-    | 'getAppIdKey' | 'householdEpoch' | 'holdAppRequest' | 'releaseAppRequest' | 'hasHandledRequest'>;
+    | 'listAppRequests' | 'listAppRequestsForHousehold' | 'writeAppRequests' | 'getAppIdKey' | 'householdEpoch'
+    | 'hasHandledRequest' | 'listAppRequestIntents' | 'addAppRequestIntent' | 'getGroup'>;
   /** Jellyfin with JellyPass's own key: the decision input for "Jellyfin already has it". */
-  jellyfin: Pick<JellyfinClient, 'findItemsByTmdbId' | 'existingItems' | 'seasonsWithEpisodes'>;
+  jellyfin: Pick<JellyfinClient, 'findItemsByTmdbId' | 'existingItems' | 'findItemsByName' | 'seasonsWithEpisodes'>;
   /** Seerr with the admin key: the blocklist, a title's requests, and the status of requests JellyPass recorded. */
   seerr: Pick<SeerrClient, 'blocklist' | 'titleRequests' | 'requestState'>;
   /** The caller's own Seerr user, confirmed before every call (a `SeerrUserMap`). */
-  members: { member(jellyfinUserId: string): Pick<SeerrMemberClient, 'ownUser' | 'quota' | 'createRequest'> | undefined };
-  /** The library join rules (AccessService.joinHousehold). */
+  members: { member(jellyfinUserId: string): Pick<SeerrMemberClient, 'ownUser' | 'quota' | 'confirmRequester'> | undefined };
+  /** The library join rules (AccessService.joinHousehold), and the webhooks deferred for an intent (AccessService.retryDeferredRequests). */
   joins: {
     joinHousehold(
       input: { itemIds: string[]; userId: string; householdId: string; householdEpoch?: number },
       options: { signal?: AbortSignal },
     ): Promise<HouseholdJoinResult>;
+    retryDeferredRequests(options: { signal?: AbortSignal }): Promise<void>;
   };
   /** Runs the branches after the answer; shutdown aborts its signal and waits for them. */
   background: Pick<BackgroundTasks, 'run'>;
@@ -118,24 +125,18 @@ export interface HouseholdRequestsOptions {
   recordDelayMs?: number;
 }
 
-/**
- * The units an accepted call holds from the moment it was found eligible until its records are written (see
- * #eligible). A Seerr request made as the caller gives its units up the moment Seerr has made it: Seerr counts them
- * from then on, and no quota read of the caller's is in flight then (both run under the caller's lock).
- */
-interface Reservation {
-  mediaType: MediaType;
-  units: number;
-}
-
 /** A record's new status (see HouseholdRequests.refresh). */
 type RecordChange = { status: AppRequestStatus; itemIds?: string[]; readySeasons?: number[] };
 
-/** What the branches of one call did, to be recorded together; filled as they go, so what was done is recorded. */
+/** What the branches of one call did, to be written together; filled as they go, so what was done is written. */
 interface Outcome {
   records: AppRequestRecord[];
-  /** Seerr requests made as the caller, noted in the store until their records are written (GrantStore.holdAppRequest). */
-  held: string[];
+  /** Intents whose request is recorded but not settled (see AppRequestIntent `settling`). */
+  settleIntents: Array<{ id: string; seerrRequestId: string }>;
+  /** Intents resolved: recorded and settled, or no request was made. */
+  removeIntents: string[];
+  /** Intents this call wrote, which reconciliation leaves to it until its records are written. */
+  intents: string[];
 }
 
 /** What Jellyfin holds of a title (see #presence). */
@@ -145,6 +146,9 @@ interface Presence {
   /** The seasons (`0` for a movie) those items have: a movie's item, or a series' episodes. */
   seasons: Set<number>;
 }
+
+/** How a request just made settles (see #settle): a genuine request (`absent`), or the join rule its grant follows. */
+type Settled = 'absent' | 'present-at-settle' | 'existing-series';
 
 export class HouseholdRequests {
   readonly #store: HouseholdRequestsOptions['store'];
@@ -157,9 +161,9 @@ export class HouseholdRequests {
   readonly #recordBranch: NonNullable<HouseholdRequestsOptions['recordBranch']>;
   readonly #now: () => number;
   readonly #recordDelayMs: number;
-  readonly #userLocks = new Map<string, Promise<unknown>>();
   readonly #titleLocks = new Map<string, Promise<unknown>>();
-  readonly #reservations = new Map<string, Set<Reservation>>();
+  /** Intents written by calls still running (see Outcome.intents); memory only. */
+  readonly #live = new Set<string>();
   /** When each record was last read from Seerr by refresh(), by record ID; memory only. */
   readonly #checkedAt = new Map<string, number>();
 
@@ -189,24 +193,18 @@ export class HouseholdRequests {
   }
 
   /**
-   * The background part of one call: under the caller's lock, decides their eligibility for the media type from their
-   * own Seerr permission and quota, and nothing about the title or other households; if eligible, holds the units the
-   * call needs and runs the branches. A failure reading eligibility runs nothing.
+   * The background part of one call: decides the caller's eligibility for the media type from their own Seerr
+   * permission and quota, and nothing about the title or other households; if eligible, runs the branches. A failure
+   * reading eligibility runs nothing.
    */
   async #run(input: GetThisInput, epoch: number | undefined, acceptedAt: number, signal: AbortSignal): Promise<void> {
     // The answer is written before anything is read.
     await new Promise((resolve) => setImmediate(resolve));
-    let reservation: Reservation | undefined;
+    let eligible: boolean;
     try {
-      reservation = await this.#withLock(this.#userLocks, input.callerId, async () => {
-        checkSignal(signal);
-        const units = input.mediaType === 'movie' ? 1 : input.seasons.length;
-        if (epoch === undefined || !await this.#eligible(input.callerId, input.mediaType, units)) return undefined;
-        checkSignal(signal);
-        const held: Reservation = { mediaType: input.mediaType, units };
-        this.#reservations.set(input.callerId, (this.#reservations.get(input.callerId) ?? new Set()).add(held));
-        return held;
-      });
+      checkSignal(signal);
+      eligible = epoch !== undefined && await this.#eligible(input.callerId, input.mediaType);
+      checkSignal(signal);
     } catch (error) {
       if (error instanceof CancelledError || signal.aborted) return void this.#recordBranch('cancelled');
       this.#record('error');
@@ -217,79 +215,34 @@ export class HouseholdRequests {
       }));
       return;
     }
-    if (!reservation) return void this.#record('ineligible');
+    if (!eligible) return void this.#record('ineligible');
     this.#record('accepted');
-    await this.#branches(input, epoch as number, reservation, acceptedAt, signal);
+    await this.#branches(input, epoch as number, acceptedAt, signal);
   }
 
   /**
-   * Whether the caller may ask for `units` more of `mediaType`: they have Seerr's request permission for it and, when
-   * Seerr gives them a quota, Seerr's own count of their requests plus their virtual requests in the same window plus
-   * the units held by their calls still running plus `units` is within the limit (Seerr 3.5.1 `User.getQuota`: `days`
-   * 0 or unset counts every request ever made). Run under the caller's lock, as is every Seerr request made as them,
-   * so each unit is counted exactly once whichever branch is serving it: by the reservation until Seerr has made the
-   * request (then by Seerr's `used`) or until the record is written (then by the tally).
+   * Whether the caller may ask "Get this" for `mediaType` (see getThisEligibility): Seerr's request permission for it,
+   * and no Seerr quota at all. Read as the caller, never about a title.
    */
-  async #eligible(callerId: string, mediaType: MediaType, units: number): Promise<boolean> {
+  async #eligible(callerId: string, mediaType: MediaType): Promise<boolean> {
     const member = this.#members.member(callerId);
     if (!member) return false;
-    let user: unknown;
-    let quota: unknown;
     try {
-      [user, quota] = await Promise.all([member.ownUser(), member.quota()]);
+      const [user, quota] = await Promise.all([member.ownUser(), member.quota()]);
+      return getThisEligibility(user, quota)[mediaType];
     } catch (error) {
       if (error instanceof SeerrUnmappedUserError) return false;
       throw error;
     }
-    if (!seerrPermissions(user)[mediaType]) return false;
-    const limits = field(quota, mediaType);
-    const limit = field(limits, 'limit');
-    // No limit, or one the caller bypasses (Seerr then reports 0): Seerr counts nothing, and neither does the tally.
-    if (!isCount(limit) || limit === 0) return true;
-    const used = field(limits, 'used');
-    const days = field(limits, 'days');
-    if (!isCount(used)) throw new SeerrError('Seerr GET /api/v1/user/:self/quota returned an unexpected answer', 502);
-    const windowStart = isCount(days) && days > 0 ? this.#now() - days * DAY_MS : -Infinity;
-    const combined = used + this.#virtualUnits(callerId, mediaType, windowStart) + this.#reservedUnits(callerId, mediaType);
-    return combined + units <= limit;
   }
 
-  /**
-   * The caller's virtual requests (join and interest records, and those pruned into their ledger) for a media type
-   * made after `windowStart`, in units, counted as Seerr counts its own: every status except declined, nothing once
-   * deleted. Records of a household since deleted still count: they were the caller's.
-   */
-  #virtualUnits(callerId: string, mediaType: MediaType, windowStart: number): number {
-    let units = this.#store.prunedAppQuotaUnits(callerId, mediaType, windowStart);
-    for (const [, record] of this.#store.listAppRequestsForUser(callerId)) {
-      if (record.mediaType !== mediaType || !counted(record)) continue;
-      if (Date.parse(record.createdAt) <= windowStart) continue;
-      units += unitsOf(record);
-    }
-    return units;
-  }
-
-  /** Units held by the caller's calls running now (see Reservation). */
-  #reservedUnits(callerId: string, mediaType: MediaType): number {
-    let units = 0;
-    for (const reservation of this.#reservations.get(callerId) ?? []) if (reservation.mediaType === mediaType) units += reservation.units;
-    return units;
-  }
-
-  /** Gives up what is left of a call's reservation: its records were just written. */
-  #release(callerId: string, reservation: Reservation): void {
-    const held = this.#reservations.get(callerId);
-    held?.delete(reservation);
-    if (held?.size === 0) this.#reservations.delete(callerId);
-  }
-
-  /** The branches of one call, in the title's turn, recorded together no sooner than RECORD_DELAY_MS after it was accepted. */
-  async #branches(input: GetThisInput, epoch: number, reservation: Reservation, acceptedAt: number, signal: AbortSignal): Promise<void> {
+  /** The branches of one call, in the title's turn, written together no sooner than RECORD_DELAY_MS after it was accepted. */
+  async #branches(input: GetThisInput, epoch: number, acceptedAt: number, signal: AbortSignal): Promise<void> {
     const recordAfter = acceptedAt + this.#recordDelayMs;
     await this.#withLock(this.#titleLocks, `${input.mediaType}:${input.tmdbId}`, async () => {
-      const outcome: Outcome = { records: [], held: [] };
+      const outcome: Outcome = { records: [], settleIntents: [], removeIntents: [], intents: [] };
       try {
-        await this.#decide(input, epoch, reservation, outcome, signal);
+        await this.#decide(input, epoch, outcome, signal);
         await delay(recordAfter - performance.now(), signal);
       } catch (error) {
         if (error instanceof CancelledError || signal.aborted) this.#recordBranch('cancelled');
@@ -302,35 +255,42 @@ export class HouseholdRequests {
           }));
         }
       }
-      // Recorded even after shutdown began: a Seerr request already made must keep its attribution record. The store
-      // detaches them if the household was deleted (or deleted and created again) meanwhile.
-      let writing: Promise<unknown> | undefined;
+      // Written even after shutdown began: a Seerr request already made must keep its attribution record. The store
+      // detaches them if the household was deleted (or deleted and created again) meanwhile. An intent this fails to
+      // resolve is reconciled later (see #reconcileIntents).
       try {
-        writing = outcome.records.length > 0 ? this.#store.writeAppRequests({ add: outcome.records, householdEpoch: epoch }) : undefined;
+        if (outcome.records.length > 0 || outcome.settleIntents.length > 0 || outcome.removeIntents.length > 0) {
+          await this.#store.writeAppRequests({
+            add: outcome.records,
+            householdEpoch: epoch,
+            settleIntents: outcome.settleIntents,
+            removeIntents: outcome.removeIntents,
+          });
+        }
       } catch (error) {
-        writing = Promise.reject(error);
+        console.error(JSON.stringify({
+          level: 'error',
+          message: 'household app get this could not be recorded',
+          detail: error instanceof Error ? error.message : String(error),
+        }));
+      } finally {
+        for (const id of outcome.intents) this.#live.delete(id);
       }
-      // In the same turn as the write: the tally counts the records from now on, and the reservation no longer does.
-      this.#release(input.callerId, reservation);
-      for (const requestId of outcome.held) this.#store.releaseAppRequest(requestId);
-      await writing?.catch((error: unknown) => console.error(JSON.stringify({
-        level: 'error',
-        message: 'household app get this could not be recorded',
-        detail: error instanceof Error ? error.message : String(error),
-      })));
+      // A webhook deferred for this call's intent is granted now, by its record's rule.
+      if (outcome.removeIntents.length > 0 && !signal.aborted) await this.#retryDeferred(signal);
     });
   }
 
   /**
    * Decides and runs each branch for the call (see the class comment), adding to `outcome` as it goes. Throws if a
-   * lookup fails: what was done until then is still recorded.
+   * lookup fails: what was done until then is still written.
    */
-  async #decide(input: GetThisInput, epoch: number, reservation: Reservation, outcome: Outcome, signal: AbortSignal): Promise<void> {
+  async #decide(input: GetThisInput, epoch: number, outcome: Outcome, signal: AbortSignal): Promise<void> {
     const { mediaType, tmdbId, householdId } = input;
     const stamp = new Date(this.#now()).toISOString();
     const base = { householdId, jellyfinUserId: input.callerId, mediaType, tmdbId, createdAt: stamp, updatedAt: stamp };
     checkSignal(signal);
-    // The administrators' blocklist is the same for every household; Seerr would refuse the request, so nothing is counted.
+    // The administrators' blocklist is the same for every household; Seerr would refuse the request.
     if ((await readBlocklist(this.#seerr)).has(`${mediaType}:${tmdbId}`)) return void this.#recordBranch('refused');
     checkSignal(signal);
     // What the caller can already play, and what their household already asked for, are theirs to know.
@@ -346,6 +306,7 @@ export class HouseholdRequests {
     // A title Seerr cannot find on TMDB cannot be requested by anyone.
     if (!title) return void this.#recordBranch('refused');
     const present = await this.#presence(mediaType, tmdbId, title);
+    const observedAt = new Date(this.#now()).toISOString();
     checkSignal(signal);
     const join: number[] = [];
     const interests = new Map<string, number[]>();
@@ -365,28 +326,29 @@ export class HouseholdRequests {
       const underlying = title.requests.find((entry) => entry.id === requestId) as SeerrTitleRecord['requests'][number];
       outcome.records.push(this.#follow(base, title, underlying, seasons));
     }
-    if (request.length > 0 && !signal.aborted) await this.#request(input, base, epoch, reservation, title, request, outcome, signal);
+    if (request.length > 0 && !signal.aborted) await this.#request(input, base, epoch, title, request, observedAt, outcome, signal);
     else if (request.length > 0) this.#recordBranch('cancelled');
   }
 
   /**
    * What Jellyfin holds of a title, read with JellyPass's key whoever may see it: every movie or series item with its
-   * TMDB ID, and the items Seerr's media record links to it (which may have no TMDB ID of their own), less the 4K one
-   * (see hdItems); for a series, the seasons those items have episodes of.
+   * TMDB ID and the items Seerr's media record links to it (which may have no TMDB ID of their own), or, when there are
+   * none, the items that plausibly are the title by name (and year, for a movie: see JellyfinClient.findItemsByName),
+   * less the 4K one (see hdItems); for a series, the seasons those items have episodes of. The three lookups run at once.
    */
   async #presence(mediaType: MediaType, tmdbId: number, title: SeerrTitleRecord): Promise<Presence> {
     const linked = [title.jellyfinMediaId, title.jellyfinMediaId4k].filter((itemId): itemId is string => itemId !== undefined);
-    const [byTmdb, byLink] = await Promise.all([
+    const [byTmdb, byLink, byName] = await Promise.all([
       this.#jellyfin.findItemsByTmdbId(mediaType, tmdbId),
       linked.length > 0 ? this.#jellyfin.existingItems(mediaType, linked) : Promise.resolve([]),
+      title.names.length > 0 ? this.#jellyfin.findItemsByName(mediaType, tmdbId, title.names, title.year) : Promise.resolve([]),
     ]);
-    const itemIds = hdItems([...new Set([...byTmdb, ...byLink])].sort(), title);
+    const found = byTmdb.length > 0 || byLink.length > 0 ? [...byTmdb, ...byLink] : byName;
+    const itemIds = hdItems([...new Set(found)].sort(), title);
     const seasons = new Set<number>();
     if (mediaType === 'movie' && itemIds.length > 0) seasons.add(0);
     if (mediaType === 'tv') {
-      for (const found of await Promise.all(itemIds.map((itemId) => this.#jellyfin.seasonsWithEpisodes(itemId)))) {
-        for (const season of found) seasons.add(season);
-      }
+      for (const season of (await Promise.all(itemIds.map((itemId) => this.#jellyfin.seasonsWithEpisodes(itemId)))).flat()) seasons.add(season);
     }
     return { itemIds, seasons };
   }
@@ -417,68 +379,93 @@ export class HouseholdRequests {
   }
 
   /**
-   * The request branch: a real HD Seerr request as the caller for `seasons` (`[0]` for a movie). Under the caller's
-   * lock, Jellyfin is read again (the re-check) and the request sent right after, with nothing else awaited between
-   * them: a title (or season) that arrived since the branch's first read is joined instead. What is left is one
-   * request's round trip, in which a title arriving would still be requested; its record is then checked once more
-   * before it is written (see #settleCheck), so its grant follows the join rules.
+   * The request branch: a real HD Seerr request as the caller for `seasons` (`[0]` for a movie), in this order:
+   *
+   * 1. its intent is written to the state file (see AppRequestIntent), so from then on no webhook or backfill grants a
+   *    request for the title, and a restart finds it;
+   * 2. the caller's Seerr user is confirmed (SeerrMemberClient.confirmRequester);
+   * 3. Jellyfin is read again (the re-check), the last step awaited: the request is sent right after it, with nothing
+   *    else awaited in between, and a title (or season) that arrived since the branch's first read is joined instead.
+   *
+   * What is left is the request's own round trip, in which a title arriving would still be requested; the request is
+   * settled by reading Jellyfin once more after Seerr answers (see #settle), and its intent stays until it is, so its
+   * grant follows the join rules if the title is there or cannot be read. A failure Seerr may have made the request
+   * through (no answer, a 5xx) leaves the intent to be reconciled (see #reconcileIntents).
    */
   async #request(
     input: GetThisInput,
     base: Omit<AppRequestRecord, 'seasons' | 'branch' | 'status'>,
     epoch: number,
-    reservation: Reservation,
     title: SeerrTitleRecord,
     seasons: number[],
+    observedAt: string,
     outcome: Outcome,
     signal: AbortSignal,
   ): Promise<void> {
     const member = this.#members.member(input.callerId);
     if (!member) return void this.#recordBranch('request_refused');
-    let recheck: Presence = { itemIds: [], seasons: new Set() };
-    let checkedAt = '';
-    let late: number[] = [];
+    const intentId = await this.#store.addAppRequestIntent({
+      householdId: input.householdId,
+      jellyfinUserId: input.callerId,
+      mediaType: input.mediaType,
+      tmdbId: input.tmdbId,
+      seasons: seasonsOf(input.mediaType, seasons),
+      observedAbsentAt: observedAt,
+      createdAt: new Date(this.#now()).toISOString(),
+      status: 'submitting',
+    });
+    this.#live.add(intentId);
+    outcome.intents.push(intentId);
+    let requester: Awaited<ReturnType<typeof member.confirmRequester>>;
+    let recheck: Presence;
+    try {
+      requester = await member.confirmRequester();
+      checkSignal(signal);
+      recheck = await this.#presence(input.mediaType, input.tmdbId, title);
+    } catch (error) {
+      // Nothing was sent.
+      outcome.removeIntents.push(intentId);
+      if (error instanceof SeerrUnmappedUserError) return void this.#recordBranch('request_refused');
+      throw error;
+    }
+    const checkedAt = new Date(this.#now()).toISOString();
+    const late = seasons.filter((season) => recheck.seasons.has(season));
+    const requested = seasons.filter((season) => !late.includes(season));
     let created: unknown;
     let failure: unknown;
-    let cancelled = false;
-    await this.#withLock(this.#userLocks, input.callerId, async () => {
-      if (signal.aborted) {
-        cancelled = true;
-        return;
-      }
-      recheck = await this.#presence(input.mediaType, input.tmdbId, title);
-      checkedAt = new Date(this.#now()).toISOString();
-      late = seasons.filter((season) => recheck.seasons.has(season));
-      if (late.length === seasons.length) return;
+    if (requested.length > 0 && !signal.aborted) {
       try {
-        created = await member.createRequest(input.mediaType === 'movie'
+        created = await requester.createRequest(input.mediaType === 'movie'
           ? { mediaType: 'movie', tmdbId: input.tmdbId }
-          : { mediaType: 'tv', tmdbId: input.tmdbId, seasons: seasons.filter((season) => !late.includes(season)) });
+          : { mediaType: 'tv', tmdbId: input.tmdbId, seasons: requested });
       } catch (error) {
         failure = error;
-        return;
       }
-      const requestId = positiveInteger(field(created, 'id'));
-      if (requestId === null) return;
-      // Seerr counts the seasons it made the request for from now on; no quota read of the caller's is in flight.
-      const createdSeasons = new Set(seasonList(field(created, 'seasons')));
-      reservation.units -= input.mediaType === 'movie' ? 1 : seasons.filter((season) => createdSeasons.has(season)).length;
-      this.#store.holdAppRequest(String(requestId));
-      outcome.held.push(String(requestId));
-    }).catch((error: unknown) => {
-      failure = error;
-    });
-    if (cancelled) return void this.#recordBranch('cancelled');
+    }
     if (late.length > 0) {
       this.#recordBranch('request_late');
       await this.#join(input, base, epoch, title, recheck.itemIds, late, outcome, signal);
     }
-    const requested = seasons.filter((season) => !late.includes(season));
-    if (requested.length === 0) return;
+    if (requested.length === 0 || (signal.aborted && created === undefined && failure === undefined)) {
+      outcome.removeIntents.push(intentId);
+      if (requested.length > 0) this.#recordBranch('cancelled');
+      return;
+    }
     if (failure !== undefined) {
+      if (!definitelyNotMade(failure)) {
+        // Seerr may have made it: the intent stays, and is reconciled against Seerr's own list.
+        this.#recordBranch('request_uncertain');
+        console.error(JSON.stringify({
+          level: 'error',
+          message: 'household app request may not have been made',
+          detail: failure instanceof Error ? failure.message : String(failure),
+        }));
+        return;
+      }
+      outcome.removeIntents.push(intentId);
       // Seerr refused it as a duplicate: someone requested it meanwhile, so it is followed instead.
       if (failure instanceof SeerrError && failure.status === 409) return this.#fallBack(input, base, requested, outcome);
-      // Refused before anything was recorded (permission, quota, blocklist, or the caller was unlinked): not counted.
+      // Refused before anything was made (permission, quota, blocklist, or the caller was unlinked).
       this.#recordBranch('request_refused');
       if (!(failure instanceof SeerrUnmappedUserError) && !(failure instanceof SeerrError && failure.status === 403)) {
         console.error(JSON.stringify({
@@ -494,7 +481,8 @@ export class HouseholdRequests {
     // Seerr answers 202 without a request when every season was requested or available meanwhile, and leaves out
     // any season that was; those are followed instead.
     const covered = requestId === null ? [] : input.mediaType === 'movie' ? requested : requested.filter((season) => createdSeasons.has(season));
-    if (requestId !== null && covered.length > 0) {
+    if (requestId === null || covered.length === 0) outcome.removeIntents.push(intentId);
+    else {
       this.#recordBranch('request');
       const mediaId = positiveInteger(field(field(created, 'media'), 'id')) ?? title.mediaId;
       const record: AppRequestRecord = {
@@ -508,7 +496,12 @@ export class HouseholdRequests {
         ...(input.mediaType === 'tv' && recheck.itemIds.length > 0 ? { joinOnGrant: 'existing-series' as const } : {}),
         ...(mediaId !== undefined && mediaId !== null ? { seerrMediaId: mediaId } : {}),
       };
-      await this.#settleCheck(record, title);
+      const settled = record.joinOnGrant ? 'existing-series' : await this.#settle(record.mediaType, record.tmdbId, record.seasons, title);
+      if (settled === undefined) outcome.settleIntents.push({ id: intentId, seerrRequestId: String(requestId) });
+      else {
+        if (settled !== 'absent') record.joinOnGrant = settled;
+        outcome.removeIntents.push(intentId);
+      }
       outcome.records.push(record);
     }
     const rest = requested.filter((season) => !covered.includes(season));
@@ -516,24 +509,24 @@ export class HouseholdRequests {
   }
 
   /**
-   * Reads Jellyfin once more for a request just made, before its record is written: if the title (or one of its
-   * seasons) is there now, it arrived while the request was being made, and the record says its grant must follow the
-   * join rules (`present-at-settle`); a series that is there without those seasons is an existing series. A failed
-   * read changes nothing: a genuine request keeps its private grant.
+   * Reads Jellyfin once more for a request Seerr has made: if the title (or one of the seasons it covers) is there now,
+   * it may have arrived while the request was being made, and its grant must follow the join rules
+   * (`present-at-settle`); a series that is there without those seasons is an existing series; otherwise the title was
+   * not there when the request was made, and the request is genuine (`absent`). Undefined when Jellyfin could not be
+   * read: never a genuine request (see AppRequestIntent `settling`).
    */
-  async #settleCheck(record: AppRequestRecord, title: SeerrTitleRecord): Promise<void> {
-    if (record.joinOnGrant) return;
+  async #settle(mediaType: MediaType, tmdbId: number, seasons: number[], title: SeerrTitleRecord): Promise<Settled | undefined> {
     try {
-      const present = await this.#presence(record.mediaType, record.tmdbId, title);
-      if (present.itemIds.length === 0) return;
-      const arrived = record.mediaType === 'movie' || record.seasons.some((season) => present.seasons.has(season));
-      record.joinOnGrant = arrived ? 'present-at-settle' : 'existing-series';
+      const present = await this.#presence(mediaType, tmdbId, title);
+      if (present.itemIds.length === 0) return 'absent';
+      return mediaType === 'movie' || seasons.some((season) => present.seasons.has(season)) ? 'present-at-settle' : 'existing-series';
     } catch (error) {
       console.error(JSON.stringify({
         level: 'error',
-        message: 'household app could not check a request it made',
+        message: 'household app could not settle a request it made',
         detail: error instanceof Error ? error.message : String(error),
       }));
+      return undefined;
     }
   }
 
@@ -580,8 +573,8 @@ export class HouseholdRequests {
   }
 
   /**
-   * The interest branch for `seasons` covered by `underlying`. The caller's own request (made outside the app) is
-   * already counted by Seerr, so it becomes the household's request record rather than a virtual request.
+   * The interest branch for `seasons` covered by `underlying`. The caller's own request (made outside the app) becomes
+   * the household's request record.
    */
   #follow(
     base: Omit<AppRequestRecord, 'seasons' | 'branch' | 'status'>,
@@ -603,10 +596,15 @@ export class HouseholdRequests {
 
   /**
    * The seasons (`0` for a movie) this household already asked for and is still waiting on: an active record (less its
-   * seasons already ready), or a failed one (Seerr refuses a new request while a failed one stands, and counts none).
+   * seasons already ready), a failed one (Seerr refuses a new request while a failed one stands), or an intent not yet
+   * resolved (its request may have been made).
    */
   #askedSeasons(householdId: string, mediaType: MediaType, tmdbId: number): Set<number> {
     const seasons = new Set<number>();
+    for (const [, intent] of this.#store.listAppRequestIntents()) {
+      if (intent.householdId !== householdId || intent.mediaType !== mediaType || intent.tmdbId !== tmdbId) continue;
+      for (const season of mediaType === 'movie' ? [0] : intent.seasons) seasons.add(season);
+    }
     for (const [, record] of this.#store.listAppRequestsForHousehold(householdId)) {
       if (record.mediaType !== mediaType || record.tmdbId !== tmdbId) continue;
       if (isActive(record)) for (const season of waitingSeasons(record)) seasons.add(season);
@@ -675,19 +673,27 @@ export class HouseholdRequests {
   }
 
   /**
-   * Brings records up to date with Seerr and Jellyfin, as the member's own request would be (docs/app-design.md,
-   * "Quota before branching"): a request or interest follows its Seerr request (pending or approved, declined, failed,
-   * or completed for a request made as the caller); a request Seerr deleted is `deleted` if the title's media record went
-   * with it, and otherwise frees nothing for an interest (`failed`, the caller's own request would not have been
-   * deleted); an interest whose request completed, or that follows none, joins the title's grant once Jellyfin has it; a
-   * record is `completed` only once every season it covers has episodes in Jellyfin (until then its ready seasons are
-   * noted and it is read again); and a completed record of any branch is `deleted` once the title's Seerr media record
-   * is, freeing its unit as Seerr frees its own request's. Reads at most {@link MAX_REFRESH_READS} records a run, those
-   * read longest ago first, each at most every {@link REFRESH_REQUEST_EVERY_MS} (a completed record's media every
-   * {@link REFRESH_MEDIA_EVERY_MS}). Run by the scheduled reconciliation; an aborted `signal` stops it before its next read.
+   * Reconciles request intents (see #reconcileIntents), then brings records up to date with Seerr and Jellyfin: a
+   * request or interest follows its Seerr request (pending or approved, declined, failed, or completed for a request
+   * made as the caller); a request Seerr deleted is `deleted` if the title's media record went with it, and otherwise
+   * `failed` for an interest; an interest whose request completed, or that follows none, joins the title's grant once
+   * Jellyfin has it; a record is `completed` only once every season it covers has episodes in Jellyfin (until then its
+   * ready seasons are noted and it is read again); and a completed record of any branch is `deleted` once the title's
+   * Seerr media record is. Reads at most {@link MAX_REFRESH_READS} records a run, those read longest ago first, each at
+   * most every {@link REFRESH_REQUEST_EVERY_MS} (a completed record's media every {@link REFRESH_MEDIA_EVERY_MS}). Last,
+   * grants the webhooks deferred for intents that are resolved now. Run at startup and by the scheduled reconciliation;
+   * an aborted `signal` stops it before its next read.
    */
   public async refresh(options: { signal?: AbortSignal } = {}): Promise<void> {
     const { signal } = options;
+    await this.#reconcileIntents(signal);
+    if (signal?.aborted) return;
+    await this.#refreshRecords(signal);
+    if (signal?.aborted) return;
+    await this.#retryDeferred(signal);
+  }
+
+  async #refreshRecords(signal: AbortSignal | undefined): Promise<void> {
     const now = this.#now();
     const records = this.#store.listAppRequests();
     const due = records.filter(([id, record]) => {
@@ -715,6 +721,111 @@ export class HouseholdRequests {
           detail: error instanceof Error ? error.message : String(error),
         }));
       }
+    }
+  }
+
+  /**
+   * Resolves the intents no running call holds (see AppRequestIntent): after a restart, after a request Seerr may have
+   * made without answering, and while a request's settle-time read keeps failing. A `submitting` intent is looked up in
+   * Seerr's own requests for the title (the caller's HD request made no earlier than the intent, allowing for Seerr's
+   * clock): found, it is recorded and settled; not found once APP_INTENT_TIMEOUT_MS has passed, it was never made and
+   * the intent is removed. A `settling` intent is settled again; once APP_SETTLE_DEADLINE_MS has passed without a
+   * successful read, its request's grant follows the join rules (`unverified`). A failed lookup leaves the intent as it
+   * is, to be tried on the next run.
+   */
+  async #reconcileIntents(signal: AbortSignal | undefined): Promise<void> {
+    for (const [id, intent] of this.#store.listAppRequestIntents()) {
+      if (signal?.aborted) return;
+      if (this.#live.has(id)) continue;
+      try {
+        if (intent.status === 'settling') await this.#resettle(id, intent);
+        else await this.#recover(id, intent);
+      } catch (error) {
+        if (signal?.aborted) return;
+        console.error(JSON.stringify({
+          level: 'error',
+          message: 'household app request intent could not be reconciled',
+          detail: error instanceof Error ? error.message : String(error),
+        }));
+      }
+    }
+  }
+
+  async #recover(id: string, intent: AppRequestIntent): Promise<void> {
+    const title = await this.#seerr.titleRequests(intent.mediaType, intent.tmdbId);
+    const recorded = new Set(this.#store.listAppRequests().flatMap(([, record]) => record.seerrRequestId ? [record.seerrRequestId] : []));
+    const since = Date.parse(intent.createdAt) - INTENT_CLOCK_SKEW_MS;
+    const made = title?.requests.find((request) => !request.is4k
+      && request.requesterJellyfinId === intent.jellyfinUserId
+      && !recorded.has(request.id)
+      && (request.createdAt === undefined || request.createdAt >= since)
+      && (intent.mediaType === 'movie' || request.seasons.some((season) => intent.seasons.includes(season))));
+    if (!title || !made) {
+      if (this.#now() - Date.parse(intent.createdAt) < APP_INTENT_TIMEOUT_MS) return;
+      await this.#store.writeAppRequests({ removeIntents: [id] });
+      this.#recordBranch('intent_cancelled');
+      return;
+    }
+    const seasons = intent.mediaType === 'movie' ? [] : intent.seasons.filter((season) => made.seasons.includes(season));
+    const settled = await this.#settle(intent.mediaType, intent.tmdbId, seasons, title);
+    const stamp = new Date(this.#now()).toISOString();
+    const record: AppRequestRecord = {
+      householdId: intent.householdId,
+      jellyfinUserId: intent.jellyfinUserId,
+      mediaType: intent.mediaType,
+      tmdbId: intent.tmdbId,
+      seasons,
+      createdAt: intent.createdAt,
+      updatedAt: stamp,
+      branch: 'request',
+      status: made.status === DECLINED ? 'declined' : made.status === FAILED ? 'failed' : 'pending',
+      seerrRequestId: made.id,
+      checkedAt: intent.observedAbsentAt,
+      ...(settled !== undefined && settled !== 'absent' ? { joinOnGrant: settled } : {}),
+      ...(title.mediaId !== undefined ? { seerrMediaId: title.mediaId } : {}),
+      // A household deleted meanwhile never gets it.
+      ...(this.#store.getGroup(intent.householdId) ? {} : { detached: true as const }),
+    };
+    await this.#store.writeAppRequests(settled === undefined
+      ? { add: [record], settleIntents: [{ id, seerrRequestId: made.id }] }
+      : { add: [record], removeIntents: [id] });
+    this.#recordBranch('intent_recovered');
+  }
+
+  async #resettle(id: string, intent: AppRequestIntent): Promise<void> {
+    let settled: Settled | undefined;
+    try {
+      const title = await this.#seerr.titleRequests(intent.mediaType, intent.tmdbId);
+      settled = await this.#settle(intent.mediaType, intent.tmdbId, intent.seasons, title ?? { names: [], requests: [] });
+    } catch (error) {
+      console.error(JSON.stringify({
+        level: 'error',
+        message: 'household app could not settle a request it made',
+        detail: error instanceof Error ? error.message : String(error),
+      }));
+    }
+    if (settled === undefined && this.#now() - Date.parse(intent.createdAt) < APP_SETTLE_DEADLINE_MS) return;
+    const rule = settled === undefined ? 'unverified' : settled === 'absent' ? undefined : settled;
+    const records = this.#store.listAppRequests()
+      .filter(([, record]) => record.branch === 'request' && record.seerrRequestId === intent.seerrRequestId && !record.joinOnGrant);
+    await this.#store.writeAppRequests({
+      update: rule ? records.map(([recordId]) => ({ id: recordId, joinOnGrant: rule })) : [],
+      removeIntents: [id],
+    });
+    this.#recordBranch(rule === 'unverified' ? 'settle_unverified' : 'settled');
+  }
+
+  /** Grants the webhooks deferred for intents that are resolved now (AccessService.retryDeferredRequests). */
+  async #retryDeferred(signal: AbortSignal | undefined): Promise<void> {
+    try {
+      await this.#joins.retryDeferredRequests(signal ? { signal } : {});
+    } catch (error) {
+      if (signal?.aborted) return;
+      console.error(JSON.stringify({
+        level: 'error',
+        message: 'household app could not grant deferred webhooks',
+        detail: error instanceof Error ? error.message : String(error),
+      }));
     }
   }
 
@@ -808,6 +919,16 @@ function delay(ms: number, signal: AbortSignal): Promise<void> {
   });
 }
 
+/**
+ * Whether a failed request was certainly not made: Seerr refused it (a 4xx), the caller could not be confirmed, or its
+ * input was refused before anything was sent. Anything else (no answer, a 5xx, an answer that could not be read) may
+ * have been made.
+ */
+function definitelyNotMade(error: unknown): boolean {
+  if (error instanceof SeerrUnmappedUserError || (error instanceof TypeError && error.cause === undefined)) return true;
+  return error instanceof SeerrError && error.status >= 400 && error.status < 500;
+}
+
 /** Shutdown aborted a branch before its next step. */
 class CancelledError extends Error {}
 
@@ -840,11 +961,6 @@ function isActive(record: AppRequestRecord): boolean {
   return !record.detached && record.status === 'pending' && record.branch !== 'join';
 }
 
-/** Whether a record is one of its member's virtual requests that Seerr would count: a join or interest neither declined nor deleted. */
-function counted(record: AppRequestRecord): boolean {
-  return record.branch !== 'request' && record.status !== 'declined' && record.status !== 'deleted';
-}
-
 /** The seasons (`0` for a movie) an active record still waits on. */
 function waitingSeasons(record: AppRequestRecord): number[] {
   if (record.mediaType === 'movie') return [0];
@@ -854,10 +970,6 @@ function waitingSeasons(record: AppRequestRecord): number[] {
 
 function sameSeasons(left: number[] | undefined, right: number[] | undefined): boolean {
   return (left ?? []).join() === (right ?? []).join();
-}
-
-function unitsOf(record: AppRequestRecord): number {
-  return record.mediaType === 'movie' ? 1 : record.seasons.length;
 }
 
 function seasonsOf(mediaType: MediaType, seasons: number[]): number[] {
@@ -878,10 +990,6 @@ function seasonList(value: unknown): number[] {
 function field(value: unknown, name: string): unknown {
   if (!value || typeof value !== 'object' || Array.isArray(value) || !Object.hasOwn(value, name)) return undefined;
   return (value as Record<string, unknown>)[name];
-}
-
-function isCount(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
 
 function positiveInteger(value: unknown): number | null {

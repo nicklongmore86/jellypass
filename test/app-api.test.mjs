@@ -438,7 +438,7 @@ describe('household app API: other households are invisible', { timeout: 60_000 
     for (const pathname of ENDPOINTS) assert.equal((await app.get(pathname)).status, 200, `${name} ${pathname}`);
     assert.deepEqual(app.seerr.violations, []);
     for (const call of app.seerr.calls) {
-      assert.match(call.pathname, /^\/api\/v1\/(?:user\/jellyfin\/[0-9a-f]{32}|user\/[0-9]+|auth\/me|blocklist)$/, call.path);
+      assert.match(call.pathname, /^\/api\/v1\/(?:user\/jellyfin\/[0-9a-f]{32}|user\/[0-9]+(?:\/quota)?|auth\/me|blocklist)$/, call.path);
     }
     // Bob's long history is never read for household A.
     assert.ok(!app.seerr.calls.some((call) => call.actingUser === String(SEERR_IDS[BOB])));
@@ -446,7 +446,7 @@ describe('household app API: other households are invisible', { timeout: 60_000 
 });
 
 describe('household app API: identity', { timeout: 20_000 }, () => {
-  it('reads only the caller\'s own permissions as the caller, each call confirmed first, and titles never from Seerr', async (t) => {
+  it('reads only the caller\'s own permissions and quota as the caller, each call confirmed first, and titles never from Seerr', async (t) => {
     const app = await startApp(t, world({ requests: { [SEERR_IDS[ANN]]: [seerrRequest({ type: 'movie', tmdbId: T_MOVIE })] } }));
     for (const pathname of ENDPOINTS) assert.equal((await app.get(pathname)).status, 200, pathname);
     assert.deepEqual(app.seerr.violations, []);
@@ -458,10 +458,10 @@ describe('household app API: identity', { timeout: 20_000 }, () => {
         assert.match(call.pathname, /^\/api\/v1\/(?:user\/(?:jellyfin\/[0-9a-f]{32}|[0-9]+)|blocklist)$/);
         continue;
       }
-      // Never the owner, never another member: only the caller's own Seerr user, for their own permissions.
+      // Never the owner, never another member: only the caller's own Seerr user, for their own permissions and quota.
       assert.equal(call.method, 'GET');
       assert.equal(call.actingUser, String(SEERR_IDS[ALICE]));
-      assert.equal(call.pathname, '/api/v1/auth/me');
+      assert.ok(['/api/v1/auth/me', `/api/v1/user/${SEERR_IDS[ALICE]}/quota`].includes(call.pathname), call.pathname);
     }
     // Every call made as a Seerr user follows its own admin confirmation of that user: concurrent calls interleave, so
     // each is matched with a confirmation no earlier call used.

@@ -178,37 +178,56 @@ export interface GrantState {
   /** The key the household app derives its opaque IDs from (hex, 32 bytes); made the first time one is needed. */
   appIdKey?: string;
   /**
-   * Virtual requests whose records were pruned while still counted (see AppQuotaLedger), by member (normalized Jellyfin
-   * ID). Additive like `appRequests`.
+   * Household app "Get this" requests about to be sent to Seerr, or sent and not yet settled, by a random ID (see
+   * AppRequestIntent). Additive like `appRequests`.
    */
-  appQuotaLedger?: Record<string, AppQuotaLedger>;
+  appRequestIntents?: Record<string, AppRequestIntent>;
+  /**
+   * `MEDIA_AVAILABLE` webhooks acknowledged without a grant because a "Get this" request for their title was not yet
+   * settled (see AppRequestIntent), oldest first, one per request; granted once it is. Additive like `appRequests`.
+   */
+  deferredWebhooks?: SeerrWebhook[];
 }
 
 /**
- * A member's counted virtual requests whose records were pruned (GrantStore.writeAppRequests), so that pruning never
- * changes their quota count. `entries` keeps each one's creation time and units, exactly; those made more than
- * APP_QUOTA_HORIZON_MS ago are summed into `older`, which counts in full for a lifetime quota and for any window that
- * reaches back to its oldest, and not at all for a window that starts after its newest.
+ * A Seerr request "Get this" is about to make, or made and has not settled yet (docs/app-design.md, "Late requests"):
+ * written atomically before the request is sent, so neither a webhook arriving before Seerr's answer nor a restart can
+ * grant the request privately. While any intent names a title, webhooks and the backfill grant no request for that
+ * title (they are deferred); the intent is removed once the request is recorded and settled (its grant then follows
+ * its record), or once it is known that no request was made.
+ *
+ * - `submitting`: the request is about to be, or was, sent; Seerr's answer is not recorded. On restart (or after an
+ *   uncertain failure) the request is looked up in Seerr by the member and title: found, it is recorded; not found once
+ *   APP_INTENT_TIMEOUT_MS has passed, the intent is removed.
+ * - `settling`: the request (`seerrRequestId`) is recorded, but whether the title was in Jellyfin when it was made could
+ *   not be read yet; it is read again, and once APP_SETTLE_DEADLINE_MS has passed the grant follows the join rules.
  */
-export type AppQuotaLedger = Partial<Record<'movie' | 'tv', {
-  /** `[createdAt (ms since the epoch), units]`, oldest first. */
-  entries: Array<[number, number]>;
-  older?: { units: number; oldest: number; newest: number };
-}>>;
+export interface AppRequestIntent {
+  householdId: string;
+  /** The member it is made as, normalized. */
+  jellyfinUserId: string;
+  mediaType: 'movie' | 'tv';
+  tmdbId: number;
+  /** The seasons it asks for, ascending; empty for a movie. */
+  seasons: number[];
+  /** When Jellyfin was read and did not have the title (or these seasons): the read the request branch was chosen on. */
+  observedAbsentAt: string;
+  createdAt: string;
+  status: 'submitting' | 'settling';
+  seerrRequestId?: string;
+}
 
 /**
- * What one household app "Get this" did for one household (docs/app-design.md, "Get this"). Each record is both the
- * household's attribution record (the only source of the app's `requested` state) and, for the join and interest
- * branches, one of its member's virtual requests (counted towards their Seerr quota as Seerr counts their own).
+ * What one household app "Get this" did for one household (docs/app-design.md, "Get this"): the household's
+ * attribution record, the only source of the app's `requested` state and of the readiness it shows.
  *
- * - `request`: JellyPass made `seerrRequestId` as the member (or found the member's own request for the title);
- *   Seerr counts it, so it is not a virtual request.
+ * - `request`: JellyPass made `seerrRequestId` as the member (or found the member's own request for the title).
  * - `interest`: the title was already requested by someone else; `seerrRequestId` is that request, if one was found.
  *   The household is joined to the title's grant when the grant is created.
  * - `join`: Jellyfin already had the title; the household was joined to the grant of `itemIds` at once.
  *
- * Status, as the member's own request would have it: `pending` (pending or approved), `completed`, `failed` (counted),
- * `declined` and `deleted` (both freed, never counted again).
+ * Status, as the member's own request would have it: `pending` (pending or approved), `completed`, `failed`,
+ * `declined` and `deleted`.
  */
 export interface AppRequestRecord {
   /** The household whose host the call was made on; never changed by membership. */
@@ -224,7 +243,7 @@ export interface AppRequestRecord {
   branch: 'request' | 'interest' | 'join';
   status: AppRequestStatus;
   seerrRequestId?: string;
-  /** Seerr's media record for the title when the record was made, to tell its deletion (which frees) apart. */
+  /** Seerr's media record for the title when the record was made, to tell its deletion apart. */
   seerrMediaId?: number;
   itemIds?: string[];
   /**
@@ -236,12 +255,13 @@ export interface AppRequestRecord {
    * A `request` record whose grant must follow the library join rules rather than make a new grant
    * (docs/app-design.md, "Late requests" and "New seasons of a series Jellyfin has"): `existing-series` when Jellyfin
    * already had the series (the request is for seasons it lacks), `present-at-settle` when Jellyfin had the title when
-   * the record was written (it arrived while the request was being made).
+   * the request was settled (it arrived while the request was being made), `unverified` when Jellyfin could not be read
+   * to settle it within APP_SETTLE_DEADLINE_MS.
    */
-  joinOnGrant?: 'existing-series' | 'present-at-settle';
-  /** When Jellyfin was last read for the title before the request was sent (the request branch's re-check). */
+  joinOnGrant?: 'existing-series' | 'present-at-settle' | 'unverified';
+  /** When Jellyfin was last read for the title before the request was sent (the request branch's last step). */
   checkedAt?: string;
-  /** The household was deleted: never shown, joined or `requested` again, still counted towards its member's quota. */
+  /** The household was deleted: never shown, joined or `requested` again. */
   detached?: true;
 }
 

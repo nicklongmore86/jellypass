@@ -12,6 +12,7 @@ import {
 import { AttemptCounter } from './rate-limit.js';
 import {
   normalizeJellyfinUserId,
+  SeerrError,
   SeerrUnmappedUserError,
   type SeerrClient,
   type SeerrMemberClient,
@@ -154,7 +155,7 @@ export interface HouseholdAppOptions {
   /** Seerr's administrator blocklist, read with the admin key. */
   blocklist: Pick<SeerrClient, 'blocklist'>;
   /** The caller's own Seerr user, confirmed before every call (a `SeerrUserMap`). */
-  members: { member(jellyfinUserId: string): Pick<SeerrMemberClient, 'ownUser'> | undefined };
+  members: { member(jellyfinUserId: string): Pick<SeerrMemberClient, 'ownUser' | 'quota'> | undefined };
   /** "Get this" and the household's own records. Without it, those endpoints answer `404` and nothing is `requested`. */
   requests?: Pick<HouseholdRequests, 'submit' | 'activeKeys' | 'list'>;
   /** A household's name, or undefined once it no longer exists. */
@@ -202,7 +203,8 @@ interface HouseholdView {
 /**
  * The single place a household state is decided, for every card and title. `in_library` (the caller's own Jellyfin
  * view has it) comes first: playing their own item needs no request permission. Then `unavailable` (blocklisted, or
- * the caller may not request this media type, which includes a caller Seerr has no user for), then `requested` (this
+ * the caller may not request this media type, which includes a caller Seerr has no user for and a caller with a Seerr
+ * quota: see getThisEligibility), then `requested` (this
  * household's own active "Get this" record names the title, or one of a series' seasons), and otherwise `get_this`.
  */
 export function titleState(view: HouseholdView, mediaType: MediaType, tmdbId: number): TitleState {
@@ -239,6 +241,32 @@ export function seerrPermissions(user: unknown): Record<MediaType, boolean> {
   const has = (bit: number) => (permissions & bit) !== 0;
   const any = has(SEERR_ADMIN) || has(SEERR_REQUEST);
   return { movie: any || has(SEERR_REQUEST_MOVIE), tv: any || has(SEERR_REQUEST_TV) };
+}
+
+/**
+ * Whether Seerr gives the caller a request quota (GET /api/v1/user/:id/quota, read as them): a movie or series `limit`
+ * above 0, their own or Seerr's default (Seerr reports 0 for a caller who bypasses quotas). "Get this" is not offered to
+ * such callers (docs/app-design.md, "Quotas"). Throws on an answer that is not Seerr's quota object.
+ */
+export function hasSeerrQuota(quota: unknown): boolean {
+  const movie = field(quota, 'movie');
+  const tv = field(quota, 'tv');
+  if (!movie || typeof movie !== 'object' || !tv || typeof tv !== 'object') {
+    throw new SeerrError('Seerr GET /api/v1/user/:self/quota returned an unexpected answer', 502);
+  }
+  return [movie, tv].some((limits) => {
+    const limit = field(limits, 'limit');
+    return typeof limit === 'number' && limit > 0;
+  });
+}
+
+/**
+ * What a caller may ask "Get this" for, by media type, from their own Seerr user and quota only, never a title: their
+ * request permission (see seerrPermissions), and nothing at all when they have a quota (see hasSeerrQuota).
+ */
+export function getThisEligibility(user: unknown, quota: unknown): Record<MediaType, boolean> {
+  if (hasSeerrQuota(quota)) return { movie: false, tv: false };
+  return seerrPermissions(user);
 }
 
 /**
@@ -650,21 +678,22 @@ export class HouseholdApp implements HouseholdAppHandler {
   }
 
   /**
-   * Whether the caller may request each media type in HD, from their own Seerr user read as them. A caller Seerr has no
-   * confirmed user for may request nothing.
+   * Whether the caller may ask "Get this" for each media type, from their own Seerr user and quota read as them (see
+   * getThisEligibility). A caller Seerr has no confirmed user for may ask for nothing.
    */
   async #eligibility(caller: JellyfinCaller): Promise<Record<MediaType, boolean>> {
     const none = { movie: false, tv: false };
     const member = this.#members.member(caller.id);
     if (!member) return none;
     let user: unknown;
+    let quota: unknown;
     try {
-      user = await member.ownUser();
+      [user, quota] = await Promise.all([member.ownUser(), member.quota()]);
     } catch (error) {
       if (error instanceof SeerrUnmappedUserError) return none;
       throw error;
     }
-    return seerrPermissions(user);
+    return getThisEligibility(user, quota);
   }
 
   /**

@@ -1,7 +1,7 @@
 import type { LogLevel } from './config.js';
 import type { JellyfinClient } from './jellyfin.js';
 import { Metrics } from './metrics.js';
-import { RECENT_REQUESTS_LIMIT, type SeerrClient } from './seerr.js';
+import { RECENT_REQUESTS_LIMIT, SeerrError, type SeerrClient } from './seerr.js';
 import { normalizeId, type GrantMove, type GrantRemainder, type GrantStore } from './store.js';
 import type {
   AccessGroup,
@@ -312,49 +312,127 @@ export class AccessService {
         this.#metrics.increment('jfa_webhooks_total', { result: 'ignored' });
         return null;
       }
-      // The body is valid from here on (parse failures count as "invalid" in the server), so every
-      // failure while resolving, persisting or reconciling counts once as "error".
-      try {
-        // A request is handled once its grant has been stored (store.grant records both in one
-        // write), so a delivery that failed before that is retried as a first delivery. A handled
-        // request is never granted again: if its grant still records it, a retry only reconciles
-        // that grant as it stands, without re-adding household groups an administrator removed;
-        // if an administrator revoked it, the replay is ignored.
-        if (this.#store.hasHandledRequest(event.request.id)) {
-          const existing = this.#store.findGrantForRequest(event.request.id);
-          if (!existing) {
-            this.#metrics.increment('jfa_webhooks_total', { result: 'ignored' });
-            this.#logDebug('webhook ignored for a request an administrator revoked', { requestId: event.request.id });
-            return null;
-          }
-          await this.#reconcileOrRecover(existing);
-          const current = this.#store.findGrantForRequest(event.request.id);
-          if (current) await this.#settleAppRequests(current.itemId, event.request.id);
-          this.#metrics.increment('jfa_webhooks_total', { result: 'granted' });
-          return this.#store.findGrantForRequest(event.request.id) ?? existing;
+      return this.#grantWebhook(event);
+    });
+  }
+
+  /** processWebhook for a MEDIA_AVAILABLE event, in the write queue. */
+  async #grantWebhook(event: SeerrWebhook): Promise<GrantRecord | null> {
+    // The body is valid from here on (parse failures count as "invalid" in the server), so every
+    // failure while resolving, persisting or reconciling counts once as "error".
+    try {
+      // A request is handled once its grant has been stored (store.grant records both in one
+      // write), so a delivery that failed before that is retried as a first delivery. A handled
+      // request is never granted again: if its grant still records it, a retry only reconciles
+      // that grant as it stands, without re-adding household groups an administrator removed;
+      // if an administrator revoked it, the replay is ignored.
+      if (this.#store.hasHandledRequest(event.request.id)) {
+        const existing = this.#store.findGrantForRequest(event.request.id);
+        if (!existing) {
+          this.#metrics.increment('jfa_webhooks_total', { result: 'ignored' });
+          this.#logDebug('webhook ignored for a request an administrator revoked', { requestId: event.request.id });
+          return null;
         }
-        const resolved = await this.#resolveWebhook(event);
-        if (this.#grantsAsJoin(event.request.id)) {
-          const joined = await this.#grantAsJoin(resolved.itemId, event.request.id);
-          this.#metrics.increment('jfa_webhooks_total', { result: 'joined' });
-          return joined;
-        }
-        const grant = await this.#store.grant({
-          itemId: resolved.itemId,
-          requestId: event.request.id,
-          userId: resolved.userId,
-          groupIds: this.#store.listGroupIdsForUser(resolved.userId),
-          ...(resolved.mediaType ? { mediaType: resolved.mediaType } : {}),
-        });
-        await this.#reconcileGrant(grant);
-        await this.#settleAppRequests(grant.itemId, event.request.id);
+        await this.#reconcileOrRecover(existing);
+        const current = this.#store.findGrantForRequest(event.request.id);
+        if (current) await this.#settleAppRequests(current.itemId, event.request.id);
         this.#metrics.increment('jfa_webhooks_total', { result: 'granted' });
-        return this.#store.get(grant.itemId) ?? grant;
-      } catch (error) {
-        this.#metrics.increment('jfa_webhooks_total', { result: 'error' });
-        throw error;
+        return this.#store.findGrantForRequest(event.request.id) ?? existing;
+      }
+      // A "Get this" request for the title is not settled yet: granted once it is (see retryDeferredRequests).
+      if (await this.#deferredForIntent(event.request.id)) {
+        await this.#store.deferWebhook(event);
+        this.#metrics.increment('jfa_webhooks_total', { result: 'deferred' });
+        console.log(JSON.stringify({ level: 'info', message: 'webhook deferred for a household app request', requestId: event.request.id }));
+        return null;
+      }
+      const resolved = await this.#resolveWebhook(event);
+      if (this.#grantsAsJoin(event.request.id)) {
+        const joined = await this.#grantAsJoin(resolved.itemId, event.request.id);
+        this.#metrics.increment('jfa_webhooks_total', { result: 'joined' });
+        return joined;
+      }
+      const grant = await this.#store.grant({
+        itemId: resolved.itemId,
+        requestId: event.request.id,
+        userId: resolved.userId,
+        groupIds: this.#store.listGroupIdsForUser(resolved.userId),
+        ...(resolved.mediaType ? { mediaType: resolved.mediaType } : {}),
+      });
+      await this.#reconcileGrant(grant);
+      await this.#settleAppRequests(grant.itemId, event.request.id);
+      this.#metrics.increment('jfa_webhooks_total', { result: 'granted' });
+      return this.#store.get(grant.itemId) ?? grant;
+    } catch (error) {
+      this.#metrics.increment('jfa_webhooks_total', { result: 'error' });
+      throw error;
+    }
+  }
+
+  /**
+   * Grants the webhooks deferred for a "Get this" request intent (see #deferredForIntent) whose title no intent names
+   * any more, as their first delivery would have been: by the record's join rule for a request "Get this" made, as a
+   * new grant otherwise. One whose request Seerr no longer has, or that is handled already, is forgotten; a failure is
+   * logged and tried again on the next run. Run by the household app after an intent is resolved, and with each refresh.
+   */
+  public retryDeferredRequests(options: { signal?: AbortSignal } = {}): Promise<void> {
+    const { signal } = options;
+    if (this.#store.listDeferredWebhooks().length === 0) return Promise.resolve();
+    return this.#exclusive(async () => {
+      const done: string[] = [];
+      try {
+        for (const event of this.#store.listDeferredWebhooks()) {
+          const requestId = event.request.id;
+          throwIfAborted(signal);
+          try {
+            if (!this.#store.hasHandledRequest(requestId)) {
+              if (await this.#deferredForIntent(requestId)) continue;
+              throwIfAborted(signal);
+              await this.#grantWebhook(event);
+            }
+            done.push(requestId);
+          } catch (error) {
+            rethrowIfCancelled(error, signal);
+            if (error instanceof SeerrError && error.status === 404) {
+              done.push(requestId);
+              continue;
+            }
+            console.error(JSON.stringify({
+              level: 'error',
+              message: 'deferred webhook could not be granted',
+              requestId,
+              detail: error instanceof Error ? error.message : String(error),
+            }));
+          }
+        }
+      } finally {
+        if (done.length > 0) await this.#store.forgetDeferredWebhooks(done);
       }
     });
+  }
+
+  /**
+   * Whether a request's grant must wait for a household app "Get this" request intent (see AppRequestIntent): an intent
+   * names its title. The title is the request's in Seerr (read with the admin key, only while there are intents);
+   * a request whose title cannot be read waits too, so a request "Get this" may have made is never granted privately
+   * before it is settled.
+   */
+  async #deferredForIntent(requestId: string, known?: SeerrRequest): Promise<boolean> {
+    if (this.#store.listAppRequestIntents().length === 0) return false;
+    let request = known;
+    if (typeof request?.media?.tmdbId !== 'number') {
+      if (!this.#seerr) return true;
+      try {
+        request = await this.#seerr.getRequest(requestId);
+      } catch (error) {
+        if (error instanceof SeerrError && error.status === 404) throw error;
+        return true;
+      }
+    }
+    const mediaType = request.media?.mediaType ?? request.type;
+    const tmdbId = request.media?.tmdbId;
+    if (typeof tmdbId !== 'number' || (mediaType !== 'movie' && mediaType !== 'tv')) return true;
+    return this.#store.hasAppRequestIntent(mediaType, tmdbId);
   }
 
   /** Whether household "Add to my library" can resolve titles; it needs Seerr lookup. */
@@ -599,11 +677,10 @@ export class AccessService {
   /**
    * Whether a request is one "Get this" made whose grant must follow the library join rules rather than be a new grant
    * (docs/app-design.md, "Late requests" and "New seasons of a series Jellyfin has"): its record says so
-   * (AppRequestRecord.joinOnGrant), or its record is not written yet (a title Jellyfin already has can be reported
-   * available within moments; a genuine download cannot).
+   * (AppRequestRecord.joinOnGrant). A request whose record is not written or not settled yet is never granted at all
+   * (see #deferredForIntent).
    */
   #grantsAsJoin(requestId: string): boolean {
-    if (this.#store.isAppRequestUnsettled(requestId)) return true;
     return this.#store.listAppRequests().some(([, record]) => record.branch === 'request' && record.seerrRequestId === requestId && record.joinOnGrant !== undefined);
   }
 
@@ -732,6 +809,14 @@ export class AccessService {
               this.#backfillMissingItems.add(requestId);
               this.#logDebug('request backfill skipped missing Jellyfin item', { requestId, itemId });
             }
+            continue;
+          }
+          throwIfAborted(signal);
+          // A "Get this" request for the title is not settled yet: the next run tries again.
+          if (await this.#deferredForIntent(requestId, request)) {
+            throwIfAborted(signal);
+            result.skipped += 1;
+            this.#metrics.increment('jfa_request_backfill_total', { result: 'deferred' });
             continue;
           }
           throwIfAborted(signal);

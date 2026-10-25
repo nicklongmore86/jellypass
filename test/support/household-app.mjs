@@ -330,14 +330,22 @@ export async function createFakeSeerr(state) {
     state.requests[acting] = [...(state.requests[acting] ?? []), created];
     // Made, and counted by the quota from now on, before the answer leaves.
     if (state.holdCreated) await state.holdCreated;
+    // Seerr made it, but its answer fails.
+    if (state.failCreated) return send(response, 500, { message: 'canary failure' });
     return send(response, 201, created);
   }
 
   function admin(url, response) {
     const title = /^\/api\/v1\/(movie|tv)\/([0-9]+)$/.exec(url.pathname);
     if (title) {
+      if (state.titlesFail) return send(response, 500, { message: 'canary failure' });
       const answer = () => send(response, 200, { ...seerrFixture(title[1]), id: Number(title[2]), mediaInfo: mediaRecord(title[1], Number(title[2])) });
       return state.holdTitles ? state.holdTitles.then(answer) : answer();
+    }
+    // The request backfill's list: every request, newest first.
+    if (url.pathname === '/api/v1/request') {
+      const results = allRequests().sort((left, right) => right.id - left.id);
+      return send(response, 200, { pageInfo: { results: results.length }, results });
     }
     const byRequest = /^\/api\/v1\/request\/([0-9]+)$/.exec(url.pathname);
     if (byRequest) {
@@ -504,16 +512,17 @@ export async function createFakeJellyfinForApp(state) {
   });
   async function administer(request, response, url) {
     const parameter = (name) => [...url.searchParams].find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1];
-    const itemOf = (item) => ({ Id: item.Id, Name: item.Name, Type: item.Type, ProviderIds: item.ProviderIds, Tags: item.Tags ?? [] });
+    const itemOf = (item) => ({ Id: item.Id, Name: item.Name, Type: item.Type, ProviderIds: item.ProviderIds, ProductionYear: item.ProductionYear, Tags: item.Tags ?? [] });
     if (request.method === 'GET' && url.pathname === '/Users') {
       return send(response, 200, Object.entries(state.jellyfinUsers).map(([Id, user]) => ({ Id, Name: user.Name, Policy: user.Policy })));
     }
     if (request.method === 'GET' && url.pathname === '/Items' && !parameter('userId')) {
       const types = (parameter('includeItemTypes') ?? '').split(',');
       const ids = parameter('ids')?.split(',');
+      const term = parameter('searchTerm')?.toLowerCase();
       const all = state.items.filter((item) => types.includes(item.Type) && (!ids || ids.includes(item.Id))
-        && (parameter('hasTmdbId') !== 'true' || item.ProviderIds?.Tmdb));
-      state.onAdminRead?.(url.pathname);
+        && (parameter('hasTmdbId') !== 'true' || item.ProviderIds?.Tmdb) && (!term || item.Name.toLowerCase().includes(term)));
+      state.onAdminRead?.(url.pathname, url);
       const start = Number(parameter('startIndex') ?? 0);
       return send(response, 200, { Items: all.slice(start, start + Number(parameter('limit') ?? 100)).map(itemOf) });
     }
@@ -652,6 +661,9 @@ export async function startApp(t, state = world(), options = {}) {
     tmdb,
     jellyfin,
     store,
+    /** The state file the store writes, to start another app from. */
+    stateFile,
+    members,
     service,
     requests,
     background,

@@ -1,11 +1,12 @@
-// "Get this": the rules Codex's review of PR #34 asked for. Each test here fails on 76485ea (see docs/app-design.md,
-// "Get this" as implemented): the re-check before a request, items without TMDB metadata, quota accounting at every
-// instant whichever branch ran, lifetime quotas, completed records freed with their media, a household deleted while a
-// call ran, pruning that never changes a count, new seasons of a series Jellyfin has, per-season readiness, and the
-// per-user lock.
+// "Get this": the rules Codex's reviews of PR #34 asked for (see docs/app-design.md, "Get this" as implemented): the
+// re-check before a request, items without TMDB metadata, completed records dropped with their media, a household
+// deleted while a call ran, pruning, new seasons of a series Jellyfin has, and per-season readiness. The late-request
+// rules (request intents, the settle-time read, title lookups by name and the order of the request branch's last
+// steps) are in get-this-intents.test.mjs.
 import assert from 'node:assert/strict';
 import path from 'node:path';
 import { describe, it } from 'node:test';
+import { readFile, writeFile } from 'node:fs/promises';
 import { GrantStore, MAX_APP_REQUESTS_PER_HOUSEHOLD } from '../dist/store.js';
 import {
   ALICE,
@@ -27,8 +28,6 @@ const GET_MOVIE = `${APP}/movie/${T_MOVIE}/get`;
 const GET_TV = `${APP}/tv/${T_TV}/get`;
 const OTHER_MOVIE = 900010;
 const THIRD_MOVIE = 900011;
-const OTHER_GET = `${APP}/movie/${OTHER_MOVIE}/get`;
-const THIRD_GET = `${APP}/movie/${THIRD_MOVIE}/get`;
 const SEED = { version: 7, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], appIdKey: 'ab'.repeat(32) };
 const DAY = 24 * 60 * 60 * 1000;
 const tmdbMovies = {
@@ -64,8 +63,6 @@ function metric(app, name, labels) {
   return line ? Number(line.split(' ').at(-1)) : 0;
 }
 
-const decided = (app) => metric(app, 'jfa_app_get_this_total', 'result="accepted"') + metric(app, 'jfa_app_get_this_total', 'result="ineligible"');
-
 async function until(condition, what = 'condition') {
   const deadline = Date.now() + 10_000;
   while (!(await condition())) {
@@ -86,16 +83,17 @@ const listed = async (app, options) => (await app.get(`${APP}/requests`, options
 
 describe('"Get this": Jellyfin is read again right before a request', { timeout: 60_000 }, () => {
   it('joins a movie, or a season, that arrives after the branch\'s first read, and never requests it', async (t) => {
-    for (const [name, state, path, body, firstRead, arrive] of [
-      ['movie', world({ tmdbMovies }), GET_MOVIE, undefined, '/Items', (jellyfin) => jellyfin.items.push(movieItem())],
-      ['season', world({ items: [seriesItem()], episodes: [episode(1)] }), GET_TV, { seasons: [2] }, `/Shows/${ITEMS.tSeries}/Episodes`, (jellyfin) => jellyfin.episodes.push(episode(2))],
+    // The branch's first read of a movie is two lookups (by TMDB ID and by name), of a series one per item.
+    for (const [name, state, path, body, firstRead, firstReads, arrive] of [
+      ['movie', world({ tmdbMovies }), GET_MOVIE, undefined, '/Items', 2, (jellyfin) => jellyfin.items.push(movieItem())],
+      ['season', world({ items: [seriesItem()], episodes: [episode(1)] }), GET_TV, { seasons: [2] }, `/Shows/${ITEMS.tSeries}/Episodes`, 1, (jellyfin) => jellyfin.episodes.push(episode(2))],
     ]) {
       const app = await start(t, state);
       let reads = 0;
       // It arrives as soon as the branch's first Jellyfin read has been answered.
       app.jellyfin.state.onAdminRead = (pathname) => {
         if (pathname === firstRead) reads += 1;
-        if (pathname === firstRead && reads === 1) arrive(app.jellyfin.state);
+        if (pathname === firstRead && reads === firstReads) arrive(app.jellyfin.state);
       };
       await getThis(app, path, body);
       assert.deepEqual(app.seerr.posts, [], name);
@@ -129,7 +127,7 @@ describe('"Get this": Jellyfin is read again right before a request', { timeout:
     }
   });
 
-  it('grants a request as a join when Seerr reports it available before its record is written', async (t) => {
+  it('defers a webhook that arrives before the request\'s record is written, then grants it as a join', async (t) => {
     const app = await start(t, world({ tmdbMovies }), { recordDelayMs: 1500 });
     let release;
     app.seerr.state.holdRequests = new Promise((resolve) => { release = resolve; });
@@ -140,10 +138,13 @@ describe('"Get this": Jellyfin is read again right before a request', { timeout:
     await until(() => metric(app, 'jfa_app_get_this_branches_total', 'branch="request"') === 1, 'the request branch');
     assert.deepEqual(app.store.listAppRequests(), []);
     app.seerr.state.requests[SEERR_IDS[ALICE]][0].status = 5;
-    await webhook(app, 'movie', 7350001, ALICE);
+    assert.equal((await webhook(app, 'movie', 7350001, ALICE)).status, 202);
     assert.equal(app.store.get(ITEMS.tMovie), undefined);
+    assert.deepEqual(app.store.listDeferredWebhooks().map((event) => event.request.id), ['7350001']);
     await app.background.settled();
     assert.equal(app.store.get(ITEMS.tMovie), undefined);
+    assert.equal(app.store.hasHandledRequest('7350001'), true);
+    assert.deepEqual(app.store.listDeferredWebhooks(), []);
   });
 });
 
@@ -165,109 +166,13 @@ describe('"Get this": items without TMDB metadata', { timeout: 60_000 }, () => {
   });
 });
 
-describe('"Get this": every instant counts the same whichever branch the earlier call took', { timeout: 120_000 }, () => {
-  const worlds = {
-    request: (quotas) => world({ tmdbMovies, quotas }),
-    interest: (quotas) => world({ tmdbMovies, quotas, requests: { [SEERR_IDS[BOB]]: [request({ id: 7300601, seerrUser: SEERR_IDS[BOB] })] } }),
-    join: (quotas) => world({
-      tmdbMovies,
-      quotas,
-      items: [movieItem()],
-      grants: [bobsMovieGrant],
-      requests: { [SEERR_IDS[BOB]]: [request({ id: 7300501, seerrUser: SEERR_IDS[BOB], status: 5 })] },
-    }),
-  };
-  const branchMetric = { request: 'request', interest: 'interest', join: 'join_joined' };
-
-  for (const limit of [1, 2]) {
-    it(`decides a second call the same at a limit of ${limit}: while the first is pending, during its record delay, and after its record`, async (t) => {
-      const seen = {};
-      for (const [branch, make] of Object.entries(worlds)) {
-        for (const phase of ['pending', 'delay', 'written']) {
-          const app = await start(t, make({ [SEERR_IDS[ALICE]]: { movie: { limit, days: 7 } } }), { recordDelayMs: 1500 });
-          let release;
-          if (phase === 'pending') app.seerr.state.holdTitles = new Promise((resolve) => { release = resolve; });
-          await app.post(GET_MOVIE);
-          await until(() => decided(app) === 1, 'the first call\'s eligibility');
-          if (phase === 'delay') await until(() => metric(app, 'jfa_app_get_this_branches_total', `branch="${branchMetric[branch]}"`) === 1, 'the first call\'s branch');
-          if (phase === 'written') await app.background.settled();
-          await app.post(OTHER_GET);
-          await until(() => decided(app) === 2, 'the second call\'s eligibility');
-          assert.equal(app.store.listAppRequests().length, phase === 'written' ? 1 : 0, `${branch} ${phase}`);
-          seen[`${branch} ${phase}`] = metric(app, 'jfa_app_get_this_total', 'result="ineligible"') === 1 ? 'ineligible' : 'eligible';
-          release?.();
-          await app.background.settled();
-        }
-      }
-      const expected = limit === 1 ? 'ineligible' : 'eligible';
-      assert.deepEqual(seen, Object.fromEntries(Object.keys(seen).map((key) => [key, expected])));
-    });
-  }
-
-  it('never reads the caller\'s quota while a request is being made as them, so the request is counted once', async (t) => {
-    const app = await start(t, world({ tmdbMovies, quotas: { [SEERR_IDS[ALICE]]: { movie: { limit: 2, days: 7 } } } }));
-    let release;
-    // Seerr has made the request (its quota counts it) but has not answered yet.
-    app.seerr.state.holdCreated = new Promise((resolve) => { release = resolve; });
-    await app.post(GET_MOVIE);
-    await until(() => app.seerr.state.requests[SEERR_IDS[ALICE]]?.length === 1, 'the request');
-    await app.post(OTHER_GET);
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    assert.equal(decided(app), 1);
-    app.seerr.state.holdCreated = undefined;
-    release();
-    await app.background.settled();
-    assert.equal(metric(app, 'jfa_app_get_this_total', 'result="accepted"'), 2);
-    assert.equal(app.seerr.posts.length, 2);
-  });
-
-  it('decides concurrent calls one at a time under the caller\'s lock: two calls at a limit of one never both run', async (t) => {
-    const app = await start(t, world({ tmdbMovies, quotas: { [SEERR_IDS[ALICE]]: { movie: { limit: 1, days: 7 } } } }));
-    let release;
-    app.seerr.state.holdQuota = new Promise((resolve) => { release = resolve; });
-    await Promise.all([app.post(GET_MOVIE), app.post(OTHER_GET)]);
-    const quotaReads = () => app.seerr.calls.filter((call) => call.pathname === '/api/v1/user/11/quota').length;
-    await until(() => quotaReads() >= 1, 'a quota read');
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    // The second call's read waits for the first call's decision, so it sees the unit the first one holds.
-    assert.equal(quotaReads(), 1);
-    release();
-    await app.background.settled();
-    assert.equal(app.seerr.posts.length, 1);
-    assert.equal(metric(app, 'jfa_app_get_this_total', 'result="accepted"'), 1);
-    assert.equal(metric(app, 'jfa_app_get_this_total', 'result="ineligible"'), 1);
-  });
-});
-
-describe('"Get this": quota windows and freed units', { timeout: 60_000 }, () => {
-  /** Whether Alice may ask for one more movie: a "Get this" for another one runs a branch. */
-  async function eligible(app, pathname = OTHER_GET) {
-    const before = metric(app, 'jfa_app_get_this_total', 'result="accepted"');
-    await getThis(app, pathname);
-    return metric(app, 'jfa_app_get_this_total', 'result="accepted"') > before;
-  }
-
-  it('counts every request ever made when Seerr\'s quota has no window (days 0), in the request and interest branches alike', async (t) => {
-    const quotas = { [SEERR_IDS[ALICE]]: { movie: { limit: 1, days: 0 } } };
-    for (const [branch, state] of [
-      ['request', world({ tmdbMovies, quotas })],
-      ['interest', world({ tmdbMovies, quotas, requests: { [SEERR_IDS[BOB]]: [request({ id: 7300601, seerrUser: SEERR_IDS[BOB] })] } })],
-    ]) {
-      let now = Date.now();
-      const app = await start(t, state, { now: () => now });
-      await getThis(app);
-      now += 400 * DAY;
-      assert.equal(await eligible(app), false, branch);
-    }
-  });
-
-  it('frees a completed record\'s unit once the title\'s media record is deleted, in every branch, and stops listing it', async (t) => {
-    const quotas = { [SEERR_IDS[ALICE]]: { movie: { limit: 1, days: 7 } } };
+describe('"Get this": completed records and their media', { timeout: 60_000 }, () => {
+  it('drops a completed record once the title\'s media record is deleted, in every branch, and stops listing it', async (t) => {
     const results = {};
     for (const branch of ['request', 'interest', 'join']) {
       const app = await start(t, branch === 'join'
-        ? world({ tmdbMovies, quotas, items: [movieItem()], grants: [bobsMovieGrant], requests: { [SEERR_IDS[BOB]]: [request({ id: 7300501, seerrUser: SEERR_IDS[BOB], status: 5 })] } })
-        : world({ tmdbMovies, quotas, requests: branch === 'interest' ? { [SEERR_IDS[BOB]]: [request({ id: 7300601, seerrUser: SEERR_IDS[BOB], status: 2 })] } : {} }));
+        ? world({ tmdbMovies, items: [movieItem()], grants: [bobsMovieGrant], requests: { [SEERR_IDS[BOB]]: [request({ id: 7300501, seerrUser: SEERR_IDS[BOB], status: 5 })] } })
+        : world({ tmdbMovies, requests: branch === 'interest' ? { [SEERR_IDS[BOB]]: [request({ id: 7300601, seerrUser: SEERR_IDS[BOB], status: 2 })] } : {} }));
       await getThis(app);
       if (branch !== 'join') {
         // The title arrives, its request completes, and its grant is created.
@@ -278,26 +183,12 @@ describe('"Get this": quota windows and freed units', { timeout: 60_000 }, () =>
       }
       assert.deepEqual(app.store.listAppRequests().map(([, record]) => record.status), ['completed'], branch);
       assert.deepEqual((await listed(app)).map((entry) => entry.status), ['ready'], branch);
-      const before = await eligible(app);
       // An administrator deletes the title's media record in Seerr, with every request on it.
       app.seerr.state.requests = {};
       await app.requests.refresh();
-      results[branch] = { before, after: await eligible(app), status: app.store.listAppRequests().find(([, record]) => record.tmdbId === T_MOVIE)[1].status, listed: (await listed(app)).filter((entry) => entry.tmdbId === T_MOVIE) };
+      results[branch] = { status: app.store.listAppRequests().find(([, record]) => record.tmdbId === T_MOVIE)[1].status, listed: await listed(app) };
     }
-    for (const branch of ['request', 'interest', 'join']) assert.deepEqual(results[branch], { before: false, after: true, status: 'deleted', listed: [] }, branch);
-  });
-
-  it('never prunes a record that still counts: more than 2,000 virtual requests in the window are all counted', async (t) => {
-    const count = MAX_APP_REQUESTS_PER_HOUSEHOLD + 5;
-    for (const [limit, expected] of [[count, [false, false]], [count + 1, [true, false]]]) {
-      const app = await start(t, world({ tmdbMovies, quotas: { [SEERR_IDS[ALICE]]: { movie: { limit, days: 7 } } } }));
-      const made = new Date(Date.now() - DAY).toISOString();
-      await app.store.writeAppRequests({ add: Array.from({ length: count }, (_, index) => ({
-        householdId: 'farmhouse', jellyfinUserId: ALICE, mediaType: 'movie', tmdbId: 800000 + index, seasons: [],
-        branch: index % 2 ? 'interest' : 'join', status: 'completed', createdAt: made, updatedAt: made,
-      })) });
-      assert.deepEqual([await eligible(app), await eligible(app, THIRD_GET)], expected, String(limit));
-    }
+    for (const branch of ['request', 'interest', 'join']) assert.deepEqual(results[branch], { status: 'deleted', listed: [] }, branch);
   });
 });
 
@@ -414,32 +305,32 @@ describe('"Get this" records in the store: pruning never changes a count', () =>
     assert.equal(store.listAppRequests().length, MAX_APP_REQUESTS_PER_HOUSEHOLD + 6);
   });
 
-  it('moves a pruned record that still counts into its member\'s ledger: exact in any window, summed past the horizon', async (t) => {
-    const file = path.join(await makeTempDir(t, 'jfa-get-this-'), 'grants.json');
-    const store = new GrantStore(file);
+  it('prunes settled records by age and per household, never a pending one', async (t) => {
+    const store = new GrantStore(path.join(await makeTempDir(t, 'jfa-get-this-'), 'grants.json'));
     await store.load();
     const at = (days) => new Date(Date.now() - days * DAY).toISOString();
     await store.writeAppRequests({ add: [
-      // Past the retention: counted ones go to the ledger, the others are forgotten.
-      record({ status: 'completed', createdAt: at(450) }),
-      record({ status: 'failed', branch: 'join', createdAt: at(420), mediaType: 'tv', seasons: [1, 2] }),
-      record({ status: 'declined', createdAt: at(430) }),
-      record({ status: 'completed', branch: 'request', createdAt: at(440) }),
-      // Settled beyond the household's cap, all inside a week.
-      ...Array.from({ length: MAX_APP_REQUESTS_PER_HOUSEHOLD + 3 }, (_, index) => record({ status: 'completed', tmdbId: index + 1, createdAt: new Date(Date.now() - DAY - index * 1000).toISOString() })),
+      ...['completed', 'declined', 'deleted', 'failed'].map((status) => record({ status, createdAt: at(401) })),
+      record({ status: 'pending', createdAt: at(401) }),
+      record({ householdId: 'mill', status: 'completed', createdAt: at(1) }),
     ] });
-    assert.equal(store.listAppRequests().length, MAX_APP_REQUESTS_PER_HOUSEHOLD);
-    const units = (mediaType, start) => store.prunedAppQuotaUnits(ALICE, mediaType, start);
-    // The 3 oldest of the week's records were pruned: each still counts, at its own time.
-    assert.equal(units('movie', Date.now() - 7 * DAY), 3);
-    assert.equal(units('movie', Date.now() - DAY - (MAX_APP_REQUESTS_PER_HOUSEHOLD + 1) * 1000 + 500), 1);
-    // A lifetime quota counts the summed ones too; a window shorter than the horizon never does.
-    assert.equal(units('movie', -Infinity), 4);
-    assert.equal(units('tv', -Infinity), 2);
-    assert.equal(units('tv', Date.now() - 365 * DAY), 0);
+    assert.deepEqual(store.listAppRequests().map(([, entry]) => [entry.householdId, entry.status]).sort(), [['farmhouse', 'pending'], ['mill', 'completed']]);
+  });
+
+  it('loads a state file an earlier build of "Get this" wrote with a quota ledger, and drops the ledger', async (t) => {
+    const file = path.join(await makeTempDir(t, 'jfa-get-this-'), 'grants.json');
+    await writeFile(file, JSON.stringify({
+      version: 7, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [],
+      appRequests: { kept: record({ status: 'completed' }) },
+      appQuotaLedger: { [ALICE]: { movie: { entries: [[Date.now() - DAY, 1]], older: { units: 2, oldest: 1, newest: 2 } } } },
+    }));
+    const store = new GrantStore(file);
+    await store.load();
+    assert.deepEqual(store.listAppRequests().map(([id]) => id), ['kept']);
+    await store.writeAppRequests({ add: [record()] });
     await store.close();
-    const reloaded = new GrantStore(file);
-    await reloaded.load();
-    assert.equal(reloaded.prunedAppQuotaUnits(ALICE, 'movie', -Infinity), 4);
+    const written = JSON.parse(await readFile(file, 'utf8'));
+    assert.equal('appQuotaLedger' in written, false);
+    assert.equal(Object.keys(written.appRequests).length, 2);
   });
 });
