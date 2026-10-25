@@ -91,3 +91,146 @@ export function createApi(options: ApiOptions): Api {
     requests: (signal) => get<RequestList>('/requests', signal),
   };
 }
+
+/** The only sign-in failures the app tells apart, each with a fixed message (see render.ts); upstream text is never shown. */
+export type SignInErrorKind = 'invalid' | 'rate_limited' | 'unavailable' | 'offline' | 'storage';
+
+export class SignInError extends Error {
+  public constructor(public readonly kind: SignInErrorKind) {
+    super(kind);
+  }
+}
+
+/** A household member the gateway lists on this host, as Jellyfin's own profile picker would. */
+export interface Profile {
+  id: string;
+  name: string;
+  /** False for a member marked passwordless: one tap signs in, as in Jellyfin web. */
+  hasPassword: boolean;
+}
+
+export interface SignInResult {
+  token: string;
+  userId: string;
+  serverId: string;
+}
+
+export interface SignInApiOptions {
+  fetch: typeof fetch;
+  deviceId: () => string;
+  /** A short device name for Jellyfin's device list (letters and digits only). */
+  deviceName: string;
+}
+
+export interface SignInApi {
+  profiles(signal?: AbortSignal): Promise<Profile[]>;
+  signIn(username: string, password: string, signal?: AbortSignal): Promise<SignInResult>;
+  /** Revokes `token` at Jellyfin, as Jellyfin web's own sign-out does. Best effort: never throws. */
+  signOut(token: string): Promise<void>;
+}
+
+/** The client name and version Jellyfin lists with the session; the version is this sign-in client's, not the release's. */
+const CLIENT_NAME = 'JellyPass';
+const CLIENT_VERSION = '1.0';
+const SIGN_OUT_TIMEOUT_MS = 5000;
+const MAX_PROFILES = 200;
+const MAX_NAME_LENGTH = 256;
+
+function signInKind(status: number): SignInErrorKind {
+  if (status === 401 || status === 403) return 'invalid';
+  if (status === 429) return 'rate_limited';
+  return 'unavailable';
+}
+
+/**
+ * Sign-in through the household gateway on this origin, with the same calls Jellyfin web makes: GET /Users/Public and
+ * POST /Users/AuthenticateByName. The gateway scopes the first to the household and rate-limits and scopes the second.
+ */
+export function createSignInApi(options: SignInApiOptions): SignInApi {
+  const base = { cache: 'no-store', credentials: 'omit', referrerPolicy: 'no-referrer' } as const;
+
+  async function call(path: string, init: RequestInit, signal?: AbortSignal): Promise<Response> {
+    try {
+      return await options.fetch(path, { ...base, ...init, ...(signal ? { signal } : {}) });
+    } catch (error) {
+      if (signal?.aborted) throw error;
+      throw new SignInError('offline');
+    }
+  }
+
+  return {
+    async profiles(signal) {
+      const response = await call('/Users/Public', { headers: { Accept: 'application/json' } }, signal);
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new SignInError(response.status === 429 ? 'rate_limited' : 'unavailable');
+      }
+      let list: unknown;
+      try {
+        list = await response.json();
+      } catch {
+        throw new SignInError('unavailable');
+      }
+      if (!Array.isArray(list)) throw new SignInError('unavailable');
+      const profiles: Profile[] = [];
+      for (const entry of list.slice(0, MAX_PROFILES)) {
+        if (typeof entry !== 'object' || entry === null) continue;
+        const { Id: id, Name: name, HasPassword: hasPassword } = entry as Record<string, unknown>;
+        if (typeof id !== 'string' || !id || typeof name !== 'string' || !name || name.length > MAX_NAME_LENGTH) continue;
+        profiles.push({ id, name, hasPassword: hasPassword !== false });
+      }
+      return profiles;
+    },
+
+    async signIn(username, password, signal) {
+      const header = [
+        `Client="${CLIENT_NAME}"`,
+        `Device="${options.deviceName}"`,
+        `DeviceId="${options.deviceId()}"`,
+        `Version="${CLIENT_VERSION}"`,
+      ].join(', ');
+      const response = await call('/Users/AuthenticateByName', {
+        method: 'POST',
+        headers: { Accept: 'application/json', 'Content-Type': 'application/json', Authorization: `MediaBrowser ${header}` },
+        body: JSON.stringify({ Username: username, Pw: password }),
+      }, signal);
+      if (!response.ok) {
+        await response.body?.cancel().catch(() => undefined);
+        throw new SignInError(signInKind(response.status));
+      }
+      let answer: unknown;
+      try {
+        answer = await response.json();
+      } catch {
+        throw new SignInError('unavailable');
+      }
+      const record = (typeof answer === 'object' && answer !== null ? answer : {}) as Record<string, unknown>;
+      const user = (typeof record['User'] === 'object' && record['User'] !== null ? record['User'] : {}) as Record<string, unknown>;
+      const token = record['AccessToken'];
+      const userId = user['Id'];
+      const serverId = record['ServerId'];
+      if (typeof token !== 'string' || !token || typeof userId !== 'string' || !userId || typeof serverId !== 'string' || !serverId) {
+        throw new SignInError('unavailable');
+      }
+      return { token, userId, serverId };
+    },
+
+    async signOut(token) {
+      const abort = new AbortController();
+      const timer = setTimeout(() => abort.abort(), SIGN_OUT_TIMEOUT_MS);
+      try {
+        const response = await options.fetch('/Sessions/Logout', {
+          ...base,
+          method: 'POST',
+          headers: { Authorization: `MediaBrowser Token="${encodeURIComponent(token).replace(/"/g, '%22')}"` },
+          signal: abort.signal,
+        });
+        await response.body?.cancel().catch(() => undefined);
+      } catch {
+        // Offline or Jellyfin down: the sign-in is still removed from this browser.
+      } finally {
+        clearTimeout(timer);
+      }
+    },
+  };
+}

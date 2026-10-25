@@ -1,4 +1,4 @@
-import type { ApiErrorKind } from './api.js';
+import type { ApiErrorKind, Profile, SignInErrorKind } from './api.js';
 import type { Card, CoarseStatus, HouseholdState, Movie, Page, RequestEntry, Season, SeasonSummary, Series } from './types.js';
 
 /**
@@ -42,6 +42,20 @@ export const ERROR_TEXT: Record<ApiErrorKind, { title: string; body: string }> =
   not_found: { title: 'Not found', body: "We couldn't find that title." },
   offline: { title: "You're offline", body: 'Check your connection, then try again.' },
 };
+
+export const SIGNIN_ERROR_TEXT: Record<SignInErrorKind, string> = {
+  invalid: "That didn't work. Check your password and try again.",
+  rate_limited: 'Too many attempts. Wait a few minutes, then try again.',
+  unavailable: "Can't sign in right now. Try again in a moment.",
+  offline: 'Check your connection, then try again.',
+  storage: "Can't keep your sign-in on this device. Allow site data for this page in your browser settings, then try again.",
+};
+
+/** The name form's own fixed text: its refusal cannot say whether the name or the password was wrong. */
+export const SIGNIN_NAME_TEXT = {
+  missing: 'Enter your name.',
+  invalid: "That didn't work. Check your name and password and try again.",
+} as const;
 
 export const TMDB_NOTICE = 'This product uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB.';
 
@@ -415,4 +429,152 @@ export function aboutView(doc: Document): HTMLElement {
 
 export function searchStatusText(count: number, query: string): string {
   return count === 0 ? `No results for “${query}”.` : '';
+}
+
+/** The sign-in screen's heading and intro; `expired` when a sign-in the app held was refused. */
+function signInHeading(doc: Document, title: string, intro: string): Node[] {
+  return [
+    el(doc, 'h1', { class: 'screen-title', text: title, attrs: { tabindex: '-1' } }),
+    el(doc, 'p', { class: 'muted', text: intro }),
+  ];
+}
+
+/** Jellyfin web's own sign-in, kept as a way in when the app's cannot be used. */
+function jellyfinFallback(doc: Document): HTMLElement {
+  return el(doc, 'p', { class: 'muted signin-fallback' }, [
+    el(doc, 'a', { text: 'Open Jellyfin to sign in', attrs: { href: '/web/' } }),
+  ]);
+}
+
+/** A fixed-text message line that screen readers announce when its text changes. */
+export function signInMessage(doc: Document, id: string): HTMLElement {
+  return el(doc, 'p', { class: 'form-error', attrs: { id, role: 'alert' } });
+}
+
+/** The household's profiles, each a button of at least a thumb's size; the first letter stands in for a picture. */
+export function profilePicker(
+  doc: Document,
+  profiles: Profile[],
+  options: { expired: boolean; onChoose: (profile: Profile, button: HTMLButtonElement) => void; onName: () => void },
+): { root: HTMLElement; message: HTMLElement } {
+  const message = signInMessage(doc, 'signin-message');
+  const list = el(doc, 'ul', { class: 'profiles' });
+  for (const profile of profiles) {
+    const button = el(doc, 'button', { class: 'profile', attrs: { type: 'button' } }, [
+      el(doc, 'span', { class: 'avatar', text: Array.from(profile.name)[0]?.toUpperCase() ?? '?', attrs: { 'aria-hidden': 'true' } }),
+      el(doc, 'span', { class: 'profile-name', text: profile.name }),
+    ]);
+    button.addEventListener('click', () => options.onChoose(profile, button));
+    list.append(el(doc, 'li', {}, [button]));
+  }
+  // Jellyfin leaves hidden members off the list; they, and anyone who prefers to, sign in by name.
+  const byName = el(doc, 'button', { class: 'button button-secondary', text: 'Sign in with a different name', attrs: { type: 'button' } });
+  byName.addEventListener('click', options.onName);
+  const root = el(doc, 'section', { class: 'signin', attrs: { 'data-screen': 'signin' } }, [
+    ...signInHeading(doc, 'Sign in', options.expired ? 'Your sign-in has expired. Choose your profile to sign in again.' : 'Choose your profile to sign in.'),
+    list,
+    message,
+    el(doc, 'div', { class: 'form-actions' }, [byName]),
+    jellyfinFallback(doc),
+  ]);
+  return { root, message };
+}
+
+/**
+ * Sign-in by name and password: for a member the picker does not list (Jellyfin's hidden users), or when it lists
+ * nobody. The gateway signs in only this household's members, and answers any other name as it answers a wrong password.
+ * The password may be empty, for a member marked passwordless. `onBack` (the picker) only when it lists someone.
+ */
+export function nameForm(
+  doc: Document,
+  options: { expired: boolean; onSubmit: (username: string, password: string) => void; onBack?: () => void },
+): { root: HTMLElement; form: HTMLFormElement; username: HTMLInputElement; input: HTMLInputElement; submit: HTMLButtonElement; message: HTMLElement } {
+  const message = signInMessage(doc, 'signin-message');
+  const username = el(doc, 'input', {
+    attrs: {
+      id: 'username', name: 'username', type: 'text', autocomplete: 'username', autocapitalize: 'none', autocorrect: 'off',
+      spellcheck: 'false', enterkeyhint: 'next', required: '', maxlength: '256', 'aria-describedby': 'signin-message',
+    },
+  });
+  const input = el(doc, 'input', {
+    attrs: { id: 'password', name: 'password', type: 'password', autocomplete: 'current-password', enterkeyhint: 'go', maxlength: '256', 'aria-describedby': 'signin-message' },
+  });
+  const submit = el(doc, 'button', { class: 'button', text: 'Sign in', attrs: { type: 'submit' } });
+  const actions = el(doc, 'div', { class: 'form-actions' }, [submit]);
+  if (options.onBack) {
+    const back = el(doc, 'button', { class: 'button button-secondary', text: 'Choose a profile', attrs: { type: 'button' } });
+    back.addEventListener('click', options.onBack);
+    actions.append(back);
+  }
+  const form = el(doc, 'form', { class: 'signin-form', attrs: { novalidate: '' } }, [
+    el(doc, 'label', { text: 'Name', attrs: { for: 'username' } }),
+    username,
+    el(doc, 'label', { text: 'Password', attrs: { for: 'password' } }),
+    input,
+    message,
+    actions,
+  ]);
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    // As in the password step, the password is held by nothing but the one call that sends it.
+    const password = input.value;
+    input.value = '';
+    options.onSubmit(username.value, password);
+  });
+  const root = el(doc, 'section', { class: 'signin', attrs: { 'data-screen': 'signin' } }, [
+    ...signInHeading(doc, 'Sign in', options.expired ? 'Your sign-in has expired. Enter your name and password to sign in again.' : 'Enter your Jellyfin name and password.'),
+    form,
+    jellyfinFallback(doc),
+  ]);
+  return { root, form, username, input, submit, message };
+}
+
+/** The password step for one profile. The username rides along as a hidden, read-only field so a password manager can match it. */
+export function passwordForm(
+  doc: Document,
+  profile: Profile,
+  options: { onSubmit: (password: string) => void; onBack: () => void },
+): { root: HTMLElement; form: HTMLFormElement; input: HTMLInputElement; submit: HTMLButtonElement; message: HTMLElement } {
+  const message = signInMessage(doc, 'signin-message');
+  const input = el(doc, 'input', {
+    attrs: { id: 'password', name: 'password', type: 'password', autocomplete: 'current-password', enterkeyhint: 'go', required: '', maxlength: '256', 'aria-describedby': 'signin-message' },
+  });
+  const username = el(doc, 'input', {
+    class: 'visually-hidden',
+    attrs: { name: 'username', type: 'text', autocomplete: 'username', value: profile.name, readonly: '', tabindex: '-1', 'aria-hidden': 'true' },
+  });
+  const submit = el(doc, 'button', { class: 'button', text: 'Sign in', attrs: { type: 'submit' } });
+  const back = el(doc, 'button', { class: 'button button-secondary', text: 'Choose another profile', attrs: { type: 'button' } });
+  back.addEventListener('click', options.onBack);
+  const form = el(doc, 'form', { class: 'signin-form', attrs: { novalidate: '' } }, [
+    username,
+    el(doc, 'label', { text: 'Password', attrs: { for: 'password' } }),
+    input,
+    message,
+    el(doc, 'div', { class: 'form-actions' }, [submit, back]),
+  ]);
+  form.addEventListener('submit', (event) => {
+    event.preventDefault();
+    // The field is emptied as it is read, so the password is held by nothing but the one call that sends it.
+    const password = input.value;
+    input.value = '';
+    options.onSubmit(password);
+  });
+  const root = el(doc, 'section', { class: 'signin', attrs: { 'data-screen': 'signin' } }, [
+    ...signInHeading(doc, `Sign in as ${profile.name}`, 'Enter your Jellyfin password.'),
+    form,
+    jellyfinFallback(doc),
+  ]);
+  return { root, form, input, submit, message };
+}
+
+/** The sign-in screen when the profiles could not be loaded. */
+export function signInUnavailable(doc: Document, kind: SignInErrorKind, onRetry: () => void): HTMLElement {
+  const retry = el(doc, 'button', { class: 'button', text: 'Try again', attrs: { type: 'button' } });
+  retry.addEventListener('click', onRetry);
+  return el(doc, 'section', { class: 'signin', attrs: { 'data-screen': 'signin' } }, [
+    ...signInHeading(doc, 'Sign in', SIGNIN_ERROR_TEXT[Object.hasOwn(SIGNIN_ERROR_TEXT, kind) ? kind : 'unavailable']),
+    retry,
+    jellyfinFallback(doc),
+  ]);
 }

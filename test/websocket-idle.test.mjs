@@ -69,6 +69,23 @@ describe('WebSocket idle timeout', { timeout: 10_000 }, () => {
     return { client, server: upstreamSockets.at(-1) };
   }
 
+  it('refuses an upgrade once shutdown has begun with a 503 no CDN keeps', async () => {
+    const port = await startGateway(0);
+    await gateways.at(-1).closeWebSockets();
+    const client = connectSocket(port, '127.0.0.1');
+    client.on('error', () => {});
+    await once(client, 'connect');
+    client.write(`GET /socket HTTP/1.1\r\nHost: ${HOUSEHOLD_HOST}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGVzdA==\r\nSec-WebSocket-Version: 13\r\n\r\n`);
+    let response = '';
+    client.on('data', (chunk) => { response += chunk.toString('utf8'); });
+    await once(client, 'end');
+    assert.match(response, /^HTTP\/1\.1 503 /);
+    for (const header of ['Cache-Control: no-store', 'CDN-Cache-Control: no-store', 'Cloudflare-CDN-Cache-Control: no-store']) {
+      assert.ok(response.includes(`\r\n${header}\r\n`), header);
+    }
+    client.destroy();
+  });
+
   it('closes both sides of an idle connection after the timeout', async () => {
     const port = await startGateway(IDLE_TIMEOUT_MS);
     const { client, server } = await openSocket(port);

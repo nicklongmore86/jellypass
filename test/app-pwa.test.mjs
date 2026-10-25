@@ -2,6 +2,7 @@
 // renders from the API's DTOs. DOM-level tests use linkedom (a small DOM for Node, a dev dependency only) to run the
 // real client modules from dist/app against the real API, served from the same fakes as test/app-api.test.mjs.
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,8 +11,8 @@ import { pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import { parseHTML } from 'linkedom';
 import { APP_CONTENT_SECURITY_POLICY, APP_PERMISSIONS_POLICY } from '../dist/app-assets.js';
-import { contentHash, stampWorker } from '../scripts/build-app.mjs';
-import { ALICE, ANN, HOST_A, HOST_B, OWN_MOVIE, T_MOVIE, T_TV, TOKENS, get, otherHouseholdWorlds, startApp, world } from './support/household-app.mjs';
+import { buildApp, contentHash, stampWorker } from '../scripts/build-app.mjs';
+import { ALICE, ANN, BOB, CAROL, HOST_A, HOST_B, OUTSIDER, OWN_MOVIE, T_MOVIE, T_TV, TOKENS, get, otherHouseholdWorlds, post, startApp, world } from './support/household-app.mjs';
 import { assertNoCanaries } from './support/seerr-fixtures.mjs';
 
 const DIST_APP = path.join(import.meta.dirname, '..', 'dist', 'app');
@@ -27,9 +28,18 @@ function walk(directory, prefix = '') {
 }
 const FILES = walk(DIST_APP);
 const read = (relative) => readFileSync(path.join(DIST_APP, relative), 'utf8');
+/** The built, fingerprinted name of a source path: `app.css` is `app.<12 hex digits>.css`. Exactly one file has it. */
+const FINGERPRINT = '[0-9a-f]{12}';
+function BUILT(logical) {
+  const ext = path.posix.extname(logical);
+  const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const found = FILES.filter((file) => new RegExp(`^${escape(logical.slice(0, -ext.length))}\\.${FINGERPRINT}${escape(ext)}$`).test(file));
+  assert.equal(found.length, 1, `${logical} is built once: ${found}`);
+  return found[0];
+}
 
 /** What a request answered, minus anything that differs by design between two fixed 404s. */
-const shape = (answer) => ({ status: answer.status, text: answer.text, headers: answer.headers });
+const shape = (answer) => ({ status: answer.status, text: answer.text, headers: { ...answer.headers, date: undefined } });
 
 describe('household app page: serving', { timeout: 30_000 }, () => {
   it('serves the page and every file it needs on household hosts, with no credentials and no upstream calls', async (t) => {
@@ -68,14 +78,14 @@ describe('household app page: serving', { timeout: 30_000 }, () => {
 
   it('answers HEAD without a body and a conditional GET with 304', async (t) => {
     const app = await startApp(t);
-    const css = await app.get(`${PAGE}app.css`, { user: null });
+    const css = await app.get(`${PAGE}${BUILT('app.css')}`, { user: null });
     const etag = css.headers.etag;
     assert.match(etag, /^"[A-Za-z0-9_-]{27}"$/);
-    const cached = await app.get(`${PAGE}app.css`, { user: null, headers: { 'If-None-Match': etag } });
+    const cached = await app.get(`${PAGE}${BUILT('app.css')}`, { user: null, headers: { 'If-None-Match': etag } });
     assert.equal(cached.status, 304);
     assert.equal(cached.body.length, 0);
     assert.equal(cached.headers.etag, etag);
-    const stale = await app.get(`${PAGE}app.css`, { user: null, headers: { 'If-None-Match': '"other"' } });
+    const stale = await app.get(`${PAGE}${BUILT('app.css')}`, { user: null, headers: { 'If-None-Match': '"other"' } });
     assert.equal(stale.status, 200);
     const head = await new Promise((resolve, reject) => {
       import('node:http').then(({ request }) => {
@@ -98,7 +108,7 @@ describe('household app page: serving', { timeout: 30_000 }, () => {
     assert.equal(unknownOff.status, 404);
     assert.equal(unknownOff.text, NOT_FOUND);
     // App off: no file, and not the page either; byte-for-byte the same as any other app path, never proxied.
-    for (const file of [PAGE, `${PAGE}sw.js`, `${PAGE}manifest.webmanifest`, `${PAGE}js/main.js`, `${PAGE}app.css`, '/jellypass/app']) {
+    for (const file of [PAGE, `${PAGE}sw.js`, `${PAGE}${BUILT('manifest.webmanifest')}`, `${PAGE}${BUILT('js/main.js')}`, `${PAGE}${BUILT('app.css')}`, '/jellypass/app']) {
       assert.deepEqual(shape(await off.get(file, { user: null })), unknownOff, file);
     }
     assert.equal(off.jellyfin.requests.length, 0);
@@ -108,7 +118,7 @@ describe('household app page: serving', { timeout: 30_000 }, () => {
       for (const headers of [undefined, admin]) {
         const baseline = shape(await on.get('/jellypass/app-no-such-path', { host, user: null, ...(headers ? { headers } : {}) }));
         assert.equal(baseline.status, headers ? 404 : 401);
-        for (const file of [PAGE, `${PAGE}sw.js`, `${PAGE}manifest.webmanifest`, `${PAGE}js/main.js`, '/jellypass/app']) {
+        for (const file of [PAGE, `${PAGE}sw.js`, `${PAGE}${BUILT('manifest.webmanifest')}`, `${PAGE}${BUILT('js/main.js')}`, '/jellypass/app']) {
           const options = { host, user: null, ...(headers ? { headers } : {}) };
           assert.deepEqual(shape(await on.get(file, options)), baseline, `${host} ${file}`);
           assert.deepEqual(shape(await off.get(file, options)), baseline, `${host} ${file} (app off)`);
@@ -202,24 +212,173 @@ describe('household app page: headers', { timeout: 30_000 }, () => {
     for (const feature of features) assert.match(feature, /^[a-z-]+=\(\)$/, 'every feature is switched off for everyone, itself included');
   });
 
+  const IMMUTABLE = 'public, max-age=31536000, immutable';
+  const NEVER_STORED = { 'cache-control': 'no-store', 'cdn-cache-control': 'no-store', 'cloudflare-cdn-cache-control': 'no-store' };
+
   it('sets the right content type and cache rule for each kind of file', async (t) => {
     const app = await startApp(t);
-    const expected = {
-      [PAGE]: ['text/html; charset=utf-8', 'no-cache'],
-      [`${PAGE}app.css`]: ['text/css; charset=utf-8', 'no-cache'],
-      [`${PAGE}js/main.js`]: ['text/javascript; charset=utf-8', 'no-cache'],
-      [`${PAGE}sw.js`]: ['text/javascript; charset=utf-8', 'no-cache'],
-      [`${PAGE}manifest.webmanifest`]: ['application/manifest+json; charset=utf-8', 'no-cache'],
-      [`${PAGE}icons/icon-192.png`]: ['image/png', 'public, max-age=604800'],
-      [`${PAGE}tmdb-logo.svg`]: ['image/svg+xml', 'public, max-age=604800'],
+    const hashed = {
+      [BUILT('app.css')]: 'text/css; charset=utf-8',
+      [BUILT('js/main.js')]: 'text/javascript; charset=utf-8',
+      [BUILT('js/signin.js')]: 'text/javascript; charset=utf-8',
+      [BUILT('manifest.webmanifest')]: 'application/manifest+json; charset=utf-8',
+      [BUILT('icons/icon-192.png')]: 'image/png',
+      [BUILT('tmdb-logo.svg')]: 'image/svg+xml',
     };
-    for (const [served, [type, cache]] of Object.entries(expected)) {
+    // Fingerprinted files never change under their name: kept for a year, immutable, with a validator.
+    for (const [file, type] of Object.entries(hashed)) {
+      const { headers } = await app.get(`${PAGE}${file}`, { user: null });
+      assert.equal(headers['content-type'], type, file);
+      assert.equal(headers['cache-control'], IMMUTABLE, file);
+      assert.match(headers.etag, /^"[A-Za-z0-9_-]{27}"$/, file);
+      assert.equal(headers['cdn-cache-control'], undefined, file);
+    }
+    // The page and the worker keep their addresses, so no browser, CDN or other shared cache may keep either; and they
+    // carry no validator, so nothing can revalidate a stale copy into use.
+    for (const served of [PAGE, `${PAGE}index.html`, `${PAGE}sw.js`, '/jellypass/app']) {
       const { headers } = await app.get(served, { user: null });
-      assert.equal(headers['content-type'], type, served);
-      assert.equal(headers['cache-control'], cache, served);
+      for (const [name, value] of Object.entries(NEVER_STORED)) assert.equal(headers[name], value, `${served} ${name}`);
+      assert.equal(headers.etag, undefined, served);
+      assert.equal(headers['set-cookie'], undefined, served);
+      assert.equal(headers.expires, undefined, served);
+    }
+    assert.equal((await app.get(PAGE, { user: null })).headers['content-type'], 'text/html; charset=utf-8');
+    assert.equal((await app.get(`${PAGE}sw.js`, { user: null })).headers['content-type'], 'text/javascript; charset=utf-8');
+    // A conditional request for the page or worker is answered in full, never 304.
+    for (const [served, file] of [[PAGE, 'index.html'], [`${PAGE}sw.js`, 'sw.js']]) {
+      const etag = `"${createHash('sha256').update(readFileSync(path.join(DIST_APP, file))).digest('base64url').slice(0, 27)}"`;
+      assert.equal((await app.get(served, { user: null, headers: { 'If-None-Match': etag } })).status, 200, `${served} is never answered 304`);
     }
     // The API next door is still never cached.
     assert.equal((await app.get('/jellypass/app/v1/me')).headers['cache-control'], 'no-store');
+  });
+
+  it('lets no CDN keep any other answer under /jellypass/app: errors, redirects, refusals and failures', async (t) => {
+    const app = await startApp(t, world({ failCatalogue: 500 }));
+    const neverStored = (answer, what) => {
+      for (const [name, value] of Object.entries(NEVER_STORED)) assert.equal(answer.headers[name], value, `${what} ${name}`);
+      assert.equal(answer.headers.etag, undefined, what);
+    };
+    const hashedJs = `${PAGE}js/main.${'0'.repeat(12)}.js`;
+    const answers = [
+      [await app.get(hashedJs), 404, 'an unknown fingerprinted script, signed in'],
+      [await app.get(hashedJs, { user: null }), 401, 'an unknown fingerprinted script, signed out'],
+      [await app.get(`${PAGE}no-such-file`, { user: null }), 401, 'an unknown file'],
+      [await app.get('/jellypass/app', { user: null }), 308, 'the redirect to the page'],
+      [await app.get(`${PAGE}sw.js`, { host: 'jelly-missing.example.test', user: null }), 404, 'the worker on an unknown household'],
+      [await app.get(PAGE, { host: 'jelly-missing.example.test', user: null }), 404, 'the page on an unknown household'],
+      [await app.get('/jellypass/app/v1/me', { host: 'jelly-missing.example.test' }), 404, 'the API on an unknown household'],
+      [await app.get('/jellypass/app/v1/me', { user: null }), 401, 'the API, signed out'],
+      [await app.get(`/jellypass/app/v1/movie/${T_MOVIE}`), 502, 'the API while TMDB fails'],
+    ];
+    for (const [answer, status, what] of answers) {
+      assert.equal(answer.status, status, what);
+      neverStored(answer, what);
+    }
+    // The address's own budget for the API, used up.
+    let limited;
+    for (let index = 0; index < 400 && !limited; index += 1) {
+      const answer = await app.get('/jellypass/app/v1/me', { user: null });
+      if (answer.status === 429) limited = answer;
+    }
+    assert.ok(limited, 'the API rate limit');
+    neverStored(limited, 'a rate-limited call');
+    // A non-file method on a file's path.
+    const posted = await post(app.port, PAGE, { Host: HOST_A }, {});
+    assert.ok(posted.status >= 400, 'POST to the page');
+    neverStored(posted, 'POST to the page');
+    // A WebSocket upgrade under /jellypass/app, which is never proxied.
+    const upgrade = await new Promise((resolve, reject) => {
+      import('node:net').then(({ connect }) => {
+        const socket = connect(app.port, '127.0.0.1', () => socket.write(`GET ${PAGE}sw.js HTTP/1.1\r\nHost: ${HOST_A}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n`));
+        let text = '';
+        socket.on('data', (chunk) => { text += chunk; });
+        socket.on('end', () => resolve(text));
+        socket.on('error', reject);
+      });
+    });
+    assert.match(upgrade, /^HTTP\/1\.1 404 /);
+    for (const [name, value] of Object.entries(NEVER_STORED)) assert.match(upgrade, new RegExp(`\r\n${name}: ${value}\r\n`, 'i'), name);
+    // Without the app API, its paths are a fixed 404 that no CDN keeps either.
+    const off = await startApp(t, world(), { app: false });
+    const disabled = await off.get(PAGE, { user: null });
+    assert.equal(disabled.status, 404);
+    neverStored(disabled, 'the app switched off');
+  });
+
+  it('serves a file only under the fingerprint of its content: an old or made-up one is an unknown app path', async (t) => {
+    const app = await startApp(t);
+    const css = BUILT('app.css');
+    assert.equal((await app.get(`${PAGE}${css}`, { user: null })).status, 200);
+    const unknown = shape(await app.get('/jellypass/app/no-such-file', { user: null }));
+    for (const name of [
+      'app.css', 'js/main.js', 'manifest.webmanifest', 'icons/icon-192.png', 'tmdb-logo.svg', 'js/session.js',
+      css.replace(/\.[0-9a-f]{12}\./, '.000000000000.'), css.replace(/\.[0-9a-f]{12}\./, '.ffffffffffff.'),
+      css.replace('.css', '.js'), `${css}.map`,
+    ]) {
+      assert.deepEqual(shape(await app.get(`${PAGE}${name}`, { user: null })), unknown, name);
+    }
+    assert.equal((await app.get(`${PAGE}js/nope.${'0'.repeat(12)}.js`)).status, 404);
+  });
+
+  it('fingerprints every file the page loads and names only fingerprinted files', () => {
+    const named = FILES.filter((file) => file !== 'index.html' && file !== 'sw.js');
+    assert.ok(named.length >= 11);
+    for (const file of named) assert.match(file, /^(?:[a-z0-9-]+\/)?[a-z0-9-]+\.[0-9a-f]{12}\.[a-z]+$/, file);
+    const { document } = parseHTML(read('index.html'));
+    const referenced = [
+      ...document.querySelectorAll('script[src], link[href]'),
+    ].map((node) => node.getAttribute('src') ?? node.getAttribute('href'));
+    assert.deepEqual(referenced.sort(), [
+      BUILT('app.css'), BUILT('icons/apple-touch-icon.png'), BUILT('icons/icon-192.png'), BUILT('js/main.js'), BUILT('manifest.webmanifest'),
+    ].sort());
+    // Every module import reaches a built file, and the sources' own names are gone.
+    for (const file of FILES.filter((name) => name.endsWith('.js') && name !== 'sw.js')) {
+      for (const match of read(file).matchAll(/(?:from|import)\s*['"](\.\/[^'"]+)['"]/g)) {
+        assert.ok(FILES.includes(path.posix.join(path.posix.dirname(file), match[1])), `${file} imports ${match[1]}`);
+        assert.match(match[1], new RegExp(`\\.${FINGERPRINT}\\.js$`), `${file} imports ${match[1]}`);
+      }
+    }
+    for (const source of ['app.css', 'js/main.js', 'js/api.js', 'manifest.webmanifest', 'icons/icon-192.png', 'tmdb-logo.svg']) {
+      assert.equal(FILES.includes(source), false, `${source} is only served fingerprinted`);
+    }
+    assert.ok(JSON.parse(read(BUILT('manifest.webmanifest'))).icons.every((icon) => FILES.includes(icon.src)));
+    assert.ok(read(BUILT('js/render.js')).includes(`'${BUILT('tmdb-logo.svg')}'`), 'the logo is named by its fingerprint');
+    // The logo is TMDB's, unmodified.
+    assert.deepEqual(readFileSync(path.join(DIST_APP, BUILT('tmdb-logo.svg'))), readFileSync(path.join(import.meta.dirname, '..', 'app', 'static', 'tmdb-logo.svg')));
+  });
+
+  it('gives a file a new name when it, or anything it names, changes, and the same name when nothing does', () => {
+    const root = mkdtempSync(path.join(os.tmpdir(), 'jellypass-fingerprint-'));
+    try {
+      const staticDir = path.join(root, 'static');
+      const jsDir = path.join(root, 'js');
+      cpSync(path.join(import.meta.dirname, '..', 'app', 'static'), staticDir, { recursive: true });
+      cpSync(path.join(import.meta.dirname, '..', 'dist', 'app-js'), jsDir, { recursive: true });
+      const build = (name) => buildApp({ staticDir, jsDir, outDir: path.join(root, name) });
+      const before = build('one');
+      assert.deepEqual([...build('two')].sort(), [...before].sort(), 'a rebuild gives the same names');
+      assert.deepEqual(walk(path.join(root, 'one')), walk(path.join(root, 'two')));
+      writeFileSync(path.join(staticDir, 'app.css'), `${readFileSync(path.join(staticDir, 'app.css'), 'utf8')}\n.x { color: red; }\n`);
+      const css = build('three');
+      assert.notEqual(css.get('app.css'), before.get('app.css'));
+      assert.equal(css.get('js/api.js'), before.get('js/api.js'), 'unrelated files keep their names');
+      assert.notEqual(read('index.html'), readFileSync(path.join(root, 'three', 'index.html'), 'utf8'), 'the page names the new stylesheet');
+      // A module's name follows what it imports: changing api.js renames main.js and signin.js, which import it.
+      writeFileSync(path.join(jsDir, 'api.js'), `${readFileSync(path.join(jsDir, 'api.js'), 'utf8')}\n// changed\n`);
+      const api = build('four');
+      for (const file of ['js/api.js', 'js/signin.js', 'js/main.js']) assert.notEqual(api.get(file), css.get(file), file);
+      assert.equal(api.get('js/session.js'), css.get('js/session.js'));
+      // The worker's cache name follows the files too.
+      const stamp = (name) => /\$\{CACHE_PREFIX\}([0-9a-f]{16})-/.exec(readFileSync(path.join(root, name, 'sw.js'), 'utf8'))?.[1];
+      assert.notEqual(stamp('four'), stamp('three'));
+      assert.notEqual(stamp('three'), stamp('one'));
+      // A reference the build cannot rewrite stops it.
+      writeFileSync(path.join(staticDir, 'app.css'), 'body { background: url(x.png); }');
+      assert.throws(() => build('five'), /url\(\) or @import/);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
@@ -247,16 +406,16 @@ describe('household app page: files', () => {
     assert.equal(meta('mobile-web-app-capable'), 'yes');
     assert.equal(meta('apple-mobile-web-app-title'), 'JellyPass');
     assert.ok(meta('apple-mobile-web-app-status-bar-style'));
-    assert.equal(meta('theme-color'), JSON.parse(read('manifest.webmanifest')).theme_color);
-    assert.equal(document.querySelector('link[rel="manifest"]').getAttribute('href'), 'manifest.webmanifest');
-    assert.equal(document.querySelector('link[rel="apple-touch-icon"]').getAttribute('href'), 'icons/apple-touch-icon.png');
+    assert.equal(meta('theme-color'), JSON.parse(read(BUILT('manifest.webmanifest'))).theme_color);
+    assert.equal(document.querySelector('link[rel="manifest"]').getAttribute('href'), BUILT('manifest.webmanifest'));
+    assert.equal(document.querySelector('link[rel="apple-touch-icon"]').getAttribute('href'), BUILT('icons/apple-touch-icon.png'));
     assert.ok(document.querySelector('main'), 'a main landmark');
     assert.ok(document.querySelector('nav[aria-label]'), 'a labelled nav');
     assert.ok(document.querySelector('a.skip-link'), 'a skip link');
   });
 
   it('has a manifest that installs the app as standalone, starting at the app, with real icons', () => {
-    const manifest = JSON.parse(read('manifest.webmanifest'));
+    const manifest = JSON.parse(read(BUILT('manifest.webmanifest')));
     assert.equal(manifest.name, 'JellyPass');
     assert.equal(manifest.display, 'standalone');
     // The scope is the whole household host, not just the app: Jellyfin web (sign-in, and what Play opens) then stays inside
@@ -274,12 +433,12 @@ describe('household app page: files', () => {
       assert.deepEqual([...png.subarray(0, 8)], [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a], icon.src);
       assert.equal(`${png.readUInt32BE(16)}x${png.readUInt32BE(20)}`, icon.sizes, icon.src);
     }
-    const touch = readFileSync(path.join(DIST_APP, 'icons/apple-touch-icon.png'));
+    const touch = readFileSync(path.join(DIST_APP, BUILT('icons/apple-touch-icon.png')));
     assert.equal(`${touch.readUInt32BE(16)}x${touch.readUInt32BE(20)}`, '180x180');
   });
 
   it('bundles the unmodified TMDB logo locally and never loads anything from another origin', () => {
-    const logo = read('tmdb-logo.svg');
+    const logo = read(BUILT('tmdb-logo.svg'));
     assert.match(logo, /^<svg [^>]*viewBox="0 0 273\.42 35\.52"/);
     assert.doesNotMatch(logo, /<script|href=["']https?:|on\w+=/i);
     for (const file of FILES.filter((name) => /\.(js|css|html|webmanifest)$/.test(name))) {
@@ -289,21 +448,30 @@ describe('household app page: files', () => {
         assert.match(url, /^https:\/\/(?:www\.themoviedb\.org\/?|image\.tmdb\.org\/t\/p\/.*|image\\\.tmdb.*)$/, `${file} mentions ${url}`);
       }
     }
-    assert.doesNotMatch(read('app.css'), /@import|url\(/);
+    assert.doesNotMatch(read(BUILT('app.css')), /@import|url\(/);
   });
 
-  it('writes nothing it should not: no HTML parsing of text, no eval, no browser storage written, no cookies', () => {
+  it('writes nothing it should not: no HTML parsing of text, no eval, no cookies, and storage only in session.js, for two keys', () => {
     for (const file of FILES.filter((name) => name.startsWith('js/'))) {
       const source = read(file);
       assert.doesNotMatch(source, /innerHTML|outerHTML|insertAdjacentHTML|document\.write|\beval\(|new Function|srcdoc/, file);
-      assert.doesNotMatch(source, /setItem|removeItem|sessionStorage|indexedDB|document\.cookie|caches\./, file);
+      assert.doesNotMatch(source, /sessionStorage|indexedDB|document\.cookie|caches\./, file);
+      if (!file.startsWith('js/session.')) assert.doesNotMatch(source, /setItem|removeItem|\.clear\(/, `${file} writes browser storage outside session.js`);
     }
-    // localStorage is only read: it holds Jellyfin web's own sign-in.
-    assert.match(read('js/session.js'), /localStorage|getItem/);
+    // The only storage the app writes is Jellyfin web's own credentials (its sign-in) and its own random device ID.
+    const session = read(BUILT('js/session.js'));
+    const keys = new Set([...session.matchAll(/CREDENTIALS_KEY = '([^']+)'|DEVICE_ID_KEY = '([^']+)'/g)].map((match) => match[1] ?? match[2]));
+    assert.deepEqual([...keys].sort(), ['jellyfin_credentials', 'jellypass_device_id']);
+    assert.deepEqual([...session.matchAll(/setItem\(([A-Z_]+)/g)].map((match) => match[1]).sort(), ['CREDENTIALS_KEY', 'CREDENTIALS_KEY', 'DEVICE_ID_KEY']);
+    assert.doesNotMatch(session, /removeItem/);
+    // No token, password or user ID reaches a URL, a log or the address bar.
+    for (const file of FILES.filter((name) => name.startsWith('js/'))) {
+      assert.doesNotMatch(read(file), /console\./, `${file} logs`);
+    }
   });
 
   it('keeps every colour pair in the stylesheet at WCAG AA contrast', () => {
-    const css = read('app.css');
+    const css = read(BUILT('app.css'));
     const tokens = Object.fromEntries([...css.matchAll(/--([a-z-]+):\s*(#[0-9a-f]{6});/gi)].map((match) => [match[1], match[2]]));
     const luminance = (hex) => {
       const channels = [1, 3, 5].map((index) => parseInt(hex.slice(index, index + 2), 16) / 255)
@@ -429,6 +597,12 @@ describe('household app page: service worker', () => {
       `${ORIGIN}/web/`,
       `${ORIGIN}/Videos/abc/stream`,
       `${ORIGIN}/jellypass/add`,
+      // The sign-in calls: they carry passwords and tokens and must always reach the network, never this worker.
+      `${ORIGIN}/Users/Public`,
+      `${ORIGIN}/Users/AuthenticateByName`,
+      `${ORIGIN}/Users/Me`,
+      `${ORIGIN}/Sessions/Logout`,
+      `${ORIGIN}/QuickConnect/Enabled`,
       `${ORIGIN}/jellypass/app/unknown.js`,
       'https://image.tmdb.org/t/p/w342/synthetic.jpg',
       'https://example.test/jellypass/app/app.css',
@@ -436,7 +610,10 @@ describe('household app page: service worker', () => {
       const { handled } = await fetchEvent(worker, url);
       assert.equal(handled, false, url);
     }
-    assert.equal((await fetchEvent(worker, `${ORIGIN}${PAGE}app.css`, { method: 'POST' })).handled, false);
+    assert.equal((await fetchEvent(worker, `${ORIGIN}${PAGE}${BUILT('app.css')}`, { method: 'POST' })).handled, false);
+    for (const url of ['/Users/AuthenticateByName', '/Sessions/Logout']) {
+      assert.equal((await fetchEvent(worker, `${ORIGIN}${url}`, { method: 'POST' })).handled, false, `POST ${url}`);
+    }
     assert.deepEqual(worker.log.fetched, [], 'the worker fetched something it was not asked to handle');
     assert.deepEqual(worker.log.puts, []);
     assert.deepEqual(worker.log.added, []);
@@ -450,8 +627,8 @@ describe('household app page: service worker', () => {
     const stored = () => [...worker.stores.values()].flatMap((store) => [...store.keys()]).sort();
     const before = stored();
     for (const url of [
-      `${ORIGIN}/jellypass/app/v1/me`, `${ORIGIN}${PAGE}`, `${ORIGIN}${PAGE}js/main.js`, `${ORIGIN}/jellypass/app/v1/discover/trending`,
-      `${ORIGIN}${PAGE}app.css?x=1`, `${ORIGIN}/jellypass/app/V1/me`,
+      `${ORIGIN}/jellypass/app/v1/me`, `${ORIGIN}${PAGE}`, `${ORIGIN}${PAGE}${BUILT('js/main.js')}`, `${ORIGIN}/jellypass/app/v1/discover/trending`,
+      `${ORIGIN}${PAGE}${BUILT('app.css')}?x=1`, `${ORIGIN}/jellypass/app/V1/me`,
     ]) {
       await fetchEvent(worker, url);
     }
@@ -490,7 +667,7 @@ describe('household app page: service worker', () => {
     const waits = [];
     worker.listeners.install({ waitUntil: (promise) => waits.push(promise) });
     await Promise.all(waits);
-    const url = `${ORIGIN}${PAGE}app.css`;
+    const url = `${ORIGIN}${PAGE}${BUILT('app.css')}`;
     assert.equal(await (await fetchEvent(worker, url)).response.text(), 'network 200');
     // A newer answer on the network is not mixed into the stored release: offline is always the installed set.
     online = false;
@@ -526,7 +703,7 @@ describe('household app page: service worker', () => {
       const template = readFileSync(path.join(import.meta.dirname, '..', 'app', 'static', 'sw.js'), 'utf8');
       assert.equal(contentHash(copy, template), hash, 'the unstamped worker is what the build hashes');
       assert.notEqual(contentHash(copy, `${template}\n// worker-only change\n`), hash, 'a worker-only change is a new cache name');
-      for (const file of ['app.css', 'js/main.js', 'index.html', 'icons/icon-192.png']) {
+      for (const file of [BUILT('app.css'), BUILT('js/main.js'), 'index.html', BUILT('icons/icon-192.png')]) {
         const target = path.join(copy, file);
         const original = readFileSync(target);
         writeFileSync(target, Buffer.concat([original, Buffer.from('\n')]));
@@ -542,7 +719,7 @@ describe('household app page: service worker', () => {
 
   it('installs a release whole or not at all, and leaves other releases\' caches alone when it cannot', async () => {
     const worker = runWorker({ failAdd: true });
-    worker.stores.set('jellypass-app-static-previous', new Map([[`${PAGE}app.css`, new Response('old release')]]));
+    worker.stores.set('jellypass-app-static-previous', new Map([[`${PAGE}${BUILT('app.css')}`, new Response('old release')]]));
     const waits = [];
     worker.listeners.install({ waitUntil: (promise) => waits.push(promise) });
     await assert.rejects(Promise.all(waits), /network error while precaching/);
@@ -567,7 +744,7 @@ describe('household app page: service worker', () => {
     assert.deepEqual([...stores.keys()], [name], 'only the failed install\'s own cache was deleted');
     assert.deepEqual(a.log.deleted, []);
     const offline = runWorker({ stores, network: async () => { throw new TypeError('offline'); } });
-    assert.equal(await (await fetchEvent(offline, `${ORIGIN}${PAGE}app.css`)).response.text(), 'precached', 'offline fallback still works');
+    assert.equal(await (await fetchEvent(offline, `${ORIGIN}${PAGE}${BUILT('app.css')}`)).response.text(), 'precached', 'offline fallback still works');
   });
 
   it('keeps every install\'s cache separate, and a restarted worker still finds its release\'s copy', async () => {
@@ -580,7 +757,7 @@ describe('household app page: service worker', () => {
     }
     assert.equal(stores.size, 2, 'distinct names per install');
     const restarted = runWorker({ stores, network: async () => { throw new TypeError('offline'); } });
-    assert.equal(await (await fetchEvent(restarted, `${ORIGIN}${PAGE}js/main.js`)).response.text(), 'precached');
+    assert.equal(await (await fetchEvent(restarted, `${ORIGIN}${PAGE}${BUILT('js/main.js')}`)).response.text(), 'precached');
   });
 
   it('stamps the worker with the hash of the files it precaches, and refuses a worker with nothing to stamp', () => {
@@ -618,8 +795,8 @@ describe('household app page: service worker', () => {
   });
 
   it('is registered by the page at the one canonical absolute URL and scope', () => {
-    const main = read('js/main.js');
-    assert.match(main, /serviceWorker\.register\('\/jellypass\/app\/sw\.js', \{ scope: '\/jellypass\/app\/' \}\)/);
+    const main = read(BUILT('js/main.js'));
+    assert.match(main, /serviceWorker\.register\('\/jellypass\/app\/sw\.js', \{ scope: '\/jellypass\/app\/', updateViaCache: 'none' \}\)/);
   });
 });
 
@@ -636,7 +813,7 @@ describe('household app page: rendering', () => {
 
   async function renderer() {
     const { document, Event } = parseHTML('<!doctype html><html><body></body></html>');
-    const module = await import(pathToFileURL(path.join(DIST_APP, 'js', 'render.js')).href);
+    const module = await import(pathToFileURL(path.join(DIST_APP, BUILT('js/render.js'))).href);
     return { document, Event, ...module };
   }
 
@@ -720,8 +897,8 @@ describe('household app page: rendering', () => {
     assert.equal(image.getAttribute('decoding'), 'async');
     assert.equal(image.getAttribute('width'), '342');
     assert.equal(image.getAttribute('height'), '513');
-    assert.match(read('app.css'), /\.poster \{[^}]*aspect-ratio: 2 \/ 3/);
-    assert.match(read('app.css'), /\.backdrop \{[^}]*aspect-ratio: 780 \/ 439/);
+    assert.match(read(BUILT('app.css')), /\.poster \{[^}]*aspect-ratio: 2 \/ 3/);
+    assert.match(read(BUILT('app.css')), /\.backdrop \{[^}]*aspect-ratio: 780 \/ 439/);
   });
 
   it('renders a movie page, a series page with its seasons and states, and a season with its episodes', async () => {
@@ -732,7 +909,7 @@ describe('household app page: rendering', () => {
     assert.deepEqual([...movie.querySelectorAll('.genres li')].map((li) => li.textContent), ['Drama', 'Mystery']);
     assert.equal(movie.querySelector('.badge').textContent, 'Ready to watch');
     assert.equal(movie.querySelector('a.button').getAttribute('href'), play.url);
-    assert.equal(movie.querySelector('.seasons'), null);
+    assert.ok(movie.querySelector('.seasons') === null);
 
     const series = titleDetail(document, {
       ...card({ mediaType: 'tv', tmdbId: 900002, title: 'Synthetic Series Two', state: 'get_this' }), genres: [], runtime: 45,
@@ -742,15 +919,15 @@ describe('household app page: rendering', () => {
         { seasonNumber: 3, name: '', episodeCount: null, state: 'unavailable' },
       ],
     }, origin);
-    assert.equal(series.querySelector('a.button'), null, 'no Play without the title in the library');
-    assert.equal(series.querySelector('button'), null, 'and no request button unless the screen can ask');
+    assert.ok(series.querySelector('a.button') === null, 'no Play without the title in the library');
+    assert.ok(series.querySelector('button') === null, 'and no request button unless the screen can ask');
     const seasons = [...series.querySelectorAll('.season')];
     assert.deepEqual(seasons.map((season) => season.querySelector('.badge').textContent), ['Ready to watch', 'Available to get', "Can't request"]);
     assert.deepEqual(seasons.map((season) => season.querySelector('a').getAttribute('href')),
       ['#/tv/900002/season/1', '#/tv/900002/season/2', '#/tv/900002/season/3']);
     assert.deepEqual(seasons.map((season) => season.querySelector('.card-meta').textContent), ['8 episodes', '1 episode', '']);
     assert.equal(seasons[2].querySelector('.season-name').textContent, 'Season 3');
-    assert.equal(series.querySelector('.detail-text .muted'), null, 'no "soon" note any more');
+    assert.ok(series.querySelector('.detail-text .muted') === null, 'no "soon" note any more');
 
     const season = seasonView(document, {
       tmdbId: 900002, seasonNumber: 1, name: 'Season 1', overview: 'Season text.', state: 'in_library',
@@ -760,7 +937,7 @@ describe('household app page: rendering', () => {
     assert.equal(season.querySelector('h1').textContent, 'Season 1');
     assert.equal(season.querySelector('.badge').textContent, 'Ready to watch');
     assert.deepEqual([...season.querySelectorAll('.episode-title')].map((title) => title.textContent), ['1. Pilot', '2. Episode 2']);
-    assert.equal(season.querySelector('a.button'), null);
+    assert.ok(season.querySelector('a.button') === null);
   });
 
   it('shows only fixed text for each error, with a sign-in link for 401 and no upstream text', async () => {
@@ -814,14 +991,14 @@ describe('household app page: rendering', () => {
       assert.equal(button.textContent, 'Get this');
       assert.equal(button.getAttribute('aria-label'), 'Get this: Synthetic Movie Three');
       assert.equal(button.getAttribute('type'), 'button');
-      assert.equal(detail.querySelector('.get-seasons'), null);
+      assert.ok(detail.querySelector('.get-seasons') === null);
       assert.equal(detail.querySelector('.get-message').getAttribute('role'), 'status');
       assert.equal(detail.querySelector('.get-message').textContent, '');
       click(document, Event, button);
       assert.deepEqual(calls, [[]], 'a movie asks for no seasons');
-      for (const state of ['in_library', 'requested', 'unavailable']) assert.equal(movie(state, { onGet }).querySelector('button'), null, state);
-      assert.equal(movie('get_this', {}).querySelector('button'), null, 'a screen that cannot ask shows none');
-      assert.equal(movie('get_this', {}).querySelector('.get-this'), null);
+      for (const state of ['in_library', 'requested', 'unavailable']) assert.ok(movie(state, { onGet }).querySelector('button') === null, state);
+      assert.ok(movie('get_this', {}).querySelector('button') === null, 'a screen that cannot ask shows none');
+      assert.ok(movie('get_this', {}).querySelector('.get-this') === null);
       assert.equal(GET_THIS_TEXT.button, 'Get this');
     });
 
@@ -904,7 +1081,7 @@ describe('household app page: rendering', () => {
       assert.equal(partly.querySelectorAll('.season .badge')[0].textContent, 'Available to get');
       // No requestable season, no picker; seasons just asked for are not offered again.
       const none = titleDetail(document, series({ state: 'unavailable', seasons: [{ seasonNumber: 1, name: 'Season 1', episodeCount: 1, state: 'unavailable' }] }), origin, { onGet: async () => 'accepted' });
-      assert.equal(none.querySelector('.get-this'), null);
+      assert.ok(none.querySelector('.get-this') === null);
       const again = titleDetail(document, series(), origin, { onGet: async () => 'accepted', asked: new Set([2]) });
       assert.deepEqual([...again.querySelectorAll('input[type="checkbox"]')].map((box) => box.value), ['3']);
     });
@@ -917,12 +1094,12 @@ describe('household app page: rendering', () => {
       const screen = view('get_this');
       const button = screen.querySelector('button');
       assert.equal(button.getAttribute('aria-label'), 'Get this: Synthetic Series Two Season 2');
-      assert.equal(screen.querySelector('fieldset'), null, 'one season needs no picker');
+      assert.ok(screen.querySelector('fieldset') === null, 'one season needs no picker');
       assert.equal(button.disabled, false);
       click(document, Event, button);
       assert.deepEqual(asked, [[2]]);
-      for (const state of ['in_library', 'requested', 'unavailable']) assert.equal(view(state).querySelector('button'), null, state);
-      assert.equal(view('get_this', { onGet: undefined }).querySelector('button'), null);
+      for (const state of ['in_library', 'requested', 'unavailable']) assert.ok(view(state).querySelector('button') === null, state);
+      assert.ok(view('get_this', { onGet: undefined }).querySelector('button') === null);
     });
 
     it('shows "We couldn\'t get this" where the household asked and it did not work out, and the other coarse states as the API gives them', async () => {
@@ -967,7 +1144,7 @@ describe('household app page: rendering', () => {
       setRequestTitle(item, undefined);
       assert.equal(item.querySelector('.card-title').textContent, 'Title unavailable');
       const movie = requestItem(document, { id: 'x', mediaType: 'movie', tmdbId: 5, status: 'failed', byYou: false, seasons: [] });
-      assert.equal(movie.querySelector('.request-seasons'), null);
+      assert.ok(movie.querySelector('.request-seasons') === null);
       assert.equal(movie.querySelector(':scope > .badge').textContent, "We couldn't get this");
       assert.equal(movie.querySelector('.card-meta').textContent, 'Movie');
       // An unknown status (never sent) is shown as the safe one rather than as raw text.
@@ -1013,13 +1190,13 @@ describe('household app page: rendering', () => {
     assert.equal(TMDB_NOTICE, 'This product uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB.');
     assert.ok([...about.querySelectorAll('p')].some((paragraph) => paragraph.textContent === TMDB_NOTICE));
     const logo = about.querySelector('img.tmdb-logo');
-    assert.equal(logo.getAttribute('src'), 'tmdb-logo.svg', 'bundled, not hotlinked');
+    assert.equal(logo.getAttribute('src'), BUILT('tmdb-logo.svg'), 'bundled, not hotlinked');
     assert.ok(logo.getAttribute('alt'));
     const links = [...about.querySelectorAll('a')].map((anchor) => anchor.getAttribute('href'));
     assert.deepEqual(links, ['https://www.themoviedb.org/', 'https://www.themoviedb.org/']);
     assert.ok(about.querySelectorAll('h1').length === 1);
     // The logo is less prominent than the app's own name (TMDB's terms): small, in the credits only.
-    assert.match(read('app.css'), /\.tmdb-logo \{ width: 9rem/);
+    assert.match(read(BUILT('app.css')), /\.tmdb-logo \{ width: 9rem/);
   });
 });
 
@@ -1028,12 +1205,24 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
    * Loads the real page and client modules into a DOM, signed in as `user` with Jellyfin web's own stored sign-in, and
    * wires `fetch` to the real API on the test server. One page per test (the client keeps its state in module scope).
    */
-  async function openApp(t, app, { user = ALICE, host = HOST_A, signedIn = true, override, hash = '', holdMe } = {}) {
+  async function openApp(t, app, { user = ALICE, host = HOST_A, signedIn = true, override, hash = '', holdMe, store: initialStore, storageFails = false, userAgent = '' } = {}) {
     const origin = `https://${host}`;
-    const { document, Event } = parseHTML(read('index.html'));
-    const store = new Map(signedIn ? [['jellyfin_credentials', JSON.stringify({
+    const { document, Event, HTMLElement } = parseHTML(read('index.html'));
+    // linkedom keeps no focus (it has no document.activeElement): the last element of this page focus() was called on stands in.
+    let focused = null;
+    const ownFocus = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'focus');
+    const { focus } = HTMLElement.prototype;
+    HTMLElement.prototype.focus = function (...args) {
+      if (this.ownerDocument === document) focused = this;
+      return focus.apply(this, args);
+    };
+    t.after(() => {
+      if (ownFocus) Object.defineProperty(HTMLElement.prototype, 'focus', ownFocus);
+      else delete HTMLElement.prototype.focus;
+    });
+    const store = new Map(initialStore ?? (signedIn ? [['jellyfin_credentials', JSON.stringify({
       Servers: [{ ManualAddress: origin, AccessToken: TOKENS[user], UserId: user }],
-    })]] : []);
+    })]] : []));
     const requests = [];
     const location = { origin, hash };
     const listeners = {};
@@ -1047,14 +1236,22 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
           requests.push({ url, init });
           if (init.signal?.aborted) throw new DOMException('aborted', 'AbortError');
           if (holdMe && url === '/jellypass/app/v1/me') await holdMe;
-          const answer = (await override?.(url, init)) ?? await get(app.port, url, { Host: host, ...init.headers }, { method: init.method ?? 'GET', body: init.body });
+          const answer = override?.(url, init) ?? await (init.method === 'POST'
+            ? post(app.port, url, { Host: host, ...init.headers }, init.body ? JSON.parse(init.body) : undefined)
+            : get(app.port, url, { Host: host, ...init.headers }));
           return new Response(answer.body, { status: answer.status, headers: answer.headers });
         },
       },
       location,
       history: { replaceState(_state, _title, url) { location.hash = String(url).slice(String(url).indexOf('#')); } },
-      localStorage: { getItem: (key) => store.get(key) ?? null },
-      navigator: {},
+      localStorage: {
+        getItem: (key) => store.get(key) ?? null,
+        setItem: (key, value) => {
+          if (storageFails) throw new DOMException('quota', 'QuotaExceededError');
+          store.set(key, String(value));
+        },
+      },
+      navigator: { userAgent },
     };
     const previous = Object.fromEntries(Object.keys(globals).map((key) => [key, Object.getOwnPropertyDescriptor(globalThis, key)]));
     for (const [key, value] of Object.entries(globals)) Object.defineProperty(globalThis, key, { value, configurable: true, writable: true });
@@ -1064,7 +1261,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         else delete globalThis[key];
       }
     });
-    await import(`${pathToFileURL(path.join(DIST_APP, 'js', 'main.js')).href}?page=${Math.random()}`);
+    await import(`${pathToFileURL(path.join(DIST_APP, BUILT('js/main.js'))).href}?page=${Math.random()}`);
     const until = async (condition, what) => {
       for (let waited = 0; waited < 5000; waited += 10) {
         const value = condition();
@@ -1078,7 +1275,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       for (const listener of listeners.hashchange ?? []) listener({});
     };
     const main = () => document.getElementById('screen');
-    return { document, Event, until, go, main, requests, store, location, serialize: () => document.documentElement.outerHTML, listeners };
+    return { document, Event, until, go, main, requests, store, location, serialize: () => document.documentElement.outerHTML, listeners, focused: () => focused };
   }
 
   it('shows the household and the four discover rows with each title\'s badge and Play link', async (t) => {
@@ -1098,7 +1295,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     const playLink = [...own.querySelectorAll('a')].find((anchor) => anchor.textContent === 'Play');
     assert.equal(playLink.getAttribute('href'), `https://${HOST_A}/web/#/details?id=33330000333300003333000033330000`);
     assert.equal(cards.flatMap((item) => [...item.querySelectorAll('a')]).filter((anchor) => anchor.textContent === 'Play').length, 1);
-    assert.equal(page.document.querySelector('[role="alert"]'), null);
+    assert.ok(page.document.querySelector('[role="alert"]') === null);
     assert.equal(page.document.getElementById('screen').getAttribute('aria-busy'), 'false');
     // Calls: me + four lists, each with the token, never cached by the browser, no cookies.
     assert.deepEqual(page.requests.map((request) => request.url.replace(/\?.*/, '')).sort(), [
@@ -1128,7 +1325,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     page.go(`#/tv/${T_TV}`);
     await page.until(() => page.main().querySelector('.season-list'), 'the series');
     assert.equal(page.main().querySelector('h1').textContent, 'Synthetic Series Two');
-    assert.equal(page.main().querySelector('a.button'), null);
+    assert.ok(page.main().querySelector('a.button') === null);
     const seasons = [...page.main().querySelectorAll('.season')];
     assert.ok(seasons.length >= 1);
     for (const season of seasons) assert.equal(season.querySelector('.badge').textContent, 'Available to get');
@@ -1207,7 +1404,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     assert.equal(page.location.hash, '#/search?q=another');
     release();
     await page.until(() => page.document.getElementById('who').textContent.length > 0, 'the header once /me is back');
-    assert.equal(page.main().querySelector('input[type="search"]'), input, 'the screen was not rebuilt');
+    assert.ok(page.main().querySelector('input[type="search"]') === input, 'the screen was not rebuilt');
     assert.equal(input.value, 'another');
   });
 
@@ -1257,18 +1454,397 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4, 'home');
   });
 
-  it('sends a signed-out visitor to the household\'s Jellyfin sign-in, without calling the API', async (t) => {
-    const app = await startApp(t);
+  const credentials = (page) => JSON.parse(page.store.get('jellyfin_credentials'));
+  const click = (page, node) => node.dispatchEvent(new page.Event('click', { bubbles: true, cancelable: true }));
+  const profileButton = (page, name) => [...page.main().querySelectorAll('button.profile')].find((button) => button.textContent.includes(name));
+  const enterPassword = (page, password) => {
+    const input = page.main().querySelector('input[type="password"]');
+    input.value = password;
+    page.main().querySelector('form').dispatchEvent(new page.Event('submit', { cancelable: true }));
+  };
+  const homeLoaded = (page) => page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4, 'the home rows');
+  const message = (page) => page.main().querySelector('#signin-message')?.textContent ?? '';
+  /** Alice has a password at Jellyfin; Ann is marked passwordless in JellyPass and has none. */
+  const signInWorld = () => world({ passwords: { [ALICE]: 'alice-pass' } });
+  const signInApp = async (t) => {
+    const app = await startApp(t, signInWorld());
+    await app.store.setUserPasswordless(ANN, true);
+    return app;
+  };
+
+  it('shows the household\'s own profiles when signed out, without calling the app API', async (t) => {
+    const app = await signInApp(t);
     const page = await openApp(t, app, { signedIn: false });
-    await page.until(() => page.main().querySelector('[role="alert"]'), 'the signed-out state');
-    assert.equal(page.main().querySelector('h1').textContent, 'Sign in to continue');
-    assert.equal(page.main().querySelector('a.button').getAttribute('href'), '/web/');
-    assert.equal(page.requests.length, 0);
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the profile picker');
+    assert.equal(page.main().querySelector('h1').textContent, 'Sign in');
+    assert.equal(page.document.title, 'Sign in – JellyPass');
+    // Only what the gateway lists on this host: this household's members, not Bob, Carol or the outsider.
+    assert.deepEqual([...page.main().querySelectorAll('.profile-name')].map((name) => name.textContent), ['Alice', 'Ann']);
+    assert.deepEqual([...page.main().querySelectorAll('button.profile')].map((button) => button.getAttribute('type')), ['button', 'button']);
+    assert.deepEqual(page.requests.map((request) => [request.init.method ?? 'GET', request.url]), [['GET', '/Users/Public']]);
+    assert.equal(page.document.getElementById('signout').hidden, true, 'nothing to sign out of');
+    // Jellyfin web is only a fallback, below the picker.
+    const links = [...page.main().querySelectorAll('a')];
+    assert.deepEqual(links.map((link) => [link.textContent, link.getAttribute('href')]), [['Open Jellyfin to sign in', '/web/']]);
+    assert.equal(page.main().querySelectorAll('a.button').length, 0);
     assert.equal(page.document.getElementById('who').textContent, '');
-    // Signing in (Jellyfin web writes its credentials) brings the app back without a reload.
+    const other = await openApp(t, app, { signedIn: false, host: HOST_B });
+    await other.until(() => other.main().querySelector('ul.profiles'), 'household B\'s picker');
+    assert.deepEqual([...other.main().querySelectorAll('.profile-name')].map((name) => name.textContent), ['Bob']);
+  });
+
+  it('signs in with a password, stores the session where Jellyfin web keeps its own, and then loads the app', async (t) => {
+    const app = await signInApp(t);
+    const page = await openApp(t, app, { signedIn: false, userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)' });
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker');
+    click(page, profileButton(page, 'Alice'));
+    const input = await page.until(() => page.main().querySelector('input[type="password"]'), 'the password step');
+    assert.equal(page.main().querySelector('h1').textContent, 'Sign in as Alice');
+    assert.equal(page.main().querySelector('label[for="password"]').textContent, 'Password');
+    assert.equal(input.getAttribute('autocomplete'), 'current-password');
+    assert.equal(page.main().querySelector('input[name="username"]').getAttribute('value'), 'Alice');
+    assert.equal(page.main().querySelector('input[name="username"]').getAttribute('aria-hidden'), 'true');
+    assert.equal(page.main().querySelector('[role="alert"]').getAttribute('id'), 'signin-message');
+    assert.equal(input.getAttribute('aria-describedby'), 'signin-message');
+    const requests = page.requests.length;
+    enterPassword(page, 'alice-pass');
+    await homeLoaded(page);
+    assert.equal(page.document.getElementById('who').textContent, 'Alice · Farmhouse');
+    assert.equal(page.document.getElementById('signout').hidden, false);
+
+    // One call signed in, with the headers Jellyfin web sends; the password is only in that body.
+    const login = page.requests[requests];
+    assert.equal(login.url, '/Users/AuthenticateByName');
+    assert.equal(login.init.method, 'POST');
+    assert.deepEqual(JSON.parse(login.init.body), { Username: 'Alice', Pw: 'alice-pass' });
+    assert.equal(login.init.credentials, 'omit');
+    assert.equal(login.init.cache, 'no-store');
+    const deviceId = page.store.get('jellypass_device_id');
+    assert.match(deviceId, /^jellypass-[0-9a-f-]{36}$/);
+    assert.equal(login.init.headers.Authorization, `MediaBrowser Client="JellyPass", Device="iPhone", DeviceId="${deviceId}", Version="1.0"`);
+    assert.equal(app.jellyfin.signIns.length, 1);
+    assert.equal(app.jellyfin.signIns[0].header, login.init.headers.Authorization);
+    // Stored exactly as Jellyfin web 10.11 stores it (Id, address, user, token, mode, time), where the app and /web/ both read.
+    const { token } = app.jellyfin.signIns[0];
+    assert.deepEqual(Object.keys(credentials(page)), ['Servers']);
+    const [server, ...others] = credentials(page).Servers;
+    assert.equal(others.length, 0);
+    assert.deepEqual({ ...server, DateLastAccessed: typeof server.DateLastAccessed }, {
+      Id: 'server', ManualAddress: page.location.origin, LastConnectionMode: 2, DateLastAccessed: 'number', UserId: ALICE, AccessToken: token,
+    });
+    assert.ok(Math.abs(server.DateLastAccessed - Date.now()) < 60_000);
+    // The app then calls /me and the lists with that token, and with nothing else.
+    const calls = page.requests.slice(requests + 1).filter((request) => request.url.startsWith('/jellypass/app/v1/'));
+    assert.ok(calls.length >= 5);
+    for (const { init } of calls) assert.equal(init.headers.Authorization, `MediaBrowser Token="${token}"`);
+    // The password is never in a URL, the page, storage (beyond the credentials above) or another request body.
+    for (const request of page.requests) assert.doesNotMatch(String(request.url), /alice-pass|signin-token/);
+    assert.doesNotMatch(page.serialize(), /alice-pass|signin-token/);
+    assert.doesNotMatch(page.store.get('jellyfin_credentials') + deviceId, /alice-pass/);
+    assert.equal(page.location.hash.includes(token), false);
+    assert.equal(input.value, '', 'the password field was cleared');
+    // Reloading finds the same device ID.
+    const again = await openApp(t, app, { store: page.store, user: ALICE });
+    await homeLoaded(again);
+    assert.equal(again.store.get('jellypass_device_id'), deviceId);
+  });
+
+  it('keeps what else Jellyfin web stored, and replaces a stale entry for this address', async (t) => {
+    const app = await signInApp(t);
+    const origin = `https://${HOST_A}`;
+    const before = JSON.stringify({
+      Servers: [
+        { Id: 'old-server', Name: 'Old', ManualAddress: origin, UserId: BOB, AccessToken: 'token-revoked' },
+        { Id: 'server', Name: 'Home Jellyfin', ManualAddress: origin, LocalAddress: 'http://10.0.0.5:8096', UserLinkType: 'Guest', DateLastAccessed: 1 },
+        { Id: 'elsewhere', Name: 'Elsewhere', ManualAddress: 'https://elsewhere.example.test' },
+      ],
+      Extra: { kept: true },
+    });
+    const page = await openApp(t, app, { store: new Map([['jellyfin_credentials', before]]) });
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker after a revoked token');
+    click(page, profileButton(page, 'Alice'));
+    await page.until(() => page.main().querySelector('input[type="password"]'), 'the password step');
+    enterPassword(page, 'alice-pass');
+    await homeLoaded(page);
+    const stored = credentials(page);
+    assert.deepEqual(stored.Extra, { kept: true });
+    assert.deepEqual(stored.Servers.map((server) => server.Id), ['server', 'elsewhere'], 'the stale entry for this address is gone');
+    assert.equal(stored.Servers[0].Name, 'Home Jellyfin');
+    assert.equal(stored.Servers[0].LocalAddress, 'http://10.0.0.5:8096');
+    assert.equal(stored.Servers[0].UserLinkType, 'Guest');
+    assert.equal(stored.Servers[0].UserId, ALICE);
+    assert.equal(stored.Servers[0].AccessToken, app.jellyfin.signIns[0].token);
+    assert.equal(stored.Servers[1].AccessToken, undefined);
+  });
+
+  it('signs in with one tap for a member marked passwordless, as Jellyfin web does', async (t) => {
+    const app = await signInApp(t);
+    const page = await openApp(t, app, { signedIn: false });
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker');
+    click(page, profileButton(page, 'Ann'));
+    await homeLoaded(page);
+    assert.ok(page.main().querySelector('input[type="password"]') === null, 'no password step');
+    assert.equal(page.document.getElementById('who').textContent, 'Ann · Farmhouse');
+    const login = page.requests.find((request) => request.url === '/Users/AuthenticateByName');
+    assert.deepEqual(JSON.parse(login.init.body), { Username: 'Ann', Pw: '' });
+    assert.equal(credentials(page).Servers[0].UserId, ANN);
+  });
+
+  /** Ann is hidden at Jellyfin (left off every login screen) and has a password; Bob, household B's only member, too. */
+  const hiddenApp = (t) => startApp(t, world({
+    passwords: { [ALICE]: 'alice-pass', [ANN]: 'ann-pass', [BOB]: 'bob-pass' },
+    jellyfinUsers: {
+      [ANN]: { Name: 'Ann', Policy: { IsHidden: true, BlockedTags: ['jellypass-held-elsewhere'], EnabledFolders: ['shared'] } },
+      [BOB]: { Name: 'Bob', Policy: { IsHidden: true, BlockedTags: [], EnableAllFolders: true } },
+    },
+  }));
+  const enterName = (page, username, password) => {
+    page.main().querySelector('#username').value = username;
+    page.main().querySelector('#password').value = password;
+    page.main().querySelector('form').dispatchEvent(new page.Event('submit', { cancelable: true }));
+  };
+  const NAME_REFUSED = "That didn't work. Check your name and password and try again.";
+
+  it('signs in a hidden member by name: the picker leaves them off and offers sign-in with a different name', async (t) => {
+    const app = await hiddenApp(t);
+    const page = await openApp(t, app, { signedIn: false });
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker');
+    assert.deepEqual([...page.main().querySelectorAll('.profile-name')].map((name) => name.textContent), ['Alice']);
+    const byName = [...page.main().querySelectorAll('button')].find((button) => button.textContent === 'Sign in with a different name');
+    assert.ok(byName, 'sign-in by name is offered');
+    assert.equal(byName.getAttribute('type'), 'button');
+    click(page, byName);
+    const username = await page.until(() => page.main().querySelector('#username'), 'the name form');
+    assert.equal(page.main().querySelector('h1').textContent, 'Sign in');
+    assert.equal(page.main().querySelector('label[for="username"]').textContent, 'Name');
+    assert.equal(page.main().querySelector('label[for="password"]').textContent, 'Password');
+    assert.equal(username.getAttribute('autocomplete'), 'username');
+    assert.equal(username.getAttribute('autocapitalize'), 'none');
+    assert.equal(username.getAttribute('spellcheck'), 'false');
+    assert.equal(username.getAttribute('aria-describedby'), 'signin-message');
+    assert.equal(page.main().querySelector('#password').getAttribute('autocomplete'), 'current-password');
+    assert.equal(page.main().querySelector('#password').getAttribute('aria-describedby'), 'signin-message');
+    assert.equal(page.main().querySelector('[role="alert"]').getAttribute('id'), 'signin-message');
+    // Never a DOM node in an assertion: a failing one inspects the whole document, at a depth of 1000, until memory runs out.
+    assert.ok(page.focused() === username, 'the name field has focus');
+    assert.deepEqual([...page.main().querySelectorAll('a')].map((link) => link.getAttribute('href')), ['/web/']);
+    const requests = page.requests.length;
+    enterName(page, ' ann ', 'ann-pass');
+    await homeLoaded(page);
+    assert.equal(page.document.getElementById('who').textContent, 'Ann · Farmhouse');
+    const login = page.requests[requests];
+    assert.equal(login.url, '/Users/AuthenticateByName');
+    assert.deepEqual(JSON.parse(login.init.body), { Username: 'ann', Pw: 'ann-pass' });
+    assert.equal(credentials(page).Servers[0].UserId, ANN);
+    assert.equal(credentials(page).Servers[0].AccessToken, app.jellyfin.signIns[0].token);
+    assert.doesNotMatch(page.serialize(), /ann-pass/);
+  });
+
+  it('refuses another household\'s name with the same fixed text as a wrong password, and asks for a name first', async (t) => {
+    const app = await hiddenApp(t);
+    const page = await openApp(t, app, { signedIn: false });
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker');
+    click(page, [...page.main().querySelectorAll('button')].find((button) => button.textContent === 'Sign in with a different name'));
+    await page.until(() => page.main().querySelector('#username'), 'the name form');
+    const submit = () => page.main().querySelector('button[type="submit"]');
+    // No name: refused before any call.
+    const calls = page.requests.length;
+    enterName(page, '  ', 'x');
+    assert.equal(message(page), 'Enter your name.');
+    assert.equal(page.main().querySelector('#username').getAttribute('aria-invalid'), 'true');
+    assert.equal(page.requests.length, calls);
+    const attempt = async (username, password, expected) => {
+      enterName(page, username, password);
+      assert.equal(submit().disabled, true, 'one attempt at a time');
+      await page.until(() => message(page) === expected && !submit().disabled, expected);
+      assert.equal(submit().textContent, 'Sign in');
+      assert.equal(page.main().querySelector('#password').value, '');
+      assert.doesNotMatch(page.serialize(), /upstream detail|bob-pass|ann-pass/);
+    };
+    await attempt('Bob', 'bob-pass', NAME_REFUSED);
+    assert.equal(page.main().querySelector('#password').getAttribute('aria-invalid'), 'true');
+    await attempt('Ann', 'wrong', NAME_REFUSED);
+    await attempt('nobody', '', NAME_REFUSED);
+    for (let attempts = 0; attempts < 20; attempts += 1) {
+      const answer = await post(app.port, '/Users/AuthenticateByName', { Host: HOST_A, Authorization: 'MediaBrowser Client="x", Device="y", DeviceId="zzzzzzzzzzzzzzzz", Version="1"' }, { Username: 'Ann', Pw: 'no' });
+      if (answer.status === 429) break;
+    }
+    await attempt('Ann', 'ann-pass', 'Too many attempts. Wait a few minutes, then try again.');
+    assert.equal(app.jellyfin.signIns.length, 0);
+    // Back to the picker.
+    click(page, [...page.main().querySelectorAll('button')].find((button) => button.textContent === 'Choose a profile'));
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker again');
+  });
+
+  it('starts with sign-in by name when the picker lists nobody', async (t) => {
+    const app = await hiddenApp(t);
+    const page = await openApp(t, app, { signedIn: false, host: HOST_B });
+    const username = await page.until(() => page.main().querySelector('#username'), 'the name form');
+    assert.ok(page.main().querySelector('ul.profiles') === null, 'no picker');
+    assert.doesNotMatch(page.main().textContent, /No profiles/);
+    assert.equal([...page.main().querySelectorAll('button')].some((button) => button.textContent === 'Choose a profile'), false, 'nothing to go back to');
+    assert.ok(page.focused() !== username, 'the first screen keeps the page\'s own focus');
+    enterName(page, 'Bob', 'bob-pass');
+    await homeLoaded(page);
+    assert.equal(page.document.getElementById('who').textContent, 'Bob · Mill');
+  });
+
+  it('asks for a password when a one-tap member has gained one, instead of failing', async (t) => {
+    const app = await startApp(t, world({ passwords: { [ANN]: 'ann-pass' } }));
+    await app.store.setUserPasswordless(ANN, true);
+    const page = await openApp(t, app, { signedIn: false });
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker');
+    click(page, profileButton(page, 'Ann'));
+    await page.until(() => page.main().querySelector('input[type="password"]'), 'the password step');
+    assert.equal(message(page), "That didn't work. Check your password and try again.");
+    enterPassword(page, 'ann-pass');
+    await homeLoaded(page);
+  });
+
+  it('shows fixed text for a wrong password, too many attempts, an outage, being offline and unusable storage', async (t) => {
+    const app = await signInApp(t);
+    const page = await openApp(t, app, { signedIn: false });
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker');
+    click(page, profileButton(page, 'Alice'));
+    await page.until(() => page.main().querySelector('input[type="password"]'), 'the password step');
+    const input = () => page.main().querySelector('input[type="password"]');
+    const submit = () => page.main().querySelector('button[type="submit"]');
+    const attempt = async (password, expected) => {
+      enterPassword(page, password);
+      assert.equal(submit().disabled, true, 'one attempt at a time');
+      await page.until(() => message(page) === expected, expected);
+      assert.equal(submit().disabled, false);
+      assert.equal(submit().textContent, 'Sign in');
+      assert.equal(input().value, '');
+      assert.doesNotMatch(page.serialize(), /upstream detail|canary/i);
+    };
+    await attempt('wrong', "That didn't work. Check your password and try again.");
+    assert.equal(input().getAttribute('aria-invalid'), 'true');
+    // An empty password is refused before any call.
+    const calls = page.requests.length;
+    enterPassword(page, '');
+    assert.equal(message(page), "That didn't work. Check your password and try again.");
+    assert.equal(page.requests.length, calls);
+    // The gateway's per-client limit: the household's other sign-in attempts used it up.
+    for (let attempts = 0; attempts < 20; attempts += 1) {
+      const answer = await post(app.port, '/Users/AuthenticateByName', { Host: HOST_A, Authorization: 'MediaBrowser Client="x", Device="y", DeviceId="zzzzzzzzzzzzzzzz", Version="1"' }, { Username: 'Alice', Pw: 'no' });
+      if (answer.status === 429) break;
+    }
+    await attempt('alice-pass', 'Too many attempts. Wait a few minutes, then try again.');
+    assert.equal(app.jellyfin.signIns.length, 0, 'the limited attempt never reached Jellyfin');
+    assert.equal(page.store.get('jellyfin_credentials'), undefined);
+  });
+
+  it('shows fixed text when Jellyfin is down, the network is gone or storage refuses the sign-in', async (t) => {
+    const app = await signInApp(t);
+    const outage = await openApp(t, app, { signedIn: false });
+    await outage.until(() => outage.main().querySelector('ul.profiles'), 'the picker');
+    // Jellyfin goes down after the picker loaded: the gateway cannot check the name, for a member as for anyone.
+    app.jellyfin.down = true;
+    click(outage, profileButton(outage, 'Ann'));
+    await outage.until(() => message(outage), 'the outage message');
+    assert.equal(message(outage), "Can't sign in right now. Try again in a moment.");
+    assert.ok(outage.main().querySelector('ul.profiles'), 'the picker stays, with its buttons usable again');
+    assert.ok([...outage.main().querySelectorAll('button.profile')].every((button) => !button.disabled));
+    assert.doesNotMatch(outage.serialize(), /upstream detail/);
+    app.jellyfin.down = false;
+
+    const offline = await openApp(t, app, { signedIn: false, override: (url) => { if (url === '/Users/AuthenticateByName') throw new TypeError('network'); } });
+    await offline.until(() => offline.main().querySelector('ul.profiles'), 'the picker');
+    click(offline, profileButton(offline, 'Ann'));
+    await offline.until(() => message(offline), 'the offline message');
+    assert.equal(message(offline), 'Check your connection, then try again.');
+
+    const refusing = await openApp(t, app, { signedIn: false, storageFails: true });
+    await refusing.until(() => refusing.main().querySelector('ul.profiles'), 'the picker');
+    click(refusing, profileButton(refusing, 'Ann'));
+    await refusing.until(() => message(refusing), 'the storage message');
+    assert.equal(message(refusing), "Can't keep your sign-in on this device. Allow site data for this page in your browser settings, then try again.");
+    assert.equal(refusing.document.getElementById('who').textContent, '');
+    assert.equal(refusing.requests.some((request) => request.url.startsWith('/jellypass/app/v1/')), false);
+  });
+
+  it('shows fixed text and a retry when the profiles cannot be loaded, and still offers Jellyfin web', async (t) => {
+    const app = await signInApp(t);
+    let fail = true;
+    const page = await openApp(t, app, {
+      signedIn: false,
+      override: (url) => (fail && url === '/Users/Public' ? { status: 502, body: Buffer.from('{"error":"jellyfin_unavailable"}'), headers: {} } : undefined),
+    });
+    await page.until(() => page.main().querySelector('button'), 'the failure');
+    assert.equal(page.main().querySelector('h1').textContent, 'Sign in');
+    assert.match(page.main().textContent, /Can't sign in right now\. Try again in a moment\./);
+    assert.doesNotMatch(page.main().textContent, /jellyfin_unavailable/);
+    assert.equal(page.main().querySelector('a').getAttribute('href'), '/web/');
+    fail = false;
+    click(page, page.main().querySelector('button'));
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker after retrying');
+  });
+
+  it('says a sign-in has expired when Jellyfin refuses the one it holds, and replaces it on signing in again', async (t) => {
+    const app = await signInApp(t);
+    const page = await openApp(t, app, { store: new Map([['jellyfin_credentials', JSON.stringify({
+      Servers: [{ Id: 'server', ManualAddress: `https://${HOST_A}`, AccessToken: 'token-revoked', UserId: ALICE }],
+    })]]) });
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker');
+    assert.match(page.main().textContent, /Your sign-in has expired/);
+    assert.equal(page.document.getElementById('signout').hidden, true);
+    click(page, profileButton(page, 'Ann'));
+    await homeLoaded(page);
+    assert.equal(credentials(page).Servers[0].AccessToken, app.jellyfin.signIns[0].token);
+    assert.equal(credentials(page).Servers.length, 1);
+  });
+
+  it('signs out: revokes the token at Jellyfin, clears the stored sign-in and shows the picker again', async (t) => {
+    const app = await signInApp(t);
+    const page = await openApp(t, app, { signedIn: false });
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker');
+    click(page, profileButton(page, 'Ann'));
+    await homeLoaded(page);
+    const { token } = app.jellyfin.signIns[0];
+    assert.equal((await app.get('/jellypass/app/v1/me', { headers: { Authorization: `MediaBrowser Token="${token}"` }, user: null })).status, 200);
+    click(page, page.document.getElementById('signout'));
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker after signing out');
+    assert.deepEqual(app.jellyfin.logouts, [token]);
+    const logout = page.requests.find((request) => request.url === '/Sessions/Logout');
+    assert.equal(logout.init.method, 'POST');
+    assert.equal(logout.init.headers.Authorization, `MediaBrowser Token="${token}"`);
+    assert.equal(logout.init.credentials, 'omit');
+    // What Jellyfin web would find: the server entry stays, without a user or token.
+    const [server] = credentials(page).Servers;
+    assert.equal(server.Id, 'server');
+    assert.equal(server.ManualAddress, page.location.origin);
+    assert.equal(server.AccessToken, undefined);
+    assert.equal(server.UserId, undefined);
+    assert.equal(page.document.getElementById('who').textContent, '');
+    assert.equal(page.document.getElementById('signout').hidden, true);
+    // Dead at Jellyfin, and so for Jellyfin web (the app API keeps trusting a token it has just verified for a few minutes).
+    assert.equal((await app.get('/Users/Me', { headers: { Authorization: `MediaBrowser Token="${token}"` }, user: null })).status, 401, 'the token is dead at Jellyfin');
+    // The device ID stays, so the next sign-in is the same device.
+    assert.match(page.store.get('jellypass_device_id'), /^jellypass-/);
+  });
+
+  it('signs out of this browser even when Jellyfin cannot be reached', async (t) => {
+    const app = await signInApp(t);
+    const page = await openApp(t, app, { override: (url) => { if (url === '/Sessions/Logout') throw new TypeError('network'); } });
+    await homeLoaded(page);
+    click(page, page.document.getElementById('signout'));
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker after signing out');
+    assert.equal(credentials(page).Servers[0].AccessToken, undefined);
+  });
+
+  it('follows a sign-in or sign-out made elsewhere on this address without a reload', async (t) => {
+    const app = await signInApp(t);
+    const page = await openApp(t, app, { signedIn: false });
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker');
+    // Jellyfin web (another tab) signs in.
     page.store.set('jellyfin_credentials', JSON.stringify({ Servers: [{ ManualAddress: page.location.origin, AccessToken: TOKENS[ALICE], UserId: ALICE }] }));
     for (const listener of page.listeners.storage ?? []) listener({ key: 'jellyfin_credentials' });
-    await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4, 'the home rows after signing in');
+    await homeLoaded(page);
+    // And signs out again.
+    page.store.set('jellyfin_credentials', JSON.stringify({ Servers: [{ ManualAddress: page.location.origin }] }));
+    for (const listener of page.listeners.storage ?? []) listener({ key: 'jellyfin_credentials' });
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker after signing out elsewhere');
   });
 
   it('shows the fixed state for an expired sign-in (401), a rate limit (429) and a failure (502), never upstream text', async (t) => {
@@ -1277,8 +1853,9 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     const expired = await openApp(t, app, { user: ALICE });
     expired.store.set('jellyfin_credentials', JSON.stringify({ Servers: [{ ManualAddress: expired.location.origin, AccessToken: 'token-revoked', UserId: ALICE }] }));
     expired.go('#/');
-    await expired.until(() => expired.main().querySelector('h1')?.textContent === 'Sign in to continue', 'the sign-in state');
-    assert.equal(expired.main().querySelector('a.button').getAttribute('href'), '/web/');
+    await expired.until(() => expired.main().querySelector('ul.profiles'), 'the sign-in state');
+    assert.equal(expired.main().querySelector('h1').textContent, 'Sign in');
+    assert.equal(expired.main().querySelector('a').getAttribute('href'), '/web/');
     assert.equal(expired.document.getElementById('who').textContent, '');
 
     // 502: TMDB is failing, so every row says so in fixed words (and the app answered 502 with its fixed body).
@@ -1305,7 +1882,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     const missing = await openApp(t, healthy);
     missing.go('#/movie/1');
     await missing.until(() => missing.main().querySelector('h1')?.textContent === 'Not found', 'the not-found state');
-    assert.equal(missing.main().querySelector('button'), null);
+    assert.ok(missing.main().querySelector('button') === null);
   });
 
   describe('"Get this" and "My requests" against the API', () => {
@@ -1343,14 +1920,14 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.deepEqual({ ...post.init.headers }, { Accept: 'application/json', ...POST_HEADERS });
       // The title is read again after the accepted answer.
       assert.ok(page.requests.filter((request) => request.url === `/jellypass/app/v1/movie/${T_MOVIE}`).length >= 2);
-      assert.equal(page.document.activeElement?.className, 'get-message');
+      assert.equal(page.focused()?.className, 'get-message');
       await app.background.settled();
       // Once the household has asked, the title says so, in the one coarse word.
       page.go('#/');
       page.go(`#/movie/${T_MOVIE}`);
       await page.until(() => page.main().querySelector('.badge')?.textContent === 'Requested', 'Requested');
-      assert.equal(page.main().querySelector('button'), null);
-      assert.equal(page.main().querySelector('.get-message'), null);
+      assert.ok(page.main().querySelector('button') === null);
+      assert.ok(page.main().querySelector('.get-message') === null);
       assertNoCanaries(page.serialize(), 'after Get this');
     });
 
@@ -1398,7 +1975,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       const app = await startApp(t);
       const page = await openApp(t, app, { hash: `#/tv/${T_TV}/season/1` });
       const button = await page.until(() => page.main().querySelector('button'), 'the season button');
-      assert.equal(page.main().querySelector('fieldset'), null);
+      assert.ok(page.main().querySelector('fieldset') === null);
       button.dispatchEvent(new page.Event('click'));
       await page.until(() => page.main().querySelector('.get-message')?.textContent, 'the confirmation');
       assert.equal(posts(page)[0].init.body, '{"seasons":[1]}');
@@ -1410,13 +1987,13 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       const app = await startApp(t);
       const held = await openApp(t, app, { hash: `#/movie/${OWN_MOVIE}` });
       await held.until(() => held.main().querySelector('a.button'), 'Play');
-      assert.equal(held.main().querySelector('button'), null);
+      assert.ok(held.main().querySelector('button') === null);
       assert.equal(held.main().querySelector('.badge').textContent, 'Ready to watch');
       const blocked = await startApp(t, world({ seerrUsers: { 11: { jellyfinUserId: ALICE, permissions: 0 } } }));
       const page = await openApp(t, blocked, { hash: `#/movie/${T_MOVIE}` });
       await page.until(() => page.main().querySelector('.badge'), 'the badge');
       assert.equal(page.main().querySelector('.badge').textContent, "Can't request");
-      assert.equal(page.main().querySelector('button'), null);
+      assert.ok(page.main().querySelector('button') === null);
       assert.equal(posts(page).length, 0);
     });
 
@@ -1451,7 +2028,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         mode = failing;
         assert.equal(await press(), "We couldn't send that just now. Try again in a moment.", failing);
       }
-      assert.equal(page.main().querySelector('button'), button, 'the same button, ready again');
+      assert.ok(page.main().querySelector('button') === button, 'the same button, ready again');
       assert.equal(button.textContent, 'Get this');
       assert.doesNotMatch(page.serialize(), /canary|upstream/i);
       // Then it works, with the same confirmation.
@@ -1555,7 +2132,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       const broken = await openApp(t, app, { hash: `#/movie/${T_MOVIE}`, override: (url) => (url === '/jellypass/app/v1/requests' ? { status: 502, body: Buffer.from('{}'), headers: {} } : undefined) });
       await broken.until(() => broken.main().querySelector('button'), 'the button');
       assert.equal(broken.main().querySelector('.badge').textContent, 'Available to get');
-      assert.equal(broken.main().querySelector('[role="alert"]'), null);
+      assert.ok(broken.main().querySelector('[role="alert"]') === null);
       const seasonsFailed = { results: [{ id: 'y', mediaType: 'tv', tmdbId: T_TV, status: 'failed', seasons: [{ seasonNumber: 2, status: 'failed' }], byYou: false }] };
       const series = await openApp(t, app, { hash: `#/tv/${T_TV}`, override: (url) => (url === '/jellypass/app/v1/requests' ? body(seasonsFailed) : undefined) });
       await series.until(() => series.main().querySelector('.season-list'), 'the series');

@@ -109,6 +109,8 @@ export function world(options = {}) {
       ...options.seerrUsers,
     },
     tokens: { ...TOKENS, ...options.tokens },
+    passwords: { ...options.passwords },
+    signInDown: options.signInDown ?? false,
     grants: [...(options.grants ?? [])],
     failCatalogue: options.failCatalogue,
     tmdbQuota: options.tmdbQuota,
@@ -509,15 +511,53 @@ export async function createFakeTmdb(state) {
  */
 export async function createFakeJellyfinForApp(state) {
   const requests = [];
+  const minted_ = [];
+  const attempts_ = [];
+  const logouts = [];
   let down = false;
   const server = createServer((request, response) => {
     const url = new URL(request.url, 'http://localhost');
     requests.push({ method: request.method, path: `${url.pathname}${url.search}`, pathname: url.pathname });
     if (down) return send(response, 503, { message: 'down' });
+    if (url.pathname === '/Users/Public' && request.method === 'GET') {
+      // Like Jellyfin, every user but hidden and disabled ones: the household gateway is what narrows this to a household.
+      return send(response, 200, Object.entries(state.jellyfinUsers).filter(([, user]) => !user.Policy.IsHidden && !user.Policy.IsDisabled).map(([Id, user]) => ({
+        // Jellyfin says so even for an empty password: JellyPass's passwordless marking is what turns it off.
+        Id, Name: user.Name, HasPassword: true, HasConfiguredPassword: true,
+      })));
+    }
+    if (url.pathname === '/Users/AuthenticateByName' && request.method === 'POST') {
+      return readJson(request).then((body) => {
+        const header = request.headers.authorization ?? '';
+        // Jellyfin 10.11 refuses a sign-in whose Authorization names no client, device, device ID and version.
+        if (!/^MediaBrowser /.test(header) || !['Client', 'Device', 'DeviceId', 'Version'].every((name) => new RegExp(`${name}="[^"]+"`).test(header))) {
+          return send(response, 400, { error: 'request.App is required' });
+        }
+        attempts_.push({ username: body.Username, password: body.Pw, header });
+        const entry = Object.entries(state.jellyfinUsers).find(([, user]) => user.Name.toLowerCase() === String(body.Username).toLowerCase());
+        if (state.signInDown) return send(response, 503, { message: 'upstream detail that must never be shown' });
+        // Any other answer Jellyfin might give a member's sign-in, or none at all.
+        if (state.signInStatus) return send(response, state.signInStatus, { message: 'upstream detail that must never be shown' });
+        if (state.signInHangs) return undefined;
+        if (!entry || entry[1].Policy.IsDisabled || (state.passwords?.[entry[0]] ?? '') !== body.Pw) return send(response, 401, { message: 'upstream detail that must never be shown' });
+        const minted = `signin-token-${entry[0].slice(0, 4)}-${minted_.length + 1}`;
+        minted_.push({ token: minted, userId: entry[0], header });
+        return send(response, 200, { User: { Id: entry[0], Name: entry[1].Name }, AccessToken: minted, ServerId: 'server' });
+      });
+    }
+    if (url.pathname === '/Sessions/Logout' && request.method === 'POST') {
+      const logoutToken = /Token="([^"]+)"/.exec(request.headers.authorization ?? '')?.[1];
+      const session = minted_.find((entry) => entry.token === logoutToken && !entry.revoked);
+      if (!session) return send(response, 401, {});
+      session.revoked = true;
+      logouts.push(logoutToken);
+      return send(response, 204, undefined);
+    }
     const token = /Token="([^"]+)"/.exec(request.headers.authorization ?? '')?.[1] ?? request.headers['x-emby-token'] ?? url.searchParams.get('api_key');
     // JellyPass's own API key: users and every item, as an administrator sees them, and the updates reconciliation makes.
     if (token === 'jellyfin-key') return administer(request, response, url);
-    const userId = Object.entries(state.tokens ?? TOKENS).find(([, value]) => value === token)?.[0];
+    const userId = minted_.find((entry) => entry.token === token && !entry.revoked)?.userId
+      ?? Object.entries(state.tokens ?? TOKENS).find(([, value]) => value === token)?.[0];
     const user = userId && state.jellyfinUsers[userId];
     if (!user) return send(response, 401, {});
     if (url.pathname === '/Users/Me') return send(response, 200, { Id: userId, Name: user.Name, Policy: user.Policy, ServerId: 'server' });
@@ -594,6 +634,12 @@ export async function createFakeJellyfinForApp(state) {
   return {
     url: `http://127.0.0.1:${server.address().port}`,
     requests,
+    /** Every sign-in this Jellyfin granted: token, user and the Authorization header it came with. */
+    signIns: minted_,
+    /** Every sign-in Jellyfin was asked for, granted or not: the name and password it was sent, and the Authorization header. */
+    signInAttempts: attempts_,
+    /** The tokens signed out at Jellyfin. */
+    logouts,
     state,
     set down(value) { down = value; },
     close: () => close(server),
@@ -614,8 +660,9 @@ function sees(user, item) {
  * `stateFile` to start the store from that state, `trustedProxies` to trust `X-Forwarded-For` from them, `now`,
  * `libraryTtlMs`, `titleTtlMs` or `blocklistTtlMs` to set the app's clock and cache lifetimes, `catalogueLimits` to
  * set its share of TMDB calls (by default high enough that tests not about it never wait for one), `reconcile` to apply
- * the world's grants to Jellyfin first, `recordDelayMs` to delay "Get this" records (none by default) and
- * `requests: false` to serve no "Get this".
+ * the world's grants to Jellyfin first, `recordDelayMs` to delay "Get this" records (none by default),
+ * `requests: false` to serve no "Get this", `loginFailureDelayMs` for the least time a refused household sign-in
+ * takes (default 0, so tests not about it never wait), and `loginTimeoutMs` for how long a sign-in waits for Jellyfin.
  */
 export async function startApp(t, state = world(), options = {}) {
   const seerr = options.seerr ? { ...options.seerr, close: async () => undefined } : await createFakeSeerr(state);
@@ -669,7 +716,7 @@ export async function startApp(t, state = world(), options = {}) {
   const server = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' }, undefined, {
     background,
     ...(options.trustedProxies ? { trustedProxies: options.trustedProxies } : {}),
-    householdGateway: { jellyfinUrl: jellyfin.url, domain: 'example.test', hostPrefix: 'jelly-' },
+    householdGateway: { jellyfinUrl: jellyfin.url, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: options.loginFailureDelayMs ?? 0, ...(options.loginTimeoutMs ? { loginTimeoutMs: options.loginTimeoutMs } : {}) },
     ...(options.app === false ? {} : {
       householdApp: {
         catalogue: new TmdbClient(TMDB_KEY, { baseUrl: tmdb.url, ...(options.now ? { now: options.now } : {}) }),
@@ -728,6 +775,15 @@ export async function startApp(t, state = world(), options = {}) {
 
 /** The raw answer: status, headers and body bytes. */
 export function get(port, pathname, headers, { method = 'GET', body } = {}) {
+  return call(port, pathname, { method, headers, body });
+}
+
+/** POST a JSON body. */
+export function post(port, pathname, headers, body) {
+  return call(port, pathname, { method: 'POST', headers: { 'Content-Type': 'application/json', ...headers }, body: JSON.stringify(body) });
+}
+
+function call(port, pathname, { method = 'GET', headers, body }) {
   return new Promise((resolve, reject) => {
     const request = httpRequest({ hostname: '127.0.0.1', port, path: pathname, method, headers }, (response) => {
       const chunks = [];
@@ -749,9 +805,23 @@ export function get(port, pathname, headers, { method = 'GET', body } = {}) {
   });
 }
 
+function readJson(request) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    request.on('data', (chunk) => chunks.push(chunk));
+    request.on('end', () => {
+      try {
+        resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+      } catch {
+        resolve({});
+      }
+    });
+  });
+}
+
 function send(response, status, value, headers = {}) {
   if (status === 204) return response.writeHead(204, headers).end();
-  const encoded = JSON.stringify(value);
+  const encoded = value === undefined ? '' : JSON.stringify(value);
   response.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(encoded), ...headers });
   response.end(encoded);
 }
