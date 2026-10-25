@@ -159,11 +159,11 @@ as semantic-version tags. For predictable production upgrades, set
 `JELLYPASS_IMAGE` in `.env` to a versioned image such as:
 
 ```dotenv
-JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:2.4.1
+JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:2.5.0
 ```
 
-Each release is published as a semantic-version image tag, such as `2.4.1`,
-plus floating `2.4` and `2` tags that move to the newest release in that minor
+Each release is published as a semantic-version image tag, such as `2.5.0`,
+plus floating `2.5` and `2` tags that move to the newest release in that minor
 or major line; see [CHANGELOG.md](CHANGELOG.md) for what each one contains. `latest` is rebuilt on
 every push to `main` and may include unreleased changes, so use it, or build
 from source, only to test ahead of a release.
@@ -855,7 +855,7 @@ switched off (those answer the same fixed `404`).
   the browser's storage for this address), so **the app and Jellyfin web share
   one session**: **Play** opens Jellyfin web already signed in, and signing in on
   `/web/` signs the app in. The only other thing the app stores is a random
-  device ID of its own. **Sign out** (top right) revokes the session at
+  device ID of its own. **Sign out** (in About's Account card) revokes the session at
   Jellyfin and clears it from the browser, so it **also signs Jellyfin web out**
   on that address (they are one session). The app API forgets the token as
   the sign-out passes through, so it is refused at once there too. **Open Jellyfin to sign in** stays under the picker as a
@@ -875,10 +875,15 @@ switched off (those answer the same fixed `404`).
 - **Install on iPhone or iPad:** open the app address in Safari, tap **Share**,
   then **Add to Home Screen**. **Android (Chrome):** menu, **Install app** (or
   **Add to Home screen**). Desktop Chrome and Edge: the install icon in the
-  address bar. It opens full screen with JellyPass's icon. **Not yet verified
-  on a real iPhone:** the install, the in-app sign-in, and Back with the
-  restored position have been tested only in a simulated browser and against a
-  real Jellyfin, so expect to check them on a device before relying on them.
+  address bar. It opens full screen with JellyPass's icon. An iPhone or iPad
+  keeps the icon the app was added with; to see a new icon after an update,
+  remove the app from the Home Screen and add it again. **Tested on a real
+  iPhone:** Back, swipe-back and the restored position, including each Home
+  row's. **Not yet verified on a real phone:** the install, the in-app
+  sign-in, and the 2.5.0 look (the glass blur, the safe areas under the status
+  bar and above the tab bar, swiping Home's hero, the new icon) have been
+  tested only in a simulated browser and against a real Jellyfin, so expect to
+  check them on a device before relying on them.
 - **Offline and privacy:** a service worker keeps only the app's own static
   files (page, styles, scripts, icons, TMDB logo), as one complete set per
   release (replaced as a whole when the app is updated), so the app opens when
@@ -1010,6 +1015,9 @@ file at schema v7, and the household app's "Get this" adds `appRequests`,
 without reading them (see
 [Rolling back to 2.3.0](CHANGELOG.md#rolling-back-to-230)).
 Upgrading from 2.4.0 to 2.4.1 changes neither the state file nor any setting.
+Upgrading from 2.4.1 to 2.5.0 changes neither the state file nor any setting,
+and needs no CDN purge; with the household app enabled, it changes how some
+failed sign-outs on household hostnames answer (see the 2.5.0 notes).
 Drain before rolling back to 2.3.x or 2.2.1: stop new "Get this" calls, wait
 until no request intents or deferred webhooks are left (at most 30 minutes plus
 one reconciliation interval, or restart JellyPass to reconcile at once), then

@@ -14,11 +14,70 @@ privacy leak. Such changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+## [2.5.0] - 2026-10-25
+
+This is a minor release for the household app (`HOUSEHOLD_APP_ENABLED=true`)
+only: with the app off (the default), nothing changes. No setting is added,
+removed or renamed, webhook payloads, the administrator API and the app's
+endpoints are unchanged, and the state file is unchanged (schema v7, with the
+same fields as 2.4.1), so 2.4.1 reads a state file written by 2.5.0. The
+sign-out changes below alter only failure responses on a relayed Jellyfin
+endpoint. JellyPass's versioning policy (at the top of `CHANGELOG.md`) keeps
+those outside the public interface: they may change in a minor or patch
+release to close a security or privacy leak, and are always listed first in
+the release notes. Here they are the bounds of the fix that closes one: a
+signed-out session stayed usable in the app for up to five minutes. Read
+these before upgrading:
+
+- **The app looks and navigates differently.** Members will find three tabs
+  (**Home**, **Search**, **My requests**) in a floating bar; **About &
+  credits** is no longer a tab but opens from the (i) button on Home, and
+  **Sign out** has moved from the header into About's **Account** card. Cards
+  no longer have a **Play** button: Play is on a title's page.
+- **New app icons.** An app already added to an iPhone or iPad Home Screen
+  keeps the icon it was added with: iOS takes the icon when the app is added
+  and does not update it, so remove the app from the Home Screen and add it
+  again from Safari to see the new one (this keeps nothing the app needs:
+  sign in again inside the installed app). Android and desktop Chrome and
+  Edge update an installed app's icon from its manifest on their own, after
+  a while, and may ask the user to confirm.
+- **Sharper backdrops use more data.** Home now opens on a hero of backdrop
+  images, and backdrops offer TMDB's `w1280` beside `w780`; the browser picks
+  by screen width and pixel density, so large screens and 3x phones (most
+  recent iPhones) download `w1280`. Images come from TMDB, not through
+  JellyPass.
+- **Sign-out on household hostnames answers differently in some failures,
+  for every Jellyfin client.** With the app enabled, `POST /Sessions/Logout`
+  on a household address (the app, Jellyfin web and any other Jellyfin client)
+  is now read whole and sent to Jellyfin by JellyPass, which waits for
+  Jellyfin's answer even if the client leaves. Jellyfin's answer, success or
+  not, is relayed as before, except that it now:
+  - answers `413` (`request_too_large`) to a sign-out whose body is over
+    8 KiB, without sending it to Jellyfin (Jellyfin's clients send none);
+  - answers `503` (`too_many_sign_outs`) with `Retry-After: 1`, without
+    sending it to Jellyfin, when 8 sign-outs from the same client address,
+    32 for the same household or 512 in all are already at Jellyfin. The
+    app's sessions made with its tokens are forgotten all the same; the client
+    should try again to have Jellyfin revoke the token;
+  - answers `502` (`jellyfin_unavailable`) when Jellyfin has not answered
+    within 15 seconds, as it already did when Jellyfin could not be reached.
+- **No CDN purge is needed:** 2.4.0 and later name the app's files (icons and
+  manifest included) by content hash and send every other `/jellypass/app`
+  answer `no-store`, so the new files have new addresses.
+- **To roll back,** set `JELLYPASS_IMAGE` back to
+  `ghcr.io/nicklongmore86/jellypass:2.4.1` and recreate the container.
+- **Tested on a device:** Back, swipe-back and the restored position (from
+  2.4.1) work on a physical iPhone. The new look (the glass blur, the safe
+  areas under the status bar and above the tab bar, swiping the hero) and the
+  new icon have been tested in a simulated browser only, not yet on a
+  physical phone; see [Household app (PWA)](README.md#household-app-pwa).
+
 ### Fixed
 
 - Household app: signing out (the app's **Sign out**, or Jellyfin web's, on a household address) now forgets the session
   at once, so the app stops working with that sign-in straight away instead of for up to five minutes. A sign-in
-  revoked in Jellyfin's dashboard can still work in the app for up to five minutes, as before.
+  revoked in Jellyfin's dashboard, or signed out straight at Jellyfin rather than through the household address, can
+  still work in the app for up to five minutes, as before.
 
 ### Changed
 
@@ -35,9 +94,10 @@ privacy leak. Such changes are always listed at the top of the release notes.
   buttons or the labelled dots; it never moves by itself and respects reduced motion. It uses the trending row Home
   already loads, so it costs no extra calls, and Back puts it where you left it. Movie, series and season pages are now
   full-bleed: a tall backdrop under the status bar fading into the page, a bold title with year, runtime (or seasons)
-  and rating chips, genres, the status pill, and one full-width **Play** or **Get this** button. Seasons are cards with
-  round checkboxes and a **Select all** that only ticks the boxes. Backdrops are sharper (TMDB `w1280`, chosen by the
-  phone through `srcset`). Status words, **Get this** outcomes and what the household can see are unchanged.
+  and rating chips, genres, the status pill, and one full-width primary button, **Play** or **Get this** (a series
+  partly in the library shows **Get this** too, as a second, glass button). Seasons are cards with round checkboxes and
+  a **Select all** that only ticks the boxes. Backdrops are sharper (TMDB `w1280`, chosen by the browser through
+  `srcset`). Status words, **Get this** outcomes and what the household can see are unchanged.
 
 ## [2.4.1] - 2026-10-25
 
@@ -1251,7 +1311,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v2.4.1...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v2.5.0...HEAD
+[2.5.0]: https://github.com/nicklongmore86/jellypass/compare/v2.4.1...v2.5.0
 [2.4.1]: https://github.com/nicklongmore86/jellypass/compare/v2.4.0...v2.4.1
 [2.4.0]: https://github.com/nicklongmore86/jellypass/compare/v2.3.0...v2.4.0
 [2.3.0]: https://github.com/nicklongmore86/jellypass/compare/v2.2.1...v2.3.0

@@ -53,6 +53,27 @@ function assertSection(notes, { version, nextVersion, subheadings }) {
 }
 
 describe('changelogSection with the real CHANGELOG.md', () => {
+  it('extracts 2.5.0 without its heading, up to the 2.4.1 section', () => {
+    const notes = changelogSection(CHANGELOG, '2.5.0');
+    assertSection(notes, {
+      version: '2.5.0',
+      nextVersion: '2.4.1',
+      subheadings: ['Fixed', 'Changed'],
+    });
+    assert.match(notes, /^This is a minor release for the household app/);
+    const flat = notes.replace(/\s+/g, ' ');
+    assert.match(flat, /keeps those outside the public interface/);
+    assert.match(flat, /`413` \(`request_too_large`\)/);
+    assert.match(flat, /`503` \(`too_many_sign_outs`\) with `Retry-After: 1`/);
+    assert.match(flat, /add it again from Safari to see the new one/);
+    assert.match(flat, /No CDN purge is needed/);
+    assert.match(flat, /`ghcr\.io\/nicklongmore86\/jellypass:2\.4\.1`/);
+    assert.match(flat, /not yet on a physical phone/);
+    assert.ok(notes.indexOf('**The app looks and navigates differently.**') < notes.indexOf('### Fixed'), 'upgrade notes come first');
+    assert.doesNotMatch(notes, /### Upgrading from/);
+    assert.deepEqual(split(notes).definitions, []);
+  });
+
   it('extracts 2.4.1 without its heading, up to the 2.4.0 section', () => {
     const notes = changelogSection(CHANGELOG, '2.4.1');
     assertSection(notes, {
