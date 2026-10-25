@@ -645,7 +645,8 @@ and nowhere else (on the administrator host they do not exist). The
   permissions; only then is `play` set, to `{"itemId", "url"}` with
   `https://<household host>/web/#/details?id=<itemId>`), `unavailable` (an
   administrator blocklisted it in Seerr, or the caller may not request this
-  media type in Seerr, which includes a caller Seerr has no user for),
+  media type in Seerr, which includes a caller Seerr has no user for and a
+  caller Seerr gives a request quota: see [Get this](#get-this)),
   `requested` (someone in this household asked for it with "Get this" and it
   is still pending or approved), and otherwise `get_this`. Seasons are
   `in_library` when the caller's own Jellyfin view has their episodes,
@@ -679,14 +680,16 @@ and nowhere else (on the administrator host they do not exist). The
 
 "Get this" asks for a title for the caller's household, the same way whatever
 the title's situation, and answers `202 {"status":"accepted"}` at once, before
-anything about the caller's quota or the title is looked up. What happens next
-runs in the background and is never part of any answer:
+anything about the caller or the title is looked up. What happens next runs in
+the background and is never part of any answer:
 
 - **Already playable for the caller**, blocklisted, or already asked for by the
   household: nothing.
 - **Jellyfin already has it** (JellyPass looks it up with its own key first,
-  by TMDB ID and by the item Seerr links to the title, so an item without TMDB
-  metadata counts too): the household joins the title's grant by the same rules as
+  by TMDB ID, by the item Seerr links to the title and, when neither finds it,
+  by the title's name and year, so an item without TMDB metadata counts too;
+  a different title of the same name and year held that way makes the call a
+  join or nothing rather than a request): the household joins the title's grant by the same rules as
   [Add to my library](#add-to-my-library): only a grant made from a request,
   never a manual-only one, and never if an administrator removed the household
   or the caller. **A title Jellyfin has is never requested in Seerr**, so a
@@ -698,10 +701,16 @@ runs in the background and is never part of any answer:
   title becomes available (webhook or request backfill), by the same rules.
 - **Otherwise**: a real HD Seerr request is made **as the caller** (their own
   Seerr user, confirmed before the call; only the title and seasons are sent,
-  never another user, server, profile, folder, tags or 4K). Jellyfin is read
-  again right before it is sent; a title that arrived meanwhile is joined
-  instead, and one that arrives while the request is being made is granted as
-  a join, never as a new private grant.
+  never another user, server, profile, folder, tags or 4K). JellyPass first
+  writes a request intent to its state file, then confirms the caller's Seerr
+  user, then reads Jellyfin again as the last step before the request is
+  sent; a title that arrived meanwhile is joined instead. Until the request is
+  recorded and Jellyfin has been read once more after Seerr answered, no
+  webhook or backfill grants any request for that title (a webhook is
+  acknowledged and kept, and granted afterwards), also across a restart. A
+  title that arrived while the request was being made, or whose check could
+  not be read within 30 minutes, is granted as a join, never as a new private
+  grant.
 
 A series is decided season by season, so one call can join the seasons
 Jellyfin has, follow the seasons someone requested and request the rest. New
@@ -711,19 +720,17 @@ a series held through someone's request. A series is `ready` once every season
 asked for has episodes in Jellyfin; until then each season shows its own
 status.
 
-**Quotas.** Before any of that, in the background, JellyPass checks the
-caller's own Seerr request permission and quota for the media type, one call
-at a time per caller. A join or interest counts against the caller's Seerr
-quota as their own request would (one unit per movie, one per season asked
-for, every status but declined, within Seerr's window, or ever made when the
-quota has no window), on top of Seerr's own count of their requests; a request
-made by "Get this" is counted by Seerr itself. A call still running holds its
-units, exactly once whichever way it goes. An ineligible caller (or one whose
-quota Seerr could not report) gets the same `202` and nothing runs. Declining
-frees the unit in every case and a failure does not, as in Seerr; deleting the
-title's Seerr media record frees it, also once the title was ready. Old
-records are pruned without changing any count. No number is shown. Calls are also limited to 10 per user, 30 per client address and 30 per
-household in each 10 minutes (`429`), on top of the limits above.
+**Quotas are not supported in this version.** "Get this" is not offered to a
+caller Seerr gives a request quota (a movie or series limit above 0, their own
+or Seerr's default, used or not): every title they cannot play shows as
+`unavailable` ("Can't request"), the same for every title, and a "Get this"
+from them gets the same `202` and does nothing. They can still request through
+Seerr. Before any branch, in the background, JellyPass reads the caller's own
+Seerr request permission and quota; a caller without permission for the media
+type, with a quota, or whose Seerr user or quota could not be read gets the
+same `202` and nothing runs. Calls are also limited to 10 per user, 30 per
+client address and 30 per household in each 10 minutes (`429`), on top of the
+limits above.
 
 **`GET /requests`** lists the household's own "Get this" titles, newest first
 (at most 200), from JellyPass's records only: `status` is `requested`
@@ -919,8 +926,9 @@ to 2.3.0 keeps the state file at schema v7, adds optional settings for the
 household app (off by default), which limits households to 100 while it is
 enabled; see [Upgrading from 2.2.1](CHANGELOG.md#upgrading-from-221).
 Rolling back from 2.3.0 to 2.2.1 needs no state-file change. The household app's "Get this" (not yet released) keeps the state file at
-schema v7 and adds `appRequests`, `appIdKey` and `appQuotaLedger`; 2.3.0 and
-2.2.1 load and keep them without reading them (see
+schema v7 and adds `appRequests`, `appIdKey`, `appRequestIntents` and
+`deferredWebhooks`; 2.3.0 and 2.2.1 load and keep them without reading them
+(roll back with no "Get this" request in flight; see
 [Store, bounds and rollback](docs/app-design.md#get-this-as-implemented-step-2a)). Rolling back from
 2.2.0 to 2.1.1, 2.1.0 or 2.0.0 keeps the state file readable, but those
 versions retry grants marked `orphaned` (see
