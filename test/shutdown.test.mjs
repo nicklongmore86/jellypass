@@ -16,6 +16,8 @@ const HOUSEHOLD_HOST = 'jelly-farmhouse.example.test';
 const ENTRYPOINT = fileURLToPath(new URL('../dist/index.js', import.meta.url));
 // Docker's default stop timeout is 10 s; shutdown should be done well inside it.
 const SHUTDOWN_BUDGET_MS = 3_000;
+// A ceiling, not a wait: startup is normally well under a second, but CI runners run the test files side by side.
+const STARTUP_TIMEOUT_MS = 30_000;
 
 describe('graceful shutdown', { timeout: 15_000 }, () => {
   let upstream;
@@ -335,7 +337,7 @@ describe('graceful shutdown', { timeout: 15_000 }, () => {
   });
 });
 
-describe('SIGTERM to the JellyPass process', { timeout: 15_000 }, () => {
+describe('SIGTERM to the JellyPass process', { timeout: STARTUP_TIMEOUT_MS + 15_000 }, () => {
   let jellyfin;
 
   before(async () => {
@@ -353,27 +355,15 @@ describe('SIGTERM to the JellyPass process', { timeout: 15_000 }, () => {
     await seed.load();
     await seed.upsertGroup({ id: 'farmhouse', name: 'Farmhouse', userIds: ['alice-id'] });
     await seed.close();
-    const port = await freePort();
-    const child = spawn(process.execPath, [ENTRYPOINT], {
-      env: {
-        PATH: process.env.PATH,
-        HOST: '127.0.0.1',
-        PORT: String(port),
-        WEBHOOK_TOKEN: 'webhook-secret',
-        ADMIN_TOKEN: 'admin-secret',
-        JELLYFIN_URL: jellyfin.url,
-        JELLYFIN_API_KEY: 'test-key',
-        STATE_FILE: stateFile,
-        HOUSEHOLD_DOMAIN: 'example.test',
-      },
-      stdio: ['ignore', 'pipe', 'pipe'],
+    const { child, port, output, exited } = await startJellyPass({
+      WEBHOOK_TOKEN: 'webhook-secret',
+      ADMIN_TOKEN: 'admin-secret',
+      JELLYFIN_URL: jellyfin.url,
+      JELLYFIN_API_KEY: 'test-key',
+      STATE_FILE: stateFile,
+      HOUSEHOLD_DOMAIN: 'example.test',
     });
-    let output = '';
-    child.stdout.on('data', (chunk) => { output += chunk; });
-    child.stderr.on('data', (chunk) => { output += chunk; });
-    const exited = new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal })));
     try {
-      await waitFor(() => output.includes('server started'), 500);
       const client = await openWebSocketClient(port, HOUSEHOLD_HOST);
       const clientClosed = once(client, 'close');
       const agent = new Agent({ keepAlive: true });
@@ -384,10 +374,10 @@ describe('SIGTERM to the JellyPass process', { timeout: 15_000 }, () => {
       // Before graceful shutdown the process never exited on its own: Docker had to SIGKILL it.
       const result = await Promise.race([exited, delay(2 * SHUTDOWN_BUDGET_MS).then(() => 'still running')]);
       const elapsed = performance.now() - startedAt;
-      assert.deepEqual(result, { code: 0, signal: null }, output);
+      assert.deepEqual(result, { code: 0, signal: null }, output());
       assert.ok(elapsed < SHUTDOWN_BUDGET_MS, `exited ${elapsed.toFixed(0)} ms after SIGTERM`);
       await clientClosed;
-      assert.match(output, /"message":"shutdown complete"/);
+      assert.match(output(), /"message":"shutdown complete"/);
       agent.destroy();
     } finally {
       child.kill('SIGKILL');
@@ -396,6 +386,45 @@ describe('SIGTERM to the JellyPass process', { timeout: 15_000 }, () => {
     }
   });
 });
+
+/**
+ * Spawns dist/index.js and resolves once it logs "server started". freePort() can lose its port to a server in
+ * another test file before the child binds it; a child that exits with EADDRINUSE is started again on a new port.
+ * Any other exit before startup, or no startup within STARTUP_TIMEOUT_MS, fails with the child's output.
+ */
+async function startJellyPass(env, attempts = 5) {
+  for (let attempt = 1; ; attempt += 1) {
+    const port = await freePort();
+    const child = spawn(process.execPath, [ENTRYPOINT], {
+      env: { PATH: process.env.PATH, HOST: '127.0.0.1', PORT: String(port), ...env },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let output = '';
+    const exited = new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal })));
+    const started = new Promise((resolve) => {
+      const onData = (chunk) => {
+        output += chunk;
+        if (output.includes('server started')) resolve('started');
+      };
+      child.stdout.on('data', onData);
+      child.stderr.on('data', onData);
+    });
+    let timer;
+    const timedOut = new Promise((resolve) => { timer = setTimeout(() => resolve('timed out'), STARTUP_TIMEOUT_MS); });
+    const outcome = await Promise.race([started, exited, timedOut]);
+    clearTimeout(timer);
+    if (outcome === 'started') return { child, port, output: () => output, exited };
+    if (outcome === 'timed out') {
+      child.kill('SIGKILL');
+      await exited;
+    }
+    if (outcome !== 'timed out' && output.includes('EADDRINUSE') && attempt < attempts) continue;
+    const reason = outcome === 'timed out'
+      ? `did not log "server started" within ${STARTUP_TIMEOUT_MS} ms`
+      : `exited (code ${outcome.code}, signal ${outcome.signal}) before logging "server started"`;
+    assert.fail(`JellyPass on port ${port} ${reason}; output:\n${output.slice(-4_000)}`);
+  }
+}
 
 async function openWebSocketClient(port, host) {
   const client = connectSocket(port, '127.0.0.1');
