@@ -391,24 +391,50 @@ elsewhere; the files are never proxied to Jellyfin.
 
 - **Source and build.** Plain TypeScript, HTML and CSS: no framework and no bundler. The client (`app/src/*.ts`) is
   compiled by `tsc` alone (`tsconfig.app.json`: DOM libraries, ES modules) to `dist/app/js`, and `scripts/build-app.mjs`
-  copies the static files (`app/static`: page, stylesheet, manifest, service worker, icons, TMDB logo) beside it. The
+  writes the served files (`app/static`: page, stylesheet, manifest, service worker, icons, TMDB logo, and the compiled
+  client from `dist/app-js`) to `dist/app`, **content-hashing every file but the page and the worker** (see "Fingerprinted
+  files"). The
   server reads `dist/app` once at startup (`src/app-assets.ts`) and refuses to start the app if it is missing. The
   Dockerfile builds it with the rest. `scripts/make-app-icons.py` regenerates the PNG icons (Pillow; the PNGs are
   committed). The only new dependency is `linkedom`, a dev dependency, for DOM-level tests.
 - **Routing.** One page, with screens chosen by the URL hash (`#/`, `#/search?q=`, `#/movie/:id`, `#/tv/:id`,
   `#/tv/:id/season/:n`, `#/about`), so the server needs no fallback route and a deep link is just the page.
-- **Sign-in.** The page sits on the household host next to the proxied Jellyfin web client, so it reads the access token
-  Jellyfin web keeps in `localStorage` (`jellyfin_credentials`, the same read as `/jellypass/add`) and sends it as
-  `Authorization: MediaBrowser Token="..."` to `/jellypass/app/v1/*`, with `credentials: omit` and `cache: no-store`.
-  The app writes nothing to browser storage. With no token, or a `401`, it shows a fixed "Sign in" state linking to
-  `/web/`; it carries on by itself when the token appears (a `storage` event, the page being shown again, or opened
-  again). Jellyfin web has no return address, so there is no automatic redirect back; the state says to come back from
-  the home screen. `GET /me` provides the name and household shown in the header. The manifest's `scope` is `/` (its
-  `start_url` is the app), not `/jellypass/app/`: an installed iOS web app keeps its storage apart from Safari's, and a
-  link out of its scope opens in an in-app Safari view, so a Jellyfin sign-in made there would never reach the app.
-  Within scope, Jellyfin web's sign-in and the page **Play** opens stay in the installed app and share its storage.
-  Only the service worker is limited to `/jellypass/app/`. **This is unverified on a real iPhone**: install and sign-in have only been exercised in a simulated browser (see
-  "Not in this step").
+- **Sign-in.** The page sits on the household host next to the proxied Jellyfin web client, so it signs in the way
+  Jellyfin web does, through the household gateway, and keeps the result where Jellyfin web keeps its own.
+  *Flow:* with no token (or a `401` from the API) the app shows a profile picker built from `GET /Users/Public`, which
+  the gateway already narrows to the household's members and adjusts for passwordless members (`HasPassword: false`).
+  A tap on a passwordless member, or a password for the others, is `POST /Users/AuthenticateByName` with
+  `{"Username", "Pw"}` and `Authorization: MediaBrowser Client="JellyPass", Device="<iPhone|iPad|Android|Mac|...>",
+  DeviceId="<random, own>", Version="1.0"`. There is no new backend and no bypass: that path is the gateway's existing
+  household-scoped, rate-limited login (20 attempts per client in five minutes, successful or not; a name outside the
+  household is refused before Jellyfin is asked). If a one-tap member has since gained a password the app falls
+  through to the password step. Failures are fixed text: `401`/`403` "That didn't work", `429` "Too many attempts",
+  anything else "Can't sign in right now", no network "Check your connection", storage refused "Can't keep your
+  sign-in on this device". The password field is emptied as it is read and the password exists only in that one request
+  body: never a URL, the page, a log or storage. *Storage choice:* the app writes Jellyfin web 10.11's own
+  `jellyfin_credentials` entry (checked against the 10.11.3 web bundle: `Servers[]` with the required `Id` (the
+  `ServerId` of the login answer), `ManualAddress` (the page's origin), `LastConnectionMode: 2` (manual),
+  `DateLastAccessed`, `UserId`, `AccessToken`), merged into what is there: other entries and fields are kept, and an
+  older entry for the same address under another server ID is replaced so the app and Jellyfin web cannot pick
+  different sessions. Both then read one session, which is what makes **Play** and `/web/` stay signed in. The risk of
+  writing another program's format is accepted because the format is what the app already read, has the one required
+  field (`Id`) and is read back after writing (a failed write is reported, never assumed); the app still reads Jellyfin
+  web's entry written by anyone, so a change to the format shows up as the picker appearing, not as a broken app.
+  Beyond that it stores one random device ID (`jellypass_device_id`), deliberately not Jellyfin web's `_deviceId2`, so
+  Jellyfin never treats the app's sign-in as a re-login of the web client's device. *Sign-out* (header button) calls
+  `POST /Sessions/Logout` with the token (best effort, five seconds), then removes `UserId` and `AccessToken` from the
+  server entries, as Jellyfin web's own sign-out does. As the session is shared, **it signs Jellyfin web out too**; the
+  app API's five-minute trust in a verified token (`APP_SESSION_TTL_MS`) is unchanged, so the app API can accept a
+  just-revoked token for that long. The service worker never handles `/Users/*`, `/Sessions/*` or any non-allowlisted path,
+  so no credential or sign-in answer is cached. A `storage` event, the page being shown again or opened again follows a
+  sign-in or sign-out made elsewhere. The CSP is unchanged (`connect-src 'self'`, no inline script). **Open Jellyfin to
+  sign in** (`/web/`) remains a secondary link. The manifest's `scope` is `/` (its `start_url` is the app), not
+  `/jellypass/app/`: an installed iOS web app keeps its storage apart from Safari's, and a link out of its scope opens
+  in an in-app Safari view, so a Jellyfin sign-in made there would never reach the app. With the in-app sign-in the
+  installed app no longer depends on that, but within scope Jellyfin web and **Play** still stay in the installed app
+  and share its storage. Only the service worker is limited to `/jellypass/app/`. `GET /me` provides the name and
+  household shown in the header. **Unverified on a real iPhone**: install and sign-in have only been exercised in a
+  simulated browser and against a real Jellyfin 10.11.3.
 - **Screens.** Home (four rows of 20 titles, each row loaded and failing on its own), Search (debounced 300 ms, one call
   per pause, previous calls aborted, **Load more** by the API's `nextPage`, query kept in the address), movie page,
   series page with a seasons list (each season's state) and a season page with its episodes, About & credits.
@@ -419,7 +445,7 @@ elsewhere; the files are never proxied to Jellyfin.
   a DTO field.
 - **Rendering.** Every string is a fixed one or a DTO field set with `textContent`; no HTML is ever parsed (no
   `innerHTML`). Image URLs are re-checked against the allowlisted TMDB pattern before use. Errors are three fixed
-  states, plus offline: `401` "Sign in to continue", `429` "Too many requests", `502` "Can't load this right now", and
+  states, plus offline: `401` the sign-in picker (above), `429` "Too many requests", `502` "Can't load this right now", and
   a `404` "Not found"; none shows upstream text.
 - **Headers.** Every app file: `Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self';
   img-src 'self' https://image.tmdb.org; connect-src 'self'; manifest-src 'self'; worker-src 'self'; base-uri 'none';
@@ -427,11 +453,25 @@ elsewhere; the files are never proxied to Jellyfin.
   `X-Frame-Options: DENY`; `Cross-Origin-Opener-Policy` and `Cross-Origin-Resource-Policy: same-origin`; a
   `Permissions-Policy` denying the powerful features the app does not use (camera, microphone, geolocation, payment,
   usb, serial, hid, bluetooth, midi, display capture, motion and other sensors, screen wake lock, WebAuthn get, XR and
-  `interest-cohort`; the list is `APP_PERMISSIONS_POLICY`, tested). `Cache-Control: no-cache` plus an `ETag` (304 on match) for the page, script, styles, manifest
-  and service worker; `public, max-age=604800` for icons and the logo. The HTML is identical for every caller and
-  carries no user data (tested), so it is not `no-store`; the API stays `no-store`.
-- **Service worker** (`sw.js`, registered by absolute URL `/jellypass/app/sw.js` with scope `/jellypass/app/`). The app's files are served only at their exact lower-case paths (the gateway matches the rest of the app's paths case-insensitively, so `/JELLYPASS/APP/` is an unknown app path, answered like any other, not the page), so there is one address and one registration. It precaches and serves only the app's own static files (the
-  exact list in `sw.js`, which a test compares with the files served), network first, falling back to its copy when
+  `interest-cohort`; the list is `APP_PERMISSIONS_POLICY`, tested). `Cache-Control: public, max-age=31536000, immutable` (with an `ETag`, 304 on match) for every
+  fingerprinted file; `no-store` (plus `CDN-Cache-Control` and `Cloudflare-CDN-Cache-Control: no-store`, no `ETag`) for the page, the
+  `/jellypass/app` redirect and `sw.js`. The HTML is identical for every caller and carries no user data (tested); it is
+  `no-store` because its address is fixed, not because it is private. The API stays `no-store`.
+- **Fingerprinted files.** `scripts/build-app.mjs` names each file `<name>.<12 hex digits of sha256(content)>.<ext>`
+  and rewrites every reference, quoted and exact: the page's `href`/`src`, module imports (`./api.js`), the manifest's
+  icons and the logo path in `render.ts`. A file's hash is taken after its references are rewritten, so it changes when
+  anything it names changes (a module's name follows its imports; the build orders modules by import and stops on a
+  cycle). Only modules reachable from `main.js` are built. CSS may not use `url()`/`@import` and the build stops if it
+  does; after rewriting, the build also fails if any quoted source name survives or an import reaches no file. The TMDB
+  logo is copied byte for byte. **Why:** a CDN that keeps files by extension (Cloudflare) rewrote `no-cache` + `ETag` to
+  `max-age=14400` on `.css`/`.js` (and stripped the page's ETag), so a browser could run a mix of old and new files for
+  four hours; with fingerprints a page can only load files its own release names. **What Cloudflare honours** (its cache
+  documentation, checked): `Cache-Control: no-store` is never cached at the edge; `Cloudflare-CDN-Cache-Control` (not
+  forwarded) and `CDN-Cache-Control` steer only the CDN's own cache and leave `Cache-Control` as sent; the Browser Cache
+  TTL setting rewrites `Cache-Control` toward browsers on what it caches. So the page and worker send all three
+  `no-store` headers. Unknown or old fingerprints, and the unfingerprinted names, are unknown app paths.
+- **Service worker** (`sw.js`, registered by absolute URL `/jellypass/app/sw.js` with scope `/jellypass/app/` and `updateViaCache: 'none'`, so the browser checks the worker on the network whatever a cache says). The app's files are served only at their exact lower-case paths (the gateway matches the rest of the app's paths case-insensitively, so `/JELLYPASS/APP/` is an unknown app path, answered like any other, not the page), so there is one address and one registration. It precaches and serves only the app's own static files (the
+  exact list, filled into `sw.js` by the build from the fingerprinted files it wrote, which a test compares with the files served), network first, falling back to its copy when
   the network fails. The copy is one release: each install fills a cache of its own, named for a hash of the precached files and of the unstamped worker (computed by
   `scripts/build-app.mjs` and written into `sw.js`, so any changed file, or a worker-only change, is a new release) plus a random id for that install; the
   whole set is installed or none of it, a failed install deletes only its own cache (never one another worker may be serving from), offline answers come from any complete cache of the worker's own release, nothing is added afterwards, and
@@ -446,7 +486,7 @@ elsewhere; the files are never proxied to Jellyfin.
   aspect-ratio frame so nothing shifts as images load (posters below the fold load lazily).
 - **Not in this step:** a link from Jellyfin web back to the app (the sign-in page could carry one through the branding
   configuration the gateway already rewrites), a check on a real iPhone of the install and sign-in flow, any request action ("Get this", step 2), the user's own requests, the Seerr cut-over (step 4),
-  notifications, and a Jellyfin sign-in that returns to the app.
+  notifications, Quick Connect in the app's picker (the gateway reports it disabled on household hosts), and profile pictures.
 
 ### Leak channels in step 1a
 

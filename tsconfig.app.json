@@ -5,7 +5,7 @@
     "module": "ES2022",
     "moduleResolution": "Bundler",
     "types": [],
-    "outDir": "dist/app/js",
+    "outDir": "dist/app-js",
     "rootDir": "app/src",
     "strict": true,
     "noUncheckedIndexedAccess": true,

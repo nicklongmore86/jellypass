@@ -7,7 +7,9 @@ import { AccessService, accessTag } from '../dist/access-service.js';
 import { JellyfinClient } from '../dist/jellyfin.js';
 import { makeServer } from '../dist/server.js';
 import { GrantStore } from '../dist/store.js';
-import { OWN_MOVIE, REQUEST, TMDB_KEY, createFakeSeerr, createFakeTmdb, get as getWithHeaders, world } from './support/household-app.mjs';
+import { createSignInApi, SignInError } from '../dist/app-js/api.js';
+import { clearSignIn, deviceId, jellyfinToken, storeSignIn } from '../dist/app-js/session.js';
+import { OWN_MOVIE, REQUEST, TMDB_KEY, createFakeSeerr, createFakeTmdb, get as getWithHeaders, post as postWithHeaders, world } from './support/household-app.mjs';
 import { SeerrClient } from '../dist/seerr.js';
 import { SeerrUserMap } from '../dist/seerr-users.js';
 import { TmdbClient } from '../dist/tmdb.js';
@@ -165,7 +167,10 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
     assert.equal(shell.headers['content-type'], 'text/html; charset=utf-8');
     assert.match(shell.headers['content-security-policy'], /^default-src 'none'; script-src 'self'; /);
     assert.match(shell.text, /<title>JellyPass<\/title>/);
-    for (const asset of ['manifest.webmanifest', 'sw.js', 'app.css', 'js/main.js', 'tmdb-logo.svg', 'icons/icon-192.png']) {
+    // The page names its files by content-hashed address; each is served, and so is the worker.
+    const assets = [...shell.text.matchAll(/(?:href|src)="([^"#]+)"/g)].map((match) => match[1]).filter((asset) => !/^(?:https?:)?\/\//.test(asset));
+    assert.ok(assets.length >= 5);
+    for (const asset of [...assets, 'sw.js']) {
       assert.equal((await getWithHeaders(gateway.address().port, `/jellypass/app/${asset}`, host)).status, 200, asset);
     }
     const adminHost = await getWithHeaders(gateway.address().port, '/jellypass/app/', { Host: 'jellypass.example.test' });
@@ -206,6 +211,181 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
     await setBob({ BlockedTags: ['jp-app-hidden'] });
     assert.deepEqual([(await movie()).state, (await movie()).play], ['unavailable', null]);
     assert.deepEqual(seerr.violations, []);
+  });
+
+  it('signs in through the app\'s own flow on the household host, stores it where Jellyfin web does, and then loads /me', async (t) => {
+    // Bob is the only member of this household; Alice signs in on Jellyfin itself, and the admin is in no household. Jellyfin
+    // 10.11 hides new users from its public list (the profile picker) until the owner shows them, as a household's owner has.
+    const originalBob = user(await client.getUsers(), fixture.bobId);
+    t.after(() => client.updatePolicy(fixture.bobId, originalBob.Policy));
+    await client.updatePolicy(fixture.bobId, { ...originalBob.Policy, IsHidden: false });
+    const appStore = new GrantStore(path.join(await makeTempDir(t, 'jfa-real-signin-'), 'grants.json'));
+    await appStore.load();
+    await appStore.upsertGroup({ id: 'signinhouse', name: 'Sign-in House', userIds: [fixture.bobId] });
+    const state = world({ seerrUsers: { 61: { jellyfinUserId: fixture.bobId.replaceAll('-', '').toLowerCase(), permissions: REQUEST } } });
+    const seerr = await createFakeSeerr(state);
+    const tmdb = await createFakeTmdb(state);
+    t.after(() => Promise.all([seerr.close(), tmdb.close()]));
+    const admin = new SeerrClient(seerr.url, 'seerr-key');
+    const gateway = makeServer(new AccessService(client, appStore), { webhook: webhookToken, admin: 'real-admin-secret' }, undefined, {
+      householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-' },
+      householdApp: {
+        catalogue: new TmdbClient(TMDB_KEY, { baseUrl: tmdb.url }),
+        blocklist: admin,
+        members: new SeerrUserMap(admin),
+      },
+    });
+    await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise((resolve) => gateway.close(resolve)));
+    const port = gateway.address().port;
+    const host = 'jelly-signinhouse.example.test';
+    const origin = `https://${host}`;
+
+    // The page's calls, as the browser makes them: same-origin paths, answered by the gateway for this household's host.
+    const asPage = async (pathname, init = {}) => {
+      const answer = init.method === 'POST'
+        ? await postWithHeaders(port, pathname, { Host: host, ...init.headers }, init.body ? JSON.parse(init.body) : undefined)
+        : await getWithHeaders(port, pathname, { Host: host, ...init.headers });
+      return new Response([204, 304].includes(answer.status) ? null : answer.body, { status: answer.status, headers: answer.headers });
+    };
+    const storage = (() => {
+      const items = new Map();
+      return { items, getItem: (key) => items.get(key) ?? null, setItem: (key, value) => items.set(key, String(value)) };
+    })();
+    const api = createSignInApi({ fetch: asPage, deviceId: () => deviceId(storage), deviceName: 'iPhone' });
+
+    // The picker: this household's members only, as the gateway lists them; Alice and the admin are not on it.
+    const profiles = await api.profiles();
+    assert.deepEqual(profiles.map((profile) => profile.name), ['Bob']);
+    assert.equal(profiles[0].id.replaceAll('-', '').toLowerCase(), fixture.bobId.replaceAll('-', '').toLowerCase());
+
+    // Signing in is Jellyfin web's own call with the app's device ID and headers; Jellyfin accepts it.
+    const result = await api.signIn('Bob', '');
+    const info = await request(baseUrl, '/System/Info/Public');
+    assert.equal(result.serverId, info.Id);
+    assert.equal(result.userId.replaceAll('-', '').toLowerCase(), fixture.bobId.replaceAll('-', '').toLowerCase());
+    assert.equal(storeSignIn(storage, origin, { serverId: result.serverId, userId: result.userId, token: result.token }), true);
+    assert.equal(jellyfinToken(storage, origin), result.token);
+    const stored = JSON.parse(storage.items.get('jellyfin_credentials')).Servers;
+    assert.deepEqual(stored.map(({ DateLastAccessed, ...entry }) => entry), [
+      { Id: info.Id, ManualAddress: origin, LastConnectionMode: 2, UserId: result.userId, AccessToken: result.token },
+    ]);
+    // Jellyfin recorded the session as the app's own device, which is not Jellyfin web's.
+    const devices = await request(baseUrl, '/Devices', { token: fixture.token });
+    const device = devices.Items.find((entry) => entry.Id === storage.items.get('jellypass_device_id'));
+    assert.ok(device, 'the app\'s device is listed');
+    assert.deepEqual([device.AppName, device.Name], ['JellyPass', 'iPhone']);
+
+    // The app then calls /me with that token, and nothing else, and is the household's member.
+    const me = await getWithHeaders(port, '/jellypass/app/v1/me', { Host: host, Authorization: `MediaBrowser Token="${jellyfinToken(storage, origin)}"` });
+    assert.deepEqual(me.json(), { name: 'Bob', household: 'Sign-in House' });
+
+    // Another household's user, and the administrator, cannot sign in on this host; Jellyfin is never asked to.
+    for (const name of ['Alice', 'admin']) {
+      await assert.rejects(api.signIn(name, name === 'admin' ? 'test-password' : ''), (error) => error instanceof SignInError && error.kind === 'invalid');
+    }
+
+    // Signing out revokes the token at Jellyfin and takes it out of storage.
+    await api.signOut(result.token);
+    assert.equal((await fetch(`${baseUrl}/Users/Me`, { headers: { Authorization: `MediaBrowser Token="${result.token}"` } })).status, 401);
+    assert.equal(clearSignIn(storage, origin), true);
+    assert.equal(jellyfinToken(storage, origin), undefined);
+  });
+
+  it('signs in a hidden member by name, from the app and as Jellyfin web does, and refuses any other name as a wrong password', async (t) => {
+    // Hilda is hidden at Jellyfin (left off its public list, so off the picker) and has a password; Bob, shown, is the
+    // household's other member. Alice is in no household here, and the admin is in none.
+    const hilda = await request(baseUrl, '/Users/New', { method: 'POST', token: fixture.token, body: { Name: 'Hilda', Password: 'hilda-pass' } });
+    t.after(() => request(baseUrl, `/Users/${hilda.Id}`, { method: 'DELETE', token: fixture.token }));
+    await client.updatePolicy(hilda.Id, { ...user(await client.getUsers(), hilda.Id).Policy, IsHidden: true });
+    const originalBob = user(await client.getUsers(), fixture.bobId);
+    t.after(() => client.updatePolicy(fixture.bobId, originalBob.Policy));
+    await client.updatePolicy(fixture.bobId, { ...originalBob.Policy, IsHidden: false });
+    const appStore = new GrantStore(path.join(await makeTempDir(t, 'jfa-real-hidden-'), 'grants.json'));
+    await appStore.load();
+    await appStore.upsertGroup({ id: 'hiddenhouse', name: 'Hidden House', userIds: [fixture.bobId, hilda.Id] });
+    const state = world();
+    const seerr = await createFakeSeerr(state);
+    const tmdb = await createFakeTmdb(state);
+    t.after(() => Promise.all([seerr.close(), tmdb.close()]));
+    const admin = new SeerrClient(seerr.url, 'seerr-key');
+    const DELAY = 200;
+    const gateway = makeServer(new AccessService(client, appStore), { webhook: webhookToken, admin: 'real-admin-secret' }, undefined, {
+      householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: DELAY },
+      householdApp: {
+        catalogue: new TmdbClient(TMDB_KEY, { baseUrl: tmdb.url }),
+        blocklist: admin,
+        members: new SeerrUserMap(admin),
+      },
+    });
+    await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise((resolve) => gateway.close(resolve)));
+    const port = gateway.address().port;
+    const host = 'jelly-hiddenhouse.example.test';
+    const asPage = async (pathname, init = {}) => {
+      const answer = init.method === 'POST'
+        ? await postWithHeaders(port, pathname, { Host: host, ...init.headers }, init.body ? JSON.parse(init.body) : undefined)
+        : await getWithHeaders(port, pathname, { Host: host, ...init.headers });
+      return new Response([204, 304].includes(answer.status) ? null : answer.body, { status: answer.status, headers: answer.headers });
+    };
+    const storage = (() => {
+      const items = new Map();
+      return { items, getItem: (key) => items.get(key) ?? null, setItem: (key, value) => items.set(key, String(value)) };
+    })();
+    const api = createSignInApi({ fetch: asPage, deviceId: () => deviceId(storage), deviceName: 'iPhone' });
+    const same = (id) => id.replaceAll('-', '').toLowerCase();
+
+    // Jellyfin itself leaves Hilda off its public list, and so the picker does.
+    assert.deepEqual((await api.profiles()).map((profile) => profile.name), ['Bob']);
+
+    // Typed in the app, in any case, she signs in, and the token is what the app API accepts.
+    const result = await api.signIn('hilda', 'hilda-pass');
+    assert.equal(same(result.userId), same(hilda.Id));
+    const me = await getWithHeaders(port, '/jellypass/app/v1/me', { Host: host, Authorization: `MediaBrowser Token="${result.token}"` });
+    assert.deepEqual(me.json(), { name: 'Hilda', household: 'Hidden House' });
+    await api.signOut(result.token);
+
+    // Jellyfin web's own manual login on the household host signs her in too.
+    const WEB = 'MediaBrowser Client="Jellyfin Web", Device="Firefox", DeviceId="jellypass-real-hidden-web", Version="10.11.3"';
+    const web = (username, password) => postWithHeaders(port, '/Users/AuthenticateByName', { Host: host, Authorization: WEB }, { Username: username, Pw: password });
+    const signedIn = await web('Hilda', 'hilda-pass');
+    assert.equal(signedIn.status, 200);
+    assert.equal(same(signedIn.json().User.Id), same(hilda.Id));
+    await request(baseUrl, '/Sessions/Logout', { method: 'POST', authorization: `${WEB}, Token="${signedIn.json().AccessToken}"` });
+
+    // A wrong password, and any name that is not this household's member's, get one and the same answer, never sooner than DELAY.
+    const seen = (answer) => ({ status: answer.status, text: answer.text, headers: { ...answer.headers, date: undefined } });
+    const timed = async (username, password) => {
+      const started = performance.now();
+      const answer = seen(await web(username, password));
+      const ms = performance.now() - started;
+      assert.ok(ms >= DELAY - 5, `${username}: ${ms} ms`);
+      return answer;
+    };
+    const wrongPassword = await timed('Hilda', 'wrong');
+    assert.deepEqual([wrongPassword.status, wrongPassword.text], [401, '{"error":"invalid_credentials"}']);
+    for (const [username, password] of [['Alice', ''], ['admin', 'test-password'], ['nobody', 'x'], ['Bob', 'wrong']]) {
+      assert.deepEqual(await timed(username, password), wrongPassword, username);
+    }
+    await assert.rejects(api.signIn('admin', 'test-password'), (error) => error instanceof SignInError && error.kind === 'invalid');
+
+    // A sign-in Jellyfin would refuse whoever it named (here with a 400, for a request naming no client) is answered alike
+    // for a member and for any other name, and no sooner either: Codex had Hilda's answered in 20 ms, nobody's in 1 s.
+    const malformed = async (headers, body) => {
+      const answers = [];
+      for (const username of ['Hilda', 'nobody']) {
+        const started = performance.now();
+        answers.push(seen(await postWithHeaders(port, '/Users/AuthenticateByName', { Host: host, ...headers }, body(username))));
+        const ms = performance.now() - started;
+        assert.ok(ms >= DELAY - 5, `${username}: ${ms} ms`);
+      }
+      assert.deepEqual(answers[0], answers[1]);
+      return answers[0];
+    };
+    const noClient = await malformed({}, (username) => ({ Username: username, Pw: 'wrong' }));
+    assert.deepEqual([noClient.status, noClient.text], [400, '{"error":"invalid_request"}']);
+    assert.deepEqual(await malformed({ Authorization: 'MediaBrowser Token="x"' }, (username) => ({ Username: username, Pw: 'wrong' })), noClient);
+    assert.deepEqual(await malformed({ Authorization: WEB }, (username) => ({ Username: username })), noClient);
   });
 
   it('finds a title\'s items by TMDB ID with JellyPass\'s key, the "Get this" decision input for "Jellyfin already has it"', async () => {

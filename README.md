@@ -812,16 +812,30 @@ switched off (those answer the same fixed `404`).
   or v4 read access token from your TMDB account's API settings (free for
   non-commercial use; read TMDB's [API terms](https://www.themoviedb.org/api-terms-of-use)).
   Nothing else to configure: the app's files are built into the image.
-- **Signing in** is Jellyfin's. The app runs on the same address as Jellyfin
-  web and reuses its sign-in (the access token Jellyfin web keeps in the
-  browser), exactly as `/jellypass/add` does; it never asks for a password and
-  stores nothing itself. Signed out, it sends the member to `/web/` to pick
-  their profile; once they are signed in it carries on (in another tab, or when
-  they open the app again). It then shows who is signed in and their household.
-  The installed app's scope is the whole household address, so Jellyfin web
-  (sign-in, and the page **Play** opens) opens inside the installed app, whose
-  storage on iPhone and iPad is separate from Safari's. After signing in there,
-  swipe back, or open JellyPass again from the home screen.
+- **Signing in** is Jellyfin's, done inside the app. Signed out, the app shows
+  the household's profile picker (the same list Jellyfin's own picker shows on
+  this address, which the gateway already limits to the household's members):
+  tap a profile, then enter its Jellyfin password, or just tap if the member is
+  marked passwordless in JellyPass. It makes the calls Jellyfin web makes, through
+  the household gateway, so household scoping and the sign-in rate limit apply
+  exactly as they do on `/web/`; wrong password, too many attempts and
+  "unavailable" each have one fixed message and never show Jellyfin's text.
+  There is no redirect to Jellyfin web and nothing to paste afterwards. The
+  sign-in is stored where Jellyfin web keeps its own (`jellyfin_credentials` in
+  the browser's storage for this address), so **the app and Jellyfin web share
+  one session**: **Play** opens Jellyfin web already signed in, and signing in on
+  `/web/` signs the app in. The only other thing the app stores is a random
+  device ID of its own. **Sign out** (top right) revokes the session at
+  Jellyfin and clears it from the browser, so it **also signs Jellyfin web out**
+  on that address (they are one session). The app API keeps trusting a token it
+  has just verified for up to five minutes, so a signed-out token can still
+  open the app API briefly; it is already refused by Jellyfin. **Open Jellyfin to sign in** stays under the picker as a
+  fallback.
+- **iPhone and iPad:** an app added to the Home Screen has storage apart from
+  Safari's, so signing in in Safari does not sign the installed app in. Sign in
+  inside the installed app: its picker stores the session in the app's own
+  storage, and Jellyfin web (also inside the installed app, whose scope is the
+  whole household address) finds it there.
 - **Screens:** Home (Trending, Popular movies, Popular series and Upcoming
   movies as scrolling rows), Search (as you type, with **Load more**), a movie
   page, a series page with its seasons (each with its own state) and a season
@@ -830,9 +844,9 @@ switched off (those answer the same fixed `404`).
   then **Add to Home Screen**. **Android (Chrome):** menu, **Install app** (or
   **Add to Home screen**). Desktop Chrome and Edge: the install icon in the
   address bar. It opens full screen with JellyPass's icon. **Not yet verified
-  on a real iPhone:** the install and the Jellyfin sign-in inside the installed
-  app have been tested only in a simulated browser, so expect to check them on a
-  device before relying on them.
+  on a real iPhone:** the install and the in-app sign-in have been tested only
+  in a simulated browser and against a real Jellyfin, so expect to check them on
+  a device before relying on them.
 - **Offline and privacy:** a service worker keeps only the app's own static
   files (page, styles, scripts, icons, TMDB logo), as one complete set per
   release (replaced as a whole when the app is updated), so the app opens when
@@ -845,8 +859,26 @@ switched off (those answer the same fixed `404`).
   `nosniff`, `Referrer-Policy: no-referrer`, a `Permissions-Policy` that turns off camera, microphone, location, payment, USB/serial/HID/Bluetooth, motion and other sensors, and the like and
   cross-origin isolation headers. The files are the same for everyone and carry
   no user data; the app fetches everything else from the API after loading.
-  Static files are revalidated on each use (`Cache-Control: no-cache` with an
-  `ETag`); icons and the logo are cached for a week.
+  See **CDN caching** below for how long each file may be kept.
+- **CDN caching (Cloudflare and others):** every file the page loads except the
+  page itself and `sw.js` is served under a name carrying a hash of its content
+  (`app.<hash>.css`, `js/main.<hash>.js`, the manifest, icons and logo too), and
+  the page names exactly those files, so a CDN or browser can keep them for good
+  (`Cache-Control: public, max-age=31536000, immutable`) and two releases can
+  never be mixed. An old or unknown hash answers the same fixed `404` as any
+  unknown app path. The page, the `/jellypass/app` redirect and `sw.js` keep
+  their addresses, so they are sent with `Cache-Control: no-store` plus
+  `CDN-Cache-Control: no-store` and `Cloudflare-CDN-Cache-Control: no-store`, and
+  no `ETag`. Per Cloudflare's documentation `no-store` is never cached at its
+  edge, `Cloudflare-CDN-Cache-Control` / `CDN-Cache-Control` are the headers it
+  reads for its own cache (the former is not forwarded to browsers), and its
+  Browser Cache TTL setting only rewrites `Cache-Control` on responses it caches.
+  An earlier release sent `no-cache` with an `ETag`, which Cloudflare rewrote to
+  `max-age=14400` on the `.css`/`.js` files, so a browser could run old and new
+  files together for up to four hours after an update. After upgrading, purge
+  the CDN cache once for `/jellypass/app/*` if you have cached it before; no
+  rule is needed afterwards. The page registers the worker with
+  `updateViaCache: 'none'`, so browsers check `sw.js` on the network.
 
 Filtering the login picker is a privacy and usability boundary, not
 authentication. Users still authenticate with Jellyfin, and Jellyfin policies

@@ -30,6 +30,10 @@ export interface ServerOptions {
     webSocketIdleTimeoutMs?: number;
     webSocketUpstreamIdleTimeoutMs?: number;
     logLevel?: LogLevel;
+    /** The least time a refused household sign-in takes, in milliseconds (default one second). */
+    loginFailureDelayMs?: number;
+    /** How long a household sign-in waits for Jellyfin, in milliseconds (default 15 seconds). */
+    loginTimeoutMs?: number;
   };
   /**
    * Runs household "Add to my library" joins after their answer. Pass the BackgroundTasks shutdown stops, so it can
@@ -61,6 +65,7 @@ export function makeServer(
         trustedProxies: options.trustedProxies ?? [],
         memberIds: (householdId) => service.getHouseholdMemberIds(householdId),
         isPasswordless: (userId) => service.isPasswordless(userId),
+        users: () => service.listJellyfinUsers(),
         ...(options.householdApp ? {
           appAssets: AppAssets.load(),
           app: new HouseholdApp({

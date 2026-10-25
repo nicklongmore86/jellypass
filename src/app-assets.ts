@@ -21,9 +21,26 @@ const CONTENT_TYPES: Record<string, string> = {
   '.png': 'image/png',
   '.svg': 'image/svg+xml',
 };
-/** Files that change with a release are revalidated on each use (a cheap 304); icons and the logo are kept a week. */
-const REVALIDATE = 'no-cache';
-const KEEP = 'public, max-age=604800';
+/**
+ * Every file but the page and the service worker is named for a hash of its content (`app.<hash>.css`, see
+ * scripts/build-app.mjs), so its bytes never change and it may be kept for good by browsers and CDNs. The page names the
+ * files of its own release, so two releases never share an address.
+ */
+const FINGERPRINTED = /\.[0-9a-f]{12}\.[a-z0-9]+$/;
+const IMMUTABLE = 'public, max-age=31536000, immutable';
+/**
+ * The page and the service worker keep their addresses from release to release, so nothing may keep a copy past the
+ * moment it is asked for: `no-store` for browsers and shared caches (Cloudflare never caches `no-store`), and the CDN
+ * headers Cloudflare and other CDNs read for their own caching, so a CDN setting that rewrites a browser lifetime
+ * cannot make a stale page or worker outlive a release. (A `Cache-Control: no-cache` with an ETag was rewritten to a
+ * four-hour `max-age` on a CDN that keeps files by extension.) Every other answer under /jellypass/app (redirects,
+ * errors, the API) carries the same three, so no CDN keeps any of them either.
+ */
+export const NEVER_STORE = {
+  'Cache-Control': 'no-store',
+  'CDN-Cache-Control': 'no-store',
+  'Cloudflare-CDN-Cache-Control': 'no-store',
+} as const;
 
 /**
  * Strict CSP for every app file: only the app's own origin, plus TMDB's image host for posters and backdrops. No inline
@@ -64,7 +81,8 @@ const SECURITY_HEADERS = {
 interface AppAsset {
   body: Buffer;
   contentType: string;
-  cacheControl: string;
+  /** Fingerprinted: kept for good, with an ETag. Otherwise never stored, with no validator. */
+  fingerprinted: boolean;
   etag: string;
 }
 
@@ -89,11 +107,10 @@ export class AppAssets {
         const contentType = CONTENT_TYPES[extname(name).toLowerCase()];
         if (!contentType) throw new Error(`household app file ${relative} has no known content type`);
         const body = readFileSync(full);
-        const keep = /\.(png|svg)$/i.test(name);
         assets.set(`${APP_PAGE_PATH}${relative}`, {
           body,
           contentType,
-          cacheControl: keep ? KEEP : REVALIDATE,
+          fingerprinted: FINGERPRINTED.test(name),
           etag: `"${createHash('sha256').update(body).digest('base64url').slice(0, 27)}"`,
         });
       }
@@ -117,12 +134,13 @@ export class AppAssets {
   /**
    * Answers a GET or HEAD for one of the app's files and returns true; false if `pathname` (as requested, not
    * lower-cased) is not one. Only the exact paths are served, so the app has one address and one service worker
-   * registration; any other spelling is just an unknown app path. `/jellypass/app` itself redirects to the page. A conditional request gets a 304.
+   * registration; any other spelling (or an old fingerprint) is just an unknown app path. `/jellypass/app` itself redirects
+   * to the page. A fingerprinted file answers a conditional request with a 304; the page and the worker are never stored.
    */
   public serve(request: IncomingMessage, response: ServerResponse, pathname: string): boolean {
     if (request.method !== 'GET' && request.method !== 'HEAD') return false;
     if (pathname === APP_PAGE_PATH.slice(0, -1)) {
-      response.writeHead(308, { Location: APP_PAGE_PATH, 'Cache-Control': REVALIDATE, ...SECURITY_HEADERS });
+      response.writeHead(308, { Location: APP_PAGE_PATH, ...NEVER_STORE, ...SECURITY_HEADERS });
       response.end();
       return true;
     }
@@ -130,11 +148,10 @@ export class AppAssets {
     if (!asset) return false;
     const headers = {
       'Content-Type': asset.contentType,
-      'Cache-Control': asset.cacheControl,
-      ETag: asset.etag,
+      ...(asset.fingerprinted ? { 'Cache-Control': IMMUTABLE, ETag: asset.etag } : NEVER_STORE),
       ...SECURITY_HEADERS,
     };
-    if (request.headers['if-none-match']?.split(',').some((tag) => tag.trim() === asset.etag)) {
+    if (asset.fingerprinted && request.headers['if-none-match']?.split(',').some((tag) => tag.trim() === asset.etag)) {
       response.writeHead(304, headers);
       response.end();
       return true;

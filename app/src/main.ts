@@ -1,4 +1,4 @@
-import { ApiError, createApi, type Api, type ApiErrorKind } from './api.js';
+import { ApiError, createApi, createSignInApi, type Api, type ApiErrorKind, type SignInApi } from './api.js';
 import {
   aboutView,
   cardList,
@@ -11,7 +11,8 @@ import {
   titleDetail,
   titleRow,
 } from './render.js';
-import { jellyfinToken } from './session.js';
+import { clearSignIn, deviceId, jellyfinToken } from './session.js';
+import { showSignIn } from './signin.js';
 import type { DiscoverList, Me } from './types.js';
 
 const ROWS: Array<{ list: DiscoverList; heading: string }> = [
@@ -27,6 +28,7 @@ const doc = document;
 const main = doc.getElementById('screen') as HTMLElement;
 const who = doc.getElementById('who') as HTMLElement;
 const status = doc.getElementById('status') as HTMLElement;
+const signOutButton = doc.getElementById('signout') as HTMLButtonElement;
 const origin = location.origin;
 
 const api: Api = createApi({
@@ -40,6 +42,23 @@ const api: Api = createApi({
     }
   },
 });
+
+const signInApi: SignInApi = createSignInApi({
+  fetch: (input, init) => window.fetch(input, init),
+  deviceId: () => deviceId(localStorage),
+  deviceName: deviceName(typeof navigator === 'object' ? navigator.userAgent ?? '' : ''),
+});
+
+/** A short name for Jellyfin's device list, from the browser's own description of the device. */
+function deviceName(userAgent: string): string {
+  if (/iPhone/.test(userAgent)) return 'iPhone';
+  if (/iPad/.test(userAgent)) return 'iPad';
+  if (/Android/.test(userAgent)) return 'Android';
+  if (/Macintosh/.test(userAgent)) return 'Mac';
+  if (/Windows/.test(userAgent)) return 'Windows';
+  if (/Linux/.test(userAgent)) return 'Linux';
+  return 'Browser';
+}
 
 /** Each navigation gets a new one; work for an earlier navigation checks it before touching the page. */
 let navigation = 0;
@@ -86,12 +105,34 @@ async function loadMe(signal: AbortSignal): Promise<void> {
   who.textContent = [me.name, me.household].filter(Boolean).join(' · ');
 }
 
+/** The sign-in screen, in place of whatever was showing; `expired` when a sign-in the app held was refused. */
+function signIn(signal: AbortSignal, current: () => boolean, expired: boolean): void {
+  me = undefined;
+  who.textContent = '';
+  signOutButton.hidden = true;
+  void showSignIn({
+    doc,
+    api: signInApi,
+    storage: localStorage,
+    origin,
+    show,
+    announce,
+    setTitle,
+    focusHeading,
+    signedIn: () => void render(),
+    current,
+    signal,
+  }, expired);
+}
+
 function failure(kind: ApiErrorKind, retry: () => void): void {
   if (kind === 'unauthorized') {
-    me = undefined;
-    who.textContent = '';
+    // No sign-in, or one Jellyfin no longer accepts: the app's own sign-in takes over this screen.
+    const mine = navigation;
+    signIn((navigationAbort as AbortController).signal, () => mine === navigation, Boolean(jellyfinToken(localStorage, origin)));
+    return;
   }
-  setTitle(kind === 'unauthorized' ? 'Sign in' : 'Error');
+  setTitle('Error');
   show(errorState(doc, kind, retry));
   announce('');
   focusHeading();
@@ -137,6 +178,7 @@ async function render(): Promise<void> {
   const route = parse(location.hash);
   markNav(route);
   const retry = () => void render();
+  signOutButton.hidden = !jellyfinToken(localStorage, origin);
 
   if (route.name === 'about') {
     setTitle('About & credits');
@@ -314,9 +356,29 @@ async function season(route: Route, signal: AbortSignal, current: () => boolean)
   focusHeading();
 }
 
-// Signing in on the same address (in another tab, or before coming back here) is picked up without a reload.
-function resumeIfSignedIn(): void {
-  if (jellyfinToken(localStorage, origin) && main.querySelector('a[href="/web/"]')) void render();
+// Signing in or out on the same address (in another tab, or in Jellyfin web) is picked up without a reload.
+function resumeIfChanged(): void {
+  const signedIn = Boolean(jellyfinToken(localStorage, origin));
+  const showingSignIn = Boolean(main.querySelector('[data-screen="signin"]'));
+  if (signedIn === showingSignIn && parse(location.hash).name !== 'about') void render();
+}
+
+async function signOut(): Promise<void> {
+  const token = jellyfinToken(localStorage, origin);
+  signOutButton.disabled = true;
+  announce('Signing out…');
+  // The token is revoked at Jellyfin first, so it is dead everywhere, Jellyfin web included; then it leaves this browser.
+  if (token) await signInApi.signOut(token);
+  const cleared = clearSignIn(localStorage, origin);
+  signOutButton.disabled = false;
+  me = undefined;
+  who.textContent = '';
+  if (!cleared) {
+    announce("Couldn't remove your sign-in from this browser.");
+    return;
+  }
+  announce('Signed out.');
+  void render();
 }
 
 window.addEventListener('hashchange', () => {
@@ -328,17 +390,18 @@ doc.querySelector('a.skip-link')?.addEventListener('click', (event) => {
   event.preventDefault();
   main.focus();
 });
+signOutButton.addEventListener('click', () => void signOut());
 window.addEventListener('storage', (event) => {
-  if (event.key === 'jellyfin_credentials') resumeIfSignedIn();
+  if (event.key === 'jellyfin_credentials') resumeIfChanged();
 });
-window.addEventListener('pageshow', resumeIfSignedIn);
+window.addEventListener('pageshow', resumeIfChanged);
 doc.addEventListener('visibilitychange', () => {
-  if (!doc.hidden) resumeIfSignedIn();
+  if (!doc.hidden) resumeIfChanged();
 });
 
 if ('serviceWorker' in navigator) {
   // Only static app files are ever cached (see sw.js); a failure to register changes nothing else.
-  navigator.serviceWorker.register('/jellypass/app/sw.js', { scope: '/jellypass/app/' }).catch(() => undefined);
+  navigator.serviceWorker.register('/jellypass/app/sw.js', { scope: '/jellypass/app/', updateViaCache: 'none' }).catch(() => undefined);
 }
 
 void render();
