@@ -524,7 +524,8 @@ elsewhere; the files are never proxied to Jellyfin.
   all** (shown when there is more than one) only checks or clears the boxes and asks for nothing; **Get this** is the one
   action and sends exactly the checked seasons through the same identical-outcome flow (one confirmation, the same fixed
   errors) as before. *Skeletons* for the hero and for a detail page have the real shapes and are hidden from assistive
-  technology.
+  technology. **Unverified on a real phone**: the glass blur, the safe-area insets, swiping the hero and the new icon have
+  only been exercised in a simulated browser.
 - **Back and position.** Every screen but Home has a **Back** button first in the header (44 px, `aria-label="Back"`),
   because the installed app has no browser chrome. The app numbers its own history entries in `history.state` (`{jp: n}`,
   nothing else). With `n > 0` Back is `history.back()`, so hardware back and swipe-back are identical; opened on a screen
@@ -532,7 +533,8 @@ elsewhere; the files are never proxied to Jellyfin.
   **Get this** adds no history entry. Scroll offsets are kept in memory per entry and put back on returning: the page
   scroll, each Home row's `scrollLeft`, Search's query (already in the address) with the pages loaded, and My requests'
   entries shown. Data is fetched again, never kept; nothing from the API is written to `sessionStorage`,
-  `localStorage` or Cache Storage, and `history.scrollRestoration` is `manual`.
+  `localStorage` or Cache Storage, and `history.scrollRestoration` is `manual`. Checked by the owner on a real iPhone
+  (2.4.1): the in-app Back and swipe-back, with the position put back, including the poster rows' `scrollLeft`.
 - **States.** Shown exactly as the DTO says, coarsely: `in_library` is "Ready to watch" with a **Play** button (only
   when `play.url` is exactly the household host's own `/web/#/details?id=<itemId>`), `get_this` is "Available to get"
   with a **Get this** button (since step 2b, a season picker on a series page; the wording says nothing about other
