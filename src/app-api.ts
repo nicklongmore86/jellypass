@@ -215,7 +215,7 @@ interface SignOutLimits {
 
 export interface HouseholdAppOptions {
   /** Titles, from TMDB. */
-  catalogue: Pick<TmdbClient, 'search' | 'discover' | 'network' | 'studio' | 'movie' | 'tv' | 'season'>;
+  catalogue: Pick<TmdbClient, 'search' | 'discover' | 'network' | 'networkFilms' | 'studio' | 'movie' | 'tv' | 'season'>;
   /** Seerr's administrator blocklist, read with the admin key. */
   blocklist: Pick<SeerrClient, 'blocklist'>;
   /** The caller's own Seerr user, confirmed before every call (a `SeerrUserMap`). */
@@ -658,10 +658,13 @@ export class HouseholdApp implements HouseholdAppHandler {
     if (path === '/me') return { endpoint: 'me', run: (caller, context) => this.#me(caller, context) };
     if (path === '/search') return { endpoint: 'search', run: (caller, context, url) => this.#search(caller, context, url) };
     if (path === '/discover/sources') return { endpoint: 'discover', run: async () => sourcesDto() };
-    const source = /^\/discover\/(network|studio)\/([^/]+)$/.exec(path);
+    const source = /^\/discover\/(network|studio)\/([^/]+)(?:\/([^/]+))?$/.exec(path);
     if (source) {
       const kind = source[1] as 'network' | 'studio';
-      return { endpoint: 'discover', run: (caller, context, url) => this.#source(caller, context, url, kind, source[2] as string) };
+      return {
+        endpoint: 'discover',
+        run: (caller, context, url) => this.#source(caller, context, url, kind, source[2] as string, source[3]),
+      };
     }
     const discover = /^\/discover\/([a-z-]+)$/.exec(path);
     if (discover) {
@@ -747,18 +750,40 @@ export class HouseholdApp implements HouseholdAppHandler {
   }
 
   /**
-   * A network's popular series or a studio's popular movies, only for an allowlisted ID ({@link TMDB_NETWORKS},
-   * {@link TMDB_STUDIOS}). Any other ID is `invalid` before TMDB, the cache or the caller's view is asked anything.
+   * A network's popular series, its films (`/films`: the movies its service streams in {@link TMDB_WATCH_REGION}), both
+   * mixed (`/all`, see {@link mixedPage}) or a studio's popular movies, only for an allowlisted ID ({@link TMDB_NETWORKS},
+   * {@link TMDB_STUDIOS}). Any other ID, any list but `films` or `all` after a network's ID (or one it has no films for)
+   * and any list after a studio's is `invalid` before TMDB, the cache or the caller's view is asked anything.
    */
-  async #source(caller: JellyfinCaller, context: HouseholdAppRequest, url: URL, kind: 'network' | 'studio', input: string): Promise<PageDto> {
+  async #source(
+    caller: JellyfinCaller,
+    context: HouseholdAppRequest,
+    url: URL,
+    kind: 'network' | 'studio',
+    input: string,
+    list: string | undefined,
+  ): Promise<PageDto> {
     const id = sourceParameter(kind, input);
+    if (list !== undefined && (kind !== 'network' || (list !== 'films' && list !== 'all') || !tmdbSource(kind, id)?.movieProviderIds?.length)) {
+      throw new AppAnswer('invalid');
+    }
     const page = pageParameter(url);
-    const [answer, view] = await Promise.all([
-      this.#title(context, `${kind}\n${id}\n${page}`, (signal) =>
-        kind === 'network' ? this.#catalogue.network(id, page, { signal }) : this.#catalogue.studio(id, page, { signal })),
-      this.#view(caller, context),
-    ]);
-    return pageOf(answer, page, kind === 'network' ? 'tv' : 'movie', view, context.origin);
+    const series = () => this.#title(context, `network\n${id}\n${page}`, (signal) => this.#catalogue.network(id, page, { signal }));
+    // A network's films are cached under keys of their own, never its series'.
+    const films = () => this.#title(context, `network-films\n${id}\n${page}`, (signal) => this.#catalogue.networkFilms(id, page, { signal }));
+    if (kind === 'studio') {
+      const [answer, view] = await Promise.all([
+        this.#title(context, `studio\n${id}\n${page}`, (signal) => this.#catalogue.studio(id, page, { signal })),
+        this.#view(caller, context),
+      ]);
+      return pageOf(answer, page, 'movie', view, context.origin);
+    }
+    if (list === 'all') {
+      const [seriesAnswer, filmsAnswer, view] = await Promise.all([series(), films(), this.#view(caller, context)]);
+      return mixedPage(pageOf(filmsAnswer, page, 'movie', view, context.origin), pageOf(seriesAnswer, page, 'tv', view, context.origin));
+    }
+    const [answer, view] = await Promise.all([list === 'films' ? films() : series(), this.#view(caller, context)]);
+    return pageOf(answer, page, list === 'films' ? 'movie' : 'tv', view, context.origin);
   }
 
   async #movie(caller: JellyfinCaller, context: HouseholdAppRequest, input: string): Promise<MovieDto> {
@@ -1007,8 +1032,13 @@ export interface SourceDto {
   logoUrl: string | null;
 }
 
+/** A network, and whether it has a films list (`GET /discover/network/:id/films`). */
+export interface NetworkDto extends SourceDto {
+  films: boolean;
+}
+
 export interface SourcesDto {
-  networks: SourceDto[];
+  networks: NetworkDto[];
   studios: SourceDto[];
 }
 
@@ -1050,6 +1080,23 @@ function adjust(counts: Map<string, number>, key: string, by: number): void {
   const count = (counts.get(key) ?? 0) + by;
   if (count > 0) counts.set(key, count);
   else counts.delete(key);
+}
+
+/**
+ * One page of a network's films and series together: the same page of each, alternating film, series, film, … from
+ * each one's own popularity order (TMDB's popularity is not comparable across movies and series), the longer one's rest
+ * at the end. Nothing is dropped as a duplicate (a movie and a series are never the same title). There is a next page
+ * while either list has one.
+ */
+function mixedPage(films: PageDto, series: PageDto): PageDto {
+  const results: CardDto[] = [];
+  for (let index = 0; index < Math.max(films.results.length, series.results.length); index += 1) {
+    const film = films.results[index];
+    const show = series.results[index];
+    if (film) results.push(film);
+    if (show) results.push(show);
+  }
+  return { page: films.page, nextPage: films.nextPage ?? series.nextPage, results };
 }
 
 function pageOf(answer: unknown, page: number, mediaType: MediaType | undefined, view: HouseholdView, origin: string): PageDto {
@@ -1202,7 +1249,10 @@ function sourceDto(source: TmdbSource): SourceDto {
 
 /** The allowlisted networks and studios, in the order Home shows them. */
 function sourcesDto(): SourcesDto {
-  return { networks: TMDB_NETWORKS.map(sourceDto), studios: TMDB_STUDIOS.map(sourceDto) };
+  return {
+    networks: TMDB_NETWORKS.map((network) => ({ ...sourceDto(network), films: Boolean(network.movieProviderIds?.length) })),
+    studios: TMDB_STUDIOS.map(sourceDto),
+  };
 }
 
 function tmdbParameter(value: string): number {

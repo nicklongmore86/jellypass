@@ -78,8 +78,13 @@ export interface Source {
   logoUrl: string | null;
 }
 
+/** A network, and whether its streaming service's films can be listed (US where-to-watch data). */
+export interface Network extends Source {
+  films: boolean;
+}
+
 export interface Sources {
-  networks: Source[];
+  networks: Network[];
   studios: Source[];
 }
 

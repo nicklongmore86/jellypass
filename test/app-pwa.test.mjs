@@ -444,9 +444,10 @@ describe('household app page: files', () => {
     assert.doesNotMatch(logo, /<script|href=["']https?:|on\w+=/i);
     for (const file of FILES.filter((name) => /\.(js|css|html|webmanifest)$/.test(name))) {
       const source = read(file);
-      // The only absolute URLs are links the person follows (TMDB's site), TMDB's image host and the SVG namespace.
+      // The only absolute URLs are links the person follows (TMDB's site, JustWatch's for its where-to-watch credit),
+      // TMDB's image host and the SVG namespace.
       for (const url of source.match(/https?:\/\/[^\s"'`)]+/g) ?? []) {
-        assert.match(url, /^(?:https:\/\/(?:www\.themoviedb\.org\/?|image\.tmdb\.org\/t\/p\/.*|image\\\.tmdb.*)|http:\/\/www\.w3\.org\/2000\/svg)$/, `${file} mentions ${url}`);
+        assert.match(url, /^(?:https:\/\/(?:www\.themoviedb\.org\/?|www\.justwatch\.com\/|image\.tmdb\.org\/t\/p\/.*|image\\\.tmdb.*)|http:\/\/www\.w3\.org\/2000\/svg)$/, `${file} mentions ${url}`);
       }
     }
     assert.doesNotMatch(read(BUILT('app.css')), /@import|url\(/);
@@ -541,6 +542,10 @@ describe('household app page: files', () => {
       }
     }
     assert.match(css, /\.tabbar a\[aria-current='page'\] \{ color: var\(--accent-text\); \}/);
+    // A service page's All | Series | Films control: muted on the surface, the selected one text on the raised surface (both pairs above).
+    assert.match(css, /\.segmented \{[^}]*background: var\(--surface\)/);
+    assert.match(css, /\.segment \{[^}]*background: transparent;[^}]*color: var\(--muted\)/);
+    assert.match(css, /\.segment\[aria-selected='true'\] \{ background: var\(--surface-raised\); color: var\(--text\); \}/);
     assert.match(css, /\.tabbar a \{[^}]*color: var\(--muted\)/);
     // The tab bar's glass is the surface colour, so the opaque fallback (no backdrop blur) gives the same pairs.
     const material = /--material:\s*rgb\((\d+) (\d+) (\d+) \/ [0-9.]+\)/.exec(css);
@@ -1657,7 +1662,10 @@ describe('household app page: rendering', () => {
     assert.equal(logo.getAttribute('src'), BUILT('tmdb-logo.svg'), 'bundled, not hotlinked');
     assert.ok(logo.getAttribute('alt'));
     const links = [...about.querySelectorAll('a')].map((anchor) => anchor.getAttribute('href'));
-    assert.deepEqual(links, ['https://www.themoviedb.org/', 'https://www.themoviedb.org/']);
+    assert.deepEqual(links, ['https://www.themoviedb.org/', 'https://www.themoviedb.org/', 'https://www.justwatch.com/']);
+    // Where-to-watch data is JustWatch's (TMDB's terms for it): credited by name, with its US-only scope.
+    assert.equal(about.querySelector('.justwatch-credit').textContent,
+      'Which films each streaming service has (US availability only, the same for every household) comes from JustWatch, through TMDB.');
     assert.ok(about.querySelectorAll('h1').length === 1);
     // The logo is less prominent than the app's own name (TMDB's terms): small, in the credits only.
     assert.match(read(BUILT('app.css')), /\.tmdb-logo \{ width: 9rem/);
@@ -1970,15 +1978,20 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     assert.equal(link.querySelector('span').textContent, 'Popular on');
     assert.equal(link.querySelector('img').getAttribute('alt'), 'Netflix');
     assert.equal(link.querySelector('img').getAttribute('src'), 'https://image.tmdb.org/t/p/w300/wwemzKWzjKYJFfCeiB57q3r4Bcm.png');
-    assert.deepEqual([...page.document.querySelector('ul[aria-labelledby="row-network-213-heading"]').querySelectorAll('.card-title')].map((title) => title.textContent),
-      ['Synthetic Series Two']);
+    // One mixed row: the service's films and series, film first, each card saying which it is.
+    const netflix = page.document.querySelector('ul[aria-labelledby="row-network-213-heading"]');
+    assert.deepEqual([...netflix.querySelectorAll('.card')].map((card) => `${card.querySelector('.card-title').textContent} | ${card.querySelector('.card-meta').textContent}`),
+      ['Synthetic Movie One | 2020 · Movie', 'Synthetic Series Two | 2019 · Series', 'Synthetic Movie Three | 2024 · Movie']);
     // Revealed again (or watched by an observer that fires twice), a row is never fetched twice.
     page.reveal('row-network-213');
     await pause(50);
-    assert.equal(page.requests.filter((request) => request.url === '/jellypass/app/v1/discover/network/213').length, 1);
+    assert.equal(page.requests.filter((request) => request.url === '/jellypass/app/v1/discover/network/213/all').length, 1);
     assert.equal(page.requests.filter((request) => request.url === '/jellypass/app/v1/discover/upcoming-tv').length, 1);
     assert.equal(page.requests.length, 8);
-    assert.equal(tmdb(), 6);
+    // Upcoming series is one TMDB call; a service's mixed row is two, its series and its films.
+    assert.equal(tmdb(), 7);
+    assert.deepEqual(app.tmdb.calls.slice(-2).map((call) => call.query.get('with_networks') ?? `${call.query.get('with_watch_providers')} ${call.query.get('watch_region')}`).sort(),
+      ['213', '8|1796 US']);
     assert.equal(page.watched().length, 7);
     assertNoCanaries(page.serialize(), 'the page shows data that is not in a DTO');
   });
@@ -2002,7 +2015,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     for (const listener of page.listeners.scroll ?? []) listener({ type: 'scroll' });
     await page.until(() => page.document.querySelector('#row-network-213-heading'), 'Netflix');
     await pause(50);
-    assert.deepEqual(page.requests.slice(6).map((request) => request.url), ['/jellypass/app/v1/discover/upcoming-tv', '/jellypass/app/v1/discover/network/213']);
+    assert.deepEqual(page.requests.slice(6).map((request) => request.url), ['/jellypass/app/v1/discover/upcoming-tv', '/jellypass/app/v1/discover/network/213/all']);
   });
 
   it('shows a network\'s page with its logo and the grid, and refuses one the API does not list without asking for titles', async (t) => {
@@ -2013,7 +2026,9 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     const logo = page.main().querySelector('.source-head img');
     assert.equal(logo.getAttribute('alt'), '', 'the heading already names the network');
     assert.equal(logo.getAttribute('src'), 'https://image.tmdb.org/t/p/w300/wwemzKWzjKYJFfCeiB57q3r4Bcm.png');
-    assert.deepEqual([...page.main().querySelectorAll('ul.grid .card .badge')].map((badge) => badge.textContent), ['Available to get']);
+    // All: the service's films and series mixed, as on Home.
+    assert.deepEqual([...page.main().querySelectorAll('ul.grid .card .badge')].map((badge) => badge.textContent), ['Available to get', 'Available to get', 'Ready to watch']);
+    assert.deepEqual(page.requests.map((request) => request.url).filter((url) => url.includes('/network/')), ['/jellypass/app/v1/discover/network/213/all']);
     assert.equal(page.main().querySelector('button.load-more'), null, 'no next page after a short one');
     assert.equal(page.document.querySelector('nav a[aria-current="page"]').dataset.nav, 'home');
     for (const hash of ['#/network/49', '#/studio/213', '#/network/41077']) {
@@ -2021,6 +2036,82 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       await missing.until(() => missing.main().querySelector('h1')?.textContent === 'Not found', hash);
       assert.deepEqual(missing.requests.map((request) => request.url).filter((url) => url !== '/jellypass/app/v1/me'), ['/jellypass/app/v1/discover/sources'], hash);
     }
+  });
+
+  it('switches a service\'s page between All, Series and Films: real tabs, keyboard, the address replaced in place', async (t) => {
+    const app = await startApp(t);
+    const page = await openApp(t, app, { hash: '#/network/213' });
+    await page.until(() => page.main().querySelector('ul.grid .card'), 'the network page');
+    const tabs = () => [...page.main().querySelectorAll('[role="tablist"] [role="tab"]')];
+    const describe = () => tabs().map((tab) => `${tab.tagName} ${tab.getAttribute('type')} ${tab.textContent} ${tab.getAttribute('aria-selected')} ${tab.getAttribute('tabindex')} ${tab.getAttribute('aria-controls')}`);
+    assert.equal(page.main().querySelector('[role="tablist"]').getAttribute('aria-label'), 'Show');
+    assert.deepEqual(describe(), ['BUTTON button All true 0 source-panel', 'BUTTON button Series false -1 source-panel', 'BUTTON button Films false -1 source-panel']);
+    const panel = () => page.main().querySelector('#source-panel');
+    assert.equal(panel().getAttribute('role'), 'tabpanel');
+    assert.equal(panel().getAttribute('aria-labelledby'), 'source-tab-all');
+    const credit = 'Where to watch: US streaming availability from JustWatch, via TMDB.';
+    assert.equal(panel().querySelector('.source-note').textContent, credit);
+    const entries = page.entries.length;
+    const metas = () => [...panel().querySelectorAll('.card-meta')].map((meta) => meta.textContent.replace(/^\d{4} · /, ''));
+    assert.deepEqual(metas(), ['Movie', 'Series', 'Movie']);
+
+    tabs()[2].dispatchEvent(new page.Event('click'));
+    await page.until(() => page.main().querySelector('h1').textContent === 'Films on Netflix' && panel().querySelector('ul.grid .card'), 'Films');
+    assert.equal(page.location.hash, '#/network/213?kind=films');
+    assert.equal(page.entries.length, entries, 'switching replaces the entry, so Back still leaves the page');
+    assert.equal(page.document.title, 'Films on Netflix – JellyPass');
+    assert.deepEqual(describe().map((text) => text.split(' ').slice(2, 5).join(' ')), ['All false -1', 'Series false -1', 'Films true 0']);
+    assert.equal(panel().getAttribute('aria-labelledby'), 'source-tab-films');
+    assert.deepEqual(metas(), ['Movie', 'Movie']);
+    assert.equal(panel().querySelector('.source-note').textContent, credit);
+
+    const key = (name) => {
+      const event = new page.Event('keydown', { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'key', { value: name });
+      page.focused().dispatchEvent(event);
+      return event;
+    };
+    page.focused();
+    tabs()[2].focus();
+    assert.equal(key('ArrowLeft').defaultPrevented, true);
+    await page.until(() => page.main().querySelector('h1').textContent === 'Series on Netflix' && panel().querySelector('ul.grid .card'), 'Series');
+    assert.equal(page.focused().textContent, 'Series', 'focus follows the selected tab');
+    assert.equal(page.location.hash, '#/network/213?kind=series');
+    assert.deepEqual(metas(), ['Series']);
+    assert.equal(panel().querySelector('.source-note'), null, 'no where-to-watch data on Series');
+    key('End');
+    await page.until(() => page.location.hash === '#/network/213?kind=films' && panel().querySelector('ul.grid .card'), 'End is Films');
+    key('ArrowRight');
+    await page.until(() => page.location.hash === '#/network/213' && panel().querySelector('ul.grid .card'), 'past the end wraps to All');
+    assert.equal(page.focused().textContent, 'All');
+    assert.equal(key('a').defaultPrevented, false, 'other keys are left alone');
+    assert.deepEqual(page.requests.map((request) => request.url).filter((url) => url.includes('/network/')), [
+      '/jellypass/app/v1/discover/network/213/all', '/jellypass/app/v1/discover/network/213/films', '/jellypass/app/v1/discover/network/213',
+      '/jellypass/app/v1/discover/network/213/films', '/jellypass/app/v1/discover/network/213/all',
+    ]);
+    assert.equal(page.entries.length, entries);
+    assertNoCanaries(page.serialize(), 'the page shows data that is not in a DTO');
+    // A network the API lists no films for has no tabs, and its Films address is "Not found".
+    const sources = { networks: [{ id: 213, name: 'Netflix', logoUrl: null, films: false }], studios: [] };
+    const override = (url) => (url === '/jellypass/app/v1/discover/sources' ? { status: 200, body: Buffer.from(JSON.stringify(sources)), headers: { 'content-type': 'application/json' } } : undefined);
+    const plain = await openApp(t, app, { hash: '#/network/213', override });
+    await plain.until(() => plain.main().querySelector('ul.grid .card'), 'series only');
+    assert.equal(plain.main().querySelector('h1').textContent, 'Series on Netflix');
+    assert.equal(plain.main().querySelector('[role="tablist"]'), null);
+    assert.deepEqual(plain.requests.map((request) => request.url).filter((url) => url.includes('/network/')), ['/jellypass/app/v1/discover/network/213']);
+    const none = await openApp(t, app, { hash: '#/network/213?kind=films', override });
+    await none.until(() => none.main().querySelector('h1')?.textContent === 'Not found', 'no films');
+  });
+
+  it('credits JustWatch once on Home, under the services\' rows', async (t) => {
+    const app = await startApp(t);
+    const page = await openApp(t, app);
+    await page.until(() => page.watched().length === 9, 'Home');
+    const notes = [...page.main().querySelectorAll('.source-note')];
+    assert.deepEqual(notes.map((note) => note.textContent), ['Where to watch: US streaming availability from JustWatch, via TMDB.']);
+    const slots = [...page.main().querySelectorAll('[data-key^="row-network-"]')];
+    assert.equal(slots.length, 8);
+    assert.ok(slots.at(-1).compareDocumentPosition(notes[0]) & 4, 'after the last service row');
   });
 
   it('shows only allowlisted TMDB logos: anything else is the name as text, and markup in a name is never parsed', async (t) => {
@@ -2407,7 +2498,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       const fetched = page.requests.slice(before).map((request) => request.url).sort();
       // The Netflix row was showing, so it is fetched with Home at once; the rows never reached are still waiting.
       assert.deepEqual(fetched, [
-        '/jellypass/app/v1/discover/network/213', '/jellypass/app/v1/discover/popular-movies', '/jellypass/app/v1/discover/popular-tv',
+        '/jellypass/app/v1/discover/network/213/all', '/jellypass/app/v1/discover/popular-movies', '/jellypass/app/v1/discover/popular-tv',
         '/jellypass/app/v1/discover/sources', '/jellypass/app/v1/discover/trending', '/jellypass/app/v1/discover/upcoming',
       ]);
       assert.equal(page.document.querySelector('ul.row-list[aria-labelledby="row-network-213-heading"]').scrollLeft, 210, 'the row is where it was');
@@ -2445,6 +2536,46 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       deep.back().dispatchEvent(new deep.Event('click'));
       await homeReady(deep);
       assert.equal(deep.location.hash, '#/');
+    });
+
+    it('puts a service\'s Films tab, its pages and the scroll back after a title, and opens its address on that tab', async (t) => {
+      const app = await startApp(t, world({ extraResults: 45 }));
+      const page = await openApp(t, app);
+      await homeReady(page);
+      page.go('#/network/213');
+      await page.until(() => page.main().querySelector('[role="tab"][data-list="films"]') && page.main().querySelector('ul.grid .card'), 'the Netflix page');
+      page.main().querySelector('[role="tab"][data-list="films"]').dispatchEvent(new page.Event('click'));
+      await page.until(() => page.main().querySelector('h1').textContent === 'Films on Netflix' && page.main().querySelector('button.load-more:not([disabled])'), 'Films');
+      assert.equal(page.main().querySelectorAll('ul.grid .card').length, 47);
+      page.main().querySelector('button.load-more').dispatchEvent(new page.Event('click'));
+      await page.until(() => page.main().querySelectorAll('ul.grid .card').length === 94 && page.main().querySelector('button.load-more:not([disabled])'), 'page 2');
+      page.scroll.y = 1234;
+      page.go(`#/movie/${OWN_MOVIE}`);
+      await page.until(() => page.main().querySelector('article.detail'), 'the movie');
+      const before = page.requests.length;
+      page.back().dispatchEvent(new page.Event('click'));
+      await page.until(() => page.main().querySelectorAll('ul.grid .card').length === 94 && page.scroll.y === 1234, 'both pages and the scroll');
+      assert.equal(page.location.hash, '#/network/213?kind=films');
+      assert.equal(page.main().querySelector('h1').textContent, 'Films on Netflix');
+      assert.equal(page.main().querySelector('[role="tab"][aria-selected="true"]').textContent, 'Films');
+      assert.deepEqual(page.requests.slice(before).map((request) => request.url), [
+        '/jellypass/app/v1/discover/sources', '/jellypass/app/v1/discover/network/213/films', '/jellypass/app/v1/discover/network/213/films?page=2',
+      ]);
+      // Back again leaves the page for Home (switching tabs added no entry).
+      page.back().dispatchEvent(new page.Event('click'));
+      await homeReady(page);
+      assert.equal(page.cursor(), 0, 'back where the app was opened');
+      // All keeps its own pages: one page of All is a page of films and one of series.
+      page.go('#/network/213');
+      await page.until(() => page.main().querySelector('button.load-more:not([disabled])'), 'All');
+      assert.equal(page.main().querySelectorAll('ul.grid .card').length, 48);
+      // Opened on its address, the page is on that tab.
+      const deep = await openApp(t, app, { hash: '#/network/213?kind=series' });
+      await deep.until(() => deep.main().querySelector('h1')?.textContent === 'Series on Netflix', 'the Series tab');
+      assert.equal(deep.main().querySelector('[role="tab"][aria-selected="true"]').textContent, 'Series');
+      assert.deepEqual(deep.requests.map((request) => request.url).filter((url) => url.includes('/network/')), ['/jellypass/app/v1/discover/network/213']);
+      const odd = await openApp(t, app, { hash: '#/network/213?kind=bogus' });
+      await odd.until(() => odd.main().querySelector('h1')?.textContent === 'Popular on Netflix', 'an unknown kind is All');
     });
 
     it('puts the search query, the pages loaded and the scroll back', async (t) => {

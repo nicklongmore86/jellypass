@@ -49,6 +49,9 @@ const ENDPOINTS = [
   `${APP}/discover/upcoming-tv`,
   `${APP}/discover/sources`,
   `${APP}/discover/network/213`,
+  // Netflix's films, then its series and films mixed (both answered from the household's cache by now).
+  `${APP}/discover/network/213/films`,
+  `${APP}/discover/network/213/all`,
   `${APP}/discover/studio/41077?page=2`,
   `${APP}/movie/${T_MOVIE}`,
   `${APP}/movie/${OWN_MOVIE}`,
@@ -451,7 +454,7 @@ describe('household app API: other households are invisible', { timeout: 60_000 
   it('draws the network rows and pages, upcoming series and the studios strip byte for byte the same in every other-household world', async (t) => {
     const dir = path.join(import.meta.dirname, '..', 'dist', 'app', 'js');
     const file = readdirSync(dir).filter((name) => /^render\.[0-9a-f]{12}\.js$/.test(name));
-    const { sourceRow, sourceHeading, studioStrip, titleRow, cardList } = await import(pathToFileURL(path.join(dir, file[0])).href);
+    const { sourceRow, sourceHeading, sourceTabs, justWatchNote, studioStrip, titleRow, cardList } = await import(pathToFileURL(path.join(dir, file[0])).href);
     const drawn = async (state) => {
       const app = await startApp(t, state);
       const { networks, studios } = (await app.get(`${APP}/discover/sources`)).json();
@@ -460,7 +463,14 @@ describe('household app API: other households are invisible', { timeout: 60_000 
       parts.push(titleRow(document, 'row-upcoming-tv', 'Upcoming series', (await app.get(`${APP}/discover/upcoming-tv`)).json()));
       // The first three rows, and HBO Max's, drawn from two TMDB networks.
       for (const network of networks.filter((source, index) => index < 3 || source.id === 3186)) {
-        parts.push(sourceRow(document, `row-network-${network.id}`, 'network', network, (await app.get(`${APP}/discover/network/${network.id}`)).json()));
+        // Home's rows: each service's series and films mixed.
+        parts.push(sourceRow(document, `row-network-${network.id}`, 'network', network, (await app.get(`${APP}/discover/network/${network.id}/all`)).json()));
+      }
+      parts.push(justWatchNote(document));
+      // A service's page, on each of its tabs.
+      for (const list of ['all', 'series', 'films']) {
+        const answer = (await app.get(`${APP}/discover/network/${networks[0].id}${list === 'series' ? '' : `/${list}`}?page=2`)).json();
+        parts.push(sourceHeading(document, 'network', networks[0], list), sourceTabs(document, 'source-tab', 'source-panel', list), cardList(document, answer.results, 'grid'));
       }
       parts.push(sourceHeading(document, 'studio', studios[0]), cardList(document, (await app.get(`${APP}/discover/studio/${studios[0].id}`)).json().results, 'grid'));
       // Everything drawn, as strings (never DOM nodes).
@@ -470,6 +480,9 @@ describe('household app API: other households are invisible', { timeout: 60_000 
     assert.match(expected, /Popular on/);
     assert.match(expected, /Synthetic Series Two/);
     assert.match(expected, /href="#\/network\/3186"[^]*alt="HBO Max"/);
+    assert.match(expected, /Films on Netflix/);
+    assert.match(expected, /JustWatch/);
+    assert.match(expected, /Synthetic Movie One[^]*Synthetic Series Two[^]*Synthetic Movie Three/, 'a mixed row: film, series, film');
     for (const [name, state] of Object.entries(otherHouseholdWorlds())) assert.equal(await drawn(state), expected, name);
   });
 
@@ -558,7 +571,7 @@ describe('household app API: identity', { timeout: 20_000 }, () => {
     }
     assert.deepEqual(asAlice.map((call) => call.pathname), [
       '/3/search/multi', '/3/search/multi', '/3/trending/all/day', '/3/discover/movie', '/3/discover/tv', '/3/discover/movie',
-      '/3/discover/tv', '/3/discover/tv', '/3/discover/movie',
+      '/3/discover/tv', '/3/discover/tv', '/3/discover/movie', '/3/discover/movie',
       `/3/movie/${T_MOVIE}`, `/3/movie/${OWN_MOVIE}`, `/3/tv/${T_TV}`, `/3/tv/${T_TV}/season/1`, `/3/tv/${T_TV}/season/2`,
     ]);
   });
@@ -581,9 +594,12 @@ describe('household app API: networks, studios and upcoming series', { timeout: 
       '521 DreamWorks', '420 Marvel Studios', '9993 DC', '41077 A24',
     ]);
     for (const source of [...networks, ...studios]) {
-      assert.deepEqual(Object.keys(source), ['id', 'name', 'logoUrl']);
+      assert.deepEqual(Object.keys(source), networks.includes(source) ? ['id', 'name', 'logoUrl', 'films'] : ['id', 'name', 'logoUrl']);
       assert.match(source.logoUrl, LOGO, source.name);
     }
+    // Every network's films can be listed (US where-to-watch data); the provider IDs themselves are never sent.
+    assert.ok(networks.every((network) => network.films === true));
+    assert.doesNotMatch(answer.text, /1796|2303|watch/);
     assert.equal(networks[0].logoUrl, 'https://image.tmdb.org/t/p/w300/wwemzKWzjKYJFfCeiB57q3r4Bcm.png');
     assert.equal(tmdbCalls(app).length, 0);
     // The same bytes for every household.
@@ -597,12 +613,19 @@ describe('household app API: networks, studios and upcoming series', { timeout: 
       `${APP}/discover/network/213.0`, `${APP}/discover/network/-213`, `${APP}/discover/network/abc`, `${APP}/discover/network/99999999999`,
       `${APP}/discover/studio/213`, `${APP}/discover/studio/1`, `${APP}/discover/studio/%32`, `${APP}/discover/network/213?page=0`,
       `${APP}/discover/network/213?page=501`, `${APP}/discover/studio/2?page=x`, `${APP}/discover/network/1?page=2`,
+      // A network's lists are `films` and `all` alone; a studio has none; an unlisted ID has none either.
+      `${APP}/discover/network/213/2`, `${APP}/discover/network/213/series`, `${APP}/discover/network/213/Films`,
+      `${APP}/discover/network/213/movies`, `${APP}/discover/network/213/%66ilms`, `${APP}/discover/network/213/all%20`,
+      `${APP}/discover/network/49/films`, `${APP}/discover/network/1/all`, `${APP}/discover/network/8/films`,
+      `${APP}/discover/studio/2/films`, `${APP}/discover/studio/41077/all`, `${APP}/discover/network/213/films?page=0`,
+      `${APP}/discover/network/213/all?page=501`, `${APP}/discover/network/abc/films`,
     ]) {
       const answer = await app.get(pathname);
       assert.equal(answer.status, 400, pathname);
       assert.equal(answer.text, '{"error":"invalid_request"}', pathname);
     }
-    for (const pathname of [`${APP}/discover/network`, `${APP}/discover/network/213/2`, `${APP}/discover/networks/213`, `${APP}/discover/company/2`]) {
+    for (const pathname of [`${APP}/discover/network`, `${APP}/discover/network/213/films/2`, `${APP}/discover/networks/213`, `${APP}/discover/company/2`,
+      `${APP}/discover/network/213/films/`]) {
       const answer = await app.get(pathname);
       assert.equal(answer.status, 404, pathname);
       assert.equal(answer.text, '{"error":"not_found"}', pathname);
@@ -705,6 +728,97 @@ describe('household app API: networks, studios and upcoming series', { timeout: 
     assert.equal(alice.status, 200, alice.text);
     assert.ok(waited < 1000, `A waited ${waited} ms`);
     // B's burst only costs B: past its 20 waiting TMDB calls, the fixed 429; the rest answered.
+    for (const answer of bob) assert.ok(answer.status === 200 || answer.text === '{"error":"too_many_requests"}', `${answer.status} ${answer.text}`);
+    const times = app.tmdb.calls.map((call) => call.at);
+    for (const first of times) assert.ok(times.filter((time) => time >= first && time < first + 1000).length <= 30);
+  });
+});
+
+describe('household app API: films on a service (US where to watch)', { timeout: 60_000 }, () => {
+  const tmdbCalls = (app) => app.tmdb.calls.filter((call) => call.pathname !== '/3/authentication');
+  const PROVIDERS = {
+    213: '8|1796', 2739: '337', 2552: '350', 1024: '9|2100', 3186: '1899', 453: '15', 4330: '2303|2616', 3353: '386|387',
+  };
+  const sent = (call) => [...call.query].filter(([name]) => name !== 'api_key').map(([name, value]) => `${name}=${value}`).join('&');
+
+  it('asks TMDB for each service\'s films by its US watch providers, flatrate, by popularity, and nothing else', async (t) => {
+    const app = await startApp(t);
+    for (const id of Object.keys(PROVIDERS)) assert.equal((await app.get(`${APP}/discover/network/${id}/films?page=2`)).status, 200, id);
+    assert.deepEqual(tmdbCalls(app).map((call) => `${call.pathname}?${sent(call)}`), Object.values(PROVIDERS).map((providers) =>
+      `/3/discover/movie?page=2&sort_by=popularity.desc&include_adult=false&watch_region=US&with_watch_providers=${providers}`
+      + '&with_watch_monetization_types=flatrate&language=en-US'));
+  });
+
+  it('ignores the caller\'s own query parameters: the same TMDB call, and the same answer from the cache', async (t) => {
+    const app = await startApp(t);
+    const answer = await app.get(`${APP}/discover/network/213/films`);
+    assert.equal(answer.status, 200);
+    for (const query of [
+      'watch_region=GB', 'with_watch_providers=1', 'with_watch_monetization_types=rent', 'kind=series', 'with_networks=49',
+      'sort_by=vote_average.desc&include_adult=true', 'language=fr-FR&region=GB', 'api_key=x',
+    ]) {
+      assert.equal(serialized(await app.get(`${APP}/discover/network/213/films?${query}`, { user: ANN })), serialized(answer), query);
+    }
+    assert.deepEqual(tmdbCalls(app).map(sent), [
+      'page=1&sort_by=popularity.desc&include_adult=false&watch_region=US&with_watch_providers=8|1796&with_watch_monetization_types=flatrate&language=en-US',
+    ]);
+  });
+
+  it('mixes a service\'s films and series, film first, alternating, with each card\'s type and the caller\'s state', async (t) => {
+    const app = await startApp(t, world({ extraResults: 20 }));
+    const all = (await app.get(`${APP}/discover/network/213/all`)).json();
+    assert.deepEqual(Object.keys(all), ['page', 'nextPage', 'results']);
+    assert.deepEqual(all.results.slice(0, 4).map((card) => `${card.mediaType} ${card.tmdbId} ${card.state}`),
+      [`movie ${T_MOVIE} get_this`, `tv ${T_TV} get_this`, `movie ${OWN_MOVIE} in_library`, 'movie 910000 get_this']);
+    assert.equal(all.results.filter((card) => card.mediaType === 'tv').length, 1, 'nothing is dropped or repeated');
+    assert.equal(all.results.length, 23);
+    assert.equal(all.nextPage, 2, 'a full page of films offers the next');
+    // Two TMDB calls, one per kind, each under its own cache key: the Series and Films lists are answered from them.
+    assert.deepEqual(tmdbCalls(app).map((call) => `${call.pathname} ${call.query.get('with_networks') ?? call.query.get('with_watch_providers')}`).sort(),
+      ['/3/discover/movie 8|1796', '/3/discover/tv 213']);
+    const series = (await app.get(`${APP}/discover/network/213`)).json();
+    const films = (await app.get(`${APP}/discover/network/213/films`)).json();
+    assert.equal(tmdbCalls(app).length, 2);
+    assert.deepEqual(series.results.map((card) => card.mediaType), ['tv']);
+    assert.ok(films.results.every((card) => card.mediaType === 'movie'));
+    assert.equal(films.results.length, 22);
+    // A page past the series' end is the films alone, still paged.
+    const later = (await app.get(`${APP}/discover/network/213/all?page=2`)).json();
+    assert.equal(later.page, 2);
+  });
+
+  it('caches films apart from series, per service and page, and never across households', async (t) => {
+    const app = await startApp(t);
+    const reads = () => tmdbCalls(app).length;
+    await app.get(`${APP}/discover/network/213`);
+    await app.get(`${APP}/discover/network/213/films`);
+    assert.equal(reads(), 2, 'a service\'s films are not its series');
+    await app.get(`${APP}/discover/network/213/films`, { user: ANN });
+    await app.get(`${APP}/discover/network/213/all`, { user: ANN });
+    assert.equal(reads(), 2);
+    await app.get(`${APP}/discover/network/213/films?page=2`);
+    await app.get(`${APP}/discover/network/2739/films`);
+    await app.get(`${APP}/discover/studio/2`);
+    assert.equal(reads(), 5);
+    await app.get(`${APP}/discover/network/213/films`, { host: HOST_B, user: BOB });
+    assert.equal(reads(), 6, 'household B is not answered from A\'s cache');
+    await app.get(`${APP}/discover/network/213/all`, { host: HOST_B, user: BOB });
+    assert.equal(reads(), 7, 'B\'s mixed row reads B\'s own series');
+  });
+
+  it('keeps household A\'s TMDB turn while household B scrolls every service\'s mixed, series and films lists', async (t) => {
+    const app = await startApp(t, world(), { catalogueLimits: {} });
+    const ids = Object.keys(PROVIDERS);
+    const paths = ids.flatMap((id) => [1, 2].flatMap((page) => ['/all', '', '/films'].map((list) => `${APP}/discover/network/${id}${list}?page=${page}`)));
+    assert.equal(paths.length, 48);
+    const bursts = paths.map((pathname) => app.get(pathname, { host: HOST_B, user: BOB }));
+    await delay(100);
+    const started = performance.now();
+    const alice = await app.get(`${APP}/discover/network/213/all?page=9`);
+    const waited = performance.now() - started;
+    const bob = await Promise.all(bursts);
+    assert.equal(alice.status, 200, alice.text);
+    assert.ok(waited < 1000, `A waited ${waited} ms`);
     for (const answer of bob) assert.ok(answer.status === 200 || answer.text === '{"error":"too_many_requests"}', `${answer.status} ${answer.text}`);
     const times = app.tmdb.calls.map((call) => call.at);
     for (const first of times) assert.ok(times.filter((time) => time >= first && time < first + 1000).length <= 30);

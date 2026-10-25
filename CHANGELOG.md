@@ -29,6 +29,19 @@ privacy leak. Such changes are always listed at the top of the release notes.
   `GET /jellypass/app/v1/discover/{network,studio}/:id?page=` for those networks and studios only: any other ID is a
   `400 invalid_request`, before TMDB is asked. Titles still come from TMDB, with the same caching per household and the
   same share of TMDB's rate limit.
+- Household app: each **Popular on** row (Netflix, Disney+, Apple TV, Prime Video, HBO Max, Hulu, Paramount+,
+  Peacock) now mixes the service's popular series with the films it streams, film then series in turn, each card
+  saying "Movie" or "Series". Films come from TMDB's where-to-watch data (JustWatch's) for **the US only**, the same
+  for every household, credited to JustWatch on About, on Home and on the service's page. A service's page has an
+  **All | Series | Films** control, kept in the address (`#/network/:id?kind=films`), so Back comes back to the same
+  tab with its pages and scroll. Opening Home still makes the same four TMDB calls; a mixed row costs two once it
+  scrolls near the screen.
+- Household app API: `GET /jellypass/app/v1/discover/network/:id/films?page=` (the service's films in the US, TMDB
+  discover by its watch providers with `watch_region=US` and `flatrate`) and `GET
+  /jellypass/app/v1/discover/network/:id/all?page=` (series and films mixed). `GET /discover/sources` gives each
+  network `films: true`. Only the listed services: any other ID, or any list after a network's ID but `films` or
+  `all` (for example `/discover/network/213/2`), is `400 invalid_request` before TMDB is asked.
+  Films are cached apart from series, per household.
 
 ## [2.5.0] - 2026-10-25
 

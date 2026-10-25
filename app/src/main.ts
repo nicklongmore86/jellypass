@@ -18,9 +18,14 @@ import {
   skeletonGrid,
   skeletonRequests,
   skeletonRow,
+  justWatchNote,
+  SOURCE_LISTS,
   SOURCE_TEXT,
   sourceHeading,
+  sourceHref,
   sourceRow,
+  sourceTabs,
+  type SourceList,
   studioStrip,
   titleDetail,
   titleRow,
@@ -28,7 +33,7 @@ import {
 import { icon } from './icons.js';
 import { clearSignIn, deviceId, jellyfinToken } from './session.js';
 import { showSignIn } from './signin.js';
-import type { DiscoverList, MediaType, Me, Page, RequestEntry, Source, SourceKind, Sources } from './types.js';
+import type { DiscoverList, MediaType, Me, Network, Page, RequestEntry, Source, SourceKind, Sources } from './types.js';
 
 const ROWS: Array<{ list: DiscoverList; heading: string }> = [
   { list: 'trending', heading: 'Trending' },
@@ -320,6 +325,8 @@ interface Route {
   id?: number;
   season?: number;
   query?: string;
+  /** A network's page: which of its lists (`?kind=series` or `films`; anything else is All). */
+  list?: SourceList;
 }
 
 /** Only an empty hash or one that starts `#/` names a screen; anything else (the skip link's `#screen`) is not a route. */
@@ -335,7 +342,11 @@ function parse(hash: string): Route {
   const season = /^\/tv\/(\d{1,10})\/season\/(\d{1,4})$/.exec(path);
   if (season) return { name: 'season', id: Number(season[1]), season: Number(season[2]) };
   const source = /^\/(network|studio)\/(\d{1,10})$/.exec(path);
-  if (source) return { name: source[1] === 'studio' ? 'studio' : 'network', id: Number(source[2]) };
+  if (source?.[1] === 'studio') return { name: 'studio', id: Number(source[2]) };
+  if (source) {
+    const list = new URLSearchParams(queryString).get('kind');
+    return { name: 'network', id: Number(source[2]), list: list === 'series' || list === 'films' ? list : 'all' };
+  }
   const title = /^\/(movie|tv)\/(\d{1,10})$/.exec(path);
   if (title) return { name: title[1] === 'tv' ? 'tv' : 'movie', id: Number(title[2]) };
   return { name: 'home' };
@@ -452,12 +463,14 @@ async function home(signal: AbortSignal, current: () => boolean): Promise<void> 
       const left = restore?.rows?.['row-studios-heading'];
       if (list && left && restoreLive(restore)) appScrollLeft(list, left);
     }
+    // Each network's row is its series and films mixed (two TMDB calls, once it comes near the screen).
     for (const network of found.networks) {
       const slot = lazySlot(`row-network-${network.id}`);
       networksSlot.append(slot);
-      watch(slot, () => api.source('network', network.id, 1, signal), (page) => sourceRow(doc, slot.dataset['key'] as string, 'network', network, page),
-        SOURCE_TEXT.heading('network', network.name));
+      watch(slot, () => api.source('network', network.id, 1, signal, network.films ? 'all' : undefined),
+        (page) => sourceRow(doc, slot.dataset['key'] as string, 'network', network, page), SOURCE_TEXT.heading('network', network.name));
     }
+    if (found.networks.some((network) => network.films)) networksSlot.append(el(doc, 'div', { class: 'home-row' }, [justWatchNote(doc)]));
     await Promise.all(again);
   };
   await Promise.all([
@@ -823,9 +836,11 @@ async function season(route: Route, signal: AbortSignal, current: () => boolean)
 }
 
 /**
- * A network's popular series or a studio's popular movies, as a grid with **Load more** (the API's `nextPage`). Only
- * the networks and studios the API lists have a page; any other is "Not found" without asking for titles. Coming back,
- * the pages that were showing are fetched again and the scroll put back.
+ * A network's or a studio's page: a grid with **Load more** (the API's `nextPage`). A network whose films the API lists
+ * has an All | Series | Films control (All, its series and films mixed, as on Home); the list shown is in the address
+ * (`?kind=`), replaced in place on switching, so Back and coming back are per list. Only the networks and studios the
+ * API lists have a page; any other is "Not found" without asking for titles. Coming back, the pages that were showing
+ * are fetched again and the scroll put back.
  */
 async function sourceScreen(route: Route, signal: AbortSignal, current: () => boolean): Promise<void> {
   const kind = route.name as SourceKind;
@@ -836,60 +851,149 @@ async function sourceScreen(route: Route, signal: AbortSignal, current: () => bo
   const sources = await api.sources(signal);
   const source: Source | undefined = (kind === 'network' ? sources.networks : sources.studios).find((candidate) => candidate.id === id);
   if (!source) throw new ApiError('not_found');
-  const back = restoring;
-  const wanted = back?.loaded ?? 1;
-  sourcePages = 1;
-  let answer = await api.source(kind, id, 1, signal);
-  if (!current()) return;
-  const grid = cardList(doc, answer.results, 'grid');
-  const results = el(doc, 'div', { class: 'search-results' }, [
-    answer.results.length ? grid : el(doc, 'p', { class: 'muted', text: 'Nothing to show here right now.' }),
-  ]);
-  const more = el(doc, 'button', { class: 'button button-secondary load-more', text: 'Load more', attrs: { type: 'button' } });
-  setTitle(SOURCE_TEXT.heading(kind, source.name));
-  show(sourceHeading(doc, kind, source), results);
-  const append = (page: Page) => {
-    const fresh = cardList(doc, page.results, 'grid');
-    const firstNew = fresh.querySelector<HTMLElement>('a.card-link');
-    grid.append(...Array.from(fresh.children));
-    return firstNew;
-  };
-  // Coming back: the pages that were showing, one after another, before the scroll is put back.
-  while (answer.nextPage && sourcePages < wanted && restoreLive(back)) {
-    answer = await api.source(kind, id, answer.nextPage, signal);
-    if (!current()) return;
-    append(answer);
-    sourcePages = answer.page;
+  const lists: readonly SourceList[] = kind === 'studio' ? ['all'] : (source as Network).films ? SOURCE_LISTS : ['series'];
+  let list: SourceList = kind === 'studio' ? 'all' : route.list ?? 'all';
+  // A network the API lists no films for has its series only, and no All or Films to link to.
+  if (!lists.includes(list)) {
+    if (list === 'films') throw new ApiError('not_found');
+    list = 'series';
   }
-  const offerMore = () => {
-    more.remove();
-    if (!answer.nextPage) return;
-    more.disabled = false;
-    more.textContent = 'Load more';
-    results.append(more);
+  const fetchList = (shown: SourceList, page: number, listSignal: AbortSignal) => {
+    if (kind === 'studio' || shown === 'series') return api.source(kind, id, page, listSignal);
+    return api.source(kind, id, page, listSignal, shown);
   };
-  more.addEventListener('click', () => {
-    if (!answer.nextPage) return;
-    more.disabled = true;
-    more.textContent = 'Loading…';
-    void api.source(kind, id, answer.nextPage, signal).then((page) => {
-      if (!current()) return;
-      answer = page;
-      const firstNew = append(page);
-      sourcePages = page.page;
-      announce('More results loaded.');
-      offerMore();
-      firstNew?.focus();
+  const panelId = 'source-panel';
+  const panel = el(doc, 'div', { class: 'source-panel', attrs: { id: panelId } });
+  const tabs = lists.length > 1 ? sourceTabs(doc, 'source-tab', panelId, list) : undefined;
+  if (tabs) {
+    panel.setAttribute('role', 'tabpanel');
+    panel.setAttribute('aria-labelledby', `source-tab-${list}`);
+  }
+  const head = sourceHeading(doc, kind, source, list);
+  /** Each list drawn gets a new one; a list switched away from stops touching the panel. */
+  let shownList = 0;
+  let listAbort: AbortController | undefined;
+  signal.addEventListener('abort', () => listAbort?.abort());
+
+  /** Draws one list into the panel, with the pages `back` had loaded fetched again first. Throws if its first page fails. */
+  const load = async (shown: SourceList, back: Position | undefined): Promise<void> => {
+    listAbort?.abort();
+    const controller = new AbortController();
+    listAbort = controller;
+    const mine = ++shownList;
+    const live = () => current() && mine === shownList && !controller.signal.aborted;
+    sourcePages = 1;
+    const wanted = back?.loaded ?? 1;
+    let answer = await fetchList(shown, 1, controller.signal);
+    if (!live()) return;
+    const grid = cardList(doc, answer.results, 'grid');
+    const results = el(doc, 'div', { class: 'search-results' }, [
+      answer.results.length ? grid : el(doc, 'p', { class: 'muted', text: 'Nothing to show here right now.' }),
+    ]);
+    const more = el(doc, 'button', { class: 'button button-secondary load-more', text: 'Load more', attrs: { type: 'button' } });
+    // A service's films are TMDB's where-to-watch data, which is JustWatch's.
+    panel.replaceChildren(results, ...(kind === 'network' && shown !== 'series' ? [justWatchNote(doc)] : []));
+    const append = (page: Page) => {
+      const fresh = cardList(doc, page.results, 'grid');
+      const firstNew = fresh.querySelector<HTMLElement>('a.card-link');
+      grid.append(...Array.from(fresh.children));
+      return firstNew;
+    };
+    // Coming back: the pages that were showing, one after another, before the scroll is put back.
+    while (answer.nextPage && sourcePages < wanted && restoreLive(back)) {
+      answer = await fetchList(shown, answer.nextPage, controller.signal);
+      if (!live()) return;
+      append(answer);
+      sourcePages = answer.page;
+    }
+    const offerMore = () => {
+      more.remove();
+      if (!answer.nextPage) return;
+      more.disabled = false;
+      more.textContent = 'Load more';
+      results.append(more);
+    };
+    more.addEventListener('click', () => {
+      if (!answer.nextPage) return;
+      more.disabled = true;
+      more.textContent = 'Loading…';
+      void fetchList(shown, answer.nextPage, controller.signal).then((page) => {
+        if (!live()) return;
+        answer = page;
+        const firstNew = append(page);
+        sourcePages = page.page;
+        announce('More results loaded.');
+        offerMore();
+        firstNew?.focus();
+      }, (error: unknown) => {
+        if (!live()) return;
+        const failed = kindOf(error);
+        if (failed === 'unauthorized') return failure(failed, () => void render());
+        announce('');
+        more.remove();
+        results.append(errorState(doc, failed, () => void render()));
+      });
+    });
+    offerMore();
+  };
+
+  /** Shows another list: the address is replaced (not pushed), so Back still leaves the page, and coming back is to this list. */
+  const select = (next: SourceList, focus: boolean): void => {
+    if (!tabs) return;
+    const tab = tabs.querySelector<HTMLElement>(`[data-list="${next}"]`);
+    if (focus) tab?.focus();
+    if (next !== list) showList(next);
+  };
+  const showList = (next: SourceList): void => {
+    if (!tabs) return;
+    list = next;
+    history.replaceState(history.state, '', sourceHref(kind, source, next));
+    shownRoute = parse(location.hash);
+    // What was being put back belonged to the other list.
+    restoreCancelled = true;
+    for (const button of tabs.querySelectorAll<HTMLElement>('[role="tab"]')) {
+      const selected = button.dataset['list'] === next;
+      button.setAttribute('aria-selected', String(selected));
+      button.setAttribute('tabindex', selected ? '0' : '-1');
+    }
+    panel.setAttribute('aria-labelledby', `source-tab-${next}`);
+    const title = SOURCE_TEXT.heading(kind, source.name, next);
+    setTitle(title);
+    const h1 = head.querySelector('h1');
+    if (h1) h1.textContent = title;
+    panel.replaceChildren(skeletonGrid(doc));
+    announce('Loading…');
+    const mine = shownList + 1;
+    load(next, undefined).then(() => {
+      if (current() && mine === shownList) announce(`${SOURCE_TEXT.lists[next]} shown.`);
     }, (error: unknown) => {
-      if (!current() || signal.aborted) return;
+      if (!current() || mine !== shownList || signal.aborted) return;
       const failed = kindOf(error);
       if (failed === 'unauthorized') return failure(failed, () => void render());
       announce('');
-      more.remove();
-      results.append(errorState(doc, failed, () => void render()));
+      panel.replaceChildren(errorState(doc, failed, () => showList(next)));
     });
-  });
-  offerMore();
+  };
+  if (tabs) {
+    for (const button of tabs.querySelectorAll<HTMLElement>('[role="tab"]')) {
+      button.addEventListener('click', () => select(button.dataset['list'] as SourceList, false));
+    }
+    tabs.addEventListener('keydown', (event) => {
+      const at = lists.indexOf(list);
+      const key = (event as KeyboardEvent).key;
+      const next = key === 'ArrowRight' ? lists[(at + 1) % lists.length]
+        : key === 'ArrowLeft' ? lists[(at + lists.length - 1) % lists.length]
+          : key === 'Home' ? lists[0] : key === 'End' ? lists[lists.length - 1] : undefined;
+      if (!next) return;
+      event.preventDefault();
+      select(next, true);
+    });
+  }
+
+  await load(list, restoring);
+  if (!current()) return;
+  setTitle(SOURCE_TEXT.heading(kind, source.name, list));
+  show(head, ...(tabs ? [tabs] : []), panel);
   announce('');
   focusHeading();
 }
