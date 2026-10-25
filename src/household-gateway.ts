@@ -30,6 +30,8 @@ const LOGIN_USERS_TTL_MS = 10_000;
 const DEFAULT_LOGIN_FAILURE_DELAY_MS = 1000;
 /** How long a household sign-in waits for Jellyfin's answer before it counts as no answer. */
 const DEFAULT_LOGIN_TIMEOUT_MS = 15_000;
+/** How long a sign-out (POST /Sessions/Logout) may take at Jellyfin in all, whether or not its client is still there. */
+const DEFAULT_SIGN_OUT_TIMEOUT_MS = 15_000;
 /** The client metadata Jellyfin requires of every sign-in: without any of it Jellyfin refuses with a 400. */
 const LOGIN_CLIENT_FIELDS = ['client', 'device', 'deviceid', 'version'];
 const LIBRARY_JOIN_PATH = '/jellypass/add';
@@ -98,6 +100,8 @@ export interface HouseholdGatewayOptions {
   loginFailureDelayMs?: number;
   /** How long a household sign-in waits for Jellyfin, in milliseconds (default DEFAULT_LOGIN_TIMEOUT_MS). */
   loginTimeoutMs?: number;
+  /** How long a sign-out may take at Jellyfin in all, in milliseconds (default DEFAULT_SIGN_OUT_TIMEOUT_MS). */
+  signOutTimeoutMs?: number;
   /** Close an upgraded connection after this long with no bytes in either direction; 0 disables. */
   webSocketIdleTimeoutMs?: number;
   /** Close an upgraded connection after this long with no bytes from Jellyfin, even if the client keeps talking; 0 disables. */
@@ -124,6 +128,13 @@ export interface HouseholdGatewayOptions {
   appAssets?: AppAssets;
 }
 
+/** Jellyfin's whole answer, as read by {@link HouseholdGateway.#sendWhole}. */
+interface WholeAnswer {
+  status: number;
+  headers: IncomingHttpHeaders;
+  body: Buffer;
+}
+
 interface CurrentUser {
   Id: string;
   Name?: string;
@@ -145,6 +156,7 @@ export class HouseholdGateway {
   readonly #users: HouseholdGatewayOptions['users'];
   readonly #loginFailureDelayMs: number;
   readonly #loginTimeoutMs: number;
+  readonly #signOutTimeoutMs: number;
   #loginUsers: { list: Promise<Array<{ Id: string; Name: string }>>; expires: number } | undefined;
   readonly #loginAttempts = new AttemptCounter({ windowMs: LOGIN_ATTEMPT_WINDOW_MS, maxKeys: MAX_LOGIN_CLIENTS });
   readonly #libraryJoinAttempts = new AttemptCounter({ windowMs: LIBRARY_JOIN_WINDOW_MS, maxKeys: MAX_LOGIN_CLIENTS });
@@ -173,6 +185,7 @@ export class HouseholdGateway {
     this.#users = options.users;
     this.#loginFailureDelayMs = options.loginFailureDelayMs ?? DEFAULT_LOGIN_FAILURE_DELAY_MS;
     this.#loginTimeoutMs = options.loginTimeoutMs ?? DEFAULT_LOGIN_TIMEOUT_MS;
+    this.#signOutTimeoutMs = options.signOutTimeoutMs ?? DEFAULT_SIGN_OUT_TIMEOUT_MS;
     this.#webSocketIdleTimeoutMs = options.webSocketIdleTimeoutMs ?? DEFAULT_WS_IDLE_TIMEOUT_MS;
     this.#webSocketUpstreamIdleTimeoutMs = options.webSocketUpstreamIdleTimeoutMs ?? DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS;
     this.#debug = options.logLevel === 'debug';
@@ -239,14 +252,7 @@ export class HouseholdGateway {
       return;
     }
     if (this.#app && request.method === 'POST' && isLogoutPath(requestUrl.pathname)) {
-      // Forgotten before Jellyfin is asked and again once it has answered (or failed, or the client left), whatever it
-      // answers, and not kept meanwhile: only the tokens this sign-out itself carries, within the app's limits.
-      const done = this.#app.signingOut(tokenKeys(this.#credentials(request, requestUrl)), { clientId: this.#clientAddress(request), householdId });
-      try {
-        await this.#proxy(request, response);
-      } finally {
-        done();
-      }
+      await this.#proxySignOut(request, response, requestUrl, householdId, this.#app);
       return;
     }
     if (request.method === 'POST' && pathname === AUTHENTICATE_BY_NAME_PATH) {
@@ -612,20 +618,80 @@ export class HouseholdGateway {
   }
 
   /**
+   * A sign-out through the household host, sent to Jellyfin as the client sent it. The app forgets the sessions of its
+   * tokens and keeps them back until Jellyfin's request is over (see {@link HouseholdAppHandler.signingOut}): that is
+   * when Jellyfin answers, fails or takes longer than #signOutTimeoutMs, never when the client leaves, as Jellyfin may
+   * still revoke the token after. So it is not sent on when its client leaves, and is read whole before it is sent.
+   * Refused (503) when the app has too many sign-outs at Jellyfin already.
+   */
+  async #proxySignOut(request: IncomingMessage, response: ServerResponse, requestUrl: URL, householdId: string, app: HouseholdAppHandler): Promise<void> {
+    let body: Buffer;
+    try {
+      body = await readLimitedBody(request, MAX_LOGIN_BODY_BYTES);
+    } catch {
+      if (!response.destroyed) writeJson(response, 413, { error: 'request_too_large' });
+      return;
+    }
+    const credentials = this.#credentials(request, requestUrl);
+    const mediaBrowserToken = request.headers['x-mediabrowser-token'];
+    if (typeof mediaBrowserToken === 'string') credentials.headers.set('x-mediabrowser-token', mediaBrowserToken);
+    const keys = tokenKeys(credentials);
+    const done = app.signingOut(keys, { clientId: this.#clientAddress(request), householdId });
+    if (!done) {
+      if (!response.destroyed) writeJson(response, 503, { error: 'too_many_sign_outs' }, { 'Retry-After': '1' });
+      return;
+    }
+    const headers: IncomingHttpHeaders = { ...request.headers, 'content-length': String(body.length) };
+    let answer: WholeAnswer | undefined;
+    try {
+      answer = await this.#sendWhole(request, headers, body, { totalTimeoutMs: this.#signOutTimeoutMs, context: 'household sign-out' });
+    } finally {
+      done(answer !== undefined);
+    }
+    if (response.destroyed) return;
+    if (!answer) writeJson(response, 502, { error: 'jellyfin_unavailable' });
+    else {
+      response.writeHead(answer.status, answer.headers);
+      response.end(answer.body);
+    }
+  }
+
+  /**
    * Sends a sign-in to Jellyfin with the client's own headers and reads the whole answer, or undefined if Jellyfin could
    * not be reached, did not answer within #loginTimeoutMs or its answer was too large.
    */
-  async #authenticate(request: IncomingMessage, body: Buffer): Promise<{ status: number; headers: IncomingHttpHeaders; body: Buffer } | undefined> {
+  async #authenticate(request: IncomingMessage, body: Buffer): Promise<WholeAnswer | undefined> {
+    const headers: IncomingHttpHeaders = {
+      ...request.headers,
+      'content-type': 'application/json',
+      'content-length': String(body.length),
+      accept: 'application/json',
+      'accept-encoding': 'identity',
+    };
+    delete headers['content-encoding'];
+    return this.#sendWhole(request, headers, body, { idleTimeoutMs: this.#loginTimeoutMs, context: 'household login' });
+  }
+
+  /**
+   * Sends `request` to Jellyfin with these headers and body, and reads the whole answer, or undefined if Jellyfin could
+   * not be reached, went quiet for `idleTimeoutMs` or took `totalTimeoutMs` in all, or its answer was too large. Its
+   * client leaving changes nothing.
+   */
+  async #sendWhole(
+    request: IncomingMessage,
+    headersInput: IncomingHttpHeaders,
+    body: Buffer,
+    options: { idleTimeoutMs?: number; totalTimeoutMs?: number; context: string },
+  ): Promise<WholeAnswer | undefined> {
     const exchange = this.#exchange();
-    return new Promise((resolve) => {
-      const headers: IncomingHttpHeaders = {
-        ...request.headers,
-        'content-type': 'application/json',
-        'content-length': String(body.length),
-        accept: 'application/json',
-        'accept-encoding': 'identity',
+    const { context } = options;
+    return new Promise((settle) => {
+      let timer: NodeJS.Timeout | undefined;
+      const resolve = (answer: WholeAnswer | undefined) => {
+        clearTimeout(timer);
+        settle(answer);
       };
-      delete headers['content-encoding'];
+      const headers = { ...headersInput };
       delete headers['transfer-encoding'];
       delete headers.expect;
       const upstream = this.#transport().request(this.#requestOptions(request, headers), (upstreamResponse) => {
@@ -633,11 +699,11 @@ export class HouseholdGateway {
         let size = 0;
         upstreamResponse.on('data', (chunk: Buffer) => {
           size += chunk.length;
-          if (size > MAX_LOGIN_RESPONSE_BYTES) upstreamResponse.destroy(new Error('sign-in response is too large'));
+          if (size > MAX_LOGIN_RESPONSE_BYTES) upstreamResponse.destroy(new Error(`${context} response is too large`));
           else chunks.push(chunk);
         });
         upstreamResponse.on('error', (error) => {
-          exchange.error('upstream', 'household login response', error);
+          exchange.error('upstream', `${context} response`, error);
           resolve(undefined);
         });
         // An upstream reset mid-body ends the answer without 'end' (or an error): it is no answer at all.
@@ -651,9 +717,10 @@ export class HouseholdGateway {
           resolve({ status: upstreamResponse.statusCode ?? 502, headers: relayed, body: answer });
         });
       });
-      upstream.setTimeout(this.#loginTimeoutMs, () => upstream.destroy(new Error('household login timed out')));
+      if (options.idleTimeoutMs !== undefined) upstream.setTimeout(options.idleTimeoutMs, () => upstream.destroy(new Error(`${context} timed out`)));
+      if (options.totalTimeoutMs !== undefined) timer = setTimeout(() => upstream.destroy(new Error(`${context} timed out`)), options.totalTimeoutMs);
       upstream.on('error', (error) => {
-        exchange.error('upstream', 'household login request', error);
+        exchange.error('upstream', `${context} request`, error);
         resolve(undefined);
       });
       upstream.end(body);
@@ -1053,8 +1120,9 @@ function credentialKey(credentials: JellyfinCredentials): string | undefined {
 
 /**
  * A hash of each Jellyfin token the credentials carry, however each is given: `Token` in an `Authorization` or
- * `X-Emby-Authorization` header (URL-decoded, as Jellyfin reads it), `X-Emby-Token`, or the first value of each token
- * query parameter (in any case; any more values of one are not taken). So at most six, however many a request sends.
+ * `X-Emby-Authorization` header (as Jellyfin reads it, see {@link authorizationToken}), `X-Emby-Token`,
+ * `X-MediaBrowser-Token`, or the first value of each token query parameter (in any case; any more values of one are not
+ * taken). So at most seven, however many a request sends.
  */
 function tokenKeys(credentials: JellyfinCredentials): string[] {
   const tokens = new Set<string>();
@@ -1063,8 +1131,10 @@ function tokenKeys(credentials: JellyfinCredentials): string[] {
     const token = value ? authorizationToken(value) : undefined;
     if (token) tokens.add(token);
   }
-  const embyToken = credentials.headers.get('x-emby-token');
-  if (embyToken) tokens.add(embyToken);
+  for (const name of ['x-emby-token', 'x-mediabrowser-token']) {
+    const token = credentials.headers.get(name);
+    if (token) tokens.add(token);
+  }
   const names = new Set<string>();
   for (const [name, value] of credentials.query) {
     if (names.has(name.toLowerCase())) continue;
@@ -1088,22 +1158,78 @@ function isLogoutPath(pathname: string): boolean {
   return decoded.toLowerCase().replace(/\/+$/, '') === LOGOUT_PATH;
 }
 
-/** The `Token` of a `MediaBrowser key="value", ...` header, or undefined if it has none. */
+/**
+ * The `Token` Jellyfin takes from a `MediaBrowser key="value", ...` (or `Emby ...`) header, or undefined if it has none,
+ * parsed exactly as Jellyfin 10.11's AuthorizationContext.GetParts does: a comma inside quotes is part of the value, a
+ * key is matched in its case, a key given twice has its last value, and each value is URL-decoded as
+ * WebUtility.UrlDecode does (`+` is a space).
+ */
 function authorizationToken(header: string): string | undefined {
-  const parameters = header.trim().replace(/^[A-Za-z]+\s+/, '');
-  for (const part of parameters.split(',')) {
-    const separator = part.indexOf('=');
-    if (separator < 0 || part.slice(0, separator).trim().toLowerCase() !== 'token') continue;
-    const raw = part.slice(separator + 1).trim().replace(/^"|"$/g, '');
-    let token = raw;
-    try {
-      token = decodeURIComponent(raw);
-    } catch {
-      // Not URL-encoded: the token as given.
+  const firstSpace = header.indexOf(' ');
+  if (firstSpace < 0) return undefined;
+  const scheme = header.slice(0, firstSpace).toLowerCase();
+  if (scheme !== 'mediabrowser' && scheme !== 'emby') return undefined;
+  const parameters = header.slice(firstSpace + 1);
+  let token: string | undefined;
+  let escaped = false;
+  let start = 0;
+  let key = '';
+  const take = (end: number) => {
+    if (key === 'Token') token = urlDecode(parameters.slice(start, end).replace(/^"+|"+$/g, ''));
+  };
+  for (let index = 0; index < parameters.length; index += 1) {
+    const character = parameters[index];
+    if (character === '"' || character === ',') {
+      // A quote opens or closes a value; a comma outside one ends it.
+      escaped = !escaped === (character === '"');
+      if (character === ',' && !escaped) {
+        if (start < index) {
+          take(index);
+          key = '';
+        }
+        start = index + 1;
+      }
+    } else if (!escaped && character === '=') {
+      key = parameters.slice(start, index).trim();
+      start = index + 1;
     }
-    return token || undefined;
   }
-  return undefined;
+  if (start < parameters.length) take(parameters.length);
+  return token || undefined;
+}
+
+/**
+ * `value` URL-decoded as .NET's WebUtility.UrlDecode does: `+` is a space, `%XX` a byte (the bytes read as UTF-8), and
+ * anything else, a `%` not followed by two hex digits included, as it is.
+ */
+function urlDecode(value: string): string {
+  let decoded = '';
+  let bytes: number[] = [];
+  const flush = () => {
+    if (!bytes.length) return;
+    decoded += Buffer.from(bytes).toString('utf8');
+    bytes = [];
+  };
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index] as string;
+    if (character === '+') {
+      bytes.push(0x20);
+      continue;
+    }
+    if (character === '%' && index < value.length - 2 && /^[0-9A-Fa-f]{2}$/.test(value.slice(index + 1, index + 3))) {
+      bytes.push(Number.parseInt(value.slice(index + 1, index + 3), 16));
+      index += 2;
+      continue;
+    }
+    const code = character.charCodeAt(0);
+    if (code < 0x80) bytes.push(code);
+    else {
+      flush();
+      decoded += character;
+    }
+  }
+  flush();
+  return decoded;
 }
 
 /** The user and token in a successful AuthenticateByName answer, or undefined if it has none. */

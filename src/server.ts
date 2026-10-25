@@ -34,6 +34,8 @@ export interface ServerOptions {
     loginFailureDelayMs?: number;
     /** How long a household sign-in waits for Jellyfin, in milliseconds (default 15 seconds). */
     loginTimeoutMs?: number;
+    /** How long a sign-out through a household host may take at Jellyfin, in milliseconds (default 15 seconds). */
+    signOutTimeoutMs?: number;
   };
   /**
    * Runs household "Add to my library" joins after their answer. Pass the BackgroundTasks shutdown stops, so it can
@@ -44,7 +46,7 @@ export interface ServerOptions {
    * The household app API at /jellypass/app/v1/* on household hosts (needs `householdGateway`). Without it those paths
    * answer a fixed 404 there; they are never served on the admin host.
    */
-  householdApp?: Pick<HouseholdAppOptions, 'catalogue' | 'blocklist' | 'members' | 'requests' | 'libraryTtlMs' | 'titleTtlMs' | 'blocklistTtlMs' | 'catalogueLimits' | 'now'>;
+  householdApp?: Pick<HouseholdAppOptions, 'catalogue' | 'blocklist' | 'members' | 'requests' | 'libraryTtlMs' | 'titleTtlMs' | 'blocklistTtlMs' | 'catalogueLimits' | 'signOutLimits' | 'now'>;
 }
 
 export interface JellyPassServer extends Server {
