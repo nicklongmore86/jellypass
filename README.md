@@ -642,7 +642,10 @@ and nowhere else (on the administrator host they do not exist). The
   the answer for at most 5 minutes, but a sign-out through any household host
   (`POST /Sessions/Logout`) forgets that token at once, whatever Jellyfin
   answers, and does not cache it again while the sign-out is at Jellyfin or
-  for a minute after, so its next call is refused once Jellyfin has revoked it. A token revoked outside JellyPass (a
+  for a minute after, so its next call is refused once Jellyfin has revoked it
+  (at most 6 tokens per sign-out, and 10 sign-outs per client and 30 per
+  household a minute, are tracked so; past that a sign-out still forgets its
+  tokens, and never affects any other). A token revoked outside JellyPass (a
   device deleted in Jellyfin's dashboard, or a sign-out sent straight to
   Jellyfin) can still be accepted for the rest of those 5 minutes. The caller must be an enabled member of
   the household whose hostname they called; household membership is checked on

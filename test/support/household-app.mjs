@@ -753,6 +753,7 @@ export async function startApp(t, state = world(), options = {}) {
         ...(options.titleTtlMs !== undefined ? { titleTtlMs: options.titleTtlMs } : {}),
         ...(options.blocklistTtlMs !== undefined ? { blocklistTtlMs: options.blocklistTtlMs } : {}),
         catalogueLimits: options.catalogueLimits ?? { perSecond: 1000, burst: 1000 },
+        ...(options.signOutLimits ? { signOutLimits: options.signOutLimits } : {}),
       },
     }),
   });

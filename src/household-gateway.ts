@@ -240,8 +240,8 @@ export class HouseholdGateway {
     }
     if (this.#app && request.method === 'POST' && isLogoutPath(requestUrl.pathname)) {
       // Forgotten before Jellyfin is asked and again once it has answered (or failed, or the client left), whatever it
-      // answers, and not kept meanwhile: only the tokens this sign-out itself carries.
-      const done = this.#app.signingOut(tokenKeys(this.#credentials(request, requestUrl)));
+      // answers, and not kept meanwhile: only the tokens this sign-out itself carries, within the app's limits.
+      const done = this.#app.signingOut(tokenKeys(this.#credentials(request, requestUrl)), { clientId: this.#clientAddress(request), householdId });
       try {
         await this.#proxy(request, response);
       } finally {
@@ -1053,7 +1053,8 @@ function credentialKey(credentials: JellyfinCredentials): string | undefined {
 
 /**
  * A hash of each Jellyfin token the credentials carry, however each is given: `Token` in an `Authorization` or
- * `X-Emby-Authorization` header (URL-decoded, as Jellyfin reads it), `X-Emby-Token`, or a token query parameter.
+ * `X-Emby-Authorization` header (URL-decoded, as Jellyfin reads it), `X-Emby-Token`, or the first value of each token
+ * query parameter (in any case; any more values of one are not taken). So at most six, however many a request sends.
  */
 function tokenKeys(credentials: JellyfinCredentials): string[] {
   const tokens = new Set<string>();
@@ -1064,7 +1065,12 @@ function tokenKeys(credentials: JellyfinCredentials): string[] {
   }
   const embyToken = credentials.headers.get('x-emby-token');
   if (embyToken) tokens.add(embyToken);
-  for (const [, value] of credentials.query) tokens.add(value);
+  const names = new Set<string>();
+  for (const [name, value] of credentials.query) {
+    if (names.has(name.toLowerCase())) continue;
+    names.add(name.toLowerCase());
+    tokens.add(value);
+  }
   return [...tokens].map((token) => createHash('sha256').update(`token\n${token}`).digest('hex'));
 }
 

@@ -367,6 +367,158 @@ describe('household app sign-in through the gateway', { timeout: 30_000 }, () =>
       });
     }
 
+    /** A sign-out with none of its tokens known to Jellyfin: `count` made-up tokens, in the headers and query parameters. */
+    let junkSerial = 0;
+    const junkSignOut = (app, host, count, headers = {}) => {
+      const junk = () => `junk${(junkSerial += 1).toString(36)}`;
+      const names = ['api_key', 'ApiKey', 'access_token'];
+      const query = Array.from({ length: Math.max(0, count - 3) }, (_, index) => `${names[index % names.length]}=${junk()}`).join('&');
+      return post(app.port, `/Sessions/Logout?${query}`, { Host: host, Authorization: `MediaBrowser Token="${junk()}"`, 'X-Emby-Authorization': `${WEB_AUTHORIZATION}, Token="${junk()}"`, 'X-Emby-Token': junk(), ...headers }, undefined);
+    };
+    /** Holds every sign-out at Jellyfin from now on, before it revokes anything, until `release`; `arrived(n)` once n are there. */
+    const holdAllLogouts = (state) => {
+      let release;
+      const released = new Promise((resolve) => { release = resolve; });
+      const requests = [];
+      state.holdLogout = (request) => {
+        requests.push(request);
+        return released;
+      };
+      const arrived = async (count) => {
+        while (requests.length < count) await new Promise((resolve) => setImmediate(resolve));
+      };
+      return { arrived, release };
+    };
+
+    it('never checks another household\'s fresh session again for a flood of made-up sign-out tokens (Codex)', async (t) => {
+      const app = await startApp(t, world({ passwords }));
+      // 21 sign-outs on household B, 500 made-up tokens each and nothing valid: all refused by Jellyfin.
+      for (let round = 0; round < 21; round += 1) assert.equal((await junkSignOut(app, HOST_B, 500)).status, 401);
+      const alice = as(HOST_A, await tokenOf(app, HOST_A, 'Alice', 'alice-pass'));
+      const before = verifications(app);
+      assert.equal((await me(app, alice)).status, 200);
+      assert.equal((await me(app, alice)).status, 200);
+      assert.equal(verifications(app) - before, 1, 'the second call was answered from the cache');
+    });
+
+    it('tracks a sign-out by the first value of each token query parameter only, however many it sends', async (t) => {
+      const app = await startApp(t, world({ passwords }));
+      const aliceToken = await tokenOf(app, HOST_A, 'Alice', 'alice-pass');
+      const annToken = await tokenOf(app, HOST_A, 'Ann', 'ann-pass');
+      const alice = as(HOST_A, aliceToken);
+      const ann = as(HOST_A, annToken);
+      for (const headers of [alice, ann, alice, ann]) assert.equal((await me(app, headers)).status, 200);
+      assert.equal(verifications(app), 2);
+      // Forwarded as sent; but Ann's token, a second api_key, is not one of the sign-out's tokens.
+      assert.equal((await post(app.port, `/Sessions/Logout?api_key=${aliceToken}&API_KEY=${annToken}`, { Host: HOST_A }, undefined)).status, 204);
+      assert.equal(app.jellyfin.logouts.length, 1);
+      assert.equal(app.jellyfin.logouts[0], aliceToken);
+      assert.equal((await me(app, alice)).text, UNAUTHORIZED);
+      assert.equal(verifications(app), 3);
+      assert.equal((await me(app, ann)).status, 200);
+      assert.equal(verifications(app), 3, 'Ann still answered from the cache');
+    });
+
+    it('stops tracking a client\'s sign-outs past its limit, though each still forgets the sessions of its tokens', async (t) => {
+      const state = world({ passwords });
+      const app = await startApp(t, state, { trustedProxies: ['127.0.0.1'] });
+      const from = (client, headers) => ({ ...headers, 'X-Forwarded-For': client });
+      const alice = as(HOST_A, await tokenOf(app, HOST_A, 'Alice', 'alice-pass'));
+      const ann = as(HOST_A, await tokenOf(app, HOST_A, 'Ann', 'ann-pass'));
+      for (const headers of [alice, ann]) assert.equal((await me(app, headers)).status, 200);
+      assert.equal(verifications(app), 2);
+      for (let index = 0; index < 10; index += 1) assert.equal((await junkSignOut(app, HOST_A, 6, { 'X-Forwarded-For': '203.0.113.5' })).status, 401);
+      const hold = holdAllLogouts(state);
+      // The client's 11th sign-out: Alice's session is forgotten, but her token is kept again while Jellyfin has it.
+      const aliceOut = signOut(app, from('203.0.113.5', alice));
+      await hold.arrived(1);
+      assert.equal((await me(app, alice)).status, 200);
+      assert.equal((await me(app, alice)).status, 200);
+      assert.equal(verifications(app), 3, 'checked once, then kept');
+      // Another client has its own allowance: Ann's token is never kept while her sign-out is at Jellyfin.
+      const annOut = signOut(app, from('203.0.113.6', ann));
+      await hold.arrived(2);
+      assert.equal((await me(app, ann)).status, 200);
+      assert.equal((await me(app, ann)).status, 200);
+      assert.equal(verifications(app), 5, 'checked every time');
+      hold.release();
+      assert.equal((await aliceOut).status, 204);
+      assert.equal((await annOut).status, 204);
+      // Each forgotten again once Jellyfin answered, so both are refused.
+      assert.equal((await me(app, alice)).text, UNAUTHORIZED);
+      assert.equal((await me(app, ann)).text, UNAUTHORIZED);
+      assert.equal(verifications(app), 7);
+    });
+
+    it('stops tracking a household\'s sign-outs past its limit, from any client, and never another household\'s', async (t) => {
+      const state = world({ passwords });
+      const app = await startApp(t, state, { trustedProxies: ['127.0.0.1'], signOutLimits: { perHousehold: 3 } });
+      const from = (client, headers) => ({ ...headers, 'X-Forwarded-For': client });
+      const alice = as(HOST_A, await tokenOf(app, HOST_A, 'Alice', 'alice-pass'));
+      const bob = as(HOST_B, await tokenOf(app, HOST_B, 'Bob', 'bob-pass'));
+      for (const headers of [alice, bob]) assert.equal((await me(app, headers)).status, 200);
+      assert.equal(verifications(app), 2);
+      for (const client of ['203.0.113.1', '203.0.113.2', '203.0.113.3']) assert.equal((await junkSignOut(app, HOST_B, 6, { 'X-Forwarded-For': client })).status, 401);
+      const hold = holdAllLogouts(state);
+      const bobOut = signOut(app, from('203.0.113.9', bob));
+      await hold.arrived(1);
+      assert.equal((await me(app, bob)).status, 200);
+      assert.equal((await me(app, bob)).status, 200);
+      assert.equal(verifications(app), 3, 'household B past its limit: checked once, then kept');
+      const aliceOut = signOut(app, from('203.0.113.9', alice));
+      await hold.arrived(2);
+      assert.equal((await me(app, alice)).status, 200);
+      assert.equal((await me(app, alice)).status, 200);
+      assert.equal(verifications(app), 5, 'household A within its own: checked every time');
+      hold.release();
+      assert.equal((await bobOut).status, 204);
+      assert.equal((await aliceOut).status, 204);
+      assert.equal((await me(app, bob)).text, UNAUTHORIZED);
+      assert.equal((await me(app, alice)).text, UNAUTHORIZED);
+    });
+
+    it('when tracking is full, drops only signed-out tokens for sign-outs in progress, and never touches anyone else\'s', async (t) => {
+      const state = world({ passwords });
+      const app = await startApp(t, state, { signOutLimits: { tracked: 6, perClient: 1000, perHousehold: 1000 } });
+      const alice = as(HOST_A, await tokenOf(app, HOST_A, 'Alice', 'alice-pass'));
+      const bob = as(HOST_B, await tokenOf(app, HOST_B, 'Bob', 'bob-pass'));
+      for (const headers of [alice, bob, alice, bob]) assert.equal((await me(app, headers)).status, 200);
+      assert.equal(verifications(app), 2);
+      // Far more signed-out tokens than there is room for, over and over.
+      for (let round = 0; round < 20; round += 1) assert.equal((await junkSignOut(app, HOST_B, 500)).status, 401);
+      for (const headers of [alice, bob]) assert.equal((await me(app, headers)).status, 200);
+      assert.equal(verifications(app), 2, 'sessions made before are still answered from the cache');
+      const ann = as(HOST_A, await tokenOf(app, HOST_A, 'Ann', 'ann-pass'));
+      assert.equal((await me(app, ann)).status, 200);
+      assert.equal((await me(app, ann)).status, 200);
+      assert.equal(verifications(app), 3, 'and a new one is kept');
+      // A sign-out in progress is tracked over the signed-out tokens filling the room.
+      const hold = holdAllLogouts(state);
+      const aliceOut = signOut(app, alice);
+      await hold.arrived(1);
+      assert.equal((await me(app, alice)).status, 200);
+      assert.equal((await me(app, alice)).status, 200);
+      assert.equal(verifications(app), 5, 'never kept while Jellyfin has its sign-out');
+      // Its token and five made-up ones in progress fill the room: Bob's sign-out is not tracked, but forgets his session.
+      const junkOut = junkSignOut(app, HOST_B, 5);
+      await hold.arrived(2);
+      const bobOut = signOut(app, bob);
+      await hold.arrived(3);
+      assert.equal((await me(app, bob)).status, 200);
+      assert.equal((await me(app, bob)).status, 200);
+      assert.equal(verifications(app), 6, 'checked once, then kept');
+      assert.equal((await me(app, ann)).status, 200);
+      assert.equal(verifications(app), 6, 'Ann still answered from the cache');
+      hold.release();
+      assert.equal((await aliceOut).status, 204);
+      assert.equal((await junkOut).status, 401);
+      assert.equal((await bobOut).status, 204);
+      assert.equal((await me(app, alice)).text, UNAUTHORIZED);
+      assert.equal((await me(app, bob)).text, UNAUTHORIZED);
+      assert.equal((await me(app, ann)).status, 200);
+      assert.equal(verifications(app), 8, 'Ann still answered from the cache');
+    });
+
     it('forgets nothing on a call that is not a sign-out', async (t) => {
       const app = await startApp(t, world({ passwords }));
       const alice = as(HOST_A, await tokenOf(app, HOST_A, 'Alice', 'alice-pass'));

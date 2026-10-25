@@ -42,6 +42,24 @@ export const APP_API_PREFIX = '/jellypass/app/v1';
 export const APP_SESSION_TTL_MS = 5 * 60 * 1000;
 /** How long after a sign-out through the household host its tokens are still never kept as verified. */
 export const APP_SIGN_OUT_GRACE_MS = 60 * 1000;
+/**
+ * The most tokens one sign-out is tracked by: one each from `Authorization`, `X-Emby-Authorization` and `X-Emby-Token`,
+ * and the first value of each token query parameter (`api_key`, `ApiKey`, `access_token`, in any case).
+ */
+export const APP_SIGN_OUT_MAX_TOKENS = 6;
+/**
+ * Sign-outs tracked per client address, and per household, in each window of APP_SIGN_OUT_WINDOW_MS: past these, a
+ * sign-out still forgets the sessions of its tokens, but keeps nothing back while it is at Jellyfin or after.
+ */
+export const APP_SIGN_OUT_WINDOW_MS = 60 * 1000;
+export const MAX_SIGN_OUTS_PER_CLIENT = 10;
+export const MAX_SIGN_OUTS_PER_HOUSEHOLD = 30;
+/**
+ * Token hashes tracked for sign-outs, in progress and lately over, all households together. With the limits above a
+ * household tracks at most a few hundred at once, so this is never full on a server of a few households; when it is,
+ * the sign-outs in progress come first and the oldest lately over is dropped (see {@link HouseholdApp.signingOut}).
+ */
+const MAX_SIGN_OUT_TRACKED = 10_000;
 /** How long the caller's own Jellyfin library view is reused. */
 export const APP_LIBRARY_TTL_MS = 60 * 1000;
 /** How long a household reuses a TMDB answer, and how many it keeps (least recently used forgotten first). */
@@ -156,9 +174,11 @@ export interface HouseholdAppHandler {
    * A sign-out with these tokens (hashes, as `tokenKeys`) has started: forgets every verified session, in every
    * household, made with one of them, and keeps none verified until the returned function is called (when Jellyfin has
    * answered it, or it failed, timed out or was given up) and for {@link APP_SIGN_OUT_GRACE_MS} after, in case Jellyfin
-   * revokes it a little late. Called with the tokens a sign-out itself carries, never others.
+   * revokes it a little late. Called with the tokens a sign-out itself carries, never others, and the client address
+   * and household it came through: tracking is limited per client and per household, and bounded in all (see
+   * {@link APP_SIGN_OUT_MAX_TOKENS} and {@link MAX_SIGN_OUTS_PER_CLIENT}).
    */
-  signingOut(tokenKeys: readonly string[]): () => void;
+  signingOut(tokenKeys: readonly string[], origin: { clientId: string; householdId: string }): () => void;
 }
 
 export interface HouseholdAppOptions {
@@ -188,6 +208,12 @@ export interface HouseholdAppOptions {
     queuePerHousehold: number;
     queueTimeoutMs: number;
     callTimeoutMs: number;
+  }>;
+  /** Sign-outs tracked (for tests; see {@link MAX_SIGN_OUTS_PER_CLIENT}): per client, per household, and token hashes in all. */
+  signOutLimits?: Partial<{
+    perClient: number;
+    perHousehold: number;
+    tracked: number;
   }>;
   logLevel?: string;
 }
@@ -366,16 +392,15 @@ export class HouseholdApp implements HouseholdAppHandler {
   readonly #getThisByClient: AttemptCounter;
   readonly #getThisByHousehold: AttemptCounter;
   readonly #partitions = new Map<string, HouseholdCaches>();
-  /** Counts sign-outs, so a token verified while one was made is not kept (Jellyfin may have answered before it). */
-  #forgets = 0;
+  /** Verifications at Jellyfin now, with the tokens (hashes) each holds: a sign-out with one of them spoils it, so it is not kept. */
+  readonly #verifying = new Set<{ tokenKeys: readonly string[]; spoiled: boolean }>();
   /** Sign-outs in progress, by token hash, with how many carry it: those tokens are never kept as verified meanwhile. */
   readonly #signingOut = new Map<string, number>();
   /** Tokens signed out lately, by hash, with when they may be kept as verified again (see APP_SIGN_OUT_GRACE_MS). */
   readonly #signedOut = new Map<string, number>();
-  /** Until when no token at all is kept as verified: set when the maps above are too full to track another. */
-  #keepNoneUntil = 0;
-  /** Sign-outs in progress that the map above had no room for: while there are any, no token is kept as verified. */
-  #untrackedSignOuts = 0;
+  readonly #signOutsByClient: AttemptCounter;
+  readonly #signOutsByHousehold: AttemptCounter;
+  readonly #signOutLimits: { perClient: number; perHousehold: number; tracked: number };
   readonly #tmdb: FairDispatcher;
 
   public constructor(options: HouseholdAppOptions) {
@@ -397,6 +422,13 @@ export class HouseholdApp implements HouseholdAppHandler {
     this.#getThisByUser = new AttemptCounter({ windowMs: GET_THIS_WINDOW_MS, maxKeys: MAX_TRACKED, now: this.#now });
     this.#getThisByClient = new AttemptCounter({ windowMs: GET_THIS_WINDOW_MS, maxKeys: MAX_TRACKED, now: this.#now });
     this.#getThisByHousehold = new AttemptCounter({ windowMs: GET_THIS_WINDOW_MS, maxKeys: MAX_TRACKED, now: this.#now });
+    this.#signOutsByClient = new AttemptCounter({ windowMs: APP_SIGN_OUT_WINDOW_MS, maxKeys: MAX_TRACKED, now: this.#now });
+    this.#signOutsByHousehold = new AttemptCounter({ windowMs: APP_SIGN_OUT_WINDOW_MS, maxKeys: MAX_TRACKED, now: this.#now });
+    this.#signOutLimits = {
+      perClient: options.signOutLimits?.perClient ?? MAX_SIGN_OUTS_PER_CLIENT,
+      perHousehold: options.signOutLimits?.perHousehold ?? MAX_SIGN_OUTS_PER_HOUSEHOLD,
+      tracked: options.signOutLimits?.tracked ?? MAX_SIGN_OUT_TRACKED,
+    };
     const limits = options.catalogueLimits ?? {};
     const queuePerHousehold = limits.queuePerHousehold ?? TMDB_QUEUE_PER_HOUSEHOLD;
     this.#tmdb = new FairDispatcher({
@@ -440,57 +472,72 @@ export class HouseholdApp implements HouseholdAppHandler {
     return caches;
   }
 
-  public signingOut(tokenKeys: readonly string[]): () => void {
-    const keys = [...new Set(tokenKeys)];
+  /**
+   * At most {@link APP_SIGN_OUT_MAX_TOKENS} tokens are taken from `tokenKeys`. A sign-out is tracked (its tokens kept
+   * back while it is in progress, and for the grace after) only within the client's and the household's limits, and
+   * while there is room; otherwise it still forgets its tokens' sessions, when it starts and when it is over, and spoils
+   * any verification of them at Jellyfin meanwhile. Nothing here ever keeps back a token the sign-out does not carry.
+   */
+  public signingOut(tokenKeys: readonly string[], origin: { clientId: string; householdId: string }): () => void {
+    const keys = [...new Set(tokenKeys)].slice(0, APP_SIGN_OUT_MAX_TOKENS);
     if (!keys.length) return () => {};
     this.#forget(keys);
-    const tracked = this.#signingOut.size + keys.length <= MAX_TRACKED;
+    const limits = this.#signOutLimits;
+    const tracked = this.#signOutsByClient.increment(origin.clientId) <= limits.perClient
+      && this.#signOutsByHousehold.increment(origin.householdId) <= limits.perHousehold
+      && this.#roomFor(keys.filter((key) => !this.#signingOut.has(key)).length);
     if (tracked) for (const key of keys) this.#signingOut.set(key, (this.#signingOut.get(key) ?? 0) + 1);
-    else this.#untrackedSignOuts += 1;
     let done = false;
     return () => {
       if (done) return;
       done = true;
       this.#forget(keys);
-      const until = this.#now() + APP_SIGN_OUT_GRACE_MS;
-      if (tracked) {
-        for (const key of keys) {
-          const count = (this.#signingOut.get(key) ?? 1) - 1;
-          if (count > 0) this.#signingOut.set(key, count);
-          else this.#signingOut.delete(key);
-        }
-      } else {
-        this.#untrackedSignOuts -= 1;
-        this.#keepNoneUntil = Math.max(this.#keepNoneUntil, until);
+      if (!tracked) return;
+      for (const key of keys) {
+        const count = (this.#signingOut.get(key) ?? 1) - 1;
+        if (count > 0) this.#signingOut.set(key, count);
+        else this.#signingOut.delete(key);
       }
+      const until = this.#now() + APP_SIGN_OUT_GRACE_MS;
       for (const key of keys) {
         this.#signedOut.delete(key);
         this.#signedOut.set(key, until);
       }
-      // The oldest are dropped first; until a dropped one's grace is over, no token is kept, so none slips through.
-      while (this.#signedOut.size > MAX_TRACKED) {
-        const [oldest, oldestUntil] = this.#signedOut.entries().next().value as [string, number];
-        this.#signedOut.delete(oldest);
-        this.#keepNoneUntil = Math.max(this.#keepNoneUntil, oldestUntil);
-      }
+      this.#roomFor(0);
     };
   }
 
-  /** Forgets every verified session, in every household, made with one of these tokens (hashes). */
+  /**
+   * Whether `count` more sign-out tokens can be tracked, making room by dropping signed-out tokens, those whose grace is
+   * over first and then the oldest: a dropped token may be kept as verified again a little early, should Jellyfin revoke
+   * it late. Tokens of sign-outs in progress are never dropped; while they alone fill it, no more are tracked.
+   */
+  #roomFor(count: number): boolean {
+    const now = this.#now();
+    for (const [key, until] of this.#signedOut) {
+      if (until > now && this.#signingOut.size + this.#signedOut.size + count <= this.#signOutLimits.tracked) break;
+      this.#signedOut.delete(key);
+    }
+    return this.#signingOut.size + this.#signedOut.size + count <= this.#signOutLimits.tracked;
+  }
+
+  /** Forgets every verified session, in every household, made with one of these tokens (hashes), and spoils any verification of one. */
   #forget(tokenKeys: readonly string[]): void {
-    this.#forgets += 1;
     const forgotten = new Set(tokenKeys);
+    const holds = (held: readonly string[]) => held.some((tokenKey) => forgotten.has(tokenKey));
     for (const { sessions } of this.#partitions.values()) {
       for (const [key, session] of sessions) {
-        if (session.tokenKeys.some((tokenKey) => forgotten.has(tokenKey))) sessions.delete(key);
+        if (holds(session.tokenKeys)) sessions.delete(key);
       }
+    }
+    for (const verification of this.#verifying) {
+      if (holds(verification.tokenKeys)) verification.spoiled = true;
     }
   }
 
-  /** Whether a token just verified with these hashes may be kept: not while, or just after, any is signed out. */
+  /** Whether a token just verified with these hashes may be kept: not while, or just after, it is signed out. */
   #mayKeep(tokenKeys: readonly string[]): boolean {
     const now = this.#now();
-    if (this.#untrackedSignOuts > 0 || now < this.#keepNoneUntil) return false;
     return tokenKeys.every((key) => {
       if (this.#signingOut.has(key)) return false;
       const until = this.#signedOut.get(key);
@@ -587,11 +634,17 @@ export class HouseholdApp implements HouseholdAppHandler {
       caller = undefined;
     }
     if (!caller) {
-      const forgets = this.#forgets;
-      const verified = await context.currentUser();
+      const verification = { tokenKeys: context.tokenKeys, spoiled: false };
+      this.#verifying.add(verification);
+      let verified: JellyfinCaller | undefined;
+      try {
+        verified = await context.currentUser();
+      } finally {
+        this.#verifying.delete(verification);
+      }
       if (!verified) return undefined;
       caller = { expiresAt: now + APP_SESSION_TTL_MS, caller: verified, tokenKeys: context.tokenKeys };
-      if (sessions && forgets === this.#forgets && this.#mayKeep(context.tokenKeys) && !verified.disabled && isMember(context, verified)) {
+      if (sessions && !verification.spoiled && this.#mayKeep(context.tokenKeys) && !verified.disabled && isMember(context, verified)) {
         sessions.set(key, caller);
         while (sessions.size > MAX_SESSIONS_PER_HOUSEHOLD) sessions.delete(sessions.keys().next().value as string);
       }

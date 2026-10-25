@@ -60,8 +60,15 @@ Identity comes only from Jellyfin, never from anything the client says about its
    its client left), those tokens are checked with Jellyfin on every call and never cached, so a call racing the
    sign-out, or Jellyfin revoking it a little late, cannot put it back in the cache; they are forgotten again once it
    is over. The routing matches Jellyfin's: `POST` to `/Sessions/Logout` in any case, percent-encoded or not, with
-   any trailing slashes. The pending and recent sign-outs tracked are bounded; past the bound, no token at all is
-   cached until the oldest one dropped would have expired. A token revoked **outside** JellyPass (an administrator deleting
+   any trailing slashes. Tracking is bounded so that no one can use it to slow anyone else down: a sign-out is tracked
+   by at most `APP_SIGN_OUT_MAX_TOKENS` (6) tokens, one per header and the first value of each token query parameter
+   (the rest are forwarded unchanged, never tracked); at most `MAX_SIGN_OUTS_PER_CLIENT` (10) sign-outs per client
+   address (the real one, as for every other limit) and `MAX_SIGN_OUTS_PER_HOUSEHOLD` (30) per household are tracked
+   each minute, and past either a sign-out still forgets its tokens' sessions when it starts and when it is over, but
+   keeps nothing back in between or after; and at most 10,000 token hashes are tracked in all. When that is full the
+   sign-outs in progress come first: the oldest token lately signed out is dropped (that one token may be cached again
+   before its 60 s are up, should Jellyfin have revoked it late), and when sign-outs in progress alone fill it, a new one
+   is not tracked. No token a sign-out does not carry is ever affected. A token revoked **outside** JellyPass (an administrator deleting
    the device or session in Jellyfin's dashboard, or a sign-out sent straight to Jellyfin) is still trusted for what is
    left of its 5 minutes: JellyPass is not told, and asking Jellyfin on every call is what the cache avoids.
 3. The household comes from the JellyPass store, and the caller must be a member of the household whose host they
