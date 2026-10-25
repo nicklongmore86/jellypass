@@ -101,7 +101,9 @@ main {
 .badge-in_library { background: var(--badge-library-bg); color: var(--badge-library-text); }
 .badge-get_this { background: var(--badge-soon-bg); color: var(--badge-soon-text); border: 1px solid var(--border); }
 .badge-unavailable { background: var(--badge-no-bg); color: var(--badge-no-text); }
-.badge-requested { background: var(--badge-requested-bg); color: var(--badge-requested-text); }
+.badge-requested, .badge-request-requested { background: var(--badge-requested-bg); color: var(--badge-requested-text); }
+.badge-request-ready { background: var(--badge-library-bg); color: var(--badge-library-text); }
+.badge-request-failed { background: var(--badge-no-bg); color: var(--badge-no-text); }
 
 /* Posters keep their 2:3 shape before the image arrives, so nothing shifts. */
 .poster { aspect-ratio: 2 / 3; width: 100%; border-radius: var(--radius); background: var(--surface); overflow: hidden; }
@@ -147,6 +149,20 @@ main {
 .episode { padding: 0.6rem 0.9rem; border-radius: var(--radius); background: var(--surface); }
 .episode-title { font-size: 1rem; }
 
+.get-this { display: grid; gap: 0.6rem; justify-items: start; }
+.get-seasons { display: grid; gap: 0.25rem; margin: 0; padding: 0; border: 0; min-width: 0; }
+.get-seasons legend { padding: 0; margin-bottom: 0.25rem; font-weight: 600; }
+.choice { display: flex; align-items: center; gap: 0.6rem; min-height: 2.75rem; }
+.choice input { width: 1.4rem; height: 1.4rem; accent-color: var(--accent); flex: none; }
+.get-message:empty { display: none; }
+.get-error { color: var(--badge-no-text); }
+
+.request-list { display: grid; gap: 0.6rem; max-width: 46rem; margin-bottom: 1rem; }
+.request { display: grid; justify-items: start; gap: 0.35rem; padding: 0.7rem 0.9rem; border-radius: var(--radius); background: var(--surface); }
+.request-link { display: grid; gap: 0.1rem; color: var(--text); text-decoration: none; min-height: 2.75rem; align-content: center; }
+.request-seasons { display: grid; gap: 0.35rem; width: 100%; }
+.request-season { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+
 .credits { display: grid; gap: 0.75rem; justify-items: start; margin-top: 1.5rem; }
 .tmdb-logo { width: 9rem; height: auto; aspect-ratio: 273.42 / 35.52; }
 .about { display: grid; gap: 0.75rem; max-width: 40rem; }
@@ -159,7 +175,7 @@ main {
 @keyframes shimmer { to { background-position: -200% 0; } }
 
 @media (hover: hover) {
-  .card-link:hover .card-title, .season-link:hover .season-name { text-decoration: underline; }
+  .card-link:hover .card-title, .request-link:hover .card-title, .season-link:hover .season-name { text-decoration: underline; }
   .button:hover { filter: brightness(1.1); }
   .tabbar a:hover { color: var(--text); }
 }
