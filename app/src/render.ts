@@ -207,6 +207,8 @@ export interface GetThisExtras {
   confirmed?: boolean;
   /** Seasons (0 for a movie) just asked for on this screen: not offered again until the screen is left. */
   asked?: ReadonlySet<number>;
+  /** Offer the seasons as a picker (a series page); a season page asks for its own season only. */
+  pick?: boolean;
   /** Seasons (0 for a movie) of a title still not held that the household asked for and could not get. */
   failed?: ReadonlySet<number>;
 }
@@ -226,7 +228,7 @@ export function getThisControl(doc: Document, subject: string, choices: Choice[]
   const box = el(doc, 'div', { class: 'get-this' });
   const onGet = extras.onGet;
   if (!onGet || choices.length === 0) return extras.confirmed ? el(doc, 'div', { class: 'get-this' }, [message]) : undefined;
-  const picking = choices.some((choice) => choice.season > 0);
+  const picking = extras.pick === true && choices.length > 0;
   const boxes = picking
     ? choices.map((choice) => el(doc, 'input', { attrs: { type: 'checkbox', value: String(choice.season) } }))
     : [];
@@ -235,7 +237,8 @@ export function getThisControl(doc: Document, subject: string, choices: Choice[]
     text: GET_THIS_TEXT.button,
     attrs: { type: 'button', 'aria-label': `${GET_THIS_TEXT.button}: ${subject}` },
   });
-  const chosen = (): number[] => boxes.filter((box) => box.checked).map((box) => Number(box.value));
+  const only = choices.filter((choice) => choice.season > 0).map((choice) => choice.season);
+  const chosen = (): number[] => (picking ? boxes.filter((box) => box.checked).map((box) => Number(box.value)) : only);
   const update = () => {
     button.disabled = picking && chosen().length === 0;
   };
@@ -280,7 +283,7 @@ export function titleDetail(doc: Document, title: Movie | Series, origin: string
     ? title.seasons.filter((season) => season.state === 'get_this' && season.seasonNumber >= 1 && !extras.asked?.has(season.seasonNumber))
       .map((season) => ({ season: season.seasonNumber, label: season.name || `Season ${season.seasonNumber}` }))
     : [];
-  const control = getThisControl(doc, title.title, own ?? seasonChoices, extras);
+  const control = getThisControl(doc, title.title, own ?? seasonChoices, { ...extras, pick: title.mediaType === 'tv' });
   const failedMovie = title.state === 'get_this' && extras.failed?.has(0);
   const actions = el(doc, 'div', { class: 'actions' }, [
     failedMovie ? requestBadge(doc, 'failed') : stateBadge(doc, title.state),

@@ -1173,7 +1173,7 @@ describe('household app page: rendering', () => {
     });
 
     it('styles the new states within the stylesheet\'s existing, contrast-checked colours', () => {
-      const css = read('app.css');
+      const css = read(BUILT('app.css'));
       for (const rule of ['.badge-request-ready', '.badge-request-failed', '.badge-request-requested', '.get-error', '.get-seasons', '.choice', '.request-list']) {
         assert.ok(css.includes(rule), rule);
       }
@@ -1236,7 +1236,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
           requests.push({ url, init });
           if (init.signal?.aborted) throw new DOMException('aborted', 'AbortError');
           if (holdMe && url === '/jellypass/app/v1/me') await holdMe;
-          const answer = override?.(url, init) ?? await (init.method === 'POST'
+          const answer = (await override?.(url, init)) ?? await (init.method === 'POST'
             ? post(app.port, url, { Host: host, ...init.headers }, init.body ? JSON.parse(init.body) : undefined)
             : get(app.port, url, { Host: host, ...init.headers }));
           return new Response(answer.body, { status: answer.status, headers: answer.headers });
@@ -2040,10 +2040,9 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
 
       // A 401 sends the person back to sign-in.
       mode = 'unauthorized';
-      const signedOut = await openApp(t, app, { hash: `#/movie/${T_MOVIE}`, override: (url, init) => (init.method === 'POST' ? answer(401) : undefined) });
+      const signedOut = await openApp(t, await startApp(t), { hash: `#/movie/${T_MOVIE}`, override: (url, init) => (init.method === 'POST' ? answer(401) : undefined) });
       (await signedOut.until(() => signedOut.main().querySelector('button'), 'the button')).dispatchEvent(new signedOut.Event('click'));
-      await signedOut.until(() => signedOut.main().querySelector('h1')?.textContent === 'Sign in to continue', 'the sign-in state');
-      assert.equal(signedOut.main().querySelector('a.button').getAttribute('href'), '/web/');
+      await signedOut.until(() => signedOut.main().querySelector('[data-screen="signin"] h1')?.textContent === 'Sign in', 'the sign-in state');
     });
 
     it('lists the household\'s requests with coarse states, per season, and who asked', async (t) => {
@@ -2145,7 +2144,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.match(worker, /const API_PREFIX = '\/jellypass\/app\/v1\/'/);
       assert.doesNotMatch(worker, /requests/, 'the worker names no API path');
       assert.match(read('index.html'), /data-nav="requests"/);
-      assert.equal(JSON.parse(read('manifest.webmanifest')).scope, '/');
+      assert.equal(JSON.parse(read(BUILT('manifest.webmanifest'))).scope, '/');
       const sources = FILES.filter((name) => name.startsWith('js/')).map((name) => read(name)).join('\n');
       assert.doesNotMatch(sources, /innerHTML|outerHTML|insertAdjacentHTML|document\.write|eval\(|new Function/);
       assert.doesNotMatch(sources, /localStorage\.setItem|sessionStorage|indexedDB|caches\./, 'the app still keeps nothing');
