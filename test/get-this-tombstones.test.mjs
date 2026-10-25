@@ -12,10 +12,13 @@ import { MAX_APP_REQUESTS_PER_HOUSEHOLD } from '../dist/store.js';
 import {
   ALICE,
   BOB,
+  HOST_A,
+  HOST_B,
   ITEMS,
   SEERR_IDS,
   T_MOVIE,
   T_TV,
+  get,
   seerrRequest,
   startApp,
   world,
@@ -363,5 +366,90 @@ describe('"Get this": an intent that cannot be reconciled for long (Codex 7)', {
     const grant = app.store.get(ITEMS.tMovie);
     assert.deepEqual([Object.keys(grant.requests), grant.groupIds], [['7300603'], ['mill']]);
     assert.equal(app.store.hasHandledRequest('7300777'), true);
+  });
+});
+
+describe('"Get this": the administrator\'s readout of what is outstanding', { timeout: 60_000 }, () => {
+  const DAY = 24 * 60 * 60 * 1000;
+  const at = (offset) => new Date(Date.now() + offset).toISOString();
+  const marker = (created, expires, requestIds, extra = {}) => ({ mediaType: 'movie', tmdbId: T_MOVIE, requestIds, createdAt: at(created), expiresAt: at(expires), ...extra });
+  const OUTSTANDING = {
+    ...SEED,
+    handledRequestIds: ['7400002', '7400004'],
+    appSafetyTombstones: {
+      // Past its 30 days, but its request is not handled yet: it still decides that grant.
+      unhandled: marker(-40 * DAY, -10 * DAY, ['7400001']),
+      // Its request is handled: it decides nothing any more.
+      handled: marker(-DAY, 29 * DAY, ['7400002']),
+      // Member-wide, within its 30 days: it covers the member's later requests.
+      member: marker(-2 * DAY, 28 * DAY, [], { mediaType: 'tv', tmdbId: T_TV, jellyfinUserId: ALICE, since: at(-2 * DAY) }),
+      // Member-wide, expired, and its candidate handled.
+      expired: marker(-31 * DAY, -DAY, ['7400004'], { jellyfinUserId: BOB, since: at(-31 * DAY) }),
+      // Never handled, but older than the 400 days anything is kept.
+      ancient: marker(-401 * DAY, -371 * DAY, ['7400005']),
+    },
+    appRequestIntents: {
+      one: lostIntent(Date.now() - 60 * 60 * 1000),
+      two: { ...lostIntent(Date.now() - 60 * 1000), householdId: 'mill', jellyfinUserId: BOB, mediaType: 'tv', tmdbId: T_TV, seasons: [1], status: 'settling', seerrRequestId: '7400006', householdEpoch: 2 },
+    },
+    deferredWebhooks: [{ notificationType: 'MEDIA_AVAILABLE', request: { id: '7400006' } }],
+  };
+  const admin = (app, pathname, headers = { Authorization: 'Bearer admin-secret' }, host = 'jellypass.example.test') =>
+    get(app.port, pathname, { Host: host, ...headers });
+
+  it('counts the safety markers that still decide a grant and the unsettled requests, by kind, with their oldest age', async (t) => {
+    const app = await start(t, world(), { stateFile: OUTSTANDING });
+    const answer = await admin(app, '/v1/app/outstanding');
+    assert.equal(answer.status, 200);
+    const readout = answer.json();
+    assert.equal(readout.clear, false);
+    assert.deepEqual(readout.safetyMarkers.byKind, { request: 1, member: 1 });
+    assert.equal(readout.safetyMarkers.total, 2);
+    assert.ok(Math.abs(readout.safetyMarkers.oldestAgeSeconds - 40 * 86_400) < 60);
+    assert.deepEqual(readout.safetyMarkers.entries.map((entry) => [entry.kind, entry.mediaType, entry.tmdbId]), [['request', 'movie', T_MOVIE], ['member', 'tv', T_TV]]);
+    assert.deepEqual(readout.requestIntents.byKind, { submitting: 1, settling: 1 });
+    assert.ok(Math.abs(readout.requestIntents.oldestAgeSeconds - 3600) < 60);
+    assert.deepEqual(readout.requestIntents.entries.map((entry) => [entry.kind, entry.mediaType, entry.tmdbId, entry.householdId]), [
+      ['submitting', 'movie', T_MOVIE, 'farmhouse'], ['settling', 'tv', T_TV, 'mill'],
+    ]);
+    assert.deepEqual(readout.deferredWebhooks, { total: 1 });
+    // Titles and households, never a member or a Seerr request.
+    assert.doesNotMatch(answer.text, new RegExp(`${ALICE}|${BOB}|74000`));
+    // The metrics carry the counts only.
+    const metrics = app.service.renderMetrics();
+    for (const line of ['jfa_app_safety_markers{kind="request"} 1', 'jfa_app_safety_markers{kind="member"} 1',
+      'jfa_app_request_intents{status="submitting"} 1', 'jfa_app_request_intents{status="settling"} 1', 'jfa_app_deferred_webhooks 1']) {
+      assert.ok(metrics.split('\n').includes(line), line);
+    }
+    assert.doesNotMatch(metrics.split('\n').filter((line) => line.startsWith('jfa_app_')).join('\n'), new RegExp(`${T_MOVIE}|${T_TV}|farmhouse|mill`));
+  });
+
+  it('is clear, with every count 0, once nothing is outstanding', async (t) => {
+    const app = await start(t, world());
+    const readout = (await admin(app, '/v1/app/outstanding')).json();
+    assert.deepEqual(readout, {
+      clear: true,
+      safetyMarkers: { total: 0, byKind: { request: 0, member: 0 }, oldestAgeSeconds: null, entries: [] },
+      requestIntents: { total: 0, byKind: { submitting: 0, settling: 0 }, oldestAgeSeconds: null, entries: [] },
+      deferredWebhooks: { total: 0 },
+    });
+    assert.match(app.service.renderMetrics(), /^jfa_app_safety_markers\{kind="member"\} 0$/m);
+  });
+
+  it('answers only the administrator, and only on the admin host', async (t) => {
+    const app = await start(t, world(), { stateFile: OUTSTANDING });
+    assert.equal((await admin(app, '/v1/app/outstanding', {})).status, 401);
+    assert.equal((await admin(app, '/v1/app/outstanding', { Authorization: 'Bearer webhook-secret' })).status, 401);
+    assert.equal((await admin(app, '/v1/app/outstanding', { Authorization: 'Bearer admin-secret' })).status, 200);
+    // A household host never serves it, nor the metrics, whoever asks: with the admin token, as a member, or as no one.
+    for (const host of [HOST_A, HOST_B]) {
+      for (const pathname of ['/v1/app/outstanding', '/jellypass/app/v1/outstanding', '/metrics']) {
+        for (const headers of [{ Authorization: 'Bearer admin-secret' }, { Authorization: 'MediaBrowser Token="token-alice"' }, {}]) {
+          const answer = await admin(app, pathname, headers, host);
+          assert.notEqual(answer.status, 200, `${host} ${pathname}`);
+          assert.doesNotMatch(answer.text, /safetyMarkers|requestIntents|jfa_app_/, `${host} ${pathname}`);
+        }
+      }
+    }
   });
 });

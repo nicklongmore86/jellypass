@@ -813,6 +813,18 @@ running when it is deleted are added detached (see 5 above).
 `intent_recovered`, `intent_cancelled` (none found in time), `intent_ambiguous`, `intent_detached` (household replaced), `intent_abandoned` (unreadable past the deadline),
 `settled`, `settle_unverified`, `error`, `cancelled`).
 
+**What is outstanding (administrators).** `GET /v1/app/outstanding`, on the admin host only and with the admin token
+or session (household hosts never route it: every path there goes to the household gateway), answers what "Get this"
+still has in flight or still protects: `{clear, safetyMarkers, requestIntents, deferredWebhooks}`. `safetyMarkers` are
+the tombstones that **still decide a grant**: one naming a request not handled yet (until it is pruned, at most 400
+days after it was made), or a member-wide one before its `expiresAt` (30 days); a tombstone that does neither is only
+waiting for the next write to prune it and is not counted. `requestIntents` are the intents not settled yet. Each has
+`total`, `byKind` (`request`/`member`; `submitting`/`settling`), `oldestAgeSeconds` (`null` when there are none) and
+up to 200 `entries`, oldest first, naming the title (`mediaType`, `tmdbId`), the times and, for an intent, the
+household: never a member or a Seerr ID. `deferredWebhooks` has only `total` (they are kept without a time). `clear` is
+true when all three are 0: what a rollback waits for (see "Drain before rolling back"). The metrics carry the counts
+only: `jfa_app_safety_markers{kind}`, `jfa_app_request_intents{status}` and `jfa_app_deferred_webhooks` (gauges).
+
 #### Leak channels in step 2a
 
 | Channel | How step 2a handles it |

@@ -81,6 +81,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   if it does not, nothing is sent (new branch `request_unsaved` in
   `jfa_app_get_this_branches_total`). The test suite checks the same from
   Seerr's side for every request.
+- **What "Get this" still has outstanding, for administrators.** New
+  `GET /v1/app/outstanding` (admin host and admin token or session only; never
+  on household hosts) lists the safety tombstones that still decide a grant,
+  the request intents not settled yet and the webhooks deferred for them:
+  counts by kind, the oldest age, each title's TMDB ID and (for intents) the
+  household, never a member, and `clear: true` once all are 0. New gauges
+  `jfa_app_safety_markers{kind}`, `jfa_app_request_intents{status}` and
+  `jfa_app_deferred_webhooks` carry the counts.
 
 ## [2.3.0] - 2026-10-24
 

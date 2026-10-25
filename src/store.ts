@@ -565,6 +565,15 @@ export class GrantStore {
     return Object.values(this.#state.appSafetyTombstones ?? {}).map(clone);
   }
 
+  /**
+   * The safety tombstones that still decide a grant (see outstandingTombstone), as of `now`: what a version that does
+   * not read them would decide differently, so a rollback waits until there are none.
+   */
+  public listOutstandingAppSafetyTombstones(now = Date.now()): AppSafetyTombstone[] {
+    const handled = new Set(this.#state.handledRequestIds ?? []);
+    return Object.values(this.#state.appSafetyTombstones ?? {}).filter((tombstone) => outstandingTombstone(tombstone, handled, now)).map(clone);
+  }
+
   /** Records requests as handled without granting them (a "Get this" request granted as a join); see hasHandledRequest. */
   public async markRequestsHandled(requestIds: string[]): Promise<void> {
     this.#assertOpen();
@@ -1099,6 +1108,16 @@ function pruneAppRequests(records: Record<string, AppRequestRecord>, now: number
 function pruneTombstones(tombstones: Record<string, AppSafetyTombstone>, handled: ReadonlySet<string>, now: number): Record<string, AppSafetyTombstone> {
   return Object.fromEntries(Object.entries(tombstones).filter(([, tombstone]) => now < Date.parse(tombstone.expiresAt)
     || (tombstone.requestIds.some((id) => !handled.has(id)) && now - Date.parse(tombstone.createdAt) <= APP_REQUEST_RETENTION_MS)));
+}
+
+/**
+ * Whether a tombstone still decides a grant: it names a request not handled yet (until it is pruned, at most
+ * APP_REQUEST_RETENTION_MS after it was made), or it is member-wide and before its `expiresAt` (the member's later
+ * requests for the title are still joins). One that is neither is kept only until the next write prunes it.
+ */
+function outstandingTombstone(tombstone: AppSafetyTombstone, handled: ReadonlySet<string>, now: number): boolean {
+  return (tombstone.requestIds.some((id) => !handled.has(id)) && now - Date.parse(tombstone.createdAt) <= APP_REQUEST_RETENTION_MS)
+    || (tombstone.jellyfinUserId !== undefined && now < Date.parse(tombstone.expiresAt));
 }
 
 function clone<T>(value: T): T {

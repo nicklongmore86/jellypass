@@ -745,7 +745,12 @@ when a grant is created. There are no notifications.
 
 `jfa_app_get_this_total{result="accepted"|"ineligible"|"error"}` and
 `jfa_app_get_this_branches_total{branch}` count calls and what their
-background work did; no label names a title. The app's "Get this" button is
+background work did; no label names a title. The gauges
+`jfa_app_safety_markers{kind}`, `jfa_app_request_intents{status}` and
+`jfa_app_deferred_webhooks` count what "Get this" still protects or has in
+flight, and the admin-only `GET /v1/app/outstanding` lists it (counts by kind,
+oldest age, TMDB IDs and households, `clear` once all are 0); household hosts
+never serve it. The app's "Get this" button is
 not in this release. See
 ["Get this" as implemented](docs/app-design.md#get-this-as-implemented-step-2a)
 for every rule, the leak channels and what remains.
@@ -868,6 +873,10 @@ All examples except health require `Authorization: Bearer $ADMIN_TOKEN`.
 # Inspect grants.
 curl -H "Authorization: Bearer $ADMIN_TOKEN" \
   http://127.0.0.1:8787/v1/grants
+
+# What household app "Get this" still protects or has in flight (check before a rollback).
+curl -H "Authorization: Bearer $ADMIN_TOKEN" \
+  http://127.0.0.1:8787/v1/app/outstanding
 
 # Preview reconciliation without changing Jellyfin.
 curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
