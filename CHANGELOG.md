@@ -34,9 +34,10 @@ these before upgrading:
   credits** is no longer a tab but opens from the (i) button on Home, and
   **Sign out** has moved from the header into About's **Account** card. Cards
   no longer have a **Play** button: Play is on a title's page.
-- **New app icons.** An app already added to an iPhone or iPad Home Screen
-  keeps the icon it was added with: iOS takes the icon when the app is added
-  and does not update it, so remove the app from the Home Screen and add it
+- **New app icons.** As we understand it (not yet tested on a device), an app
+  already added to an iPhone or iPad Home Screen keeps the icon it was added
+  with, because iOS takes the icon when the app is added and does not update
+  it; if the old icon stays, remove the app from the Home Screen and add it
   again from Safari to see the new one (this keeps nothing the app needs:
   sign in again inside the installed app). Android and desktop Chrome and
   Edge update an installed app's icon from its manifest on their own, after

@@ -875,9 +875,10 @@ switched off (those answer the same fixed `404`).
 - **Install on iPhone or iPad:** open the app address in Safari, tap **Share**,
   then **Add to Home Screen**. **Android (Chrome):** menu, **Install app** (or
   **Add to Home screen**). Desktop Chrome and Edge: the install icon in the
-  address bar. It opens full screen with JellyPass's icon. An iPhone or iPad
-  keeps the icon the app was added with; to see a new icon after an update,
-  remove the app from the Home Screen and add it again. **Tested on a real
+  address bar. It opens full screen with JellyPass's icon. As we understand it
+  (not yet tested on a device), an iPhone or iPad keeps the icon the app was
+  added with; if a new icon doesn't appear after an update, remove the app
+  from the Home Screen and add it again. **Tested on a real
   iPhone:** Back, swipe-back and the restored position, including each Home
   row's. **Not yet verified on a real phone:** the install, the in-app
   sign-in, and the 2.5.0 look (the glass blur, the safe areas under the status
