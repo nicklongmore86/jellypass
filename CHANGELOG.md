@@ -5,12 +5,22 @@ All notable changes to JellyPass are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+JellyPass's public interface is its settings, its state file, its administrator
+API, its webhook and app endpoints, and successful responses on the endpoints it
+relays to Jellyfin. Failure responses on relayed Jellyfin endpoints (status,
+body and headers when a request is refused or fails) are not part of that
+interface: they may change in a minor or patch release to close a security or
+privacy leak. Such changes are always listed at the top of the release notes.
+
 ## [Unreleased]
 
 ## [2.4.0] - 2026-10-25
 
-This is a minor release. With `HOUSEHOLD_APP_ENABLED=true`, the household app
-now requests titles (**Get this**), lists the household's requests and signs
+This is a minor release. The household sign-in changes below alter only failure
+responses on a relayed Jellyfin endpoint, which the versioning policy above
+keeps outside the public interface. With `HOUSEHOLD_APP_ENABLED=true`, the
+household app now requests titles (**Get this**), lists the household's
+requests and signs
 members in inside the app. With the app off (the default), only household
 hostnames change: how sign-in there answers (see below) and the caching
 headers of `/jellypass/app` answers. No setting is added, removed or renamed,
