@@ -24,19 +24,26 @@ export interface TmdbSource {
   id: number;
   name: string;
   logoPath: string;
+  /**
+   * The TMDB networks the list is drawn from, when more than `id` alone (`id` first); TMDB lists the series of any of
+   * them. Fixed here, never taken from a request.
+   */
+  networkIds?: readonly number[];
 }
 
 /**
  * The only networks whose series the app lists (TMDB `discover/tv` with `with_networks`): the major US streamers. IDs,
  * names and logo files checked against TMDB's `GET /3/network/:id` (2026-10-25); Seerr 3.5.1's Networks slider
  * (`src/components/Discover/NetworkSlider`) uses the same IDs for all of them but HBO Max, which it does not list.
+ * HBO Max's list also takes in HBO (49), where TMDB files HBO's own series (The Last of Us, House of the Dragon); the
+ * app has one HBO Max row, by HBO Max's ID and logo, and no HBO one.
  */
 export const TMDB_NETWORKS: readonly TmdbSource[] = Object.freeze([
   { id: 213, name: 'Netflix', logoPath: '/wwemzKWzjKYJFfCeiB57q3r4Bcm.png' },
   { id: 2739, name: 'Disney+', logoPath: '/1edZOYAfoyZyZ3rklNSiUpXX30Q.png' },
   { id: 2552, name: 'Apple TV', logoPath: '/bngHRFi794mnMq34gfVcm9nDxN1.png' },
   { id: 1024, name: 'Prime Video', logoPath: '/w7HfLNm9CWwRmAMU58udl2L7We7.png' },
-  { id: 3186, name: 'HBO Max', logoPath: '/nmU0UMDJB3dRRQSTUqawzF2Od1a.png' },
+  { id: 3186, name: 'HBO Max', logoPath: '/nmU0UMDJB3dRRQSTUqawzF2Od1a.png', networkIds: Object.freeze([3186, 49]) },
   { id: 453, name: 'Hulu', logoPath: '/pqUTCleNUiTLAVlelGxUgWn1ELh.png' },
   { id: 4330, name: 'Paramount+', logoPath: '/fi83B1oztoS47xxcemFdPMhIzK.png' },
   { id: 3353, name: 'Peacock', logoPath: '/gIAcGTjKKr0KOHL5s4O36roJ8p7.png' },
@@ -161,15 +168,17 @@ export class TmdbClient {
 
   /**
    * Popular series of one allowlisted network ({@link TMDB_NETWORKS}), as Seerr 3.5.1's `discover/tv/network/:id`:
-   * TMDB discover by popularity with `with_networks`. Throws a TypeError for any other network.
+   * TMDB discover by popularity with `with_networks`; a network listed with several {@link TmdbSource.networkIds} asks
+   * for the series of any of them (TMDB's `|`, OR). Throws a TypeError for any other network.
    */
   public network(networkId: number, page = 1, options: TmdbCallOptions = {}): Promise<unknown> {
-    if (!tmdbSource('network', networkId)) throw new TypeError('network is not allowed');
+    const source = tmdbSource('network', networkId);
+    if (!source) throw new TypeError('network is not allowed');
     return this.#get('/3/discover/tv', '/3/discover/tv', {
       page: pageNumber(page),
       sort_by: 'popularity.desc',
       include_null_first_air_dates: 'false',
-      with_networks: networkId,
+      with_networks: (source.networkIds ?? [source.id]).join('|'),
     }, options);
   }
 

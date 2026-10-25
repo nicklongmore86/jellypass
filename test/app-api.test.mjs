@@ -458,7 +458,8 @@ describe('household app API: other households are invisible', { timeout: 60_000 
       const { document } = parseHTML('<!doctype html><html><body></body></html>');
       const parts = [studioStrip(document, 'row-studios', studios)];
       parts.push(titleRow(document, 'row-upcoming-tv', 'Upcoming series', (await app.get(`${APP}/discover/upcoming-tv`)).json()));
-      for (const network of networks.slice(0, 3)) {
+      // The first three rows, and HBO Max's, drawn from two TMDB networks.
+      for (const network of networks.filter((source, index) => index < 3 || source.id === 3186)) {
         parts.push(sourceRow(document, `row-network-${network.id}`, 'network', network, (await app.get(`${APP}/discover/network/${network.id}`)).json()));
       }
       parts.push(sourceHeading(document, 'studio', studios[0]), cardList(document, (await app.get(`${APP}/discover/studio/${studios[0].id}`)).json().results, 'grid'));
@@ -468,6 +469,7 @@ describe('household app API: other households are invisible', { timeout: 60_000 
     const expected = await drawn(world());
     assert.match(expected, /Popular on/);
     assert.match(expected, /Synthetic Series Two/);
+    assert.match(expected, /href="#\/network\/3186"[^]*alt="HBO Max"/);
     for (const [name, state] of Object.entries(otherHouseholdWorlds())) assert.equal(await drawn(state), expected, name);
   });
 
@@ -631,6 +633,22 @@ describe('household app API: networks, studios and upcoming series', { timeout: 
     assert.equal(upcomingCall.pathname, '/3/discover/tv');
     assert.match(upcomingCall.query.get('first_air_date.gte'), /^\d{4}-\d{2}-\d{2}$/);
     assert.equal(upcomingCall.query.has('with_networks'), false);
+  });
+
+  it('lists HBO Max\'s row with HBO\'s own series under HBO Max\'s ID, and HBO\'s ID on its own not at all', async (t) => {
+    const app = await startApp(t);
+    const answer = await app.get(`${APP}/discover/network/3186`);
+    assert.equal(answer.status, 200);
+    assert.deepEqual(answer.json().results.map((card) => `${card.mediaType} ${card.tmdbId}`), [`tv ${T_TV}`]);
+    for (const pathname of [`${APP}/discover/network/49`, `${APP}/discover/network/3186%7C49`, `${APP}/discover/network/3186|49`, `${APP}/discover/network/49?page=2`]) {
+      const refused = await app.get(pathname);
+      assert.equal(refused.status, 400, pathname);
+      assert.equal(refused.text, '{"error":"invalid_request"}', pathname);
+    }
+    // A caller's own with_networks is ignored: the same answer, from the cache.
+    assert.equal(serialized(await app.get(`${APP}/discover/network/3186?with_networks=1`, { user: ANN })), serialized(answer));
+    const sent = tmdbCalls(app).map((call) => call.query.get('with_networks'));
+    assert.deepEqual(sent, ['3186|49'], 'one TMDB call, cached under 3186, for both HBO Max answers');
   });
 
   it('caches network and studio pages per household, by network and page, and never across households', async (t) => {

@@ -137,7 +137,7 @@ So `TmdbClient` (`src/tmdb.ts`) reads TMDB's v3 API directly, with JellyPass's o
   (popular movies and series); `GET /3/discover/movie` by `popularity.desc` with `primary_release_date.gte` today in
   UTC (upcoming); `GET /3/discover/tv` by `popularity.desc` with `first_air_date.gte` today and `first_air_date.lte` a
   year and a half on, in UTC (upcoming series, Seerr's `discover/tv/upcoming` with its default upper bound);
-  `GET /3/discover/tv` by `popularity.desc` with `with_networks` (a network's series) and `GET /3/discover/movie` by
+  `GET /3/discover/tv` by `popularity.desc` with `with_networks` (a network's series; HBO Max's is `3186|49`) and `GET /3/discover/movie` by
   `popularity.desc` with `with_companies` (a studio's movies), each only for an allowlisted ID (see "Networks and
   studios"); `GET /3/movie/:id`; `GET /3/tv/:id`; `GET /3/tv/:id/season/:n`. The discover lists are built the way
   Seerr 3.5.1 builds its own (`server/routes/discover.ts` and `server/api/themoviedb`), so the lists match what
@@ -353,7 +353,15 @@ the name and TMDB logo file of each; nothing about them is read from TMDB or See
 /discover/sources` makes no upstream call and is the same for everyone. **Networks** (TMDB network IDs, checked with
 `GET /3/network/:id` on 2026-10-25): Netflix 213, Disney+ 2739, Apple TV 2552, Prime Video 1024, HBO Max 3186, Hulu
 453, Paramount+ 4330, Peacock 3353; all but HBO Max are the IDs Seerr 3.5.1's Networks slider uses
-(`src/components/Discover/NetworkSlider`, which lists HBO, 49, but not HBO Max). **Studios** are Seerr 3.5.1's Studios
+(`src/components/Discover/NetworkSlider`, which lists HBO, 49, but not HBO Max). **HBO Max's row is HBO Max and HBO
+together**: TMDB files HBO's own series (The Last of Us, House of the Dragon) under HBO, 49, not HBO Max, so the HBO Max
+entry carries `networkIds: [3186, 49]` and its page asks for `with_networks=3186|49`, TMDB's OR (checked live on
+2026-10-25: 196 series under 3186 alone, 378 under 49, 572 for `3186|49`, the two in both being what `3186,49`, TMDB's
+AND, returns; The Last of Us, TMDB 100088, is on the first page). The row keeps HBO Max's ID, name and logo, so
+`#/network/3186` links still work, and is cached under that ID alone. HBO, 49, is not a source of its own:
+`/discover/network/49` is the fixed `400` like any unlisted ID, rather than an alias for 3186, since nothing has ever
+linked to it, and an alias would be a second cache key and a second path to the same answer. The OR string is built
+from the allowlist only; a caller's ID is only ever looked up in it, never sent. **Studios** are Seerr 3.5.1's Studios
 slider (`src/components/Discover/StudioSlider`), in its order and with its names (TMDB company IDs): Disney 2, 20th
 Century Studios 127928, Sony Pictures 34, Warner Bros. Pictures 174, Universal 33, Paramount 4, Pixar 3, DreamWorks
 521, Marvel Studios 420, DC 9993, A24 41077; logo files are TMDB's current ones (`GET /3/company/:id`), not Seerr's
@@ -508,7 +516,8 @@ elsewhere; the files are never proxied to Jellyfin.
 - **Home's rows.** In order: the hero (from Trending's answer), **Trending**, **Popular movies**, **Popular series**,
   **Upcoming movies** (these four fetched at once, as before), **Upcoming series**, a **Studios** strip (each studio's
   logo, a link named "<studio> movies" to its page; drawn from `GET /discover/sources`, no title fetched), then
-  **Popular on** Netflix, Disney+, Apple TV, Prime Video, HBO Max, Hulu, Paramount+ and Peacock. A network row's
+  **Popular on** Netflix, Disney+, Apple TV, Prime Video, HBO Max (with HBO's own series), Hulu, Paramount+ and
+  Peacock. A network row's
   heading is a link to the network's page reading "Popular on" followed by the network's logo, whose `alt` is the
   network's name (its name as text when there is no allowlisted logo). Each row loads and fails on its own, with its own
   retry. **Lazy rows:** Upcoming series and the network rows hold a row-shaped skeleton (hidden from assistive
