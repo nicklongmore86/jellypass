@@ -856,7 +856,7 @@ describe('household app page: rendering', () => {
     assert.deepEqual([...movie.querySelectorAll('.genres li')].map((li) => li.textContent), ['Drama', 'Mystery']);
     assert.equal(movie.querySelector('.badge').textContent, 'In your library');
     assert.equal(movie.querySelector('a.button').getAttribute('href'), play.url);
-    assert.equal(movie.querySelector('.seasons'), null);
+    assert.ok(movie.querySelector('.seasons') === null);
 
     const series = titleDetail(document, {
       ...card({ mediaType: 'tv', tmdbId: 900002, title: 'Synthetic Series Two', state: 'get_this' }), genres: [], runtime: 45,
@@ -866,8 +866,8 @@ describe('household app page: rendering', () => {
         { seasonNumber: 3, name: '', episodeCount: null, state: 'unavailable' },
       ],
     }, origin);
-    assert.equal(series.querySelector('a.button'), null, 'no Play, and no request button, without the title in the library');
-    assert.equal(series.querySelector('button'), null);
+    assert.ok(series.querySelector('a.button') === null, 'no Play, and no request button, without the title in the library');
+    assert.ok(series.querySelector('button') === null);
     const seasons = [...series.querySelectorAll('.season')];
     assert.deepEqual(seasons.map((season) => season.querySelector('.badge').textContent), ['In your library', 'Available to request soon', "Can't request"]);
     assert.deepEqual(seasons.map((season) => season.querySelector('a').getAttribute('href')),
@@ -884,7 +884,7 @@ describe('household app page: rendering', () => {
     assert.equal(season.querySelector('h1').textContent, 'Season 1');
     assert.equal(season.querySelector('.badge').textContent, 'In your library');
     assert.deepEqual([...season.querySelectorAll('.episode-title')].map((title) => title.textContent), ['1. Pilot', '2. Episode 2']);
-    assert.equal(season.querySelector('a.button'), null);
+    assert.ok(season.querySelector('a.button') === null);
   });
 
   it('shows only fixed text for each error, with a sign-in link for 401 and no upstream text', async () => {
@@ -936,7 +936,19 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
    */
   async function openApp(t, app, { user = ALICE, host = HOST_A, signedIn = true, override, hash = '', holdMe, store: initialStore, storageFails = false, userAgent = '' } = {}) {
     const origin = `https://${host}`;
-    const { document, Event } = parseHTML(read('index.html'));
+    const { document, Event, HTMLElement } = parseHTML(read('index.html'));
+    // linkedom keeps no focus (it has no document.activeElement): the last element of this page focus() was called on stands in.
+    let focused = null;
+    const ownFocus = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'focus');
+    const { focus } = HTMLElement.prototype;
+    HTMLElement.prototype.focus = function (...args) {
+      if (this.ownerDocument === document) focused = this;
+      return focus.apply(this, args);
+    };
+    t.after(() => {
+      if (ownFocus) Object.defineProperty(HTMLElement.prototype, 'focus', ownFocus);
+      else delete HTMLElement.prototype.focus;
+    });
     const store = new Map(initialStore ?? (signedIn ? [['jellyfin_credentials', JSON.stringify({
       Servers: [{ ManualAddress: origin, AccessToken: TOKENS[user], UserId: user }],
     })]] : []));
@@ -992,7 +1004,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       for (const listener of listeners.hashchange ?? []) listener({});
     };
     const main = () => document.getElementById('screen');
-    return { document, Event, until, go, main, requests, store, location, serialize: () => document.documentElement.outerHTML, listeners };
+    return { document, Event, until, go, main, requests, store, location, serialize: () => document.documentElement.outerHTML, listeners, focused: () => focused };
   }
 
   it('shows the household and the four discover rows with each title\'s badge and Play link', async (t) => {
@@ -1012,7 +1024,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     const playLink = [...own.querySelectorAll('a')].find((anchor) => anchor.textContent === 'Play');
     assert.equal(playLink.getAttribute('href'), `https://${HOST_A}/web/#/details?id=33330000333300003333000033330000`);
     assert.equal(cards.flatMap((item) => [...item.querySelectorAll('a')]).filter((anchor) => anchor.textContent === 'Play').length, 1);
-    assert.equal(page.document.querySelector('[role="alert"]'), null);
+    assert.ok(page.document.querySelector('[role="alert"]') === null);
     assert.equal(page.document.getElementById('screen').getAttribute('aria-busy'), 'false');
     // Calls: me + four lists, each with the token, never cached by the browser, no cookies.
     assert.deepEqual(page.requests.map((request) => request.url.replace(/\?.*/, '')).sort(), [
@@ -1042,7 +1054,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     page.go(`#/tv/${T_TV}`);
     await page.until(() => page.main().querySelector('.season-list'), 'the series');
     assert.equal(page.main().querySelector('h1').textContent, 'Synthetic Series Two');
-    assert.equal(page.main().querySelector('a.button'), null);
+    assert.ok(page.main().querySelector('a.button') === null);
     const seasons = [...page.main().querySelectorAll('.season')];
     assert.ok(seasons.length >= 1);
     for (const season of seasons) assert.equal(season.querySelector('.badge').textContent, 'Available to request soon');
@@ -1121,7 +1133,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     assert.equal(page.location.hash, '#/search?q=another');
     release();
     await page.until(() => page.document.getElementById('who').textContent.length > 0, 'the header once /me is back');
-    assert.equal(page.main().querySelector('input[type="search"]'), input, 'the screen was not rebuilt');
+    assert.ok(page.main().querySelector('input[type="search"]') === input, 'the screen was not rebuilt');
     assert.equal(input.value, 'another');
   });
 
@@ -1300,7 +1312,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     await page.until(() => page.main().querySelector('ul.profiles'), 'the picker');
     click(page, profileButton(page, 'Ann'));
     await homeLoaded(page);
-    assert.equal(page.main().querySelector('input[type="password"]'), null, 'no password step');
+    assert.ok(page.main().querySelector('input[type="password"]') === null, 'no password step');
     assert.equal(page.document.getElementById('who').textContent, 'Ann · Farmhouse');
     const login = page.requests.find((request) => request.url === '/Users/AuthenticateByName');
     assert.deepEqual(JSON.parse(login.init.body), { Username: 'Ann', Pw: '' });
@@ -1499,6 +1511,6 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     const missing = await openApp(t, healthy);
     missing.go('#/movie/1');
     await missing.until(() => missing.main().querySelector('h1')?.textContent === 'Not found', 'the not-found state');
-    assert.equal(missing.main().querySelector('button'), null);
+    assert.ok(missing.main().querySelector('button') === null);
   });
 });
