@@ -4,7 +4,7 @@ import https from 'node:https';
 import type { Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
 import type { HouseholdAppHandler, JellyfinCaller } from './app-api.js';
-import type { AppAssets } from './app-assets.js';
+import { NEVER_STORE, type AppAssets } from './app-assets.js';
 import { ClientIpResolver, normaliseIp } from './client-ip.js';
 import { DEFAULT_WS_IDLE_TIMEOUT_MS, DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS, type LogLevel } from './config.js';
 import { LIBRARY_JOIN_HTML, LIBRARY_JOIN_JS, LIBRARY_JOIN_STYLES } from './household-ui.js';
@@ -175,17 +175,21 @@ export class HouseholdGateway {
   }
 
   public async handle(request: IncomingMessage, response: ServerResponse, householdId: string): Promise<void> {
-    const memberIds = this.#memberIds(householdId);
-    if (!memberIds) {
-      writeJson(response, 404, { error: 'household_not_found' });
-      return;
-    }
     const requestUrl = new URL(request.url ?? '/', 'http://localhost');
     const pathname = requestUrl.pathname.toLowerCase();
-    if (pathname === APP_PATH || pathname.startsWith(`${APP_PATH}/`)) {
+    const appPath = pathname === APP_PATH || pathname.startsWith(`${APP_PATH}/`);
+    const memberIds = this.#memberIds(householdId);
+    if (!memberIds) {
+      // No CDN may keep any answer under /jellypass/app, this one included (see NEVER_STORE).
+      writeJson(response, 404, { error: 'household_not_found' }, appPath ? NEVER_STORE : {});
+      return;
+    }
+    if (appPath) {
       // The app's own files carry nothing user-specific and need no credentials; the API under /v1 always does.
       // Files only at their exact (lower-case) paths: another spelling is an unknown app path, like any other.
       if (this.#appAssets?.serve(request, response, requestUrl.pathname)) return;
+      // Every other answer here, whatever writes it (an unknown file, the API, its errors), is never stored by a CDN.
+      for (const [name, value] of Object.entries(NEVER_STORE)) response.setHeader(name, value);
       await this.#householdApp(request, response, requestUrl, householdId, memberIds);
       return;
     }
@@ -248,9 +252,11 @@ export class HouseholdGateway {
       return;
     }
     const pathname = new URL(request.url ?? '/', 'http://localhost').pathname.toLowerCase();
+    const appPath = pathname === APP_PATH || pathname.startsWith(`${APP_PATH}/`);
     // The app API has no WebSockets, and its paths are never proxied to Jellyfin.
-    if (!this.#memberIds(householdId) || pathname === APP_PATH || pathname.startsWith(`${APP_PATH}/`)) {
-      socket.end('HTTP/1.1 404 Not Found\r\nConnection: close\r\n\r\n');
+    if (!this.#memberIds(householdId) || appPath) {
+      const neverStore = appPath ? Object.entries(NEVER_STORE).map(([name, value]) => `${name}: ${value}\r\n`).join('') : '';
+      socket.end(`HTTP/1.1 404 Not Found\r\n${neverStore}Connection: close\r\n\r\n`);
       return;
     }
     const upstream = this.#transport().request(this.#requestOptions(request));
@@ -947,13 +953,14 @@ function writeAsset(response: ServerResponse, body: string, contentType: string)
   response.end(body);
 }
 
-function writeJson(response: ServerResponse, status: number, body: unknown): void {
+function writeJson(response: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
   const encoded = Buffer.from(JSON.stringify(body));
   response.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': encoded.length,
     'Cache-Control': 'no-store',
     'X-Content-Type-Options': 'nosniff',
+    ...headers,
   });
   response.end(encoded);
 }

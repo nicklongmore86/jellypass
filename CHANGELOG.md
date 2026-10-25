@@ -21,6 +21,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   share one session and **Play** stays signed in. New **Sign out** revokes the
   session and also signs Jellyfin web out on that address. **Open Jellyfin to
   sign in** remains as a fallback.
+- **No CDN keeps any `/jellypass/app` answer.** Errors, unknown paths, API
+  answers, refusals and the WebSocket refusal under `/jellypass/app` are now
+  sent with `Cache-Control`, `CDN-Cache-Control` and
+  `Cloudflare-CDN-Cache-Control: no-store`, like the page; fingerprinted files
+  stay `immutable`.
 - **The app's files can no longer be mixed across releases by a CDN.** Cloudflare
   rewrote the `Cache-Control: no-cache` on the app's `.css`/`.js` files
   (including `sw.js`) to `max-age=14400` and stripped the page's `ETag`, so after

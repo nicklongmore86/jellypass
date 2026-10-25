@@ -33,9 +33,10 @@ const IMMUTABLE = 'public, max-age=31536000, immutable';
  * moment it is asked for: `no-store` for browsers and shared caches (Cloudflare never caches `no-store`), and the CDN
  * headers Cloudflare and other CDNs read for their own caching, so a CDN setting that rewrites a browser lifetime
  * cannot make a stale page or worker outlive a release. (A `Cache-Control: no-cache` with an ETag was rewritten to a
- * four-hour `max-age` on a CDN that keeps files by extension.)
+ * four-hour `max-age` on a CDN that keeps files by extension.) Every other answer under /jellypass/app (redirects,
+ * errors, the API) carries the same three, so no CDN keeps any of them either.
  */
-const NEVER_STORE = {
+export const NEVER_STORE = {
   'Cache-Control': 'no-store',
   'CDN-Cache-Control': 'no-store',
   'Cloudflare-CDN-Cache-Control': 'no-store',

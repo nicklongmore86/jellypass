@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
+import { NEVER_STORE } from './app-assets.js';
 import { DispatchQueueFullError, FairDispatcher } from './fair-dispatcher.js';
 import { AttemptCounter } from './rate-limit.js';
 import {
@@ -856,7 +857,7 @@ function writeAppJson(response: ServerResponse, status: number, body: unknown): 
   response.writeHead(status, {
     'Content-Type': 'application/json; charset=utf-8',
     'Content-Length': encoded.length,
-    'Cache-Control': 'no-store',
+    ...NEVER_STORE,
     'X-Content-Type-Options': 'nosniff',
     'Referrer-Policy': 'no-referrer',
   });

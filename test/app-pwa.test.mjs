@@ -253,6 +253,59 @@ describe('household app page: headers', { timeout: 30_000 }, () => {
     assert.equal((await app.get('/jellypass/app/v1/me')).headers['cache-control'], 'no-store');
   });
 
+  it('lets no CDN keep any other answer under /jellypass/app: errors, redirects, refusals and failures', async (t) => {
+    const app = await startApp(t, world({ failCatalogue: 500 }));
+    const neverStored = (answer, what) => {
+      for (const [name, value] of Object.entries(NEVER_STORED)) assert.equal(answer.headers[name], value, `${what} ${name}`);
+      assert.equal(answer.headers.etag, undefined, what);
+    };
+    const hashedJs = `${PAGE}js/main.${'0'.repeat(12)}.js`;
+    const answers = [
+      [await app.get(hashedJs), 404, 'an unknown fingerprinted script, signed in'],
+      [await app.get(hashedJs, { user: null }), 401, 'an unknown fingerprinted script, signed out'],
+      [await app.get(`${PAGE}no-such-file`, { user: null }), 401, 'an unknown file'],
+      [await app.get('/jellypass/app', { user: null }), 308, 'the redirect to the page'],
+      [await app.get(`${PAGE}sw.js`, { host: 'jelly-missing.example.test', user: null }), 404, 'the worker on an unknown household'],
+      [await app.get(PAGE, { host: 'jelly-missing.example.test', user: null }), 404, 'the page on an unknown household'],
+      [await app.get('/jellypass/app/v1/me', { host: 'jelly-missing.example.test' }), 404, 'the API on an unknown household'],
+      [await app.get('/jellypass/app/v1/me', { user: null }), 401, 'the API, signed out'],
+      [await app.get(`/jellypass/app/v1/movie/${T_MOVIE}`), 502, 'the API while TMDB fails'],
+    ];
+    for (const [answer, status, what] of answers) {
+      assert.equal(answer.status, status, what);
+      neverStored(answer, what);
+    }
+    // The address's own budget for the API, used up.
+    let limited;
+    for (let index = 0; index < 400 && !limited; index += 1) {
+      const answer = await app.get('/jellypass/app/v1/me', { user: null });
+      if (answer.status === 429) limited = answer;
+    }
+    assert.ok(limited, 'the API rate limit');
+    neverStored(limited, 'a rate-limited call');
+    // A non-file method on a file's path.
+    const posted = await post(app.port, PAGE, { Host: HOST_A }, {});
+    assert.ok(posted.status >= 400, 'POST to the page');
+    neverStored(posted, 'POST to the page');
+    // A WebSocket upgrade under /jellypass/app, which is never proxied.
+    const upgrade = await new Promise((resolve, reject) => {
+      import('node:net').then(({ connect }) => {
+        const socket = connect(app.port, '127.0.0.1', () => socket.write(`GET ${PAGE}sw.js HTTP/1.1\r\nHost: ${HOST_A}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n`));
+        let text = '';
+        socket.on('data', (chunk) => { text += chunk; });
+        socket.on('end', () => resolve(text));
+        socket.on('error', reject);
+      });
+    });
+    assert.match(upgrade, /^HTTP\/1\.1 404 /);
+    for (const [name, value] of Object.entries(NEVER_STORED)) assert.match(upgrade, new RegExp(`\r\n${name}: ${value}\r\n`, 'i'), name);
+    // Without the app API, its paths are a fixed 404 that no CDN keeps either.
+    const off = await startApp(t, world(), { app: false });
+    const disabled = await off.get(PAGE, { user: null });
+    assert.equal(disabled.status, 404);
+    neverStored(disabled, 'the app switched off');
+  });
+
   it('serves a file only under the fingerprint of its content: an old or made-up one is an unknown app path', async (t) => {
     const app = await startApp(t);
     const css = BUILT('app.css');
