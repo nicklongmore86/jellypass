@@ -358,6 +358,7 @@ export async function createFakeTmdb(state) {
 export async function createFakeJellyfinForApp(state) {
   const requests = [];
   const minted_ = [];
+  const attempts_ = [];
   const logouts = [];
   let down = false;
   const server = createServer((request, response) => {
@@ -365,8 +366,8 @@ export async function createFakeJellyfinForApp(state) {
     requests.push({ method: request.method, path: `${url.pathname}${url.search}`, pathname: url.pathname });
     if (down) return send(response, 503, { message: 'down' });
     if (url.pathname === '/Users/Public' && request.method === 'GET') {
-      // Like Jellyfin, every user: the household gateway is what narrows this to a household.
-      return send(response, 200, Object.entries(state.jellyfinUsers).map(([Id, user]) => ({
+      // Like Jellyfin, every user but hidden and disabled ones: the household gateway is what narrows this to a household.
+      return send(response, 200, Object.entries(state.jellyfinUsers).filter(([, user]) => !user.Policy.IsHidden && !user.Policy.IsDisabled).map(([Id, user]) => ({
         // Jellyfin says so even for an empty password: JellyPass's passwordless marking is what turns it off.
         Id, Name: user.Name, HasPassword: true, HasConfiguredPassword: true,
       })));
@@ -378,6 +379,7 @@ export async function createFakeJellyfinForApp(state) {
         if (!/^MediaBrowser /.test(header) || !['Client', 'Device', 'DeviceId', 'Version'].every((name) => new RegExp(`${name}="[^"]+"`).test(header))) {
           return send(response, 400, { error: 'request.App is required' });
         }
+        attempts_.push({ username: body.Username, password: body.Pw, header });
         const entry = Object.entries(state.jellyfinUsers).find(([, user]) => user.Name.toLowerCase() === String(body.Username).toLowerCase());
         if (state.signInDown) return send(response, 503, { message: 'upstream detail that must never be shown' });
         if (!entry || entry[1].Policy.IsDisabled || (state.passwords?.[entry[0]] ?? '') !== body.Pw) return send(response, 401, { message: 'upstream detail that must never be shown' });
@@ -433,6 +435,8 @@ export async function createFakeJellyfinForApp(state) {
     requests,
     /** Every sign-in this Jellyfin granted: token, user and the Authorization header it came with. */
     signIns: minted_,
+    /** Every sign-in Jellyfin was asked for, granted or not: the name and password it was sent, and the Authorization header. */
+    signInAttempts: attempts_,
     /** The tokens signed out at Jellyfin. */
     logouts,
     state,
@@ -453,8 +457,9 @@ function sees(user, item) {
  * and B (Bob). Pass `app: false` to start JellyPass without the app API (and so without the household limit),
  * `seerr: { url, apiKey }` to use a real Seerr instead of the fake, `households` to replace the two households,
  * `stateFile` to start the store from that state, `trustedProxies` to trust `X-Forwarded-For` from them, `now`,
- * `libraryTtlMs`, `titleTtlMs` or `blocklistTtlMs` to set the app's clock and cache lifetimes, and `catalogueLimits` to
- * set its share of TMDB calls (by default high enough that tests not about it never wait for one).
+ * `libraryTtlMs`, `titleTtlMs` or `blocklistTtlMs` to set the app's clock and cache lifetimes, `catalogueLimits` to
+ * set its share of TMDB calls (by default high enough that tests not about it never wait for one), and
+ * `loginFailureDelayMs` for the least time a refused household sign-in takes (default 0, so tests not about it never wait).
  */
 export async function startApp(t, state = world(), options = {}) {
   const seerr = options.seerr ? { ...options.seerr, close: async () => undefined } : await createFakeSeerr(state);
@@ -473,7 +478,7 @@ export async function startApp(t, state = world(), options = {}) {
   const service = new AccessService(new JellyfinClient(jellyfin.url, 'jellyfin-key'), store, undefined, admin);
   const server = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' }, undefined, {
     ...(options.trustedProxies ? { trustedProxies: options.trustedProxies } : {}),
-    householdGateway: { jellyfinUrl: jellyfin.url, domain: 'example.test', hostPrefix: 'jelly-' },
+    householdGateway: { jellyfinUrl: jellyfin.url, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: options.loginFailureDelayMs ?? 0 },
     ...(options.app === false ? {} : {
       householdApp: {
         catalogue: new TmdbClient(TMDB_KEY, { baseUrl: tmdb.url, ...(options.now ? { now: options.now } : {}) }),

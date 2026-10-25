@@ -21,6 +21,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   share one session and **Play** stays signed in. New **Sign out** revokes the
   session and also signs Jellyfin web out on that address. **Open Jellyfin to
   sign in** remains as a fallback.
+- **Hidden Jellyfin users in a household can sign in.** Jellyfin leaves hidden
+  users off its public list, so they were missing from the household's profile
+  picker and, with Jellyfin web's **Manual Login** hidden on household
+  addresses, could not sign in there at all. The app's picker now always offers
+  **Sign in with a different name** (and starts there when it lists nobody),
+  and Jellyfin web's **Manual Login** is shown again on household addresses.
+  A typed name is checked against the household's members whether or not they
+  are hidden; any other name gets exactly the answer a wrong password gets, no
+  sooner than one second after the attempt, under the same per-client limit.
 - **No CDN keeps any `/jellypass/app` answer.** Errors, unknown paths, API
   answers, refusals and the WebSocket refusal under `/jellypass/app` are now
   sent with `Cache-Control`, `CDN-Cache-Control` and

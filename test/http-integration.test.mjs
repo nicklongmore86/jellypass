@@ -77,13 +77,14 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     const householdBrandingBody = await householdBranding.json();
     assert.match(householdBrandingBody.CustomCss, /existing-branding/);
     assert.doesNotMatch(householdBrandingBody.CustomCss, /#loginPage \.manualLoginForm/);
-    assert.match(householdBrandingBody.CustomCss, /#loginPage \.readOnlyContent/);
-    assert.match(householdBrandingBody.CustomCss, /#loginPage \.btnManual/);
+    // Manual login stays (hidden members sign in by name), so neither it nor the container it sits in is hidden.
+    assert.doesNotMatch(householdBrandingBody.CustomCss, /\.readOnlyContent|\.btnManual/);
     assert.match(householdBrandingBody.CustomCss, /#loginPage \.btnQuick/);
     assert.match(householdBrandingBody.CustomCss, /#loginPage \.btnForgotPassword/);
+    assert.match(householdBrandingBody.CustomCss, /#loginPage \.btnSelectServer/);
     assert.match(householdBrandingBody.LoginDisclaimer, /<style id="jellypass-household-profile-picker">/);
-    assert.doesNotMatch(householdBrandingBody.LoginDisclaimer, /#loginPage \.manualLoginForm/);
-    assert.match(householdBrandingBody.LoginDisclaimer, /#loginPage \.readOnlyContent/);
+    assert.doesNotMatch(householdBrandingBody.LoginDisclaimer, /#loginPage \.manualLoginForm|\.btnManual|\.readOnlyContent/);
+    assert.match(householdBrandingBody.LoginDisclaimer, /#loginPage \.btnQuick/);
     const householdQuickConnect = await fetchWithHost(bridgeUrl, '/QuickConnect/Enabled', 'jelly-farmhouse.example.test');
     assert.equal(householdQuickConnect.status, 200);
     assert.equal(await householdQuickConnect.json(), false);

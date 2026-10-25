@@ -145,6 +145,11 @@ export class AccessService {
     this.#metrics.increment('jfa_app_requests_total', { endpoint, outcome });
   }
 
+  /** Every Jellyfin user, as Jellyfin's admin API lists them (hidden and disabled users included). */
+  public listJellyfinUsers(): Promise<JellyfinUser[]> {
+    return this.#jellyfin.getUsers();
+  }
+
   public isPasswordless(userId: string): boolean {
     return this.#store.listPasswordlessUserIds().includes(userId.toLowerCase());
   }

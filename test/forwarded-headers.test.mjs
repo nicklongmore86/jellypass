@@ -46,6 +46,7 @@ describe('forwarded client addresses', { timeout: 10_000 }, () => {
         jellyfinUrl: `http://${LOCAL}:${upstream.address().port}`,
         domain: 'example.test',
         hostPrefix: 'jelly-',
+        loginFailureDelayMs: 0,
       },
     });
     servers.push(server);
@@ -207,6 +208,7 @@ function send(port, path, headers, { method = 'GET', body } = {}) {
 function stubService() {
   return {
     getHouseholdMemberIds: (householdId) => (householdId === 'farmhouse' ? ['alice-id'] : undefined),
+    listJellyfinUsers: async () => [{ Id: 'alice-id', Name: 'Alice', Policy: {} }],
     isPasswordless: () => false,
     canJoinLibrary: () => false,
   };

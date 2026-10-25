@@ -1372,6 +1372,105 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     assert.equal(credentials(page).Servers[0].UserId, ANN);
   });
 
+  /** Ann is hidden at Jellyfin (left off every login screen) and has a password; Bob, household B's only member, too. */
+  const hiddenApp = (t) => startApp(t, world({
+    passwords: { [ALICE]: 'alice-pass', [ANN]: 'ann-pass', [BOB]: 'bob-pass' },
+    jellyfinUsers: {
+      [ANN]: { Name: 'Ann', Policy: { IsHidden: true, BlockedTags: ['jellypass-held-elsewhere'], EnabledFolders: ['shared'] } },
+      [BOB]: { Name: 'Bob', Policy: { IsHidden: true, BlockedTags: [], EnableAllFolders: true } },
+    },
+  }));
+  const enterName = (page, username, password) => {
+    page.main().querySelector('#username').value = username;
+    page.main().querySelector('#password').value = password;
+    page.main().querySelector('form').dispatchEvent(new page.Event('submit', { cancelable: true }));
+  };
+  const NAME_REFUSED = "That didn't work. Check your name and password and try again.";
+
+  it('signs in a hidden member by name: the picker leaves them off and offers sign-in with a different name', async (t) => {
+    const app = await hiddenApp(t);
+    const page = await openApp(t, app, { signedIn: false });
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker');
+    assert.deepEqual([...page.main().querySelectorAll('.profile-name')].map((name) => name.textContent), ['Alice']);
+    const byName = [...page.main().querySelectorAll('button')].find((button) => button.textContent === 'Sign in with a different name');
+    assert.ok(byName, 'sign-in by name is offered');
+    assert.equal(byName.getAttribute('type'), 'button');
+    click(page, byName);
+    const username = await page.until(() => page.main().querySelector('#username'), 'the name form');
+    assert.equal(page.main().querySelector('h1').textContent, 'Sign in');
+    assert.equal(page.main().querySelector('label[for="username"]').textContent, 'Name');
+    assert.equal(page.main().querySelector('label[for="password"]').textContent, 'Password');
+    assert.equal(username.getAttribute('autocomplete'), 'username');
+    assert.equal(username.getAttribute('autocapitalize'), 'none');
+    assert.equal(username.getAttribute('spellcheck'), 'false');
+    assert.equal(username.getAttribute('aria-describedby'), 'signin-message');
+    assert.equal(page.main().querySelector('#password').getAttribute('autocomplete'), 'current-password');
+    assert.equal(page.main().querySelector('#password').getAttribute('aria-describedby'), 'signin-message');
+    assert.equal(page.main().querySelector('[role="alert"]').getAttribute('id'), 'signin-message');
+    // Never a DOM node in an assertion: a failing one inspects the whole document, at a depth of 1000, until memory runs out.
+    assert.ok(page.focused() === username, 'the name field has focus');
+    assert.deepEqual([...page.main().querySelectorAll('a')].map((link) => link.getAttribute('href')), ['/web/']);
+    const requests = page.requests.length;
+    enterName(page, ' ann ', 'ann-pass');
+    await homeLoaded(page);
+    assert.equal(page.document.getElementById('who').textContent, 'Ann · Farmhouse');
+    const login = page.requests[requests];
+    assert.equal(login.url, '/Users/AuthenticateByName');
+    assert.deepEqual(JSON.parse(login.init.body), { Username: 'ann', Pw: 'ann-pass' });
+    assert.equal(credentials(page).Servers[0].UserId, ANN);
+    assert.equal(credentials(page).Servers[0].AccessToken, app.jellyfin.signIns[0].token);
+    assert.doesNotMatch(page.serialize(), /ann-pass/);
+  });
+
+  it('refuses another household\'s name with the same fixed text as a wrong password, and asks for a name first', async (t) => {
+    const app = await hiddenApp(t);
+    const page = await openApp(t, app, { signedIn: false });
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker');
+    click(page, [...page.main().querySelectorAll('button')].find((button) => button.textContent === 'Sign in with a different name'));
+    await page.until(() => page.main().querySelector('#username'), 'the name form');
+    const submit = () => page.main().querySelector('button[type="submit"]');
+    // No name: refused before any call.
+    const calls = page.requests.length;
+    enterName(page, '  ', 'x');
+    assert.equal(message(page), 'Enter your name.');
+    assert.equal(page.main().querySelector('#username').getAttribute('aria-invalid'), 'true');
+    assert.equal(page.requests.length, calls);
+    const attempt = async (username, password, expected) => {
+      enterName(page, username, password);
+      assert.equal(submit().disabled, true, 'one attempt at a time');
+      await page.until(() => message(page) === expected && !submit().disabled, expected);
+      assert.equal(submit().textContent, 'Sign in');
+      assert.equal(page.main().querySelector('#password').value, '');
+      assert.doesNotMatch(page.serialize(), /upstream detail|bob-pass|ann-pass/);
+    };
+    await attempt('Bob', 'bob-pass', NAME_REFUSED);
+    assert.equal(page.main().querySelector('#password').getAttribute('aria-invalid'), 'true');
+    await attempt('Ann', 'wrong', NAME_REFUSED);
+    await attempt('nobody', '', NAME_REFUSED);
+    for (let attempts = 0; attempts < 20; attempts += 1) {
+      const answer = await post(app.port, '/Users/AuthenticateByName', { Host: HOST_A, Authorization: 'MediaBrowser Client="x", Device="y", DeviceId="zzzzzzzzzzzzzzzz", Version="1"' }, { Username: 'Ann', Pw: 'no' });
+      if (answer.status === 429) break;
+    }
+    await attempt('Ann', 'ann-pass', 'Too many attempts. Wait a few minutes, then try again.');
+    assert.equal(app.jellyfin.signIns.length, 0);
+    // Back to the picker.
+    click(page, [...page.main().querySelectorAll('button')].find((button) => button.textContent === 'Choose a profile'));
+    await page.until(() => page.main().querySelector('ul.profiles'), 'the picker again');
+  });
+
+  it('starts with sign-in by name when the picker lists nobody', async (t) => {
+    const app = await hiddenApp(t);
+    const page = await openApp(t, app, { signedIn: false, host: HOST_B });
+    const username = await page.until(() => page.main().querySelector('#username'), 'the name form');
+    assert.ok(page.main().querySelector('ul.profiles') === null, 'no picker');
+    assert.doesNotMatch(page.main().textContent, /No profiles/);
+    assert.equal([...page.main().querySelectorAll('button')].some((button) => button.textContent === 'Choose a profile'), false, 'nothing to go back to');
+    assert.ok(page.focused() !== username, 'the first screen keeps the page\'s own focus');
+    enterName(page, 'Bob', 'bob-pass');
+    await homeLoaded(page);
+    assert.equal(page.document.getElementById('who').textContent, 'Bob · Mill');
+  });
+
   it('asks for a password when a one-tap member has gained one, instead of failing', async (t) => {
     const app = await startApp(t, world({ passwords: { [ANN]: 'ann-pass' } }));
     await app.store.setUserPasswordless(ANN, true);
