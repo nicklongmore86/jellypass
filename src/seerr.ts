@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { Worker } from 'node:worker_threads';
 import type { RecentSeerrRequest, SeerrRequest } from './types.js';
 
 interface SeerrRequestList {
@@ -85,11 +86,19 @@ export class SeerrClient {
   readonly #baseUrl: string;
   readonly #apiKey: string;
   #recentCache: { expiresAt: number; catalogKey: string; items: RecentSeerrRequest[] } | undefined;
+  readonly #titles: TitleParser;
 
-  public constructor(baseUrl: string, apiKey: string) {
+  /** `titleWorker` overrides {@link TITLE_WORKER_LIMITS} (for tests). */
+  public constructor(baseUrl: string, apiKey: string, options: { titleWorker?: Partial<TitleWorkerLimits> } = {}) {
     this.#baseUrl = baseUrl;
     this.#apiKey = apiKey;
+    this.#titles = new TitleParser({ ...TITLE_WORKER_LIMITS, ...options.titleWorker });
     credentials.set(this, { baseUrl, apiKey });
+  }
+
+  /** Stops the title worker (see titleRequests), failing any parse still queued; at shutdown. */
+  public close(): Promise<void> {
+    return this.#titles.close();
   }
 
   /**
@@ -134,6 +143,53 @@ export class SeerrClient {
       throw new TypeError('paging is invalid');
     }
     return this.#guardedGet('/api/v1/blocklist', `/api/v1/blocklist?take=${take}&skip=${skip}`);
+  }
+
+  /**
+   * What Seerr records about a title's HD and 4K requests (GET /api/v1/movie/:id or /api/v1/tv/:id with the admin key),
+   * reduced to what household app "Get this" decides from in the background: the media record's ID and Jellyfin items,
+   * and each request's ID, status, quality, seasons and requester. Undefined when Seerr (TMDB) does not know the title.
+   * The answer carries every household's records on the title, so it is read only by background work, never for an
+   * answer, and up to {@link MAX_TITLE_RECORD_BYTES}. Guarded like {@link findUserByJellyfinId}.
+   */
+  public titleRequests(mediaType: 'movie' | 'tv', tmdbId: number): Promise<SeerrTitleRecord | undefined> {
+    if (mediaType !== 'movie' && mediaType !== 'tv') throw new TypeError('media type is invalid');
+    return this.#titleRequests(mediaType, tmdbIdentifier(tmdbId));
+  }
+
+  async #titleRequests(mediaType: 'movie' | 'tv', id: number): Promise<SeerrTitleRecord | undefined> {
+    const route = `/api/v1/${mediaType}/:id`;
+    let bytes: Uint8Array;
+    try {
+      bytes = await guardedSeerrBytes(this.#baseUrl, 'GET', route, `/api/v1/${mediaType}/${id}`,
+        { Accept: 'application/json', 'X-Api-Key': this.#apiKey }, undefined, MAX_TITLE_RECORD_BYTES);
+    } catch (error) {
+      if (error instanceof SeerrError && error.status === 404) return undefined;
+      throw error;
+    }
+    return this.#titles.parse(bytes, route);
+  }
+
+  /**
+   * One request's status and media record (GET /api/v1/request/:id with the admin key), or undefined when Seerr has
+   * no such request (deleted). Only for requests JellyPass's own records name. Guarded like {@link findUserByJellyfinId}.
+   */
+  public requestState(requestId: string): Promise<{ status: number; mediaId?: number } | undefined> {
+    if (typeof requestId !== 'string' || !/^[1-9][0-9]{0,15}$/.test(requestId)) throw new TypeError('request ID is invalid');
+    return this.#requestState(requestId);
+  }
+
+  async #requestState(requestId: string): Promise<{ status: number; mediaId?: number } | undefined> {
+    let answer: unknown;
+    try {
+      answer = await this.#guardedGet('/api/v1/request/:id', `/api/v1/request/${requestId}`);
+    } catch (error) {
+      if (error instanceof SeerrError && error.status === 404) return undefined;
+      throw error;
+    }
+    const status = positiveSafeInteger(ownField(answer, 'status'));
+    if (status === undefined || String(ownField(answer, 'id')) !== requestId) throw new SeerrError('Seerr GET /api/v1/request/:id returned an unexpected answer', 502);
+    return { status, ...optional('mediaId', positiveSafeInteger(ownField(ownField(answer, 'media'), 'id'))) };
   }
 
   /** Seerr's GET /api/v1/user/:id as the admin, or undefined when that user does not exist (or is not the one asked for). */
@@ -313,6 +369,31 @@ export type SeerrRequestInput =
 
 /** Largest Seerr response body read by the guarded calls, in bytes; reading stops as soon as a body passes it. */
 export const MAX_GUARDED_RESPONSE_BYTES = 4 * 1024 * 1024;
+/**
+ * Largest Seerr title answer read by {@link SeerrClient.titleRequests}: its size grows with every household's records on
+ * the title, so it is far above any real one, and a busy title never makes "Get this" fail.
+ */
+export const MAX_TITLE_RECORD_BYTES = 64 * 1024 * 1024;
+
+/** What {@link SeerrClient.titleRequests} reads of a title. Jellyfin IDs are normalized. */
+export interface SeerrTitleRecord {
+  /** The title's names as TMDB has them (title and original title, or a series' name and original name). */
+  names: string[];
+  /** The year of its release (a series: first air date), if known. */
+  year?: number;
+  mediaId?: number;
+  jellyfinMediaId?: string;
+  jellyfinMediaId4k?: string;
+  requests: Array<{
+    id: string;
+    status: number;
+    is4k: boolean;
+    seasons: number[];
+    requesterJellyfinId?: string;
+    /** When Seerr made it (ms since the epoch), if it says. */
+    createdAt?: number;
+  }>;
+}
 
 /** Statuses after which Seerr may no longer accept the acting user (unknown, removed or relinked). */
 const USER_REJECTED_STATUSES = new Set([401, 403, 404]);
@@ -389,18 +470,32 @@ export class SeerrMemberClient {
    * request for someone else) or a server, profile or folder override.
    */
   public createRequest(input: SeerrRequestInput): Promise<unknown> {
-    const tmdbId = tmdbIdentifier(input.tmdbId);
-    if (input.mediaType === 'movie') {
-      return this.#send('POST', '/api/v1/request', () => '/api/v1/request', { mediaType: 'movie', mediaId: tmdbId, is4k: false });
-    }
-    if (input.mediaType !== 'tv') throw new TypeError('media type is invalid');
-    const seasons = input.seasons;
-    if (!Array.isArray(seasons) || !seasons.length || seasons.length > 100 ||
-        !seasons.every((season) => Number.isSafeInteger(season) && season > 0)) {
-      throw new TypeError('seasons are invalid');
-    }
-    return this.#send('POST', '/api/v1/request', () => '/api/v1/request',
-      { mediaType: 'tv', mediaId: tmdbId, seasons: [...new Set(seasons)], is4k: false });
+    return this.#send('POST', '/api/v1/request', () => '/api/v1/request', requestBody(input));
+  }
+
+  /**
+   * Confirms now, as before every call, the Seerr user that acts for this member, and returns a sender for one request
+   * as that user that confirms nothing more: for "Get this", whose last step before its request is a Jellyfin read
+   * (docs/app-design.md, "Late requests"). The sender sends nothing (SeerrUnmappedUserError) if this member's mapping
+   * was invalidated since (SeerrUserMap.invalidate); otherwise its request leaves at once, like {@link createRequest}.
+   * A relink made in Seerr in between that JellyPass is not told of is not seen: the request acts as the user Seerr
+   * linked to the member when it was confirmed.
+   */
+  public async confirmRequester(): Promise<{ createRequest(input: SeerrRequestInput): Promise<unknown> }> {
+    const key = this.#jellyfinUserId;
+    const { user, version } = await this.#confirm();
+    return {
+      createRequest: (input) => {
+        let body: unknown;
+        try {
+          body = requestBody(input);
+        } catch (error) {
+          return Promise.reject(error);
+        }
+        if (this.#resolver.version(key) !== version) return Promise.reject(new SeerrUnmappedUserError());
+        return actingUserJson(this.#admin, user, 'POST', '/api/v1/request', '/api/v1/request', body, () => this.#resolver.forget(key, user));
+      },
+    };
   }
 
   /** This member's own requests, newest first. The user ID in the path is always the confirmed acting user's. */
@@ -428,6 +523,14 @@ export class SeerrMemberClient {
 
   async #send(method: 'GET' | 'POST', route: string, path: (user: string) => string, body?: unknown): Promise<unknown> {
     const key = this.#jellyfinUserId;
+    const { user } = await this.#confirm();
+    // Sent at once: nothing is awaited between Seerr confirming the link and the call leaving.
+    return actingUserJson(this.#admin, user, method, route, path(String(user)), body, () => this.#resolver.forget(key, user));
+  }
+
+  /** The Seerr user Seerr confirms is linked to this member now, with the mapping's version when it was confirmed. */
+  async #confirm(): Promise<{ user: SeerrUserId; version: number }> {
+    const key = this.#jellyfinUserId;
     // A stale candidate is forgotten and replaced once; a second failure means Seerr is changing under us.
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const version = this.#resolver.version(key);
@@ -438,11 +541,23 @@ export class SeerrMemberClient {
         continue;
       }
       if (this.#resolver.version(key) !== version) continue;
-      // Sent at once: nothing is awaited between Seerr confirming the link and the call leaving.
-      return actingUserJson(this.#admin, user, method, route, path(String(user)), body, () => this.#resolver.forget(key, user));
+      return { user, version };
     }
     throw new SeerrUnmappedUserError();
   }
+}
+
+/** The body of an HD request for a title: only the title, never `userId` or a server, profile or folder override. */
+function requestBody(input: SeerrRequestInput): unknown {
+  const tmdbId = tmdbIdentifier(input.tmdbId);
+  if (input.mediaType === 'movie') return { mediaType: 'movie', mediaId: tmdbId, is4k: false };
+  if (input.mediaType !== 'tv') throw new TypeError('media type is invalid');
+  const seasons = input.seasons;
+  if (!Array.isArray(seasons) || !seasons.length || seasons.length > 100 ||
+      !seasons.every((season) => Number.isSafeInteger(season) && season > 0)) {
+    throw new TypeError('seasons are invalid');
+  }
+  return { mediaType: 'tv', mediaId: tmdbId, seasons: [...new Set(seasons)], is4k: false };
 }
 
 /**
@@ -487,7 +602,27 @@ async function guardedSeerrJson(
   path: string,
   headers: Record<string, string>,
   body?: unknown,
+  limit = MAX_GUARDED_RESPONSE_BYTES,
 ): Promise<unknown> {
+  const bytes = await guardedSeerrBytes(baseUrl, method, route, path, headers, body, limit);
+  try {
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown;
+  } catch {
+    // JSON.parse's own message quotes the body.
+    throw new SeerrError(`Seerr ${method} ${route} returned invalid JSON`, 502);
+  }
+}
+
+/** {@link guardedSeerrJson}'s call, up to reading the body's bytes. */
+async function guardedSeerrBytes(
+  baseUrl: string,
+  method: 'GET' | 'POST',
+  route: string,
+  path: string,
+  headers: Record<string, string>,
+  body: unknown,
+  limit: number,
+): Promise<Uint8Array> {
   const response = await fetch(`${baseUrl}${path}`, {
     method,
     signal: AbortSignal.timeout(15_000),
@@ -500,13 +635,127 @@ async function guardedSeerrJson(
     // Includes an unfollowed redirect, which Node's fetch hands back as the 3xx itself.
     throw new SeerrError(`Seerr ${method} ${route} returned ${response.status}`, response.status);
   }
-  const bytes = await readCappedBody(response, MAX_GUARDED_RESPONSE_BYTES);
+  const bytes = await readCappedBody(response, limit);
   if (!bytes) throw new SeerrError(`Seerr ${method} ${route} response is too large`, 502);
-  try {
-    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown;
-  } catch {
-    // JSON.parse's own message quotes the body.
-    throw new SeerrError(`Seerr ${method} ${route} returned invalid JSON`, 502);
+  return bytes;
+}
+
+/** Bounds on the worker Seerr title answers are parsed in (see SeerrClient.titleRequests). */
+export interface TitleWorkerLimits {
+  /** Most answers queued or being parsed at once; more are refused (`503`) until one is done. */
+  maxJobs: number;
+  /** Most bytes queued or being parsed at once, all answers together; an answer past it is refused (`503`). */
+  maxQueuedBytes: number;
+  /**
+   * Longest an answer may wait in the worker, queued and parsed, counted from when it was handed over; past it for the
+   * oldest one the worker is stopped (failing every queued answer) and restarted when next needed. Answers handed over
+   * meanwhile never extend it.
+   */
+  timeoutMs: number;
+}
+
+export const TITLE_WORKER_LIMITS: TitleWorkerLimits = { maxJobs: 32, maxQueuedBytes: 4 * MAX_TITLE_RECORD_BYTES, timeoutMs: 15_000 };
+
+interface TitleWorkerState {
+  worker: Worker;
+  jobs: Map<number, TitleJob>;
+  timer?: NodeJS.Timeout;
+}
+
+interface TitleJob {
+  resolve: (record: SeerrTitleRecord) => void;
+  reject: (error: Error) => void;
+  route: string;
+  bytes: number;
+  /** When it was handed to the worker (performance.now()). */
+  queuedAt: number;
+}
+
+/**
+ * The worker title answers are parsed in (see parseTitleAnswer), so the event loop never waits on the size of other
+ * households' records: started when first needed, kept while it works and stopped by {@link close}. Bounded by
+ * {@link TitleWorkerLimits}: queued answers and bytes are capped, and a parse that takes too long stops the worker.
+ * Exported for tests; each SeerrClient has its own.
+ */
+export class TitleParser {
+  readonly #limits: TitleWorkerLimits;
+  #current: TitleWorkerState | undefined;
+  #nextJob = 1;
+  #queuedBytes = 0;
+  #closed = false;
+
+  public constructor(limits: TitleWorkerLimits) {
+    this.#limits = limits;
+  }
+
+  public parse(bytes: Uint8Array, route: string): Promise<SeerrTitleRecord> {
+    if (this.#closed) return Promise.reject(new SeerrError(`Seerr GET ${route} could not be read`, 503));
+    const busy = this.#current?.jobs.size ?? 0;
+    if (busy >= this.#limits.maxJobs || this.#queuedBytes + bytes.byteLength > this.#limits.maxQueuedBytes) {
+      return Promise.reject(new SeerrError(`Seerr GET ${route} could not be read now`, 503));
+    }
+    const current = this.#current ??= this.#start();
+    const id = this.#nextJob++;
+    return new Promise((resolve, reject) => {
+      current.jobs.set(id, { resolve, reject, route, bytes: bytes.byteLength, queuedAt: performance.now() });
+      this.#queuedBytes += bytes.byteLength;
+      current.worker.ref();
+      this.#arm(current);
+      // Handed over, not copied: nothing reads the bytes here afterwards.
+      const whole = bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength ? bytes : bytes.slice();
+      current.worker.postMessage({ id, bytes: whole }, [whole.buffer as ArrayBuffer]);
+    });
+  }
+
+  public async close(): Promise<void> {
+    this.#closed = true;
+    const current = this.#current;
+    if (!current) return;
+    this.#fail(current, 'could not be read');
+    await current.worker.terminate();
+  }
+
+  #start(): TitleWorkerState {
+    const worker = new Worker(new URL('./seerr-title-worker.js', import.meta.url));
+    const state: TitleWorkerState = { worker, jobs: new Map() };
+    worker.on('message', ({ id, record }: { id: number; record?: SeerrTitleRecord }) => {
+      const job = state.jobs.get(id);
+      state.jobs.delete(id);
+      if (job) this.#queuedBytes -= job.bytes;
+      this.#arm(state);
+      if (state.jobs.size === 0) worker.unref();
+      if (!job) return;
+      if (record) job.resolve(record);
+      else job.reject(new SeerrError(`Seerr GET ${job.route} returned invalid JSON`, 502));
+    });
+    worker.on('error', () => this.#fail(state, 'could not be read'));
+    worker.on('exit', () => this.#fail(state, 'could not be read'));
+    worker.unref();
+    return state;
+  }
+
+  /** Sets the timeout to the deadline of the oldest job still in the worker (jobs are kept oldest first); none when idle. */
+  #arm(state: TitleWorkerState): void {
+    clearTimeout(state.timer);
+    delete state.timer;
+    const oldest = state.jobs.values().next().value;
+    if (!oldest) return;
+    state.timer = setTimeout(() => {
+      this.#fail(state, 'took too long to read');
+      void state.worker.terminate();
+    }, Math.max(0, oldest.queuedAt + this.#limits.timeoutMs - performance.now()));
+    state.timer.unref();
+  }
+
+  /** Fails every job of `state` and forgets its worker, so the next parse starts another. */
+  #fail(state: TitleWorkerState, reason: string): void {
+    clearTimeout(state.timer);
+    if (this.#current === state) this.#current = undefined;
+    for (const job of state.jobs.values()) {
+      this.#queuedBytes -= job.bytes;
+      job.reject(new SeerrError(`Seerr GET ${job.route} ${reason}`, 502));
+    }
+    state.jobs.clear();
   }
 }
 
@@ -538,6 +787,20 @@ export async function readCappedBody(response: Response, limit: number): Promise
     offset += chunk.byteLength;
   }
   return bytes;
+}
+
+/** One own property of a JSON object, or undefined; never anything inherited. */
+function ownField(value: unknown, name: string): unknown {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || !Object.hasOwn(value, name)) return undefined;
+  return (value as Record<string, unknown>)[name];
+}
+
+function positiveSafeInteger(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
+function optional<K extends string, V>(key: K, value: V | undefined): Partial<Record<K, V>> {
+  return value === undefined ? {} : { [key]: value } as Record<K, V>;
 }
 
 function pageNumber(page: number): number {

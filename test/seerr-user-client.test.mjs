@@ -54,6 +54,7 @@ afterEach(() => {
 
 /** Every public method of the member client, called once with valid arguments. */
 const MEMBER_CALLS = {
+  confirmRequester: async (client) => (await client.confirmRequester()).createRequest({ mediaType: 'movie', tmdbId: 900001 }),
   createRequest: (client) => client.createRequest({ mediaType: 'tv', tmdbId: 900002, seasons: [1, 2] }),
   ownRequests: (client) => client.ownRequests(20, 0),
   quota: (client) => client.quota(),
@@ -72,11 +73,15 @@ const ADMIN_CALLS = {
   findUserByJellyfinId: (client) => client.findUserByJellyfinId(MEMBER_JELLYFIN_ID),
   jellyfinUserIdOf: (client) => client.jellyfinUserIdOf(seerrUserId(9)),
   getRequest: (client) => client.getRequest('5'),
+  titleRequests: (client) => client.titleRequests('movie', 900001),
+  requestState: (client) => client.requestState('5'),
   getJellyfinItemId: (client) => client.getJellyfinItemId('movie', 900001),
   importJellyfinUser: (client) => client.importJellyfinUser(MEMBER_JELLYFIN_ID),
   listRequestsSince: (client) => client.listRequestsSince(new Date('2026-01-01T00:00:00.000Z')),
   getRecentRequests: (client) => client.getRecentRequests(1),
   getPoster: (client) => client.getPoster('/synthetic-poster.jpg'),
+  // Last: it stops the title worker, and calls nothing.
+  close: (client) => client.close(),
 };
 
 function publicMethods(prototype) {
@@ -134,13 +139,30 @@ describe('acting-user Seerr clients', () => {
     for (const call of Object.values(MEMBER_CALLS)) await call(member);
     assert.deepEqual(actingCalls().map((request) => `${request.headers.get('x-api-user')} ${request.method} ${request.url.pathname}${request.url.search}`), [
       '42 POST /api/v1/request',
+      '42 POST /api/v1/request',
       '42 GET /api/v1/user/42/requests?take=20&skip=0',
       '42 GET /api/v1/user/42/quota',
       '42 GET /api/v1/auth/me',
       '42 GET /api/v1/discover/watchlist?page=1',
     ]);
     // The member is confirmed before every call.
-    assert.equal(calls.filter((request) => request.url.pathname === `/api/v1/user/${MEMBER}`).length, 5);
+    assert.equal(calls.filter((request) => request.url.pathname === `/api/v1/user/${MEMBER}`).length, 6);
+  });
+
+  it('confirms the requester first, then sends one request later without confirming again, unless its mapping was invalidated', async () => {
+    let version = 0;
+    const resolver = { ...proposing(MEMBER), version: () => version };
+    const member = new SeerrMemberClient(new SeerrClient(BASE_URL, API_KEY), MEMBER_JELLYFIN_ID, resolver);
+    const requester = await member.confirmRequester();
+    assert.deepEqual(calls.map((request) => request.url.pathname), [`/api/v1/user/${MEMBER}`]);
+    await requester.createRequest({ mediaType: 'tv', tmdbId: 900002, seasons: [2, 1, 2], userId: 1, is4k: true });
+    assert.deepEqual(actingCalls().map((request) => [request.headers.get('x-api-user'), request.body]), [[String(MEMBER), { mediaType: 'tv', mediaId: 900002, seasons: [2, 1], is4k: false }]]);
+    assert.equal(calls.length, 2);
+    // Invalid input, and a mapping invalidated since the confirmation, send nothing.
+    await assert.rejects(requester.createRequest({ mediaType: 'tv', tmdbId: 1, seasons: [] }), TypeError);
+    version += 1;
+    await assert.rejects(requester.createRequest({ mediaType: 'movie', tmdbId: 900001 }), SeerrUnmappedUserError);
+    assert.equal(calls.length, 2);
   });
 
   it('requests only the named title in HD, never for another user or with overrides', async () => {
@@ -171,6 +193,12 @@ describe('acting-user Seerr clients', () => {
       () => member.createRequest({ mediaType: 'tv', tmdbId: 1, seasons: ['1'] }),
       () => member.ownRequests(Number.NaN),
       () => member.watchlist(-1),
+      () => admin.titleRequests('person', 1),
+      () => admin.titleRequests('movie', 0),
+      () => admin.titleRequests('tv', '1'),
+      () => admin.requestState('0'),
+      () => admin.requestState('5/../user'),
+      () => admin.requestState(5),
     ];
     for (const call of invalid) assert.throws(call, TypeError, String(call));
     assert.equal(calls.length, 0);
@@ -341,6 +369,8 @@ describe('Seerr calls made for the household app, against a real redirect', () =
     findUserByJellyfinId: ({ baseUrl }) => new SeerrClient(baseUrl, API_KEY).findUserByJellyfinId(MEMBER_JELLYFIN_ID),
     jellyfinUserIdOf: ({ baseUrl }) => new SeerrClient(baseUrl, API_KEY).jellyfinUserIdOf(seerrUserId(9)),
     blocklist: ({ baseUrl }) => new SeerrClient(baseUrl, API_KEY).blocklist(100, 0),
+    titleRequests: ({ baseUrl }) => new SeerrClient(baseUrl, API_KEY).titleRequests('tv', 900002),
+    requestState: ({ baseUrl }) => new SeerrClient(baseUrl, API_KEY).requestState('7300041'),
     ...Object.fromEntries(Object.entries(MEMBER_CALLS).map(([name, call]) => [
       `SeerrMemberClient.${name}`,
       ({ baseUrl }) => call(memberClient(baseUrl)),
@@ -369,6 +399,8 @@ describe('Seerr calls made for the household app, on failure', () => {
         [() => admin.findUserByJellyfinId(MEMBER_JELLYFIN_ID), '/api/v1/user/jellyfin/:jellyfinUserId'],
         [() => admin.jellyfinUserIdOf(seerrUserId(9)), '/api/v1/user/:id'],
         [() => admin.blocklist(100, 0), '/api/v1/blocklist'],
+        [() => admin.titleRequests('movie', 900001), '/api/v1/movie/:id'],
+        [() => admin.requestState('7300041'), '/api/v1/request/:id'],
       ]) {
         const error = await call().catch((caught) => caught);
         assert.ok(error instanceof SeerrError);
@@ -396,11 +428,12 @@ describe('admin-key Seerr client', () => {
         return Response.json({ pageInfo: { results: 1 }, results: [{ id: 1, type: 'movie', createdAt: '2026-06-01T00:00:00.000Z', media: { tmdbId: 900001, jellyfinMediaId: 'item-1' } }] });
       }
       if (url.hostname === 'image.tmdb.org') return new Response(new Uint8Array([1]), { headers: { 'Content-Type': 'image/jpeg' } });
+      if (url.pathname === '/api/v1/request/5') return Response.json({ id: 5, status: 1 });
       return Response.json({ id: 1, title: 'Synthetic Movie One' });
     };
     const admin = new SeerrClient(BASE_URL, API_KEY);
     for (const call of Object.values(ADMIN_CALLS)) await call(admin);
-    assert.ok(calls.length >= Object.keys(ADMIN_CALLS).length - 1);
+    assert.ok(calls.length >= Object.keys(ADMIN_CALLS).length - 2);
     for (const request of calls) {
       assert.equal(request.headers.has('x-api-user'), false, `${request.method} ${request.url}`);
     }
@@ -469,5 +502,58 @@ describe('Seerr user link check', () => {
       await assert.rejects(new SeerrClient(BASE_URL, API_KEY).jellyfinUserIdOf(user), TypeError);
     }
     assert.equal(calls.length, 0);
+  });
+});
+
+describe('Seerr title records for "Get this"', () => {
+  it('reads a title\'s requests with the admin key, keeping only what the branches decide from', async () => {
+    respond = () => Response.json(seerrFixture('tv'));
+    const record = await new SeerrClient(BASE_URL, API_KEY).titleRequests('tv', 900002);
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].url.pathname, '/api/v1/tv/900002');
+    assert.equal(calls[0].headers.has('x-api-user'), false);
+    assert.equal(calls[0].redirect, 'manual');
+    assert.deepEqual(record, {
+      // The title's own names and year, for a lookup in Jellyfin by name.
+      names: ['Synthetic Series Two'],
+      year: 2019,
+      mediaId: 7300036,
+      jellyfinMediaId: 'c0ffee00c0ffee000000000000000102',
+      jellyfinMediaId4k: 'c0ffee00c0ffee000000000000000202',
+      requests: [
+        { id: '7300041', status: 1, is4k: false, seasons: [1], requesterJellyfinId: 'c0ffee00c0ffee000000000000000001', createdAt: Date.parse('2001-06-06T01:01:01.001Z') },
+        { id: '7300049', status: 2, is4k: false, seasons: [2], requesterJellyfinId: 'c0ffee00c0ffee000000000000000002', createdAt: Date.parse('2001-05-05T09:09:09.009Z') },
+      ],
+    });
+    // Nothing else of the answer (names, emails, download state, issues) is kept.
+    assert.deepEqual(Object.keys(record.requests[0]).sort(), ['createdAt', 'id', 'is4k', 'requesterJellyfinId', 'seasons', 'status']);
+  });
+
+  it('answers undefined for a title Seerr cannot find, and a title with no media record has no requests', async () => {
+    const admin = new SeerrClient(BASE_URL, API_KEY);
+    respond = () => Response.json({ message: 'canary not found' }, { status: 404 });
+    assert.equal(await admin.titleRequests('movie', 900001), undefined);
+    respond = () => Response.json({ id: 900001, title: 'Synthetic Movie One' });
+    assert.deepEqual(await admin.titleRequests('movie', 900001), { names: ['Synthetic Movie One'], requests: [] });
+  });
+
+  it('reads past the household app\'s usual size limit, since every household\'s records are on a title', async () => {
+    const fixture = seerrFixture('movie');
+    fixture.mediaInfo.requests = Array.from({ length: Math.ceil((5 * 1024 * 1024) / JSON.stringify(fixture.mediaInfo.requests[0]).length) }, () => fixture.mediaInfo.requests[0]);
+    respond = () => Response.json(fixture);
+    const record = await new SeerrClient(BASE_URL, API_KEY).titleRequests('movie', 900001);
+    assert.ok(record.requests.length > 1000);
+  });
+
+  it('reads one request\'s status and media record, or undefined once Seerr deleted it', async () => {
+    const admin = new SeerrClient(BASE_URL, API_KEY);
+    respond = () => Response.json(seerrFixture('requests').results[0]);
+    assert.deepEqual(await admin.requestState('7300070'), { status: 1, mediaId: 7300065 });
+    assert.equal(calls[0].url.pathname, '/api/v1/request/7300070');
+    assert.equal(calls[0].headers.has('x-api-user'), false);
+    respond = () => Response.json({ message: 'canary' }, { status: 404 });
+    assert.equal(await admin.requestState('7300070'), undefined);
+    respond = () => Response.json({ id: 7300071, status: 1 });
+    await assert.rejects(admin.requestState('7300070'), (error) => error instanceof SeerrError && !/7300/.test(error.message));
   });
 });

@@ -1,11 +1,14 @@
 import type { LogLevel } from './config.js';
 import type { JellyfinClient } from './jellyfin.js';
 import { Metrics } from './metrics.js';
-import { RECENT_REQUESTS_LIMIT, type SeerrClient } from './seerr.js';
+import { RECENT_REQUESTS_LIMIT, SeerrError, type SeerrClient } from './seerr.js';
 import { normalizeId, type GrantMove, type GrantRemainder, type GrantStore } from './store.js';
 import type {
   AccessGroup,
   AccessRemovals,
+  AppRequestRecord,
+  AppRequestStatus,
+  AppSafetyTombstone,
   ChangePlan,
   GrantRecord,
   IgnoredWebhook,
@@ -27,6 +30,37 @@ const AVAILABLE_MEDIA_STATUSES = new Set([4, 5]);
 // Seerr (v3.5.0) request statuses: 2 = approved, 5 = completed. Pending (1), declined (3) and failed (4) requests are
 // listed too, and their media can be available through someone else's request.
 const GRANTABLE_REQUEST_STATUSES = new Set([2, 5]);
+
+/** What a household app join did: see AccessService.joinHousehold. */
+export type HouseholdJoinResult = 'joined' | 'already' | 'refused' | 'ungranted' | 'error' | 'cancelled';
+
+/** Most entries {@link AccessService.appOutstanding} lists of each kind, oldest first; the counts are always complete. */
+export const MAX_OUTSTANDING_ENTRIES = 200;
+
+/**
+ * What "Get this" still has in flight or still protects, for the administrator (admin host only): the safety
+ * tombstones that still decide a grant, the request intents not settled yet and the webhooks deferred for them. A
+ * version that does not read these (2.3.0, 2.2.1) would grant those requests as ordinary ones, so a rollback waits
+ * until every count is 0 (`clear`). Names titles by TMDB ID and intents by household, never a member.
+ */
+export interface AppOutstanding {
+  clear: boolean;
+  safetyMarkers: {
+    total: number;
+    /** `request`: names the requests it covers; `member`: also covers the member's later requests for the title. */
+    byKind: { request: number; member: number };
+    oldestAgeSeconds: number | null;
+    entries: Array<{ kind: 'request' | 'member'; mediaType: string; tmdbId: number; createdAt: string; expiresAt: string }>;
+  };
+  requestIntents: {
+    total: number;
+    byKind: { submitting: number; settling: number };
+    oldestAgeSeconds: number | null;
+    entries: Array<{ kind: 'submitting' | 'settling'; mediaType: string; tmdbId: number; householdId: string; createdAt: string }>;
+  };
+  /** Kept without a time, so no age. */
+  deferredWebhooks: { total: number };
+}
 
 interface PlanContext {
   plan: ChangePlan;
@@ -143,6 +177,54 @@ export class AccessService {
   /** Counts a household app API answer by endpoint and outcome. */
   public recordAppRequest(endpoint: string, outcome: string): void {
     this.#metrics.increment('jfa_app_requests_total', { endpoint, outcome });
+  }
+
+  /** See {@link AppOutstanding}. */
+  public appOutstanding(now = Date.now()): AppOutstanding {
+    const age = (times: string[]) => times.length === 0 ? null : Math.max(0, Math.floor((now - Math.min(...times.map(Date.parse))) / 1000));
+    const oldestFirst = <T extends { createdAt: string }>(entries: T[]) =>
+      [...entries].sort((left, right) => left.createdAt.localeCompare(right.createdAt)).slice(0, MAX_OUTSTANDING_ENTRIES);
+    const markers = this.#store.listOutstandingAppSafetyTombstones(now).map((tombstone) => ({
+      kind: tombstone.jellyfinUserId === undefined ? 'request' as const : 'member' as const,
+      mediaType: tombstone.mediaType,
+      tmdbId: tombstone.tmdbId,
+      createdAt: tombstone.createdAt,
+      expiresAt: tombstone.expiresAt,
+    }));
+    const intents = this.#store.listAppRequestIntents().map(([, intent]) => ({
+      kind: intent.status,
+      mediaType: intent.mediaType,
+      tmdbId: intent.tmdbId,
+      householdId: intent.householdId,
+      createdAt: intent.createdAt,
+    }));
+    const deferred = this.#store.listDeferredWebhooks().length;
+    return {
+      clear: markers.length === 0 && intents.length === 0 && deferred === 0,
+      safetyMarkers: {
+        total: markers.length,
+        byKind: { request: markers.filter((marker) => marker.kind === 'request').length, member: markers.filter((marker) => marker.kind === 'member').length },
+        oldestAgeSeconds: age(markers.map((marker) => marker.createdAt)),
+        entries: oldestFirst(markers),
+      },
+      requestIntents: {
+        total: intents.length,
+        byKind: { submitting: intents.filter((intent) => intent.kind === 'submitting').length, settling: intents.filter((intent) => intent.kind === 'settling').length },
+        oldestAgeSeconds: age(intents.map((intent) => intent.createdAt)),
+        entries: oldestFirst(intents),
+      },
+      deferredWebhooks: { total: deferred },
+    };
+  }
+
+  /** Counts a household app "Get this" call by what its eligibility check decided; never by title. */
+  public recordGetThis(result: string): void {
+    this.#metrics.increment('jfa_app_get_this_total', { result });
+  }
+
+  /** Counts what a "Get this" did in the background, by branch; never by title. */
+  public recordGetThisBranch(branch: string): void {
+    this.#metrics.increment('jfa_app_get_this_branches_total', { branch });
   }
 
   /** Every Jellyfin user, as Jellyfin's admin API lists them (hidden and disabled users included). */
@@ -302,41 +384,168 @@ export class AccessService {
         this.#metrics.increment('jfa_webhooks_total', { result: 'ignored' });
         return null;
       }
-      // The body is valid from here on (parse failures count as "invalid" in the server), so every
-      // failure while resolving, persisting or reconciling counts once as "error".
-      try {
-        // A request is handled once its grant has been stored (store.grant records both in one
-        // write), so a delivery that failed before that is retried as a first delivery. A handled
-        // request is never granted again: if its grant still records it, a retry only reconciles
-        // that grant as it stands, without re-adding household groups an administrator removed;
-        // if an administrator revoked it, the replay is ignored.
-        if (this.#store.hasHandledRequest(event.request.id)) {
-          const existing = this.#store.findGrantForRequest(event.request.id);
-          if (!existing) {
-            this.#metrics.increment('jfa_webhooks_total', { result: 'ignored' });
-            this.#logDebug('webhook ignored for a request an administrator revoked', { requestId: event.request.id });
-            return null;
-          }
-          await this.#reconcileOrRecover(existing);
-          this.#metrics.increment('jfa_webhooks_total', { result: 'granted' });
-          return this.#store.findGrantForRequest(event.request.id) ?? existing;
+      return this.#grantWebhook(event);
+    });
+  }
+
+  /** processWebhook for a MEDIA_AVAILABLE event, in the write queue; `known` is its grant rule, if already read. */
+  async #grantWebhook(event: SeerrWebhook, known?: GrantRule): Promise<GrantRecord | null> {
+    // The body is valid from here on (parse failures count as "invalid" in the server), so every
+    // failure while resolving, persisting or reconciling counts once as "error".
+    try {
+      // A request is handled once its grant has been stored (store.grant records both in one
+      // write), so a delivery that failed before that is retried as a first delivery. A handled
+      // request is never granted again: if its grant still records it, a retry only reconciles
+      // that grant as it stands, without re-adding household groups an administrator removed;
+      // if an administrator revoked it, the replay is ignored.
+      if (this.#store.hasHandledRequest(event.request.id)) {
+        const existing = this.#store.findGrantForRequest(event.request.id);
+        if (!existing) {
+          this.#metrics.increment('jfa_webhooks_total', { result: 'ignored' });
+          this.#logDebug('webhook ignored for a request an administrator revoked', { requestId: event.request.id });
+          return null;
         }
-        const resolved = await this.#resolveWebhook(event);
-        const grant = await this.#store.grant({
-          itemId: resolved.itemId,
-          requestId: event.request.id,
-          userId: resolved.userId,
-          groupIds: this.#store.listGroupIdsForUser(resolved.userId),
-          ...(resolved.mediaType ? { mediaType: resolved.mediaType } : {}),
-        });
-        await this.#reconcileGrant(grant);
+        await this.#reconcileOrRecover(existing);
+        const current = this.#store.findGrantForRequest(event.request.id);
+        if (current) await this.#settleAppRequests(current.itemId, event.request.id);
         this.#metrics.increment('jfa_webhooks_total', { result: 'granted' });
-        return this.#store.get(grant.itemId) ?? grant;
-      } catch (error) {
-        this.#metrics.increment('jfa_webhooks_total', { result: 'error' });
-        throw error;
+        return this.#store.findGrantForRequest(event.request.id) ?? existing;
+      }
+      // A "Get this" request for the title is not settled yet: granted once it is (see retryDeferredRequests).
+      const rule = known ?? await this.#grantRule(event.request.id);
+      if (rule === 'defer') {
+        await this.#store.deferWebhook(event);
+        this.#metrics.increment('jfa_webhooks_total', { result: 'deferred' });
+        console.log(JSON.stringify({ level: 'info', message: 'webhook deferred for a household app request', requestId: event.request.id }));
+        return null;
+      }
+      const resolved = await this.#resolveWebhook(event);
+      if (rule === 'join') {
+        const joined = await this.#grantAsJoin(resolved.itemId, event.request.id);
+        this.#metrics.increment('jfa_webhooks_total', { result: 'joined' });
+        return joined;
+      }
+      const grant = await this.#store.grant({
+        itemId: resolved.itemId,
+        requestId: event.request.id,
+        userId: resolved.userId,
+        groupIds: this.#store.listGroupIdsForUser(resolved.userId),
+        ...(resolved.mediaType ? { mediaType: resolved.mediaType } : {}),
+      });
+      await this.#reconcileGrant(grant);
+      await this.#settleAppRequests(grant.itemId, event.request.id);
+      this.#metrics.increment('jfa_webhooks_total', { result: 'granted' });
+      return this.#store.get(grant.itemId) ?? grant;
+    } catch (error) {
+      this.#metrics.increment('jfa_webhooks_total', { result: 'error' });
+      throw error;
+    }
+  }
+
+  /**
+   * Grants the webhooks deferred for a "Get this" request intent (see #grantRule) that need wait no longer, as their
+   * first delivery would have been: genuine requests first, as new grants, then those whose grant follows the join
+   * rules, so a join replayed with the grant it joins finds it, whatever order they arrived in. One whose request Seerr
+   * no longer has, or that is handled already, is forgotten; a failure is logged and tried again on the next run. Run by
+   * the household app after an intent is resolved, and with each refresh.
+   */
+  public retryDeferredRequests(options: { signal?: AbortSignal } = {}): Promise<void> {
+    const { signal } = options;
+    if (this.#store.listDeferredWebhooks().length === 0) return Promise.resolve();
+    return this.#exclusive(async () => {
+      const done: string[] = [];
+      const failed = (requestId: string, error: unknown) => {
+        rethrowIfCancelled(error, signal);
+        if (error instanceof SeerrError && error.status === 404) return void done.push(requestId);
+        console.error(JSON.stringify({
+          level: 'error',
+          message: 'deferred webhook could not be granted',
+          requestId,
+          detail: error instanceof Error ? error.message : String(error),
+        }));
+      };
+      try {
+        const ready: Array<{ event: SeerrWebhook; rule: GrantRule }> = [];
+        for (const event of this.#store.listDeferredWebhooks()) {
+          throwIfAborted(signal);
+          try {
+            if (this.#store.hasHandledRequest(event.request.id)) {
+              done.push(event.request.id);
+              continue;
+            }
+            const rule = await this.#grantRule(event.request.id);
+            if (rule !== 'defer') ready.push({ event, rule });
+          } catch (error) {
+            failed(event.request.id, error);
+          }
+        }
+        for (const { event, rule } of [...ready.filter((entry) => entry.rule === 'grant'), ...ready.filter((entry) => entry.rule === 'join')]) {
+          throwIfAborted(signal);
+          try {
+            await this.#grantWebhook(event, rule);
+            done.push(event.request.id);
+          } catch (error) {
+            failed(event.request.id, error);
+          }
+        }
+      } finally {
+        if (done.length > 0) await this.#store.forgetDeferredWebhooks(done);
       }
     });
+  }
+
+  /**
+   * How a request may be granted now (docs/app-design.md, "Safety tombstones"):
+   *
+   * - `defer`: a household app "Get this" request intent (see AppRequestIntent) names its title, or the request's title,
+   *   requester or creation time must be known and cannot be read (Seerr, with the admin key, read only while there
+   *   are intents or member-wide tombstones), so a request "Get this" may have made is never granted privately before
+   *   it is settled;
+   * - `join`: "Get this" made it, or may have, and its grant follows the library join rules: a record says so
+   *   (AppRequestRecord.joinOnGrant), or a safety tombstone covers it (see AppSafetyTombstone);
+   * - `grant`: a new grant, as for any request.
+   *
+   * Throws the SeerrError of a request Seerr no longer has.
+   */
+  async #grantRule(requestId: string, known?: SeerrRequest): Promise<GrantRule> {
+    const now = Date.now();
+    const tombstones = this.#store.listAppSafetyTombstones();
+    if (this.#grantsAsJoin(requestId) || tombstones.some((tombstone) => tombstone.requestIds.includes(requestId))) return 'join';
+    const intents = this.#store.listAppRequestIntents().length > 0;
+    const members = tombstones.filter((tombstone) => tombstone.jellyfinUserId !== undefined && now < Date.parse(tombstone.expiresAt));
+    if (!intents && members.length === 0) return 'grant';
+    const request = await this.#requestFacts(requestId, known);
+    if (!request) return 'defer';
+    if (intents && this.#store.hasAppRequestIntent(request.mediaType, request.tmdbId)) return 'defer';
+    return members.some((tombstone) => covers(tombstone, requestId, request)) ? 'join' : 'grant';
+  }
+
+  /**
+   * What #grantRule reads of a request: its title, requester and creation time, from `known` or from Seerr (with the
+   * admin key). Undefined when they cannot be read; throws the SeerrError of a request Seerr no longer has.
+   */
+  async #requestFacts(requestId: string, known?: SeerrRequest): Promise<RequestFacts | undefined> {
+    let request = known;
+    if (typeof request?.media?.tmdbId !== 'number') {
+      if (!this.#seerr) return undefined;
+      try {
+        request = await this.#seerr.getRequest(requestId);
+      } catch (error) {
+        if (error instanceof SeerrError && error.status === 404) throw error;
+        return undefined;
+      }
+    }
+    const mediaType = request.media?.mediaType ?? request.type;
+    const tmdbId = request.media?.tmdbId;
+    if (typeof tmdbId !== 'number' || (mediaType !== 'movie' && mediaType !== 'tv')) return undefined;
+    const requester = request.requestedBy?.jellyfinUserId;
+    const createdAt = Date.parse(request.createdAt ?? '');
+    return {
+      mediaType,
+      tmdbId,
+      ...(typeof requester === 'string' && requester !== '' ? { requester: normalizeId(requester) } : {}),
+      ...(Number.isFinite(createdAt) ? { createdAt } : {}),
+    };
   }
 
   /** Whether household "Add to my library" can resolve titles; it needs Seerr lookup. */
@@ -433,6 +642,195 @@ export class AccessService {
       }));
       return finish('error');
     }
+  }
+
+  /**
+   * The household app's join branch of "Get this": adds `householdId` (only the household whose host the call was made
+   * on, never the caller's other households, and only while it is the household the call was made for: the same
+   * `householdEpoch`) to the grant of each of `itemIds` through the library join rules (see
+   * GrantStore.joinGrant: only an active grant with a request is joined, an administrator's removal of the household or
+   * of the caller sticks, manual-only grants and items without a grant are left alone) and applies each join. Resolves
+   * `joined` when a grant changed, `already` when the household was already on one, `ungranted` when none of the items
+   * has a grant at all, and `refused` otherwise. Like
+   * joinLibrary, it runs in the background, its result must never reach the caller's answer, failures are logged and
+   * reported as `error`, and an aborted `signal` (shutdown) stops it before its next step (`cancelled`).
+   */
+  public async joinHousehold(
+    input: { itemIds: string[]; userId: string; householdId: string; householdEpoch?: number },
+    options: { signal?: AbortSignal } = {},
+  ): Promise<HouseholdJoinResult> {
+    const { signal } = options;
+    // Once stored, a join is reported as such even if applying it is cut short: it is applied after restart.
+    let stored: 'joined' | 'already' | 'refused' | 'ungranted' | undefined;
+    try {
+      throwIfAborted(signal);
+      return await this.#exclusive(async () => {
+        throwIfAborted(signal);
+        // A household deleted (or deleted and created again) since the call began joins nothing.
+        if (input.householdEpoch !== undefined && this.#store.householdEpoch(input.householdId) !== input.householdEpoch) {
+          stored = 'refused';
+          return stored;
+        }
+        const { result, joined } = await this.#joinHouseholdNow(input.itemIds, input.userId, input.householdId);
+        stored = result;
+        for (const grant of joined) {
+          throwIfAborted(signal);
+          try {
+            await this.#reconcileGrant(grant, signal);
+          } catch (error) {
+            rethrowIfCancelled(error, signal);
+            console.error(JSON.stringify({
+              level: 'error',
+              message: 'household app join reconciliation failed',
+              itemId: grant.itemId,
+              detail: error instanceof Error ? error.message : String(error),
+            }));
+          }
+        }
+        return result;
+      });
+    } catch (error) {
+      if (error instanceof OperationCancelledError || signal?.aborted) return stored ?? 'cancelled';
+      console.error(JSON.stringify({
+        level: 'error',
+        message: 'household app join failed',
+        detail: error instanceof Error ? error.message : String(error),
+      }));
+      return stored ?? 'error';
+    }
+  }
+
+  /** The joins of joinHousehold, stored but not yet applied; in the write queue. */
+  async #joinHouseholdNow(itemIds: string[], userId: string, householdId: string): Promise<{
+    result: 'joined' | 'already' | 'refused' | 'ungranted';
+    joined: GrantRecord[];
+  }> {
+    const groupId = normalizeId(householdId);
+    if (!this.#store.getGroup(groupId)) return { result: 'refused', joined: [] };
+    if (!itemIds.some((itemId) => this.#store.get(itemId))) return { result: 'ungranted', joined: [] };
+    let result: 'joined' | 'already' | 'refused' | 'ungranted' = 'refused';
+    const joined: GrantRecord[] = [];
+    for (const itemId of itemIds) {
+      const change = await this.#store.joinGrant({ itemId, userId, groupIds: [groupId] });
+      if (change) {
+        joined.push(change.current);
+        result = 'joined';
+        const join = change.current.joins?.at(-1);
+        console.log(JSON.stringify({ level: 'info', message: 'household app join', userId, itemId: change.current.itemId, groupIds: join?.groupIds ?? [] }));
+        continue;
+      }
+      const grant = this.#store.get(itemId);
+      if (result === 'refused' && grant?.active && grant.groupIds.includes(groupId)) result = 'already';
+    }
+    return { result, joined };
+  }
+
+  /**
+   * Settles household app records once `requestId` was granted on `itemId` (a webhook or the backfill), whether as a
+   * new grant or as a join (see #grantAsJoin): a request the app made is ready, and each household that registered
+   * interest in that request (or, for a movie or an interest that found no request, in the item's title) joins the
+   * item's grant through the library join rules, so an administrator's removals stick. A request the app made whose
+   * grant follows the join rules (AppRequestRecord.joinOnGrant) joins its household the same way. An interest whose
+   * household could not join a grant is `failed` (still counted, as Seerr counts a failed request); one for an item no
+   * grant holds (a request granted as a join of a public title) needs no join. A record is `completed` once Jellyfin has
+   * episodes of every season it covers (a movie at once); until then its ready seasons are noted and the app's refresh
+   * reads it again. Runs in the write queue. A failure here is logged and never fails the grant; the app's scheduled
+   * refresh tries again.
+   */
+  async #settleAppRequests(itemId: string, requestId: string, signal?: AbortSignal): Promise<void> {
+    try {
+      const records = this.#store.listAppRequests()
+        .filter(([, record]) => !record.detached && (record.status === 'pending' || record.status === 'failed'));
+      if (records.length === 0) return;
+      let title: { mediaType: 'movie' | 'tv'; tmdbId: number } | undefined | null = null;
+      let seasons: Set<number> | undefined;
+      const ready = async (record: AppRequestRecord) => {
+        if (record.mediaType === 'movie') return { status: 'completed' as const, itemIds: [itemId] };
+        seasons ??= new Set(await this.#jellyfin.seasonsWithEpisodes(itemId));
+        throwIfAborted(signal);
+        const readySeasons = record.seasons.filter((season) => seasons?.has(season));
+        return { status: readySeasons.length === record.seasons.length ? 'completed' as const : 'pending' as const, itemIds: [itemId], readySeasons };
+      };
+      const updates: Array<{ id: string; status: AppRequestStatus; itemIds?: string[]; readySeasons?: number[]; awaitingGrant?: boolean }> = [];
+      const joined: GrantRecord[] = [];
+      for (const [id, record] of records) {
+        if (record.branch === 'join') continue;
+        // A record that found no grant for the item joins the one created now.
+        let matches = record.seerrRequestId === requestId || (record.awaitingGrant === true && (record.itemIds ?? []).includes(normalizeId(itemId)));
+        if (!matches && record.branch === 'interest' && (record.mediaType === 'movie' || !record.seerrRequestId)) {
+          if (title === null) title = await this.#itemTitle(itemId);
+          throwIfAborted(signal);
+          matches = title?.mediaType === record.mediaType && title.tmdbId === record.tmdbId;
+        }
+        if (!matches) continue;
+        if (record.branch === 'request' && !record.joinOnGrant) {
+          updates.push({ id, ...await ready(record) });
+          continue;
+        }
+        const outcome = await this.#joinHouseholdNow([itemId], record.jellyfinUserId, record.householdId);
+        throwIfAborted(signal);
+        joined.push(...outcome.joined);
+        if (outcome.result === 'refused') updates.push({ id, status: 'failed', itemIds: [itemId] });
+        else if (outcome.result === 'ungranted') {
+          // No grant to join: the title is public. Never `completed` against it: joined when a grant is created.
+          const { readySeasons } = await ready(record);
+          updates.push({ id, status: 'pending', itemIds: [itemId], readySeasons: record.mediaType === 'movie' ? [0] : readySeasons ?? [], awaitingGrant: true });
+        } else updates.push({ id, ...await ready(record), awaitingGrant: false });
+      }
+      if (updates.length > 0) await this.#store.writeAppRequests({ update: updates });
+      throwIfAborted(signal);
+      const latest = joined.at(-1);
+      if (latest) await this.#reconcileGrant(this.#store.get(latest.itemId) ?? latest, signal);
+    } catch (error) {
+      rethrowIfCancelled(error, signal);
+      console.error(JSON.stringify({
+        level: 'error',
+        message: 'household app records could not be settled for a grant',
+        requestId,
+        itemId,
+        detail: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }
+
+  /**
+   * Whether a request is one "Get this" made whose grant must follow the library join rules rather than be a new grant
+   * (docs/app-design.md, "Late requests" and "New seasons of a series Jellyfin has"): its record says so
+   * (AppRequestRecord.joinOnGrant). A request whose record is not written or not settled yet is never granted at all
+   * (see #grantRule).
+   */
+  #grantsAsJoin(requestId: string): boolean {
+    return this.#store.listAppRequests().some(([, record]) => record.branch === 'request' && record.seerrRequestId === requestId && record.joinOnGrant !== undefined);
+  }
+
+  /**
+   * Grants a request "Get this" made as a join (see #grantsAsJoin): never a new grant and never the requester's
+   * households; the request is recorded as handled (so neither a replay nor the backfill grants it later), and
+   * #settleAppRequests joins the household the request was made for to the item's grant, if it has one, through the
+   * library join rules. A public title stays public. Runs in the write queue.
+   */
+  async #grantAsJoin(itemId: string, requestId: string, signal?: AbortSignal): Promise<GrantRecord | null> {
+    await this.#store.markRequestsHandled([requestId]);
+    console.log(JSON.stringify({ level: 'info', message: 'household app request granted as a join', requestId, itemId: normalizeId(itemId) }));
+    await this.#settleAppRequests(itemId, requestId, signal);
+    return this.#store.get(itemId) ?? null;
+  }
+
+  /** The TMDB title of a Jellyfin movie or series item, from its provider IDs, or undefined if it has none. */
+  async #itemTitle(itemId: string): Promise<{ mediaType: 'movie' | 'tv'; tmdbId: number } | undefined> {
+    const item = await this.#jellyfin.getItem(itemId);
+    const mediaType = item.Type === 'Movie' ? 'movie' : item.Type === 'Series' ? 'tv' : undefined;
+    const providerIds = item.ProviderIds;
+    const tmdb = providerIds && typeof providerIds === 'object'
+      ? Object.entries(providerIds).find(([name]) => name.toLowerCase() === 'tmdb')?.[1]
+      : undefined;
+    const tmdbId = typeof tmdb === 'string' && /^[1-9][0-9]{0,9}$/.test(tmdb) ? Number(tmdb) : undefined;
+    return mediaType && tmdbId !== undefined ? { mediaType, tmdbId } : undefined;
+  }
+
+  /** Household app "Get this" records (see GrantStore.listAppRequests). */
+  public listAppRequests(): Array<[string, AppRequestRecord]> {
+    return this.#store.listAppRequests();
   }
 
   /** Counts a household "Add to my library" call that was not started because its budget was used up. */
@@ -533,6 +931,21 @@ export class AccessService {
             continue;
           }
           throwIfAborted(signal);
+          // A "Get this" request for the title is not settled yet: the next run tries again.
+          const rule = await this.#grantRule(requestId, request);
+          throwIfAborted(signal);
+          if (rule === 'defer') {
+            result.skipped += 1;
+            this.#metrics.increment('jfa_request_backfill_total', { result: 'deferred' });
+            continue;
+          }
+          if (rule === 'join') {
+            await this.#grantAsJoin(itemId, requestId, signal);
+            throwIfAborted(signal);
+            result.skipped += 1;
+            this.#metrics.increment('jfa_request_backfill_total', { result: 'joined' });
+            continue;
+          }
           const mediaType = request.media?.mediaType ?? request.type;
           const grant = await this.#store.grant({
             itemId,
@@ -542,6 +955,8 @@ export class AccessService {
             ...(mediaType ? { mediaType } : {}),
           });
           await this.#reconcileGrant(grant, signal);
+          throwIfAborted(signal);
+          await this.#settleAppRequests(grant.itemId, requestId, signal);
           throwIfAborted(signal);
           result.granted.push(grant.itemId);
           this.#metrics.increment('jfa_request_backfill_total', { result: 'granted' });
@@ -1222,6 +1637,11 @@ export class AccessService {
     this.#metrics.gauge('jfa_grants', grants.filter((grant) => grant.active).length);
     this.#metrics.gauge('jfa_sync_errors', grants.filter((grant) => grant.sync.state === 'error').length);
     this.#metrics.gauge('jfa_orphaned_grants', grants.filter((grant) => grant.sync.state === 'orphaned').length);
+    // Counts only: the titles and households are in the admin readout (appOutstanding).
+    const outstanding = this.appOutstanding();
+    for (const [kind, count] of Object.entries(outstanding.safetyMarkers.byKind)) this.#metrics.gauge(`jfa_app_safety_markers{kind="${kind}"}`, count);
+    for (const [status, count] of Object.entries(outstanding.requestIntents.byKind)) this.#metrics.gauge(`jfa_app_request_intents{status="${status}"}`, count);
+    this.#metrics.gauge('jfa_app_deferred_webhooks', outstanding.deferredWebhooks.total);
   }
 
   #exclusive<T>(operation: () => Promise<T>): Promise<T> {
@@ -1272,4 +1692,29 @@ function requestItemId(request: SeerrRequest): string | undefined {
 
 function requestMediaStatus(request: SeerrRequest): number | undefined {
   return request.is4k ? request.media?.status4k : request.media?.status;
+}
+
+/** How a request may be granted now: see AccessService.#grantRule. */
+type GrantRule = 'defer' | 'join' | 'grant';
+
+/** What a grant decision reads of a Seerr request (see AccessService.#requestFacts). */
+interface RequestFacts {
+  mediaType: 'movie' | 'tv';
+  tmdbId: number;
+  /** Its requester's Jellyfin user, normalized, if it can be read. */
+  requester?: string;
+  /** When Seerr made it (milliseconds), if it can be read. */
+  createdAt?: number;
+}
+
+/**
+ * Whether a member-wide safety tombstone covers a request (see AppSafetyTombstone): the title's, by the member or by
+ * a requester that cannot be read, made no earlier than the tombstone's `since` (or at a time that cannot be read),
+ * and not exempt.
+ */
+function covers(tombstone: AppSafetyTombstone, requestId: string, request: RequestFacts): boolean {
+  if (tombstone.mediaType !== request.mediaType || tombstone.tmdbId !== request.tmdbId) return false;
+  if (tombstone.exemptRequestIds?.includes(requestId)) return false;
+  if (request.requester !== undefined && request.requester !== tombstone.jellyfinUserId) return false;
+  return request.createdAt === undefined || tombstone.since === undefined || request.createdAt >= Date.parse(tombstone.since);
 }

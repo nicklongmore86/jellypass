@@ -1,6 +1,7 @@
 // A household app under test: a fake TMDB, a fake Seerr and a fake Jellyfin (all real HTTP servers), and a JellyPass
 // server whose household gateway serves the app API from them. TMDB answers are the canary-laden TMDB fixtures; Seerr
 // answers are built from the canary-laden Seerr 3.5.1 fixtures.
+import { readFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { request as httpRequest, createServer } from 'node:http';
 import path from 'node:path';
@@ -8,8 +9,10 @@ import { performance } from 'node:perf_hooks';
 import { AccessService } from '../../dist/access-service.js';
 import { JellyfinClient } from '../../dist/jellyfin.js';
 import { SeerrClient } from '../../dist/seerr.js';
+import { HouseholdRequests } from '../../dist/household-requests.js';
 import { SeerrUserMap } from '../../dist/seerr-users.js';
 import { makeServer } from '../../dist/server.js';
+import { BackgroundTasks } from '../../dist/shutdown.js';
 import { GrantStore } from '../../dist/store.js';
 import { TmdbClient } from '../../dist/tmdb.js';
 import { seerrFixture } from './seerr-fixtures.mjs';
@@ -23,6 +26,8 @@ export const ANN = 'a2200000a2200000a2200000a2200000';
 export const BOB = 'b0b00000b0b00000b0b00000b0b00000';
 export const CAROL = 'ca201000ca201000ca201000ca201000';
 export const OUTSIDER = 'e0e00000e0e00000e0e00000e0e00000';
+/** A Jellyfin administrator, who signs in to nothing here: reconciliation needs one to read items. */
+export const JELLYFIN_ADMIN = 'ad000000ad000000ad000000ad000000';
 export const TOKENS = { [ALICE]: 'token-alice', [ANN]: 'token-ann', [BOB]: 'token-bob', [CAROL]: 'token-carol', [OUTSIDER]: 'token-outsider' };
 export const HOST_A = 'jelly-farmhouse.example.test';
 export const HOST_B = 'jelly-mill.example.test';
@@ -92,6 +97,7 @@ export function world(options = {}) {
       [BOB]: { Name: 'Bob', Policy: { BlockedTags: [], EnableAllFolders: true } },
       [CAROL]: { Name: 'Carol', Policy: { BlockedTags: [], EnableAllFolders: true } },
       [OUTSIDER]: { Name: 'Outsider', Policy: { BlockedTags: [], EnableAllFolders: true } },
+      [JELLYFIN_ADMIN]: { Name: 'Administrator', Policy: { IsAdministrator: true, BlockedTags: [], EnableAllFolders: true } },
       ...options.jellyfinUsers,
     },
     seerrUsers: {
@@ -113,6 +119,18 @@ export function world(options = {}) {
     tmdbMovies: { ...options.tmdbMovies },
     tmdbHang: options.tmdbHang ?? false,
     extraResults: options.extraResults ?? 0,
+    // Seerr's quotas, by Seerr user: `{ movie: { limit, days }, tv: { limit, days } }` (none: no limit).
+    quotas: { ...options.quotas },
+    // New requests are approved at once (Seerr's auto-approve), or left pending.
+    autoApprove: options.autoApprove ?? false,
+    // A promise each POST /api/v1/request waits for before Seerr answers, if set.
+    holdRequests: undefined,
+    // A promise each POST /api/v1/request waits for after making the request and before answering, if set.
+    holdCreated: undefined,
+    // A promise each member quota read (GET /api/v1/user/:id/quota) waits for before Seerr answers, if set.
+    holdQuota: undefined,
+    // A promise each admin title read (GET /api/v1/movie|tv/:id) waits for before Seerr answers, if set.
+    holdTitles: undefined,
   };
 }
 
@@ -197,10 +215,17 @@ export function otherHouseholdWorlds() {
   };
 }
 
-/** Starts a fake Seerr serving `state` (see {@link world}); `calls` records every call, `violations` misuse. */
+/**
+ * Starts a fake Seerr serving `state` (see {@link world}); `calls` records every call, `violations` misuse. Set
+ * `onRequest` to check each POST /api/v1/request as it arrives: what it returns, if anything, is a violation.
+ */
 export async function createFakeSeerr(state) {
   const calls = [];
   const violations = [];
+  // Every POST /api/v1/request that reached Seerr, with its acting user and body.
+  const posts = [];
+  let onRequest;
+  let nextRequestId = 7350001;
   const server = createServer((request, response) => {
     const url = new URL(request.url, 'http://localhost');
     const actingUser = request.headers['x-api-user'];
@@ -210,9 +235,20 @@ export async function createFakeSeerr(state) {
     const acting = Number(actingUser);
     const user = state.seerrUsers[acting];
     if (!/^[1-9][0-9]*$/.test(actingUser) || !user) return send(response, 403, { message: 'canary forbidden' });
+    if (request.method === 'POST' && url.pathname === '/api/v1/request') return createRequest(request, response, acting, user);
     if (request.method !== 'GET') {
       violations.push(`${request.method} ${url.pathname}`);
       return send(response, 405, { message: 'canary' });
+    }
+    const quota = /^\/api\/v1\/user\/([0-9]+)\/quota$/.exec(url.pathname);
+    if (quota) {
+      if (Number(quota[1]) !== acting) {
+        violations.push(`${acting} read ${url.pathname}`);
+        return send(response, 403, { message: 'canary' });
+      }
+      if (state.quotaFails) return send(response, 500, { message: 'canary failure' });
+      if (state.holdQuota) return state.holdQuota.then(() => send(response, 200, { movie: quotaOf(acting, 'movie'), tv: quotaOf(acting, 'tv') }));
+      return send(response, 200, { movie: quotaOf(acting, 'movie'), tv: quotaOf(acting, 'tv') });
     }
     if (url.pathname === '/api/v1/auth/me') {
       return send(response, 200, { ...seerrFixture('requests').results[0].requestedBy, id: acting, permissions: user.permissions, jellyfinUserId: user.jellyfinUserId });
@@ -233,7 +269,98 @@ export async function createFakeSeerr(state) {
     return send(response, 403, { message: 'canary' });
   });
 
+  /** Every request Seerr holds, with its requester's Jellyfin ID. */
+  function allRequests() {
+    return Object.entries(state.requests).flatMap(([seerrId, requests]) => requests.map((entry) => ({
+      ...entry,
+      requestedBy: { ...entry.requestedBy, id: Number(seerrId), jellyfinUserId: state.seerrUsers[seerrId]?.jellyfinUserId ?? entry.requestedBy?.jellyfinUserId },
+    })));
+  }
+
+  /** Seerr's media record for a title: the world's `media` entry, with every request Seerr holds for it. */
+  function mediaRecord(mediaType, tmdbId) {
+    const info = state.media[tmdbId] && (state.media[tmdbId].mediaType ?? mediaType) === mediaType ? state.media[tmdbId] : undefined;
+    const requests = allRequests().filter((entry) => entry.type === mediaType && entry.media?.tmdbId === tmdbId);
+    if (!info && requests.length === 0) return undefined;
+    return { ...(info ?? { id: 7360000 + (tmdbId % 10000), mediaType, tmdbId, status: 2 }), requests: [...(info?.requests ?? []), ...requests] };
+  }
+
+  /**
+   * Seerr 3.5.1's quota for a user: requests not declined, made within the window (every request ever made when `days`
+   * is 0 or unset); one unit per movie or season.
+   */
+  function quotaOf(acting, mediaType) {
+    const limits = state.quotas[acting]?.[mediaType];
+    if (!limits?.limit) return { days: limits?.days ?? 0, limit: 0, used: 0, restricted: false };
+    const since = limits.days ? Date.now() - limits.days * 24 * 60 * 60 * 1000 : -Infinity;
+    const used = (state.requests[acting] ?? []).filter((entry) => entry.type === mediaType && entry.status !== 3 && Date.parse(entry.createdAt) > since)
+      .reduce((sum, entry) => sum + (mediaType === 'movie' ? 1 : entry.seasons.length), 0);
+    return { days: limits.days, limit: limits.limit, used, remaining: Math.max(0, limits.limit - used), restricted: limits.limit - used <= 0 };
+  }
+
+  /** POST /api/v1/request as `acting`, refused and charged as Seerr 3.5.1 does. */
+  async function createRequest(request, response, acting, user) {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+    posts.push({ actingUser: acting, body });
+    const violation = onRequest?.(body);
+    if (violation) violations.push(violation);
+    if (Object.keys(body).some((key) => !['mediaType', 'mediaId', 'seasons', 'is4k'].includes(key)) || body.is4k !== false) {
+      violations.push(`request with ${JSON.stringify(body)}`);
+    }
+    if (state.holdRequests) await state.holdRequests;
+    const { mediaType, mediaId: tmdbId } = body;
+    const permitted = (user.permissions & (ADMIN | REQUEST)) || (user.permissions & (mediaType === 'movie' ? REQUEST_MOVIE : REQUEST_TV));
+    if (!permitted) return send(response, 403, { message: 'canary permission' });
+    if (state.blocklist.some((entry) => entry.mediaType === mediaType && entry.tmdbId === tmdbId)) return send(response, 403, { message: 'canary blocklisted' });
+    const existing = (mediaRecord(mediaType, tmdbId)?.requests ?? []).filter((entry) => !entry.is4k && entry.status !== 3);
+    let seasons = [];
+    if (mediaType === 'movie') {
+      if (existing.length > 0) return send(response, 409, { message: 'canary duplicate' });
+    } else {
+      const taken = new Set(existing.flatMap((entry) => entry.seasons.map((season) => season.seasonNumber)));
+      seasons = body.seasons.filter((season) => !taken.has(season));
+      if (seasons.length === 0) return send(response, 202, { message: 'canary no seasons' });
+    }
+    const quota = quotaOf(acting, mediaType);
+    if (quota.limit && quota.used + (mediaType === 'movie' ? 1 : seasons.length) > quota.limit) return send(response, 403, { message: 'canary quota' });
+    const media = mediaRecord(mediaType, tmdbId);
+    const created = {
+      id: nextRequestId++,
+      status: state.autoApprove ? 2 : 1,
+      type: mediaType,
+      is4k: false,
+      createdAt: new Date().toISOString(),
+      media: { id: media?.id ?? 7360000 + (tmdbId % 10000), mediaType, tmdbId, status: 2 },
+      seasons: seasons.map((seasonNumber) => ({ id: 7370000 + seasonNumber, seasonNumber, status: 1 })),
+      requestedBy: { id: acting, jellyfinUserId: user.jellyfinUserId, email: 'canary-new@example.invalid' },
+    };
+    state.requests[acting] = [...(state.requests[acting] ?? []), created];
+    // Made, and counted by the quota from now on, before the answer leaves.
+    if (state.holdCreated) await state.holdCreated;
+    // Seerr made it, but its answer fails.
+    if (state.failCreated) return send(response, 500, { message: 'canary failure' });
+    return send(response, 201, created);
+  }
+
   function admin(url, response) {
+    const title = /^\/api\/v1\/(movie|tv)\/([0-9]+)$/.exec(url.pathname);
+    if (title) {
+      if (state.titlesFail) return send(response, 500, { message: 'canary failure' });
+      const answer = () => send(response, 200, { ...seerrFixture(title[1]), id: Number(title[2]), mediaInfo: mediaRecord(title[1], Number(title[2])) });
+      return state.holdTitles ? state.holdTitles.then(answer) : answer();
+    }
+    // The request backfill's list: every request, newest first.
+    if (url.pathname === '/api/v1/request') {
+      const results = allRequests().sort((left, right) => right.id - left.id);
+      return send(response, 200, { pageInfo: { results: results.length }, results });
+    }
+    const byRequest = /^\/api\/v1\/request\/([0-9]+)$/.exec(url.pathname);
+    if (byRequest) {
+      const found = [...allRequests(), ...Object.values(state.media).flatMap((info) => info?.requests ?? [])].find((entry) => entry.id === Number(byRequest[1]));
+      return found ? send(response, 200, found) : send(response, 404, { message: 'canary' });
+    }
     const byJellyfin = /^\/api\/v1\/user\/jellyfin\/([0-9a-f]{32})$/.exec(url.pathname);
     if (byJellyfin) {
       const found = Object.entries(state.seerrUsers).find(([, user]) => user.jellyfinUserId === byJellyfin[1]);
@@ -265,7 +392,34 @@ export async function createFakeSeerr(state) {
   }
 
   await listen(server);
-  return { url: `http://127.0.0.1:${server.address().port}`, calls, violations, state, close: () => close(server) };
+  return {
+    url: `http://127.0.0.1:${server.address().port}`,
+    calls,
+    violations,
+    posts,
+    state,
+    set onRequest(check) { onRequest = check; },
+    close: () => close(server),
+  };
+}
+
+/** The violation the fake Seerr records for a request sent before an intent for its title was in the state file. */
+export const UNSAVED_INTENT = 'request sent before its intent was in the state file';
+
+/**
+ * The invariant every app test runs under (see startApp): when a request reaches Seerr, the state file on disk already
+ * holds a "Get this" intent for its title, so the decision that protects its grant survives a crash.
+ */
+function intentOnDisk(stateFile) {
+  return (body) => {
+    let intents;
+    try {
+      intents = Object.values(JSON.parse(readFileSync(stateFile, 'utf8')).appRequestIntents ?? {});
+    } catch {
+      intents = [];
+    }
+    return intents.some((intent) => intent.mediaType === body.mediaType && intent.tmdbId === body.mediaId) ? undefined : UNSAVED_INTENT;
+  };
 }
 
 /**
@@ -397,10 +551,8 @@ export async function createFakeJellyfinForApp(state) {
       return send(response, 204, undefined);
     }
     const token = /Token="([^"]+)"/.exec(request.headers.authorization ?? '')?.[1] ?? request.headers['x-emby-token'] ?? url.searchParams.get('api_key');
-    // JellyPass's own API key may list users (the admin API checks group members with it), and nothing else.
-    if (token === 'jellyfin-key' && request.method === 'GET' && url.pathname === '/Users') {
-      return send(response, 200, Object.entries(state.jellyfinUsers).map(([Id, user]) => ({ Id, Name: user.Name, Policy: user.Policy })));
-    }
+    // JellyPass's own API key: users and every item, as an administrator sees them, and the updates reconciliation makes.
+    if (token === 'jellyfin-key') return administer(request, response, url);
     const userId = minted_.find((entry) => entry.token === token && !entry.revoked)?.userId
       ?? Object.entries(state.tokens ?? TOKENS).find(([, value]) => value === token)?.[0];
     const user = userId && state.jellyfinUsers[userId];
@@ -429,6 +581,52 @@ export async function createFakeJellyfinForApp(state) {
     }
     return send(response, 404, {});
   });
+  async function administer(request, response, url) {
+    const parameter = (name) => [...url.searchParams].find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1];
+    const itemOf = (item) => ({ Id: item.Id, Name: item.Name, Type: item.Type, ProviderIds: item.ProviderIds, ProductionYear: item.ProductionYear, Tags: item.Tags ?? [] });
+    if (request.method === 'GET' && url.pathname === '/Users') {
+      return send(response, 200, Object.entries(state.jellyfinUsers).map(([Id, user]) => ({ Id, Name: user.Name, Policy: user.Policy })));
+    }
+    if (request.method === 'GET' && url.pathname === '/Items' && !parameter('userId')) {
+      const types = (parameter('includeItemTypes') ?? '').split(',');
+      const ids = parameter('ids')?.split(',');
+      const term = parameter('searchTerm')?.toLowerCase();
+      const all = state.items.filter((item) => types.includes(item.Type) && (!ids || ids.includes(item.Id))
+        && (parameter('hasTmdbId') !== 'true' || item.ProviderIds?.Tmdb) && (!term || item.Name.toLowerCase().includes(term)));
+      state.onAdminRead?.(url.pathname, url);
+      const start = Number(parameter('startIndex') ?? 0);
+      return send(response, 200, { Items: all.slice(start, start + Number(parameter('limit') ?? 100)).map(itemOf) });
+    }
+    const episodes = /^\/Shows\/([0-9a-f]{32})\/Episodes$/.exec(url.pathname);
+    if (request.method === 'GET' && episodes) {
+      const answer = state.episodes.filter((episode) => episode.SeriesId === episodes[1]);
+      state.onAdminRead?.(url.pathname);
+      return send(response, 200, { Items: answer.map((episode) => ({ Id: episode.Id, Type: 'Episode', ParentIndexNumber: episode.ParentIndexNumber })) });
+    }
+    const item = /^\/Users\/[0-9a-f]{32}\/Items\/([0-9a-f]{32})$/.exec(url.pathname);
+    if (request.method === 'GET' && item) {
+      const found = state.items.find((entry) => entry.Id === item[1]);
+      return found ? send(response, 200, itemOf(found)) : send(response, 404, {});
+    }
+    if (request.method === 'GET' && /^\/Items\/[0-9a-f]{32}\/LocalTrailers$/.test(url.pathname)) return send(response, 200, []);
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    const body = chunks.length ? JSON.parse(Buffer.concat(chunks).toString('utf8')) : {};
+    const update = /^\/Items\/([0-9a-f]{32})$/.exec(url.pathname);
+    if (request.method === 'POST' && update) {
+      const found = state.items.find((entry) => entry.Id === update[1]);
+      if (!found) return send(response, 404, {});
+      found.Tags = body.Tags;
+      return send(response, 204);
+    }
+    const policy = /^\/Users\/([0-9a-f]{32})\/Policy$/.exec(url.pathname);
+    if (request.method === 'POST' && policy && state.jellyfinUsers[policy[1]]) {
+      state.jellyfinUsers[policy[1]].Policy = body;
+      return send(response, 204);
+    }
+    return send(response, 404, {});
+  }
+
   await listen(server);
   return {
     url: `http://127.0.0.1:${server.address().port}`,
@@ -458,8 +656,10 @@ function sees(user, item) {
  * `seerr: { url, apiKey }` to use a real Seerr instead of the fake, `households` to replace the two households,
  * `stateFile` to start the store from that state, `trustedProxies` to trust `X-Forwarded-For` from them, `now`,
  * `libraryTtlMs`, `titleTtlMs` or `blocklistTtlMs` to set the app's clock and cache lifetimes, `catalogueLimits` to
- * set its share of TMDB calls (by default high enough that tests not about it never wait for one), and
- * `loginFailureDelayMs` for the least time a refused household sign-in takes (default 0, so tests not about it never wait).
+ * set its share of TMDB calls (by default high enough that tests not about it never wait for one), `reconcile` to apply
+ * the world's grants to Jellyfin first, `recordDelayMs` to delay "Get this" records (none by default),
+ * `requests: false` to serve no "Get this", and `loginFailureDelayMs` for the least time a refused household sign-in
+ * takes (default 0, so tests not about it never wait).
  */
 export async function startApp(t, state = world(), options = {}) {
   const seerr = options.seerr ? { ...options.seerr, close: async () => undefined } : await createFakeSeerr(state);
@@ -467,6 +667,7 @@ export async function startApp(t, state = world(), options = {}) {
   const jellyfin = await createFakeJellyfinForApp(state);
   const stateFile = path.join(await makeTempDir(t, 'jfa-app-'), 'grants.json');
   if (options.stateFile) await writeFile(stateFile, JSON.stringify(options.stateFile));
+  if (!options.seerr) seerr.onRequest = intentOnDisk(stateFile);
   const store = new GrantStore(stateFile, { limitHouseholds: options.app !== false });
   await store.load();
   for (const household of options.households ?? HOUSEHOLDS) await store.upsertGroup(household);
@@ -475,15 +676,50 @@ export async function startApp(t, state = world(), options = {}) {
     if (grant.manual) await store.setManualAccess(grant.manual);
   }
   const admin = new SeerrClient(seerr.url, seerr.apiKey ?? 'seerr-key');
-  const service = new AccessService(new JellyfinClient(jellyfin.url, 'jellyfin-key'), store, undefined, admin);
+  const jellyfinClient = new JellyfinClient(jellyfin.url, 'jellyfin-key');
+  const service = new AccessService(jellyfinClient, store, undefined, admin);
+  // Grants applied to Jellyfin (tags and blocked tags), as a running JellyPass would have them.
+  if (options.reconcile) await service.reconcileAll();
+  // Background work, tracked so a test can wait for it to settle.
+  const tasks = new BackgroundTasks();
+  const running = new Set();
+  const background = {
+    run(task) {
+      const started = tasks.run(task);
+      if (started) {
+        running.add(started);
+        started.finally(() => running.delete(started));
+      }
+      return started;
+    },
+    stop: () => tasks.stop(),
+    async settled() {
+      while (running.size > 0) await Promise.all([...running]);
+    },
+  };
+  const members = new SeerrUserMap(admin);
+  const requests = new HouseholdRequests({
+    store,
+    jellyfin: jellyfinClient,
+    seerr: admin,
+    members,
+    joins: service,
+    background,
+    record: (result) => service.recordGetThis(result),
+    recordBranch: (branch) => service.recordGetThisBranch(branch),
+    ...(options.now ? { now: options.now } : {}),
+    recordDelayMs: options.recordDelayMs ?? 0,
+  });
   const server = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' }, undefined, {
+    background,
     ...(options.trustedProxies ? { trustedProxies: options.trustedProxies } : {}),
     householdGateway: { jellyfinUrl: jellyfin.url, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: options.loginFailureDelayMs ?? 0 },
     ...(options.app === false ? {} : {
       householdApp: {
         catalogue: new TmdbClient(TMDB_KEY, { baseUrl: tmdb.url, ...(options.now ? { now: options.now } : {}) }),
         blocklist: admin,
-        members: new SeerrUserMap(admin),
+        members,
+        ...(options.requests === false ? {} : { requests }),
         ...(options.now ? { now: options.now } : {}),
         ...(options.libraryTtlMs !== undefined ? { libraryTtlMs: options.libraryTtlMs } : {}),
         ...(options.titleTtlMs !== undefined ? { titleTtlMs: options.titleTtlMs } : {}),
@@ -496,6 +732,8 @@ export async function startApp(t, state = world(), options = {}) {
   t.after(async () => {
     server.closeAllConnections();
     await Promise.all([close(server), seerr.close(), tmdb.close(), jellyfin.close()]);
+    // Checked for every test: a request sent before its intent was on disk fails it (see intentOnDisk).
+    if (seerr.violations?.includes(UNSAVED_INTENT)) throw new Error(UNSAVED_INTENT);
   });
   const port = server.address().port;
   return {
@@ -504,19 +742,37 @@ export async function startApp(t, state = world(), options = {}) {
     tmdb,
     jellyfin,
     store,
+    /** The state file the store writes, to start another app from. */
+    stateFile,
+    members,
     service,
+    requests,
+    background,
     /** GET `pathname` on `host` as `user` (a Jellyfin ID, or null for no credentials, or a header object). */
     get: (pathname, { host = HOST_A, user = ALICE, headers } = {}) => get(port, pathname, {
       Host: host,
       ...(user ? { Authorization: authorization(user) } : {}),
       ...headers,
     }),
+    /** POST `body` (a string or an object sent as JSON; undefined for none) to `pathname`, like {@link get}. */
+    post: (pathname, body, { host = HOST_A, user = ALICE, headers } = {}) => get(port, pathname, {
+      Host: host,
+      ...(user ? { Authorization: authorization(user) } : {}),
+      ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      ...headers,
+    }, { method: 'POST', body: body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body) }),
+    /** A Seerr MEDIA_AVAILABLE webhook for an HD request whose item Jellyfin now has. */
+    webhook: (payload) => get(port, '/webhooks/seerr', {
+      Host: 'jellypass.example.test',
+      Authorization: 'Bearer webhook-secret',
+      'Content-Type': 'application/json',
+    }, { method: 'POST', body: JSON.stringify(payload) }),
   };
 }
 
 /** The raw answer: status, headers and body bytes. */
-export function get(port, pathname, headers) {
-  return call(port, pathname, { headers });
+export function get(port, pathname, headers, { method = 'GET', body } = {}) {
+  return call(port, pathname, { method, headers, body });
 }
 
 /** POST a JSON body. */
@@ -561,6 +817,7 @@ function readJson(request) {
 }
 
 function send(response, status, value, headers = {}) {
+  if (status === 204) return response.writeHead(204, headers).end();
   const encoded = value === undefined ? '' : JSON.stringify(value);
   response.writeHead(status, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(encoded), ...headers });
   response.end(encoded);

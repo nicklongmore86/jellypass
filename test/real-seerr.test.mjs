@@ -15,6 +15,8 @@ const MEMBER_JELLYFIN_ID = '00000000-0000-0000-0000-00000000000b';
 const REQUESTER_JELLYFIN_ID = '0000000000000000000000000000000c';
 const NEIGHBOUR_JELLYFIN_ID = '0000000000000000000000000000000d';
 const SHARED_JELLYFIN_ID = '0000000000000000000000000000000e';
+const LIFETIME_JELLYFIN_ID = '0000000000000000000000000000000f';
+const SERIES_QUOTA_JELLYFIN_ID = '00000000000000000000000000000010';
 
 describe('real Seerr', { timeout: 60_000, skip: !baseUrl || !apiKey }, () => {
   let calls = [];
@@ -23,7 +25,7 @@ describe('real Seerr', { timeout: 60_000, skip: !baseUrl || !apiKey }, () => {
   before(() => {
     originalFetch = globalThis.fetch;
     globalThis.fetch = (input, init = {}) => {
-      calls.push({ url: new URL(String(input)), headers: new Headers(init.headers) });
+      calls.push({ url: new URL(String(input)), method: init.method ?? 'GET', headers: new Headers(init.headers), body: init.body });
       return originalFetch(input, init);
     };
   });
@@ -203,9 +205,108 @@ describe('real Seerr', { timeout: 60_000, skip: !baseUrl || !apiKey }, () => {
     const seerrCalls = calls.filter((call) => call.url.origin === baseUrl);
     assert.ok(seerrCalls.length > 0);
     for (const call of seerrCalls) {
-      assert.match(call.url.pathname, /^\/api\/v1\/(?:user\/jellyfin\/[0-9a-f]{32}|user\/[0-9]+|auth\/me|blocklist)$/, call.url.pathname);
+      assert.match(call.url.pathname, /^\/api\/v1\/(?:user\/jellyfin\/[0-9a-f]{32}|user\/[0-9]+(?:\/quota)?|auth\/me|blocklist)$/, call.url.pathname);
       assert.notEqual(call.headers.get('x-api-user'), '6');
     }
+  });
+
+  it('makes "Get this" a real HD request as the member, attributed to their household', async (t) => {
+    const people = [[REQUESTER_JELLYFIN_ID, 'requester', 'Requester'], [SHARED_JELLYFIN_ID, 'shared', 'Shared']];
+    const app = await startApp(t, world({
+      tokens: Object.fromEntries(people.map(([id, token]) => [id, `token-${token}`])),
+      jellyfinUsers: Object.fromEntries(people.map(([id, , name]) => [id, { Name: name, Policy: { BlockedTags: [], EnableAllFolders: true } }])),
+    }), {
+      seerr: { url: baseUrl, apiKey },
+      households: [{ id: 'farmhouse', name: 'Farmhouse', userIds: [REQUESTER_JELLYFIN_ID] }, { id: 'mill', name: 'Mill', userIds: [SHARED_JELLYFIN_ID] }],
+    });
+    const asRequester = { user: null, headers: { Authorization: 'MediaBrowser Token="token-requester"' } };
+    const getThis = async (tmdbId) => {
+      const answer = await app.post(`/jellypass/app/v1/movie/${tmdbId}/get`, undefined, asRequester);
+      await app.background.settled();
+      return answer;
+    };
+    const admin = (pathname, init = {}) => originalFetch(`${baseUrl}${pathname}`, { ...init, headers: { Accept: 'application/json', 'Content-Type': 'application/json', 'X-Api-Key': apiKey } });
+    const records = () => app.store.listAppRequests().map(([, record]) => record);
+    // The requester has no Seerr quota, so "Get this" is offered to them.
+    const own = await (await admin('/api/v1/user/4/quota')).json();
+    assert.deepEqual([own.movie.limit ?? 0, own.tv.limit ?? 0], [0, 0]);
+    calls = [];
+    // The Dark Knight: nobody holds or asked for it.
+    const first = await getThis(155);
+    assert.equal(first.status, 202);
+    assert.equal(first.text, '{"status":"accepted"}');
+    assert.equal(records().length, 1, JSON.stringify(calls.map((call) => `${call.method} ${call.url.pathname}`)));
+    const [made] = records();
+    assert.deepEqual([made.branch, made.householdId, made.status], ['request', 'farmhouse', 'pending']);
+    // Sent as the member, naming only the title, in HD.
+    const posted = calls.filter((call) => call.method === 'POST' && call.url.pathname === '/api/v1/request');
+    assert.equal(posted.length, 1);
+    assert.equal(posted[0].headers.get('x-api-user'), '4');
+    assert.deepEqual(JSON.parse(posted[0].body), { mediaType: 'movie', mediaId: 155, is4k: false });
+    const inSeerr = await (await admin(`/api/v1/request/${made.seerrRequestId}`)).json();
+    assert.equal(inSeerr.requestedBy.id, 4);
+    assert.equal(inSeerr.is4k, false);
+    assert.equal(inSeerr.media.tmdbId, 155);
+    assert.equal(made.seerrMediaId, inSeerr.media.id);
+    // Its intent was written before the request was sent, and is gone now that the request is recorded and settled.
+    assert.deepEqual(app.store.listAppRequestIntents(), []);
+    // An administrator declines it, and JellyPass's record follows.
+    assert.equal((await admin(`/api/v1/request/${made.seerrRequestId}/decline`, { method: 'POST' })).status, 200);
+    await app.requests.refresh();
+    assert.equal(records()[0].status, 'declined');
+    // Pulp Fiction is the other household's member's pending request: the household's interest follows it, unrequested.
+    calls = [];
+    await getThis(680);
+    assert.ok(!calls.some((call) => call.method === 'POST'));
+    const interest = records().find((record) => record.tmdbId === 680);
+    assert.deepEqual([interest.branch, interest.seerrRequestId, interest.status], ['interest', '3', 'pending']);
+    // The household sees its own titles with coarse statuses, nothing of Seerr's.
+    const listed = await app.get('/jellypass/app/v1/requests', asRequester);
+    assert.deepEqual(listed.json().results.map((entry) => [entry.tmdbId, entry.status, entry.byYou]), [[680, 'requested', true], [155, 'failed', true]]);
+    assertNoCanaries(listed.text);
+    assert.doesNotMatch(listed.text, /requester|shared|example\.invalid|seerr|"3"|mediaId/i);
+    // The other household, whose member made the request followed, sees nothing of it.
+    const mill = await app.get('/jellypass/app/v1/requests', { host: 'jelly-mill.example.test', user: null, headers: { Authorization: 'MediaBrowser Token="token-shared"' } });
+    assert.deepEqual(mill.json(), { results: [] });
+  });
+
+  it('offers "Get this" to no caller Seerr gives a quota: every title they cannot play is unavailable, and it runs nothing', async (t) => {
+    const people = [[LIFETIME_JELLYFIN_ID, 'lifetime', 'Lifetime'], [SERIES_QUOTA_JELLYFIN_ID, 'series', 'Series'], [REQUESTER_JELLYFIN_ID, 'requester', 'Requester']];
+    const app = await startApp(t, world({
+      tokens: Object.fromEntries(people.map(([id, token]) => [id, `token-${token}`])),
+      jellyfinUsers: Object.fromEntries(people.map(([id, , name]) => [id, { Name: name, Policy: { BlockedTags: [], EnableAllFolders: true } }])),
+      tmdbMovies: Object.fromEntries([[155, 'The Dark Knight', '2008-07-16'], [603, 'The Matrix', '1999-03-30']].map(([id, title, date]) => [id, { title, release_date: date }])),
+    }), {
+      seerr: { url: baseUrl, apiKey },
+      households: [{ id: 'farmhouse', name: 'Farmhouse', userIds: people.map(([id]) => id) }],
+    });
+    // Seerr's own quotas: user 7 a lifetime movie quota already used, user 8 a series quota with nothing used.
+    const quota = async (user) => (await (await originalFetch(`${baseUrl}/api/v1/user/${user}/quota`, { headers: { Accept: 'application/json', 'X-Api-Key': apiKey } })).json());
+    const lifetime = await quota(7);
+    assert.deepEqual([Boolean(lifetime.movie.days), lifetime.movie.limit, lifetime.movie.used], [false, 1, 1]);
+    const series = await quota(8);
+    assert.deepEqual([series.movie.limit ?? 0, series.tv.limit, series.tv.used], [0, 5, 0]);
+    const as = (token) => ({ user: null, headers: { Authorization: `MediaBrowser Token="token-${token}"` } });
+    for (const token of ['lifetime', 'series']) {
+      // Every title, of either media type, the same: "Can't request".
+      for (const pathname of ['/jellypass/app/v1/movie/155', '/jellypass/app/v1/movie/603']) {
+        const answer = await app.get(pathname, as(token));
+        assert.equal(answer.status, 200, answer.text);
+        assert.equal(answer.json().state, 'unavailable', `${token} ${pathname}`);
+      }
+      calls = [];
+      const answer = await app.post('/jellypass/app/v1/movie/155/get', undefined, as(token));
+      await app.background.settled();
+      assert.equal(answer.text, '{"status":"accepted"}');
+      assert.deepEqual(app.store.listAppRequests(), []);
+      assert.deepEqual(app.store.listAppRequestIntents(), []);
+      // Only their own Seerr user and quota were read: no title, no request.
+      for (const call of calls.filter((entry) => entry.url.origin === baseUrl)) {
+        assert.match(call.url.pathname, /^\/api\/v1\/(?:user\/jellyfin\/[0-9a-f]{32}|user\/[0-9]+(?:\/quota)?|auth\/me)$/, `${token} ${call.url.pathname}`);
+      }
+    }
+    // A member of the same household with no quota is offered it.
+    assert.equal((await app.get('/jellypass/app/v1/movie/155', as('requester'))).json().state, 'get_this');
   });
 
   it('acts as a Seerr user that does not exist as nobody, never the owner', async () => {

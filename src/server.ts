@@ -42,7 +42,7 @@ export interface ServerOptions {
    * The household app API at /jellypass/app/v1/* on household hosts (needs `householdGateway`). Without it those paths
    * answer a fixed 404 there; they are never served on the admin host.
    */
-  householdApp?: Pick<HouseholdAppOptions, 'catalogue' | 'blocklist' | 'members' | 'libraryTtlMs' | 'titleTtlMs' | 'blocklistTtlMs' | 'catalogueLimits' | 'now'>;
+  householdApp?: Pick<HouseholdAppOptions, 'catalogue' | 'blocklist' | 'members' | 'requests' | 'libraryTtlMs' | 'titleTtlMs' | 'blocklistTtlMs' | 'catalogueLimits' | 'now'>;
 }
 
 export interface JellyPassServer extends Server {
@@ -160,6 +160,9 @@ export function makeServer(
 
       if (request.method === 'GET' && url.pathname === '/metrics') {
         return text(response, 200, service.renderMetrics(), 'text/plain; version=0.0.4; charset=utf-8');
+      }
+      if (request.method === 'GET' && url.pathname === '/v1/app/outstanding') {
+        return json(response, 200, service.appOutstanding());
       }
       if (request.method === 'GET' && url.pathname === '/v1/grants') {
         return json(response, 200, { grants: service.listGrants() });
