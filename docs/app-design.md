@@ -55,8 +55,13 @@ Identity comes only from Jellyfin, never from anything the client says about its
    cached. A sign-out through any household host (`POST /Sessions/Logout`, the app's **Sign out** and Jellyfin web's
    alike) forgets that token's verified sessions in every household's cache at once, before Jellyfin is asked and
    whatever it answers, so the next call with it is checked with Jellyfin again and refused. Only the tokens the sign-out
-   itself carries (each kept as a hash) are forgotten, so a sign-out can never forget anyone else's session; a token
-   verified while it was being signed out is not cached. A token revoked **outside** JellyPass (an administrator deleting
+   itself carries (each kept as a hash) are forgotten, so a sign-out can never forget anyone else's session. While the
+   sign-out is at Jellyfin, and for `APP_SIGN_OUT_GRACE_MS` (60 s) after it is over (answered, failed, or given up when
+   its client left), those tokens are checked with Jellyfin on every call and never cached, so a call racing the
+   sign-out, or Jellyfin revoking it a little late, cannot put it back in the cache; they are forgotten again once it
+   is over. The routing matches Jellyfin's: `POST` to `/Sessions/Logout` in any case, percent-encoded or not, with
+   any trailing slashes. The pending and recent sign-outs tracked are bounded; past the bound, no token at all is
+   cached until the oldest one dropped would have expired. A token revoked **outside** JellyPass (an administrator deleting
    the device or session in Jellyfin's dashboard, or a sign-out sent straight to Jellyfin) is still trusted for what is
    left of its 5 minutes: JellyPass is not told, and asking Jellyfin on every call is what the cache avoids.
 3. The household comes from the JellyPass store, and the caller must be a member of the household whose host they

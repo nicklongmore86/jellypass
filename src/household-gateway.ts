@@ -238,9 +238,16 @@ export class HouseholdGateway {
       writeJson(response, 403, { error: 'household_password_recovery_disabled' });
       return;
     }
-    if (request.method === 'POST' && pathname === LOGOUT_PATH) {
-      // Forgotten before Jellyfin is asked, whatever it answers: only the tokens this sign-out itself carries.
-      this.#app?.forget(tokenKeys(this.#credentials(request, requestUrl)));
+    if (this.#app && request.method === 'POST' && isLogoutPath(requestUrl.pathname)) {
+      // Forgotten before Jellyfin is asked and again once it has answered (or failed, or the client left), whatever it
+      // answers, and not kept meanwhile: only the tokens this sign-out itself carries.
+      const done = this.#app.signingOut(tokenKeys(this.#credentials(request, requestUrl)));
+      try {
+        await this.#proxy(request, response);
+      } finally {
+        done();
+      }
+      return;
     }
     if (request.method === 'POST' && pathname === AUTHENTICATE_BY_NAME_PATH) {
       await this.#proxyHouseholdLogin(request, response, memberIds);
@@ -1059,6 +1066,20 @@ function tokenKeys(credentials: JellyfinCredentials): string[] {
   if (embyToken) tokens.add(embyToken);
   for (const [, value] of credentials.query) tokens.add(value);
   return [...tokens].map((token) => createHash('sha256').update(`token\n${token}`).digest('hex'));
+}
+
+/**
+ * Whether Jellyfin routes this path to its sign-out, POST /Sessions/Logout: in any case, percent-encoded or not, with
+ * any trailing slashes, as ASP.NET Core matches its routes.
+ */
+function isLogoutPath(pathname: string): boolean {
+  let decoded = pathname;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    // Not valid percent-encoding: the path as given.
+  }
+  return decoded.toLowerCase().replace(/\/+$/, '') === LOGOUT_PATH;
 }
 
 /** The `Token` of a `MediaBrowser key="value", ...` header, or undefined if it has none. */

@@ -545,13 +545,18 @@ export async function createFakeJellyfinForApp(state) {
         return send(response, 200, { User: { Id: entry[0], Name: entry[1].Name }, AccessToken: minted, ServerId: 'server' });
       });
     }
-    if (url.pathname === '/Sessions/Logout' && request.method === 'POST') {
-      const logoutToken = /Token="([^"]+)"/.exec(request.headers.authorization ?? '')?.[1];
-      const session = minted_.find((entry) => entry.token === logoutToken && !entry.revoked);
-      if (!session) return send(response, 401, {});
-      session.revoked = true;
-      logouts.push(logoutToken);
-      return send(response, 204, undefined);
+    // As ASP.NET Core routes it: percent-decoded, in any case, with any trailing slashes.
+    if (routePath(url.pathname) === '/sessions/logout' && request.method === 'POST') {
+      // Jellyfin signs out the first of the request's tokens it knows. `state.holdLogout`, when set, holds it (before
+      // it is revoked) until the promise it returns settles, and is passed the request so a test can break it.
+      const signOut = () => {
+        const session = tokensOf(request, url).map((token) => minted_.find((entry) => entry.token === token && !entry.revoked)).find(Boolean);
+        if (!session) return send(response, 401, {});
+        session.revoked = true;
+        logouts.push(session.token);
+        return send(response, 204, undefined);
+      };
+      return state.holdLogout ? state.holdLogout(request, response).then(signOut) : signOut();
     }
     const token = /Token="([^"]+)"/.exec(request.headers.authorization ?? '')?.[1] ?? request.headers['x-emby-token'] ?? url.searchParams.get('api_key');
     // JellyPass's own API key: users and every item, as an administrator sees them, and the updates reconciliation makes.
@@ -648,6 +653,22 @@ export async function createFakeJellyfinForApp(state) {
     set down(value) { down = value; },
     close: () => close(server),
   };
+}
+
+function routePath(pathname) {
+  return decodeURIComponent(pathname).toLowerCase().replace(/\/+$/, '');
+}
+
+/** Every token a request carries, as Jellyfin reads them: `Token` in either authorization header (URL-decoded), `X-Emby-Token`, and the token query parameters in any case. */
+function tokensOf(request, url) {
+  const tokens = [];
+  for (const name of ['authorization', 'x-emby-authorization']) {
+    const token = /Token="([^"]+)"/.exec(request.headers[name] ?? '')?.[1];
+    if (token) tokens.push(decodeURIComponent(token));
+  }
+  if (request.headers['x-emby-token']) tokens.push(request.headers['x-emby-token']);
+  for (const [key, value] of url.searchParams) if (['api_key', 'apikey', 'access_token'].includes(key.toLowerCase())) tokens.push(value);
+  return tokens;
 }
 
 function sees(user, item) {
