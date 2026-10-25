@@ -14,6 +14,17 @@ privacy leak. Such changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Changed
+
+- Household app: a new look. Dark indigo with a soft glow, a floating glass tab bar (**Home**, **Search**, **My
+  requests**), a glass header with a round Back button, rounded poster cards with the status pill on the poster, a
+  three-column Search grid under a capsule field, request cards with a poster thumbnail, and new app icons. **About &
+  credits** now opens from the (i) button on Home, and **Sign out** moved into About's new Account card (with your name
+  and household, which left the header). Cards no longer have a Play button; Play stays on a title's page. Status words,
+  **Get this** and what the household can see are unchanged.
+- Household app: the glass tab bar and header are denser so their labels and icons stay readable (4.5:1 text, 3:1 icons) over
+  any poster, and keyboard focus now scrolls a card clear of the bar and header.
+
 ## [2.4.1] - 2026-10-25
 
 This is a patch release for the household app (`HOUSEHOLD_APP_ENABLED=true`)

@@ -425,7 +425,7 @@ elsewhere; the files are never proxied to Jellyfin.
   field (`Id`) and is read back after writing (a failed write is reported, never assumed); the app still reads Jellyfin
   web's entry written by anyone, so a change to the format shows up as the picker appearing, not as a broken app.
   Beyond that it stores one random device ID (`jellypass_device_id`), deliberately not Jellyfin web's `_deviceId2`, so
-  Jellyfin never treats the app's sign-in as a re-login of the web client's device. *Sign-out* (header button) calls
+  Jellyfin never treats the app's sign-in as a re-login of the web client's device. *Sign-out* (the **Sign out** button in About's Account card, not the header) calls
   `POST /Sessions/Logout` with the token (best effort, five seconds), then removes `UserId` and `AccessToken` from the
   server entries, as Jellyfin web's own sign-out does. As the session is shared, **it signs Jellyfin web out too**; the
   app API's five-minute trust in a verified token (`APP_SESSION_TTL_MS`) is unchanged, so the app API can accept a
@@ -437,13 +437,30 @@ elsewhere; the files are never proxied to Jellyfin.
   in an in-app Safari view, so a Jellyfin sign-in made there would never reach the app. With the in-app sign-in the
   installed app no longer depends on that, but within scope Jellyfin web and **Play** still stay in the installed app
   and share its storage. Only the service worker is limited to `/jellypass/app/`. `GET /me` provides the name and
-  household shown in the header. **Unverified on a real iPhone**: install and sign-in have only been exercised in a
+  household shown in About's Account card. **Unverified on a real iPhone**: install and sign-in have only been exercised in a
   simulated browser and against a real Jellyfin 10.11.3.
 - **Screens.** Home (four rows of 20 titles, each row loaded and failing on its own), Search (debounced 300 ms, one call
   per pause, previous calls aborted, **Load more** by the API's `nextPage`, query kept in the address), movie page,
   series page with a seasons list (each season's state) and a season page with its episodes, **My requests** (since step
   2b: the household's requests from `GET /requests`, each with its coarse status, per season for a series, and whether the
   caller or someone else in the household asked; titles are named from TMDB ten at a time), About & credits.
+- **Navigation and look (restyle, PR 1).** Three tabs in a floating glass pill above the bottom safe area: **Home**,
+  **Search**, **My requests** (own inline icons built with `createElementNS`, visible labels, active tab = accent colour
+  and a dot, each at least 44 px). **About & credits** is not a tab: it opens from the small (i) button in Home's top row
+  (brand on the left), and no tab is marked while it is shown. About is grouped into inset cards: **Account** (the
+  signed-in name and household from `GET /me`, and the **Sign out** button; signed out, it says so and links to the
+  sign-in on Home), **About** and **Credits** (the TMDB logo and notice are unchanged). The header is glass, with a round
+  glass **Back** button (behaviour unchanged). Cards no longer carry a **Play** button: a poster card is one link to the
+  title, with the status pill on the poster's corner and "year · Movie/Series" under the title; **Play** stays on the
+  title's own page. Search is a three-column grid (two below 21 rem, more from 48 rem) under a capsule field; a request
+  shows a 46x68 thumbnail (the title's TMDB poster, filled in when the title is read), its title, the coarse status and
+  who asked. The look is ours: colours, radii, the system font and the blur are CSS custom properties at the top of
+  `app.css` (indigo `--bg` with a soft top glow; radii 10/14/20/999), `theme-color` and the manifest's
+  `background_color` are `--bg`, and the app icons are drawn by `scripts/make-app-icons.py`. Every text/background pair is
+  a hex token checked at WCAG AA by a test, including dark text on both ends of the gradient button and each status
+  pill's text over a white poster at the glass's opacity; without `backdrop-filter` the glass becomes the opaque surface
+  colour. The screens' data, statuses, wording and **Get this** outcomes are unchanged. Not yet: the hero and 1280 px
+  backdrops (PR 2).
 - **Back and position.** Every screen but Home has a **Back** button first in the header (44 px, `aria-label="Back"`),
   because the installed app has no browser chrome. The app numbers its own history entries in `history.state` (`{jp: n}`,
   nothing else). With `n > 0` Back is `history.back()`, so hardware back and swipe-back are identical; opened on a screen
@@ -1039,6 +1056,7 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
 - Coarse statuses only; no notifications yet.
 - HD only in v1 (`is4k` is always false).
 - No watchlist-star shortcut.
+- Three tabs; About behind Home's (i); Sign out only in About's Account card; no Play on cards (the title page has it).
 
 ## Test strategy
 

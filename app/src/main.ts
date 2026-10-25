@@ -1,20 +1,25 @@
 import { ApiError, createApi, createSignInApi, type Api, type ApiErrorKind, type SignInApi } from './api.js';
 import {
   aboutView,
+  accountText,
   cardList,
   el,
   errorState,
   type GetThisHandler,
   REQUESTS_TEXT,
   requestItem,
+  searchForm,
   searchStatusText,
   seasonView,
   setRequestTitle,
   skeletonDetail,
+  skeletonGrid,
+  skeletonRequests,
   skeletonRow,
   titleDetail,
   titleRow,
 } from './render.js';
+import { icon } from './icons.js';
 import { clearSignIn, deviceId, jellyfinToken } from './session.js';
 import { showSignIn } from './signin.js';
 import type { DiscoverList, MediaType, Me, RequestEntry } from './types.js';
@@ -33,10 +38,19 @@ const REQUEST_TITLE_CALLS = 4;
 
 const doc = document;
 const main = doc.getElementById('screen') as HTMLElement;
-const who = doc.getElementById('who') as HTMLElement;
 const status = doc.getElementById('status') as HTMLElement;
-const signOutButton = doc.getElementById('signout') as HTMLButtonElement;
 const backButton = doc.getElementById('back') as HTMLButtonElement;
+/** Home's top row: the (i) that opens About, the only way to it (and so to Sign out and the TMDB credit). */
+const aboutLink = doc.getElementById('about-link') as HTMLAnchorElement;
+const TAB_ICONS = { home: 'home', search: 'search', requests: 'requests' } as const;
+
+// The chrome's icons are drawn here, node by node, so the page itself carries no markup for them.
+backButton.append(icon(doc, 'back'));
+aboutLink.append(icon(doc, 'info'));
+for (const link of doc.querySelectorAll<HTMLAnchorElement>('nav a[data-nav]')) {
+  const name = TAB_ICONS[link.dataset['nav'] as keyof typeof TAB_ICONS];
+  if (name) link.prepend(icon(doc, name));
+}
 const origin = location.origin;
 
 const api: Api = createApi({
@@ -215,14 +229,11 @@ function goBack(): void {
 async function loadMe(signal: AbortSignal): Promise<void> {
   if (me) return;
   me = await api.me(signal);
-  who.textContent = [me.name, me.household].filter(Boolean).join(' · ');
 }
 
 /** The sign-in screen, in place of whatever was showing; `expired` when a sign-in the app held was refused. */
 function signIn(signal: AbortSignal, current: () => boolean, expired: boolean): void {
   me = undefined;
-  who.textContent = '';
-  signOutButton.hidden = true;
   void showSignIn({
     doc,
     api: signInApi,
@@ -276,7 +287,8 @@ function parse(hash: string): Route {
 }
 
 function markNav(route: Route): void {
-  const current = route.name === 'search' || route.name === 'requests' || route.name === 'about' ? route.name : 'home';
+  // About is not a tab: reached from Home's (i), it leaves every tab unmarked.
+  const current = route.name === 'about' ? undefined : route.name === 'search' || route.name === 'requests' ? route.name : 'home';
   for (const link of doc.querySelectorAll<HTMLAnchorElement>('nav a[data-nav]')) {
     if (link.dataset['nav'] === current) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
@@ -297,15 +309,26 @@ async function render(): Promise<void> {
   shownDepth = depth;
   shownRoute = route;
   backButton.hidden = route.name === 'home';
+  aboutLink.hidden = route.name !== 'home';
   markNav(route);
   const retry = () => void render();
-  signOutButton.hidden = !jellyfinToken(localStorage, origin);
 
   if (route.name === 'about') {
     setTitle('About & credits');
-    show(aboutView(doc));
+    const signedIn = Boolean(jellyfinToken(localStorage, origin));
+    show(aboutView(doc, signedIn ? { me, onSignOut: (button) => void signOut(button) } : undefined, !signedIn));
     announce('');
     focusHeading();
+    // The name and household fill in when /me answers (it is asked once); the card is useful without them.
+    if (signedIn && !me) {
+      void loadMe(abort.signal).then(
+        () => {
+          const name = main.querySelector('.account-name');
+          if (current() && name) name.textContent = accountText(me);
+        },
+        () => undefined,
+      );
+    }
     return;
   }
   if (!jellyfinToken(localStorage, origin)) return failure('unauthorized', retry);
@@ -339,7 +362,7 @@ async function home(signal: AbortSignal, current: () => boolean): Promise<void> 
       try {
         const page = await api.discover(row.list, signal);
         if (!current()) return;
-        slot.replaceChildren(titleRow(doc, `row-${row.list}`, row.heading, page, origin));
+        slot.replaceChildren(titleRow(doc, `row-${row.list}`, row.heading, page));
         const list = slot.querySelector<HTMLElement>('ul.row-list');
         const left = restore?.rows?.[`row-${row.list}-heading`];
         if (list && left && restoreLive(restore)) appScrollLeft(list, left);
@@ -386,10 +409,7 @@ async function search(initial: string, signal: AbortSignal, current: () => boole
   const input = el(doc, 'input', {
     attrs: { id: 'q', type: 'search', name: 'q', autocomplete: 'off', enterkeyhint: 'search', maxlength: String(MAX_QUERY_LENGTH), placeholder: 'Movies and series', value: initial },
   });
-  const form = el(doc, 'form', { class: 'search-form', attrs: { role: 'search' } }, [
-    el(doc, 'label', { class: 'visually-hidden', text: 'Search movies and series', attrs: { for: 'q' } }),
-    input,
-  ]);
+  const form = searchForm(doc, input);
   const results = el(doc, 'div', { class: 'search-results' });
 
   function run(raw: string, restoringRun = false): void {
@@ -411,7 +431,7 @@ async function search(initial: string, signal: AbortSignal, current: () => boole
     }
     const controller = new AbortController();
     pending = controller;
-    results.replaceChildren(skeletonRow(doc));
+    results.replaceChildren(skeletonGrid(doc));
     announce('Searching…');
     void fetchPage(query, 1, controller, mine, false);
   }
@@ -428,7 +448,7 @@ async function search(initial: string, signal: AbortSignal, current: () => boole
     try {
       const answer = await api.search(query, page, controller.signal);
       if (mine !== sequence || !current()) return;
-      const fresh = cardList(doc, answer.results, origin, 'grid');
+      const fresh = cardList(doc, answer.results, 'grid');
       const firstNew = fresh.querySelector<HTMLElement>('a.card-link');
       results.querySelector('.load-more')?.remove();
       if (append) {
@@ -591,7 +611,7 @@ async function season(route: Route, signal: AbortSignal, current: () => boolean)
 /** The household's requests, with their titles read from TMDB (through the API) ten at a time. */
 async function requestsScreen(signal: AbortSignal, current: () => boolean): Promise<void> {
   setTitle(REQUESTS_TEXT.title);
-  busy(el(doc, 'h1', { class: 'screen-title', text: REQUESTS_TEXT.title, attrs: { tabindex: '-1' } }), skeletonRow(doc));
+  busy(el(doc, 'h1', { class: 'screen-title', text: REQUESTS_TEXT.title, attrs: { tabindex: '-1' } }), skeletonRequests(doc));
   await loadMe(signal);
   const entries: RequestEntry[] = (await api.requests(signal)).results;
   if (!current()) return;
@@ -656,19 +676,20 @@ async function requestsScreen(signal: AbortSignal, current: () => boolean): Prom
 function resumeIfChanged(): void {
   const signedIn = Boolean(jellyfinToken(localStorage, origin));
   const showingSignIn = Boolean(main.querySelector('[data-screen="signin"]'));
-  if (signedIn === showingSignIn && parse(location.hash).name !== 'about') void render();
+  const onAbout = parse(location.hash).name === 'about';
+  // About shows an Account card only while signed in, so a sign-in or sign-out elsewhere redraws it.
+  if (onAbout ? signedIn !== Boolean(main.querySelector('.account')) : signedIn === showingSignIn) void render();
 }
 
-async function signOut(): Promise<void> {
+async function signOut(button: HTMLButtonElement): Promise<void> {
   const token = jellyfinToken(localStorage, origin);
-  signOutButton.disabled = true;
+  button.disabled = true;
   announce('Signing out…');
   // The token is revoked at Jellyfin first, so it is dead everywhere, Jellyfin web included; then it leaves this browser.
   if (token) await signInApi.signOut(token);
   const cleared = clearSignIn(localStorage, origin);
-  signOutButton.disabled = false;
+  button.disabled = false;
   me = undefined;
-  who.textContent = '';
   if (!cleared) {
     announce("Couldn't remove your sign-in from this browser.");
     return;
@@ -689,7 +710,6 @@ doc.querySelector('a.skip-link')?.addEventListener('click', (event) => {
   event.preventDefault();
   main.focus();
 });
-signOutButton.addEventListener('click', () => void signOut());
 window.addEventListener('storage', (event) => {
   if (event.key === 'jellyfin_credentials') resumeIfChanged();
 });

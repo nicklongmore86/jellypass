@@ -1,4 +1,5 @@
 import type { ApiErrorKind, Profile, SignInErrorKind } from './api.js';
+import { icon } from './icons.js';
 import type { Card, CoarseStatus, HouseholdState, Movie, Page, RequestEntry, Season, SeasonSummary, Series } from './types.js';
 
 /**
@@ -105,15 +106,18 @@ export function stateBadge(doc: Document, state: HouseholdState): HTMLElement {
   return el(doc, 'span', { class: `badge badge-${Object.hasOwn(STATE_LABELS, state) ? state : 'unavailable'}`, text: label });
 }
 
-function poster(doc: Document, url: string | null, alt: string, size: 'card' | 'detail'): HTMLElement {
-  const frame = el(doc, 'div', { class: `poster poster-${size}` });
+/** The `<img>` for an allowlisted TMDB poster URL, or nothing. */
+function posterImage(doc: Document, url: string | null | undefined, alt: string, loading: 'lazy' | 'eager'): HTMLElement | undefined {
   const src = safeImageUrl(url);
-  if (src) {
-    frame.append(el(doc, 'img', { attrs: { src, alt, width: '342', height: '513', loading: size === 'card' ? 'lazy' : 'eager', decoding: 'async' } }));
-  } else {
-    // No image: the frame keeps its shape, so nothing shifts.
-    frame.classList.add('poster-empty');
-  }
+  return src ? el(doc, 'img', { attrs: { src, alt, width: '342', height: '513', loading, decoding: 'async' } }) : undefined;
+}
+
+function poster(doc: Document, url: string | null, alt: string, size: 'card' | 'detail' | 'thumb'): HTMLElement {
+  const frame = el(doc, 'div', { class: `poster poster-${size}` });
+  const image = posterImage(doc, url, alt, size === 'detail' ? 'eager' : 'lazy');
+  // No image: the frame keeps its shape, so nothing shifts.
+  if (image) frame.append(image);
+  else frame.classList.add('poster-empty');
   return frame;
 }
 
@@ -127,23 +131,23 @@ export function playButton(doc: Document, card: Pick<Card, 'play' | 'title'>, or
   return el(doc, 'a', { class: className, text: 'Play', attrs: { href: url, rel: 'noopener', 'aria-label': `Play ${card.title}` } });
 }
 
-export function cardItem(doc: Document, card: Card, origin: string): HTMLElement {
+/** A poster card: poster with its status pill on the corner, then the title and "year · Movie/Series". Play lives on the detail page. */
+export function cardItem(doc: Document, card: Card): HTMLElement {
   const link = el(doc, 'a', { class: 'card-link', attrs: { href: href(card) } }, [
     poster(doc, card.posterUrl, '', 'card'),
     el(doc, 'span', { class: 'card-title', text: card.title }),
     el(doc, 'span', { class: 'card-meta', text: [card.year ?? '', card.mediaType === 'tv' ? 'Series' : 'Movie'].filter(Boolean).join(' · ') }),
   ]);
-  const play = card.state === 'in_library' ? playButton(doc, card, origin, 'button button-small') : undefined;
-  return el(doc, 'li', { class: 'card' }, [link, stateBadge(doc, card.state), play]);
+  return el(doc, 'li', { class: 'card' }, [link, stateBadge(doc, card.state)]);
 }
 
-export function cardList(doc: Document, cards: readonly Card[], origin: string, className: string): HTMLElement {
-  return el(doc, 'ul', { class: className }, cards.map((card) => cardItem(doc, card, origin)));
+export function cardList(doc: Document, cards: readonly Card[], className: string): HTMLElement {
+  return el(doc, 'ul', { class: className }, cards.map((card) => cardItem(doc, card)));
 }
 
 /** A discover row: a heading and a horizontally scrolling list, reachable and scrollable from the keyboard. */
-export function titleRow(doc: Document, id: string, heading: string, page: Page, origin: string): HTMLElement {
-  const list = cardList(doc, page.results, origin, 'row-list');
+export function titleRow(doc: Document, id: string, heading: string, page: Page): HTMLElement {
+  const list = cardList(doc, page.results, 'row-list');
   list.setAttribute('tabindex', '0');
   list.setAttribute('aria-labelledby', `${id}-heading`);
   const section = el(doc, 'section', { class: 'row' }, [el(doc, 'h2', { class: 'row-heading', text: heading, attrs: { id: `${id}-heading` } })]);
@@ -159,6 +163,25 @@ export function skeletonRow(doc: Document): HTMLElement {
     el(doc, 'div', { class: 'skeleton skeleton-heading' }),
     el(doc, 'ul', { class: 'row-list' }, cards),
   ]);
+}
+
+/** The search results' shape: three columns of posters. */
+export function skeletonGrid(doc: Document): HTMLElement {
+  const cards = Array.from({ length: 6 }, () =>
+    el(doc, 'li', { class: 'card skeleton-card' }, [el(doc, 'div', { class: 'poster poster-card skeleton' }), el(doc, 'span', { class: 'skeleton skeleton-line' })]),
+  );
+  return el(doc, 'ul', { class: 'skeleton-grid', attrs: { 'aria-hidden': 'true' } }, cards);
+}
+
+/** "My requests" while it loads: a thumbnail and two lines per entry. */
+export function skeletonRequests(doc: Document): HTMLElement {
+  const items = Array.from({ length: 4 }, () =>
+    el(doc, 'li', { class: 'skeleton-request' }, [
+      el(doc, 'div', { class: 'skeleton skeleton-thumb' }),
+      el(doc, 'div', { class: 'skeleton-lines' }, [el(doc, 'span', { class: 'skeleton skeleton-line' }), el(doc, 'span', { class: 'skeleton skeleton-line' })]),
+    ]),
+  );
+  return el(doc, 'ul', { class: 'request-list', attrs: { 'aria-hidden': 'true' } }, items);
 }
 
 export function skeletonDetail(doc: Document): HTMLElement {
@@ -412,7 +435,10 @@ export function requestItem(doc: Document, entry: RequestEntry): HTMLElement {
   const seasons = entry.seasons.map((season) =>
     el(doc, 'li', { class: 'request-season' }, [el(doc, 'span', { text: `Season ${season.seasonNumber}` }), requestBadge(doc, season.status)]),
   );
+  const thumb = poster(doc, null, '', 'thumb');
+  thumb.classList.add('request-thumb');
   return el(doc, 'li', { class: 'request' }, [
+    thumb,
     el(doc, 'a', { class: 'request-link', attrs: { href: href(entry) } }, [
       el(doc, 'span', { class: 'card-title', text: REQUESTS_TEXT.loading }),
       el(doc, 'span', { class: 'card-meta', text: entry.mediaType === 'tv' ? 'Series' : 'Movie' }),
@@ -423,12 +449,26 @@ export function requestItem(doc: Document, entry: RequestEntry): HTMLElement {
   ]);
 }
 
-export function setRequestTitle(item: HTMLElement, title: { title: string; year: number | null; mediaType: 'movie' | 'tv' } | undefined): void {
+export function setRequestTitle(
+  item: HTMLElement,
+  title: { title: string; year: number | null; mediaType: 'movie' | 'tv'; posterUrl?: string | null } | undefined,
+): void {
   const name = item.querySelector('.card-title');
   const meta = item.querySelector('.card-meta');
   if (!name || !meta) return;
   name.textContent = title?.title || REQUESTS_TEXT.titleMissing;
   if (title) meta.textContent = [title.year ?? '', title.mediaType === 'tv' ? 'Series' : 'Movie'].filter(Boolean).join(' · ');
+  // The thumbnail is the same TMDB poster (w342) the title page uses, only if it is an allowlisted URL.
+  const frame = item.querySelector('.request-thumb');
+  const image = title ? posterImage(ownerOf(item), title.posterUrl, '', 'lazy') : undefined;
+  if (frame && image && !frame.querySelector('img')) {
+    frame.classList.remove('poster-empty');
+    frame.append(image);
+  }
+}
+
+function ownerOf(node: Node): Document {
+  return node.ownerDocument as Document;
 }
 
 /** A fixed error state: the message depends only on the kind of failure, never on any text from a response. */
@@ -449,22 +489,70 @@ export function errorState(doc: Document, kind: ApiErrorKind, onRetry?: () => vo
   return box;
 }
 
-export function aboutView(doc: Document): HTMLElement {
+/** What the About screen shows of the signed-in member; `onSignOut` is run by its Sign out button. */
+export interface AboutAccount {
+  me?: { name: string; household: string } | undefined;
+  onSignOut: (button: HTMLButtonElement) => void;
+}
+
+/** The "name · household" line of the Account card. */
+export function accountText(me: { name: string; household: string } | undefined): string {
+  return me ? [me.name, me.household].filter(Boolean).join(' · ') : 'Signed in';
+}
+
+/** The Account card: who is signed in and the Sign out button (the only place to sign out). */
+function accountGroup(doc: Document, account: AboutAccount): HTMLElement {
+  const out = el(doc, 'button', { class: 'button button-secondary', text: 'Sign out', attrs: { id: 'signout', type: 'button' } });
+  out.addEventListener('click', () => account.onSignOut(out));
+  return el(doc, 'section', { class: 'group account', attrs: { 'aria-labelledby': 'account-heading' } }, [
+    el(doc, 'h2', { class: 'group-label', text: 'Account', attrs: { id: 'account-heading' } }),
+    el(doc, 'div', { class: 'inset-card' }, [el(doc, 'p', { class: 'account-name', text: accountText(account.me) }), out]),
+  ]);
+}
+
+/** Where Sign out was: once signed out, About says so and points back to the sign-in on Home. */
+function signedOutGroup(doc: Document): HTMLElement {
+  return el(doc, 'section', { class: 'group account-out', attrs: { 'aria-labelledby': 'account-heading' } }, [
+    el(doc, 'h2', { class: 'group-label', text: 'Account', attrs: { id: 'account-heading' } }),
+    el(doc, 'div', { class: 'inset-card' }, [
+      el(doc, 'p', { class: 'account-name', text: "You're signed out." }),
+      el(doc, 'a', { class: 'button', text: 'Sign in', attrs: { href: '#/' } }),
+    ]),
+  ]);
+}
+
+export function aboutView(doc: Document, account?: AboutAccount, signedOut = false): HTMLElement {
   return el(doc, 'article', { class: 'about' }, [
     el(doc, 'h1', { class: 'screen-title', text: 'About & credits', attrs: { tabindex: '-1' } }),
-    el(doc, 'p', { text: 'JellyPass is your household’s way to browse what is in your Jellyfin library and to find more to watch.' }),
-    el(doc, 'section', { class: 'credits' }, [
-      el(doc, 'h2', { class: 'row-heading', text: 'Credits' }),
-      el(doc, 'a', { class: 'tmdb-logo-link', attrs: { href: 'https://www.themoviedb.org/', rel: 'noopener noreferrer', 'aria-label': 'The Movie Database (TMDB)' } }, [
-        el(doc, 'img', { class: 'tmdb-logo', attrs: { src: 'tmdb-logo.svg', alt: 'TMDB logo', width: '273', height: '36' } }),
-      ]),
-      el(doc, 'p', { text: TMDB_NOTICE }),
-      el(doc, 'p', { class: 'muted' }, [
-        doc.createTextNode('Titles, overviews and images come from '),
-        el(doc, 'a', { text: 'themoviedb.org', attrs: { href: 'https://www.themoviedb.org/', rel: 'noopener noreferrer' } }),
-        doc.createTextNode('.'),
+    account ? accountGroup(doc, account) : signedOut ? signedOutGroup(doc) : undefined,
+    el(doc, 'section', { class: 'group' }, [
+      el(doc, 'h2', { class: 'group-label', text: 'About' }),
+      el(doc, 'div', { class: 'inset-card' }, [
+        el(doc, 'p', { text: 'JellyPass is your household’s way to browse what is in your Jellyfin library and to find more to watch.' }),
       ]),
     ]),
+    el(doc, 'section', { class: 'group' }, [
+      el(doc, 'h2', { class: 'group-label', text: 'Credits' }),
+      el(doc, 'div', { class: 'inset-card credits' }, [
+        el(doc, 'a', { class: 'tmdb-logo-link', attrs: { href: 'https://www.themoviedb.org/', rel: 'noopener noreferrer', 'aria-label': 'The Movie Database (TMDB)' } }, [
+          el(doc, 'img', { class: 'tmdb-logo', attrs: { src: 'tmdb-logo.svg', alt: 'TMDB logo', width: '273', height: '36' } }),
+        ]),
+        el(doc, 'p', { text: TMDB_NOTICE }),
+        el(doc, 'p', { class: 'muted' }, [
+          doc.createTextNode('Titles, overviews and images come from '),
+          el(doc, 'a', { text: 'themoviedb.org', attrs: { href: 'https://www.themoviedb.org/', rel: 'noopener noreferrer' } }),
+          doc.createTextNode('.'),
+        ]),
+      ]),
+    ]),
+  ]);
+}
+
+/** The search field: a capsule with its magnifier inside, the label visible to assistive technology only. */
+export function searchForm(doc: Document, input: HTMLInputElement): HTMLFormElement {
+  return el(doc, 'form', { class: 'search-form', attrs: { role: 'search' } }, [
+    el(doc, 'label', { class: 'visually-hidden', text: 'Search movies and series', attrs: { for: 'q' } }),
+    el(doc, 'div', { class: 'search-field' }, [icon(doc, 'search'), input]),
   ]);
 }
 
