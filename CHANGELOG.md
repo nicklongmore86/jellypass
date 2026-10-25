@@ -5,15 +5,104 @@ All notable changes to JellyPass are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+JellyPass's public interface is its settings, its state file, its administrator
+API, its webhook and app endpoints, and successful responses on the endpoints it
+relays to Jellyfin. Failure responses on relayed Jellyfin endpoints (status,
+body and headers when a request is refused or fails) are not part of that
+interface: they may change in a minor or patch release to close a security or
+privacy leak. Such changes are always listed at the top of the release notes.
+
 ## [Unreleased]
+
+## [2.4.0] - 2026-10-25
+
+This is a minor release. The household sign-in changes below alter only failure
+responses on a relayed Jellyfin endpoint. JellyPass's versioning policy (at the
+top of `CHANGELOG.md`) keeps those outside the public interface: they may change
+in a minor or patch release to close a security or privacy leak, and are always
+listed first in the release notes. With `HOUSEHOLD_APP_ENABLED=true`, the
+household app now requests titles (**Get this**), lists the household's
+requests and signs members in inside the app. With the app off (the default), only household
+hostnames change: how sign-in there answers (see below) and the caching
+headers of `/jellypass/app` answers. No setting is added, removed or renamed,
+the state file stays at schema v7, and the administrator API only gains
+`GET /v1/app/outstanding`. Read these before upgrading;
+[Upgrading from 2.3.0](#upgrading-from-230) has the steps:
+
+- **With the app enabled, it now requests titles.** There is no separate
+  switch: after upgrading, every household member with Seerr request
+  permission gets a **Get this** button that makes a real Seerr request as
+  them (or adds the household to a title Jellyfin already has). To keep the
+  app read-only, block `POST /jellypass/app/v1/movie/*/get` and
+  `POST /jellypass/app/v1/tv/*/get` at the reverse proxy, or leave
+  `HOUSEHOLD_APP_ENABLED` off.
+- **Members with a Seerr request limit see "Can't request".** Seerr request
+  quotas are not supported yet: a member whose Seerr user has a movie or series
+  request limit, their own or Seerr's default, sees every title they cannot
+  play as **Can't request** (2.3.0 showed **Available to request soon**), and
+  their **Get this** does nothing; they still request in Seerr. If Seerr has a
+  default request limit, that is every member who does not bypass quotas.
+- **The Seerr website is not restricted yet, so the late-request risk
+  remains** for requests made in Seerr directly. Seerr 3.5.x accepts a request
+  for a title that is already available, and for a user with auto-approve, the
+  webhook and backfill treat it as a genuine request, which can make a public
+  title private, re-add access an administrator removed, or extend a
+  manual-only grant. **Get this** never requests a title Jellyfin has, and
+  grants a request it made for a title that arrived meanwhile as a join, but
+  the risk closes only once the Seerr website is restricted to administrators
+  (step 4 of [the app plan](docs/app-design.md#late-requests-closed-by-design),
+  planned, not part of 2.4.0).
+- **Sign-in on household hostnames answers differently, with or without the
+  app.** `POST /Users/AuthenticateByName` on a household address (Jellyfin
+  web, the app and any other Jellyfin client) now:
+  - answers `400` (`invalid_request`) to a malformed sign-in: no
+    `Authorization` or `X-Emby-Authorization` header with a `Client`,
+    `Device`, `DeviceId` and `Version`, or a body that is not a `Username` and
+    a `Pw` (both strings). Jellyfin's own clients send both; a script that does
+    not is refused on household addresses (2.3.0 passed it to Jellyfin, or
+    answered `401`);
+  - answers every other failure with a fixed JellyPass body, never Jellyfin's:
+    `401` (`invalid_credentials`) for a wrong name or password, a name that is
+    no member's, and any answer but success that Jellyfin gives a member; `502`
+    (`jellyfin_unavailable`) only when Jellyfin's user list cannot be read.
+    These `400`, `401` and `502` answers come no sooner than one second after
+    the attempt (2.3.0 refused a non-member at once); `429`
+    (`too_many_login_attempts`) still answers at once;
+  - shows a member whose sign-in Jellyfin fails to answer (unreachable, a
+    `5xx`, or no answer within 15 seconds) **wrong name or password** (`401`),
+    not an outage, unless Jellyfin's user list cannot be read either (then
+    `502`);
+  - looks the name up in Jellyfin's full user list, read with the API key
+    (2.3.0 read the public list), so hidden members can sign in by typing their
+    name, and Jellyfin web's **Manual Login** is shown again on household
+    addresses.
+- **After deploying, purge your CDN's cache for `/jellypass/app/*` once**, if
+  a CDN sits in front of household hostnames: it may still hold 2.3.0's app
+  files for up to four hours. 2.4.0 names its files by content hash and sends
+  every other `/jellypass/app` answer `no-store`, so no rule is needed
+  afterwards.
+- **The state file stays at schema v7.** Only **Get this** adds to it
+  (`appRequests`, `appIdKey`, `appRequestIntents`, `deferredWebhooks`,
+  `appSafetyTombstones`, `householdEpochs`, `nextHouseholdEpoch`); with the
+  app off, 2.4.0 writes no new field. 2.3.0 and 2.2.1 load these fields and
+  write them back unread. **Before rolling back** to 2.3.0, drain and wait for
+  the admin-only `GET /v1/app/outstanding` to answer `"clear": true`; see
+  [Rolling back to 2.3.0](#rolling-back-to-230) for what 2.3.0 then keeps and
+  what stops.
+- **No new settings.** Webhook payloads and the existing administrator API
+  responses are unchanged.
+- **Install and sign-in on a real iPhone are still not verified.** The in-app
+  sign-in has been tested in a simulated browser and against a real Jellyfin;
+  see [Household app (PWA)](README.md#household-app-pwa).
 
 ### Added
 
-- **Household app "Get this" (API only, off by default).** With
-  `HOUSEHOLD_APP_ENABLED=true`, household hostnames serve
+- **Household app "Get this" API (with `HOUSEHOLD_APP_ENABLED=true`).**
+  Household hostnames serve
   `POST /jellypass/app/v1/{movie|tv}/{tmdbId}/get` (series:
-  `{"seasons": [...]}`), which always answers `202 {"status":"accepted"}` at
-  once, before anything about the caller or the title is looked up, and then
+  `{"seasons": [...]}`), which answers `202 {"status":"accepted"}` as soon as
+  the caller's sign-in, the input and the rate limits pass, before the
+  caller's eligibility or anything about the title is read, and then
   in the background: does nothing if the caller can already play it or the
   household already asked; joins the household to the title's grant if
   Jellyfin already has it (found by TMDB ID, by the item Seerr links to the
@@ -61,8 +150,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   title's counts too. The title worker's timeout runs from when the oldest
   answer was handed over. The state file stays at schema v7 and gains
   `appRequests`, `appIdKey`, `appRequestIntents`, `deferredWebhooks`,
-  `appSafetyTombstones`, `householdEpochs` and `nextHouseholdEpoch`, which 2.2.1
-  and 2.3.0 keep without reading. **Before rolling back** to 2.3.x or 2.2.1,
+  `appSafetyTombstones`, `householdEpochs` and `nextHouseholdEpoch`, which 2.3.0
+  and 2.2.1 keep without reading. **Before rolling back** to 2.3.x or 2.2.1,
   drain: stop new "Get this" calls, wait until no `appRequestIntents` or
   `deferredWebhooks` are left (at most 30 minutes plus one reconciliation
   interval), then roll back only once the admin-only
@@ -71,12 +160,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   requests while rolled back, and a marker naming a request not handled yet
   lasts until it is, up to 400 days, not 30 (see
   [Store, bounds and rollback](docs/app-design.md#get-this-as-implemented-step-2a)).
-  The app's **Get this** button gives one fixed confirmation as soon as the call
-  is accepted (kept if reading the page again then fails, with a retry that only
-  reloads the page). A title the household asked for that failed shows **We
-  couldn't get this** with no button and "Ask your JellyPass admin to try
-  again.", since the API does not ask again while the failed record stands. See
-  ["Get this" as implemented](docs/app-design.md#get-this-as-implemented-step-2a).
+  See ["Get this" as implemented](docs/app-design.md#get-this-as-implemented-step-2a).
+- **Get this, a season picker and My requests in the app.** A title (or
+  season) the API marks `get_this` has a **Get this** button; a series page
+  first asks **Choose the seasons you want** among its seasons available to
+  get (a season page asks for its own season only). The button shows
+  **Sending…** while the call is in flight, then one fixed confirmation,
+  "Thanks — we'll get this for your household.", as soon as the call is
+  accepted, whatever happens afterwards; it is kept if reading the page again
+  then fails, with a **Try again** that only reloads the page. Too many tries,
+  being offline and an outage each have their own fixed message. A title the
+  household already asked for is not offered again, and one whose request
+  failed shows **We couldn't get this** with no button and "Ask your JellyPass
+  admin to try again.", since the API does not ask again while the failed
+  record stands. New **My requests** tab: the household's requests with their
+  status (**Requested**, **Ready to watch**, **We couldn't get this**, per
+  season for a series) and whether the member asked ("Asked for by you") or
+  someone else in the household did, with titles named from TMDB a few at a
+  time. Title states are relabelled: **In your library** is now **Ready to
+  watch** and **Available to request soon** is now **Available to get**.
 - **"Ready to watch" only for members who can play it.** A title (or season)
   the household's "Get this" record says is ready shows `ready` in
   `GET /jellypass/app/v1/requests`, and `in_library` on its page, only to a
@@ -99,9 +201,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   on household hosts) lists the safety tombstones that still decide a grant,
   the request intents not settled yet and the webhooks deferred for them:
   counts by kind, the oldest age, each title's TMDB ID and (for intents) the
-  household, never a member, and `clear: true` once all are 0. New gauges
-  `jfa_app_safety_markers{kind}`, `jfa_app_request_intents{status}` and
-  `jfa_app_deferred_webhooks` carry the counts.
+  household, never a member, and `clear: true` once all are 0 (always, if
+  "Get this" was never used). New gauges `jfa_app_safety_markers{kind}`,
+  `jfa_app_request_intents{status}` and `jfa_app_deferred_webhooks` carry the
+  counts.
 
 ### Fixed
 
@@ -128,15 +231,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   sooner than one second after the attempt, under the same per-client limit.
   No failed sign-in tells a member from anyone else: a request Jellyfin would
   refuse whoever it named (no client metadata in `Authorization`, or a body
-  that is not a name and a password) is refused before the name is looked up,
-  any answer but success that Jellyfin gives a member is a wrong password, and
-  "Jellyfin unavailable" means its user list could not be read, for any name.
-- **The WebSocket refusal during shutdown is never stored by a CDN** either.
+  that is not a name and a password) is refused with `400` before the name is
+  looked up, any answer but success that Jellyfin gives a member is a wrong
+  password, and "Jellyfin unavailable" means its user list could not be read,
+  for any name. A sign-in waits at most 15 seconds for Jellyfin.
 - **No CDN keeps any `/jellypass/app` answer.** Errors, unknown paths, API
   answers, refusals and the WebSocket refusal under `/jellypass/app` are now
   sent with `Cache-Control`, `CDN-Cache-Control` and
   `Cloudflare-CDN-Cache-Control: no-store`, like the page; fingerprinted files
-  stay `immutable`.
+  stay `immutable`. The WebSocket refusal a household hostname sends while
+  JellyPass shuts down carries the same headers, on any path.
 - **The app's files can no longer be mixed across releases by a CDN.** Cloudflare
   rewrote the `Cache-Control: no-cache` on the app's `.css`/`.js` files
   (including `sw.js`) to `max-age=14400` and stripped the page's `ETag`, so after
@@ -149,6 +253,90 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   no-store`, and the worker is registered with `updateViaCache: 'none'` and
   precaches the hashed names. Purge your CDN's cache for `/jellypass/app/*`
   once after upgrading.
+
+### Upgrading from 2.3.0
+
+1. **Back up the state file** first, as before any upgrade (see
+   [Backup and restore](README.md#backup-and-restore)): stop JellyPass, copy
+   the file with its permissions (`cp -p`), start it again. 2.4.0 does not
+   migrate the file, but the backup is the clean way back if anything else
+   goes wrong.
+2. **No setting changes are needed.** Nothing is added, removed or renamed.
+3. **If the household app is enabled, decide about Get this before
+   upgrading.** Members with Seerr request permission will be able to request
+   titles from the app as themselves (with auto-approve, those requests are
+   approved at once). Check Seerr's request limits: a member with a limit, or
+   everyone if Seerr has a default limit, sees **Can't request** and requests
+   in Seerr instead. Household members still must not have Seerr's
+   `MANAGE_BLOCKLIST` permission. To keep the app read-only for now, block
+   `POST /jellypass/app/v1/movie/*/get` and `POST /jellypass/app/v1/tv/*/get`
+   at the reverse proxy before upgrading.
+4. **Upgrade:** set `JELLYPASS_IMAGE` to
+   `ghcr.io/nicklongmore86/jellypass:2.4.0`, pull, recreate the container and
+   check `/health` and the logs.
+5. **Purge your CDN's cache for `/jellypass/app/*` once**, if a CDN sits in
+   front of household hostnames.
+6. **Check sign-in on a household address:** a member signs in with their
+   password (and a hidden member through **Manual Login** or **Sign in with a
+   different name**). A client or script that signs in there without
+   Jellyfin's `Authorization` client fields now gets `400`, and every refused
+   sign-in but a rate-limited one takes at least one second.
+7. **Watch the new metrics** once **Get this** is used:
+   `jfa_app_get_this_total{result}` (`error` means the member's Seerr user or
+   quota could not be read), `jfa_app_get_this_branches_total{branch}`
+   (`request_unsaved`, a request held back because its intent was not in the
+   state file, should stay 0), and the gauges
+   `jfa_app_request_intents` and `jfa_app_deferred_webhooks`, which should
+   return to 0 within about 30 minutes plus one reconciliation interval.
+
+### Rolling back to 2.3.0
+
+**Drain first** if **Get this** was used (if the app was never enabled,
+`GET /v1/app/outstanding` already answers `"clear": true`):
+
+1. Stop new **Get this** calls (block the two `POST .../get` paths at the
+   reverse proxy, or pick a time no one uses the app), and leave 2.4.0 running
+   with `RECONCILE_INTERVAL_SECONDS` above 0.
+2. Wait until no request intents and no deferred webhooks are left: at most 30
+   minutes plus one reconciliation interval (a restart reconciles at once).
+3. Check the admin-only `GET /v1/app/outstanding` and roll back only once it
+   answers `"clear": true`. Safety markers cannot be drained early: one
+   covering a member's new requests lasts 30 days, and one naming a request not
+   handled yet (pending, declined, never available) lasts until that request is
+   handled, up to 400 days. Rolled back while any is outstanding, a request it
+   covers is granted by 2.3.0's webhook or backfill as an ordinary (private)
+   request, which can make a public title private (revoke that request in the
+   admin UI to make it public again).
+
+What 2.3.0 does then:
+
+- **It keeps the state file whole.** 2.3.0 loads the seven new fields and
+  writes them back unread, so nothing is lost and the backup is not needed to
+  roll back; upgrading to 2.4.0 again picks them up (statuses catch up at the
+  next reconciliation, and every opaque request ID stays the same).
+- **It does not read them.** The app has no **Get this** and no
+  `GET /jellypass/app/v1/requests` (the app is read-only, as in 2.3.0, and
+  shows nothing as requested); records are not brought up to date and
+  interests are not joined when their grant is created (after upgrading again,
+  such an interest joins only at a later reconciliation); the webhook and
+  backfill grant every request as an ordinary one; a household deleted while
+  rolled back does not detach its records and keeps its epoch, so one created
+  again under the same ID is taken for it after upgrading again.
+  `GET /v1/app/outstanding` and the new metrics do not exist.
+- **Sign-in on household addresses is 2.3.0's again:** Jellyfin's own failure
+  answers are relayed, a non-member is refused at once, **Manual Login** is
+  hidden and names are looked up in the public list, so **hidden members can
+  no longer sign in** on household addresses. The app's **Sign in** sends
+  members to Jellyfin web again; sessions already signed in stay signed in
+  (they are stored in Jellyfin web's own format).
+- **Purge your CDN's cache for `/jellypass/app/*` again** after rolling back:
+  2.3.0 serves the app's files under fixed names with `no-cache`, which a CDN
+  may keep for hours.
+
+To roll back, set `JELLYPASS_IMAGE` back to
+`ghcr.io/nicklongmore86/jellypass:2.3.0` and recreate the container. Rolling
+back to 2.2.1 needs the same drain; 2.2.1 also keeps the new fields unread;
+see [Rolling back to 2.2.1](#rolling-back-to-221) for the rest.
 
 ## [2.3.0] - 2026-10-24
 
@@ -1007,7 +1195,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v2.3.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v2.4.0...HEAD
+[2.4.0]: https://github.com/nicklongmore86/jellypass/compare/v2.3.0...v2.4.0
 [2.3.0]: https://github.com/nicklongmore86/jellypass/compare/v2.2.1...v2.3.0
 [2.2.1]: https://github.com/nicklongmore86/jellypass/compare/v2.2.0...v2.2.1
 [2.2.0]: https://github.com/nicklongmore86/jellypass/compare/v2.1.1...v2.2.0

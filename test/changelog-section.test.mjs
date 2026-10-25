@@ -53,6 +53,36 @@ function assertSection(notes, { version, nextVersion, subheadings }) {
 }
 
 describe('changelogSection with the real CHANGELOG.md', () => {
+  it('extracts 2.4.0 without its heading, up to the 2.3.0 section', () => {
+    const notes = changelogSection(CHANGELOG, '2.4.0');
+    assertSection(notes, {
+      version: '2.4.0',
+      nextVersion: '2.3.0',
+      subheadings: ['Added', 'Fixed', 'Upgrading from 2\\.3\\.0', 'Rolling back to 2\\.3\\.0'],
+    });
+    assert.match(notes, /^This is a minor release\./);
+    const flat = notes.replace(/\s+/g, ' ');
+    // What upgraders must know comes before the first subheading.
+    const intro = flat.slice(0, flat.indexOf('### Added'));
+    for (const must of [
+      /HOUSEHOLD_APP_ENABLED=true/,
+      /Can't request/,
+      /late-request risk remains/,
+      /step 4/,
+      /`400` \(`invalid_request`\)/,
+      /no sooner than one second/,
+      /\*\*wrong name or password\*\*/,
+      /purge your CDN's cache for `\/jellypass\/app\/\*` once/,
+      /schema v7/,
+      /GET \/v1\/app\/outstanding/,
+      /\*\*No new settings\.\*\*/,
+    ]) assert.match(intro, must);
+    assert.match(flat, /\*\*Back up the state file\*\* first/);
+    assert.ok(flat.indexOf('Back up the state file') < flat.indexOf('**Upgrade:**'), 'the backup comes before the upgrade');
+    assert.doesNotMatch(notes, /not yet released/);
+    assert.deepEqual(split(notes).definitions, []);
+  });
+
   it('extracts 2.3.0 without its heading, up to the 2.2.1 section', () => {
     const notes = changelogSection(CHANGELOG, '2.3.0');
     assertSection(notes, {
@@ -250,12 +280,12 @@ describe('changelog-section command line', () => {
 describe('rollback notes for household app "Get this"', () => {
   const README = readFileSync(fileURLToPath(new URL('../README.md', import.meta.url)), 'utf8');
   const DESIGN = readFileSync(fileURLToPath(new URL('../docs/app-design.md', import.meta.url)), 'utf8');
-  const unreleased = CHANGELOG.slice(CHANGELOG.indexOf('## [Unreleased]'), CHANGELOG.indexOf('## [2.3.0]'));
+  const released = changelogSection(CHANGELOG, '2.4.0');
   const drain = DESIGN.slice(DESIGN.indexOf('**Drain before rolling back.**'), DESIGN.indexOf('A state file written by an unreleased build'));
   const readme = README.slice(README.indexOf('Drain before rolling back'), README.indexOf('Rolling back from\n2.2.0'));
 
   it('send the operator to the admin readout and roll back only once it is clear', () => {
-    for (const [name, text] of [['CHANGELOG Unreleased', unreleased], ['README', readme], ['design doc', drain]]) {
+    for (const [name, text] of [['CHANGELOG 2.4.0', released], ['README', readme], ['design doc', drain]]) {
       const flat = text.replace(/\s+/g, ' ');
       assert.match(flat, /GET \/v1\/app\/outstanding/, name);
       assert.match(flat, /"clear": true/, name);
@@ -264,7 +294,7 @@ describe('rollback notes for household app "Get this"', () => {
   });
 
   it('never say a safety marker lasts only 30 days: one naming an unhandled request lasts up to 400', () => {
-    for (const [name, text] of [['CHANGELOG Unreleased', unreleased], ['README', readme], ['design doc', drain]]) {
+    for (const [name, text] of [['CHANGELOG 2.4.0', released], ['README', readme], ['design doc', drain]]) {
       assert.match(text.replace(/\s+/g, ' '), /up to 400 days/, name);
       assert.doesNotMatch(text.replace(/\s+/g, ' '), /\(they last 30 days\)/, name);
     }
