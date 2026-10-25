@@ -14,6 +14,12 @@ privacy leak. Such changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Fixed
+
+- Household app: signing out (the app's **Sign out**, or Jellyfin web's, on a household address) now forgets the session
+  at once, so the app stops working with that sign-in straight away instead of for up to five minutes. A sign-in
+  revoked in Jellyfin's dashboard can still work in the app for up to five minutes, as before.
+
 ### Changed
 
 - Household app: a new look. Dark indigo with a soft glow, a floating glass tab bar (**Home**, **Search**, **My

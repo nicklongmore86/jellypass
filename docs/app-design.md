@@ -51,7 +51,14 @@ Identity comes only from Jellyfin, never from anything the client says about its
 1. The app sends the user's Jellyfin access token to the household host.
 2. JellyPass verifies it with Jellyfin's `GET /Users/Me` (as the household gateway does today) and caches the answer
    for at most 5 minutes, keyed by a hash of the token. A disabled user is rejected. A Jellyfin that cannot be reached,
-   or answers 5xx, fails the call (`unavailable`) rather than signing the caller out.
+   or answers 5xx, fails the call (`unavailable`) rather than signing the caller out. A token Jellyfin refuses is never
+   cached. A sign-out through any household host (`POST /Sessions/Logout`, the app's **Sign out** and Jellyfin web's
+   alike) forgets that token's verified sessions in every household's cache at once, before Jellyfin is asked and
+   whatever it answers, so the next call with it is checked with Jellyfin again and refused. Only the tokens the sign-out
+   itself carries (each kept as a hash) are forgotten, so a sign-out can never forget anyone else's session; a token
+   verified while it was being signed out is not cached. A token revoked **outside** JellyPass (an administrator deleting
+   the device or session in Jellyfin's dashboard, or a sign-out sent straight to Jellyfin) is still trusted for what is
+   left of its 5 minutes: JellyPass is not told, and asking Jellyfin on every call is what the cache avoids.
 3. The household comes from the JellyPass store, and the caller must be a member of the household whose host they
    called. Anyone not in that household is refused.
 4. The caller's own Seerr data (requests, quota, watchlist) is read and written through `SeerrUserMap.member(id)`, a
@@ -427,9 +434,9 @@ elsewhere; the files are never proxied to Jellyfin.
   Beyond that it stores one random device ID (`jellypass_device_id`), deliberately not Jellyfin web's `_deviceId2`, so
   Jellyfin never treats the app's sign-in as a re-login of the web client's device. *Sign-out* (the **Sign out** button in About's Account card, not the header) calls
   `POST /Sessions/Logout` with the token (best effort, five seconds), then removes `UserId` and `AccessToken` from the
-  server entries, as Jellyfin web's own sign-out does. As the session is shared, **it signs Jellyfin web out too**; the
-  app API's five-minute trust in a verified token (`APP_SESSION_TTL_MS`) is unchanged, so the app API can accept a
-  just-revoked token for that long. The service worker never handles `/Users/*`, `/Sessions/*` or any non-allowlisted path,
+  server entries, as Jellyfin web's own sign-out does. As the session is shared, **it signs Jellyfin web out too**. The
+  sign-out passes through the household host, so the app API forgets the token at once (see Identity above): its next
+  call is refused. Only a token revoked outside JellyPass keeps the app API's five-minute trust (`APP_SESSION_TTL_MS`). The service worker never handles `/Users/*`, `/Sessions/*` or any non-allowlisted path,
   so no credential or sign-in answer is cached. A `storage` event, the page being shown again or opened again follows a
   sign-in or sign-out made elsewhere. The CSP is unchanged (`connect-src 'self'`, no inline script). **Open Jellyfin to
   sign in** (`/web/`) remains a secondary link. The manifest's `scope` is `/` (its `start_url` is the app), not

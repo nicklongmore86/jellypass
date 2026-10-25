@@ -126,6 +126,114 @@ describe('household app sign-in through the gateway', { timeout: 30_000 }, () =>
     assert.deepEqual(app.jellyfin.logouts, [AccessToken]);
     assert.equal((await get(app.port, '/Users/Me', header)).status, 401);
   });
+
+  describe('forgets the app\'s session as soon as it signs out', () => {
+    const ME = '/jellypass/app/v1/me';
+    const UNAUTHORIZED = '{"error":"unauthorized"}';
+    const verifications = (app) => app.jellyfin.requests.filter((request) => request.pathname === '/Users/Me').length;
+    const tokenOf = async (app, host, username, password) => (await signIn(app, host, username, password)).json().AccessToken;
+    const as = (host, token) => ({ Host: host, Authorization: `MediaBrowser Token="${token}"` });
+    const me = (app, headers) => get(app.port, ME, headers);
+    const signOut = (app, headers) => post(app.port, '/Sessions/Logout', headers, undefined);
+    const passwords = { [ALICE]: 'alice-pass', [ANN]: 'ann-pass', [BOB]: 'bob-pass' };
+
+    it('refuses the very next call after a sign-out, though the token was verified a moment ago', async (t) => {
+      const app = await startApp(t, world({ passwords }));
+      const alice = as(HOST_A, await tokenOf(app, HOST_A, 'Alice', 'alice-pass'));
+      assert.equal((await me(app, alice)).status, 200);
+      assert.equal((await me(app, alice)).status, 200);
+      assert.equal(verifications(app), 1, 'the second call was answered from the cache');
+      assert.equal((await signOut(app, alice)).status, 204);
+      const after = await me(app, alice);
+      assert.equal(after.status, 401);
+      assert.equal(after.text, UNAUTHORIZED);
+      assert.equal(verifications(app), 2, 'checked with Jellyfin again, which refused it');
+    });
+
+    it('forgets it whatever Jellyfin answers the sign-out, even when Jellyfin is down', async (t) => {
+      const app = await startApp(t, world({ passwords }));
+      const alice = as(HOST_A, await tokenOf(app, HOST_A, 'Alice', 'alice-pass'));
+      assert.equal((await me(app, alice)).status, 200);
+      app.jellyfin.down = true;
+      assert.equal((await signOut(app, alice)).status, 503);
+      app.jellyfin.down = false;
+      // Jellyfin never revoked it, so it is still valid there; but it is checked again rather than taken from the cache.
+      assert.equal((await me(app, alice)).status, 200);
+      assert.equal(verifications(app), 2);
+    });
+
+    it('forgets it on every household\'s cache, and a token is still refused on another household\'s host', async (t) => {
+      const app = await startApp(t, world({ passwords }));
+      const bobToken = await tokenOf(app, HOST_B, 'Bob', 'bob-pass');
+      assert.equal((await me(app, as(HOST_B, bobToken))).status, 200);
+      assert.equal((await me(app, as(HOST_A, bobToken))).text, UNAUTHORIZED, 'Bob is not in household A');
+      // Signed out on household A's address with Bob's own token: his session on household B is forgotten too.
+      assert.equal((await signOut(app, as(HOST_A, bobToken))).status, 204);
+      const after = await me(app, as(HOST_B, bobToken));
+      assert.equal(after.status, 401);
+      assert.equal(after.text, UNAUTHORIZED);
+      assert.equal((await me(app, as(HOST_A, bobToken))).text, UNAUTHORIZED);
+    });
+
+    it('forgets only the sessions of the token the sign-out carries, never anyone else\'s', async (t) => {
+      const app = await startApp(t, world({ passwords }));
+      const alice = as(HOST_A, await tokenOf(app, HOST_A, 'Alice', 'alice-pass'));
+      const annToken = await tokenOf(app, HOST_A, 'Ann', 'ann-pass');
+      const ann = as(HOST_A, annToken);
+      const bob = as(HOST_B, await tokenOf(app, HOST_B, 'Bob', 'bob-pass'));
+      for (const headers of [alice, ann, bob]) assert.equal((await me(app, headers)).status, 200);
+      assert.equal(verifications(app), 3);
+      // A garbage token, no token, and the household's other member's token as another header carries: nobody else's.
+      assert.equal((await signOut(app, as(HOST_A, 'not-a-token'))).status, 401);
+      assert.equal((await signOut(app, { Host: HOST_A })).status, 401);
+      assert.equal((await signOut(app, { Host: HOST_B, 'X-Emby-Token': 'not-a-token', Authorization: 'MediaBrowser Token=""' })).status, 401);
+      for (const headers of [alice, ann, bob]) assert.equal((await me(app, headers)).status, 200);
+      assert.equal(verifications(app), 3, 'every session still answered from the cache');
+      // Ann signs out as Jellyfin web does (its own header, with the token at the end): only Ann is forgotten.
+      assert.equal((await signOut(app, { Host: HOST_A, Authorization: `${WEB_AUTHORIZATION}, Token="${annToken}"` })).status, 204);
+      assert.equal((await me(app, ann)).text, UNAUTHORIZED);
+      assert.equal(verifications(app), 4);
+      assert.equal((await me(app, alice)).status, 200);
+      assert.equal((await me(app, bob)).status, 200);
+      assert.equal(verifications(app), 4, 'Alice and Bob still answered from the cache');
+    });
+
+    it('does not keep a token verified while it was being signed out', async (t) => {
+      const state = world({ passwords });
+      const app = await startApp(t, state);
+      const alice = as(HOST_A, await tokenOf(app, HOST_A, 'Alice', 'alice-pass'));
+      let release;
+      let asked;
+      const askedPromise = new Promise((resolve) => { asked = resolve; });
+      state.holdMe = () => {
+        asked();
+        return new Promise((resolve) => { release = resolve; });
+      };
+      // Jellyfin decides it is valid, then the sign-out passes before its answer arrives.
+      const first = me(app, alice);
+      await askedPromise;
+      state.holdMe = undefined;
+      assert.equal((await signOut(app, alice)).status, 204);
+      release();
+      assert.equal((await first).status, 200);
+      assert.equal((await me(app, alice)).text, UNAUTHORIZED);
+    });
+
+    it('still trusts a token revoked outside JellyPass for up to five minutes', async (t) => {
+      let now = Date.parse('2026-10-25T12:00:00.000Z');
+      const app = await startApp(t, world({ passwords }), { now: () => now });
+      const token = await tokenOf(app, HOST_A, 'Alice', 'alice-pass');
+      const alice = as(HOST_A, token);
+      assert.equal((await me(app, alice)).status, 200);
+      // An administrator deletes the device at Jellyfin: JellyPass sees no sign-out.
+      app.jellyfin.signIns.find((entry) => entry.token === token).revoked = true;
+      assert.equal((await get(app.port, '/Users/Me', alice)).status, 401, 'Jellyfin refuses it');
+      now += 5 * 60 * 1000 - 1;
+      assert.equal((await me(app, alice)).status, 200, 'the cache still trusts it');
+      now += 1;
+      assert.equal((await me(app, alice)).text, UNAUTHORIZED);
+    });
+  });
   it('leaves a hidden member off the picker, and signs them in by name from the app and from /web/', async (t) => {
     const app = await startApp(t, hiddenWorld());
     assert.deepEqual(await names(app, HOST_A), ['Alice'], 'Ann is hidden at Jellyfin, so the picker leaves her off');

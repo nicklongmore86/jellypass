@@ -15,6 +15,7 @@ const PUBLIC_USERS_PATH = '/users/public';
 const BRANDING_CONFIGURATION_PATH = '/branding/configuration';
 const QUICK_CONNECT_ENABLED_PATH = '/quickconnect/enabled';
 const AUTHENTICATE_BY_NAME_PATH = '/users/authenticatebyname';
+const LOGOUT_PATH = '/sessions/logout';
 const FORGOT_PASSWORD_PATHS = new Set(['/users/forgotpassword', '/users/forgotpassword/pin']);
 const MAX_TRANSFORMED_JSON_BYTES = 2 * 1024 * 1024;
 const MAX_LOGIN_BODY_BYTES = 8 * 1024;
@@ -237,6 +238,10 @@ export class HouseholdGateway {
       writeJson(response, 403, { error: 'household_password_recovery_disabled' });
       return;
     }
+    if (request.method === 'POST' && pathname === LOGOUT_PATH) {
+      // Forgotten before Jellyfin is asked, whatever it answers: only the tokens this sign-out itself carries.
+      this.#app?.forget(tokenKeys(this.#credentials(request, requestUrl)));
+    }
     if (request.method === 'POST' && pathname === AUTHENTICATE_BY_NAME_PATH) {
       await this.#proxyHouseholdLogin(request, response, memberIds);
       return;
@@ -437,6 +442,7 @@ export class HouseholdGateway {
       origin: `https://${this.#hostPrefix}${householdId}.${this.#domain}`,
       clientId: this.#clientAddress(request),
       credentialKey: credentialKey(credentials),
+      tokenKeys: tokenKeys(credentials),
       currentUser: async () => {
         const user = (await this.#userFor(credentials, { serverErrorsThrow: true }))?.user;
         return user ? callerOf(user) : undefined;
@@ -1036,6 +1042,41 @@ function credentialKey(credentials: JellyfinCredentials): string | undefined {
   const query = [...credentials.query].sort(([a], [b]) => a.localeCompare(b));
   if (!parts.length && !query.length) return undefined;
   return createHash('sha256').update(JSON.stringify([parts, query])).digest('hex');
+}
+
+/**
+ * A hash of each Jellyfin token the credentials carry, however each is given: `Token` in an `Authorization` or
+ * `X-Emby-Authorization` header (URL-decoded, as Jellyfin reads it), `X-Emby-Token`, or a token query parameter.
+ */
+function tokenKeys(credentials: JellyfinCredentials): string[] {
+  const tokens = new Set<string>();
+  for (const name of ['authorization', 'x-emby-authorization']) {
+    const value = credentials.headers.get(name);
+    const token = value ? authorizationToken(value) : undefined;
+    if (token) tokens.add(token);
+  }
+  const embyToken = credentials.headers.get('x-emby-token');
+  if (embyToken) tokens.add(embyToken);
+  for (const [, value] of credentials.query) tokens.add(value);
+  return [...tokens].map((token) => createHash('sha256').update(`token\n${token}`).digest('hex'));
+}
+
+/** The `Token` of a `MediaBrowser key="value", ...` header, or undefined if it has none. */
+function authorizationToken(header: string): string | undefined {
+  const parameters = header.trim().replace(/^[A-Za-z]+\s+/, '');
+  for (const part of parameters.split(',')) {
+    const separator = part.indexOf('=');
+    if (separator < 0 || part.slice(0, separator).trim().toLowerCase() !== 'token') continue;
+    const raw = part.slice(separator + 1).trim().replace(/^"|"$/g, '');
+    let token = raw;
+    try {
+      token = decodeURIComponent(raw);
+    } catch {
+      // Not URL-encoded: the token as given.
+    }
+    return token || undefined;
+  }
+  return undefined;
 }
 
 /** The user and token in a successful AuthenticateByName answer, or undefined if it has none. */

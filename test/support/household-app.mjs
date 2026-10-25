@@ -560,7 +560,11 @@ export async function createFakeJellyfinForApp(state) {
       ?? Object.entries(state.tokens ?? TOKENS).find(([, value]) => value === token)?.[0];
     const user = userId && state.jellyfinUsers[userId];
     if (!user) return send(response, 401, {});
-    if (url.pathname === '/Users/Me') return send(response, 200, { Id: userId, Name: user.Name, Policy: user.Policy, ServerId: 'server' });
+    if (url.pathname === '/Users/Me') {
+      const me = { Id: userId, Name: user.Name, Policy: user.Policy, ServerId: 'server' };
+      // `state.holdMe`, when set, holds the answer (decided now) until the promise it returns settles.
+      return state.holdMe ? state.holdMe().then(() => send(response, 200, me)) : send(response, 200, me);
+    }
     const parameter = (name) => [...url.searchParams].find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1];
     if (parameter('userId') !== userId) return send(response, 403, {});
     if (url.pathname === '/Items') {

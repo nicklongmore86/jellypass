@@ -140,6 +140,8 @@ export interface HouseholdAppRequest {
   clientId: string;
   /** A hash of the Jellyfin credentials the request carries, or undefined when it carries none. */
   credentialKey: string | undefined;
+  /** A hash of each Jellyfin token the request carries, so a sign-out with one of them forgets its session. */
+  tokenKeys: readonly string[];
   /** The caller per Jellyfin's GET /Users/Me, or undefined if Jellyfin rejects the credentials. Throws if Jellyfin fails. */
   currentUser(): Promise<JellyfinCaller | undefined>;
   /** A Jellyfin GET with the caller's own credentials. Throws unless Jellyfin answers 2xx with JSON. */
@@ -148,6 +150,11 @@ export interface HouseholdAppRequest {
 
 export interface HouseholdAppHandler {
   handle(request: IncomingMessage, response: ServerResponse, context: HouseholdAppRequest): Promise<void>;
+  /**
+   * Forgets every verified session, in every household, made with one of these tokens (hashes, as `tokenKeys`), so the
+   * next call with it is checked with Jellyfin again. Called with the tokens a sign-out itself carries, never others.
+   */
+  forget(tokenKeys: readonly string[]): void;
 }
 
 export interface HouseholdAppOptions {
@@ -315,8 +322,8 @@ class TtlCache<T> {
  * household's calls never decide whether another's are answered from a cache, and so never change how long they take.
  */
 interface HouseholdCaches {
-  /** Verified tokens of this household's members, by credential hash. */
-  sessions: Map<string, { expiresAt: number; caller: JellyfinCaller }>;
+  /** Verified tokens of this household's members, by credential hash, with the hashes of the tokens they hold. */
+  sessions: Map<string, { expiresAt: number; caller: JellyfinCaller; tokenKeys: readonly string[] }>;
   libraries: TtlCache<Map<string, string>>;
   titles: TtlCache<unknown>;
   blocklist: TtlCache<Set<string>>;
@@ -355,6 +362,8 @@ export class HouseholdApp implements HouseholdAppHandler {
   readonly #getThisByClient: AttemptCounter;
   readonly #getThisByHousehold: AttemptCounter;
   readonly #partitions = new Map<string, HouseholdCaches>();
+  /** Counts sign-outs, so a token verified while one was made is not kept (Jellyfin may have answered before it). */
+  #forgets = 0;
   readonly #tmdb: FairDispatcher;
 
   public constructor(options: HouseholdAppOptions) {
@@ -417,6 +426,17 @@ export class HouseholdApp implements HouseholdAppHandler {
     };
     this.#partitions.set(householdId, caches);
     return caches;
+  }
+
+  public forget(tokenKeys: readonly string[]): void {
+    if (!tokenKeys.length) return;
+    this.#forgets += 1;
+    const forgotten = new Set(tokenKeys);
+    for (const { sessions } of this.#partitions.values()) {
+      for (const [key, session] of sessions) {
+        if (session.tokenKeys.some((tokenKey) => forgotten.has(tokenKey))) sessions.delete(key);
+      }
+    }
   }
 
   public async handle(request: IncomingMessage, response: ServerResponse, context: HouseholdAppRequest): Promise<void> {
@@ -490,7 +510,8 @@ export class HouseholdApp implements HouseholdAppHandler {
    * The caller, if their token is valid, their Jellyfin user enabled and a member of this host's household; otherwise
    * undefined, whichever of these failed. A member's verified token is trusted for {@link APP_SESSION_TTL_MS}, in the
    * household's own cache (anyone else's is checked with Jellyfin on every call, so it can never crowd a member's out);
-   * membership is checked against the store on every call.
+   * membership is checked against the store on every call. A sign-out through the household host forgets it at once
+   * (see {@link forget}); a token Jellyfin refuses is never kept.
    */
   async #caller(context: HouseholdAppRequest): Promise<JellyfinCaller | undefined> {
     const key = context.credentialKey;
@@ -503,10 +524,11 @@ export class HouseholdApp implements HouseholdAppHandler {
       caller = undefined;
     }
     if (!caller) {
+      const forgets = this.#forgets;
       const verified = await context.currentUser();
       if (!verified) return undefined;
-      caller = { expiresAt: now + APP_SESSION_TTL_MS, caller: verified };
-      if (sessions && !verified.disabled && isMember(context, verified)) {
+      caller = { expiresAt: now + APP_SESSION_TTL_MS, caller: verified, tokenKeys: context.tokenKeys };
+      if (sessions && forgets === this.#forgets && !verified.disabled && isMember(context, verified)) {
         sessions.set(key, caller);
         while (sessions.size > MAX_SESSIONS_PER_HOUSEHOLD) sessions.delete(sessions.keys().next().value as string);
       }
