@@ -532,6 +532,10 @@ export class GrantStore {
    * Whether the state file on disk holds this request intent: written and renamed into place, not merely in memory.
    * "Get this" checks it immediately before sending the intent's Seerr request (see HouseholdRequests), so a request is
    * never sent before the decision that protects its grant would survive a crash.
+   *
+   * "On disk" means the atomic write-and-rename completed, not power-loss durability: neither the file nor its directory
+   * is fsynced, so an OS crash or power cut right after the rename can still lose the intent (a documented leftover, see
+   * docs/app-design.md); a process crash cannot.
    */
   public isAppRequestIntentDurable(id: string): boolean {
     return this.#durableIntents.has(id);

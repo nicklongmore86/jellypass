@@ -39,7 +39,7 @@ export const MAX_REFRESH_READS = 50;
 export const RECORD_DELAY_MS = 2000;
 /** Most titles GET /requests lists, newest first. */
 export const MAX_LISTED_TITLES = 200;
-/** Most of the caller's own Jellyfin views GET /requests reads at once, to tell whether a ready title is theirs to play. */
+/** Most of the caller's own Jellyfin views GET /requests reads at once (one per listed title), to tell whether a ready title is theirs to play. */
 export const OWN_VIEW_READS = 8;
 /**
  * A `submitting` intent whose request Seerr does not list this long after it was written is taken as never made (the
@@ -703,17 +703,31 @@ export class HouseholdRequests {
    *
    * `ready` is never optimistic: a movie (or season) is `ready` only when `ownView`, the caller's own Jellyfin view
    * (their library access, parental limits and the household's blocked tags), has it; otherwise it stays `requested`.
-   * `ownView` is asked only about listed titles with a ready season, at most {@link OWN_VIEW_READS} at a time.
+   * `ownView` is asked about every listed title, ready or not, at most {@link OWN_VIEW_READS} at a time, and a title it
+   * fails for is shown as if the caller's view did not have it (its ready seasons `requested`): which reads the list
+   * makes, and how it answers when they fail, depend only on the caller's own view and the household's own listed
+   * records, never on whether a title arrived somewhere the caller cannot see. The cost is bounded by
+   * {@link MAX_LISTED_TITLES} views (with the caller's library cached, a movie's needs no Jellyfin call and a series'
+   * one episode read, only when the caller's own view has the series).
    */
   public async list(householdId: string, callerId: string, ownView: (mediaType: MediaType, tmdbId: number) => Promise<OwnView>): Promise<RequestsDto> {
     const key = this.#store.getAppIdKey() ?? '';
     const listed = [...this.#titles(householdId, callerId).values()]
       .sort((left, right) => right.latest.localeCompare(left.latest) || left.tmdbId - right.tmdbId)
       .slice(0, MAX_LISTED_TITLES);
-    const pending = listed.filter((entry) => [...entry.seasons.values()].includes('ready'));
-    for (let index = 0; index < pending.length; index += OWN_VIEW_READS) {
-      await Promise.all(pending.slice(index, index + OWN_VIEW_READS).map(async (entry) => {
-        const view = await ownView(entry.mediaType, entry.tmdbId);
+    for (let index = 0; index < listed.length; index += OWN_VIEW_READS) {
+      await Promise.all(listed.slice(index, index + OWN_VIEW_READS).map(async (entry) => {
+        let view: OwnView;
+        try {
+          view = await ownView(entry.mediaType, entry.tmdbId);
+        } catch (error) {
+          console.error(JSON.stringify({
+            level: 'error',
+            message: 'household app own view read failed; its ready seasons are listed as requested',
+            detail: error instanceof Error ? error.message : String(error),
+          }));
+          view = { visible: false, seasons: new Set() };
+        }
         for (const [season, status] of entry.seasons) {
           const visible = entry.mediaType === 'movie' ? view.visible : view.seasons.has(season);
           if (status === 'ready' && !visible) entry.seasons.set(season, 'requested');

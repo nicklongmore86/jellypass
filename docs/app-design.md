@@ -539,7 +539,9 @@ Step 2a implements the first two rules (see '"Get this" as implemented (step 2a)
   season) that arrived since the first read is joined instead.
 - **Durable first, checked.** Immediately before the request leaves (nothing awaited in between), the store is asked
   whether the state file on disk holds the intent (`GrantStore.isAppRequestIntentDurable`: written and renamed into
-  place, not merely in memory). If not, nothing is sent and the intent is dropped (`request_unsaved`): a change that
+  place, not merely in memory). "Durable" here means the atomic replacement completed, not that it survives a power
+  loss: the write-and-rename does not fsync the file or its directory, so an OS crash or power cut just after the rename
+  can still lose it (a documented leftover; a process crash cannot). If not, nothing is sent and the intent is dropped (`request_unsaved`): a change that
   stopped awaiting the intent's write sends nothing rather than a request a crash would leave unprotected. Every app
   test runs under the same invariant from the other side: the fake Seerr reads the state file when a request arrives
   and fails the test unless an intent for its title is there.
@@ -753,8 +755,13 @@ tombstones", "Replay order"). A request a tombstone covers is granted the same w
 `{id, mediaType, tmdbId, status, seasons, byYou}`. `status` is coarse: `requested` (Requested: pending or approved),
 `ready` (Ready to watch: completed, and in the caller's own view; otherwise `requested`, see "Readiness") or `failed`
 (We couldn't get this: declined or failed); `deleted` records are not
-listed. The caller's view is read only for listed titles with a ready season (at most 8 at a time): a series' episodes
-as them, the rest from their library. A title's latest record decides each season (or the movie); a series is `requested` while any season is,
+listed. The caller's view is read for **every** listed title, ready or not (at most 8 at a time): a movie from their
+cached library (no Jellyfin call), a series' episodes as them only when their own view has the series (one read per
+such series, so at most 200 per call). A title whose read fails is listed as if the caller's view did not have it (its
+ready seasons `requested`), not answered `502`. So which reads the list makes, and how it answers when they fail,
+depend only on the caller's own view and the household's own listed records, never on whether a title arrived in a
+library the caller cannot see (Codex's repro: reading the view only for a ready title made a season arriving in a
+hidden library change the list's Jellyfin reads and, with the episode endpoint failing, its answer from `200` to `502`). A title's latest record decides each season (or the movie); a series is `requested` while any season is,
 otherwise `ready` if any season is, otherwise `failed`; `seasons` is `[{seasonNumber, status}]` (empty for a movie).
 `id` is opaque: an HMAC-SHA256 of the household and the title with a key kept in the state file (`appIdKey`, made with
 the first record), base64url, 22 characters: the same for every member of the household, different for each household

@@ -78,10 +78,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `GET /jellypass/app/v1/requests`, and `in_library` on its page, only to a
   member whose own Jellyfin view has it; to a member another library, a
   parental limit or a blocked tag hides it from, it stays `requested` (before:
-  `ready` in the list and `get_this` on the page).
+  `ready` in the list and `get_this` on the page). The list reads the
+  member's own view of every listed title, ready or not, and lists a title
+  whose read fails as `requested` rather than failing, so a title arriving in
+  a library the member cannot see changes neither the list's Jellyfin reads
+  nor its answer.
 - **A "Get this" request is never sent before its intent is on disk.** Just
   before the Seerr request leaves, JellyPass checks that the state file holds
-  the request intent that protects its grant (written and renamed into place);
+  the request intent that protects its grant (written and renamed into place,
+  though not fsynced, so this survives a process crash, not a power cut);
   if it does not, nothing is sent (new branch `request_unsaved` in
   `jfa_app_get_this_branches_total`). The test suite checks the same from
   Seerr's side for every request.

@@ -721,6 +721,52 @@ describe('household app "Get this": what the household sees afterwards', { timeo
     assert.equal((await app.get(`${APP}/requests`, { user: ANN })).json().results[0].status, 'ready');
   });
 
+  it('reads the same of the caller\'s own view, and answers the same, before and after a season arrives in a library they cannot see', async (t) => {
+    const [first, second] = episodesOf(1, 2);
+    const app = await start(t, world({
+      items: [seriesItem()],
+      episodes: [{ ...first, library: 'shared' }],
+      jellyfinUsers: { [ALICE]: { Name: 'Alice', Policy: { BlockedTags: ['jellypass-held-elsewhere'], EnabledFolders: ['shared'], MaxParentalRating: 12 } } },
+    }));
+    await getThis(app, GET_TV, { seasons: [2] });
+    const originalFetch = globalThis.fetch;
+    let failEpisodes = false;
+    globalThis.fetch = async (url, options) => (failEpisodes && String(url).includes('/Episodes')
+      ? new Response('{}', { status: 503 })
+      : originalFetch(url, options));
+    t.after(() => { globalThis.fetch = originalFetch; });
+    /** `/requests` as Alice, with Jellyfin's episode endpoint up and then failing: its answer and what it read. */
+    const sample = async () => {
+      const seen = {};
+      for (const failing of [false, true]) {
+        failEpisodes = failing;
+        const before = app.jellyfin.requests.length;
+        const answer = await app.get(`${APP}/requests`);
+        seen[failing ? 'episodes failing' : 'episodes up'] = {
+          status: answer.status,
+          body: answer.text,
+          reads: app.jellyfin.requests.slice(before).map((request) => request.pathname),
+        };
+      }
+      failEpisodes = false;
+      return seen;
+    };
+    // The first sample fills the household's library cache, so both compared samples read from it alike.
+    await sample();
+    const waiting = await sample();
+    // Season 2 arrives, in a library Alice cannot see: the household's record now says it is ready.
+    app.jellyfin.state.episodes.push({ ...second, library: 'mill-only' });
+    app.seerr.state.requests[SEERR_IDS[ALICE]][0].status = 5;
+    await app.store.markRequestsHandled([app.store.listAppRequests()[0][1].seerrRequestId]);
+    await app.requests.refresh();
+    assert.deepEqual(app.store.listAppRequests()[0][1].readySeasons, [2]);
+    assert.deepEqual(await sample(), waiting);
+    assert.equal(waiting['episodes up'].status, 200);
+    assert.equal(waiting['episodes failing'].status, 200);
+    assert.ok(waiting['episodes up'].reads.some((pathname) => pathname.endsWith('/Episodes')));
+    assert.match(waiting['episodes failing'].body, /"status":"requested"/);
+  });
+
   it('derives the same opaque ID from the same household and title, and different ones otherwise', async (t) => {
     const app = await start(t, world({ tmdbMovies }));
     await getThis(app);
