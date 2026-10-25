@@ -148,7 +148,10 @@ So `TmdbClient` (`src/tmdb.ts`) reads TMDB's v3 API directly, with JellyPass's o
   never evicts A's entries (see "One cache per household"). Concurrent calls for the same key in one household share
   one TMDB call; a failed call is not kept.
 - **Images** are TMDB's own `poster_path` and `backdrop_path` through the existing allowlisted image URLs
-  (`https://image.tmdb.org/t/p/{w342,w780}` plus a file name matching `^/[A-Za-z0-9_-]{1,100}\.(jpg|jpeg|png|webp)$`).
+  (`https://image.tmdb.org/t/p/{w342,w780,w1280}` plus a file name matching `^/[A-Za-z0-9_-]{1,100}\.(jpg|jpeg|png|webp)$`).
+  The API sends posters at `w342` and backdrops at `w780`, exactly as before; the app re-checks every URL against that
+  allowlist and, for a backdrop, also offers the same file at `w1280` in a `srcset` (same host, same path), so a phone's
+  browser takes the sharper one by its own width and density. No other size is accepted.
 - **Attribution.** TMDB's API terms require attribution: the README carries TMDB's notice ("This product uses the TMDB
   API but is not endorsed or certified by TMDB"). Step 1b's About & credits screen shows TMDB's
   notice (the wording on TMDB's API terms page: "This product uses TMDB and the TMDB APIs but is not endorsed,
@@ -308,7 +311,7 @@ DTOs (every key always present; missing values `null`, or `""` for text):
 
 - `Card`: `mediaType`, `tmdbId`, `title`, `year`, `overview`, `posterUrl`, `backdropUrl`, `rating` (TMDB vote average,
   `null` when 0), `state`, `play` (`{itemId, url}` only for `in_library`, the URL
-  `https://<household host>/web/#/details?id=<itemId>`). Images are `https://image.tmdb.org/t/p/{w342,w780}` plus a
+  `https://<household host>/web/#/details?id=<itemId>`). Images are `https://image.tmdb.org/t/p/{w342,w780,w1280}` plus a
   path matching `^/[A-Za-z0-9_-]{1,100}\.(jpg|jpeg|png|webp)$`.
 - `Page`: `page`, `nextPage` (`page + 1` only when TMDB returned a full page of 20 results, up to 500), `results`
   (cards for movies and series; people and collections dropped).
@@ -478,8 +481,41 @@ elsewhere; the files are never proxied to Jellyfin.
   `background_color` are `--bg`, and the app icons are drawn by `scripts/make-app-icons.py`. Every text/background pair is
   a hex token checked at WCAG AA by a test, including dark text on both ends of the gradient button and each status
   pill's text over a white poster at the glass's opacity; without `backdrop-filter` the glass becomes the opaque surface
-  colour. The screens' data, statuses, wording and **Get this** outcomes are unchanged. Not yet: the hero and 1280 px
-  backdrops (PR 2).
+  colour. The screens' data, statuses, wording and **Get this** outcomes are unchanged.
+- **Hero and full-bleed pages (restyle, PR 2).** The page runs under the status bar (`black-translucent`, safe-area
+  insets) and the header floats over a screen's top image: `body[data-chrome]` is `home` over Home's hero, `detail` over
+  a title's backdrop, and unset elsewhere (and on Home when there is no hero, or on an error); past 40 px of scroll
+  (`data-scrolled`, set by a plain scroll listener that never counts as the member taking over) it is the glass bar of
+  PR 1 again. A scrim behind the brand and the status bar keeps them readable over any image.
+  *Home's hero* shows the first five titles of the first row (Trending) from the answer Home already has for that row:
+  **no extra API call**, and nothing new in the DTO. Each slide is a scroll-snap slide (`scroll-snap-type: x mandatory`)
+  with the backdrop as an `<img>` (`srcset` w780/w1280, `sizes="100vw"`; never a CSS `url()` or inline style), the
+  title (a link to the title's page that stretches over the slide), year, "★ 7.8 TMDB", the household's status pill and a
+  two-line overview; a title with no backdrop gets a plain gradient slide. There is **no autoplay**: it moves only by
+  swipe, the **Previous title** and **Next title** buttons (wrapping round), or the dots, each a button named "Show
+  title N of 5: <title>" with `aria-current` on the one in view; buttons scroll smoothly unless the member prefers
+  reduced motion, and a hidden polite live region says which slide is showing. The hero's `scrollLeft` is part of
+  Home's captured position and is put back with the rows' under the same rules (a touch, wheel, pointer or key before it
+  is back cancels it); the data is fetched again, never kept.
+  *Detail pages* (movie, series, season) have a backdrop of 60 dvh (60 vh where `dvh` is unknown, at least 20 rem) with
+  a gradient into `--bg`; the round glass **Back** stays top-left below the safe-area inset; the title block overlaps
+  the backdrop's lower 11 rem: a large bold title, a chip row (year, runtime or "N seasons" (specials are not a
+  season), "★ 7.5 TMDB"), genre pills, the status pill and **one** full-width capsule action: **Play** (in the library,
+  only with the household's own Jellyfin link) or **Get this** (available to get). "Requested", "We couldn't get this"
+  and "Can't request" show the pill and one muted fixed note ("Check My requests to follow it.", the admin note, "This
+  title can't be requested."), never a button. A series partly in the library keeps **Play** as its primary and shows
+  **Get this** in the glass style. The poster is hidden on phones and a 9 rem thumbnail from 48 rem. A season page uses
+  its series' backdrop (the series is already read for its name). The text is checked at 4.5:1 over a *white* backdrop:
+  `--scrim-text` (the page colour at 0.84) is solid for 14 rem above the backdrop's foot (17 rem in the hero), more
+  than the title block's overlap, and a test composites it, the chips, the pills and the brand's `--scrim-top` over pure
+  white and pure black.
+  *Seasons* are cards (name, "N episodes", status pill, a link to the season). Where the household can ask, the card has
+  a round selection control that is still a real `<input type="checkbox">` (`appearance: none`, a 44 px label around it,
+  named for its season), and the cards share one `<fieldset>` whose `<legend>` is "Choose the seasons you want". **Select
+  all** (shown when there is more than one) only checks or clears the boxes and asks for nothing; **Get this** is the one
+  action and sends exactly the checked seasons through the same identical-outcome flow (one confirmation, the same fixed
+  errors) as before. *Skeletons* for the hero and for a detail page have the real shapes and are hidden from assistive
+  technology.
 - **Back and position.** Every screen but Home has a **Back** button first in the header (44 px, `aria-label="Back"`),
   because the installed app has no browser chrome. The app numbers its own history entries in `history.state` (`{jp: n}`,
   nothing else). With `n > 0` Back is `history.back()`, so hardware back and swipe-back are identical; opened on a screen

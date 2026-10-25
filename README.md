@@ -658,7 +658,8 @@ and nowhere else (on the administrator host they do not exist). The
   `"seasons"` (`{"seasonNumber", "name", "episodeCount", "state"}`), and a
   season is `{"tmdbId", "seasonNumber", "name", "overview", "episodes",
   "state"}`. Missing values are `null` (or `""` for text). Images are TMDB URLs
-  built from an allowlisted file name.
+  built from an allowlisted file name (posters at `w342`, backdrops at `w780`; the app also draws a backdrop at `w1280`,
+  the same file, for sharper screens).
 - **`state`** is the household's own view of the title, decided in this order:
   `in_library` (the caller's own Jellyfin view has it, whatever their Seerr
   permissions; only then is `play` set, to `{"itemId", "url"}` with
