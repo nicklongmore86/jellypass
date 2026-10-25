@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { EventEmitter } from 'node:events';
 import { mkdir, readFile } from 'node:fs/promises';
 import { Agent, createServer, request as httpRequest } from 'node:http';
 import { connect as connectSocket, createServer as createNetServer } from 'node:net';
 import path from 'node:path';
+import { PassThrough } from 'node:stream';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { makeServer } from '../dist/server.js';
@@ -387,20 +389,117 @@ describe('SIGTERM to the JellyPass process', { timeout: STARTUP_TIMEOUT_MS + 15_
   });
 });
 
+describe('starting JellyPass for a test', { timeout: 15_000 }, () => {
+  const inUse = "Error: listen EADDRINUSE: address already in use 127.0.0.1:1\n    at Server.setupListenHandle\n"
+    + "    at process.processTicksAndRejections {\n  code: 'EADDRINUSE',\n  errno: -98,\n  syscall: 'listen',\n}\n";
+
+  it('recognises the report of a listen() on a port that is taken', async () => {
+    const taken = createNetServer();
+    await new Promise((resolve) => taken.listen(0, '127.0.0.1', resolve));
+    try {
+      const script = `require('node:http').createServer().listen(${taken.address().port}, '127.0.0.1')`;
+      const { status, stderr } = spawnSync(process.execPath, ['-e', script], { encoding: 'utf8' });
+      assert.equal(status, 1, stderr);
+      assert.equal(isListenAddressInUse(stderr), true, stderr);
+    } finally {
+      await new Promise((resolve) => taken.close(resolve));
+    }
+  });
+
+  it('does not retry another error that merely mentions EADDRINUSE', async () => {
+    const denied = "Error: EACCES: permission denied, open '/data/EADDRINUSE/grants.json'\n    at async open {\n"
+      + "  errno: -13,\n  code: 'EACCES',\n  syscall: 'open',\n  path: '/data/EADDRINUSE/grants.json'\n}\n";
+    assert.equal(isListenAddressInUse(denied), false);
+    const children = [];
+    await assert.rejects(
+      startUntilReady(() => fakeChild(children, (child) => child.finish(1, denied)), { timeoutMs: 5_000 }),
+      /exited \(code 1, signal null\)[\s\S]*EACCES/,
+    );
+    assert.equal(children.length, 1);
+  });
+
+  it('retries on EADDRINUSE written to stderr after the child exits', async () => {
+    const children = [];
+    const started = await startUntilReady((port) => fakeChild(children, (child) => {
+      if (children.length === 1) child.finish(1, inUse, { lateStderr: true });
+      else child.stdout.write(`{"message":"server started","port":${port}}\n`);
+    }), { timeoutMs: 5_000 });
+    assert.equal(children.length, 2);
+    assert.equal(started.child, children[1]);
+    assert.match(started.output(), /server started/);
+    started.child.finish(0, '');
+    assert.deepEqual(await started.exited, { code: 0, signal: null });
+  });
+
+  it('keeps one deadline across retries and kills the child still starting when it passes', async () => {
+    const children = [];
+    const startedAt = performance.now();
+    await assert.rejects(
+      startUntilReady(() => fakeChild(children, (child) => {
+        setTimeout(() => child.finish(1, inUse), 100);
+      }), { timeoutMs: 250, attempts: 50 }),
+      /did not log "server started" within 250 ms/,
+    );
+    const elapsed = performance.now() - startedAt;
+    assert.ok(elapsed < 1_000, `gave up after ${elapsed.toFixed(0)} ms`);
+    assert.ok(children.length >= 2 && children.length < 50, `${children.length} attempts`);
+    assert.deepEqual(children.at(-1).signals, ['SIGKILL']);
+    await Promise.all(children.map((child) => child.closed));
+  });
+});
+
+/** A stand-in for a spawned child: `finish` ends it, optionally writing stderr only after 'exit', as a pipe may. */
+function fakeChild(children, behave) {
+  const child = new EventEmitter();
+  child.stdout = new PassThrough();
+  child.stderr = new PassThrough();
+  child.signals = [];
+  let finished = false;
+  child.closed = new Promise((resolve) => child.once('close', resolve));
+  child.finish = (code, stderr, { lateStderr = false, signal = null } = {}) => {
+    if (finished) return;
+    finished = true;
+    if (!lateStderr) child.stderr.write(stderr);
+    child.emit('exit', code, signal);
+    setTimeout(() => {
+      if (lateStderr) child.stderr.write(stderr);
+      child.stdout.end();
+      child.stderr.end();
+      setTimeout(() => child.emit('close', code, signal), 10);
+    }, 20);
+  };
+  child.kill = (signal) => {
+    child.signals.push(signal);
+    child.finish(null, '', { signal });
+    return true;
+  };
+  children.push(child);
+  setImmediate(() => behave(child));
+  return child;
+}
+
 /**
  * Spawns dist/index.js and resolves once it logs "server started". freePort() can lose its port to a server in
- * another test file before the child binds it; a child that exits with EADDRINUSE is started again on a new port.
- * Any other exit before startup, or no startup within STARTUP_TIMEOUT_MS, fails with the child's output.
+ * another test file before the child binds it; a child that fails to listen with EADDRINUSE is started again on a new
+ * port. Any other exit before startup, or no startup within STARTUP_TIMEOUT_MS across all attempts, fails with the
+ * child's output.
  */
-async function startJellyPass(env, attempts = 5) {
+function startJellyPass(env) {
+  return startUntilReady((port) => spawn(process.execPath, [ENTRYPOINT], {
+    env: { PATH: process.env.PATH, HOST: '127.0.0.1', PORT: String(port), ...env },
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }), { timeoutMs: STARTUP_TIMEOUT_MS });
+}
+
+async function startUntilReady(spawnOnPort, { timeoutMs, attempts = 5 }) {
+  // One deadline for every attempt, so retries never stretch startup past timeoutMs.
+  const deadline = performance.now() + timeoutMs;
   for (let attempt = 1; ; attempt += 1) {
     const port = await freePort();
-    const child = spawn(process.execPath, [ENTRYPOINT], {
-      env: { PATH: process.env.PATH, HOST: '127.0.0.1', PORT: String(port), ...env },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    const child = spawnOnPort(port);
     let output = '';
-    const exited = new Promise((resolve) => child.once('exit', (code, signal) => resolve({ code, signal })));
+    // 'close', not 'exit': stderr can still be draining after 'exit', and the retry decision reads the output.
+    const exited = new Promise((resolve) => child.once('close', (code, signal) => resolve({ code, signal })));
     const started = new Promise((resolve) => {
       const onData = (chunk) => {
         output += chunk;
@@ -410,20 +509,28 @@ async function startJellyPass(env, attempts = 5) {
       child.stderr.on('data', onData);
     });
     let timer;
-    const timedOut = new Promise((resolve) => { timer = setTimeout(() => resolve('timed out'), STARTUP_TIMEOUT_MS); });
+    const timedOut = new Promise((resolve) => {
+      timer = setTimeout(() => resolve('timed out'), Math.max(0, deadline - performance.now()));
+    });
     const outcome = await Promise.race([started, exited, timedOut]);
     clearTimeout(timer);
     if (outcome === 'started') return { child, port, output: () => output, exited };
     if (outcome === 'timed out') {
       child.kill('SIGKILL');
       await exited;
+    } else if (isListenAddressInUse(output) && attempt < attempts && performance.now() < deadline) {
+      continue;
     }
-    if (outcome !== 'timed out' && output.includes('EADDRINUSE') && attempt < attempts) continue;
     const reason = outcome === 'timed out'
-      ? `did not log "server started" within ${STARTUP_TIMEOUT_MS} ms`
+      ? `did not log "server started" within ${timeoutMs} ms (attempt ${attempt})`
       : `exited (code ${outcome.code}, signal ${outcome.signal}) before logging "server started"`;
     assert.fail(`JellyPass on port ${port} ${reason}; output:\n${output.slice(-4_000)}`);
   }
+}
+
+// Node's report of a failed listen(), not just the word: a path or message can contain "EADDRINUSE" too.
+function isListenAddressInUse(output) {
+  return /^Error: listen EADDRINUSE: /m.test(output) && /^ {2}code: 'EADDRINUSE',$/m.test(output);
 }
 
 async function openWebSocketClient(port, host) {
