@@ -39,7 +39,7 @@ function BUILT(logical) {
 }
 
 /** What a request answered, minus anything that differs by design between two fixed 404s. */
-const shape = (answer) => ({ status: answer.status, text: answer.text, headers: answer.headers });
+const shape = (answer) => ({ status: answer.status, text: answer.text, headers: { ...answer.headers, date: undefined } });
 
 describe('household app page: serving', { timeout: 30_000 }, () => {
   it('serves the page and every file it needs on household hosts, with no credentials and no upstream calls', async (t) => {
