@@ -52,6 +52,25 @@ describe('Seerr title worker', { timeout: 60_000 }, () => {
     await parser.close();
   });
 
+  it('times the oldest answer from when it was handed over: answers handed over after it never extend its deadline', async () => {
+    const parser = new TitleParser({ ...limits, timeoutMs: 150 });
+    let settled = false;
+    const big = answer(300_000);
+    const started = performance.now();
+    const slow = parser.parse(big, '/api/v1/movie/:id').finally(() => { settled = true; });
+    const failed = assert.rejects(slow, (error) => refused(502)(error) && /took too long/.test(error.message));
+    const later = [];
+    // A steady stream of small answers while the slow one is parsed.
+    while (!settled && performance.now() - started < 10_000) {
+      later.push(parser.parse(answer(), '/api/v1/movie/:id').catch(() => undefined));
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+    await failed;
+    assert.ok(performance.now() - started < 2_000);
+    await Promise.all(later);
+    await parser.close();
+  });
+
   it('fails what is queued when it is closed at shutdown, and refuses anything after', async () => {
     const parser = new TitleParser(limits);
     const queued = assert.rejects(parser.parse(answer(20_000), '/api/v1/movie/:id'), refused(502));

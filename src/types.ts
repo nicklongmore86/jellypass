@@ -187,6 +187,41 @@ export interface GrantState {
    * settled (see AppRequestIntent), oldest first, one per request; granted once it is. Additive like `appRequests`.
    */
   deferredWebhooks?: SeerrWebhook[];
+  /**
+   * Household app safety tombstones, by a random ID (see AppSafetyTombstone): the grant decisions "Get this" made,
+   * kept apart from its records so pruning records never loosens one. Additive like `appRequests`.
+   */
+  appSafetyTombstones?: Record<string, AppSafetyTombstone>;
+  /**
+   * Each household's epoch (see GrantStore.householdEpoch), by group ID, and the next one to give: a household deleted
+   * and created again under the same ID has another. Additive like `appRequests`.
+   */
+  householdEpochs?: Record<string, number>;
+  nextHouseholdEpoch?: number;
+}
+
+/**
+ * A grant decision "Get this" made (docs/app-design.md, "Safety tombstones"): a Seerr request it made, or may have
+ * made, whose grant must follow the library join rules, never a new (private) grant. Kept apart from the records,
+ * which are display and attribution only and may be pruned.
+ *
+ * - `requestIds`: these requests follow the join rules, whoever made them.
+ * - `jellyfinUserId` (with `since`): so does any request for the title by that member, or whose requester cannot be
+ *   read, made no earlier than `since` (or whose creation time cannot be read), except `exemptRequestIds`: an intent
+ *   whose request could not be told apart (lost, timed out or ambiguous), so whichever request it made is covered.
+ *
+ * Kept until `expiresAt`, and after it for as long as one of `requestIds` is not handled yet (at most
+ * APP_REQUEST_RETENTION_MS after it was made).
+ */
+export interface AppSafetyTombstone {
+  mediaType: 'movie' | 'tv';
+  tmdbId: number;
+  requestIds: string[];
+  jellyfinUserId?: string;
+  since?: string;
+  exemptRequestIds?: string[];
+  createdAt: string;
+  expiresAt: string;
 }
 
 /**
@@ -197,8 +232,10 @@ export interface GrantState {
  * its record), or once it is known that no request was made.
  *
  * - `submitting`: the request is about to be, or was, sent; Seerr's answer is not recorded. On restart (or after an
- *   uncertain failure) the request is looked up in Seerr by the member and title: found, it is recorded; not found once
- *   APP_INTENT_TIMEOUT_MS has passed, the intent is removed.
+ *   uncertain failure) the request is looked up in Seerr by the member and title: exactly one found, for the household
+ *   it was made for, it is recorded; anything else (several, a declined one, none once APP_INTENT_TIMEOUT_MS has
+ *   passed, or unreadable once APP_SETTLE_DEADLINE_MS has) replaces the intent with a safety tombstone
+ *   (AppSafetyTombstone).
  * - `settling`: the request (`seerrRequestId`) is recorded, but whether the title was in Jellyfin when it was made could
  *   not be read yet; it is read again, and once APP_SETTLE_DEADLINE_MS has passed the grant follows the join rules.
  */
@@ -215,6 +252,8 @@ export interface AppRequestIntent {
   createdAt: string;
   status: 'submitting' | 'settling';
   seerrRequestId?: string;
+  /** The household's epoch when the call was accepted (GrantStore.householdEpoch): another means it was replaced. */
+  householdEpoch?: number;
 }
 
 /**
@@ -263,6 +302,13 @@ export interface AppRequestRecord {
   checkedAt?: string;
   /** The household was deleted: never shown, joined or `requested` again. */
   detached?: true;
+  /** The household's epoch when the record was made (GrantStore.householdEpoch): another means it was replaced. */
+  householdEpoch?: number;
+  /**
+   * A record whose grant follows the join rules (or an interest) found no grant to join: the title was public. It
+   * stays `pending` (with `itemIds` and its ready seasons) and joins the grant once one is created for those items.
+   */
+  awaitingGrant?: true;
 }
 
 export type AppRequestStatus = 'pending' | 'completed' | 'failed' | 'declined' | 'deleted';

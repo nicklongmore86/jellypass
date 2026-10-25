@@ -88,8 +88,10 @@ const start = (t, state, options = {}) => startApp(t, state, { reconcile: true, 
 /** The app's records, without their random IDs and times. */
 function records(app) {
   return app.store.listAppRequests().map(([, record]) => {
-    const { createdAt, updatedAt, checkedAt, ...rest } = record;
+    const { createdAt, updatedAt, checkedAt, householdEpoch, ...rest } = record;
     assert.ok(Date.parse(createdAt) > 0 && Date.parse(updatedAt) > 0);
+    // Each record notes the epoch of the household it was made for.
+    assert.ok(Number.isSafeInteger(householdEpoch) && householdEpoch > 0);
     // A request the app made notes when Jellyfin was read again just before it was sent.
     assert.ok(checkedAt === undefined || (rest.branch === 'request' && Date.parse(checkedAt) > 0));
     return rest;

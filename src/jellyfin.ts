@@ -18,6 +18,9 @@ export class JellyfinError extends Error {
   }
 }
 
+/** The most items JellyfinClient.findItemsByName reads for one name; past it the search counts as incomplete. */
+export const MAX_NAME_SEARCH_ITEMS = 2000;
+
 export class JellyfinClient {
   readonly #baseUrl: string;
   readonly #authorization: string;
@@ -208,41 +211,58 @@ export class JellyfinClient {
   }
 
   /**
-   * The movie or series items (`mediaType`) Jellyfin holds that plausibly are a title known by `names`, in any library
-   * and whoever may see them, read with JellyPass's API key: for titles whose items have no TMDB ID and that Seerr links
-   * to no item. Conservative, so a title Jellyfin has is never requested: an item matches when its name or original
-   * name equals one of `names` once case, accents and punctuation are ignored, and, for a movie with a `year`, its
-   * production year (when it has one) is within a year of it. An item with another TMDB ID is another title and never
-   * matches. A different title of the same name (and year) can match: the caller then gets a join rather than a request.
+   * The movie or series items (`mediaType`) Jellyfin holds that may be a title known by `names`, in any library and
+   * whoever may see them, read with JellyPass's API key: for titles whose items have no TMDB ID and that Seerr links to
+   * no item. Conservative, so a title Jellyfin has is never requested: every item Jellyfin's search finds for one of
+   * `names` is paged through (at most {@link MAX_NAME_SEARCH_ITEMS} per name). An item with this TMDB ID matches; an
+   * item with another TMDB ID is another title and never matches; an item without one matches when its name or original
+   * name equals one of `names` once case, accents and punctuation are ignored, or contains one (it cannot be ruled out),
+   * and, for a movie with a `year`, its production year (when it has one) is within a year of it. A different title of
+   * the same name (and year) can match: the caller then gets a join rather than a request. `complete` is false when a
+   * search had more items than were read: the title may be among those not read.
    */
-  public async findItemsByName(mediaType: 'movie' | 'tv', tmdbId: number, names: string[], year?: number): Promise<string[]> {
-    const wanted = new Set(names.map(comparableName).filter((name) => name.length > 0));
+  public async findItemsByName(mediaType: 'movie' | 'tv', tmdbId: number, names: string[], year?: number): Promise<{ itemIds: string[]; complete: boolean }> {
+    const wanted = [...new Set(names.map(comparableName).filter((name) => name.length > 0))];
     const found = new Set<string>();
+    let complete = true;
+    const limit = 200;
     for (const name of names.slice(0, 4)) {
-      const parameters = new URLSearchParams({
-        Recursive: 'true',
-        IncludeItemTypes: mediaType === 'movie' ? 'Movie' : 'Series',
-        SearchTerm: name,
-        Fields: 'ProviderIds,OriginalTitle',
-        EnableImages: 'false',
-        EnableUserData: 'false',
-        EnableTotalRecordCount: 'false',
-        Limit: '200',
-      });
-      for (const item of (await this.#request<JellyfinItemQueryResult>(`/Items?${parameters.toString()}`)).Items ?? []) {
-        if (typeof item.Id !== 'string') continue;
-        const providerIds = item.ProviderIds;
-        const tmdb = providerIds && typeof providerIds === 'object'
-          ? Object.entries(providerIds).find(([key]) => key.toLowerCase() === 'tmdb')?.[1]
-          : undefined;
-        if (typeof tmdb === 'string' && tmdb.trim() !== '' && tmdb.trim() !== String(tmdbId)) continue;
-        const itemNames = [item.Name, item.OriginalTitle].filter((value): value is string => typeof value === 'string').map(comparableName);
-        if (!itemNames.some((itemName) => wanted.has(itemName))) continue;
-        if (mediaType === 'movie' && year !== undefined && typeof item.ProductionYear === 'number' && Math.abs(item.ProductionYear - year) > 1) continue;
-        found.add(item.Id.replace(/-/g, '').toLowerCase());
+      for (let startIndex = 0; ; startIndex += limit) {
+        if (startIndex >= MAX_NAME_SEARCH_ITEMS) {
+          complete = false;
+          break;
+        }
+        const parameters = new URLSearchParams({
+          Recursive: 'true',
+          IncludeItemTypes: mediaType === 'movie' ? 'Movie' : 'Series',
+          SearchTerm: name,
+          Fields: 'ProviderIds,OriginalTitle',
+          EnableImages: 'false',
+          EnableUserData: 'false',
+          EnableTotalRecordCount: 'false',
+          StartIndex: String(startIndex),
+          Limit: String(limit),
+        });
+        const items = (await this.#request<JellyfinItemQueryResult>(`/Items?${parameters.toString()}`)).Items ?? [];
+        for (const item of items) {
+          if (typeof item.Id !== 'string') continue;
+          const providerIds = item.ProviderIds;
+          const tmdb = providerIds && typeof providerIds === 'object'
+            ? Object.entries(providerIds).find(([key]) => key.toLowerCase() === 'tmdb')?.[1]
+            : undefined;
+          const known = typeof tmdb === 'string' && tmdb.trim() !== '';
+          if (known && tmdb.trim() !== String(tmdbId)) continue;
+          if (!known) {
+            const itemNames = [item.Name, item.OriginalTitle].filter((value): value is string => typeof value === 'string').map(comparableName);
+            if (!itemNames.some((itemName) => wanted.some((title) => itemName.includes(title)))) continue;
+            if (mediaType === 'movie' && year !== undefined && typeof item.ProductionYear === 'number' && Math.abs(item.ProductionYear - year) > 1) continue;
+          }
+          found.add(item.Id.replace(/-/g, '').toLowerCase());
+        }
+        if (items.length < limit) break;
       }
     }
-    return [...found].sort();
+    return { itemIds: [...found].sort(), complete };
   }
 
   /** The season numbers of a series Jellyfin has episodes of (not missing ones), read with JellyPass's API key. */

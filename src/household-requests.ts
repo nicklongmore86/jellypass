@@ -5,7 +5,7 @@ import type { JellyfinClient } from './jellyfin.js';
 import { SeerrError, SeerrUnmappedUserError, type SeerrClient, type SeerrMemberClient, type SeerrTitleRecord } from './seerr.js';
 import type { BackgroundTasks } from './shutdown.js';
 import type { GrantStore } from './store.js';
-import type { AppRequestIntent, AppRequestRecord, AppRequestStatus } from './types.js';
+import type { AppRequestIntent, AppRequestRecord, AppRequestStatus, AppSafetyTombstone } from './types.js';
 
 /**
  * Household app "Get this" (docs/app-design.md, "Get this"). The answer depends on nothing but the call itself: it is
@@ -40,12 +40,22 @@ export const RECORD_DELAY_MS = 2000;
 /** Most titles GET /requests lists, newest first. */
 export const MAX_LISTED_TITLES = 200;
 /**
- * A `submitting` intent whose request Seerr does not list this long after it was written was never made (the request's
- * own timeout is 15 seconds), and is removed (see AppRequestIntent).
+ * A `submitting` intent whose request Seerr does not list this long after it was written is taken as never made (the
+ * request's own timeout is 15 seconds): it gives way to a safety tombstone (see #retire), so a request Seerr made late
+ * still follows the join rules.
  */
 export const APP_INTENT_TIMEOUT_MS = 2 * 60 * 1000;
-/** A request whose settle-time Jellyfin read has not succeeded this long after its intent was written follows the join rules. */
+/**
+ * A request whose settle-time Jellyfin read has not succeeded this long after its intent was written follows the join
+ * rules; a `submitting` intent that could not be reconciled (Seerr or Jellyfin unreadable) in that time gives way to a
+ * safety tombstone, so it holds up no other member's grant for the title any longer.
+ */
 export const APP_SETTLE_DEADLINE_MS = 30 * 60 * 1000;
+/**
+ * How long a member-wide safety tombstone (see AppSafetyTombstone) covers a member's requests for a title, and how long
+ * a record awaiting a grant (AppRequestRecord.awaitingGrant) is checked for one.
+ */
+export const APP_TOMBSTONE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 /** How much earlier than its intent Seerr's clock may date the request it made, when an intent is recovered. */
 const INTENT_CLOCK_SKEW_MS = 5 * 60 * 1000;
 /** Seerr request statuses: pending and approved requests are active. */
@@ -126,7 +136,10 @@ export interface HouseholdRequestsOptions {
 }
 
 /** A record's new status (see HouseholdRequests.refresh). */
-type RecordChange = { status: AppRequestStatus; itemIds?: string[]; readySeasons?: number[] };
+type RecordChange = { status: AppRequestStatus; itemIds?: string[]; readySeasons?: number[]; awaitingGrant?: boolean };
+
+/** A request "Get this" made and settled as genuine (see GrantStore.writeAppRequests `exempt`). */
+type Exemption = { mediaType: MediaType; tmdbId: number; jellyfinUserId: string; requestId: string };
 
 /** What the branches of one call did, to be written together; filled as they go, so what was done is written. */
 interface Outcome {
@@ -137,6 +150,9 @@ interface Outcome {
   removeIntents: string[];
   /** Intents this call wrote, which reconciliation leaves to it until its records are written. */
   intents: string[];
+  /** Requests whose grant follows the join rules (see AppSafetyTombstone). */
+  tombstones: AppSafetyTombstone[];
+  exempt: Exemption[];
 }
 
 /** What Jellyfin holds of a title (see #presence). */
@@ -145,6 +161,11 @@ interface Presence {
   itemIds: string[];
   /** The seasons (`0` for a movie) those items have: a movie's item, or a series' episodes. */
   seasons: Set<number>;
+  /**
+   * Jellyfin's items by name could not all be read (see JellyfinClient.findItemsByName): the title may be there, so
+   * every season counts as present (see holds).
+   */
+  unknown: boolean;
 }
 
 /** How a request just made settles (see #settle): a genuine request (`absent`), or the join rule its grant follows. */
@@ -240,7 +261,7 @@ export class HouseholdRequests {
   async #branches(input: GetThisInput, epoch: number, acceptedAt: number, signal: AbortSignal): Promise<void> {
     const recordAfter = acceptedAt + this.#recordDelayMs;
     await this.#withLock(this.#titleLocks, `${input.mediaType}:${input.tmdbId}`, async () => {
-      const outcome: Outcome = { records: [], settleIntents: [], removeIntents: [], intents: [] };
+      const outcome: Outcome = { records: [], settleIntents: [], removeIntents: [], intents: [], tombstones: [], exempt: [] };
       try {
         await this.#decide(input, epoch, outcome, signal);
         await delay(recordAfter - performance.now(), signal);
@@ -259,12 +280,14 @@ export class HouseholdRequests {
       // detaches them if the household was deleted (or deleted and created again) meanwhile. An intent this fails to
       // resolve is reconciled later (see #reconcileIntents).
       try {
-        if (outcome.records.length > 0 || outcome.settleIntents.length > 0 || outcome.removeIntents.length > 0) {
+        if (outcome.records.length > 0 || outcome.settleIntents.length > 0 || outcome.removeIntents.length > 0 || outcome.tombstones.length > 0) {
           await this.#store.writeAppRequests({
             add: outcome.records,
             householdEpoch: epoch,
             settleIntents: outcome.settleIntents,
             removeIntents: outcome.removeIntents,
+            tombstones: outcome.tombstones,
+            exempt: outcome.exempt,
           });
         }
       } catch (error) {
@@ -312,7 +335,7 @@ export class HouseholdRequests {
     const interests = new Map<string, number[]>();
     const request: number[] = [];
     for (const season of wanted) {
-      if (present.seasons.has(season)) {
+      if (holds(present, season)) {
         join.push(season);
         continue;
       }
@@ -333,24 +356,26 @@ export class HouseholdRequests {
   /**
    * What Jellyfin holds of a title, read with JellyPass's key whoever may see it: every movie or series item with its
    * TMDB ID and the items Seerr's media record links to it (which may have no TMDB ID of their own), or, when there are
-   * none, the items that plausibly are the title by name (and year, for a movie: see JellyfinClient.findItemsByName),
-   * less the 4K one (see hdItems); for a series, the seasons those items have episodes of. The three lookups run at once.
+   * none, the items that may be the title by name (and year, for a movie: see JellyfinClient.findItemsByName), less
+   * the 4K one (see hdItems); for a series, the seasons those items have episodes of. The three lookups run at once. If
+   * the items by name could not all be read, the title counts as present (`unknown`), never as absent.
    */
   async #presence(mediaType: MediaType, tmdbId: number, title: SeerrTitleRecord): Promise<Presence> {
     const linked = [title.jellyfinMediaId, title.jellyfinMediaId4k].filter((itemId): itemId is string => itemId !== undefined);
     const [byTmdb, byLink, byName] = await Promise.all([
       this.#jellyfin.findItemsByTmdbId(mediaType, tmdbId),
       linked.length > 0 ? this.#jellyfin.existingItems(mediaType, linked) : Promise.resolve([]),
-      title.names.length > 0 ? this.#jellyfin.findItemsByName(mediaType, tmdbId, title.names, title.year) : Promise.resolve([]),
+      title.names.length > 0 ? this.#jellyfin.findItemsByName(mediaType, tmdbId, title.names, title.year) : Promise.resolve({ itemIds: [], complete: true }),
     ]);
-    const found = byTmdb.length > 0 || byLink.length > 0 ? [...byTmdb, ...byLink] : byName;
+    const direct = byTmdb.length > 0 || byLink.length > 0;
+    const found = direct ? [...byTmdb, ...byLink] : byName.itemIds;
     const itemIds = hdItems([...new Set(found)].sort(), title);
     const seasons = new Set<number>();
     if (mediaType === 'movie' && itemIds.length > 0) seasons.add(0);
     if (mediaType === 'tv') {
       for (const season of (await Promise.all(itemIds.map((itemId) => this.#jellyfin.seasonsWithEpisodes(itemId)))).flat()) seasons.add(season);
     }
-    return { itemIds, seasons };
+    return { itemIds, seasons, unknown: !direct && !byName.complete };
   }
 
   /** The join branch for `seasons` (`[0]` for a movie) of items Jellyfin has: a `join` record if the household joined. */
@@ -413,6 +438,7 @@ export class HouseholdRequests {
       observedAbsentAt: observedAt,
       createdAt: new Date(this.#now()).toISOString(),
       status: 'submitting',
+      householdEpoch: epoch,
     });
     this.#live.add(intentId);
     outcome.intents.push(intentId);
@@ -429,7 +455,7 @@ export class HouseholdRequests {
       throw error;
     }
     const checkedAt = new Date(this.#now()).toISOString();
-    const late = seasons.filter((season) => recheck.seasons.has(season));
+    const late = seasons.filter((season) => holds(recheck, season));
     const requested = seasons.filter((season) => !late.includes(season));
     let created: unknown;
     let failure: unknown;
@@ -499,7 +525,10 @@ export class HouseholdRequests {
       const settled = record.joinOnGrant ? 'existing-series' : await this.#settle(record.mediaType, record.tmdbId, record.seasons, title);
       if (settled === undefined) outcome.settleIntents.push({ id: intentId, seerrRequestId: String(requestId) });
       else {
-        if (settled !== 'absent') record.joinOnGrant = settled;
+        if (settled !== 'absent') {
+          record.joinOnGrant = settled;
+          outcome.tombstones.push(this.#tombstone(record, [String(requestId)]));
+        } else outcome.exempt.push({ mediaType: record.mediaType, tmdbId: record.tmdbId, jellyfinUserId: record.jellyfinUserId, requestId: String(requestId) });
         outcome.removeIntents.push(intentId);
       }
       outcome.records.push(record);
@@ -518,8 +547,8 @@ export class HouseholdRequests {
   async #settle(mediaType: MediaType, tmdbId: number, seasons: number[], title: SeerrTitleRecord): Promise<Settled | undefined> {
     try {
       const present = await this.#presence(mediaType, tmdbId, title);
-      if (present.itemIds.length === 0) return 'absent';
-      return mediaType === 'movie' || seasons.some((season) => present.seasons.has(season)) ? 'present-at-settle' : 'existing-series';
+      if (present.itemIds.length === 0 && !present.unknown) return 'absent';
+      return mediaType === 'movie' || seasons.some((season) => holds(present, season)) ? 'present-at-settle' : 'existing-series';
     } catch (error) {
       console.error(JSON.stringify({
         level: 'error',
@@ -621,7 +650,7 @@ export class HouseholdRequests {
   public activeKeys(householdId: string): Set<string> {
     const keys = new Set<string>();
     for (const [, record] of this.#store.listAppRequestsForHousehold(householdId)) {
-      if (!isActive(record)) continue;
+      if (!isActive(record) || waitingSeasons(record).length === 0) continue;
       keys.add(`${record.mediaType}:${record.tmdbId}`);
       if (record.mediaType === 'tv') for (const season of waitingSeasons(record)) keys.add(`tv:${record.tmdbId}:${season}`);
     }
@@ -710,7 +739,8 @@ export class HouseholdRequests {
       try {
         const status = await this.#current(record, signal);
         if (signal?.aborted) return;
-        if (status && (status.status !== record.status || !sameSeasons(status.readySeasons, record.readySeasons))) {
+        if (status && (status.status !== record.status || !sameSeasons(status.readySeasons, record.readySeasons)
+          || (status.awaitingGrant !== undefined && status.awaitingGrant !== (record.awaitingGrant === true)))) {
           await this.#store.writeAppRequests({ update: [{ id, ...status }] });
         }
       } catch (error) {
@@ -727,11 +757,14 @@ export class HouseholdRequests {
   /**
    * Resolves the intents no running call holds (see AppRequestIntent): after a restart, after a request Seerr may have
    * made without answering, and while a request's settle-time read keeps failing. A `submitting` intent is looked up in
-   * Seerr's own requests for the title (the caller's HD request made no earlier than the intent, allowing for Seerr's
-   * clock): found, it is recorded and settled; not found once APP_INTENT_TIMEOUT_MS has passed, it was never made and
-   * the intent is removed. A `settling` intent is settled again; once APP_SETTLE_DEADLINE_MS has passed without a
-   * successful read, its request's grant follows the join rules (`unverified`). A failed lookup leaves the intent as it
-   * is, to be tried on the next run.
+   * Seerr's own requests for the title: the caller's HD requests made no earlier than the intent (allowing for Seerr's
+   * clock) that no record names yet. Attribution is never guessed: only when exactly one such request is found, it is
+   * not declined, the household is the one the call was made for (its epoch) and Jellyfin can be read to settle it is it
+   * recorded for the household. Every other outcome gives way to a safety tombstone instead (see #retire): several
+   * candidates or a declined one at once, a household replaced meanwhile, none found once APP_INTENT_TIMEOUT_MS has
+   * passed, or Seerr or Jellyfin still unreadable once APP_SETTLE_DEADLINE_MS has. Until then a failed lookup leaves the
+   * intent for the next run. A `settling` intent is settled again; once APP_SETTLE_DEADLINE_MS has passed without a
+   * successful read, its request's grant follows the join rules (`unverified`).
    */
   async #reconcileIntents(signal: AbortSignal | undefined): Promise<void> {
     for (const [id, intent] of this.#store.listAppRequestIntents()) {
@@ -752,22 +785,37 @@ export class HouseholdRequests {
   }
 
   async #recover(id: string, intent: AppRequestIntent): Promise<void> {
-    const title = await this.#seerr.titleRequests(intent.mediaType, intent.tmdbId);
-    const recorded = new Set(this.#store.listAppRequests().flatMap(([, record]) => record.seerrRequestId ? [record.seerrRequestId] : []));
+    const age = this.#now() - Date.parse(intent.createdAt);
+    let title: SeerrTitleRecord | undefined;
+    try {
+      title = await this.#seerr.titleRequests(intent.mediaType, intent.tmdbId);
+    } catch (error) {
+      // It holds up every grant for the title only so long.
+      if (age < APP_SETTLE_DEADLINE_MS) throw error;
+      return this.#retire(id, intent, [], 'intent_abandoned');
+    }
+    const recorded = this.#genuineRequests(intent);
     const since = Date.parse(intent.createdAt) - INTENT_CLOCK_SKEW_MS;
-    const made = title?.requests.find((request) => !request.is4k
+    const candidates = (title?.requests ?? []).filter((request) => !request.is4k
       && request.requesterJellyfinId === intent.jellyfinUserId
-      && !recorded.has(request.id)
+      && !recorded.includes(request.id)
       && (request.createdAt === undefined || request.createdAt >= since)
       && (intent.mediaType === 'movie' || request.seasons.some((season) => intent.seasons.includes(season))));
-    if (!title || !made) {
-      if (this.#now() - Date.parse(intent.createdAt) < APP_INTENT_TIMEOUT_MS) return;
-      await this.#store.writeAppRequests({ removeIntents: [id] });
-      this.#recordBranch('intent_cancelled');
-      return;
+    if (candidates.length === 0) {
+      if (age < APP_INTENT_TIMEOUT_MS) return;
+      return this.#retire(id, intent, [], 'intent_cancelled');
+    }
+    const made = candidates[0] as SeerrTitleRecord['requests'][number];
+    const current = intent.householdEpoch !== undefined && this.#store.householdEpoch(intent.householdId) === intent.householdEpoch;
+    if (!title || candidates.length > 1 || made.status === DECLINED || !current) {
+      return this.#retire(id, intent, candidates.map((request) => request.id), current ? 'intent_ambiguous' : 'intent_detached');
     }
     const seasons = intent.mediaType === 'movie' ? [] : intent.seasons.filter((season) => made.seasons.includes(season));
     const settled = await this.#settle(intent.mediaType, intent.tmdbId, seasons, title);
+    if (settled === undefined) {
+      if (age < APP_SETTLE_DEADLINE_MS) return;
+      return this.#retire(id, intent, [made.id], 'intent_abandoned');
+    }
     const stamp = new Date(this.#now()).toISOString();
     const record: AppRequestRecord = {
       householdId: intent.householdId,
@@ -778,18 +826,61 @@ export class HouseholdRequests {
       createdAt: intent.createdAt,
       updatedAt: stamp,
       branch: 'request',
-      status: made.status === DECLINED ? 'declined' : made.status === FAILED ? 'failed' : 'pending',
+      status: made.status === FAILED ? 'failed' : 'pending',
       seerrRequestId: made.id,
       checkedAt: intent.observedAbsentAt,
-      ...(settled !== undefined && settled !== 'absent' ? { joinOnGrant: settled } : {}),
+      ...(settled !== 'absent' ? { joinOnGrant: settled } : {}),
       ...(title.mediaId !== undefined ? { seerrMediaId: title.mediaId } : {}),
-      // A household deleted meanwhile never gets it.
-      ...(this.#store.getGroup(intent.householdId) ? {} : { detached: true as const }),
     };
-    await this.#store.writeAppRequests(settled === undefined
-      ? { add: [record], settleIntents: [{ id, seerrRequestId: made.id }] }
-      : { add: [record], removeIntents: [id] });
+    // The request found may not be the one this intent made (Seerr may make that later): the member's other requests
+    // for the title from then on follow the join rules all the same.
+    const tombstone = this.#tombstone(intent, settled === 'absent' ? [] : [made.id], intent, settled === 'absent' ? [made.id] : []);
+    await this.#store.writeAppRequests({ add: [record], householdEpoch: intent.householdEpoch as number, removeIntents: [id], tombstones: [tombstone] });
     this.#recordBranch('intent_recovered');
+  }
+
+  /**
+   * Gives up on telling which request an intent made: the intent is replaced by a safety tombstone covering
+   * `requestIds` and every request the member makes for the title from the intent's time on (see AppSafetyTombstone),
+   * whichever household asks for it, and nothing is recorded for the household. From then on the intent holds up no
+   * other member's grant for the title.
+   */
+  async #retire(id: string, intent: AppRequestIntent, requestIds: string[], branch: string): Promise<void> {
+    await this.#store.writeAppRequests({ removeIntents: [id], tombstones: [this.#tombstone(intent, requestIds, intent)] });
+    this.#recordBranch(branch);
+  }
+
+  /**
+   * A safety tombstone for `requestIds` on the title, and with `member`, for that member's requests for it from the
+   * intent's time on (allowing for Seerr's clock), less those recorded as genuine and `exempt`.
+   */
+  #tombstone(
+    title: { mediaType: MediaType; tmdbId: number },
+    requestIds: string[],
+    member?: AppRequestIntent,
+    exempt: string[] = [],
+  ): AppSafetyTombstone {
+    const now = this.#now();
+    const exemptRequestIds = member ? [...new Set([...this.#genuineRequests(member), ...exempt])].sort() : [];
+    return {
+      mediaType: title.mediaType,
+      tmdbId: title.tmdbId,
+      requestIds: [...new Set(requestIds)].sort(),
+      ...(member ? {
+        jellyfinUserId: member.jellyfinUserId,
+        since: new Date(Date.parse(member.createdAt) - INTENT_CLOCK_SKEW_MS).toISOString(),
+      } : {}),
+      ...(exemptRequestIds.length > 0 ? { exemptRequestIds } : {}),
+      createdAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + APP_TOMBSTONE_TTL_MS).toISOString(),
+    };
+  }
+
+  /** The member's requests for the title that records name as made by "Get this" and genuine (no join rule). */
+  #genuineRequests(intent: AppRequestIntent): string[] {
+    return this.#store.listAppRequests().flatMap(([, record]) => record.seerrRequestId && record.branch === 'request' && !record.joinOnGrant
+      && record.jellyfinUserId === intent.jellyfinUserId && record.mediaType === intent.mediaType && record.tmdbId === intent.tmdbId
+      ? [record.seerrRequestId] : []);
   }
 
   async #resettle(id: string, intent: AppRequestIntent): Promise<void> {
@@ -806,11 +897,15 @@ export class HouseholdRequests {
     }
     if (settled === undefined && this.#now() - Date.parse(intent.createdAt) < APP_SETTLE_DEADLINE_MS) return;
     const rule = settled === undefined ? 'unverified' : settled === 'absent' ? undefined : settled;
+    const requestId = intent.seerrRequestId as string;
     const records = this.#store.listAppRequests()
-      .filter(([, record]) => record.branch === 'request' && record.seerrRequestId === intent.seerrRequestId && !record.joinOnGrant);
+      .filter(([, record]) => record.branch === 'request' && record.seerrRequestId === requestId && !record.joinOnGrant);
     await this.#store.writeAppRequests({
       update: rule ? records.map(([recordId]) => ({ id: recordId, joinOnGrant: rule })) : [],
       removeIntents: [id],
+      ...(rule
+        ? { tombstones: [this.#tombstone(intent, [requestId])] }
+        : { exempt: [{ mediaType: intent.mediaType, tmdbId: intent.tmdbId, jellyfinUserId: intent.jellyfinUserId, requestId }] }),
     });
     this.#recordBranch(rule === 'unverified' ? 'settle_unverified' : 'settled');
   }
@@ -832,6 +927,11 @@ export class HouseholdRequests {
   /** What a record's status is now (see refresh), or undefined to leave it as it is. */
   async #current(record: AppRequestRecord, signal?: AbortSignal): Promise<RecordChange | undefined> {
     if (record.status === 'completed') return await this.#mediaGone(record) ? { status: 'deleted' } : undefined;
+    // There was no grant to join (the title was public): joined once there is one, for so long.
+    if (record.status === 'pending' && record.awaitingGrant) {
+      if (this.#now() - Date.parse(record.createdAt) > APP_TOMBSTONE_TTL_MS) return { status: 'completed', awaitingGrant: false };
+      return this.#joinInterest(record, signal);
+    }
     // Its grant was settled already: it waits for its seasons (and for its media, should Seerr delete it meanwhile).
     if (record.status === 'pending' && record.itemIds?.length) {
       if (await this.#mediaGone(record)) return { status: 'deleted' };
@@ -857,8 +957,10 @@ export class HouseholdRequests {
 
   /**
    * An interest whose request completed (or that follows none), or a request of the app's whose grant follows the join
-   * rules: the household joins the title's grant, if Jellyfin has it. When no grant holds the title, it waits for one,
-   * unless its request was granted as a join (handled, and no grant made: the title stayed public).
+   * rules: the household joins the title's grant, if Jellyfin has it. When no grant holds the title, it waits for one;
+   * if its request was granted as a join already (handled, and no grant made: the title stayed public), its seasons
+   * are ready but it stays `pending`, awaiting a grant (see AppRequestRecord.awaitingGrant), never `completed` against
+   * a public title.
    */
   async #joinInterest(record: AppRequestRecord, signal?: AbortSignal): Promise<RecordChange | undefined> {
     if (record.detached) return undefined;
@@ -866,9 +968,12 @@ export class HouseholdRequests {
     const itemIds = title ? (await this.#presence(record.mediaType, record.tmdbId, title)).itemIds : await this.#jellyfin.findItemsByTmdbId(record.mediaType, record.tmdbId);
     if (itemIds.length === 0) return undefined;
     const joined = await this.#joins.joinHousehold({ itemIds, userId: record.jellyfinUserId, householdId: record.householdId }, signal ? { signal } : {});
-    if (joined === 'joined' || joined === 'already') return this.#readiness(record, itemIds);
+    if (joined === 'joined' || joined === 'already') return { ...await this.#readiness(record, itemIds), awaitingGrant: false };
     if (joined === 'ungranted') {
-      return record.seerrRequestId && this.#store.hasHandledRequest(record.seerrRequestId) ? this.#readiness(record, itemIds) : undefined;
+      if (record.awaitingGrant || (record.seerrRequestId && this.#store.hasHandledRequest(record.seerrRequestId))) {
+        return awaiting(record, await this.#readiness(record, itemIds));
+      }
+      return undefined;
     }
     // A grant not created yet (Jellyfin has the title before Seerr's webhook) is tried again on the next run.
     return joined === 'refused' && record.status === 'pending' && record.seerrRequestId ? { status: 'failed', itemIds } : undefined;
@@ -963,9 +1068,22 @@ function isActive(record: AppRequestRecord): boolean {
 
 /** The seasons (`0` for a movie) an active record still waits on. */
 function waitingSeasons(record: AppRequestRecord): number[] {
-  if (record.mediaType === 'movie') return [0];
   const ready = new Set(record.readySeasons ?? []);
+  if (record.mediaType === 'movie') return ready.has(0) ? [] : [0];
   return record.seasons.filter((season) => !ready.has(season));
+}
+
+/**
+ * A record whose grant follows the join rules (or an interest) that found no grant for `itemIds`: the title is public,
+ * so its seasons (`0` for a movie) are ready, and it stays `pending`, awaiting a grant (AppRequestRecord.awaitingGrant).
+ */
+function awaiting(record: Pick<AppRequestRecord, 'mediaType'>, ready: RecordChange): RecordChange {
+  return { status: 'pending', itemIds: ready.itemIds ?? [], readySeasons: record.mediaType === 'movie' ? [0] : ready.readySeasons ?? [], awaitingGrant: true };
+}
+
+/** Whether Jellyfin holds `season` (`0` for a movie) of the title, or may (see Presence.unknown). */
+function holds(present: Presence, season: number): boolean {
+  return present.unknown || present.seasons.has(season);
 }
 
 function sameSeasons(left: number[] | undefined, right: number[] | undefined): boolean {

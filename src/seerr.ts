@@ -646,7 +646,11 @@ export interface TitleWorkerLimits {
   maxJobs: number;
   /** Most bytes queued or being parsed at once, all answers together; an answer past it is refused (`503`). */
   maxQueuedBytes: number;
-  /** Longest one answer may take to parse; past it the worker is stopped (failing every queued answer) and restarted when next needed. */
+  /**
+   * Longest an answer may wait in the worker, queued and parsed, counted from when it was handed over; past it for the
+   * oldest one the worker is stopped (failing every queued answer) and restarted when next needed. Answers handed over
+   * meanwhile never extend it.
+   */
   timeoutMs: number;
 }
 
@@ -663,6 +667,8 @@ interface TitleJob {
   reject: (error: Error) => void;
   route: string;
   bytes: number;
+  /** When it was handed to the worker (performance.now()). */
+  queuedAt: number;
 }
 
 /**
@@ -691,7 +697,7 @@ export class TitleParser {
     const current = this.#current ??= this.#start();
     const id = this.#nextJob++;
     return new Promise((resolve, reject) => {
-      current.jobs.set(id, { resolve, reject, route, bytes: bytes.byteLength });
+      current.jobs.set(id, { resolve, reject, route, bytes: bytes.byteLength, queuedAt: performance.now() });
       this.#queuedBytes += bytes.byteLength;
       current.worker.ref();
       this.#arm(current);
@@ -728,15 +734,16 @@ export class TitleParser {
     return state;
   }
 
-  /** (Re)starts the timeout of the oldest job still in the worker; none when idle. */
+  /** Sets the timeout to the deadline of the oldest job still in the worker (jobs are kept oldest first); none when idle. */
   #arm(state: TitleWorkerState): void {
     clearTimeout(state.timer);
     delete state.timer;
-    if (state.jobs.size === 0) return;
+    const oldest = state.jobs.values().next().value;
+    if (!oldest) return;
     state.timer = setTimeout(() => {
       this.#fail(state, 'took too long to read');
       void state.worker.terminate();
-    }, this.#limits.timeoutMs);
+    }, Math.max(0, oldest.queuedAt + this.#limits.timeoutMs - performance.now()));
     state.timer.unref();
   }
 

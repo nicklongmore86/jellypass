@@ -8,6 +8,7 @@ import type {
   AccessRemovals,
   AppRequestRecord,
   AppRequestStatus,
+  AppSafetyTombstone,
   ChangePlan,
   GrantRecord,
   IgnoredWebhook,
@@ -316,8 +317,8 @@ export class AccessService {
     });
   }
 
-  /** processWebhook for a MEDIA_AVAILABLE event, in the write queue. */
-  async #grantWebhook(event: SeerrWebhook): Promise<GrantRecord | null> {
+  /** processWebhook for a MEDIA_AVAILABLE event, in the write queue; `known` is its grant rule, if already read. */
+  async #grantWebhook(event: SeerrWebhook, known?: GrantRule): Promise<GrantRecord | null> {
     // The body is valid from here on (parse failures count as "invalid" in the server), so every
     // failure while resolving, persisting or reconciling counts once as "error".
     try {
@@ -340,14 +341,15 @@ export class AccessService {
         return this.#store.findGrantForRequest(event.request.id) ?? existing;
       }
       // A "Get this" request for the title is not settled yet: granted once it is (see retryDeferredRequests).
-      if (await this.#deferredForIntent(event.request.id)) {
+      const rule = known ?? await this.#grantRule(event.request.id);
+      if (rule === 'defer') {
         await this.#store.deferWebhook(event);
         this.#metrics.increment('jfa_webhooks_total', { result: 'deferred' });
         console.log(JSON.stringify({ level: 'info', message: 'webhook deferred for a household app request', requestId: event.request.id }));
         return null;
       }
       const resolved = await this.#resolveWebhook(event);
-      if (this.#grantsAsJoin(event.request.id)) {
+      if (rule === 'join') {
         const joined = await this.#grantAsJoin(resolved.itemId, event.request.id);
         this.#metrics.increment('jfa_webhooks_total', { result: 'joined' });
         return joined;
@@ -370,39 +372,49 @@ export class AccessService {
   }
 
   /**
-   * Grants the webhooks deferred for a "Get this" request intent (see #deferredForIntent) whose title no intent names
-   * any more, as their first delivery would have been: by the record's join rule for a request "Get this" made, as a
-   * new grant otherwise. One whose request Seerr no longer has, or that is handled already, is forgotten; a failure is
-   * logged and tried again on the next run. Run by the household app after an intent is resolved, and with each refresh.
+   * Grants the webhooks deferred for a "Get this" request intent (see #grantRule) that need wait no longer, as their
+   * first delivery would have been: genuine requests first, as new grants, then those whose grant follows the join
+   * rules, so a join replayed with the grant it joins finds it, whatever order they arrived in. One whose request Seerr
+   * no longer has, or that is handled already, is forgotten; a failure is logged and tried again on the next run. Run by
+   * the household app after an intent is resolved, and with each refresh.
    */
   public retryDeferredRequests(options: { signal?: AbortSignal } = {}): Promise<void> {
     const { signal } = options;
     if (this.#store.listDeferredWebhooks().length === 0) return Promise.resolve();
     return this.#exclusive(async () => {
       const done: string[] = [];
+      const failed = (requestId: string, error: unknown) => {
+        rethrowIfCancelled(error, signal);
+        if (error instanceof SeerrError && error.status === 404) return void done.push(requestId);
+        console.error(JSON.stringify({
+          level: 'error',
+          message: 'deferred webhook could not be granted',
+          requestId,
+          detail: error instanceof Error ? error.message : String(error),
+        }));
+      };
       try {
+        const ready: Array<{ event: SeerrWebhook; rule: GrantRule }> = [];
         for (const event of this.#store.listDeferredWebhooks()) {
-          const requestId = event.request.id;
           throwIfAborted(signal);
           try {
-            if (!this.#store.hasHandledRequest(requestId)) {
-              if (await this.#deferredForIntent(requestId)) continue;
-              throwIfAborted(signal);
-              await this.#grantWebhook(event);
-            }
-            done.push(requestId);
-          } catch (error) {
-            rethrowIfCancelled(error, signal);
-            if (error instanceof SeerrError && error.status === 404) {
-              done.push(requestId);
+            if (this.#store.hasHandledRequest(event.request.id)) {
+              done.push(event.request.id);
               continue;
             }
-            console.error(JSON.stringify({
-              level: 'error',
-              message: 'deferred webhook could not be granted',
-              requestId,
-              detail: error instanceof Error ? error.message : String(error),
-            }));
+            const rule = await this.#grantRule(event.request.id);
+            if (rule !== 'defer') ready.push({ event, rule });
+          } catch (error) {
+            failed(event.request.id, error);
+          }
+        }
+        for (const { event, rule } of [...ready.filter((entry) => entry.rule === 'grant'), ...ready.filter((entry) => entry.rule === 'join')]) {
+          throwIfAborted(signal);
+          try {
+            await this.#grantWebhook(event, rule);
+            done.push(event.request.id);
+          } catch (error) {
+            failed(event.request.id, error);
           }
         }
       } finally {
@@ -412,27 +424,57 @@ export class AccessService {
   }
 
   /**
-   * Whether a request's grant must wait for a household app "Get this" request intent (see AppRequestIntent): an intent
-   * names its title. The title is the request's in Seerr (read with the admin key, only while there are intents);
-   * a request whose title cannot be read waits too, so a request "Get this" may have made is never granted privately
-   * before it is settled.
+   * How a request may be granted now (docs/app-design.md, "Safety tombstones"):
+   *
+   * - `defer`: a household app "Get this" request intent (see AppRequestIntent) names its title, or the request's title,
+   *   requester or creation time must be known and cannot be read (Seerr, with the admin key, read only while there
+   *   are intents or member-wide tombstones), so a request "Get this" may have made is never granted privately before
+   *   it is settled;
+   * - `join`: "Get this" made it, or may have, and its grant follows the library join rules: a record says so
+   *   (AppRequestRecord.joinOnGrant), or a safety tombstone covers it (see AppSafetyTombstone);
+   * - `grant`: a new grant, as for any request.
+   *
+   * Throws the SeerrError of a request Seerr no longer has.
    */
-  async #deferredForIntent(requestId: string, known?: SeerrRequest): Promise<boolean> {
-    if (this.#store.listAppRequestIntents().length === 0) return false;
+  async #grantRule(requestId: string, known?: SeerrRequest): Promise<GrantRule> {
+    const now = Date.now();
+    const tombstones = this.#store.listAppSafetyTombstones();
+    if (this.#grantsAsJoin(requestId) || tombstones.some((tombstone) => tombstone.requestIds.includes(requestId))) return 'join';
+    const intents = this.#store.listAppRequestIntents().length > 0;
+    const members = tombstones.filter((tombstone) => tombstone.jellyfinUserId !== undefined && now < Date.parse(tombstone.expiresAt));
+    if (!intents && members.length === 0) return 'grant';
+    const request = await this.#requestFacts(requestId, known);
+    if (!request) return 'defer';
+    if (intents && this.#store.hasAppRequestIntent(request.mediaType, request.tmdbId)) return 'defer';
+    return members.some((tombstone) => covers(tombstone, requestId, request)) ? 'join' : 'grant';
+  }
+
+  /**
+   * What #grantRule reads of a request: its title, requester and creation time, from `known` or from Seerr (with the
+   * admin key). Undefined when they cannot be read; throws the SeerrError of a request Seerr no longer has.
+   */
+  async #requestFacts(requestId: string, known?: SeerrRequest): Promise<RequestFacts | undefined> {
     let request = known;
     if (typeof request?.media?.tmdbId !== 'number') {
-      if (!this.#seerr) return true;
+      if (!this.#seerr) return undefined;
       try {
         request = await this.#seerr.getRequest(requestId);
       } catch (error) {
         if (error instanceof SeerrError && error.status === 404) throw error;
-        return true;
+        return undefined;
       }
     }
     const mediaType = request.media?.mediaType ?? request.type;
     const tmdbId = request.media?.tmdbId;
-    if (typeof tmdbId !== 'number' || (mediaType !== 'movie' && mediaType !== 'tv')) return true;
-    return this.#store.hasAppRequestIntent(mediaType, tmdbId);
+    if (typeof tmdbId !== 'number' || (mediaType !== 'movie' && mediaType !== 'tv')) return undefined;
+    const requester = request.requestedBy?.jellyfinUserId;
+    const createdAt = Date.parse(request.createdAt ?? '');
+    return {
+      mediaType,
+      tmdbId,
+      ...(typeof requester === 'string' && requester !== '' ? { requester: normalizeId(requester) } : {}),
+      ...(Number.isFinite(createdAt) ? { createdAt } : {}),
+    };
   }
 
   /** Whether household "Add to my library" can resolve titles; it needs Seerr lookup. */
@@ -638,11 +680,12 @@ export class AccessService {
         const readySeasons = record.seasons.filter((season) => seasons?.has(season));
         return { status: readySeasons.length === record.seasons.length ? 'completed' as const : 'pending' as const, itemIds: [itemId], readySeasons };
       };
-      const updates: Array<{ id: string; status: AppRequestStatus; itemIds?: string[]; readySeasons?: number[] }> = [];
+      const updates: Array<{ id: string; status: AppRequestStatus; itemIds?: string[]; readySeasons?: number[]; awaitingGrant?: boolean }> = [];
       const joined: GrantRecord[] = [];
       for (const [id, record] of records) {
         if (record.branch === 'join') continue;
-        let matches = record.seerrRequestId === requestId;
+        // A record that found no grant for the item joins the one created now.
+        let matches = record.seerrRequestId === requestId || (record.awaitingGrant === true && (record.itemIds ?? []).includes(normalizeId(itemId)));
         if (!matches && record.branch === 'interest' && (record.mediaType === 'movie' || !record.seerrRequestId)) {
           if (title === null) title = await this.#itemTitle(itemId);
           throwIfAborted(signal);
@@ -656,7 +699,12 @@ export class AccessService {
         const outcome = await this.#joinHouseholdNow([itemId], record.jellyfinUserId, record.householdId);
         throwIfAborted(signal);
         joined.push(...outcome.joined);
-        updates.push(outcome.result === 'refused' ? { id, status: 'failed', itemIds: [itemId] } : { id, ...await ready(record) });
+        if (outcome.result === 'refused') updates.push({ id, status: 'failed', itemIds: [itemId] });
+        else if (outcome.result === 'ungranted') {
+          // No grant to join: the title is public. Never `completed` against it: joined when a grant is created.
+          const { readySeasons } = await ready(record);
+          updates.push({ id, status: 'pending', itemIds: [itemId], readySeasons: record.mediaType === 'movie' ? [0] : readySeasons ?? [], awaitingGrant: true });
+        } else updates.push({ id, ...await ready(record), awaitingGrant: false });
       }
       if (updates.length > 0) await this.#store.writeAppRequests({ update: updates });
       throwIfAborted(signal);
@@ -678,7 +726,7 @@ export class AccessService {
    * Whether a request is one "Get this" made whose grant must follow the library join rules rather than be a new grant
    * (docs/app-design.md, "Late requests" and "New seasons of a series Jellyfin has"): its record says so
    * (AppRequestRecord.joinOnGrant). A request whose record is not written or not settled yet is never granted at all
-   * (see #deferredForIntent).
+   * (see #grantRule).
    */
   #grantsAsJoin(requestId: string): boolean {
     return this.#store.listAppRequests().some(([, record]) => record.branch === 'request' && record.seerrRequestId === requestId && record.joinOnGrant !== undefined);
@@ -813,14 +861,14 @@ export class AccessService {
           }
           throwIfAborted(signal);
           // A "Get this" request for the title is not settled yet: the next run tries again.
-          if (await this.#deferredForIntent(requestId, request)) {
-            throwIfAborted(signal);
+          const rule = await this.#grantRule(requestId, request);
+          throwIfAborted(signal);
+          if (rule === 'defer') {
             result.skipped += 1;
             this.#metrics.increment('jfa_request_backfill_total', { result: 'deferred' });
             continue;
           }
-          throwIfAborted(signal);
-          if (this.#grantsAsJoin(requestId)) {
+          if (rule === 'join') {
             await this.#grantAsJoin(itemId, requestId, signal);
             throwIfAborted(signal);
             result.skipped += 1;
@@ -1568,4 +1616,29 @@ function requestItemId(request: SeerrRequest): string | undefined {
 
 function requestMediaStatus(request: SeerrRequest): number | undefined {
   return request.is4k ? request.media?.status4k : request.media?.status;
+}
+
+/** How a request may be granted now: see AccessService.#grantRule. */
+type GrantRule = 'defer' | 'join' | 'grant';
+
+/** What a grant decision reads of a Seerr request (see AccessService.#requestFacts). */
+interface RequestFacts {
+  mediaType: 'movie' | 'tv';
+  tmdbId: number;
+  /** Its requester's Jellyfin user, normalized, if it can be read. */
+  requester?: string;
+  /** When Seerr made it (milliseconds), if it can be read. */
+  createdAt?: number;
+}
+
+/**
+ * Whether a member-wide safety tombstone covers a request (see AppSafetyTombstone): the title's, by the member or by
+ * a requester that cannot be read, made no earlier than the tombstone's `since` (or at a time that cannot be read),
+ * and not exempt.
+ */
+function covers(tombstone: AppSafetyTombstone, requestId: string, request: RequestFacts): boolean {
+  if (tombstone.mediaType !== request.mediaType || tombstone.tmdbId !== request.tmdbId) return false;
+  if (tombstone.exemptRequestIds?.includes(requestId)) return false;
+  if (request.requester !== undefined && request.requester !== tombstone.jellyfinUserId) return false;
+  return request.createdAt === undefined || tombstone.since === undefined || request.createdAt >= Date.parse(tombstone.since);
 }
