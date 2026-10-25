@@ -1325,7 +1325,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
    * Loads the real page and client modules into a DOM, signed in as `user` with Jellyfin web's own stored sign-in, and
    * wires `fetch` to the real API on the test server. One page per test (the client keeps its state in module scope).
    */
-  async function openApp(t, app, { user = ALICE, host = HOST_A, signedIn = true, override, hash = '', holdMe, store: initialStore, storageFails = false, userAgent = '' } = {}) {
+  async function openApp(t, app, { user = ALICE, host = HOST_A, signedIn = true, override, hash = '', holdMe, store: initialStore, storageFails = false, userAgent = '', clamp = false } = {}) {
     const origin = `https://${host}`;
     const { document, Event, HTMLElement } = parseHTML(read('index.html'));
     // linkedom keeps no focus (it has no document.activeElement): the last element of this page focus() was called on stands in.
@@ -1357,10 +1357,23 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     const fire = () => { for (const listener of listeners.hashchange ?? []) listener({}); };
     const scroll = { y: 0 };
     const sessionWrites = [];
+    // With `clamp`, the page is as tall as what is drawn (300 for a skeleton, 100 a card, 1000 a title's detail screen).
+    const pageHeight = () => (document.querySelector('article.detail') ? 1000 : 300 + 100 * document.querySelectorAll('#screen .card').length);
+    const clampScroll = () => {
+      const limit = pageHeight();
+      if (scroll.y > limit) {
+        scroll.y = limit;
+        for (const listener of listeners.scroll ?? []) listener({ type: 'scroll', target: document });
+      }
+    };
     const globals = {
       document,
       window: {
-        scrollTo(_x, y) { scroll.y = y ?? 0; },
+        scrollTo(_x, y) {
+          scroll.y = y ?? 0;
+          // A browser cannot scroll past the end of the page: it clamps, and says so with a scroll event.
+          if (clamp) clampScroll();
+        },
         get scrollY() { return scroll.y; },
         addEventListener(type, listener) { (listeners[type] ??= []).push(listener); },
         // The page's network is the test server; Node's own fetch (used by the server itself) is left alone.
@@ -1427,6 +1440,11 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       fire();
     };
     const main = () => document.getElementById('screen');
+    if (clamp) {
+      const screen = main();
+      const replace = screen.replaceChildren;
+      screen.replaceChildren = function (...nodes) { replace.apply(this, nodes); clampScroll(); };
+    }
     const back = () => document.getElementById('back');
     return { document, Event, until, go, main, requests, store, location, back, entries, cursor: () => index, scroll, sessionWrites, history: globals.history, window: globals.window, serialize: () => document.documentElement.outerHTML, listeners, focused: () => focused };
   }
@@ -1731,7 +1749,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     const heldTrending = (gate) => (url) => (gate.held && url.startsWith('/jellypass/app/v1/discover/trending') ? gate.held.promise.then(() => undefined) : undefined);
     const heldSearchPage2 = (gate) => (url) => (gate.held && url === '/jellypass/app/v1/search?q=synthetic&page=2' ? gate.held.promise.then(() => undefined) : undefined);
 
-    for (const interaction of ['scroll', 'wheel', 'touchstart', 'keydown']) {
+    for (const interaction of ['wheel', 'touchstart', 'pointerdown', 'keydown']) {
       it(`does not pull Home back when a delayed row arrives after the member used ${interaction}`, async (t) => {
         const app = await startApp(t);
         const gate = { held: undefined };
@@ -1754,7 +1772,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       });
     }
 
-    it('still restores Home when only the app\'s own scroll events arrive while a row is delayed', async (t) => {
+    it('still restores Home when only scroll events arrive while a row is delayed', async (t) => {
       const app = await startApp(t);
       const gate = { held: undefined };
       const page = await openApp(t, app, { override: heldTrending(gate) });
@@ -1790,6 +1808,29 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       await page.until(() => page.requests.filter((request) => request.url === '/jellypass/app/v1/search?q=synthetic&page=2').length === 2, 'page 2 asked for again');
       return page;
     }
+
+    it('restores a search whose first attempts the browser clamps, with the detail page left scrolled', async (t) => {
+      const app = await startApp(t, world({ extraResults: 45 }));
+      const page = await openApp(t, app, { clamp: true });
+      await homeReady(page);
+      page.go('#/search');
+      const input = await page.until(() => page.main().querySelector('input[type="search"]'), 'the search box');
+      input.value = 'synthetic';
+      input.dispatchEvent(new page.Event('input'));
+      await page.until(() => page.main().querySelector('button.load-more'), 'results');
+      page.main().querySelector('button.load-more').dispatchEvent(new page.Event('click'));
+      await page.until(() => page.main().querySelector('button.load-more:not([disabled])'), 'page 2 shown');
+      const shown = page.main().querySelectorAll('.card').length;
+      assert.ok(shown > 20, 'two pages are showing');
+      page.scroll.y = 900;
+      page.go(`#/movie/${OWN_MOVIE}`);
+      await page.until(() => page.main().querySelector('article.detail'), 'the movie');
+      page.scroll.y = 250;
+      page.back().dispatchEvent(new page.Event('click'));
+      await page.until(() => page.main().querySelectorAll('.card').length === shown, 'both pages again');
+      await page.until(() => page.scroll.y === 900, 'the scroll, not cut short by the clamping');
+      assert.equal(page.main().querySelectorAll('.card').length, shown);
+    });
 
     it('does not carry a restored search\'s pages or scroll into a different query typed before the restore finished', async (t) => {
       const gate = { held: undefined };
