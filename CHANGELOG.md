@@ -18,7 +18,7 @@ privacy leak. Such changes are always listed at the top of the release notes.
 
 - Household app: going back now returns to where you were. The page scroll, each Home row's horizontal scroll, Search's
   query, loaded pages and scroll, and My requests' scroll are restored. Nothing from the API is stored on the device
-  for this.
+  for this. Scrolling, touching, typing or changing the search ends it, so a slow response never moves the page.
 
 ### Changed
 

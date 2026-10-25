@@ -1542,6 +1542,122 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       await page.until(() => page.scroll.y === 1500, 'the scroll');
     });
 
+    /** A response the test releases by hand; the page's fetch waits on it. */
+    const deferred = () => {
+      let release;
+      const promise = new Promise((resolve) => { release = resolve; });
+      return { promise, release };
+    };
+    const fire = (page, type) => { for (const listener of page.listeners[type] ?? []) listener({ type }); };
+    const pause = (ms = 60) => new Promise((resolve) => setTimeout(resolve, ms));
+    const heldTrending = (gate) => (url) => (gate.held && url.startsWith('/jellypass/app/v1/discover/trending') ? gate.held.promise.then(() => undefined) : undefined);
+    const heldSearchPage2 = (gate) => (url) => (gate.held && url === '/jellypass/app/v1/search?q=synthetic&page=2' ? gate.held.promise.then(() => undefined) : undefined);
+
+    for (const interaction of ['scroll', 'wheel', 'touchstart', 'keydown']) {
+      it(`does not pull Home back when a delayed row arrives after the member used ${interaction}`, async (t) => {
+        const app = await startApp(t);
+        const gate = { held: undefined };
+        const page = await openApp(t, app, { override: heldTrending(gate) });
+        await homeReady(page);
+        page.scroll.y = 640;
+        page.go(`#/movie/${OWN_MOVIE}`);
+        await page.until(() => page.main().querySelector('article.detail'), 'the movie');
+        gate.held = deferred();
+        page.history.back();
+        await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 3, 'three rows, one still on its way');
+        // The app's own scroll (and its scroll events) is not the member taking over.
+        fire(page, 'scroll');
+        page.scroll.y = 200;
+        fire(page, interaction);
+        gate.held.release();
+        await homeReady(page);
+        await pause();
+        assert.equal(page.scroll.y, 200, 'the member\'s place was kept');
+      });
+    }
+
+    it('still restores Home when only the app\'s own scroll events arrive while a row is delayed', async (t) => {
+      const app = await startApp(t);
+      const gate = { held: undefined };
+      const page = await openApp(t, app, { override: heldTrending(gate) });
+      await homeReady(page);
+      page.scroll.y = 640;
+      page.go(`#/movie/${OWN_MOVIE}`);
+      await page.until(() => page.main().querySelector('article.detail'), 'the movie');
+      gate.held = deferred();
+      page.history.back();
+      await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 3, 'three rows');
+      fire(page, 'scroll');
+      gate.held.release();
+      await homeReady(page);
+      await page.until(() => page.scroll.y === 640, 'the page scroll');
+    });
+
+    async function searchTwoPagesThenOpenATitle(t, gate) {
+      const app = await startApp(t, world({ extraResults: 45 }));
+      const page = await openApp(t, app, { override: heldSearchPage2(gate) });
+      await homeReady(page);
+      page.go('#/search');
+      const input = await page.until(() => page.main().querySelector('input[type="search"]'), 'the search box');
+      input.value = 'synthetic';
+      input.dispatchEvent(new page.Event('input'));
+      await page.until(() => page.main().querySelector('button.load-more'), 'results');
+      page.main().querySelector('button.load-more').dispatchEvent(new page.Event('click'));
+      await page.until(() => page.main().querySelector('button.load-more:not([disabled])'), 'page 2 shown');
+      page.scroll.y = 910;
+      page.go(`#/movie/${OWN_MOVIE}`);
+      await page.until(() => page.main().querySelector('article.detail'), 'the movie');
+      gate.held = deferred();
+      page.back().dispatchEvent(new page.Event('click'));
+      await page.until(() => page.requests.filter((request) => request.url === '/jellypass/app/v1/search?q=synthetic&page=2').length === 2, 'page 2 asked for again');
+      return page;
+    }
+
+    it('does not carry a restored search\'s pages or scroll into a different query typed before the restore finished', async (t) => {
+      const gate = { held: undefined };
+      const page = await searchTwoPagesThenOpenATitle(t, gate);
+      page.scroll.y = 0;
+      const typed = page.main().querySelector('input[type="search"]');
+      typed.value = 'synthetic2';
+      typed.dispatchEvent(new page.Event('input'));
+      await page.until(() => page.requests.some((request) => request.url === '/jellypass/app/v1/search?q=synthetic2&page=1'), 'the new query');
+      gate.held.release();
+      await page.until(() => page.main().querySelector('button.load-more:not([disabled])'), 'the new results');
+      await pause();
+      const asked = page.requests.map((request) => request.url).filter((url) => url.startsWith('/jellypass/app/v1/search?q=synthetic2'));
+      assert.deepEqual(asked, ['/jellypass/app/v1/search?q=synthetic2&page=1'], 'only the first page of the new query');
+      assert.equal(page.scroll.y, 0, 'the old scroll was not applied');
+    });
+
+    it('does not put a search back after the member scrolled while its pages were coming', async (t) => {
+      const gate = { held: undefined };
+      const page = await searchTwoPagesThenOpenATitle(t, gate);
+      page.scroll.y = 120;
+      fire(page, 'wheel');
+      gate.held.release();
+      await page.until(() => page.main().querySelector('button.load-more:not([disabled])'), 'the results');
+      await pause();
+      assert.equal(page.scroll.y, 120);
+    });
+
+    it('keeps at most 50 remembered positions, forgetting the oldest first', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app);
+      await homeReady(page);
+      page.scroll.y = 333;
+      for (let index = 1; index <= 60; index += 1) {
+        page.go(`#/about?n=${index}`);
+        await page.until(() => page.main().querySelector('.tmdb-logo') && page.location.hash === `#/about?n=${index}`, `entry ${index}`);
+        page.scroll.y = 1000 + index;
+      }
+      page.history.back();
+      await page.until(() => page.scroll.y === 1059, 'a recent entry is remembered');
+      for (let index = 0; index < 59; index += 1) page.history.back();
+      await homeReady(page);
+      await pause();
+      assert.equal(page.scroll.y, 0, 'Home, the oldest entry, was forgotten');
+    });
+
     it('keeps only scroll and query state in the browser: no API data in storage, and no new storage keys', async (t) => {
       const app = await startApp(t);
       const page = await openApp(t, app);

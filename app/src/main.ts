@@ -104,7 +104,21 @@ function focusHeading(): void {
   }
   const heading = main.querySelector<HTMLElement>('h1');
   heading?.focus({ preventScroll: true });
-  window.scrollTo(0, restoring?.y ?? 0);
+  // Coming back, the page goes where it was unless the member has taken over; a new screen starts at the top.
+  if (!restoring) appScrollTo(0);
+  else if (restoreLive(restoring)) appScrollTo(restoring.y);
+}
+
+/** The only place the app moves the page, so the scroll it causes is told apart from the member's own. */
+let expectedY: number | undefined;
+const expectedLeft = new WeakMap<HTMLElement, number>();
+function appScrollTo(y: number): void {
+  expectedY = y;
+  window.scrollTo(0, y);
+}
+function appScrollLeft(list: HTMLElement, left: number): void {
+  expectedLeft.set(list, left);
+  list.scrollLeft = left;
 }
 
 /**
@@ -128,6 +142,14 @@ let shownDepth: number | undefined;
 let shownRoute: Route | undefined;
 /** What the screen being drawn should come back to, when the member got here by going back (or forward). */
 let restoring: Position | undefined;
+/** Set by anything the member does after the screen was drawn: from then on the position is theirs and not put back. */
+let restoreCancelled = false;
+/** A restoration still owed: it belongs to the screen on show (stale completions never match) and nobody has taken over. */
+function restoreLive(position: Position | undefined): position is Position {
+  return position !== undefined && position === restoring && !restoreCancelled;
+}
+/** Most entries kept; the oldest are forgotten first. */
+const MAX_POSITIONS = 50;
 let searchPages = 1;
 let requestsShown = 0;
 
@@ -151,7 +173,9 @@ function capturePosition(): void {
   if (Object.keys(rows).length) position.rows = rows;
   if (shownRoute.name === 'search') position.loaded = searchPages;
   if (shownRoute.name === 'requests') position.loaded = requestsShown;
+  positions.delete(shownDepth);
   positions.set(shownDepth, position);
+  while (positions.size > MAX_POSITIONS) positions.delete(positions.keys().next().value as number);
 }
 
 /** Numbers this history entry. An entry the app has not seen is a new one (or Back's replacement) and drops what lay ahead. */
@@ -269,6 +293,7 @@ async function render(): Promise<void> {
   capturePosition();
   stampHistory();
   restoring = positions.get(depth);
+  restoreCancelled = false;
   shownDepth = depth;
   shownRoute = route;
   backButton.hidden = route.name === 'home';
@@ -307,6 +332,7 @@ async function home(signal: AbortSignal, current: () => boolean): Promise<void> 
   show(heading, ...slots);
   slots.forEach((slot) => slot.append(skeletonRow(doc)));
   let unauthorized = false;
+  const restore = restoring;
   await Promise.all(
     ROWS.map(async (row, index) => {
       const slot = slots[index] as HTMLElement;
@@ -315,8 +341,8 @@ async function home(signal: AbortSignal, current: () => boolean): Promise<void> 
         if (!current()) return;
         slot.replaceChildren(titleRow(doc, `row-${row.list}`, row.heading, page, origin));
         const list = slot.querySelector<HTMLElement>('ul.row-list');
-        const left = restoring?.rows?.[`row-${row.list}-heading`];
-        if (list && left) list.scrollLeft = left;
+        const left = restore?.rows?.[`row-${row.list}-heading`];
+        if (list && left && restoreLive(restore)) appScrollLeft(list, left);
       } catch (error) {
         if (!current() || signal.aborted) return;
         const kind = kindOf(error);
@@ -347,8 +373,11 @@ async function search(initial: string, signal: AbortSignal, current: () => boole
   let sequence = 0;
   let pending: AbortController | undefined;
   /** Coming back: this many pages are fetched again, then the screen is put back where it was. */
-  let wanted = restoring?.loaded ?? 1;
-  let scrollBack = restoring;
+  const back = restoring;
+  let wanted = back?.loaded ?? 1;
+  let scrollBack = back;
+  /** True while the screen is still being put back and the member has not taken over. */
+  const resuming = () => scrollBack !== undefined && restoreLive(scrollBack);
   searchPages = 1;
   signal.addEventListener('abort', () => {
     clearTimeout(timer);
@@ -363,13 +392,18 @@ async function search(initial: string, signal: AbortSignal, current: () => boole
   ]);
   const results = el(doc, 'div', { class: 'search-results' });
 
-  function run(raw: string): void {
+  function run(raw: string, restoringRun = false): void {
     clearTimeout(timer);
     pending?.abort();
     const query = raw.trim().slice(0, MAX_QUERY_LENGTH);
     history.replaceState(history.state, '', query ? `#/search?q=${encodeURIComponent(query)}` : '#/search');
     const mine = ++sequence;
     searchPages = 1;
+    // A different search is not the one that was left: it keeps nothing of that screen's pages or scroll.
+    if (!restoringRun) {
+      scrollBack = undefined;
+      wanted = 1;
+    }
     if (!query) {
       results.replaceChildren();
       announce('');
@@ -384,13 +418,13 @@ async function search(initial: string, signal: AbortSignal, current: () => boole
 
   function settled(): void {
     // Once, after the pages that were showing are back; later pages are the member's own.
-    if (scrollBack) window.scrollTo(0, scrollBack.y);
+    if (resuming() && scrollBack) appScrollTo(scrollBack.y);
     scrollBack = undefined;
     wanted = 1;
   }
 
   async function fetchPage(query: string, page: number, controller: AbortController, mine: number, append: boolean): Promise<void> {
-    const resuming = Boolean(scrollBack);
+    const wasResuming = resuming();
     try {
       const answer = await api.search(query, page, controller.signal);
       if (mine !== sequence || !current()) return;
@@ -405,7 +439,7 @@ async function search(initial: string, signal: AbortSignal, current: () => boole
       }
       searchPages = page;
       announce(append ? 'More results loaded.' : answer.results.length ? 'Results loaded.' : '');
-      if (answer.nextPage && page < wanted) {
+      if (answer.nextPage && page < wanted && resuming()) {
         await fetchPage(query, answer.nextPage, controller, mine, true);
         return;
       }
@@ -420,7 +454,7 @@ async function search(initial: string, signal: AbortSignal, current: () => boole
         results.append(more);
         if (scrollBack) settled();
       }
-      if (append && !resuming) firstNew?.focus();
+      if (append && !wasResuming) firstNew?.focus();
     } catch (error) {
       if (mine !== sequence || !current() || controller.signal.aborted) return;
       const kind = kindOf(error);
@@ -437,6 +471,7 @@ async function search(initial: string, signal: AbortSignal, current: () => boole
     run(input.value);
   });
   input.addEventListener('input', () => {
+    restoreCancelled = true;
     clearTimeout(timer);
     timer = setTimeout(() => run(input.value), SEARCH_DEBOUNCE_MS);
   });
@@ -444,7 +479,7 @@ async function search(initial: string, signal: AbortSignal, current: () => boole
   show(el(doc, 'h1', { class: 'screen-title', text: 'Search', attrs: { tabindex: '-1' } }), form, results);
   announce('');
   focusHeading();
-  if (initial.trim()) run(initial);
+  if (initial.trim()) run(initial, true);
   await loadMe(signal);
 }
 
@@ -578,7 +613,7 @@ async function requestsScreen(signal: AbortSignal, current: () => boolean): Prom
     requestsShown = shown;
     const items = batch.map((entry) => requestItem(doc, entry));
     list.append(...items);
-    if (size > REQUESTS_PER_PAGE) window.scrollTo(0, back?.y ?? 0);
+    if (size > REQUESTS_PER_PAGE && restoreLive(back)) appScrollTo(back.y);
     more.hidden = shown >= entries.length;
     more.disabled = false;
     more.textContent = 'Load more';
@@ -614,7 +649,7 @@ async function requestsScreen(signal: AbortSignal, current: () => boolean): Prom
   const again = Math.max(REQUESTS_PER_PAGE, back?.loaded ?? 0);
   requestsShown = 0;
   await showMore(again);
-  if (again === REQUESTS_PER_PAGE && back) window.scrollTo(0, back.y);
+  if (again === REQUESTS_PER_PAGE && restoreLive(back)) appScrollTo(back.y);
 }
 
 // Signing in or out on the same address (in another tab, or in Jellyfin web) is picked up without a reload.
@@ -643,6 +678,21 @@ async function signOut(): Promise<void> {
 }
 
 backButton.addEventListener('click', goBack);
+// Anything the member does with the page or a row ends a restoration still owed; the scroll the app itself causes does not.
+for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown']) window.addEventListener(type, () => { restoreCancelled = true; }, { capture: true, passive: true });
+window.addEventListener(
+  'scroll',
+  (event) => {
+    const target = event.target as unknown;
+    if (target && typeof target === 'object' && 'scrollLeft' in target) {
+      const list = target as HTMLElement;
+      if (expectedLeft.get(list) !== Math.round(list.scrollLeft)) restoreCancelled = true;
+    } else if (expectedY !== Math.round(window.scrollY || 0)) {
+      restoreCancelled = true;
+    }
+  },
+  { capture: true, passive: true },
+);
 window.addEventListener('hashchange', () => {
   if (isRouteHash(location.hash)) void render();
 });
