@@ -1,0 +1,23 @@
+{
+  "networks": [
+    {
+      "id": 213,
+      "name": "Synthetic Network",
+      "logoUrl": "https://image.tmdb.org/t/p/w300/synthetic-logo.png",
+      "hasFilms": true
+    },
+    {
+      "id": 453,
+      "name": "Synthetic Network Two",
+      "logoUrl": null,
+      "hasFilms": false
+    }
+  ],
+  "studios": [
+    {
+      "id": 2,
+      "name": "Synthetic Studio",
+      "logoUrl": "https://image.tmdb.org/t/p/w300/studio_logo-1.png"
+    }
+  ]
+}
