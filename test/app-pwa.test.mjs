@@ -987,6 +987,30 @@ describe('household app page: rendering', () => {
     return { document, Event, ...module };
   }
 
+  it('names each card link with its title, facts and status exactly once, and hides the sibling pill from assistive technology', async () => {
+    const { document, cardItem, backdropCardItem, STATE_LABELS } = await renderer();
+    for (const state of Object.keys(STATE_LABELS)) {
+      const poster = cardItem(document, card({ state }));
+      assert.equal(poster.querySelector('.card-link').getAttribute('aria-label'), `Synthetic Movie Three, 2021 · Movie, ${STATE_LABELS[state]}`, state);
+      assert.equal(poster.querySelector(':scope > .badge').getAttribute('aria-hidden'), 'true', state);
+      const wide = backdropCardItem(document, card({ state }));
+      const facts = wide.querySelector('.card-meta').textContent;
+      assert.match(facts, /^2021 · .*7\.5 TMDB$/);
+      assert.equal(wide.querySelector('.card-link').getAttribute('aria-label'), `Synthetic Movie Three, ${facts}, ${STATE_LABELS[state]}`, state);
+      assert.equal(wide.querySelector(':scope > .badge').getAttribute('aria-hidden'), 'true', state);
+    }
+    const bare = backdropCardItem(document, card({ year: null, rating: null, state: 'in_library' }));
+    assert.equal(bare.querySelector('.card-link').getAttribute('aria-label'), `Synthetic Movie Three, ${STATE_LABELS.in_library}`);
+  });
+
+  it('brings a focused card fully into its row: the handler is wired and the rows still snap to a card\'s start', () => {
+    const main = read(BUILT('js/main.js'));
+    assert.match(main, /addEventListener\('focusin', showFocusedCard\)/);
+    assert.match(main, /list\.scrollLeft \+= box\.left - view\.left/);
+    assert.doesNotMatch(main.slice(main.indexOf('function showFocusedCard'), main.indexOf('function showFocusedCard') + 1100), /restoreCancelled/, 'a focus scroll is not the member\'s input');
+    assert.match(read(BUILT('app.css')), /\.row-list > \.card \{[^}]*scroll-snap-align: start/);
+  });
+
   it('shows each household state as its own coarse badge on the card, and no Play button on any card', async () => {
     const { document, cardItem, STATE_LABELS } = await renderer();
     assert.deepEqual(STATE_LABELS, {
@@ -2055,7 +2079,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
 
   // One test (and so one page) per world: a page patches the test DOM's prototypes until its test ends.
   describe('backdrop rows against other households', () => {
-    const worlds = { baseline: world(), ...Object.fromEntries(Object.entries(otherHouseholdWorlds()).filter(([name]) => !name.startsWith('large'))) };
+    const worlds = { baseline: world(), ...Object.fromEntries(Object.entries(otherHouseholdWorlds())) };
     const seen = {};
     for (const [name, state] of Object.entries(worlds)) {
       it(`draws the popular rows with ${name === 'baseline' ? 'nothing else going on' : name}`, async (t) => {
@@ -3427,7 +3451,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     });
 
     it('gives the same confirmation whatever the household, the title or Seerr already had', async (t) => {
-      const worlds = { baseline: world(), ...Object.fromEntries(Object.entries(otherHouseholdWorlds()).filter(([name]) => !name.startsWith('large'))) };
+      const worlds = { baseline: world(), ...Object.fromEntries(Object.entries(otherHouseholdWorlds())) };
       const seen = {};
       const shapes = {};
       for (const [name, state] of Object.entries(worlds)) {

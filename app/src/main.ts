@@ -148,6 +148,28 @@ function appScrollLeft(list: HTMLElement, left: number): void {
 }
 
 /**
+ * A card focused by Tab sits fully in its row: a row scrolls sideways, and the browser's own focus scroll can leave the
+ * card almost off the edge. The card is brought to the row's start (where its scroll snap would put it), straight away
+ * so reduced motion needs nothing special. This is the page's own scroll, not the member's: it neither cancels nor
+ * fights a restoration (the keydown that moved focus already cancelled it).
+ */
+function showFocusedCard(event: FocusEvent): void {
+  const link = event.target instanceof Element ? event.target.closest('.row-list .card-link') : null;
+  // After the browser's own focus scroll, which would otherwise settle last.
+  if (link) requestAnimationFrame(() => bringCardIntoRow(link));
+}
+function bringCardIntoRow(link: Element): void {
+  const list = link.closest<HTMLElement>('.row-list');
+  if (!list || document.activeElement !== link) return;
+  const card = link.closest('.card') ?? link;
+  const box = card.getBoundingClientRect();
+  const view = list.getBoundingClientRect();
+  const right = Math.min(view.right, document.documentElement.clientWidth);
+  if (box.left >= view.left && box.right <= right) return;
+  list.scrollLeft += box.left - view.left;
+}
+
+/**
  * How the header sits over the screen: over Home's hero (`home`) or a title's backdrop (`detail`), both of which run
  * under the status bar, or as its own bar. Over a hero it is clear until the page is scrolled, then it is the glass bar.
  */
@@ -989,6 +1011,7 @@ backButton.addEventListener('click', goBack);
 // Anything the member does with the page or a row ends a restoration still owed; scroll events alone do not.
 for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown']) window.addEventListener(type, () => { restoreCancelled = true; }, { capture: true, passive: true });
 window.addEventListener('scroll', onScroll, { passive: true });
+document.addEventListener('focusin', showFocusedCard);
 window.addEventListener('hashchange', () => {
   if (isRouteHash(location.hash)) void render();
 });

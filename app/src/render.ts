@@ -111,8 +111,26 @@ export function requestBadge(doc: Document, status: CoarseStatus): HTMLElement {
   return el(doc, 'span', { class: `badge badge-request-${known ? status : 'failed'}`, text: known ? REQUEST_LABELS[status] : REQUEST_LABELS.failed });
 }
 
+function stateLabel(state: HouseholdState): string {
+  return Object.hasOwn(STATE_LABELS, state) ? STATE_LABELS[state] : STATE_LABELS.unavailable;
+}
+
+/**
+ * A card's status pill is a sibling of its link, so the link's name carries the status itself ("Title, 2024 · Movie, Ready
+ * to watch") and the pill is hidden from assistive technology: said once, in the name.
+ */
+function cardStatusBadge(doc: Document, state: HouseholdState): HTMLElement {
+  const badge = stateBadge(doc, state);
+  badge.setAttribute('aria-hidden', 'true');
+  return badge;
+}
+
+function cardName(card: Card, facts: string): string {
+  return [card.title, facts, stateLabel(card.state)].filter(Boolean).join(', ');
+}
+
 export function stateBadge(doc: Document, state: HouseholdState): HTMLElement {
-  const label = Object.hasOwn(STATE_LABELS, state) ? STATE_LABELS[state] : STATE_LABELS.unavailable;
+  const label = stateLabel(state);
   return el(doc, 'span', { class: `badge badge-${Object.hasOwn(STATE_LABELS, state) ? state : 'unavailable'}`, text: label });
 }
 
@@ -146,12 +164,13 @@ export type RowVariant = 'poster' | 'backdrop';
 
 /** A poster card: poster with its status pill on the corner, then the title and "year · Movie/Series". Play lives on the detail page. */
 export function cardItem(doc: Document, card: Card): HTMLElement {
-  const link = el(doc, 'a', { class: 'card-link', attrs: { href: href(card) } }, [
+  const facts = [card.year ?? '', card.mediaType === 'tv' ? 'Series' : 'Movie'].filter(Boolean).join(' · ');
+  const link = el(doc, 'a', { class: 'card-link', attrs: { href: href(card), 'aria-label': cardName(card, facts) } }, [
     poster(doc, card.posterUrl, '', 'card'),
     el(doc, 'span', { class: 'card-title', text: card.title }),
-    el(doc, 'span', { class: 'card-meta', text: [card.year ?? '', card.mediaType === 'tv' ? 'Series' : 'Movie'].filter(Boolean).join(' · ') }),
+    el(doc, 'span', { class: 'card-meta', text: facts }),
   ]);
-  return el(doc, 'li', { class: 'card' }, [link, stateBadge(doc, card.state)]);
+  return el(doc, 'li', { class: 'card' }, [link, cardStatusBadge(doc, card.state)]);
 }
 
 export function cardList(doc: Document, cards: readonly Card[], className: string, variant: RowVariant = 'poster'): HTMLElement {
@@ -218,7 +237,7 @@ export function backdropCardItem(doc: Document, card: Card): HTMLElement {
   const image = backdrop ?? posterImage(doc, card.posterUrl, '', 'lazy');
   if (!backdrop && image) image.classList.add('backdrop-img');
   const meta = backdropMeta(card);
-  const link = el(doc, 'a', { class: `card-link backdrop-link${image ? '' : ' backdrop-plain'}`, attrs: { href: href(card) } }, [
+  const link = el(doc, 'a', { class: `card-link backdrop-link${image ? '' : ' backdrop-plain'}`, attrs: { href: href(card), 'aria-label': cardName(card, meta) } }, [
     image,
     el(doc, 'span', { class: 'backdrop-scrim', attrs: { 'aria-hidden': 'true' } }),
     el(doc, 'span', { class: 'backdrop-text' }, [
@@ -226,7 +245,7 @@ export function backdropCardItem(doc: Document, card: Card): HTMLElement {
       meta ? el(doc, 'span', { class: 'card-meta', text: meta }) : undefined,
     ]),
   ]);
-  return el(doc, 'li', { class: 'card card-backdrop' }, [link, stateBadge(doc, card.state)]);
+  return el(doc, 'li', { class: 'card card-backdrop' }, [link, cardStatusBadge(doc, card.state)]);
 }
 
 function heroSlide(doc: Document, card: Card, index: number, total: number): HTMLElement {
