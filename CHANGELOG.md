@@ -131,7 +131,12 @@ and the admin host are unaffected.
   picker loads without credentials: it is served for the household's own
   members and refused for anyone else. jellyfin-web 10.11 names only the
   signed-in user (its playlist permission check included), so members using it
-  see no difference. Allowed in a minor release by the household-check rule at the top of this file.
+  see no difference. Naming a share recipient in the path
+  (`/Playlists/{id}/Users/{userId}`) is refused for anyone but the caller, but
+  sharing still works through the playlist body (`POST /Playlists` and
+  `POST /Playlists/{id}` with `Users[].UserId`), where Jellyfin checks the
+  caller's own right to edit; that names a recipient, not the acting user, so
+  it is not affected. Allowed in a minor release by the household-check rule at the top of this file.
 - **Household hostnames no longer relay Quick Connect to Jellyfin.** Quick
   Connect signs in whoever authorizes the code, so it skipped the membership
   check `POST /Users/AuthenticateByName` has there. `GET /QuickConnect/Enabled`
