@@ -59,9 +59,10 @@ patch release may carry.
   ignored, and without the legacy prefix. A path Jellyfin might read otherwise
   than the gateway (an encoded slash, a dot segment, double or invalid
   percent-encoding, a control or non-ASCII character, a backslash, a repeated
-  legacy prefix) gets a fixed `400 {"error":"invalid_path"}` with
-  `Cache-Control: no-store` and never reaches Jellyfin; a WebSocket upgrade to
-  one gets `400` too.
+  legacy prefix) gets a fixed `400 {"error":"invalid_request"}` with
+  `Cache-Control: no-store`, the code the household app already documents and
+  household sign-in already uses, and never reaches Jellyfin; a WebSocket
+  upgrade to one gets `400` too.
 - **Household hostnames refuse Jellyfin's sign-in by ID for non-members.**
   Jellyfin 10.11 still routes the obsolete `POST /Users/{id}/Authenticate`,
   which signs in by user ID and password without the household check. For an

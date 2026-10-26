@@ -571,7 +571,7 @@ obsolete `POST /Users/{id}/Authenticate`) for anyone but a member gets the same
 A path Jellyfin might read otherwise than JellyPass (an encoded slash or
 backslash, a `.` or `..` segment, a backslash, invalid or double
 percent-encoding, a control or non-ASCII character, or one legacy prefix after
-another) is answered a fixed `400` (`invalid_path`, `Cache-Control: no-store`)
+another) is answered a fixed `400` (`invalid_request`, `Cache-Control: no-store`)
 and never reaches Jellyfin.
 
 Unknown household hostnames fail closed with `404`. Group IDs used as household

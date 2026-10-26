@@ -10,7 +10,7 @@ import { ALICE, HOST_A, ITEMS, OUTSIDER, get, post, startApp, world } from './su
 
 const AUTHORIZATION = 'MediaBrowser Client="JellyPass", Device="Browser", DeviceId="jellypass-test-device-0001", Version="1.0"';
 const NOT_A_MEMBER = '{"error":"invalid_credentials"}';
-const INVALID_PATH = '{"error":"invalid_path"}';
+const INVALID_PATH = '{"error":"invalid_request"}';
 const ITEM_NOT_FOUND = '{"error":"item_not_found"}';
 /** An item in a library Alice does not have. */
 const HIDDEN = '44440000444400004444000044440000';

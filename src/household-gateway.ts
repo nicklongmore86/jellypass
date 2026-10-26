@@ -236,7 +236,7 @@ export class HouseholdGateway {
     }
     if (route === undefined) {
       // Jellyfin might route it otherwise than the gateway reads it, so no check here can be trusted to apply.
-      writeJson(response, 400, { error: 'invalid_path' }, NEVER_STORE);
+      writeJson(response, 400, { error: 'invalid_request' }, NEVER_STORE);
       return;
     }
     if (appPath) {
