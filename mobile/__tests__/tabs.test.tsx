@@ -23,8 +23,13 @@ jest.mock('../src/api/transport', () => ({
 jest.mock('expo-constants', () => ({ __esModule: true, default: { expoConfig: jest.requireActual('../app.config').default } }));
 jest.mock('react-native-safe-area-context', () => jest.requireActual('react-native-safe-area-context/jest/mock').default);
 
+// Home's own calls (the lazy rows never come near the screen here: Jest lays nothing out).
+const HOME_AT_ONCE = ['trending', 'popular-movies', 'popular-tv', 'new-movies'].map((list) => `GET /jellypass/app/v1/discover/${list}`);
+
 const HOUSEHOLD = {
   'GET /jellypass/app/v1/me': () => answer(200, fixture('me')),
+  'GET /jellypass/app/v1/discover/sources': () => answer(200, fixture('sources')),
+  ...Object.fromEntries(HOME_AT_ONCE.map((route) => [route, () => answer(200, fixture('page'))])),
   'GET /Users/Public': () => answer(200, []),
   'POST /Sessions/Logout': () => answer(204),
 };
@@ -51,6 +56,11 @@ async function start(initialUrl = '/') {
   const result = await renderRouter({ appDir: 'src/app', overrides: { '(tabs)/account/pushed': Pushed } }, { initialUrl });
   await settle();
   return result;
+}
+
+/** The calls made but Home's discover calls. */
+function notHome(): string[] {
+  return gateway.routes().filter((route) => !route.startsWith('GET /jellypass/app/v1/discover/'));
 }
 
 function tabs() {
@@ -115,8 +125,8 @@ describe('the tab bar', () => {
 
   it('moves between the tabs, each with its title in the header (Home has none, as in the PWA)', async () => {
     const app = await start();
-    expect(headers()).toEqual([]);
-    expect(shows(PLACEHOLDER_TEXT.home)).toBe(true);
+    expect(headers().filter((text) => text !== '')).toEqual(['Trending', 'Popular movies', 'Popular series', 'New movie releases', 'Studios']);
+    expect(screen.queryAllByRole('radio').map((node) => node.props.accessibilityLabel)).toEqual(['All', 'Movies', 'TV']);
 
     await openTab('Search');
     expect(app.getPathname()).toBe('/search');
@@ -239,7 +249,7 @@ describe('the Account screen', () => {
     await openTab('Account');
     await press('Sign out');
     await settle();
-    expect(gateway.routes()).toEqual(['GET /jellypass/app/v1/me', 'POST /Sessions/Logout', 'GET /Users/Public']);
+    expect(notHome()).toEqual(['GET /jellypass/app/v1/me', 'POST /Sessions/Logout', 'GET /Users/Public']);
     expect(storedSession()).toBeUndefined();
     expect(app.getPathname()).toBe('/');
     expect(tabs()).toHaveLength(0);
@@ -251,7 +261,7 @@ describe('the Account screen', () => {
     expect(button('Change household')).toBeTruthy();
     await press('Change household');
     await settle();
-    expect(gateway.routes()).toEqual(['GET /jellypass/app/v1/me', 'POST /Sessions/Logout']);
+    expect(notHome()).toEqual(['GET /jellypass/app/v1/me', 'POST /Sessions/Logout']);
     expect(storedSession()).toBeUndefined();
     expect(app.getPathname()).toBe('/');
     expect(shows('Connect to your household')).toBe(true);
@@ -292,7 +302,7 @@ describe('a setup link while signed in', () => {
     expect(selectedTabs()).toEqual(['Home']);
     expect(screen.queryAllByRole('tab')).toHaveLength(4);
     expect(storedSession()).toMatchObject({ address: ORIGIN });
-    expect(gateway.routes()).toEqual(['GET /jellypass/app/v1/me']);
+    expect(notHome()).toEqual(['GET /jellypass/app/v1/me']);
     expect(router.canGoBack()).toBe(false);
   });
 
@@ -307,12 +317,13 @@ describe('a setup link while signed in', () => {
 });
 
 describe('network', () => {
-  it('makes no call but the start-up /me, through every tab and the Account screen', async () => {
+  // Home's own calls are pinned against docs/app-api/fetch-budget.json by home-budget.test.tsx.
+  it('makes no call but the start-up /me and Home\'s first rows, once, through every tab and the Account screen', async () => {
     const global = jest.spyOn(globalThis, 'fetch');
     try {
       await start();
       for (const name of ['Search', 'My requests', 'Account', 'Home', 'Account']) await openTab(name);
-      expect(gateway.routes()).toEqual(['GET /jellypass/app/v1/me']);
+      expect(gateway.routes().sort()).toEqual(['GET /jellypass/app/v1/me', 'GET /jellypass/app/v1/discover/sources', ...HOME_AT_ONCE].sort());
       expect(global).not.toHaveBeenCalled();
     } finally {
       global.mockRestore();
@@ -339,7 +350,7 @@ function textOf(node: Node): string {
   return node.children.map((child) => (typeof child === 'string' ? child : textOf(child))).join('');
 }
 
-const OURS = ['header', 'screen-column', 'tabbar'] as const;
+const OURS = ['header', 'screen-column', 'home-switch', 'tabbar'] as const;
 
 /** Every host node on screen that answers a press, hidden or not, whatever role it has (or none). */
 function pressables(): Node[] {
@@ -394,13 +405,16 @@ describe('accessibility', () => {
 
   // Every pressable (anything that answers a press, whatever its role), not just the buttons and tabs: each is a
   // button, link or tab with a name, and at least a thumb's height.
+  // Home stays mounted under the other tabs: its 3 filter chips, the hero's 3 slides, Previous, Next and 3 dots, and the
+  // first four rows' 3 cards each (the fixture page has 3 titles).
+  const HOME = 3 + 3 + 2 + 3 + 4 * 3;
   it.each([
-    ['Home', 'Home', 4],
-    ['Search', 'Search', 4],
-    ['My requests', 'My requests', 4],
-    ['Account', 'Account', 9],
+    ['Home', 'Home', 4 + HOME],
+    ['Search', 'Search', 4 + HOME],
+    ['My requests', 'My requests', 4 + HOME],
+    ['Account', 'Account', 9 + HOME],
     // Back, and the Account screen still mounted underneath it.
-    ['a pushed screen', '/account/pushed', 10],
+    ['a pushed screen', '/account/pushed', 10 + HOME],
   ] as const)('keeps every pressable on %s named and a thumb\'s size', async (_name, to, count) => {
     await start();
     if (to.startsWith('/')) {
@@ -415,7 +429,7 @@ describe('accessibility', () => {
       const what = node.props.accessibilityLabel ?? textOf(node);
       const role = node.props.accessibilityRole;
       const height = flat(node).minHeight;
-      expect({ what, role: ['button', 'link', 'tab'].includes(role), named: what.length > 0, height: typeof height === 'number' && height >= layout.touchTarget }).toEqual({
+      expect({ what, role: ['button', 'link', 'tab', 'radio'].includes(role), named: what.length > 0, height: typeof height === 'number' && height >= layout.touchTarget }).toEqual({
         what,
         role: true,
         named: true,

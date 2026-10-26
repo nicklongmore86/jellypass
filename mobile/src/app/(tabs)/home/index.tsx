@@ -1,5 +1,5 @@
-import { PLACEHOLDER_TEXT, PlaceholderScreen } from '@/screens/PlaceholderScreen';
+import { HomeScreen } from '@/screens/HomeScreen';
 
 export default function Home() {
-  return <PlaceholderScreen text={PLACEHOLDER_TEXT.home} />;
+  return <HomeScreen />;
 }
