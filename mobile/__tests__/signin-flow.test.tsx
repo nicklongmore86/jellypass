@@ -3,12 +3,15 @@
 // Retry-After, the start-up check of a kept sign-in, and sign-out. A fake gateway answers; the credential store is the
 // in-memory mock. Queries never print the component tree (support/household.ts).
 import { act, render } from '@testing-library/react-native';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 
+import { AccountScreen } from '../src/screens/AccountScreen';
 import { SessionProvider, useSession } from '../src/session/SessionProvider';
 import { Root } from '../src/screens/Root';
 import { ADDRESS_TEXT, SIGNIN_ERROR_TEXT, SIGNIN_NAME_TEXT, STALLED_TEXT } from '../src/signin/wording';
 import {
   IDENTITY,
+  METRICS,
   ORIGIN,
   OTHER_ORIGIN,
   PASSWORD,
@@ -44,10 +47,12 @@ function LinkProbe() {
 async function start(routes: Routes, now = () => Date.parse('2026-10-26T12:00:00Z')) {
   const gateway = fakeGateway(routes);
   await render(
-    <SessionProvider deps={{ fetch: gateway.fetch, identity: async () => IDENTITY, now }}>
-      <LinkProbe />
-      <Root />
-    </SessionProvider>,
+    <SafeAreaProvider initialMetrics={METRICS}>
+      <SessionProvider deps={{ fetch: gateway.fetch, identity: async () => IDENTITY, now }}>
+        <LinkProbe />
+        <Root signedIn={(me) => <AccountScreen me={me} />} />
+      </SessionProvider>
+    </SafeAreaProvider>,
   );
   await settle();
   return gateway;

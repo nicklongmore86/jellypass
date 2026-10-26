@@ -29,6 +29,8 @@ const config: ExpoConfig = {
   backgroundColor: NAVY,
   ios: {
     bundleIdentifier: IOS_BUNDLE_ID,
+    // The build number, shown with the version on the Account screen; raised for every TestFlight build.
+    buildNumber: '1',
     supportsTablet: true,
     requireFullScreen: false,
     infoPlist: {
@@ -44,6 +46,8 @@ const config: ExpoConfig = {
   },
   android: {
     package: ANDROID_PACKAGE,
+    // Raised for every APK: Android installs an update over the old one only if this is higher.
+    versionCode: 1,
     // A placeholder from the PWA icon: its ticket already sits inside the adaptive icon's safe zone.
     adaptiveIcon: { foregroundImage: './assets/adaptive-icon.png', backgroundColor: NAVY },
     // No Android backup: the sign-in is only ever on this device (a restored Keystore-encrypted value is unreadable

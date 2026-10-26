@@ -10,6 +10,9 @@ import { answer } from './app-api';
 
 export { answer, fixture, ORIGIN, TOKEN, ADDRESS } from './app-api';
 
+/** A phone's safe areas (an iPhone's notch and home indicator), for the screens that read them. */
+export const METRICS = { frame: { x: 0, y: 0, width: 390, height: 844 }, insets: { top: 47, left: 0, right: 0, bottom: 34 } };
+
 export const OTHER_ORIGIN = 'https://jelly-elsewhere.example.test';
 export const PASSWORD = 'synthetic-password-do-not-log';
 

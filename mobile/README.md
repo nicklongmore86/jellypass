@@ -5,9 +5,10 @@ TypeScript (strict) and Expo Router. It talks to a household's JellyPass server 
 `/jellypass/app/v1` API as the PWA, and wears the same Tidepool look: its theme in `src/theme` is ported from
 `app/static/app.css`.
 
-**Sign-in works; the screens come next.** The app connects to a household address, signs a member in, keeps the
-sign-in in the device's credential store and signs out. Once signed in it shows a placeholder with the member's
-name and household; Home, Search and the rest come next (see [What's next](#whats-next)).
+**Sign-in, the tab bar and Account work; the browsing screens come next.** The app connects to a household address,
+signs a member in, keeps the sign-in in the device's credential store and signs out. Once signed in it has the PWA's
+four docked tabs (Home, Search, My requests, Account) with a header and Back, and a finished Account screen; Home,
+Search and My requests are one-line placeholders until their screens come (see [What's next](#whats-next)).
 
 `mobile/` is separate from the server: it has its own `package.json` and `pnpm-lock.yaml`, it is excluded from
 the Docker build context (`.dockerignore`), and the root `pnpm check`, `pnpm test` and temp-leak check never look
@@ -34,7 +35,7 @@ pnpm test        # Jest (jest-expo)
 pnpm check       # all three
 ```
 
-The Jest suites check sign-in (below), the API client against the server's contract (below), the theme's colour contrast (the same pairs and thresholds as the PWA's
+The Jest suites check the signed-in app's navigation and Account screen (below), sign-in (below), the API client against the server's contract (below), the theme's colour contrast (the same pairs and thresholds as the PWA's
 `test/app-pwa.test.mjs`), that every colour token still matches `app/static/app.css`, and the app config's
 promises (the final ids, the Expo owner, rotation, no update service or analytics). No test makes a network call.
 
@@ -73,7 +74,7 @@ The PWA's sign-in (`app/src/signin.ts`) with an address step in front, as `docs/
 7. **Sign-out** sends `POST /Sessions/Logout` with the token (best effort, five seconds; the gateway forgets the session
    at once), then deletes the sign-in from the device whatever came of that.
 
-The signed-in placeholder shows "name · household" from `/me`, **Sign out** and **Change household**.
+Signed in, the Account tab shows "name · household" from `/me`, **Sign out** and **Change household** (below).
 
 **Orientation.** Phones are portrait and tablets turn: iOS from Info.plist (iPhone portrait, iPad all four), and an
 Android phone is locked to portrait at launch with `expo-screen-orientation` when `expo-device` says it is a phone
@@ -87,6 +88,54 @@ buttons, the start-up check and its 401, sign-out clearing the device even offli
 `wording.test.ts` (the PWA's wording, word for word) and `no-logging.test.ts`. The credential store is the in-memory
 mock in `__mocks__/expo-secure-store.ts`. The UI tests only ever use RNTL's `queryAll*` queries through the helpers in
 `__tests__/support/household.ts`, so a failure never prints the component tree.
+
+## The signed-in app (`src/app/(tabs)`, `src/navigation`, `src/screens/AccountScreen.tsx`)
+
+Expo Router: a root stack holding the one sign-in screen (`src/app/index.tsx`), the setup-link route and the `(tabs)`
+group. The tabs show only while signed in with no setup link waiting; otherwise the app goes back to the sign-in
+screen (and a setup link opened over the tabs leaves no second copy of them behind).
+
+- **Tab bar** (`TabBar.tsx`), the PWA's `.tabbar`: docked full width on the screen's foot over the home indicator,
+  rounded at the top, four labelled tabs of equal width: **Home**, **Search**, **My requests**, **Account** (`tabs.ts`
+  holds the routes, labels and icons). The icons are the PWA's own (`app/src/icons.ts`, a key for Account), drawn with
+  `react-native-svg` from the code. The active tab is a cyan-tint rounded square with a visible cyan outline and a
+  heavier icon stroke, so it is shown by shape and weight, not colour alone. iPad has the same bar.
+- **Header** (`Header.tsx`), the PWA's `.app-header`: solid navy with a hairline, the screen's title and, on a pushed
+  screen, a **Back** button. No wordmark and no (i). Home's header is bare, as in the PWA.
+- **Stacks.** Each tab has its own stack (`TabStack.tsx`), so a pushed screen (title pages, from 3.2) keeps its tab and
+  the tab bar. A screen pushed from another tab with `withAnchor: true` gets its tab's first screen under it.
+- **Back.** The header's Back, the iOS edge swipe and Android's back button pop the tab's stack; Android's back on a
+  tab's first screen goes to Home (`backBehavior: 'firstRoute'`), and on Home leaves the app. Nothing goes back to
+  the sign-in screens.
+- **Width.** A screen's content stops widening at the PWA's 72rem (1152 pt) and Account's at 40rem (640 pt), centred
+  on iPad and wide windows, with the side margins clear of the safe areas.
+- **Home, Search and My requests** are placeholders: their routes (`/home`, `/search`, `/requests`), titles and tabs
+  are final; 3.2 to 3.6 fill them in.
+
+**Account** is the PWA's Account tab. **Account**: the member card ("name · household" from the `/me` the sign-in
+checked), **Sign out** (the session's sign-out) and **Change household** (signs out first, then the address step).
+**About & credits**, word for word as the PWA (`src/credits.ts`): what JellyPass is, the TMDB logo (the PWA's
+`tmdb-logo.svg`, drawn from the code in `src/TmdbLogo.tsx`, so nothing is loaded) linking to TMDB, TMDB's required
+notice, where titles and images come from, the JustWatch credit, the app's version and build
+(`JellyPass 0.1.0 (build 1)`, from `version`, `ios.buildNumber` and `android.versionCode` in `app.config.ts`) and the
+household's API version from `/me`. The links (TMDB and JustWatch only) open in the system browser with
+`Linking.openURL`. The screen makes no call of its own.
+
+**Accessibility.** Tabs have the `tab` role, their label, their selected state and "Tab n of 4"; the bar is a
+`tablist` named Main. Headings have the `header` role, the links the `link` role, and Back is a named button. Screen
+readers go header, screen, then tab bar. Every target is at least 44 pt. Text scales with the system font size
+(Dynamic Type, Android font scale) with no cap, line limit or shrinking, and nothing that holds text has a fixed
+height or clips, so labels and titles wrap and the bars grow. The colour pairs are checked with the theme's contrast
+helper.
+
+**Tests.** `tabs.test.tsx` runs the real `src/app` routes through Expo Router's `renderRouter` with a fake gateway:
+the four tabs, their order, icons and active state, moving between them and their header titles, a pushed screen and
+Back, Android's back (pop, then Home, then out), setup links over the tabs, the Account card from a mocked `/me`, Sign
+out and Change household through the session, the credits, version and API version, the links opening in the
+browser, and that nothing but the start-up `/me` is ever sent. Its accessibility part checks the roles, labels and
+reading order, the 44 pt targets, that every text on every tab can grow without clipping, the iPad widths and the
+contrast pairs. `credits.test.tsx` fails if the logo, the credits' words or the icons drift from the PWA's files.
+Queries are `queryAll*` only, so a failure never prints the component tree.
 
 ## The API client (`src/api`)
 
@@ -147,6 +196,7 @@ Edits reload on the phone as you save. Expo Go needs no Apple or Google develope
 ## Privacy: no telemetry, no update service
 
 - No analytics, crash-reporting or tracking SDKs. `__tests__/app-config.test.ts` fails if one is added.
+  `react-native-svg` only draws the icons and the TMDB logo from the code; it loads nothing.
 - No over-the-air updates: `expo-updates` is not installed and `updates.enabled` is `false`, so a built app
   never checks Expo's servers at launch.
 - No Android backup (`allowBackup: false`): the sign-in stays on the device. The `expo-secure-store` config plugin is
@@ -170,8 +220,8 @@ Edits reload on the phone as you save. Expo Go needs no Apple or Google develope
 
 1. **Setup link on the PWA**: a "Set up the app" link on the PWA's Account tab carrying the household's address. Left
    for when the app can be installed (a `jellypass://` link does nothing on a phone without it).
-2. **Screens**: tab bar (Home, Search, My requests, Account), Home with its rows and hero, network and studio
-   pages, Search, movie/series/season pages with **Get this**, My requests, then an accessibility pass.
+2. **Screens**: Home with its rows and hero, network and studio pages, Search, movie/series/season pages with
+   **Get this**, My requests, then an accessibility pass. (The tab bar, header, stacks and Account are done.)
 3. **Play**: an in-app Jellyfin web view, optionally a Swiftfin hand-off.
 4. **Builds**: `eas.json` profiles and EAS Build in the cloud (no Mac needed). iOS goes to TestFlight with
    `eas build --platform ios --auto-submit`; Android is a sideloaded APK (below). These need an Expo account and
