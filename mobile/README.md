@@ -162,7 +162,8 @@ The PWA's Home (`home()` in `app/src/main.ts`, its pieces in `app/src/render.ts`
   card per slide, the backdrop with a solid navy panel **below** it (title, year, "★ 7.8 TMDB", the status, the start
   of the overview). Swipe, **Previous title** / **Next title** (wrapping) and one round dot per title (hollow, or larger
   and filled for the one showing, named "Show title 2 of 5: <title>"). It never moves by itself, jumps without
-  animation under Reduce Motion, and the screen reader hears which title is showing. A tap opens the title.
+  animation under Reduce Motion, and the screen reader hears which title is showing. A tap opens the title. Where
+  Previous, the dots and Next don't fit on one line (a 320 pt phone), the dots take a line of their own above them.
 - **Cards.** A poster card shows the title and "2024 · Movie"; a big card "2024 · ★ 7.8 TMDB". The status is a dot and
   the PWA's word (Ready to watch, Available to get, Can't request, Requested; with My requests' "We couldn't get this",
   the PWA's five) on the image's top-left. Each card is one link named "title, year, rating, status", the status said
@@ -170,9 +171,12 @@ The PWA's Home (`home()` in `app/src/main.ts`, its pieces in `app/src/render.ts`
   From 768 pt wide (iPad): posters 168 pt, big cards 36% of the column, the hero 21:9 and w1280 backdrops.
 - **Images** are TMDB's only, through the API client's allowlist (`src/api/urls.ts`); one that fails to load is dropped,
   leaving its frame. Logos sit on a light tile; with no logo the name is drawn instead.
-- **Calls.** The eager rows and `/discover/sources` at once; every other row only once it comes within 400 pt of the
-  screen, after the eager ones have answered, each once per filter. `/me` is the start-up check's, not asked again.
-  `__tests__/home-budget.test.tsx` pins each filter against `docs/app-api/fetch-budget.json` (the PWA's numbers).
+- **Calls.** The eager rows and `/discover/sources` at once; every other row only once the member has **scrolled** it
+  within 400 pt of the screen, after the eager ones have answered, each once per filter. A layout change alone never
+  loads a row, and each row's slot keeps its skeleton's height, so rows that come back empty or failed can't pull the
+  rows under them near the screen (on a tall iPad that once loaded every lazy row at rest). `/me` is the start-up
+  check's, not asked again. `__tests__/home-budget.test.tsx` pins each filter against `docs/app-api/fetch-budget.json`
+  (the PWA's numbers), also on a 1366 pt iPad with every row empty, failing or a single title.
 - **Failures.** Each row fails on its own with the PWA's fixed words (Can't load this right now, Too many requests,
   You're offline, …) and **Try again** for that row alone; the networks and studios fail as one row. Nothing is retried
   by itself. A 401 forgets the sign-in and shows the picker ("Your sign-in has expired"). Pull to refresh asks for the
@@ -182,8 +186,8 @@ The PWA's Home (`home()` in `app/src/main.ts`, its pieces in `app/src/render.ts`
 **Tests.** `home.test.tsx` (the rows per filter in order, the services' headings and waterlines, the studios, card
 text and names, status words, TMDB-only images and a broken one dropped, the hero's slides, controls and swipe and
 that it never moves by itself, the filter remembered, each failure's wording with no automatic retry, Try again, a 401,
-pull to refresh, nothing kept on the device, every pressable named and 44 pt, every text free to grow, the iPad and
-phone widths), `home-budget.test.tsx` (above) and `home-text.test.ts` (the words, rows and waterlines against the PWA's
+pull to refresh, nothing kept on the device, every pressable named and 44 pt high and wide, every text free to grow,
+the iPad and phone widths, the hero's controls on a 320 pt phone), `home-budget.test.tsx` (above) and `home-text.test.ts` (the words, rows and waterlines against the PWA's
 files). `tabs.test.tsx` counts Home's pressables (its chips are radios) and checks its text too.
 
 ## The API client (`src/api`)

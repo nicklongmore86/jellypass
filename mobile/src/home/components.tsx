@@ -49,6 +49,8 @@ import {
   type HomeFilter,
 } from './text';
 
+const SKELETON_HEADING_HEIGHT = 26;
+
 const hidden = { accessibilityElementsHidden: true, importantForAccessibility: 'no-hide-descendants' } as const;
 
 const STATE_COLORS: Record<HouseholdState, { bg: string; text: string }> = {
@@ -243,6 +245,12 @@ export function SkeletonRow({ variant, cardWidth }: { variant: RowVariant; cardW
   );
 }
 
+/** How tall SkeletonRow stands. Home keeps each row's slot at least this tall, whatever the row turns out to hold. */
+export function skeletonRowHeight(variant: RowVariant, cardWidth: number): number {
+  const frame = variant === 'backdrop' ? cardWidth / (16 / 9) : cardWidth / (2 / 3);
+  return Math.ceil(SKELETON_HEADING_HEIGHT + spacing.md + frame + spacing.xxs);
+}
+
 /** A row that failed: its heading, the fixed message for the kind of failure, and Try again for this row alone. */
 export function RowFailure({ heading, error, onRetry }: { heading: string; error: ErrorText; onRetry: () => void }) {
   const text = ERROR_TEXT[error];
@@ -366,6 +374,12 @@ export function Hero({
     track.current?.scrollTo({ x: next * width, animated: !reduceMotion });
     show(next);
   };
+  // Previous, a dot a title and Next each take a thumb's width. Where they do not fit on one line (five titles on a
+  // 320 pt phone) the dots take a line of their own, over Previous and Next.
+  const fits = width >= (total + 2) * layout.touchTarget + 2 * spacing.sm;
+  const previous = <HeroButton icon="prev" label={HERO_TEXT.previous} onPress={() => goTo((index - 1 + total) % total)} />;
+  const next = <HeroButton icon="next" label={HERO_TEXT.next} onPress={() => goTo((index + 1) % total)} />;
+  const dots = <HeroDots cards={cards} index={index} onChoose={goTo} />;
   const onSwipe = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
     if (width > 0) show(Math.min(total - 1, Math.max(0, Math.round(event.nativeEvent.contentOffset.x / width))));
   };
@@ -384,26 +398,42 @@ export function Hero({
           <HeroSlide key={`${card.mediaType}-${card.tmdbId}`} card={card} width={width} tablet={tablet} first={at === 0} onOpen={onOpen} />
         ))}
       </ScrollView>
-      {total > 1 ? (
-        <View style={styles.heroControls}>
-          <HeroButton icon="prev" label={HERO_TEXT.previous} onPress={() => goTo((index - 1 + total) % total)} />
-          <View style={styles.heroDots}>
-            {cards.map((card, at) => (
-              <Pressable
-                key={`${card.mediaType}-${card.tmdbId}`}
-                accessibilityRole="button"
-                accessibilityLabel={`Show title ${at + 1} of ${total}: ${card.title}`}
-                accessibilityState={{ selected: at === index }}
-                onPress={() => goTo(at)}
-                style={styles.heroDotTarget}
-              >
-                <View testID={at === index ? 'hero-dot-current' : 'hero-dot'} style={[styles.heroDot, at === index && styles.heroDotCurrent]} />
-              </Pressable>
-            ))}
-          </View>
-          <HeroButton icon="next" label={HERO_TEXT.next} onPress={() => goTo((index + 1) % total)} />
+      {total > 1 && fits ? (
+        <View testID="hero-controls" style={styles.heroControls}>
+          {previous}
+          {dots}
+          {next}
         </View>
       ) : null}
+      {total > 1 && !fits ? (
+        <View style={styles.heroControlsStacked}>
+          {dots}
+          <View testID="hero-controls" style={styles.heroControls}>
+            {previous}
+            {next}
+          </View>
+        </View>
+      ) : null}
+    </View>
+  );
+}
+
+/** A dot a title, the current one filled: each a thumb's size, wrapping to another line before it would overflow. */
+function HeroDots({ cards, index, onChoose }: { cards: readonly Card[]; index: number; onChoose: (at: number) => void }) {
+  return (
+    <View testID="hero-dots" style={styles.heroDots}>
+      {cards.map((card, at) => (
+        <Pressable
+          key={`${card.mediaType}-${card.tmdbId}`}
+          accessibilityRole="button"
+          accessibilityLabel={`Show title ${at + 1} of ${cards.length}: ${card.title}`}
+          accessibilityState={{ selected: at === index }}
+          onPress={() => onChoose(at)}
+          style={styles.heroDotTarget}
+        >
+          <View testID={at === index ? 'hero-dot-current' : 'hero-dot'} style={[styles.heroDot, at === index && styles.heroDotCurrent]} />
+        </Pressable>
+      ))}
     </View>
   );
 }
@@ -517,7 +547,7 @@ const styles = StyleSheet.create({
   logoText: { fontSize: 12.8, lineHeight: 15, fontWeight: '700', textAlign: 'center', color: colors.logoText },
 
   skeleton: { backgroundColor: colors.surface, borderWidth: 0 },
-  skeletonHeading: { width: 160, height: 26, borderRadius: radii.chip, backgroundColor: colors.surface },
+  skeletonHeading: { width: 160, height: SKELETON_HEADING_HEIGHT, borderRadius: radii.chip, backgroundColor: colors.surface },
   skeletonList: { flexDirection: 'row', overflow: 'hidden' },
 
   notice: {
@@ -576,7 +606,8 @@ const styles = StyleSheet.create({
     borderColor: colors.hairline,
     backgroundColor: colors.surface,
   },
-  heroDots: { flexDirection: 'row', alignItems: 'center' },
+  heroControlsStacked: { alignItems: 'center', gap: spacing.xxs },
+  heroDots: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'center' },
   heroDotTarget: { minWidth: layout.touchTarget, minHeight: layout.touchTarget, alignItems: 'center', justifyContent: 'center' },
   heroDot: { width: 10, height: 10, borderRadius: 5, borderWidth: 1.5, borderColor: colors.muted },
   heroDotCurrent: { width: 14, height: 14, borderRadius: 7, borderColor: colors.accent, backgroundColor: colors.accent },

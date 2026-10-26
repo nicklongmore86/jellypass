@@ -1,8 +1,10 @@
 // Home's tests: a household whose every Home list answers a synthetic page (example.test addresses and TMDB-shaped
 // image URLs only), all eight services and a few studios, and helpers that lay Home out and scroll it the way the
-// device would (Jest lays nothing out by itself, so no lazy row comes near the screen until a test says so). Queries
+// device would (Jest lays nothing out by itself, so no lazy row comes near the screen until a test says so): each row
+// as tall as what it shows, so a short row moves the rows under it as it would on the device. Queries
 // are queryAll* only and assertions read single fields, so a failure never prints the component tree.
-import { act, fireEvent, screen } from '@testing-library/react-native';
+import { act, fireEvent, screen, within } from '@testing-library/react-native';
+import { StyleSheet } from 'react-native';
 
 import type { FetchLike, ResponseLike } from '../../src/api/client';
 import { answer, fixture, settle, type Call } from './household';
@@ -97,36 +99,124 @@ export function budgetRoute(route: string): string {
   return route.replace(` ${API}/`, ' /');
 }
 
-const SLOT_STEP = 1000;
+/** A screen to lay Home out on: an iPhone's (less its bars) unless a test says otherwise. */
+export interface ScreenSize {
+  width: number;
+  height: number;
+}
+export const PHONE_SCREEN: ScreenSize = { width: 390, height: 800 };
 
-/** Lays Home out as a phone would: an 800 pt screen, every row 1000 pt below the one before. */
-export async function layOut(): Promise<void> {
-  const scroller = screen.queryAllByTestId('home-scroll');
-  await act(async () => {
-    for (const node of scroller) fireEvent(node, 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: 390, height: 800 } } });
-    for (const node of screen.queryAllByTestId('screen-column')) fireEvent(node, 'layout', { nativeEvent: { layout: { x: 0, y: 60, width: 390, height: 40000 } } });
-    screen.queryAllByTestId(/^home-slot-/).forEach((node, index) => {
-      fireEvent(node, 'layout', { nativeEvent: { layout: { x: 0, y: 400 + index * SLOT_STEP, width: 358, height: 300 } } });
-    });
-  });
-  await settle();
+type Node = NonNullable<ReturnType<typeof screen.queryAllByTestId>[number]>;
+
+/** Where the column starts under the filter band, its top padding and the gap between its parts (HomeScreen's styles). */
+const BAND = 60;
+const COLUMN_TOP = 16;
+const GAP = 28;
+/** A row heading and its waterline, a thumb-sized control, a card's words, a failure's notice and the "nothing" line. */
+const HEADING = 37;
+const ROW_GAP = 12;
+const CONTROL = 44;
+const CARD_TEXT = 50;
+const NOTICE = 140;
+const LINE = 22;
+const HERO_PANEL = 160;
+
+let shown: ScreenSize = PHONE_SCREEN;
+let contentEnd = 0;
+
+const styleOf = (node: Node): Record<string, unknown> => StyleSheet.flatten(node.props.style) ?? {};
+const number = (value: unknown): number => (typeof value === 'number' ? value : 0);
+
+function inside(node: Node, testID: string | RegExp): Node[] {
+  return within(node).queryAllByTestId(testID, { includeHiddenElements: true });
 }
 
-/** Scrolls Home so its top is at `y`. */
+/** The first node under `node` with an aspect ratio, as tall as it would draw `width` wide (or its own width). */
+function frameHeight(node: Node, width?: number): number {
+  const visit = (at: Node): number | undefined => {
+    const style = styleOf(at);
+    const ratio = number(style.aspectRatio);
+    const own = typeof style.width === 'number' ? style.width : width;
+    if (ratio > 0 && own !== undefined) return own / ratio;
+    for (const child of at.children) {
+      if (typeof child === 'string') continue;
+      const found = visit(child);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  };
+  return visit(node) ?? 0;
+}
+
+/** How tall a row's slot draws: what it holds now (skeleton, cards, failure or the "nothing" line), or its own minimum. */
+function slotHeight(slot: Node): number {
+  const skeleton = inside(slot, 'skeleton-row')[0];
+  const card = within(slot).queryAllByRole('link')[0];
+  let content: number;
+  if (skeleton) content = 26 + ROW_GAP + frameHeight(skeleton) + 4;
+  else if (card) content = HEADING + ROW_GAP + frameHeight(card, number(styleOf(card).width)) + CARD_TEXT;
+  else if (within(slot).queryAllByRole('alert').length) content = HEADING + ROW_GAP + NOTICE;
+  else content = HEADING + ROW_GAP + LINE;
+  return Math.max(content, number(styleOf(slot).minHeight));
+}
+
+/** How tall the hero draws: its skeleton, or the first slide's picture and panel and its controls (two lines, stacked). */
+function heroHeight(): number {
+  const skeleton = screen.queryAllByTestId('skeleton-hero', { includeHiddenElements: true })[0];
+  if (skeleton) return frameHeight(skeleton, shown.width - 32);
+  const slide = screen.queryAllByTestId('hero-slide-first')[0];
+  if (!slide) return 0;
+  const controls = screen.queryAllByTestId('hero-controls')[0];
+  const stacked = controls !== undefined && inside(controls, 'hero-dots').length === 0;
+  return frameHeight(slide, number(styleOf(slide).width)) + HERO_PANEL + (controls ? CONTROL + 12 : 0) + (stacked ? CONTROL + 4 : 0);
+}
+
+/**
+ * Lays Home out on `size` the way the device would: each row's slot as tall as what it shows now (never less than the
+ * height it reserves), one under the other, and again after every change until nothing moves, as the device lays out
+ * after every render. So a row that comes back short pulls the rows under it up, as it would on the device.
+ */
+export async function layOut(size: ScreenSize = PHONE_SCREEN): Promise<void> {
+  shown = size;
+  let last = '';
+  for (let pass = 0; pass < 20; pass += 1) {
+    const slots = screen.queryAllByTestId(/^home-slot-/);
+    let y = COLUMN_TOP + heroHeight() + GAP;
+    const placed = slots.map((slot) => {
+      const height = slotHeight(slot);
+      const top = y;
+      y += height + GAP;
+      return { slot, top, height };
+    });
+    contentEnd = BAND + y;
+    const now = placed.map(({ top, height }) => `${top}:${height}`).join(',');
+    if (now === last) return;
+    last = now;
+    await act(async () => {
+      for (const node of screen.queryAllByTestId('home-scroll')) fireEvent(node, 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: size.width, height: size.height } } });
+      for (const node of screen.queryAllByTestId('screen-column')) fireEvent(node, 'layout', { nativeEvent: { layout: { x: 0, y: BAND, width: size.width, height: y } } });
+      for (const { slot, top, height } of placed) fireEvent(slot, 'layout', { nativeEvent: { layout: { x: 0, y: top, width: size.width - 32, height } } });
+    });
+    await settle();
+  }
+}
+
+/** Scrolls Home so its top is at `y`, on the screen it was last laid out on, and lays it out again. */
 export async function scrollTo(y: number): Promise<void> {
   await act(async () => {
     for (const node of screen.queryAllByTestId('home-scroll')) {
-      fireEvent.scroll(node, { nativeEvent: { contentOffset: { x: 0, y }, contentSize: { width: 390, height: 40000 }, layoutMeasurement: { width: 390, height: 800 } } });
+      fireEvent.scroll(node, { nativeEvent: { contentOffset: { x: 0, y }, contentSize: { width: shown.width, height: contentEnd }, layoutMeasurement: shown } });
     }
   });
   await settle();
+  await layOut(shown);
 }
 
 /** Lays Home out and scrolls to its end, a screen at a time, as a member would; again once the services' rows are there. */
-export async function scrollToEnd(): Promise<void> {
+export async function scrollToEnd(size: ScreenSize = shown): Promise<void> {
   for (let round = 0; round < 2; round += 1) {
-    await layOut();
-    for (let y = 0; y <= 20 * SLOT_STEP; y += 800) await scrollTo(y);
+    await layOut(size);
+    for (let y = 0; y <= contentEnd; y += size.height) await scrollTo(y);
   }
 }
 

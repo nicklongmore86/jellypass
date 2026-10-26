@@ -4,7 +4,7 @@
 // layout, and that every pressable is named and a thumb's size and every text can grow. The calls themselves are
 // pinned by home-budget.test.tsx. Queries are queryAll* and assertions read single fields, so a failure never prints
 // the component tree.
-import { act, fireEvent, screen } from '@testing-library/react-native';
+import { act, fireEvent, screen, within } from '@testing-library/react-native';
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { renderRouter } from 'expo-router/testing-library';
@@ -39,6 +39,8 @@ jest.mock('react-native-safe-area-context', () => jest.requireActual('react-nati
 
 const PHONE = { width: 390, height: 844, scale: 2, fontScale: 1 };
 const IPAD = { width: 1024, height: 1366, scale: 2, fontScale: 1 };
+/** The narrowest iPhone (SE, first generation): a 288 pt column inside the gutters. */
+const NARROW = { width: 320, height: 568, scale: 2, fontScale: 1 };
 let mockWindow = PHONE;
 jest.mock('react-native/Libraries/Utilities/useWindowDimensions', () => ({ __esModule: true, default: () => mockWindow }));
 
@@ -461,6 +463,23 @@ function pressables(): Node[] {
   return found;
 }
 
+/**
+ * Whether a pressable is at least a thumb wide: by its width or minimum width, or with neither, by filling its parent's
+ * width (a column's child, not a row's) or sharing a row by flex (the tab bar's four tabs: 69 pt each at 320 pt).
+ */
+function wideEnough(node: Node): boolean {
+  const style = flat(node);
+  if (typeof style.width === 'number') return style.width >= layout.touchTarget;
+  if (typeof style.minWidth === 'number' && style.minWidth >= layout.touchTarget) return true;
+  if ((typeof style.flex === 'number' && style.flex > 0) || (typeof style.flexGrow === 'number' && style.flexGrow > 0)) return true;
+  if (style.alignSelf !== undefined) return false;
+  for (let at = node.parent; at; at = at.parent) {
+    if (at.props.style === undefined) continue;
+    return flat(at).flexDirection !== 'row' && flat(at).flexDirection !== 'row-reverse';
+  }
+  return false;
+}
+
 describe('accessibility', () => {
   it('keeps every pressable on a fully loaded Home named and a thumb\'s size', async () => {
     await start();
@@ -471,11 +490,13 @@ describe('accessibility', () => {
       .map((node) => {
         const what = String(node.props.accessibilityLabel ?? textOf(node));
         const role = node.props.accessibilityRole;
-        const height = flat(node).minHeight;
+        const style = flat(node);
+        const height = style.minHeight;
         return [
           !['button', 'link', 'tab', 'radio'].includes(role) && `${what}: role ${role}`,
           what.length === 0 && 'a pressable with no name',
           !(typeof height === 'number' && height >= layout.touchTarget) && `${what}: under 44 pt`,
+          !wideEnough(node) && `${what}: under 44 pt wide`,
         ];
       })
       .flat()
@@ -529,5 +550,47 @@ describe('on iPad', () => {
     await start();
     expect(widthOf('trending 1, 2020, Movie, TMDB rating 6.0 out of 10, Ready to watch')).toBe(132);
     expect(widthOf('popular-movies 1, 2020, TMDB rating 6.0 out of 10, Ready to watch')).toBe(Math.round((390 - 32) * 0.92));
+  });
+});
+
+describe('on a 320 pt phone', () => {
+  const widthOf = (node: Node) => {
+    const style = flat(node);
+    return typeof style.width === 'number' ? style.width : Number(style.minWidth);
+  };
+  /** The hero's buttons on one line, end to end with the line's gaps: never wider than the column. */
+  const lineWidth = (line: Node, buttons: Node[]) => buttons.reduce((sum, node) => sum + widthOf(node), 0) + Number(flat(line).gap ?? 0) * (buttons.length - 1);
+  const names = (nodes: Node[]) => nodes.map((node) => String(node.props.accessibilityLabel));
+
+  it("puts the hero's dots on a line of their own over Previous and Next, each a thumb's size and none past the column", async () => {
+    mockWindow = NARROW;
+    await start();
+    const column = NARROW.width - 32;
+    const controls = only(screen.queryAllByTestId('hero-controls'), 'hero controls');
+    const dotLine = only(screen.queryAllByTestId('hero-dots'), 'hero dots');
+    expect(within(controls).queryAllByTestId('hero-dots')).toHaveLength(0);
+    const buttons = within(controls).queryAllByRole('button');
+    const dots = within(dotLine).queryAllByRole('button');
+    expect(names(buttons)).toEqual(['Previous title', 'Next title']);
+    expect(dots).toHaveLength(5);
+    const small = [...buttons, ...dots]
+      .filter((node) => !(widthOf(node) >= layout.touchTarget && Number(flat(node).minHeight) >= layout.touchTarget))
+      .map((node) => String(node.props.accessibilityLabel));
+    expect(small).toEqual([]);
+    expect(lineWidth(controls, buttons)).toBeLessThanOrEqual(column);
+    expect(lineWidth(dotLine, dots)).toBeLessThanOrEqual(column);
+    // More titles than fit would wrap onto another line rather than run off the screen.
+    expect(flat(dotLine).flexWrap).toBe('wrap');
+  });
+
+  it('keeps Previous, the dots and Next on one line where they fit', async () => {
+    await start();
+    const controls = only(screen.queryAllByTestId('hero-controls'), 'hero controls');
+    expect(within(controls).queryAllByTestId('hero-dots')).toHaveLength(1);
+    expect(within(controls).queryAllByRole('button')).toHaveLength(7);
+    const dotLine = only(screen.queryAllByTestId('hero-dots'), 'hero dots');
+    // Previous, the gap, the dots, the gap and Next.
+    const width = lineWidth(controls, [buttonNamed('Previous title'), buttonNamed('Next title')]) + Number(flat(controls).gap) + lineWidth(dotLine, within(dotLine).queryAllByRole('button'));
+    expect(width).toBeLessThanOrEqual(PHONE.width - 32);
   });
 });

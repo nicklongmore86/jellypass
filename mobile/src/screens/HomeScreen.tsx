@@ -3,6 +3,12 @@
 // networks and studios are asked for at once; every other row only once it comes within LAZY_MARGIN of the screen,
 // after the eager ones have answered, so Home stays inside docs/app-api/fetch-budget.json. Pull to refresh asks again;
 // nothing is retried by itself. The filter stays as chosen while the app is open (Home stays mounted under its tab).
+//
+// Lazy rows are loaded by scrolling, never by layout alone. "Near the screen" is measured from `reach`, the deepest the
+// member has scrolled in this drawing plus a screen and LAZY_MARGIN, and only a scroll moves it on. A row that comes
+// back empty or failed would otherwise shrink to a line, pull the next rows up into the margin and load them, and so
+// on down the page: on a tall iPad, every lazy call at once. As a second guard each row's slot keeps its skeleton's
+// height (skeletonRowHeight), so a short row leaves the rows below it where they were.
 import { router } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
@@ -30,6 +36,7 @@ import {
   RowHeading,
   SkeletonHero,
   SkeletonRow,
+  skeletonRowHeight,
   StudioStrip,
 } from '../home/components';
 import { HERO_MAX, HOME_LAYOUT, LAZY_MARGIN, NETWORK_ACCENTS, networkKey, rowKey, TABLET_WIDTH, type HomeRow, type RowVariant } from '../home/layout';
@@ -71,6 +78,8 @@ export function HomeScreen() {
   const scroller = useRef<ScrollViewInstance>(null);
   const scrollY = useRef(0);
   const viewport = useRef(0);
+  /** How far down the member has brought the screen in this drawing: its bottom plus LAZY_MARGIN; 0 until they scroll. */
+  const reach = useRef(0);
   const columnY = useRef(0);
   const heroEnd = useRef(0);
   /** Each slot's top within the column, by key, as last laid out. */
@@ -92,16 +101,20 @@ export function HomeScreen() {
     [parts, listed],
   );
 
-  /** Asks for every lazy row that has come within LAZY_MARGIN of the screen; nothing before the eager rows have answered. */
+  /** Asks for every lazy row the member has scrolled within reach of; nothing before the eager rows have answered. */
   const check = useCallback(() => {
-    if (!started || viewport.current <= 0) return;
-    const bottom = scrollY.current + viewport.current + LAZY_MARGIN;
+    if (!started || reach.current <= 0) return;
     const due = slots.filter((slot) => {
       const y = slotY.current.get(slot.key);
-      return slot.lazy && y !== undefined && columnY.current + y <= bottom;
+      return slot.lazy && y !== undefined && columnY.current + y <= reach.current;
     });
     if (due.length) near(due.map((slot) => slot.key));
   }, [started, slots, near]);
+
+  /** A new drawing reaches only as far as the screen is now: nothing lazy, until a scroll, when it is at the top. */
+  const restart = () => {
+    reach.current = scrollY.current > 0 ? scrollY.current + viewport.current + LAZY_MARGIN : 0;
+  };
 
   useEffect(() => check(), [check]);
 
@@ -118,11 +131,13 @@ export function HomeScreen() {
     AccessibilityInfo.announceForAccessibility?.('Loading…');
     // The chips stay where they are; a member far down the page starts the new filter at its first row.
     if (scrollY.current > heroEnd.current) scroller.current?.scrollTo({ y: heroEnd.current, animated: false });
+    restart();
     home.choose(next);
   };
 
   const onRefresh = async () => {
     setRefreshing(true);
+    restart();
     try {
       await home.refresh();
     } finally {
@@ -133,7 +148,10 @@ export function HomeScreen() {
   const open = (card: Card) => router.push(titlePath(card));
 
   const onScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-    scrollY.current = event.nativeEvent.contentOffset.y;
+    const { contentOffset, layoutMeasurement } = event.nativeEvent;
+    scrollY.current = contentOffset.y;
+    const height = viewport.current || layoutMeasurement.height;
+    if (contentOffset.y > 0) reach.current = Math.max(reach.current, contentOffset.y + height + LAZY_MARGIN);
     check();
   };
   const onLayout = (event: LayoutChangeEvent) => {
@@ -152,7 +170,7 @@ export function HomeScreen() {
   const titleRow = (part: HomeRow) => {
     const key = rowKey(part);
     return (
-      <View key={key} testID={`home-slot-${key}`} onLayout={placed(key)}>
+      <View key={key} testID={`home-slot-${key}`} onLayout={placed(key)} style={{ minHeight: skeletonRowHeight(part.variant, widths[part.variant]) }}>
         <RowBody
           state={rows[key]}
           heading={<RowHeading title={part.heading} />}
@@ -170,7 +188,7 @@ export function HomeScreen() {
     const key = networkKey(network.id);
     const prefix = SOURCE_TEXT.networkPrefix[networkList(filter, network)];
     return (
-      <View key={key} testID={`home-slot-${key}`} onLayout={placed(key)}>
+      <View key={key} testID={`home-slot-${key}`} onLayout={placed(key)} style={{ minHeight: skeletonRowHeight('poster', widths.poster) }}>
         <RowBody
           state={rows[key]}
           heading={
