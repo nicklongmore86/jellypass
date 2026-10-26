@@ -2,8 +2,9 @@ name: Mobile
 
 # The household app for iPhone, iPad and Android (mobile/). It has its own
 # package.json and lockfile and is not part of the server's build or image, so
-# it runs only when mobile/ changes, the stylesheet its theme is ported from, or
-# the API contract its client is tested against (docs/app-api).
+# it runs only when mobile/ changes, the stylesheet its theme is ported from,
+# the API contract its client is tested against (docs/app-api), or the release
+# workflow (mobile/__tests__/eas-json.test.ts checks it).
 on:
   push:
     branches: [main]
@@ -12,12 +13,14 @@ on:
       - 'app/static/app.css'
       - 'docs/app-api/**'
       - '.github/workflows/mobile.yaml'
+      - '.github/workflows/mobile-release.yaml'
   pull_request:
     paths:
       - 'mobile/**'
       - 'app/static/app.css'
       - 'docs/app-api/**'
       - '.github/workflows/mobile.yaml'
+      - '.github/workflows/mobile-release.yaml'
 
 permissions:
   contents: read

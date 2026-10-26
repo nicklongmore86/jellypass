@@ -1,0 +1,176 @@
+name: Mobile release
+
+# Release builds of the household app (mobile/) on EAS Build: iOS to TestFlight, Android as a sideloaded APK.
+# The builds run on EAS's own machines (macOS for iOS), so this only needs an Ubuntu runner to start them and wait.
+# It never runs on a pull request: only by hand (Actions → Mobile release → Run workflow) or from a `mobile-v*` tag.
+# One-time setup, the secrets and how members install: mobile/README.md, "Release builds".
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: Which app to build
+        type: choice
+        options: [all, ios, android]
+        default: all
+      profile:
+        description: Build profile (mobile/eas.json)
+        type: choice
+        options: [preview, production]
+        default: preview
+      submit:
+        description: Send the iOS build to TestFlight
+        type: boolean
+        default: true
+  push:
+    tags: ['mobile-v*']
+  # TestFlight builds expire 90 days after upload. To keep one current without remembering, uncomment this: it builds
+  # with the tag defaults below (both apps, production, submitted to TestFlight) at 06:00 UTC on the 1st of each
+  # month, and waits for the `mobile-release` reviewer like any other run. Each run is one iOS and one Android build
+  # against the EAS plan's monthly allowance.
+  # schedule:
+  #   - cron: '0 6 1 * *'
+
+permissions:
+  contents: read
+
+# Never two releases of the same ref at once: the remote build numbers and TestFlight would race.
+concurrency:
+  group: mobile-release-${{ github.ref }}
+  cancel-in-progress: false
+
+# Actions are pinned to full commit SHAs (the tag each was at, in the comment), so a moved tag can't change what runs.
+
+jobs:
+  # The same checks as mobile.yaml, with no secrets in reach, before anyone is asked to approve a build.
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: mobile
+    env:
+      EXPO_NO_TELEMETRY: 1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          package_json_file: mobile/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: mobile/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm check
+      - name: Check the EAS project ID is committed
+        run: |
+          project_id="$(env -u EAS_PROJECT_ID pnpm exec expo config --type public --json | jq -r '.extra.eas.projectId // empty')"
+          if [ -z "$project_id" ]; then
+            echo "::error file=mobile/app.config.ts::EAS_PROJECT_ID in mobile/app.config.ts is still the placeholder. Create the EAS project and commit its ID first (mobile/README.md, Release builds)."
+            exit 1
+          fi
+
+  build:
+    needs: check
+    runs-on: ubuntu-24.04
+    # The secrets live in this environment, and its required reviewer approves every run before this job starts.
+    environment: mobile-release
+    # EAS's free plan queues builds at low priority; a release waits for both builds and the TestFlight upload.
+    timeout-minutes: 300
+    defaults:
+      run:
+        working-directory: mobile
+    env:
+      # A tag (or the commented-out schedule) has no inputs: build both apps for production and send iOS to TestFlight.
+      PLATFORM: ${{ inputs.platform || 'all' }}
+      PROFILE: ${{ inputs.profile || 'production' }}
+      SUBMIT: ${{ github.event_name != 'workflow_dispatch' || inputs.submit }}
+      # Pinned like the actions; eas.json's cli.version is the floor.
+      EAS_CLI_VERSION: 24.12.1
+      # No usage telemetry from either CLI.
+      EXPO_NO_TELEMETRY: 1
+      DISABLE_EAS_ANALYTICS: 1
+      # The Apple Developer membership type. Not secret: set the APPLE_TEAM_TYPE variable on the environment to
+      # COMPANY_OR_ORGANIZATION if the membership is an organisation's.
+      EXPO_APPLE_TEAM_TYPE: ${{ vars.APPLE_TEAM_TYPE || 'INDIVIDUAL' }}
+      # The app's numeric Apple ID in App Store Connect (App Information → Apple ID). Not secret; `eas submit` needs
+      # it to run non-interactively. An environment variable, ASC_APP_ID, on `mobile-release`.
+      ASC_APP_ID: ${{ vars.ASC_APP_ID }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+        with:
+          package_json_file: mobile/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: mobile/pnpm-lock.yaml
+      # EAS CLI reads app.config.ts, which needs `expo` installed.
+      - run: pnpm install --frozen-lockfile
+      - run: npm install --global "eas-cli@${EAS_CLI_VERSION}"
+
+      - name: Check the TestFlight settings before spending a build
+        if: env.PLATFORM != 'android' && env.SUBMIT == 'true'
+        run: |
+          if ! printf '%s' "$ASC_APP_ID" | grep -Eq '^[0-9]+$'; then
+            echo "::error::Set the ASC_APP_ID variable on the mobile-release environment to the app's Apple ID from App Store Connect (digits only)."
+            exit 1
+          fi
+
+      # The App Store Connect API key, for EAS to make the iOS provisioning profile and for the TestFlight upload. It
+      # is written readable only by the runner's user, outside the checkout, and deleted in the last step.
+      - name: Write the App Store Connect API key
+        if: env.PLATFORM != 'android'
+        env:
+          ASC_API_KEY_P8: ${{ secrets.ASC_API_KEY_P8 }}
+        run: |
+          key_path="${RUNNER_TEMP}/asc-api-key.p8"
+          (umask 077 && printf '%s\n' "$ASC_API_KEY_P8" > "$key_path")
+          chmod 600 "$key_path"
+          echo "EXPO_ASC_API_KEY_PATH=${key_path}" >> "$GITHUB_ENV"
+
+      - name: Build on EAS
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          # Apple's credentials only when iOS is being built.
+          EXPO_ASC_KEY_ID: ${{ env.PLATFORM != 'android' && secrets.ASC_API_KEY_ID || '' }}
+          EXPO_ASC_ISSUER_ID: ${{ env.PLATFORM != 'android' && secrets.ASC_API_ISSUER_ID || '' }}
+          EXPO_APPLE_TEAM_ID: ${{ env.PLATFORM != 'android' && secrets.APPLE_TEAM_ID || '' }}
+        # --json prints the finished builds to stdout (the logs go to stderr); --wait is the default, spelled out.
+        run: eas build --platform "$PLATFORM" --profile "$PROFILE" --non-interactive --wait --json > "${RUNNER_TEMP}/builds.json"
+
+      - name: Report the builds
+        if: always()
+        run: |
+          builds="${RUNNER_TEMP}/builds.json"
+          [ -s "$builds" ] || exit 0
+          {
+            echo "## JellyPass ${PROFILE} builds"
+            echo
+            jq -r '.[] | "- **\(.platform)** \(.appVersion // "?") (\(.appBuildVersion // "?")): \(.status), [build page](https://expo.dev/accounts/nicklongmore86/projects/jellypass/builds/\(.id))"' "$builds"
+            jq -r '.[] | select(.platform == "ANDROID" and .artifacts.buildUrl != null) | "\n**Android APK:** \(.artifacts.buildUrl)\n\nShare this link with members (mobile/README.md, \"Install on Android\")."' "$builds"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Send the iOS build to TestFlight
+        if: env.PLATFORM != 'android' && env.SUBMIT == 'true'
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+          EXPO_ASC_KEY_ID: ${{ secrets.ASC_API_KEY_ID }}
+          EXPO_ASC_ISSUER_ID: ${{ secrets.ASC_API_ISSUER_ID }}
+          EXPO_APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          build_id="$(jq -r '.[] | select(.platform == "IOS") | .id' "${RUNNER_TEMP}/builds.json")"
+          # ascAppId is not secret but differs per Apple account, so it comes from the environment, not the repo.
+          jq --arg id "$ASC_APP_ID" '.submit.production.ios.ascAppId = $id' eas.json > "${RUNNER_TEMP}/eas.json"
+          mv "${RUNNER_TEMP}/eas.json" eas.json
+          eas submit --platform ios --profile production --id "$build_id" --non-interactive --wait
+          echo "- **IOS** sent to TestFlight. Internal testers get it once App Store Connect finishes processing (usually under an hour)." >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Delete the App Store Connect API key
+        if: always()
+        run: rm -f "${RUNNER_TEMP}/asc-api-key.p8"

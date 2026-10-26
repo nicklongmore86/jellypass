@@ -11,7 +11,8 @@ name and household; Home, Search and the rest come next (see [What's next](#what
 
 `mobile/` is separate from the server: it has its own `package.json` and `pnpm-lock.yaml`, it is excluded from
 the Docker build context (`.dockerignore`), and the root `pnpm check`, `pnpm test` and temp-leak check never look
-at it. Its CI is `.github/workflows/mobile.yaml`, which runs only when `mobile/`, `app/static/app.css` or `docs/app-api/` changes.
+at it. Its CI is `.github/workflows/mobile.yaml`, which runs only when `mobile/`, `app/static/app.css` or `docs/app-api/` changes. Release builds
+are `.github/workflows/mobile-release.yaml` ([Release builds](#release-builds)).
 
 ## Never ship a household list
 
@@ -36,7 +37,8 @@ pnpm check       # all three
 
 The Jest suites check sign-in (below), the API client against the server's contract (below), the theme's colour contrast (the same pairs and thresholds as the PWA's
 `test/app-pwa.test.mjs`), that every colour token still matches `app/static/app.css`, and the app config's
-promises (the final ids, the Expo owner, rotation, no update service or analytics). No test makes a network call.
+promises (the final ids, the Expo owner and project ID, rotation, no update service or analytics), and `eas.json`
+and the release workflow (`eas-json.test.ts`, [Release builds](#release-builds)). No test makes a network call.
 
 ## Sign-in (`src/signin`, `src/session`, `src/screens`)
 
@@ -152,7 +154,8 @@ Edits reload on the phone as you save. Expo Go needs no Apple or Google develope
 - No Android backup (`allowBackup: false`): the sign-in stays on the device. The `expo-secure-store` config plugin is
   not used, since it would add a Face ID usage string for biometrics the app does not use.
 - Expo's **CLI** (`expo start`, `expo lint`) sends anonymous usage telemetry by default. CI sets
-  `EXPO_NO_TELEMETRY=1`; set it in your shell too (`export EXPO_NO_TELEMETRY=1`).
+  `EXPO_NO_TELEMETRY=1`; set it in your shell too (`export EXPO_NO_TELEMETRY=1`). EAS CLI has its own, which the
+  release workflow turns off with `DISABLE_EAS_ANALYTICS=1`; do the same before running `eas` yourself.
 
 ## App identity
 
@@ -161,7 +164,8 @@ Edits reload on the phone as you save. Expo Go needs no Apple or Google develope
 | Name | JellyPass | Keep "Jellyfin" out of the name |
 | iOS bundle id | `com.rtc-services.jellypass` | **Final and permanent.** Never change it: a different bundle id is a different app, and TestFlight and every member start over |
 | Android package | `com.rtcservices.jellypass` | **Final and permanent.** No hyphen, because Android forbids one. A different package is a different app, and members would have to reinstall and sign in again. Every APK must also be signed with the same key, forever (see [Distribution](#distribution)) |
-| Expo owner | `nicklongmore86` | Set in `app.config.ts`. The EAS `projectId` and `eas.json` come with the build PR (`eas init` needs the owner's Expo login) |
+| Expo owner | `nicklongmore86` | Set in `app.config.ts` |
+| EAS project ID | `EAS_PROJECT_ID` in `app.config.ts` | **Placeholder (empty) until the owner creates the project** ([Release builds](#release-builds)). Not secret |
 | Icon | `assets/icon.png`, `assets/adaptive-icon.png` | Placeholder: the PWA's 512 px icon. The App Store needs 1024 px: draw one with `draw(1024)` from `scripts/make-app-icons.py` before submitting |
 | Orientation | iPhone portrait; iPad all four; Android tablets turn freely (`orientation: 'default'`), Android phones locked to portrait at launch | iPad multitasking requires all four |
 | URL scheme | `jellypass://` | Setup links: `jellypass://connect?address=https://jelly-<household>.<domain>` |
@@ -173,23 +177,22 @@ Edits reload on the phone as you save. Expo Go needs no Apple or Google develope
 2. **Screens**: tab bar (Home, Search, My requests, Account), Home with its rows and hero, network and studio
    pages, Search, movie/series/season pages with **Get this**, My requests, then an accessibility pass.
 3. **Play**: an in-app Jellyfin web view, optionally a Swiftfin hand-off.
-4. **Builds**: `eas.json` profiles and EAS Build in the cloud (no Mac needed). iOS goes to TestFlight with
-   `eas build --platform ios --auto-submit`; Android is a sideloaded APK (below). These need an Expo account and
-   an Apple Developer membership. No Google Play Console account or Play config.
+4. **First release build**: the owner's one-time setup in [Release builds](#release-builds), then a run of the
+   `Mobile release` workflow. No Google Play Console account or Play config.
 
 ## Distribution
 
 ### iOS: TestFlight
 
-Members install TestFlight and accept an invitation; builds come from EAS with `eas build --platform ios
---auto-submit`.
+Members install TestFlight and accept an invitation; builds come from EAS through the `Mobile release` workflow
+([Release builds](#release-builds)).
 
 ### Android: a sideloaded APK, not Google Play
 
 Android builds are shared as an APK file that members install directly. There is no Play Store listing and
 no Play Console configuration in this project.
 
-- **APK, not AAB.** The `preview` and `production` profiles in `eas.json` (a later PR) set
+- **APK, not AAB.** The `preview` and `production` profiles in `eas.json` set
   `"android": { "buildType": "apk" }`. EAS builds an AAB by default, which only Play can install.
 - **Members must allow installs from unknown sources.** On Android 8 and later this is a per-app permission:
   the first time they open the APK from their browser or file manager, Android asks them to allow that app to
@@ -200,8 +203,166 @@ no Play Console configuration in this project.
   the member must uninstall (losing the app's sign-in) and install again. With no Play App Signing to recover
   from, a lost key means every member reinstalls. So:
   - Create the keystore once (EAS-managed credentials, or your own with `keytool`) and use it for every build.
-  - Back it up offline, with its passwords, somewhere other than the dev box and Expo's servers. If EAS
-    manages it, download a copy with `eas credentials` and store it the same way.
+  - Back it up offline, with its passwords, somewhere other than the dev box and Expo's servers. EAS manages
+    it here: download a copy as in [Back up the Android keystore](#back-up-the-android-keystore).
   - Never commit it: `*.jks`, `*.keystore`, `*.p12` and `*.key` are in `.gitignore`.
 - **Updates** are a new APK with a higher `android.versionCode`, shared the same way; members install it over
   the old one.
+
+## Release builds
+
+Release builds run on [EAS Build](https://docs.expo.dev/build/introduction/), Expo's cloud builders (macOS for
+iOS), started by the GitHub Actions workflow `.github/workflows/mobile-release.yaml`. Nobody needs a Mac, and no
+credential is ever on the dev box or in the repo: the workflow's secrets live in the `mobile-release` GitHub
+environment, and the signing credentials live on EAS.
+
+- **iOS** goes to TestFlight for internal testing.
+- **Android** is an APK that members sideload ([Distribution](#android-a-sideloaded-apk-not-google-play)).
+
+### What's in the repo
+
+`eas.json` has two build profiles, the same for both platforms apart from their name: `preview` for a build to
+try, `production` for a release (what a `mobile-v*` tag builds).
+
+| Setting | Why |
+|---|---|
+| `"distribution": "store"` | An App Store signed iOS build, the only kind TestFlight takes. On Android, a release-signed APK |
+| `"android": { "buildType": "apk" }` | An AAB only installs from Google Play ([APK builds](https://docs.expo.dev/build-reference/apk/)) |
+| `"cli": { "appVersionSource": "remote" }` and `"autoIncrement": true` | EAS keeps the build number (`ios.buildNumber`, `android.versionCode`) and raises it for every build, so TestFlight never refuses a repeat and every APK installs over the last. The first build is 1 ([App versions](https://docs.expo.dev/build-reference/app-versions/)). The version members see is `version` in `app.config.ts` |
+| `"corepack": true` | The builder installs with the pnpm in `package.json`'s `packageManager` |
+| `submit.production.ios` | The App Store Connect API key, as `$EXPO_ASC_API_KEY_PATH`, `$EXPO_ASC_KEY_ID` and `$EXPO_ASC_ISSUER_ID`: EAS CLI fills a `$NAME` in those three fields from the environment (its `eas-json` package, `submit/resolver.ts`; the fields are in the [eas.json reference](https://docs.expo.dev/build-reference/eas-json/)), and the workflow sets them from the secrets |
+
+No profile has a `channel`: EAS Update stays off, as `updates.enabled: false` in `app.config.ts` says. `__tests__/eas-json.test.ts` checks
+all of this, and that the workflow only runs by hand or from a tag, behind the environment, with pinned actions and
+exactly the five secrets.
+
+### How the workflow talks to EAS and Apple
+
+EAS CLI is pinned (`EAS_CLI_VERSION`, 24.12.1; `eas.json` asks for at least that) and always runs with
+`--non-interactive`. It reads these environment variables
+([Building on CI](https://docs.expo.dev/build/building-on-ci/)):
+
+| Variable | From | Used for |
+|---|---|---|
+| `EXPO_TOKEN` | secret `EXPO_TOKEN` | Signing in to Expo |
+| `EXPO_ASC_API_KEY_PATH` | secret `ASC_API_KEY_P8`, written to `$RUNNER_TEMP/asc-api-key.p8` (mode 0600) and deleted when the job ends, whatever happened | The App Store Connect API key: EAS creates and repairs the iOS provisioning profile with it, and `eas submit` uploads to TestFlight with it |
+| `EXPO_ASC_KEY_ID` | secret `ASC_API_KEY_ID` | The key's ID |
+| `EXPO_ASC_ISSUER_ID` | secret `ASC_API_ISSUER_ID` | The key's issuer |
+| `EXPO_APPLE_TEAM_ID` | secret `APPLE_TEAM_ID` | The Apple Developer team |
+| `EXPO_APPLE_TEAM_TYPE` | environment variable `APPLE_TEAM_TYPE`, default `INDIVIDUAL` | `INDIVIDUAL`, `COMPANY_OR_ORGANIZATION` or `IN_HOUSE` |
+| `DISABLE_EAS_ANALYTICS`, `EXPO_NO_TELEMETRY` | set to 1 | No usage telemetry from EAS CLI or Expo CLI |
+
+The Apple variables only reach the build step when iOS is being built.
+
+**What EAS does by itself, and what it can't.** Read from EAS CLI's source (`credentials/` at v24.12.1), since the
+docs only say "set up credentials locally first":
+
+- **Android keystore:** on the first Android build with no keystore, `--non-interactive` generates one (random
+  passwords and alias) and stores it on EAS. Every later build uses it. [Back it up](#back-up-the-android-keystore)
+  straight after that first build.
+- **iOS provisioning profile:** created, and recreated when it expires or no longer matches, with the App Store
+  Connect API key.
+- **iOS distribution certificate: not in non-interactive mode.** With none on EAS the build stops with "Credentials
+  are not set up. Run this command again in interactive mode." So the owner creates it once, by hand
+  ([step 6](#one-time-setup-owner)). It lasts a year; renew it the same way when Apple expires it.
+- **`eas submit` needs the app's App Store Connect ID (`ascAppId`)** in non-interactive mode
+  ([Submit to the Apple App Store](https://docs.expo.dev/submit/ios/)). It differs per Apple account and is not
+  secret, so the workflow adds it to `eas.json` at run time from the `ASC_APP_ID` environment variable.
+
+### One-time setup (owner)
+
+1. **EAS project.** Sign in at [expo.dev](https://expo.dev) as `nicklongmore86`, open **Projects**, choose
+   **Create a project**, name it `JellyPass` with the slug `jellypass` (it must match `slug` in `app.config.ts`),
+   and create it. Copy the **ID** shown on the project's overview page (a UUID). Paste it into `EAS_PROJECT_ID` in
+   `app.config.ts`, replacing `''`, and merge that change. The workflow refuses to build until then.
+2. **Expo token.** At [expo.dev/settings/access-tokens](https://expo.dev/settings/access-tokens) create a token for
+   GitHub Actions ([Programmatic access](https://docs.expo.dev/accounts/programmatic-access/)). A robot user's token
+   with the Developer role is narrower than a personal one if the account offers robot users.
+3. **App Store Connect API key.** In [App Store Connect](https://appstoreconnect.apple.com), **Users and Access →
+   Integrations → App Store Connect API → Team Keys**, generate a key with the **Admin** role. Note its **Key ID** and
+   the **Issuer ID** above the table, and download the `.p8` (Apple only lets you download it once). The **Team
+   ID** is under **Membership details** at [developer.apple.com/account](https://developer.apple.com/account).
+4. **App record.** In App Store Connect, **Apps → + → New App**: iOS, name JellyPass (App Store names are unique, so
+   pick another if it's taken: the name on the home screen stays JellyPass), bundle ID `com.rtc-services.jellypass`
+   (register it under **Certificates, Identifiers & Profiles → Identifiers** first if it isn't offered), any SKU.
+   Open the app's **App Information** and copy its **Apple ID** (digits): that is `ASC_APP_ID`.
+5. **GitHub environment.** In the repo, **Settings → Environments → New environment**, name it `mobile-release`.
+   Then:
+   - **Required reviewers:** tick it and add yourself. Leave **Prevent self-review** off, or nobody can approve
+     your own runs.
+   - **Deployment branches and tags:** **Selected branches and tags**, then add the branch `main` and the tag
+     pattern `mobile-v*`, so a build only ever comes from reviewed code.
+   - **Environment secrets → Add environment secret**, five times, with exactly these names:
+
+     | Secret | Value |
+     |---|---|
+     | `EXPO_TOKEN` | The token from step 2 |
+     | `ASC_API_KEY_ID` | The Key ID |
+     | `ASC_API_ISSUER_ID` | The Issuer ID |
+     | `ASC_API_KEY_P8` | The whole `.p8` file, from `-----BEGIN PRIVATE KEY-----` to `-----END PRIVATE KEY-----` |
+     | `APPLE_TEAM_ID` | The Team ID |
+
+   - **Environment variables → Add environment variable:** `ASC_APP_ID` (step 4), and `APPLE_TEAM_TYPE` set to
+     `COMPANY_OR_ORGANIZATION` only if the Apple membership is an organisation's (it defaults to `INDIVIDUAL`).
+
+   Then delete the downloaded `.p8` from your computer, or keep it only in a password manager.
+6. **iOS distribution certificate, once.** On any computer (Linux is fine), in a checkout of `main` with the
+   project ID merged: `cd mobile && pnpm install && npx eas-cli@24.12.1 credentials --platform ios`. Sign in to
+   Expo, pick the `production` profile, then **Build Credentials → All: Set up all the required credentials to build
+   your project**, and sign in with your Apple ID when asked. EAS makes the distribution certificate and keeps it.
+   This is the only interactive step; every build after it runs from the workflow.
+7. **TestFlight testers.** Internal testers must be users on your App Store Connect team: invite each member in
+   **Users and Access** with the narrowest role on offer, limited to the JellyPass app. Then, after the first upload,
+   the app's **TestFlight** tab → **Internal Testing → +**, create a group (say "Household"), turn on automatic
+   distribution, and add them. Up to 100 internal testers; they need no Beta App Review.
+
+### Back up the Android keystore
+
+Do this right after the first Android build, and keep the copy for as long as the app exists. Every JellyPass
+APK must be signed with this one key: Android installs an update only over an app signed with the same key, and
+with no Google Play to re-sign for us, a lost key means every member uninstalls (losing their sign-in) and installs
+afresh.
+
+```sh
+cd mobile
+npx eas-cli@24.12.1 credentials --platform android
+```
+
+Pick the `production` profile, then **Keystore: Manage everything needed to build your project → Download existing
+keystore**. It saves the `.jks` file and prints the keystore password, key alias and key password. Store all four
+together, offline and somewhere other than the dev box (a password manager plus an offline copy), and delete the
+local file. Never commit it (`*.jks` is in `.gitignore`). ([App credentials](https://docs.expo.dev/app-signing/app-credentials/))
+
+### Run a build
+
+**By hand:** **Actions → Mobile release → Run workflow**, choose:
+
+- **platform:** `all`, `ios` or `android`;
+- **profile:** `preview` or `production`;
+- **Send the iOS build to TestFlight:** on or off.
+
+**From a tag:** push a `mobile-v*` tag (for example `mobile-v0.1.0`, matching `version` in `app.config.ts`). It
+builds both apps with `production` and sends iOS to TestFlight.
+
+Each run first runs the mobile checks (`pnpm check`) with no secrets in reach, then waits for your approval as
+the `mobile-release` reviewer. It then builds on EAS (`eas build --non-interactive --wait --json`) and, for iOS,
+uploads that build (`eas submit --platform ios --profile production --id <build> --non-interactive`). On EAS's free
+plan builds queue at low priority, so a run can take an hour or more; the job allows five hours. The run's summary
+lists each build's page on expo.dev and the Android APK's download link. That summary is public on a public repo:
+the APK holds no household address, so the link is fine to show.
+
+**TestFlight builds expire after 90 days.** A commented-out monthly `schedule` in the workflow can keep one current;
+uncomment it to turn it on (it still waits for your approval).
+
+### Install
+
+**iPhone and iPad:** install **TestFlight** from the App Store, accept the email invitation (or open the TestFlight
+link) with the Apple ID you were invited as, and tap **Install**. New builds appear in TestFlight; turn on automatic
+updates there.
+
+**Android:**
+
+1. Open the APK link from the run's summary on the phone and download it.
+2. Open the downloaded file. The first time, Android asks to allow the browser (or file manager) to install
+   unknown apps: tap **Settings**, turn on **Allow from this source**, and go back. Allow it only for that app.
+3. Tap **Install**. Later APKs install the same way, over the old one, keeping the sign-in.
