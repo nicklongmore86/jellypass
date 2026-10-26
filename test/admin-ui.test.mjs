@@ -17,11 +17,12 @@ const DATA = {
 const SYNCED = { status: 200, body: { items: [], lastSyncedAt: null } };
 const SESSION_CHECKS = (page) => page.requests.filter((request) => request === 'GET /auth/session').length;
 
-/** An answer held back until `resolve(reply)` is called. */
+/** An answer held back until `resolve(reply)` is called, or a request that fails when `reject(error)` is. */
 function deferred() {
   let resolve;
-  const promise = new Promise((done) => { resolve = done; });
-  return { promise, resolve };
+  let reject;
+  const promise = new Promise((done, fail) => { resolve = done; reject = fail; });
+  return { promise, resolve, reject };
 }
 
 /**
@@ -56,6 +57,7 @@ function adminPage(answer) {
     fetch,
     Headers,
     URLSearchParams,
+    confirm: () => true,
     Date: { now: () => now, parse: Date.parse },
     setTimeout: (callback, ms) => { const id = nextTimer++; timers.set(id, { at: now + (ms ?? 0), callback }); return id; },
     clearTimeout: (id) => { timers.delete(id); },
@@ -92,6 +94,8 @@ function adminPage(answer) {
         connection: byId('connection').querySelector('b').textContent,
       };
     },
+    window,
+    document,
     toast: () => byId('toast').textContent,
     click: (id) => byId(id).dispatchEvent(new window.Event('click')),
   };
@@ -293,5 +297,85 @@ describe('admin UI answers that arrive after the session changed', () => {
     assert.equal(JSON.stringify(page.view()), SIGNED_OUT);
     assert.equal(page.toast(), '');
     assert.equal(page.pendingRetry(), null);
+  });
+
+  it('does not show the app view for a first load whose recent requests are answered after a sign-out', async () => {
+    const recent = deferred();
+    const page = adminPage((path) => (path === '/v1/requests/recent' ? recent.promise : path === '/auth/logout' ? { status: 200, body: {} } : DATA[path]));
+    await page.settle();
+    assert.ok(page.requests.includes('GET /v1/requests/recent'));
+    page.click('logout');
+    await page.settle();
+    assert.equal(JSON.stringify(page.view()), SIGNED_OUT);
+
+    recent.resolve(DATA['/v1/requests/recent']);
+    await page.settle();
+    assert.equal(JSON.stringify(page.view()), SIGNED_OUT);
+    assert.equal(page.toast(), '');
+  });
+
+  it('shows the sign-in form for a 401 from recent requests during the first load', async () => {
+    const page = adminPage((path) => (path === '/v1/requests/recent' ? UNAUTHORIZED : DATA[path]));
+    await page.settle();
+    assert.equal(JSON.stringify(page.view()), SIGNED_OUT);
+    assert.equal(page.pendingRetry(), null);
+  });
+
+  it('still shows the app view with empty activity when only recent requests fail', async () => {
+    const page = adminPage((path) => (path === '/v1/requests/recent' ? { status: 500, body: { error: 'boom' } } : DATA[path]));
+    await page.settle();
+    assert.equal(JSON.stringify(page.view()), JSON.stringify({ login: false, app: true, notice: '', connection: 'Library sync required' }));
+    assert.equal(page.toast(), '');
+  });
+
+  it('does not toast a request that fails after a sign-out', async () => {
+    const sync = deferred();
+    const page = adminPage((path) => (path === '/v1/library/sync' ? sync.promise : path === '/auth/logout' ? { status: 200, body: {} } : DATA[path]));
+    await page.settle();
+    page.click('sync-library');
+    await page.settle();
+    page.click('logout');
+    await page.settle();
+    assert.equal(JSON.stringify(page.view()), SIGNED_OUT);
+
+    sync.reject(new TypeError('Failed to fetch'));
+    await page.settle();
+    assert.equal(JSON.stringify(page.view()), SIGNED_OUT);
+    assert.equal(page.toast(), '');
+    assert.equal(page.pendingRetry(), null);
+  });
+
+  it('still toasts a request that fails while the session lasts', async () => {
+    const page = adminPage((path) => (path === '/v1/library/sync' ? Promise.reject(new TypeError('Failed to fetch')) : DATA[path]));
+    await page.settle();
+    page.click('sync-library');
+    await page.settle();
+    assert.equal(page.toast(), 'Failed to fetch');
+  });
+
+  it('does not toast a group deletion whose reload is answered after a sign-out', async () => {
+    const group = { id: 'family', name: 'Family', userIds: [], householdUrl: null };
+    const recent = deferred();
+    let deleted = false;
+    const page = adminPage((path, init) => {
+      if (path === '/v1/groups/family' && init?.method === 'DELETE') { deleted = true; return { status: 200, body: {} }; }
+      if (path === '/v1/groups') return { status: 200, body: { groups: deleted ? [] : [group] } };
+      if (path === '/v1/requests/recent' && deleted) return recent.promise;
+      if (path === '/auth/logout') return { status: 200, body: {} };
+      return DATA[path];
+    });
+    await page.settle();
+    const remove = [...page.document.querySelectorAll('#groups-list button')].find((button) => button.textContent === 'Delete');
+    remove.dispatchEvent(new page.window.Event('click'));
+    await page.settle();
+    assert.ok(deleted);
+    page.click('logout');
+    await page.settle();
+    assert.equal(JSON.stringify(page.view()), SIGNED_OUT);
+
+    recent.resolve(DATA['/v1/requests/recent']);
+    await page.settle();
+    assert.equal(JSON.stringify(page.view()), SIGNED_OUT);
+    assert.equal(page.toast(), '');
   });
 });
