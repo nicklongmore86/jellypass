@@ -322,7 +322,7 @@ On the administrator host the paths do not exist (the admin API's own `401`/`404
 |---|---|
 | `GET /jellypass/app/v1/me` | `{name, household}` (no Seerr call) |
 | `GET /jellypass/app/v1/search?q=&page=` | `Page` (`q` 1 to 100 characters, `page` 1 to 500) |
-| `GET /jellypass/app/v1/discover/{trending,popular-movies,popular-tv,upcoming,upcoming-tv}?page=` | `Page` (`upcoming` is upcoming movies, `upcoming-tv` upcoming series) |
+| `GET /jellypass/app/v1/discover/{trending,trending-movies,trending-tv,popular-movies,popular-tv,new-movies,upcoming,upcoming-tv,top-movies,top-tv}?page=` | `Page` (`upcoming` is upcoming movies, `upcoming-tv` upcoming series; see "Home's lists" below) |
 | `GET /jellypass/app/v1/discover/sources` | `Sources` (no TMDB call) |
 | `GET /jellypass/app/v1/discover/network/:id?page=` | `Page` of the network's popular series (allowlisted IDs only) |
 | `GET /jellypass/app/v1/discover/network/:id/films?page=` | `Page` of the films the network's streaming service has in the US (allowlisted IDs only) |
@@ -411,6 +411,26 @@ either list has one. Mixing is on the server rather than in the app because the 
 page, not two (half the per-client and per-household request budget), the order is decided in one place for every
 household, and the endpoint adds no data the two lists do not already return: each card still carries its own
 `mediaType` and the caller's own state.
+
+#### Home's lists
+
+Home's **All | Movies | TV** switch (see "App page") needs lists of one kind, and Home has rows for what is new and what
+is best of all time. They are plain discover lists, `GET /discover/<list>?page=`, each a `Page` whose cards all have one
+`mediaType`, built from the allowlist only (a caller's own `region`, `sort_by`, `with_genres` or anything but `page` is
+ignored, like on every list). Anything but exactly these lowercase names after `/discover/` is an unknown path, `404`;
+a bad `page` is `400`; both before TMDB, the cache or the caller's view is asked anything.
+
+| List | TMDB call | Why |
+|---|---|---|
+| `trending-movies` | `trending/movie/day` | The Movies filter's hero and Trending row; `trending` mixes both kinds, and half of a mixed page cannot be thrown away on the phone without leaving the row half empty. |
+| `trending-tv` | `trending/tv/day` | The same for the TV filter. |
+| `new-movies` | `discover/movie`, `sort_by=popularity.desc`, `region=US`, `with_release_type=2\|3`, `release_date.gte` 60 days before today (UTC), `release_date.lte` today | Films that opened in US theatres (release types 2, theatrical limited, and 3, theatrical) in the last two months, most popular first. `region` and `release_date.*` are used together, as TMDB documents. Seerr 3.5.1 has no equivalent (its sliders are Trending, Popular, Upcoming and Recently Added); `upcoming` stays as Seerr builds it (no region) and is not changed. |
+| `top-movies` | `movie/top_rated` | All-time great movies. TMDB ranks these itself above a vote-count floor, so no floor is set here. |
+| `top-tv` | `tv/top_rated` | All-time great TV. |
+
+These are cached per household under `discover`, the list and the page, like every discover list, wait for the
+household's fair turn at TMDB, and are the same for every household. `new-movies` is keyed by the page only, so across
+midnight (UTC) a cached answer (at most ten minutes old) can still be yesterday's window.
 
 **Attribution.** TMDB's terms for watch-provider data require crediting JustWatch. The app does so on About & credits
 ("Which films each streaming service has (US availability only, the same for every household) comes from JustWatch,
@@ -559,16 +579,61 @@ elsewhere; the files are never proxied to Jellyfin.
   series page with a seasons list (each season's state) and a season page with its episodes, **My requests** (since step
   2b: the household's requests from `GET /requests`, each with its coarse status, per season for a series, and whether the
   caller or someone else in the household asked; titles are named from TMDB ten at a time), About & credits.
-- **Home's rows.** In order: the hero (from Trending's answer), **Trending**, **Popular movies**, **Popular series**,
-  **Upcoming movies** (these four fetched at once, as before), **Upcoming series**, a **Studios** strip (each studio's
-  logo, a link named "<studio> movies" to its page; drawn from `GET /discover/sources`, no title fetched), then
-  **Popular on** Netflix, Disney+, Apple TV, Prime Video, HBO Max (with HBO's own series), Hulu, Paramount+ and
-  Peacock, each one mixed row of the service's series and its US films (`GET /discover/network/:id/all`; film,
-  series, film, …, each card saying "year · Movie" or "year · Series"), then one line crediting JustWatch for the
-  where-to-watch data. A network row's
+- **Home's rows.** Under the hero, a floating **All | Movies | TV** switch, then the rows of the chosen filter.
+  **All** (the default), in order: the hero (from Trending's answer), the switch, **Trending** (posters), **Popular
+  movies** and **Popular series** (large backdrop cards), **New movie releases** (backdrop cards; these four fetched at
+  once), **Upcoming movies**, **Upcoming series** (posters, fetched when they near the screen), **Popular on** Netflix,
+  Disney+, Apple TV, Prime Video, HBO Max (with HBO's own series), Hulu, Paramount+ and Peacock, each one mixed row of the
+  service's series and its US films (`GET /discover/network/:id/all`; film, series, film, …, each card saying "year ·
+  Movie" or "year · Series"), a **Studios** strip (each studio's logo, a link named "<studio> movies" to its page; drawn
+  from `GET /discover/sources`, no title fetched), **All-time great movies** (backdrop cards) and **All-time great TV**
+  (posters), both when they near the screen, then one line crediting JustWatch for the where-to-watch data. (Compared
+  with 2.6.0: the studios sit after the services rather than before, since the services are the better row to arrive at;
+  Upcoming movies is now fetched on scrolling rather than at once, to make room for New movie releases in the four
+  calls; the credit moved to the end of the page so it closes the services-and-studios block.) A network row's
   heading is a link to the network's page reading "Popular on" followed by the network's logo, whose `alt` is the
   network's name (its name as text when there is no allowlisted logo). Each row loads and fails on its own, with its own
-  retry. **Backdrop cards (Popular movies and Popular series).** These two rows use `titleRow(..., 'backdrop')`:
+  retry.
+  **The switch (All | Movies | TV).** A `role="radiogroup"` named "Show" of three real `<button role="radio">`s
+  (`aria-checked`; only the chosen one in the tab order; ArrowLeft/Up and ArrowRight/Down wrap and **choose** as they
+  move, Home and End go to the ends, focus following, other keys left alone; Enter and Space press the focused button
+  as a button does), 44 px tall, in a glass pill (`--material`) with the chosen one filled with the accent gradient and
+  dark (`--on-accent`) text. It is a direct child of `main`, so it **sticks** (`position: sticky`) just under the glass
+  header and the status bar (`top: 3.75rem + env(safe-area-inset-top) + 0.25rem`, below the header's own layer) while the
+  rows scroll under it; its wrapper takes no pointer events but the pill's. While Home is on show the page's
+  `scroll-padding-top` grows by the switch's height so a focused or scrolled-to card (#51's focus-into-view) never ends up
+  behind it. The choice is in the address, `#/` for All and `#/?kind=movies` or `#/?kind=tv` (anything else is All),
+  replaced in place on choosing (no history entry, so Back still leaves Home), so a deep link opens on its filter and
+  Back from a title comes back to it, with the page scroll and rows' scrolls of *that* filter put back under the same
+  rules as before (choosing is the member's own doing: it cancels a restoration still owed, and the new filter starts at
+  its first row if the page was scrolled past the hero). The Home tab itself links to `#/`, so tapping it returns to
+  All. The panel under the switch is a `role="group"` labelled by the chosen button; the switch announces "Loading…"
+  and then "Movies shown." (or "All", "TV"). The control is the same node throughout, so focus is never lost.
+  **What each filter shows.** The rows are never filtered on the phone: each filter asks for lists of its own kind, so
+  no row is half empty. *Movies:* hero and **Trending movies** (`trending-movies`), **Popular movies**, **New movie
+  releases**, **Upcoming movies** (these four at once), then **Films on** each of the eight services
+  (`/discover/network/:id/films`, a heading linking to the service's Films tab, `#/network/:id?kind=films`), the
+  **Studios** strip, **All-time great movies**, and the JustWatch credit. *TV:* hero and **Trending series**
+  (`trending-tv`), **Popular series**, **Upcoming series** (these three at once), then **Series on** each service
+  (`/discover/network/:id`, linking to `?kind=series`), and **All-time great TV**; no studios (they make films), no
+  credit (no where-to-watch data is shown). A service the API lists no films for keeps its series row under All and
+  Movies hides it. The hero follows the filter, drawn from the first row's own answer exactly as before, labelled
+  "Trending movies" or "Trending series" under the filters. First load: the first row, the four (three under TV) rows
+  fetched at once, and nothing else; so the default **All** still makes four TMDB calls (Trending, Popular movies,
+  Popular series, New movie releases), Movies four and TV three; the lazy rows then add one each (two for a mixed
+  service row) as they near the screen. Choosing a filter fetches that filter's rows the same way, answered from the
+  household's cache where the list is the same (Popular movies, say, is one call whichever filter asked first); a
+  filter's rows never wait on another's.
+  **Accent bars.** Each row heading has a small vertical bar (4 px, `.row-heading::before`): the app's purple gradient by
+  default, gold for the two All-time great rows, and a tasteful approximation of each service's brand colour for its row
+  (Netflix red, Disney+ blue, Apple grey, Prime Video cyan, HBO Max violet, Hulu green, Paramount+ blue, Peacock orange;
+  never a logo). The class is on the heading (`accent-gold`, `accent-netflix`, …) and the colour a custom property
+  (`--bar-*`) used only as the bar's `background`; the page carries no inline style. They are **decorative**: the
+  heading's words say what the row is, no meaning is carried by colour, and no text is ever drawn in a bar colour. A test
+  checks each bar colour is at least 3:1 against the page background (not required of decoration, but it keeps them
+  visible) and that no two services share one.
+  **Backdrop cards (Popular movies, Popular series, New movie releases, All-time great movies).** These rows use
+  `titleRow(..., 'backdrop')`:
   `ul.row-list.row-list-backdrop` (same id, `aria-labelledby`, `tabindex` and scroll hooks as any row, so Back's capture and
   restore are unchanged) of `li.card.card-backdrop`. A card is one `<a>` holding a 16:9 `<img>` (the Card DTO's
   `backdropUrl`, which these rows already carry: no extra call, no server change; `src` w780 and `srcset` w780/w1280 derived
@@ -578,14 +643,17 @@ elsewhere; the files are never proxied to Jellyfin.
   navigates. No backdrop: the poster (w342) cropped to fit, else a plain gradient. About 92% of the list's width on a phone
   (the next card peeks), 36% from 48 rem; radius 16 px; a 3 px inset focus ring; no motion of its own. A test composites the
   scrim over white and black for the title and facts and checks that they fit the solid part. The component
-  (`backdropCardItem`, `RowVariant`) is meant for other rows to adopt; only these two do now.
-  **Lazy rows:** Upcoming series and the network rows hold a row-shaped skeleton (hidden from assistive
-  technology) and are fetched only when they come within 400 px of the screen: an `IntersectionObserver` with that
+  (`backdropCardItem`, `RowVariant`) is meant for other rows to adopt; these four do now (Upcoming movies, Upcoming
+  series, All-time great TV, Trending and the services' rows stay posters).
+  **Lazy rows:** everything below the first four rows (Upcoming movies and series, the services' rows and the All-time
+  great rows) holds a row-shaped skeleton (hidden from assistive
+  technology) and is fetched only when it comes within 400 px of the screen: an `IntersectionObserver` with that
   root margin, or without one, a check on scroll (at most once a frame) and once when Home is drawn. Nothing is watched
-  until the first four rows are drawn and any position is put back, each row is fetched once per visit, and leaving Home
-  stops the watching. So a first Home load makes the same four TMDB calls as before (plus `GET /me` and `GET
-  /discover/sources`, neither of which calls TMDB); scrolling to the bottom adds at most seventeen, one for Upcoming
-  series and two for each service's mixed row as it nears the screen, never all at once. **Network and studio pages**
+  until the first rows are drawn and any position is put back, each row is fetched once per visit to a filter, and
+  leaving Home or choosing another filter stops the watching. So a first Home load makes the same four TMDB calls as
+  before (plus `GET /me` and `GET /discover/sources`, neither of which calls TMDB); scrolling to the bottom of All adds
+  at most twenty, one each for Upcoming movies, Upcoming series, All-time great movies and All-time great TV and two for
+  each service's mixed row as it nears the screen, never all at once. **Network and studio pages**
   show the logo (decorative: the heading names it) and "Popular on <network>" or "<studio> movies" over the same poster
   grid as Search, with **Load more** by the API's `nextPage`; a hash naming a network or studio the API does not list
   shows "Not found" without asking for titles. A network's page has an **All | Series | Films** control: an ARIA tab

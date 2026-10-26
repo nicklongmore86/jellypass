@@ -148,10 +148,15 @@ const APP_ERRORS: Record<Exclude<AppOutcome, 'ok'>, { status: number; body: { er
 /** The discover lists the app offers, by their path segment, with the media type of lists that hold only one. */
 const DISCOVER_LISTS: Record<string, { list: TmdbDiscoverList; mediaType?: MediaType }> = {
   trending: { list: 'trending' },
+  'trending-movies': { list: 'trending-movies', mediaType: 'movie' },
+  'trending-tv': { list: 'trending-tv', mediaType: 'tv' },
   'popular-movies': { list: 'popular-movies', mediaType: 'movie' },
   'popular-tv': { list: 'popular-tv', mediaType: 'tv' },
+  'new-movies': { list: 'new-movies', mediaType: 'movie' },
   upcoming: { list: 'upcoming', mediaType: 'movie' },
   'upcoming-tv': { list: 'upcoming-tv', mediaType: 'tv' },
+  'top-movies': { list: 'top-movies', mediaType: 'movie' },
+  'top-tv': { list: 'top-tv', mediaType: 'tv' },
 };
 
 export type MediaType = 'movie' | 'tv';

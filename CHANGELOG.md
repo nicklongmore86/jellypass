@@ -16,6 +16,23 @@ privacy leak. Such changes are always listed at the top of the release notes.
 
 ### Added
 
+- Household app: Home has an **All | Movies | TV** switch under the hero, a floating pill that sticks just below the
+  status bar as Home scrolls. Movies shows films only and TV series only, from lists of their own kind (each
+  service's films or its series, per-kind Trending), so no row is half empty; the hero follows. The choice is kept in
+  the address (`#/?kind=movies`, `#/?kind=tv`), replaced in place, so Back from a title comes back to it. Opening Home
+  on All still makes the same four TMDB calls (Movies four, TV three); anything below waits to near the screen. It is a
+  radio group of real buttons: arrow keys, Home and End move and choose.
+- Household app: new Home rows **New movie releases** (backdrop cards, in the first four rows),
+  **All-time great movies** (backdrop cards) and **All-time great TV** (posters), the last two fetched when they near the
+  screen. **Upcoming movies** now waits to near the screen too, to keep Home's first load at four TMDB calls.
+- Household app: each Home row's heading bar is coloured: gold for the all-time rows, a tasteful approximation of the
+  brand colour for each of the eight services, the app's purple for the rest. Decorative only; the heading says what
+  the row is.
+- Household app API: `GET /jellypass/app/v1/discover/{trending-movies,trending-tv,new-movies,top-movies,top-tv}?page=`
+  (TMDB `trending/movie/day`, `trending/tv/day`, `discover/movie` for films that opened in US theatres in the last 60
+  days, `movie/top_rated` and `tv/top_rated`). Read-only, allowlisted by name (any other spelling is `404`, a bad
+  `page` `400`), cached per household, in TMDB's fair share, and the same for every household.
+
 - Household app: each **Popular on** row (Netflix, Disney+, Apple TV, Prime Video, HBO Max, Hulu, Paramount+,
   Peacock) now mixes the service's popular series with the films it streams, film then series in turn, each card
   saying "Movie" or "Series". Films come from TMDB's where-to-watch data (JustWatch's) for **the US only**, the same
@@ -31,6 +48,8 @@ privacy leak. Such changes are always listed at the top of the release notes.
 
 ### Changed
 
+- Household app: on Home the **Studios** strip now follows the **Popular on** rows (it came before them), and the
+  where-to-watch credit closes the page.
 - Household app: a service's page (`#/network/:id`) now opens on **All** (its series and films mixed, like its Home
   row); its series alone are the **Series** tab, `#/network/:id?kind=series`.
 - Household app API: a path with anything after a network's ID other than `films` or `all` (for example

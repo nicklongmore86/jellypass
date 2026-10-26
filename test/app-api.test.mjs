@@ -43,10 +43,15 @@ const ENDPOINTS = [
   `${APP}/search?q=synthetic`,
   `${APP}/search?q=synthetic&page=2`,
   `${APP}/discover/trending`,
+  `${APP}/discover/trending-movies`,
+  `${APP}/discover/trending-tv`,
   `${APP}/discover/popular-movies`,
   `${APP}/discover/popular-tv`,
   `${APP}/discover/upcoming?page=3`,
   `${APP}/discover/upcoming-tv`,
+  `${APP}/discover/new-movies?page=2`,
+  `${APP}/discover/top-movies`,
+  `${APP}/discover/top-tv?page=4`,
   `${APP}/discover/sources`,
   `${APP}/discover/network/213`,
   // Netflix's films, then its series and films mixed (both answered from the household's cache by now).
@@ -570,8 +575,9 @@ describe('household app API: identity', { timeout: 20_000 }, () => {
       assert.doesNotMatch(`${call.path}\n${JSON.stringify(call.headers)}`, /a11ce000|farmhouse|token-alice|x-api-user|authorization/i);
     }
     assert.deepEqual(asAlice.map((call) => call.pathname), [
-      '/3/search/multi', '/3/search/multi', '/3/trending/all/day', '/3/discover/movie', '/3/discover/tv', '/3/discover/movie',
-      '/3/discover/tv', '/3/discover/tv', '/3/discover/movie', '/3/discover/movie',
+      '/3/search/multi', '/3/search/multi', '/3/trending/all/day', '/3/trending/movie/day', '/3/trending/tv/day', '/3/discover/movie',
+      '/3/discover/tv', '/3/discover/movie', '/3/discover/tv', '/3/discover/movie', '/3/movie/top_rated', '/3/tv/top_rated',
+      '/3/discover/tv', '/3/discover/movie', '/3/discover/movie',
       `/3/movie/${T_MOVIE}`, `/3/movie/${OWN_MOVIE}`, `/3/tv/${T_TV}`, `/3/tv/${T_TV}/season/1`, `/3/tv/${T_TV}/season/2`,
     ]);
   });
@@ -1413,5 +1419,106 @@ describe('household app API: input, budgets and metrics', { timeout: 30_000 }, (
       'jfa_app_requests_total{endpoint="unknown",outcome="not_found"} 1',
     ]) assert.ok(metrics.includes(line), line);
     assert.doesNotMatch(metrics, /900001|404404|synthetic/i);
+  });
+});
+
+describe('household app API: Home\'s per-kind trending, new releases and all-time great lists', { timeout: 60_000 }, () => {
+  const tmdbCalls = (app) => app.tmdb.calls.filter((call) => call.pathname !== '/3/authentication');
+  const NOW = Date.parse('2026-10-24T12:00:00.000Z');
+  const LISTS = ['trending-movies', 'trending-tv', 'new-movies', 'top-movies', 'top-tv'];
+
+  it('asks TMDB for each list the way it is documented, and for nothing else', async (t) => {
+    const app = await startApp(t, world(), { now: () => NOW });
+    for (const list of LISTS) assert.equal((await app.get(`${APP}/discover/${list}?page=2`)).status, 200, list);
+    const calls = tmdbCalls(app).map((call) => `${call.pathname} ${[...call.query].filter(([name]) => name !== 'api_key').map(([name, value]) => `${name}=${value}`).join('&')}`);
+    assert.deepEqual(calls, [
+      '/3/trending/movie/day page=2&language=en-US',
+      '/3/trending/tv/day page=2&language=en-US',
+      // Opened in US theatres (release types 2 and 3) in the 60 days up to today.
+      '/3/discover/movie page=2&sort_by=popularity.desc&include_adult=false&region=US&with_release_type=2|3&release_date.gte=2026-08-25&release_date.lte=2026-10-24&language=en-US',
+      '/3/movie/top_rated page=2&language=en-US',
+      '/3/tv/top_rated page=2&language=en-US',
+    ]);
+  });
+
+  it('answers cards of one kind for a per-kind list: movies from the movie lists, series from the series lists', async (t) => {
+    const app = await startApp(t);
+    const kinds = {};
+    for (const list of LISTS) {
+      const page = (await app.get(`${APP}/discover/${list}`)).json();
+      assert.deepEqual(Object.keys(page), ['page', 'nextPage', 'results']);
+      assert.ok(page.results.length > 0, list);
+      kinds[list] = [...new Set(page.results.map((card) => card.mediaType))].join();
+    }
+    assert.deepEqual(kinds, { 'trending-movies': 'movie', 'trending-tv': 'tv', 'new-movies': 'movie', 'top-movies': 'movie', 'top-tv': 'tv' });
+    assert.deepEqual(states((await app.get(`${APP}/discover/top-movies`)).json()), { [T_MOVIE]: 'get_this', [OWN_MOVIE]: 'in_library' });
+    assert.deepEqual(states((await app.get(`${APP}/discover/top-tv`)).json()), { [T_TV]: 'get_this' });
+  });
+
+  it('refuses a bad page with the fixed 400 and any other spelling of a list with the fixed 404, before TMDB', async (t) => {
+    const app = await startApp(t);
+    for (const list of LISTS) {
+      for (const query of ['page=0', 'page=501', 'page=x', 'page=1.5']) {
+        const answer = await app.get(`${APP}/discover/${list}?${query}`);
+        assert.equal(answer.status, 400, `${list} ${query}`);
+        assert.equal(answer.text, '{"error":"invalid_request"}');
+      }
+    }
+    for (const pathname of [`${APP}/discover/Top-Movies`, `${APP}/discover/top_movies`, `${APP}/discover/top-movies/`, `${APP}/discover/top-movies/2`,
+      `${APP}/discover/trending/movie`, `${APP}/discover/trending-all`, `${APP}/discover/new`, `${APP}/discover/top-rated`, `${APP}/discover/now-playing`]) {
+      const answer = await app.get(pathname);
+      assert.equal(answer.status, 404, pathname);
+      assert.equal(answer.text, '{"error":"not_found"}', pathname);
+    }
+    assert.equal(tmdbCalls(app).length, 0);
+  });
+
+  it('ignores the caller\'s own query parameters: the same TMDB call, and the same answer from the cache', async (t) => {
+    const app = await startApp(t, world(), { now: () => NOW });
+    const plain = await app.get(`${APP}/discover/new-movies`);
+    for (const list of LISTS) await app.get(`${APP}/discover/${list}?with_genres=27&sort_by=revenue.desc&region=DE&include_adult=true&language=de`, { user: ANN });
+    assert.equal(serialized(await app.get(`${APP}/discover/new-movies?region=DE&release_date.gte=1900-01-01`, { user: ANN })), serialized(plain));
+    const sent = tmdbCalls(app).map((call) => call.path);
+    assert.equal(sent.length, 5, 'one TMDB call per list, new-movies answered once');
+    assert.ok(sent.every((path) => !/with_genres|revenue|DE|true|1900|language=de/.test(path)), sent.join('\n'));
+  });
+
+  it('caches each list per household and page, and never across households', async (t) => {
+    const app = await startApp(t);
+    for (const list of LISTS) {
+      await app.get(`${APP}/discover/${list}`);
+      await app.get(`${APP}/discover/${list}`, { user: ANN });
+    }
+    assert.equal(tmdbCalls(app).length, 5);
+    for (const list of LISTS) await app.get(`${APP}/discover/${list}?page=2`);
+    assert.equal(tmdbCalls(app).length, 10, 'another page is another entry');
+    for (const list of LISTS) await app.get(`${APP}/discover/${list}`, { host: HOST_B, user: BOB });
+    assert.equal(tmdbCalls(app).length, 15, 'household B is not answered from A\'s cache');
+  });
+
+  it('answers byte for byte the same whatever other households hold, ask for or wait on', async (t) => {
+    const seen = {};
+    for (const [name, state] of Object.entries({ baseline: world(), ...otherHouseholdWorlds() })) {
+      const app = await startApp(t, state);
+      seen[name] = (await Promise.all(LISTS.map(async (list) => serialized(await app.get(`${APP}/discover/${list}`))))).join('\n---\n');
+    }
+    assert.ok(Object.keys(seen).length >= 5);
+    for (const [name, text] of Object.entries(seen)) assert.equal(text, seen.baseline, name);
+  });
+
+  it('keeps household A\'s TMDB turn while household B asks for every new list and page at once', async (t) => {
+    const app = await startApp(t, world(), { catalogueLimits: {} });
+    const paths = LISTS.flatMap((list) => Array.from({ length: 8 }, (_, index) => `${APP}/discover/${list}?page=${index + 1}`));
+    const bursts = paths.map((pathname) => app.get(pathname, { host: HOST_B, user: BOB }));
+    await delay(100);
+    const started = performance.now();
+    const alice = await app.get(`${APP}/discover/top-tv?page=9`);
+    const waited = performance.now() - started;
+    const bob = await Promise.all(bursts);
+    assert.equal(alice.status, 200, alice.text);
+    assert.ok(waited < 1000, `A waited ${waited} ms`);
+    for (const answer of bob) assert.ok(answer.status === 200 || answer.text === '{"error":"too_many_requests"}', `${answer.status} ${answer.text}`);
+    const times = app.tmdb.calls.map((call) => call.at);
+    for (const first of times) assert.ok(times.filter((time) => time >= first && time < first + 1000).length <= 30);
   });
 });

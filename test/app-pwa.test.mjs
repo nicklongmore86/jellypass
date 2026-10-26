@@ -43,6 +43,54 @@ function BUILT(logical) {
 const shape = (answer) => ({ status: answer.status, text: answer.text, headers: { ...answer.headers, date: undefined } });
 
 describe('household app page: serving', { timeout: 30_000 }, () => {
+  it('styles Home\'s switch and the rows\' accent bars from tokens, with contrast, and no inline style', async () => {
+    const css = read(BUILT('app.css'));
+    const tokens = Object.fromEntries([...css.matchAll(/--([a-z0-9-]+):\s*(#[0-9a-f]{6});/gi)].map((match) => [match[1], match[2]]));
+    const luminance = (hex) => {
+      const channels = [1, 3, 5].map((index) => parseInt(hex.slice(index, index + 2), 16) / 255)
+        .map((value) => (value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4));
+      return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+    };
+    const contrast = (a, b) => {
+      const [high, low] = [luminance(a), luminance(b)].sort((x, y) => y - x);
+      return (high + 0.05) / (low + 0.05);
+    };
+    const { ROW_ACCENTS, NETWORK_ACCENTS, homeHref } = await import(pathToFileURL(path.join(DIST_APP, BUILT('js/render.js'))).href);
+    // Every accent but the default has a class and a colour token; the bars are decorative, but still stand out from the page (3:1).
+    assert.deepEqual([...ROW_ACCENTS].sort(), ['apple', 'default', 'disney', 'gold', 'hbo', 'hulu', 'netflix', 'paramount', 'peacock', 'prime']);
+    for (const accent of ROW_ACCENTS.filter((name) => name !== 'default')) {
+      assert.ok(tokens[`bar-${accent}`], `--bar-${accent} is a token`);
+      assert.match(css, new RegExp(`\\.row-heading\\.accent-${accent}::before \\{ background: var\\(--bar-${accent}\\); \\}`), accent);
+      for (const under of ['bg', 'bg-glow', 'surface']) {
+        assert.ok(contrast(tokens[`bar-${accent}`], tokens[under]) >= 3, `${accent} bar on ${under}: ${contrast(tokens[`bar-${accent}`], tokens[under]).toFixed(2)}`);
+      }
+    }
+    // Eight services, eight different colours, none of them the all-time gold or the default purple.
+    assert.deepEqual(Object.keys(NETWORK_ACCENTS).map(Number).sort((a, b) => a - b), [213, 453, 1024, 2552, 2739, 3186, 3353, 4330]);
+    assert.equal(new Set(Object.values(NETWORK_ACCENTS)).size, 8);
+    assert.equal(new Set(Object.values(NETWORK_ACCENTS).map((name) => tokens[`bar-${name}`])).size, 8, 'no two services share a colour');
+    assert.ok(!Object.values(NETWORK_ACCENTS).includes('gold') && !Object.values(NETWORK_ACCENTS).includes('default'));
+    assert.match(css, /\.row-heading::before \{[^}]*background: var\(--accent-gradient\)/, 'the default bar is the app\'s purple');
+    // No text is ever drawn in a bar colour: it is a background, and only on a heading's ::before.
+    for (const [, property] of css.matchAll(/([a-z-]+): var\(--bar-/g)) assert.equal(property, 'background');
+    // The switch: sticky just under the glass header and the status bar, below the header's own layer; the chosen one filled, dark on the accent.
+    assert.match(css, /\.home-switch \{[^}]*position: sticky;[^}]*z-index: 5;[^}]*top: calc\(3\.75rem \+ env\(safe-area-inset-top\) \+ 0\.25rem\)/);
+    assert.match(css, /\.app-header \{[^}]*position: sticky;[^}]*z-index: 10/);
+    assert.match(css, /\.segmented-home \{[^}]*background: var\(--material\)/);
+    assert.match(css, /\.segmented-home \.segment\[aria-checked='true'\] \{ background: var\(--accent-gradient\); color: var\(--on-accent\)/);
+    assert.ok(contrast(tokens['on-accent'], tokens.accent) >= 4.5 && contrast(tokens['on-accent'], tokens['accent-2']) >= 4.5);
+    assert.match(css, /\.segment \{[^}]*min-height: 2\.75rem/, 'a touch target of at least 44px');
+    // A focused card clears the floating switch as well as the header while Home is on show (#42's scroll padding, plus the switch).
+    assert.match(css, /scroll-padding-top: calc\(3\.75rem \+ env\(safe-area-inset-top\) \+ 0\.5rem\)/);
+    assert.match(css, /:root:has\(body\[data-chrome='home'\]\) \{ scroll-padding-top: calc\(3\.75rem \+ env\(safe-area-inset-top\) \+ 0\.25rem \+ 3\.15rem \+ 0\.5rem\); \}/);
+    assert.match(css, /@supports not \(\(-webkit-backdrop-filter: blur\(1px\)\) or \(backdrop-filter: blur\(1px\)\)\)[^@]*\.segmented-home[^@]*background: var\(--surface\)/);
+    assert.equal(homeHref('all'), '#/');
+    assert.equal(homeHref('movies'), '#/?kind=movies');
+    assert.equal(homeHref('tv'), '#/?kind=tv');
+    // The scripts set no style, as the CSP forbids: every bar colour is a class.
+    for (const file of FILES.filter((name) => name.startsWith('js/'))) assert.doesNotMatch(read(file), /\.style\b|setAttribute\(['"]style/, file);
+  });
+
   it('serves the page and every file it needs on household hosts, with no credentials and no upstream calls', async (t) => {
     const app = await startApp(t);
     for (const host of [HOST_A, HOST_B]) {
@@ -2020,7 +2068,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     const page = await openApp(t, app);
     await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4 && page.document.querySelector('ul.logo-list'), 'four discover rows and the studios');
     assert.deepEqual([...page.document.querySelectorAll('.row-heading')].map((heading) => heading.textContent),
-      ['Trending', 'Popular movies', 'Popular series', 'Upcoming movies', 'Studios']);
+      ['Trending', 'Popular movies', 'Popular series', 'New movie releases', 'Studios']);
     const trending = page.document.querySelector('#row-trending-heading').parentElement;
     const cards = [...trending.querySelectorAll('.card')];
     assert.deepEqual(cards.map((item) => item.querySelector('.card-title').textContent),
@@ -2036,8 +2084,8 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     // browser, no cookies. The rows further down wait until they come near the screen.
     await page.until(() => page.requests.some((request) => request.url === '/jellypass/app/v1/discover/sources'), 'the sources');
     assert.deepEqual(page.requests.map((request) => request.url.replace(/\?.*/, '')).sort(), [
-      '/jellypass/app/v1/discover/popular-movies', '/jellypass/app/v1/discover/popular-tv', '/jellypass/app/v1/discover/sources',
-      '/jellypass/app/v1/discover/trending', '/jellypass/app/v1/discover/upcoming', '/jellypass/app/v1/me',
+      '/jellypass/app/v1/discover/new-movies', '/jellypass/app/v1/discover/popular-movies', '/jellypass/app/v1/discover/popular-tv',
+      '/jellypass/app/v1/discover/sources', '/jellypass/app/v1/discover/trending', '/jellypass/app/v1/me',
     ]);
     for (const { init } of page.requests) {
       assert.equal(init.cache, 'no-store');
@@ -2048,10 +2096,10 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     assert.equal(await accountName(page), 'Alice · Farmhouse', 'the household and name are on About, not in the header');
   });
 
-  it('draws Popular movies and Popular series as backdrop cards and every other row as posters, with no extra call', async (t) => {
+  it('draws Popular movies, Popular series, New movie releases and All-time great movies as backdrop cards and every other row as posters, with no extra call', async (t) => {
     const app = await startApp(t);
     const page = await openApp(t, app);
-    await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4 && page.watched().length === 9, 'Home');
+    await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4 && page.watched().length === 12, 'Home');
     const kinds = {};
     for (const list of page.document.querySelectorAll('ul.row-list[aria-labelledby]')) {
       kinds[list.getAttribute('aria-labelledby')] = list.className;
@@ -2060,9 +2108,9 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       'row-trending-heading': 'row-list',
       'row-popular-movies-heading': 'row-list row-list-backdrop',
       'row-popular-tv-heading': 'row-list row-list-backdrop',
-      'row-upcoming-heading': 'row-list',
+      'row-new-movies-heading': 'row-list row-list-backdrop',
     });
-    for (const id of ['row-popular-movies-heading', 'row-popular-tv-heading']) {
+    for (const id of ['row-popular-movies-heading', 'row-popular-tv-heading', 'row-new-movies-heading']) {
       const items = [...page.document.getElementById(id).parentElement.querySelectorAll('li.card-backdrop')];
       assert.ok(items.length > 0, id);
       for (const item of items) {
@@ -2075,13 +2123,25 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         assert.equal(item.querySelectorAll('a').length, 1);
       }
     }
-    assert.equal(page.document.querySelectorAll('#row-trending-heading ~ .row-list li.card-backdrop, #row-upcoming-heading ~ .row-list li.card-backdrop').length, 0);
+    assert.equal(page.document.querySelectorAll('#row-trending-heading ~ .row-list li.card-backdrop').length, 0);
     assert.ok(page.document.querySelectorAll('.network-row li.card-backdrop, .logo-list li.card-backdrop').length === 0);
     assert.deepEqual(page.requests.map((request) => request.url.replace(/\?.*/, '')).sort(), [
-      '/jellypass/app/v1/discover/popular-movies', '/jellypass/app/v1/discover/popular-tv', '/jellypass/app/v1/discover/sources',
-      '/jellypass/app/v1/discover/trending', '/jellypass/app/v1/discover/upcoming', '/jellypass/app/v1/me',
+      '/jellypass/app/v1/discover/new-movies', '/jellypass/app/v1/discover/popular-movies', '/jellypass/app/v1/discover/popular-tv',
+      '/jellypass/app/v1/discover/sources', '/jellypass/app/v1/discover/trending', '/jellypass/app/v1/me',
     ]);
     assert.equal(app.tmdb.calls.filter((call) => call.pathname !== '/3/authentication').length, 4);
+    // The rows below the fold draw as they are revealed: the two All-time great rows differ (movies big, TV posters), the upcoming rows are posters.
+    for (const key of ['row-upcoming', 'row-upcoming-tv', 'row-top-movies', 'row-top-tv']) {
+      page.reveal(key);
+      await page.until(() => page.document.querySelector(`#${key}-heading`), key);
+    }
+    for (const [id, className] of Object.entries({
+      'row-upcoming-heading': 'row-list', 'row-upcoming-tv-heading': 'row-list', 'row-top-movies-heading': 'row-list row-list-backdrop', 'row-top-tv-heading': 'row-list',
+    })) {
+      assert.equal(page.document.querySelector(`ul[aria-labelledby="${id}"]`).className, className, id);
+    }
+    assert.deepEqual([...page.document.querySelectorAll('.row-heading')].map((heading) => heading.textContent).filter(Boolean),
+      ['Trending', 'Popular movies', 'Popular series', 'New movie releases', 'Upcoming movies', 'Upcoming series', 'Studios', 'All-time great movies', 'All-time great TV']);
     assertNoCanaries(page.serialize(), 'backdrop cards');
   });
 
@@ -2094,7 +2154,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         const app = await startApp(t, state);
         const page = await openApp(t, app);
         await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4, `${name}: Home`);
-        seen[name] = ['row-popular-movies-heading', 'row-popular-tv-heading'].map((id) => page.document.getElementById(id).parentElement.outerHTML).join('\n');
+        seen[name] = ['row-popular-movies-heading', 'row-popular-tv-heading', 'row-new-movies-heading'].map((id) => page.document.getElementById(id).parentElement.outerHTML).join('\n');
       });
     }
     it('draws them byte for byte the same in every world', () => {
@@ -2107,22 +2167,22 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
   it('fetches Home\'s rows below the fold only as they come near the screen, one call each', async (t) => {
     const app = await startApp(t);
     const page = await openApp(t, app);
-    await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4 && page.watched().length === 9, 'Home');
+    await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4 && page.watched().length === 12, 'Home');
     const urls = () => page.requests.map((request) => request.url).sort();
     const tmdb = () => app.tmdb.calls.filter((call) => call.pathname !== '/3/authentication').length;
     // First load: the same four TMDB calls as before the network rows; the networks and studios cost none.
     assert.deepEqual(urls(), [
-      '/jellypass/app/v1/discover/popular-movies', '/jellypass/app/v1/discover/popular-tv', '/jellypass/app/v1/discover/sources',
-      '/jellypass/app/v1/discover/trending', '/jellypass/app/v1/discover/upcoming', '/jellypass/app/v1/me',
+      '/jellypass/app/v1/discover/new-movies', '/jellypass/app/v1/discover/popular-movies', '/jellypass/app/v1/discover/popular-tv',
+      '/jellypass/app/v1/discover/sources', '/jellypass/app/v1/discover/trending', '/jellypass/app/v1/me',
     ]);
     assert.equal(tmdb(), 4);
     assert.deepEqual(page.watched(), [
       'row-network-1024', 'row-network-213', 'row-network-2552', 'row-network-2739', 'row-network-3186', 'row-network-3353',
-      'row-network-4330', 'row-network-453', 'row-upcoming-tv',
+      'row-network-4330', 'row-network-453', 'row-top-movies', 'row-top-tv', 'row-upcoming', 'row-upcoming-tv',
     ]);
     assert.equal(page.observers.at(-1).options.rootMargin, '400px 0px', 'a row starts loading a little before it scrolls in');
     // Each waiting row holds a row-shaped skeleton, hidden from assistive technology.
-    assert.equal(page.main().querySelectorAll('[data-lazy="waiting"] section.row[aria-hidden="true"] .skeleton').length, 9 * 13);
+    assert.equal(page.main().querySelectorAll('[data-lazy="waiting"] section.row[aria-hidden="true"] .skeleton').length, 12 * 13);
     // The Studios strip needs no title: it is drawn at once, each logo a link with the studio's name.
     assert.deepEqual([...page.main().querySelectorAll('ul.logo-list a')].map((link) => `${link.getAttribute('href')} ${link.getAttribute('aria-label')}`).slice(0, 3),
       ['#/studio/2 Disney movies', '#/studio/127928 20th Century Studios movies', '#/studio/34 Sony Pictures movies']);
@@ -2156,7 +2216,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     assert.equal(tmdb(), 7);
     assert.deepEqual(app.tmdb.calls.slice(-2).map((call) => call.query.get('with_networks') ?? `${call.query.get('with_watch_providers')} ${call.query.get('watch_region')}`).sort(),
       ['213', '8|1796 US']);
-    assert.equal(page.watched().length, 7);
+    assert.equal(page.watched().length, 10);
     assertNoCanaries(page.serialize(), 'the page shows data that is not in a DTO');
   });
 
@@ -2164,7 +2224,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     const app = await startApp(t);
     const tops = new Map();
     const page = await openApp(t, app, { intersection: false, rect: (element) => tops.get(element.getAttribute('data-key')) ?? 3000 });
-    await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4 && page.main().querySelectorAll('[data-lazy]').length === 9, 'Home');
+    await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4 && page.main().querySelectorAll('[data-lazy]').length === 12, 'Home');
     await pause(50);
     assert.equal(page.requests.length, 6, 'nothing below the fold yet');
     tops.set('row-upcoming-tv', 1200);
@@ -2180,6 +2240,259 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     await page.until(() => page.document.querySelector('#row-network-213-heading'), 'Netflix');
     await pause(50);
     assert.deepEqual(page.requests.slice(6).map((request) => request.url), ['/jellypass/app/v1/discover/upcoming-tv', '/jellypass/app/v1/discover/network/213/all']);
+  });
+
+  describe('Home\'s All | Movies | TV switch', () => {
+    const tmdbCount = (app) => app.tmdb.calls.filter((call) => call.pathname !== '/3/authentication').length;
+    const urls = (page) => page.requests.map((request) => request.url.replace(/\?.*/, '').replace('/jellypass/app/v1', ''));
+    const headings = (page) => [...page.document.querySelectorAll('.row-heading')].map((heading) => heading.textContent).filter(Boolean);
+    const radios = (page) => [...page.main().querySelectorAll('[role="radiogroup"] [role="radio"]')];
+    const state = (page) => radios(page).map((radio) => `${radio.textContent} ${radio.getAttribute('aria-checked')} ${radio.getAttribute('tabindex')}`);
+    const key = (page, name) => {
+      const event = new page.Event('keydown', { bubbles: true, cancelable: true });
+      Object.defineProperty(event, 'key', { value: name });
+      page.focused().dispatchEvent(event);
+      return event;
+    };
+    const ready = (page, label, count = 4) => page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === count && page.main().querySelector('.hero-slide'), label);
+    /** Reveals every lazy row that is waiting, and waits for each to draw. */
+    async function revealAll(page) {
+      for (const slot of [...page.main().querySelectorAll('[data-lazy="waiting"]')]) page.reveal(slot.getAttribute('data-key'));
+      await page.until(() => page.main().querySelectorAll('[data-lazy="waiting"], [data-lazy="loading"]').length === 0, 'every lazy row drawn');
+    }
+
+    it('is a radio group of three real buttons under the hero: one choice, roving tabindex, named by its label', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app);
+      await ready(page, 'Home');
+      const group = page.main().querySelector('[role="radiogroup"]');
+      assert.equal(group.getAttribute('aria-label'), 'Show');
+      assert.deepEqual(state(page), ['All true 0', 'Movies false -1', 'TV false -1']);
+      assert.deepEqual(radios(page).map((radio) => `${radio.tagName} ${radio.getAttribute('type')} ${radio.getAttribute('aria-controls')}`), Array(3).fill('BUTTON button home-panel'));
+      // Under the hero and above the rows, as direct children of the page's main region so it can stick while the rows scroll.
+      const order = [...page.main().children].map((node) => node.className || node.id || node.tagName);
+      assert.deepEqual(order.slice(-2), ['home-switch', 'home-panel']);
+      assert.equal(group.parentElement.className, 'home-switch');
+      assert.equal(group.parentElement.parentElement, page.main());
+      const panel = page.main().querySelector('#home-panel');
+      assert.equal(panel.getAttribute('role'), 'group');
+      assert.equal(panel.getAttribute('aria-labelledby'), 'home-filter-all');
+      assert.equal(page.document.getElementById('home-filter-all').textContent, 'All');
+      assert.doesNotMatch(page.serialize().replace(/<style[^]*?<\/style>/gi, ''), /\sstyle=/);
+    });
+
+    it('All is today\'s Home: the same four TMDB calls at first load, rows in the order the design gives', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app);
+      await ready(page, 'Home');
+      await page.until(() => page.watched().length === 12, 'the lazy rows');
+      assert.equal(tmdbCount(app), 4);
+      assert.deepEqual(urls(page).sort(), ['/discover/new-movies', '/discover/popular-movies', '/discover/popular-tv', '/discover/sources', '/discover/trending', '/me']);
+      await revealAll(page);
+      assert.deepEqual(headings(page), ['Trending', 'Popular movies', 'Popular series', 'New movie releases', 'Upcoming movies', 'Upcoming series',
+        'Popular on', 'Popular on', 'Popular on', 'Popular on', 'Popular on', 'Popular on', 'Popular on', 'Popular on', 'Studios', 'All-time great movies', 'All-time great TV']);
+      // Rows in the order given: the services' rows come before the studios' strip, then the all-time lists, then the JustWatch credit.
+      const slots = [...page.main().querySelectorAll('#home-panel > *')].map((slot) => slot.getAttribute('data-key')
+        ?? (slot.querySelector('[data-key^="row-network-"]') ? 'networks' : slot.querySelector('.source-note') ? 'credit' : slot.querySelector('.hero, ul.logo-list') ? 'studios' : slot.querySelector('ul.row-list') ? 'row' : 'empty'));
+      assert.deepEqual(slots, ['row', 'row', 'row', 'row', 'row-upcoming', 'row-upcoming-tv', 'networks', 'studios', 'row-top-movies', 'row-top-tv', 'credit']);
+      assert.equal(page.main().querySelectorAll('#home-panel [data-key^="row-network-"]').length, 8);
+      assert.equal(page.main().querySelectorAll('.source-note').length, 1);
+      assert.ok(page.main().querySelector('.source-note').compareDocumentPosition(page.document.getElementById('row-top-tv-heading')) & 2, 'the credit closes Home');
+      // The accent bars: the app's purple (no class) by default, gold for the all-time lists, a brand colour per service. A class, never a style.
+      const accents = Object.fromEntries([...page.main().querySelectorAll('.row-heading')].map((heading) => [heading.id.replace(/^row-|-heading$/g, ''), [...heading.classList].filter((name) => name.startsWith('accent-')).join()]));
+      assert.deepEqual(accents, {
+        trending: '', 'popular-movies': '', 'popular-tv': '', 'new-movies': '', upcoming: '', 'upcoming-tv': '', studios: '',
+        'top-movies': 'accent-gold', 'top-tv': 'accent-gold',
+        'network-213': 'accent-netflix', 'network-2739': 'accent-disney', 'network-2552': 'accent-apple', 'network-1024': 'accent-prime',
+        'network-3186': 'accent-hbo', 'network-453': 'accent-hulu', 'network-4330': 'accent-paramount', 'network-3353': 'accent-peacock',
+      });
+      assert.doesNotMatch(page.serialize().replace(/<style[^]*?<\/style>/gi, ''), /\sstyle=/);
+    });
+
+    it('Movies: films only, replaced in the address, from per-kind lists (a service\'s films), no series-only row', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app);
+      await ready(page, 'Home');
+      const entries = page.entries.length;
+      const before = page.requests.length;
+      radios(page)[1].dispatchEvent(new page.Event('click'));
+      await page.until(() => page.document.querySelector('#row-trending-movies-heading') && page.document.querySelector('#row-upcoming-heading'), 'Movies');
+      assert.equal(page.location.hash, '#/?kind=movies');
+      assert.equal(page.entries.length, entries, 'switching replaces the entry, so Back still leaves Home');
+      assert.deepEqual(state(page), ['All false -1', 'Movies true 0', 'TV false -1']);
+      assert.equal(page.main().querySelector('#home-panel').getAttribute('aria-labelledby'), 'home-filter-movies');
+      assert.equal(page.main().querySelector('.hero').getAttribute('aria-label'), 'Trending movies');
+      await revealAll(page);
+      assert.deepEqual(headings(page), ['Trending movies', 'Popular movies', 'New movie releases', 'Upcoming movies',
+        ...Array(8).fill('Films on'), 'Studios', 'All-time great movies']);
+      // Only the movie lists, and a service's films alone: nothing was fetched and then thrown away.
+      const asked = urls(page).slice(before);
+      assert.deepEqual(asked.filter((url) => !url.includes('/network/')).sort(), ['/discover/new-movies', '/discover/popular-movies', '/discover/top-movies', '/discover/trending-movies', '/discover/upcoming']);
+      assert.deepEqual(asked.filter((url) => url.includes('/network/')).sort(), [213, 2739, 2552, 1024, 3186, 453, 4330, 3353].sort().map((id) => `/discover/network/${id}/films`).sort());
+      for (const list of page.main().querySelectorAll('ul.row-list')) {
+        for (const link of list.querySelectorAll('a.card-link')) assert.match(link.getAttribute('href'), /^#\/movie\//, list.getAttribute('aria-labelledby'));
+      }
+      // A service's heading says films and goes to its Films tab.
+      const netflix = page.document.querySelector('#row-network-213-heading a');
+      assert.equal(netflix.getAttribute('href'), '#/network/213?kind=films');
+      assert.equal(netflix.querySelector('span').textContent, 'Films on');
+      assert.equal(page.main().querySelectorAll('.source-note').length, 1, 'where-to-watch data is films: the credit stays');
+      assert.equal(page.document.querySelector('#row-popular-tv-heading'), null);
+      assert.equal(page.document.querySelector('#row-upcoming-tv-heading'), null);
+      assert.equal(page.document.querySelector('#row-top-tv-heading'), null);
+      assertNoCanaries(page.serialize(), 'the page shows data that is not in a DTO');
+    });
+
+    it('TV: series only, a service\'s series, no film row, no studios, no where-to-watch credit', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app);
+      await ready(page, 'Home');
+      const before = page.requests.length;
+      radios(page)[2].dispatchEvent(new page.Event('click'));
+      await page.until(() => page.document.querySelector('#row-trending-tv-heading') && page.document.querySelector('#row-upcoming-tv-heading'), 'TV');
+      assert.equal(page.location.hash, '#/?kind=tv');
+      assert.deepEqual(state(page), ['All false -1', 'Movies false -1', 'TV true 0']);
+      assert.equal(page.main().querySelector('.hero').getAttribute('aria-label'), 'Trending series');
+      await revealAll(page);
+      assert.deepEqual(headings(page), ['Trending series', 'Popular series', 'Upcoming series', ...Array(8).fill('Series on'), 'All-time great TV']);
+      const asked = urls(page).slice(before);
+      assert.deepEqual(asked.filter((url) => !url.includes('/network/')).sort(), ['/discover/popular-tv', '/discover/top-tv', '/discover/trending-tv', '/discover/upcoming-tv']);
+      assert.deepEqual(asked.filter((url) => url.includes('/network/')).sort(), [213, 2739, 2552, 1024, 3186, 453, 4330, 3353].sort().map((id) => `/discover/network/${id}`).sort());
+      for (const list of page.main().querySelectorAll('ul.row-list')) {
+        for (const link of list.querySelectorAll('a.card-link')) assert.match(link.getAttribute('href'), /^#\/tv\//, list.getAttribute('aria-labelledby'));
+      }
+      assert.equal(page.document.querySelector('#row-network-213-heading a').getAttribute('href'), '#/network/213?kind=series');
+      assert.equal(page.main().querySelector('ul.logo-list'), null, 'the studios make movies');
+      assert.equal(page.main().querySelector('.source-note'), null, 'no where-to-watch data on series');
+      for (const gone of ['row-popular-movies', 'row-new-movies', 'row-upcoming', 'row-top-movies']) assert.equal(page.document.querySelector(`#${gone}-heading`), null, gone);
+    });
+
+    it('opens on the filter named in the address, and anything else is All', async (t) => {
+      const app = await startApp(t);
+      const movies = await openApp(t, app, { hash: '#/?kind=movies' });
+      await ready(movies, 'Movies');
+      assert.deepEqual(state(movies), ['All false -1', 'Movies true 0', 'TV false -1']);
+      assert.equal(movies.main().querySelectorAll('[data-lazy]').length, 9, 'All-time great movies and the eight services wait');
+      const tv = await openApp(t, app, { hash: '#/?kind=tv' });
+      await ready(tv, 'TV', 3);
+      assert.deepEqual(state(tv), ['All false -1', 'Movies false -1', 'TV true 0']);
+      for (const hash of ['#/?kind=bogus', '#/?kind=', '#/?kind=Movies', '#/?other=tv', '#/?kind=all']) {
+        const other = await openApp(t, app, { hash });
+        await ready(other, hash);
+        assert.deepEqual(state(other), ['All true 0', 'Movies false -1', 'TV false -1'], hash);
+      }
+    });
+
+    it('costs the same first-load TMDB calls as before under All, and no more under Movies or TV', async (t) => {
+      const first = async (hash, rows) => {
+        const app = await startApp(t);
+        const page = await openApp(t, app, { hash });
+        await ready(page, hash, rows);
+        await page.until(() => page.main().querySelector('[data-lazy="waiting"]'), 'lazy rows waiting');
+        await pause(50);
+        return tmdbCount(app);
+      };
+      assert.equal(await first('', 4), 4);
+      assert.equal(await first('#/?kind=movies', 4), 4);
+      assert.equal(await first('#/?kind=tv', 3), 3);
+    });
+
+    it('moves with the arrow keys, Home and End, choosing as it goes, and leaves other keys alone', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app);
+      await ready(page, 'Home');
+      radios(page)[0].focus();
+      assert.equal(key(page, 'ArrowRight').defaultPrevented, true);
+      await page.until(() => page.location.hash === '#/?kind=movies', 'Movies');
+      assert.equal(page.focused().textContent, 'Movies', 'focus follows the choice');
+      assert.deepEqual(state(page), ['All false -1', 'Movies true 0', 'TV false -1']);
+      key(page, 'ArrowDown');
+      await page.until(() => page.location.hash === '#/?kind=tv', 'TV');
+      key(page, 'ArrowRight');
+      await page.until(() => page.location.hash === '#/', 'wraps to All');
+      assert.equal(page.focused().textContent, 'All');
+      key(page, 'ArrowLeft');
+      await page.until(() => page.location.hash === '#/?kind=tv', 'wraps back to TV');
+      key(page, 'Home');
+      await page.until(() => page.location.hash === '#/', 'Home is All');
+      key(page, 'End');
+      await page.until(() => page.location.hash === '#/?kind=tv', 'End is TV');
+      key(page, 'ArrowUp');
+      await page.until(() => page.location.hash === '#/?kind=movies', 'Up is Movies');
+      assert.equal(key(page, 'a').defaultPrevented, false);
+      assert.equal(key(page, 'Enter').defaultPrevented, false, 'Enter and Space press the focused button, as a button does');
+      assert.equal(page.location.hash, '#/?kind=movies');
+      assert.equal(page.cursor(), 0, 'no history entry was ever added');
+    });
+
+    it('announces the choice, redraws the hero and keeps the sticky control where it is', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app);
+      await ready(page, 'Home');
+      const control = page.main().querySelector('.home-switch');
+      radios(page)[1].dispatchEvent(new page.Event('click'));
+      assert.equal(page.document.getElementById('status').textContent, 'Loading…');
+      await page.until(() => page.document.getElementById('status').textContent === 'Movies shown.', 'the announcement');
+      await page.until(() => page.document.querySelector('#row-upcoming-heading'), 'the last row asked for at once');
+      assert.equal(page.main().querySelector('.home-switch'), control, 'the control is the same node: focus is never lost');
+      assert.equal(page.document.body.getAttribute('data-chrome'), 'home');
+      // Choosing the choice already made does nothing.
+      const calls = page.requests.length;
+      radios(page)[1].dispatchEvent(new page.Event('click'));
+      await pause(50);
+      assert.equal(page.requests.length, calls);
+      assert.equal(page.main().querySelectorAll('#home-panel [data-lazy="loading"]').length, 0);
+    });
+
+    it('comes back to the filter that was chosen: Back from a title restores Movies, and only the member can cancel the restore', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app);
+      await ready(page, 'Home');
+      radios(page)[1].dispatchEvent(new page.Event('click'));
+      await page.until(() => page.document.querySelector('#row-trending-movies-heading'), 'Movies');
+      await ready(page, 'Movies rows', 4);
+      page.scroll.y = 720;
+      const rows = [...page.document.querySelectorAll('ul.row-list[aria-labelledby]')];
+      rows[1].scrollLeft = 90;
+      page.go(`#/movie/${OWN_MOVIE}`);
+      await page.until(() => page.main().querySelector('article.detail'), 'the movie');
+      page.back().dispatchEvent(new page.Event('click'));
+      await page.until(() => page.document.querySelector('#row-trending-movies-heading') && page.scroll.y === 720, 'Movies and the scroll');
+      assert.equal(page.location.hash, '#/?kind=movies');
+      assert.deepEqual(state(page), ['All false -1', 'Movies true 0', 'TV false -1']);
+      assert.equal(page.document.querySelector('ul[aria-labelledby="row-popular-movies-heading"]').scrollLeft, 90);
+      // Switching is the member's own doing: nothing of the other filter's position is put back on the new one.
+      page.scroll.y = 400;
+      radios(page)[2].dispatchEvent(new page.Event('click'));
+      await page.until(() => page.document.querySelector('#row-trending-tv-heading'), 'TV');
+      await pause(60);
+      assert.ok(page.scroll.y <= 400, 'not moved back to where Movies was');
+    });
+
+    it('opens Home at #/ from the Home tab even on a filter, and Back from the first screen leaves the filter alone', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app, { hash: '#/?kind=tv' });
+      await ready(page, 'TV', 3);
+      assert.equal(page.document.querySelector('nav a[aria-current="page"]').dataset.nav, 'home');
+      assert.equal(page.back().hidden, true);
+      page.go('#/');
+      await page.until(() => page.document.querySelector('#row-trending-heading'), 'All');
+      assert.deepEqual(state(page), ['All true 0', 'Movies false -1', 'TV false -1']);
+    });
+
+    it('draws the same bytes for the same filter whatever other households hold, ask for or wait on', async (t) => {
+      const seen = {};
+      for (const [name, worldState] of Object.entries({ baseline: world(), ...otherHouseholdWorlds() })) {
+        const app = await startApp(t, worldState);
+        const page = await openApp(t, app, { hash: '#/?kind=movies' });
+        await ready(page, `${name}: Movies`);
+        await revealAll(page);
+        seen[name] = page.main().outerHTML;
+      }
+      assert.ok(Object.keys(seen).length >= 5);
+      assert.match(seen.baseline, /Films on/);
+      for (const [name, html] of Object.entries(seen)) assert.equal(html, seen.baseline, name);
+    });
   });
 
   it('shows a network\'s page with its logo and the grid, and refuses one the API does not list without asking for titles', async (t) => {
@@ -2270,7 +2583,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
   it('credits JustWatch once on Home, under the services\' rows', async (t) => {
     const app = await startApp(t);
     const page = await openApp(t, app);
-    await page.until(() => page.watched().length === 9, 'Home');
+    await page.until(() => page.watched().length === 12, 'Home');
     const notes = [...page.main().querySelectorAll('.source-note')];
     assert.deepEqual(notes.map((note) => note.textContent), ['Where to watch: US streaming availability from JustWatch, via TMDB.']);
     const slots = [...page.main().querySelectorAll('[data-key^="row-network-"]')];
@@ -2289,7 +2602,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     const page = await openApp(t, app, {
       override: (url) => (url === '/jellypass/app/v1/discover/sources' ? { status: 200, body: Buffer.from(JSON.stringify(sources)), headers: { 'content-type': 'application/json' } } : undefined),
     });
-    await page.until(() => page.main().querySelector('ul.logo-list') && page.watched().length === bad.length + 1, 'Home');
+    await page.until(() => page.main().querySelector('ul.logo-list') && page.watched().length === bad.length + 4, 'Home');
     page.reveal('row-network-213');
     const heading = await page.until(() => page.document.querySelector('#row-network-213-heading'), 'the first network row');
     assert.equal(heading.querySelector('img'), null);
@@ -2428,8 +2741,8 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.equal(page.document.querySelector('#row-trending-heading').parentElement.querySelectorAll('.card').length, 8);
       assert.equal(page.requests.length, 6);
       assert.deepEqual(page.requests.map((request) => request.url.replace(/\?.*/, '')).sort(), [
-        '/jellypass/app/v1/discover/popular-movies', '/jellypass/app/v1/discover/popular-tv', '/jellypass/app/v1/discover/sources',
-        '/jellypass/app/v1/discover/trending', '/jellypass/app/v1/discover/upcoming', '/jellypass/app/v1/me',
+        '/jellypass/app/v1/discover/new-movies', '/jellypass/app/v1/discover/popular-movies', '/jellypass/app/v1/discover/popular-tv',
+        '/jellypass/app/v1/discover/sources', '/jellypass/app/v1/discover/trending', '/jellypass/app/v1/me',
       ]);
       assert.equal(chrome(page), 'home');
       const active = () => [...page.document.querySelectorAll('.hero-dot')].map((dot) => dot.getAttribute('aria-current') === 'true' ? 1 : 0).join('');
@@ -2625,7 +2938,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       await homeReady(page);
       const rows = [...page.document.querySelectorAll('ul.row-list[aria-labelledby]')];
       const lefts = [120, 8, 340, 55];
-      assert.deepEqual(rows.map((row) => row.classList.contains('row-list-backdrop')), [false, true, true, false], 'the backdrop rows are among those restored');
+      assert.deepEqual(rows.map((row) => row.classList.contains('row-list-backdrop')), [false, true, true, true], 'the backdrop rows are among those restored');
       rows.forEach((row, index) => { row.scrollLeft = lefts[index]; });
       page.scroll.y = 640;
       page.go(`#/movie/${OWN_MOVIE}`);
@@ -2650,7 +2963,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       const app = await startApp(t);
       const page = await openApp(t, app);
       await homeReady(page);
-      await page.until(() => page.watched().length === 9, 'the lazy rows watched');
+      await page.until(() => page.watched().length === 12, 'the lazy rows watched');
       page.reveal('row-network-213');
       const netflix = await page.until(() => page.document.querySelector('ul.row-list[aria-labelledby="row-network-213-heading"]'), 'the Netflix row');
       netflix.scrollLeft = 210;
@@ -2663,12 +2976,12 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       const fetched = page.requests.slice(before).map((request) => request.url).sort();
       // The Netflix row was showing, so it is fetched with Home at once; the rows never reached are still waiting.
       assert.deepEqual(fetched, [
-        '/jellypass/app/v1/discover/network/213/all', '/jellypass/app/v1/discover/popular-movies', '/jellypass/app/v1/discover/popular-tv',
-        '/jellypass/app/v1/discover/sources', '/jellypass/app/v1/discover/trending', '/jellypass/app/v1/discover/upcoming',
+        '/jellypass/app/v1/discover/network/213/all', '/jellypass/app/v1/discover/new-movies', '/jellypass/app/v1/discover/popular-movies',
+        '/jellypass/app/v1/discover/popular-tv', '/jellypass/app/v1/discover/sources', '/jellypass/app/v1/discover/trending',
       ]);
       assert.equal(page.document.querySelector('ul.row-list[aria-labelledby="row-network-213-heading"]').scrollLeft, 210, 'the row is where it was');
       assert.equal(page.main().querySelector('[data-key="row-network-213"]').getAttribute('data-lazy'), 'loaded');
-      await page.until(() => page.watched().length === 8, 'the other lazy rows watched again');
+      await page.until(() => page.watched().length === 11, 'the other lazy rows watched again');
       assert.equal(page.watched().includes('row-network-213'), false);
     });
 

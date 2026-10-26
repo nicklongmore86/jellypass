@@ -24,7 +24,9 @@ export const TMDB_LANGUAGE = 'en-US';
 export const TMDB_WATCH_REGION = 'US';
 
 /** The discover lists the household app offers, by their app path segment. */
-export const TMDB_DISCOVER_LISTS = ['trending', 'popular-movies', 'popular-tv', 'upcoming', 'upcoming-tv'] as const;
+export const TMDB_DISCOVER_LISTS = [
+  'trending', 'trending-movies', 'trending-tv', 'popular-movies', 'popular-tv', 'new-movies', 'upcoming', 'upcoming-tv', 'top-movies', 'top-tv',
+] as const;
 export type TmdbDiscoverList = typeof TMDB_DISCOVER_LISTS[number];
 
 /** A TMDB network or production company the app offers a list of, with its name and TMDB logo file. */
@@ -97,6 +99,9 @@ export function tmdbSource(kind: 'network' | 'studio', id: number): TmdbSource |
   return (kind === 'network' ? TMDB_NETWORKS : TMDB_STUDIOS).find((source) => source.id === id);
 }
 
+/** New movie releases are those released in theatres within this long before now (or on) today: eight and a half weeks. */
+const NEW_MOVIES_SPAN_MS = 1000 * 60 * 60 * 24 * 60;
+
 /** Upcoming series first air within this long of now: Seerr 3.5.1's default upper bound, a year and a half. */
 const UPCOMING_TV_SPAN_MS = 1000 * 60 * 60 * 24 * (365 * 1.5);
 
@@ -160,11 +165,33 @@ export class TmdbClient {
    * One discover list, built the way Seerr 3.5.1 builds its own (`server/routes/discover.ts`): trending is today's
    * trending titles; popular movies and series are TMDB discover by popularity; upcoming is movies by popularity whose
    * primary release is today (UTC) or later; upcoming series are series by popularity first airing from today (UTC)
-   * to a year and a half from now (Seerr's `discover/tv/upcoming` with its default upper bound).
+   * to a year and a half from now (Seerr's `discover/tv/upcoming` with its default upper bound). Trending movies and
+   * series are today's `trending/movie` and `trending/tv` (what Home's Movies and TV filters show in place of
+   * `trending`, which mixes both). New movies are movies by popularity that opened in theatres in
+   * {@link TMDB_WATCH_REGION} in the 60 days up to today (UTC; TMDB's release types 2 and 3, theatrical, `region` and
+   * `release_date.*` used together as TMDB documents); Seerr has no equivalent. The top lists are TMDB's own
+   * `movie/top_rated` and `tv/top_rated` (the all-time best, which TMDB itself only ranks above a vote floor).
    */
   public discover(list: TmdbDiscoverList, page = 1, options: TmdbCallOptions = {}): Promise<unknown> {
     const parameters = { page: pageNumber(page) };
     if (list === 'trending') return this.#get('/3/trending/all/day', '/3/trending/all/day', parameters, options);
+    if (list === 'trending-movies') return this.#get('/3/trending/movie/day', '/3/trending/movie/day', parameters, options);
+    if (list === 'trending-tv') return this.#get('/3/trending/tv/day', '/3/trending/tv/day', parameters, options);
+    if (list === 'top-movies') return this.#get('/3/movie/top_rated', '/3/movie/top_rated', parameters, options);
+    if (list === 'top-tv') return this.#get('/3/tv/top_rated', '/3/tv/top_rated', parameters, options);
+    if (list === 'new-movies') {
+      const today = new Date(this.#now());
+      const since = new Date(today.getTime() - NEW_MOVIES_SPAN_MS);
+      return this.#get('/3/discover/movie', '/3/discover/movie', {
+        ...parameters,
+        sort_by: 'popularity.desc',
+        include_adult: 'false',
+        region: TMDB_WATCH_REGION,
+        with_release_type: '2|3',
+        'release_date.gte': since.toISOString().slice(0, 10),
+        'release_date.lte': today.toISOString().slice(0, 10),
+      }, options);
+    }
     if (list === 'popular-movies') {
       return this.#get('/3/discover/movie', '/3/discover/movie', { ...parameters, sort_by: 'popularity.desc', include_adult: 'false' }, options);
     }
