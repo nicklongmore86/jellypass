@@ -41,6 +41,18 @@ describe('app config', () => {
     ]);
   });
 
+  it('leaves the build numbers to EAS', () => {
+    // eas.json's appVersionSource "remote" and autoIncrement: EAS sets both for every build, and the Account screen
+    // reads the installed binary's own (src/credits.ts). A number here would only drift from the real one.
+    expect(Object.keys(config.ios ?? {})).not.toContain('buildNumber');
+    expect(Object.keys(config.android ?? {})).not.toContain('versionCode');
+  });
+
+  it('declares only exempt encryption, so a TestFlight build never waits on export compliance', () => {
+    // Standard HTTPS through the OS only: Expo writes ITSAppUsesNonExemptEncryption = false into the Info.plist.
+    expect(config.ios?.config?.usesNonExemptEncryption).toBe(false);
+  });
+
   it('opens jellypass:// setup links, and keeps the sign-in out of Android backups', () => {
     expect(config.scheme).toBe('jellypass');
     expect(config.android?.allowBackup).toBe(false);

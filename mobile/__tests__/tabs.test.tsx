@@ -10,7 +10,7 @@ import { Linking, StyleSheet, Text } from 'react-native';
 
 import type { FetchLike } from '../src/api/client';
 import { JUSTWATCH_CREDIT, JUSTWATCH_URL, TMDB_NOTICE, TMDB_SOURCE, TMDB_URL, type LinkedSentence } from '../src/credits';
-import { PLACEHOLDER_TEXT } from '../src/screens/PlaceholderScreen';
+import { SEARCH_TEXT } from '../src/search/text';
 import { colors, contrast, layout } from '../src/theme';
 import { ORIGIN, OTHER_ORIGIN, TOKEN, answer, button, fakeGateway, fixture, keepSession, press, settle, shows, store, storedSession } from './support/household';
 
@@ -22,6 +22,8 @@ jest.mock('../src/api/transport', () => ({
 // The app config the build embeds, which Jest has no copy of.
 jest.mock('expo-constants', () => ({ __esModule: true, default: { expoConfig: jest.requireActual('../app.config').default } }));
 jest.mock('react-native-safe-area-context', () => jest.requireActual('react-native-safe-area-context/jest/mock').default);
+// The installed binary's version and build number, as the OS would report them for an EAS build.
+jest.mock('expo-application', () => ({ nativeApplicationVersion: '0.1.0', nativeBuildVersion: '42' }));
 
 // Home's own calls (the lazy rows never come near the screen here: Jest lays nothing out).
 const HOME_AT_ONCE = ['trending', 'popular-movies', 'popular-tv', 'new-movies'].map((list) => `GET /jellypass/app/v1/discover/${list}`);
@@ -35,6 +37,10 @@ const HOUSEHOLD = {
   // A title page opened on the Home tab's stack: the film (in the library, with Play) and the household's requests.
   'GET /jellypass/app/v1/movie/900001': () => answer(200, fixture('movie')),
   'GET /jellypass/app/v1/requests': () => answer(200, fixture('requests')),
+  // My requests names the fixture's two requests: that film and a series.
+  'GET /jellypass/app/v1/tv/900002': () => answer(200, fixture('series')),
+  // Search's results: the fixture page (three titles, and a next page).
+  'GET /jellypass/app/v1/search': () => answer(200, fixture('page')),
 };
 
 // A screen pushed on the Account tab's stack, standing in for the title pages that come with 3.2.
@@ -135,7 +141,7 @@ describe('the tab bar', () => {
     expect(app.getPathname()).toBe('/search');
     expect(selectedTabs()).toEqual(['Search']);
     expect(headers()).toEqual(['Search']);
-    expect(shows(PLACEHOLDER_TEXT.search)).toBe(true);
+    expect(screen.queryAllByLabelText(SEARCH_TEXT.label)).toHaveLength(1);
 
     await openTab('My requests');
     expect(app.getPathname()).toBe('/requests');
@@ -231,10 +237,10 @@ describe('the Account screen', () => {
     expect(shows(sentenceOf(JUSTWATCH_CREDIT))).toBe(true);
   });
 
-  it('shows the app version and build, and the API version from /me', async () => {
+  it("shows the installed app's version and native build number, and the API version from /me", async () => {
     await start();
     await openTab('Account');
-    expect(shows('JellyPass 0.1.0 (build 1)')).toBe(true);
+    expect(shows('JellyPass 0.1.0 (build 42)')).toBe(true);
     expect(shows('Household API version 1')).toBe(true);
   });
 
@@ -321,12 +327,14 @@ describe('a setup link while signed in', () => {
 
 describe('network', () => {
   // Home's own calls are pinned against docs/app-api/fetch-budget.json by home-budget.test.tsx.
-  it('makes no call but the start-up /me and Home\'s first rows, once, through every tab and the Account screen', async () => {
+  // Search and My requests are pinned by search-requests-budget.test.tsx.
+  it('makes no call but the start-up /me, Home\'s first rows and My requests\' own, once, through every tab and the Account screen', async () => {
     const global = jest.spyOn(globalThis, 'fetch');
     try {
       await start();
       for (const name of ['Search', 'My requests', 'Account', 'Home', 'Account']) await openTab(name);
-      expect(gateway.routes().sort()).toEqual(['GET /jellypass/app/v1/me', 'GET /jellypass/app/v1/discover/sources', ...HOME_AT_ONCE].sort());
+      const requests = ['GET /jellypass/app/v1/requests', 'GET /jellypass/app/v1/tv/900002', 'GET /jellypass/app/v1/movie/900001'];
+      expect(gateway.routes().sort()).toEqual(['GET /jellypass/app/v1/me', 'GET /jellypass/app/v1/discover/sources', ...HOME_AT_ONCE, ...requests].sort());
       expect(global).not.toHaveBeenCalled();
     } finally {
       global.mockRestore();
@@ -414,15 +422,26 @@ describe('accessibility', () => {
   it.each([
     ['Home', 'Home', 4 + HOME],
     ['Search', 'Search', 4 + HOME],
-    ['My requests', 'My requests', 4 + HOME],
+    // Its two requests, each one link.
+    ['My requests', 'My requests', 6 + HOME],
     ['Account', 'Account', 9 + HOME],
     // Back, and the Account screen still mounted underneath it.
     ['a pushed screen', '/account/pushed', 10 + HOME],
     // Back and Play, over Home.
     ['a title page', '/home/movie/900001', 6 + HOME],
+    // Its three results and Load more.
+    ['Search with results', 'search results', 8 + HOME],
+    // Back and Play, over Home and Search.
+    ['a title page on Search', '/search/movie/900001', 6 + HOME],
+    ['a title page on My requests', '/requests/movie/900001', 6 + HOME],
   ] as const)('keeps every pressable on %s named and a thumb\'s size', async (_name, to, count) => {
     await start();
-    if (to.startsWith('/')) {
+    if (to === 'search results') {
+      await openTab('Search');
+      await fireEvent.changeText(screen.queryAllByLabelText(SEARCH_TEXT.label)[0]!, 'synthetic');
+      await fireEvent(screen.queryAllByLabelText(SEARCH_TEXT.label)[0]!, 'submitEditing');
+      await settle();
+    } else if (to.startsWith('/')) {
       await act(async () => router.push(to, { withAnchor: true }));
       await settle();
     } else {

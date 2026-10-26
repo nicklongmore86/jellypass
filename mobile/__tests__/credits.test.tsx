@@ -5,7 +5,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { Linking } from 'react-native';
 
-import { ABOUT_TEXT, apiVersionText, CREDIT_URLS, JUSTWATCH_CREDIT, JUSTWATCH_URL, TMDB_NOTICE, TMDB_SOURCE, TMDB_URL, versionText } from '../src/credits';
+import { ABOUT_TEXT, apiVersionText, CREDIT_URLS, JUSTWATCH_CREDIT, JUSTWATCH_URL, TMDB_NOTICE, TMDB_SOURCE, TMDB_URL, installedVersion, versionText } from '../src/credits';
 import { SHAPES } from '../src/icons';
 import { openCredit } from '../src/screens/AccountScreen';
 import { TMDB_LOGO_PATH, TMDB_LOGO_STOPS, TMDB_LOGO_VIEWBOX } from '../src/TmdbLogo';
@@ -75,18 +75,26 @@ describe('the credits', () => {
 });
 
 describe('the version line', () => {
-  const config = { name: 'JellyPass', slug: 'jellypass', version: '1.2.3', ios: { buildNumber: '7' }, android: { versionCode: 12 } };
+  const config = { name: 'JellyPass', slug: 'jellypass', version: '1.2.3' };
 
-  it('gives the version and the platform\'s build', () => {
-    expect(versionText(config, 'ios')).toBe('JellyPass 1.2.3 (build 7)');
-    expect(versionText(config, 'android')).toBe('JellyPass 1.2.3 (build 12)');
-    expect(versionText({ name: 'JellyPass', slug: 'jellypass', version: '1.2.3' }, 'ios')).toBe('JellyPass 1.2.3');
+  it("gives the installed app's own version and build number", () => {
+    expect(versionText({ version: '1.2.3', build: '7' }, config)).toBe('JellyPass 1.2.3 (build 7)');
+    expect(versionText({ version: '1.2.4', build: '12' }, config)).toBe('JellyPass 1.2.4 (build 12)');
   });
 
-  it('reads the app config: version and build numbers', () => {
-    const app = jest.requireActual('../app.config').default as typeof config;
-    expect(versionText(app, 'ios')).toBe(`JellyPass ${app.version} (build ${app.ios.buildNumber})`);
-    expect(versionText(app, 'android')).toBe(`JellyPass ${app.version} (build ${app.android.versionCode})`);
+  it("falls back to the config's version, with no build, where the OS reports none", () => {
+    expect(versionText({ version: null, build: null }, config)).toBe('JellyPass 1.2.3');
+    expect(versionText({ version: '', build: '' }, config)).toBe('JellyPass 1.2.3');
+    expect(versionText({ version: null, build: null }, undefined)).toBe('JellyPass unknown');
+  });
+
+  it('reads the native build number through expo-application, never the app config', () => {
+    const Application = jest.requireActual('expo-application') as { nativeApplicationVersion: string | null; nativeBuildVersion: string | null };
+    expect(installedVersion()).toEqual({ version: Application.nativeApplicationVersion, build: Application.nativeBuildVersion });
+    const app = jest.requireActual('../app.config').default as { version: string; ios: Record<string, unknown>; android: Record<string, unknown> };
+    // EAS keeps the build numbers (eas.json: appVersionSource "remote", autoIncrement), so the config has none to drift.
+    expect(Object.keys(app.ios)).not.toContain('buildNumber');
+    expect(Object.keys(app.android)).not.toContain('versionCode');
     expect(app.version).toBe((jest.requireActual('../package.json') as { version: string }).version);
   });
 

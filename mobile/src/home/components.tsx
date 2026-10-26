@@ -271,17 +271,24 @@ export function skeletonRowHeight(variant: RowVariant, cardWidth: number): numbe
   return Math.ceil(SKELETON_HEADING_HEIGHT + spacing.md + frame + spacing.xxs);
 }
 
+/** The fixed message for a kind of failure, and Try again for the one call that failed. Nothing in it comes from an answer. */
+export function ErrorNotice({ error, onRetry, secondary = true }: { error: ErrorText; onRetry: () => void; secondary?: boolean }) {
+  const text = ERROR_TEXT[error];
+  return (
+    <View accessibilityRole="alert" style={styles.notice}>
+      <Text style={styles.noticeTitle}>{text.title}</Text>
+      <Text style={styles.noticeBody}>{text.body}</Text>
+      <Button label={RETRY_TEXT} onPress={onRetry} secondary={secondary} />
+    </View>
+  );
+}
+
 /** A row that failed: its heading, the fixed message for the kind of failure, and Try again for this row alone. */
 export function RowFailure({ heading, error, onRetry }: { heading: string; error: ErrorText; onRetry: () => void }) {
-  const text = ERROR_TEXT[error];
   return (
     <View style={styles.row}>
       <RowHeading title={heading} />
-      <View accessibilityRole="alert" style={styles.notice}>
-        <Text style={styles.noticeTitle}>{text.title}</Text>
-        <Text style={styles.noticeBody}>{text.body}</Text>
-        <Button label={RETRY_TEXT} onPress={onRetry} secondary />
-      </View>
+      <ErrorNotice error={error} onRetry={onRetry} />
     </View>
   );
 }

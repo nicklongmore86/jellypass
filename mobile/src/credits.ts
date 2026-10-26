@@ -1,8 +1,8 @@
 // The Account screen's "About & credits", word for word as the PWA's accountView (app/src/render.ts) shows them: what
 // JellyPass is, TMDB's required notice, where titles and images come from, and JustWatch's credit for which films each
 // streaming service has. Links open in the system browser.
+import * as Application from 'expo-application';
 import Constants from 'expo-constants';
-import { Platform } from 'react-native';
 
 export const ABOUT_TEXT = 'JellyPass is your household’s way to browse what is in your Jellyfin library and to find more to watch.';
 
@@ -32,14 +32,25 @@ export const JUSTWATCH_CREDIT: LinkedSentence = {
 /** The links the Account screen may open: nothing else is ever handed to the system browser. */
 export const CREDIT_URLS: readonly string[] = [TMDB_URL, JUSTWATCH_URL];
 
+/** The installed binary's own version and build number, as the OS reports them (null where there is no binary). */
+export interface InstalledVersion {
+  version: string | null;
+  build: string | null;
+}
+
+export function installedVersion(): InstalledVersion {
+  return { version: Application.nativeApplicationVersion, build: Application.nativeBuildVersion };
+}
+
 /**
- * "JellyPass 0.1.0 (build 1)": the app's version and its platform's build number, from the app config the build
- * embeds (`version`, `ios.buildNumber`, `android.versionCode`).
+ * "JellyPass 0.1.0 (build 12)": the installed app's version and build number (CFBundleShortVersionString and
+ * CFBundleVersion on iOS, versionName and versionCode on Android). EAS sets the build number for each build (eas.json's
+ * remote version source), so the app config has none; with no native value (a development client) the config's
+ * `version` stands in and no build is shown.
  */
-export function versionText(config = Constants.expoConfig, os = Platform.OS): string {
-  const version = config?.version ?? 'unknown';
-  const build = os === 'ios' ? config?.ios?.buildNumber : os === 'android' ? config?.android?.versionCode : undefined;
-  return build === undefined ? `JellyPass ${version}` : `JellyPass ${version} (build ${build})`;
+export function versionText(installed: InstalledVersion = installedVersion(), config = Constants.expoConfig): string {
+  const version = installed.version || config?.version || 'unknown';
+  return installed.build ? `JellyPass ${version} (build ${installed.build})` : `JellyPass ${version}`;
 }
 
 /** The API revision the household's server speaks, from /me (0 when it does not say). */

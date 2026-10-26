@@ -5,12 +5,11 @@ TypeScript (strict) and Expo Router. It talks to a household's JellyPass server 
 `/jellypass/app/v1` API as the PWA, and wears the same Tidepool look: its theme in `src/theme` is ported from
 `app/static/app.css`.
 
-**Sign-in, the tab bar, Home, the title pages with Get this, and Account work; the other browsing screens come next.**
-The app connects to a household address, signs a member in, keeps the sign-in in the device's credential store and
-signs out. Once signed in it has the PWA's four docked tabs (Home, Search, My requests, Account) with a header and Back,
-a finished Home (its filters, hero and rows), the movie, series and season pages with Play and Get this, and the
-Account screen; Search and My requests are one-line placeholders until their screens come (see
-[What's next](#whats-next)).
+**Sign-in, the tab bar, Home, Search, My requests, the title pages with Get this, and Account work; the network and
+studio pages come next.** The app connects to a household address, signs a member in, keeps the sign-in in the
+device's credential store and signs out. Once signed in it has the PWA's four docked tabs (Home, Search, My requests,
+Account) with a header and Back, a finished Home (its filters, hero and rows), Search, My requests, the movie, series
+and season pages with Play and Get this, and the Account screen (see [What's next](#whats-next)).
 
 `mobile/` is separate from the server: it has its own `package.json` and `pnpm-lock.yaml`, it is excluded from
 the Docker build context (`.dockerignore`), and the root `pnpm check`, `pnpm test` and temp-leak check never look
@@ -113,15 +112,15 @@ screen (and a setup link opened over the tabs leaves no second copy of them behi
   the sign-in screens.
 - **Width.** A screen's content stops widening at the PWA's 72rem (1152 pt) and Account's at 40rem (640 pt), centred
   on iPad and wide windows, with the side margins clear of the safe areas.
-- **Search and My requests** are placeholders: their routes (`/search`, `/requests`), titles and tabs are final; 3.4 to
-  3.6 fill them in.
 
 **Account** is the PWA's Account tab. **Account**: the member card ("name · household" from the `/me` the sign-in
 checked), **Sign out** (the session's sign-out) and **Change household** (signs out first, then the address step).
 **About & credits**, word for word as the PWA (`src/credits.ts`): what JellyPass is, the TMDB logo (the PWA's
 `tmdb-logo.svg`, drawn from the code in `src/TmdbLogo.tsx`, so nothing is loaded) linking to TMDB, TMDB's required
 notice, where titles and images come from, the JustWatch credit, the app's version and build
-(`JellyPass 0.1.0 (build 1)`, from `version`, `ios.buildNumber` and `android.versionCode` in `app.config.ts`) and the
+(`JellyPass 0.1.0 (build 12)`: the installed binary's own version and build number, read with `expo-application`'s
+`nativeApplicationVersion` and `nativeBuildVersion`, since EAS sets the build number; a development client with no
+native values shows `version` from `app.config.ts` alone) and the
 household's API version from `/me`. The links (TMDB and JustWatch only) open in the system browser with
 `Linking.openURL`. The screen makes no call of its own.
 
@@ -203,9 +202,10 @@ files). `tabs.test.tsx` counts Home's pressables (its chips are radios) and chec
 
 ## Title pages and Get this (`src/title`, `src/screens/TitleScreen.tsx`)
 
-The PWA's detail pages (`titleDetail` and `seasonView` in `app/src/render.ts`) on the Home tab's stack:
-`/home/movie/<id>`, `/home/tv/<id>` and `/home/tv/<id>/season/<n>`, opened from Home's cards and hero (a season from its
-card on the series page). An address that names no title (`07`, `1e3`) is **Not found** with no call.
+The PWA's detail pages (`titleDetail` and `seasonView` in `app/src/render.ts`) on the stack of the tab they were opened
+from: `/home/movie/<id>`, `/home/tv/<id>` and `/home/tv/<id>/season/<n>` from Home's cards and hero, the same under
+`/search/…` from Search's results and `/requests/…` from My requests (a season from its card on the series page, on the
+same stack; `src/navigation/titles.ts`, `src/screens/TitleRoutes.tsx`). An address that names no title (`07`, `1e3`) is **Not found** with no call.
 
 - **Page.** The inset rounded backdrop card (16:9, 30 pt, the series' on a season page; a plain navy card without
   one), then on the page's own navy: the title (the page's one heading: the header carries only Back), the facts (year,
@@ -245,6 +245,54 @@ card on the series page). An address that names no title (`07`, `1e3`) is **Not 
 - **Layout.** On iPad (from 768 pt) the column widens to 960 pt, the poster shows as a 144 pt thumbnail beside the
   title, the backdrop loads at w1280 and the seasons go two a row. Text grows with the system font size with no line
   limit or fixed height; every control is at least 44 pt.
+
+## Search and My requests (`src/search`, `src/requests`, `src/screens/SearchScreen.tsx`, `src/screens/RequestsScreen.tsx`)
+
+**Search** is the PWA's `search()` (`app/src/main.ts`): the squircle field (named "Search movies and series", its
+magnifier hidden from screen readers, at most 100 characters) in a band that sticks under the header, then the results.
+
+- **Calls** (`useSearch.ts`). Results load as the member types: one call per 300 ms pause (or at once on the keyboard's
+  Search key), the call before it aborted, and an answer for a query that is no longer the latest (or a page asked for
+  under one) dropped, so a late answer never replaces a newer search. Each further page only on **Load more** ("Loading…",
+  disabled, while it comes), by the API's `nextPage`. An empty field asks for nothing.
+- **Results** are poster cards (the status chip on the poster, "year · Movie/Series" under the title; one link named
+  once with its status) in a grid: three columns on a phone, two below 336 pt (21rem), and from 768 pt as many columns
+  of at least 160 pt as fit, in the 72rem column. A card opens its title on the Search tab's own stack, and Back comes
+  back to the results as they were (they stay in memory while the tab is open; nothing is read again).
+- **States.** A skeleton grid while the first page loads, "No results for “…”." when nothing matches, and the PWA's
+  fixed messages ("Too many requests", "Can't load this right now", "You're offline") with **Try again**, which asks
+  again for the one page that failed (a failed Load more keeps the results above it). Nothing is retried by itself; a
+  401 signs the member out.
+- **The overlay.** Every page is seen by `asked.ts` as it arrives and each card is drawn through it, so a title shows
+  Requested right after Get this, and the latest state read for it anywhere since.
+
+**My requests** is the PWA's `requestsScreen()`: the household's requests from `GET /requests`, each an entry with its
+title's thumbnail (46 × 68 pt, TMDB's poster only), its title and "year · Movie/Series", the coarse status (Requested,
+Ready to watch, We couldn't get this), who asked ("Asked for by you" or "… by someone in your household"), each season of
+a series with its own status, and, where anything failed, "Ask your JellyPass admin to try again." with no button.
+
+- **Calls** (`useRequests.ts`). The list is read each time the screen is shown (as the PWA reads it on each visit) and
+  on pull to refresh. The list carries only TMDB IDs, so the first ten requests are named from their title's own answer
+  (`GET /movie` or `/tv`, four at a time), and **Load more** names the next ten; shown again it names as many as were
+  showing. A title that cannot be read says "Title unavailable" and keeps its status. Every title answer is seen by
+  `asked.ts`, so Home, Search and the title pages show the state read here.
+- **States.** "Loading title…" until a title is named, a skeleton while the list loads, the PWA's empty line ("Nothing
+  requested yet. Press Get this on a title to ask for it."), and the same fixed messages with **Try again**; nothing is
+  retried by itself, and a 401 (the list or a title) signs the member out.
+- **An entry** is one link (named once with everything it shows, at least 44 pt) to its title on the My requests tab's
+  own stack. The list stops widening at 46rem (736 pt) on iPad.
+
+**Calls against the budget.** `docs/app-api/fetch-budget.json` pins the PWA's `search` (`/me` and the first page of one
+query) and `requests` (`/me`, `/requests` and one title call per request shown, at most `titlesAtOnce`, ten) screens,
+checked against the PWA by `test/app-pwa.test.mjs` and against the app by `__tests__/search-requests-budget.test.tsx`.
+
+**Tests.** `search.test.tsx` (the pause, the Search key, stale answers, Load more, every failure with Try again and
+never by itself, 401, the overlay after Get this, the title on Search's stack, the columns on a phone, a narrow phone and
+an iPad, names and targets), `requests.test.tsx` (the entries' names, statuses, seasons, thumbnails and admin note,
+"Loading title…" and "Title unavailable", ten at a time with four calls at once, empty, failures and 401, reading
+again on return and on pull to refresh, the overlay, names, targets and the iPad width),
+`search-requests-budget.test.tsx` (above) and `search-requests-text.test.ts` (the words and sizes against the PWA's
+files).
 
 ## The API client (`src/api`)
 
@@ -331,8 +379,8 @@ Edits reload on the phone as you save. Expo Go needs no Apple or Google develope
 
 1. **Setup link on the PWA**: a "Set up the app" link on the PWA's Account tab carrying the household's address. Left
    for when the app can be installed (a `jellypass://` link does nothing on a phone without it).
-2. **Screens**: network and studio pages (Home's service headings and studio logos link to them then), Search, My
-   requests, then an accessibility pass. (The tab bar, header, stacks, Home, the title pages and Account are done.)
+2. **Screens**: network and studio pages (Home's service headings and studio logos link to them then), then an
+   accessibility pass. (The tab bar, header, stacks, Home, Search, My requests, the title pages and Account are done.)
 3. **Play**: an in-app Jellyfin web view, optionally a Swiftfin hand-off.
 4. **First release build**: the owner's one-time setup in [Release builds](#release-builds), then a run of the
    `Mobile release` workflow. No Google Play Console account or Play config.
@@ -343,6 +391,11 @@ Edits reload on the phone as you save. Expo Go needs no Apple or Google develope
 
 Members install TestFlight and accept an invitation; builds come from EAS through the `Mobile release` workflow
 ([Release builds](#release-builds)).
+
+**Export compliance.** The app's only encryption is the standard HTTPS the OS provides (exempt), so `app.config.ts`
+sets `ios.config.usesNonExemptEncryption: false` (`ITSAppUsesNonExemptEncryption = false` in the Info.plist). App
+Store Connect then asks no encryption questions and a new build goes to testers without stopping at **Missing
+Compliance**. If the app ever adds encryption of its own, this must change, and the questions be answered.
 
 ### Android: a sideloaded APK, not Google Play
 
@@ -385,7 +438,7 @@ try, `production` for a release (what a `mobile-v*` tag builds).
 |---|---|
 | `"distribution": "store"` | An App Store signed iOS build, the only kind TestFlight takes. On Android, a release-signed APK |
 | `"android": { "buildType": "apk" }` | An AAB only installs from Google Play ([APK builds](https://docs.expo.dev/build-reference/apk/)) |
-| `"cli": { "appVersionSource": "remote" }` and `"autoIncrement": true` | EAS keeps the build number (`ios.buildNumber`, `android.versionCode`) and raises it for every build, so TestFlight never refuses a repeat and every APK installs over the last. The first build is 1 ([App versions](https://docs.expo.dev/build-reference/app-versions/)). The version members see is `version` in `app.config.ts` |
+| `"cli": { "appVersionSource": "remote" }` and `"autoIncrement": true` | EAS keeps the build number (iOS `CFBundleVersion`, Android `versionCode`) and raises it for every build, so TestFlight never refuses a repeat and every APK installs over the last. The first build is 1 ([App versions](https://docs.expo.dev/build-reference/app-versions/)). `app.config.ts` has no `ios.buildNumber` or `android.versionCode` (they would be ignored, and drift); the Account screen shows the installed binary's own. The version members see is `version` in `app.config.ts` |
 | `"corepack": true` | The builder installs with the pnpm in `package.json`'s `packageManager` |
 | `submit.production.ios` | The App Store Connect API key, as `$EXPO_ASC_API_KEY_PATH`, `$EXPO_ASC_KEY_ID` and `$EXPO_ASC_ISSUER_ID`: EAS CLI fills a `$NAME` in those three fields from the environment (its `eas-json` package, `submit/resolver.ts`; the fields are in the [eas.json reference](https://docs.expo.dev/build-reference/eas-json/)), and the workflow sets them from the secrets |
 
