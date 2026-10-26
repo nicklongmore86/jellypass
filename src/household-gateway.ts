@@ -1278,17 +1278,21 @@ const USER_ID_PARAMETERS = new Set(['userid', 'controllablebyuserid', 'controlli
  *
  * - the second segment of every route under `/Users` but Jellyfin's fixed ones there (USER_FIXED_ROUTES), whatever
  *   follows it and by any method, so a route Jellyfin adds later is checked too;
- * - the user in `/Playlists/{playlistId}/Users/{userId}` and `/Sessions/{sessionId}/User/{userId}`;
+ * - the user in `/Sessions/{sessionId}/User/{userId}`;
  * - every non-empty `userId`, `controllableByUserId` and `controllingUserId` query parameter, in any case, each of
  *   them where one is given more than once, and however Jellyfin reads the query (see {@link jellyfinQueryPairs}).
  *
  * An empty parameter is no user ID: Jellyfin binds it as none given. Empty for a request that names no user.
+ *
+ * The user in `/Playlists/{playlistId}/Users/{userId}` (`GET`, `POST`, `DELETE`) is not one of them: it is who the
+ * playlist is shared with, not who acts, and Jellyfin checks the caller's own rights there (the playlist must be the
+ * caller's to see; reading another user's share takes the caller's `CanEdit`, changing it ownership, removing it
+ * ownership or `CanEdit`), so a member shares their playlist with anyone by path as by `POST /Playlists/{id}`.
  */
 function userScopedIds(route: string, query: URLSearchParams): string[] {
   const [root = '', second, third, fourth] = route.split('/').slice(1);
   const ids: string[] = [];
   if (root === 'users' && second !== undefined && !USER_FIXED_ROUTES.has(route)) ids.push(second);
-  if (root === 'playlists' && third === 'users' && fourth !== undefined) ids.push(fourth);
   if (root === 'sessions' && third === 'user' && fourth !== undefined) ids.push(fourth);
   for (const [name, value] of jellyfinQueryPairs(query)) if (value && USER_ID_PARAMETERS.has(name.toLowerCase())) ids.push(value);
   return [...new Set(ids)];

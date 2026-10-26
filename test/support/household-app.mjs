@@ -91,6 +91,8 @@ export function world(options = {}) {
       ...(options.items ?? []),
     ],
     episodes: [...(options.episodes ?? [])],
+    // Private playlists by ID: `{ owner, items, shares: [{ UserId, CanEdit }] }`.
+    playlists: structuredClone(options.playlists ?? {}),
     jellyfinUsers: {
       [ALICE]: { Name: 'Alice', Policy: { BlockedTags: ['jellypass-held-elsewhere'], EnabledFolders: ['shared'] } },
       [ANN]: { Name: 'Ann', Policy: { BlockedTags: ['jellypass-held-elsewhere'], EnabledFolders: ['shared'] } },
@@ -607,6 +609,8 @@ export async function createFakeJellyfinForApp(state) {
       const found = state.items.find((entry) => entry.Id === ownItem[2]);
       return ownItem[1] === userId && found && sees(user, found) ? send(response, 200, { Id: found.Id, Name: found.Name, Type: found.Type }) : send(response, 404, {});
     }
+    const playlist = /^\/playlists\/([0-9a-f]{32})(?:\/(items|users)(?:\/([0-9a-f]{32}))?)?$/.exec(route);
+    if (playlist && state.playlists[playlist[1]]) return answerPlaylist(request, response, userId, playlist[1], playlist[2], playlist[3]);
     // Like Jellyfin's streams, playlists, segments, subtitles and downloads, every route of an item here asks only for a
     // signed-in user, not whether they may see the item: the household gateway is what checks that.
     const media = /^\/(?:videos|audio|items|useritems|mediasegments)\/([0-9a-f]{32})\/./.exec(route);
@@ -634,6 +638,46 @@ export async function createFakeJellyfinForApp(state) {
     }
     return send(response, 404, {});
   });
+  /**
+   * Jellyfin 10.11's PlaylistsController on a private playlist, for `callerId`: its items, its update by the body, and
+   * reading, changing and removing a share by path. The playlist must be the caller's to see (its owner's or a user's it
+   * is shared with); reading another user's share takes the caller's CanEdit, changing a share ownership, removing one
+   * ownership or CanEdit. Changing the share of a user who cannot see the playlist yet fails, as in Jellyfin (500).
+   */
+  async function answerPlaylist(request, response, callerId, id, collection, userId) {
+    const entry = state.playlists[id];
+    const visible = (who) => entry.owner === who || entry.shares.some((share) => share.UserId === who);
+    const editor = (who) => entry.owner === who || entry.shares.some((share) => share.UserId === who && share.CanEdit);
+    if (!visible(callerId)) return send(response, 404, 'Playlist not found');
+    const action = `${request.method} ${collection ?? ''}${userId ? '/user' : ''}`;
+    if (action === 'GET items') return send(response, 200, { Items: entry.items.map((Id) => ({ Id })), TotalRecordCount: entry.items.length });
+    if (action === 'POST ') {
+      if (!editor(callerId)) return send(response, 403, {});
+      const body = await readJson(request);
+      if (body.Users) entry.shares = body.Users.map((share) => ({ UserId: share.UserId, CanEdit: share.CanEdit }));
+      return send(response, 204, undefined);
+    }
+    if (action === 'GET users/user') {
+      if (entry.owner === callerId) return send(response, 200, { UserId: callerId, CanEdit: true });
+      if (!editor(callerId) && userId !== callerId) return send(response, 403, {});
+      const share = entry.shares.find((candidate) => candidate.UserId === userId);
+      return share ? send(response, 200, share) : send(response, 404, 'User permissions not found');
+    }
+    if (action === 'POST users/user') {
+      if (entry.owner !== callerId) return send(response, 403, {});
+      const { CanEdit = false } = await readJson(request);
+      if (!visible(userId)) return send(response, 500, 'Error processing request.');
+      entry.shares = [...entry.shares.filter((share) => share.UserId !== userId), { UserId: userId, CanEdit }];
+      return send(response, 204, undefined);
+    }
+    if (action === 'DELETE users/user') {
+      if (!editor(callerId)) return send(response, 403, {});
+      if (!entry.shares.some((share) => share.UserId === userId)) return send(response, 404, 'User permissions not found');
+      entry.shares = entry.shares.filter((share) => share.UserId !== userId);
+      return send(response, 204, undefined);
+    }
+    return send(response, 404, {});
+  }
   async function administer(request, response, url) {
     const parameter = (name) => [...url.searchParams].find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1];
     const itemOf = (item) => ({ Id: item.Id, Name: item.Name, Type: item.Type, ProviderIds: item.ProviderIds, ProductionYear: item.ProductionYear, Tags: item.Tags ?? [] });

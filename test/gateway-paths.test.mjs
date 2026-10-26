@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { connect } from 'node:net';
 import { performance } from 'node:perf_hooks';
 import { describe, it } from 'node:test';
-import { ALICE, ANN, BOB, HOST_A, ITEMS, JELLYFIN_ADMIN, OUTSIDER, get, post, startApp, world } from './support/household-app.mjs';
+import { ALICE, ANN, BOB, HOST_A, HOST_B, ITEMS, JELLYFIN_ADMIN, OUTSIDER, get, post, startApp, world } from './support/household-app.mjs';
 
 const AUTHORIZATION = 'MediaBrowser Client="JellyPass", Device="Browser", DeviceId="jellypass-test-device-0001", Version="1.0"';
 const NOT_A_MEMBER = '{"error":"invalid_credentials"}';
@@ -272,12 +272,13 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
       ['POST', `/Users/${id}/PlayedItems/${ITEMS.ownMovie}`], ['POST', `/Users/${id}/PlayingItems/${ITEMS.ownMovie}/Progress`],
       ['POST', `/Users/${id}/Images/Primary`], ['DELETE', `/Users/${id}/Images/Primary/0`],
       ['GET', `/Users/${id}/SomeRouteJellyfinAddsLater`], ['GET', `/Users/${id}/Authenticate`], ['GET', `/Users/${id}/Public`],
-      ['GET', `/Playlists/${playlist}/Users/${id}`], ['POST', `/Playlists/${playlist}/Users/${id}`],
-      ['DELETE', `/Playlists/${playlist}/Users/${id}`], ['POST', `/Sessions/abc/User/${id}`], ['DELETE', `/Sessions/abc/User/${id}`],
+      ['POST', `/Sessions/abc/User/${id}`], ['DELETE', `/Sessions/abc/User/${id}`],
     ];
-    // Routes that take a user ID in the query, Jellyfin's that trusts it for the caller among them.
+    // Routes that take a user ID in the query, Jellyfin's that trusts it for the caller among them, and the playlist
+    // share routes, whose user in the path is who the playlist is shared with (see the next test).
     const queried = [
       ['GET', `/Playlists/${playlist}/Items`], ['GET', '/Items'], ['GET', '/UserViews'], ['GET', `/UserItems/${ITEMS.ownMovie}/UserData`],
+      ['GET', `/Playlists/${playlist}/Users/${ALICE}`], ['POST', `/Playlists/${playlist}/Users/${BOB}`], ['DELETE', `/Playlists/${playlist}/Users/${BOB}`],
       ['GET', '/Sessions'], ['POST', '/Sessions/abc/Playing/Pause'], ['GET', '/DisplayPreferences/usersettings'], ['POST', '/Users/Configuration'],
     ];
     const userParameters = (id) => [
@@ -339,6 +340,54 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
     assert.equal(proxied(), pictures, 'another household\'s picture reached Jellyfin');
   });
 
+  it('proxies a playlist share by path whoever it names, in every spelling, leaving the caller\'s rights to Jellyfin', async (t) => {
+    const playlist = '9a9a00009a9a00009a9a00009a9a0000';
+    const app = await startApp(t, world({ playlists: { [playlist]: { owner: ALICE, items: [ITEMS.ownMovie], shares: [] } } }));
+    const as = (token, host = HOST_A) => ({ Host: host, Authorization: `${AUTHORIZATION}, Token="${token}"`, 'Content-Type': 'application/json' });
+    const alice = as('token-alice');
+    const bob = as('token-bob', HOST_B);
+    const send = (method, path, headers, body) => get(app.port, path, headers, { method, body: body === undefined ? undefined : JSON.stringify(body) });
+    const items = `/Playlists/${playlist}/Items`;
+    const share = (id) => `/Playlists/${playlist}/Users/${id}`;
+    assert.equal((await send('GET', items, bob)).status, 404);
+
+    // Bob cannot share Alice's playlist, with himself or anyone: Jellyfin refuses him, not the household host.
+    for (const id of [BOB, ALICE, ANN]) {
+      const answer = await send('POST', share(id), bob, { CanEdit: true });
+      assert.deepEqual([answer.status, answer.text], [404, '"Playlist not found"'], id);
+    }
+    // Naming Alice in the query is still the household host's to refuse, without asking Jellyfin.
+    const proxied = () => app.jellyfin.requests.filter((request) => request.pathname !== '/Users/Me').length;
+    const before = proxied();
+    for (const path of [`${share(BOB)}?userId=${ALICE}`, `${share(BOB)}?UserId=${ALICE}`, `/emby/playlists/${playlist}/users/${BOB}?userid=${ALICE}`]) {
+      const answer = await send('POST', path, bob, { CanEdit: true });
+      assert.deepEqual([answer.status, answer.text], [404, ITEM_NOT_FOUND], path);
+    }
+    assert.equal(proxied(), before, 'a share naming another caller reached Jellyfin');
+
+    // Alice shares it with Bob by the body, and makes him an editor by path; Bob then reads it and his share.
+    assert.equal((await send('POST', `/Playlists/${playlist}`, alice, { Users: [{ UserId: BOB, CanEdit: false }] })).status, 204);
+    const read = await send('GET', items, bob);
+    assert.equal(read.status, 200, read.text);
+    assert.deepEqual(read.json().Items.map((item) => item.Id), [ITEMS.ownMovie]);
+    assert.deepEqual((await send('GET', share(BOB), bob)).json(), { UserId: BOB, CanEdit: false });
+    // Not an editor, Bob may read no one else's share, nor change his own.
+    assert.equal((await send('GET', share(ANN), bob)).status, 403);
+    assert.equal((await send('POST', share(BOB), bob, { CanEdit: true })).status, 403);
+    // Every spelling is proxied, for Jellyfin to answer: those it routes change the share.
+    for (const path of [share(BOB), ...spellings(share(BOB))]) {
+      const sent = proxied();
+      const answer = await send('POST', path, alice, { CanEdit: true });
+      assert.equal(proxied(), sent + 1, path);
+      if (!unrouted(share(BOB)).includes(path)) assert.deepEqual([answer.status, app.jellyfin.requests.at(-1).path], [204, path]);
+    }
+    assert.deepEqual((await send('GET', share(BOB), bob)).json(), { UserId: BOB, CanEdit: true });
+    // An editor still may not change who it is shared with: only its owner may.
+    assert.equal((await send('POST', share(ANN), bob, { CanEdit: true })).status, 403);
+    assert.equal((await send('DELETE', share(BOB), alice)).status, 204);
+    assert.equal((await send('GET', items, bob)).status, 404);
+  });
+
   it('never proxies the household app\'s own paths, in any spelling', async (t) => {
     const app = await startApp(t);
     for (const bare of ['/jellypass/app/v1/me', '/jellypass/app/', '/jellypass/app/nope.js']) {
@@ -391,7 +440,8 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
 
   it('still proxies ordinary paths, encoded ones included', async (t) => {
     const app = await startApp(t);
-    const before = app.jellyfin.requests.length;
+    const proxied = () => app.jellyfin.requests.filter((request) => request.pathname !== '/Users/Me').length;
+    const before = proxied();
     const paths = [
       '/web/index.html', '/Genres/Sci-Fi%20%26%20Fantasy', '/Persons/100%25%20Real', '/System/Info/Public', '/emby/System/Info/Public',
       // A name that is itself percent-encoded once decoded, wherever decoding it again would change nothing.
