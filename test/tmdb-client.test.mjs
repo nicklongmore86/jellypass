@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { afterEach, beforeEach, describe, it } from 'node:test';
 import { MAX_GUARDED_RESPONSE_BYTES } from '../dist/seerr.js';
-import { TMDB_API_URL, TMDB_DISCOVER_LISTS, TMDB_NETWORKS, TMDB_STUDIOS, TmdbClient, TmdbError, isTmdbCredential, tmdbSource } from '../dist/tmdb.js';
+import {
+  TMDB_API_URL, TMDB_DISCOVER_LISTS, TMDB_NETWORKS, TMDB_STUDIOS, TMDB_WATCH_REGION, TmdbClient, TmdbError, isTmdbCredential, tmdbSource,
+} from '../dist/tmdb.js';
 import { tmdbFixture } from './support/tmdb-fixtures.mjs';
 
 const V3_KEY = 'f00dfeedf00dfeedf00dfeedf00dfeed';
@@ -15,6 +17,7 @@ const CALLS = {
   search: (client) => client.search('synthetic title', 2),
   discover: (client) => client.discover('trending', 1),
   network: (client) => client.network(213, 2),
+  networkFilms: (client) => client.networkFilms(213, 3),
   studio: (client) => client.studio(41077, 1),
   movie: (client) => client.movie(900001),
   tv: (client) => client.tv(900002),
@@ -73,6 +76,8 @@ describe('TMDB client', () => {
       `GET ${TMDB_API_URL}/3/trending/all/day?page=1&language=en-US`,
       // A network's series and a studio's movies, by popularity, as Seerr 3.5.1 builds them.
       `GET ${TMDB_API_URL}/3/discover/tv?page=2&sort_by=popularity.desc&include_null_first_air_dates=false&with_networks=213&language=en-US`,
+      // A network's films: the movies its service streams by subscription in the US, by popularity.
+      `GET ${TMDB_API_URL}/3/discover/movie?page=3&sort_by=popularity.desc&include_adult=false&watch_region=US&with_watch_providers=8|1796&with_watch_monetization_types=flatrate&language=en-US`,
       `GET ${TMDB_API_URL}/3/discover/movie?page=1&sort_by=popularity.desc&include_adult=false&with_companies=41077&language=en-US`,
       `GET ${TMDB_API_URL}/3/movie/900001?language=en-US`,
       `GET ${TMDB_API_URL}/3/tv/900002?language=en-US`,
@@ -116,6 +121,23 @@ describe('TMDB client', () => {
     assert.equal(TMDB_STUDIOS.some((source) => source.networkIds), false);
   });
 
+  it('lists each service\'s films by its US watch providers (TMDB\'s OR), flatrate only, in the one fixed region', async () => {
+    assert.equal(TMDB_WATCH_REGION, 'US');
+    assert.deepEqual(TMDB_NETWORKS.map((network) => `${network.name}: ${network.movieProviderIds.join('|')}`), [
+      'Netflix: 8|1796', 'Disney+: 337', 'Apple TV: 350', 'Prime Video: 9|2100', 'HBO Max: 1899', 'Hulu: 15', 'Paramount+: 2303|2616', 'Peacock: 386|387',
+    ]);
+    for (const network of TMDB_NETWORKS) {
+      assert.ok(Object.isFrozen(network.movieProviderIds), network.name);
+      await client().networkFilms(network.id, 2);
+    }
+    assert.deepEqual(calls.map((call) => `${call.url.pathname}?${[...call.url.searchParams].filter(([name]) => name !== 'api_key').map(([name, value]) => `${name}=${value}`).join('&')}`),
+      TMDB_NETWORKS.map((network) => `/3/discover/movie?page=2&sort_by=popularity.desc&include_adult=false&watch_region=US`
+        + `&with_watch_providers=${network.movieProviderIds.join('|')}&with_watch_monetization_types=flatrate&language=en-US`));
+    // The pipe is sent encoded, as TMDB's OR.
+    assert.match(calls[0].url.search, /[?&]with_watch_providers=8%7C1796&/);
+    assert.equal(TMDB_STUDIOS.some((source) => source.movieProviderIds), false);
+  });
+
   it('rejects malformed input before calling TMDB', () => {
     const tmdb = client();
     for (const call of [
@@ -138,6 +160,15 @@ describe('TMDB client', () => {
       // HBO is only part of HBO Max's list, never a list of its own, and never a caller's OR.
       () => tmdb.network(49),
       () => tmdb.network('3186|49'),
+      // A service's films only for an allowlisted network, never a studio, a provider ID or a caller's OR.
+      () => tmdb.networkFilms(1),
+      () => tmdb.networkFilms(49),
+      () => tmdb.networkFilms(8),
+      () => tmdb.networkFilms(41077),
+      () => tmdb.networkFilms('213'),
+      () => tmdb.networkFilms('8|1796'),
+      () => tmdb.networkFilms(213, 0),
+      () => tmdb.networkFilms(213, 501),
       () => tmdb.network('213'),
       () => tmdb.network(213, 0),
       () => tmdb.studio(213),

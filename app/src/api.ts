@@ -23,8 +23,11 @@ export interface Api {
   discover(list: DiscoverList, signal?: AbortSignal): Promise<Page>;
   /** The networks and studios the API lists (no TMDB call). */
   sources(signal?: AbortSignal): Promise<Sources>;
-  /** A network's popular series or a studio's popular movies, one page at a time. */
-  source(kind: SourceKind, id: number, page: number, signal?: AbortSignal): Promise<Page>;
+  /**
+   * A network's popular series or a studio's popular movies, one page at a time; with `list`, a network's films
+   * (`films`) or its films and series mixed (`all`).
+   */
+  source(kind: SourceKind, id: number, page: number, signal?: AbortSignal, list?: 'all' | 'films'): Promise<Page>;
   movie(tmdbId: number, signal?: AbortSignal): Promise<Movie>;
   tv(tmdbId: number, signal?: AbortSignal): Promise<Series>;
   season(tmdbId: number, seasonNumber: number, signal?: AbortSignal): Promise<Season>;
@@ -85,7 +88,8 @@ export function createApi(options: ApiOptions): Api {
     search: (query, page, signal) => get<Page>(`/search?q=${encodeURIComponent(query)}&page=${page}`, signal),
     discover: (list, signal) => get<Page>(`/discover/${list}`, signal),
     sources: (signal) => get<Sources>('/discover/sources', signal),
-    source: (kind, id, page, signal) => get<Page>(`/discover/${kind}/${id}${page > 1 ? `?page=${page}` : ''}`, signal),
+    source: (kind, id, page, signal, list) =>
+      get<Page>(`/discover/${kind}/${id}${list ? `/${list}` : ''}${page > 1 ? `?page=${page}` : ''}`, signal),
     movie: (tmdbId, signal) => get<Movie>(`/movie/${tmdbId}`, signal),
     tv: (tmdbId, signal) => get<Series>(`/tv/${tmdbId}`, signal),
     season: (tmdbId, seasonNumber, signal) => get<Season>(`/tv/${tmdbId}/season/${seasonNumber}`, signal),

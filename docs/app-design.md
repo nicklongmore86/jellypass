@@ -139,11 +139,14 @@ So `TmdbClient` (`src/tmdb.ts`) reads TMDB's v3 API directly, with JellyPass's o
   year and a half on, in UTC (upcoming series, Seerr's `discover/tv/upcoming` with its default upper bound);
   `GET /3/discover/tv` by `popularity.desc` with `with_networks` (a network's series; HBO Max's is `3186|49`) and `GET /3/discover/movie` by
   `popularity.desc` with `with_companies` (a studio's movies), each only for an allowlisted ID (see "Networks and
-  studios"); `GET /3/movie/:id`; `GET /3/tv/:id`; `GET /3/tv/:id/season/:n`. The discover lists are built the way
+  studios"); `GET /3/discover/movie` by `popularity.desc` with `watch_region=US`, `with_watch_providers` (the
+  service's providers, `|`-joined) and `with_watch_monetization_types=flatrate` (a streaming service's films; see
+  "Films on a service"); `GET /3/movie/:id`; `GET /3/tv/:id`; `GET /3/tv/:id/season/:n`. The discover lists are built the way
   Seerr 3.5.1 builds its own (`server/routes/discover.ts` and `server/api/themoviedb`), so the lists match what
   members saw in Seerr, minus per-user region and language.
-- **The same for everyone.** Every call carries `language=en-US` and nothing about the caller: no region, no user, no
-  household, no Jellyfin session. TMDB knows nothing of JellyPass's households or Seerr's records, so nothing another
+- **The same for everyone.** Every call carries `language=en-US` and nothing about the caller: no user, no
+  household, no Jellyfin session, and no region but the one fixed `watch_region=US` of a service's films
+  (`TMDB_WATCH_REGION`, a constant, not a setting). TMDB knows nothing of JellyPass's households or Seerr's records, so nothing another
   household holds, asked for or waits on can change what TMDB returns, how large it is or how long it takes.
 - **The credential.** `TMDB_API_KEY` is a v3 API key (32 hexadecimal characters, sent as `api_key`) or a v4 API read
   access token (sent as `Authorization: Bearer`). It is required when `HOUSEHOLD_APP_ENABLED` is true; a malformed
@@ -322,6 +325,8 @@ On the administrator host the paths do not exist (the admin API's own `401`/`404
 | `GET /jellypass/app/v1/discover/{trending,popular-movies,popular-tv,upcoming,upcoming-tv}?page=` | `Page` (`upcoming` is upcoming movies, `upcoming-tv` upcoming series) |
 | `GET /jellypass/app/v1/discover/sources` | `Sources` (no TMDB call) |
 | `GET /jellypass/app/v1/discover/network/:id?page=` | `Page` of the network's popular series (allowlisted IDs only) |
+| `GET /jellypass/app/v1/discover/network/:id/films?page=` | `Page` of the films the network's streaming service has in the US (allowlisted IDs only) |
+| `GET /jellypass/app/v1/discover/network/:id/all?page=` | `Page` of the network's series and films mixed: Home's row and the page's **All** tab |
 | `GET /jellypass/app/v1/discover/studio/:id?page=` | `Page` of the studio's popular movies (allowlisted IDs only) |
 | `GET /jellypass/app/v1/movie/:tmdbId` | `Movie` |
 | `GET /jellypass/app/v1/tv/:tmdbId` | `Series` |
@@ -339,7 +344,9 @@ DTOs (every key always present; missing values `null`, or `""` for text):
   (`{seasonNumber, name, episodeCount, state}`), with `runtime` the first episode run time.
 - `Season`: `tmdbId`, `seasonNumber`, `name`, `overview`, `episodes` (`{episodeNumber, name, overview}`), `state`.
 - `Sources`: `networks` and `studios`, each a list of `{id, name, logoUrl}` (`logoUrl` is
-  `https://image.tmdb.org/t/p/w300` plus the allowlisted file pattern, or `null`), in the order Home shows them.
+  `https://image.tmdb.org/t/p/w300` plus the allowlisted file pattern, or `null`), in the order Home shows them; each
+  network also has `hasFilms` (whether `/films` and `/all` are offered for it: true for all eight). The provider IDs
+  themselves are never sent.
 
 Every DTO is built by copying named TMDB fields (`title`/`name`, `release_date`/`first_air_date`, `overview`,
 `poster_path`, `backdrop_path`, `vote_average`, `genres[].name`, `runtime`, `episode_run_time[0]`,
@@ -370,6 +377,45 @@ the fixed `400 invalid_request` after the caller is checked and before TMDB, the
 anything; `TmdbClient.network` and `.studio` refuse such an ID too. A network or studio page is cached like any other
 TMDB answer, keyed by kind, ID and page, in the household's own 500 entries, and waits for the household's turn at
 TMDB like any other call.
+
+#### Films on a service
+
+Owner decision (2026-10-25): a service's films come from TMDB's where-to-watch data (JustWatch's) for **one fixed
+region, the US, the same for every household**. It is `TMDB_WATCH_REGION = 'US'` in `src/tmdb.ts`, a named constant and
+deliberately not a setting: a per-household or per-caller region would make answers differ by who asks. Each network on
+the allowlist carries its own `movieProviderIds`, frozen, checked against `GET /3/watch/providers/movie?watch_region=US`
+and a `GET /3/discover/movie` per service on 2026-10-25 (US flatrate results then in brackets): Netflix `8|1796`
+(Netflix, Netflix Standard with Ads; 4,790), Disney+ `337` (1,719), Apple TV `350` (Apple TV+, renamed "Apple TV";
+131), Prime Video `9|2100` (Amazon Prime Video, with Ads; 20,001), HBO Max `1899` (2,072; the retired Max/HBO Max IDs
+such as 384 return nothing), Hulu `15` (1,367), Paramount+ `2303|2616` (Paramount Plus Premium, the tier that was "with
+Showtime", and Essential; 1,255; TMDB's US list has no Showtime-named provider any more, and the old 531 and 1853 return
+4 and 3 films), Peacock `386|387` (Peacock Premium, Premium Plus; 1,218). Resellers' channels ("HBO Max Amazon
+Channel", "Paramount+ Amazon Channel", …) are left out: they are other subscriptions. The call is TMDB discover by
+`popularity.desc` with `include_adult=false`, `watch_region=US`, `with_watch_providers` (the IDs `|`-joined, TMDB's OR)
+and `with_watch_monetization_types=flatrate` (by subscription; not rent or buy), built from the allowlist only.
+
+The routes are `/discover/network/:id/films` and `/discover/network/:id/all`. The ID is checked first, then the list:
+anything after a network's ID but `films` or `all` (so `/2`, `/series`, `/Films`, `/%66ilms`), any list after a
+studio's ID, and an unlisted ID (49, a provider ID such as 8) are the fixed `400 invalid_request` before TMDB, the
+cache or the caller's view is asked anything; a second segment after the list is an unknown path, `404`. Only `page` is
+read from the query: a caller's `watch_region`, `with_watch_providers`, `kind` or anything else is ignored. Films are
+cached as `network-films`, ID and page, never under a network's series keys, in the household's own cache, and wait
+for the household's turn at TMDB like any other call.
+
+**All** (owner design input, from the Vision app's mixed "Popular on" rows) is one page of the network's series and
+one of its films, the same page number, read through those same two cache keys (so the Series and Films tabs reuse
+them, and a mixed row costs at most two TMDB calls), alternating film, series, film, … from each list's own popularity
+order, the longer list's rest at the end, with nothing dropped (a movie and a series are never the same title). It is
+not merged by TMDB's `popularity`, which is not comparable between movies and series. There is a next page while
+either list has one. Mixing is on the server rather than in the app because the app then makes one call per row or
+page, not two (half the per-client and per-household request budget), the order is decided in one place for every
+household, and the endpoint adds no data the two lists do not already return: each card still carries its own
+`mediaType` and the caller's own state.
+
+**Attribution.** TMDB's terms for watch-provider data require crediting JustWatch. The app does so on About & credits
+("Which films each streaming service has (US availability only, the same for every household) comes from JustWatch,
+through TMDB.", with a link to justwatch.com), once on Home under the service rows, and on a service page's All and
+Films tabs ("Where to watch: US streaming availability from JustWatch, via TMDB."), alongside the existing TMDB credit.
 
 Errors are fixed and the same for every endpoint and title: `400 invalid_request`, `401 unauthorized` (missing,
 invalid or disabled token, or a caller from another household, all identical), `404 not_found` (unknown path, or a
@@ -517,7 +563,9 @@ elsewhere; the files are never proxied to Jellyfin.
   **Upcoming movies** (these four fetched at once, as before), **Upcoming series**, a **Studios** strip (each studio's
   logo, a link named "<studio> movies" to its page; drawn from `GET /discover/sources`, no title fetched), then
   **Popular on** Netflix, Disney+, Apple TV, Prime Video, HBO Max (with HBO's own series), Hulu, Paramount+ and
-  Peacock. A network row's
+  Peacock, each one mixed row of the service's series and its US films (`GET /discover/network/:id/all`; film,
+  series, film, …, each card saying "year · Movie" or "year · Series"), then one line crediting JustWatch for the
+  where-to-watch data. A network row's
   heading is a link to the network's page reading "Popular on" followed by the network's logo, whose `alt` is the
   network's name (its name as text when there is no allowlisted logo). Each row loads and fails on its own, with its own
   retry. **Lazy rows:** Upcoming series and the network rows hold a row-shaped skeleton (hidden from assistive
@@ -525,10 +573,17 @@ elsewhere; the files are never proxied to Jellyfin.
   root margin, or without one, a check on scroll (at most once a frame) and once when Home is drawn. Nothing is watched
   until the first four rows are drawn and any position is put back, each row is fetched once per visit, and leaving Home
   stops the watching. So a first Home load makes the same four TMDB calls as before (plus `GET /me` and `GET
-  /discover/sources`, neither of which calls TMDB); scrolling to the bottom adds at most nine, one per row as it nears
-  the screen, never all at once. **Network and studio pages** show the logo (decorative: the heading names it) and
-  "Popular on <network>" or "<studio> movies" over the same poster grid as Search, with **Load more** by the API's
-  `nextPage`; a hash naming a network or studio the API does not list shows "Not found" without asking for titles.
+  /discover/sources`, neither of which calls TMDB); scrolling to the bottom adds at most seventeen, one for Upcoming
+  series and two for each service's mixed row as it nears the screen, never all at once. **Network and studio pages**
+  show the logo (decorative: the heading names it) and "Popular on <network>" or "<studio> movies" over the same poster
+  grid as Search, with **Load more** by the API's `nextPage`; a hash naming a network or studio the API does not list
+  shows "Not found" without asking for titles. A network's page has an **All | Series | Films** control: an ARIA tab
+  list of real `<button>`s (`role="tab"`, `aria-selected`, `aria-controls` the grid's `tabpanel`), only the selected one
+  in the tab order, Left/Right (wrapping), Home and End moving and selecting, focus following. The heading reads
+  "Popular on", "Series on" or "Films on" the network. The tab is in the address, `#/network/:id` for All and
+  `?kind=series` or `?kind=films` (anything else is All), replaced in place on switching (no new history entry, so
+  Back leaves the page), so a deep link opens on its tab and coming back restores that tab with its pages and scroll.
+  A network the API lists no films for has its series alone, no control, and its Films address is "Not found".
 - **Navigation and look (restyle, PR 1).** Three tabs in a floating glass pill above the bottom safe area: **Home**,
   **Search**, **My requests** (own inline icons built with `createElementNS`, visible labels, active tab = accent colour
   and a dot, each at least 44 px). **About & credits** is not a tab: it opens from the small (i) button in Home's top row
@@ -587,7 +642,7 @@ elsewhere; the files are never proxied to Jellyfin.
   **Get this** adds no history entry. Scroll offsets are kept in memory per entry and put back on returning: the page
   scroll, each Home row's `scrollLeft` (the Studios strip's too), which of Home's lazy rows had been fetched (fetched
   again at once on coming back, before the scroll is put back; the others wait to be scrolled to again), Search's query
-  (already in the address) with the pages loaded, a network's or studio's pages loaded, and My requests' entries
+  (already in the address) with the pages loaded, a network's or studio's pages loaded (for the tab in the address), and My requests' entries
   shown. A lazy row still waiting is not a screen still loading, so it never stops the position being kept. Data is fetched again, never kept; nothing from the API is written to `sessionStorage`,
   `localStorage` or Cache Storage, and `history.scrollRestoration` is `manual`. Checked by the owner on a real iPhone
   (2.4.1): the in-app Back and swipe-back, with the position put back, including the poster rows' `scrollLeft`.
