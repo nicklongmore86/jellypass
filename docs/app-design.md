@@ -591,6 +591,13 @@ is supported. A client:
   `requested`;
 - treats an unknown error code by its HTTP status, and any other status as `unavailable`.
 
+**Schema.** `docs/app-api/v1.openapi.json` (OpenAPI 3.1, JSON Schema 2020-12) describes every `v1` endpoint, its
+parameters and every answer, errors included; `info.version` is `apiVersion`. Its object schemas are closed
+(`additionalProperties: false`) and list every key as required, because the API always sends every key: that is for
+the server's own test, which checks every answer the app API tests produce against it (see "Test strategy"). A client
+generates its types from it but decodes leniently, as above. A change to an answer changes the document in the same
+pull request, additively.
+
 ## App page (step 1b)
 
 The PWA (read-only in step 1b; **Get this** and **My requests** since step 2b) is served by the household gateway at `/jellypass/app/`, on household hosts only and only with
@@ -1461,6 +1468,12 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
   redirects in the guarded lookups, skipping the per-call link check (or doing it only once per client), ignoring an
   invalidation during a confirmation, dropping an evicted stamp without raising the floor, letting a pending lookup
   fill the cache after `clear()`, or counting the size limit in characters.
+- **API schema.** `test/app-api-schema.test.mjs` checks every endpoint's answers (every household state, an empty and a
+  full `GET /requests`, both "Get this" bodies, and a `400`, `401`, `404`, `429` and `502`) against
+  `docs/app-api/v1.openapi.json` with a small validator in `test/support/json-schema.mjs` (no dependency; it knows
+  only the keywords the document uses, and the test refuses any other so none is silently ignored). An undeclared
+  field, a missing one, a wrong type or a value outside its enum fails. It also checks that the document lists exactly
+  the README's endpoints and that `info.version` is `APP_API_VERSION`.
 - **App API.** `test/app-api.test.mjs` runs the app through the household gateway against a fake TMDB serving the
   TMDB fixtures (it refuses calls without JellyPass's key), a fake Seerr that enforces `X-API-User`, serves the
   blocklist and counts any title read as a violation (built from the Seerr fixtures), and a fake Jellyfin that applies

@@ -666,6 +666,10 @@ and nowhere else (on the administrator host they do not exist). The
 | `POST` | `/jellypass/app/v1/tv/{tmdbId}/get` | "Get this" for seasons of a series, `{"seasons": [1, 2]}` (1 to 100 seasons from 1 to 999): always `202 {"status":"accepted"}`. |
 | `GET` | `/jellypass/app/v1/requests` | The household's own titles from "Get this", with a coarse status: `{"results": [{"id", "mediaType", "tmdbId", "status", "seasons", "byYou"}]}`. |
 
+The machine-readable contract is [docs/app-api/v1.openapi.json](docs/app-api/v1.openapi.json)
+(OpenAPI 3.1). Native clients follow
+[the native-client contract](docs/app-design.md#native-clients-contract).
+
 - **Sign-in is Jellyfin's.** Send the member's Jellyfin token as Jellyfin web
   does (`Authorization: MediaBrowser Token="..."`, `X-Emby-Token`, or
   `api_key`). JellyPass checks it with Jellyfin's `GET /Users/Me` and trusts
