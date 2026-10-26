@@ -7,7 +7,7 @@ import type { ExpoConfig } from 'expo/config';
 const IOS_BUNDLE_ID = 'com.rtc-services.jellypass';
 const ANDROID_PACKAGE = 'com.rtcservices.jellypass';
 
-// The EAS project, nicklongmore86/jellypass on expo.dev (the owner and slug below). The ID is not a secret. Like the
+// The EAS project, rtc-services-llc/jellypass on expo.dev (the owner and slug below). The ID is not a secret. Like the
 // app ids it is permanent: EAS keeps the signing credentials and build numbers under it.
 const EAS_PROJECT_ID = '1db20c4d-4270-404e-acf4-31a8bd6dd591';
 
@@ -17,8 +17,9 @@ const NAVY = '#000b25';
 const config: ExpoConfig = {
   name: 'JellyPass',
   slug: 'jellypass',
-  // The Expo account the app belongs to, and its EAS project (eas.json has the build profiles).
-  owner: 'nicklongmore86',
+  // The Expo organization the app belongs to, and its EAS project (eas.json has the build profiles). It must be the
+  // project's owner on expo.dev, or EAS CLI refuses to run.
+  owner: 'rtc-services-llc',
   extra: { eas: { projectId: EAS_PROJECT_ID } },
   version: '0.1.0',
   // Turns freely ('default': Android's `unspecified`), so Android tablets rotate; an Android phone is locked to portrait

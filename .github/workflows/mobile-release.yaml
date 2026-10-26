@@ -152,7 +152,7 @@ jobs:
           {
             echo "## JellyPass ${PROFILE} builds"
             echo
-            jq -r '.[] | "- **\(.platform)** \(.appVersion // "?") (\(.appBuildVersion // "?")): \(.status), [build page](https://expo.dev/accounts/nicklongmore86/projects/jellypass/builds/\(.id))"' "$builds"
+            jq -r '.[] | "- **\(.platform)** \(.appVersion // "?") (\(.appBuildVersion // "?")): \(.status), [build page](https://expo.dev/accounts/rtc-services-llc/projects/jellypass/builds/\(.id))"' "$builds"
             jq -r '.[] | select(.platform == "ANDROID" and .artifacts.buildUrl != null) | "\n**Android APK:** \(.artifacts.buildUrl)\n\nShare this link with members (mobile/README.md, \"Install on Android\")."' "$builds"
           } >> "$GITHUB_STEP_SUMMARY"
 

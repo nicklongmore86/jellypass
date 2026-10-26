@@ -3,9 +3,9 @@
 import config from '../app.config';
 
 describe('app config', () => {
-  it('is JellyPass, on iPhone, iPad and Android, with the final ids, owned by the Expo account', () => {
+  it('is JellyPass, on iPhone, iPad and Android, with the final ids, owned by the Expo organization', () => {
     expect(config.name).toBe('JellyPass');
-    expect(config.owner).toBe('nicklongmore86');
+    expect(config.owner).toBe('rtc-services-llc');
     expect(config.ios?.supportsTablet).toBe(true);
     // Permanent: a different id is a different app for every member.
     expect(config.ios?.bundleIdentifier).toBe('com.rtc-services.jellypass');
@@ -20,10 +20,10 @@ describe('app config', () => {
     expect(config.ios!.bundleIdentifier).toMatch(/^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/);
   });
 
-  it('is the nicklongmore86/jellypass project on EAS', () => {
+  it('is the rtc-services-llc/jellypass project on EAS', () => {
     // Permanent, like the app ids: EAS keeps the signing keys and build numbers under this project, owner and slug.
     expect(config.extra).toEqual({ eas: { projectId: '1db20c4d-4270-404e-acf4-31a8bd6dd591' } });
-    expect(config.owner).toBe('nicklongmore86');
+    expect(config.owner).toBe('rtc-services-llc');
     expect(config.slug).toBe('jellypass');
   });
 

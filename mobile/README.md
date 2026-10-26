@@ -214,8 +214,8 @@ Edits reload on the phone as you save. Expo Go needs no Apple or Google develope
 | Name | JellyPass | Keep "Jellyfin" out of the name |
 | iOS bundle id | `com.rtc-services.jellypass` | **Final and permanent.** Never change it: a different bundle id is a different app, and TestFlight and every member start over |
 | Android package | `com.rtcservices.jellypass` | **Final and permanent.** No hyphen, because Android forbids one. A different package is a different app, and members would have to reinstall and sign in again. Every APK must also be signed with the same key, forever (see [Distribution](#distribution)) |
-| Expo owner | `nicklongmore86` | Set in `app.config.ts` |
-| EAS project ID | `1db20c4d-4270-404e-acf4-31a8bd6dd591` (`nicklongmore86/jellypass` on expo.dev) | Set in `app.config.ts` as `extra.eas.projectId`. **Permanent**: EAS keeps the signing credentials and build numbers under it. Not secret |
+| Expo owner | `rtc-services-llc` (an Expo organization) | Set in `app.config.ts`. Must match the project's owner on expo.dev, or EAS CLI refuses to run |
+| EAS project ID | `1db20c4d-4270-404e-acf4-31a8bd6dd591` (`rtc-services-llc/jellypass` on expo.dev) | Set in `app.config.ts` as `extra.eas.projectId`. **Permanent**: EAS keeps the signing credentials and build numbers under it. Not secret |
 | Icon | `assets/icon.png`, `assets/adaptive-icon.png` | Placeholder: the PWA's 512 px icon. The App Store needs 1024 px: draw one with `draw(1024)` from `scripts/make-app-icons.py` before submitting |
 | Orientation | iPhone portrait; iPad all four; Android tablets turn freely (`orientation: 'default'`), Android phones locked to portrait at launch | iPad multitasking requires all four |
 | URL scheme | `jellypass://` | Setup links: `jellypass://connect?address=https://jelly-<household>.<domain>` |
@@ -321,12 +321,16 @@ docs only say "set up credentials locally first":
 
 ### One-time setup (owner)
 
-1. **EAS project.** Done: `nicklongmore86/jellypass` on [expo.dev](https://expo.dev), ID
+1. **EAS project.** Done: `rtc-services-llc/jellypass` on [expo.dev](https://expo.dev), ID
    `1db20c4d-4270-404e-acf4-31a8bd6dd591`, committed as `extra.eas.projectId` in `app.config.ts` (the workflow refuses
-   to build without it). Its owner and slug must stay `nicklongmore86` and `jellypass`.
+   to build without it). Its owner and slug must stay `rtc-services-llc` (the
+   Expo organization) and `jellypass`.
 2. **Expo token.** At [expo.dev/settings/access-tokens](https://expo.dev/settings/access-tokens) create a token for
-   GitHub Actions ([Programmatic access](https://docs.expo.dev/accounts/programmatic-access/)). A robot user's token
-   with the Developer role is narrower than a personal one if the account offers robot users.
+   GitHub Actions ([Programmatic access](https://docs.expo.dev/accounts/programmatic-access/)). The token must belong
+   to an account that is a member of the `rtc-services-llc` organization with permission to build (Owner, Admin, Release Manager or
+   Developer): a personal token of `nicklongmore86` works while that account holds one of those roles. An
+   organization robot user's token with the Developer role (created under the organization's settings) is
+   narrower.
 3. **App Store Connect API key.** In [App Store Connect](https://appstoreconnect.apple.com), **Users and Access →
    Integrations → App Store Connect API → Team Keys**, generate a key with the **Admin** role. Note its **Key ID** and
    the **Issuer ID** above the table, and download the `.p8` (Apple only lets you download it once). The **Team
