@@ -15,7 +15,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 
 import type { HouseholdAddress } from '../api/address';
 import type { ClientIdentity } from '../api/auth';
-import { createApiClient, type FetchLike } from '../api/client';
+import { createApiClient, type ApiClient, type FetchLike } from '../api/client';
 import { ApiError } from '../api/errors';
 import type { Me } from '../api/types';
 import { parseLinkAddress } from '../signin/address-input';
@@ -71,6 +71,10 @@ export interface Session {
   retry: () => void;
   signOut: () => Promise<void>;
   signInApi: (address: HouseholdAddress) => SignInApi;
+  /** The signed-in household's API client (one per sign-in), or undefined while not signed in. */
+  api: ApiClient | undefined;
+  /** The API answered 401: the token is no longer good, so the device forgets it and the profile picker shows. */
+  expire: () => Promise<void>;
 }
 
 const SessionContext = createContext<Session | undefined>(undefined);
@@ -179,6 +183,26 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
 
   const household = phase.kind === 'signin' ? phase.address : sessionOf(phase)?.address;
 
+  const signedIn = phase.kind === 'signedIn' ? phase.session : undefined;
+  const api = useMemo(
+    () =>
+      signedIn
+        ? createApiClient({ address: signedIn.address, token: () => signedIn.token, ...(fetch ? { fetch } : {}), ...(now ? { now } : {}) })
+        : undefined,
+    [signedIn, fetch, now],
+  );
+
+  const expire = useCallback(async () => {
+    const session = sessionOf(phaseRef.current);
+    if (!session) return;
+    const mine = move({ kind: 'signingOut' });
+    try {
+      await clearSession();
+    } finally {
+      if (generation.current === mine) move({ kind: 'signin', address: session.address, expired: true });
+    }
+  }, [move]);
+
   // A link to the household the app is already on needs nothing.
   const offer = link?.address && household && link.address.origin === household.origin ? undefined : link;
 
@@ -233,8 +257,10 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
       },
       signOut: () => leave((session) => (session ? { kind: 'signin', address: session.address, expired: false } : { kind: 'address' })),
       signInApi,
+      api,
+      expire,
     }),
-    [phase, offer, household, offerLink, leave, move, check, signInApi, clock],
+    [phase, offer, household, offerLink, leave, move, check, signInApi, clock, api, expire],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

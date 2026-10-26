@@ -31,6 +31,10 @@ export const SHAPES = {
     ['line', { x1: '13.2', y1: '10.3', x2: '15.2', y2: '12.3' }],
   ],
   back: [['path', { d: 'M14.5 5.5 8 12l6.5 6.5' }]],
+  // Home's chosen filter chip, and the hero's Previous and Next.
+  check: [['path', { d: 'M5.5 12.5 10 17l8.5-9.5' }]],
+  prev: [['path', { d: 'M14.5 5.5 8 12l6.5 6.5' }]],
+  next: [['path', { d: 'M9.5 5.5 16 12l-6.5 6.5' }]],
 } as const satisfies Record<string, readonly Shape[]>;
 
 export type IconName = keyof typeof SHAPES;
