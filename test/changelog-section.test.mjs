@@ -53,6 +53,49 @@ function assertSection(notes, { version, nextVersion, subheadings }) {
 }
 
 describe('changelogSection with the real CHANGELOG.md', () => {
+  it('extracts 3.2.0 without its heading, up to the 3.1.1 section', () => {
+    const notes = changelogSection(CHANGELOG, '3.2.0');
+    assertSection(notes, {
+      version: '3.2.0',
+      nextVersion: '3.1.1',
+      subheadings: ['Security', 'Added'],
+    });
+    assert.match(notes, /^This is a security release for household hostnames, and a minor release\./);
+    const flat = notes.replace(/\s+/g, ' ');
+    assert.match(flat, /\*\*Upgrading is strongly recommended\*\*/);
+    assert.match(flat, /There is nothing to configure/);
+    assert.match(flat, /3\.1\.1 reads a state file written by 3\.2\.0/);
+    assert.match(flat, /\*\*What 3\.1\.1 and earlier exposed on household hostnames\.\*\*/);
+    assert.match(flat, /None of them needs a setting or a change to Jellyfin/);
+    assert.match(flat, /mobile app \(`mobile\/`\)\. It is not part of this release/);
+    assert.match(flat, /\*\*Why this is a minor release\.\*\*/);
+    assert.match(flat, /`ghcr\.io\/nicklongmore86\/jellypass:3\.1\.1`/);
+    assert.match(flat, /rolling back re-opens every issue listed above/);
+    assert.match(flat, /`POST \/LiveTv\/Programs`/);
+    assert.match(flat, /A short identity cache/);
+    const security = notes.indexOf('### Security');
+    const order = [
+      '**What 3.1.1 and earlier exposed on household hostnames.**',
+      '**Why this is a minor release.**',
+      '**Fonts embedded in subtitles no longer load on household hostnames.**',
+      '**Quick Connect stops working on household hostnames.**',
+      '**A playlist can no longer be shared by naming the recipient in the path**',
+      '**Oddly encoded paths get `400`.**',
+      '**Some household requests take one more round trip to Jellyfin.**',
+      '**To roll back,**',
+      'Known follow-ups, for a later release:',
+    ];
+    for (const [index, note] of order.entries()) {
+      assert.ok(notes.indexOf(note) >= 0 && notes.indexOf(note) < security, `${note} comes before Security`);
+      if (index) assert.ok(notes.indexOf(order[index - 1]) < notes.indexOf(note), `${note} comes after ${order[index - 1]}`);
+    }
+    assert.ok(security < notes.indexOf('### Added'));
+    assert.ok((notes.match(/household-check rule/g) ?? []).length >= 10, 'each refusal cites the rule');
+    assert.doesNotMatch(notes, /### Upgrading from/);
+    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b/, 'no server-specific details');
+    assert.deepEqual(split(notes).definitions, []);
+  });
+
   it('extracts 3.1.1 without its heading, up to the 3.1.0 section', () => {
     const notes = changelogSection(CHANGELOG, '3.1.1');
     assertSection(notes, {
