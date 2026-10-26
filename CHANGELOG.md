@@ -14,6 +14,16 @@ privacy leak. Such changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Admin UI: a session that ends just after signing in no longer blames the
+  password.** If the session ended (a sign-out elsewhere, or the administrator
+  was demoted or disabled) while the admin UI loaded its data right after a
+  successful sign-in, the sign-in form said "That username or password was
+  not accepted." It now says "Your session has ended. Sign in again." A sign-in
+  the server refuses still shows the username-or-password message, and the
+  too-many-attempts and Jellyfin-unavailable messages are unchanged.
+
 ## [3.1.0] - 2026-10-26
 
 This is a minor release for the household app (`HOUSEHOLD_APP_ENABLED=true`)
