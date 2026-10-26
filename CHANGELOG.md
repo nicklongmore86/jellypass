@@ -14,8 +14,27 @@ privacy leak. Such changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Added
+
+- Household app: each **Popular on** row (Netflix, Disney+, Apple TV, Prime Video, HBO Max, Hulu, Paramount+,
+  Peacock) now mixes the service's popular series with the films it streams, film then series in turn, each card
+  saying "Movie" or "Series". Films come from TMDB's where-to-watch data (JustWatch's) for **the US only**, the same
+  for every household, credited to JustWatch on About, on Home and on the service's page. A service's page has an
+  **All | Series | Films** control, kept in the address (`#/network/:id?kind=films`), so Back comes back to the same
+  tab with its pages and scroll. Opening Home still makes the same four TMDB calls; a mixed row costs two once it
+  scrolls near the screen.
+- Household app API: `GET /jellypass/app/v1/discover/network/:id/films?page=` (the service's films in the US, TMDB
+  discover by its watch providers with `watch_region=US` and `flatrate`) and `GET
+  /jellypass/app/v1/discover/network/:id/all?page=` (series and films mixed). `GET /discover/sources` gives each
+  network `hasFilms: true`. Only the listed services: any other ID, or any list after a network's ID but `films` or
+  `all`, is `400 invalid_request` before TMDB is asked. Films are cached apart from series, per household.
+
 ### Changed
 
+- Household app: a service's page (`#/network/:id`) now opens on **All** (its series and films mixed, like its Home
+  row); its series alone are the **Series** tab, `#/network/:id?kind=series`.
+- Household app API: a path with anything after a network's ID other than `films` or `all` (for example
+  `/discover/network/213/2`) is now `400 invalid_request` instead of `404 not_found`, still before TMDB is asked.
 - Household app: **Popular movies** and **Popular series** on Home are now large landscape backdrop cards: one nearly
   full-width 16:9 card per phone screen with the next one peeking in (about three across on a wide screen), the title and
   "year · ★ rating TMDB" over a dark gradient at the foot, and the status pill on the corner. The whole card is the link

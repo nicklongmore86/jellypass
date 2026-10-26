@@ -4,7 +4,8 @@ import { MAX_GUARDED_RESPONSE_BYTES, readCappedBody } from './seerr.js';
  * The household app's title catalogue (search, discover, details), read straight from TMDB's v3 API with JellyPass's
  * own TMDB credential. TMDB knows nothing about JellyPass's households, Seerr's media records or anyone's requests, so
  * nothing another household holds, asked for or waits on can change what these calls return, how large it is or how
- * long it takes. Every call is the same for every caller: a fixed language, no region, no user.
+ * long it takes. Every call is the same for every caller: a fixed language, no user, and no region but the one fixed
+ * {@link TMDB_WATCH_REGION} that a service's films are listed by.
  *
  * Only the endpoints the app uses are exposed, each behind its own method. Responses are TMDB's JSON as-is (`unknown`):
  * callers copy out only the fields they need. Errors carry the status and the route, never TMDB's body, the IDs asked
@@ -14,6 +15,13 @@ import { MAX_GUARDED_RESPONSE_BYTES, readCappedBody } from './seerr.js';
 export const TMDB_API_URL = 'https://api.themoviedb.org';
 /** The language every catalogue call asks TMDB for, the same for every caller. */
 export const TMDB_LANGUAGE = 'en-US';
+
+/**
+ * The one region whose streaming availability ("where to watch", TMDB's data from JustWatch) a service's films are
+ * listed by: the US, the same for every household and every caller. Fixed here, not a setting; see docs/app-design.md,
+ * "Films on a service".
+ */
+export const TMDB_WATCH_REGION = 'US';
 
 /** The discover lists the household app offers, by their app path segment. */
 export const TMDB_DISCOVER_LISTS = ['trending', 'popular-movies', 'popular-tv', 'upcoming', 'upcoming-tv'] as const;
@@ -29,6 +37,12 @@ export interface TmdbSource {
    * them. Fixed here, never taken from a request.
    */
   networkIds?: readonly number[];
+  /**
+   * A network's own streaming service as TMDB watch providers in {@link TMDB_WATCH_REGION} (its ad and premium tiers
+   * too); its films are the movies any of them streams by subscription there. Absent: the network has no films list.
+   * Fixed here, never taken from a request.
+   */
+  movieProviderIds?: readonly number[];
 }
 
 /**
@@ -37,17 +51,27 @@ export interface TmdbSource {
  * (`src/components/Discover/NetworkSlider`) uses the same IDs for all of them but HBO Max, which it does not list.
  * HBO Max's list also takes in HBO (49), where TMDB files HBO's own series (The Last of Us, House of the Dragon); the
  * app has one HBO Max row, by HBO Max's ID and logo, and no HBO one.
+ *
+ * Each also lists its films by its US watch providers (`movieProviderIds`), checked against TMDB's
+ * `GET /3/watch/providers/movie?watch_region=US` (2026-10-25): Netflix 8 and its ad tier 1796; Disney Plus 337; Apple TV
+ * 350 (Apple TV+, renamed); Amazon Prime Video 9 and its ad tier 2100; HBO Max 1899; Hulu 15; Paramount Plus Premium
+ * 2303 (the tier that was "with Showtime"; TMDB's US list has no Showtime-named provider) and Essential 2616; Peacock
+ * Premium 386 and Premium Plus 387. Resellers' channels (e.g. "HBO Max Amazon Channel") are left out.
  */
 export const TMDB_NETWORKS: readonly TmdbSource[] = Object.freeze([
-  { id: 213, name: 'Netflix', logoPath: '/wwemzKWzjKYJFfCeiB57q3r4Bcm.png' },
-  { id: 2739, name: 'Disney+', logoPath: '/1edZOYAfoyZyZ3rklNSiUpXX30Q.png' },
-  { id: 2552, name: 'Apple TV', logoPath: '/bngHRFi794mnMq34gfVcm9nDxN1.png' },
-  { id: 1024, name: 'Prime Video', logoPath: '/w7HfLNm9CWwRmAMU58udl2L7We7.png' },
-  { id: 3186, name: 'HBO Max', logoPath: '/nmU0UMDJB3dRRQSTUqawzF2Od1a.png', networkIds: Object.freeze([3186, 49]) },
-  { id: 453, name: 'Hulu', logoPath: '/pqUTCleNUiTLAVlelGxUgWn1ELh.png' },
-  { id: 4330, name: 'Paramount+', logoPath: '/fi83B1oztoS47xxcemFdPMhIzK.png' },
-  { id: 3353, name: 'Peacock', logoPath: '/gIAcGTjKKr0KOHL5s4O36roJ8p7.png' },
-].map((source) => Object.freeze(source)));
+  { id: 213, name: 'Netflix', logoPath: '/wwemzKWzjKYJFfCeiB57q3r4Bcm.png', movieProviderIds: [8, 1796] },
+  { id: 2739, name: 'Disney+', logoPath: '/1edZOYAfoyZyZ3rklNSiUpXX30Q.png', movieProviderIds: [337] },
+  { id: 2552, name: 'Apple TV', logoPath: '/bngHRFi794mnMq34gfVcm9nDxN1.png', movieProviderIds: [350] },
+  { id: 1024, name: 'Prime Video', logoPath: '/w7HfLNm9CWwRmAMU58udl2L7We7.png', movieProviderIds: [9, 2100] },
+  { id: 3186, name: 'HBO Max', logoPath: '/nmU0UMDJB3dRRQSTUqawzF2Od1a.png', networkIds: [3186, 49], movieProviderIds: [1899] },
+  { id: 453, name: 'Hulu', logoPath: '/pqUTCleNUiTLAVlelGxUgWn1ELh.png', movieProviderIds: [15] },
+  { id: 4330, name: 'Paramount+', logoPath: '/fi83B1oztoS47xxcemFdPMhIzK.png', movieProviderIds: [2303, 2616] },
+  { id: 3353, name: 'Peacock', logoPath: '/gIAcGTjKKr0KOHL5s4O36roJ8p7.png', movieProviderIds: [386, 387] },
+].map((source) => Object.freeze({
+  ...source,
+  ...(source.networkIds ? { networkIds: Object.freeze(source.networkIds) } : {}),
+  movieProviderIds: Object.freeze(source.movieProviderIds),
+})));
 
 /**
  * The only production companies whose movies the app lists (TMDB `discover/movie` with `with_companies`): Seerr 3.5.1's
@@ -179,6 +203,24 @@ export class TmdbClient {
       sort_by: 'popularity.desc',
       include_null_first_air_dates: 'false',
       with_networks: (source.networkIds ?? [source.id]).join('|'),
+    }, options);
+  }
+
+  /**
+   * Popular films of one allowlisted network's streaming service ({@link TMDB_NETWORKS} with
+   * {@link TmdbSource.movieProviderIds}): TMDB discover by popularity of the movies any of its providers streams by
+   * subscription (`flatrate`) in {@link TMDB_WATCH_REGION} (TMDB's `|`, OR). Throws a TypeError for any other network.
+   */
+  public networkFilms(networkId: number, page = 1, options: TmdbCallOptions = {}): Promise<unknown> {
+    const providers = tmdbSource('network', networkId)?.movieProviderIds;
+    if (!providers?.length) throw new TypeError('network films are not allowed');
+    return this.#get('/3/discover/movie', '/3/discover/movie', {
+      page: pageNumber(page),
+      sort_by: 'popularity.desc',
+      include_adult: 'false',
+      watch_region: TMDB_WATCH_REGION,
+      with_watch_providers: providers.join('|'),
+      with_watch_monetization_types: 'flatrate',
     }, options);
   }
 

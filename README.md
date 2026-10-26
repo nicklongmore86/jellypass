@@ -628,7 +628,12 @@ and nowhere else (on the administrator host they do not exist). The
 | --- | --- | --- |
 | `GET` | `/jellypass/app/v1/me` | `{"name", "household"}`: the caller's Jellyfin display name and household name. |
 | `GET` | `/jellypass/app/v1/search?q=...&page=N` | A page of title cards. `q` is 1 to 100 characters; `page` 1 to 500, default 1. |
-| `GET` | `/jellypass/app/v1/discover/{list}?page=N` | A page of title cards; `list` is `trending`, `popular-movies`, `popular-tv` or `upcoming` (upcoming movies). |
+| `GET` | `/jellypass/app/v1/discover/{list}?page=N` | A page of title cards; `list` is `trending`, `popular-movies`, `popular-tv`, `upcoming` (upcoming movies) or `upcoming-tv` (upcoming series). |
+| `GET` | `/jellypass/app/v1/discover/sources` | The streaming services (networks) and studios the app offers, with their TMDB logos; no TMDB call. |
+| `GET` | `/jellypass/app/v1/discover/network/{id}?page=N` | A page of a service's popular series. Only the eight listed services (Netflix, Disney+, Apple TV, Prime Video, HBO Max, Hulu, Paramount+, Peacock); any other ID is `400`. |
+| `GET` | `/jellypass/app/v1/discover/network/{id}/films?page=N` | A page of the films the service streams **in the US**, from TMDB's where-to-watch data (JustWatch). |
+| `GET` | `/jellypass/app/v1/discover/network/{id}/all?page=N` | The service's series and films mixed (film, series, …): Home's "Popular on" rows. |
+| `GET` | `/jellypass/app/v1/discover/studio/{id}?page=N` | A page of a listed studio's popular movies. |
 | `GET` | `/jellypass/app/v1/movie/{tmdbId}` | One movie. |
 | `GET` | `/jellypass/app/v1/tv/{tmdbId}` | One series, with its seasons. |
 | `GET` | `/jellypass/app/v1/tv/{tmdbId}/season/{n}` | One season, with its episodes. |
@@ -778,6 +783,11 @@ never serve it. The app's "Get this" button is
 described under [Household app (PWA)](#household-app-pwa). See
 ["Get this" as implemented](docs/app-design.md#get-this-as-implemented-step-2a)
 for every rule, the leak channels and what remains.
+
+Which films a streaming service has is **US availability only**: the same
+fixed region for every household, not a setting (TMDB's where-to-watch data,
+from JustWatch, credited in the app). Outside the US a service's films may not
+match what it offers there; its series are not region-specific.
 
 Each call reads titles straight from TMDB with `TMDB_API_KEY` (in English;
 each household reuses an answer for up to 10 minutes), never from Seerr, so

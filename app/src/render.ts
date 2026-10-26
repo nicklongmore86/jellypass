@@ -354,11 +354,32 @@ export function titleRow(doc: Document, id: string, heading: string, page: Page,
 export const SOURCE_TEXT = {
   studios: 'Studios',
   networkPrefix: 'Popular on',
-  heading: (kind: SourceKind, name: string) => (kind === 'network' ? `Popular on ${name}` : `${name} movies`),
+  heading: (kind: SourceKind, name: string, list: SourceList = 'all') => {
+    if (kind === 'studio') return `${name} movies`;
+    return `${list === 'films' ? 'Films on' : list === 'series' ? 'Series on' : 'Popular on'} ${name}`;
+  },
+  /** A network page's three lists, as its segmented control names them. */
+  lists: { all: 'All', series: 'Series', films: 'Films' },
+  listsLabel: 'Show',
+  /** JustWatch's credit, wherever a service's films (TMDB's where-to-watch data, from JustWatch) are shown. */
+  justWatch: 'Where to watch: US streaming availability from JustWatch, via TMDB.',
 } as const;
 
-export function sourceHref(kind: SourceKind, source: Pick<Source, 'id'>): string {
-  return `#/${kind}/${source.id}`;
+/**
+ * A network's lists: its popular series and the films its streaming service has in the US, mixed (`all`, Home's row and
+ * the page's first tab), or either alone.
+ */
+export type SourceList = 'all' | 'series' | 'films';
+export const SOURCE_LISTS: readonly SourceList[] = ['all', 'series', 'films'];
+
+/** A network's or studio's page; a network's Series or Films tab says so in the address (`?kind=`), All does not. */
+export function sourceHref(kind: SourceKind, source: Pick<Source, 'id'>, list: SourceList = 'all'): string {
+  return `#/${kind}/${source.id}${kind === 'network' && list !== 'all' ? `?kind=${list}` : ''}`;
+}
+
+/** JustWatch's credit for where-to-watch data, as one line of muted text. */
+export function justWatchNote(doc: Document): HTMLElement {
+  return el(doc, 'p', { class: 'muted source-note', text: SOURCE_TEXT.justWatch });
 }
 
 /**
@@ -375,7 +396,8 @@ export function sourceLogo(doc: Document, source: Source, alt: string, loading: 
 
 /**
  * A network's row: the heading is a link to the network's own page and reads "Popular on <name>", the name given by the
- * logo's text alternative; then the same scrolling list as any discover row.
+ * logo's text alternative; then the same scrolling list as any discover row (a network's: its series and films mixed,
+ * each card saying which it is).
  */
 export function sourceRow(doc: Document, id: string, kind: SourceKind, source: Source, page: Page): HTMLElement {
   const link = el(doc, 'a', { class: 'row-heading-link', attrs: { href: sourceHref(kind, source) } }, [
@@ -403,12 +425,36 @@ export function studioStrip(doc: Document, id: string, studios: readonly Source[
   return el(doc, 'section', { class: 'row' }, [el(doc, 'h2', { class: 'row-heading', text: SOURCE_TEXT.studios, attrs: { id: `${id}-heading` } }), list]);
 }
 
-/** A network's or studio's page heading: its logo (decorative: the heading says the name) and "Popular on <name>". */
-export function sourceHeading(doc: Document, kind: SourceKind, source: Source): HTMLElement {
+/**
+ * A network's or studio's page heading: its logo (decorative: the heading says the name) and "Popular on <name>"
+ * ("Series on" or "Films on" on a network's Series or Films tab), or "<studio> movies".
+ */
+export function sourceHeading(doc: Document, kind: SourceKind, source: Source, list: SourceList = 'all'): HTMLElement {
   return el(doc, 'div', { class: 'source-head' }, [
     sourceLogo(doc, source, '', 'eager'),
-    el(doc, 'h1', { class: 'screen-title', text: SOURCE_TEXT.heading(kind, source.name), attrs: { tabindex: '-1' } }),
+    el(doc, 'h1', { class: 'screen-title', text: SOURCE_TEXT.heading(kind, source.name, list), attrs: { tabindex: '-1' } }),
   ]);
+}
+
+/**
+ * A network page's All | Series | Films control: an ARIA tab list of real buttons, the selected one `aria-selected` and
+ * the only one in the tab order (arrow keys, Home and End move between them; see main.ts). Each controls `panelId`.
+ */
+export function sourceTabs(doc: Document, id: string, panelId: string, selected: SourceList): HTMLElement {
+  const tabs = SOURCE_LISTS.map((list) => el(doc, 'button', {
+    class: 'segment',
+    text: SOURCE_TEXT.lists[list],
+    attrs: {
+      type: 'button',
+      role: 'tab',
+      id: `${id}-${list}`,
+      'data-list': list,
+      'aria-selected': String(list === selected),
+      'aria-controls': panelId,
+      tabindex: list === selected ? '0' : '-1',
+    },
+  }));
+  return el(doc, 'div', { class: 'segmented', attrs: { role: 'tablist', 'aria-label': SOURCE_TEXT.listsLabel } }, tabs);
 }
 
 export function skeletonRow(doc: Document, variant: RowVariant = 'poster'): HTMLElement {
@@ -868,6 +914,11 @@ export function aboutView(doc: Document, account?: AboutAccount, signedOut = fal
           doc.createTextNode('Titles, overviews and images come from '),
           el(doc, 'a', { text: 'themoviedb.org', attrs: { href: 'https://www.themoviedb.org/', rel: 'noopener noreferrer' } }),
           doc.createTextNode('.'),
+        ]),
+        el(doc, 'p', { class: 'muted justwatch-credit' }, [
+          doc.createTextNode('Which films each streaming service has (US availability only, the same for every household) comes from '),
+          el(doc, 'a', { text: 'JustWatch', attrs: { href: 'https://www.justwatch.com/', rel: 'noopener noreferrer' } }),
+          doc.createTextNode(', through TMDB.'),
         ]),
       ]),
     ]),
