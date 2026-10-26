@@ -61,12 +61,14 @@ describe('WebSocket idle timeout', { timeout: 10_000 }, () => {
     const client = connectSocket(port, '127.0.0.1');
     client.on('error', () => {});
     await once(client, 'connect');
+    // The gateway arms its idle timers once it has this request, so no timer can have started before `requestedAt`.
+    const requestedAt = performance.now();
     client.write(`GET /socket HTTP/1.1\r\nHost: ${HOUSEHOLD_HOST}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGVzdA==\r\nSec-WebSocket-Version: 13\r\n\r\n`);
     let response = '';
     while (!response.includes('\r\n\r\n')) response += (await once(client, 'data'))[0].toString('utf8');
     assert.match(response, /^HTTP\/1\.1 101/);
     await waitFor(() => upstreamSockets.length > seen);
-    return { client, server: upstreamSockets.at(-1) };
+    return { client, server: upstreamSockets.at(-1), requestedAt };
   }
 
   it('refuses an upgrade once shutdown has begun with a 503 no CDN keeps', async () => {
@@ -88,12 +90,11 @@ describe('WebSocket idle timeout', { timeout: 10_000 }, () => {
 
   it('closes both sides of an idle connection after the timeout', async () => {
     const port = await startGateway(IDLE_TIMEOUT_MS);
-    const { client, server } = await openSocket(port);
-    // The gateway arms the timer just before relaying the 101, so measuring from its arrival can only under-count.
-    const upgradedAt = performance.now();
+    const { client, server, requestedAt } = await openSocket(port);
     await Promise.all([once(client, 'close'), once(server, 'close')]);
-    const elapsed = performance.now() - upgradedAt;
-    assert.ok(elapsed >= IDLE_TIMEOUT_MS - 2, `closed ${elapsed.toFixed(1)} ms after the upgrade, before the idle timeout`);
+    // Measured from before the upgrade was asked for, so this can only over-count the time the timer ran.
+    const elapsed = performance.now() - requestedAt;
+    assert.ok(elapsed >= IDLE_TIMEOUT_MS - 2, `closed ${elapsed.toFixed(1)} ms after the upgrade request, before the idle timeout`);
     assert.deepEqual(uncaughtErrors, []);
   });
 
@@ -140,16 +141,15 @@ describe('WebSocket idle timeout', { timeout: 10_000 }, () => {
 
   it('closes both sides when Jellyfin goes silent while the client keeps talking', async () => {
     const port = await startGateway(0, { webSocketUpstreamIdleTimeoutMs: IDLE_TIMEOUT_MS });
-    const { client, server } = await openSocket(port);
-    const upgradedAt = performance.now();
+    const { client, server, requestedAt } = await openSocket(port);
     const keepAlive = setInterval(() => client.write(maskedTextFrame('{"MessageType":"KeepAlive"}')), IDLE_TIMEOUT_MS / 3);
     try {
       await Promise.all([once(client, 'close'), once(server, 'close')]);
     } finally {
       clearInterval(keepAlive);
     }
-    const elapsed = performance.now() - upgradedAt;
-    assert.ok(elapsed >= IDLE_TIMEOUT_MS - 2, `closed ${elapsed.toFixed(1)} ms after the upgrade, before the upstream timeout`);
+    const elapsed = performance.now() - requestedAt;
+    assert.ok(elapsed >= IDLE_TIMEOUT_MS - 2, `closed ${elapsed.toFixed(1)} ms after the upgrade request, before the upstream timeout`);
     assert.deepEqual(uncaughtErrors, []);
   });
 
