@@ -159,10 +159,10 @@ as semantic-version tags. For predictable production upgrades, set
 `JELLYPASS_IMAGE` in `.env` to a versioned image such as:
 
 ```dotenv
-JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:3.0.0
+JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:3.0.1
 ```
 
-Each release is published as a semantic-version image tag, such as `3.0.0`,
+Each release is published as a semantic-version image tag, such as `3.0.1`,
 plus floating `3.0` and `3` tags that move to the newest release in that minor
 or major line; see [CHANGELOG.md](CHANGELOG.md) for what each one contains. `latest` is rebuilt on
 every push to `main` and may include unreleased changes, so use it, or build
@@ -1068,6 +1068,9 @@ Upgrading from 2.7.0 to 3.0.0 changes neither the state file nor any setting,
 but every administrator signs in again, and admin API clients may need changes
 (a matching `Origin` for session-cookie scripts, JSON request bodies, `Host`
 passed unchanged by the proxy); see the 3.0.0 notes.
+Upgrading from 3.0.0 to 3.0.1 changes neither the state file nor any setting;
+admin requests to routes that read no body are now `415` if they carry a
+non-JSON body; see the 3.0.1 notes.
 Drain before rolling back to 2.3.x or 2.2.1: stop new "Get this" calls, wait
 until no request intents or deferred webhooks are left (at most 30 minutes plus
 one reconciliation interval, or restart JellyPass to reconcile at once), then
