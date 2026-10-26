@@ -4,8 +4,21 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 
-import { ApiError, isAbortError, type ApiClient } from '../src/api';
-import { API, ORIGIN, TOKEN, answer, clientWith, fixture, type Json } from './support/app-api';
+import { ApiError, createApiClient, isAbortError, type ApiClient } from '../src/api';
+import {
+  ADDRESS,
+  API,
+  OPERATIONS,
+  ORIGIN,
+  REDIRECT_STATUSES,
+  REDIRECT_TARGETS,
+  TOKEN,
+  answer,
+  clientWith,
+  fixture,
+  redirectingNetwork,
+  type Json,
+} from './support/app-api';
 
 async function failure(promise: Promise<unknown>): Promise<ApiError> {
   const caught = await promise.then(
@@ -34,7 +47,8 @@ describe('what the client sends', () => {
     expect(init.headers).toEqual({ Accept: 'application/json', Authorization: `MediaBrowser Token="${TOKEN}"` });
     expect(init.credentials).toBe('omit');
     // No `cache` option: React Native's fetch would add `?_=<time>` to the URL for `no-store`.
-    expect(Object.keys(init).sort()).toEqual(['credentials', 'headers', 'method', 'signal']);
+    expect(Object.keys(init).sort()).toEqual(['credentials', 'headers', 'method', 'redirect', 'signal']);
+    expect(init.redirect).toBe('manual');
     expect(init.body).toBeUndefined();
   });
 
@@ -363,5 +377,34 @@ describe('secrets', () => {
   it('logs nothing: no console call in the client', () => {
     const dir = path.join(__dirname, '..', 'src', 'api');
     for (const file of readdirSync(dir)) expect({ file, console: /\bconsole\./.test(readFileSync(path.join(dir, file), 'utf8')) }).toEqual({ file, console: false });
+  });
+});
+
+describe('redirects', () => {
+  // The token is in every call's Authorization header: a redirect is never followed, to the household or anywhere
+  // else, and its answer is never read.
+  const cases = Object.entries(OPERATIONS).flatMap(([name, operation]) =>
+    REDIRECT_STATUSES.flatMap((status) => Object.entries(REDIRECT_TARGETS).map(([where, target]) => [name, status, where, operation, target] as const)),
+  );
+
+  it.each(cases)('%s: a %i (%s) is unavailable, with no second request', async (_name, status, _where, operation, target) => {
+    let redirect: ReturnType<typeof answer> | undefined;
+    const network = redirectingNetwork((url) => (redirect = answer(status, fixture(operation.fixture), { Location: target(url) })));
+    const api = createApiClient({ address: ADDRESS, token: () => TOKEN, fetch: network.fetch });
+    const error = await failure(operation.call(api));
+    expect(error.kind).toBe('unavailable');
+    expect(error.status).toBe(status);
+    expect(network.requests).toHaveLength(1);
+    expect(network.requests[0]!.url.startsWith(`${API}/`)).toBe(true);
+    expect(network.requests[0]!.init.redirect).toBe('manual');
+    expect(redirect!.text).not.toHaveBeenCalled();
+  });
+
+  it('reads nothing from an answer the platform says it reached by a redirect, or from an opaque one', async () => {
+    for (const response of [{ ...answer(200, fixture('me'), {}, `${API}/me`), redirected: true }, answer(0, '')]) {
+      const { api } = clientWith(() => response);
+      expect((await failure(api.me())).kind).toBe('unexpected');
+      expect(response.text).not.toHaveBeenCalled();
+    }
   });
 });

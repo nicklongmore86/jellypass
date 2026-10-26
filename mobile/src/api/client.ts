@@ -5,6 +5,8 @@
 // - One call per method, never a retry: the PWA retries nothing on its own (every retry is a member's tap), and a
 //   household's devices share one per-address budget (docs/app-api/fetch-budget.json). A 429 is handed back, with
 //   its Retry-After when there is one, for the screen to offer a retry.
+// - No redirects: every call is `redirect: 'manual'` through expo/fetch (transport.ts), so the token is never sent
+//   anywhere but the household, and a 3xx (or any answer from elsewhere) is `unexpected` with nothing read.
 // - No cookies (`credentials: 'omit'`). No `cache` option: React Native's fetch (whatwg-fetch) adds a `?_=<time>`
 //   query to a GET sent with `cache: 'no-store'`, and the API already answers `Cache-Control: no-store`.
 // - A call stops at the caller's AbortSignal (the original abort is thrown, never an ApiError) or after `timeoutMs`
@@ -25,6 +27,7 @@ import {
   type DecodeContext,
 } from './decode';
 import { ApiError, errorForAnswer } from './errors';
+import { householdFetch, offHousehold } from './transport';
 import { DISCOVER_LISTS, type DiscoverList, type MediaType, type Me, type Movie, type Page, type Requests, type Season, type Series, type Sources } from './types';
 
 export const API_PREFIX = '/jellypass/app/v1';
@@ -43,6 +46,8 @@ export interface ResponseLike {
   readonly status: number;
   /** The final URL, when the platform reports it: an answer from anywhere but the household is `unexpected`. */
   readonly url?: string;
+  /** True when the platform followed a redirect to get this answer (never, with `redirect: 'manual'`). */
+  readonly redirected?: boolean;
   readonly headers: { get(name: string): string | null };
   text(): Promise<string>;
 }
@@ -52,6 +57,8 @@ export interface RequestInitLike {
   headers: Record<string, string>;
   body?: string;
   credentials: 'omit';
+  /** Never follow a redirect: the platform hands back the 3xx itself (transport.ts). */
+  redirect: 'manual';
   signal: AbortSignal;
 }
 
@@ -123,7 +130,7 @@ function abortError(signal: AbortSignal): Error {
 
 export function createApiClient(options: ApiClientOptions): ApiClient {
   const { address } = options;
-  const fetchAnswer: FetchLike = options.fetch ?? (globalThis.fetch as unknown as FetchLike);
+  const fetchAnswer: FetchLike = options.fetch ?? householdFetch;
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   const now = options.now ?? Date.now;
   const context: DecodeContext = { origin: address.origin };
@@ -159,16 +166,16 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
           },
           ...(body === undefined ? {} : { body: JSON.stringify(body) }),
           credentials: 'omit',
+          redirect: 'manual',
           signal: controller.signal,
         });
       } catch {
         throw lost();
       }
       const { status } = response;
-      // Followed a redirect off the household: nothing from there is read.
-      if (typeof response.url === 'string' && response.url !== '' && !response.url.startsWith(`${address.origin}/`)) {
-        throw new ApiError('unexpected', { status });
-      }
+      // A redirect (never followed) is `unavailable`, as any status the contract does not list; an answer from anywhere
+      // else is `unexpected`. Nothing in either is read.
+      if (offHousehold(response, address.origin)) throw new ApiError(status >= 300 && status < 400 ? 'unavailable' : 'unexpected', { status });
       const ok = status >= 200 && status < 300;
       if (ok && !read) return undefined;
 

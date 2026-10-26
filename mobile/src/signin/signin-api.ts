@@ -9,12 +9,15 @@
 //   work), 429 (too many attempts from this address) and 502 (Jellyfin unreachable). The app tells apart only the kinds
 //   below, each with fixed wording (wording.ts); a body, an upstream message or a status line is never shown.
 // - The password is only in the one request body that sends it: nothing here keeps or logs it.
+// - No redirects: every call is `redirect: 'manual'` through expo/fetch (api/transport.ts), so the password, a token
+//   or the client fields are never sent anywhere but the household. A 3xx is `unavailable`, with nothing read.
 // - Nothing is logged, and a SignInError carries no URL, token, name or answer.
 
 import type { HouseholdAddress } from '../api/address';
 import { signInAuthorization, tokenAuthorization, type ClientIdentity } from '../api/auth';
 import type { FetchLike, ResponseLike } from '../api/client';
 import { retryAfterSeconds } from '../api/errors';
+import { householdFetch, offHousehold } from '../api/transport';
 
 /** The only sign-in failures the app tells apart (as the PWA's, plus `not_found` for an address no household has). */
 export type SignInErrorKind = 'invalid' | 'rate_limited' | 'unavailable' | 'offline' | 'not_found' | 'storage';
@@ -91,11 +94,11 @@ function record(value: unknown): Record<string, unknown> {
 
 export function createSignInApi(options: SignInApiOptions): SignInApi {
   const { address } = options;
-  const fetchAnswer: FetchLike = options.fetch ?? (globalThis.fetch as unknown as FetchLike);
+  const fetchAnswer: FetchLike = options.fetch ?? householdFetch;
   const timeoutMs = options.timeoutMs ?? SIGN_IN_TIMEOUT_MS;
   const now = options.now ?? Date.now;
 
-  /** One call; `offline` when there was no answer (or it came from somewhere other than the household). */
+  /** One call; `offline` when there was no answer, `unavailable` for a redirect (never followed) or an answer from elsewhere. */
   async function call(
     method: 'GET' | 'POST',
     path: string,
@@ -117,16 +120,20 @@ export function createSignInApi(options: SignInApiOptions): SignInApi {
           headers,
           ...(body === undefined ? {} : { body }),
           credentials: 'omit',
+          redirect: 'manual',
           signal: controller.signal,
         });
-        text = await response.text();
       } catch (error) {
         if (signal?.aborted) throw error;
         throw new SignInError('offline');
       }
-      // Followed a redirect off the household: nothing from there is read.
-      if (typeof response.url === 'string' && response.url !== '' && !response.url.startsWith(`${address.origin}/`)) {
-        throw new SignInError('unavailable');
+      // Nothing from a redirect or from anywhere else is read.
+      if (offHousehold(response, address.origin)) throw new SignInError('unavailable');
+      try {
+        text = await response.text();
+      } catch (error) {
+        if (signal?.aborted) throw error;
+        throw new SignInError('offline');
       }
       return { response, text };
     } finally {

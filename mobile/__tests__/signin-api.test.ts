@@ -2,6 +2,7 @@
 // how the gateway's answers map to the app's fixed kinds, and that sign-out never fails. No network: a fake gateway.
 import { parseHouseholdAddress } from '../src/api/address';
 import { createSignInApi, SignInError, SIGN_OUT_TIMEOUT_MS, type SignInApi } from '../src/signin/signin-api';
+import { REDIRECT_STATUSES, REDIRECT_TARGETS, redirectingNetwork } from './support/app-api';
 import { IDENTITY, ORIGIN, PASSWORD, PROFILES, TOKEN, answer, fakeGateway, offline, signedInAnswer } from './support/household';
 
 const ADDRESS = parseHouseholdAddress(ORIGIN)!;
@@ -173,6 +174,43 @@ describe('sign-out', () => {
       expect(aborted).toBe(true);
     } finally {
       jest.useRealTimers();
+    }
+  });
+});
+
+describe('redirects', () => {
+  // A redirect is never followed, to the household or anywhere else: the password, the token and the client fields go
+  // in the one request to the household address and nowhere after it, and nothing in the 3xx is read.
+  const calls: [string, (api: SignInApi) => Promise<unknown>, string | undefined][] = [
+    ['GET /Users/Public', (api) => api.profiles(), 'unavailable'],
+    ['POST /Users/AuthenticateByName', (api) => api.signIn('ben', PASSWORD), 'unavailable'],
+    // Sign-out never throws.
+    ['POST /Sessions/Logout', (api) => api.signOut(TOKEN), undefined],
+  ];
+  const cases = calls.flatMap(([name, call, kind]) =>
+    REDIRECT_STATUSES.flatMap((status) => Object.entries(REDIRECT_TARGETS).map(([where, target]) => [name, status, where, call, kind, target] as const)),
+  );
+
+  it.each(cases)('%s: a %i (%s) makes no second request', async (name, status, _where, call, kind, target) => {
+    let redirect: ReturnType<typeof answer> | undefined;
+    const network = redirectingNetwork(
+      (url) => (redirect = answer(status, name.includes('Authenticate') ? { AccessToken: TOKEN, User: { Id: 'u-ben' } } : PROFILES, { Location: target(url) })),
+    );
+    const api = createSignInApi({ address: ADDRESS, identity: async () => IDENTITY, fetch: network.fetch });
+    if (kind) expect((await kindOf(call(api))).kind).toBe(kind);
+    else await expect(call(api)).resolves.toBeUndefined();
+    expect(network.requests).toHaveLength(1);
+    const [request] = network.requests as [(typeof network.requests)[number]];
+    expect(`${request.init.method} ${request.url}`).toBe(`${name.split(' ')[0]} ${ORIGIN}${name.split(' ')[1]}`);
+    expect(request.init.redirect).toBe('manual');
+    expect(redirect!.text).not.toHaveBeenCalled();
+  });
+
+  it('reads nothing from an answer the platform says it reached by a redirect, or from an opaque one', async () => {
+    for (const response of [{ ...signedInAnswer('Ben', TOKEN), redirected: true }, answer(0, '')]) {
+      const api = createSignInApi({ address: ADDRESS, identity: async () => IDENTITY, fetch: async () => response });
+      expect((await kindOf(api.signIn('ben', PASSWORD))).kind).toBe('unavailable');
+      expect(response.text).not.toHaveBeenCalled();
     }
   });
 });
