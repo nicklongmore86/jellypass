@@ -3,9 +3,9 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { ConflictError, UserProvisioningError, type AccessService } from './access-service.js';
 import { HouseholdApp, type HouseholdAppOptions } from './app-api.js';
 import { ADMIN_APP_JS, ADMIN_FAVICON_SVG, ADMIN_HTML, ADMIN_STYLES } from './admin-ui.js';
-import { AppAssets } from './app-assets.js';
-import { expiredSessionCookie, sessionCookie, type WebAuth } from './auth.js';
-import { ClientIpResolver } from './client-ip.js';
+import { APP_PERMISSIONS_POLICY, AppAssets } from './app-assets.js';
+import { expiredSessionCookie, isSameOriginRequest, isSecureRequest, sessionCookie, type WebAuth } from './auth.js';
+import { ClientIpResolver, normaliseIp } from './client-ip.js';
 import type { LogLevel } from './config.js';
 import { HouseholdGateway } from './household-gateway.js';
 import { RECENT_REQUESTS_LIMIT } from './seerr.js';
@@ -14,6 +14,10 @@ import { parseWebhook } from './webhook.js';
 
 const BODY_LIMIT = 64 * 1024;
 const ID_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/;
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
+
+/** A request body that is not declared as JSON; answered 415 before any of it is read. */
+class UnsupportedMediaTypeError extends Error {}
 
 export interface ServerTokens {
   webhook: string;
@@ -96,6 +100,12 @@ export function makeServer(
         return;
       }
       const segments = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
+      // Cross-site request forgery: a state-changing request a browser sends with the session cookie must come from the
+      // admin origin itself. SameSite=Strict alone is not enough, as every sibling host under the same site (household
+      // hosts, Seerr) is same-site. Requests with ADMIN_TOKEN as a bearer token carry no ambient credential and are
+      // exempt; so is the Seerr webhook, which has its own token.
+      const sameOrigin = () => isSameOriginRequest(request, clientIp.isTrusted(normaliseIp(request.socket.remoteAddress) ?? ''));
+      const forbidden = () => json(response, 403, { error: 'cross_origin_request_refused' });
 
       if (request.method === 'GET' && url.pathname === '/health') {
         return json(response, 200, { status: 'ok' });
@@ -117,12 +127,17 @@ export function makeServer(
       }
       if (request.method === 'POST' && url.pathname === '/auth/login') {
         if (!webAuth) return json(response, 404, { error: 'web_auth_not_configured' });
-        const body = recordBody(await readJson(request));
-        const username = nonEmptyString(body.username, 'username');
-        const password = nonEmptyString(body.password, 'password');
+        if (!sameOrigin()) return forbidden();
+        requireJsonBody(request);
+        let body: Record<string, unknown>;
+        try {
+          body = recordBody(await readJson(request));
+        } catch {
+          body = {};
+        }
         let login: { token: string; username: string } | null;
         try {
-          login = await webAuth.login(username, password, clientIp.resolve(request.socket.remoteAddress, request.headers['x-forwarded-for']));
+          login = await webAuth.login(body.username, body.password, clientIp.resolve(request.socket.remoteAddress, request.headers['x-forwarded-for']));
         } catch (error) {
           if (error instanceof Error && error.message === 'too_many_login_attempts') {
             return json(response, 429, { error: 'too_many_login_attempts' });
@@ -134,11 +149,13 @@ export function makeServer(
         return json(response, 200, { status: 'authenticated', username: login.username });
       }
       if (request.method === 'GET' && url.pathname === '/auth/session') {
-        const session = webAuth?.session(request);
-        if (!session) return json(response, 401, { error: 'unauthorized' });
+        const session = webAuth ? await webAuth.session(request) : { status: 'none' as const };
+        if (session.status === 'unavailable') return json(response, 503, { error: 'session_check_unavailable' });
+        if (session.status !== 'active') return json(response, 401, { error: 'unauthorized' });
         return json(response, 200, { authenticated: true, username: session.username });
       }
       if (request.method === 'POST' && url.pathname === '/auth/logout') {
+        if (!sameOrigin()) return forbidden();
         webAuth?.logout(request);
         response.setHeader('Set-Cookie', expiredSessionCookie(isSecureRequest(request)));
         return json(response, 200, { status: 'logged_out' });
@@ -150,7 +167,7 @@ export function makeServer(
         service.recordWebhookReceived();
         let event: ReturnType<typeof parseWebhook>;
         try {
-          event = parseWebhook(await readJson(request));
+          event = parseWebhook(await readJson(request, { requireJsonType: false }));
         } catch (error) {
           service.recordInvalidWebhook();
           throw error;
@@ -158,8 +175,11 @@ export function makeServer(
         const result = await service.processWebhook(event);
         return json(response, result ? 200 : 202, result ? { status: 'granted', grant: result } : { status: 'ignored' });
       }
-      if (!authorized(request, tokens.admin) && !webAuth?.session(request)) {
-        return json(response, 401, { error: 'unauthorized' });
+      if (!authorized(request, tokens.admin)) {
+        const session = webAuth ? await webAuth.session(request) : { status: 'none' as const };
+        if (session.status === 'unavailable') return json(response, 503, { error: 'session_check_unavailable' });
+        if (session.status !== 'active') return json(response, 401, { error: 'unauthorized' });
+        if (!SAFE_METHODS.has(request.method ?? 'GET') && !sameOrigin()) return forbidden();
       }
 
       if (request.method === 'GET' && url.pathname === '/metrics') {
@@ -291,6 +311,7 @@ export function makeServer(
           ...(error.group ? { group: error.group } : {}),
         });
       }
+      if (error instanceof UnsupportedMediaTypeError) return json(response, 415, { error: 'unsupported_media_type' });
       if (error instanceof ConflictError) return json(response, 409, { error: error.message, code: error.code });
       const message = error instanceof Error ? error.message : 'unknown error';
       console.error(JSON.stringify({ level: 'error', message }));
@@ -322,7 +343,18 @@ function sameToken(supplied: string, expectedToken: string): boolean {
   return timingSafeEqual(left, right);
 }
 
-async function readJson(request: IncomingMessage): Promise<unknown> {
+/** Refuses a body not declared as `application/json` (parameters such as charset allowed), before any of it is read. */
+function requireJsonBody(request: IncomingMessage): void {
+  const mediaType = request.headers['content-type']?.split(';')[0]?.trim().toLowerCase();
+  if (mediaType !== 'application/json') throw new UnsupportedMediaTypeError('unsupported_media_type');
+}
+
+/**
+ * Reads a JSON body. Admin requests must declare it as JSON, so a cross-site form or `no-cors` fetch (which can only send
+ * text/plain, form or multipart bodies) never reaches a handler. The Seerr webhook keeps accepting any declared type.
+ */
+async function readJson(request: IncomingMessage, { requireJsonType = true } = {}): Promise<unknown> {
+  if (requireJsonType) requireJsonBody(request);
   let size = 0;
   const chunks: Buffer[] = [];
   for await (const chunk of request) {
@@ -381,12 +413,6 @@ function isClientError(message: string): boolean {
   return ['must be', 'must contain', 'invalid', 'unsupported', 'missing', 'already in use'].some((part) => message.includes(part));
 }
 
-function isSecureRequest(request: IncomingMessage): boolean {
-  const forwarded = request.headers['x-forwarded-proto'];
-  const protocol = Array.isArray(forwarded) ? forwarded[0] : forwarded;
-  return protocol?.split(',')[0]?.trim().toLowerCase() === 'https';
-}
-
 function json(response: ServerResponse, status: number, body: unknown): void {
   text(response, status, JSON.stringify(body), 'application/json; charset=utf-8');
 }
@@ -397,19 +423,27 @@ function text(response: ServerResponse, status: number, body: string, contentTyp
     'Content-Length': Buffer.byteLength(body),
     'Cache-Control': 'no-store',
     'X-Content-Type-Options': 'nosniff',
+    'Cross-Origin-Resource-Policy': 'same-origin',
   });
   response.end(body);
 }
 
+/**
+ * Headers for the admin UI's own files: the household app's set. The UI posts no forms (every form's submit is handled
+ * by script with fetch), so form-action is 'none'.
+ */
 function asset(response: ServerResponse, status: number, body: string, contentType: string): void {
   response.writeHead(status, {
     'Content-Type': contentType,
     'Content-Length': Buffer.byteLength(body),
     'Cache-Control': 'no-store',
-    'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'self'; frame-ancestors 'none'",
+    'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     'Referrer-Policy': 'no-referrer',
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',
+    'Cross-Origin-Opener-Policy': 'same-origin',
+    'Cross-Origin-Resource-Policy': 'same-origin',
+    'Permissions-Policy': APP_PERMISSIONS_POLICY,
   });
   response.end(body);
 }
@@ -424,6 +458,7 @@ function image(response: ServerResponse, body: Uint8Array, upstreamContentType: 
     'Cache-Control': 'private, max-age=86400',
     'Content-Security-Policy': "default-src 'none'",
     'X-Content-Type-Options': 'nosniff',
+    'Cross-Origin-Resource-Policy': 'same-origin',
   });
   response.end(body);
 }

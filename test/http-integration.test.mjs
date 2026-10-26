@@ -42,7 +42,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
       },
     };
     const service = new AccessService(jellyfinClient, store, undefined, seerr);
-    const webAuth = new WebAuth(jellyfinClient);
+    const webAuth = new WebAuth(jellyfinClient, { loginFailureDelayMs: 0 });
     bridge = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' }, webAuth, {
       householdGateway: { jellyfinUrl: jellyfin.url, domain: 'example.test', hostPrefix: 'jelly-' },
     });
@@ -201,7 +201,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
 
     const badLogin = await fetch(`${bridgeUrl}/auth/login`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin' },
       body: JSON.stringify({ username: 'Admin', password: 'wrong-password' }),
     });
     assert.equal(badLogin.status, 401);
@@ -209,7 +209,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
 
     const nonAdminLogin = await fetch(`${bridgeUrl}/auth/login`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', 'Sec-Fetch-Site': 'same-origin' },
       body: JSON.stringify({ username: 'Alice', password: 'user-password' }),
     });
     assert.equal(nonAdminLogin.status, 401);
@@ -217,31 +217,35 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
 
     const login = await fetch(`${bridgeUrl}/auth/login`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Forwarded-Proto': 'https' },
+      headers: { 'Content-Type': 'application/json', 'X-Forwarded-Proto': 'https', 'Sec-Fetch-Site': 'same-origin' },
       body: JSON.stringify({ username: 'Admin', password: 'admin-password' }),
     });
     assert.equal(login.status, 200);
     await login.json();
     const setCookie = login.headers.get('set-cookie');
-    assert.match(setCookie, /^jellypass_session=/);
+    assert.match(setCookie, /^__Host-jellypass_session=/);
+    assert.match(setCookie, /Path=\//);
+    assert.doesNotMatch(setCookie.split(', ')[0], /Domain=/i);
     assert.match(setCookie, /HttpOnly/);
     assert.match(setCookie, /SameSite=Strict/);
     assert.match(setCookie, /Secure/);
     assert.equal(jellyfin.logoutCount, 2);
     const sessionCookie = setCookie.split(';')[0];
+    // What the admin UI's own fetches carry: the cookie, over HTTPS behind the proxy, from the admin origin.
+    const sessionHeaders = { Cookie: sessionCookie, 'X-Forwarded-Proto': 'https', 'Sec-Fetch-Site': 'same-origin' };
 
-    const sessionUsers = await fetch(`${bridgeUrl}/v1/users`, { headers: { Cookie: sessionCookie } });
+    const sessionUsers = await fetch(`${bridgeUrl}/v1/users`, { headers: { ...sessionHeaders } });
     assert.equal(sessionUsers.status, 200);
     const sessionUsersBody = await sessionUsers.json();
     assert.deepEqual(sessionUsersBody.users.map((user) => user.name), ['Admin', 'Alice', 'Bob']);
     assert.equal(sessionUsersBody.jellyseerrImportAvailable, true);
-    const groups = await fetch(`${bridgeUrl}/v1/groups`, { headers: { Cookie: sessionCookie } });
+    const groups = await fetch(`${bridgeUrl}/v1/groups`, { headers: { ...sessionHeaders } });
     assert.equal(groups.status, 200);
     assert.equal((await groups.json()).groups[0].householdUrl, 'https://jelly-farmhouse.example.test');
 
     const shortPassword = await fetch(`${bridgeUrl}/v1/users`, {
       method: 'POST',
-      headers: { Cookie: sessionCookie, 'Content-Type': 'application/json' },
+      headers: { ...sessionHeaders, 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: 'Charlie', password: 'short', groupId: 'farmhouse' }),
     });
     assert.equal(shortPassword.status, 400);
@@ -249,7 +253,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
 
     const missingGroup = await fetch(`${bridgeUrl}/v1/users`, {
       method: 'POST',
-      headers: { Cookie: sessionCookie, 'Content-Type': 'application/json' },
+      headers: { ...sessionHeaders, 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: 'Charlie', password: 'charlie-password', groupId: 'missing' }),
     });
     assert.equal(missingGroup.status, 404);
@@ -257,7 +261,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
 
     const createdUser = await fetch(`${bridgeUrl}/v1/users`, {
       method: 'POST',
-      headers: { Cookie: sessionCookie, 'Content-Type': 'application/json' },
+      headers: { ...sessionHeaders, 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: 'Charlie', password: '', groupId: 'farmhouse' }),
     });
     assert.equal(createdUser.status, 201);
@@ -270,7 +274,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.deepEqual(importedUserIds, []);
     const duplicateUser = await fetch(`${bridgeUrl}/v1/users`, {
       method: 'POST',
-      headers: { Cookie: sessionCookie, 'Content-Type': 'application/json' },
+      headers: { ...sessionHeaders, 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: 'charlie', password: 'another-password', groupId: 'farmhouse' }),
     });
     assert.equal(duplicateUser.status, 400);
@@ -278,7 +282,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
 
     const importedUser = await fetch(`${bridgeUrl}/v1/users`, {
       method: 'POST',
-      headers: { Cookie: sessionCookie, 'Content-Type': 'application/json' },
+      headers: { ...sessionHeaders, 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: 'Dana', password: 'dana-password', groupId: 'farmhouse', importToJellyseerr: true }),
     });
     assert.equal(importedUser.status, 201);
@@ -295,7 +299,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
 
     const failedImport = await fetch(`${bridgeUrl}/v1/users`, {
       method: 'POST',
-      headers: { Cookie: sessionCookie, 'Content-Type': 'application/json' },
+      headers: { ...sessionHeaders, 'Content-Type': 'application/json' },
       body: JSON.stringify({ username: 'Import Failure', password: 'failure-password', groupId: 'farmhouse', importToJellyseerr: true }),
     });
     assert.equal(failedImport.status, 502);
@@ -313,12 +317,12 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
 
     const markAlice = await fetch(`${bridgeUrl}/v1/users/alice-id/sign-in`, {
       method: 'PUT',
-      headers: { Cookie: sessionCookie, 'Content-Type': 'application/json' },
+      headers: { ...sessionHeaders, 'Content-Type': 'application/json' },
       body: JSON.stringify({ passwordless: true }),
     });
     assert.equal(markAlice.status, 200);
     assert.deepEqual((await markAlice.json()).user, { id: 'alice-id', passwordless: true });
-    const markedUsers = await fetch(`${bridgeUrl}/v1/users`, { headers: { Cookie: sessionCookie } });
+    const markedUsers = await fetch(`${bridgeUrl}/v1/users`, { headers: { ...sessionHeaders } });
     assert.deepEqual(
       (await markedUsers.json()).users.filter((user) => user.passwordless).map((user) => user.name),
       ['Alice', 'Charlie'],
@@ -329,7 +333,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.ok((await directPublicUsers.json()).every((user) => user.HasPassword === true));
     const unmarkAlice = await fetch(`${bridgeUrl}/v1/users/alice-id/sign-in`, {
       method: 'PUT',
-      headers: { Cookie: sessionCookie, 'Content-Type': 'application/json' },
+      headers: { ...sessionHeaders, 'Content-Type': 'application/json' },
       body: JSON.stringify({ passwordless: false }),
     });
     assert.equal(unmarkAlice.status, 200);
@@ -337,19 +341,19 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.deepEqual((await unmarkedHouseholdUsers.json()).map((user) => user.HasPassword), [true, true, false, true, true]);
     const markAdmin = await fetch(`${bridgeUrl}/v1/users/admin-id/sign-in`, {
       method: 'PUT',
-      headers: { Cookie: sessionCookie, 'Content-Type': 'application/json' },
+      headers: { ...sessionHeaders, 'Content-Type': 'application/json' },
       body: JSON.stringify({ passwordless: true }),
     });
     assert.equal(markAdmin.status, 400);
     const markMissing = await fetch(`${bridgeUrl}/v1/users/missing-id/sign-in`, {
       method: 'PUT',
-      headers: { Cookie: sessionCookie, 'Content-Type': 'application/json' },
+      headers: { ...sessionHeaders, 'Content-Type': 'application/json' },
       body: JSON.stringify({ passwordless: true }),
     });
     assert.equal(markMissing.status, 404);
     const invalidMark = await fetch(`${bridgeUrl}/v1/users/alice-id/sign-in`, {
       method: 'PUT',
-      headers: { Cookie: sessionCookie, 'Content-Type': 'application/json' },
+      headers: { ...sessionHeaders, 'Content-Type': 'application/json' },
       body: JSON.stringify({ passwordless: 'yes' }),
     });
     assert.equal(invalidMark.status, 400);
@@ -361,25 +365,25 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.equal(newUserLogin.status, 200);
     assert.equal((await newUserLogin.json()).User.Name, 'Charlie');
 
-    const librarySearch = await fetch(`${bridgeUrl}/v1/library/search?q=Second`, { headers: { Cookie: sessionCookie } });
+    const librarySearch = await fetch(`${bridgeUrl}/v1/library/search?q=Second`, { headers: { ...sessionHeaders } });
     assert.equal(librarySearch.status, 200);
     assert.deepEqual((await librarySearch.json()).items, [{ id: 'item-2', name: 'Second Movie', mediaType: 'movie', productionYear: 2026 }]);
 
-    const catalogSync = await fetch(`${bridgeUrl}/v1/library/sync`, { method: 'POST', headers: { Cookie: sessionCookie } });
+    const catalogSync = await fetch(`${bridgeUrl}/v1/library/sync`, { method: 'POST', headers: { ...sessionHeaders } });
     assert.equal(catalogSync.status, 200);
     assert.equal((await catalogSync.json()).items.length, 2);
-    const catalog = await fetch(`${bridgeUrl}/v1/library`, { headers: { Cookie: sessionCookie } });
+    const catalog = await fetch(`${bridgeUrl}/v1/library`, { headers: { ...sessionHeaders } });
     assert.equal(catalog.status, 200);
     assert.equal((await catalog.json()).items.length, 2);
-    const libraryPoster = await fetch(`${bridgeUrl}/v1/library/poster?itemId=item-1`, { headers: { Cookie: sessionCookie } });
+    const libraryPoster = await fetch(`${bridgeUrl}/v1/library/poster?itemId=item-1`, { headers: { ...sessionHeaders } });
     assert.equal(libraryPoster.status, 200);
     assert.equal(libraryPoster.headers.get('content-type'), 'image/jpeg');
     assert.deepEqual(new Uint8Array(await libraryPoster.arrayBuffer()), new Uint8Array([255, 216, 255, 217]));
 
-    const recentRequests = await fetch(`${bridgeUrl}/v1/requests/recent`, { headers: { Cookie: sessionCookie } });
+    const recentRequests = await fetch(`${bridgeUrl}/v1/requests/recent`, { headers: { ...sessionHeaders } });
     assert.equal(recentRequests.status, 200);
     assert.equal((await recentRequests.json()).requests[0].title, 'Recent Series');
-    const requestPoster = await fetch(`${bridgeUrl}/v1/requests/poster?path=%2Fposter.jpg`, { headers: { Cookie: sessionCookie } });
+    const requestPoster = await fetch(`${bridgeUrl}/v1/requests/poster?path=%2Fposter.jpg`, { headers: { ...sessionHeaders } });
     assert.equal(requestPoster.status, 200);
     assert.equal(requestPoster.headers.get('content-type'), 'image/jpeg');
     assert.deepEqual(new Uint8Array(await requestPoster.arrayBuffer()), new Uint8Array([255, 216, 255, 217]));
@@ -387,7 +391,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     const manualBody = JSON.stringify({ itemIds: ['item-2'], userIds: ['bob-id'], groupIds: [] });
     const manualPreview = await fetch(`${bridgeUrl}/v1/library/access?dryRun=true`, {
       method: 'PUT',
-      headers: { Cookie: sessionCookie, 'Content-Type': 'application/json' },
+      headers: { ...sessionHeaders, 'Content-Type': 'application/json' },
       body: manualBody,
     });
     assert.equal(manualPreview.status, 200);
@@ -396,7 +400,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
 
     const manualImport = await fetch(`${bridgeUrl}/v1/library/access`, {
       method: 'PUT',
-      headers: { Cookie: sessionCookie, 'Content-Type': 'application/json' },
+      headers: { ...sessionHeaders, 'Content-Type': 'application/json' },
       body: manualBody,
     });
     assert.equal(manualImport.status, 200);

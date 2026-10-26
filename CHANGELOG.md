@@ -14,6 +14,34 @@ privacy leak. Such changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Security
+
+- Admin: a state-changing request (`POST`, `PUT`, `PATCH`, `DELETE`) signed in by the browser session cookie,
+  including `POST /auth/logout`, and every `POST /auth/login`, must come from the admin origin itself:
+  `Sec-Fetch-Site: same-origin`, or, without it, an `Origin` equal to the host the request was sent to (`Host`, or
+  `X-Forwarded-Host` from a trusted proxy) with an https scheme when the proxy reports HTTPS. Anything else is a fixed
+  `403 {"error":"cross_origin_request_refused"}` before any work is done. `SameSite=Strict` did not cover this: every
+  sibling host under the same site (household hosts, Seerr) is same-site. `ADMIN_TOKEN` bearer requests and the Seerr
+  webhook (its own token) are exempt.
+- Admin: a request body must be declared `Content-Type: application/json` (parameters allowed), or the answer is
+  `415 {"error":"unsupported_media_type"}` before it is read. The Seerr webhook still accepts any declared type.
+- Admin: every refused sign-in (wrong password, unknown name, not an enabled administrator, a malformed body, Jellyfin
+  failing or answering an error) is the same `401 {"error":"invalid_credentials"}`, no sooner than one second after it
+  arrived; Jellyfin's own error text is never relayed (it is logged). Failures are now also limited per name (ten in
+  15 minutes, case- and width-insensitive, counted whether or not the account exists) as well as per client address.
+  Missing fields used to answer `400`; they now answer `401 invalid_credentials` like any other refusal.
+- Admin: every five minutes each browser session's administrator is read again from Jellyfin with JellyPass's API key
+  (one read per session, however many requests wait on it). A user who was deleted, demoted or disabled ends the
+  session (`401`); a check Jellyfin fails to answer keeps the session but answers `503 session_check_unavailable`,
+  retried after 30 seconds. Before, such a session lasted up to 12 hours.
+- Admin: over HTTPS the session cookie is now `__Host-jellypass_session` (Secure, `Path=/`, no `Domain`), so no
+  sibling host can set or overwrite it; plain HTTP (LAN) keeps `jellypass_session`. A session cookie from before the
+  change is ignored over HTTPS (sign in again; restarting JellyPass signs sessions out anyway), and is cleared at the
+  next sign-in or sign-out.
+- Admin: the UI's files carry the household app's headers too: `Permissions-Policy` (same deny list),
+  `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Resource-Policy: same-origin`, and `form-action 'none'`
+  (the UI posts no forms). Admin API answers carry `Cross-Origin-Resource-Policy: same-origin`.
+
 ### Added
 
 - Household app: Home has an **All | Movies | TV** switch under the hero, a floating pill that sticks just below the

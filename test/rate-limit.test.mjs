@@ -62,7 +62,7 @@ describe('administrator login failure limit', () => {
 
   it('locks a client out after eight failures until the five-minute window expires', async () => {
     mock.timers.enable({ apis: ['Date'], now: 0 });
-    const webAuth = new WebAuth({ authenticateAdministrator: async () => null });
+    const webAuth = new WebAuth({ authenticateAdministrator: async () => null }, { loginFailureDelayMs: 0 });
     for (let index = 0; index < 8; index += 1) assert.equal(await webAuth.login('admin', 'wrong', '203.0.113.5'), null);
     await assert.rejects(webAuth.login('admin', 'wrong', '203.0.113.5'), /too_many_login_attempts/);
     assert.equal(await webAuth.login('admin', 'wrong', '203.0.113.6'), null);

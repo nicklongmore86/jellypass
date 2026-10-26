@@ -173,10 +173,11 @@ describe('forwarded client addresses', { timeout: 10_000 }, () => {
   });
 
   it('rate-limits administrator logins per client behind a trusted proxy', async () => {
-    const webAuth = new WebAuth({ authenticateAdministrator: async () => null });
+    const webAuth = new WebAuth({ authenticateAdministrator: async () => null }, { loginFailureDelayMs: 0 });
     const port = await startGateway([LOCAL], webAuth);
     const attempt = (client) => send(port, '/auth/login', {
       host: `${LOCAL}:${port}`,
+      origin: `http://${LOCAL}:${port}`,
       'x-forwarded-for': client,
       'content-type': 'application/json',
     }, { method: 'POST', body: JSON.stringify({ username: 'admin', password: 'wrong' }) });
@@ -186,10 +187,11 @@ describe('forwarded client addresses', { timeout: 10_000 }, () => {
   });
 
   it('shares one administrator login bucket across IPv4-mapped spellings', async () => {
-    const webAuth = new WebAuth({ authenticateAdministrator: async () => null });
+    const webAuth = new WebAuth({ authenticateAdministrator: async () => null }, { loginFailureDelayMs: 0 });
     const port = await startGateway([LOCAL], webAuth);
     const attempt = (client) => send(port, '/auth/login', {
       host: `${LOCAL}:${port}`,
+      origin: `http://${LOCAL}:${port}`,
       'x-forwarded-for': client,
       'content-type': 'application/json',
     }, { method: 'POST', body: JSON.stringify({ username: 'admin', password: 'wrong' }) });
