@@ -1,6 +1,6 @@
 // The only URLs the app ever loads or opens from an API answer, ported from the PWA's app/src/render.ts: TMDB's own
 // image files at the exact widths the API sends, and a Play link to the household's own Jellyfin. Anything else in an
-// answer is refused by decode.ts (a Play link is dropped), so a bad answer can never point the app at another host.
+// answer is dropped by decode.ts, so a bad answer can never point the app at another host.
 
 /** Posters (w342) and backdrops (w780, and w1280 for the sharper copy), as the PWA's TMDB_IMAGE. */
 const TMDB_IMAGE = /^https:\/\/image\.tmdb\.org\/t\/p\/(?:w342|w780|w1280)\/[A-Za-z0-9_-]{1,100}\.(?:jpg|jpeg|png|webp)$/;

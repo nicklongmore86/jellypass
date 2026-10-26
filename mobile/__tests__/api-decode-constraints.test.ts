@@ -50,6 +50,12 @@ const LENIENT: Record<string, (decoded: unknown, path: Path) => void> = {
   // Play.url: "a client ignores anything else"; the URL is built from itemId, so a bad itemId is ignored the same way.
   'Play.itemId pattern': (decoded, path) => expect(at(decoded, path.slice(0, -1))).toBeNull(),
   'Play.url pattern': (decoded, path) => expect(at(decoded, path.slice(0, -1))).toBeNull(),
+  // An image URL off its field's pattern is that one image dropped, as the PWA drops it: never the whole answer.
+  ...Object.fromEntries(
+    ['Card.posterUrl', 'Card.backdropUrl', 'Movie.posterUrl', 'Movie.backdropUrl', 'Series.posterUrl', 'Series.backdropUrl', 'Source.logoUrl', 'Network.logoUrl'].map(
+      (where) => [`${where} pattern`, (decoded: unknown, path: Path) => expect(at(decoded, path)).toBeNull()],
+    ),
+  ),
 };
 
 const WALKED = new Set([

@@ -1,10 +1,11 @@
 // Decoding of the API's answers, as docs/app-design.md ("Native clients (contract)") asks: lenient only where the
 // contract says so, strict otherwise. Fields the app does not know are ignored (only the named fields are copied,
 // nothing is spread), an unknown `state` is `unavailable`, an unknown request `status` is `requested`, a `/me` without
-// `apiVersion` is revision 0, and a Play link that is not exactly the household's own is null (the schema: "a client
-// ignores anything else"). Anything else that breaks docs/app-api/v1.openapi.json (a missing field, a wrong type, a
-// number, length, item count or pattern outside the schema's limits) is a DecodeError, which the client turns into
-// the `unexpected` error kind. __tests__/api-decode-constraints.test.ts fails when a limit here and the schema differ.
+// `apiVersion` is revision 0, an image URL off its field's pattern is null (that image only: one bad poster never
+// blanks a screen), and a Play link that is not exactly the household's own is null (the schema: "a client ignores
+// anything else"). Anything else that breaks docs/app-api/v1.openapi.json (a missing field, a wrong type, a number,
+// length, item count or pattern outside the schema's limits) is a DecodeError, which the client turns into the
+// `unexpected` error kind. __tests__/api-decode-constraints.test.ts fails when a limit here and the schema differ.
 
 import {
   COARSE_STATUSES,
@@ -64,7 +65,7 @@ interface Text {
 const CARD_TMDB_ID: Range = { min: 1, max: Number.MAX_SAFE_INTEGER };
 const PATH_TMDB_ID: Range = { min: 1, max: 2147483647 };
 
-/** The schema's image patterns, one width each: an answer with any other image URL is not the documented shape. */
+/** The schema's image patterns, one width each: any other image URL is dropped, as the PWA drops it. */
 const POSTER_URL = /^https:\/\/image\.tmdb\.org\/t\/p\/w342\/[A-Za-z0-9_-]{1,100}\.(?:jpg|jpeg|png|webp)$/;
 const BACKDROP_URL = /^https:\/\/image\.tmdb\.org\/t\/p\/w780\/[A-Za-z0-9_-]{1,100}\.(?:jpg|jpeg|png|webp)$/;
 const LOGO_URL = /^https:\/\/image\.tmdb\.org\/t\/p\/w300\/[A-Za-z0-9_-]{1,100}\.(?:jpg|jpeg|png|webp)$/;
@@ -94,8 +95,11 @@ function string(record: Fields, key: string, path: string, limits: Text = {}): s
   return text(field(record, key), `${path}.${key}`, limits);
 }
 
-function nullableString(record: Fields, key: string, path: string, limits: Text): string | null {
-  return field(record, key) === null ? null : string(record, key, path, limits);
+/** An image URL: a string or null, and null too when it is not on `pattern`, the field's own allowlist. */
+function image(record: Fields, key: string, path: string, pattern: RegExp): string | null {
+  if (field(record, key) === null) return null;
+  const url = string(record, key, path);
+  return pattern.test(url) ? url : null;
 }
 
 function inRange(value: number, range: Range): boolean {
@@ -191,8 +195,8 @@ function card(record: Fields, path: string, context: DecodeContext, tmdbId: Rang
     title: string(record, 'title', path, { max: 300 }),
     year: nullableInteger(record, 'year', path, { min: 0, max: 9999 }),
     overview: string(record, 'overview', path, { max: 4000 }),
-    posterUrl: nullableString(record, 'posterUrl', path, { pattern: POSTER_URL }),
-    backdropUrl: nullableString(record, 'backdropUrl', path, { pattern: BACKDROP_URL }),
+    posterUrl: image(record, 'posterUrl', path, POSTER_URL),
+    backdropUrl: image(record, 'backdropUrl', path, BACKDROP_URL),
     rating: nullableNumber(record, 'rating', path, { min: 0, max: 10 }),
     state: titleState,
     play: play(record, path, titleState, context),
@@ -272,7 +276,7 @@ function decodeSource(value: unknown, path: string): Source {
   return {
     id: integer(record, 'id', path, { min: 1 }),
     name: string(record, 'name', path, { min: 1 }),
-    logoUrl: nullableString(record, 'logoUrl', path, { pattern: LOGO_URL }),
+    logoUrl: image(record, 'logoUrl', path, LOGO_URL),
   };
 }
 
