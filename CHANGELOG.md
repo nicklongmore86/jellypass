@@ -18,29 +18,107 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
-This ships as 3.2.0, a minor release. The Security changes below refuse, on
-household hostnames, requests that got around a household check, some of which
-Jellyfin itself used to answer with a success: Quick Connect (on a Jellyfin
-that has it enabled), sign-in by user ID (a member's included), paths whose
-percent-encoding would change which check applies if decoded once more,
-every route of an item the caller may not see (HLS playlists and segments,
-subtitles and attachments among them), and every request that names a user
-other than the caller (`?userId=` on a playlist's items among them). The rule at the top of this file allows
-exactly this in a minor or patch release: household-check bypasses may be
-refused even where Jellyfin answered them successfully. The other refusals
-(other spellings of a path, Streamyfin, the live TV transcoder routes) change
-only failure responses or close the same bypasses.
+## [3.2.0] - 2026-10-26
 
-In the setup this project documents (Quick Connect disabled in Jellyfin, as
-`docs/household-access.md` requires, and no Streamyfin plugin installed), a
-member using a supported client sees two differences: the household login
-styles now come with `/Branding/Configuration` in every spelling, and
-jellyfin-web renders ASS/SSA subtitles with its fallback fonts on household
-hostnames, because it loads the fonts embedded in a video without credentials
-and the per-item check needs them. A Jellyfin that has Quick Connect enabled,
-or the Streamyfin plugin installed, loses those features on household
-hostnames; they still work on Jellyfin's own address. The main Jellyfin site
-and the admin host are unaffected.
+This is a security release for household hostnames, and a minor release.
+**Upgrading is strongly recommended** for every installation that serves
+household hostnames. There is nothing to configure: no setting is added,
+removed or renamed, and the state file is unchanged (schema v7, with the same
+fields as 3.1.1), so 3.1.1 reads a state file written by 3.2.0. The main
+Jellyfin site, the admin host, the administrator API, the admin UI and the
+Seerr webhook are unchanged.
+
+**What 3.1.1 and earlier exposed on household hostnames.** Jellyfin answers
+some requests without checking who may see what, and the household gateway
+did not catch all of them:
+
+- **Anyone who could reach a household hostname** could list every Jellyfin
+  user, reach password recovery and load any Jellyfin user's profile picture,
+  and **anyone with a Jellyfin account**, not only the household's members,
+  could sign in there: the membership check could be got around by spelling a
+  path differently, by Jellyfin's old sign-in by user ID, or by Quick Connect
+  on a Jellyfin that has it enabled.
+- **A signed-in household member** could play, download, or read the
+  subtitles and other files of titles hidden from them (by HLS streaming,
+  among other routes), see another Jellyfin user's private playlists and
+  profile, and add another user to a playback session.
+- **With the Streamyfin plugin installed,** any signed-in user could read its
+  settings, Seerr's API key among them.
+
+3.2.0 closes all of these; the Security section below lists each change.
+None of them needs a setting or a change to Jellyfin. One gap that needs Live
+TV set up in Jellyfin remains; see the known follow-ups below.
+
+The repository now also holds the source of a mobile app (`mobile/`). It is
+not part of this release: it is not in the image and nothing in it runs on
+the server.
+
+**Why this is a minor release.** The rule at the top of this file allows a
+minor or patch release to refuse, on a household hostname, requests that
+would get around a household check, even where Jellyfin used to answer them
+with a success, and to change failure responses on relayed Jellyfin endpoints
+to close a leak. Every refusal below is one or the other, and each is cited
+against that rule. The release also adds a field to the household app API
+(`apiVersion` in `GET /jellypass/app/v1/me`), a backward-compatible addition
+to the public interface, so it is a minor release rather than a patch one.
+Nothing that is part of the public interface is removed or changed in an
+incompatible way, so it is not a major one.
+
+Read these before upgrading. In the setup this project documents (Quick
+Connect disabled in Jellyfin, as `docs/household-access.md` requires, and no
+Streamyfin plugin installed), a member using a supported client notices at
+most two of them: the subtitle fonts and the extra round trip.
+
+- **Fonts embedded in subtitles no longer load on household hostnames.**
+  jellyfin-web loads the fonts embedded in a video's ASS/SSA subtitles without
+  credentials, and the per-item check needs them, so on household hostnames it
+  draws those subtitles with its fallback fonts. The subtitles themselves
+  still show. Refusing an item's routes to a caller who cannot be checked is
+  allowed in a minor release by the household-check rule at the top of this
+  file.
+- **Quick Connect stops working on household hostnames.** On a Jellyfin that
+  has it enabled, it still works on Jellyfin's own address. Quick Connect
+  signs in without the membership check, so refusing it is allowed by the
+  household-check rule. The Streamyfin plugin's routes also stop answering on
+  household hostnames. On a Jellyfin without the plugin they were already
+  failures, so that changes failure responses only; with it, they handed any
+  signed-in user Seerr's API key, and with it a way around the household
+  app's own checks on what is requested, so refusing them is allowed by the
+  household-check rule.
+- **A playlist can no longer be shared by naming the recipient in the path**
+  (`/Playlists/{id}/Users/{userId}`) on a household hostname. Sharing through
+  the playlist itself (`POST /Playlists` and `POST /Playlists/{id}` with
+  `Users[].UserId`), which is what jellyfin-web 10.11 does, is unaffected.
+  Every request that names a user other than the caller is refused, because
+  Jellyfin trusts some of them for the caller; that is a household-check
+  bypass under the rule at the top of this file.
+- **Oddly encoded paths get `400`.** A path Jellyfin might read otherwise than
+  the gateway (an encoded slash, a `.` or `..` segment, invalid
+  percent-encoding and the like; the Security section has the full list) gets
+  `400 {"error":"invalid_request"}` and never reaches Jellyfin. Browsers and
+  Jellyfin clients do not send these; they are the spellings a household
+  check could be skipped by, so refusing them is allowed by the
+  household-check rule.
+- **Some household requests take one more round trip to Jellyfin.** Every
+  request on a household hostname that names an item or a user (most of what
+  a Jellyfin client asks for while browsing and playing, HLS segments
+  included) is checked with Jellyfin's `GET /Users/Me`, plus one lookup per
+  item it names, before it is sent on. Those answers are not cached yet, so
+  each such request waits for them. This changes no answer, only how long one
+  takes, so no part of the public interface the versioning rule covers.
+- **To roll back,** set `JELLYPASS_IMAGE` back to
+  `ghcr.io/nicklongmore86/jellypass:3.1.1` and recreate the container. No
+  state-file or setting change is needed, but rolling back re-opens every
+  issue listed above.
+
+Known follow-ups, for a later release:
+
+- **Live TV:** the household gateway does not yet check a user ID sent in the
+  body of Jellyfin's `POST /LiveTv/Programs`. Live TV is not part of the
+  setup this project documents; do not enable Live TV in a Jellyfin that
+  household hostnames reach until a release refuses it.
+- **A short identity cache:** remembering, briefly, who a set of credentials
+  belongs to would remove most of the extra round trips above.
 
 ### Security
 
@@ -155,7 +233,7 @@ and the admin host are unaffected.
   `/Streamyfin` and every path below it is a fixed
   `404 {"error":"not_found"}` with `Cache-Control: no-store` and never reaches
   Jellyfin, so the plugin, if installed, cannot hand its settings (Seerr's API
-  key among them) to household users.
+  key among them) to household users. Allowed in a minor release by the household-check rule at the top of this file.
 - Both are matched as Jellyfin 10.11 routes them, like every household check
   above. A WebSocket upgrade to any of these paths is answered `404` and never
   reaches Jellyfin. The main Jellyfin site and the admin host are unaffected.
@@ -1888,7 +1966,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.1.1...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.2.0...HEAD
+[3.2.0]: https://github.com/nicklongmore86/jellypass/compare/v3.1.1...v3.2.0
 [3.1.1]: https://github.com/nicklongmore86/jellypass/compare/v3.1.0...v3.1.1
 [3.1.0]: https://github.com/nicklongmore86/jellypass/compare/v3.0.1...v3.1.0
 [3.0.1]: https://github.com/nicklongmore86/jellypass/compare/v3.0.0...v3.0.1
