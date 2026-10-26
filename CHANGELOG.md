@@ -87,6 +87,23 @@ patch release may carry.
   above. A WebSocket upgrade to any of these paths is answered `404` and never
   reaches Jellyfin. The main Jellyfin site and the admin host are unaffected.
 
+### Added
+
+- Household app API: `GET /jellypass/app/v1/me` also answers `apiVersion`, the revision of the `v1` API the server
+  speaks (an integer, `1`; it goes up by one with each release that adds a field or endpoint, never down), so a native
+  client can ask for a server update instead of failing. Additive: `name` and `household` are unchanged, and the PWA
+  does not read it.
+- Household app API: a machine-readable contract, `docs/app-api/v1.openapi.json` (OpenAPI 3.1), describing every `v1`
+  endpoint and answer, errors included. A test checks every endpoint's answers against it, so an undeclared or missing
+  field fails CI.
+- Household app API: `docs/app-api/fetch-budget.json` and a test that pin the calls the app makes when Home opens under
+  All, Movies and TV and when a title or season page opens, so a change cannot quietly use more of the per-address
+  budget a household's devices share.
+- Docs: a native-client contract in `docs/app-design.md` ("Native clients (contract)"): one household per address and
+  never a list of households, the token header only (no cookies, no token in URLs, no CORS), the required sign-in client
+  fields, device-only token storage, fixed errors and wording, the identical **Get this** outcome, and the budgets. `v1`
+  only ever gains fields and endpoints; removing, renaming or changing the meaning of anything needs `/jellypass/app/v2`.
+
 ## [3.1.1] - 2026-10-26
 
 This is a patch release for the admin UI only. There is nothing to configure:

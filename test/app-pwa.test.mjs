@@ -10,6 +10,7 @@ import { describe, it } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import { parseHTML } from 'linkedom';
+import { APP_BUDGET_WINDOW_MS, APP_BURST_WINDOW_MS, MAX_APP_REQUESTS_PER_CLIENT, MAX_APP_REQUESTS_PER_HOUSEHOLD_BURST, MAX_APP_REQUESTS_PER_USER } from '../dist/app-api.js';
 import { APP_CONTENT_SECURITY_POLICY, APP_PERMISSIONS_POLICY } from '../dist/app-assets.js';
 import { buildApp, contentHash, stampWorker } from '../scripts/build-app.mjs';
 import { ALICE, ANN, BOB, CAROL, HOST_A, HOST_B, OUTSIDER, OWN_MOVIE, T_MOVIE, T_TV, TOKENS, get, otherHouseholdWorlds, post, startApp, world } from './support/household-app.mjs';
@@ -1998,6 +1999,8 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       Servers: [{ ManualAddress: origin, AccessToken: TOKENS[user], UserId: user }],
     })]] : []));
     const requests = [];
+    // Calls not yet answered, and answers whose body the page is still reading: none means nothing is under way.
+    let pending = 0;
     let meRead = false;
     const location = {
       origin,
@@ -2079,11 +2082,26 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         fetch: async (url, init = {}) => {
           requests.push({ url, init });
           if (init.signal?.aborted) throw new DOMException('aborted', 'AbortError');
-          if (holdMe && url === '/jellypass/app/v1/me') await holdMe;
-          const answer = (await override?.(url, init)) ?? await (init.method === 'POST'
-            ? post(app.port, url, { Host: host, ...init.headers }, init.body ? JSON.parse(init.body) : undefined)
-            : get(app.port, url, { Host: host, ...init.headers }));
+          pending += 1;
+          let answer;
+          try {
+            if (holdMe && url === '/jellypass/app/v1/me') await holdMe;
+            answer = (await override?.(url, init)) ?? await (init.method === 'POST'
+              ? post(app.port, url, { Host: host, ...init.headers }, init.body ? JSON.parse(init.body) : undefined)
+              : get(app.port, url, { Host: host, ...init.headers }));
+          } finally {
+            pending -= 1;
+          }
           const response = new Response(answer.body, { status: answer.status, headers: answer.headers });
+          const read = response.json.bind(response);
+          response.json = async () => {
+            pending += 1;
+            try {
+              return await read();
+            } finally {
+              pending -= 1;
+            }
+          };
           if (url === '/jellypass/app/v1/me') {
             // The signal that /me is fully back: the page has read its body. `until` polls on timers, so the page's continuation has run by the time it sees this.
             const json = response.json.bind(response);
@@ -2151,7 +2169,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       screen.replaceChildren = function (...nodes) { replace.apply(this, nodes); clampScroll(); };
     }
     const back = () => document.getElementById('back');
-    return { document, Event, until, go, main, requests, resizeBand, resizers, watched, reveal, observers, meRead: () => meRead, store, location, back, entries, cursor: () => index, scroll, sessionWrites, history: globals.history, window: globals.window, serialize: () => document.documentElement.outerHTML, listeners, focused: () => focused };
+    return { document, Event, until, go, main, requests, resizeBand, resizers, watched, reveal, observers, meRead: () => meRead, pending: () => pending, store, location, back, entries, cursor: () => index, scroll, sessionWrites, history: globals.history, window: globals.window, serialize: () => document.documentElement.outerHTML, listeners, focused: () => focused };
   }
 
   it('shows the four discover rows with each title\'s badge and no Play button on the cards', async (t) => {
@@ -2334,6 +2352,69 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     await page.until(() => page.document.querySelector('#row-network-213-heading'), 'Netflix');
     await pause(50);
     assert.deepEqual(page.requests.slice(6).map((request) => request.url), ['/jellypass/app/v1/discover/upcoming-tv', '/jellypass/app/v1/discover/network/213/all']);
+  });
+
+  describe('fetch budget', () => {
+    // How many app API calls each screen makes when opened, pinned in docs/app-api/fetch-budget.json: a household's
+    // devices share one address's budget (300 calls in 5 minutes), so a change that makes the app chattier fails here
+    // and has to change that file, where a native client reads the same numbers.
+    const BUDGET = JSON.parse(readFileSync(path.join(import.meta.dirname, '..', 'docs', 'app-api', 'fetch-budget.json'), 'utf8'));
+    // As `METHOD /path` without the prefix, a title's ID as `{tmdbId}` and a season's number as `{n}`, sorted (rows load in parallel).
+    const calls = (page, from = 0) => page.requests.slice(from).map((request) => `${request.init.method ?? 'GET'} ${request.url.replace('/jellypass/app/v1', '').replace(/^\/(movie|tv)\/[0-9]+/, '/$1/{tmdbId}').replace(/\/season\/[0-9]+$/, '/season/{n}')}`).sort();
+    const settled = async (page) => {
+      // Every call answered and read, and nothing more asked for once the page has drawn what it read.
+      let count;
+      do {
+        count = page.requests.length;
+        await page.until(() => page.pending() === 0, 'every call answered and read');
+        await new Promise((resolve) => setImmediate(resolve));
+      } while (page.requests.length !== count || page.pending() !== 0);
+    };
+    async function revealAll(page) {
+      const waiting = () => [...page.main().querySelectorAll('[data-lazy="waiting"]')];
+      await page.until(() => waiting().every((slot) => page.watched().includes(slot.getAttribute('data-key'))), 'every waiting row observed');
+      for (const slot of waiting()) page.reveal(slot.getAttribute('data-key'));
+      await page.until(() => page.main().querySelectorAll('[data-lazy="waiting"], [data-lazy="loading"]').length === 0, 'every lazy row drawn');
+    }
+
+    it('is written down for every screen it pins, and only those, with the server\'s own budgets', () => {
+      assert.deepEqual(BUDGET.limits, {
+        perAddress: { calls: MAX_APP_REQUESTS_PER_CLIENT, windowSeconds: APP_BUDGET_WINDOW_MS / 1000 },
+        perMember: { calls: MAX_APP_REQUESTS_PER_USER, windowSeconds: APP_BUDGET_WINDOW_MS / 1000 },
+        perHousehold: { calls: MAX_APP_REQUESTS_PER_HOUSEHOLD_BURST, windowSeconds: APP_BURST_WINDOW_MS / 1000 },
+      });
+      assert.deepEqual(Object.keys(BUDGET.screens).sort(), ['home-all', 'home-movies', 'home-tv', 'movie', 'season', 'series']);
+      for (const [name, screen] of Object.entries(BUDGET.screens)) {
+        assert.equal(screen.calls, screen.atOnce.length + (screen.belowTheFold?.length ?? 0), name);
+      }
+    });
+
+    for (const [name, hash] of [['home-all', '#/'], ['home-movies', '#/?kind=movies'], ['home-tv', '#/?kind=tv']]) {
+      it(`Home (${name.slice(5)}), opened directly: the calls at once, then each lazy row once`, async (t) => {
+        const app = await startApp(t);
+        const page = await openApp(t, app, { hash });
+        await page.until(() => page.main().querySelector('.hero-slide') && page.main().querySelectorAll('[data-lazy]').length > 0, 'Home');
+        await settled(page);
+        const atOnce = calls(page);
+        await revealAll(page);
+        await settled(page);
+        const expected = BUDGET.screens[name];
+        assert.deepEqual(atOnce, expected.atOnce);
+        assert.deepEqual(calls(page, atOnce.length), expected.belowTheFold);
+        assert.equal(page.requests.length, expected.calls);
+      });
+    }
+
+    for (const [name, hash] of [['movie', `#/movie/${T_MOVIE}`], ['series', `#/tv/${T_TV}`], ['season', `#/tv/${T_TV}/season/1`]]) {
+      it(`a ${name} page, opened directly`, async (t) => {
+        const app = await startApp(t);
+        const page = await openApp(t, app, { hash });
+        await page.until(() => page.main().querySelector('article.detail, .season-list, .episode-list'), name);
+        await settled(page);
+        assert.deepEqual(calls(page), BUDGET.screens[name].atOnce);
+        assert.equal(page.requests.length, BUDGET.screens[name].calls);
+      });
+    }
   });
 
   describe('Home\'s All | Movies | TV switch', () => {
