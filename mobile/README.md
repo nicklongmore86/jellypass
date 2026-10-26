@@ -327,7 +327,7 @@ docs only say "set up credentials locally first":
    Expo organization) and `jellypass`.
 2. **Expo token.** At [expo.dev/settings/access-tokens](https://expo.dev/settings/access-tokens) create a token for
    GitHub Actions ([Programmatic access](https://docs.expo.dev/accounts/programmatic-access/)). The token must belong
-   to an account that is a member of the `rtc-services-llc` organization with permission to build (Owner, Admin or
+   to an account that is a member of the `rtc-services-llc` organization with permission to build (Owner, Admin, Release Manager or
    Developer): a personal token of `nicklongmore86` works while that account holds one of those roles. An
    organization robot user's token with the Developer role (created under the organization's settings) is
    narrower.
