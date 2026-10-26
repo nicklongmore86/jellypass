@@ -126,8 +126,8 @@ main {
   background: var(--surface); border-top: 1px solid var(--hairline); border-radius: var(--radius-sheet) var(--radius-sheet) 0 0;
 }
 .tabbar a {
-  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.2rem;
-  min-height: 3.5rem; padding: 0.25rem; border: 1.5px solid transparent; border-radius: var(--radius-card);
+  flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 0.2rem; text-align: center;
+  min-height: 3.5rem; padding: 0.4rem 0.125rem 0.25rem; border: 1.5px solid transparent; border-radius: var(--radius-card);
   color: var(--muted); text-decoration: none; font-size: 0.75rem; font-weight: 700; line-height: 1.1; touch-action: manipulation;
 }
 .tabbar a[aria-current='page'] { background: var(--accent-tint); border-color: var(--accent); color: var(--accent-text); }
