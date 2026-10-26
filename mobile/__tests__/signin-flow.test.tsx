@@ -41,10 +41,10 @@ function LinkProbe() {
   return null;
 }
 
-async function start(routes: Routes) {
+async function start(routes: Routes, now = () => Date.parse('2026-10-26T12:00:00Z')) {
   const gateway = fakeGateway(routes);
   await render(
-    <SessionProvider deps={{ fetch: gateway.fetch, identity: async () => IDENTITY, now: () => Date.parse('2026-10-26T12:00:00Z') }}>
+    <SessionProvider deps={{ fetch: gateway.fetch, identity: async () => IDENTITY, now }}>
       <LinkProbe />
       <Root />
     </SessionProvider>,
@@ -346,6 +346,67 @@ describe("a 429's Retry-After", () => {
   });
 });
 
+describe('a sign-in that finishes after the app moved on', () => {
+  // A setup link to another household is accepted while a sign-in is out: the old household's answer must not sign the
+  // app in there, nor start /me; its token is revoked at the household it came from.
+  const STALE = 'synthetic-stale-token-0001';
+
+  function deferred() {
+    let resolve!: (response: ReturnType<typeof answer>) => void;
+    const promise = new Promise<ReturnType<typeof answer>>((done) => (resolve = done));
+    return { promise, resolve };
+  }
+
+  async function acceptOtherHousehold() {
+    await openLink(OTHER_ORIGIN);
+    await press('Continue');
+    await settle();
+    expect(shows('jelly-elsewhere.example.test')).toBe(true);
+  }
+
+  function expectRevokedOnly(gateway: Awaited<ReturnType<typeof start>>) {
+    expect(storedSession()).toBeUndefined();
+    expect(gateway.routes()).not.toContain('GET /jellypass/app/v1/me');
+    const logouts = gateway.calls.filter((call) => call.route === 'POST /Sessions/Logout');
+    expect(logouts.map((call) => [call.url, call.init.headers.Authorization])).toEqual([[`${ORIGIN}/Sessions/Logout`, `MediaBrowser Token="${STALE}"`]]);
+    expect(shows('Choose your profile to sign in.')).toBe(true);
+    expect(shows('jelly-elsewhere.example.test')).toBe(true);
+    expect(shows('Synthetic Member · Synthetic Household')).toBe(false);
+  }
+
+  it('while the sign-in is out: not kept, no /me, revoked at the original household', async () => {
+    const pending = deferred();
+    const gateway = await toPicker({ ...HOUSEHOLD, 'POST /Users/AuthenticateByName': () => pending.promise });
+    await press('Ana Lima');
+    await settle();
+    await acceptOtherHousehold();
+    pending.resolve(signedInAnswer('Ana Lima', STALE));
+    await settle();
+    expectRevokedOnly(gateway);
+    expect(store.setItemAsync).not.toHaveBeenCalledWith('jellypass.session', expect.anything(), expect.anything());
+  });
+
+  it('while the sign-in is being kept: forgotten again, no /me, revoked at the original household', async () => {
+    const gateway = await toPicker({ ...HOUSEHOLD, 'POST /Users/AuthenticateByName': () => signedInAnswer('Ana Lima', STALE) });
+    let written!: () => void;
+    store.setItemAsync.mockImplementationOnce(
+      (key: string, value: string, options: unknown) =>
+        new Promise<void>((done) => {
+          written = () => {
+            store.__items.set(key, { value, options });
+            done();
+          };
+        }),
+    );
+    await press('Ana Lima');
+    await settle();
+    await acceptOtherHousehold();
+    written();
+    await settle();
+    expectRevokedOnly(gateway);
+  });
+});
+
 describe('at start', () => {
   it('checks a kept sign-in with GET /me and shows who and which household', async () => {
     keepSession(TOKEN, ORIGIN);
@@ -378,6 +439,40 @@ describe('at start', () => {
     await press('Try again');
     await settle();
     expect(shows('Synthetic Member · Synthetic Household')).toBe(true);
+  });
+});
+
+describe("a 429's Retry-After at start", () => {
+  afterEach(() => jest.useRealTimers());
+
+  it('holds Try again until it has passed, and never checks again by itself', async () => {
+    jest.useFakeTimers();
+    keepSession(TOKEN, ORIGIN);
+    let checks = 0;
+    const gateway = await start(
+      { ...HOUSEHOLD, 'GET /jellypass/app/v1/me': () => (++checks === 1 ? answer(429, { error: 'too_many_requests' }, { 'Retry-After': '30' }) : ME()) },
+      () => Date.now(),
+    );
+    expect(shows(STALLED_TEXT.rate_limited)).toBe(true);
+    expect(isDisabled('Try again')).toBe(true);
+    await press('Try again');
+    await act(async () => jest.advanceTimersByTime(29_000));
+    expect(isDisabled('Try again')).toBe(true);
+    expect(gateway.routes()).toEqual(['GET /jellypass/app/v1/me']);
+    await act(async () => jest.advanceTimersByTime(1000));
+    expect(isDisabled('Try again')).toBe(false);
+    await act(async () => jest.advanceTimersByTime(60_000));
+    expect(gateway.routes()).toEqual(['GET /jellypass/app/v1/me']);
+    await press('Try again');
+    await settle();
+    expect(shows('Synthetic Member · Synthetic Household')).toBe(true);
+    expect(gateway.routes()).toEqual(['GET /jellypass/app/v1/me', 'GET /jellypass/app/v1/me']);
+  });
+
+  it('without one, holds nothing', async () => {
+    keepSession(TOKEN, ORIGIN);
+    await start({ ...HOUSEHOLD, 'GET /jellypass/app/v1/me': () => answer(429, { error: 'too_many_requests' }) });
+    expect(isDisabled('Try again')).toBe(false);
   });
 });
 

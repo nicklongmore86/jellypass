@@ -28,7 +28,7 @@ function failureOf(error: unknown): SignInError {
 
 export function SignInScreen({ address, expired }: { address: HouseholdAddress; expired: boolean }) {
   const session = useSession();
-  const { signInApi, completeSignIn, changeHousehold } = session;
+  const { signInApi, completeSignIn, changeHousehold, epoch } = session;
   const [api] = useState(() => signInApi(address));
   const [step, setStep] = useState<Step>({ kind: 'loading' });
   const [profiles, setProfiles] = useState<Profile[]>([]);
@@ -88,9 +88,11 @@ export function SignInScreen({ address, expired }: { address: HouseholdAddress; 
   async function attempt(username: string, secret: string): Promise<SignInError | undefined> {
     setBusy(true);
     setMessage('');
+    // Where the app is as the sign-in goes out: if it has moved on by the answer, the sign-in is not kept.
+    const sentAt = epoch();
     try {
       const result = await api.signIn(username, secret);
-      await completeSignIn(address, result);
+      await completeSignIn(address, result, sentAt);
       return undefined;
     } catch (error) {
       const failure = failureOf(error);

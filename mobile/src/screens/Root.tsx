@@ -22,7 +22,7 @@ export function Root() {
     case 'signedIn':
       return <SignedInScreen me={phase.me} />;
     case 'stalled':
-      return <StalledScreen problem={phase.problem} />;
+      return <StalledScreen key={phase.retryAt ?? 'now'} problem={phase.problem} retryAt={phase.retryAt} />;
     case 'signingOut':
       return <Loading label="Signing out…" />;
   }

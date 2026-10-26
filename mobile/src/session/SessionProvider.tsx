@@ -3,7 +3,10 @@
 // changing household signs out first.
 //
 // - At start the kept sign-in (if any) is checked with GET /me: a 401 deletes it and shows the profile picker; no answer
-//   (or any other) keeps it and offers a retry.
+//   (or any other) keeps it and offers a retry, held until a 429's Retry-After has passed. Nothing retries by itself.
+// - A sign-in is kept only if the app is still where it was when the sign-in was sent (the same `epoch`). One that
+//   finishes after the app moved on (a setup link to another household accepted meanwhile) is not kept and starts no
+//   /me: its token is revoked at the household address it came from.
 // - A setup link is only ever offered: nothing happens until the member confirms it, and it never signs anyone in.
 // - Sign-out asks the gateway to forget the session (best effort, five seconds), then deletes the sign-in from the
 //   device whatever came of that.
@@ -27,7 +30,8 @@ export type Phase =
   | { kind: 'signin'; address: HouseholdAddress; expired: boolean }
   | { kind: 'checking'; session: StoredSession }
   | { kind: 'signedIn'; session: StoredSession; me: Me }
-  | { kind: 'stalled'; session: StoredSession; problem: StalledKind }
+  /** `retryAt`: when a 429 said to wait (its Retry-After), the time (ms) before which no retry is made. */
+  | { kind: 'stalled'; session: StoredSession; problem: StalledKind; retryAt?: number }
   | { kind: 'signingOut' };
 
 /** A setup link waiting for the member: the address it names, or `undefined` when it names none. */
@@ -54,9 +58,16 @@ export interface Session {
   chooseAddress: (address: HouseholdAddress) => void;
   /** Back to the address step, signing out first if signed in. */
   changeHousehold: () => Promise<void>;
-  /** Keeps a sign-in and checks it. Throws SignInError `storage` (having revoked the token) if it cannot be kept. */
-  completeSignIn: (address: HouseholdAddress, result: SignInResult) => Promise<void>;
-  /** Checks the kept sign-in again, after it stalled. */
+  /** The clock `retryAt` is on. */
+  now: () => number;
+  /** Where the app is now: read when a sign-in is sent, and handed back with its result to completeSignIn. */
+  epoch: () => number;
+  /**
+   * Keeps a sign-in and checks it, if the app is still at `epoch`; otherwise revokes it at `address` and resolves.
+   * Throws SignInError `storage` (having revoked the token) if it cannot be kept.
+   */
+  completeSignIn: (address: HouseholdAddress, result: SignInResult, epoch: number) => Promise<void>;
+  /** Checks the kept sign-in again, after it stalled (not before a 429's Retry-After has passed). */
   retry: () => void;
   signOut: () => Promise<void>;
   signInApi: (address: HouseholdAddress) => SignInApi;
@@ -89,13 +100,18 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
   const generation = useRef(0);
 
   const { fetch, identity = clientIdentity, now } = deps;
+  const clock = now ?? Date.now;
   const signInApi = useCallback(
     (address: HouseholdAddress) => createSignInApi({ address, identity, ...(fetch ? { fetch } : {}), ...(now ? { now } : {}) }),
     [fetch, identity, now],
   );
 
+  // The phase as of the last move, for an answer that comes back later.
+  const phaseRef = useRef<Phase>(phase);
+
   const move = useCallback((next: Phase) => {
     generation.current += 1;
+    phaseRef.current = next;
     setPhase(next);
     return generation.current;
   }, []);
@@ -114,10 +130,11 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
           if (generation.current === mine) move({ kind: 'signin', address: session.address, expired: true });
           return;
         }
-        move({ kind: 'stalled', session, problem: stalledKind(error) });
+        const wait = error instanceof ApiError ? error.retryAfterSeconds : undefined;
+        move({ kind: 'stalled', session, problem: stalledKind(error), ...(wait ? { retryAt: clock() + wait * 1000 } : {}) });
       }
     },
-    [fetch, now, move],
+    [fetch, now, clock, move],
   );
 
   useEffect(() => {
@@ -182,25 +199,42 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
         move({ kind: 'signin', address, expired: false });
       },
       changeHousehold: () => leave(() => ({ kind: 'address' })),
-      completeSignIn: async (address, result) => {
+      now: clock,
+      epoch: () => generation.current,
+      completeSignIn: async (address, result, epoch) => {
+        // The app moved on while this sign-in was out: it is not kept, and the household it came from forgets it.
+        const revoke = () => signInApi(address).signOut(result.token);
+        if (generation.current !== epoch) {
+          await revoke();
+          return;
+        }
         const session: StoredSession = { address, token: result.token, userId: result.userId, name: result.name };
         try {
           await writeSession(session);
         } catch {
           // Not kept, so not used: the gateway forgets it too.
-          await signInApi(address).signOut(result.token);
+          await revoke();
           throw new SignInError('storage');
+        }
+        if (generation.current !== epoch) {
+          // It moved on while the sign-in was being written. Nothing newer has been kept (that would have moved to a
+          // phase with a session), so the device forgets this one.
+          if (!sessionOf(phaseRef.current)) await clearSession();
+          await revoke();
+          return;
         }
         void check(session);
       },
       retry: () => {
         const session = sessionOf(phase);
-        if (session) void check(session);
+        if (!session) return;
+        if (phase.kind === 'stalled' && phase.retryAt !== undefined && clock() < phase.retryAt) return;
+        void check(session);
       },
       signOut: () => leave((session) => (session ? { kind: 'signin', address: session.address, expired: false } : { kind: 'address' })),
       signInApi,
     }),
-    [phase, offer, household, offerLink, leave, move, check, signInApi],
+    [phase, offer, household, offerLink, leave, move, check, signInApi, clock],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
