@@ -136,9 +136,12 @@ export const ADMIN_APP_JS = `
   };
   // While Jellyfin cannot answer the server's session check, the server keeps the session and allows another check
   // 30 seconds later: the UI keeps its view and asks again, backing off to two minutes, never while the tab is hidden.
+  // Time spent hidden does not count towards the wait: remaining holds what was left of it when the tab was hidden.
   const SESSION_RETRY_FIRST_MS = 30 * 1000;
   const SESSION_RETRY_MAX_MS = 2 * 60 * 1000;
-  const sessionRetry = { delay: 0, dueAt: 0, timer: null };
+  const sessionRetry = { delay: 0, dueAt: 0, remaining: null, timer: null };
+  // Changes when a session ends (sign-out, 401) or starts (sign-in): an answer to a request made before then has no effect.
+  let sessionEpoch = 0;
   const heroCopy = {
     dashboard: ['Jellyfin access', 'JellyPass dashboard', 'Monitor library access, audiences, and synchronization health.'],
     library: ['Jellyfin library', 'Your media library', 'Browse synchronized movies and series, then assign access in bulk.'],
@@ -171,8 +174,10 @@ export const ADMIN_APP_JS = `
     const config = options || {};
     const headers = new Headers(config.headers || {});
     if (config.body) headers.set('Content-Type', 'application/json');
+    const epoch = sessionEpoch;
     const response = await fetch(path, Object.assign({}, config, { headers }));
     const text = await response.text();
+    if (epoch !== sessionEpoch) throw staleAnswer();
     let body = {};
     try { body = text ? JSON.parse(text) : {}; } catch { body = { error: text }; }
     if (!response.ok) {
@@ -189,6 +194,13 @@ export const ADMIN_APP_JS = `
     // A successful answer means the session passed its check again.
     if (!noticeNode.hidden) sessionAvailable();
     return body;
+  }
+
+  // Thrown for an answer that arrived after its session ended or another began: callers show nothing for it.
+  function staleAnswer() {
+    const error = new Error('The session changed while this request was answered');
+    error.stale = true;
+    return error;
   }
 
   async function load() {
@@ -788,7 +800,7 @@ export const ADMIN_APP_JS = `
   async function busy(operation) {
     const enabledButtons = Array.from(document.querySelectorAll('button:not(:disabled)'));
     enabledButtons.forEach((button) => { button.disabled = true; });
-    try { await operation(); } catch (error) { toast(error.message || String(error), true); }
+    try { await operation(); } catch (error) { if (!error.stale) toast(error.message || String(error), true); }
     finally { enabledButtons.forEach((button) => { button.disabled = false; }); }
   }
 
@@ -806,24 +818,38 @@ export const ADMIN_APP_JS = `
     // The session is kept at the server, so the sign-in form is not shown.
     if (appView.hidden) loginView.hidden = true;
     setHealth('warning', 'Jellyfin unavailable');
-    if (sessionRetry.dueAt) return;
+    if (sessionRetry.timer || sessionRetry.remaining !== null) return;
     sessionRetry.delay = sessionRetry.delay ? Math.min(sessionRetry.delay * 2, SESSION_RETRY_MAX_MS) : SESSION_RETRY_FIRST_MS;
-    sessionRetry.dueAt = Date.now() + sessionRetry.delay;
+    sessionRetry.remaining = sessionRetry.delay;
     armSessionRetry();
   }
 
+  // Starts the wait that is left while the tab is shown, and pauses it, keeping what is left, while it is hidden.
   function armSessionRetry() {
-    clearTimeout(sessionRetry.timer);
-    sessionRetry.timer = null;
-    if (!sessionRetry.dueAt || document.visibilityState === 'hidden') return;
-    sessionRetry.timer = setTimeout(retrySession, Math.max(0, sessionRetry.dueAt - Date.now()));
+    if (document.visibilityState === 'hidden') {
+      if (!sessionRetry.timer) return;
+      clearTimeout(sessionRetry.timer);
+      sessionRetry.timer = null;
+      sessionRetry.remaining = Math.max(0, sessionRetry.dueAt - Date.now());
+      sessionRetry.dueAt = 0;
+      return;
+    }
+    if (sessionRetry.timer || sessionRetry.remaining === null) return;
+    sessionRetry.dueAt = Date.now() + sessionRetry.remaining;
+    sessionRetry.remaining = null;
+    sessionRetry.timer = setTimeout(retrySession, sessionRetry.dueAt - Date.now());
   }
 
-  function sessionAvailable() {
+  function clearSessionRetry() {
     clearTimeout(sessionRetry.timer);
     sessionRetry.timer = null;
     sessionRetry.dueAt = 0;
+    sessionRetry.remaining = null;
     sessionRetry.delay = 0;
+  }
+
+  function sessionAvailable() {
+    clearSessionRetry();
     noticeNode.hidden = true;
     noticeNode.textContent = '';
     if (!appView.hidden) updateHealth();
@@ -833,13 +859,15 @@ export const ADMIN_APP_JS = `
     sessionRetry.timer = null;
     sessionRetry.dueAt = 0;
     const connected = !appView.hidden;
+    const epoch = sessionEpoch;
     try {
       await api('/auth/session');
       if (!connected) {
         await load();
-        setConnected(true);
+        if (epoch === sessionEpoch) setConnected(true);
       }
     } catch (error) {
+      if (error.stale || epoch !== sessionEpoch) return;
       if (error.status === 401) setConnected(false);
       // Anything else (JellyPass unreachable, or a load that failed) is asked again later.
       else sessionUnavailable();
@@ -848,8 +876,14 @@ export const ADMIN_APP_JS = `
 
   document.addEventListener('visibilitychange', armSessionRetry);
 
+  // A session that ends invalidates the answers still on their way, so none of them can show a view, notice or retry.
+  function endSession() {
+    sessionEpoch += 1;
+    sessionAvailable();
+  }
+
   function setConnected(connected) {
-    if (!connected) sessionAvailable();
+    if (!connected) endSession();
     loginView.hidden = connected;
     appView.hidden = !connected;
     byId('logout').hidden = !connected;
@@ -881,10 +915,14 @@ export const ADMIN_APP_JS = `
     byId('login-error').textContent = '';
     try {
       await api('/auth/login', { method: 'POST', body: JSON.stringify({ username: byId('username').value.trim(), password: byId('password').value }) });
+      // A new session: answers to requests made before it have no effect.
+      sessionEpoch += 1;
+      clearSessionRetry();
       await load();
       byId('password').value = '';
       setConnected(true);
     } catch (error) {
+      if (error.stale) return;
       byId('login-error').textContent = ['invalid_credentials', 'unauthorized'].includes(error.code) ? errorText.invalid_credentials : error.message;
     }
   });
@@ -928,6 +966,7 @@ export const ADMIN_APP_JS = `
 
   scrollToTop();
   api('/auth/session').then(load).then(() => setConnected(true)).catch((error) => {
+    if (error.stale) return;
     // A session Jellyfin could not check is kept: the notice is shown and the check retried.
     if (error.status === 503 && error.code === 'session_check_unavailable') sessionUnavailable();
     else setConnected(false);

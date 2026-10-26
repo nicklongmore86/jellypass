@@ -14,10 +14,19 @@ const DATA = {
   '/v1/library': { status: 200, body: { items: [], lastSyncedAt: null } },
   '/v1/requests/recent': { status: 200, body: { requests: [] } },
 };
+const SYNCED = { status: 200, body: { items: [], lastSyncedAt: null } };
+const SESSION_CHECKS = (page) => page.requests.filter((request) => request === 'GET /auth/session').length;
+
+/** An answer held back until `resolve(reply)` is called. */
+function deferred() {
+  let resolve;
+  const promise = new Promise((done) => { resolve = done; });
+  return { promise, resolve };
+}
 
 /**
- * The admin UI's script run against its own page, with fetch answered by `answer(path, init)` and a manual clock:
- * timers only run when `advance` passes their time.
+ * The admin UI's script run against its own page, with fetch answered by `answer(path, init)` (a reply, or a promise
+ * of one) and a manual clock: timers only run when `advance` passes their time.
  */
 function adminPage(answer) {
   const { window, document } = parseHTML(ADMIN_HTML);
@@ -37,7 +46,7 @@ function adminPage(answer) {
   const requests = [];
   const fetch = async (path, init) => {
     requests.push(`${init?.method ?? 'GET'} ${path}`);
-    const reply = answer(path, init);
+    const reply = await answer(path, init);
     return { ok: reply.status >= 200 && reply.status < 300, status: reply.status, text: async () => JSON.stringify(reply.body) };
   };
   const context = {
@@ -58,9 +67,9 @@ function adminPage(answer) {
   return {
     requests,
     async settle() { for (let i = 0; i < 20; i += 1) await settle(); },
-    /** The retry timer's delay from now, in ms, or null when none is armed (the 4.2 s toast timer is not one). */
+    /** The session retry timer's delay from now, in ms, or null when none is armed. */
     pendingRetry() {
-      const delays = [...timers.values()].map((timer) => timer.at - now).filter((ms) => ms >= 30_000);
+      const delays = [...timers.values()].filter((timer) => timer.callback.name === 'retrySession').map((timer) => timer.at - now);
       return delays.length ? Math.min(...delays) : null;
     },
     async advance(ms) {
@@ -114,19 +123,38 @@ describe('admin UI while Jellyfin cannot answer the session check', () => {
     assert.ok(page.requests.includes('GET /v1/grants'), 'the data is loaded once the check passes');
   });
 
-  it('does not retry while the tab is hidden and resumes when it is shown', async () => {
+  it('does not retry while the tab is hidden, and waits the whole delay once it is shown', async () => {
     let session = UNAVAILABLE;
     const page = adminPage((path) => (path === '/auth/session' ? session : DATA[path]));
     await page.settle();
     await page.setVisibility('hidden');
     assert.equal(page.pendingRetry(), null);
     await page.advance(600_000);
-    assert.equal(page.requests.filter((request) => request === 'GET /auth/session').length, 1);
+    assert.equal(SESSION_CHECKS(page), 1);
     session = DATA['/auth/session'];
     await page.setVisibility('visible');
-    await page.advance(0);
-    assert.equal(page.requests.filter((request) => request === 'GET /auth/session').length, 2);
+    assert.equal(page.pendingRetry(), 30_000, 'hidden time does not count towards the wait');
+    await page.advance(29_999);
+    assert.equal(SESSION_CHECKS(page), 1);
+    await page.advance(1);
+    assert.equal(SESSION_CHECKS(page), 2);
     assert.equal(JSON.stringify(page.view()), JSON.stringify({ login: false, app: true, notice: '', connection: 'Library sync required' }));
+  });
+
+  it('keeps the part of the delay that was left when the tab was hidden', async () => {
+    const page = adminPage((path) => (path === '/auth/session' ? UNAVAILABLE : DATA[path]));
+    await page.settle();
+    await page.advance(10_000);
+    await page.setVisibility('hidden');
+    assert.equal(page.pendingRetry(), null);
+    await page.advance(10_000);
+    await page.setVisibility('visible');
+    assert.equal(page.pendingRetry(), 20_000);
+    await page.advance(19_999);
+    assert.equal(SESSION_CHECKS(page), 1);
+    await page.advance(1);
+    assert.equal(SESSION_CHECKS(page), 2);
+    assert.equal(page.pendingRetry(), 60_000);
   });
 
   it('keeps the connected view on an API call 503 with a friendly toast, then clears the notice on recovery', async () => {
@@ -176,5 +204,94 @@ describe('admin UI while Jellyfin cannot answer the session check', () => {
     page.click('reconcile-policies');
     await page.settle();
     assert.equal(JSON.stringify(page.view()), JSON.stringify({ login: true, app: false, notice: '', connection: 'Disconnected' }));
+  });
+});
+
+describe('admin UI answers that arrive after the session changed', () => {
+  const SIGNED_OUT = JSON.stringify({ login: true, app: false, notice: '', connection: 'Disconnected' });
+
+  it('ignores a late 503 after a sign-out: no notice, no retry, the sign-in form stays', async () => {
+    const sync = deferred();
+    const page = adminPage((path) => (path === '/v1/library/sync' ? sync.promise : path === '/auth/logout' ? { status: 200, body: {} } : DATA[path]));
+    await page.settle();
+    page.click('sync-library');
+    await page.settle();
+    page.click('logout');
+    await page.settle();
+    assert.equal(JSON.stringify(page.view()), SIGNED_OUT);
+
+    sync.resolve(UNAVAILABLE);
+    await page.settle();
+    assert.equal(JSON.stringify(page.view()), SIGNED_OUT);
+    assert.equal(page.pendingRetry(), null);
+    assert.equal(page.toast(), '');
+    await page.advance(600_000);
+    assert.equal(SESSION_CHECKS(page), 1);
+  });
+
+  it('ignores a late 503 after a 401', async () => {
+    const sync = deferred();
+    const page = adminPage((path) => (path === '/v1/library/sync' ? sync.promise : path.startsWith('/v1/reconcile') ? UNAUTHORIZED : DATA[path]));
+    await page.settle();
+    page.click('sync-library');
+    await page.settle();
+    page.click('reconcile-policies');
+    await page.settle();
+    assert.equal(JSON.stringify(page.view()), SIGNED_OUT);
+
+    sync.resolve(UNAVAILABLE);
+    await page.settle();
+    assert.equal(JSON.stringify(page.view()), SIGNED_OUT);
+    assert.equal(page.pendingRetry(), null);
+    assert.equal(page.toast(), 'Your session has ended. Sign in again.');
+  });
+
+  it('ignores a late 503 from a session check that was in flight at sign-out', async () => {
+    const check = deferred();
+    let session = DATA['/auth/session'];
+    const page = adminPage((path) => (path === '/auth/session' ? session : path.startsWith('/v1/reconcile') ? UNAVAILABLE : path === '/auth/logout' ? { status: 200, body: {} } : DATA[path]));
+    await page.settle();
+    page.click('reconcile-policies');
+    await page.settle();
+    session = check.promise;
+    await page.advance(30_000);
+    assert.equal(SESSION_CHECKS(page), 2);
+    page.click('logout');
+    await page.settle();
+    assert.equal(JSON.stringify(page.view()), SIGNED_OUT);
+
+    check.resolve(UNAVAILABLE);
+    await page.settle();
+    assert.equal(JSON.stringify(page.view()), SIGNED_OUT);
+    assert.equal(page.pendingRetry(), null);
+  });
+
+  it('does not show the app view or a toast for a late success after a sign-out', async () => {
+    const sync = deferred();
+    const grants = deferred();
+    let session = UNAVAILABLE;
+    const page = adminPage((path) => {
+      if (path === '/auth/session') return session;
+      if (path === '/v1/grants' && session !== UNAVAILABLE) return grants.promise;
+      if (path === '/v1/library/sync') return sync.promise;
+      if (path === '/auth/logout') return { status: 200, body: {} };
+      return DATA[path];
+    });
+    await page.settle();
+    // The retry's session check passes, and the data it loads is still on its way at sign-out.
+    session = DATA['/auth/session'];
+    await page.advance(30_000);
+    assert.ok(page.requests.includes('GET /v1/grants'));
+    page.click('sync-library');
+    page.click('logout');
+    await page.settle();
+    assert.equal(JSON.stringify(page.view()), SIGNED_OUT);
+
+    grants.resolve(DATA['/v1/grants']);
+    sync.resolve(SYNCED);
+    await page.settle();
+    assert.equal(JSON.stringify(page.view()), SIGNED_OUT);
+    assert.equal(page.toast(), '');
+    assert.equal(page.pendingRetry(), null);
   });
 });
