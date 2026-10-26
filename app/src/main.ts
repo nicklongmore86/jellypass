@@ -168,10 +168,38 @@ function kindOf(error: unknown): ApiErrorKind {
   return error instanceof ApiError ? error.kind : 'unavailable';
 }
 
+/** The fixed chrome's real heights go onto the root as custom properties through the CSSOM (no style attribute is written via markup or setAttribute; style-src 'self' allows CSSOM writes). At large text or zoom the header grows, the tab bar grows and the chips would wrap, so the scroll padding follows what is measured, not a one-row guess. The stylesheet's rem estimates stay as the fallback until then. */
+const watchers = new Map<string, ResizeObserver>();
+
+function measure(property: string, element: HTMLElement | null): void {
+  watchers.get(property)?.disconnect();
+  watchers.delete(property);
+  const root = doc.documentElement;
+  if (!element) {
+    root.style.removeProperty(property);
+    return;
+  }
+  const apply = (): void => {
+    const height = element.getBoundingClientRect().height;
+    if (height > 0) root.style.setProperty(property, `${height}px`);
+  };
+  apply();
+  if (typeof ResizeObserver === 'function') {
+    const watcher = new ResizeObserver(apply);
+    watcher.observe(element);
+    watchers.set(property, watcher);
+  }
+}
+
+measure('--header-box', doc.querySelector<HTMLElement>('.app-header'));
+measure('--tabbar-box', doc.querySelector<HTMLElement>('.tabbar'));
+
 /** `data-home-switch` is on the body whenever the sticky All | Movies | TV switch is on the page, hero or no hero, so the scroll padding that clears it never depends on the hero. */
 function markSwitch(): void {
-  if (main.querySelector('.home-switch')) doc.body.setAttribute('data-home-switch', '');
+  const band = main.querySelector<HTMLElement>('.home-switch');
+  if (band) doc.body.setAttribute('data-home-switch', '');
   else doc.body.removeAttribute('data-home-switch');
+  measure('--switch-height', band);
 }
 
 function show(...nodes: Node[]): void {
@@ -207,6 +235,24 @@ function focusHeading(): void {
 function appScrollTo(y: number): void {
   window.scrollTo(0, y);
   markScrolled();
+}
+/** The chosen Home chip, ring included, sits fully inside the chip row's horizontal scroll. Runs after the browser's own focus scroll and after the tick has changed the chips' widths (a frame later, so the final bounds are measured), and jumps rather than glides under reduced motion. */
+const CHIP_RING = 4; // the focus outline: 3px wide, 1px offset
+function revealChip(chip: HTMLElement | null): void {
+  const scroller = chip?.closest<HTMLElement>('.segmented-home');
+  if (!chip || !scroller) return;
+  const settle = (): void => {
+    const box = chip.getBoundingClientRect();
+    const view = scroller.getBoundingClientRect();
+    const over = box.right + CHIP_RING - (view.left + scroller.clientWidth);
+    const under = view.left - (box.left - CHIP_RING);
+    const by = under > 0 ? -under : over > 0 ? over : 0;
+    if (!by) return;
+    const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches === true;
+    scroller.scrollTo({ left: scroller.scrollLeft + by, behavior: reduced ? 'auto' : 'smooth' });
+  };
+  // Without frames there is no layout to measure (a test page), so there is nothing to reveal.
+  if (typeof window.requestAnimationFrame === 'function') window.requestAnimationFrame(() => window.requestAnimationFrame(settle));
 }
 function appScrollLeft(list: HTMLElement, left: number): void {
   list.scrollLeft = left;
@@ -510,7 +556,8 @@ async function home(filter: HomeFilter, signal: AbortSignal, current: () => bool
   const panelId = 'home-panel';
   const switcher = homeSwitch(doc, filter, panelId);
   const panel = el(doc, 'div', { attrs: { id: panelId, role: 'group', 'aria-labelledby': `home-filter-${filter}` } });
-  show(heading, heroSlot, switcher, panel);
+  show(heading, switcher, heroSlot, panel);
+  revealChip(switcher.querySelector<HTMLElement>('[aria-checked="true"]'));
 
   /** The studios and networks the API lists (no TMDB call), asked for once however often the filter changes. */
   let found: Sources | undefined;
@@ -648,7 +695,8 @@ async function home(filter: HomeFilter, signal: AbortSignal, current: () => bool
   const choose = (next: HomeFilter, focus: boolean): void => {
     const button = switcher.querySelector<HTMLElement>(`[data-filter="${next}"]`);
     if (focus) button?.focus();
-    if (next === chosen) return;
+    if (next === chosen) return revealChip(button);
+    // (revealChip runs again below once the selection has changed the chips' widths.)
     chosen = next;
     history.replaceState(history.state, '', homeHref(next));
     shownRoute = parse(location.hash);
@@ -659,6 +707,7 @@ async function home(filter: HomeFilter, signal: AbortSignal, current: () => bool
       radio.setAttribute('aria-checked', String(checked));
       radio.setAttribute('tabindex', checked ? '0' : '-1');
     }
+    revealChip(button);
     // The sticky control stays where it is; a member far down the page starts the new filter at its first row.
     const edge = heroSlot.offsetHeight || 0;
     if ((window.scrollY || 0) > edge) appScrollTo(edge);

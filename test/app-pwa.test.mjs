@@ -43,7 +43,7 @@ function BUILT(logical) {
 const shape = (answer) => ({ status: answer.status, text: answer.text, headers: { ...answer.headers, date: undefined } });
 
 describe('household app page: serving', { timeout: 30_000 }, () => {
-  it('styles Home\'s switch and the rows\' accent bars from tokens, with contrast, and no inline style', async () => {
+  it('styles Home\'s filter chips and the rows\' waterlines from tokens, with contrast, and no inline style', async () => {
     const css = read(BUILT('app.css'));
     const tokens = Object.fromEntries([...css.matchAll(/--([a-z0-9-]+):\s*(#[0-9a-f]{6});/gi)].map((match) => [match[1], match[2]]));
     const luminance = (hex) => {
@@ -56,39 +56,83 @@ describe('household app page: serving', { timeout: 30_000 }, () => {
       return (high + 0.05) / (low + 0.05);
     };
     const { ROW_ACCENTS, NETWORK_ACCENTS, homeHref } = await import(pathToFileURL(path.join(DIST_APP, BUILT('js/render.js'))).href);
-    // Every accent but the default has a class and a colour token; the bars are decorative, but still stand out from the page (3:1).
+    // Every accent but the default has a class and a colour token; the waterlines are decorative, but still stand out from the page and the card surface (3:1).
     assert.deepEqual([...ROW_ACCENTS].sort(), ['apple', 'default', 'disney', 'gold', 'hbo', 'hulu', 'netflix', 'paramount', 'peacock', 'prime']);
     for (const accent of ROW_ACCENTS.filter((name) => name !== 'default')) {
-      assert.ok(tokens[`bar-${accent}`], `--bar-${accent} is a token`);
-      assert.match(css, new RegExp(`\\.row-heading\\.accent-${accent}::before \\{ background: var\\(--bar-${accent}\\); \\}`), accent);
-      for (const under of ['bg', 'bg-glow', 'surface']) {
-        assert.ok(contrast(tokens[`bar-${accent}`], tokens[under]) >= 3, `${accent} bar on ${under}: ${contrast(tokens[`bar-${accent}`], tokens[under]).toFixed(2)}`);
+      assert.ok(tokens[`water-${accent}`], `--water-${accent} is a token`);
+      assert.match(css, new RegExp(`\\.row-heading\\.water-${accent}::after \\{ background: var\\(--water-${accent}\\); \\}`), accent);
+      for (const under of ['bg', 'surface']) {
+        assert.ok(contrast(tokens[`water-${accent}`], tokens[under]) >= 3, `${accent} waterline on ${under}: ${contrast(tokens[`water-${accent}`], tokens[under]).toFixed(2)}`);
       }
     }
-    // Eight services, eight different colours, none of them the all-time gold or the default purple.
+    // The default waterline runs aqua to coral; both ends stand out from the page (3:1), and coral is never text.
+    assert.match(css, /--waterline: linear-gradient\(90deg, var\(--accent\), var\(--coral\)\);/);
+    for (const end of ['accent', 'coral']) assert.ok(contrast(tokens[end], tokens.bg) >= 3 && contrast(tokens[end], tokens.surface) >= 3, `${end} waterline end`);
+    assert.doesNotMatch(css, /color: var\(--coral\)/);
+    // The line is a short pseudo-element under the heading (never a vertical bar), and there is no bar left.
+    assert.match(css, /\.row-heading::after \{[^}]*width: 2\.75rem; height: 0\.25rem;[^}]*background: var\(--waterline\)/);
+    assert.doesNotMatch(css, /\.row-heading[^{]*::before/);
+    // Eight services, eight different colours, none of them the all-time gold or the default waterline.
     assert.deepEqual(Object.keys(NETWORK_ACCENTS).map(Number).sort((a, b) => a - b), [213, 453, 1024, 2552, 2739, 3186, 3353, 4330]);
     assert.equal(new Set(Object.values(NETWORK_ACCENTS)).size, 8);
-    assert.equal(new Set(Object.values(NETWORK_ACCENTS).map((name) => tokens[`bar-${name}`])).size, 8, 'no two services share a colour');
+    assert.equal(new Set(Object.values(NETWORK_ACCENTS).map((name) => tokens[`water-${name}`])).size, 8, 'no two services share a colour');
     assert.ok(!Object.values(NETWORK_ACCENTS).includes('gold') && !Object.values(NETWORK_ACCENTS).includes('default'));
-    assert.match(css, /\.row-heading::before \{[^}]*background: var\(--accent-gradient\)/, 'the default bar is the app\'s purple');
-    // No text is ever drawn in a bar colour: it is a background, and only on a heading's ::before.
-    for (const [, property] of css.matchAll(/([a-z-]+): var\(--bar-/g)) assert.equal(property, 'background');
-    // The switch: sticky just under the glass header and the status bar, below the header's own layer; the chosen one filled, dark on the accent.
-    assert.match(css, /\.home-switch \{[^}]*position: sticky;[^}]*z-index: 5;[^}]*top: calc\(3\.75rem \+ env\(safe-area-inset-top\) \+ 0\.25rem\)/);
-    assert.match(css, /\.app-header \{[^}]*position: sticky;[^}]*z-index: 10/);
-    assert.match(css, /\.segmented-home \{[^}]*background: var\(--material\)/);
-    assert.match(css, /\.segmented-home \.segment\[aria-checked='true'\] \{ background: var\(--accent-gradient\); color: var\(--on-accent\)/);
-    assert.ok(contrast(tokens['on-accent'], tokens.accent) >= 4.5 && contrast(tokens['on-accent'], tokens['accent-2']) >= 4.5);
+    // No text is ever drawn in a waterline colour: it is a background, and only on a heading's ::after.
+    for (const [, property] of css.matchAll(/([a-z-]+): var\(--water-/g)) assert.equal(property, 'background');
+    // The filter: a solid band that sticks just under the solid header and the status bar, below the header's own layer.
+    assert.match(css, /\.home-switch \{[^}]*position: sticky;[^}]*z-index: 5;[^}]*top: var\(--header-box\)/);
+    assert.match(css, /\.home-switch \{[^}]*background: var\(--bg\)/);
+    assert.match(css, /\.app-header \{[^}]*position: sticky;[^}]*z-index: 10;[^}]*background: var\(--bg\)/);
+    // Outlined squircle chips; the chosen one is tinted aqua with an accent border and its tick, text on the tint at 4.5:1.
+    assert.match(css, /\.segment \{[^}]*border: 1\.5px solid var\(--hairline\); border-radius: var\(--radius-chip\); background: transparent;/);
+    assert.match(css, /\.segment\[aria-selected='true'\], \.segment\[aria-checked='true'\] \{ background: var\(--accent-tint\); border-color: var\(--accent\); color: var\(--accent-text\); \}/);
+    assert.match(css, /\.segment\[aria-checked='true'\] \.icon \{ display: block; \}/);
+    for (const [foreground, background] of [['accent-text', 'accent-tint'], ['muted', 'bg'], ['on-accent', 'accent']]) {
+      assert.ok(contrast(tokens[foreground], tokens[background]) >= 4.5, `${foreground} on ${background}: ${contrast(tokens[foreground], tokens[background]).toFixed(2)}`);
+    }
+    // The chosen chip's border and the chips' outline stand out from the page as non-text (3:1): the accent border; the muted text carries the rest.
+    assert.ok(contrast(tokens.accent, tokens['accent-tint']) >= 3 && contrast(tokens.accent, tokens.bg) >= 3);
     assert.match(css, /\.segment \{[^}]*min-height: 2\.75rem/, 'a touch target of at least 44px');
-    // A focused card clears the floating switch as well as the header while Home is on show (#42's scroll padding, plus the switch).
-    assert.match(css, /scroll-padding-top: calc\(3\.75rem \+ env\(safe-area-inset-top\) \+ 0\.5rem\)/);
-    assert.match(css, /:root:has\(body\[data-home-switch\]\) \{ scroll-padding-top: calc\(3\.75rem \+ env\(safe-area-inset-top\) \+ 0\.25rem \+ 3\.15rem \+ 0\.5rem\); \}/);
-    assert.match(css, /@supports not \(\(-webkit-backdrop-filter: blur\(1px\)\) or \(backdrop-filter: blur\(1px\)\)\)[^@]*\.segmented-home[^@]*background: var\(--surface\)/);
+    // A focused card clears the header, and on Home the band under it too (#42's scroll padding, plus the band).
+    assert.match(css, /--header-height: 3\.75rem;/);
+    assert.match(css, /--switch-height: 3\.875rem;/);
+    assert.match(css, /scroll-padding-top: calc\(var\(--header-box\) \+ 0\.5rem\)/);
+    assert.match(css, /:root:has\(body\[data-home-switch\]\) \{ scroll-padding-top: calc\(var\(--header-box\) \+ var\(--switch-height\) \+ 0\.5rem\); \}/);
+    assert.doesNotMatch(css, /backdrop-filter/, 'no glass');
     assert.equal(homeHref('all'), '#/');
     assert.equal(homeHref('movies'), '#/?kind=movies');
     assert.equal(homeHref('tv'), '#/?kind=tv');
-    // The scripts set no style, as the CSP forbids: every bar colour is a class.
-    for (const file of FILES.filter((name) => name.startsWith('js/'))) assert.doesNotMatch(read(file), /\.style\b|setAttribute\(['"]style/, file);
+    // The scripts set no style attribute, as the CSP forbids: every waterline colour is a class. No style attributes are written via markup or setAttribute; the root's custom properties are set via the CSSOM, which style-src allows. The one exemption is the root-measurement helper in main.js (measure) and only the three properties --header-box, --tabbar-box and --switch-height.
+    for (const file of FILES.filter((name) => name.startsWith('js/'))) {
+      let rest = read(file);
+      if (/^js\/main\./.test(file)) {
+        const helper = rest.match(/function measure\(property, element\) \{[^]*?\n\}\n/);
+        assert.ok(helper, 'the measure helper');
+        assert.equal(helper[0].match(/\.style\b/g).length, 2, 'only the remove and set calls');
+        assert.equal((helper[0].match(/\bstyle\.(?:setProperty|removeProperty)\(property\b/g) || []).length, 2);
+        rest = rest.replace(helper[0], '');
+        const callers = [...rest.matchAll(/\bmeasure\((['"])([^'"]+)\1/g)].map((hit) => hit[2]).sort();
+        assert.deepEqual(callers, ['--header-box', '--switch-height', '--tabbar-box']);
+      }
+      assert.doesNotMatch(rest, /\.style\b|setAttribute\(['"]style/, file);
+    }
+  });
+
+  it('is the Tidepool look and nothing left of the old one: no indigo, purple, glass, gradient capsule, accent bar or dot', () => {
+    const css = read(BUILT('app.css'));
+    for (const old of ['#8b7bff', '#0d0f24', '#c4bbff', '#5fa8ff', '#1b1740', '#b25cff']) assert.ok(!css.toLowerCase().includes(old), `${old} is gone`);
+    assert.doesNotMatch(css, /--(?:accent-gradient|accent-2|bg-glow|material|material-header|blur|radius-pill|scrim-top|bar-[a-z]+|pill-neutral-[a-z]+|pill-[a-z]+-glass):/);
+    assert.doesNotMatch(css, /accent-gradient|var\(--blur\)|var\(--material|radius-pill|\.accent-[a-z]+|-glass\b/);
+    // No gradient on any control: the button is solid aqua with on-accent text; gradients are the waterline, the brand mark, scrims, skeletons and image fallbacks only.
+    assert.match(css, /\.button \{[^}]*background: var\(--accent\); color: var\(--on-accent\)/);
+    assert.match(css, /\.button-secondary \{ background: transparent; color: var\(--accent-text\); border: 1\.5px solid var\(--accent\); \}/);
+    assert.doesNotMatch(css, /\.(?:button|segment|badge|chip|tabbar|home-switch)[^{]*\{[^}]*gradient/);
+    // The tab bar is not a floating pill and carries no dot; the page has no glow behind it.
+    assert.doesNotMatch(css, /\.tabbar a\[aria-current='page'\]::after|body::before/);
+    // Heavy titles and squircle radii.
+    assert.match(css, /--radius-chip: 12px;\s*--radius-poster: 20px;\s*--radius-card: 20px;\s*--radius-backdrop: 24px;\s*--radius-sheet: 30px;/);
+    assert.match(css, /\.screen-title \{[^}]*font-weight: 800/);
+    assert.match(css, /\.row-heading \{[^}]*font-weight: 800/);
   });
 
   it('serves the page and every file it needs on household hosts, with no credentials and no upstream calls', async (t) => {
@@ -535,13 +579,13 @@ describe('household app page: files', () => {
     const ratio = (a, b) => contrast(tokens[a], tokens[b]);
     const pairs = [
       // Text on the page, on its glow and on cards.
-      ['text', 'bg'], ['text', 'bg-glow'], ['text', 'surface'], ['text', 'surface-raised'],
-      ['muted', 'bg'], ['muted', 'bg-glow'], ['muted', 'surface'], ['muted', 'surface-raised'],
-      // The accent as text (the active tab, links) and as the button: dark text on both ends of the gradient.
-      ['accent', 'bg'], ['accent', 'bg-glow'], ['accent', 'surface'],
-      ['on-accent', 'accent'], ['on-accent', 'accent-2'],
-      // Status pills.
-      ['pill-ok-text', 'pill-ok-bg'], ['pill-neutral-text', 'pill-neutral-bg'], ['pill-bad-text', 'pill-bad-bg'], ['pill-warn-text', 'pill-warn-bg'],
+      ['text', 'bg'], ['text', 'surface'], ['text', 'surface-raised'], ['text', 'accent-tint'],
+      ['muted', 'bg'], ['muted', 'surface'], ['muted', 'surface-raised'],
+      // The accent as text (links, the chosen filter) and as the button: dark text on the solid aqua.
+      ['accent', 'bg'], ['accent', 'surface'], ['accent-text', 'bg'], ['accent-text', 'surface'], ['accent-text', 'surface-raised'], ['accent-text', 'accent-tint'],
+      ['on-accent', 'accent'],
+      // Status chips.
+      ['pill-ok-text', 'pill-ok-bg'], ['pill-get-text', 'pill-get-bg'], ['pill-bad-text', 'pill-bad-bg'], ['pill-warn-text', 'pill-warn-bg'],
       // Error text on the page and on cards.
       ['pill-bad-text', 'bg'], ['pill-bad-text', 'surface'],
       // A network's or studio's name, shown on its logo tile when there is no logo.
@@ -551,54 +595,51 @@ describe('household app page: files', () => {
       assert.ok(tokens[foreground] && tokens[background], `${foreground} on ${background} are tokens`);
       assert.ok(ratio(foreground, background) >= 4.5, `${foreground} on ${background}: ${ratio(foreground, background).toFixed(2)}`);
     }
-    // The gradient button is made of exactly the two accents the pairs above were checked against.
-    assert.match(css, /--accent-gradient: linear-gradient\(135deg, var\(--accent\), var\(--accent-2\)\)/);
-    assert.match(css, /\.button \{[^}]*background: var\(--accent-gradient\); color: var\(--on-accent\)/);
+    // The button is solid aqua with dark text: no gradient.
+    assert.match(css, /\.button \{[^}]*background: var\(--accent\); color: var\(--on-accent\)/);
 
-    // The glass: a translucent rgb() token must be its opaque pair's colour, and its text must hold up even on a white poster behind it.
-    const glass = Object.fromEntries([...css.matchAll(/--(pill-[a-z]+)-glass:\s*rgb\((\d+) (\d+) (\d+) \/ ([0-9.]+)\);/g)]
-      .map((match) => [match[1], { rgb: match.slice(2, 5).map(Number), alpha: Number(match[5]) }]));
-    assert.deepEqual(Object.keys(glass).sort(), ['pill-bad', 'pill-neutral', 'pill-ok', 'pill-warn']);
-    for (const [name, { rgb, alpha }] of Object.entries(glass)) {
-      const hex = `#${rgb.map((value) => value.toString(16).padStart(2, '0')).join('')}`;
-      assert.equal(hex, tokens[`${name}-bg`], `${name}-glass is ${name}-bg`);
-      const overWhite = `#${rgb.map((value) => Math.round(value * alpha + 255 * (1 - alpha)).toString(16).padStart(2, '0')).join('')}`;
-      assert.ok(contrast(tokens[`${name}-text`], overWhite) >= 4.5, `${name} text over a white poster: ${contrast(tokens[`${name}-text`], overWhite).toFixed(2)}`);
+    // The status chips are solid, so they hold their text pair over any poster or backdrop, white or black (nothing shows through).
+    assert.doesNotMatch(css, /--pill-[a-z]+-(?:bg|text):\s*rgb/);
+    for (const [selector, pill] of [['badge-in_library, .badge-request-ready', 'ok'], ['badge-get_this', 'get'], ['badge-unavailable, .badge-request-failed', 'bad'], ['badge-requested, .badge-request-requested', 'warn']]) {
+      assert.match(css, new RegExp(`\\.${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{ background: var\\(--pill-${pill}-bg\\); color: var\\(--pill-${pill}-text\\); \\}`), pill);
+      // The dot is the text colour, so the chip's one non-text mark has the same ratio as its word.
+      assert.ok(ratio(`pill-${pill}-text`, `pill-${pill}-bg`) >= 4.5, `${pill} dot and word`);
     }
-    // The pills are also readable over a black poster.
-    for (const [name, { rgb, alpha }] of Object.entries(glass)) {
-      const overBlack = `#${rgb.map((value) => Math.round(value * alpha).toString(16).padStart(2, '0')).join('')}`;
-      assert.ok(contrast(tokens[`${name}-text`], overBlack) >= 4.5, `${name} text over a black poster: ${contrast(tokens[`${name}-text`], overBlack).toFixed(2)}`);
-    }
-    // The tab bar and the header are glass too: whatever is scrolled behind them, at worst pure white or pure black, composited at their real alpha.
+    assert.match(css, /\.badge::before \{[^}]*border-radius: 50%; background: currentColor;/);
+    // Over a white poster, the chip still stands out from it as a shape (3:1); over a black one its hairline and light text carry it.
+    for (const pill of ['ok', 'get', 'bad', 'warn']) assert.ok(contrast(tokens[`pill-${pill}-bg`], '#ffffff') >= 3, `${pill} chip against a white poster`);
+    // The chip sits at the image's top-left, on poster cards and on backdrop cards.
+    assert.match(css, /\.card > \.badge \{[^}]*position: absolute; top: [0-9.]+rem; left: [0-9.]+rem/);
+    assert.match(css, /\.card-backdrop > \.badge \{[^}]*top: [0-9.]+rem; left: [0-9.]+rem/);
+
+    // The header, the filter band and the docked tab bar are solid (no glass), so their text and icons hold the plain pairs checked above;
+    // the tab bar is the surface colour with the active tab raised, and the round hero buttons sit on a dark overlay over any image.
     const composite = (name, backdrop) => {
       const found = new RegExp(`--${name}:\\s*rgb\\((\\d+) (\\d+) (\\d+) / ([0-9.]+)\\)`).exec(css);
       assert.ok(found, `${name} is a translucent rgb() token`);
       const alpha = Number(found[4]);
       return `#${found.slice(1, 4).map((value) => Math.round(Number(value) * alpha + backdrop * (1 - alpha)).toString(16).padStart(2, '0')).join('')}`;
     };
-    for (const [surface, backdrop] of [['material', 255], ['material', 0], ['material-header', 255], ['material-header', 0]]) {
-      const under = composite(surface, backdrop);
-      const where = `${surface} over ${backdrop ? 'white' : 'black'} (${under})`;
-      // Text: tab labels (inactive and active), the brand and the placeholder.
-      for (const text of ['muted', 'text', 'accent-text']) {
-        assert.ok(contrast(tokens[text], under) >= 4.5, `${text} on ${where}: ${contrast(tokens[text], under).toFixed(2)}`);
-      }
-      // Non-text: the back and search icons, and the active tab's dot.
-      for (const graphic of ['text', 'accent']) {
-        assert.ok(contrast(tokens[graphic], under) >= 3, `${graphic} icon on ${where}: ${contrast(tokens[graphic], under).toFixed(2)}`);
-      }
+    for (const backdrop of [255, 0]) {
+      const under = composite('overlay', backdrop);
+      assert.ok(contrast(tokens.text, under) >= 4.5, `the hero buttons' icon over ${backdrop ? 'white' : 'black'} (${under}): ${contrast(tokens.text, under).toFixed(2)}`);
     }
-    assert.match(css, /\.tabbar a\[aria-current='page'\] \{ color: var\(--accent-text\); \}/);
-    // A service page's All | Series | Films control: muted on the surface, the selected one text on the raised surface (both pairs above).
-    assert.match(css, /\.segmented \{[^}]*background: var\(--surface\)/);
+    // Non-text: the back, search and tab icons, and the waterline and tab indicator, against what they sit on.
+    for (const [graphic, under] of [['text', 'surface'], ['text', 'bg'], ['accent-text', 'surface-raised'], ['muted', 'surface'], ['accent', 'surface']]) {
+      assert.ok(ratio(graphic, under) >= 3, `${graphic} icon on ${under}: ${ratio(graphic, under).toFixed(2)}`);
+    }
+    // The active tab is an aqua-tint squircle with an aqua outline: the outline is the non-text indicator and must be 3:1 against the bar (WCAG 1.4.11); the tint is not relied on. Its label and icon are 4.5:1 on the tint (above).
+    assert.ok(ratio('accent', 'surface') >= 3, `the active tab's outline against the bar: ${ratio('accent', 'surface').toFixed(2)}`);
+    assert.ok(ratio('accent-text', 'accent-tint') >= 4.5);
+    // Active vs inactive is told apart by more than colour: an outline the inactive tabs lack (transparent) and a heavier icon stroke.
+    assert.match(css, /\.tabbar a \{[^}]*border: 1\.5px solid transparent/);
+    assert.match(css, /\.tabbar a\[aria-current='page'\] \{ background: var\(--accent-tint\); border-color: var\(--accent\); color: var\(--accent-text\); \}/);
+    assert.match(css, /\.tabbar a\[aria-current='page'\] \.icon \{ stroke-width: 2\.4; \}/);
+    // A service page's All | Series | Films control shares the chips: muted on the page, the selected one aqua on its tint (pairs above).
     assert.match(css, /\.segment \{[^}]*background: transparent;[^}]*color: var\(--muted\)/);
-    assert.match(css, /\.segment\[aria-selected='true'\] \{ background: var\(--surface-raised\); color: var\(--text\); \}/);
     assert.match(css, /\.tabbar a \{[^}]*color: var\(--muted\)/);
-    // The tab bar's glass is the surface colour, so the opaque fallback (no backdrop blur) gives the same pairs.
-    const material = /--material:\s*rgb\((\d+) (\d+) (\d+) \/ [0-9.]+\)/.exec(css);
-    assert.equal(`#${material.slice(1, 4).map((value) => Number(value).toString(16).padStart(2, '0')).join('')}`, tokens.surface);
-    assert.match(css, /@supports not \(\(-webkit-backdrop-filter: blur\(1px\)\) or \(backdrop-filter: blur\(1px\)\)\)[^@]*\.tabbar[^@]*background: var\(--surface\)/);
+    // The tab bar is the surface colour, solid, so it needs no blur fallback.
+    assert.match(css, /\.tabbar \{[^}]*background: var\(--surface\)/);
     // The page's colours are the installed app's: the status bar and the splash.
     const manifest = JSON.parse(read(BUILT('manifest.webmanifest')));
     assert.equal(manifest.background_color, tokens.bg);
@@ -629,23 +670,17 @@ describe('household app page: files', () => {
     const WHITE = [255, 255, 255];
     const BLACK = [0, 0, 0];
     const scrimText = translucent('scrim-text');
-    const scrimTop = translucent('scrim-top');
     // Under the hero's and the detail page's text: the page colour at a fixed alpha, over a backdrop at worst pure white (or black).
     for (const [backdrop, name] of [[WHITE, 'white'], [BLACK, 'black']]) {
       const under = over(scrimText, backdrop);
       for (const text of ['text', 'muted', 'accent-text']) {
         assert.ok(contrast(hex(tokens[text]), under) >= 4.5, `${text} on the text scrim over ${name}: ${contrast(hex(tokens[text]), under).toFixed(2)}`);
       }
-      // The chips are glass over that scrim, and the pills are too.
-      const chip = over(translucent('material'), under);
-      assert.ok(contrast(hex(tokens.text), chip) >= 4.5, `chip text over ${name}`);
-      for (const pill of ['ok', 'neutral', 'bad', 'warn']) {
-        const glass = new RegExp(`--pill-${pill}-glass:\\s*rgb\\((\\d+) (\\d+) (\\d+) / ([0-9.]+)\\)`).exec(css);
-        const behind = over({ rgb: glass.slice(1, 4).map(Number), alpha: Number(glass[4]) }, under);
-        assert.ok(contrast(hex(tokens[`pill-${pill}-text`]), behind) >= 4.5, `${pill} pill over the scrim over ${name}`);
+      // The detail chips and the status chips are solid (the chips' surface, the pills' own pairs), so nothing behind them matters.
+      assert.ok(contrast(hex(tokens.text), hex(tokens.surface)) >= 4.5, `chip text over ${name}`);
+      for (const pill of ['ok', 'get', 'bad', 'warn']) {
+        assert.ok(contrast(hex(tokens[`pill-${pill}-text`]), hex(tokens[`pill-${pill}-bg`])) >= 4.5, `${pill} chip over ${name}`);
       }
-      // The brand sits under the header's scrim.
-      assert.ok(contrast(hex(tokens.text), over(scrimTop, backdrop)) >= 4.5, `the brand on the top scrim over ${name}`);
     }
     // The scrim is solid under the text: from the foot up past where the title block starts, then it fades out.
     const overlap = Number(/--detail-overlap:\s*(\d+(?:\.\d+)?)rem/.exec(css)?.[1]);
@@ -673,50 +708,63 @@ describe('household app page: files', () => {
     // The title is at most two lines, the card is 16:9 and nearly a screen wide, and the pill stays on the corner over the image.
     assert.match(css, /\.backdrop-link \{[^}]*aspect-ratio: 16 \/ 9/);
     assert.match(css, /\.row-list-backdrop > \.card \{ flex: 0 0 92%; \}/);
-    assert.match(css, /\.backdrop-link:focus-visible \{ outline: 3px solid var\(--accent\)/);
+    assert.match(css, /\.backdrop-link:focus-visible \{ outline: 3px solid var\(--accent-text\)/);
     assert.equal(/\.backdrop[a-z-]* \{[^}]*url\(/.test(css), false, 'no CSS url()');
-    assert.match(css, /\.app-header::before \{[^}]*\}/);
-    assert.match(css, /body\[data-chrome='home'\]:not\(\[data-scrolled\]\) \.app-header::before \{[^}]*var\(--scrim-top\) 0, var\(--scrim-top\) 55%/);
+    // The big card is 24px round, with its chip at the top-left.
+    assert.match(css, /\.backdrop-link \{[^}]*border-radius: var\(--radius-backdrop\)/);
+    // The header is solid and sits above the image, so nothing is drawn under it: no header scrim is left.
+    assert.doesNotMatch(css, /\.app-header::before/);
     // The text on the backdrop is the checked tokens, and nothing else is laid over the scrims.
     assert.match(css, /\.hero-link \{ color: var\(--text\)/);
     assert.match(css, /\.hero-overview \{[^}]*color: var\(--muted\)/);
-    assert.match(css, /\.chip \{[^}]*background: var\(--material\); color: var\(--text\)/);
+    assert.match(css, /\.chip \{[^}]*background: var\(--surface\); color: var\(--text\)/);
     assert.match(css, /\.back \{[^}]*color: var\(--accent-text\)/);
-    // Scrolled, the header is the glass bar again (checked above for the tab bar and header alike).
-    assert.match(css, /body\[data-chrome\]\[data-scrolled\] \.app-header \{ background: var\(--material-header\)/);
-    // Past the new header and over the hero, a focused element still stops clear of it.
-    assert.match(css, /scroll-padding-top: calc\(3\.75rem \+ env\(safe-area-inset-top\) \+ 0\.5rem\)/);
+    // Past the header, a focused element still stops clear of it.
+    assert.match(css, /scroll-padding-top: calc\(var\(--header-box\) \+ 0\.5rem\)/);
   });
 
-  it('keeps a focused card clear of the glass header and the floating tab bar', () => {
+  it('keeps a focused card clear of the solid header and the docked tab bar', () => {
     const css = read(BUILT('app.css'));
     const html = /(?:^|\n)html \{([^}]*)\}/.exec(css)[1];
     const bottom = /scroll-padding-bottom: ([^;]+);/.exec(html)[1];
     const top = /scroll-padding-top: ([^;]+);/.exec(html)[1];
-    for (const part of ['var(--tabbar-height)', 'var(--tabbar-gap)', 'env(safe-area-inset-bottom)']) assert.ok(bottom.includes(part), `bottom clearance has ${part}: ${bottom}`);
-    assert.ok(top.includes('env(safe-area-inset-top)'), `top clearance has the safe area: ${top}`);
-    // Never less than the bar itself: the clearance is the bar's height and gap plus a margin, never the padding alone.
+    assert.ok(bottom.includes('var(--tabbar-box)'), `bottom clearance follows the bar's box: ${bottom}`);
+    assert.ok(top.includes('var(--header-box)'), `top clearance follows the header's box: ${top}`);
+    // The boxes default to the rem estimates with the safe areas; main.ts replaces them with the measured heights.
+    assert.match(css, /--header-box: calc\(var\(--header-height\) \+ env\(safe-area-inset-top\)\);/);
+    assert.match(css, /--tabbar-box: calc\(var\(--tabbar-height\) \+ var\(--tabbar-gap\) \+ env\(safe-area-inset-bottom\)\);/);
+    // Never less than the bar itself: the clearance is the bar's height plus a margin, never the padding alone.
     assert.match(bottom, /\+ 0\.[0-9]+rem\)$/);
-    assert.match(css, /--tabbar-height: 3\.5rem;/);
+    assert.match(css, /--tabbar-height: 4\.5rem;/);
+    assert.match(css, /--tabbar-gap: 0rem;/, 'docked: no gap under the bar');
+    // The bar is 0.5rem of padding either side of a 3.5rem tab; the header is 0.5rem, a 2.75rem button and 0.5rem; the band is 0.5rem, a 2.75rem chip and 0.625rem.
+    assert.match(css, /\.tabbar a \{[^}]*min-height: 3\.5rem/);
+    assert.match(css, /\.tabbar \{[^}]*padding: 0\.5rem max\(0\.75rem, env\(safe-area-inset-right\)\) calc\(0\.5rem \+ env\(safe-area-inset-bottom\)\)/);
+    assert.match(css, /--header-height: 3\.75rem;/);
+    assert.match(css, /--switch-height: 3\.875rem;/);
+    assert.match(css, /\.home-switch \{[^}]*padding: 0\.5rem [^;]* 0\.625rem /);
+    assert.match(css, /main \{[^}]*padding: 0\.75rem var\(--gutter-end\) calc\(var\(--tabbar-box\) \+ 1\.5rem\)/);
   });
 
-  it('draws the tab bar as a floating glass pill of 44px targets, with the blur prefixed and a safe-area gap', () => {
+  it('draws the tab bar docked and full width: rounded top corners, 56px labelled tabs, a filled squircle for the active one, a safe-area foot, no dot', () => {
     const css = read(BUILT('app.css'));
     const tabbar = /\.tabbar \{([^}]*)\}/.exec(css)[1];
-    assert.match(tabbar, /position: fixed/);
-    assert.match(tabbar, /bottom: calc\(var\(--tabbar-gap\) \+ env\(safe-area-inset-bottom\)\)/);
-    assert.match(tabbar, /border-radius: var\(--radius-pill\)/);
-    assert.match(css, /--blur: saturate\(180%\) blur\(20px\)/);
-    assert.match(css, /-webkit-backdrop-filter: var\(--blur\); backdrop-filter: var\(--blur\)/);
-    // Each tab is at least 44px (2.75rem) tall: 3rem here.
+    assert.match(tabbar, /position: fixed; left: 0; right: 0; bottom: 0;/);
+    assert.match(tabbar, /border-radius: var\(--radius-sheet\) var\(--radius-sheet\) 0 0/);
+    assert.match(tabbar, /env\(safe-area-inset-bottom\)/);
+    assert.doesNotMatch(tabbar, /width:|margin:|box-shadow|backdrop/);
+    // Each tab is at least 44px (2.75rem) tall: 3.5rem here, an icon over a label, the active one filled.
     const tab = /\.tabbar a \{([^}]*)\}/.exec(css)[1];
     assert.ok(Number(/min-height: ([0-9.]+)rem/.exec(tab)[1]) >= 2.75);
-    assert.match(css, /\.tabbar a\[aria-current='page'\]::after \{[^}]*border-radius: 50%/, 'the active dot');
-    // Status pills sit on the poster's corner; search is three columns, two on a very narrow screen.
-    assert.match(css, /\.card > \.badge \{[^}]*position: absolute; top: [0-9.]+rem; right: [0-9.]+rem/);
+    assert.match(tab, /flex-direction: column/);
+    assert.match(tab, /border-radius: var\(--radius-card\)/);
+    assert.match(css, /\.tabbar a\[aria-current='page'\] \{ background: var\(--accent-tint\); border-color: var\(--accent\);/);
+    assert.doesNotMatch(css, /\.tabbar a\[aria-current='page'\]::after/, 'no dot under the active tab');
+    // Status chips sit on the image's top-left corner; search is three columns, two on a very narrow screen.
+    assert.match(css, /\.card > \.badge \{[^}]*position: absolute; top: [0-9.]+rem; left: [0-9.]+rem/);
     assert.match(css, /\.grid, \.skeleton-grid \{[^}]*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/);
     assert.match(css, /@media \(max-width: 21rem\) \{\s*\.grid, \.skeleton-grid \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
-    assert.match(css, /--radius-poster: 10px;[\s\S]*--radius-card: 14px;[\s\S]*--radius-sheet: 20px;[\s\S]*--radius-pill: 999px;/);
+    assert.match(css, /--radius-chip: 12px;[\s\S]*--radius-poster: 20px;[\s\S]*--radius-card: 20px;[\s\S]*--radius-backdrop: 24px;[\s\S]*--radius-sheet: 30px;/);
     assert.match(css, /--font: -apple-system, /);
   });
 });
@@ -1730,7 +1778,7 @@ describe('household app page: rendering', () => {
       assert.match(css, /@media \(min-width: 48rem\) \{[^@]*\.poster-detail \{ display: block; \}/, 'a small one on a wide screen');
       assert.match(css, /\.detail-main \{[^}]*margin: calc\(-1 \* var\(--detail-overlap\)\) auto 0/, 'the title block overlaps the backdrop');
       assert.match(css, /\.detail-title \{[^}]*font-weight: 800/);
-      assert.match(css, /\.button-primary \{ width: 100%; min-height: 3\.25rem/, 'a full-width capsule');
+      assert.match(css, /\.button-primary \{ width: 100%; min-height: 3\.5rem/, 'a full-width squircle button');
     });
 
     it('draws seasons as cards with a round checkbox inside one fieldset, and Select all only moves the checkmarks', async () => {
@@ -1786,10 +1834,10 @@ describe('household app page: rendering', () => {
       assert.equal(none.querySelector('fieldset'), null);
       assert.equal(none.querySelector('.select-all'), null);
       assert.equal(none.querySelectorAll('.season').length, 1);
-      // The control is a custom round one built on the real checkbox.
+      // The control is a custom rounded-square one built on the real checkbox.
       const css = read(BUILT('app.css'));
-      assert.match(css, /\.choice input \{[^}]*appearance: none;[^}]*border-radius: 50%/);
-      assert.match(css, /\.choice input:checked \{[^}]*background: var\(--accent-gradient\)/);
+      assert.match(css, /\.choice input \{[^}]*appearance: none;[^}]*border-radius: 0\.5rem/);
+      assert.match(css, /\.choice input:checked \{[^}]*background: var\(--accent\)/);
       assert.match(css, /\.choice input:focus-visible \{ outline: 3px solid var\(--accent\)/);
       assert.match(css, /\.choice \{[^}]*min-width: 2\.75rem; min-height: 2\.75rem/);
     });
@@ -1972,8 +2020,31 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         }
       }
     };
+    // The sticky band's height, as a browser would measure it (it grows when the chips wrap); a ResizeObserver tells the page when it changes.
+    const band = { height: 62 };
+    const resizers = [];
+    class FakeResizeObserver {
+      constructor(callback) { this.callback = callback; this.targets = new Set(); resizers.push(this); }
+      observe(target) { this.targets.add(target); }
+      unobserve(target) { this.targets.delete(target); }
+      disconnect() { this.targets.clear(); }
+    }
+    /** The band is now this tall (px): the observers fire, as on a resize. */
+    const resizeBand = (height) => {
+      band.height = height;
+      for (const observer of resizers) if (observer.targets.size) observer.callback([...observer.targets].map((target) => ({ target })), observer);
+    };
+    const ownBandRect = rect ? undefined : Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'getBoundingClientRect');
+    if (!rect) {
+      HTMLElement.prototype.getBoundingClientRect = function () { return { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: this.classList.contains('home-switch') ? band.height : this.classList.contains('app-header') ? 76 : this.classList.contains('tabbar') ? 90 : 0, x: 0, y: 0 }; };
+      t.after(() => {
+        if (ownBandRect) Object.defineProperty(HTMLElement.prototype, 'getBoundingClientRect', ownBandRect);
+        else delete HTMLElement.prototype.getBoundingClientRect;
+      });
+    }
     const globals = {
       ...(intersection ? { IntersectionObserver: FakeIntersectionObserver } : {}),
+      ResizeObserver: FakeResizeObserver,
       document,
       window: {
         scrollTo(_x, y) {
@@ -2060,7 +2131,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       screen.replaceChildren = function (...nodes) { replace.apply(this, nodes); clampScroll(); };
     }
     const back = () => document.getElementById('back');
-    return { document, Event, until, go, main, requests, watched, reveal, observers, meRead: () => meRead, store, location, back, entries, cursor: () => index, scroll, sessionWrites, history: globals.history, window: globals.window, serialize: () => document.documentElement.outerHTML, listeners, focused: () => focused };
+    return { document, Event, until, go, main, requests, resizeBand, resizers, watched, reveal, observers, meRead: () => meRead, store, location, back, entries, cursor: () => index, scroll, sessionWrites, history: globals.history, window: globals.window, serialize: () => document.documentElement.outerHTML, listeners, focused: () => focused };
   }
 
   it('shows the four discover rows with each title\'s badge and no Play button on the cards', async (t) => {
@@ -2261,7 +2332,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       await page.until(() => page.main().querySelectorAll('[data-lazy="waiting"], [data-lazy="loading"]').length === 0, 'every lazy row drawn');
     }
 
-    it('is a radio group of three real buttons under the hero: one choice, roving tabindex, named by its label', async (t) => {
+    it('is a radio group of three real buttons under the header, above the hero: one choice, roving tabindex, named by its label', async (t) => {
       const app = await startApp(t);
       const page = await openApp(t, app);
       await ready(page, 'Home');
@@ -2269,16 +2340,23 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.equal(group.getAttribute('aria-label'), 'Show');
       assert.deepEqual(state(page), ['All true 0', 'Movies false -1', 'TV false -1']);
       assert.deepEqual(radios(page).map((radio) => `${radio.tagName} ${radio.getAttribute('type')} ${radio.getAttribute('aria-controls')}`), Array(3).fill('BUTTON button home-panel'));
-      // Under the hero and above the rows, as direct children of the page's main region so it can stick while the rows scroll.
+      // Under the header and above the hero (a plain div) and the rows, as direct children of the page's main region so it can stick while the rows scroll.
       const order = [...page.main().children].map((node) => node.className || node.id || node.tagName);
-      assert.deepEqual(order.slice(-2), ['home-switch', 'home-panel']);
+      assert.deepEqual(order.slice(-3), ['home-switch', 'DIV', 'home-panel']);
       assert.equal(group.parentElement.className, 'home-switch');
       assert.equal(group.parentElement.parentElement, page.main());
       const panel = page.main().querySelector('#home-panel');
       assert.equal(panel.getAttribute('role'), 'group');
       assert.equal(panel.getAttribute('aria-labelledby'), 'home-filter-all');
       assert.equal(page.document.getElementById('home-filter-all').textContent, 'All');
-      assert.doesNotMatch(page.serialize().replace(/<style[^]*?<\/style>/gi, ''), /\sstyle=/);
+      // Each chip carries a tick, drawn by the app and hidden from assistive technology, so a name is still the plain word; the stylesheet shows it on the chosen chip only.
+      for (const radio of radios(page)) {
+        const ticks = radio.querySelectorAll('svg.icon');
+        assert.equal(ticks.length, 1);
+        assert.equal(ticks[0].getAttribute('aria-hidden'), 'true');
+        assert.equal(ticks[0].getAttribute('focusable'), 'false');
+      }
+      assert.doesNotMatch(page.serialize().replace(/<style[^]*?<\/style>/gi, '').replace(/<html style="(?:--(?:switch-height|header-box|tabbar-box):[0-9.]+px;?\s*)+"/, '<html'), /\sstyle=/);
     });
 
     it('All is today\'s Home: the same four TMDB calls at first load, rows in the order the design gives', async (t) => {
@@ -2298,15 +2376,15 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.equal(page.main().querySelectorAll('#home-panel [data-key^="row-network-"]').length, 8);
       assert.equal(page.main().querySelectorAll('.source-note').length, 1);
       assert.ok(page.main().querySelector('.source-note').compareDocumentPosition(page.document.getElementById('row-top-tv-heading')) & 2, 'the credit closes Home');
-      // The accent bars: the app's purple (no class) by default, gold for the all-time lists, a brand colour per service. A class, never a style.
-      const accents = Object.fromEntries([...page.main().querySelectorAll('.row-heading')].map((heading) => [heading.id.replace(/^row-|-heading$/g, ''), [...heading.classList].filter((name) => name.startsWith('accent-')).join()]));
+      // The waterlines: aqua to coral (no class) by default, gold for the all-time lists, a brand colour per service. A class, never a style.
+      const accents = Object.fromEntries([...page.main().querySelectorAll('.row-heading')].map((heading) => [heading.id.replace(/^row-|-heading$/g, ''), [...heading.classList].filter((name) => name.startsWith('water-')).join()]));
       assert.deepEqual(accents, {
         trending: '', 'popular-movies': '', 'popular-tv': '', 'new-movies': '', upcoming: '', 'upcoming-tv': '', studios: '',
-        'top-movies': 'accent-gold', 'top-tv': 'accent-gold',
-        'network-213': 'accent-netflix', 'network-2739': 'accent-disney', 'network-2552': 'accent-apple', 'network-1024': 'accent-prime',
-        'network-3186': 'accent-hbo', 'network-453': 'accent-hulu', 'network-4330': 'accent-paramount', 'network-3353': 'accent-peacock',
+        'top-movies': 'water-gold', 'top-tv': 'water-gold',
+        'network-213': 'water-netflix', 'network-2739': 'water-disney', 'network-2552': 'water-apple', 'network-1024': 'water-prime',
+        'network-3186': 'water-hbo', 'network-453': 'water-hulu', 'network-4330': 'water-paramount', 'network-3353': 'water-peacock',
       });
-      assert.doesNotMatch(page.serialize().replace(/<style[^]*?<\/style>/gi, ''), /\sstyle=/);
+      assert.doesNotMatch(page.serialize().replace(/<style[^]*?<\/style>/gi, '').replace(/<html style="(?:--(?:switch-height|header-box|tabbar-box):[0-9.]+px;?\s*)+"/, '<html'), /\sstyle=/);
     });
 
     it('Movies: films only, replaced in the address, from per-kind lists (a service\'s films), no series-only row', async (t) => {
@@ -2754,7 +2832,57 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       // The hero's title opens the title's page.
       assert.equal(slides[0].querySelector('.hero-link').getAttribute('href'), '#/movie/710000');
       // The hero reads like Home's own rows when the page is serialised: no inline style, no script.
-      assert.doesNotMatch(page.serialize().replace(/<style[^]*?<\/style>/gi, ''), /\sstyle=|<script[^>]*>[^<]/i);
+      // (The root's measured --header-box, --tabbar-box and --switch-height are set via the CSSOM, which `style-src 'self'` allows, and so do appear as the root's style attribute.)
+      assert.doesNotMatch(page.serialize().replace(/<style[^]*?<\/style>/gi, '').replace(/<html style="(?:--(?:switch-height|header-box|tabbar-box):[0-9.]+px;?\s*)+"/, '<html'), /\sstyle=|<script[^>]*>[^<]/i);
+    });
+
+    it('measures the sticky band into --switch-height, follows it as the chips wrap, and lets go off Home', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app, { override: trending(0) });
+      await page.until(() => page.main().querySelector('.home-switch'), 'the band');
+      const root = page.document.documentElement;
+      const switchHeight = () => root.style.getPropertyValue('--switch-height');
+      assert.equal(switchHeight(), '62px', 'the band as measured, not a one-row guess');
+      assert.equal(root.style.getPropertyValue('--header-box'), '76px', 'the header as measured (its safe-area padding included)');
+      assert.equal(root.style.getPropertyValue('--tabbar-box'), '90px', 'the tab bar as measured');
+      assert.equal(page.resizers.filter((observer) => observer.targets.size).length, 3, 'header, tab bar and band watched');
+      // Large text or zoom: the chips wrap to a second row and the band grows; the clearance follows with no new render.
+      page.resizeBand(118);
+      assert.equal(switchHeight(), '118px');
+      page.resizeBand(62);
+      assert.equal(switchHeight(), '62px');
+      // Another screen has no band: the property is dropped (the stylesheet's fallback is not used either, the rule is keyed to the band) and nothing is watched.
+      page.go('#/search');
+      await page.until(() => !page.document.body.hasAttribute('data-home-switch'), 'a screen without the band');
+      assert.equal(switchHeight(), '');
+      assert.equal(page.resizers.filter((observer) => observer.targets.size).length, 2, 'only the header and tab bar watched off Home');
+      assert.equal(root.style.getPropertyValue('--header-box'), '76px');
+      // No style attributes are written via markup or setAttribute; the root's custom properties are set via the CSSOM, allowed by style-src (the root's style attribute then reflects them).
+      const css = read(BUILT('app.css'));
+      assert.match(css, /:root:has\(body\[data-home-switch\]\) \{ scroll-padding-top: calc\([^;]*var\(--switch-height\)/);
+      assert.match(APP_CONTENT_SECURITY_POLICY, /style-src 'self'(?!.*unsafe-inline)/);
+      const source = read(BUILT('js/main.js'));
+      assert.match(source, /measure\(["']--switch-height["']/);
+      assert.match(source, /measure\(["']--header-box["']/);
+      assert.match(source, /measure\(["']--tabbar-box["']/);
+      assert.match(source, /style\.setProperty\(property, /);
+      assert.doesNotMatch(source, /setAttribute\(['"]style['"]|\.cssText/);
+    });
+
+    it('brings the chosen Home chip, focus ring included, fully into the chip row after the selection settles', () => {
+      const source = read(BUILT('js/main.js'));
+      const css = read(BUILT('app.css'));
+      const reveal = source.match(/function revealChip\(chip\) \{[^]*?\n\}\n/);
+      assert.ok(reveal, 'revealChip');
+      // Measured after two frames (the browser's focus scroll and the tick's width change have settled), the ring (4px) counted in, reduced motion jumps.
+      assert.match(reveal[0], /requestAnimationFrame\(\(\) => window\.requestAnimationFrame\(settle\)\)/);
+      assert.match(source, /CHIP_RING = 4/);
+      assert.match(reveal[0], /prefers-reduced-motion: reduce[^]*behavior: reduced \? ['"]auto['"] : ['"]smooth['"]/);
+      // On the initial render (?kind=tv), on a click or key choice, and when the choice is unchanged.
+      assert.match(source, /show\(heading, switcher, heroSlot, panel\);\s*revealChip\(switcher\.querySelector\(['"]\[aria-checked="true"\]['"]\)\)/);
+      assert.match(source, /if \(next === chosen\)\s*return revealChip\(button\)/);
+      assert.match(source, /radio\.setAttribute\(['"]tabindex['"][^]*?\}\s*revealChip\(button\)/);
+      assert.match(css, /\.segmented-home \{[^}]*scroll-padding-inline: 4px/);
     });
 
     it('has no hero, and the header is its own bar, when the first row is empty or fails', async (t) => {
@@ -2770,7 +2898,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       // The sticky switch is still on the page, so the scroll padding that clears it stays on (it is keyed to the switch, not the hero).
       for (const page of [empty, failing]) assert.equal(page.document.body.getAttribute('data-home-switch'), '');
       const css = read(BUILT('app.css'));
-      assert.match(css, /:root:has\(body\[data-home-switch\]\) \{ scroll-padding-top: calc\([^;]*3\.15rem/);
+      assert.match(css, /:root:has\(body\[data-home-switch\]\) \{ scroll-padding-top: calc\([^;]*var\(--switch-height\)/);
       assert.ok(!/data-chrome='home'\]\) \{ scroll-padding/.test(css));
     });
 
@@ -2784,7 +2912,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         await page.until(() => chrome(page) === expected && page.main().getAttribute('aria-busy') === 'false', `${hash}: ${expected}`);
         assert.equal(chrome(page), expected, hash);
       }
-      // Scrolling past the top turns it into the glass bar; the app's own scroll to the top turns it back.
+      // Scrolling past the top marks the page scrolled (the header is solid either way now); the app's own scroll to the top clears it.
       page.scroll.y = 400;
       for (const listener of page.listeners.scroll ?? []) listener({ type: 'scroll' });
       assert.equal(page.document.body.hasAttribute('data-scrolled'), true);

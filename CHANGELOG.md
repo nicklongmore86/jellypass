@@ -14,6 +14,23 @@ privacy leak. Such changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Changed
+
+- **Household app: the Tidepool look, part 1** (the app's whole look changes; no setting, API, data or **Get this**
+  outcome does). The page is a deep teal-black with an aqua accent and a touch of coral, solid surfaces with no glass
+  or glow, and bigger rounded shapes (radii 12/20/24/30 px, 800-weight titles). The header is a solid bar. Home's
+  All / Movies / TV filter is a row of outlined chips under the header (the chosen one ticked and tinted aqua; still a
+  radio group with the same keys, `?kind=` address and Back restore) in a solid band that sticks under it, above the
+  hero. The floating tab bar is now docked full width with rounded top corners and an aqua-outlined, tinted rounded square behind the
+  active tab (no dot). Row headings have a short aqua-to-coral line under them (a service's brand colour on its rows)
+  instead of a vertical bar. A title's status (the same five words) is a dot and a word at the top-left of its image.
+  The primary button is solid aqua and the secondary is outlined. The big cards are rounder, with a thin border.
+  Part 2 will redraw the hero and the detail pages (this part only recolours them), and the app icons are not yet
+  redrawn. The `theme-color` and the installed app's background colour are now the new page colour. At large text the
+  chosen chip, focus ring included, is scrolled fully into the chip row on every choice and on first load. The app
+  writes no style attributes via markup or `setAttribute`; the three measured chrome heights are root custom properties
+  set via the CSSOM, which `style-src` allows.
+
 ## [3.0.1] - 2026-10-26
 
 This is a patch release for the admin UI and the administrator API. There is

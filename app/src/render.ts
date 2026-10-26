@@ -116,8 +116,8 @@ function stateLabel(state: HouseholdState): string {
 }
 
 /**
- * A card's status pill is a sibling of its link, so the link's name carries the status itself ("Title, 2024 · Movie, Ready
- * to watch") and the pill is hidden from assistive technology: said once, in the name.
+ * A card's status chip is a sibling of its link, so the link's name carries the status itself ("Title, 2024 · Movie, Ready
+ * to watch") and the chip is hidden from assistive technology: said once, in the name.
  */
 function cardStatusBadge(doc: Document, state: HouseholdState): HTMLElement {
   const badge = stateBadge(doc, state);
@@ -162,7 +162,7 @@ export function playButton(doc: Document, card: Pick<Card, 'play' | 'title'>, or
 /** How a row draws its titles: poster cards, or the large landscape backdrop cards. */
 export type RowVariant = 'poster' | 'backdrop';
 
-/** A poster card: poster with its status pill on the corner, then the title and "year · Movie/Series". Play lives on the detail page. */
+/** A poster card: poster with its status chip at the top-left, then the title and "year · Movie/Series". Play lives on the detail page. */
 export function cardItem(doc: Document, card: Card): HTMLElement {
   const facts = [card.year ?? '', card.mediaType === 'tv' ? 'Series' : 'Movie'].filter(Boolean).join(' · ');
   const link = el(doc, 'a', { class: 'card-link', attrs: { href: href(card), 'aria-label': cardName(card, facts) } }, [
@@ -231,7 +231,7 @@ function backdropMeta(card: Card): string {
 
 /**
  * A large landscape card: the title's backdrop (a poster when it has none, a plain gradient when it has neither) under a
- * scrim, with the title and "year · ★ rating" over the foot and the status pill on the corner. The whole card is the link.
+ * scrim, with the title and "year · ★ rating" over the foot and the status chip at the top-left. The whole card is the link.
  * Every image is lazy: these rows start below the hero.
  */
 export function backdropCardItem(doc: Document, card: Card): HTMLElement {
@@ -343,10 +343,10 @@ export function skeletonHero(doc: Document): HTMLElement {
 }
 
 /**
- * The colour of a row heading's small vertical bar: a service's brand colour (a tasteful approximation, never its logo),
- * gold for the all-time lists, the app's own purple for everything else. Purely decorative: the heading's words say what
- * the row is, and the bar is hidden from assistive technology. Each is a class (`accent-<name>`) whose colour is a custom
- * property in the stylesheet, so the page carries no inline style.
+ * The colour of a row heading's short "waterline" underline: a service's brand colour (a tasteful approximation, never its
+ * logo), gold for the all-time lists, the app's own aqua-to-coral for everything else. Purely decorative: the heading's
+ * words say what the row is, and the line is a pseudo-element, so assistive technology never meets it. Each is a class
+ * (`water-<name>`) whose colour is a custom property in the stylesheet, so the page carries no inline style.
  */
 export type RowAccent = 'default' | 'gold' | 'netflix' | 'disney' | 'apple' | 'prime' | 'hbo' | 'hulu' | 'paramount' | 'peacock';
 export const ROW_ACCENTS: readonly RowAccent[] = ['default', 'gold', 'netflix', 'disney', 'apple', 'prime', 'hbo', 'hulu', 'paramount', 'peacock'];
@@ -356,7 +356,7 @@ export const NETWORK_ACCENTS: Readonly<Record<number, RowAccent>> = {
 };
 
 function accentClass(accent: RowAccent | undefined): string {
-  return accent && accent !== 'default' ? ` accent-${accent}` : '';
+  return accent && accent !== 'default' ? ` water-${accent}` : '';
 }
 
 /** Home's filter: everything, only films, or only series. */
@@ -374,9 +374,9 @@ export function homeHref(filter: HomeFilter): string {
 }
 
 /**
- * Home's All | Movies | TV control: a radio group of real buttons (one choice, shown filled), the chosen one `aria-checked`
- * and the only one in the tab order (arrow keys, Home and End move and choose; see main.ts). It floats in a pill that
- * sticks under the header while Home scrolls.
+ * Home's All | Movies | TV control: a radio group of real buttons (one choice, shown ticked and tinted), the chosen one `aria-checked`
+ * and the only one in the tab order (arrow keys, Home and End move and choose; see main.ts). It is a row of outlined chips
+ * that sticks under the header while Home scrolls.
  */
 export function homeSwitch(doc: Document, selected: HomeFilter, panelId: string): HTMLElement {
   const buttons = HOME_FILTERS.map((filter) => el(doc, 'button', {
@@ -392,6 +392,8 @@ export function homeSwitch(doc: Document, selected: HomeFilter, panelId: string)
       tabindex: filter === selected ? '0' : '-1',
     },
   }));
+  // The tick is drawn on every chip and shown (by the stylesheet) only on the chosen one; it is hidden from assistive technology.
+  for (const button of buttons) button.prepend(icon(doc, 'check'));
   return el(doc, 'div', { class: 'home-switch' }, [
     el(doc, 'div', { class: 'segmented segmented-home', attrs: { role: 'radiogroup', 'aria-label': HOME_TEXT.label } }, buttons),
   ]);

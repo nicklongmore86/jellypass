@@ -1,71 +1,73 @@
-/* JellyPass household app. Dark, mobile-first, with a soft indigo glow. Every text/background colour pair is a hex token below and is checked for WCAG AA contrast by test/app-pwa.test.mjs. The look is our own, and the stylesheet refers to no other file. */
+/* JellyPass household app: Tidepool. A deep teal-black page, solid surfaces (no glass), an aqua accent with a touch of coral, and big soft squircles. Every text/background colour pair is a hex token below and is checked for WCAG AA contrast by test/app-pwa.test.mjs. The look is our own, and the stylesheet refers to no other file. */
 :root {
   color-scheme: dark;
-  --bg: #0d0f24;
-  --bg-glow: #1b1740;
-  --surface: #1c1b2a;
-  --surface-raised: #272636;
-  --material: rgb(28 27 42 / 0.9);
-  --material-header: rgb(13 15 36 / 0.9);
-  --hairline: rgb(255 255 255 / 0.12);
-  --text: #f5f5fa;
-  --muted: #b4b4c6;
-  --accent: #8b7bff;
-  --accent-text: #c4bbff;
-  --accent-2: #5fa8ff;
-  --accent-gradient: linear-gradient(135deg, var(--accent), var(--accent-2));
-  --on-accent: #0d0f24;
-  /* Row headings' accent bars: decorative only (the heading says what the row is). Brand colours as tasteful approximations, never logos; the test checks each is 3:1 against the page. */
-  --bar-gold: #e6b422;
-  --bar-netflix: #e50914;
-  --bar-disney: #5b7cff;
-  --bar-apple: #a1a1aa;
-  --bar-prime: #00a8e1;
-  --bar-hbo: #b25cff;
-  --bar-hulu: #1ce783;
-  --bar-paramount: #2f8bff;
-  --bar-peacock: #ff8a3d;
+  --bg: #06161b;
+  --surface: #0e262d;
+  --surface-raised: #153540;
+  /* The chosen filter chip's fill: the accent, tinted into the page. */
+  --accent-tint: #0f3a38;
+  --hairline: rgb(159 195 192 / 0.22);
+  --text: #eafaf6;
+  --muted: #9fc3c0;
+  --accent: #4fe3c1;
+  --accent-text: #7ff0d6;
+  --on-accent: #04201b;
+  /* Coral is decorative only (the end of the waterline): never text. */
+  --coral: #ff8a73;
+  --waterline: linear-gradient(90deg, var(--accent), var(--coral));
+  /* Row headings' waterlines: decorative only (the heading says what the row is). Brand colours as tasteful approximations, never logos; the test checks each is 3:1 against the page and the card surface. */
+  --water-gold: #e6b422;
+  --water-netflix: #f0343c;
+  --water-disney: #5b7cff;
+  --water-apple: #8e99a8;
+  --water-prime: #00a8e1;
+  --water-hbo: #f5f5f5;
+  --water-hulu: #1ce783;
+  --water-paramount: #2f8bff;
+  --water-peacock: #ff8a3d;
   --pill-ok-bg: #0f3d2b;
   --pill-ok-text: #a7f3d0;
+  --pill-get-bg: #0d3a46;
+  --pill-get-text: #bdf0ff;
   --pill-warn-bg: #4a3a0a;
   --pill-warn-text: #fde68a;
   --pill-bad-bg: #4d1c24;
   --pill-bad-text: #fecdd3;
-  --pill-neutral-bg: #1f2a4d;
-  --pill-neutral-text: #cfe0ff;
   /* Network and studio logos sit on a light tile, as TMDB draws them; a name shown in place of a logo is dark on it. */
-  --logo-tile: #f5f5fa;
-  --logo-text: #0d0f24;
-  /* The same pill colours, translucent for use over a poster (the test checks they match the opaque pairs above). */
-  --pill-ok-glass: rgb(15 61 43 / 0.86);
-  --pill-warn-glass: rgb(74 58 10 / 0.86);
-  --pill-bad-glass: rgb(77 28 36 / 0.86);
-  --pill-neutral-glass: rgb(31 42 77 / 0.86);
-  /* The scrims that keep text readable over any backdrop (even a white one): the test composites each over white and black. */
-  --scrim-text: rgb(13 15 36 / 0.84);
-  --scrim-top: rgb(13 15 36 / 0.7);
+  --logo-tile: #eafaf6;
+  --logo-text: #06161b;
+  /* The scrim that keeps text readable over any backdrop (even a white one): the test composites it over white and black. */
+  --scrim-text: rgb(6 22 27 / 0.84);
+  /* The round buttons over the hero's image (Previous, Next): dark enough for their icon over a white image too. */
+  --overlay: rgb(6 22 27 / 0.88);
   --hero-height: min(72vh, 38rem);
   --detail-hero-height: 60vh;
   --detail-overlap: 11rem;
-  --radius-poster: 10px;
-  --radius-card: 14px;
-  --radius-backdrop: 16px;
-  --radius-sheet: 20px;
-  --radius-pill: 999px;
+  --radius-chip: 12px;
+  --radius-poster: 20px;
+  --radius-card: 20px;
+  --radius-backdrop: 24px;
+  --radius-sheet: 30px;
   --font: -apple-system, BlinkMacSystemFont, 'SF Pro Text', system-ui, 'Segoe UI', Roboto, sans-serif;
-  --blur: saturate(180%) blur(20px);
   --gutter: max(1rem, env(safe-area-inset-left));
   --gutter-end: max(1rem, env(safe-area-inset-right));
-  --tabbar-height: 3.5rem;
-  --tabbar-gap: 0.75rem;
+  /* The solid header (below the status bar) and Home's filter band under it: the fixed chrome at the top. Measured by the clearance script. */
+  --header-height: 3.75rem;
+  --switch-height: 3.875rem; /* the fallback: main.ts measures the band's real height (chips wrap at large text) into this property on the root */
+  /* The docked tab bar: its tabs and padding, without the home indicator's safe area; it touches the screen's foot, so no gap. */
+  --tabbar-height: 4.5rem;
+  --tabbar-gap: 0rem;
+  /* What the fixed chrome really takes, safe areas included. These are the one-row estimates from the tokens above; main.ts replaces each with the element's measured height (on the root, through the CSSOM) so larger text, zoom and wrapping can never leave the clearances short. */
+  --header-box: calc(var(--header-height) + env(safe-area-inset-top));
+  --tabbar-box: calc(var(--tabbar-height) + var(--tabbar-gap) + env(safe-area-inset-bottom));
 }
 
 * { box-sizing: border-box; }
 html {
   -webkit-text-size-adjust: 100%; text-size-adjust: 100%; background: var(--bg);
-  /* A focused or scrolled-to element stops clear of the glass header above and the floating tab bar below. */
-  scroll-padding-top: calc(3.75rem + env(safe-area-inset-top) + 0.5rem);
-  scroll-padding-bottom: calc(var(--tabbar-height) + var(--tabbar-gap) + env(safe-area-inset-bottom) + 0.75rem);
+  /* A focused or scrolled-to element stops clear of the solid header above and the docked tab bar below. */
+  scroll-padding-top: calc(var(--header-box) + 0.5rem);
+  scroll-padding-bottom: calc(var(--tabbar-box) + 0.75rem);
 }
 body {
   margin: 0;
@@ -74,11 +76,6 @@ body {
   font: 1rem/1.5 var(--font);
   -webkit-tap-highlight-color: transparent;
   overflow-wrap: anywhere;
-}
-/* The soft glow behind the top of every screen; fixed, so it stays put as the page scrolls. */
-body::before {
-  content: ''; position: fixed; inset: 0; z-index: -1; pointer-events: none;
-  background: radial-gradient(120% 55% at 50% -8%, var(--bg-glow), transparent 72%);
 }
 a { color: var(--accent); }
 img { display: block; max-width: 100%; }
@@ -95,73 +92,71 @@ main:focus { outline: none; }
 }
 .skip-link {
   position: absolute; left: 0.5rem; top: -4rem; z-index: 20;
-  padding: 0.6rem 1rem; border-radius: var(--radius-pill); background: var(--accent); color: var(--on-accent); font-weight: 700;
+  padding: 0.6rem 1rem; border-radius: var(--radius-chip); background: var(--accent); color: var(--on-accent); font-weight: 700;
 }
 .skip-link:focus { top: calc(0.5rem + env(safe-area-inset-top)); }
 
-/* Glass surfaces: translucent with a blur, and an opaque fallback where the browser cannot blur. */
-.app-header, .tabbar, .icon-button, .back-button, .search-field input, .button-secondary, .hero-nav, .chip {
-  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
-}
-
+/* The header is solid, one colour with the page; a hairline under it, except on Home where the filter band under it takes the line. */
 .app-header {
   position: sticky; top: 0; z-index: 10;
   display: flex; align-items: center; gap: 0.75rem;
   padding: calc(0.5rem + env(safe-area-inset-top)) var(--gutter-end) 0.5rem var(--gutter);
-  background: var(--material-header);
+  background: var(--bg); box-shadow: 0 1px 0 var(--hairline);
 }
+body[data-home-switch] .app-header { box-shadow: none; }
 .back-button, .icon-button, .hero-nav {
   display: inline-grid; place-items: center; flex: none;
   min-width: 2.75rem; min-height: 2.75rem; padding: 0;
-  border: 1px solid var(--hairline); border-radius: 50%; background: var(--material); color: var(--text);
+  border: 1px solid var(--hairline); border-radius: var(--radius-chip); background: var(--surface); color: var(--text);
   font: inherit; line-height: 1; cursor: pointer; text-decoration: none; touch-action: manipulation;
 }
+.hero-nav { background: var(--overlay); }
 .back-button[hidden], .icon-button[hidden] { display: none; }
 .back-button:focus-visible, .icon-button:focus-visible, .hero-nav:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
 .icon { width: 1.4rem; height: 1.4rem; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
-.brand { font-weight: 700; font-size: 1.2rem; letter-spacing: 0.01em; }
+.brand { display: flex; align-items: center; gap: 0.5rem; font-weight: 800; font-size: 1.25rem; letter-spacing: -0.01em; }
+/* The brand's small jelly dome, aqua over coral: a shape, not a picture. */
+.brand::before { content: ''; flex: none; width: 0.9rem; height: 0.75rem; border-radius: 0.9rem 0.9rem 0.2rem 0.2rem; background: linear-gradient(var(--accent), var(--coral)); }
 .app-header .icon-button { margin-left: auto; }
 
 main {
   max-width: 72rem; margin: 0 auto;
-  padding: 0.75rem var(--gutter-end) calc(var(--tabbar-height) + var(--tabbar-gap) + 1.5rem + env(safe-area-inset-bottom)) var(--gutter);
+  padding: 0.75rem var(--gutter-end) calc(var(--tabbar-box) + 1.5rem) var(--gutter);
   min-height: 60vh;
 }
 
-/* The floating pill tab bar, inset from the edges and clear of the home indicator. */
+/* The docked tab bar: full width on the screen's foot, rounded at the top, over the home indicator's safe area. The active tab is an aqua-tint squircle with an aqua outline (3:1 against the bar) behind its icon and label, and a heavier icon stroke: shape and weight, not colour alone. */
 .tabbar {
-  position: fixed; left: 0; right: 0; z-index: 10;
-  bottom: calc(var(--tabbar-gap) + env(safe-area-inset-bottom));
-  width: min(22rem, calc(100% - 2rem)); margin: 0 auto;
-  display: flex; padding: 0.25rem;
-  background: var(--material); border: 1px solid var(--hairline); border-radius: var(--radius-pill);
-  box-shadow: 0 8px 28px rgb(0 0 0 / 0.45);
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
+  display: flex; gap: 0.375rem; padding: 0.5rem max(0.75rem, env(safe-area-inset-right)) calc(0.5rem + env(safe-area-inset-bottom)) max(0.75rem, env(safe-area-inset-left));
+  background: var(--surface); border-top: 1px solid var(--hairline); border-radius: var(--radius-sheet) var(--radius-sheet) 0 0;
 }
 .tabbar a {
-  position: relative; flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.1rem;
-  min-height: 3rem; padding: 0.2rem 0.25rem 0.45rem; border-radius: var(--radius-pill);
-  color: var(--muted); text-decoration: none; font-size: 0.7rem; font-weight: 600; line-height: 1.1; touch-action: manipulation;
+  flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.2rem;
+  min-height: 3.5rem; padding: 0.25rem; border: 1.5px solid transparent; border-radius: var(--radius-card);
+  color: var(--muted); text-decoration: none; font-size: 0.75rem; font-weight: 700; line-height: 1.1; touch-action: manipulation;
 }
-.tabbar a[aria-current='page'] { color: var(--accent-text); }
-.tabbar a[aria-current='page']::after {
-  content: ''; position: absolute; bottom: 0.2rem; left: 50%; width: 4px; height: 4px; margin-left: -2px; border-radius: 50%; background: var(--accent);
-}
+.tabbar a[aria-current='page'] { background: var(--accent-tint); border-color: var(--accent); color: var(--accent-text); }
+.tabbar a[aria-current='page'] .icon { stroke-width: 2.4; }
+.tabbar a:focus-visible { outline-offset: -3px; }
 .tabbar .icon { width: 1.5rem; height: 1.5rem; }
 
-.screen-title { font-size: 1.75rem; line-height: 1.2; margin-bottom: 0.75rem; letter-spacing: -0.01em; }
+.screen-title { font-size: 1.75rem; line-height: 1.2; font-weight: 800; margin-bottom: 0.75rem; letter-spacing: -0.02em; }
+/* The row heading and its "waterline": a short aqua-to-coral line under the title, in a service's brand colour on its rows. */
 .row-heading {
-  display: flex; align-items: center; gap: 0.5rem; font-size: 1.2rem; line-height: 1.3; margin: 0 0 0.7rem;
+  position: relative; display: flex; align-items: center; gap: 0.5rem; margin: 0 0 0.9rem; padding-bottom: 0.65rem;
+  font-size: 1.3rem; line-height: 1.25; font-weight: 800; letter-spacing: -0.01em;
 }
-.row-heading::before { content: ''; flex: none; width: 4px; height: 1.1em; border-radius: 2px; background: var(--accent-gradient); }
-.row-heading.accent-gold::before { background: var(--bar-gold); }
-.row-heading.accent-netflix::before { background: var(--bar-netflix); }
-.row-heading.accent-disney::before { background: var(--bar-disney); }
-.row-heading.accent-apple::before { background: var(--bar-apple); }
-.row-heading.accent-prime::before { background: var(--bar-prime); }
-.row-heading.accent-hbo::before { background: var(--bar-hbo); }
-.row-heading.accent-hulu::before { background: var(--bar-hulu); }
-.row-heading.accent-paramount::before { background: var(--bar-paramount); }
-.row-heading.accent-peacock::before { background: var(--bar-peacock); }
+.row-heading::after { content: ''; position: absolute; left: 0; bottom: 0; width: 2.75rem; height: 0.25rem; border-radius: 0.25rem; background: var(--waterline); }
+.row-heading.water-gold::after { background: var(--water-gold); }
+.row-heading.water-netflix::after { background: var(--water-netflix); }
+.row-heading.water-disney::after { background: var(--water-disney); }
+.row-heading.water-apple::after { background: var(--water-apple); }
+.row-heading.water-prime::after { background: var(--water-prime); }
+.row-heading.water-hbo::after { background: var(--water-hbo); }
+.row-heading.water-hulu::after { background: var(--water-hulu); }
+.row-heading.water-paramount::after { background: var(--water-paramount); }
+.row-heading.water-peacock::after { background: var(--water-peacock); }
 .muted { color: var(--muted); }
 .meta { color: var(--muted); }
 .notice { padding: 1rem; border-radius: var(--radius-card); background: var(--surface); border: 1px solid var(--hairline); display: grid; gap: 0.75rem; justify-items: start; }
@@ -169,28 +164,30 @@ main {
 
 .button {
   display: inline-flex; align-items: center; justify-content: center; min-height: 2.75rem; padding: 0.5rem 1.4rem;
-  border: 0; border-radius: var(--radius-pill); background: var(--accent-gradient); color: var(--on-accent);
-  font: inherit; font-weight: 700; text-decoration: none; cursor: pointer; touch-action: manipulation;
+  border: 0; border-radius: var(--radius-card); background: var(--accent); color: var(--on-accent);
+  font: inherit; font-weight: 800; text-decoration: none; cursor: pointer; touch-action: manipulation;
 }
-.button-primary { width: 100%; min-height: 3.25rem; font-size: 1.05rem; }
+.button-primary { width: 100%; min-height: 3.5rem; font-size: 1.05rem; }
 .button-small { min-height: 2.25rem; padding: 0.25rem 0.9rem; font-size: 0.9rem; }
-.button-secondary { background: var(--material); color: var(--text); border: 1px solid var(--hairline); }
+.button-secondary { background: transparent; color: var(--accent-text); border: 1.5px solid var(--accent); }
 .button:disabled { opacity: 0.7; cursor: default; }
 
-/* Status pills: translucent over a poster, fixed words, never colour alone. */
+/* Status chips: a dot and a fixed word, never colour alone. Solid, so they read over any poster or backdrop. */
 .badge {
-  display: inline-block; width: fit-content; max-width: 100%; padding: 0.15rem 0.6rem; border-radius: var(--radius-pill);
-  font-size: 0.75rem; font-weight: 600; line-height: 1.3; border: 1px solid var(--hairline);
+  display: inline-flex; align-items: flex-start; gap: 0.35rem; width: fit-content; max-width: 100%; padding: 0.15rem 0.6rem 0.15rem 0.5rem; border-radius: var(--radius-chip);
+  font-size: 0.75rem; font-weight: 700; line-height: 1.3; border: 1px solid var(--hairline);
 }
-.badge-in_library, .badge-request-ready { background: var(--pill-ok-glass); color: var(--pill-ok-text); }
-.badge-get_this { background: var(--pill-neutral-glass); color: var(--pill-neutral-text); }
-.badge-unavailable, .badge-request-failed { background: var(--pill-bad-glass); color: var(--pill-bad-text); }
-.badge-requested, .badge-request-requested { background: var(--pill-warn-glass); color: var(--pill-warn-text); }
+.badge::before { content: ''; flex: none; width: 0.45em; height: 0.45em; margin-top: 0.4em; border-radius: 50%; background: currentColor; }
+.badge-in_library, .badge-request-ready { background: var(--pill-ok-bg); color: var(--pill-ok-text); }
+.badge-get_this { background: var(--pill-get-bg); color: var(--pill-get-text); }
+.badge-unavailable, .badge-request-failed { background: var(--pill-bad-bg); color: var(--pill-bad-text); }
+.badge-requested, .badge-request-requested { background: var(--pill-warn-bg); color: var(--pill-warn-text); }
 
 /* Posters keep their 2:3 shape before the image arrives, so nothing shifts. */
 .poster { aspect-ratio: 2 / 3; width: 100%; border-radius: var(--radius-poster); background: var(--surface); overflow: hidden; }
 .poster img { width: 100%; height: 100%; object-fit: cover; }
 .poster-empty { border: 1px solid var(--hairline); }
+.request-thumb { border-radius: var(--radius-chip); }
 
 .row { margin-bottom: 1.75rem; }
 .row-list {
@@ -206,26 +203,25 @@ main {
 .row-list-backdrop > .card { flex: 0 0 92%; }
 .backdrop-link {
   position: relative; display: block; aspect-ratio: 16 / 9; overflow: hidden; border-radius: var(--radius-backdrop);
-  background: linear-gradient(135deg, var(--surface-raised), var(--surface)); color: var(--text);
+  background: linear-gradient(135deg, var(--surface-raised), var(--surface)); color: var(--text); border: 1px solid var(--hairline);
 }
 .backdrop-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; }
 /* Solid enough under the title and facts for 4.5:1 over even a white backdrop (the test checks the text fits in the solid part), clear above. */
 .backdrop-scrim { position: absolute; inset: 0; background: linear-gradient(to top, var(--scrim-text) 0, var(--scrim-text) 5.75rem, transparent 8.5rem); }
 .backdrop-text { position: absolute; left: 0.75rem; right: 0.75rem; bottom: 0.75rem; display: grid; gap: 0.2rem; }
-.backdrop-text .card-title { font-size: 1.25rem; font-weight: 700; line-height: 1.2; color: var(--text); }
+.backdrop-text .card-title { font-size: 1.25rem; font-weight: 800; line-height: 1.2; color: var(--text); }
 .backdrop-text .card-meta { font-size: 0.85rem; line-height: 1.3; color: var(--muted); }
-.card-backdrop > .badge { top: 0.75rem; right: 0.75rem; pointer-events: none; }
-.backdrop-link:focus-visible { outline: 3px solid var(--accent); outline-offset: -3px; }
+.card-backdrop > .badge { top: 0.75rem; left: 0.75rem; max-width: calc(100% - 1.5rem); font-size: 0.75rem; padding: 0.15rem 0.6rem 0.15rem 0.5rem; gap: 0.35rem; pointer-events: none; }
+.backdrop-link:focus-visible { outline: 3px solid var(--accent-text); outline-offset: -3px; }
 .skeleton-card > .backdrop-link { border-radius: var(--radius-backdrop); }
 
 /* Network and studio logos: TMDB's own files, unmodified, on a light tile of one shape so nothing shifts as they load. */
 .logo-tile {
   display: inline-flex; align-items: center; justify-content: center; flex: none; width: 6.5rem; height: 2.25rem;
-  padding: 0.3rem 0.55rem; border-radius: var(--radius-poster); background: var(--logo-tile); color: var(--logo-text);
+  padding: 0.3rem 0.55rem; border-radius: var(--radius-chip); background: var(--logo-tile); color: var(--logo-text);
 }
 .logo-img { display: block; width: 100%; height: 100%; object-fit: contain; }
 .logo-text { font-size: 0.8rem; font-weight: 700; line-height: 1.1; text-align: center; overflow: hidden; }
-.row-heading-source::before { height: 1.6rem; }
 .row-heading-link {
   display: inline-flex; align-items: center; gap: 0.55rem; min-height: 2.75rem; color: var(--text); text-decoration: none;
 }
@@ -241,30 +237,30 @@ main {
 .logo-link .logo-tile { width: 8.5rem; height: 4.5rem; padding: 0.75rem 1rem; border-radius: var(--radius-card); }
 .source-head { display: flex; align-items: center; gap: 0.85rem; margin-bottom: 0.75rem; }
 .source-head .screen-title { margin: 0; }
-/* A network page's All | Series | Films control: one pill of real buttons, the selected one raised. */
-.segmented {
-  display: inline-flex; gap: 0.25rem; padding: 0.25rem; margin-bottom: 1rem; border-radius: var(--radius-pill);
-  background: var(--surface); border: 1px solid var(--hairline);
-}
+/* Filter chips: outlined squircles of real buttons, the chosen one filled aqua-tint (Home's also ticked). A network page's All | Series | Films tabs and Home's All | Movies | TV radios share the look. */
+.segmented { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1rem; }
 .segment {
-  min-height: 2.75rem; min-width: 4.5rem; padding: 0 1rem; border: 0; border-radius: var(--radius-pill); background: transparent;
-  color: var(--muted); font: inherit; font-size: 0.9rem; font-weight: 600; cursor: pointer;
+  display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem;
+  min-height: 2.75rem; min-width: 4.5rem; padding: 0 1.1rem; border: 1.5px solid var(--hairline); border-radius: var(--radius-chip); background: transparent;
+  color: var(--muted); font: inherit; font-size: 0.95rem; font-weight: 700; cursor: pointer; touch-action: manipulation;
+  transition: background-color 0.15s ease-out, border-color 0.15s ease-out;
 }
-.segment[aria-selected='true'] { background: var(--surface-raised); color: var(--text); }
-/* Home's All | Movies | TV switch: a glass pill that sticks just under the glass header (3.75rem and the status bar), the chosen one filled. */
+.segment .icon { display: none; width: 1.1rem; height: 1.1rem; stroke-width: 2.6; }
+.segment[aria-selected='true'], .segment[aria-checked='true'] { background: var(--accent-tint); border-color: var(--accent); color: var(--accent-text); }
+.segment[aria-checked='true'] .icon { display: block; }
+/* Home's All | Movies | TV: a solid band that sticks just under the header (and the status bar), so rows scroll away beneath it. */
 .home-switch {
-  position: sticky; z-index: 5; top: calc(3.75rem + env(safe-area-inset-top) + 0.25rem);
-  display: flex; justify-content: center; max-width: 72rem; margin: 0 auto; padding: 0 var(--gutter-end) 0 var(--gutter); pointer-events: none;
+  position: sticky; z-index: 5; top: var(--header-box);
+  padding: 0.5rem max(var(--gutter-end), calc((100% - 72rem) / 2 + 1rem)) 0.625rem max(var(--gutter), calc((100% - 72rem) / 2 + 1rem));
+  background: var(--bg); box-shadow: 0 1px 0 var(--hairline);
 }
-.segmented-home {
-  margin: 0 0 1rem; gap: 0.15rem; padding: 0.2rem; pointer-events: auto;
-  background: var(--material); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); box-shadow: 0 6px 20px rgb(0 0 0 / 0.4);
-}
-.segmented-home .segment { min-width: 5rem; }
-.segmented-home .segment[aria-checked='true'] { background: var(--accent-gradient); color: var(--on-accent); font-weight: 700; }
+/* One row at any text size or zoom: the sticky band must stay short, so at large text the chips scroll sideways (focus brings the chosen one into view) instead of wrapping into a tall band that would fill the screen. The padding keeps the focus ring inside the scroller's clip. */
+.segmented-home { margin: -4px; padding: 4px; flex-wrap: nowrap; overflow-x: auto; scroll-padding-inline: 4px; scrollbar-width: none; overscroll-behavior-x: contain; }
+.segmented-home::-webkit-scrollbar { display: none; }
+.segmented-home .segment { flex: none; }
 .segmented-home .segment:focus-visible { outline: 3px solid var(--accent-text); outline-offset: 1px; }
-/* While the switch is on the page (with or without a hero), a focused or scrolled-to card also clears the floating switch. */
-:root:has(body[data-home-switch]) { scroll-padding-top: calc(3.75rem + env(safe-area-inset-top) + 0.25rem + 3.15rem + 0.5rem); }
+/* While the switch is on the page (with or without a hero), a focused or scrolled-to card also clears the band. */
+:root:has(body[data-home-switch]) { scroll-padding-top: calc(var(--header-box) + var(--switch-height) + 0.5rem); }
 .source-note { margin: 0.25rem 0 1rem; font-size: 0.8rem; }
 /* Three columns on a phone, two on a very narrow one, more on a wide screen. */
 .grid, .skeleton-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem 0.6rem; margin-bottom: 1rem; }
@@ -272,34 +268,33 @@ main {
 .card-link { display: grid; gap: 0.3rem; align-content: start; color: var(--text); text-decoration: none; }
 .card-title {
   display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; line-clamp: 2; overflow: hidden;
-  font-weight: 600; font-size: 0.9rem; line-height: 1.25;
+  font-weight: 700; font-size: 0.9rem; line-height: 1.25;
 }
 .card-meta { color: var(--muted); font-size: 0.78rem; line-height: 1.3; }
-/* The status pill sits on the poster's top-right corner. */
+/* The status chip sits on the image's top-left corner. */
 .card > .badge {
-  position: absolute; top: 0.35rem; right: 0.35rem; max-width: calc(100% - 0.7rem);
-  font-size: 0.64rem; line-height: 1.2; padding: 0.12rem 0.4rem; text-align: center;
-  -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur);
+  position: absolute; top: 0.4rem; left: 0.4rem; max-width: calc(100% - 0.8rem);
+  font-size: 0.64rem; line-height: 1.2; padding: 0.15rem 0.45rem 0.15rem 0.4rem; gap: 0.3rem;
 }
 
-/* Search: a capsule field with its icon inside. */
+/* Search: a squircle field with its icon inside. */
 .search-form { margin: 0.25rem 0 1.1rem; }
 .search-field { position: relative; display: block; }
 .search-field .icon { position: absolute; left: 1rem; top: 50%; width: 1.25rem; height: 1.25rem; margin-top: -0.625rem; color: var(--muted); pointer-events: none; z-index: 1; }
 .search-field input {
-  width: 100%; min-height: 2.9rem; padding: 0.5rem 1rem 0.5rem 2.75rem; border-radius: var(--radius-pill);
-  border: 1px solid var(--hairline); background: var(--material); color: var(--text); font: inherit;
+  width: 100%; min-height: 3rem; padding: 0.5rem 1rem 0.5rem 2.75rem; border-radius: var(--radius-card);
+  border: 1.5px solid var(--hairline); background: var(--surface); color: var(--text); font: inherit;
 }
 .search-field input::placeholder { color: var(--muted); opacity: 1; }
 .load-more { display: flex; margin: 0.5rem auto 1rem; }
 
 .back { display: inline-block; width: fit-content; color: var(--accent-text); font-weight: 600; }
 
-/* Full-bleed detail pages: the backdrop runs under the status bar and fades into the page; the title block overlaps its lower part. */
+/* Full-bleed detail pages: the backdrop sits edge to edge under the header and fades into the page; the title block overlaps its lower part. */
 .detail-hero {
   position: relative; height: var(--detail-hero-height); min-height: 20rem; max-height: 44rem; overflow: hidden;
 }
-.detail-hero:not(.skeleton) { background: linear-gradient(160deg, var(--bg-glow), var(--surface)); }
+.detail-hero:not(.skeleton) { background: linear-gradient(160deg, var(--surface-raised), var(--surface)); }
 .hero-img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: center 22%; }
 /* Solid enough under the text for 4.5:1 even over a white backdrop, then clear above it; the page colour at the foot. */
 .detail-scrim { position: absolute; inset: 0; background: linear-gradient(to top, var(--bg) 0, var(--scrim-text) 5rem, var(--scrim-text) 14rem, transparent 24rem); }
@@ -313,12 +308,12 @@ main {
 .poster-detail { display: none; }
 .chips { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
 .chip {
-  display: inline-block; padding: 0.2rem 0.8rem; border-radius: var(--radius-pill); border: 1px solid var(--hairline);
-  background: var(--material); color: var(--text); font-size: 0.85rem; font-weight: 600; line-height: 1.5;
+  display: inline-block; padding: 0.2rem 0.8rem; border-radius: var(--radius-chip); border: 1px solid var(--hairline);
+  background: var(--surface); color: var(--text); font-size: 0.85rem; font-weight: 600; line-height: 1.5;
 }
 .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; }
 .genres { display: flex; flex-wrap: wrap; gap: 0.4rem; }
-.genres li { padding: 0.15rem 0.7rem; border-radius: var(--radius-pill); background: var(--surface-raised); border: 1px solid var(--hairline); font-size: 0.8rem; }
+.genres li { padding: 0.15rem 0.7rem; border-radius: var(--radius-chip); background: var(--surface-raised); border: 1px solid var(--hairline); font-size: 0.8rem; }
 .detail-action { display: grid; gap: 0.6rem; }
 .overview { max-width: 46rem; margin: 1.25rem 0 1.5rem; }
 .seasons { margin-top: 1.5rem; }
@@ -339,13 +334,13 @@ main {
 .choice { display: inline-flex; align-items: center; justify-content: center; flex: none; min-width: 2.75rem; min-height: 2.75rem; margin: -0.25rem -0.55rem -0.25rem 0; cursor: pointer; touch-action: manipulation; }
 .choice input {
   -webkit-appearance: none; appearance: none; display: grid; place-content: center; flex: none; margin: 0;
-  width: 1.6rem; height: 1.6rem; border: 2px solid var(--muted); border-radius: 50%; background: transparent; cursor: pointer;
+  width: 1.6rem; height: 1.6rem; border: 2px solid var(--muted); border-radius: 0.5rem; background: transparent; cursor: pointer;
 }
 .choice input::after {
   content: ''; width: 0.7rem; height: 0.4rem; margin-top: -0.12rem; border-left: 2.5px solid var(--on-accent); border-bottom: 2.5px solid var(--on-accent);
   transform: rotate(-45deg) scale(0); transition: transform 0.12s ease-out;
 }
-.choice input:checked { border-color: transparent; background: var(--accent-gradient); }
+.choice input:checked { border-color: transparent; background: var(--accent); }
 .choice input:checked::after { transform: rotate(-45deg) scale(1); }
 .choice input:disabled { opacity: 0.6; cursor: default; }
 .choice input:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
@@ -387,16 +382,16 @@ main {
 }
 .profile:disabled { opacity: 0.7; cursor: default; }
 .avatar {
-  display: grid; place-items: center; width: 3.5rem; height: 3.5rem; border-radius: 50%;
-  background: var(--accent-gradient); color: var(--on-accent); font-size: 1.5rem; font-weight: 700;
+  display: grid; place-items: center; width: 3.5rem; height: 3.5rem; border-radius: var(--radius-card);
+  background: var(--accent); color: var(--on-accent); font-size: 1.5rem; font-weight: 800;
 }
 .profile-name { font-weight: 600; overflow-wrap: anywhere; }
 .signin-form { display: grid; gap: 0.75rem; }
 .signin-form label { font-weight: 600; }
 .signin-form input[type='text'],
 .signin-form input[type='password'] {
-  width: 100%; min-height: 2.9rem; padding: 0.5rem 1rem; border-radius: var(--radius-pill);
-  border: 1px solid var(--hairline); background: var(--surface); color: var(--text); font: inherit; font-size: 1rem;
+  width: 100%; min-height: 3rem; padding: 0.5rem 1rem; border-radius: var(--radius-card);
+  border: 1.5px solid var(--hairline); background: var(--surface); color: var(--text); font: inherit; font-size: 1rem;
 }
 .signin-form input[aria-invalid='true'] { border-color: var(--pill-bad-text); }
 .form-actions { display: flex; flex-wrap: wrap; gap: 0.75rem; }
@@ -409,10 +404,10 @@ main {
 .skeleton-heading { height: 1.4rem; width: 9rem; margin-bottom: 0.75rem; }
 .skeleton-line { display: block; height: 0.9rem; width: 70%; }
 .skeleton-block { height: 6rem; margin-top: 1rem; }
-.skeleton-field { height: 2.9rem; border-radius: var(--radius-pill); margin-bottom: 1.1rem; }
+.skeleton-field { height: 3rem; border-radius: var(--radius-card); margin-bottom: 1.1rem; }
 .skeleton-title { height: 2.4rem; width: 70%; margin-bottom: 0.75rem; }
 .skeleton-chips { height: 1.7rem; width: 60%; margin-bottom: 0.75rem; }
-.skeleton-action { height: 3.25rem; border-radius: var(--radius-pill); margin-top: 1rem; }
+.skeleton-action { height: 3.5rem; border-radius: var(--radius-card); margin-top: 1rem; }
 .detail-skeleton .detail-hero { border-radius: 0; }
 .hero-skeleton { position: relative; display: flex; align-items: flex-end; height: var(--hero-height); margin-bottom: 1.25rem; }
 .hero-skeleton-media { position: absolute; inset: 0; border-radius: 0; }
@@ -420,20 +415,11 @@ main {
 .hero-skeleton-title { height: 1.9rem; width: 75%; }
 .hero-skeleton-facts { width: 45%; }
 .skeleton-request { display: grid; grid-template-columns: 46px minmax(0, 1fr); gap: 0.8rem; align-items: center; padding: 0.7rem 0.8rem; border-radius: var(--radius-card); background: var(--surface); border: 1px solid var(--hairline); }
-.skeleton-request .skeleton-thumb { width: 46px; height: 68px; }
+.skeleton-request .skeleton-thumb { width: 46px; height: 68px; border-radius: var(--radius-chip); }
 .skeleton-request .skeleton-lines { display: grid; gap: 0.5rem; }
 @keyframes shimmer { to { background-position: -200% 0; } }
 
-/* Screens with a full-bleed hero or backdrop: the header floats over it, clear until the page is scrolled. */
-body[data-chrome] .app-header {
-  position: fixed; left: 0; right: 0; background: transparent; -webkit-backdrop-filter: none; backdrop-filter: none;
-}
-/* A scrim behind the brand, the status bar and the glass buttons, fading out below the header, so none of it sits on a bare backdrop. */
-body[data-chrome]:not([data-scrolled]) .app-header::before { content: ''; position: absolute; z-index: -1; left: 0; right: 0; top: 0; pointer-events: none; }
-body[data-chrome='home']:not([data-scrolled]) .app-header::before { height: calc(100% + 2.5rem); background: linear-gradient(to bottom, var(--scrim-top) 0, var(--scrim-top) 55%, transparent 100%); }
-body[data-chrome='detail']:not([data-scrolled]) .app-header::before { height: calc(100% + 1rem); background: linear-gradient(to bottom, var(--scrim-top) 0, transparent 100%); }
-body[data-chrome='detail']:not([data-scrolled]) .brand { visibility: hidden; }
-body[data-chrome][data-scrolled] .app-header { background: var(--material-header); -webkit-backdrop-filter: var(--blur); backdrop-filter: var(--blur); }
+/* Screens with a full-bleed hero or backdrop: the header is the same solid bar above it; only the page's own padding gives way to the image. */
 body[data-chrome] main { max-width: none; padding-top: 0; padding-left: 0; padding-right: 0; }
 body[data-chrome] .home-row { max-width: 72rem; margin: 0 auto; padding: 0 var(--gutter-end) 0 var(--gutter); }
 
@@ -447,7 +433,7 @@ body[data-chrome] .home-row { max-width: 72rem; margin: 0 auto; padding: 0 var(-
   position: relative; display: flex; align-items: flex-end; flex: 0 0 100%; min-width: 0; height: var(--hero-height);
   overflow: hidden; scroll-snap-align: start; scroll-snap-stop: always; isolation: isolate;
 }
-.hero-slide-plain { background: linear-gradient(160deg, var(--bg-glow), var(--surface)); }
+.hero-slide-plain { background: linear-gradient(160deg, var(--surface-raised), var(--surface)); }
 .hero-media { position: absolute; inset: 0; z-index: -1; }
 /* Solid enough under the title, facts and overview for 4.5:1 over even a white backdrop. */
 .hero-scrim { position: absolute; inset: 0; z-index: -1; background: linear-gradient(to top, var(--bg) 0, var(--scrim-text) 6rem, var(--scrim-text) 17rem, transparent 26rem); }
@@ -477,21 +463,17 @@ body[data-chrome] .home-row { max-width: 72rem; margin: 0 auto; padding: 0 var(-
 .hero-dot { position: relative; flex: none; width: 1.5rem; height: 2.75rem; padding: 0; border: 0; background: none; cursor: pointer; touch-action: manipulation; }
 .hero-dot::before {
   content: ''; position: absolute; left: 50%; top: 50%; width: 0.5rem; height: 0.5rem; margin: -0.25rem 0 0 -0.25rem;
-  border-radius: var(--radius-pill); background: var(--muted); transition: width 0.15s ease-out, margin 0.15s ease-out;
+  border-radius: 50%; background: var(--muted); transition: transform 0.15s ease-out, background-color 0.15s ease-out;
 }
-.hero-dot[aria-current='true']::before { width: 1.25rem; margin-left: -0.625rem; background: var(--accent-text); }
-.hero-dot:focus-visible { outline: 3px solid var(--accent); outline-offset: -2px; border-radius: var(--radius-pill); }
-
-/* Without backdrop blur the glass is nearly opaque, so text on it keeps its contrast. */
-@supports not ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))) {
-  .app-header { background: var(--bg); }
-  .tabbar, .back-button, .icon-button, .search-field input, .button-secondary, .hero-nav, .chip, .segmented-home { background: var(--surface); }
-}
+.hero-dot[aria-current='true']::before { transform: scale(1.4); background: var(--accent); }
+.hero-dot:focus-visible { outline: 3px solid var(--accent-text); outline-offset: -2px; border-radius: var(--radius-chip); }
 
 @media (hover: hover) {
   .card-link:hover .card-title, .request-link:hover .card-title, .season-link:hover .season-name { text-decoration: underline; }
   .button:hover { filter: brightness(1.1); }
   .tabbar a:hover { color: var(--text); }
+  .segment:hover { border-color: var(--muted); }
+  .button-secondary:hover { background: var(--accent-tint); }
   .back-button:hover, .icon-button:hover, .hero-nav:hover { background: var(--surface-raised); }
 }
 
