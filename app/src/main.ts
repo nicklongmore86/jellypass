@@ -510,7 +510,7 @@ async function home(filter: HomeFilter, signal: AbortSignal, current: () => bool
   const panelId = 'home-panel';
   const switcher = homeSwitch(doc, filter, panelId);
   const panel = el(doc, 'div', { attrs: { id: panelId, role: 'group', 'aria-labelledby': `home-filter-${filter}` } });
-  show(heading, heroSlot, switcher, panel);
+  show(heading, switcher, heroSlot, panel);
 
   /** The studios and networks the API lists (no TMDB call), asked for once however often the filter changes. */
   let found: Sources | undefined;

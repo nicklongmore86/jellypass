@@ -28,6 +28,7 @@ const SHAPES = {
     ['line', { x1: '12', y1: '7.8', x2: '12', y2: '7.9' }],
   ],
   back: [['path', { d: 'M14.5 5.5 8 12l6.5 6.5' }]],
+  check: [['path', { d: 'M5.5 12.5 10 17l8.5-9.5' }]],
   prev: [['path', { d: 'M14.5 5.5 8 12l6.5 6.5' }]],
   next: [['path', { d: 'M9.5 5.5 16 12l-6.5 6.5' }]],
 } as const satisfies Record<string, readonly Shape[]>;
