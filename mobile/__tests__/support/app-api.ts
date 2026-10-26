@@ -97,3 +97,38 @@ export const OPERATIONS: Record<string, Operation> = {
 export function sent(call: Recorded): string {
   return `${call.init.method} ${call.url.slice(API.length)}`;
 }
+
+export const REDIRECT_STATUSES = [301, 302, 303, 307, 308] as const;
+
+/** Where a redirect may point: the household itself, or anywhere else. */
+export const REDIRECT_TARGETS = {
+  'same-origin': (url: string) => `${url}-moved`,
+  'cross-origin': () => 'https://elsewhere.example.test/catch',
+} as const;
+
+/**
+ * A fake platform network that behaves as React Native's does under fetch: it follows a 3xx to its Location with a
+ * second request (keeping the method, headers and body for 307/308, as NSURLSession and OkHttp do) unless the call
+ * says `redirect: 'manual'` or `'error'`. `first` answers the first request; every request is recorded, so a test can
+ * assert that nothing ever went to the Location.
+ */
+export function redirectingNetwork(first: (url: string, init: RequestInitLike) => ResponseLike) {
+  const requests: Recorded[] = [];
+  const fetch: FetchLike = async (url, init) => {
+    requests.push({ url, init });
+    let response = first(url, init);
+    const redirect = (init as { redirect?: string }).redirect;
+    let hops = 0;
+    while (response.status >= 300 && response.status < 400 && redirect !== 'manual' && redirect !== 'error' && hops < 5) {
+      const location = response.headers.get('Location')!;
+      const keep = response.status === 307 || response.status === 308;
+      const next = { ...init, ...(keep ? {} : { method: 'GET' as const, body: undefined }) };
+      requests.push({ url: location, init: next });
+      response = answer(200, '"followed"', {}, location);
+      hops += 1;
+    }
+    if (redirect === 'error' && response.status >= 300 && response.status < 400) throw new TypeError('redirect');
+    return response;
+  };
+  return { fetch, requests };
+}

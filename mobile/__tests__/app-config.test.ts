@@ -25,8 +25,9 @@ describe('app config', () => {
     expect(JSON.stringify(config)).not.toMatch(/projectId/);
   });
 
-  it('is portrait on iPhone, and turns on iPad and Android', () => {
-    // 'default' is Android's `unspecified`, so tablets rotate; on iOS the infoPlist keys below win.
+  it('is portrait on phones, and turns on iPad and Android tablets', () => {
+    // 'default' is Android's `unspecified`, so tablets rotate (an Android phone is locked to portrait at launch:
+    // orientation.test.ts); on iOS the infoPlist keys below win.
     expect(config.orientation).toBe('default');
     expect(config.ios?.infoPlist?.UISupportedInterfaceOrientations).toEqual(['UIInterfaceOrientationPortrait', 'UIInterfaceOrientationPortraitUpsideDown']);
     expect(config.ios?.requireFullScreen).toBe(false);
@@ -36,6 +37,13 @@ describe('app config', () => {
       'UIInterfaceOrientationLandscapeLeft',
       'UIInterfaceOrientationLandscapeRight',
     ]);
+  });
+
+  it('opens jellypass:// setup links, and keeps the sign-in out of Android backups', () => {
+    expect(config.scheme).toBe('jellypass');
+    expect(config.android?.allowBackup).toBe(false);
+    // The secure-store plugin would add a Face ID usage string for biometrics the app does not use.
+    expect(JSON.stringify(config.plugins)).not.toMatch(/expo-secure-store/);
   });
 
   it('has no update service, analytics or tracking, and no household address', () => {

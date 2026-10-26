@@ -16,12 +16,14 @@ const config: ExpoConfig = {
   // The Expo account the app belongs to. The EAS projectId and eas.json come with the build PR.
   owner: 'nicklongmore86',
   version: '0.1.0',
-  // Turns freely ('default': Android's `unspecified`), so Android tablets rotate. The iPhone stays portrait and the
-  // iPad turns all four ways: both are spelled out in infoPlist below, which Expo uses in place of this value on iOS
-  // (App Store validation needs all four on iPad for multitasking).
+  // Turns freely ('default': Android's `unspecified`), so Android tablets rotate; an Android phone is locked to portrait
+  // at launch (src/orientation.ts), as Android has no per-form-factor setting. The iPhone stays portrait and the iPad
+  // turns all four ways: both are spelled out in infoPlist below, which Expo uses in place of this value on iOS (App
+  // Store validation needs all four on iPad for multitasking).
   orientation: 'default',
   icon: './assets/icon.png',
-  // The jellypass:// links a household will hand out to connect the app to its address (the sign-in PR).
+  // The setup links a household hands out, `jellypass://connect?address=https://jelly-<household>.<domain>`: they only
+  // offer the address, for the member to confirm (src/app/connect.tsx).
   scheme: 'jellypass',
   userInterfaceStyle: 'dark',
   backgroundColor: NAVY,
@@ -44,6 +46,9 @@ const config: ExpoConfig = {
     package: ANDROID_PACKAGE,
     // A placeholder from the PWA icon: its ticket already sits inside the adaptive icon's safe zone.
     adaptiveIcon: { foregroundImage: './assets/adaptive-icon.png', backgroundColor: NAVY },
+    // No Android backup: the sign-in is only ever on this device (a restored Keystore-encrypted value is unreadable
+    // anyway), and the app keeps nothing else worth restoring.
+    allowBackup: false,
   },
   // No over-the-air updates: expo-updates is not installed and nothing checks Expo's servers at launch.
   updates: { enabled: false },
