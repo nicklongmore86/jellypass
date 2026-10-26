@@ -14,6 +14,43 @@ privacy leak. Such changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+The household-gateway changes below alter only failure responses on relayed
+Jellyfin endpoints, in the configuration this project documents (Quick Connect
+disabled in Jellyfin, as `docs/household-access.md` requires, and no Streamyfin
+plugin installed): there Jellyfin itself already refused every one of these
+calls, and `GET /QuickConnect/Enabled` already answered `false`. JellyPass's
+versioning policy (at the top of `CHANGELOG.md`) keeps failure responses
+outside the public interface: they may change in a minor or patch release to
+close a security or privacy leak, and are always listed first in the release
+notes. Here they close one: on a Jellyfin with Quick Connect enabled, a
+household hostname offered a sign-in that skipped the household-membership
+check. A Jellyfin that has Quick Connect enabled, or the Streamyfin plugin
+installed, loses those features on household hostnames: that is the leak being
+closed, and they still work on Jellyfin's own address.
+
+### Security
+
+- **Household hostnames no longer relay Quick Connect to Jellyfin.** Quick
+  Connect signs in whoever authorizes the code, so it skipped the membership
+  check `POST /Users/AuthenticateByName` has there. `GET /QuickConnect/Enabled`
+  still answers `false`, now in every spelling; every other Quick Connect call
+  (`/QuickConnect/Initiate`, `/QuickConnect/Connect`, `/QuickConnect/Authorize`,
+  `/Users/AuthenticateWithQuickConnect`, any other path under `/QuickConnect`,
+  and `/QuickConnect/Enabled` by any method but `GET`) is a fixed
+  `403 {"error":"household_quick_connect_disabled"}` with `Cache-Control:
+  no-store`, the same for members and anyone else, and never reaches Jellyfin.
+  Before, every such call but an exact `GET /QuickConnect/Enabled` was relayed.
+- **Household hostnames no longer relay the Streamyfin plugin's routes.**
+  `/Streamyfin` and every path below it is a fixed
+  `404 {"error":"not_found"}` with `Cache-Control: no-store` and never reaches
+  Jellyfin, so the plugin, if installed, cannot hand its settings (Seerr's API
+  key among them) to household users.
+- Both are matched as Jellyfin 10.11 routes them: in any case, percent-encoded
+  or not, with trailing or repeated slashes, and under its legacy `/emby` and
+  `/mediabrowser` prefixes. A WebSocket upgrade to any of these paths is
+  answered `404` and never reaches Jellyfin. The main Jellyfin site and the
+  admin host are unaffected.
+
 ## [3.1.1] - 2026-10-26
 
 This is a patch release for the admin UI only. There is nothing to configure:

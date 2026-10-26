@@ -46,6 +46,9 @@ Filtering public discovery is a usability and privacy boundary. It is not author
 
 - Quick Connect is disabled globally in Jellyfin (`QuickConnectAvailable=false`).
 - Household origins independently return a non-cacheable `false` from `GET /QuickConnect/Enabled` so stale or accidental global configuration cannot advertise Quick Connect there.
+- Household origins also refuse every other Quick Connect call themselves, so enabling Quick Connect in Jellyfin never opens a sign-in that skips the membership check below: `/QuickConnect/Initiate`, `/QuickConnect/Connect`, `/QuickConnect/Authorize`, `/Users/AuthenticateWithQuickConnect`, any other path under `/QuickConnect`, and `/QuickConnect/Enabled` by any method but `GET` get a fixed, non-cacheable `403 {"error":"household_quick_connect_disabled"}`, the same for every caller, and never reach Jellyfin. A WebSocket upgrade to any of them is answered `404` and never reaches Jellyfin either.
+- The [Streamyfin](https://github.com/streamyfin/jellyfin-plugin-streamyfin) plugin's routes (`/Streamyfin` and below) get a fixed, non-cacheable `404 {"error":"not_found"}` on household origins and never reach Jellyfin, so the plugin, if installed, cannot hand its settings (Seerr's API key among them) to household users.
+- These paths are matched as Jellyfin routes them: in any case, percent-decoded, with trailing (or repeated) slashes, and with Jellyfin's legacy `/emby` or `/mediabrowser` prefix removed.
 - Household login pages do not expose Forgot Password, Quick Connect or server selection. Manual Login stays: Jellyfin leaves hidden users off its public list (and so off the household's picker), and a hidden member signs in by typing their name. This is implemented by augmenting Jellyfin's branding response for household hosts.
 - `POST /Users/AuthenticateByName` on a household host signs in only that household's members. The name is looked up in Jellyfin's full user list (hidden users included, matched case-insensitively), Jellyfin is asked to sign in that member by their own name, and a session for anyone else is revoked at once. Only a sign-in that works is answered by Jellyfin; every other attempt gets one of three fixed answers, with the same headers, no sooner than one second after it arrived, none of them depending on whether the name is a member's:
   - `400 {"error":"invalid_request"}` for a request Jellyfin would refuse whoever it named: no `Authorization` (or `X-Emby-Authorization`) header with the `MediaBrowser` (or `Emby`) scheme and a non-empty `Client`, `Device`, `DeviceId` and `Version`, or a body that is not `{"Username": string, "Pw": string}`. This is decided before the name is looked up.
@@ -116,7 +119,8 @@ The SSO step needs an explicit native-client design. The maintained Community SS
 
 - Jellyfin supplies its login picker from unauthenticated `GET /Users/Public`.
 - Jellyfin Web renders Manual Login and Forgot Password independently of whether public users exist; Quick Connect visibility comes from `GET /QuickConnect/Enabled`.
-- Jellyfin exposes the global `QuickConnectAvailable` server setting.
+- Jellyfin exposes the global `QuickConnectAvailable` server setting. A fresh Jellyfin 10.11 has it on.
+- Jellyfin 10.11 routes `/emby/...` and `/mediabrowser/...` (in any case, percent-encoded or not) as the same path without that prefix.
 - Presentation changes in Jellyfin Web do not disable the corresponding server authentication endpoints.
 
 Upstream references:

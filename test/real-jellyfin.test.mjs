@@ -403,6 +403,37 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
     assert.deepEqual(await malformed({ Authorization: WEB }, (username) => ({ Username: username })), noClient);
   });
 
+  it('keeps Quick Connect and Streamyfin off a household host, though Jellyfin itself offers Quick Connect', async (t) => {
+    const configuration = await request(baseUrl, '/System/Configuration', { token: fixture.token });
+    t.after(() => request(baseUrl, '/System/Configuration', { method: 'POST', token: fixture.token, body: configuration }));
+    await request(baseUrl, '/System/Configuration', { method: 'POST', token: fixture.token, body: { ...configuration, QuickConnectAvailable: true } });
+    const WEB = 'MediaBrowser Client="Jellyfin Web", Device="Firefox", DeviceId="jellypass-real-quick-connect", Version="10.11.3"';
+    // At Jellyfin itself Quick Connect is on and hands out a code, by every route it takes, the legacy prefix included.
+    assert.equal(await request(baseUrl, '/QuickConnect/Enabled'), true);
+    assert.match((await request(baseUrl, '/emby/QuickConnect/Initiate', { method: 'POST', authorization: WEB })).Code, /^\d+$/);
+
+    const householdStore = new GrantStore(path.join(await makeTempDir(t, 'jfa-real-quick-connect-'), 'grants.json'));
+    await householdStore.load();
+    await householdStore.upsertGroup({ id: 'quickhouse', name: 'Quick House', userIds: [fixture.bobId] });
+    const gateway = makeServer(new AccessService(client, householdStore), { webhook: webhookToken, admin: 'real-admin-secret' }, undefined, {
+      householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-' },
+    });
+    await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise((resolve) => gateway.close(resolve)));
+    const port = gateway.address().port;
+    const host = { Host: 'jelly-quickhouse.example.test', Authorization: WEB };
+    for (const pathname of ['/QuickConnect/Enabled', '/emby/QuickConnect/Enabled/', '/QuickConnect/%45nabled']) {
+      const answer = await getWithHeaders(port, pathname, host);
+      assert.deepEqual([answer.status, answer.text], [200, 'false'], pathname);
+    }
+    for (const pathname of ['/QuickConnect/Initiate', '/emby/QuickConnect/Initiate', '/QuickConnect/Authorize?Code=000000', '/Users/AuthenticateWithQuickConnect']) {
+      const answer = await postWithHeaders(port, pathname, host, { Secret: 'x' });
+      assert.deepEqual([answer.status, answer.text], [403, '{"error":"household_quick_connect_disabled"}'], pathname);
+    }
+    const streamyfin = await getWithHeaders(port, '/Streamyfin/config', host);
+    assert.deepEqual([streamyfin.status, streamyfin.text], [404, '{"error":"not_found"}']);
+  });
+
   it('finds a title\'s items by TMDB ID with JellyPass\'s key, the "Get this" decision input for "Jellyfin already has it"', async () => {
     const original = await client.getItem(fixture.itemId);
     await client.updateItem({ ...original, ProviderIds: { ...original.ProviderIds, Tmdb: '424242' } });

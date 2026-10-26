@@ -545,6 +545,22 @@ second after the attempt, so no answer tells a member's name from anyone
 else's. The exception is the sign-in rate limit: `429`
 (`too_many_login_attempts`) still answers at once. See [the household access design](docs/household-access.md).
 
+Quick Connect is never offered on a household hostname, whatever Jellyfin's
+own setting: it signs in whoever authorizes the code, without the membership
+check above. `GET /QuickConnect/Enabled` answers `false`, and every other
+Quick Connect call (`/QuickConnect/Initiate`, `/QuickConnect/Connect`,
+`/QuickConnect/Authorize`, `/Users/AuthenticateWithQuickConnect`, and any
+other path under `/QuickConnect`) a fixed `403`
+(`household_quick_connect_disabled`). The
+[Streamyfin](https://github.com/streamyfin/jellyfin-plugin-streamyfin)
+plugin's routes (`/Streamyfin` and below), which would hand its settings,
+Seerr's API key among them, to any signed-in user, answer a fixed `404`
+(`not_found`). Both are answered by JellyPass alike for anyone, never reach
+Jellyfin (WebSocket upgrades included), are never cached (`Cache-Control:
+no-store`), and are matched as Jellyfin routes them: in any case,
+percent-encoded or not, with trailing slashes, and under Jellyfin's legacy
+`/emby` and `/mediabrowser` prefixes.
+
 Unknown household hostnames fail closed with `404`. Group IDs used as household
 IDs must contain lowercase letters, numbers, and hyphens and be no longer than
 63 characters.

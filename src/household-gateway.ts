@@ -14,6 +14,11 @@ import { AttemptCounter } from './rate-limit.js';
 const PUBLIC_USERS_PATH = '/users/public';
 const BRANDING_CONFIGURATION_PATH = '/branding/configuration';
 const QUICK_CONNECT_ENABLED_PATH = '/quickconnect/enabled';
+/** Quick Connect: every route under it, and the sign-in it ends in, which Jellyfin does not scope to a household. */
+const QUICK_CONNECT_PATH = '/quickconnect';
+const AUTHENTICATE_WITH_QUICK_CONNECT_PATH = '/users/authenticatewithquickconnect';
+/** The Streamyfin plugin's routes, which hand its settings (Seerr's keys among them) to any signed-in user. */
+const STREAMYFIN_PATH = '/streamyfin';
 const AUTHENTICATE_BY_NAME_PATH = '/users/authenticatebyname';
 const LOGOUT_PATH = '/sessions/logout';
 const FORGOT_PASSWORD_PATHS = new Set(['/users/forgotpassword', '/users/forgotpassword/pin']);
@@ -243,8 +248,19 @@ export class HouseholdGateway {
       await this.#proxyBrandingConfiguration(request, response);
       return;
     }
-    if (request.method === 'GET' && pathname === QUICK_CONNECT_ENABLED_PATH) {
+    // Quick Connect signs in whoever authorizes the code, member or not, so no household host offers it: whether it is
+    // enabled is always false, and every other Quick Connect call is refused alike, without asking Jellyfin.
+    const route = jellyfinRoute(requestUrl.pathname);
+    if (request.method === 'GET' && route === QUICK_CONNECT_ENABLED_PATH) {
       writeJson(response, 200, false);
+      return;
+    }
+    if (isQuickConnectRoute(route)) {
+      writeJson(response, 403, { error: 'household_quick_connect_disabled' });
+      return;
+    }
+    if (isStreamyfinRoute(route)) {
+      writeJson(response, 404, { error: 'not_found' });
       return;
     }
     if (request.method === 'POST' && FORGOT_PASSWORD_PATHS.has(pathname)) {
@@ -297,10 +313,12 @@ export class HouseholdGateway {
       socket.end(`HTTP/1.1 503 Service Unavailable\r\n${neverStoreHeaders()}Connection: close\r\n\r\n`);
       return;
     }
-    const pathname = new URL(request.url ?? '/', 'http://localhost').pathname.toLowerCase();
+    const requestPath = new URL(request.url ?? '/', 'http://localhost').pathname;
+    const pathname = requestPath.toLowerCase();
     const appPath = pathname === APP_PATH || pathname.startsWith(`${APP_PATH}/`);
-    // The app API has no WebSockets, and its paths are never proxied to Jellyfin.
-    if (!this.#memberIds(householdId) || appPath) {
+    const route = jellyfinRoute(requestPath);
+    // The app API has no WebSockets, and its paths, Quick Connect's and Streamyfin's are never proxied to Jellyfin.
+    if (!this.#memberIds(householdId) || appPath || isQuickConnectRoute(route) || isStreamyfinRoute(route)) {
       socket.end(`HTTP/1.1 404 Not Found\r\n${appPath ? neverStoreHeaders() : ''}Connection: close\r\n\r\n`);
       return;
     }
@@ -1156,6 +1174,29 @@ function isLogoutPath(pathname: string): boolean {
     // Not valid percent-encoding: the path as given.
   }
   return decoded.toLowerCase().replace(/\/+$/, '') === LOGOUT_PATH;
+}
+
+/**
+ * The route Jellyfin takes a path to, for matching: percent-decoded, in lower case, with runs of slashes as one and no
+ * trailing slash, and without the legacy `/emby` or `/mediabrowser` prefix Jellyfin strips before routing. It may match
+ * a path Jellyfin itself would not route (a decoded `%2F`, say), never the other way round.
+ */
+function jellyfinRoute(pathname: string): string {
+  let decoded = pathname;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    // Not valid percent-encoding: the path as given.
+  }
+  return decoded.toLowerCase().replace(/\/{2,}/g, '/').replace(/\/+$/, '').replace(/^\/(?:emby|mediabrowser)(?=\/)/, '');
+}
+
+function isQuickConnectRoute(route: string): boolean {
+  return route === QUICK_CONNECT_PATH || route.startsWith(`${QUICK_CONNECT_PATH}/`) || route === AUTHENTICATE_WITH_QUICK_CONNECT_PATH;
+}
+
+function isStreamyfinRoute(route: string): boolean {
+  return route === STREAMYFIN_PATH || route.startsWith(`${STREAMYFIN_PATH}/`);
 }
 
 /**
