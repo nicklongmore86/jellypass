@@ -5,6 +5,7 @@
 // otherwise than the gateway is refused with a fixed answer and never proxied.
 import assert from 'node:assert/strict';
 import { connect } from 'node:net';
+import { performance } from 'node:perf_hooks';
 import { describe, it } from 'node:test';
 import { ALICE, HOST_A, ITEMS, OUTSIDER, get, post, startApp, world } from './support/household-app.mjs';
 
@@ -77,20 +78,41 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
     }
   });
 
-  it('refuses Jellyfin\'s sign-in by ID for a non-member in every spelling, without asking Jellyfin', async (t) => {
-    const app = await startApp(t, world({ passwords }));
-    const dashed = `${OUTSIDER.slice(0, 8)}-${OUTSIDER.slice(8, 12)}-${OUTSIDER.slice(12, 16)}-${OUTSIDER.slice(16, 20)}-${OUTSIDER.slice(20)}`;
-    for (const id of [OUTSIDER, dashed, `{${dashed}}`, 'not-a-user']) {
+  it('refuses Jellyfin\'s obsolete sign-in by ID for members and non-members alike, in every spelling, without asking Jellyfin', async (t) => {
+    const loginFailureDelayMs = 150;
+    const app = await startApp(t, world({ passwords }), { trustedProxies: ['127.0.0.1'], loginFailureDelayMs });
+    const dashed = (id) => `${id.slice(0, 8)}-${id.slice(8, 12)}-${id.slice(12, 16)}-${id.slice(16, 20)}-${id.slice(20)}`;
+    let client = 0;
+    const answers = [];
+    for (const [id, password] of [[ALICE, 'alice-pass'], [OUTSIDER, 'out-pass'], [ALICE, 'wrong'], [dashed(ALICE), 'alice-pass'], [`{${dashed(OUTSIDER)}}`, 'out-pass'], ['not-a-user', '']]) {
       for (const path of [`/Users/${id}/Authenticate`, ...spellings(`/Users/${id}/Authenticate`)]) {
-        const answer = await post(app.port, `${path}?pw=out-pass`, { Host: HOST_A, Authorization: AUTHORIZATION }, {});
-        assert.deepEqual([answer.status, answer.text], [401, NOT_A_MEMBER], path);
+        const started = performance.now();
+        const answer = await post(app.port, `${path}?pw=${password}`, { Host: HOST_A, Authorization: AUTHORIZATION, 'X-Forwarded-For': `203.0.113.${++client}` }, {});
+        const took = performance.now() - started;
+        assert.ok(took >= loginFailureDelayMs - 5, `${path} answered after ${took} ms`);
+        const { date, ...headers } = answer.headers;
+        answers.push({ path, answer: [answer.status, answer.text, headers] });
       }
     }
-    assert.deepEqual(app.jellyfin.signInAttempts, []);
+    // A member's ID with her own password is answered exactly as an outsider's, or no user's at all.
+    for (const { path, answer } of answers) assert.deepEqual(answer, answers[0].answer, path);
+    assert.deepEqual(answers[0].answer.slice(0, 2), [401, NOT_A_MEMBER]);
+    assert.deepEqual(app.jellyfin.signInAttempts, [], 'Jellyfin was asked to sign someone in by ID');
     assert.deepEqual(forwarded(app), []);
-    // A member's is Jellyfin's to answer, as before.
-    const alice = await post(app.port, `/emby/Users/${ALICE}/Authenticate?pw=alice-pass`, { Host: HOST_A, Authorization: AUTHORIZATION }, {});
-    assert.equal(alice.json().User.Id, ALICE);
+  });
+
+  it('counts sign-ins by ID against the same per-address budget as sign-ins by name, for members and non-members alike', async (t) => {
+    const app = await startApp(t, world({ passwords }), { trustedProxies: ['127.0.0.1'] });
+    const from = (address) => ({ Host: HOST_A, Authorization: AUTHORIZATION, 'X-Forwarded-For': address });
+    for (const [address, id] of [['203.0.113.10', ALICE], ['203.0.113.11', OUTSIDER]]) {
+      for (let attempt = 0; attempt < 20; attempt += 1) {
+        assert.equal((await post(app.port, `/Users/${id}/Authenticate?pw=x`, from(address), {})).status, 401);
+      }
+      const byId = await post(app.port, `/Users/${id}/Authenticate?pw=x`, from(address), {});
+      const byName = await post(app.port, '/Users/AuthenticateByName', from(address), { Username: 'Alice', Pw: 'alice-pass' });
+      assert.deepEqual([byId.status, byId.text], [429, '{"error":"too_many_login_attempts"}'], id);
+      assert.deepEqual([byName.status, byName.text], [429, '{"error":"too_many_login_attempts"}'], id);
+    }
   });
 
   it('lists only the household\'s members in every spelling of /Users/Public', async (t) => {
@@ -172,6 +194,66 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
     }
   });
 
+  it('checks every route that names an item, HLS, subtitles and attachments included, and proxies only what the caller may see', async (t) => {
+    const app = await startApp(t, mediaWorld());
+    const alice = { Host: HOST_A, Authorization: `${AUTHORIZATION}, Token="token-alice"` };
+    const source = 'd00d0000d00d0000d00d0000d00d0000';
+    const query = 'api_key=token-alice&MediaSourceId=d00d0000d00d0000d00d0000d00d0000&PlaySessionId=p1';
+    // Every route Jellyfin 10.11 takes an item ID in, by method; most of them check nobody's access to the item.
+    const itemRoutes = (id) => [
+      ['GET', `/Videos/${id}/live.m3u8`], ['GET', `/Videos/${id}/master.m3u8`], ['HEAD', `/Videos/${id}/master.m3u8`],
+      ['GET', `/Videos/${id}/main.m3u8`], ['GET', `/Videos/${id}/hls1/main/0.ts`], ['GET', `/Videos/${id}/hls1/main/-1.mp4`],
+      ['GET', `/Videos/${id}/hls/abc/stream.m3u8`], ['GET', `/Videos/${id}/hls/abc/0.ts`], ['GET', `/Videos/${id}/stream`],
+      ['HEAD', `/Videos/${id}/stream.mp4`], ['GET', `/Videos/${id}/${source}/Subtitles/2/Stream.vtt`],
+      ['GET', `/Videos/${id}/${source}/Subtitles/2/0/Stream.srt`], ['GET', `/Videos/${id}/${source}/Subtitles/2/subtitles.m3u8`],
+      ['GET', `/Videos/${id}/${source}/Attachments/0`], ['GET', `/Videos/${id}/Trickplay/320/tiles.m3u8`],
+      ['GET', `/Videos/${id}/Trickplay/320/0.jpg`], ['GET', `/Videos/${id}/AdditionalParts`], ['POST', `/Videos/${id}/Subtitles`],
+      ['GET', `/Audio/${id}/universal`], ['HEAD', `/Audio/${id}/universal`], ['GET', `/Audio/${id}/stream.mp3`],
+      ['GET', `/Audio/${id}/main.m3u8`], ['GET', `/Audio/${id}/hls1/main/0.aac`], ['GET', `/Audio/${id}/hls/0/stream.aac`],
+      ['GET', `/Audio/${id}/Lyrics`], ['GET', `/Items/${id}`], ['GET', `/Items/${id}/PlaybackInfo`],
+      ['POST', `/Items/${id}/PlaybackInfo`], ['GET', `/Items/${id}/File`], ['GET', `/Items/${id}/Download`],
+      ['GET', `/Items/${id}/Images`], ['GET', `/Items/${id}/ThemeMedia`], ['GET', `/Items/${id}/Similar`],
+      ['GET', `/Items/${id}/SpecialFeatures`], ['GET', `/Items/${id}/Intros`], ['GET', `/Items/${id}/Ancestors`],
+      ['GET', `/Items/${id}/SomeRouteJellyfinAddsLater`], ['POST', `/Items/${id}/Images/Primary`],
+      ['GET', `/UserItems/${id}/UserData`], ['POST', `/UserPlayedItems/${id}`], ['POST', `/UserFavoriteItems/${id}`],
+      ['POST', `/PlayingItems/${id}/Progress`], ['GET', `/MediaSegments/${id}`], ['GET', `/Shows/${id}/Episodes`],
+      ['GET', `/Shows/${id}/Seasons`], ['GET', `/Movies/${id}/Similar`], ['GET', `/Albums/${id}/InstantMix`],
+      ['GET', `/Artists/${id}/Similar`], ['GET', `/Users/${ALICE}/Items/${id}`], ['POST', `/Users/${ALICE}/PlayedItems/${id}`],
+      ['POST', `/Users/${ALICE}/PlayingItems/${id}/Progress`], ['DELETE', `/Users/${ALICE}/FavoriteItems/${id}`],
+    ];
+    for (const [method, bare] of itemRoutes(HIDDEN)) {
+      for (const path of [bare, ...spellings(bare)]) {
+        const answer = await get(app.port, `${path}?${query}`, alice, { method });
+        assert.deepEqual([answer.status, method === 'HEAD' ? ITEM_NOT_FOUND : answer.text], [404, ITEM_NOT_FOUND], `${method} ${path}`);
+      }
+      // As a WebSocket upgrade (a GET), save an image's route, which is Jellyfin's to answer (below).
+      if (!bare.includes('/Images/')) assert.match(await upgrade(app.port, bare, HOST_A), /^HTTP\/1\.1 404 /, bare);
+    }
+    // Jellyfin takes a subtitle's item from the query over the route: the query's is checked too.
+    // Jellyfin also reads a query that is one encoded key (`?itemId%3D...`) as the pairs in it.
+    for (const parameter of [`itemId=${HIDDEN}`, `ItemId=${HIDDEN}`, `ITEMID=${HIDDEN}`, `item%49d=${HIDDEN}`, `itemId%3D${HIDDEN}`, `api_key%3Dtoken-alice%26itemId%3D${HIDDEN}`]) {
+      const path = `/Videos/${ITEMS.ownMovie}/${source}/Subtitles/2/Stream.vtt?${parameter}`;
+      assert.deepEqual([(await get(app.port, path, alice)).status], [404], path);
+    }
+    // Jellyfin's live TV streams for its own transcoder are served to no household client.
+    for (const path of ['/LiveTv/LiveRecordings/0123/stream', '/emby/livetv/livestreamfiles/abc/stream.ts']) {
+      assert.deepEqual([(await get(app.port, path, alice)).status, (await get(app.port, path, alice)).text], [404, ITEM_NOT_FOUND], path);
+    }
+    assert.deepEqual(forwarded(app), [], 'a route of an item Alice may not see reached Jellyfin');
+    // An item she may see is proxied, by every route.
+    for (const [method, bare] of itemRoutes(ITEMS.ownMovie)) {
+      const answer = await get(app.port, `${bare}?${query}`, alice, { method });
+      assert.notEqual(answer.text, ITEM_NOT_FOUND, `${method} ${bare}`);
+      assert.equal(app.jellyfin.requests.at(-1).path, `${bare}?${query}`, `${method} ${bare}`);
+    }
+    // Images are Jellyfin's to answer, signed in or not: clients load them without credentials.
+    const before = forwarded(app).length;
+    for (const path of [`/Items/${HIDDEN}/Images/Primary`, `/Items/${HIDDEN}/Images/Backdrop/0`, `/emby/Items/${HIDDEN}/Images/Primary/0/tag/Jpg/100/100/0/0`]) {
+      await get(app.port, `${path}?tag=x`, { Host: HOST_A });
+    }
+    assert.equal(forwarded(app).length, before + 3);
+  });
+
   it('never proxies the household app\'s own paths, in any spelling', async (t) => {
     const app = await startApp(t);
     for (const bare of ['/jellypass/app/v1/me', '/jellypass/app/', '/jellypass/app/nope.js']) {
@@ -191,8 +273,9 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
       '/Users/AuthenticateByName%2f',
       '/Users%5CAuthenticateByName',
       '/Users\\AuthenticateByName',
-      '/%2565mby/Users/AuthenticateByName',
-      '/Users/%2541uthenticateByName',
+      '/jellypass/%2561pp/v1/me',
+      '/%2565mby/QuickConnect/Enabled',
+      '/Users/%252e%252e/Public',
       '/Users/x/../AuthenticateByName',
       '/Users/%2e%2e/Users/AuthenticateByName',
       '/Users/AuthenticateByName/.',
@@ -210,16 +293,31 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
       }
       assert.match(await upgrade(app.port, path, HOST_A), /^HTTP\/1\.1 400 /, path);
     }
+    // Double encoding that would make a sign-in of something else, were it decoded again: ambiguous for a sign-in only.
+    for (const path of ['/%2565mby/Users/AuthenticateByName', '/Users/%2541uthenticateByName', '/Users/%2525%2534%2531uthenticateByName']) {
+      const answer = await post(app.port, path, alice, { Username: 'Outsider', Pw: 'out-pass' });
+      assert.deepEqual([answer.status, answer.text, answer.headers['cache-control']], [400, INVALID_PATH, 'no-store'], `POST ${path}`);
+    }
+    // And one that would be the household's profile list: ambiguous for a GET only.
+    const list = await get(app.port, '/Users/%2550ublic', alice);
+    assert.deepEqual([list.status, list.text, list.headers['cache-control']], [400, INVALID_PATH, 'no-store']);
     assert.deepEqual(app.jellyfin.requests, [], 'an ambiguous path reached Jellyfin');
   });
 
   it('still proxies ordinary paths, encoded ones included', async (t) => {
     const app = await startApp(t);
     const before = app.jellyfin.requests.length;
-    for (const path of ['/web/index.html', '/Genres/Sci-Fi%20%26%20Fantasy', '/Persons/100%25%20Real', '/System/Info/Public', '/emby/System/Info/Public']) {
-      await get(app.port, path, { Host: HOST_A });
+    const paths = [
+      '/web/index.html', '/Genres/Sci-Fi%20%26%20Fantasy', '/Persons/100%25%20Real', '/System/Info/Public', '/emby/System/Info/Public',
+      // A name that is itself percent-encoded once decoded, wherever decoding it again would change nothing.
+      '/Artists/100%2520%20Real', '/Genres/100%2520%20Hits', '/Persons/%2541lice', '/MusicGenres/%2525%2520', '/Studios/%25zz',
+    ];
+    for (const path of paths) {
+      assert.equal((await get(app.port, path, { Host: HOST_A })).status, 401, path);
     }
-    assert.equal(app.jellyfin.requests.length, before + 5);
+    assert.deepEqual(app.jellyfin.requests.slice(before).map((request) => request.path), paths);
+    // GET of a sign-in route is no sign-in, so its double encoding changes nothing either.
+    assert.equal((await get(app.port, '/Users/%2541uthenticateByName', { Host: HOST_A })).status, 401);
   });
 });
 

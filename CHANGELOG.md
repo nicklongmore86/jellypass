@@ -57,18 +57,54 @@ patch release may carry.
   JellyPass's own `/jellypass/...` paths) now matches the route Jellyfin takes
   the path to: decoded once, in any case, with trailing or repeated slashes
   ignored, and without the legacy prefix. A path Jellyfin might read otherwise
-  than the gateway (an encoded slash, a dot segment, double or invalid
+  than the gateway (an encoded slash, a dot segment, invalid
   percent-encoding, a control or non-ASCII character, a backslash, a repeated
-  legacy prefix) gets a fixed `400 {"error":"invalid_request"}` with
+  legacy prefix, or percent-encoding that, decoded once more, would change
+  which household check applies, such as `/Users/%2541uthenticateByName`)
+  gets a fixed `400 {"error":"invalid_request"}` with
   `Cache-Control: no-store`, the code the household app already documents and
   household sign-in already uses, and never reaches Jellyfin; a WebSocket
   upgrade to one gets `400` too.
-- **Household hostnames refuse Jellyfin's sign-in by ID for non-members.**
-  Jellyfin 10.11 still routes the obsolete `POST /Users/{id}/Authenticate`,
-  which signs in by user ID and password without the household check. For an
-  ID that is no member's it now gets the same `401
-  {"error":"invalid_credentials"}`, after the same delay, as a non-member's
-  name, without asking Jellyfin. A member's is still sent to Jellyfin.
+- **Household hostnames refuse Jellyfin's sign-in by ID.** Jellyfin 10.11
+  still routes the obsolete `POST /Users/{id}/Authenticate`, which signs in by
+  user ID and password without the household check. No Jellyfin client in use
+  (Jellyfin web, Swiftfin, Streamyfin, Findroid) or Jellyfin SDK calls it; they
+  sign in by name or with Quick Connect. On a household hostname every such
+  call, a member's or not and whatever the password, now counts against the
+  same per-address sign-in limit as a sign-in by name and gets the same
+  `401 {"error":"invalid_credentials"}` a refused sign-in by name gets, after
+  the same minimum delay, without asking Jellyfin. So the answer no longer
+  tells a member's ID from anyone else's.
+- **Household hostnames check every route that names an item.** Jellyfin
+  10.11 serves an item's HLS playlists and segments (`master.m3u8`,
+  `main.m3u8`, `live.m3u8`, `hls1/...`, the legacy `hls/...`), its subtitles,
+  attachments and direct streams to any signed-in user, and some of them to
+  anyone, without checking whether that user may see the item. The gateway
+  checked only `/Videos|Audio/{id}/stream`, `master.m3u8`, `main.m3u8` and
+  `/Items/{id}/Download`, so a household member could still play, by HLS, a
+  title hidden from them (this affected 3.1.1 too). Every route under
+  `/Videos/{id}`, `/Audio/{id}`, `/Items/{id}`, `/UserItems/{id}`,
+  `/UserPlayedItems/{id}`, `/UserFavoriteItems/{id}`, `/PlayingItems/{id}`,
+  `/MediaSegments/{id}`, `/Shows/{id}`, `/Users/{userId}/Items/{id}` (and its
+  played, playing and favourite variants) and the item routes of `/Albums`,
+  `/Artists`, `/Movies`, `/Songs` and `/Trailers` (`InstantMix`, `Similar`) is
+  now checked against the caller's own Jellyfin view of the item before it is
+  sent on, by any method, including routes Jellyfin may add later, and so is
+  every `itemId` query parameter on them, however Jellyfin reads the query
+  (Jellyfin takes a subtitle's item from it over the path). An item the caller may not see gets the fixed
+  `404 {"error":"item_not_found"}`; a WebSocket upgrade to any of these routes
+  gets `404`. The one exception is an item's images
+  (`GET /Items/{id}/Images/...`), which Jellyfin serves to anyone and clients
+  load without credentials; Jellyfin still refuses them to a signed-in caller
+  who may not see the item. Jellyfin's anonymous live TV routes for its own
+  transcoder (`/LiveTv/LiveRecordings/...`, `/LiveTv/LiveStreamFiles/...`) are
+  now `404` on household hostnames. Because the check needs the caller's
+  credentials, a client that fetches one of these routes without any gets
+  `404`: jellyfin-web loads the fonts embedded in ASS/SSA subtitles
+  (`/Videos/{id}/{mediaSourceId}/Attachments/{index}`) without credentials, so
+  on a household hostname it renders those subtitles with its fallback fonts;
+  Findroid plays `/Videos/{id}/stream` without credentials, which household
+  hostnames already refused before this release.
 - **Household hostnames no longer relay Quick Connect to Jellyfin.** Quick
   Connect signs in whoever authorizes the code, so it skipped the membership
   check `POST /Users/AuthenticateByName` has there. `GET /QuickConnect/Enabled`

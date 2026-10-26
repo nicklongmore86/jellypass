@@ -467,6 +467,11 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
     }
     const byId = await postWithHeaders(port, `/emby/Users/${fixture.aliceId}/Authenticate?pw=alice-paths`, host, {});
     assert.deepEqual([byId.status, byId.text], [401, '{"error":"invalid_credentials"}']);
+    // Sign-in by ID is offered to no one on a household host: a member's ID is answered exactly as Alice's.
+    const memberById = await postWithHeaders(port, `/Users/${fixture.bobId}/Authenticate?pw=`, host, {});
+    const { date: _byIdDate, ...byIdHeaders } = byId.headers;
+    const { date: _memberDate, ...memberHeaders } = memberById.headers;
+    assert.deepEqual([memberById.status, memberById.text, memberHeaders], [byId.status, byId.text, byIdHeaders]);
     // Bob is: signed in by Jellyfin through the legacy prefix.
     const bob = await postWithHeaders(port, '/emby/Users/AuthenticateByName', host, { Username: 'Bob', Pw: '' });
     assert.equal(bob.status, 200, bob.text);
@@ -489,6 +494,95 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
       const answer = await getWithHeaders(port, `${pathname}?Static=true`, asBob);
       assert.deepEqual([answer.status, answer.text], [404, '{"error":"item_not_found"}'], pathname);
     }
+  });
+
+  it('refuses every route of an item a member may not see, HLS, subtitles and attachments included, and serves them to one who may', async (t) => {
+    const WEB = 'MediaBrowser Client="Jellyfin Web", Device="Firefox", DeviceId="jellypass-real-media", Version="10.11.3"';
+    let clip;
+    await waitFor(async () => {
+      clip = (await request(baseUrl, '/Items?Recursive=true&SearchTerm=Gateway%20Clip&IncludeItemTypes=Movie', { token: fixture.token })).Items?.[0];
+      return !!clip;
+    });
+    const originalClip = await client.getItem(clip.Id);
+    t.after(() => client.updateItem({ ...originalClip }));
+    const originalBob = user(await client.getUsers(), fixture.bobId);
+    t.after(() => client.updatePolicy(fixture.bobId, originalBob.Policy));
+    await client.updateItem({ ...originalClip, Tags: [...originalClip.Tags, 'jp-clip-hidden'] });
+    await client.updatePolicy(fixture.bobId, { ...originalBob.Policy, BlockedTags: ['jp-clip-hidden'] });
+
+    const householdStore = new GrantStore(path.join(await makeTempDir(t, 'jfa-real-media-'), 'grants.json'));
+    await householdStore.load();
+    await householdStore.upsertGroup({ id: 'cliphouse', name: 'Clip House', userIds: [fixture.aliceId, fixture.bobId] });
+    const gateway = makeServer(new AccessService(client, householdStore), { webhook: webhookToken, admin: 'real-admin-secret' }, undefined, {
+      householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: 0 },
+    });
+    await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise((resolve) => gateway.close(resolve)));
+    const port = gateway.address().port;
+    const host = 'jelly-cliphouse.example.test';
+    const signIn = async (name) => {
+      const answer = await postWithHeaders(port, '/Users/AuthenticateByName', { Host: host, Authorization: WEB }, { Username: name, Pw: '' });
+      assert.equal(answer.status, 200, answer.text);
+      return answer.json().AccessToken;
+    };
+    const tokens = { alice: await signIn('Alice'), bob: await signIn('Bob') };
+
+    // The clip as the administrator sees it: its media source, its subtitle streams (embedded and a sidecar) and its attachment.
+    const info = await request(baseUrl, `/Items/${clip.Id}/PlaybackInfo?UserId=${fixture.aliceId}`, { token: fixture.token });
+    const source = info.MediaSources[0];
+    const subtitles = source.MediaStreams.filter((stream) => stream.Type === 'Subtitle').map((stream) => stream.Index);
+    assert.ok(subtitles.length >= 1, JSON.stringify(source.MediaStreams));
+    const hls = (token) => `MediaSourceId=${source.Id}&VideoCodec=h264&AudioCodec=aac&SegmentContainer=ts&PlaySessionId=jp-${token.slice(0, 8)}&ApiKey=${token}`;
+    const attachment = source.MediaAttachments[0].Index;
+    // Jellyfin's live.m3u8 waits for a transcode it may never finish for a file: asked of the household host as Bob only.
+    const live = (token) => `/Videos/${clip.Id}/live.m3u8?${hls(token)}`;
+    const routes = (token) => [
+      `/Videos/${clip.Id}/master.m3u8?${hls(token)}`,
+      `/Videos/${clip.Id}/main.m3u8?${hls(token)}`,
+      `/Videos/${clip.Id}/hls1/main/0.ts?${hls(token)}&runtimeTicks=0&actualSegmentLengthTicks=30000000`,
+      `/Videos/${clip.Id}/stream?Static=true&ApiKey=${token}`,
+      ...subtitles.flatMap((index) => [
+        `/Videos/${clip.Id}/${source.Id}/Subtitles/${index}/0/Stream.srt?ApiKey=${token}`,
+        `/Videos/${clip.Id}/${source.Id}/Subtitles/${index}/Stream.vtt?ApiKey=${token}`,
+        `/Videos/${clip.Id}/${source.Id}/Subtitles/${index}/subtitles.m3u8?SegmentLength=3&ApiKey=${token}`,
+      ]),
+      `/Videos/${clip.Id}/${source.Id}/Attachments/${attachment}?ApiKey=${token}`,
+      `/Videos/${clip.Id}/Trickplay/320/tiles.m3u8?ApiKey=${token}`,
+      `/Items/${clip.Id}/PlaybackInfo?ApiKey=${token}`,
+      `/Items/${clip.Id}/Download?ApiKey=${token}`,
+      `/Audio/${clip.Id}/universal?ApiKey=${token}`,
+    ];
+
+    // Jellyfin itself hides the clip from Bob, yet serves him its HLS playlist, a segment and its subtitles.
+    const atJellyfin = (pathname) => getWithHeaders(new URL(baseUrl).port, pathname, { Host: new URL(baseUrl).host });
+    assert.equal((await atJellyfin(`/Users/${fixture.bobId}/Items/${clip.Id}?ApiKey=${tokens.bob}`)).status, 404);
+    const leakedPlaylist = await atJellyfin(`/Videos/${clip.Id}/main.m3u8?${hls(tokens.bob)}`);
+    assert.equal(leakedPlaylist.status, 200, 'Jellyfin no longer serves a hidden item\'s HLS playlist: revisit the gateway\'s item checks');
+    assert.match(leakedPlaylist.text, /^#EXTM3U/);
+    assert.equal((await atJellyfin(`/Videos/${clip.Id}/${source.Id}/Subtitles/${subtitles[0]}/0/Stream.srt`)).status, 200, 'and its subtitles, to anyone');
+
+    // The household host refuses Bob every route of it, in any spelling, without sending it to Jellyfin.
+    for (const pathname of [...routes(tokens.bob), live(tokens.bob)]) {
+      for (const spelled of [pathname, `/emby${pathname}`]) {
+        const answer = await getWithHeaders(port, spelled, { Host: host });
+        assert.deepEqual([answer.status, answer.text], [404, '{"error":"item_not_found"}'], spelled);
+      }
+    }
+    // Alice may see it: her playlist, a segment of it, its subtitles and attachment are Jellyfin's to answer.
+    const alice = {};
+    for (const pathname of routes(tokens.alice)) alice[pathname] = await getWithHeaders(port, pathname, { Host: host });
+    for (const [pathname, answer] of Object.entries(alice)) assert.notEqual(answer.text, '{"error":"item_not_found"}', pathname);
+    const playlist = alice[routes(tokens.alice)[1]];
+    assert.equal(playlist.status, 200, playlist.text);
+    const segment = playlist.text.split('\n').find((line) => line.startsWith('hls1/'));
+    assert.ok(segment, playlist.text);
+    const bytes = await getWithHeaders(port, `/Videos/${clip.Id}/${segment}`, { Host: host });
+    assert.equal(bytes.status, 200);
+    assert.ok(bytes.text.length > 0);
+    const srt = alice[routes(tokens.alice).find((pathname) => pathname.includes('/Stream.srt'))];
+    assert.equal(srt.status, 200);
+    assert.match(srt.text, /Gateway clip subtitle/);
+    assert.equal(alice[routes(tokens.alice).find((pathname) => pathname.includes('/Attachments/'))].status, 200);
   });
 
   it('finds a title\'s items by TMDB ID with JellyPass\'s key, the "Get this" decision input for "Jellyfin already has it"', async () => {

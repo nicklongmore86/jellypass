@@ -607,9 +607,10 @@ export async function createFakeJellyfinForApp(state) {
       const found = state.items.find((entry) => entry.Id === ownItem[2]);
       return ownItem[1] === userId && found && sees(user, found) ? send(response, 200, { Id: found.Id, Name: found.Name, Type: found.Type }) : send(response, 404, {});
     }
-    // Like Jellyfin's, its streams and downloads ask only for a signed-in user, not whether they may see the item.
-    const media = /^\/(?:(?:videos|audio)\/([0-9a-f]{32})\/(?:stream(?:\.[^/]*)?|master\.m3u8|main\.m3u8)|items\/([0-9a-f]{32})\/download)$/.exec(route);
-    if (request.method === 'GET' && media) return send(response, 200, { stream: media[1] ?? media[2] });
+    // Like Jellyfin's streams, playlists, segments, subtitles and downloads, every route of an item here asks only for a
+    // signed-in user, not whether they may see the item: the household gateway is what checks that.
+    const media = /^\/(?:videos|audio|items|useritems|mediasegments)\/([0-9a-f]{32})\/./.exec(route);
+    if (['GET', 'HEAD', 'POST'].includes(request.method) && media) return send(response, 200, { stream: media[1] });
     const parameter = (name) => [...url.searchParams].find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1];
     if (parameter('userId') !== userId) return send(response, 403, {});
     if (url.pathname === '/Items') {
