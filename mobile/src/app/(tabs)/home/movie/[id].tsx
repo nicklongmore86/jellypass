@@ -1,5 +1,11 @@
-import { TitlePlaceholderScreen } from '@/screens/TitlePlaceholderScreen';
+import { useLocalSearchParams } from 'expo-router';
+
+import { NotFoundScreen } from '@/screens/NotFoundScreen';
+import { TitleScreen } from '@/screens/TitleScreen';
+import { routeNumber } from '@/title/route';
 
 export default function MovieTitle() {
-  return <TitlePlaceholderScreen mediaType="movie" />;
+  const { id } = useLocalSearchParams<{ id: string }>();
+  const tmdbId = routeNumber(id);
+  return tmdbId === undefined ? <NotFoundScreen /> : <TitleScreen key={tmdbId} route={{ mediaType: 'movie', tmdbId }} />;
 }

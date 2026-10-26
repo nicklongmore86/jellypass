@@ -10,17 +10,22 @@
 // - A setup link is only ever offered: nothing happens until the member confirms it, and it never signs anyone in.
 // - Sign-out asks the gateway to forget the session (best effort, five seconds), then deletes the sign-in from the
 //   device whatever came of that.
+// - What the member just asked for (src/title/asked.ts) belongs to one signed-in session: a sign-out, a 401 or any
+//   other sign-in (household, member or token) starts it empty. Coming back to the foreground reads its clocks again
+//   (a timer may have slept with the app), and leaving the provider stops its timer.
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { AppState } from 'react-native';
 
 import type { HouseholdAddress } from '../api/address';
 import type { ClientIdentity } from '../api/auth';
 import { createApiClient, type ApiClient, type FetchLike } from '../api/client';
 import { ApiError } from '../api/errors';
-import type { Me } from '../api/types';
+import type { MediaType, Me } from '../api/types';
 import { parseLinkAddress } from '../signin/address-input';
 import { createSignInApi, SignInError, type SignInApi, type SignInResult } from '../signin/signin-api';
 import type { StalledKind } from '../signin/wording';
+import { createAsked, type Asked } from '../title/asked';
 import { clientIdentity } from './identity';
 import { clearSession, readSession, writeSession, type StoredSession } from './store';
 
@@ -75,6 +80,13 @@ export interface Session {
   api: ApiClient | undefined;
   /** The API answered 401: the token is no longer good, so the device forgets it and the profile picker shows. */
   expire: () => Promise<void>;
+  /** What this member just asked for, shown as requested while the server records it (in memory only). */
+  asked: Asked;
+  /**
+   * Get this through the signed-in client. Once it is accepted (a 2xx) in the same session as when it was sent (no move
+   * since), the title (and the seasons asked for) is added to `asked`. Rejects with the ApiError, or the caller's abort.
+   */
+  getThis: (mediaType: MediaType, tmdbId: number, seasons: readonly number[], signal?: AbortSignal) => Promise<void>;
 }
 
 const SessionContext = createContext<Session | undefined>(undefined);
@@ -112,6 +124,8 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
 
   // The phase as of the last move, for an answer that comes back later.
   const phaseRef = useRef<Phase>(phase);
+  // The overlay in use now (below), for the moves that forget it.
+  const askedRef = useRef<Asked | undefined>(undefined);
 
   const move = useCallback((next: Phase) => {
     generation.current += 1;
@@ -165,6 +179,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
     async (next: (session: StoredSession | undefined) => Phase) => {
       // A link the app held back (to the household it was on) is moot once it moves on.
       setLink(undefined);
+      askedRef.current?.forget();
       const session = sessionOf(phase);
       if (session) {
         move({ kind: 'signingOut' });
@@ -184,15 +199,44 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
   const household = phase.kind === 'signin' ? phase.address : sessionOf(phase)?.address;
 
   const signedIn = phase.kind === 'signedIn' ? phase.session : undefined;
-  const api = useMemo(
-    () =>
-      signedIn
+  // A new client and overlay for each sign-in (household, member or token); the old overlay is forgotten as soon as it
+  // is replaced.
+  const { api, asked } = useMemo(
+    () => ({
+      api: signedIn
         ? createApiClient({ address: signedIn.address, token: () => signedIn.token, ...(fetch ? { fetch } : {}), ...(now ? { now } : {}) })
         : undefined,
+      asked: createAsked(),
+    }),
     [signedIn, fetch, now],
+  );
+  useEffect(() => {
+    askedRef.current = asked;
+    const foreground = AppState.addEventListener('change', (state) => {
+      if (state === 'active') asked.recheck();
+    });
+    return () => {
+      foreground.remove();
+      if (askedRef.current === asked) askedRef.current = undefined;
+      asked.forget();
+    };
+  }, [asked]);
+
+  const getThis = useCallback(
+    async (mediaType: MediaType, tmdbId: number, seasons: readonly number[], signal?: AbortSignal) => {
+      // The sign-in this call belongs to: any move since (a sign-out, a 401, any other sign-in, even with the same
+      // token) is another session.
+      const mine = generation.current;
+      if (!api || phaseRef.current.kind !== 'signedIn') throw new ApiError('unauthorized');
+      await api.getThis(mediaType, tmdbId, seasons, signal ? { signal } : undefined);
+      // Only for the member who asked: not if the sign-in changed (or went) while the call was out.
+      if (generation.current === mine && askedRef.current === asked) asked.add(mediaType, tmdbId, seasons);
+    },
+    [api, asked],
   );
 
   const expire = useCallback(async () => {
+    askedRef.current?.forget();
     const session = sessionOf(phaseRef.current);
     if (!session) return;
     const mine = move({ kind: 'signingOut' });
@@ -259,9 +303,18 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
       signInApi,
       api,
       expire,
+      asked,
+      getThis,
     }),
-    [phase, offer, household, offerLink, leave, move, check, signInApi, clock, api, expire],
+    [phase, offer, household, offerLink, leave, move, check, signInApi, clock, api, expire, asked, getThis],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
+}
+
+/** The signed-in member's overlay, drawn again whenever a title is added to it or it is forgotten. */
+export function useAsked(): Asked {
+  const { asked } = useSession();
+  useSyncExternalStore(asked.subscribe, asked.version, asked.version);
+  return asked;
 }

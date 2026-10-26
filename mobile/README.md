@@ -5,11 +5,12 @@ TypeScript (strict) and Expo Router. It talks to a household's JellyPass server 
 `/jellypass/app/v1` API as the PWA, and wears the same Tidepool look: its theme in `src/theme` is ported from
 `app/static/app.css`.
 
-**Sign-in, the tab bar, Home and Account work; the other browsing screens come next.** The app connects to a household
-address, signs a member in, keeps the sign-in in the device's credential store and signs out. Once signed in it has the
-PWA's four docked tabs (Home, Search, My requests, Account) with a header and Back, a finished Home (its filters, hero
-and rows) and Account screen; a title's page, Search and My requests are one-line placeholders until their screens
-come (see [What's next](#whats-next)).
+**Sign-in, the tab bar, Home, the title pages with Get this, and Account work; the other browsing screens come next.**
+The app connects to a household address, signs a member in, keeps the sign-in in the device's credential store and
+signs out. Once signed in it has the PWA's four docked tabs (Home, Search, My requests, Account) with a header and Back,
+a finished Home (its filters, hero and rows), the movie, series and season pages with Play and Get this, and the
+Account screen; Search and My requests are one-line placeholders until their screens come (see
+[What's next](#whats-next)).
 
 `mobile/` is separate from the server: it has its own `package.json` and `pnpm-lock.yaml`, it is excluded from
 the Docker build context (`.dockerignore`), and the root `pnpm check`, `pnpm test` and temp-leak check never look
@@ -105,7 +106,7 @@ screen (and a setup link opened over the tabs leaves no second copy of them behi
   heavier icon stroke, so it is shown by shape and weight, not colour alone. iPad has the same bar.
 - **Header** (`Header.tsx`), the PWA's `.app-header`: solid navy with a hairline, the screen's title and, on a pushed
   screen, a **Back** button. No wordmark and no (i). Home's header is bare, as in the PWA.
-- **Stacks.** Each tab has its own stack (`TabStack.tsx`), so a pushed screen (title pages, from 3.2) keeps its tab and
+- **Stacks.** Each tab has its own stack (`TabStack.tsx`), so a pushed screen (the title pages) keeps its tab and
   the tab bar. A screen pushed from another tab with `withAnchor: true` gets its tab's first screen under it.
 - **Back.** The header's Back, the iOS edge swipe and Android's back button pop the tab's stack; Android's back on a
   tab's first screen goes to Home (`backBehavior: 'firstRoute'`), and on Home leaves the app. Nothing goes back to
@@ -113,8 +114,7 @@ screen (and a setup link opened over the tabs leaves no second copy of them behi
 - **Width.** A screen's content stops widening at the PWA's 72rem (1152 pt) and Account's at 40rem (640 pt), centred
   on iPad and wide windows, with the side margins clear of the safe areas.
 - **Search and My requests** are placeholders: their routes (`/search`, `/requests`), titles and tabs are final; 3.4 to
-  3.6 fill them in. So is a title's page (`/home/movie/<id>`, `/home/tv/<id>`, header "Movie" or "Series", no call),
-  which 3.3 builds.
+  3.6 fill them in.
 
 **Account** is the PWA's Account tab. **Account**: the member card ("name · household" from the `/me` the sign-in
 checked), **Sign out** (the session's sign-out) and **Change household** (signs out first, then the address step).
@@ -201,6 +201,51 @@ pull to refresh, nothing kept on the device, every pressable named and 44 pt hig
 the iPad and phone widths, the hero's controls on a 320 pt phone), `home-budget.test.tsx` (above) and `home-text.test.ts` (the words, rows and waterlines against the PWA's
 files). `tabs.test.tsx` counts Home's pressables (its chips are radios) and checks its text too.
 
+## Title pages and Get this (`src/title`, `src/screens/TitleScreen.tsx`)
+
+The PWA's detail pages (`titleDetail` and `seasonView` in `app/src/render.ts`) on the Home tab's stack:
+`/home/movie/<id>`, `/home/tv/<id>` and `/home/tv/<id>/season/<n>`, opened from Home's cards and hero (a season from its
+card on the series page). An address that names no title (`07`, `1e3`) is **Not found** with no call.
+
+- **Page.** The inset rounded backdrop card (16:9, 30 pt, the series' on a season page; a plain navy card without
+  one), then on the page's own navy: the title (the page's one heading: the header carries only Back), the facts (year,
+  run time or "N seasons", specials not counted, "★ 7.4 TMDB" said as "TMDB rating 7.4 out of 10"), genre pills, the
+  status chip (said once) and its one muted note ("Check My requests to follow it.", "This title can't be requested.",
+  or the admin note for a title the household asked for that failed, from `GET /requests`), the overview, and **one**
+  full-width cyan action: **Play** when in the library, **Get this** when the household can ask, nothing otherwise. A
+  series partly in the library keeps Play and shows Get this outlined. A season page lists its episodes.
+- **Play** opens the API's `play.url` only when the client's allowlist (`safePlayUrl`) says it is exactly the
+  household's own `/web/#/details?id=<itemId>`, in the system browser (`Linking.openURL`). Anything else: no button.
+- **Seasons** are cards: one link to the season (name, "N episodes" and status, said once), the status chip, and, where
+  the household can ask, a round selection circle that is a real checkbox (44 pt, named for its season). **Select all**
+  (more than one to pick) only moves the circles; **Get this** sends exactly the seasons chosen (`{"seasons":[…]}`; HD
+  only, as the API asks for nothing else) and is disabled until one is.
+- **Get this** (`useTitle.ts`): disabled, "Sending…", while the call is out (the circles and Select all too). Any 2xx
+  is the one fixed confirmation, "Thanks — we'll get this for your household.", whatever the answer; the page is then
+  read again (as the PWA does), and if that fails the confirmation stays with the fixed error and Try again. A 429, no
+  answer and anything else get the PWA's three fixed messages and the button back; nothing is ever sent again by
+  itself. A 401 signs the member out (the series read behind a season page is best effort, but its 401 too).
+- **Requested right after Get this** (`asked.ts`, the PWA's `app/src/asked.ts` from PR #76): the server records a
+  request a moment after it answers, so a page read straight afterwards can still say "Available to get". The app keeps,
+  in memory only, the keys `movie:<id>`, `tv:<id>` and `tv:<id>:<season>` its member just asked for, added only after a
+  2xx in the same session as when it was sent (no sign-in move while it was out, even back to the same token). A key
+  ends after two minutes by the monotonic clock or the wall clock moving forward (a clock set back never stretches it),
+  and as soon as a fresh answer from the server says anything but `get_this` for it. One timer, set for the earliest
+  end, drops the keys whose time is up and redraws every screen once, so a page or Home left open shows the server's
+  state again with no call; coming back to the foreground (`AppState` active) reads both clocks again at once, for a
+  timer that slept with the app. Drawing only reads. Beside the keys, the same store keeps the latest state
+  the server reported for each key, numbered in the order the answers arrived (title pages, season pages, Home's rows):
+  a card drawn again from an older answer shows the fresher one's state, so a title found requested (or in the library)
+  on opening it again stays so on Home once its key is dropped. It is one store per signed-in session
+  (`SessionProvider`), shared by every tab, so Home's cards and hero and the title pages show Requested with no call;
+  sign-out, a 401 and any other sign-in (household, member or token) forget both.
+- **Calls.** A movie or series page asks for the title and `GET /requests`, a season page also its series, each once:
+  with the start-up `/me`, docs/app-api/fetch-budget.json's `movie`, `series` and `season` screens
+  (`__tests__/title-budget.test.tsx`). Nothing is polled.
+- **Layout.** On iPad (from 768 pt) the column widens to 960 pt, the poster shows as a 144 pt thumbnail beside the
+  title, the backdrop loads at w1280 and the seasons go two a row. Text grows with the system font size with no line
+  limit or fixed height; every control is at least 44 pt.
+
 ## The API client (`src/api`)
 
 `createApiClient({ address, token })` talks to one household's `/jellypass/app/v1` API, as
@@ -286,9 +331,8 @@ Edits reload on the phone as you save. Expo Go needs no Apple or Google develope
 
 1. **Setup link on the PWA**: a "Set up the app" link on the PWA's Account tab carrying the household's address. Left
    for when the app can be installed (a `jellypass://` link does nothing on a phone without it).
-2. **Screens**: movie/series/season pages with **Get this** (3.3), network and studio pages (Home's service headings
-   and studio logos link to them then), Search, My requests, then an accessibility pass. (The tab bar, header, stacks,
-   Home and Account are done.)
+2. **Screens**: network and studio pages (Home's service headings and studio logos link to them then), Search, My
+   requests, then an accessibility pass. (The tab bar, header, stacks, Home, the title pages and Account are done.)
 3. **Play**: an in-app Jellyfin web view, optionally a Swiftfin hand-off.
 4. **First release build**: the owner's one-time setup in [Release builds](#release-builds), then a run of the
    `Mobile release` workflow. No Google Play Console account or Play config.

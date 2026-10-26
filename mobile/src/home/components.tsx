@@ -40,6 +40,7 @@ import {
   posterMeta,
   ratingLabel,
   ratingText,
+  REQUEST_LABELS,
   RETRY_TEXT,
   shortOverview,
   SOURCE_TEXT,
@@ -60,13 +61,32 @@ const STATE_COLORS: Record<HouseholdState, { bg: string; text: string }> = {
   requested: statusColors.warn,
 };
 
-/** A status chip: a dot and its word, solid, so it reads over any picture. `overlay` puts it on an image's top-left. */
-export function StatusChip({ state, overlay = false }: { state: HouseholdState; overlay?: boolean }) {
-  const pair = Object.hasOwn(STATE_COLORS, state) ? STATE_COLORS[state] : STATE_COLORS.unavailable;
+/**
+ * A status chip: a dot and its word, solid, so it reads over any picture. `overlay` puts it on an image's top-left.
+ * Hidden from screen readers where its card's name already says it; a title page's own status is `spoken`. `failed`
+ * is a title the household asked for that did not work out: "We couldn't get this".
+ */
+export function StatusChip({
+  state,
+  overlay = false,
+  spoken = false,
+  failed = false,
+}: {
+  state: HouseholdState;
+  overlay?: boolean;
+  spoken?: boolean;
+  failed?: boolean;
+}) {
+  const pair = failed || !Object.hasOwn(STATE_COLORS, state) ? STATE_COLORS.unavailable : STATE_COLORS[state];
+  const label = failed ? REQUEST_LABELS.failed : stateLabel(state);
   return (
-    <View testID="status-chip" style={[styles.chip, { backgroundColor: pair.bg }, overlay && styles.chipOverlay]} {...hidden}>
+    <View
+      testID="status-chip"
+      style={[styles.chip, { backgroundColor: pair.bg }, overlay && styles.chipOverlay]}
+      {...(spoken ? { accessible: true, accessibilityLabel: label } : hidden)}
+    >
       <View style={[styles.chipDot, { backgroundColor: pair.text }]} />
-      <Text style={[styles.chipText, { color: pair.text }]}>{stateLabel(state)}</Text>
+      <Text style={[styles.chipText, { color: pair.text }]}>{label}</Text>
     </View>
   );
 }

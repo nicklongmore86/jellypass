@@ -32,6 +32,9 @@ const HOUSEHOLD = {
   ...Object.fromEntries(HOME_AT_ONCE.map((route) => [route, () => answer(200, fixture('page'))])),
   'GET /Users/Public': () => answer(200, []),
   'POST /Sessions/Logout': () => answer(204),
+  // A title page opened on the Home tab's stack: the film (in the library, with Play) and the household's requests.
+  'GET /jellypass/app/v1/movie/900001': () => answer(200, fixture('movie')),
+  'GET /jellypass/app/v1/requests': () => answer(200, fixture('requests')),
 };
 
 // A screen pushed on the Account tab's stack, standing in for the title pages that come with 3.2.
@@ -415,6 +418,8 @@ describe('accessibility', () => {
     ['Account', 'Account', 9 + HOME],
     // Back, and the Account screen still mounted underneath it.
     ['a pushed screen', '/account/pushed', 10 + HOME],
+    // Back and Play, over Home.
+    ['a title page', '/home/movie/900001', 6 + HOME],
   ] as const)('keeps every pressable on %s named and a thumb\'s size', async (_name, to, count) => {
     await start();
     if (to.startsWith('/')) {

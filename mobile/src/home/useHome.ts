@@ -10,6 +10,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { ApiClient } from '../api/client';
 import { ApiError, isAbortError } from '../api/errors';
 import type { Network, Page, Sources } from '../api/types';
+import type { Asked } from '../title/asked';
 import { HOME_LAYOUT, NETWORK_LIST, networkKey, rowKey, type HomeRow } from './layout';
 import { errorText, type ErrorText, type HomeFilter } from './text';
 
@@ -54,7 +55,11 @@ function homeRows(filter: HomeFilter): HomeRow[] {
   return HOME_LAYOUT[filter].filter((part): part is HomeRow => part.part === 'row');
 }
 
-export function useHome(api: ApiClient | undefined, expire: () => Promise<void>, initial: HomeFilter = 'all'): HomeData {
+/**
+ * `overlay` is the session's Requested overlay (src/title/asked.ts): each row's page is seen by it as it arrives, so a
+ * fresher answer for a title (its page opened since) is what the row's card shows.
+ */
+export function useHome(api: ApiClient | undefined, expire: () => Promise<void>, overlay?: Asked, initial: HomeFilter = 'all'): HomeData {
   const [filter, setFilter] = useState<HomeFilter>(initial);
   const [rows, setRows] = useState<Record<string, RowState>>({});
   const [sources, setSources] = useState<SourcesState>({ status: 'loading' });
@@ -106,13 +111,14 @@ export function useHome(api: ApiClient | undefined, expire: () => Promise<void>,
       try {
         const page = await load();
         if (!live.current || drawing.current !== mine) return;
+        overlay?.seen(page);
         setRows((current) => ({ ...current, [key]: { status: 'loaded', page } }));
       } catch (error) {
         const kind = failed(error, mine);
         if (kind) setRows((current) => ({ ...current, [key]: { status: 'failed', error: kind } }));
       }
     },
-    [loader, failed],
+    [loader, failed, overlay],
   );
 
   const loadSources = useCallback(async (): Promise<void> => {
