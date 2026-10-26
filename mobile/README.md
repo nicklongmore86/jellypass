@@ -10,7 +10,7 @@ but no screen calls it yet; sign-in and the screens come next (see [What's next]
 
 `mobile/` is separate from the server: it has its own `package.json` and `pnpm-lock.yaml`, it is excluded from
 the Docker build context (`.dockerignore`), and the root `pnpm check`, `pnpm test` and temp-leak check never look
-at it. Its CI is `.github/workflows/mobile.yaml`, which runs only when `mobile/` (or `app/static/app.css`) changes.
+at it. Its CI is `.github/workflows/mobile.yaml`, which runs only when `mobile/`, `app/static/app.css` or `docs/app-api/` changes.
 
 ## Never ship a household list
 

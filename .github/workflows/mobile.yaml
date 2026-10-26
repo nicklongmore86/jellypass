@@ -2,18 +2,21 @@ name: Mobile
 
 # The household app for iPhone, iPad and Android (mobile/). It has its own
 # package.json and lockfile and is not part of the server's build or image, so
-# it runs only when mobile/ changes, or the stylesheet its theme is ported from.
+# it runs only when mobile/ changes, the stylesheet its theme is ported from, or
+# the API contract its client is tested against (docs/app-api).
 on:
   push:
     branches: [main]
     paths:
       - 'mobile/**'
       - 'app/static/app.css'
+      - 'docs/app-api/**'
       - '.github/workflows/mobile.yaml'
   pull_request:
     paths:
       - 'mobile/**'
       - 'app/static/app.css'
+      - 'docs/app-api/**'
       - '.github/workflows/mobile.yaml'
 
 permissions:
