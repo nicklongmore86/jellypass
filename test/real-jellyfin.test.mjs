@@ -65,6 +65,14 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
     await assert.rejects(client.getItem(unknownId), (error) => error.status === 404);
   });
 
+  it('reads one user with the API key and answers a missing one with a 404, as the admin session re-check expects', async () => {
+    const bob = await client.getUser(fixture.bobId);
+    assert.equal(bob.Id, fixture.bobId);
+    assert.equal(typeof bob.Policy.IsAdministrator, 'boolean');
+    assert.equal(typeof bob.Policy.IsDisabled, 'boolean');
+    await assert.rejects(client.getUser(randomUUID().replaceAll('-', '')), (error) => error.status === 404);
+  });
+
   it('grants and revokes access on Jellyfin for an HD Now Available webhook', async () => {
     const granted = await sendWebhook(server, available('real-17', 'Movie Request Now Available'));
     assert.equal(granted.status, 200, JSON.stringify(granted.body));

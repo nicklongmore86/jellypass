@@ -152,6 +152,8 @@ export const ADMIN_APP_JS = `
     let body = {};
     try { body = text ? JSON.parse(text) : {}; } catch { body = { error: text }; }
     if (!response.ok) {
+      // A session that ended at the server (signed out elsewhere, or the administrator was demoted or disabled).
+      if (response.status === 401 && path.indexOf('/auth/') !== 0) setConnected(false);
       const error = new Error(body.error || ('Request failed (' + response.status + ')'));
       error.code = body.code;
       error.body = body;
@@ -805,7 +807,7 @@ export const ADMIN_APP_JS = `
       byId('password').value = '';
       setConnected(true);
     } catch (error) {
-      byId('login-error').textContent = ['invalid_credentials', 'unauthorized'].includes(error.message) ? 'That username or password was not accepted.' : error.message === 'too_many_login_attempts' ? 'Too many attempts. Try again in five minutes.' : error.message;
+      byId('login-error').textContent = ['invalid_credentials', 'unauthorized'].includes(error.message) ? 'That username or password was not accepted.' : error.message === 'too_many_login_attempts' ? 'Too many attempts. Try again later.' : error.message;
     }
   });
   byId('logout').addEventListener('click', () => busy(async () => { await api('/auth/logout', { method: 'POST' }); setConnected(false); }));

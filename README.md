@@ -465,7 +465,32 @@ reverse proxy. Sign in with an enabled Jellyfin administrator account.
 
 JellyPass sends credentials directly to Jellyfin, immediately closes the
 temporary Jellyfin session, and stores only an in-memory JellyPass session for
-12 hours. Restarting JellyPass signs browser sessions out.
+12 hours. Restarting JellyPass signs browser sessions out. Every five minutes
+the session's administrator is read again from Jellyfin, so deleting, demoting
+or disabling them ends their session within five minutes.
+
+Every refused sign-in gets the same `401 invalid_credentials` answer after at
+least one second. The exception is the rate limit, a fixed
+`429 too_many_login_attempts` after the same second, reached per client address
+(eight failures in five minutes) or per name from one address (ten in 15
+minutes). Both count whether or not the account exists and are keyed by the
+caller's address, so a `429` reveals no account and only the address that
+caused it sees it. Failures for a name from anywhere never lock it out: past
+five in 15 minutes its sign-ins wait longer (up to five seconds) before
+Jellyfin is asked, and the right password still signs in.
+
+Browser-session requests that change anything must come from the admin page
+itself (`Sec-Fetch-Site: same-origin`, or an `Origin` naming the admin host),
+and request bodies must be `Content-Type: application/json`. One from anywhere
+else is `403 cross_origin_request_refused`, before the session is checked. The
+admin host is read from `Host` only, never `X-Forwarded-Host`, so a reverse
+proxy in front of the admin URL must pass the browser's `Host` on unchanged
+(Nginx Proxy Manager does). Proxies that pass a client's own `X-Forwarded-Host` through
+cannot widen the accepted origins, but you may also overwrite that header at
+the proxy (in Nginx, `proxy_set_header X-Forwarded-Host $host;`). Scripts
+should use `ADMIN_TOKEN` as a bearer token instead of a session cookie; bearer
+requests are not origin-checked. Over HTTPS the session cookie is
+`__Host-jellypass_session`; on plain HTTP it is `jellypass_session`.
 
 The UI contains four views:
 
@@ -1267,7 +1292,11 @@ With `HOUSEHOLD_APP_ENABLED=true`, household hostnames also serve the
 [household app API](#household-app-api) under `/jellypass/app/v1/`.
 
 Administrative routes accept `ADMIN_TOKEN` bearer authentication or a valid
-administrator browser session. Request bodies are limited to 64 KiB.
+administrator browser session. Request bodies are limited to 64 KiB and must be
+`Content-Type: application/json` (`415` otherwise). A state-changing request
+made with the browser session, and every `POST /auth/login`, must come from the
+admin origin (`403 cross_origin_request_refused` otherwise). The Seerr webhook
+uses its own token and is not origin- or type-checked.
 
 ## Security and privacy
 
@@ -1277,6 +1306,12 @@ administrator browser session. Request bodies are limited to 64 KiB.
 - Put browser, household, and remote webhook traffic behind TLS.
 - Expose only the routes each network needs; the admin bearer token grants full
   administrative API access.
+- **The admin URL is not gated by default.** Anyone who can reach `/admin/` can
+  try to sign in with a Jellyfin administrator's name and password, and the
+  administrative API answers anyone holding `ADMIN_TOKEN`. JellyPass limits
+  sign-in attempts, but put the admin host behind an identity-aware gate such as
+  Cloudflare Access, a VPN, or an IP allowlist at the proxy, or keep it on the
+  LAN only. Give it a host of its own, not a household host or Seerr's.
 - Preserve `Host` only through a reverse proxy you control. Household routing
   relies on the HTTP host authority.
 - Restrict state-file and backup permissions; they contain media names and

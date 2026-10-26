@@ -34,6 +34,11 @@ export class JellyfinClient {
     return this.#request<JellyfinUser[]>('/Users');
   }
 
+  /** One user, read with JellyPass's API key; a user Jellyfin does not have throws a JellyfinError with status 404. */
+  public getUser(userId: string): Promise<JellyfinUser> {
+    return this.#request<JellyfinUser>(`/Users/${encodeURIComponent(userId)}`);
+  }
+
   public createUser(name: string, password: string): Promise<JellyfinUser> {
     return this.#request<JellyfinUser>('/Users/New', {
       method: 'POST',
@@ -137,7 +142,7 @@ export class JellyfinClient {
     if (!logout.ok) {
       throw new JellyfinError(`Jellyfin POST /Sessions/Logout returned ${logout.status}`, logout.status);
     }
-    const user = await this.#request<JellyfinUser>(`/Users/${encodeURIComponent(authentication.User.Id)}`);
+    const user = await this.getUser(authentication.User.Id);
     return user.Policy.IsAdministrator && !user.Policy.IsDisabled
       ? user
       : null;

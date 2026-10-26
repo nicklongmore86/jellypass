@@ -14,6 +14,47 @@ privacy leak. Such changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Security
+
+- Admin: a state-changing request (`POST`, `PUT`, `PATCH`, `DELETE`) signed in by the browser session cookie,
+  including `POST /auth/logout`, and every `POST /auth/login`, must come from the admin origin itself:
+  `Sec-Fetch-Site: same-origin`, or, without it, an `Origin` equal to the host the request was sent to, read from `Host`
+  only, with an https scheme when the proxy reports HTTPS. Anything else is a fixed
+  `403 {"error":"cross_origin_request_refused"}` before any work is done, the session included: it is refused before the
+  session is looked at, so a cross-origin request never starts the five-minute session check below, never sees its `503`
+  and never ends a demoted administrator's session. `X-Forwarded-Host` is not read, even from a trusted proxy: a proxy
+  that keeps `Host` (Nginx Proxy Manager does) may still pass a client's own `X-Forwarded-Host` on, which would let a
+  sibling page add its origin. A proxy in front of the admin host must therefore pass the browser's `Host` unchanged.
+  `SameSite=Strict` did not cover this: every sibling host under the same site (household hosts, Seerr) is same-site.
+  `ADMIN_TOKEN` bearer requests and the Seerr webhook (its own token) are exempt; a state-changing request with no
+  session cookie is still `401 unauthorized`.
+- Admin: a request body must be declared `Content-Type: application/json` (parameters allowed), or the answer is
+  `415 {"error":"unsupported_media_type"}` before it is read. The Seerr webhook still accepts any declared type.
+- Admin: every refused sign-in (wrong password, unknown name, not an enabled administrator, a malformed body, Jellyfin
+  failing or answering an error) is the same `401 {"error":"invalid_credentials"}`, no sooner than one second after it
+  arrived; Jellyfin's own error text is never relayed (it is logged). Missing fields used to answer `400`; they now
+  answer `401 invalid_credentials` like any other refusal. The one exception is the rate limit, a deliberate separate
+  signal so an administrator knows to wait rather than retype: `429 {"error":"too_many_login_attempts"}`, fixed, also no
+  sooner than one second, and Jellyfin is not asked. It is reached per client address (eight failures in five minutes,
+  as before) or, new, per name from one client address (ten in 15 minutes, case- and width-insensitive). Both count
+  whether or not the account exists and are keyed by the caller's own address, so a `429` says nothing about which
+  accounts exist and is only ever seen by the address that caused it.
+- Admin: failures for a name from any address never refuse it: past five in 15 minutes each further sign-in for that
+  name waits longer before Jellyfin is asked (250 ms, doubling, at most five seconds), the right password included, which
+  then signs in as usual. Guessing an administrator's name from many addresses slows the guessing but cannot lock the
+  administrator out.
+- Admin: every five minutes each browser session's administrator is read again from Jellyfin with JellyPass's API key
+  (one read per session, however many requests wait on it). A user who was deleted, demoted or disabled ends the
+  session (`401`); a check Jellyfin fails to answer keeps the session but answers `503 session_check_unavailable`,
+  retried after 30 seconds. Before, such a session lasted up to 12 hours.
+- Admin: over HTTPS the session cookie is now `__Host-jellypass_session` (Secure, `Path=/`, no `Domain`), so no
+  sibling host can set or overwrite it; plain HTTP (LAN) keeps `jellypass_session`. A session cookie from before the
+  change is ignored over HTTPS (sign in again; restarting JellyPass signs sessions out anyway), and is cleared at the
+  next sign-in or sign-out.
+- Admin: the UI's files carry the household app's headers too: `Permissions-Policy` (same deny list),
+  `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Resource-Policy: same-origin`, and `form-action 'none'`
+  (the UI posts no forms). Admin API answers carry `Cross-Origin-Resource-Policy: same-origin`.
+
 ## [2.7.0] - 2026-10-26
 
 This is a minor release for the household app (`HOUSEHOLD_APP_ENABLED=true`)
