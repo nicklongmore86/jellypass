@@ -1,5 +1,5 @@
 // A movie's, a series' and a season's page, the PWA's titleDetail() and seasonView() (app/src/render.ts) natively, on
-// the Home tab's stack (/home/movie/<id>, /home/tv/<id>, /home/tv/<id>/season/<n>). The inset backdrop card, then the
+// the stack of the tab it was opened from (/home/movie/<id>, /search/tv/<id>, /requests/tv/<id>/season/<n>, …). The inset backdrop card, then the
 // title, its facts, genres, the status (and its note), and one full-width action: Play when the title is in the
 // library (its own Jellyfin link, through the allowlist), Get this when the household can ask for it, nothing else
 // otherwise. A series partly in the library keeps Play and shows Get this outlined. A series lists its seasons as
@@ -15,6 +15,7 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { Movie, Season, Series } from '../api/types';
 import { safePlayUrl } from '../api/urls';
+import { seasonPath, type TitleTab } from '../navigation/titles';
 import { useAsked, useSession } from '../session/SessionProvider';
 import { colors, spacing, typography } from '../theme';
 import {
@@ -37,11 +38,6 @@ import { episodesText, episodeTitle, GET_THIS_TEXT, seasonName, SEASONS_TEXT } f
 import { useTitle, type GetThisState, type TitleRoute } from '../title/useTitle';
 import { Button, Screen } from '../ui';
 
-/** A season's page under the Home tab's stack. */
-export function seasonPath(tmdbId: number, seasonNumber: number): string {
-  return `/home/tv/${tmdbId}/season/${seasonNumber}`;
-}
-
 /** The column's width, inside the gutters and the detail page's widest. */
 function useColumn() {
   const window = useWindowDimensions();
@@ -50,7 +46,8 @@ function useColumn() {
   return { width: Math.max(0, Math.min(window.width, DETAIL_MAX_WIDTH) - gutters), tablet: window.width >= DETAIL_TABLET_WIDTH };
 }
 
-export function TitleScreen({ route }: { route: TitleRoute }) {
+/** `tab`: the tab whose stack the page is on, where its season pages open too. */
+export function TitleScreen({ route, tab }: { route: TitleRoute; tab: TitleTab }) {
   const data = useTitle(route);
   const asked = useAsked();
   const { load } = data;
@@ -66,6 +63,7 @@ export function TitleScreen({ route }: { route: TitleRoute }) {
         <TitleDetail
           title={load.answer.title.mediaType === 'tv' ? asked.series(load.answer.title) : asked.movie(load.answer.title)}
           failed={load.answer.failed}
+          tab={tab}
           {...data}
         />
       ) : null}
@@ -80,7 +78,7 @@ interface DetailProps {
   reload: () => void;
 }
 
-function TitleDetail({ title, failed, get, send, reload }: DetailProps & { title: Movie | Series }) {
+function TitleDetail({ title, failed, get, send, reload, tab }: DetailProps & { title: Movie | Series; tab: TitleTab }) {
   const { api } = useSession();
   const column = useColumn();
   const [chosen, setChosen] = useState<ReadonlySet<number>>(new Set());
@@ -174,7 +172,7 @@ function TitleDetail({ title, failed, get, send, reload }: DetailProps & { title
                     state={season.state}
                     failed={failedSeason(season.seasonNumber, season.state)}
                     wide={column.tablet}
-                    onOpen={() => router.push(seasonPath(series.tmdbId, season.seasonNumber))}
+                    onOpen={() => router.push(seasonPath(tab, series.tmdbId, season.seasonNumber))}
                     choice={offered ? { checked: chosen.has(season.seasonNumber), disabled: toggling, onToggle: () => toggle(season.seasonNumber) } : undefined}
                   />
                 );

@@ -10,7 +10,7 @@ import { Linking, StyleSheet, Text } from 'react-native';
 
 import type { FetchLike } from '../src/api/client';
 import { JUSTWATCH_CREDIT, JUSTWATCH_URL, TMDB_NOTICE, TMDB_SOURCE, TMDB_URL, type LinkedSentence } from '../src/credits';
-import { PLACEHOLDER_TEXT } from '../src/screens/PlaceholderScreen';
+import { SEARCH_TEXT } from '../src/search/text';
 import { colors, contrast, layout } from '../src/theme';
 import { ORIGIN, OTHER_ORIGIN, TOKEN, answer, button, fakeGateway, fixture, keepSession, press, settle, shows, store, storedSession } from './support/household';
 
@@ -37,6 +37,8 @@ const HOUSEHOLD = {
   // A title page opened on the Home tab's stack: the film (in the library, with Play) and the household's requests.
   'GET /jellypass/app/v1/movie/900001': () => answer(200, fixture('movie')),
   'GET /jellypass/app/v1/requests': () => answer(200, fixture('requests')),
+  // My requests names the fixture's two requests: that film and a series.
+  'GET /jellypass/app/v1/tv/900002': () => answer(200, fixture('series')),
 };
 
 // A screen pushed on the Account tab's stack, standing in for the title pages that come with 3.2.
@@ -137,7 +139,7 @@ describe('the tab bar', () => {
     expect(app.getPathname()).toBe('/search');
     expect(selectedTabs()).toEqual(['Search']);
     expect(headers()).toEqual(['Search']);
-    expect(shows(PLACEHOLDER_TEXT.search)).toBe(true);
+    expect(screen.queryAllByLabelText(SEARCH_TEXT.label)).toHaveLength(1);
 
     await openTab('My requests');
     expect(app.getPathname()).toBe('/requests');
@@ -323,12 +325,14 @@ describe('a setup link while signed in', () => {
 
 describe('network', () => {
   // Home's own calls are pinned against docs/app-api/fetch-budget.json by home-budget.test.tsx.
-  it('makes no call but the start-up /me and Home\'s first rows, once, through every tab and the Account screen', async () => {
+  // Search and My requests are pinned by search-budget.test.tsx and requests-budget.test.tsx.
+  it('makes no call but the start-up /me, Home\'s first rows and My requests\' own, once, through every tab and the Account screen', async () => {
     const global = jest.spyOn(globalThis, 'fetch');
     try {
       await start();
       for (const name of ['Search', 'My requests', 'Account', 'Home', 'Account']) await openTab(name);
-      expect(gateway.routes().sort()).toEqual(['GET /jellypass/app/v1/me', 'GET /jellypass/app/v1/discover/sources', ...HOME_AT_ONCE].sort());
+      const requests = ['GET /jellypass/app/v1/requests', 'GET /jellypass/app/v1/tv/900002', 'GET /jellypass/app/v1/movie/900001'];
+      expect(gateway.routes().sort()).toEqual(['GET /jellypass/app/v1/me', 'GET /jellypass/app/v1/discover/sources', ...HOME_AT_ONCE, ...requests].sort());
       expect(global).not.toHaveBeenCalled();
     } finally {
       global.mockRestore();
@@ -416,7 +420,8 @@ describe('accessibility', () => {
   it.each([
     ['Home', 'Home', 4 + HOME],
     ['Search', 'Search', 4 + HOME],
-    ['My requests', 'My requests', 4 + HOME],
+    // Its two requests, each one link.
+    ['My requests', 'My requests', 6 + HOME],
     ['Account', 'Account', 9 + HOME],
     // Back, and the Account screen still mounted underneath it.
     ['a pushed screen', '/account/pushed', 10 + HOME],

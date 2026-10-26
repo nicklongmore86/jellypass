@@ -58,13 +58,9 @@ import {
 import { HERO_MAX, HOME_LAYOUT, LAZY_MARGIN, NETWORK_ACCENTS, networkKey, rowKey, TABLET_WIDTH, type HomeRow, type RowVariant } from '../home/layout';
 import { HOME_TEXT, SOURCE_TEXT, type HomeFilter } from '../home/text';
 import { listedNetworks, networkList, useHome, type RowState } from '../home/useHome';
+import { titlePath } from '../navigation/titles';
 import { useAsked, useSession } from '../session/SessionProvider';
 import { colors, layout, spacing } from '../theme';
-
-/** Where a title opens: its page under the Home tab's stack. */
-export function titlePath(card: Pick<Card, 'mediaType' | 'tmdbId'>): string {
-  return `/home/${card.mediaType}/${card.tmdbId}`;
-}
 
 /** How wide each kind of card is: about 92% of the column on a phone (the next one peeks), 36% on a tablet. */
 export function cardWidths(columnWidth: number, tablet: boolean): Record<RowVariant, number> {
@@ -252,7 +248,7 @@ export function HomeScreen() {
     }
   };
 
-  const open = (card: Card) => router.push(titlePath(card));
+  const open = (card: Card) => router.push(titlePath('home', card));
 
   /** The scroll view has caught up with the new drawing: it starts moving on from where the screen is now. */
   const caughtUp = (y: number) => {

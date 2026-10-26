@@ -1,5 +1,5 @@
-import { PLACEHOLDER_TEXT, PlaceholderScreen } from '@/screens/PlaceholderScreen';
+import { SearchScreen } from '@/screens/SearchScreen';
 
 export default function Search() {
-  return <PlaceholderScreen text={PLACEHOLDER_TEXT.search} />;
+  return <SearchScreen />;
 }
