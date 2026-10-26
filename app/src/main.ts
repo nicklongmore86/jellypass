@@ -430,6 +430,7 @@ async function loadMe(signal: AbortSignal): Promise<void> {
 /** The sign-in screen, in place of whatever was showing; `expired` when a sign-in the app held was refused. */
 function signIn(signal: AbortSignal, current: () => boolean, expired: boolean): void {
   me = undefined;
+  api.forgetAsked();
   setChrome();
   void showSignIn({
     doc,
@@ -1324,6 +1325,7 @@ async function signOut(button: HTMLButtonElement): Promise<void> {
   const cleared = clearSignIn(localStorage, origin);
   button.disabled = false;
   me = undefined;
+  api.forgetAsked();
   if (!cleared) {
     announce("Couldn't remove your sign-in from this browser.");
     return;

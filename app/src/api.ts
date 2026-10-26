@@ -1,3 +1,4 @@
+import { createAsked, type Asked } from './asked.js';
 import type { DiscoverList, MediaType, Me, Movie, Page, RequestList, Season, Series, SourceKind, Sources } from './types.js';
 
 export const API_PREFIX = '/jellypass/app/v1';
@@ -15,6 +16,8 @@ export interface ApiOptions {
   fetch: typeof fetch;
   /** The Jellyfin access token, read for each call. */
   token: () => string | undefined;
+  /** The titles this member asked for in this page's life; shown as requested while the server catches up. */
+  asked?: Asked;
 }
 
 export interface Api {
@@ -34,6 +37,8 @@ export interface Api {
   /** "Get this": resolves once the API accepted the call (it always answers the same), and says nothing about what follows. */
   getThis(mediaType: MediaType, tmdbId: number, seasons: readonly number[], signal?: AbortSignal): Promise<void>;
   requests(signal?: AbortSignal): Promise<RequestList>;
+  /** Forgets what this member just asked for (sign-out). */
+  forgetAsked(): void;
 }
 
 function kindOf(status: number): ApiErrorKind {
@@ -44,6 +49,8 @@ function kindOf(status: number): ApiErrorKind {
 }
 
 export function createApi(options: ApiOptions): Api {
+  const asked = options.asked ?? createAsked();
+  let household: string | undefined;
   async function call(path: string, init: { body?: unknown }, signal?: AbortSignal): Promise<Response> {
     const token = options.token();
     if (!token) throw new ApiError('unauthorized');
@@ -84,21 +91,30 @@ export function createApi(options: ApiOptions): Api {
   }
 
   return {
-    me: (signal) => get<Me>('/me', signal),
-    search: (query, page, signal) => get<Page>(`/search?q=${encodeURIComponent(query)}&page=${page}`, signal),
-    discover: (list, signal) => get<Page>(`/discover/${list}`, signal),
+    me: async (signal) => {
+      const me = await get<Me>('/me', signal);
+      // Another household's answers never see this one's overlay.
+      if (household !== undefined && household !== me.household) asked.forget();
+      household = me.household;
+      return me;
+    },
+    search: (query, page, signal) => get<Page>(`/search?q=${encodeURIComponent(query)}&page=${page}`, signal).then(asked.page),
+    discover: (list, signal) => get<Page>(`/discover/${list}`, signal).then(asked.page),
     sources: (signal) => get<Sources>('/discover/sources', signal),
     source: (kind, id, page, signal, list) =>
-      get<Page>(`/discover/${kind}/${id}${list ? `/${list}` : ''}${page > 1 ? `?page=${page}` : ''}`, signal),
-    movie: (tmdbId, signal) => get<Movie>(`/movie/${tmdbId}`, signal),
-    tv: (tmdbId, signal) => get<Series>(`/tv/${tmdbId}`, signal),
-    season: (tmdbId, seasonNumber, signal) => get<Season>(`/tv/${tmdbId}/season/${seasonNumber}`, signal),
+      get<Page>(`/discover/${kind}/${id}${list ? `/${list}` : ''}${page > 1 ? `?page=${page}` : ''}`, signal).then(asked.page),
+    movie: (tmdbId, signal) => get<Movie>(`/movie/${tmdbId}`, signal).then(asked.movie),
+    tv: (tmdbId, signal) => get<Series>(`/tv/${tmdbId}`, signal).then(asked.series),
+    season: (tmdbId, seasonNumber, signal) => get<Season>(`/tv/${tmdbId}/season/${seasonNumber}`, signal).then(asked.season),
     getThis: async (mediaType, tmdbId, seasons, signal) => {
       // A movie sends an empty object, a series the seasons asked for; the answer is the same fixed 202 either way.
       const response = await call(`/${mediaType}/${tmdbId}/get`, { body: mediaType === 'tv' ? { seasons } : {} }, signal);
       await response.body?.cancel().catch(() => undefined);
+      // Only an accepted call (a 2xx; anything else threw above) is shown as requested while the server records it.
+      asked.add(mediaType, tmdbId, seasons);
     },
     requests: (signal) => get<RequestList>('/requests', signal),
+    forgetAsked: () => asked.forget(),
   };
 }
 

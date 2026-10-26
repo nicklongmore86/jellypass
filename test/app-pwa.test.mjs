@@ -4166,6 +4166,117 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assertNoCanaries(page.serialize(), 'after Get this');
     });
 
+    describe('shows Requested right after an accepted Get this, while the server records it', () => {
+      // The server writes the household's record a moment after it accepts the call (and these tests never let
+      // `app.background` run), so every read in them still says get_this: the page's own overlay has to carry it.
+      const homeReady = (page) => page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4, 'home');
+      const cardFor = (page, name) => [...page.main().querySelectorAll('li.card')].find((card) => card.textContent.includes(name));
+      const statusOf = (card) => card.querySelector('.badge').textContent;
+      const nameOf = (card) => card.querySelector('a').getAttribute('aria-label');
+      const searchFor = async (page, name) => {
+        page.go('#/search?q=synthetic');
+        return page.until(() => cardFor(page, name), `${name} in the search results`);
+      };
+      const ask = async (page) => {
+        const button = await page.until(() => page.main().querySelector('button'), 'the Get this button');
+        assert.equal(page.main().querySelector('.badge').textContent, 'Available to get');
+        button.dispatchEvent(new page.Event('click'));
+        await page.until(() => page.main().querySelector('.get-message')?.textContent, 'the confirmation');
+        // The confirmation is up before the title is read again; wait for the redraw (it focuses the confirmation).
+        await page.until(() => page.focused()?.className === 'get-message' && page.pending() === 0, 'the redraw');
+      };
+
+      it('on the title page at once, and on Home and Search after Back, with the status said once in the name', async (t) => {
+        const app = await startApp(t);
+        const page = await openApp(t, app);
+        await homeReady(page);
+        const before = await searchFor(page, 'Synthetic Movie One');
+        assert.equal(statusOf(before), 'Available to get');
+        page.go(`#/movie/${T_MOVIE}`);
+        await ask(page);
+        // The refetch after the accepted call still said get_this; the page shows Requested all the same.
+        assert.equal(page.main().querySelector('.badge').textContent, 'Requested');
+        assert.ok(page.main().querySelector('button') === null, 'no Get this button');
+        page.back().dispatchEvent(new page.Event('click'));
+        const card = await page.until(() => cardFor(page, 'Synthetic Movie One'), 'the search results again');
+        assert.equal(statusOf(card), 'Requested');
+        const name = nameOf(card);
+        assert.ok(name.startsWith('Synthetic Movie One'), name);
+        assert.equal(name.split('Requested').length - 1, 1, name);
+        assert.equal(name.includes('Available to get'), false, name);
+        // A card for another title is untouched.
+        assert.equal(statusOf(cardFor(page, 'Synthetic Series Two')), 'Available to get');
+        // The page keeps nothing about it.
+        assert.deepEqual(page.sessionWrites, []);
+        assert.equal([...page.store.keys()].some((key) => key !== 'jellyfin_credentials' && /ask|request/i.test(key)), false);
+        page.go('#/');
+        await homeReady(page);
+        page.go(`#/movie/${T_MOVIE}`);
+        await page.until(() => page.main().querySelector('.badge')?.textContent === 'Requested', 'Requested');
+        assert.ok(page.main().querySelector('button') === null);
+      });
+
+      it('expires after two minutes, then the server\'s answer shows', async (t) => {
+        t.mock.timers.enable({ apis: ['Date'] });
+        const app = await startApp(t);
+        const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}` });
+        await ask(page);
+        assert.equal(page.main().querySelector('.badge').textContent, 'Requested');
+        t.mock.timers.tick(119_000);
+        page.go('#/');
+        page.go(`#/movie/${T_MOVIE}`);
+        await page.until(() => page.main().querySelector('.badge'), 'the title');
+        assert.equal(page.main().querySelector('.badge').textContent, 'Requested', 'still inside the window');
+        t.mock.timers.tick(2_000);
+        page.go('#/');
+        page.go(`#/movie/${T_MOVIE}`);
+        await page.until(() => page.main().querySelector('.badge')?.textContent === 'Available to get', 'server truth');
+        assert.equal(page.main().querySelector('button').textContent, 'Get this');
+      });
+
+      it('marks the seasons asked for, and the series as the server will', async (t) => {
+        const app = await startApp(t);
+        const page = await openApp(t, app, { hash: `#/tv/${T_TV}/season/1` });
+        await ask(page);
+        assert.equal(page.main().querySelector('.badge').textContent, 'Requested');
+        assert.ok(page.main().querySelector('button') === null);
+        page.go(`#/tv/${T_TV}`);
+        await page.until(() => page.main().querySelector('.badge'), 'the series');
+        assert.equal(page.main().querySelector('.detail-hero ~ * .badge, .badge').textContent, 'Requested');
+        const seasons = [...page.main().querySelectorAll('li.season')];
+        const numberOf = (item) => item.querySelector('a').getAttribute('href').split('/').pop();
+        assert.ok(seasons.length >= 1);
+        for (const item of seasons) {
+          assert.equal(item.querySelector('.badge').textContent, numberOf(item) === '1' ? 'Requested' : 'Available to get', numberOf(item));
+        }
+      });
+
+      it('is not added by a call the API refused', async (t) => {
+        const app = await startApp(t);
+        const page = await openApp(t, app, {
+          hash: `#/movie/${T_MOVIE}`,
+          override: (url, init) => (init.method === 'POST' ? { status: 502, body: Buffer.from('{}'), headers: {} } : undefined),
+        });
+        const button = await page.until(() => page.main().querySelector('button'), 'the button');
+        button.dispatchEvent(new page.Event('click'));
+        await page.until(() => page.main().querySelector('.get-error'), 'the error');
+        const card = await searchFor(page, 'Synthetic Movie One');
+        assert.equal(statusOf(card), 'Available to get');
+      });
+
+      it('makes no extra call', async (t) => {
+        const app = await startApp(t);
+        const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}` });
+        await page.until(() => page.main().querySelector('button'), 'the button');
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const start = page.requests.length;
+        await ask(page);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        const made = page.requests.slice(start).map((request) => `${request.init.method ?? 'GET'} ${request.url}`).sort();
+        assert.deepEqual(made, [`GET /jellypass/app/v1/movie/${T_MOVIE}`, 'GET /jellypass/app/v1/requests', `POST /jellypass/app/v1/movie/${T_MOVIE}/get`].sort());
+      });
+    });
+
     it('gives the same confirmation whatever the household, the title or Seerr already had', async (t) => {
       const worlds = { baseline: world(), ...Object.fromEntries(Object.entries(otherHouseholdWorlds())) };
       const seen = {};
@@ -4477,6 +4588,104 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.doesNotMatch(sources, /localStorage\.setItem|sessionStorage|indexedDB|caches\./, 'the app still keeps nothing');
       await settle();
       t.diagnostic('checked');
+    });
+  });
+});
+
+describe('household app: what this member just asked for', { timeout: 30_000 }, () => {
+  const asked = () => import(pathToFileURL(path.join(DIST_APP, BUILT('js/asked.js'))).href);
+  const apiModule = () => import(pathToFileURL(path.join(DIST_APP, BUILT('js/api.js'))).href);
+  const movieCard = (state) => ({ mediaType: 'movie', tmdbId: 5, title: 'T', year: 2020, overview: '', posterUrl: null, backdropUrl: null, rating: null, state, play: null });
+
+  it('adds a key for two minutes, and drops it once the server says anything but get_this', async () => {
+    const { createAsked, ASKED_TTL_MS } = await asked();
+    let now = 1000;
+    const overlay = createAsked(() => now);
+    assert.equal(overlay.card(movieCard('get_this')).state, 'get_this', 'nothing asked yet');
+    overlay.add('movie', 5, []);
+    assert.equal(overlay.card(movieCard('get_this')).state, 'requested');
+    assert.equal(ASKED_TTL_MS, 120_000);
+    now += 119_999;
+    assert.equal(overlay.card(movieCard('get_this')).state, 'requested');
+    now += 2;
+    assert.equal(overlay.card(movieCard('get_this')).state, 'get_this', 'expired');
+    overlay.add('movie', 5, []);
+    assert.equal(overlay.card(movieCard('unavailable')).state, 'unavailable');
+    assert.equal(overlay.card(movieCard('get_this')).state, 'get_this', 'dropped by another state');
+    overlay.add('movie', 5, []);
+    assert.equal(overlay.card(movieCard('in_library')).state, 'in_library');
+    assert.equal(overlay.card(movieCard('get_this')).state, 'get_this');
+  });
+
+  it('keeps season keys apart and marks the series', async () => {
+    const { createAsked } = await asked();
+    const overlay = createAsked(() => 0);
+    overlay.add('tv', 9, [2]);
+    const series = { ...movieCard('get_this'), mediaType: 'tv', tmdbId: 9, genres: [], runtime: null, seasons: [1, 2, 3].map((seasonNumber) => ({ seasonNumber, name: '', episodeCount: 1, state: 'get_this' })) };
+    const shown = overlay.series(series);
+    assert.equal(shown.state, 'requested');
+    assert.deepEqual(shown.seasons.map((season) => season.state), ['get_this', 'requested', 'get_this']);
+    assert.equal(overlay.season({ tmdbId: 9, seasonNumber: 2, name: '', overview: '', episodes: [], state: 'get_this' }).state, 'requested');
+    assert.equal(overlay.season({ tmdbId: 9, seasonNumber: 3, name: '', overview: '', episodes: [], state: 'get_this' }).state, 'get_this');
+    assert.equal(overlay.card(movieCard('get_this')).state, 'get_this', 'a movie with the same ID is another key');
+  });
+
+  describe('through the API client', () => {
+    const json = (body, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+    async function client(handler) {
+      const { createApi } = await apiModule();
+      const { createAsked } = await asked();
+      const overlay = createAsked();
+      const api = createApi({ fetch: async (url, init) => handler(String(url), init ?? {}), token: () => 'token', asked: overlay });
+      return api;
+    }
+    const sample = (state) => ({ ...movieCard(state), genres: [], runtime: null });
+
+    it('adds a key only for an accepted call, and never for a refusal or an error', async () => {
+      for (const status of [400, 401, 404, 429, 500]) {
+        const api = await client((url, init) => (init.method === 'POST' ? json({}, status) : json(sample('get_this'))));
+        await assert.rejects(api.getThis('movie', 5, []));
+        assert.equal((await api.movie(5)).state, 'get_this', String(status));
+      }
+      const offline = await client((url, init) => { if (init.method === 'POST') throw new TypeError('down'); return json(sample('get_this')); });
+      await assert.rejects(offline.getThis('movie', 5, []));
+      assert.equal((await offline.movie(5)).state, 'get_this');
+      const ok = await client((url, init) => (init.method === 'POST' ? json({}, 202) : json(sample('get_this'))));
+      await ok.getThis('movie', 5, []);
+      assert.equal((await ok.movie(5)).state, 'requested');
+    });
+
+    it('overlays every kind of answer and forgets on sign-out', async () => {
+      const page = { page: 1, nextPage: null, results: [movieCard('get_this')] };
+      const api = await client((url, init) => (init.method === 'POST' ? json({}, 202) : url.includes('/movie/') ? json(sample('get_this')) : json(page)));
+      await api.getThis('movie', 5, []);
+      assert.equal((await api.search('x', 1)).results[0].state, 'requested');
+      assert.equal((await api.discover('trending')).results[0].state, 'requested');
+      assert.equal((await api.source('studio', 1, 1)).results[0].state, 'requested');
+      api.forgetAsked();
+      assert.equal((await api.search('x', 1)).results[0].state, 'get_this');
+      assert.equal((await api.movie(5)).state, 'get_this');
+    });
+
+    it('drops the key when the server answers with another state, and clears it for another household', async () => {
+      let state = 'get_this';
+      let household = 'a';
+      const api = await client((url, init) => {
+        if (init.method === 'POST') return json({}, 202);
+        if (url.endsWith('/me')) return json({ name: 'n', household, apiVersion: 1 });
+        return json(sample(state));
+      });
+      await api.me();
+      await api.getThis('movie', 5, []);
+      state = 'requested';
+      assert.equal((await api.movie(5)).state, 'requested');
+      state = 'get_this';
+      assert.equal((await api.movie(5)).state, 'get_this', 'dropped once the server said requested');
+      await api.getThis('movie', 5, []);
+      assert.equal((await api.movie(5)).state, 'requested');
+      household = 'b';
+      await api.me();
+      assert.equal((await api.movie(5)).state, 'get_this', 'another household');
     });
   });
 });
