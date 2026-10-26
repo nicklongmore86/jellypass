@@ -1,0 +1,5 @@
+# mobile/ is its own pnpm project, separate from the server at the repo root.
+# No dependency runs an install script: the two that ask ship prebuilt binaries.
+allowBuilds:
+  '@parcel/watcher': false
+  unrs-resolver: false

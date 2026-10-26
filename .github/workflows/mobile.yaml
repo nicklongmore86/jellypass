@@ -1,0 +1,45 @@
+name: Mobile
+
+# The household app for iPhone, iPad and Android (mobile/). It has its own
+# package.json and lockfile and is not part of the server's build or image, so
+# it runs only when mobile/ changes, or the stylesheet its theme is ported from.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'mobile/**'
+      - 'app/static/app.css'
+      - '.github/workflows/mobile.yaml'
+  pull_request:
+    paths:
+      - 'mobile/**'
+      - 'app/static/app.css'
+      - '.github/workflows/mobile.yaml'
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: mobile
+    env:
+      # Expo's CLI sends usage telemetry unless told not to.
+      EXPO_NO_TELEMETRY: 1
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6
+        with:
+          package_json_file: mobile/package.json
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+          cache-dependency-path: mobile/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm typecheck
+      - run: pnpm lint
+      - run: pnpm test
