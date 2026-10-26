@@ -15,6 +15,8 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 export const HASH_PLACEHOLDER = '__CONTENT_HASH__';
 export const PRECACHE_PLACEHOLDER = '__PRECACHE_PATHS__';
+/** The client's `APP_VERSION` is this in the source; the build writes package.json's version in its place. */
+export const VERSION_PLACEHOLDER = '__APP_VERSION__';
 export const APP_PATH = '/jellypass/app/';
 /** The module the page loads; only it and what it imports are built. */
 const ENTRY = 'main.js';
@@ -63,13 +65,18 @@ export function stampWorker(directory) {
 }
 
 /** Builds `outDir` (replacing it) from the static files and the compiled modules; returns the logical-to-built path map. */
-export function buildApp({ staticDir = SOURCE_DIR, jsDir = join(ROOT, 'dist', 'app-js'), outDir = join(ROOT, 'dist', 'app') } = {}) {
+export function buildApp({
+  staticDir = SOURCE_DIR,
+  jsDir = join(ROOT, 'dist', 'app-js'),
+  outDir = join(ROOT, 'dist', 'app'),
+  version = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8')).version,
+} = {}) {
   rmSync(outDir, { recursive: true, force: true });
   mkdirSync(outDir, { recursive: true });
   cpSync(staticDir, outDir, { recursive: true });
   for (const [relative, text] of reachableModules(jsDir)) {
     mkdirSync(dirname(join(outDir, 'js', relative)), { recursive: true });
-    writeFileSync(join(outDir, 'js', relative), text);
+    writeFileSync(join(outDir, 'js', relative), text.replaceAll(VERSION_PLACEHOLDER, version));
   }
 
   const logical = files(outDir).map(([relative]) => relative).filter((relative) => !UNHASHED.has(relative));
