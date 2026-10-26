@@ -20,6 +20,8 @@ const AUTHENTICATE_WITH_QUICK_CONNECT_PATH = '/users/authenticatewithquickconnec
 /** The Streamyfin plugin's routes, which hand its settings (Seerr's keys among them) to any signed-in user. */
 const STREAMYFIN_PATH = '/streamyfin';
 const AUTHENTICATE_BY_NAME_PATH = '/users/authenticatebyname';
+/** Jellyfin's obsolete sign-in by user ID and password, still routed in 10.11 and, like AuthenticateByName, not scoped to a household. */
+const AUTHENTICATE_BY_ID_ROUTE = /^\/users\/([^/]+)\/authenticate$/;
 const LOGOUT_PATH = '/sessions/logout';
 const FORGOT_PASSWORD_PATHS = new Set(['/users/forgotpassword', '/users/forgotpassword/pin']);
 const MAX_TRANSFORMED_JSON_BYTES = 2 * 1024 * 1024;
@@ -223,34 +225,39 @@ export class HouseholdGateway {
 
   public async handle(request: IncomingMessage, response: ServerResponse, householdId: string): Promise<void> {
     const requestUrl = new URL(request.url ?? '/', 'http://localhost');
-    const pathname = requestUrl.pathname.toLowerCase();
-    const appPath = pathname === APP_PATH || pathname.startsWith(`${APP_PATH}/`);
+    // Every decision below is made on the route Jellyfin takes the path to, never on the path as spelled.
+    const route = jellyfinRoute(request.url ?? '/');
+    const appPath = route !== undefined && isAppRoute(route);
     const memberIds = this.#memberIds(householdId);
     if (!memberIds) {
       // No CDN may keep any answer under /jellypass/app, this one included (see NEVER_STORE).
       writeJson(response, 404, { error: 'household_not_found' }, appPath ? NEVER_STORE : {});
       return;
     }
+    if (route === undefined) {
+      // Jellyfin might route it otherwise than the gateway reads it, so no check here can be trusted to apply.
+      writeJson(response, 400, { error: 'invalid_path' }, NEVER_STORE);
+      return;
+    }
     if (appPath) {
       // The app's own files carry nothing user-specific and need no credentials; the API under /v1 always does.
       // Files only at their exact (lower-case) paths: another spelling is an unknown app path, like any other.
-      if (this.#appAssets?.serve(request, response, requestUrl.pathname)) return;
+      if (this.#appAssets?.serve(request, response, (request.url ?? '/').split('?', 1)[0] as string)) return;
       // Every other answer here, whatever writes it (an unknown file, the API, its errors), is never stored by a CDN.
       for (const [name, value] of Object.entries(NEVER_STORE)) response.setHeader(name, value);
       await this.#householdApp(request, response, requestUrl, householdId, memberIds);
       return;
     }
-    if (request.method === 'GET' && pathname === PUBLIC_USERS_PATH) {
+    if (request.method === 'GET' && route === PUBLIC_USERS_PATH) {
       await this.#proxyPublicUsers(request, response, memberIds);
       return;
     }
-    if (request.method === 'GET' && pathname === BRANDING_CONFIGURATION_PATH) {
+    if (request.method === 'GET' && route === BRANDING_CONFIGURATION_PATH) {
       await this.#proxyBrandingConfiguration(request, response);
       return;
     }
     // Quick Connect signs in whoever authorizes the code, member or not, so no household host offers it: whether it is
     // enabled is always false, and every other Quick Connect call is refused alike, without asking Jellyfin.
-    const route = jellyfinRoute(requestUrl.pathname);
     if (request.method === 'GET' && route === QUICK_CONNECT_ENABLED_PATH) {
       writeJson(response, 200, false);
       return;
@@ -263,30 +270,37 @@ export class HouseholdGateway {
       writeJson(response, 404, { error: 'not_found' });
       return;
     }
-    if (request.method === 'POST' && FORGOT_PASSWORD_PATHS.has(pathname)) {
+    if (request.method === 'POST' && FORGOT_PASSWORD_PATHS.has(route)) {
       writeJson(response, 403, { error: 'household_password_recovery_disabled' });
       return;
     }
-    if (this.#app && request.method === 'POST' && isLogoutPath(requestUrl.pathname)) {
+    if (this.#app && request.method === 'POST' && route === LOGOUT_PATH) {
       await this.#proxySignOut(request, response, requestUrl, householdId, this.#app);
       return;
     }
-    if (request.method === 'POST' && pathname === AUTHENTICATE_BY_NAME_PATH) {
+    if (request.method === 'POST' && route === AUTHENTICATE_BY_NAME_PATH) {
       await this.#proxyHouseholdLogin(request, response, memberIds);
       return;
     }
+    // Jellyfin signs anyone in by ID here too, so an ID that is no member's is refused like a non-member's name.
+    const signInId = request.method === 'POST' ? AUTHENTICATE_BY_ID_ROUTE.exec(route)?.[1] : undefined;
+    if (signInId !== undefined && !memberIds.some((id) => sameUserId(id, signInId))) {
+      await delay(this.#loginFailureDelayMs);
+      writeJson(response, 401, { error: 'invalid_credentials' });
+      return;
+    }
     if (this.#libraryJoin) {
-      const libraryJoinAsset = LIBRARY_JOIN_ASSETS[pathname];
+      const libraryJoinAsset = LIBRARY_JOIN_ASSETS[route];
       if (request.method === 'GET' && libraryJoinAsset) {
         writeAsset(response, libraryJoinAsset.body, libraryJoinAsset.contentType);
         return;
       }
-      if (request.method === 'POST' && pathname === LIBRARY_JOIN_PATH) {
+      if (request.method === 'POST' && route === LIBRARY_JOIN_PATH) {
         await this.#joinLibrary(request, response, requestUrl, this.#libraryJoin);
         return;
       }
     }
-    const streamedItemId = protectedResourceItemId(requestUrl.pathname);
+    const streamedItemId = protectedResourceItemId(route);
     if (streamedItemId) {
       try {
         if (!await this.#canAccessItem(request, requestUrl, streamedItemId)) {
@@ -313,10 +327,12 @@ export class HouseholdGateway {
       socket.end(`HTTP/1.1 503 Service Unavailable\r\n${neverStoreHeaders()}Connection: close\r\n\r\n`);
       return;
     }
-    const requestPath = new URL(request.url ?? '/', 'http://localhost').pathname;
-    const pathname = requestPath.toLowerCase();
-    const appPath = pathname === APP_PATH || pathname.startsWith(`${APP_PATH}/`);
-    const route = jellyfinRoute(requestPath);
+    const route = jellyfinRoute(request.url ?? '/');
+    if (route === undefined) {
+      socket.end(`HTTP/1.1 400 Bad Request\r\n${neverStoreHeaders()}Connection: close\r\n\r\n`);
+      return;
+    }
+    const appPath = isAppRoute(route);
     // The app API has no WebSockets, and its paths, Quick Connect's and Streamyfin's are never proxied to Jellyfin.
     if (!this.#memberIds(householdId) || appPath || isQuickConnectRoute(route) || isStreamyfinRoute(route)) {
       socket.end(`HTTP/1.1 404 Not Found\r\n${appPath ? neverStoreHeaders() : ''}Connection: close\r\n\r\n`);
@@ -1118,11 +1134,11 @@ function libraryJoinInput(value: unknown): { mediaType: 'movie' | 'tv'; tmdbId: 
   return { mediaType, tmdbId };
 }
 
-function protectedResourceItemId(pathname: string): string | undefined {
-  const media = pathname.match(/^\/(?:videos|audio)\/([^/]+)\/(?:stream(?:\.[^/]*)?|master\.m3u8|main\.m3u8)$/i);
-  if (media) return decodeURIComponent(media[1] as string);
-  const download = pathname.match(/^\/items\/([^/]+)\/download$/i);
-  return download ? decodeURIComponent(download[1] as string) : undefined;
+/** The item a protected stream or download is of, from its {@link jellyfinRoute}, or undefined if it is neither. */
+function protectedResourceItemId(route: string): string | undefined {
+  const media = route.match(/^\/(?:videos|audio)\/([^/]+)\/(?:stream(?:\.[^/]*)?|master\.m3u8|main\.m3u8)$/);
+  if (media) return media[1];
+  return route.match(/^\/items\/([^/]+)\/download$/)?.[1];
 }
 
 /**
@@ -1162,33 +1178,58 @@ function tokenKeys(credentials: JellyfinCredentials): string[] {
   return [...tokens].map((token) => createHash('sha256').update(`token\n${token}`).digest('hex'));
 }
 
+const LEGACY_PREFIXES = new Set(['emby', 'mediabrowser']);
+
 /**
- * Whether Jellyfin routes this path to its sign-out, POST /Sessions/Logout: in any case, percent-encoded or not, with
- * any trailing slashes, as ASP.NET Core matches its routes.
+ * The route Jellyfin 10.11 takes a request target to, which every decision a household host makes about a path is made
+ * on: each segment percent-decoded once and in lower case, without empty segments (so runs of slashes count as one and
+ * a trailing slash as none) and without the legacy `/emby` or `/mediabrowser` prefix Jellyfin strips before routing. It
+ * may match a path Jellyfin itself does not route (`//Users//Public`, say), never the other way round.
+ *
+ * Undefined for a target Jellyfin might read otherwise than this, which is refused rather than proxied: one that is not
+ * a path (`*`, an absolute URL); one with a backslash, a fragment or a character outside printable ASCII; invalid
+ * percent-encoding; an encoded slash or backslash, which Jellyfin keeps inside its segment; a `.` or `..` segment,
+ * encoded or not, which Jellyfin resolves; a control character; anything still percent-encoded once decoded; and a
+ * legacy prefix after another.
  */
-function isLogoutPath(pathname: string): boolean {
-  let decoded = pathname;
-  try {
-    decoded = decodeURIComponent(pathname);
-  } catch {
-    // Not valid percent-encoding: the path as given.
+function jellyfinRoute(target: string): string | undefined {
+  if (!target.startsWith('/')) return undefined;
+  const queryAt = target.indexOf('?');
+  const path = queryAt < 0 ? target : target.slice(0, queryAt);
+  if (/[^\x21-\x7e]|[\\#]/.test(path)) return undefined;
+  const segments: string[] = [];
+  for (const raw of path.split('/')) {
+    if (!raw) continue;
+    let segment: string;
+    try {
+      segment = decodeURIComponent(raw);
+    } catch {
+      return undefined;
+    }
+    if (segment === '.' || segment === '..' || /[/\\\u0000-\u001f\u007f]|%[0-9a-f]{2}/i.test(segment)) return undefined;
+    segments.push(segment.toLowerCase());
   }
-  return decoded.toLowerCase().replace(/\/+$/, '') === LOGOUT_PATH;
+  if (LEGACY_PREFIXES.has(segments[0] ?? '')) segments.shift();
+  if (LEGACY_PREFIXES.has(segments[0] ?? '')) return undefined;
+  return `/${segments.join('/')}`;
 }
 
 /**
- * The route Jellyfin takes a path to, for matching: percent-decoded, in lower case, with runs of slashes as one and no
- * trailing slash, and without the legacy `/emby` or `/mediabrowser` prefix Jellyfin strips before routing. It may match
- * a path Jellyfin itself would not route (a decoded `%2F`, say), never the other way round.
+ * Whether `given` names the Jellyfin user `id`, as Jellyfin parses a user ID in a route: a GUID with or without dashes,
+ * braces or parentheses, in any case. A `given` that is no such GUID names nobody.
  */
-function jellyfinRoute(pathname: string): string {
-  let decoded = pathname;
-  try {
-    decoded = decodeURIComponent(pathname);
-  } catch {
-    // Not valid percent-encoding: the path as given.
-  }
-  return decoded.toLowerCase().replace(/\/{2,}/g, '/').replace(/\/+$/, '').replace(/^\/(?:emby|mediabrowser)(?=\/)/, '');
+function sameUserId(id: string, given: string): boolean {
+  const hex = (value: string) => {
+    const digits = value.replace(/^[{(](.*)[})]$/, '$1').replaceAll('-', '').toLowerCase();
+    return /^[0-9a-f]{32}$/.test(digits) ? digits : undefined;
+  };
+  const wanted = hex(id);
+  return wanted !== undefined && wanted === hex(given);
+}
+
+/** Whether a {@link jellyfinRoute} is the household app's: never proxied to Jellyfin. */
+function isAppRoute(route: string): boolean {
+  return route === APP_PATH || route.startsWith(`${APP_PATH}/`);
 }
 
 function isQuickConnectRoute(route: string): boolean {

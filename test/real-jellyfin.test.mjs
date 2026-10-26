@@ -434,6 +434,63 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
     assert.deepEqual([streamyfin.status, streamyfin.text], [404, '{"error":"not_found"}']);
   });
 
+  it('checks a household sign-in, profile list and protected media in every spelling Jellyfin routes', async (t) => {
+    const originalBob = user(await client.getUsers(), fixture.bobId);
+    t.after(() => client.updatePolicy(fixture.bobId, originalBob.Policy));
+    const original = await client.getItem(fixture.itemId);
+    t.after(() => client.updateItem({ ...original }));
+    // Sign-in by ID needs a password that is not empty.
+    await request(baseUrl, `/Users/${fixture.aliceId}/Password`, { method: 'POST', token: fixture.token, body: { NewPw: 'alice-paths' } });
+    t.after(() => request(baseUrl, `/Users/${fixture.aliceId}/Password`, { method: 'POST', token: fixture.token, body: { ResetPassword: true } }));
+    const WEB = 'MediaBrowser Client="Jellyfin Web", Device="Firefox", DeviceId="jellypass-real-paths", Version="10.11.3"';
+    // At Jellyfin itself Alice signs in by every one of these spellings, and by her ID.
+    const spellings = ['/emby/Users/AuthenticateByName', '/MediaBrowser/Users/AuthenticateByName/', '/%65mby/Users/AuthenticateByName', '/Users/AuthenticateByName/', '/Users/%41uthenticateByName'];
+    for (const pathname of spellings) {
+      assert.equal((await request(baseUrl, pathname, { method: 'POST', authorization: WEB, body: { Username: 'Alice', Pw: 'alice-paths' } })).User.Id, fixture.aliceId, pathname);
+    }
+    assert.equal((await request(baseUrl, `/Users/${fixture.aliceId}/Authenticate?pw=alice-paths`, { method: 'POST', authorization: WEB })).User.Id, fixture.aliceId);
+
+    const householdStore = new GrantStore(path.join(await makeTempDir(t, 'jfa-real-paths-'), 'grants.json'));
+    await householdStore.load();
+    await householdStore.upsertGroup({ id: 'pathhouse', name: 'Path House', userIds: [fixture.bobId] });
+    const gateway = makeServer(new AccessService(client, householdStore), { webhook: webhookToken, admin: 'real-admin-secret' }, undefined, {
+      householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: 0 },
+    });
+    await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise((resolve) => gateway.close(resolve)));
+    const port = gateway.address().port;
+    const host = { Host: 'jelly-pathhouse.example.test', Authorization: WEB };
+    // Alice is no member here: refused in every spelling, by name or by ID, as on the plain path.
+    for (const pathname of ['/Users/AuthenticateByName', ...spellings]) {
+      const answer = await postWithHeaders(port, pathname, host, { Username: 'Alice', Pw: 'alice-paths' });
+      assert.deepEqual([answer.status, answer.text], [401, '{"error":"invalid_credentials"}'], pathname);
+    }
+    const byId = await postWithHeaders(port, `/emby/Users/${fixture.aliceId}/Authenticate?pw=alice-paths`, host, {});
+    assert.deepEqual([byId.status, byId.text], [401, '{"error":"invalid_credentials"}']);
+    // Bob is: signed in by Jellyfin through the legacy prefix.
+    const bob = await postWithHeaders(port, '/emby/Users/AuthenticateByName', host, { Username: 'Bob', Pw: '' });
+    assert.equal(bob.status, 200, bob.text);
+    assert.equal(bob.json().User.Id, fixture.bobId);
+    // Jellyfin 10.11 lists no hidden user publicly, and makes every new user hidden: Bob and the administrator are shown.
+    await client.updatePolicy(fixture.bobId, { ...originalBob.Policy, IsHidden: false });
+    const originalAdmin = (await client.getUsers()).find((entry) => entry.Policy.IsAdministrator);
+    t.after(() => client.updatePolicy(originalAdmin.Id, originalAdmin.Policy));
+    await client.updatePolicy(originalAdmin.Id, { ...originalAdmin.Policy, IsHidden: false });
+    assert.ok((await request(baseUrl, '/emby/Users/Public')).some((entry) => entry.Id === originalAdmin.Id), 'Jellyfin itself lists the administrator');
+    for (const pathname of ['/Users/Public', '/emby/Users/Public', '/Users/Public/', '/%65mby/Users/%50ublic']) {
+      const answer = await getWithHeaders(port, pathname, host);
+      assert.deepEqual(answer.json().map((entry) => entry.Id), [fixture.bobId], pathname);
+    }
+    // A title Bob may not see: its media is refused in every spelling, as on the plain path.
+    await client.updateItem({ ...original, Tags: [...original.Tags, 'jp-paths-hidden'] });
+    await client.updatePolicy(fixture.bobId, { ...originalBob.Policy, BlockedTags: ['jp-paths-hidden'] });
+    const asBob = { Host: 'jelly-pathhouse.example.test', Authorization: `${WEB}, Token="${bob.json().AccessToken}"` };
+    for (const pathname of [`/Videos/${fixture.itemId}/stream`, `/emby/Videos/${fixture.itemId}/stream`, `/MediaBrowser/Items/${fixture.itemId}/Download`, `/Videos/${fixture.itemId}/stream/`]) {
+      const answer = await getWithHeaders(port, `${pathname}?Static=true`, asBob);
+      assert.deepEqual([answer.status, answer.text], [404, '{"error":"item_not_found"}'], pathname);
+    }
+  });
+
   it('finds a title\'s items by TMDB ID with JellyPass\'s key, the "Get this" decision input for "Jellyfin already has it"', async () => {
     const original = await client.getItem(fixture.itemId);
     await client.updateItem({ ...original, ProviderIds: { ...original.ProviderIds, Tmdb: '424242' } });

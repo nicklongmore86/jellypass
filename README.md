@@ -561,6 +561,19 @@ no-store`), and are matched as Jellyfin routes them: in any case,
 percent-encoded or not, with trailing slashes, and under Jellyfin's legacy
 `/emby` and `/mediabrowser` prefixes.
 
+Every other decision a household hostname makes about a path is made the same
+way, on the route Jellyfin takes it to rather than on its spelling: the sign-in
+check above, the household's `/Users/Public` list and login styles, refused
+password recovery, sign-out, the per-item check on streams and downloads, and
+JellyPass's own `/jellypass/...` paths. A sign-in by user ID (Jellyfin's
+obsolete `POST /Users/{id}/Authenticate`) for anyone but a member gets the same
+`401` (`invalid_credentials`) as a non-member's name, without asking Jellyfin.
+A path Jellyfin might read otherwise than JellyPass (an encoded slash or
+backslash, a `.` or `..` segment, a backslash, invalid or double
+percent-encoding, a control or non-ASCII character, or one legacy prefix after
+another) is answered a fixed `400` (`invalid_path`, `Cache-Control: no-store`)
+and never reaches Jellyfin.
+
 Unknown household hostnames fail closed with `404`. Group IDs used as household
 IDs must contain lowercase letters, numbers, and hyphens and be no longer than
 63 characters.

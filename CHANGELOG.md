@@ -14,8 +14,8 @@ privacy leak. Such changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
-The household-gateway changes below alter only failure responses on relayed
-Jellyfin endpoints, in the configuration this project documents (Quick Connect
+The Quick Connect and Streamyfin changes below alter only failure responses on
+relayed Jellyfin endpoints, in the configuration this project documents (Quick Connect
 disabled in Jellyfin, as `docs/household-access.md` requires, and no Streamyfin
 plugin installed): there Jellyfin itself already refused every one of these
 calls, and `GET /QuickConnect/Enabled` already answered `false`. JellyPass's
@@ -28,8 +28,46 @@ check. A Jellyfin that has Quick Connect enabled, or the Streamyfin plugin
 installed, loses those features on household hostnames: that is the leak being
 closed, and they still work on Jellyfin's own address.
 
+The path-matching fix below closes a second leak under the same rule. In every
+setup this project documents, it changes only answers to non-members, and to
+callers asking for what they may not see, on other spellings of household
+routes: where Jellyfin used to answer those with a success that skipped a
+household check, they now get the fixed answer the plain path already gives
+(the `401` sign-in refusal, the household's own `/Users/Public` list, the
+password-recovery `403`, the protected-media `404`). For members, every
+spelling Jellyfin routes answers as before, except that `/Branding/Configuration`
+now carries the household login styles in every spelling, as the plain path
+already did. The one other change is the new fixed `400` for paths Jellyfin might read otherwise than the gateway. Browsers
+and Jellyfin clients do not send these, and they are the spellings a check
+could be skipped by. So this is a failure response closing a leak, which a
+patch release may carry.
+
 ### Security
 
+- **Household checks now apply to every spelling of a path.** Jellyfin routes
+  one endpoint by several spellings: with its legacy `/emby` or `/mediabrowser`
+  prefix, with a trailing slash, or with percent-encoded letters. The household
+  gateway matched most of its checks on the plain spelling only, so a
+  non-member could sign in on a household hostname, list every Jellyfin user,
+  reach password recovery, or stream an item they may not see by spelling the
+  path another way. A sign-out spelled that way also left the household app
+  trusting the session until its cache expired. Every check (sign-in
+  membership, the household's `/Users/Public` list and login styles, password
+  recovery, sign-out, protected media, Quick Connect, Streamyfin and
+  JellyPass's own `/jellypass/...` paths) now matches the route Jellyfin takes
+  the path to: decoded once, in any case, with trailing or repeated slashes
+  ignored, and without the legacy prefix. A path Jellyfin might read otherwise
+  than the gateway (an encoded slash, a dot segment, double or invalid
+  percent-encoding, a control or non-ASCII character, a backslash, a repeated
+  legacy prefix) gets a fixed `400 {"error":"invalid_path"}` with
+  `Cache-Control: no-store` and never reaches Jellyfin; a WebSocket upgrade to
+  one gets `400` too.
+- **Household hostnames refuse Jellyfin's sign-in by ID for non-members.**
+  Jellyfin 10.11 still routes the obsolete `POST /Users/{id}/Authenticate`,
+  which signs in by user ID and password without the household check. For an
+  ID that is no member's it now gets the same `401
+  {"error":"invalid_credentials"}`, after the same delay, as a non-member's
+  name, without asking Jellyfin. A member's is still sent to Jellyfin.
 - **Household hostnames no longer relay Quick Connect to Jellyfin.** Quick
   Connect signs in whoever authorizes the code, so it skipped the membership
   check `POST /Users/AuthenticateByName` has there. `GET /QuickConnect/Enabled`
@@ -45,11 +83,9 @@ closed, and they still work on Jellyfin's own address.
   `404 {"error":"not_found"}` with `Cache-Control: no-store` and never reaches
   Jellyfin, so the plugin, if installed, cannot hand its settings (Seerr's API
   key among them) to household users.
-- Both are matched as Jellyfin 10.11 routes them: in any case, percent-encoded
-  or not, with trailing or repeated slashes, and under its legacy `/emby` and
-  `/mediabrowser` prefixes. A WebSocket upgrade to any of these paths is
-  answered `404` and never reaches Jellyfin. The main Jellyfin site and the
-  admin host are unaffected.
+- Both are matched as Jellyfin 10.11 routes them, like every household check
+  above. A WebSocket upgrade to any of these paths is answered `404` and never
+  reaches Jellyfin. The main Jellyfin site and the admin host are unaffected.
 
 ## [3.1.1] - 2026-10-26
 

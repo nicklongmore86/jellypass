@@ -529,14 +529,16 @@ export async function createFakeJellyfinForApp(state) {
     const url = new URL(request.url, 'http://localhost');
     requests.push({ method: request.method, path: `${url.pathname}${url.search}`, pathname: url.pathname });
     if (down) return send(response, 503, { message: 'down' });
-    if (url.pathname === '/Users/Public' && request.method === 'GET') {
+    const route = routePath(url.pathname);
+    if (route === '/users/public' && request.method === 'GET') {
       // Like Jellyfin, every user but hidden and disabled ones: the household gateway is what narrows this to a household.
       return send(response, 200, Object.entries(state.jellyfinUsers).filter(([, user]) => !user.Policy.IsHidden && !user.Policy.IsDisabled).map(([Id, user]) => ({
         // Jellyfin says so even for an empty password: JellyPass's passwordless marking is what turns it off.
         Id, Name: user.Name, HasPassword: true, HasConfiguredPassword: true,
       })));
     }
-    if (url.pathname === '/Users/AuthenticateByName' && request.method === 'POST') {
+    if (route === '/branding/configuration' && request.method === 'GET') return send(response, 200, { LoginDisclaimer: '', CustomCss: '', SplashscreenEnabled: false });
+    if (route === '/users/authenticatebyname' && request.method === 'POST') {
       return readJson(request).then((body) => {
         const header = request.headers.authorization ?? '';
         // Jellyfin 10.11 refuses a sign-in whose Authorization names no client, device, device ID and version.
@@ -555,8 +557,17 @@ export async function createFakeJellyfinForApp(state) {
         return send(response, 200, { User: { Id: entry[0], Name: entry[1].Name }, AccessToken: minted, ServerId: 'server' });
       });
     }
-    // As ASP.NET Core routes it: percent-decoded, in any case, with any trailing slashes.
-    if (routePath(url.pathname) === '/sessions/logout' && request.method === 'POST') {
+    // Jellyfin 10.11 still signs anyone in by ID and password here (obsolete, but routed), never asking about households.
+    const byId = /^\/users\/([0-9a-f]{32})\/authenticate$/.exec(route);
+    if (byId && request.method === 'POST') {
+      const entry = state.jellyfinUsers[byId[1]];
+      attempts_.push({ userId: byId[1], password: url.searchParams.get('pw'), header: request.headers.authorization ?? '' });
+      if (!entry || entry.Policy.IsDisabled || (state.passwords?.[byId[1]] ?? '') !== (url.searchParams.get('pw') ?? '')) return send(response, 401, {});
+      const minted = `signin-token-${byId[1].slice(0, 4)}-${minted_.length + 1}`;
+      minted_.push({ token: minted, userId: byId[1], header: request.headers.authorization ?? '' });
+      return send(response, 200, { User: { Id: byId[1], Name: entry.Name }, AccessToken: minted, ServerId: 'server' });
+    }
+    if (route === '/sessions/logout' && request.method === 'POST') {
       // Jellyfin signs out the first of the request's tokens it knows. `state.holdLogout`, when set, holds it (before
       // it is revoked) until the promise it returns settles, and is passed the request so a test can break it.
       // `state.revokeLate`, when set, answers first and revokes only once the promise it returns settles.
@@ -590,6 +601,15 @@ export async function createFakeJellyfinForApp(state) {
       // `state.holdMe`, when set, holds the answer (decided now) until the promise it returns settles.
       return state.holdMe ? state.holdMe().then(() => send(response, 200, me)) : send(response, 200, me);
     }
+    // An item as its user sees it, which is how the household gateway checks a stream or download before proxying it.
+    const ownItem = /^\/users\/([0-9a-f]{32})\/items\/([0-9a-f]{32})$/.exec(route);
+    if (request.method === 'GET' && ownItem) {
+      const found = state.items.find((entry) => entry.Id === ownItem[2]);
+      return ownItem[1] === userId && found && sees(user, found) ? send(response, 200, { Id: found.Id, Name: found.Name, Type: found.Type }) : send(response, 404, {});
+    }
+    // Like Jellyfin's, its streams and downloads ask only for a signed-in user, not whether they may see the item.
+    const media = /^\/(?:(?:videos|audio)\/([0-9a-f]{32})\/(?:stream(?:\.[^/]*)?|master\.m3u8|main\.m3u8)|items\/([0-9a-f]{32})\/download)$/.exec(route);
+    if (request.method === 'GET' && media) return send(response, 200, { stream: media[1] ?? media[2] });
     const parameter = (name) => [...url.searchParams].find(([key]) => key.toLowerCase() === name.toLowerCase())?.[1];
     if (parameter('userId') !== userId) return send(response, 403, {});
     if (url.pathname === '/Items') {
@@ -687,8 +707,12 @@ function authorizationToken(header) {
   return value ? decodeURIComponent(value.replace(/\+/g, ' ')) : undefined;
 }
 
+/**
+ * The route Jellyfin 10.11 takes a path to: percent-decoded but for `%2F`, in any case, without trailing slashes and
+ * without the legacy `/emby` or `/mediabrowser` prefix it strips before routing.
+ */
 function routePath(pathname) {
-  return decodeURIComponent(pathname).toLowerCase().replace(/\/+$/, '');
+  return decodeURIComponent(pathname.replace(/%2f/gi, '%252F')).toLowerCase().replace(/\/+$/, '').replace(/^\/(?:emby|mediabrowser)(?=\/)/, '');
 }
 
 /** Every token a request carries, as Jellyfin reads them: `Token` in either authorization header, `X-Emby-Token`, `X-MediaBrowser-Token`, and the token query parameters in any case. */
