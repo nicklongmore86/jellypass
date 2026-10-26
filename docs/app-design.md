@@ -570,7 +570,7 @@ server by months still works.
   each 5 minutes, 60 per household in each 10 seconds; "Get this" 10 per member, 30 per address and 30 per household in
   each 10 minutes; 20 sign-in attempts per address in each 5 minutes. A household's phones usually share one public
   address, so every call one device makes comes out of the others' budget too: a native client makes no more calls than
-  the PWA does for the same screen, fetches rows below the fold only when they near the
+  the PWA does for the same screen (see "Fetch budget" below), fetches rows below the fold only when they near the
   screen, never polls, and on `429` stops and offers a retry rather than retrying by itself.
 - **Play** opens `play.url`, only when it is exactly `https://<the household host>/web/#/details?id=<play.itemId>`;
   anything else is ignored.
@@ -590,6 +590,13 @@ is supported. A client:
 - treats an unknown `state` as `unavailable`, and an unknown coarse `status` of a request (or one of its seasons) as
   `requested`;
 - treats an unknown error code by its HTTP status, and any other status as `unavailable`.
+
+**Fetch budget.** `docs/app-api/fetch-budget.json` lists the calls the PWA makes when each screen is opened: Home
+under **All** 6 at once (`/me`, `/discover/sources` and 4 lists) and 10 more as the lazy rows near the screen,
+**Movies** 6 and 8, **TV** 5 and 8; a movie or series page 3 (`/me`, the title, `/requests`), a season page 4. It also
+holds the server's budgets. `test/app-pwa.test.mjs` ("fetch budget") runs the real app against the API and fails
+if any screen makes a different set of calls, so a change that makes the app chattier has to change the file, and a
+native client is tested against the same numbers.
 
 **Schema.** `docs/app-api/v1.openapi.json` (OpenAPI 3.1, JSON Schema 2020-12) describes every `v1` endpoint, its
 parameters and every answer, errors included; `info.version` is `apiVersion`. Its object schemas are closed

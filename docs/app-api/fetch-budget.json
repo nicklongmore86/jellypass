@@ -1,0 +1,108 @@
+{
+  "description": "The household app API calls the PWA makes when each screen is opened directly, signed in: 'atOnce' when the screen opens, 'belowTheFold' once every lazy row has come near the screen (each fetched once). Sorted, as 'METHOD /path' under /jellypass/app/v1. Pinned by test/app-pwa.test.mjs ('fetch budget'). A native client makes no more calls than these for the same screen: a household's devices usually share one address and so one per-address budget. See docs/app-design.md, 'Native clients (contract)'.",
+  "limits": {
+    "perAddress": {
+      "calls": 300,
+      "windowSeconds": 300
+    },
+    "perMember": {
+      "calls": 200,
+      "windowSeconds": 300
+    },
+    "perHousehold": {
+      "calls": 60,
+      "windowSeconds": 10
+    }
+  },
+  "screens": {
+    "home-all": {
+      "calls": 16,
+      "atOnce": [
+        "GET /discover/new-movies",
+        "GET /discover/popular-movies",
+        "GET /discover/popular-tv",
+        "GET /discover/sources",
+        "GET /discover/trending",
+        "GET /me"
+      ],
+      "belowTheFold": [
+        "GET /discover/network/1024/all",
+        "GET /discover/network/213/all",
+        "GET /discover/network/2552/all",
+        "GET /discover/network/2739/all",
+        "GET /discover/network/3186/all",
+        "GET /discover/network/3353/all",
+        "GET /discover/network/4330/all",
+        "GET /discover/network/453/all",
+        "GET /discover/upcoming",
+        "GET /discover/upcoming-tv"
+      ]
+    },
+    "home-movies": {
+      "calls": 14,
+      "atOnce": [
+        "GET /discover/new-movies",
+        "GET /discover/popular-movies",
+        "GET /discover/sources",
+        "GET /discover/trending-movies",
+        "GET /discover/upcoming",
+        "GET /me"
+      ],
+      "belowTheFold": [
+        "GET /discover/network/1024/films",
+        "GET /discover/network/213/films",
+        "GET /discover/network/2552/films",
+        "GET /discover/network/2739/films",
+        "GET /discover/network/3186/films",
+        "GET /discover/network/3353/films",
+        "GET /discover/network/4330/films",
+        "GET /discover/network/453/films"
+      ]
+    },
+    "home-tv": {
+      "calls": 13,
+      "atOnce": [
+        "GET /discover/popular-tv",
+        "GET /discover/sources",
+        "GET /discover/trending-tv",
+        "GET /discover/upcoming-tv",
+        "GET /me"
+      ],
+      "belowTheFold": [
+        "GET /discover/network/1024",
+        "GET /discover/network/213",
+        "GET /discover/network/2552",
+        "GET /discover/network/2739",
+        "GET /discover/network/3186",
+        "GET /discover/network/3353",
+        "GET /discover/network/4330",
+        "GET /discover/network/453"
+      ]
+    },
+    "movie": {
+      "calls": 3,
+      "atOnce": [
+        "GET /me",
+        "GET /movie/{tmdbId}",
+        "GET /requests"
+      ]
+    },
+    "series": {
+      "calls": 3,
+      "atOnce": [
+        "GET /me",
+        "GET /requests",
+        "GET /tv/{tmdbId}"
+      ]
+    },
+    "season": {
+      "calls": 4,
+      "atOnce": [
+        "GET /me",
+        "GET /requests",
+        "GET /tv/{tmdbId}",
+        "GET /tv/{tmdbId}/season/{n}"
+      ]
+    }
+  }
+}
