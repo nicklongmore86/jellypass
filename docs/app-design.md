@@ -522,6 +522,70 @@ free, and a call can wait out its 10 seconds). Neither says which titles another
 key for JellyPass alone.
 
 
+### Native clients (contract)
+
+A native client (an iPhone app first) uses the same `/jellypass/app/v1` API as the PWA, with no server change and no
+endpoint of its own. This is the contract it is built against; the server keeps it, and a store build that lags the
+server by months still works.
+
+- **One address, one household.** The household is the one whose address the client calls: `https://jelly-<id>.<domain>`
+  (from `HOUSEHOLD_DOMAIN` and the `jelly-` prefix), decided from the `Host` header the HTTP client sends, never from
+  anything in the request. Every call goes to an absolute URL on that address: `https://<household host>/jellypass/app/v1/...`
+  for the API and `https://<household host>/Users/...` and `/Sessions/Logout` for sign-in and sign-out, through the
+  household gateway. The member enters the address (or opens a setup link that carries only the address, never a
+  token). **A client never ships, fetches or shows a list of households**: a list would tell each household that the
+  others exist. Someone in two households adds two addresses, each with its own sign-in, and the client never merges
+  their answers. The administrator host has no app API.
+- **Checking an address.** `GET /jellypass/app/v1/me` with no token answers `401 {"error":"unauthorized"}` on a host
+  with the app on and `404` everywhere else; it counts one call against the address budget. There is no
+  unauthenticated `v1` endpoint and none will be added: every `v1` path needs a token.
+- **Sign-in** is the PWA's (see "Sign-in" under "App page (step 1b)"): `GET /Users/Public` for the household's
+  profiles, then `POST /Users/AuthenticateByName` with `{"Username", "Pw"}` and `Authorization: MediaBrowser
+  Client="<app name>", Device="<device model>", DeviceId="<random, generated once, kept on the device>",
+  Version="<app version>"`. All four fields are required and non-empty, or the gateway answers `400`. The password is
+  only ever in that one request body. The answer's `AccessToken`, `User.Id` and `ServerId` are what the client keeps.
+- **Every API call** sends the token as `Authorization: MediaBrowser Token="<token>"` and nothing else that identifies
+  the caller: no cookie (the API sets and reads none), no `api_key` or other token in a URL (the API accepts one, for
+  Jellyfin web's sake, but a URL ends up in logs), and no reliance on `Origin`, `Referer` or `Sec-Fetch-*` (the API
+  checks none). `Accept: application/json`; a `POST` sends `Content-Type: application/json`. **CORS stays off**: the API
+  sends no `Access-Control-*` headers, and a preflight gets the same `401` as any call without a token (a native HTTP
+  client never sends one).
+- **Storage.** The token is kept only in the platform's credential store, readable only on that device (on iOS the
+  Keychain with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`), keyed by the address, never in plain files,
+  backups, logs or analytics. API answers are `Cache-Control: no-store` and are not cached on disk (an ephemeral URL
+  session, or the cache off). No third-party analytics, crash-reporting or advertising SDK: each is a new place a
+  title or a household name could go.
+- **Sign-out** is `POST /Sessions/Logout` with the token through the household host (best effort, five seconds), then
+  the token is deleted from the device. The gateway forgets the token at once (see "Identity chain").
+- **Answers.** `401` means the token is no longer good: drop it and show the profile picker. Errors are fixed bodies,
+  the same for every endpoint and every title: `400 {"error":"invalid_request"}`, `401 {"error":"unauthorized"}`,
+  `404 {"error":"not_found"}`, `429 {"error":"too_many_requests"}`, `502 {"error":"unavailable"}`. The client shows
+  fixed wording of its own for each and never shows a body, an upstream message or a status line; for sign-in, the
+  PWA's: `401`/`403` "That didn't work", `429` "Too many attempts", anything else "Can't sign in right now", no network
+  "Check your connection".
+- **"Get this"** always answers the same `202 {"status":"accepted"}` and the client shows the same confirmation for
+  it every time: it never waits for or reads anything to tell what happened, and only `GET /requests` and the
+  titles' `state` say how it went, later. Nothing the client shows may depend on another household.
+- **Budgets.** They are the server's, the same for every client: 300 calls per client address and 200 per member in
+  each 5 minutes, 60 per household in each 10 seconds; "Get this" 10 per member, 30 per address and 30 per household in
+  each 10 minutes; 20 sign-in attempts per address in each 5 minutes. A household's phones usually share one public
+  address, so every call one device makes comes out of the others' budget too: a native client makes no more calls than
+  the PWA does for the same screen, fetches rows below the fold only when they near the
+  screen, never polls, and on `429` stops and offers a retry rather than retrying by itself.
+- **Play** opens `play.url`, only when it is exactly `https://<the household host>/web/#/details?id=<play.itemId>`;
+  anything else is ignored.
+
+**Compatibility.** `v1` only ever gains: a new optional field in an answer, a new endpoint, a new value only where
+the contract below already says what a client does with an unknown one. It never removes or renames a field, changes
+a field's type or meaning, makes a present field optional or nullable, or changes a status code or error body. Anything
+that would is a new major version under `/jellypass/app/v2`, served next to `v1` for long enough that store builds can
+move. A client:
+
+- ignores fields it does not know, and never rejects an answer for having one;
+- treats an unknown `state` as `unavailable`, and an unknown coarse `status` of a request (or one of its seasons) as
+  `requested`;
+- treats an unknown error code by its HTTP status, and any other status as `unavailable`.
+
 ## App page (step 1b)
 
 The PWA (read-only in step 1b; **Get this** and **My requests** since step 2b) is served by the household gateway at `/jellypass/app/`, on household hosts only and only with
@@ -1333,6 +1397,8 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
 ## Decisions
 
 - PWA first; native apps later on the same API.
+- Native clients use `/jellypass/app/v1` as the PWA does, with no endpoint, CORS or authentication of their own (see
+  "Native clients (contract)"). `v1` only gains fields and endpoints; a breaking change is `/jellypass/app/v2`.
 - The Seerr website is restricted to administrators once the app is ready (step 4).
 - Coarse statuses only; no notifications yet.
 - HD only in v1 (`is4k` is always false).
