@@ -39,7 +39,8 @@ promises (iPad support, placeholder ids, no update service or analytics).
 
 ## Run it on a phone with Expo Go
 
-1. Install **Expo Go** from the App Store or Google Play.
+1. Install **Expo Go** from the App Store or, on Android, from Google Play (only Expo Go: the JellyPass app
+   itself is never on Play).
 2. On the dev box: `cd mobile && pnpm start` (add `--tunnel` if the phone isn't on the same network).
 3. Scan the QR code: with the Camera app on iPhone, or from inside Expo Go on Android.
 
@@ -59,7 +60,7 @@ Edits reload on the phone as you save. Expo Go needs no Apple or Google develope
 |---|---|---|
 | Name | JellyPass | Keep "Jellyfin" out of the name |
 | iOS bundle id | `io.starrgroup.jellypass` | **Placeholder.** Confirm before the first EAS build: it can't change once in TestFlight |
-| Android package | `io.starrgroup.jellypass` | **Placeholder.** Same: it can't change once on Play |
+| Android package | `io.starrgroup.jellypass` | **Placeholder.** Confirm before the first APK goes out: a different package is a different app, and members would have to reinstall |
 | Icon | `assets/icon.png`, `assets/adaptive-icon.png` | Placeholder: the PWA's 512 px icon. The App Store needs 1024 px: draw one with `draw(1024)` from `scripts/make-app-icons.py` before submitting |
 | Orientation | Portrait on phones; all four on iPad | iPad multitasking requires all four |
 | URL scheme | `jellypass://` | For the connect link in the sign-in PR |
@@ -74,6 +75,35 @@ Edits reload on the phone as you save. Expo Go needs no Apple or Google develope
 3. **Screens**: tab bar (Home, Search, My requests, Account), Home with its rows and hero, network and studio
    pages, Search, movie/series/season pages with **Get this**, My requests, then an accessibility pass.
 4. **Play**: an in-app Jellyfin web view, optionally a Swiftfin hand-off.
-5. **Builds**: `eas.json` profiles and EAS Build in the cloud (no Mac needed): `eas build --platform ios
-   --auto-submit` to TestFlight, and `eas build --platform android` for an APK or Play internal testing. These
-   need an Expo account, an Apple Developer membership and a Google Play Console account.
+5. **Builds**: `eas.json` profiles and EAS Build in the cloud (no Mac needed). iOS goes to TestFlight with
+   `eas build --platform ios --auto-submit`; Android is a sideloaded APK (below). These need an Expo account and
+   an Apple Developer membership. No Google Play Console account or Play config.
+
+## Distribution
+
+### iOS: TestFlight
+
+Members install TestFlight and accept an invitation; builds come from EAS with `eas build --platform ios
+--auto-submit`.
+
+### Android: a sideloaded APK, not Google Play
+
+Android builds are shared as an APK file that members install directly. There is no Play Store listing and
+no Play Console configuration in this project.
+
+- **APK, not AAB.** The `preview` and `production` profiles in `eas.json` (a later PR) set
+  `"android": { "buildType": "apk" }`. EAS builds an AAB by default, which only Play can install.
+- **Members must allow installs from unknown sources.** On Android 8 and later this is a per-app permission:
+  the first time they open the APK from their browser or file manager, Android asks them to allow that app to
+  install unknown apps (Settings → Apps → Special app access → Install unknown apps). Tell members to grant it
+  only to the app they used to open the JellyPass APK.
+- **One signing key, forever.** Every APK must be signed with the same key. Android installs an update only if
+  its signature matches the installed app's; an APK signed with a different key fails to install over it, and
+  the member must uninstall (losing the app's sign-in) and install again. With no Play App Signing to recover
+  from, a lost key means every member reinstalls. So:
+  - Create the keystore once (EAS-managed credentials, or your own with `keytool`) and use it for every build.
+  - Back it up offline, with its passwords, somewhere other than the dev box and Expo's servers. If EAS
+    manages it, download a copy with `eas credentials` and store it the same way.
+  - Never commit it: `*.jks`, `*.keystore`, `*.p12` and `*.key` are in `.gitignore`.
+- **Updates** are a new APK with a higher `android.versionCode`, shared the same way; members install it over
+  the old one.
