@@ -39,6 +39,8 @@ const HOUSEHOLD = {
   'GET /jellypass/app/v1/requests': () => answer(200, fixture('requests')),
   // My requests names the fixture's two requests: that film and a series.
   'GET /jellypass/app/v1/tv/900002': () => answer(200, fixture('series')),
+  // Search's results: the fixture page (three titles, and a next page).
+  'GET /jellypass/app/v1/search': () => answer(200, fixture('page')),
 };
 
 // A screen pushed on the Account tab's stack, standing in for the title pages that come with 3.2.
@@ -325,7 +327,7 @@ describe('a setup link while signed in', () => {
 
 describe('network', () => {
   // Home's own calls are pinned against docs/app-api/fetch-budget.json by home-budget.test.tsx.
-  // Search and My requests are pinned by search-budget.test.tsx and requests-budget.test.tsx.
+  // Search and My requests are pinned by search-requests-budget.test.tsx.
   it('makes no call but the start-up /me, Home\'s first rows and My requests\' own, once, through every tab and the Account screen', async () => {
     const global = jest.spyOn(globalThis, 'fetch');
     try {
@@ -427,9 +429,19 @@ describe('accessibility', () => {
     ['a pushed screen', '/account/pushed', 10 + HOME],
     // Back and Play, over Home.
     ['a title page', '/home/movie/900001', 6 + HOME],
+    // Its three results and Load more.
+    ['Search with results', 'search results', 8 + HOME],
+    // Back and Play, over Home and Search.
+    ['a title page on Search', '/search/movie/900001', 6 + HOME],
+    ['a title page on My requests', '/requests/movie/900001', 6 + HOME],
   ] as const)('keeps every pressable on %s named and a thumb\'s size', async (_name, to, count) => {
     await start();
-    if (to.startsWith('/')) {
+    if (to === 'search results') {
+      await openTab('Search');
+      await fireEvent.changeText(screen.queryAllByLabelText(SEARCH_TEXT.label)[0]!, 'synthetic');
+      await fireEvent(screen.queryAllByLabelText(SEARCH_TEXT.label)[0]!, 'submitEditing');
+      await settle();
+    } else if (to.startsWith('/')) {
       await act(async () => router.push(to, { withAnchor: true }));
       await settle();
     } else {

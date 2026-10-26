@@ -11,7 +11,6 @@ export const REQUESTS_TEXT = {
   titleMissing: 'Title unavailable',
   byYou: 'Asked for by you',
   byOther: 'Asked for by someone in your household',
-  seasons: 'Seasons',
 } as const;
 
 /** The requests shown at first and added by each Load more, each named with one title call, a few calls at a time. */
