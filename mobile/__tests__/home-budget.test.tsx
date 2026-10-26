@@ -6,7 +6,9 @@
 // event that takes the screen further down: rows that come back short (empty, failed or a single title) on a tall iPad
 // load only the lazy rows on screen at rest, once, then one more per step down, however often Home is laid out. Any
 // scrolling moves Home on (a screen reader's scroll action or a mouse wheel sends no drag), but not the offset left
-// from the filter before, the app's own scroll back to the first row, nor a glide from before the switch.
+// from the filter before, the app's own scroll back to the first row, nor a glide from before the switch. Where the
+// rows shrink until the whole page fits on a tall Android tablet (no scroll at all), the rows left on screen load once
+// per filter chosen; a page still taller than the screen waits for it to move.
 import { renderRouter } from 'expo-router/testing-library';
 
 import type { FetchLike } from '../src/api/client';
@@ -322,5 +324,94 @@ describe('Home after the filter changes', () => {
     await glide(PHONE_SCREEN.height, PHONE_SCREEN.height + 100);
     await layOut();
     expect(lazyTv().length).toBe(3);
+  });
+});
+
+/** A tall Android tablet upright: tall enough that each filter, its rows all empty, fits on it whole. */
+const ANDROID_TABLET = { width: 1600, height: 2560, scale: 2, fontScale: 1 };
+const ANDROID_SCREEN: ScreenSize = { width: 1600, height: 2560 };
+/** A shorter one, on which All's rows, all empty, still run past the bottom. */
+const SHORTER_TABLET = { width: 1200, height: 1920, scale: 2, fontScale: 1 };
+const SHORTER_SCREEN: ScreenSize = { width: 1200, height: 1920 };
+
+describe.each([
+  ['Movies', 'home-movies'],
+  ['TV', 'home-tv'],
+] as const)('Home under %s on a tall Android tablet whose rows shrink to fit, with no scroll event at all', (filter, name) => {
+  const budget = BUDGET.screens[name]!;
+  const below = budget.belowTheFold ?? [];
+  const counted = (since: readonly string[]) => ['GET /me', 'GET /discover/sources', ...since];
+
+  beforeEach(() => {
+    mockWindow = ANDROID_TABLET;
+    gateway = homeGateway(homeHousehold(SHORT[0]![1]));
+    mockFetch = gateway.fetch;
+  });
+
+  it('loads the lazy rows left on screen once the page fits, each once, and nothing more however often laid out', async () => {
+    await start();
+    const before = made().length;
+    await choose(filter);
+    const since = () => made().slice(before);
+    const lazy = () => since().filter((route) => below.includes(route));
+
+    await layOut(ANDROID_SCREEN);
+    // The skeletons first drawn didn't fit, so the look at rest didn't take every row; now it all fits, nothing waits.
+    expect(skeletonsOnScreen('first').length).toBeLessThan(below.length);
+    expect(scrollEnd()).toBe(0);
+    expect(skeletonsOnScreen('last')).toEqual([]);
+    expect(sorted(lazy())).toEqual(sorted(below));
+    const calls = counted(since());
+    expect(sorted(calls)).toEqual(sorted([...budget.atOnce, ...below]));
+    expect(calls.length).toBe(budget.calls);
+
+    const asked = since().length;
+    await layOut(ANDROID_SCREEN);
+    await layOut(ANDROID_SCREEN);
+    expect(since().length).toBe(asked);
+  });
+
+  it('does it again for the next filter chosen, and the one after, each once', async () => {
+    const other = filter === 'Movies' ? 'TV' : 'Movies';
+    const otherBelow = BUDGET.screens[other === 'TV' ? 'home-tv' : 'home-movies']!.belowTheFold ?? [];
+    await start();
+    await choose(filter);
+    await layOut(ANDROID_SCREEN);
+
+    for (const [next, rows] of [
+      [other, otherBelow],
+      [filter, below],
+    ] as const) {
+      const before = made().length;
+      await choose(next);
+      const lazy = () => made().slice(before).filter((route) => rows.includes(route));
+      await layOut(ANDROID_SCREEN);
+      expect(scrollEnd()).toBe(0);
+      expect(skeletonsOnScreen('last')).toEqual([]);
+      expect(sorted(lazy())).toEqual(sorted(rows));
+      await layOut(ANDROID_SCREEN);
+      expect(lazy().length).toBe(rows.length);
+    }
+  });
+});
+
+describe('Home under All on a shorter Android tablet whose rows shrink but still overflow, with no scroll event at all', () => {
+  const below = BUDGET.screens['home-all']!.belowTheFold ?? [];
+
+  it('loads only the lazy rows on screen at rest: the page can still scroll, so the rest wait for it to move', async () => {
+    mockWindow = SHORTER_TABLET;
+    gateway = homeGateway(homeHousehold(SHORT[0]![1]));
+    mockFetch = gateway.fetch;
+    await start();
+    const lazy = () => made().filter((route) => below.includes(route));
+
+    await layOut(SHORTER_SCREEN);
+    const atRest = skeletonsOnScreen('first').length;
+    await layOut(SHORTER_SCREEN);
+    await layOut(SHORTER_SCREEN);
+    expect(scrollEnd()).toBeGreaterThan(0);
+    expect(skeletonsOnScreen('last').length).toBeGreaterThanOrEqual(1);
+    expect(lazy().length).toBe(atRest);
+    expect(lazy().length).toBeLessThan(below.length);
   });
 });

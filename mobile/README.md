@@ -173,16 +173,21 @@ The PWA's Home (`home()` in `app/src/main.ts`, its pieces in `app/src/render.ts`
   leaving its frame. Logos sit on a light tile; with no logo the name is drawn instead.
 - **Calls.** The eager rows and `/discover/sources` at once; every other row in order, one at a time, as the screen
   moves down: a scroll event may ask for the next lazy row only once the screen has gone down past where the last one
-  was asked for (or the furthest up it has been since) and that row is within 400 pt of the screen's bottom. At the
-  content's end, where the screen can go no further, every lazy row still on screen is asked for. Any scrolling counts
-  (a drag, a glide, a screen reader's scroll action, a mouse wheel, a keyboard); a layout never asks for anything, so
+  was asked for (or the furthest up it has been since) and that row is within 400 pt of the screen's bottom. Two
+  things ask for every lazy row still on screen at once, and only ever rows already on screen (never the 400 pt below,
+  nor rows that come into view after): a scroll event at the content's end, where the screen can go no further, even
+  one that hasn't gone further down (rows above shrank and the end came up); and, once per filter chosen or refresh,
+  the whole page fitting on the screen after the eager rows have answered (a tall Android tablet whose rows shrank: it
+  can't scroll, and Android sends no scroll event). Any scrolling counts
+  (a drag, a glide, a screen reader's scroll action, a mouse wheel, a keyboard); otherwise a layout asks for nothing, so
   rows that come back empty or failed can't pull the rows under them in and load them in turn (on a tall iPad that once
   made every lazy call from one drag). Each filter chosen and each refresh starts again from where it starts, once the
   app's jump back to the first row has landed and a glide from before has stopped; one look at what is on screen at
   rest, once the eager rows have answered, loads the lazy rows there. Each row is asked for once per filter, and a
   row's slot keeps its skeleton's height only until it answers. `/me` is the start-up check's, not asked again.
   `__tests__/home-budget.test.tsx` pins each filter against `docs/app-api/fetch-budget.json` (the PWA's numbers), also
-  on a 1366 pt iPad with every row empty, failing or a single title, and scrolled with no drag at all.
+  on a 1366 pt iPad with every row empty, failing or a single title, scrolled with no drag at all, and on a tall
+  Android tablet where the page shrinks to fit with no scroll event.
 - **Failures.** Each row fails on its own with the PWA's fixed words (Can't load this right now, Too many requests,
   You're offline, …) and **Try again** for that row alone; the networks and studios fail as one row. Nothing is retried
   by itself. A 401 forgets the sign-in and shows the picker ("Your sign-in has expired"). Pull to refresh asks for the

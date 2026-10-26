@@ -11,14 +11,20 @@
 // screen can go no further (and where it lands when rows above shrink), a scroll event asks for every lazy row still on
 // screen instead: they are all in view, and nothing is below them. Any scrolling counts, the member's drag
 // and glide as much as a screen reader's scroll action, a mouse wheel or a keyboard, because what moves it on is the
-// screen going down, never a layout: a row that comes back empty or failed shrinks and pulls the next rows up, but that
-// alone asks for nothing (on a tall iPad it once made every lazy call at once). Going back up lowers `from`, so a member
-// whose end moved up as rows shrank can nudge the rest in. Each drawing starts `from` again where it starts, once the
+// screen going down, never a layout (but for the page fitting whole, below): a row that comes back empty or failed
+// shrinks and pulls the next rows up, but that alone asks for nothing (on a tall iPad it once made every lazy call at
+// once). Going back up lowers `from`, so a member whose end moved up as rows shrank can nudge the rest in. Each drawing starts `from` again where it starts, once the
 // scroll view has caught up with it: the app's jump back to the first row has landed and a glide from before has
 // stopped (or the member touches the screen); scroll events until then belong to the old drawing. The look at rest is
 // taken once, from the first layout after the eager rows have answered, and loads only the lazy rows on screen then. A
 // row's slot keeps its skeleton's height (skeletonRowHeight) while it waits or loads, so the rows below stay put until
 // it has answered.
+//
+// Two things load every lazy row still on screen at once, and only ever rows already on screen, never the margin below
+// nor a row that comes into view after: a scroll event at the content's end (above), even one that hasn't gone down
+// past `from`, as rows above it shrank and the end came up to the screen; and, once per drawing, the content fitting on
+// the screen whole after the eager rows have answered and a batch of layouts has arrived (a tall Android tablet whose
+// rows shrank at the top: the page can't scroll, and Android sends no scroll event to say where it is).
 import { router } from 'expo-router';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
@@ -105,7 +111,11 @@ export function HomeScreen() {
   /** The drawing whose look at rest has been taken, and whether one is due after this batch of layouts. */
   const looked = useRef(-1);
   const looking = useRef(false);
+  /** The drawing whose fits-on-screen check has asked for its rows: once per drawing, like the look at rest. */
+  const fitted = useRef(-1);
   const columnY = useRef(0);
+  /** Where the content ends: the column's bottom, as last laid out. */
+  const contentEnd = useRef(0);
   const heroEnd = useRef(0);
   /** Each slot's top within the column, by key, as last laid out. */
   const slotY = useRef(new Map<string, number>());
@@ -164,14 +174,35 @@ export function HomeScreen() {
     ask(due.map((slot) => slot.key));
   }, [slots, ask]);
 
-  /** After a layout: the look at rest once this batch of layouts has all arrived. Nothing else; a layout moves nothing on. */
+  /**
+   * When the whole content fits on screen, once per drawing: every lazy row still waiting, all on screen, never the
+   * margin below. The page can't scroll then, so no scroll event (none at all on Android) would ever ask for them.
+   */
+  const fit = useCallback(() => {
+    if (ready.current !== drawn.current || fitted.current === drawn.current || viewport.current <= 0) return;
+    if (contentEnd.current <= 0 || contentEnd.current > viewport.current) return;
+    fitted.current = drawn.current;
+    const due = slots.filter((slot) => {
+      const y = slotY.current.get(slot.key);
+      return slot.lazy && y !== undefined && columnY.current + y < viewport.current;
+    });
+    ask(due.map((slot) => slot.key));
+  }, [slots, ask]);
+
+  /**
+   * After a layout: once this batch of layouts has all arrived, the look at rest, and the fits-on-screen check. Nothing
+   * else; a layout that leaves the page taller than the screen moves nothing on.
+   */
   const laidOut = () => {
-    if (ready.current !== drawn.current || looked.current === drawn.current || looking.current) return;
+    if (ready.current !== drawn.current || looking.current) return;
+    if (looked.current === drawn.current && fitted.current === drawn.current) return;
     looking.current = true;
     const mine = drawn.current;
     void Promise.resolve().then(() => {
       looking.current = false;
-      if (drawn.current === mine) look();
+      if (drawn.current !== mine) return;
+      look();
+      fit();
     });
   };
 
@@ -343,6 +374,7 @@ export function HomeScreen() {
         style={[styles.column, { paddingLeft, paddingRight }]}
         onLayout={(event) => {
           columnY.current = event.nativeEvent.layout.y;
+          contentEnd.current = event.nativeEvent.layout.y + event.nativeEvent.layout.height;
           laidOut();
         }}
       >
