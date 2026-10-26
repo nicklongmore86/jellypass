@@ -394,10 +394,11 @@ Channel", "Paramount+ Amazon Channel", …) are left out: they are other subscri
 `popularity.desc` with `include_adult=false`, `watch_region=US`, `with_watch_providers` (the IDs `|`-joined, TMDB's OR)
 and `with_watch_monetization_types=flatrate` (by subscription; not rent or buy), built from the allowlist only.
 
-The routes are `/discover/network/:id/films` and `/discover/network/:id/all`. The ID is checked first, then the list:
-anything after a network's ID but `films` or `all` (so `/2`, `/series`, `/Films`, `/%66ilms`), any list after a
-studio's ID, and an unlisted ID (49, a provider ID such as 8) are the fixed `400 invalid_request` before TMDB, the
-cache or the caller's view is asked anything; a second segment after the list is an unknown path, `404`. Only `page` is
+The routes are `/discover/network/:id/films` and `/discover/network/:id/all`, for a listed network's ID only: anything
+after a network's ID but `films` or `all` (so `/2`, `/series`, `/Films`, `/%66ilms`), any list after a studio's ID, a
+list after an unlisted or malformed ID (49, a provider ID such as 8, `abc`) and a second segment after the list are an
+unknown path, the fixed `404 not_found` as in 2.6.0, before TMDB, the cache or the caller's view is asked anything. A
+bad `page` on a route that exists is `400 invalid_request`, likewise before TMDB. Only `page` is
 read from the query: a caller's `watch_region`, `with_watch_providers`, `kind` or anything else is ignored. Films are
 cached as `network-films`, ID and page, never under a network's series keys, in the household's own cache, and wait
 for the household's turn at TMDB like any other call.

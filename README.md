@@ -159,11 +159,11 @@ as semantic-version tags. For predictable production upgrades, set
 `JELLYPASS_IMAGE` in `.env` to a versioned image such as:
 
 ```dotenv
-JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:2.6.0
+JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:2.7.0
 ```
 
-Each release is published as a semantic-version image tag, such as `2.6.0`,
-plus floating `2.6` and `2` tags that move to the newest release in that minor
+Each release is published as a semantic-version image tag, such as `2.7.0`,
+plus floating `2.7` and `2` tags that move to the newest release in that minor
 or major line; see [CHANGELOG.md](CHANGELOG.md) for what each one contains. `latest` is rebuilt on
 every push to `main` and may include unreleased changes, so use it, or build
 from source, only to test ahead of a release.
@@ -628,7 +628,7 @@ and nowhere else (on the administrator host they do not exist). The
 | --- | --- | --- |
 | `GET` | `/jellypass/app/v1/me` | `{"name", "household"}`: the caller's Jellyfin display name and household name. |
 | `GET` | `/jellypass/app/v1/search?q=...&page=N` | A page of title cards. `q` is 1 to 100 characters; `page` 1 to 500, default 1. |
-| `GET` | `/jellypass/app/v1/discover/{list}?page=N` | A page of title cards; `list` is `trending`, `popular-movies`, `popular-tv`, `upcoming` (upcoming movies) or `upcoming-tv` (upcoming series). |
+| `GET` | `/jellypass/app/v1/discover/{list}?page=N` | A page of title cards; `list` is `trending`, `trending-movies`, `trending-tv`, `popular-movies`, `popular-tv`, `new-movies` (films that opened in US theatres in the last 60 days), `upcoming` (upcoming movies), `upcoming-tv` (upcoming series), `top-movies` or `top-tv` (TMDB's top rated). |
 | `GET` | `/jellypass/app/v1/discover/sources` | The streaming services (networks) and studios the app offers, with their TMDB logos; no TMDB call. |
 | `GET` | `/jellypass/app/v1/discover/network/{id}?page=N` | A page of a service's popular series. Only the eight listed services (Netflix, Disney+, Apple TV, Prime Video, HBO Max, Hulu, Paramount+, Peacock); any other ID is `400`. |
 | `GET` | `/jellypass/app/v1/discover/network/{id}/films?page=N` | A page of the films the service streams **in the US**, from TMDB's where-to-watch data (JustWatch). |
@@ -894,8 +894,10 @@ switched off (those answer the same fixed `404`).
   sign-in, and the 2.5.0 look (the glass blur, the safe areas under the status
   bar and above the tab bar, swiping Home's hero, the new icon) and 2.6.0's
   rows (lazy loading, the Studios strip, network and studio pages) have been
-  tested only in a simulated browser and against a real Jellyfin, so expect to
-  check them on a device before relying on them.
+  tested only in a simulated browser and against a real Jellyfin, and 2.7.0's
+  additions (the All | Movies | TV switch, the backdrop cards, the service
+  films and tabs, the focus scrolling) only in a simulated browser, so expect
+  to check them on a device before relying on them.
 - **Offline and privacy:** a service worker keeps only the app's own static
   files (page, styles, scripts, icons, TMDB logo), as one complete set per
   release (replaced as a whole when the app is updated), so the app opens when
@@ -1034,6 +1036,8 @@ Upgrading from 2.4.1 to 2.5.0 changes neither the state file nor any setting,
 and needs no CDN purge; with the household app enabled, it changes how some
 failed sign-outs on household hostnames answer (see the 2.5.0 notes).
 Upgrading from 2.5.0 to 2.6.0 changes neither the state file nor any setting,
+and needs no CDN purge.
+Upgrading from 2.6.0 to 2.7.0 changes neither the state file nor any setting,
 and needs no CDN purge.
 Drain before rolling back to 2.3.x or 2.2.1: stop new "Get this" calls, wait
 until no request intents or deferred webhooks are left (at most 30 minutes plus

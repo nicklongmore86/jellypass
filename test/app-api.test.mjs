@@ -619,19 +619,22 @@ describe('household app API: networks, studios and upcoming series', { timeout: 
       `${APP}/discover/network/213.0`, `${APP}/discover/network/-213`, `${APP}/discover/network/abc`, `${APP}/discover/network/99999999999`,
       `${APP}/discover/studio/213`, `${APP}/discover/studio/1`, `${APP}/discover/studio/%32`, `${APP}/discover/network/213?page=0`,
       `${APP}/discover/network/213?page=501`, `${APP}/discover/studio/2?page=x`, `${APP}/discover/network/1?page=2`,
-      // A network's lists are `films` and `all` alone; a studio has none; an unlisted ID has none either.
-      `${APP}/discover/network/213/2`, `${APP}/discover/network/213/series`, `${APP}/discover/network/213/Films`,
-      `${APP}/discover/network/213/movies`, `${APP}/discover/network/213/%66ilms`, `${APP}/discover/network/213/all%20`,
-      `${APP}/discover/network/49/films`, `${APP}/discover/network/1/all`, `${APP}/discover/network/8/films`,
-      `${APP}/discover/studio/2/films`, `${APP}/discover/studio/41077/all`, `${APP}/discover/network/213/films?page=0`,
-      `${APP}/discover/network/213/all?page=501`, `${APP}/discover/network/abc/films`,
+      `${APP}/discover/network/213/films?page=0`, `${APP}/discover/network/213/all?page=501`,
     ]) {
       const answer = await app.get(pathname);
       assert.equal(answer.status, 400, pathname);
       assert.equal(answer.text, '{"error":"invalid_request"}', pathname);
     }
+    // A network's lists are `films` and `all` alone; a studio has none; an unlisted or malformed ID has none either.
+    // Any other second segment is an unknown path, as in 2.6.0.
     for (const pathname of [`${APP}/discover/network`, `${APP}/discover/network/213/films/2`, `${APP}/discover/networks/213`, `${APP}/discover/company/2`,
-      `${APP}/discover/network/213/films/`]) {
+      `${APP}/discover/network/213/films/`,
+      `${APP}/discover/network/213/2`, `${APP}/discover/network/213/series`, `${APP}/discover/network/213/Films`,
+      `${APP}/discover/network/213/movies`, `${APP}/discover/network/213/%66ilms`, `${APP}/discover/network/213/all%20`,
+      `${APP}/discover/network/49/films`, `${APP}/discover/network/1/all`, `${APP}/discover/network/8/films`,
+      `${APP}/discover/studio/2/films`, `${APP}/discover/studio/41077/all`, `${APP}/discover/studio/2/2`,
+      `${APP}/discover/network/abc/films`, `${APP}/discover/network/0213/films`, `${APP}/discover/network/1/2?page=0`,
+      `${APP}/discover/studio/1/films?page=x`]) {
       const answer = await app.get(pathname);
       assert.equal(answer.status, 404, pathname);
       assert.equal(answer.text, '{"error":"not_found"}', pathname);
