@@ -1291,6 +1291,16 @@ describe('household app page: rendering', () => {
       assert.equal(items[0].querySelector('.badge').textContent, 'Available to get');
       assert.equal(items[1].querySelector('.card-meta'), null, 'no year and no rating: no empty line');
       assert.equal(items[0].querySelectorAll('button, a.button').length, 0);
+      // Title and "year · ★ rating TMDB" are BELOW the image, never inside the picture's frame; the solid chip is on the image.
+      const link = items[0].querySelector('a');
+      const frame = link.querySelector(':scope > .backdrop-frame');
+      const text = link.querySelector(':scope > .backdrop-text');
+      assert.ok(frame && text, 'a frame and a text block');
+      assert.deepEqual([...link.children].map((child) => child.className), ['backdrop-frame', 'backdrop-text'], 'the text follows the image');
+      assert.equal(frame.querySelectorAll('.card-title, .card-meta').length, 0, 'no text over the picture');
+      assert.equal(frame.querySelectorAll('img').length, 1);
+      assert.equal(text.querySelector('.card-title').textContent, 'Synthetic Movie Three');
+      assert.equal(items[0].querySelector(':scope > .badge').textContent, 'Available to get', 'the chip is a sibling positioned on the image corner');
     });
 
     it('falls back to the poster, then to a plain gradient card, and drops a URL that is not TMDB\'s', async () => {
@@ -1666,6 +1676,15 @@ describe('household app page: rendering', () => {
       assert.deepEqual(dots.map((dot) => dot.getAttribute('aria-label')), [1, 2, 3, 4, 5].map((n) => `Show title ${n} of 5: Synthetic Hero ${n}`));
       assert.deepEqual(dots.map((dot) => dot.getAttribute('aria-current')), ['true', null, null, null, null]);
       assert.equal(shown.querySelectorAll('[style]').length, 0);
+      // Each slide is an inset card: the picture fills it and the text sits in a panel after the picture, with the pager outside the card.
+      for (const slide of slides) {
+        assert.deepEqual([...slide.children].map((child) => child.className), ['hero-card']);
+        assert.deepEqual([...slide.querySelector('.hero-card').children].map((child) => child.className), ['hero-media', 'hero-panel']);
+        assert.equal(slide.querySelector('.hero-panel .hero-title') !== null && slide.querySelector('.hero-panel .hero-facts') !== null && slide.querySelector('.hero-panel .hero-overview') !== null, true);
+        assert.equal(slide.querySelector('.hero-media').querySelectorAll('a, button, p').length, 0, 'no text in the picture');
+      }
+      assert.equal(shown.querySelectorAll('.hero-card button').length, 0, 'the pager is outside the cards');
+      assert.equal(shown.querySelector('.hero-controls').querySelectorAll('button').length, 7, 'Previous, five bubbles and Next');
       // A single title needs no controls; no title, no hero.
       assert.equal(heroCarousel(document, heroCards(1)).querySelectorAll('button').length, 0);
       assert.equal(heroCarousel(document, []), undefined);
