@@ -7,16 +7,9 @@ import type { ExpoConfig } from 'expo/config';
 const IOS_BUNDLE_ID = 'com.rtc-services.jellypass';
 const ANDROID_PACKAGE = 'com.rtcservices.jellypass';
 
-// PLACEHOLDER until the owner creates the EAS project on expo.dev: paste its project ID (a UUID, not a secret) here
-// (mobile/README.md, "Release builds"). EAS_PROJECT_ID in the environment wins, for a one-off local `eas` command
-// before that commit; EAS's builders don't see it, so release builds need the ID committed here. While both are empty
-// the config has no `extra.eas`, which Expo Go and the tests don't need, and the release workflow stops before building.
-const EAS_PROJECT_ID = '';
-
-const projectId = process.env.EAS_PROJECT_ID || EAS_PROJECT_ID;
-if (projectId && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(projectId)) {
-  throw new Error('The EAS project ID must be the UUID shown on the project page at expo.dev');
-}
+// The EAS project, nicklongmore86/jellypass on expo.dev (the owner and slug below). The ID is not a secret. Like the
+// app ids it is permanent: EAS keeps the signing credentials and build numbers under it.
+const EAS_PROJECT_ID = '1db20c4d-4270-404e-acf4-31a8bd6dd591';
 
 // Jellyfin navy, the app's --bg: the splash, the root view behind every screen, and the Android icon's backdrop.
 const NAVY = '#000b25';
@@ -26,7 +19,7 @@ const config: ExpoConfig = {
   slug: 'jellypass',
   // The Expo account the app belongs to, and its EAS project (eas.json has the build profiles).
   owner: 'nicklongmore86',
-  ...(projectId ? { extra: { eas: { projectId } } } : {}),
+  extra: { eas: { projectId: EAS_PROJECT_ID } },
   version: '0.1.0',
   // Turns freely ('default': Android's `unspecified`), so Android tablets rotate; an Android phone is locked to portrait
   // at launch (src/orientation.ts), as Android has no per-form-factor setting. The iPhone stays portrait and the iPad

@@ -66,9 +66,9 @@ jobs:
       - run: pnpm check
       - name: Check the EAS project ID is committed
         run: |
-          project_id="$(env -u EAS_PROJECT_ID pnpm exec expo config --type public --json | jq -r '.extra.eas.projectId // empty')"
+          project_id="$(pnpm exec expo config --type public --json | jq -r '.extra.eas.projectId // empty')"
           if [ -z "$project_id" ]; then
-            echo "::error file=mobile/app.config.ts::EAS_PROJECT_ID in mobile/app.config.ts is still the placeholder. Create the EAS project and commit its ID first (mobile/README.md, Release builds)."
+            echo "::error file=mobile/app.config.ts::mobile/app.config.ts has no extra.eas.projectId (mobile/README.md, Release builds)."
             exit 1
           fi
 

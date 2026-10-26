@@ -165,7 +165,7 @@ Edits reload on the phone as you save. Expo Go needs no Apple or Google develope
 | iOS bundle id | `com.rtc-services.jellypass` | **Final and permanent.** Never change it: a different bundle id is a different app, and TestFlight and every member start over |
 | Android package | `com.rtcservices.jellypass` | **Final and permanent.** No hyphen, because Android forbids one. A different package is a different app, and members would have to reinstall and sign in again. Every APK must also be signed with the same key, forever (see [Distribution](#distribution)) |
 | Expo owner | `nicklongmore86` | Set in `app.config.ts` |
-| EAS project ID | `EAS_PROJECT_ID` in `app.config.ts` | **Placeholder (empty) until the owner creates the project** ([Release builds](#release-builds)). Not secret |
+| EAS project ID | `1db20c4d-4270-404e-acf4-31a8bd6dd591` (`nicklongmore86/jellypass` on expo.dev) | Set in `app.config.ts` as `extra.eas.projectId`. **Permanent**: EAS keeps the signing credentials and build numbers under it. Not secret |
 | Icon | `assets/icon.png`, `assets/adaptive-icon.png` | Placeholder: the PWA's 512 px icon. The App Store needs 1024 px: draw one with `draw(1024)` from `scripts/make-app-icons.py` before submitting |
 | Orientation | iPhone portrait; iPad all four; Android tablets turn freely (`orientation: 'default'`), Android phones locked to portrait at launch | iPad multitasking requires all four |
 | URL scheme | `jellypass://` | Setup links: `jellypass://connect?address=https://jelly-<household>.<domain>` |
@@ -271,10 +271,9 @@ docs only say "set up credentials locally first":
 
 ### One-time setup (owner)
 
-1. **EAS project.** Sign in at [expo.dev](https://expo.dev) as `nicklongmore86`, open **Projects**, choose
-   **Create a project**, name it `JellyPass` with the slug `jellypass` (it must match `slug` in `app.config.ts`),
-   and create it. Copy the **ID** shown on the project's overview page (a UUID). Paste it into `EAS_PROJECT_ID` in
-   `app.config.ts`, replacing `''`, and merge that change. The workflow refuses to build until then.
+1. **EAS project.** Done: `nicklongmore86/jellypass` on [expo.dev](https://expo.dev), ID
+   `1db20c4d-4270-404e-acf4-31a8bd6dd591`, committed as `extra.eas.projectId` in `app.config.ts` (the workflow refuses
+   to build without it). Its owner and slug must stay `nicklongmore86` and `jellypass`.
 2. **Expo token.** At [expo.dev/settings/access-tokens](https://expo.dev/settings/access-tokens) create a token for
    GitHub Actions ([Programmatic access](https://docs.expo.dev/accounts/programmatic-access/)). A robot user's token
    with the Developer role is narrower than a personal one if the account offers robot users.
@@ -306,8 +305,7 @@ docs only say "set up credentials locally first":
      `COMPANY_OR_ORGANIZATION` only if the Apple membership is an organisation's (it defaults to `INDIVIDUAL`).
 
    Then delete the downloaded `.p8` from your computer, or keep it only in a password manager.
-6. **iOS distribution certificate, once.** On any computer (Linux is fine), in a checkout of `main` with the
-   project ID merged: `cd mobile && pnpm install && npx eas-cli@24.12.1 credentials --platform ios`. Sign in to
+6. **iOS distribution certificate, once.** On any computer (Linux is fine), in a checkout of `main`: `cd mobile && pnpm install && npx eas-cli@24.12.1 credentials --platform ios`. Sign in to
    Expo, pick the `production` profile, then **Build Credentials → All: Set up all the required credentials to build
    your project**, and sign in with your Apple ID when asked. EAS makes the distribution certificate and keeps it.
    This is the only interactive step; every build after it runs from the workflow.

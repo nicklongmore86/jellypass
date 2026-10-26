@@ -20,46 +20,11 @@ describe('app config', () => {
     expect(config.ios!.bundleIdentifier).toMatch(/^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/);
   });
 
-  describe('EAS project ID', () => {
-    const saved = process.env.EAS_PROJECT_ID;
-    afterEach(() => {
-      if (saved === undefined) delete process.env.EAS_PROJECT_ID;
-      else process.env.EAS_PROJECT_ID = saved;
-    });
-
-    const load = (projectId?: string): typeof config => {
-      if (projectId === undefined) delete process.env.EAS_PROJECT_ID;
-      else process.env.EAS_PROJECT_ID = projectId;
-      let loaded: typeof config | undefined;
-      jest.isolateModules(() => {
-        loaded = (require('../app.config') as { default: typeof config }).default;
-      });
-      return loaded!;
-    };
-
-    it('is the committed constant: empty (no extra.eas) until the owner pastes it in, then a UUID', () => {
-      const source = require('fs').readFileSync(require('path').join(__dirname, '../app.config.ts'), 'utf8') as string;
-      const constant = /^const EAS_PROJECT_ID = '([^']*)';$/m.exec(source)?.[1];
-      expect(constant).toBeDefined();
-      expect(constant).toMatch(/^$|^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
-      const loaded = load(undefined);
-      if (constant) expect(loaded.extra).toEqual({ eas: { projectId: constant } });
-      else expect(loaded.extra).toBeUndefined();
-    });
-
-    it('can come from EAS_PROJECT_ID instead, and only ever as extra.eas.projectId', () => {
-      const id = '0f1e2d3c-4b5a-4987-8a6b-5c4d3e2f1a0b';
-      const loaded = load(id);
-      expect(loaded.extra).toEqual({ eas: { projectId: id } });
-      // Only the ID: the config still has no URL and keeps updates off.
-      expect(JSON.stringify(loaded)).not.toMatch(/https?:\/\//);
-      expect(loaded.updates?.enabled).toBe(false);
-    });
-
-    it('refuses anything that is not a project UUID', () => {
-      expect(() => load('jellypass')).toThrow(/UUID/);
-      expect(() => load('0F1E2D3C-4B5A-4987-8A6B-5C4D3E2F1A0B ')).toThrow(/UUID/);
-    });
+  it('is the nicklongmore86/jellypass project on EAS', () => {
+    // Permanent, like the app ids: EAS keeps the signing keys and build numbers under this project, owner and slug.
+    expect(config.extra).toEqual({ eas: { projectId: '1db20c4d-4270-404e-acf4-31a8bd6dd591' } });
+    expect(config.owner).toBe('nicklongmore86');
+    expect(config.slug).toBe('jellypass');
   });
 
   it('is portrait on phones, and turns on iPad and Android tablets', () => {
