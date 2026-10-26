@@ -47,6 +47,12 @@ import {
  */
 
 export const APP_API_PREFIX = '/jellypass/app/v1';
+/**
+ * The revision of the v1 contract this server speaks, sent in `GET /me`: one more with each release that adds a field or
+ * an endpoint to v1, never lowered. v1 only ever gains (see docs/app-design.md, "Native clients (contract)"); anything
+ * else is a new path, `/jellypass/app/v2`.
+ */
+export const APP_API_VERSION = 1;
 /** How long a verified Jellyfin token is trusted without asking Jellyfin again (at most 5 minutes). */
 export const APP_SESSION_TTL_MS = 5 * 60 * 1000;
 /** How long after a sign-out through the household host its tokens are still never kept as verified. */
@@ -728,7 +734,7 @@ export class HouseholdApp implements HouseholdAppHandler {
   }
 
   async #me(caller: JellyfinCaller, context: HouseholdAppRequest): Promise<MeDto> {
-    return { name: caller.name, household: this.#householdName(context.householdId) ?? '' };
+    return { name: caller.name, household: this.#householdName(context.householdId) ?? '', apiVersion: APP_API_VERSION };
   }
 
   async #search(caller: JellyfinCaller, context: HouseholdAppRequest, url: URL): Promise<PageDto> {
@@ -1003,6 +1009,8 @@ export class HouseholdApp implements HouseholdAppHandler {
 export interface MeDto {
   name: string;
   household: string;
+  /** {@link APP_API_VERSION}. */
+  apiVersion: number;
 }
 
 export interface PlayDto {

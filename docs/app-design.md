@@ -320,7 +320,7 @@ On the administrator host the paths do not exist (the admin API's own `401`/`404
 
 | Endpoint | Answer |
 |---|---|
-| `GET /jellypass/app/v1/me` | `{name, household}` (no Seerr call) |
+| `GET /jellypass/app/v1/me` | `{name, household, apiVersion}` (no Seerr call; `apiVersion` is `APP_API_VERSION`, see "Native clients (contract)") |
 | `GET /jellypass/app/v1/search?q=&page=` | `Page` (`q` 1 to 100 characters, `page` 1 to 500) |
 | `GET /jellypass/app/v1/discover/{trending,trending-movies,trending-tv,popular-movies,popular-tv,new-movies,upcoming,upcoming-tv,top-movies,top-tv}?page=` | `Page` (`upcoming` is upcoming movies, `upcoming-tv` upcoming series; see "Home's lists" below) |
 | `GET /jellypass/app/v1/discover/sources` | `Sources` (no TMDB call) |
@@ -579,7 +579,12 @@ server by months still works.
 the contract below already says what a client does with an unknown one. It never removes or renames a field, changes
 a field's type or meaning, makes a present field optional or nullable, or changes a status code or error body. Anything
 that would is a new major version under `/jellypass/app/v2`, served next to `v1` for long enough that store builds can
-move. A client:
+move. `GET /me` says which `v1` the server speaks: `apiVersion`, an integer (`APP_API_VERSION` in `src/app-api.ts`),
+`1` in the first release that sends it, one more with each release that adds a field or endpoint to `v1`, never
+lower. A client that needs a field added in revision *n* checks `apiVersion >= n` (a missing `apiVersion` is revision
+0: 3.1.0 and earlier) and can say
+"update the server" instead of failing. No minimum client version is sent: until a `v2` exists every client of `v1`
+is supported. A client:
 
 - ignores fields it does not know, and never rejects an answer for having one;
 - treats an unknown `state` as `unavailable`, and an unknown coarse `status` of a request (or one of its seasons) as
