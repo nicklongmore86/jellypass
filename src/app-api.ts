@@ -666,6 +666,8 @@ export class HouseholdApp implements HouseholdAppHandler {
     const source = /^\/discover\/(network|studio)\/([^/]+)(?:\/([^/]+))?$/.exec(path);
     if (source) {
       const kind = source[1] as 'network' | 'studio';
+      // Only a listed network's own lists follow an ID; any other second segment is an unknown path, as before 2.7.0.
+      if (source[3] !== undefined && (kind !== 'network' || !networkHasList(source[2] as string, source[3]))) return undefined;
       return {
         endpoint: 'discover',
         run: (caller, context, url) => this.#source(caller, context, url, kind, source[2] as string, source[3]),
@@ -757,8 +759,8 @@ export class HouseholdApp implements HouseholdAppHandler {
   /**
    * A network's popular series, its films (`/films`: the movies its service streams in {@link TMDB_WATCH_REGION}), both
    * mixed (`/all`, see {@link mixedPage}) or a studio's popular movies, only for an allowlisted ID ({@link TMDB_NETWORKS},
-   * {@link TMDB_STUDIOS}). Any other ID, any list but `films` or `all` after a network's ID (or one it has no films for)
-   * and any list after a studio's is `invalid` before TMDB, the cache or the caller's view is asked anything.
+   * {@link TMDB_STUDIOS}). Any other ID is `invalid` before TMDB, the cache or the caller's view is asked anything; a
+   * list is only routed here after a listed network's ID that has it (see {@link networkHasList}).
    */
   async #source(
     caller: JellyfinCaller,
@@ -769,9 +771,6 @@ export class HouseholdApp implements HouseholdAppHandler {
     list: string | undefined,
   ): Promise<PageDto> {
     const id = sourceParameter(kind, input);
-    if (list !== undefined && (kind !== 'network' || (list !== 'films' && list !== 'all') || !tmdbSource(kind, id)?.movieProviderIds?.length)) {
-      throw new AppAnswer('invalid');
-    }
     const page = pageParameter(url);
     const series = () => this.#title(context, `network\n${id}\n${page}`, (signal) => this.#catalogue.network(id, page, { signal }));
     // A network's films are cached under keys of their own, never its series'.
@@ -1246,6 +1245,16 @@ function pageParameter(url: URL): number {
 function sourceParameter(kind: 'network' | 'studio', value: string): number {
   if (!/^[1-9][0-9]{0,9}$/.test(value) || !tmdbSource(kind, Number(value))) throw new AppAnswer('invalid');
   return Number(value);
+}
+
+/**
+ * Whether `list` (`films` or `all`) is one of the network `input`'s lists: only a listed network with films has them.
+ * Any other second segment after a network's ID, as after a studio's, is an unknown path (`not_found`).
+ */
+function networkHasList(input: string, list: string): boolean {
+  return (list === 'films' || list === 'all')
+    && /^[1-9][0-9]{0,9}$/.test(input)
+    && Boolean(tmdbSource('network', Number(input))?.movieProviderIds?.length);
 }
 
 function sourceDto(source: TmdbSource): SourceDto {

@@ -42,17 +42,71 @@ privacy leak. Such changes are always listed at the top of the release notes.
   `Cross-Origin-Opener-Policy: same-origin`, `Cross-Origin-Resource-Policy: same-origin`, and `form-action 'none'`
   (the UI posts no forms). Admin API answers carry `Cross-Origin-Resource-Policy: same-origin`.
 
+## [2.7.0] - 2026-10-26
+
+This is a minor release for the household app (`HOUSEHOLD_APP_ENABLED=true`)
+only: with the app off (the default), nothing changes. It adds a filter, rows,
+service films and app endpoints. There is nothing to configure: no setting is
+added, removed or renamed, webhook payloads and the administrator API are
+unchanged, and the state file is unchanged (schema v7, with the same fields as
+2.6.0), so 2.6.0 reads a state file written by 2.7.0. Read these before
+upgrading:
+
+- **More TMDB calls as members scroll and switch filters.** Opening Home on
+  **All** still makes four TMDB calls before anything is drawn (Trending,
+  Popular movies, Popular series and, new, New movie releases; Upcoming movies
+  now waits to near the screen); **Movies** makes four and **TV** three.
+  Scrolling to the bottom of All adds at most twenty calls (2.6.0: nine): each
+  of the eight **Popular on** rows now costs two (its series and its films),
+  plus Upcoming movies, Upcoming series and the two all-time rows; the bottom of
+  Movies or TV adds at most nine. Switching filter asks for that filter's first
+  rows at once. A service's page costs two calls per page on its **All** tab,
+  one on **Series** or **Films**. Every answer is cached per household for up to
+  ten minutes, under the same key whichever row, filter or tab asked for it,
+  and shares TMDB's rate limit as before.
+- **Where-to-watch data is for the US only.** A service's films come from
+  TMDB's where-to-watch data (JustWatch's) for the US, the same for every
+  household and not a setting; outside the US they may not match what the
+  service offers there. Its series are not region-specific. **New movie
+  releases** are likewise films that opened in US theatres in the last 60 days.
+- **JustWatch is credited** on About, under Home's service rows (All and
+  Movies) and on a service page's All and Films tabs, as its data requires.
+- **Existing app API answers are unchanged.** A path with a second segment
+  after a network's or studio's ID, other than `films` or `all` after a listed
+  network's (for example `/discover/network/213/2` or
+  `/discover/studio/2/films`), is still `404 not_found`, before TMDB is asked.
+  `GET /discover/network/:id` still lists the service's series alone, and
+  `GET /discover/sources` only gains `hasFilms`. In the app, a service's page
+  (`#/network/:id`) now opens on **All**, its series and films mixed.
+- **No CDN purge is needed:** the app's files are still named by content hash
+  and every other `/jellypass/app` answer, the new endpoints included, is sent
+  `no-store`. No new image host or size: backdrops are TMDB's `w780` and
+  `w1280` (a `srcset`), both already used in 2.6.0, and the app's Content
+  Security Policy is unchanged.
+- **To roll back,** set `JELLYPASS_IMAGE` back to
+  `ghcr.io/nicklongmore86/jellypass:2.6.0` and recreate the container. On
+  2.6.0 a `#/?kind=` link opens Home unfiltered and `#/network/:id?kind=` opens
+  the service's series.
+- **Tested in a simulated browser:** the switch, the new rows, the backdrop
+  cards, the service films and tabs and the focus scrolling are covered by the
+  app's tests in a simulated browser (the watch provider IDs were checked
+  against TMDB's live API), not yet on a physical phone; see
+  [Household app (PWA)](README.md#household-app-pwa).
+
 ### Added
 
 - Household app: Home has an **All | Movies | TV** switch under the hero, a floating pill that sticks just below the
-  status bar as Home scrolls. Movies shows films only and TV series only, from lists of their own kind (each
-  service's films or its series, per-kind Trending), so no row is half empty; the hero follows. The choice is kept in
-  the address (`#/?kind=movies`, `#/?kind=tv`), replaced in place, so Back from a title comes back to it. Opening Home
-  on All still makes the same four TMDB calls (Movies four, TV three); anything below waits to near the screen. It is a
-  radio group of real buttons: arrow keys, Home and End move and choose.
-- Household app: new Home rows **New movie releases** (backdrop cards, in the first four rows),
-  **All-time great movies** (backdrop cards) and **All-time great TV** (posters), the last two fetched when they near the
-  screen. **Upcoming movies** now waits to near the screen too, to keep Home's first load at four TMDB calls.
+  status bar as Home scrolls. Movies shows films only and TV series only, from lists of their own kind (per-kind
+  Trending, each service's films or its series), so no row is half empty; the hero follows. The choice is kept in the
+  address (`#/?kind=movies`, `#/?kind=tv`), replaced in place, so Back from a title comes back to it. It is a radio group
+  of real buttons: arrow keys, Home and End move and choose.
+- Household app: each **Popular on** row (Netflix, Disney+, Apple TV, Prime Video, HBO Max, Hulu, Paramount+, Peacock)
+  now mixes the service's popular series with the films it streams in the US, film then series in turn, each card
+  saying "Movie" or "Series". A service's page has an **All | Series | Films** control (real buttons, arrow keys, Home
+  and End), kept in the address (`#/network/:id?kind=series`, `?kind=films`), so Back comes back to the same tab with
+  its pages and scroll.
+- Household app: new Home rows **New movie releases** (among the first four rows) and, near the foot, **All-time great
+  movies** and **All-time great TV**, the last two fetched as they near the screen.
 - Household app: each Home row's heading bar is coloured: gold for the all-time rows, a tasteful approximation of the
   brand colour for each of the eight services, the app's purple for the rest. Decorative only; the heading says what
   the row is.
@@ -60,34 +114,29 @@ privacy leak. Such changes are always listed at the top of the release notes.
   (TMDB `trending/movie/day`, `trending/tv/day`, `discover/movie` for films that opened in US theatres in the last 60
   days, `movie/top_rated` and `tv/top_rated`). Read-only, allowlisted by name (any other spelling is `404`, a bad
   `page` `400`), cached per household, in TMDB's fair share, and the same for every household.
-
-- Household app: each **Popular on** row (Netflix, Disney+, Apple TV, Prime Video, HBO Max, Hulu, Paramount+,
-  Peacock) now mixes the service's popular series with the films it streams, film then series in turn, each card
-  saying "Movie" or "Series". Films come from TMDB's where-to-watch data (JustWatch's) for **the US only**, the same
-  for every household, credited to JustWatch on About, on Home and on the service's page. A service's page has an
-  **All | Series | Films** control, kept in the address (`#/network/:id?kind=films`), so Back comes back to the same
-  tab with its pages and scroll. Opening Home still makes the same four TMDB calls; a mixed row costs two once it
-  scrolls near the screen.
-- Household app API: `GET /jellypass/app/v1/discover/network/:id/films?page=` (the service's films in the US, TMDB
-  discover by its watch providers with `watch_region=US` and `flatrate`) and `GET
-  /jellypass/app/v1/discover/network/:id/all?page=` (series and films mixed). `GET /discover/sources` gives each
-  network `hasFilms: true`. Only the listed services: any other ID, or any list after a network's ID but `films` or
-  `all`, is `400 invalid_request` before TMDB is asked. Films are cached apart from series, per household.
+- Household app API: `GET /jellypass/app/v1/discover/network/:id/films?page=` (the service's films in the US: TMDB
+  discover by its watch providers with `watch_region=US` and `flatrate`) and
+  `GET /jellypass/app/v1/discover/network/:id/all?page=` (series and films mixed, one page of each). `GET
+  /discover/sources` gives each network `hasFilms: true`. Only the listed services; films are cached apart from series,
+  per household.
 
 ### Changed
 
+- Household app: **Popular movies**, **Popular series**, **New movie releases** and **All-time great movies** on Home
+  are large landscape backdrop cards: one nearly full-width 16:9 card per phone screen with the next one peeking in
+  (about three across on a wide screen), the title and "year · ★ rating TMDB" over a dark gradient at the foot, and
+  the status pill on the corner. The whole card is the link to the title's page. A title with no backdrop shows its
+  poster, or a plain card. The other rows keep poster cards. The images come from the rows' own answers, and Back still
+  puts each row's scroll position back.
+- Household app: on **All**, **Upcoming movies** now waits to near the screen (it was among the first four rows), to
+  keep Home's first load at four TMDB calls.
 - Household app: on Home the **Studios** strip now follows the **Popular on** rows (it came before them), and the
   where-to-watch credit closes the page.
 - Household app: a service's page (`#/network/:id`) now opens on **All** (its series and films mixed, like its Home
-  row); its series alone are the **Series** tab, `#/network/:id?kind=series`.
-- Household app API: a path with anything after a network's ID other than `films` or `all` (for example
-  `/discover/network/213/2`) is now `400 invalid_request` instead of `404 not_found`, still before TMDB is asked.
-- Household app: **Popular movies** and **Popular series** on Home are now large landscape backdrop cards: one nearly
-  full-width 16:9 card per phone screen with the next one peeking in (about three across on a wide screen), the title and
-  "year · ★ rating TMDB" over a dark gradient at the foot, and the status pill on the corner. The whole card is the link
-  to the title's page. A title with no backdrop shows its poster, or a plain card. Trending, Upcoming and the network and
-  studio rows are unchanged. No new calls: the images come from the rows' own answers, and Back still puts each row's
-  scroll position back.
+  row); its series alone are the **Series** tab.
+- Household app: a card in a Home row that gets focus from the keyboard is scrolled fully into its row (it could be
+  left almost off the edge). A card's link name now includes its status ("Title, 2024 · Movie, Ready to watch"), and
+  the status pill beside it is hidden from assistive technology, so the status is said once.
 
 ## [2.6.0] - 2026-10-25
 
@@ -1445,7 +1494,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v2.6.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v2.7.0...HEAD
+[2.7.0]: https://github.com/nicklongmore86/jellypass/compare/v2.6.0...v2.7.0
 [2.6.0]: https://github.com/nicklongmore86/jellypass/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/nicklongmore86/jellypass/compare/v2.4.1...v2.5.0
 [2.4.1]: https://github.com/nicklongmore86/jellypass/compare/v2.4.0...v2.4.1
