@@ -19,6 +19,7 @@ export const ADMIN_HTML = `<!doctype html>
       </a>
       <div class="topbar-actions"><div id="connection" class="connection disconnected" role="status"><span></span><b>Disconnected</b></div><button id="logout" class="button quiet compact" hidden>Sign out</button></div>
     </header>
+    <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
 
     <section id="login-view" class="login-wrap">
       <div class="login-card panel">
@@ -105,6 +106,7 @@ body{background:radial-gradient(circle at 14% 4%,rgba(170,92,195,.2) 0,transpare
 .household-route{margin-top:16px;padding:11px 12px;border:1px solid rgba(0,164,220,.25);border-radius:9px;background:rgba(0,164,220,.07)}.household-route small{display:block;color:var(--muted);font-size:9px;font-weight:800;letter-spacing:.1em;text-transform:uppercase}.household-route a{display:block;margin-top:4px;color:#70dfff;font:11px ui-monospace,SFMono-Regular,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.household-route.unavailable{border-color:var(--line);background:rgba(16,29,56,.45)}
 @media(max-width:900px){.grant-card{grid-template-columns:56px 1fr 1fr}.grant-poster{grid-column:1;grid-row:1}.grant-main{grid-column:2/-1}.grant-owners{grid-column:2}.grant-access{grid-column:3}.grant-card>.card-actions{grid-column:2/-1;justify-content:flex-start}}
 @media(max-width:620px){.grant-card{grid-template-columns:48px 1fr}.grant-poster{width:48px}.grant-main{grid-column:2}.grant-owners,.grant-access,.grant-card>.card-actions{grid-column:1/-1}}
+.notice{margin:0 0 18px;padding:11px 15px;border:1px solid rgba(246,185,77,.45);border-radius:10px;background:rgba(246,185,77,.09);color:#ffe0a7;font-size:13px}
 `;
 
 export const ADMIN_APP_JS = `
@@ -115,6 +117,28 @@ export const ADMIN_APP_JS = `
   const loginView = byId('login-view');
   const appView = byId('app-view');
   const toastNode = byId('toast');
+  const noticeNode = byId('notice');
+  // Text for the error codes JellyPass answers with; other errors already carry a sentence.
+  const errorText = {
+    session_check_unavailable: 'Jellyfin is temporarily unavailable — retrying…',
+    jellyfin_unavailable: 'Jellyfin is temporarily unavailable. Try again in a moment.',
+    shutting_down: 'JellyPass is restarting. Try again in a moment.',
+    unauthorized: 'Your session has ended. Sign in again.',
+    invalid_credentials: 'That username or password was not accepted.',
+    too_many_login_attempts: 'Too many attempts. Try again later.',
+    too_many_requests: 'Too many requests. Try again in a moment.',
+    cross_origin_request_refused: 'This request was refused because it did not come from the admin page. Reload the page and try again.',
+    unsupported_media_type: 'This request was refused. Reload the page and try again.',
+    request_too_large: 'That request is too large.',
+    invalid_request: 'That request was not valid.',
+    not_found: 'That was not found.',
+    item_not_found: 'That item was not found in Jellyfin.',
+  };
+  // While Jellyfin cannot answer the server's session check, the server keeps the session and allows another check
+  // 30 seconds later: the UI keeps its view and asks again, backing off to two minutes, never while the tab is hidden.
+  const SESSION_RETRY_FIRST_MS = 30 * 1000;
+  const SESSION_RETRY_MAX_MS = 2 * 60 * 1000;
+  const sessionRetry = { delay: 0, dueAt: 0, timer: null };
   const heroCopy = {
     dashboard: ['Jellyfin access', 'JellyPass dashboard', 'Monitor library access, audiences, and synchronization health.'],
     library: ['Jellyfin library', 'Your media library', 'Browse synchronized movies and series, then assign access in bulk.'],
@@ -154,11 +178,16 @@ export const ADMIN_APP_JS = `
     if (!response.ok) {
       // A session that ended at the server (signed out elsewhere, or the administrator was demoted or disabled).
       if (response.status === 401 && path.indexOf('/auth/') !== 0) setConnected(false);
-      const error = new Error(body.error || ('Request failed (' + response.status + ')'));
-      error.code = body.code;
+      const known = typeof body.error === 'string' && Object.prototype.hasOwnProperty.call(errorText, body.error);
+      if (response.status === 503 && body.error === 'session_check_unavailable') sessionUnavailable();
+      const error = new Error(known ? errorText[body.error] : body.error || ('Request failed (' + response.status + ')'));
+      error.code = body.code || (known ? body.error : undefined);
+      error.status = response.status;
       error.body = body;
       throw error;
     }
+    // A successful answer means the session passed its check again.
+    if (!noticeNode.hidden) sessionAvailable();
     return body;
   }
 
@@ -771,7 +800,56 @@ export const ADMIN_APP_JS = `
     toastTimer = setTimeout(() => { toastNode.className = 'toast'; }, 4200);
   }
 
+  function sessionUnavailable() {
+    noticeNode.textContent = errorText.session_check_unavailable;
+    noticeNode.hidden = false;
+    // The session is kept at the server, so the sign-in form is not shown.
+    if (appView.hidden) loginView.hidden = true;
+    setHealth('warning', 'Jellyfin unavailable');
+    if (sessionRetry.dueAt) return;
+    sessionRetry.delay = sessionRetry.delay ? Math.min(sessionRetry.delay * 2, SESSION_RETRY_MAX_MS) : SESSION_RETRY_FIRST_MS;
+    sessionRetry.dueAt = Date.now() + sessionRetry.delay;
+    armSessionRetry();
+  }
+
+  function armSessionRetry() {
+    clearTimeout(sessionRetry.timer);
+    sessionRetry.timer = null;
+    if (!sessionRetry.dueAt || document.visibilityState === 'hidden') return;
+    sessionRetry.timer = setTimeout(retrySession, Math.max(0, sessionRetry.dueAt - Date.now()));
+  }
+
+  function sessionAvailable() {
+    clearTimeout(sessionRetry.timer);
+    sessionRetry.timer = null;
+    sessionRetry.dueAt = 0;
+    sessionRetry.delay = 0;
+    noticeNode.hidden = true;
+    noticeNode.textContent = '';
+    if (!appView.hidden) updateHealth();
+  }
+
+  async function retrySession() {
+    sessionRetry.timer = null;
+    sessionRetry.dueAt = 0;
+    const connected = !appView.hidden;
+    try {
+      await api('/auth/session');
+      if (!connected) {
+        await load();
+        setConnected(true);
+      }
+    } catch (error) {
+      if (error.status === 401) setConnected(false);
+      // Anything else (JellyPass unreachable, or a load that failed) is asked again later.
+      else sessionUnavailable();
+    }
+  }
+
+  document.addEventListener('visibilitychange', armSessionRetry);
+
   function setConnected(connected) {
+    if (!connected) sessionAvailable();
     loginView.hidden = connected;
     appView.hidden = !connected;
     byId('logout').hidden = !connected;
@@ -807,7 +885,7 @@ export const ADMIN_APP_JS = `
       byId('password').value = '';
       setConnected(true);
     } catch (error) {
-      byId('login-error').textContent = ['invalid_credentials', 'unauthorized'].includes(error.message) ? 'That username or password was not accepted.' : error.message === 'too_many_login_attempts' ? 'Too many attempts. Try again later.' : error.message;
+      byId('login-error').textContent = ['invalid_credentials', 'unauthorized'].includes(error.code) ? errorText.invalid_credentials : error.message;
     }
   });
   byId('logout').addEventListener('click', () => busy(async () => { await api('/auth/logout', { method: 'POST' }); setConnected(false); }));
@@ -849,6 +927,10 @@ export const ADMIN_APP_JS = `
   document.querySelectorAll('.tabs button').forEach((button) => button.addEventListener('click', () => activateTab(button.dataset.tab)));
 
   scrollToTop();
-  api('/auth/session').then(load).then(() => setConnected(true)).catch(() => setConnected(false));
+  api('/auth/session').then(load).then(() => setConnected(true)).catch((error) => {
+    // A session Jellyfin could not check is kept: the notice is shown and the check retried.
+    if (error.status === 503 && error.code === 'session_check_unavailable') sessionUnavailable();
+    else setConnected(false);
+  });
 })();
 `;

@@ -14,6 +14,16 @@ privacy leak. Such changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Fixed
+
+- Admin UI: while Jellyfin cannot answer the five-minute session check (`503 {"error":"session_check_unavailable"}`),
+  the admin UI no longer shows the sign-in form at load, and no longer shows the raw code after an action. The server
+  keeps the session and allows another check 30 seconds after the failed one; the UI now keeps its current view, shows
+  "Jellyfin is temporarily unavailable — retrying…" and asks again on its own, first after 30 seconds and then backing
+  off to every two minutes, never while the tab is hidden, and returns to normal once the check passes. A `401` still
+  returns to sign-in. Other error codes the admin API answers with (such as `cross_origin_request_refused` or
+  `too_many_requests`) are shown as sentences instead of codes.
+
 ## [3.0.0] - 2026-10-26
 
 This is a major release for the administrator API and the admin UI. The
