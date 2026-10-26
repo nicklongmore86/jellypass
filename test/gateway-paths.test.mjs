@@ -7,7 +7,7 @@ import assert from 'node:assert/strict';
 import { connect } from 'node:net';
 import { performance } from 'node:perf_hooks';
 import { describe, it } from 'node:test';
-import { ALICE, HOST_A, ITEMS, OUTSIDER, get, post, startApp, world } from './support/household-app.mjs';
+import { ALICE, ANN, BOB, HOST_A, ITEMS, JELLYFIN_ADMIN, OUTSIDER, get, post, startApp, world } from './support/household-app.mjs';
 
 const AUTHORIZATION = 'MediaBrowser Client="JellyPass", Device="Browser", DeviceId="jellypass-test-device-0001", Version="1.0"';
 const NOT_A_MEMBER = '{"error":"invalid_credentials"}';
@@ -254,6 +254,91 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
     assert.equal(forwarded(app).length, before + 3);
   });
 
+  it('refuses any user ID but the caller\'s own, in the route or the query, in every spelling and form, without proxying it', async (t) => {
+    const app = await startApp(t, world({ tokens: { [JELLYFIN_ADMIN]: 'token-admin' } }));
+    const as = (token) => ({ Host: HOST_A, Authorization: `${AUTHORIZATION}, Token="${token}"` });
+    const alice = as('token-alice');
+    const dashed = (id) => `${id.slice(0, 8)}-${id.slice(8, 12)}-${id.slice(12, 16)}-${id.slice(16, 20)}-${id.slice(20)}`;
+    // Every spelling Jellyfin's GUID binding reads as the same user.
+    const forms = (id) => [id, id.toUpperCase(), dashed(id), `{${dashed(id).toUpperCase()}}`, `(${dashed(id)})`];
+    const playlist = '9a9a00009a9a00009a9a00009a9a0000';
+    // Every route Jellyfin 10.11 takes a user ID in, by method; and one it may add later under /Users.
+    const userRoutes = (id) => [
+      ['GET', `/Users/${id}`], ['POST', `/Users/${id}`], ['DELETE', `/Users/${id}`], ['POST', `/Users/${id}/Policy`],
+      ['POST', `/Users/${id}/Configuration`], ['POST', `/Users/${id}/Password`], ['POST', `/Users/${id}/EasyPassword`],
+      ['GET', `/Users/${id}/Views`], ['GET', `/Users/${id}/GroupingOptions`], ['GET', `/Users/${id}/Items`],
+      ['GET', `/Users/${id}/Items/Resume`], ['GET', `/Users/${id}/Items/Latest`], ['GET', `/Users/${id}/Items/Root`],
+      ['GET', `/Users/${id}/Suggestions`], ['GET', `/Users/${id}/Items/${ITEMS.ownMovie}`],
+      ['POST', `/Users/${id}/PlayedItems/${ITEMS.ownMovie}`], ['POST', `/Users/${id}/PlayingItems/${ITEMS.ownMovie}/Progress`],
+      ['POST', `/Users/${id}/Images/Primary`], ['DELETE', `/Users/${id}/Images/Primary/0`],
+      ['GET', `/Users/${id}/SomeRouteJellyfinAddsLater`], ['GET', `/Users/${id}/Authenticate`], ['GET', `/Users/${id}/Public`],
+      ['GET', `/Playlists/${playlist}/Users/${id}`], ['POST', `/Playlists/${playlist}/Users/${id}`],
+      ['DELETE', `/Playlists/${playlist}/Users/${id}`], ['POST', `/Sessions/abc/User/${id}`], ['DELETE', `/Sessions/abc/User/${id}`],
+    ];
+    // Routes that take a user ID in the query, Jellyfin's that trusts it for the caller among them.
+    const queried = [
+      ['GET', `/Playlists/${playlist}/Items`], ['GET', '/Items'], ['GET', '/UserViews'], ['GET', `/UserItems/${ITEMS.ownMovie}/UserData`],
+      ['GET', '/Sessions'], ['POST', '/Sessions/abc/Playing/Pause'], ['GET', '/DisplayPreferences/usersettings'], ['POST', '/Users/Configuration'],
+    ];
+    const userParameters = (id) => [
+      `userId=${id}`, `UserId=${id}`, `USERID=${id}`, `user%49d=${id}`, `userId=${dashed(id)}`, `userId={${dashed(id).toUpperCase()}}`,
+      `userId%3D${id}`, `api_key%3Dtoken-alice%26userId%3D${id}`, `controllableByUserId=${id}`, `ControllingUserId=${id}`,
+      `userId=${ALICE}&userId=${id}`, `userId=${id}&userId=${ALICE}`, `userId=${ALICE}&UserId=${id}`,
+    ];
+    const proxied = () => app.jellyfin.requests.filter((request) => request.pathname !== '/Users/Me').length;
+    const refused = async (method, path, headers = alice) => {
+      const answer = await get(app.port, path, headers, { method });
+      assert.deepEqual([answer.status, method === 'HEAD' ? ITEM_NOT_FOUND : answer.text], [404, ITEM_NOT_FOUND], `${method} ${path}`);
+    };
+    const before = proxied();
+    for (const [method, bare] of userRoutes(BOB)) {
+      for (const path of [bare, ...spellings(bare)]) await refused(method, path);
+      assert.match(await upgrade(app.port, bare, HOST_A), /^HTTP\/1\.1 404 /, bare);
+    }
+    // A fixed name under /Users is only that route: anything longer takes the name for a user ID.
+    for (const path of ['/Users/Me/Views', '/Users/Public/Items', '/emby/users/me/items/latest']) await refused('GET', path);
+    // Another member's, an outsider's, an administrator's and no one's ID, in each of their forms.
+    for (const other of [ANN, OUTSIDER, JELLYFIN_ADMIN, '00000000000000000000000000000000']) {
+      for (const id of [...forms(other), `${other}x`]) {
+        for (const [method, path] of userRoutes(encodeURIComponent(id))) await refused(method, path);
+      }
+    }
+    for (const [method, route] of queried) {
+      for (const parameter of [...userParameters(BOB), 'userId=00000000000000000000000000000000', 'userId=me', `userId=${ALICE},${BOB}`]) {
+        await refused(method, `${route}?${parameter}`);
+      }
+    }
+    // Alice's own ID is no use to anyone else, an administrator included, or to no one at all.
+    for (const headers of [as('token-bob'), as('token-admin'), { Host: HOST_A }]) {
+      await refused('GET', `/Users/${ALICE}/Views`, headers);
+      await refused('GET', `/Playlists/${playlist}/Items?userId=${ALICE}`, headers);
+    }
+    assert.equal(proxied(), before, 'a request naming another user reached Jellyfin');
+    // The caller's own ID, in any of its forms, any number of times, or an empty one, is proxied as sent.
+    const own = [
+      ...forms(ALICE).flatMap((id) => userRoutes(encodeURIComponent(id))),
+      ...queried.flatMap(([method, route]) => [...forms(ALICE).map((id) => `userId=${encodeURIComponent(id)}`), `userId=${ALICE}&UserId=${dashed(ALICE)}`, 'userId=', `userId%3D${ALICE}`]
+        .map((parameter) => [method, `${route}?${parameter}`])),
+    ];
+    for (const [method, path] of own) {
+      const answer = await get(app.port, path, alice, { method });
+      assert.notEqual(answer.text, ITEM_NOT_FOUND, `${method} ${path}`);
+      assert.equal(app.jellyfin.requests.at(-1).path, path, `${method} ${path}`);
+    }
+    // A member's picture is Jellyfin's to serve to anyone, as the profile picker loads it; no one else's is served.
+    for (const path of [`/Users/${ALICE}/Images/Primary?tag=x`, `/emby/users/${dashed(ANN)}/images/primary/0`, `/UserImage?userId=${ANN}`]) {
+      for (const method of ['GET', 'HEAD']) {
+        await get(app.port, path, { Host: HOST_A }, { method });
+        assert.equal(app.jellyfin.requests.at(-1).path, path, `${method} ${path}`);
+      }
+    }
+    const pictures = proxied();
+    for (const path of [`/Users/${BOB}/Images/Primary`, `/UserImage?userId=${OUTSIDER}`, `/Users/${ALICE}/Images/Primary?userId=${BOB}`, `/Users/${JELLYFIN_ADMIN}/Images/Primary/0`]) {
+      for (const method of ['GET', 'HEAD']) await refused(method, path, { Host: HOST_A });
+    }
+    assert.equal(proxied(), pictures, 'another household\'s picture reached Jellyfin');
+  });
+
   it('never proxies the household app\'s own paths, in any spelling', async (t) => {
     const app = await startApp(t);
     for (const bare of ['/jellypass/app/v1/me', '/jellypass/app/', '/jellypass/app/nope.js']) {
@@ -316,8 +401,11 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
       assert.equal((await get(app.port, path, { Host: HOST_A })).status, 401, path);
     }
     assert.deepEqual(app.jellyfin.requests.slice(before).map((request) => request.path), paths);
-    // GET of a sign-in route is no sign-in, so its double encoding changes nothing either.
-    assert.equal((await get(app.port, '/Users/%2541uthenticateByName', { Host: HOST_A })).status, 401);
+    // GET of a sign-out route is no sign-out, so its double encoding changes nothing either.
+    assert.equal((await get(app.port, '/Sessions/%254Cogout', { Host: HOST_A })).status, 401);
+    // But under /Users every other name is a user's ID, which decoding again would make a fixed name: ambiguous.
+    const user = await get(app.port, '/Users/%2541uthenticateByName', { Host: HOST_A });
+    assert.deepEqual([user.status, user.text], [400, INVALID_PATH]);
   });
 });
 

@@ -287,16 +287,22 @@ export class HouseholdGateway {
       case 'notFound':
         writeJson(response, 404, { error: 'item_not_found' });
         return;
-      case 'items':
+      case 'caller':
         try {
-          for (const itemId of decision.itemIds) {
-            if (!await this.#canAccessItem(request, requestUrl, itemId)) {
-              writeJson(response, 404, { error: 'item_not_found' });
-              return;
-            }
+          if (!await this.#callerMay(request, requestUrl, decision.userIds, decision.itemIds)) {
+            writeJson(response, 404, { error: 'item_not_found' });
+            return;
           }
         } catch {
           writeJson(response, 502, { error: 'jellyfin_unavailable' });
+          return;
+        }
+        break;
+      // A user's picture, which Jellyfin serves to anyone and clients load without credentials (the profile picker):
+      // only the household's own members' pictures, refused otherwise with the same answer as any other check.
+      case 'userImage':
+        if (!decision.userIds.every((userId) => memberIds.some((memberId) => userIdKey(memberId) === userIdKey(userId)))) {
+          writeJson(response, 404, { error: 'item_not_found' });
           return;
         }
         break;
@@ -337,8 +343,10 @@ export class HouseholdGateway {
       if (method === 'POST' && route === LIBRARY_JOIN_PATH) return { kind: 'libraryJoin' };
     }
     if (isServerInternalStreamRoute(route)) return { kind: 'notFound' };
+    const userIds = userScopedIds(route, query);
+    if (userIds.length && (method === 'GET' || method === 'HEAD') && isUserImageRoute(route)) return { kind: 'userImage', userIds };
     const itemIds = itemScopedIds(method, route, query);
-    return itemIds.length ? { kind: 'items', itemIds } : { kind: 'proxy' };
+    return userIds.length || itemIds.length ? { kind: 'caller', userIds, itemIds } : { kind: 'proxy' };
   }
 
   public handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer, householdId: string): void {
@@ -363,7 +371,7 @@ export class HouseholdGateway {
     }
     const appPath = decision.kind === 'app';
     // Jellyfin's only WebSocket is an ordinary route: anything a household host checks or answers itself (the app API,
-    // which has none, Quick Connect, Streamyfin, an item's routes) is never proxied as an upgrade.
+    // which has none, Quick Connect, Streamyfin, a route that names an item or a user) is never proxied as an upgrade.
     if (!this.#memberIds(householdId) || decision.kind !== 'proxy') {
       socket.end(`HTTP/1.1 404 Not Found\r\n${appPath ? neverStoreHeaders() : ''}Connection: close\r\n\r\n`);
       return;
@@ -881,17 +889,26 @@ export class HouseholdGateway {
     });
   }
 
-  async #canAccessItem(request: IncomingMessage, requestUrl: URL, itemId: string): Promise<boolean> {
+  /**
+   * Whether the request's own credentials belong to a Jellyfin user who is every one of `userIds` (see
+   * {@link userScopedIds}) and may see every one of `itemIds` (see {@link itemScopedIds}). Jellyfin administrators are
+   * not exempt: on a household host no one acts as another user. Throws if Jellyfin cannot be reached.
+   */
+  async #callerMay(request: IncomingMessage, requestUrl: URL, userIds: string[], itemIds: string[]): Promise<boolean> {
     const current = await this.#currentUser(request, requestUrl);
     if (!current) return false;
-    const itemResponse = await fetch(this.#targetUrl(
-      `/Users/${encodeURIComponent(current.user.Id)}/Items/${encodeURIComponent(itemId)}${current.suffix}`,
-    ), {
-      headers: current.headers,
-      signal: AbortSignal.timeout(15_000),
-    });
-    await itemResponse.body?.cancel();
-    return itemResponse.ok;
+    if (userIds.some((userId) => userIdKey(userId) !== userIdKey(current.user.Id))) return false;
+    for (const itemId of itemIds) {
+      const itemResponse = await fetch(this.#targetUrl(
+        `/Users/${encodeURIComponent(current.user.Id)}/Items/${encodeURIComponent(itemId)}${current.suffix}`,
+      ), {
+        headers: current.headers,
+        signal: AbortSignal.timeout(15_000),
+      });
+      await itemResponse.body?.cancel();
+      if (!itemResponse.ok) return false;
+    }
+    return true;
   }
 
   /**
@@ -1243,6 +1260,55 @@ function itemScopedIds(method: string | undefined, route: string, query: URLSear
 }
 
 /**
+ * The routes Jellyfin 10.11 has under `/Users` with a fixed name in a user ID's place (`/Users/Me`, `/Users/Public`).
+ * Only these exact routes: Jellyfin routes anything longer (`/Users/Me/Views`) to a route that takes a user ID.
+ */
+const USER_FIXED_ROUTES = new Set([
+  '/users/authenticatebyname', '/users/authenticatewithquickconnect', '/users/configuration', '/users/forgotpassword',
+  '/users/forgotpassword/pin', '/users/me', '/users/new', '/users/password', '/users/public',
+]);
+/** The query parameters Jellyfin 10.11 reads a user ID from (in any case). */
+const USER_ID_PARAMETERS = new Set(['userid', 'controllablebyuserid', 'controllinguserid']);
+
+/**
+ * Every user ID a request on a household host names, from its {@link jellyfinRoute} and query, each of which must be
+ * the caller's own before it is proxied: Jellyfin 10.11 takes some of them for the caller without checking
+ * (`GET /Playlists/{id}/Items?userId=`, `GET /Users/{userId}`, `POST /Sessions/{id}/User/{userId}`), so a member could
+ * otherwise act as anyone, another household's members included. They are
+ *
+ * - the second segment of every route under `/Users` but Jellyfin's fixed ones there (USER_FIXED_ROUTES), whatever
+ *   follows it and by any method, so a route Jellyfin adds later is checked too;
+ * - the user in `/Playlists/{playlistId}/Users/{userId}` and `/Sessions/{sessionId}/User/{userId}`;
+ * - every non-empty `userId`, `controllableByUserId` and `controllingUserId` query parameter, in any case, each of
+ *   them where one is given more than once, and however Jellyfin reads the query (see {@link jellyfinQueryPairs}).
+ *
+ * An empty parameter is no user ID: Jellyfin binds it as none given. Empty for a request that names no user.
+ */
+function userScopedIds(route: string, query: URLSearchParams): string[] {
+  const [root = '', second, third, fourth] = route.split('/').slice(1);
+  const ids: string[] = [];
+  if (root === 'users' && second !== undefined && !USER_FIXED_ROUTES.has(route)) ids.push(second);
+  if (root === 'playlists' && third === 'users' && fourth !== undefined) ids.push(fourth);
+  if (root === 'sessions' && third === 'user' && fourth !== undefined) ids.push(fourth);
+  for (const [name, value] of jellyfinQueryPairs(query)) if (value && USER_ID_PARAMETERS.has(name.toLowerCase())) ids.push(value);
+  return [...new Set(ids)];
+}
+
+/** Whether a {@link jellyfinRoute} is one of a user's pictures: `/Users/{userId}/Images/...` or `/UserImage`. */
+function isUserImageRoute(route: string): boolean {
+  return route === '/userimage' || /^\/users\/[^/]+\/images(?:\/|$)/.test(route);
+}
+
+/**
+ * A user ID in the one form Jellyfin's GUID binding reads each of its spellings as (`a11ce000-...`, `{A11CE000-...}`,
+ * `(a11ce000...)`, `a11ce000...`), to compare two of them: without braces, parentheses or dashes, in lower case. A value
+ * Jellyfin does not read as a GUID at all never matches a user's own.
+ */
+function userIdKey(value: string): string {
+  return value.replace(/[{}()-]/g, '').toLowerCase();
+}
+
+/**
  * Every query parameter Jellyfin 10.11 might read: the query's own, and, for a query that is a single key with no
  * value and an `=` in it (`?itemId%3D...`), the `&`-separated pairs in that key, which Jellyfin's UrlDecodeQueryFeature
  * reads as the query instead.
@@ -1271,7 +1337,8 @@ type RouteDecision =
   | { kind: 'app' | 'publicUsers' | 'branding' | 'quickConnectEnabled' | 'quickConnect' | 'streamyfin' | 'forgotPassword' }
   | { kind: 'signOut' | 'signIn' | 'signInById' | 'libraryJoin' | 'notFound' | 'proxy' }
   | { kind: 'libraryJoinAsset'; asset: { body: string; contentType: string } }
-  | { kind: 'items'; itemIds: string[] };
+  | { kind: 'userImage'; userIds: string[] }
+  | { kind: 'caller'; userIds: string[]; itemIds: string[] };
 
 /**
  * A hash of the credentials a request carries, to key the app's short-lived cache of who they belong to, or undefined

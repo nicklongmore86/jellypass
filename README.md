@@ -584,6 +584,15 @@ serves them to anyone and clients load them without credentials. Jellyfin's
 live TV routes for its own transcoder (`/LiveTv/LiveRecordings/...`,
 `/LiveTv/LiveStreamFiles/...`) answer `404` on household hostnames.
 
+No request on a household hostname may name a user other than the caller:
+every user ID in the path (`/Users/{id}/...`, `/Playlists/{id}/Users/{id}`,
+`/Sessions/{id}/User/{id}`) or the query (`userId`, `controllableByUserId`,
+`controllingUserId`, in any case and every copy) must be the caller's own, or
+the answer is the same fixed `404` (`item_not_found`), administrators included.
+Jellyfin itself trusts some of these for the caller. A household member's
+picture is the one exception, since the profile picker loads it without
+credentials.
+
 A path Jellyfin might read otherwise than JellyPass (an encoded slash or
 backslash, a `.` or `..` segment, a backslash, invalid percent-encoding, a
 control or non-ASCII character, one legacy prefix after another, or
