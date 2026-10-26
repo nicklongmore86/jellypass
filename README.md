@@ -585,13 +585,17 @@ live TV routes for its own transcoder (`/LiveTv/LiveRecordings/...`,
 `/LiveTv/LiveStreamFiles/...`) answer `404` on household hostnames.
 
 No request on a household hostname may name a user other than the caller:
-every user ID in the path (`/Users/{id}/...`, `/Playlists/{id}/Users/{id}`,
-`/Sessions/{id}/User/{id}`) or the query (`userId`, `controllableByUserId`,
-`controllingUserId`, in any case and every copy) must be the caller's own, or
-the answer is the same fixed `404` (`item_not_found`), administrators included.
-Jellyfin itself trusts some of these for the caller. A household member's
-picture is the one exception, since the profile picker loads it without
-credentials.
+every user ID in the path (`/Users/{id}/...`, `/Sessions/{id}/User/{id}`) or
+the query (`userId`, `controllableByUserId`, `controllingUserId`, in any case
+and every copy) must be the caller's own, or the answer is the same fixed `404`
+(`item_not_found`), administrators included. Jellyfin itself trusts some of
+these for the caller. A household member's picture is the one exception, since
+the profile picker loads it without credentials. The user in
+`/Playlists/{id}/Users/{id}` is not checked: it is who a playlist is shared
+with, and Jellyfin checks the caller's own rights there, so those sharing
+routes are relayed unchanged. Jellyfin 10.11.3 itself fails a first share by
+path (`500`) and keeps a share removed by path (`204`); sharing through the
+playlist body works.
 
 A path Jellyfin might read otherwise than JellyPass (an encoded slash or
 backslash, a `.` or `..` segment, a backslash, invalid percent-encoding, a

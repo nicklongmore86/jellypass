@@ -116,7 +116,7 @@ and the admin host are unaffected.
   the second segment of every route under `/Users` but Jellyfin's fixed ones
   (`/Users/Me`, `/Users/Public`, `/Users/AuthenticateByName` and the like), by
   any method and including routes Jellyfin may add later; the user in
-  `/Playlists/{id}/Users/{userId}` and `/Sessions/{id}/User/{userId}`; and
+  `/Sessions/{id}/User/{userId}`; and
   every non-empty `userId`, `controllableByUserId` and `controllingUserId`
   query parameter, in any case, each of them when one is given more than once,
   however Jellyfin reads the query. IDs are compared as Jellyfin reads them
@@ -129,14 +129,18 @@ and the admin host are unaffected.
   one exception is a user's picture (`GET /Users/{id}/Images/...`,
   `GET /UserImage?userId=`), which Jellyfin serves to anyone and the profile
   picker loads without credentials: it is served for the household's own
-  members and refused for anyone else. jellyfin-web 10.11 names only the
-  signed-in user (its playlist permission check included), so members using it
-  see no difference. Naming a share recipient in the path
-  (`/Playlists/{id}/Users/{userId}`) is refused for anyone but the caller, but
-  sharing still works through the playlist body (`POST /Playlists` and
-  `POST /Playlists/{id}` with `Users[].UserId`), where Jellyfin checks the
-  caller's own right to edit; that names a recipient, not the acting user, so
-  it is not affected. Allowed in a minor release by the household-check rule at the top of this file.
+  members and refused for anyone else. Playlist sharing is not affected, by
+  path or by body: the user in `/Playlists/{id}/Users/{userId}` (`GET`, `POST`,
+  `DELETE`) is who the playlist is shared with, not the acting user, and
+  Jellyfin checks the caller's own rights there, as it does for
+  `Users[].UserId` in `POST /Playlists` and `POST /Playlists/{id}`; a `userId`
+  query parameter on those routes must still be the caller's own. Those
+  sharing routes are relayed to Jellyfin unchanged, including two Jellyfin
+  10.11.3 bugs: a first share by path fails with `500`, and removing a share
+  by path answers `204` but keeps it. Sharing through the playlist body is
+  unaffected by either. jellyfin-web 10.11 names only the signed-in user (its playlist permission
+  check included), so members using it see no difference. Allowed in a minor
+  release by the household-check rule at the top of this file.
 - **Household hostnames no longer relay Quick Connect to Jellyfin.** Quick
   Connect signs in whoever authorizes the code, so it skipped the membership
   check `POST /Users/AuthenticateByName` has there. `GET /QuickConnect/Enabled`

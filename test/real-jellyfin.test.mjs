@@ -669,6 +669,78 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
     assert.equal(views.status, 200, views.text);
   });
 
+  it('lets a member share their playlist by path, naming who it is shared with, and leaves the rights to Jellyfin', async (t) => {
+    const WEB = 'MediaBrowser Client="Jellyfin Web", Device="Firefox", DeviceId="jellypass-real-share", Version="10.11.3"';
+    const householdStore = new GrantStore(path.join(await makeTempDir(t, 'jfa-real-share-'), 'grants.json'));
+    await householdStore.load();
+    await householdStore.upsertGroup({ id: 'sharehouse', name: 'Share House', userIds: [fixture.aliceId, fixture.bobId] });
+    const gateway = makeServer(new AccessService(client, householdStore), { webhook: webhookToken, admin: 'real-admin-secret' }, undefined, {
+      householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: 0 },
+    });
+    await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise((resolve) => gateway.close(resolve)));
+    const port = gateway.address().port;
+    const host = 'jelly-sharehouse.example.test';
+    const signIn = async (name) => {
+      const answer = await postWithHeaders(port, '/Users/AuthenticateByName', { Host: host, Authorization: WEB }, { Username: name, Pw: '' });
+      assert.equal(answer.status, 200, answer.text);
+      return answer.json().AccessToken;
+    };
+    const tokens = { alice: await signIn('Alice'), bob: await signIn('Bob') };
+    const as = (token) => ({ Host: host, 'X-Emby-Token': token, 'Content-Type': 'application/json' });
+    const send = (method, pathname, token, body) => getWithHeaders(port, pathname, as(token), { method, body: body === undefined ? undefined : JSON.stringify(body) });
+    const { Id: playlist } = await request(baseUrl, '/Playlists', { method: 'POST', token: tokens.alice, body: { Name: 'jp-share', Ids: [fixture.itemId], UserId: fixture.aliceId, MediaType: 'Video', IsPublic: false } });
+    t.after(() => request(baseUrl, `/Items/${playlist}`, { method: 'DELETE', token: tokens.alice }));
+    const items = `/Playlists/${playlist}/Items`;
+    assert.equal((await send('GET', items, tokens.bob)).status, 404, 'Bob sees Alice\'s private playlist before she shares it');
+
+    // Bob cannot share Alice's playlist, with himself or anyone: Jellyfin refuses him, the household host does not.
+    for (const id of [fixture.bobId, fixture.aliceId]) {
+      const answer = await send('POST', `/Playlists/${playlist}/Users/${id}`, tokens.bob, { CanEdit: true });
+      assert.equal(answer.status, 404, answer.text);
+      assert.notEqual(answer.text, '{"error":"item_not_found"}', 'the household host, not Jellyfin, refused Bob');
+    }
+    // Nor by naming Alice in the query: that is still the household host's to refuse.
+    const named = await send('POST', `/Playlists/${playlist}/Users/${fixture.bobId}?userId=${fixture.aliceId}`, tokens.bob, { CanEdit: true });
+    assert.deepEqual([named.status, named.text], [404, '{"error":"item_not_found"}']);
+
+    // Jellyfin 10.11 cannot add a first share by path (it looks the playlist up as the user it is shared with, who
+    // cannot see it yet), but that is Jellyfin's own answer, not the household host's.
+    const first = await send('POST', `/Playlists/${playlist}/Users/${fixture.bobId}`, tokens.alice, { CanEdit: false });
+    assert.notEqual(first.text, '{"error":"item_not_found"}');
+    assert.equal(first.status, 500, 'Jellyfin now adds a first playlist share by path: share by path here instead of by the body');
+    // Alice shares it with Bob by the body, and then makes him an editor by path; Bob reads it and his share.
+    const shared = await send('POST', `/Playlists/${playlist}`, tokens.alice, { Users: [{ UserId: fixture.bobId, CanEdit: false }] });
+    assert.equal(shared.status, 204, shared.text);
+    const read = await send('GET', items, tokens.bob);
+    assert.equal(read.status, 200, read.text);
+    assert.deepEqual(read.json().Items.map((item) => item.Id), [fixture.itemId]);
+    const shareOf = async (token, id) => {
+      const answer = await send('GET', `/emby/playlists/${playlist}/users/${id}`, token);
+      assert.equal(answer.status, 200, answer.text);
+      return answer.json().CanEdit;
+    };
+    assert.equal(await shareOf(tokens.bob, fixture.bobId), false);
+    // Not an editor, Bob may read no one else's share, nor change his own.
+    assert.equal((await send('GET', `/Playlists/${playlist}/Users/${fixture.aliceId}`, tokens.bob)).status, 403);
+    assert.equal((await send('POST', `/Playlists/${playlist}/Users/${fixture.bobId}`, tokens.bob, { CanEdit: true })).status, 403);
+    const editor = await send('POST', `/Playlists/${playlist}/Users/${fixture.bobId}`, tokens.alice, { CanEdit: true });
+    assert.equal(editor.status, 204, editor.text);
+    assert.equal(await shareOf(tokens.bob, fixture.bobId), true);
+    assert.equal(await shareOf(tokens.alice, fixture.bobId), true);
+    // An editor still may not change who it is shared with: only its owner may.
+    assert.equal((await send('POST', `/Playlists/${playlist}/Users/${fixture.aliceId}`, tokens.bob, { CanEdit: true })).status, 403);
+
+    // Alice removes Bob's share by path: Jellyfin 10.11 accepts it, yet keeps the share (it removes a copy of it).
+    const removed = await send('DELETE', `/Playlists/${playlist}/Users/${fixture.bobId}`, tokens.alice);
+    assert.equal(removed.status, 204, removed.text);
+    const kept = await send('GET', `/Playlists/${playlist}/Users`, tokens.alice);
+    assert.deepEqual(kept.json().map((entry) => entry.UserId), [fixture.bobId], 'Jellyfin now removes a playlist share by path: check Bob no longer sees it here');
+    // By the body, Bob's share goes, and with it the playlist.
+    assert.equal((await send('POST', `/Playlists/${playlist}`, tokens.alice, { Users: [] })).status, 204);
+    assert.equal((await send('GET', items, tokens.bob)).status, 404);
+  });
+
   it('finds a title\'s items by TMDB ID with JellyPass\'s key, the "Get this" decision input for "Jellyfin already has it"', async () => {
     const original = await client.getItem(fixture.itemId);
     await client.updateItem({ ...original, ProviderIds: { ...original.ProviderIds, Tmdb: '424242' } });
