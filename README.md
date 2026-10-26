@@ -1038,8 +1038,7 @@ failed sign-outs on household hostnames answer (see the 2.5.0 notes).
 Upgrading from 2.5.0 to 2.6.0 changes neither the state file nor any setting,
 and needs no CDN purge.
 Upgrading from 2.6.0 to 2.7.0 changes neither the state file nor any setting,
-and needs no CDN purge; with the household app enabled, a few unknown app
-paths answer `400` instead of `404` (see the 2.7.0 notes).
+and needs no CDN purge.
 Drain before rolling back to 2.3.x or 2.2.1: stop new "Get this" calls, wait
 until no request intents or deferred webhooks are left (at most 30 minutes plus
 one reconciliation interval, or restart JellyPass to reconcile at once), then

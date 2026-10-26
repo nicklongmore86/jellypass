@@ -43,17 +43,18 @@ upgrading:
   releases** are likewise films that opened in US theatres in the last 60 days.
 - **JustWatch is credited** on About, under Home's service rows (All and
   Movies) and on a service page's All and Films tabs, as its data requires.
-- **Changed app API answers.** A path with a second segment after a network's
-  or studio's ID, other than `films` or `all` after a listed network's (for
-  example `/discover/network/213/2` or `/discover/studio/2/films`), is now
-  `400 invalid_request` instead of `404 not_found`, still before TMDB is asked.
+- **Existing app API answers are unchanged.** A path with a second segment
+  after a network's or studio's ID, other than `films` or `all` after a listed
+  network's (for example `/discover/network/213/2` or
+  `/discover/studio/2/films`), is still `404 not_found`, before TMDB is asked.
   `GET /discover/network/:id` still lists the service's series alone, and
   `GET /discover/sources` only gains `hasFilms`. In the app, a service's page
   (`#/network/:id`) now opens on **All**, its series and films mixed.
 - **No CDN purge is needed:** the app's files are still named by content hash
   and every other `/jellypass/app` answer, the new endpoints included, is sent
-  `no-store`. No new image host or size: backdrops are TMDB's `w780`, as the
-  hero's already were, and the app's Content Security Policy is unchanged.
+  `no-store`. No new image host or size: backdrops are TMDB's `w780` and
+  `w1280` (a `srcset`), both already used in 2.6.0, and the app's Content
+  Security Policy is unchanged.
 - **To roll back,** set `JELLYPASS_IMAGE` back to
   `ghcr.io/nicklongmore86/jellypass:2.6.0` and recreate the container. On
   2.6.0 a `#/?kind=` link opens Home unfiltered and `#/network/:id?kind=` opens
@@ -108,9 +109,6 @@ upgrading:
 - Household app: a card in a Home row that gets focus from the keyboard is scrolled fully into its row (it could be
   left almost off the edge). A card's link name now includes its status ("Title, 2024 · Movie, Ready to watch"), and
   the status pill beside it is hidden from assistive technology, so the status is said once.
-- Household app API: a path with a second segment after a network's or studio's ID, other than `films` or `all` after
-  a listed network's (for example `/discover/network/213/2` or `/discover/studio/2/films`), is now `400
-  invalid_request` instead of `404 not_found`, still before TMDB is asked.
 
 ## [2.6.0] - 2026-10-25
 

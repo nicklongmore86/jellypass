@@ -68,7 +68,9 @@ describe('changelogSection with the real CHANGELOG.md', () => {
     assert.match(flat, /Where-to-watch data is for the US only/);
     assert.match(flat, /JustWatch is credited/);
     assert.match(flat, /`\/discover\/network\/213\/2`/);
-    assert.match(flat, /`400 invalid_request` instead of `404 not_found`/);
+    assert.match(flat, /is still `404 not_found`, before TMDB is asked/);
+    assert.doesNotMatch(flat, /instead of `404 not_found`/);
+    assert.match(flat, /`w780` and `w1280` \(a `srcset`\), both already used in 2\.6\.0/);
     assert.match(flat, /No CDN purge is needed/);
     assert.match(flat, /`ghcr\.io\/nicklongmore86\/jellypass:2\.6\.0`/);
     assert.match(flat, /`GET \/jellypass\/app\/v1\/discover\/network\/:id\/films\?page=`/);
