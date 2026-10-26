@@ -18,18 +18,44 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+## [3.2.1] - 2026-10-26
+
+This is a patch release for the household app (`HOUSEHOLD_APP_ENABLED=true`)
+only: with the app off (the default), nothing changes. There is nothing to
+configure: no setting is added, removed or renamed, and the state file is
+unchanged (schema v7, with the same fields as 3.2.0), so 3.2.0 reads a state
+file written by 3.2.1. No server behaviour changed (only the version string
+JellyPass reports to Jellyfin): the app API, the household gateway, webhook
+payloads, the administrator API and the admin UI are unchanged. Read these
+before upgrading:
+
+- **Close and reopen the installed app** to pick up the fix. An open app keeps
+  running the files it loaded until then.
+- **No CDN purge is needed:** the app's files are still named by content hash
+  (those fingerprinted files are sent `public, max-age=31536000, immutable`),
+  and the page, the service worker and every other `/jellypass/app` answer are
+  sent `no-store`, so the changed files have new addresses.
+- **To roll back,** set `JELLYPASS_IMAGE` back to
+  `ghcr.io/nicklongmore86/jellypass:3.2.0` and recreate the container. No
+  state-file or setting change is needed.
+
+The mobile app's source (`mobile/`) also changed since 3.2.0. It is not part
+of this release: it is not in the image and nothing in it runs on the server.
+
 ### Fixed
 
 - The household app now shows **Requested** right after **Get this** is
   accepted, on the title and season pages and on every card elsewhere (Home,
   Search, service and studio pages). The server records a request a couple of
-  seconds after it answers, so the page it reads straight afterwards could still
-  say "Available to get". The app now remembers, in memory only, the titles and
-  seasons its member just asked for: for two minutes at most (by the monotonic clock or, if the device slept, the wall clock moving forward; a clock set back never extends it), dropped as soon as
-  the server says anything else, never stored or sent. It belongs to the member
-  who is signed in: any sign-out, sign-in, change of credentials or refused
-  (401) answer clears it, so another member on the same device never inherits it.
-  The app makes no extra calls, and the server is unchanged.
+  seconds after it answers, so the page it reads straight afterwards could
+  still say "Available to get". The app now remembers, in memory only, the
+  titles and seasons its member just asked for: for two minutes at most (by
+  the monotonic clock or, if the device slept, the wall clock moving forward;
+  a clock set back never extends it), dropped as soon as the server says
+  anything else, never stored or sent. It belongs to the member who is signed
+  in: any sign-out, sign-in, change of credentials or refused (401) answer
+  clears it, so another member on the same device never inherits it. The app
+  makes no extra calls, and the server is unchanged.
 
 ## [3.2.0] - 2026-10-26
 
@@ -1980,7 +2006,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.2.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.2.1...HEAD
+[3.2.1]: https://github.com/nicklongmore86/jellypass/compare/v3.2.0...v3.2.1
 [3.2.0]: https://github.com/nicklongmore86/jellypass/compare/v3.1.1...v3.2.0
 [3.1.1]: https://github.com/nicklongmore86/jellypass/compare/v3.1.0...v3.1.1
 [3.1.0]: https://github.com/nicklongmore86/jellypass/compare/v3.0.1...v3.1.0

@@ -53,6 +53,33 @@ function assertSection(notes, { version, nextVersion, subheadings }) {
 }
 
 describe('changelogSection with the real CHANGELOG.md', () => {
+  it('extracts 3.2.1 without its heading, up to the 3.2.0 section', () => {
+    const notes = changelogSection(CHANGELOG, '3.2.1');
+    assertSection(notes, {
+      version: '3.2.1',
+      nextVersion: '3.2.0',
+      subheadings: ['Fixed'],
+    });
+    assert.match(notes, /^This is a patch release for the household app/);
+    const flat = notes.replace(/\s+/g, ' ');
+    assert.match(flat, /There is nothing to configure/);
+    assert.match(flat, /3\.2\.0 reads a state file written by 3\.2\.1/);
+    assert.match(flat, /the administrator API and the admin UI are unchanged/);
+    assert.match(flat, /\*\*No CDN purge is needed:\*\*/);
+    assert.match(flat, /`ghcr\.io\/nicklongmore86\/jellypass:3\.2\.0`/);
+    assert.match(flat, /No state-file or setting change is needed/);
+    assert.match(flat, /mobile app's source \(`mobile\/`\) also changed since 3\.2\.0\. It is not part of this release/);
+    assert.match(flat, /shows \*\*Requested\*\* right after \*\*Get this\*\* is accepted/);
+    assert.match(flat, /the server is unchanged/);
+    const fixed = notes.indexOf('### Fixed');
+    for (const note of ['**Close and reopen the installed app**', '**No CDN purge is needed:**', '**To roll back,**']) {
+      assert.ok(notes.indexOf(note) >= 0 && notes.indexOf(note) < fixed, `upgrade note ${note} comes first`);
+    }
+    assert.doesNotMatch(notes, /### Upgrading from/);
+    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b/, 'no server-specific details');
+    assert.deepEqual(split(notes).definitions, []);
+  });
+
   it('extracts 3.2.0 without its heading, up to the 3.1.1 section', () => {
     const notes = changelogSection(CHANGELOG, '3.2.0');
     assertSection(notes, {
