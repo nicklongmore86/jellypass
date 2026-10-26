@@ -159,11 +159,11 @@ as semantic-version tags. For predictable production upgrades, set
 `JELLYPASS_IMAGE` in `.env` to a versioned image such as:
 
 ```dotenv
-JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:2.5.0
+JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:2.6.0
 ```
 
-Each release is published as a semantic-version image tag, such as `2.5.0`,
-plus floating `2.5` and `2` tags that move to the newest release in that minor
+Each release is published as a semantic-version image tag, such as `2.6.0`,
+plus floating `2.6` and `2` tags that move to the newest release in that minor
 or major line; see [CHANGELOG.md](CHANGELOG.md) for what each one contains. `latest` is rebuilt on
 every push to `main` and may include unreleased changes, so use it, or build
 from source, only to test ahead of a release.
@@ -882,7 +882,8 @@ switched off (those answer the same fixed `404`).
   iPhone:** Back, swipe-back and the restored position, including each Home
   row's. **Not yet verified on a real phone:** the install, the in-app
   sign-in, and the 2.5.0 look (the glass blur, the safe areas under the status
-  bar and above the tab bar, swiping Home's hero, the new icon) have been
+  bar and above the tab bar, swiping Home's hero, the new icon) and 2.6.0's
+  rows (lazy loading, the Studios strip, network and studio pages) have been
   tested only in a simulated browser and against a real Jellyfin, so expect to
   check them on a device before relying on them.
 - **Offline and privacy:** a service worker keeps only the app's own static
@@ -1022,6 +1023,8 @@ Upgrading from 2.4.0 to 2.4.1 changes neither the state file nor any setting.
 Upgrading from 2.4.1 to 2.5.0 changes neither the state file nor any setting,
 and needs no CDN purge; with the household app enabled, it changes how some
 failed sign-outs on household hostnames answer (see the 2.5.0 notes).
+Upgrading from 2.5.0 to 2.6.0 changes neither the state file nor any setting,
+and needs no CDN purge.
 Drain before rolling back to 2.3.x or 2.2.1: stop new "Get this" calls, wait
 until no request intents or deferred webhooks are left (at most 30 minutes plus
 one reconciliation interval, or restart JellyPass to reconcile at once), then
