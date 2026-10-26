@@ -168,10 +168,38 @@ function kindOf(error: unknown): ApiErrorKind {
   return error instanceof ApiError ? error.kind : 'unavailable';
 }
 
+/** The fixed chrome's real heights go onto the root as custom properties through the CSSOM (which `style-src 'self'` allows, unlike a style attribute). At large text or zoom the header grows, the tab bar grows and the chips would wrap, so the scroll padding follows what is measured, not a one-row guess. The stylesheet's rem estimates stay as the fallback until then. */
+const watchers = new Map<string, ResizeObserver>();
+
+function measure(property: string, element: HTMLElement | null): void {
+  watchers.get(property)?.disconnect();
+  watchers.delete(property);
+  const root = doc.documentElement;
+  if (!element) {
+    root.style.removeProperty(property);
+    return;
+  }
+  const apply = (): void => {
+    const height = element.getBoundingClientRect().height;
+    if (height > 0) root.style.setProperty(property, `${height}px`);
+  };
+  apply();
+  if (typeof ResizeObserver === 'function') {
+    const watcher = new ResizeObserver(apply);
+    watcher.observe(element);
+    watchers.set(property, watcher);
+  }
+}
+
+measure('--header-box', doc.querySelector<HTMLElement>('.app-header'));
+measure('--tabbar-box', doc.querySelector<HTMLElement>('.tabbar'));
+
 /** `data-home-switch` is on the body whenever the sticky All | Movies | TV switch is on the page, hero or no hero, so the scroll padding that clears it never depends on the hero. */
 function markSwitch(): void {
-  if (main.querySelector('.home-switch')) doc.body.setAttribute('data-home-switch', '');
+  const band = main.querySelector<HTMLElement>('.home-switch');
+  if (band) doc.body.setAttribute('data-home-switch', '');
   else doc.body.removeAttribute('data-home-switch');
+  measure('--switch-height', band);
 }
 
 function show(...nodes: Node[]): void {

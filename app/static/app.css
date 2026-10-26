@@ -53,18 +53,21 @@
   --gutter-end: max(1rem, env(safe-area-inset-right));
   /* The solid header (below the status bar) and Home's filter band under it: the fixed chrome at the top. Measured by the clearance script. */
   --header-height: 3.75rem;
-  --switch-height: 3.875rem;
+  --switch-height: 3.875rem; /* the fallback: main.ts measures the band's real height (chips wrap at large text) into this property on the root */
   /* The docked tab bar: its tabs and padding, without the home indicator's safe area; it touches the screen's foot, so no gap. */
   --tabbar-height: 4.5rem;
   --tabbar-gap: 0rem;
+  /* What the fixed chrome really takes, safe areas included. These are the one-row estimates from the tokens above; main.ts replaces each with the element's measured height (on the root, through the CSSOM) so larger text, zoom and wrapping can never leave the clearances short. */
+  --header-box: calc(var(--header-height) + env(safe-area-inset-top));
+  --tabbar-box: calc(var(--tabbar-height) + var(--tabbar-gap) + env(safe-area-inset-bottom));
 }
 
 * { box-sizing: border-box; }
 html {
   -webkit-text-size-adjust: 100%; text-size-adjust: 100%; background: var(--bg);
   /* A focused or scrolled-to element stops clear of the solid header above and the docked tab bar below. */
-  scroll-padding-top: calc(var(--header-height) + env(safe-area-inset-top) + 0.5rem);
-  scroll-padding-bottom: calc(var(--tabbar-height) + var(--tabbar-gap) + env(safe-area-inset-bottom) + 0.75rem);
+  scroll-padding-top: calc(var(--header-box) + 0.5rem);
+  scroll-padding-bottom: calc(var(--tabbar-box) + 0.75rem);
 }
 body {
   margin: 0;
@@ -118,11 +121,11 @@ body[data-home-switch] .app-header { box-shadow: none; }
 
 main {
   max-width: 72rem; margin: 0 auto;
-  padding: 0.75rem var(--gutter-end) calc(var(--tabbar-height) + var(--tabbar-gap) + 1.5rem + env(safe-area-inset-bottom)) var(--gutter);
+  padding: 0.75rem var(--gutter-end) calc(var(--tabbar-box) + 1.5rem) var(--gutter);
   min-height: 60vh;
 }
 
-/* The docked tab bar: full width on the screen's foot, rounded at the top, over the home indicator's safe area. The active tab is a filled squircle behind its icon and label. */
+/* The docked tab bar: full width on the screen's foot, rounded at the top, over the home indicator's safe area. The active tab is an aqua-tint squircle with an aqua outline (3:1 against the bar) behind its icon and label, and a heavier icon stroke: shape and weight, not colour alone. */
 .tabbar {
   position: fixed; left: 0; right: 0; bottom: 0; z-index: 10;
   display: flex; gap: 0.375rem; padding: 0.5rem max(0.75rem, env(safe-area-inset-right)) calc(0.5rem + env(safe-area-inset-bottom)) max(0.75rem, env(safe-area-inset-left));
@@ -130,10 +133,11 @@ main {
 }
 .tabbar a {
   flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 0.2rem;
-  min-height: 3.5rem; padding: 0.25rem; border-radius: var(--radius-card);
+  min-height: 3.5rem; padding: 0.25rem; border: 1.5px solid transparent; border-radius: var(--radius-card);
   color: var(--muted); text-decoration: none; font-size: 0.75rem; font-weight: 700; line-height: 1.1; touch-action: manipulation;
 }
-.tabbar a[aria-current='page'] { background: var(--surface-raised); color: var(--accent-text); }
+.tabbar a[aria-current='page'] { background: var(--accent-tint); border-color: var(--accent); color: var(--accent-text); }
+.tabbar a[aria-current='page'] .icon { stroke-width: 2.4; }
 .tabbar a:focus-visible { outline-offset: -3px; }
 .tabbar .icon { width: 1.5rem; height: 1.5rem; }
 
@@ -246,14 +250,17 @@ main {
 .segment[aria-checked='true'] .icon { display: block; }
 /* Home's All | Movies | TV: a solid band that sticks just under the header (and the status bar), so rows scroll away beneath it. */
 .home-switch {
-  position: sticky; z-index: 5; top: calc(var(--header-height) + env(safe-area-inset-top));
+  position: sticky; z-index: 5; top: var(--header-box);
   padding: 0.5rem max(var(--gutter-end), calc((100% - 72rem) / 2 + 1rem)) 0.625rem max(var(--gutter), calc((100% - 72rem) / 2 + 1rem));
   background: var(--bg); box-shadow: 0 1px 0 var(--hairline);
 }
-.segmented-home { margin: 0; }
+/* One row at any text size or zoom: the sticky band must stay short, so at large text the chips scroll sideways (focus brings the chosen one into view) instead of wrapping into a tall band that would fill the screen. The padding keeps the focus ring inside the scroller's clip. */
+.segmented-home { margin: -4px; padding: 4px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; overscroll-behavior-x: contain; }
+.segmented-home::-webkit-scrollbar { display: none; }
+.segmented-home .segment { flex: none; }
 .segmented-home .segment:focus-visible { outline: 3px solid var(--accent-text); outline-offset: 1px; }
 /* While the switch is on the page (with or without a hero), a focused or scrolled-to card also clears the band. */
-:root:has(body[data-home-switch]) { scroll-padding-top: calc(var(--header-height) + env(safe-area-inset-top) + var(--switch-height) + 0.5rem); }
+:root:has(body[data-home-switch]) { scroll-padding-top: calc(var(--header-box) + var(--switch-height) + 0.5rem); }
 .source-note { margin: 0.25rem 0 1rem; font-size: 0.8rem; }
 /* Three columns on a phone, two on a very narrow one, more on a wide screen. */
 .grid, .skeleton-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem 0.6rem; margin-bottom: 1rem; }

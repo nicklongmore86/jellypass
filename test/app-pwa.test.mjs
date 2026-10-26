@@ -80,7 +80,7 @@ describe('household app page: serving', { timeout: 30_000 }, () => {
     // No text is ever drawn in a waterline colour: it is a background, and only on a heading's ::after.
     for (const [, property] of css.matchAll(/([a-z-]+): var\(--water-/g)) assert.equal(property, 'background');
     // The filter: a solid band that sticks just under the solid header and the status bar, below the header's own layer.
-    assert.match(css, /\.home-switch \{[^}]*position: sticky;[^}]*z-index: 5;[^}]*top: calc\(var\(--header-height\) \+ env\(safe-area-inset-top\)\)/);
+    assert.match(css, /\.home-switch \{[^}]*position: sticky;[^}]*z-index: 5;[^}]*top: var\(--header-box\)/);
     assert.match(css, /\.home-switch \{[^}]*background: var\(--bg\)/);
     assert.match(css, /\.app-header \{[^}]*position: sticky;[^}]*z-index: 10;[^}]*background: var\(--bg\)/);
     // Outlined squircle chips; the chosen one is tinted aqua with an accent border and its tick, text on the tint at 4.5:1.
@@ -96,14 +96,17 @@ describe('household app page: serving', { timeout: 30_000 }, () => {
     // A focused card clears the header, and on Home the band under it too (#42's scroll padding, plus the band).
     assert.match(css, /--header-height: 3\.75rem;/);
     assert.match(css, /--switch-height: 3\.875rem;/);
-    assert.match(css, /scroll-padding-top: calc\(var\(--header-height\) \+ env\(safe-area-inset-top\) \+ 0\.5rem\)/);
-    assert.match(css, /:root:has\(body\[data-home-switch\]\) \{ scroll-padding-top: calc\(var\(--header-height\) \+ env\(safe-area-inset-top\) \+ var\(--switch-height\) \+ 0\.5rem\); \}/);
+    assert.match(css, /scroll-padding-top: calc\(var\(--header-box\) \+ 0\.5rem\)/);
+    assert.match(css, /:root:has\(body\[data-home-switch\]\) \{ scroll-padding-top: calc\(var\(--header-box\) \+ var\(--switch-height\) \+ 0\.5rem\); \}/);
     assert.doesNotMatch(css, /backdrop-filter/, 'no glass');
     assert.equal(homeHref('all'), '#/');
     assert.equal(homeHref('movies'), '#/?kind=movies');
     assert.equal(homeHref('tv'), '#/?kind=tv');
-    // The scripts set no style, as the CSP forbids: every waterline colour is a class.
-    for (const file of FILES.filter((name) => name.startsWith('js/'))) assert.doesNotMatch(read(file), /\.style\b|setAttribute\(['"]style/, file);
+    // The scripts set no style attribute, as the CSP forbids: every waterline colour is a class. The one use of the CSSOM is the root's measured --header-box, --tabbar-box and --switch-height (set and removed with setProperty/removeProperty, which style-src does not gate).
+    for (const file of FILES.filter((name) => name.startsWith('js/'))) {
+      const rest = read(file).replace(/\w+\.style\.(?:setProperty|removeProperty)\(property\b/g, '');
+      assert.doesNotMatch(rest, /\.style\b|setAttribute\(['"]style/, file);
+    }
   });
 
   it('is the Tidepool look and nothing left of the old one: no indigo, purple, glass, gradient capsule, accent bar or dot', () => {
@@ -616,9 +619,13 @@ describe('household app page: files', () => {
     for (const [graphic, under] of [['text', 'surface'], ['text', 'bg'], ['accent-text', 'surface-raised'], ['muted', 'surface'], ['accent', 'surface']]) {
       assert.ok(ratio(graphic, under) >= 3, `${graphic} icon on ${under}: ${ratio(graphic, under).toFixed(2)}`);
     }
-    // The active tab is a filled squircle (raised on the surface): it stands out as a shape at 1.2:1 or more, and has its text and icon at 4.5:1 (above).
-    assert.ok(ratio('surface-raised', 'surface') >= 1.2, `the active tab's fill against the bar: ${ratio('surface-raised', 'surface').toFixed(2)}`);
-    assert.match(css, /\.tabbar a\[aria-current='page'\] \{ background: var\(--surface-raised\); color: var\(--accent-text\); \}/);
+    // The active tab is an aqua-tint squircle with an aqua outline: the outline is the non-text indicator and must be 3:1 against the bar (WCAG 1.4.11); the tint is not relied on. Its label and icon are 4.5:1 on the tint (above).
+    assert.ok(ratio('accent', 'surface') >= 3, `the active tab's outline against the bar: ${ratio('accent', 'surface').toFixed(2)}`);
+    assert.ok(ratio('accent-text', 'accent-tint') >= 4.5);
+    // Active vs inactive is told apart by more than colour: an outline the inactive tabs lack (transparent) and a heavier icon stroke.
+    assert.match(css, /\.tabbar a \{[^}]*border: 1\.5px solid transparent/);
+    assert.match(css, /\.tabbar a\[aria-current='page'\] \{ background: var\(--accent-tint\); border-color: var\(--accent\); color: var\(--accent-text\); \}/);
+    assert.match(css, /\.tabbar a\[aria-current='page'\] \.icon \{ stroke-width: 2\.4; \}/);
     // A service page's All | Series | Films control shares the chips: muted on the page, the selected one aqua on its tint (pairs above).
     assert.match(css, /\.segment \{[^}]*background: transparent;[^}]*color: var\(--muted\)/);
     assert.match(css, /\.tabbar a \{[^}]*color: var\(--muted\)/);
@@ -704,7 +711,7 @@ describe('household app page: files', () => {
     assert.match(css, /\.chip \{[^}]*background: var\(--surface\); color: var\(--text\)/);
     assert.match(css, /\.back \{[^}]*color: var\(--accent-text\)/);
     // Past the header, a focused element still stops clear of it.
-    assert.match(css, /scroll-padding-top: calc\(var\(--header-height\) \+ env\(safe-area-inset-top\) \+ 0\.5rem\)/);
+    assert.match(css, /scroll-padding-top: calc\(var\(--header-box\) \+ 0\.5rem\)/);
   });
 
   it('keeps a focused card clear of the solid header and the docked tab bar', () => {
@@ -712,8 +719,11 @@ describe('household app page: files', () => {
     const html = /(?:^|\n)html \{([^}]*)\}/.exec(css)[1];
     const bottom = /scroll-padding-bottom: ([^;]+);/.exec(html)[1];
     const top = /scroll-padding-top: ([^;]+);/.exec(html)[1];
-    for (const part of ['var(--tabbar-height)', 'var(--tabbar-gap)', 'env(safe-area-inset-bottom)']) assert.ok(bottom.includes(part), `bottom clearance has ${part}: ${bottom}`);
-    assert.ok(top.includes('env(safe-area-inset-top)'), `top clearance has the safe area: ${top}`);
+    assert.ok(bottom.includes('var(--tabbar-box)'), `bottom clearance follows the bar's box: ${bottom}`);
+    assert.ok(top.includes('var(--header-box)'), `top clearance follows the header's box: ${top}`);
+    // The boxes default to the rem estimates with the safe areas; main.ts replaces them with the measured heights.
+    assert.match(css, /--header-box: calc\(var\(--header-height\) \+ env\(safe-area-inset-top\)\);/);
+    assert.match(css, /--tabbar-box: calc\(var\(--tabbar-height\) \+ var\(--tabbar-gap\) \+ env\(safe-area-inset-bottom\)\);/);
     // Never less than the bar itself: the clearance is the bar's height plus a margin, never the padding alone.
     assert.match(bottom, /\+ 0\.[0-9]+rem\)$/);
     assert.match(css, /--tabbar-height: 4\.5rem;/);
@@ -724,7 +734,7 @@ describe('household app page: files', () => {
     assert.match(css, /--header-height: 3\.75rem;/);
     assert.match(css, /--switch-height: 3\.875rem;/);
     assert.match(css, /\.home-switch \{[^}]*padding: 0\.5rem [^;]* 0\.625rem /);
-    assert.match(css, /main \{[^}]*padding: 0\.75rem var\(--gutter-end\) calc\(var\(--tabbar-height\) \+ var\(--tabbar-gap\) \+ 1\.5rem \+ env\(safe-area-inset-bottom\)\)/);
+    assert.match(css, /main \{[^}]*padding: 0\.75rem var\(--gutter-end\) calc\(var\(--tabbar-box\) \+ 1\.5rem\)/);
   });
 
   it('draws the tab bar docked and full width: rounded top corners, 56px labelled tabs, a filled squircle for the active one, a safe-area foot, no dot', () => {
@@ -739,7 +749,7 @@ describe('household app page: files', () => {
     assert.ok(Number(/min-height: ([0-9.]+)rem/.exec(tab)[1]) >= 2.75);
     assert.match(tab, /flex-direction: column/);
     assert.match(tab, /border-radius: var\(--radius-card\)/);
-    assert.match(css, /\.tabbar a\[aria-current='page'\] \{ background: var\(--surface-raised\); color: var\(--accent-text\); \}/);
+    assert.match(css, /\.tabbar a\[aria-current='page'\] \{ background: var\(--accent-tint\); border-color: var\(--accent\);/);
     assert.doesNotMatch(css, /\.tabbar a\[aria-current='page'\]::after/, 'no dot under the active tab');
     // Status chips sit on the image's top-left corner; search is three columns, two on a very narrow screen.
     assert.match(css, /\.card > \.badge \{[^}]*position: absolute; top: [0-9.]+rem; left: [0-9.]+rem/);
@@ -2001,8 +2011,31 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         }
       }
     };
+    // The sticky band's height, as a browser would measure it (it grows when the chips wrap); a ResizeObserver tells the page when it changes.
+    const band = { height: 62 };
+    const resizers = [];
+    class FakeResizeObserver {
+      constructor(callback) { this.callback = callback; this.targets = new Set(); resizers.push(this); }
+      observe(target) { this.targets.add(target); }
+      unobserve(target) { this.targets.delete(target); }
+      disconnect() { this.targets.clear(); }
+    }
+    /** The band is now this tall (px): the observers fire, as on a resize. */
+    const resizeBand = (height) => {
+      band.height = height;
+      for (const observer of resizers) if (observer.targets.size) observer.callback([...observer.targets].map((target) => ({ target })), observer);
+    };
+    const ownBandRect = rect ? undefined : Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'getBoundingClientRect');
+    if (!rect) {
+      HTMLElement.prototype.getBoundingClientRect = function () { return { top: 0, bottom: 0, left: 0, right: 0, width: 0, height: this.classList.contains('home-switch') ? band.height : this.classList.contains('app-header') ? 76 : this.classList.contains('tabbar') ? 90 : 0, x: 0, y: 0 }; };
+      t.after(() => {
+        if (ownBandRect) Object.defineProperty(HTMLElement.prototype, 'getBoundingClientRect', ownBandRect);
+        else delete HTMLElement.prototype.getBoundingClientRect;
+      });
+    }
     const globals = {
       ...(intersection ? { IntersectionObserver: FakeIntersectionObserver } : {}),
+      ResizeObserver: FakeResizeObserver,
       document,
       window: {
         scrollTo(_x, y) {
@@ -2089,7 +2122,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       screen.replaceChildren = function (...nodes) { replace.apply(this, nodes); clampScroll(); };
     }
     const back = () => document.getElementById('back');
-    return { document, Event, until, go, main, requests, watched, reveal, observers, meRead: () => meRead, store, location, back, entries, cursor: () => index, scroll, sessionWrites, history: globals.history, window: globals.window, serialize: () => document.documentElement.outerHTML, listeners, focused: () => focused };
+    return { document, Event, until, go, main, requests, resizeBand, resizers, watched, reveal, observers, meRead: () => meRead, store, location, back, entries, cursor: () => index, scroll, sessionWrites, history: globals.history, window: globals.window, serialize: () => document.documentElement.outerHTML, listeners, focused: () => focused };
   }
 
   it('shows the four discover rows with each title\'s badge and no Play button on the cards', async (t) => {
@@ -2314,7 +2347,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         assert.equal(ticks[0].getAttribute('aria-hidden'), 'true');
         assert.equal(ticks[0].getAttribute('focusable'), 'false');
       }
-      assert.doesNotMatch(page.serialize().replace(/<style[^]*?<\/style>/gi, ''), /\sstyle=/);
+      assert.doesNotMatch(page.serialize().replace(/<style[^]*?<\/style>/gi, '').replace(/<html style="(?:--(?:switch-height|header-box|tabbar-box):[0-9.]+px;?\s*)+"/, '<html'), /\sstyle=/);
     });
 
     it('All is today\'s Home: the same four TMDB calls at first load, rows in the order the design gives', async (t) => {
@@ -2342,7 +2375,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         'network-213': 'water-netflix', 'network-2739': 'water-disney', 'network-2552': 'water-apple', 'network-1024': 'water-prime',
         'network-3186': 'water-hbo', 'network-453': 'water-hulu', 'network-4330': 'water-paramount', 'network-3353': 'water-peacock',
       });
-      assert.doesNotMatch(page.serialize().replace(/<style[^]*?<\/style>/gi, ''), /\sstyle=/);
+      assert.doesNotMatch(page.serialize().replace(/<style[^]*?<\/style>/gi, '').replace(/<html style="(?:--(?:switch-height|header-box|tabbar-box):[0-9.]+px;?\s*)+"/, '<html'), /\sstyle=/);
     });
 
     it('Movies: films only, replaced in the address, from per-kind lists (a service\'s films), no series-only row', async (t) => {
@@ -2790,7 +2823,41 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       // The hero's title opens the title's page.
       assert.equal(slides[0].querySelector('.hero-link').getAttribute('href'), '#/movie/710000');
       // The hero reads like Home's own rows when the page is serialised: no inline style, no script.
-      assert.doesNotMatch(page.serialize().replace(/<style[^]*?<\/style>/gi, ''), /\sstyle=|<script[^>]*>[^<]/i);
+      // (The one exception is the root's measured --header-box, --tabbar-box and --switch-height, written through the CSSOM, which `style-src 'self'` allows.)
+      assert.doesNotMatch(page.serialize().replace(/<style[^]*?<\/style>/gi, '').replace(/<html style="(?:--(?:switch-height|header-box|tabbar-box):[0-9.]+px;?\s*)+"/, '<html'), /\sstyle=|<script[^>]*>[^<]/i);
+    });
+
+    it('measures the sticky band into --switch-height, follows it as the chips wrap, and lets go off Home', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app, { override: trending(0) });
+      await page.until(() => page.main().querySelector('.home-switch'), 'the band');
+      const root = page.document.documentElement;
+      const switchHeight = () => root.style.getPropertyValue('--switch-height');
+      assert.equal(switchHeight(), '62px', 'the band as measured, not a one-row guess');
+      assert.equal(root.style.getPropertyValue('--header-box'), '76px', 'the header as measured (its safe-area padding included)');
+      assert.equal(root.style.getPropertyValue('--tabbar-box'), '90px', 'the tab bar as measured');
+      assert.equal(page.resizers.filter((observer) => observer.targets.size).length, 3, 'header, tab bar and band watched');
+      // Large text or zoom: the chips wrap to a second row and the band grows; the clearance follows with no new render.
+      page.resizeBand(118);
+      assert.equal(switchHeight(), '118px');
+      page.resizeBand(62);
+      assert.equal(switchHeight(), '62px');
+      // Another screen has no band: the property is dropped (the stylesheet's fallback is not used either, the rule is keyed to the band) and nothing is watched.
+      page.go('#/search');
+      await page.until(() => !page.document.body.hasAttribute('data-home-switch'), 'a screen without the band');
+      assert.equal(switchHeight(), '');
+      assert.equal(page.resizers.filter((observer) => observer.targets.size).length, 2, 'only the header and tab bar watched off Home');
+      assert.equal(root.style.getPropertyValue('--header-box'), '76px');
+      // The mechanism is CSSOM only: the markup carries no style attribute on any element but the root's one custom property, and the CSP forbids inline styles.
+      const css = read(BUILT('app.css'));
+      assert.match(css, /:root:has\(body\[data-home-switch\]\) \{ scroll-padding-top: calc\([^;]*var\(--switch-height\)/);
+      assert.match(APP_CONTENT_SECURITY_POLICY, /style-src 'self'(?!.*unsafe-inline)/);
+      const source = read(BUILT('js/main.js'));
+      assert.match(source, /measure\(["']--switch-height["']/);
+      assert.match(source, /measure\(["']--header-box["']/);
+      assert.match(source, /measure\(["']--tabbar-box["']/);
+      assert.match(source, /style\.setProperty\(property, /);
+      assert.doesNotMatch(source, /setAttribute\(['"]style['"]|\.cssText/);
     });
 
     it('has no hero, and the header is its own bar, when the first row is empty or fails', async (t) => {
