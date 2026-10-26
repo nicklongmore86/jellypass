@@ -1,6 +1,7 @@
 // The signed-in app through the real router (src/app): the four tabs and which one is active, moving between them, a
 // pushed screen's Back, Android's back button, the Account screen's member card, Sign out and Change household, the
-// credits, and that nothing but the start-up /me goes out. A fake gateway answers every call the app makes (through
+// credits, that every pressable is named and a thumb's size, that a link into the tabs while signed out lands on
+// sign-in, and that nothing but the start-up /me goes out. A fake gateway answers every call the app makes (through
 // src/api/transport); queries never print the component tree (support/household.ts).
 import { act, fireEvent, screen } from '@testing-library/react-native';
 import { router } from 'expo-router';
@@ -8,7 +9,7 @@ import { renderRouter } from 'expo-router/testing-library';
 import { Linking, StyleSheet, Text } from 'react-native';
 
 import type { FetchLike } from '../src/api/client';
-import { JUSTWATCH_CREDIT, JUSTWATCH_URL, TMDB_NOTICE, TMDB_SOURCE, TMDB_URL } from '../src/credits';
+import { JUSTWATCH_CREDIT, JUSTWATCH_URL, TMDB_NOTICE, TMDB_SOURCE, TMDB_URL, type LinkedSentence } from '../src/credits';
 import { PLACEHOLDER_TEXT } from '../src/screens/PlaceholderScreen';
 import { colors, contrast, layout } from '../src/theme';
 import { ORIGIN, OTHER_ORIGIN, TOKEN, answer, button, fakeGateway, fixture, keepSession, press, settle, shows, store, storedSession } from './support/household';
@@ -46,8 +47,8 @@ beforeEach(() => {
 
 afterEach(() => openURL.mockRestore());
 
-async function start() {
-  const result = await renderRouter({ appDir: 'src/app', overrides: { '(tabs)/account/pushed': Pushed } }, { initialUrl: '/' });
+async function start(initialUrl = '/') {
+  const result = await renderRouter({ appDir: 'src/app', overrides: { '(tabs)/account/pushed': Pushed } }, { initialUrl });
   await settle();
   return result;
 }
@@ -71,6 +72,14 @@ function selectedTabs(): string[] {
 async function openTab(name: string) {
   await fireEvent.press(tabNamed(name));
   await settle();
+}
+
+const sentenceOf = (sentence: LinkedSentence) => `${sentence.before}${sentence.link}${sentence.after}`;
+
+function link(sentence: LinkedSentence) {
+  const found = screen.queryAllByRole('link', { name: sentenceOf(sentence) });
+  if (found.length !== 1) throw new Error(`expected one link "${sentence.link}", found ${found.length}`);
+  return found[0]!;
 }
 
 function headers(): string[] {
@@ -205,8 +214,8 @@ describe('the Account screen', () => {
     expect(screen.queryAllByTestId('tmdb-logo', { includeHiddenElements: true })).toHaveLength(1);
     expect(screen.queryAllByRole('link', { name: 'The Movie Database (TMDB)' })).toHaveLength(1);
     expect(shows(TMDB_NOTICE)).toBe(true);
-    expect(shows(`${TMDB_SOURCE.before}${TMDB_SOURCE.link}${TMDB_SOURCE.after}`)).toBe(true);
-    expect(shows(`${JUSTWATCH_CREDIT.before}${JUSTWATCH_CREDIT.link}${JUSTWATCH_CREDIT.after}`)).toBe(true);
+    expect(shows(sentenceOf(TMDB_SOURCE))).toBe(true);
+    expect(shows(sentenceOf(JUSTWATCH_CREDIT))).toBe(true);
   });
 
   it('shows the app version and build, and the API version from /me', async () => {
@@ -220,8 +229,8 @@ describe('the Account screen', () => {
     await start();
     await openTab('Account');
     await fireEvent.press(screen.queryAllByRole('link', { name: 'The Movie Database (TMDB)' })[0]!);
-    await fireEvent.press(screen.queryAllByRole('link', { name: 'themoviedb.org' })[0]!);
-    await fireEvent.press(screen.queryAllByRole('link', { name: 'JustWatch' })[0]!);
+    await fireEvent.press(link(TMDB_SOURCE));
+    await fireEvent.press(link(JUSTWATCH_CREDIT));
     expect(openURL.mock.calls).toEqual([[TMDB_URL], [TMDB_URL], [JUSTWATCH_URL]]);
   });
 
@@ -246,6 +255,26 @@ describe('the Account screen', () => {
     expect(storedSession()).toBeUndefined();
     expect(app.getPathname()).toBe('/');
     expect(shows('Connect to your household')).toBe(true);
+  });
+});
+
+describe('signed out', () => {
+  // Nothing kept on the device: a link straight into the tabs (or a screen pushed on one) lands on the sign-in screen's
+  // first step, and nothing goes out, not even a /me.
+  it.each(['/home', '/search', '/requests', '/account', '/account/pushed'])('opening %s directly lands on sign-in with no call', async (path) => {
+    store.__items.clear();
+    const global = jest.spyOn(globalThis, 'fetch');
+    try {
+      const app = await start(path);
+      expect(app.getPathname()).toBe('/');
+      expect(shows('Connect to your household')).toBe(true);
+      expect(tabs()).toHaveLength(0);
+      expect(shows('Pushed screen')).toBe(false);
+      expect(gateway.calls).toHaveLength(0);
+      expect(global).not.toHaveBeenCalled();
+    } finally {
+      global.mockRestore();
+    }
   });
 });
 
@@ -312,6 +341,18 @@ function textOf(node: Node): string {
 
 const OURS = ['header', 'screen-column', 'tabbar'] as const;
 
+/** Every host node on screen that answers a press, hidden or not, whatever role it has (or none). */
+function pressables(): Node[] {
+  const found: Node[] = [];
+  const visit = (node: Node) => {
+    const { onPress, onClick, onResponderRelease } = node.props;
+    if ([onPress, onClick, onResponderRelease].some((handler) => typeof handler === 'function')) found.push(node);
+    for (const child of node.children) if (typeof child !== 'string') visit(child);
+  };
+  visit(screen.root as Node);
+  return found;
+}
+
 /** Every text the header, the screen and the tab bar draw, and what each sits in. */
 function texts() {
   return screen
@@ -334,8 +375,8 @@ describe('accessibility', () => {
       'button:Change household',
       'header:ABOUT & CREDITS',
       'link:The Movie Database (TMDB)',
-      'link:themoviedb.org',
-      'link:JustWatch',
+      `link:${sentenceOf(TMDB_SOURCE)}`,
+      `link:${sentenceOf(JUSTWATCH_CREDIT)}`,
       'tab:Home',
       'tab:Search',
       'tab:My requests',
@@ -343,17 +384,53 @@ describe('accessibility', () => {
     ]);
   });
 
-  it('names the Back button and keeps it, the tabs and the buttons a thumb\'s size', async () => {
+  it('names the Back button', async () => {
     await start();
     await openTab('Account');
     await act(async () => router.push('/account/pushed'));
     await settle();
-    const targets = [...screen.queryAllByRole('button'), ...screen.queryAllByRole('tab')];
-    expect(targets.map((node) => node.props.accessibilityLabel)).toContain('Back');
-    for (const node of targets) {
-      const style = Object.assign({}, ...[node.props.style].flat(Infinity).filter(Boolean)) as { minHeight?: number; minWidth?: number };
-      expect({ label: node.props.accessibilityLabel, ok: (style.minHeight ?? 0) >= layout.touchTarget }).toEqual({ label: node.props.accessibilityLabel, ok: true });
+    expect(screen.queryAllByRole('button').map((node) => node.props.accessibilityLabel)).toContain('Back');
+  });
+
+  // Every pressable (anything that answers a press, whatever its role), not just the buttons and tabs: each is a
+  // button, link or tab with a name, and at least a thumb's height.
+  it.each([
+    ['Home', 'Home', 4],
+    ['Search', 'Search', 4],
+    ['My requests', 'My requests', 4],
+    ['Account', 'Account', 9],
+    // Back, and the Account screen still mounted underneath it.
+    ['a pushed screen', '/account/pushed', 10],
+  ] as const)('keeps every pressable on %s named and a thumb\'s size', async (_name, to, count) => {
+    await start();
+    if (to.startsWith('/')) {
+      await act(async () => router.push(to, { withAnchor: true }));
+      await settle();
+    } else {
+      await openTab(to);
     }
+    const found = pressables();
+    expect(found).toHaveLength(count);
+    for (const node of found) {
+      const what = node.props.accessibilityLabel ?? textOf(node);
+      const role = node.props.accessibilityRole;
+      const height = flat(node).minHeight;
+      expect({ what, role: ['button', 'link', 'tab'].includes(role), named: what.length > 0, height: typeof height === 'number' && height >= layout.touchTarget }).toEqual({
+        what,
+        role: true,
+        named: true,
+        height: true,
+      });
+    }
+  });
+
+  it('counts the Account screen\'s links among its pressables', async () => {
+    await start();
+    await openTab('Account');
+    const labels = pressables().map((node) => node.props.accessibilityLabel ?? textOf(node));
+    expect(labels).toEqual(
+      expect.arrayContaining(['Sign out', 'Change household', 'The Movie Database (TMDB)', sentenceOf(TMDB_SOURCE), sentenceOf(JUSTWATCH_CREDIT)]),
+    );
   });
 
   it.each(['Home', 'Search', 'My requests', 'Account'])('lets every text on %s grow with the font size, wrapping, never clipped', async (name) => {

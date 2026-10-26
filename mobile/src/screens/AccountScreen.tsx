@@ -8,7 +8,7 @@ import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 import type { Me } from '../api/types';
 import { ABOUT_TEXT, apiVersionText, CREDIT_URLS, JUSTWATCH_CREDIT, TMDB_NOTICE, TMDB_SOURCE, TMDB_URL, versionText, type LinkedSentence } from '../credits';
 import { useSession } from '../session/SessionProvider';
-import { colors, radii, spacing, typography } from '../theme';
+import { colors, layout, radii, spacing, typography } from '../theme';
 import { TmdbLogo } from '../TmdbLogo';
 import { Button, Screen } from '../ui';
 
@@ -36,15 +36,22 @@ function Group({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
+// The whole sentence is the link's target, a thumb's height at least: the link's words alone, inline, are shorter than
+// one. Screen readers read the sentence as the link's name, so its words stay with it.
 function Sentence({ sentence, muted = true }: { sentence: LinkedSentence; muted?: boolean }) {
   return (
-    <Text style={muted ? styles.muted : styles.text}>
-      {sentence.before}
-      <Text accessibilityRole="link" onPress={() => openCredit(sentence.url)} style={styles.link}>
-        {sentence.link}
+    <Pressable
+      accessibilityRole="link"
+      accessibilityLabel={`${sentence.before}${sentence.link}${sentence.after}`}
+      onPress={() => openCredit(sentence.url)}
+      style={({ pressed }) => [styles.sentenceLink, pressed && styles.pressed]}
+    >
+      <Text style={muted ? styles.muted : styles.text}>
+        {sentence.before}
+        <Text style={styles.link}>{sentence.link}</Text>
+        {sentence.after}
       </Text>
-      {sentence.after}
-    </Text>
+    </Pressable>
   );
 }
 
@@ -103,6 +110,7 @@ const styles = StyleSheet.create({
   link: { color: colors.accentText, textDecorationLine: 'underline' },
   version: { fontSize: 14.4, lineHeight: 20 },
   // At least a thumb's height around the logo, which is shorter.
-  logoLink: { minHeight: 44, justifyContent: 'center', alignSelf: 'flex-start', borderRadius: radii.chip },
+  logoLink: { minHeight: layout.touchTarget, justifyContent: 'center', alignSelf: 'flex-start', borderRadius: radii.chip },
+  sentenceLink: { minHeight: layout.touchTarget, justifyContent: 'center', borderRadius: radii.chip },
   pressed: { opacity: 0.6 },
 });
