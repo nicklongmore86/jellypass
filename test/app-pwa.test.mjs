@@ -2351,7 +2351,10 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     const ready = (page, label, count = 4) => page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === count && page.main().querySelector('.hero-slide'), label);
     /** Reveals every lazy row that is waiting, and waits for each to draw. */
     async function revealAll(page) {
-      for (const slot of [...page.main().querySelectorAll('[data-lazy="waiting"]')]) page.reveal(slot.getAttribute('data-key'));
+      // A slot can be waiting before the page has started observing it, and revealing it then would be lost.
+      const waiting = () => [...page.main().querySelectorAll('[data-lazy="waiting"]')];
+      await page.until(() => waiting().every((slot) => page.watched().includes(slot.getAttribute('data-key'))), 'every waiting row observed');
+      for (const slot of waiting()) page.reveal(slot.getAttribute('data-key'));
       await page.until(() => page.main().querySelectorAll('[data-lazy="waiting"], [data-lazy="loading"]').length === 0, 'every lazy row drawn');
     }
 
@@ -2407,6 +2410,18 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         'network-3186': 'water-hbo', 'network-453': 'water-hulu', 'network-4330': 'water-paramount', 'network-3353': 'water-peacock',
       });
       assert.doesNotMatch(page.serialize().replace(/<style[^]*?<\/style>/gi, '').replace(/<html style="(?:--(?:switch-height|header-box|tabbar-box):[0-9.]+px;?\s*)+"/, '<html'), /\sstyle=/);
+    });
+
+    it('Movies: reveals every lazy row even when a list is slow to arrive (new-movies delayed 250 ms)', async (t) => {
+      const app = await startApp(t);
+      let slow = false;
+      const page = await openApp(t, app, { override: (url) => (slow && url.startsWith('/jellypass/app/v1/discover/new-movies') ? new Promise((resolve) => setTimeout(resolve, 250)) : undefined) });
+      await ready(page, 'Home');
+      slow = true;
+      radios(page)[1].dispatchEvent(new page.Event('click'));
+      await page.until(() => page.document.querySelector('#row-trending-movies-heading'), 'Movies');
+      await revealAll(page);
+      assert.deepEqual(headings(page).slice(0, 4), ['Trending movies', 'Popular movies', 'New movie releases', 'Upcoming movies']);
     });
 
     it('Movies: films only, replaced in the address, from per-kind lists (a service\'s films), no series-only row', async (t) => {
@@ -3596,9 +3611,10 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     page.go('#/account');
     const button = await page.until(() => page.main().querySelector('#signout'), 'the Sign out button');
     click(page, button);
-    await page.until(() => page.main().querySelector('.account-out'), 'Account after signing out');
-    page.go('#/');
+    // Signing out itself lands on the sign-in screen, in place of Account's entry.
     await page.until(() => page.main().querySelector('ul.profiles'), 'the picker after signing out');
+    assert.equal(page.location.hash, '#/', 'the sign-in screen, not Account');
+    assert.equal(page.main().querySelector('.account'), null, 'no Account card left on screen');
   };
   const profileButton = (page, name) => [...page.main().querySelectorAll('button.profile')].find((button) => button.textContent.includes(name));
   const enterPassword = (page, password) => {

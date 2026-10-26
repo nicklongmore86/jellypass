@@ -276,11 +276,18 @@ function showFocusedCard(event: FocusEvent): void {
   // After the browser's own focus scroll, which would otherwise settle last.
   if (link) requestAnimationFrame(() => bringCardIntoRow(link));
 }
+/** The browser's focus scroll can leave a tall card's foot behind the tab bar at large text; the root's bottom scroll padding is the measured tab bar plus the focus ring's room, so the page is nudged up to it. */
+function clearTabBar(box: DOMRect): void {
+  const padding = parseFloat(getComputedStyle(doc.documentElement).scrollPaddingBottom);
+  const limit = (window.innerHeight || doc.documentElement.clientHeight) - (Number.isFinite(padding) ? padding : 0);
+  if (box.bottom > limit && box.height > 0) window.scrollBy(0, box.bottom - limit);
+}
 function bringCardIntoRow(link: Element): void {
   const list = link.closest<HTMLElement>('.row-list');
   if (!list || document.activeElement !== link) return;
   const card = link.closest('.card') ?? link;
   const box = card.getBoundingClientRect();
+  clearTabBar(box);
   const view = list.getBoundingClientRect();
   const right = Math.min(view.right, document.documentElement.clientWidth);
   if (box.left >= view.left && box.right <= right) return;
@@ -1322,7 +1329,9 @@ async function signOut(button: HTMLButtonElement): Promise<void> {
     return;
   }
   announce('Signed out.');
-  void render();
+  // Straight to the sign-in screen, in place of Account's entry, so Back never lands on a signed-in-looking Account.
+  replacingEntry = true;
+  location.replace('#/');
 }
 
 backButton.addEventListener('click', goBack);
