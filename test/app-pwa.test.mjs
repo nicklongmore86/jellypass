@@ -18,6 +18,9 @@ import { assertNoCanaries } from './support/seerr-fixtures.mjs';
 const DIST_APP = path.join(import.meta.dirname, '..', 'dist', 'app');
 const PAGE = '/jellypass/app/';
 const NOT_FOUND = '{"error":"not_found"}';
+/** Regexp checks that report the pattern, never the (large) text: a failing assert.match prints its whole input. */
+const matches = (text, pattern, message) => assert.ok(pattern.test(text), message ?? `expected to match ${pattern}`);
+const lacks = (text, pattern, message) => assert.ok(!pattern.test(text), message ?? `expected not to match ${pattern}`);
 const pause = (ms = 60) => new Promise((resolve) => setTimeout(resolve, ms));
 
 function walk(directory, prefix = '') {
@@ -57,48 +60,46 @@ describe('household app page: serving', { timeout: 30_000 }, () => {
     };
     const { ROW_ACCENTS, NETWORK_ACCENTS, homeHref } = await import(pathToFileURL(path.join(DIST_APP, BUILT('js/render.js'))).href);
     // Every accent but the default has a class and a colour token; the waterlines are decorative, but still stand out from the page and the card surface (3:1).
-    assert.deepEqual([...ROW_ACCENTS].sort(), ['apple', 'default', 'disney', 'gold', 'hbo', 'hulu', 'netflix', 'paramount', 'peacock', 'prime']);
+    assert.deepEqual([...ROW_ACCENTS].sort(), ['apple', 'default', 'disney', 'hbo', 'hulu', 'netflix', 'paramount', 'peacock', 'prime']);
     for (const accent of ROW_ACCENTS.filter((name) => name !== 'default')) {
       assert.ok(tokens[`water-${accent}`], `--water-${accent} is a token`);
-      assert.match(css, new RegExp(`\\.row-heading\\.water-${accent}::after \\{ background: var\\(--water-${accent}\\); \\}`), accent);
+      matches(css, new RegExp(`\\.row-heading\\.water-${accent}::after \\{ background: var\\(--water-${accent}\\); \\}`), accent);
       for (const under of ['bg', 'surface']) {
         assert.ok(contrast(tokens[`water-${accent}`], tokens[under]) >= 3, `${accent} waterline on ${under}: ${contrast(tokens[`water-${accent}`], tokens[under]).toFixed(2)}`);
       }
     }
-    // The default waterline runs aqua to coral; both ends stand out from the page (3:1), and coral is never text.
-    assert.match(css, /--waterline: linear-gradient\(90deg, var\(--accent\), var\(--coral\)\);/);
-    for (const end of ['accent', 'coral']) assert.ok(contrast(tokens[end], tokens.bg) >= 3 && contrast(tokens[end], tokens.surface) >= 3, `${end} waterline end`);
-    assert.doesNotMatch(css, /color: var\(--coral\)/);
-    // The line is a short pseudo-element under the heading (never a vertical bar), and there is no bar left.
-    assert.match(css, /\.row-heading::after \{[^}]*width: 2\.75rem; height: 0\.25rem;[^}]*background: var\(--waterline\)/);
-    assert.doesNotMatch(css, /\.row-heading[^{]*::before/);
-    // Eight services, eight different colours, none of them the all-time gold or the default waterline.
+    // The default waterline is a cyan line with a short purple end-cap, two separate segments (never a gradient); both stand out from the page (3:1), and the purple is never text.
+    for (const end of ['accent', 'purple']) assert.ok(contrast(tokens[end], tokens.bg) >= 3 && contrast(tokens[end], tokens.surface) >= 3, `${end} waterline end`);
+    matches(css, /\.row-heading::after \{[^}]*width: 2\.1rem; height: 0\.25rem;[^}]*background: var\(--accent\)/);
+    matches(css, /\.row-heading::before \{[^}]*height: 0\.25rem;[^}]*background: var\(--purple\)/);
+    lacks(css, /--waterline|color: var\(--purple\)/);
+    // Eight services, eight different colours, none of them the default waterline.
     assert.deepEqual(Object.keys(NETWORK_ACCENTS).map(Number).sort((a, b) => a - b), [213, 453, 1024, 2552, 2739, 3186, 3353, 4330]);
     assert.equal(new Set(Object.values(NETWORK_ACCENTS)).size, 8);
     assert.equal(new Set(Object.values(NETWORK_ACCENTS).map((name) => tokens[`water-${name}`])).size, 8, 'no two services share a colour');
-    assert.ok(!Object.values(NETWORK_ACCENTS).includes('gold') && !Object.values(NETWORK_ACCENTS).includes('default'));
+    assert.ok(!Object.values(NETWORK_ACCENTS).includes('default'));
     // No text is ever drawn in a waterline colour: it is a background, and only on a heading's ::after.
     for (const [, property] of css.matchAll(/([a-z-]+): var\(--water-/g)) assert.equal(property, 'background');
     // The filter: a solid band that sticks just under the solid header and the status bar, below the header's own layer.
-    assert.match(css, /\.home-switch \{[^}]*position: sticky;[^}]*z-index: 5;[^}]*top: var\(--header-box\)/);
-    assert.match(css, /\.home-switch \{[^}]*background: var\(--bg\)/);
-    assert.match(css, /\.app-header \{[^}]*position: sticky;[^}]*z-index: 10;[^}]*background: var\(--bg\)/);
-    // Outlined squircle chips; the chosen one is tinted aqua with an accent border and its tick, text on the tint at 4.5:1.
-    assert.match(css, /\.segment \{[^}]*border: 1\.5px solid var\(--hairline\); border-radius: var\(--radius-chip\); background: transparent;/);
-    assert.match(css, /\.segment\[aria-selected='true'\], \.segment\[aria-checked='true'\] \{ background: var\(--accent-tint\); border-color: var\(--accent\); color: var\(--accent-text\); \}/);
-    assert.match(css, /\.segment\[aria-checked='true'\] \.icon \{ display: block; \}/);
+    matches(css, /\.home-switch \{[^}]*position: sticky;[^}]*z-index: 5;[^}]*top: var\(--header-box\)/);
+    matches(css, /\.home-switch \{[^}]*background: var\(--bg\)/);
+    matches(css, /\.app-header \{[^}]*position: sticky;[^}]*z-index: 10;[^}]*background: var\(--bg\)/);
+    // Outlined squircle chips; the chosen one is tinted cyan with an accent border and its tick, text on the tint at 4.5:1.
+    matches(css, /\.segment \{[^}]*border: 1\.5px solid var\(--hairline\); border-radius: var\(--radius-chip\); background: transparent;/);
+    matches(css, /\.segment\[aria-selected='true'\], \.segment\[aria-checked='true'\] \{ background: var\(--accent-tint\); border-color: var\(--accent\); color: var\(--accent-text\); \}/);
+    matches(css, /\.segment\[aria-checked='true'\] \.icon \{ display: block; \}/);
     for (const [foreground, background] of [['accent-text', 'accent-tint'], ['muted', 'bg'], ['on-accent', 'accent']]) {
       assert.ok(contrast(tokens[foreground], tokens[background]) >= 4.5, `${foreground} on ${background}: ${contrast(tokens[foreground], tokens[background]).toFixed(2)}`);
     }
     // The chosen chip's border and the chips' outline stand out from the page as non-text (3:1): the accent border; the muted text carries the rest.
     assert.ok(contrast(tokens.accent, tokens['accent-tint']) >= 3 && contrast(tokens.accent, tokens.bg) >= 3);
-    assert.match(css, /\.segment \{[^}]*min-height: 2\.75rem/, 'a touch target of at least 44px');
+    matches(css, /\.segment \{[^}]*min-height: 2\.75rem/, 'a touch target of at least 44px');
     // A focused card clears the header, and on Home the band under it too (#42's scroll padding, plus the band).
-    assert.match(css, /--header-height: 3\.75rem;/);
-    assert.match(css, /--switch-height: 3\.875rem;/);
-    assert.match(css, /scroll-padding-top: calc\(var\(--header-box\) \+ 0\.5rem\)/);
-    assert.match(css, /:root:has\(body\[data-home-switch\]\) \{ scroll-padding-top: calc\(var\(--header-box\) \+ var\(--switch-height\) \+ 0\.5rem\); \}/);
-    assert.doesNotMatch(css, /backdrop-filter/, 'no glass');
+    matches(css, /--header-height: 3\.75rem;/);
+    matches(css, /--switch-height: 3\.875rem;/);
+    matches(css, /scroll-padding-top: calc\(var\(--header-box\) \+ 0\.5rem\)/);
+    matches(css, /:root:has\(body\[data-home-switch\]\) \{ scroll-padding-top: calc\(var\(--header-box\) \+ var\(--switch-height\) \+ 0\.5rem\); \}/);
+    lacks(css, /backdrop-filter/, 'no glass');
     assert.equal(homeHref('all'), '#/');
     assert.equal(homeHref('movies'), '#/?kind=movies');
     assert.equal(homeHref('tv'), '#/?kind=tv');
@@ -121,18 +122,18 @@ describe('household app page: serving', { timeout: 30_000 }, () => {
   it('is the Tidepool look and nothing left of the old one: no indigo, purple, glass, gradient capsule, accent bar or dot', () => {
     const css = read(BUILT('app.css'));
     for (const old of ['#8b7bff', '#0d0f24', '#c4bbff', '#5fa8ff', '#1b1740', '#b25cff']) assert.ok(!css.toLowerCase().includes(old), `${old} is gone`);
-    assert.doesNotMatch(css, /--(?:accent-gradient|accent-2|bg-glow|material|material-header|blur|radius-pill|scrim-top|bar-[a-z]+|pill-neutral-[a-z]+|pill-[a-z]+-glass):/);
-    assert.doesNotMatch(css, /accent-gradient|var\(--blur\)|var\(--material|radius-pill|\.accent-[a-z]+|-glass\b/);
+    lacks(css, /--(?:accent-gradient|accent-2|bg-glow|material|material-header|blur|radius-pill|scrim-top|bar-[a-z]+|pill-neutral-[a-z]+|pill-[a-z]+-glass):/);
+    lacks(css, /accent-gradient|var\(--blur\)|var\(--material|radius-pill|\.accent-[a-z]+|-glass\b/);
     // No gradient on any control: the button is solid aqua with on-accent text; gradients are the waterline, the brand mark, scrims, skeletons and image fallbacks only.
-    assert.match(css, /\.button \{[^}]*background: var\(--accent\); color: var\(--on-accent\)/);
-    assert.match(css, /\.button-secondary \{ background: transparent; color: var\(--accent-text\); border: 1\.5px solid var\(--accent\); \}/);
-    assert.doesNotMatch(css, /\.(?:button|segment|badge|chip|tabbar|home-switch)[^{]*\{[^}]*gradient/);
+    matches(css, /\.button \{[^}]*background: var\(--accent\); color: var\(--on-accent\)/);
+    matches(css, /\.button-secondary \{ background: transparent; color: var\(--accent-text\); border: 1\.5px solid var\(--accent\); \}/);
+    lacks(css, /\.(?:button|segment|badge|chip|tabbar|home-switch)[^{]*\{[^}]*gradient/);
     // The tab bar is not a floating pill and carries no dot; the page has no glow behind it.
-    assert.doesNotMatch(css, /\.tabbar a\[aria-current='page'\]::after|body::before/);
+    lacks(css, /\.tabbar a\[aria-current='page'\]::after|body::before/);
     // Heavy titles and squircle radii.
-    assert.match(css, /--radius-chip: 12px;\s*--radius-poster: 20px;\s*--radius-card: 20px;\s*--radius-backdrop: 24px;\s*--radius-sheet: 30px;/);
-    assert.match(css, /\.screen-title \{[^}]*font-weight: 800/);
-    assert.match(css, /\.row-heading \{[^}]*font-weight: 800/);
+    matches(css, /--radius-chip: 12px;\s*--radius-poster: 20px;\s*--radius-card: 20px;\s*--radius-backdrop: 24px;\s*--radius-sheet: 30px;/);
+    matches(css, /\.screen-title \{[^}]*font-weight: 800/);
+    matches(css, /\.row-heading \{[^}]*font-weight: 800/);
   });
 
   it('serves the page and every file it needs on household hosts, with no credentials and no upstream calls', async (t) => {
@@ -596,24 +597,24 @@ describe('household app page: files', () => {
       assert.ok(ratio(foreground, background) >= 4.5, `${foreground} on ${background}: ${ratio(foreground, background).toFixed(2)}`);
     }
     // The button is solid aqua with dark text: no gradient.
-    assert.match(css, /\.button \{[^}]*background: var\(--accent\); color: var\(--on-accent\)/);
+    matches(css, /\.button \{[^}]*background: var\(--accent\); color: var\(--on-accent\)/);
 
     // The status chips are solid, so they hold their text pair over any poster or backdrop, white or black (nothing shows through).
-    assert.doesNotMatch(css, /--pill-[a-z]+-(?:bg|text):\s*rgb/);
+    lacks(css, /--pill-[a-z]+-(?:bg|text):\s*rgb/);
     for (const [selector, pill] of [['badge-in_library, .badge-request-ready', 'ok'], ['badge-get_this', 'get'], ['badge-unavailable, .badge-request-failed', 'bad'], ['badge-requested, .badge-request-requested', 'warn']]) {
-      assert.match(css, new RegExp(`\\.${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{ background: var\\(--pill-${pill}-bg\\); color: var\\(--pill-${pill}-text\\); \\}`), pill);
+      matches(css, new RegExp(`\\.${selector.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} \\{ background: var\\(--pill-${pill}-bg\\); color: var\\(--pill-${pill}-text\\); \\}`), pill);
       // The dot is the text colour, so the chip's one non-text mark has the same ratio as its word.
       assert.ok(ratio(`pill-${pill}-text`, `pill-${pill}-bg`) >= 4.5, `${pill} dot and word`);
     }
-    assert.match(css, /\.badge::before \{[^}]*border-radius: 50%; background: currentColor;/);
+    matches(css, /\.badge::before \{[^}]*border-radius: 50%; background: currentColor;/);
     // Over a white poster, the chip still stands out from it as a shape (3:1); over a black one its hairline and light text carry it.
     for (const pill of ['ok', 'get', 'bad', 'warn']) assert.ok(contrast(tokens[`pill-${pill}-bg`], '#ffffff') >= 3, `${pill} chip against a white poster`);
     // The chip sits at the image's top-left, on poster cards and on backdrop cards.
-    assert.match(css, /\.card > \.badge \{[^}]*position: absolute; top: [0-9.]+rem; left: [0-9.]+rem/);
-    assert.match(css, /\.card-backdrop > \.badge \{[^}]*top: [0-9.]+rem; left: [0-9.]+rem/);
+    matches(css, /\.card > \.badge \{[^}]*position: absolute; top: [0-9.]+rem; left: [0-9.]+rem/);
+    matches(css, /\.card-backdrop > \.badge \{[^}]*top: [0-9.]+rem; left: [0-9.]+rem/);
 
-    // The header, the filter band and the docked tab bar are solid (no glass), so their text and icons hold the plain pairs checked above;
-    // the tab bar is the surface colour with the active tab raised, and the round hero buttons sit on a dark overlay over any image.
+    // The header, the filter band, the docked tab bar and the hero's text panel are navy and (nearly) opaque, so their text and icons hold the plain pairs checked above;
+    // the hero panel is composited over a pure white and a pure black picture, so its text never depends on the image.
     const composite = (name, backdrop) => {
       const found = new RegExp(`--${name}:\\s*rgb\\((\\d+) (\\d+) (\\d+) / ([0-9.]+)\\)`).exec(css);
       assert.ok(found, `${name} is a translucent rgb() token`);
@@ -621,106 +622,100 @@ describe('household app page: files', () => {
       return `#${found.slice(1, 4).map((value) => Math.round(Number(value) * alpha + backdrop * (1 - alpha)).toString(16).padStart(2, '0')).join('')}`;
     };
     for (const backdrop of [255, 0]) {
-      const under = composite('overlay', backdrop);
-      assert.ok(contrast(tokens.text, under) >= 4.5, `the hero buttons' icon over ${backdrop ? 'white' : 'black'} (${under}): ${contrast(tokens.text, under).toFixed(2)}`);
+      const under = composite('panel', backdrop);
+      for (const text of ['text', 'muted', 'accent-text']) {
+        assert.ok(contrast(tokens[text], under) >= 4.5, `${text} on the hero panel over ${backdrop ? 'white' : 'black'} (${under}): ${contrast(tokens[text], under).toFixed(2)}`);
+      }
     }
+    // The colours are Jellyfin's: its navy page and cyan main colour, the purple a small decoration.
+    assert.equal(tokens.bg, '#000b25');
+    assert.equal(tokens.accent, '#00a4dc');
+    assert.equal(tokens.purple, '#aa5cc3');
+    assert.ok(ratio('text', 'bg') >= 12, `body text on navy: ${ratio('text', 'bg').toFixed(2)}`);
+    assert.ok(ratio('accent', 'bg') >= 6, `cyan on navy: ${ratio('accent', 'bg').toFixed(2)}`);
+    assert.ok(ratio('on-accent', 'accent') >= 6, `navy on cyan: ${ratio('on-accent', 'accent').toFixed(2)}`);
+    assert.ok(ratio('purple', 'bg') >= 3, `the purple cap on navy: ${ratio('purple', 'bg').toFixed(2)}`);
     // Non-text: the back, search and tab icons, and the waterline and tab indicator, against what they sit on.
-    for (const [graphic, under] of [['text', 'surface'], ['text', 'bg'], ['accent-text', 'surface-raised'], ['muted', 'surface'], ['accent', 'surface']]) {
+    for (const [graphic, under] of [['text', 'surface'], ['text', 'bg'], ['accent-text', 'surface-raised'], ['muted', 'surface'], ['accent', 'surface'], ['purple', 'bg']]) {
       assert.ok(ratio(graphic, under) >= 3, `${graphic} icon on ${under}: ${ratio(graphic, under).toFixed(2)}`);
     }
     // The active tab is an aqua-tint squircle with an aqua outline: the outline is the non-text indicator and must be 3:1 against the bar (WCAG 1.4.11); the tint is not relied on. Its label and icon are 4.5:1 on the tint (above).
     assert.ok(ratio('accent', 'surface') >= 3, `the active tab's outline against the bar: ${ratio('accent', 'surface').toFixed(2)}`);
     assert.ok(ratio('accent-text', 'accent-tint') >= 4.5);
     // Active vs inactive is told apart by more than colour: an outline the inactive tabs lack (transparent) and a heavier icon stroke.
-    assert.match(css, /\.tabbar a \{[^}]*border: 1\.5px solid transparent/);
-    assert.match(css, /\.tabbar a\[aria-current='page'\] \{ background: var\(--accent-tint\); border-color: var\(--accent\); color: var\(--accent-text\); \}/);
-    assert.match(css, /\.tabbar a\[aria-current='page'\] \.icon \{ stroke-width: 2\.4; \}/);
+    matches(css, /\.tabbar a \{[^}]*border: 1\.5px solid transparent/);
+    matches(css, /\.tabbar a\[aria-current='page'\] \{ background: var\(--accent-tint\); border-color: var\(--accent\); color: var\(--accent-text\); \}/);
+    matches(css, /\.tabbar a\[aria-current='page'\] \.icon \{ stroke-width: 2\.4; \}/);
     // A service page's All | Series | Films control shares the chips: muted on the page, the selected one aqua on its tint (pairs above).
-    assert.match(css, /\.segment \{[^}]*background: transparent;[^}]*color: var\(--muted\)/);
-    assert.match(css, /\.tabbar a \{[^}]*color: var\(--muted\)/);
+    matches(css, /\.segment \{[^}]*background: transparent;[^}]*color: var\(--muted\)/);
+    matches(css, /\.tabbar a \{[^}]*color: var\(--muted\)/);
     // The tab bar is the surface colour, solid, so it needs no blur fallback.
-    assert.match(css, /\.tabbar \{[^}]*background: var\(--surface\)/);
+    matches(css, /\.tabbar \{[^}]*background: var\(--surface\)/);
     // The page's colours are the installed app's: the status bar and the splash.
     const manifest = JSON.parse(read(BUILT('manifest.webmanifest')));
     assert.equal(manifest.background_color, tokens.bg);
     assert.equal(manifest.theme_color, tokens.bg);
-    assert.match(css, /prefers-reduced-motion: reduce/);
-    assert.match(css, /env\(safe-area-inset-bottom\)/);
-    assert.match(css, /:focus-visible/);
+    matches(css, /prefers-reduced-motion: reduce/);
+    matches(css, /env\(safe-area-inset-bottom\)/);
+    matches(css, /:focus-visible/);
   });
 
-  it('keeps text over a backdrop at 4.5:1 even when the backdrop is pure white, through the scrims', () => {
+  it('draws no text over a picture except in the hero\'s navy panel, and no scrim, gradient between the brand colours, teal or coral', () => {
     const css = read(BUILT('app.css'));
-    const tokens = Object.fromEntries([...css.matchAll(/--([a-z0-9-]+):\s*(#[0-9a-f]{6});/gi)].map((match) => [match[1], match[2]]));
-    const hex = (value) => [1, 3, 5].map((index) => parseInt(value.slice(index, index + 2), 16));
-    const luminance = (rgb) => {
-      const [r, g, b] = rgb.map((value) => value / 255).map((value) => (value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4));
-      return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-    };
-    const contrast = (a, b) => {
-      const [high, low] = [luminance(a), luminance(b)].sort((x, y) => y - x);
-      return (high + 0.05) / (low + 0.05);
-    };
-    const translucent = (name) => {
-      const found = new RegExp(`--${name}:\\s*rgb\\((\\d+) (\\d+) (\\d+) / ([0-9.]+)\\)`).exec(css);
-      assert.ok(found, `${name} is a translucent rgb() token`);
-      return { rgb: found.slice(1, 4).map(Number), alpha: Number(found[4]) };
-    };
-    const over = ({ rgb, alpha }, behind) => rgb.map((value, index) => value * alpha + behind[index] * (1 - alpha));
-    const WHITE = [255, 255, 255];
-    const BLACK = [0, 0, 0];
-    const scrimText = translucent('scrim-text');
-    // Under the hero's and the detail page's text: the page colour at a fixed alpha, over a backdrop at worst pure white (or black).
-    for (const [backdrop, name] of [[WHITE, 'white'], [BLACK, 'black']]) {
-      const under = over(scrimText, backdrop);
-      for (const text of ['text', 'muted', 'accent-text']) {
-        assert.ok(contrast(hex(tokens[text]), under) >= 4.5, `${text} on the text scrim over ${name}: ${contrast(hex(tokens[text]), under).toFixed(2)}`);
-      }
-      // The detail chips and the status chips are solid (the chips' surface, the pills' own pairs), so nothing behind them matters.
-      assert.ok(contrast(hex(tokens.text), hex(tokens.surface)) >= 4.5, `chip text over ${name}`);
-      for (const pill of ['ok', 'get', 'bad', 'warn']) {
-        assert.ok(contrast(hex(tokens[`pill-${pill}-text`]), hex(tokens[`pill-${pill}-bg`])) >= 4.5, `${pill} chip over ${name}`);
-      }
-    }
-    // The scrim is solid under the text: from the foot up past where the title block starts, then it fades out.
-    const overlap = Number(/--detail-overlap:\s*(\d+(?:\.\d+)?)rem/.exec(css)?.[1]);
-    const detailSolid = Number(/\.detail-scrim \{[^}]*linear-gradient\(to top, var\(--bg\) 0, var\(--scrim-text\) 5rem, var\(--scrim-text\) (\d+)rem, transparent \d+rem\)/.exec(css)?.[1]);
-    assert.ok(detailSolid >= overlap + 2, `the detail scrim is solid for ${detailSolid}rem and the title starts ${overlap}rem up`);
-    // A two-line title, the facts row, a two-line overview and the controls' strip all fit inside the hero's solid part.
-    const heroSolid = Number(/\.hero-scrim \{[^}]*linear-gradient\(to top, var\(--bg\) 0, var\(--scrim-text\) 6rem, var\(--scrim-text\) (\d+)rem, transparent \d+rem\)/.exec(css)?.[1]);
-    const strip = Number(/\.hero-text \{[^}]*padding: 0 var\(--gutter-end\) (\d+(?:\.\d+)?)rem/.exec(css)?.[1]);
-    const title = 2 * 2.4 * 1.15;
-    const facts = 0.5 + 0.9 * 1.5 + 0.35;
-    const overview = 0.5 + 2 * 0.95 * 1.4;
-    assert.ok(strip + title + facts + overview <= heroSolid, `${(strip + title + facts + overview).toFixed(1)}rem of hero text in ${heroSolid}rem of solid scrim`);
-    // Backdrop cards: the title and facts sit on the same scrim; its solid part holds a two-line title, the facts and the inset, at the narrowest card.
-    const cardScrim = /\.backdrop-scrim \{[^}]*linear-gradient\(to top, var\(--scrim-text\) 0, var\(--scrim-text\) (\d+(?:\.\d+)?)rem, transparent (\d+(?:\.\d+)?)rem\)/.exec(css);
-    assert.ok(cardScrim, 'the backdrop scrim is the checked scrim token');
-    const cardTitle = Number(/\.backdrop-text \.card-title \{[^}]*font-size: (\d+(?:\.\d+)?)rem/.exec(css)?.[1]);
-    const cardLine = Number(/\.backdrop-text \.card-title \{[^}]*line-height: (\d+(?:\.\d+)?)/.exec(css)?.[1]);
-    const cardMeta = /\.backdrop-text \.card-meta \{[^}]*font-size: (\d+(?:\.\d+)?)rem; line-height: (\d+(?:\.\d+)?)/.exec(css);
-    const cardInset = Number(/\.backdrop-text \{[^}]*bottom: (\d+(?:\.\d+)?)rem/.exec(css)?.[1]);
-    const cardGap = Number(/\.backdrop-text \{[^}]*gap: (\d+(?:\.\d+)?)rem/.exec(css)?.[1]);
-    const cardText = cardInset + 2 * cardTitle * cardLine + cardGap + Number(cardMeta[1]) * Number(cardMeta[2]);
-    assert.ok(cardText <= Number(cardScrim[1]), `${cardText.toFixed(2)}rem of backdrop text in ${cardScrim[1]}rem of solid scrim`);
-    assert.match(css, /\.backdrop-text \.card-title \{[^}]*color: var\(--text\)/);
-    assert.match(css, /\.backdrop-text \.card-meta \{[^}]*color: var\(--muted\)/);
-    // The title is at most two lines, the card is 16:9 and nearly a screen wide, and the pill stays on the corner over the image.
-    assert.match(css, /\.backdrop-link \{[^}]*aspect-ratio: 16 \/ 9/);
-    assert.match(css, /\.row-list-backdrop > \.card \{ flex: 0 0 92%; \}/);
-    assert.match(css, /\.backdrop-link:focus-visible \{ outline: 3px solid var\(--accent-text\)/);
+    // The big cards and the detail pages put their text below the image, on the page's own navy: no scrim is left.
+    lacks(css, /scrim|--overlay/);
+    lacks(css, /\.backdrop-text \{[^}]*position: absolute/);
+    matches(css, /\.backdrop-text \.card-title \{[^}]*color: var\(--text\)/);
+    matches(css, /\.backdrop-text \.card-meta \{[^}]*color: var\(--muted\)/);
+    // The hero's text sits in a panel of the page colour at 0.92 opacity or more (composited over white and black in the contrast test).
+    const panel = /--panel:\s*rgb\(0 11 37 \/ ([0-9.]+)\)/.exec(css);
+    assert.ok(panel && Number(panel[1]) >= 0.9, 'the panel is navy and nearly opaque');
+    matches(css, /\.hero-panel \{[^}]*background: var\(--panel\)/);
+    matches(css, /\.hero-link \{ color: var\(--text\)/);
+    matches(css, /\.hero-overview \{[^}]*color: var\(--muted\)/);
+    matches(css, /\.chip \{[^}]*background: var\(--surface\); color: var\(--text\)/);
+    matches(css, /\.back \{[^}]*color: var\(--accent-text\)/);
+    // The big card is a 16:9 image 24px round, nearly a screen wide on a phone, with its chip at the top-left.
+    matches(css, /\.backdrop-frame \{[^}]*aspect-ratio: 16 \/ 9[^}]*border-radius: var\(--radius-backdrop\)/);
+    matches(css, /--radius-backdrop: 24px;/);
+    matches(css, /\.row-list-backdrop > \.card \{ flex: 0 0 92%; \}/);
+    matches(css, /\.backdrop-link:focus-visible \.backdrop-frame::after \{[^}]*border: 3px solid var\(--accent\)/);
     assert.equal(/\.backdrop[a-z-]* \{[^}]*url\(/.test(css), false, 'no CSS url()');
-    // The big card is 24px round, with its chip at the top-left.
-    assert.match(css, /\.backdrop-link \{[^}]*border-radius: var\(--radius-backdrop\)/);
-    // The header is solid and sits above the image, so nothing is drawn under it: no header scrim is left.
-    assert.doesNotMatch(css, /\.app-header::before/);
-    // The text on the backdrop is the checked tokens, and nothing else is laid over the scrims.
-    assert.match(css, /\.hero-link \{ color: var\(--text\)/);
-    assert.match(css, /\.hero-overview \{[^}]*color: var\(--muted\)/);
-    assert.match(css, /\.chip \{[^}]*background: var\(--surface\); color: var\(--text\)/);
-    assert.match(css, /\.back \{[^}]*color: var\(--accent-text\)/);
+    lacks(css, /\.app-header::before/);
     // Past the header, a focused element still stops clear of it.
-    assert.match(css, /scroll-padding-top: calc\(var\(--header-box\) \+ 0\.5rem\)/);
+    matches(css, /scroll-padding-top: calc\(var\(--header-box\) \+ 0\.5rem\)/);
+    // The hero is an inset 4:5 card on a phone, never full bleed; the detail backdrop an inset 16:9 card.
+    matches(css, /\.hero-card \{[^}]*aspect-ratio: 4 \/ 5/);
+    matches(css, /\.detail-hero \{[^}]*aspect-ratio: 16 \/ 9/);
+    matches(css, /\.detail-hero \{[^}]*border-radius: var\(--radius-sheet\)/);
+  });
+
+  it('is Jellyfin navy and cyan: no teal or coral, purple only as a small decoration, never a purple-to-blue gradient', () => {
+    const css = read(BUILT('app.css'));
+    const ts = read(BUILT('js/render.js'));
+    // Colours are tokens; the old teal and coral hexes and names are gone everywhere (stylesheet, page, manifest, code).
+    const OLD = ['#06161b', '#0e262d', '#153540', '#0f3a38', '#eafaf6', '#9fc3c0', '#4fe3c1', '#7ff0d6', '#04201b', '#ff8a73', '#e6b422', '#0d3a46', '#bdf0ff'];
+    for (const file of [css, read('index.html'), read(BUILT('manifest.webmanifest')), ts]) {
+      for (const hex of OLD) assert.equal(file.toLowerCase().includes(hex), false, hex);
+      assert.doesNotMatch(file, /\b(?:teal|coral|aqua)\b/i);
+    }
+    // The purple is used in exactly one rule: the waterline's end-cap pseudo-element. Never as text, a border, a control or a fill of anything else.
+    const uses = css.split('\n').filter((line) => /var\(--purple\)|#aa5cc3/i.test(line)).filter((line) => !/^\s*--purple:/.test(line));
+    assert.equal(uses.length, 1, `purple is used on one line: ${uses.join(' | ')}`);
+    assert.match(uses[0], /^\.row-heading::before \{[^}]*background: var\(--purple\); \}$/);
+    lacks(css, /(?:^|[^-])color:\s*var\(--purple\)|(?:border|outline)[a-z-]*:[^;}]*var\(--purple\)/);
+    // No gradient mixes the cyan and the purple (or either with the blue): the gradients left are navy surface ramps and the loading shimmer.
+    for (const gradient of css.match(/(?:linear|radial|conic)-gradient\([^;{}]*\)/g) ?? []) {
+      assert.doesNotMatch(gradient, /--purple|--accent|#aa5cc3|#00a4dc|--water-/, gradient);
+    }
+    // The two segments of the waterline are separate boxes with a gap between them, not one blended bar.
+    const cyan = /\.row-heading::after \{[^}]*left: 0; bottom: 0; width: ([0-9.]+)rem/.exec(css);
+    const cap = /\.row-heading::before \{[^}]*left: ([0-9.]+)rem; bottom: 0; width: ([0-9.]+)rem/.exec(css);
+    assert.ok(cyan && cap, 'the waterline is two segments');
+    assert.ok(Number(cap[1]) > Number(cyan[1]), 'a gap between the cyan line and the purple cap');
+    assert.ok(Number(cap[2]) <= 0.75, 'the purple cap is short');
+    // The old tokens are gone.
+    lacks(css, /--gold|--coral|--aqua|--teal|water-gold/);
   });
 
   it('keeps a focused card clear of the solid header and the docked tab bar', () => {
@@ -731,19 +726,19 @@ describe('household app page: files', () => {
     assert.ok(bottom.includes('var(--tabbar-box)'), `bottom clearance follows the bar's box: ${bottom}`);
     assert.ok(top.includes('var(--header-box)'), `top clearance follows the header's box: ${top}`);
     // The boxes default to the rem estimates with the safe areas; main.ts replaces them with the measured heights.
-    assert.match(css, /--header-box: calc\(var\(--header-height\) \+ env\(safe-area-inset-top\)\);/);
-    assert.match(css, /--tabbar-box: calc\(var\(--tabbar-height\) \+ var\(--tabbar-gap\) \+ env\(safe-area-inset-bottom\)\);/);
+    matches(css, /--header-box: calc\(var\(--header-height\) \+ env\(safe-area-inset-top\)\);/);
+    matches(css, /--tabbar-box: calc\(var\(--tabbar-height\) \+ var\(--tabbar-gap\) \+ env\(safe-area-inset-bottom\)\);/);
     // Never less than the bar itself: the clearance is the bar's height plus a margin, never the padding alone.
     assert.match(bottom, /\+ 0\.[0-9]+rem\)$/);
-    assert.match(css, /--tabbar-height: 4\.5rem;/);
-    assert.match(css, /--tabbar-gap: 0rem;/, 'docked: no gap under the bar');
+    matches(css, /--tabbar-height: 4\.5rem;/);
+    matches(css, /--tabbar-gap: 0rem;/, 'docked: no gap under the bar');
     // The bar is 0.5rem of padding either side of a 3.5rem tab; the header is 0.5rem, a 2.75rem button and 0.5rem; the band is 0.5rem, a 2.75rem chip and 0.625rem.
-    assert.match(css, /\.tabbar a \{[^}]*min-height: 3\.5rem/);
-    assert.match(css, /\.tabbar \{[^}]*padding: 0\.5rem max\(0\.75rem, env\(safe-area-inset-right\)\) calc\(0\.5rem \+ env\(safe-area-inset-bottom\)\)/);
-    assert.match(css, /--header-height: 3\.75rem;/);
-    assert.match(css, /--switch-height: 3\.875rem;/);
-    assert.match(css, /\.home-switch \{[^}]*padding: 0\.5rem [^;]* 0\.625rem /);
-    assert.match(css, /main \{[^}]*padding: 0\.75rem var\(--gutter-end\) calc\(var\(--tabbar-box\) \+ 1\.5rem\)/);
+    matches(css, /\.tabbar a \{[^}]*min-height: 3\.5rem/);
+    matches(css, /\.tabbar \{[^}]*padding: 0\.5rem max\(0\.75rem, env\(safe-area-inset-right\)\) calc\(0\.5rem \+ env\(safe-area-inset-bottom\)\)/);
+    matches(css, /--header-height: 3\.75rem;/);
+    matches(css, /--switch-height: 3\.875rem;/);
+    matches(css, /\.home-switch \{[^}]*padding: 0\.5rem [^;]* 0\.625rem /);
+    matches(css, /main \{[^}]*padding: 0\.75rem var\(--gutter-end\) calc\(var\(--tabbar-box\) \+ 1\.5rem\)/);
   });
 
   it('draws the tab bar docked and full width: rounded top corners, 56px labelled tabs, a filled squircle for the active one, a safe-area foot, no dot', () => {
@@ -758,14 +753,14 @@ describe('household app page: files', () => {
     assert.ok(Number(/min-height: ([0-9.]+)rem/.exec(tab)[1]) >= 2.75);
     assert.match(tab, /flex-direction: column/);
     assert.match(tab, /border-radius: var\(--radius-card\)/);
-    assert.match(css, /\.tabbar a\[aria-current='page'\] \{ background: var\(--accent-tint\); border-color: var\(--accent\);/);
-    assert.doesNotMatch(css, /\.tabbar a\[aria-current='page'\]::after/, 'no dot under the active tab');
+    matches(css, /\.tabbar a\[aria-current='page'\] \{ background: var\(--accent-tint\); border-color: var\(--accent\);/);
+    lacks(css, /\.tabbar a\[aria-current='page'\]::after/, 'no dot under the active tab');
     // Status chips sit on the image's top-left corner; search is three columns, two on a very narrow screen.
-    assert.match(css, /\.card > \.badge \{[^}]*position: absolute; top: [0-9.]+rem; left: [0-9.]+rem/);
-    assert.match(css, /\.grid, \.skeleton-grid \{[^}]*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/);
-    assert.match(css, /@media \(max-width: 21rem\) \{\s*\.grid, \.skeleton-grid \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
-    assert.match(css, /--radius-chip: 12px;[\s\S]*--radius-poster: 20px;[\s\S]*--radius-card: 20px;[\s\S]*--radius-backdrop: 24px;[\s\S]*--radius-sheet: 30px;/);
-    assert.match(css, /--font: -apple-system, /);
+    matches(css, /\.card > \.badge \{[^}]*position: absolute; top: [0-9.]+rem; left: [0-9.]+rem/);
+    matches(css, /\.grid, \.skeleton-grid \{[^}]*grid-template-columns: repeat\(3, minmax\(0, 1fr\)\)/);
+    matches(css, /@media \(max-width: 21rem\) \{\s*\.grid, \.skeleton-grid \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\)/);
+    matches(css, /--radius-chip: 12px;[\s\S]*--radius-poster: 20px;[\s\S]*--radius-card: 20px;[\s\S]*--radius-backdrop: 24px;[\s\S]*--radius-sheet: 30px;/);
+    matches(css, /--font: -apple-system, /);
   });
 });
 
@@ -1189,15 +1184,13 @@ describe('household app page: rendering', () => {
     assert.equal(image.getAttribute('width'), '342');
     assert.equal(image.getAttribute('height'), '513');
     assert.match(read(BUILT('app.css')), /\.poster \{[^}]*aspect-ratio: 2 \/ 3/);
-    // A backdrop is an <img> with its own size attributes inside a frame of fixed height (dvh where the browser has it).
+    // A backdrop is an <img> with its own size attributes inside a 16:9 frame.
     const backdrop = titleDetail(document, { ...card(), genres: [], runtime: 90 }, origin).querySelector('.detail-hero img');
     assert.equal(backdrop.getAttribute('width'), '780');
     assert.equal(backdrop.getAttribute('height'), '439');
     assert.equal(backdrop.getAttribute('loading'), 'eager');
     const css = read(BUILT('app.css'));
-    assert.match(css, /\.detail-hero \{[^}]*height: var\(--detail-hero-height\)/);
-    assert.match(css, /@supports \(height: 100dvh\) \{\s*:root \{[^}]*--detail-hero-height: 60dvh/);
-    assert.match(css, /--detail-hero-height: 60vh;/, 'and 60vh where dvh is unknown');
+    matches(css, /\.detail-hero \{[^}]*aspect-ratio: 16 \/ 9/, 'the backdrop card keeps its 16:9 shape before the image arrives');
   });
 
   it('renders a movie page, a series page with its seasons and states, and a season with its episodes', async () => {
@@ -1298,6 +1291,16 @@ describe('household app page: rendering', () => {
       assert.equal(items[0].querySelector('.badge').textContent, 'Available to get');
       assert.equal(items[1].querySelector('.card-meta'), null, 'no year and no rating: no empty line');
       assert.equal(items[0].querySelectorAll('button, a.button').length, 0);
+      // Title and "year · ★ rating TMDB" are BELOW the image, never inside the picture's frame; the solid chip is on the image.
+      const link = items[0].querySelector('a');
+      const frame = link.querySelector(':scope > .backdrop-frame');
+      const text = link.querySelector(':scope > .backdrop-text');
+      assert.ok(frame && text, 'a frame and a text block');
+      assert.deepEqual([...link.children].map((child) => child.className), ['backdrop-frame', 'backdrop-text'], 'the text follows the image');
+      assert.equal(frame.querySelectorAll('.card-title, .card-meta').length, 0, 'no text over the picture');
+      assert.equal(frame.querySelectorAll('img').length, 1);
+      assert.equal(text.querySelector('.card-title').textContent, 'Synthetic Movie Three');
+      assert.equal(items[0].querySelector(':scope > .badge').textContent, 'Available to get', 'the chip is a sibling positioned on the image corner');
     });
 
     it('falls back to the poster, then to a plain gradient card, and drops a URL that is not TMDB\'s', async () => {
@@ -1314,7 +1317,7 @@ describe('household app page: rendering', () => {
       assert.equal(items[0].querySelector('img').className, 'backdrop-img');
       for (const item of items.slice(1)) {
         assert.equal(item.querySelector('img'), null);
-        assert.ok(item.querySelector('a').className.includes('backdrop-plain'));
+        assert.equal(item.querySelectorAll('.backdrop-frame').length, 1, 'the plain card keeps its 16:9 frame');
         assert.ok(item.querySelector('.card-title').textContent);
       }
     });
@@ -1549,7 +1552,7 @@ describe('household app page: rendering', () => {
       for (const rule of ['.badge-request-ready', '.badge-request-failed', '.badge-request-requested', '.get-error', '.get-seasons', '.choice', '.request-list']) {
         assert.ok(css.includes(rule), rule);
       }
-      assert.match(css, /\.choice \{[^}]*min-height: 2\.75rem/, '44 px touch target');
+      matches(css, /\.choice \{[^}]*min-height: 2\.75rem/, '44 px touch target');
       // No new colour literals: the new rules use the checked tokens only.
       const added = css.slice(css.indexOf('.get-this {'), css.indexOf('.credits {'));
       assert.doesNotMatch(added, /#[0-9a-f]{3,6}\b/i);
@@ -1578,7 +1581,7 @@ describe('household app page: rendering', () => {
     it('lays the detail head out in two columns only where there is a poster to put in the first', async () => {
       const { document, titleDetail, seasonView } = await renderer();
       const css = readFileSync(path.join(DIST_APP, BUILT('app.css')), 'utf8');
-      assert.match(css, /\.detail-head-poster \{ display: grid; grid-template-columns: 9rem minmax\(0, 1fr\)/);
+      matches(css, /\.detail-head-poster \{ display: grid; grid-template-columns: 9rem minmax\(0, 1fr\)/);
       assert.equal(/\.detail-head \{ display: grid/.test(css), false, 'the bare head is never a grid');
       const headOf = (node) => node.querySelector('.detail-head');
       for (const posterUrl of [poster, null]) {
@@ -1625,11 +1628,12 @@ describe('household app page: rendering', () => {
         const image = detail.querySelector('.detail-hero img');
         assert.equal(image.getAttribute('src'), w780, 'the fallback is the smaller file');
         assert.equal(image.getAttribute('srcset'), `${w780} 780w, ${w1280} 1280w`);
-        assert.equal(image.getAttribute('sizes'), '100vw');
+        assert.equal(image.getAttribute('sizes'), '(min-width: 64rem) 960px, calc(100vw - 2rem)', 'a phone asks for the inset card\'s width');
         assert.equal(image.getAttribute('alt'), '');
         assert.equal(detail.querySelectorAll('[style]').length, 0);
         const hero = heroCarousel(document, [card({ backdropUrl })]);
         assert.equal(hero.querySelector('img').getAttribute('srcset'), `${w780} 780w, ${w1280} 1280w`);
+        assert.equal(hero.querySelector('img').getAttribute('sizes'), '(min-width: 75rem) 1100px, calc(100vw - 2rem)');
         assert.equal(hero.querySelectorAll('[style]').length, 0);
       }
       // Posters stay at w342.
@@ -1638,7 +1642,7 @@ describe('household app page: rendering', () => {
       for (const backdropUrl of ['https://image.tmdb.org/t/p/original/a.jpg', 'https://image.tmdb.org/t/p/w500/a.jpg', 'https://evil.example.test/a.jpg', null]) {
         assert.equal(titleDetail(document, { ...card({ backdropUrl }), genres: [], runtime: 90 }, origin).querySelectorAll('.detail-hero img').length, 0, String(backdropUrl));
       }
-      assert.doesNotMatch(read(BUILT('app.css')), /url\(|@import/);
+      lacks(read(BUILT('app.css')), /url\(|@import/);
     });
 
     it('draws the hero from up to five titles, with a labelled button for each control and a plain slide where there is no backdrop', async () => {
@@ -1658,7 +1662,8 @@ describe('household app page: rendering', () => {
       assert.deepEqual(slides.map((slide) => slide.querySelector('.hero-overview').textContent), [1, 2, 3, 4, 5].map((n) => `Synthetic hero overview ${n}.`));
       assert.deepEqual(slides.map((slide) => slide.querySelector('.badge').textContent), ['Available to get', 'Ready to watch', 'Requested', "Can't request", 'Available to get']);
       assert.deepEqual(slides.map((slide) => slide.querySelectorAll('img').length), [1, 1, 0, 1, 1], 'no backdrop, no image');
-      assert.ok(slides[2].classList.contains('hero-slide-plain'));
+      assert.equal(slides[2].querySelectorAll('.hero-card .hero-media img').length, 0, 'the plain card is navy with its panel');
+      assert.deepEqual(slides.map((slide) => slide.querySelectorAll('.hero-card > .hero-panel .hero-link, .hero-card > .hero-panel .badge').length), Array(5).fill(2), 'title and status chip sit in the text panel');
       assert.equal(slides[0].querySelector('img').getAttribute('loading'), 'eager');
       assert.equal(slides[1].querySelector('img').getAttribute('loading'), 'lazy');
       // Controls: real buttons, each named.
@@ -1671,6 +1676,15 @@ describe('household app page: rendering', () => {
       assert.deepEqual(dots.map((dot) => dot.getAttribute('aria-label')), [1, 2, 3, 4, 5].map((n) => `Show title ${n} of 5: Synthetic Hero ${n}`));
       assert.deepEqual(dots.map((dot) => dot.getAttribute('aria-current')), ['true', null, null, null, null]);
       assert.equal(shown.querySelectorAll('[style]').length, 0);
+      // Each slide is an inset card: the picture fills it and the text sits in a panel after the picture, with the pager outside the card.
+      for (const slide of slides) {
+        assert.deepEqual([...slide.children].map((child) => child.className), ['hero-card']);
+        assert.deepEqual([...slide.querySelector('.hero-card').children].map((child) => child.className), ['hero-media', 'hero-panel']);
+        assert.equal(slide.querySelector('.hero-panel .hero-title') !== null && slide.querySelector('.hero-panel .hero-facts') !== null && slide.querySelector('.hero-panel .hero-overview') !== null, true);
+        assert.equal(slide.querySelector('.hero-media').querySelectorAll('a, button, p').length, 0, 'no text in the picture');
+      }
+      assert.equal(shown.querySelectorAll('.hero-card button').length, 0, 'the pager is outside the cards');
+      assert.equal(shown.querySelector('.hero-controls').querySelectorAll('button').length, 7, 'Previous, five bubbles and Next');
       // A single title needs no controls; no title, no hero.
       assert.equal(heroCarousel(document, heroCards(1)).querySelectorAll('button').length, 0);
       assert.equal(heroCarousel(document, []), undefined);
@@ -1715,9 +1729,9 @@ describe('household app page: rendering', () => {
       // The built client has no timer or animation frame at all in the rendering code, and the stylesheet no autoplay either.
       assert.doesNotMatch(read(BUILT('js/render.js')), /setInterval|setTimeout|requestAnimationFrame|autoplay/i);
       const css = read(BUILT('app.css'));
-      assert.match(css, /@media \(prefers-reduced-motion: reduce\) \{[^@]*animation: none !important; transition: none !important; scroll-behavior: auto !important/);
-      assert.match(css, /\.hero-track \{[^}]*scroll-snap-type: x mandatory/);
-      assert.doesNotMatch(css, /\.hero[^{]*\{[^}]*animation:/, 'the hero itself animates nothing');
+      matches(css, /@media \(prefers-reduced-motion: reduce\) \{[^@]*animation: none !important; transition: none !important; scroll-behavior: auto !important/);
+      matches(css, /\.hero-track \{[^}]*scroll-snap-type: x mandatory/);
+      lacks(css, /\.hero[^{]*\{[^}]*animation:/, 'the hero itself animates nothing');
     });
 
     it('shows Play for a title in the library, Get this for one available to get, and neither (a pill and a note) for the rest', async () => {
@@ -1774,11 +1788,12 @@ describe('household app page: rendering', () => {
       assert.deepEqual(chips(seasonView(document, { tmdbId: 900002, seasonNumber: 1, name: 'Season 1', overview: '', state: 'in_library',
         episodes: [{ episodeNumber: 1, name: 'Pilot', overview: '' }, { episodeNumber: 2, name: '', overview: '' }] }, 'S')), ['2 episodes']);
       const css = read(BUILT('app.css'));
-      assert.match(css, /\.poster-detail \{ display: none; \}/, 'no poster on a phone');
-      assert.match(css, /@media \(min-width: 48rem\) \{[^@]*\.poster-detail \{ display: block; \}/, 'a small one on a wide screen');
-      assert.match(css, /\.detail-main \{[^}]*margin: calc\(-1 \* var\(--detail-overlap\)\) auto 0/, 'the title block overlaps the backdrop');
-      assert.match(css, /\.detail-title \{[^}]*font-weight: 800/);
-      assert.match(css, /\.button-primary \{ width: 100%; min-height: 3\.5rem/, 'a full-width squircle button');
+      matches(css, /\.poster-detail \{ display: none; \}/, 'no poster on a phone');
+      matches(css, /@media \(min-width: 48rem\) \{[^@]*\.poster-detail \{ display: block; \}/, 'a small one on a wide screen');
+      lacks(css, /--detail-overlap|margin: calc\(-1 \*/, 'the title block starts below the backdrop card, never over it');
+      matches(css, /\.detail-hero \{[^}]*margin-bottom: [0-9.]+rem/, 'the title block sits below the backdrop card');
+      matches(css, /\.detail-title \{[^}]*font-weight: 800/);
+      matches(css, /\.button-primary \{ width: 100%; min-height: 3\.5rem/, 'a full-width squircle button');
     });
 
     it('draws seasons as cards with a round checkbox inside one fieldset, and Select all only moves the checkmarks', async () => {
@@ -1836,10 +1851,10 @@ describe('household app page: rendering', () => {
       assert.equal(none.querySelectorAll('.season').length, 1);
       // The control is a custom rounded-square one built on the real checkbox.
       const css = read(BUILT('app.css'));
-      assert.match(css, /\.choice input \{[^}]*appearance: none;[^}]*border-radius: 0\.5rem/);
-      assert.match(css, /\.choice input:checked \{[^}]*background: var\(--accent\)/);
-      assert.match(css, /\.choice input:focus-visible \{ outline: 3px solid var\(--accent\)/);
-      assert.match(css, /\.choice \{[^}]*min-width: 2\.75rem; min-height: 2\.75rem/);
+      matches(css, /\.choice input \{[^}]*appearance: none;[^}]*border-radius: 0\.5rem/);
+      matches(css, /\.choice input:checked \{[^}]*background: var\(--accent\)/);
+      matches(css, /\.choice input:focus-visible \{ outline: 3px solid var\(--accent\)/);
+      matches(css, /\.choice \{[^}]*min-width: 2\.75rem; min-height: 2\.75rem/);
     });
 
     it('gives the hero and a detail page their own skeletons, hidden from assistive technology and free of controls', async () => {
@@ -1847,19 +1862,19 @@ describe('household app page: rendering', () => {
       for (const [name, node] of [['hero', skeletonHero(document)], ['detail', skeletonDetail(document)]]) {
         assert.equal(node.getAttribute('aria-hidden'), 'true', name);
         assert.equal(node.querySelectorAll('a, button, input, img, h1, h2').length, 0, `${name}: nothing to focus or announce`);
-        assert.ok(node.querySelectorAll('.skeleton').length >= 3, name);
+        assert.ok(node.querySelectorAll('.skeleton').length >= 1, name);
         assert.equal(node.querySelectorAll('[style]').length, 0, name);
       }
       assert.equal(skeletonHero(document).querySelectorAll('.hero-slide').length, 0, 'not the real hero');
       assert.ok(skeletonDetail(document).querySelector('.detail-hero.skeleton'), 'the backdrop\'s shape');
       const css = read(BUILT('app.css'));
-      assert.match(css, /\.hero-skeleton \{[^}]*height: var\(--hero-height\)/);
+      matches(css, /\.hero-skeleton-card \{[^}]*aspect-ratio: 4 \/ 5/, 'the same shape as the hero card');
     });
   });
 
   it('credits TMDB with its logo, the required notice and a link to themoviedb.org', async () => {
-    const { document, aboutView, TMDB_NOTICE } = await renderer();
-    const about = aboutView(document);
+    const { document, accountView, TMDB_NOTICE } = await renderer();
+    const about = accountView(document);
     assert.equal(TMDB_NOTICE, 'This product uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB.');
     assert.ok([...about.querySelectorAll('p')].some((paragraph) => paragraph.textContent === TMDB_NOTICE));
     const logo = about.querySelector('img.tmdb-logo');
@@ -1871,31 +1886,36 @@ describe('household app page: rendering', () => {
     assert.equal(about.querySelector('.justwatch-credit').textContent,
       'Which films each streaming service has (US availability only, the same for every household) comes from JustWatch, through TMDB.');
     assert.ok(about.querySelectorAll('h1').length === 1);
+    assert.match(about.querySelector('.app-version').textContent, /^JellyPass \d+\.\d+\.\d+/, 'the version is in About & credits');
     // The logo is less prominent than the app's own name (TMDB's terms): small, in the credits only.
-    assert.match(read(BUILT('app.css')), /\.tmdb-logo \{ width: 9rem/);
+    matches(read(BUILT('app.css')), /\.tmdb-logo \{ width: 9rem/);
   });
 
-  it('puts the account and Sign out in grouped About cards, only while signed in, and keeps the TMDB credit', async () => {
-    const { document, aboutView, accountText, TMDB_NOTICE } = await renderer();
+  it('puts the member card with Sign out first, then About & credits, only while signed in, and keeps the TMDB credit', async () => {
+    const { document, accountView, accountText, TMDB_NOTICE } = await renderer();
     let signedOutBy = 0;
-    const view = aboutView(document, { me: { name: 'Alice', household: 'Farmhouse' }, onSignOut: (button) => { if (button.id === 'signout') signedOutBy += 1; } });
-    assert.deepEqual([...view.querySelectorAll('h2')].map((heading) => heading.textContent), ['Account', 'About', 'Credits']);
+    const view = accountView(document, { me: { name: 'Alice', household: 'Farmhouse' }, onSignOut: (button) => { if (button.id === 'signout') signedOutBy += 1; } });
+    assert.deepEqual([...view.querySelectorAll('h2')].map((heading) => heading.textContent), ['Account', 'About & credits']);
+    assert.equal(view.querySelector('h1').textContent, 'Account');
+    assert.ok(view.querySelector('h1').classList.contains('visually-hidden'), 'the header shows the title');
     assert.equal(view.querySelector('.account .account-name').textContent, 'Alice · Farmhouse');
     const signOut = view.querySelector('.account button#signout');
     assert.equal(signOut.textContent, 'Sign out');
     assert.equal(signOut.getAttribute('type'), 'button');
     signOut.dispatchEvent(new (document.defaultView.Event)('click'));
     assert.equal(signedOutBy, 1);
-    assert.equal(view.querySelectorAll('.inset-card').length, 3);
+    assert.equal(view.querySelectorAll('.inset-card').length, 2);
+    assert.ok(view.querySelector('.account').compareDocumentPosition(view.querySelector('.credits')) & 4, 'the member card comes first');
     assert.ok([...view.querySelectorAll('p')].some((paragraph) => paragraph.textContent === TMDB_NOTICE), 'the notice is still there');
     assert.ok(view.querySelector('img.tmdb-logo'));
+    assert.ok(view.querySelector('.justwatch-credit'));
     assert.equal(accountText(undefined), 'Signed in', 'before /me answers');
     assert.equal(accountText({ name: 'Alice', household: '' }), 'Alice');
-    // No account: no Account card and no Sign out; signed out, a way back to the sign-in on Home.
-    const anonymous = aboutView(document);
-    assert.deepEqual([...anonymous.querySelectorAll('h2')].map((heading) => heading.textContent), ['About', 'Credits']);
+    // No account: no member card and no Sign out; signed out, a way back to the sign-in on Home.
+    const anonymous = accountView(document);
+    assert.deepEqual([...anonymous.querySelectorAll('h2')].map((heading) => heading.textContent), ['About & credits']);
     assert.equal(anonymous.querySelector('#signout'), null);
-    const out = aboutView(document, undefined, true);
+    const out = accountView(document, undefined, true);
     assert.equal(out.querySelector('#signout'), null);
     assert.equal(out.querySelector('.account-out a.button').getAttribute('href'), '#/');
   });
@@ -1933,7 +1953,7 @@ describe('household app page: rendering', () => {
     assert.ok(!requests.classList.contains('request-list') || requests.querySelectorAll('.request').length === 0);
     assert.equal(requests.querySelectorAll('.skeleton-request .skeleton-thumb').length, 4);
     // Icons are built node by node in the SVG namespace, hidden from assistive technology, in the text colour.
-    for (const name of ['home', 'search', 'requests', 'info', 'back']) {
+    for (const name of ['home', 'search', 'requests', 'account', 'back']) {
       const svg = icon(document, name);
       assert.equal(svg.namespaceURI, 'http://www.w3.org/2000/svg', name);
       assert.equal(svg.getAttribute('aria-hidden'), 'true');
@@ -2167,10 +2187,10 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     assert.equal(await accountName(page), 'Alice · Farmhouse', 'the household and name are on About, not in the header');
   });
 
-  it('draws Popular movies, Popular series, New movie releases and All-time great movies as backdrop cards and every other row as posters, with no extra call', async (t) => {
+  it('draws Popular movies, Popular series and New movie releases as backdrop cards and every other row as posters, with no extra call', async (t) => {
     const app = await startApp(t);
     const page = await openApp(t, app);
-    await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4 && page.watched().length === 12, 'Home');
+    await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4 && page.watched().length === 10, 'Home');
     const kinds = {};
     for (const list of page.document.querySelectorAll('ul.row-list[aria-labelledby]')) {
       kinds[list.getAttribute('aria-labelledby')] = list.className;
@@ -2201,18 +2221,21 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       '/jellypass/app/v1/discover/sources', '/jellypass/app/v1/discover/trending', '/jellypass/app/v1/me',
     ]);
     assert.equal(app.tmdb.calls.filter((call) => call.pathname !== '/3/authentication').length, 4);
-    // The rows below the fold draw as they are revealed: the two All-time great rows differ (movies big, TV posters), the upcoming rows are posters.
-    for (const key of ['row-upcoming', 'row-upcoming-tv', 'row-top-movies', 'row-top-tv']) {
+    // The rows below the fold draw as they are revealed: the upcoming rows are posters, and there are no All-time great rows.
+    for (const key of ['row-upcoming', 'row-upcoming-tv']) {
       page.reveal(key);
       await page.until(() => page.document.querySelector(`#${key}-heading`), key);
     }
     for (const [id, className] of Object.entries({
-      'row-upcoming-heading': 'row-list', 'row-upcoming-tv-heading': 'row-list', 'row-top-movies-heading': 'row-list row-list-backdrop', 'row-top-tv-heading': 'row-list',
+      'row-upcoming-heading': 'row-list', 'row-upcoming-tv-heading': 'row-list',
     })) {
       assert.equal(page.document.querySelector(`ul[aria-labelledby="${id}"]`).className, className, id);
     }
     assert.deepEqual([...page.document.querySelectorAll('.row-heading')].map((heading) => heading.textContent).filter(Boolean),
-      ['Trending', 'Popular movies', 'Popular series', 'New movie releases', 'Upcoming movies', 'Upcoming series', 'Studios', 'All-time great movies', 'All-time great TV']);
+      ['Trending', 'Popular movies', 'Popular series', 'New movie releases', 'Upcoming movies', 'Upcoming series', 'Studios']);
+    assert.equal(page.document.querySelector('#row-top-movies-heading'), null);
+    assert.equal(page.document.querySelector('#row-top-tv-heading'), null);
+    assert.equal(app.tmdb.calls.some((call) => /top_rated/.test(call.pathname)), false, 'the all-time lists are not asked of TMDB');
     assertNoCanaries(page.serialize(), 'backdrop cards');
   });
 
@@ -2238,7 +2261,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
   it('fetches Home\'s rows below the fold only as they come near the screen, one call each', async (t) => {
     const app = await startApp(t);
     const page = await openApp(t, app);
-    await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4 && page.watched().length === 12, 'Home');
+    await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4 && page.watched().length === 10, 'Home');
     const urls = () => page.requests.map((request) => request.url).sort();
     const tmdb = () => app.tmdb.calls.filter((call) => call.pathname !== '/3/authentication').length;
     // First load: the same four TMDB calls as before the network rows; the networks and studios cost none.
@@ -2249,11 +2272,11 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     assert.equal(tmdb(), 4);
     assert.deepEqual(page.watched(), [
       'row-network-1024', 'row-network-213', 'row-network-2552', 'row-network-2739', 'row-network-3186', 'row-network-3353',
-      'row-network-4330', 'row-network-453', 'row-top-movies', 'row-top-tv', 'row-upcoming', 'row-upcoming-tv',
+      'row-network-4330', 'row-network-453', 'row-upcoming', 'row-upcoming-tv',
     ]);
     assert.equal(page.observers.at(-1).options.rootMargin, '400px 0px', 'a row starts loading a little before it scrolls in');
     // Each waiting row holds a row-shaped skeleton, hidden from assistive technology.
-    assert.equal(page.main().querySelectorAll('[data-lazy="waiting"] section.row[aria-hidden="true"] .skeleton').length, 12 * 13);
+    assert.equal(page.main().querySelectorAll('[data-lazy="waiting"] section.row[aria-hidden="true"] .skeleton').length, 10 * 13);
     // The Studios strip needs no title: it is drawn at once, each logo a link with the studio's name.
     assert.deepEqual([...page.main().querySelectorAll('ul.logo-list a')].map((link) => `${link.getAttribute('href')} ${link.getAttribute('aria-label')}`).slice(0, 3),
       ['#/studio/2 Disney movies', '#/studio/127928 20th Century Studios movies', '#/studio/34 Sony Pictures movies']);
@@ -2287,7 +2310,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     assert.equal(tmdb(), 7);
     assert.deepEqual(app.tmdb.calls.slice(-2).map((call) => call.query.get('with_networks') ?? `${call.query.get('with_watch_providers')} ${call.query.get('watch_region')}`).sort(),
       ['213', '8|1796 US']);
-    assert.equal(page.watched().length, 10);
+    assert.equal(page.watched().length, 8);
     assertNoCanaries(page.serialize(), 'the page shows data that is not in a DTO');
   });
 
@@ -2295,7 +2318,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     const app = await startApp(t);
     const tops = new Map();
     const page = await openApp(t, app, { intersection: false, rect: (element) => tops.get(element.getAttribute('data-key')) ?? 3000 });
-    await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4 && page.main().querySelectorAll('[data-lazy]').length === 12, 'Home');
+    await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4 && page.main().querySelectorAll('[data-lazy]').length === 10, 'Home');
     await pause(50);
     assert.equal(page.requests.length, 6, 'nothing below the fold yet');
     tops.set('row-upcoming-tv', 1200);
@@ -2328,7 +2351,10 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     const ready = (page, label, count = 4) => page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === count && page.main().querySelector('.hero-slide'), label);
     /** Reveals every lazy row that is waiting, and waits for each to draw. */
     async function revealAll(page) {
-      for (const slot of [...page.main().querySelectorAll('[data-lazy="waiting"]')]) page.reveal(slot.getAttribute('data-key'));
+      // A slot can be waiting before the page has started observing it, and revealing it then would be lost.
+      const waiting = () => [...page.main().querySelectorAll('[data-lazy="waiting"]')];
+      await page.until(() => waiting().every((slot) => page.watched().includes(slot.getAttribute('data-key'))), 'every waiting row observed');
+      for (const slot of waiting()) page.reveal(slot.getAttribute('data-key'));
       await page.until(() => page.main().querySelectorAll('[data-lazy="waiting"], [data-lazy="loading"]').length === 0, 'every lazy row drawn');
     }
 
@@ -2363,28 +2389,39 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       const app = await startApp(t);
       const page = await openApp(t, app);
       await ready(page, 'Home');
-      await page.until(() => page.watched().length === 12, 'the lazy rows');
+      await page.until(() => page.watched().length === 10, 'the lazy rows');
       assert.equal(tmdbCount(app), 4);
       assert.deepEqual(urls(page).sort(), ['/discover/new-movies', '/discover/popular-movies', '/discover/popular-tv', '/discover/sources', '/discover/trending', '/me']);
       await revealAll(page);
       assert.deepEqual(headings(page), ['Trending', 'Popular movies', 'Popular series', 'New movie releases', 'Upcoming movies', 'Upcoming series',
-        'Popular on', 'Popular on', 'Popular on', 'Popular on', 'Popular on', 'Popular on', 'Popular on', 'Popular on', 'Studios', 'All-time great movies', 'All-time great TV']);
+        'Popular on', 'Popular on', 'Popular on', 'Popular on', 'Popular on', 'Popular on', 'Popular on', 'Popular on', 'Studios']);
       // Rows in the order given: the services' rows come before the studios' strip, then the all-time lists, then the JustWatch credit.
       const slots = [...page.main().querySelectorAll('#home-panel > *')].map((slot) => slot.getAttribute('data-key')
         ?? (slot.querySelector('[data-key^="row-network-"]') ? 'networks' : slot.querySelector('.source-note') ? 'credit' : slot.querySelector('.hero, ul.logo-list') ? 'studios' : slot.querySelector('ul.row-list') ? 'row' : 'empty'));
-      assert.deepEqual(slots, ['row', 'row', 'row', 'row', 'row-upcoming', 'row-upcoming-tv', 'networks', 'studios', 'row-top-movies', 'row-top-tv', 'credit']);
+      assert.deepEqual(slots, ['row', 'row', 'row', 'row', 'row-upcoming', 'row-upcoming-tv', 'networks', 'studios', 'credit']);
       assert.equal(page.main().querySelectorAll('#home-panel [data-key^="row-network-"]').length, 8);
       assert.equal(page.main().querySelectorAll('.source-note').length, 1);
-      assert.ok(page.main().querySelector('.source-note').compareDocumentPosition(page.document.getElementById('row-top-tv-heading')) & 2, 'the credit closes Home');
-      // The waterlines: aqua to coral (no class) by default, gold for the all-time lists, a brand colour per service. A class, never a style.
+      assert.equal(slots.at(-1), 'credit', 'the credit closes Home');
+      // The waterlines: cyan with a purple end-cap (no class) by default, a brand colour per service. A class, never a style.
       const accents = Object.fromEntries([...page.main().querySelectorAll('.row-heading')].map((heading) => [heading.id.replace(/^row-|-heading$/g, ''), [...heading.classList].filter((name) => name.startsWith('water-')).join()]));
       assert.deepEqual(accents, {
         trending: '', 'popular-movies': '', 'popular-tv': '', 'new-movies': '', upcoming: '', 'upcoming-tv': '', studios: '',
-        'top-movies': 'water-gold', 'top-tv': 'water-gold',
         'network-213': 'water-netflix', 'network-2739': 'water-disney', 'network-2552': 'water-apple', 'network-1024': 'water-prime',
         'network-3186': 'water-hbo', 'network-453': 'water-hulu', 'network-4330': 'water-paramount', 'network-3353': 'water-peacock',
       });
       assert.doesNotMatch(page.serialize().replace(/<style[^]*?<\/style>/gi, '').replace(/<html style="(?:--(?:switch-height|header-box|tabbar-box):[0-9.]+px;?\s*)+"/, '<html'), /\sstyle=/);
+    });
+
+    it('Movies: reveals every lazy row even when a list is slow to arrive (new-movies delayed 250 ms)', async (t) => {
+      const app = await startApp(t);
+      let slow = false;
+      const page = await openApp(t, app, { override: (url) => (slow && url.startsWith('/jellypass/app/v1/discover/new-movies') ? new Promise((resolve) => setTimeout(resolve, 250)) : undefined) });
+      await ready(page, 'Home');
+      slow = true;
+      radios(page)[1].dispatchEvent(new page.Event('click'));
+      await page.until(() => page.document.querySelector('#row-trending-movies-heading'), 'Movies');
+      await revealAll(page);
+      assert.deepEqual(headings(page).slice(0, 4), ['Trending movies', 'Popular movies', 'New movie releases', 'Upcoming movies']);
     });
 
     it('Movies: films only, replaced in the address, from per-kind lists (a service\'s films), no series-only row', async (t) => {
@@ -2402,10 +2439,10 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.equal(page.main().querySelector('.hero').getAttribute('aria-label'), 'Trending movies');
       await revealAll(page);
       assert.deepEqual(headings(page), ['Trending movies', 'Popular movies', 'New movie releases', 'Upcoming movies',
-        ...Array(8).fill('Films on'), 'Studios', 'All-time great movies']);
+        ...Array(8).fill('Films on'), 'Studios']);
       // Only the movie lists, and a service's films alone: nothing was fetched and then thrown away.
       const asked = urls(page).slice(before);
-      assert.deepEqual(asked.filter((url) => !url.includes('/network/')).sort(), ['/discover/new-movies', '/discover/popular-movies', '/discover/top-movies', '/discover/trending-movies', '/discover/upcoming']);
+      assert.deepEqual(asked.filter((url) => !url.includes('/network/')).sort(), ['/discover/new-movies', '/discover/popular-movies', '/discover/trending-movies', '/discover/upcoming']);
       assert.deepEqual(asked.filter((url) => url.includes('/network/')).sort(), [213, 2739, 2552, 1024, 3186, 453, 4330, 3353].sort().map((id) => `/discover/network/${id}/films`).sort());
       for (const list of page.main().querySelectorAll('ul.row-list')) {
         for (const link of list.querySelectorAll('a.card-link')) assert.match(link.getAttribute('href'), /^#\/movie\//, list.getAttribute('aria-labelledby'));
@@ -2432,9 +2469,9 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.deepEqual(state(page), ['All false -1', 'Movies false -1', 'TV true 0']);
       assert.equal(page.main().querySelector('.hero').getAttribute('aria-label'), 'Trending series');
       await revealAll(page);
-      assert.deepEqual(headings(page), ['Trending series', 'Popular series', 'Upcoming series', ...Array(8).fill('Series on'), 'All-time great TV']);
+      assert.deepEqual(headings(page), ['Trending series', 'Popular series', 'Upcoming series', ...Array(8).fill('Series on')]);
       const asked = urls(page).slice(before);
-      assert.deepEqual(asked.filter((url) => !url.includes('/network/')).sort(), ['/discover/popular-tv', '/discover/top-tv', '/discover/trending-tv', '/discover/upcoming-tv']);
+      assert.deepEqual(asked.filter((url) => !url.includes('/network/')).sort(), ['/discover/popular-tv', '/discover/trending-tv', '/discover/upcoming-tv']);
       assert.deepEqual(asked.filter((url) => url.includes('/network/')).sort(), [213, 2739, 2552, 1024, 3186, 453, 4330, 3353].sort().map((id) => `/discover/network/${id}`).sort());
       for (const list of page.main().querySelectorAll('ul.row-list')) {
         for (const link of list.querySelectorAll('a.card-link')) assert.match(link.getAttribute('href'), /^#\/tv\//, list.getAttribute('aria-labelledby'));
@@ -2442,7 +2479,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.equal(page.document.querySelector('#row-network-213-heading a').getAttribute('href'), '#/network/213?kind=series');
       assert.equal(page.main().querySelector('ul.logo-list'), null, 'the studios make movies');
       assert.equal(page.main().querySelector('.source-note'), null, 'no where-to-watch data on series');
-      for (const gone of ['row-popular-movies', 'row-new-movies', 'row-upcoming', 'row-top-movies']) assert.equal(page.document.querySelector(`#${gone}-heading`), null, gone);
+      for (const gone of ['row-popular-movies', 'row-new-movies', 'row-upcoming', 'row-top-movies', 'row-top-tv']) assert.equal(page.document.querySelector(`#${gone}-heading`), null, gone);
     });
 
     it('opens on the filter named in the address, and anything else is All', async (t) => {
@@ -2450,7 +2487,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       const movies = await openApp(t, app, { hash: '#/?kind=movies' });
       await ready(movies, 'Movies');
       assert.deepEqual(state(movies), ['All false -1', 'Movies true 0', 'TV false -1']);
-      assert.equal(movies.main().querySelectorAll('[data-lazy]').length, 9, 'All-time great movies and the eight services wait');
+      assert.equal(movies.main().querySelectorAll('[data-lazy]').length, 8, 'the eight services wait');
       const tv = await openApp(t, app, { hash: '#/?kind=tv' });
       await ready(tv, 'TV', 3);
       assert.deepEqual(state(tv), ['All false -1', 'Movies false -1', 'TV true 0']);
@@ -2661,7 +2698,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
   it('credits JustWatch once on Home, under the services\' rows', async (t) => {
     const app = await startApp(t);
     const page = await openApp(t, app);
-    await page.until(() => page.watched().length === 12, 'Home');
+    await page.until(() => page.watched().length === 10, 'Home');
     const notes = [...page.main().querySelectorAll('.source-note')];
     assert.deepEqual(notes.map((note) => note.textContent), ['Where to watch: US streaming availability from JustWatch, via TMDB.']);
     const slots = [...page.main().querySelectorAll('[data-key^="row-network-"]')];
@@ -2680,7 +2717,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     const page = await openApp(t, app, {
       override: (url) => (url === '/jellypass/app/v1/discover/sources' ? { status: 200, body: Buffer.from(JSON.stringify(sources)), headers: { 'content-type': 'application/json' } } : undefined),
     });
-    await page.until(() => page.main().querySelector('ul.logo-list') && page.watched().length === bad.length + 4, 'Home');
+    await page.until(() => page.main().querySelector('ul.logo-list') && page.watched().length === bad.length + 2, 'Home');
     page.reveal('row-network-213');
     const heading = await page.until(() => page.document.querySelector('#row-network-213-heading'), 'the first network row');
     assert.equal(heading.querySelector('img'), null);
@@ -2723,57 +2760,69 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     page.go('#/about');
     await page.until(() => page.main().querySelector('.tmdb-logo'), 'about');
     assert.match(page.main().textContent, /uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB/);
-    assert.equal(page.document.querySelector('nav a[aria-current="page"]'), null, 'About is not a tab, so no tab is marked');
+    assert.equal(page.document.querySelector('nav a[aria-current="page"]').dataset.nav, 'account', 'About is the Account tab');
+    assert.equal(page.location.hash, '#/account', 'the old address is replaced in place');
   });
 
-  it('has three labelled tabs, and reaches About (with its TMDB credit) from the (i) button in Home\'s top row', async (t) => {
+  it('has four labelled tabs, a header without the wordmark or (i), and Account (with the TMDB credit) as the fourth', async (t) => {
     const app = await startApp(t);
     const page = await openApp(t, app);
     await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4, 'home');
     const tabs = [...page.document.querySelectorAll('nav[aria-label="Main"] a')];
-    assert.deepEqual(tabs.map((tab) => tab.textContent), ['Home', 'Search', 'My requests']);
-    assert.deepEqual(tabs.map((tab) => tab.getAttribute('href')), ['#/', '#/search', '#/requests']);
-    assert.deepEqual(tabs.map((tab) => tab.querySelectorAll('svg[aria-hidden="true"]').length), [1, 1, 1], 'an icon on each tab, hidden from screen readers');
-    assert.equal(page.document.querySelector('nav a[data-nav="about"]'), null, 'About is not a tab');
+    assert.deepEqual(tabs.map((tab) => tab.textContent), ['Home', 'Search', 'My requests', 'Account']);
+    assert.deepEqual(tabs.map((tab) => tab.getAttribute('href')), ['#/', '#/search', '#/requests', '#/account']);
+    assert.deepEqual(tabs.map((tab) => tab.querySelectorAll('svg[aria-hidden="true"]').length), [1, 1, 1, 1], 'an icon on each tab, hidden from screen readers');
     assert.equal(page.document.querySelector('nav a[aria-current="page"]').dataset.nav, 'home');
-    // Home's top row: the brand and the (i) that opens About; nowhere else, and not the signed-in name or Sign out.
+    // Account has its own pass/key icon, not a person in a circle.
+    const { icon } = await import(pathToFileURL(path.join(DIST_APP, BUILT('js/icons.js'))).href);
+    const pass = icon(page.document, 'account');
+    assert.ok(pass.querySelector('circle') && pass.querySelectorAll('line').length >= 3, 'a key: a bow and a shaft with teeth');
+    assert.equal(pass.querySelector('path'), null, 'no head-and-shoulders path');
+    // The header: no wordmark, no (i). Home has neither Back nor a title, so it is only the status bar's safe area.
     const header = page.document.querySelector('header.app-header');
-    const info = header.querySelector('a#about-link');
-    assert.equal(info.hidden, false);
-    assert.equal(info.getAttribute('href'), '#/about');
-    assert.equal(info.getAttribute('aria-label'), 'About and credits');
-    assert.equal(info.querySelectorAll('svg').length, 1);
-    assert.equal(header.querySelector('.brand').textContent, 'JellyPass');
+    assert.equal(header.querySelector('.brand'), null);
+    assert.equal(header.querySelector('#about-link'), null);
+    assert.equal(/JellyPass/.test(header.textContent), false, 'no wordmark');
+    assert.equal(header.hasAttribute('data-bare'), true);
+    assert.equal(header.querySelector('#header-title').textContent, '');
     assert.equal(header.querySelector('#signout'), null, 'no Sign out in the header');
-    assert.equal(header.querySelector('#who'), null);
     assert.equal(/Sign out/.test(header.textContent), false);
-    page.go(info.getAttribute('href'));
-    await page.until(() => page.main().querySelector('.tmdb-logo'), 'about');
+    page.go('#/account');
+    await page.until(() => page.main().querySelector('.tmdb-logo'), 'account');
     assert.match(page.main().textContent, /uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB/);
-    assert.equal(info.hidden, true, 'the (i) is Home\'s own');
+    assert.equal(page.document.querySelector('nav a[aria-current="page"]').dataset.nav, 'account');
+    assert.equal(header.querySelector('#header-title').textContent, 'Account', 'a titled screen shows its title in the header');
+    assert.equal(header.hasAttribute('data-bare'), false);
     assert.equal(page.back().hidden, false);
     page.go('#/search');
     await page.until(() => page.main().querySelector('input[type="search"]'), 'search');
-    assert.equal(info.hidden, true);
+    assert.equal(header.querySelector('#header-title').textContent, 'Search');
     assert.equal(page.document.querySelector('nav a[aria-current="page"]').dataset.nav, 'search');
     assert.equal(page.main().querySelectorAll('.search-field svg').length, 1, 'the magnifier is inside the field');
+    page.go(`#/movie/${OWN_MOVIE}`);
+    await page.until(() => page.main().querySelector('article.detail'), 'the movie');
+    assert.equal(header.querySelector('#header-title').textContent, 'Synthetic Movie Three');
   });
 
-  it('shows Sign out only in About\'s Account card, with the name and household, and signed out offers the way back', async (t) => {
+  it('shows the member card with Sign out first, then About & credits, and signed out offers the way back', async (t) => {
     const app = await startApp(t);
-    const page = await openApp(t, app, { hash: '#/about' });
+    const page = await openApp(t, app, { hash: '#/account' });
     await page.until(() => page.main().querySelector('.account-name')?.textContent === 'Alice · Farmhouse', 'the account card');
-    assert.deepEqual([...page.main().querySelectorAll('h2')].map((heading) => heading.textContent), ['Account', 'About', 'Credits']);
+    assert.deepEqual([...page.main().querySelectorAll('h2')].map((heading) => heading.textContent), ['Account', 'About & credits']);
     assert.equal(page.main().querySelectorAll('button#signout').length, 1);
     assert.equal(page.document.querySelector('header #signout'), null);
     assert.equal(page.document.querySelectorAll('#signout').length, 1);
     assert.equal(page.document.querySelector('.tmdb-logo') !== null, true);
-    const signedOut = await openApp(t, app, { hash: '#/about', signedIn: false });
-    await signedOut.until(() => signedOut.main().querySelector('.tmdb-logo'), 'about, signed out');
+    assert.match(page.main().querySelector('.app-version').textContent, /^JellyPass \d+\.\d+\.\d+/);
+    const legacy = await openApp(t, app, { hash: '#/about' });
+    await legacy.until(() => legacy.main().querySelector('.account-name')?.textContent === 'Alice · Farmhouse', 'the old About address');
+    assert.equal(legacy.location.hash, '#/account', '#/about is the Account tab');
+    const signedOut = await openApp(t, app, { hash: '#/account', signedIn: false });
+    await signedOut.until(() => signedOut.main().querySelector('.tmdb-logo'), 'account, signed out');
     assert.equal(signedOut.main().querySelector('#signout'), null, 'nothing to sign out of');
     assert.equal(signedOut.main().querySelector('.account'), null);
     assert.equal(signedOut.main().querySelector('.account-out a').getAttribute('href'), '#/');
-    assert.equal(signedOut.requests.length, 0, 'About asks the API for nothing when signed out');
+    assert.equal(signedOut.requests.length, 0, 'Account asks the API for nothing when signed out');
   });
 
   it('keeps Play on the title\'s own page when it is in the library, and shows none where it is not', async (t) => {
@@ -2859,7 +2908,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.equal(root.style.getPropertyValue('--header-box'), '76px');
       // No style attributes are written via markup or setAttribute; the root's custom properties are set via the CSSOM, allowed by style-src (the root's style attribute then reflects them).
       const css = read(BUILT('app.css'));
-      assert.match(css, /:root:has\(body\[data-home-switch\]\) \{ scroll-padding-top: calc\([^;]*var\(--switch-height\)/);
+      matches(css, /:root:has\(body\[data-home-switch\]\) \{ scroll-padding-top: calc\([^;]*var\(--switch-height\)/);
       assert.match(APP_CONTENT_SECURITY_POLICY, /style-src 'self'(?!.*unsafe-inline)/);
       const source = read(BUILT('js/main.js'));
       assert.match(source, /measure\(["']--switch-height["']/);
@@ -2882,7 +2931,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.match(source, /show\(heading, switcher, heroSlot, panel\);\s*revealChip\(switcher\.querySelector\(['"]\[aria-checked="true"\]['"]\)\)/);
       assert.match(source, /if \(next === chosen\)\s*return revealChip\(button\)/);
       assert.match(source, /radio\.setAttribute\(['"]tabindex['"][^]*?\}\s*revealChip\(button\)/);
-      assert.match(css, /\.segmented-home \{[^}]*scroll-padding-inline: 4px/);
+      matches(css, /\.segmented-home \{[^}]*scroll-padding-inline: 4px/);
     });
 
     it('has no hero, and the header is its own bar, when the first row is empty or fails', async (t) => {
@@ -2898,16 +2947,16 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       // The sticky switch is still on the page, so the scroll padding that clears it stays on (it is keyed to the switch, not the hero).
       for (const page of [empty, failing]) assert.equal(page.document.body.getAttribute('data-home-switch'), '');
       const css = read(BUILT('app.css'));
-      assert.match(css, /:root:has\(body\[data-home-switch\]\) \{ scroll-padding-top: calc\([^;]*var\(--switch-height\)/);
+      matches(css, /:root:has\(body\[data-home-switch\]\) \{ scroll-padding-top: calc\([^;]*var\(--switch-height\)/);
       assert.ok(!/data-chrome='home'\]\) \{ scroll-padding/.test(css));
     });
 
-    it('lets the header float over a hero or a backdrop only on the screens that have one', async (t) => {
+    it('runs Home\'s filter band full width and gives every other screen, detail pages included, the page\'s own gutters', async (t) => {
       const app = await startApp(t);
       const page = await openApp(t, app);
       await homeReady(page);
       assert.equal(chrome(page), 'home');
-      for (const [hash, expected] of [[`#/movie/${OWN_MOVIE}`, 'detail'], [`#/tv/${T_TV}`, 'detail'], [`#/tv/${T_TV}/season/1`, 'detail'], ['#/search', null], ['#/requests', null], ['#/about', null], ['#/', 'home']]) {
+      for (const [hash, expected] of [[`#/movie/${OWN_MOVIE}`, null], [`#/tv/${T_TV}`, null], [`#/tv/${T_TV}/season/1`, null], ['#/search', null], ['#/requests', null], ['#/account', null], ['#/', 'home']]) {
         page.go(hash);
         await page.until(() => chrome(page) === expected && page.main().getAttribute('aria-busy') === 'false', `${hash}: ${expected}`);
         assert.equal(chrome(page), expected, hash);
@@ -2919,16 +2968,16 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       page.scroll.y = 0;
       for (const listener of page.listeners.scroll ?? []) listener({ type: 'scroll' });
       assert.equal(page.document.body.hasAttribute('data-scrolled'), false);
-      // An error on a detail page is an ordinary screen, not drawn under a floating header.
+      // An error on a detail page is an ordinary screen.
       const missing = await openApp(t, app, { hash: '#/movie/999999' });
       await missing.until(() => missing.main().querySelector('[role="alert"]'), 'the error');
       assert.equal(chrome(missing), null);
     });
 
-    it('draws a movie, a series and a season full-bleed, with the one action and the seasons as cards', async (t) => {
+    it('draws a movie, a series and a season with an inset backdrop card, the title below it, the one action and the seasons as cards', async (t) => {
       const app = await startApp(t);
       const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}` });
-      await page.until(() => page.main().querySelector('article.detail-full'), 'the movie');
+      await page.until(() => page.main().querySelector('article.detail'), 'the movie');
       assert.equal(page.main().querySelector('.detail-hero img').getAttribute('src'), `https://image.tmdb.org/t/p/w780/synthetic-backdrop-${T_MOVIE}.jpg`);
       assert.equal(page.main().querySelector('.detail-hero img').getAttribute('srcset'), `https://image.tmdb.org/t/p/w780/synthetic-backdrop-${T_MOVIE}.jpg 780w, https://image.tmdb.org/t/p/w1280/synthetic-backdrop-${T_MOVIE}.jpg 1280w`);
       assert.equal(page.main().querySelectorAll('.button-primary').length, 1);
@@ -2938,7 +2987,15 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       await own.until(() => own.main().querySelector('a.button-primary'), 'Play');
       assert.equal(own.main().querySelector('a.button-primary').textContent, 'Play');
       assert.equal(own.main().querySelectorAll('.button-primary').length, 1);
-      assert.ok(own.main().querySelector('.detail-hero .detail-scrim'));
+      // The backdrop card holds only the picture: the title block is a sibling after it, on the page's navy.
+      const hero = own.main().querySelector('article.detail > .detail-hero');
+      assert.ok(hero, 'an inset backdrop card');
+      assert.equal(hero.children.length, 1, 'nothing is drawn over the picture');
+      assert.equal(hero.querySelector('h1, .badge, a, button'), null);
+      assert.equal(own.main().querySelector('article.detail > .detail-main h1').textContent, 'Synthetic Movie Three');
+      assert.equal(own.main().querySelector('article.detail-full'), null);
+      assert.equal(own.main().querySelector('.detail-main .chips') !== null, true, 'chips below the backdrop');
+      assert.equal(own.main().querySelector('.detail-main .detail-action a.button-primary').textContent, 'Play');
       const series = await openApp(t, app, { hash: `#/tv/${T_TV}` });
       await series.until(() => series.main().querySelector('fieldset.get-seasons'), 'the series');
       assert.ok(series.main().querySelectorAll('fieldset .season').length >= 2);
@@ -2991,7 +3048,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         [`#/tv/${T_TV}/season/1`, '.episode-list'],
         ['#/search', 'input[type="search"]'],
         ['#/requests', '.request-list, p.muted'],
-        ['#/about', '.tmdb-logo'],
+        ['#/account', '.tmdb-logo'],
       ]) {
         page.go(hash);
         await page.until(() => page.main().querySelector(ready), hash);
@@ -3038,7 +3095,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.equal(season.location.hash, '#/');
       assert.equal(season.entries.length, 1);
 
-      for (const hash of [`#/movie/${OWN_MOVIE}`, '#/requests', '#/about', '#/search']) {
+      for (const hash of [`#/movie/${OWN_MOVIE}`, '#/requests', '#/account', '#/search']) {
         const deep = await openApp(t, app, { hash });
         await deep.until(() => deep.back().hidden === false && deep.main().getAttribute('aria-busy') === 'false', hash);
         deep.back().dispatchEvent(new deep.Event('click'));
@@ -3096,7 +3153,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       const app = await startApp(t);
       const page = await openApp(t, app);
       await homeReady(page);
-      await page.until(() => page.watched().length === 12, 'the lazy rows watched');
+      await page.until(() => page.watched().length === 10, 'the lazy rows watched');
       page.reveal('row-network-213');
       const netflix = await page.until(() => page.document.querySelector('ul.row-list[aria-labelledby="row-network-213-heading"]'), 'the Netflix row');
       netflix.scrollLeft = 210;
@@ -3114,7 +3171,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       ]);
       assert.equal(page.document.querySelector('ul.row-list[aria-labelledby="row-network-213-heading"]').scrollLeft, 210, 'the row is where it was');
       assert.equal(page.main().querySelector('[data-key="row-network-213"]').getAttribute('data-lazy'), 'loaded');
-      await page.until(() => page.watched().length === 11, 'the other lazy rows watched again');
+      await page.until(() => page.watched().length === 9, 'the other lazy rows watched again');
       assert.equal(page.watched().includes('row-network-213'), false);
     });
 
@@ -3400,8 +3457,8 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       await homeReady(page);
       page.scroll.y = 333;
       for (let index = 1; index <= 60; index += 1) {
-        page.go(`#/about?n=${index}`);
-        await page.until(() => page.main().querySelector('.tmdb-logo') && page.location.hash === `#/about?n=${index}`, `entry ${index}`);
+        page.go(`#/account?n=${index}`);
+        await page.until(() => page.main().querySelector('.tmdb-logo') && page.location.hash === `#/account?n=${index}`, `entry ${index}`);
         page.scroll.y = 1000 + index;
       }
       page.history.back();
@@ -3512,7 +3569,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
 
   it('moves focus to the content from the skip link without leaving the screen', async (t) => {
     const app = await startApp(t);
-    const page = await openApp(t, app, { hash: '#/about' });
+    const page = await openApp(t, app, { hash: '#/account' });
     await page.until(() => page.main().querySelector('h1'), 'the about screen');
     const screen = page.main();
     const heading = screen.querySelector('h1').textContent;
@@ -3526,7 +3583,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     link.dispatchEvent(click);
     assert.equal(click.defaultPrevented, true, 'the browser does not navigate to #screen');
     assert.equal(focused, 1, 'focus goes to main');
-    assert.equal(page.location.hash, '#/about');
+    assert.equal(page.location.hash, '#/account');
     assert.equal(screen.querySelector('h1').textContent, heading);
     // Were the address to change to a non-route hash anyway (scripts off, or another anchor), the screen stays too.
     const requests = page.requests.length;
@@ -3541,22 +3598,23 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
 
   const credentials = (page) => JSON.parse(page.store.get('jellyfin_credentials'));
   const click = (page, node) => node.dispatchEvent(new page.Event('click', { bubbles: true, cancelable: true }));
-  /** The signed-in "name · household", read from About's Account card (the header no longer shows it). */
+  /** The signed-in "name · household", read from Account's member card (the header no longer shows it). */
   const accountName = async (page) => {
-    page.go('#/about');
+    page.go('#/account');
     return page.until(() => {
       const name = page.main().querySelector('.account-name');
       return name && name.textContent !== 'Signed in' ? name.textContent : '';
     }, 'the account card');
   };
-  /** Signs out the only way the app offers: the Sign out button in About's Account card. Ends on Home's picker. */
-  const signOutFromAbout = async (page) => {
-    page.go('#/about');
+  /** Signs out the only way the app offers: the Sign out button in Account's member card. Ends on Home's picker. */
+  const signOutFromAccount = async (page) => {
+    page.go('#/account');
     const button = await page.until(() => page.main().querySelector('#signout'), 'the Sign out button');
     click(page, button);
-    await page.until(() => page.main().querySelector('.account-out'), 'About after signing out');
-    page.go('#/');
+    // Signing out itself lands on the sign-in screen, in place of Account's entry.
     await page.until(() => page.main().querySelector('ul.profiles'), 'the picker after signing out');
+    assert.equal(page.location.hash, '#/', 'the sign-in screen, not Account');
+    assert.equal(page.main().querySelector('.account'), null, 'no Account card left on screen');
   };
   const profileButton = (page, name) => [...page.main().querySelectorAll('button.profile')].find((button) => button.textContent.includes(name));
   const enterPassword = (page, password) => {
@@ -3903,7 +3961,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     await homeLoaded(page);
     const { token } = app.jellyfin.signIns[0];
     assert.equal((await app.get('/jellypass/app/v1/me', { headers: { Authorization: `MediaBrowser Token="${token}"` }, user: null })).status, 200);
-    await signOutFromAbout(page);
+    await signOutFromAccount(page);
     assert.deepEqual(app.jellyfin.logouts, [token]);
     const logout = page.requests.find((request) => request.url === '/Sessions/Logout');
     assert.equal(logout.init.method, 'POST');
@@ -3926,7 +3984,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     const app = await signInApp(t);
     const page = await openApp(t, app, { override: (url) => { if (url === '/Sessions/Logout') throw new TypeError('network'); } });
     await homeLoaded(page);
-    await signOutFromAbout(page);
+    await signOutFromAccount(page);
     assert.equal(credentials(page).Servers[0].AccessToken, undefined);
   });
 

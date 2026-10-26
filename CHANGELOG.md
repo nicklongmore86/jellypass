@@ -16,6 +16,24 @@ privacy leak. Such changes are always listed at the top of the release notes.
 
 ### Changed
 
+- **Household app: the Tidepool look, part 2** (colours, header, tabs, hero, big cards and detail pages; no setting,
+  API, data or **Get this** outcome changes). The app now wears **Jellyfin's colours**: Jellyfin navy `#000b25` with
+  lighter navy surfaces, and **Jellyfin cyan `#00a4dc`** as the main colour (primary buttons, the chosen chip, the active
+  tab's outline and tint, links and focus rings), with derived cyan text and on-cyan text that hold at least 4.5:1.
+  Jellyfin purple `#aa5cc3` is only a small decoration (the end-cap of each row heading's waterline, a cyan line then a
+  short purple segment with a gap, never a gradient); there is no teal or coral left, `theme-color`, the manifest and the app
+  icons follow. The **header** no longer shows the JellyPass wordmark or the (i) button: it carries Back and the screen's
+  title, and Home goes straight to the filter chips and the hero. A fourth tab, **Account** (with its own key icon),
+  holds the member card with **Sign out**, then **About & credits** (TMDB's logo and exact notice, the JustWatch credit and
+  the app's version); the old `#/about` address opens it. **Home's hero** is an inset rounded card (4:5 on a phone) with a
+  solid navy text panel (title, year, rating, status chip and a two-line overview, readable whatever the picture), round
+  bubble buttons and Previous/Next below it, no autoplay and reduced motion honoured, and still follows the filter. The
+  **big cards** put the title and "year · ★ rating TMDB" below a 16:9 image (radius 24 px) with a solid status chip at its
+  top-left. **Detail pages** open with an inset rounded backdrop card, then the title, chips, one full-width cyan action
+  and the season cards, on navy. Removed from Home under every filter: the **All-time great movies** and **All-time great
+  TV** rows (the server endpoints stay), so a first load and the lazy rows make fewer calls. Tests cover contrast for the
+  new colour pairs, no teal/coral, no purple on text or controls, no purple-to-blue gradient, the header, the four tabs,
+  Account and Sign out, the hero panel and pager, the card and detail layouts, and the fetch counts.
 - **Household app: the Tidepool look, part 1** (the app's whole look changes; no setting, API, data or **Get this**
   outcome does). The page is a deep teal-black with an aqua accent and a touch of coral, solid surfaces with no glass
   or glow, and bigger rounded shapes (radii 12/20/24/30 px, 800-weight titles). The header is a solid bar. Home's

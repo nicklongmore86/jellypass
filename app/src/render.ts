@@ -64,6 +64,15 @@ export const SIGNIN_NAME_TEXT = {
   invalid: "That didn't work. Check your name and password and try again.",
 } as const;
 
+/**
+ * Marks the one `<h1>` whose text the header also shows (main.ts copies it there): Search, My requests, Account and the
+ * detail pages. On the first three the page's own heading is then visually hidden (still the screen's heading for
+ * assistive technology and focus); on a detail page it stays as the title block.
+ */
+export const HEADER_TITLE = 'data-header-title';
+/** The app's version, filled in by the build from package.json. */
+export const APP_VERSION = '__APP_VERSION__';
+
 export const TMDB_NOTICE = 'This product uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB.';
 
 interface ElementOptions {
@@ -230,18 +239,18 @@ function backdropMeta(card: Card): string {
 }
 
 /**
- * A large landscape card: the title's backdrop (a poster when it has none, a plain gradient when it has neither) under a
- * scrim, with the title and "year · ★ rating" over the foot and the status chip at the top-left. The whole card is the link.
- * Every image is lazy: these rows start below the hero.
+ * A large landscape card: the title's backdrop (a poster when it has none, a plain gradient when it has neither) as a
+ * rounded 16:9 image with the status chip at its top-left, and the title and "year · ★ rating" below it, on the page's
+ * own colour: no text is ever drawn over a picture. The whole card is the link. Every image is lazy: these rows start
+ * below the hero.
  */
 export function backdropCardItem(doc: Document, card: Card): HTMLElement {
   const backdrop = backdropImage(doc, card.backdropUrl, 'backdrop-img', 'lazy', BACKDROP_CARD_SIZES);
   const image = backdrop ?? posterImage(doc, card.posterUrl, '', 'lazy');
   if (!backdrop && image) image.classList.add('backdrop-img');
   const meta = backdropMeta(card);
-  const link = el(doc, 'a', { class: `card-link backdrop-link${image ? '' : ' backdrop-plain'}`, attrs: { href: href(card), 'aria-label': cardName(card, meta) } }, [
-    image,
-    el(doc, 'span', { class: 'backdrop-scrim', attrs: { 'aria-hidden': 'true' } }),
+  const link = el(doc, 'a', { class: 'card-link backdrop-link', attrs: { href: href(card), 'aria-label': cardName(card, meta) } }, [
+    el(doc, 'span', { class: 'backdrop-frame' }, [image]),
     el(doc, 'span', { class: 'backdrop-text' }, [
       el(doc, 'span', { class: 'card-title', text: card.title }),
       meta ? el(doc, 'span', { class: 'card-meta', text: meta }) : undefined,
@@ -250,9 +259,12 @@ export function backdropCardItem(doc: Document, card: Card): HTMLElement {
   return el(doc, 'li', { class: 'card card-backdrop' }, [link, cardStatusBadge(doc, card.state)]);
 }
 
+/** The hero card's image: the whole card is 4:5 on a phone, so a phone asks for what fits its width less the page's gutters. */
+const HERO_SIZES = '(min-width: 75rem) 1100px, calc(100vw - 2rem)';
+
 function heroSlide(doc: Document, card: Card, index: number, total: number): HTMLElement {
   const media = el(doc, 'div', { class: 'hero-media' });
-  const image = backdropImage(doc, card.backdropUrl, 'hero-img', index === 0 ? 'eager' : 'lazy');
+  const image = backdropImage(doc, card.backdropUrl, 'hero-img', index === 0 ? 'eager' : 'lazy', HERO_SIZES);
   if (image) media.append(image);
   const facts = el(doc, 'p', { class: 'hero-facts' });
   if (card.year) facts.append(el(doc, 'span', { class: 'hero-year', text: String(card.year) }));
@@ -261,23 +273,25 @@ function heroSlide(doc: Document, card: Card, index: number, total: number): HTM
   }
   facts.append(stateBadge(doc, card.state));
   return el(doc, 'div', {
-    class: `hero-slide${image ? '' : ' hero-slide-plain'}`,
+    class: 'hero-slide',
     attrs: { role: 'group', 'aria-roledescription': 'slide', 'aria-label': `${index + 1} of ${total}` },
   }, [
-    media,
-    el(doc, 'div', { class: 'hero-scrim', attrs: { 'aria-hidden': 'true' } }),
-    el(doc, 'div', { class: 'hero-text' }, [
-      el(doc, 'p', { class: 'hero-title' }, [el(doc, 'a', { class: 'hero-link', text: card.title, attrs: { href: href(card) } })]),
-      facts,
-      card.overview ? el(doc, 'p', { class: 'hero-overview', text: card.overview }) : undefined,
+    el(doc, 'div', { class: 'hero-card' }, [
+      media,
+      el(doc, 'div', { class: 'hero-panel' }, [
+        el(doc, 'p', { class: 'hero-title' }, [el(doc, 'a', { class: 'hero-link', text: card.title, attrs: { href: href(card) } })]),
+        facts,
+        card.overview ? el(doc, 'p', { class: 'hero-overview', text: card.overview }) : undefined,
+      ]),
     ]),
   ]);
 }
 
 /**
- * Home's hero: the first few trending titles, one per screen-wide slide in a CSS scroll-snap track. It never moves by
- * itself. Swiping works as it does in any scroller; the Previous and Next buttons and the dots (each a labelled
- * button) do the same for those who cannot swipe, and scroll smoothly unless the member prefers reduced motion.
+ * Home's hero: the first few trending titles, one inset rounded card per slide in a CSS scroll-snap track, each with its
+ * text in a navy panel. It never moves by itself. Swiping works as it does in any scroller; the Previous and Next buttons
+ * and the round bubbles under the card (each a labelled button) do the same for those who cannot swipe, and scroll
+ * smoothly unless the member prefers reduced motion.
  */
 export function heroCarousel(doc: Document, cards: readonly Card[], filter: HomeFilter = 'all'): HTMLElement | undefined {
   const shown = cards.slice(0, HERO_MAX);
@@ -330,26 +344,21 @@ export function heroCarousel(doc: Document, cards: readonly Card[], filter: Home
   return section;
 }
 
-/** The hero while Home loads: the same height, with lines where the title and facts will be. */
+/** The hero while Home loads: a card of the same shape. */
 export function skeletonHero(doc: Document): HTMLElement {
   return el(doc, 'div', { class: 'hero hero-skeleton', attrs: { 'aria-hidden': 'true' } }, [
-    el(doc, 'div', { class: 'skeleton hero-skeleton-media' }),
-    el(doc, 'div', { class: 'hero-text' }, [
-      el(doc, 'span', { class: 'skeleton skeleton-line hero-skeleton-title' }),
-      el(doc, 'span', { class: 'skeleton skeleton-line hero-skeleton-facts' }),
-      el(doc, 'span', { class: 'skeleton skeleton-line' }),
-    ]),
+    el(doc, 'div', { class: 'skeleton hero-skeleton-card' }),
   ]);
 }
 
 /**
  * The colour of a row heading's short "waterline" underline: a service's brand colour (a tasteful approximation, never its
- * logo), gold for the all-time lists, the app's own aqua-to-coral for everything else. Purely decorative: the heading's
+ * logo), or the app's own cyan with its small purple end-cap for everything else. Purely decorative: the heading's
  * words say what the row is, and the line is a pseudo-element, so assistive technology never meets it. Each is a class
  * (`water-<name>`) whose colour is a custom property in the stylesheet, so the page carries no inline style.
  */
-export type RowAccent = 'default' | 'gold' | 'netflix' | 'disney' | 'apple' | 'prime' | 'hbo' | 'hulu' | 'paramount' | 'peacock';
-export const ROW_ACCENTS: readonly RowAccent[] = ['default', 'gold', 'netflix', 'disney', 'apple', 'prime', 'hbo', 'hulu', 'paramount', 'peacock'];
+export type RowAccent = 'default' | 'netflix' | 'disney' | 'apple' | 'prime' | 'hbo' | 'hulu' | 'paramount' | 'peacock';
+export const ROW_ACCENTS: readonly RowAccent[] = ['default', 'netflix', 'disney', 'apple', 'prime', 'hbo', 'hulu', 'paramount', 'peacock'];
 /** The accent of each allowlisted network's row, by its TMDB ID (see TMDB_NETWORKS in src/tmdb.ts). */
 export const NETWORK_ACCENTS: Readonly<Record<number, RowAccent>> = {
   213: 'netflix', 2739: 'disney', 2552: 'apple', 1024: 'prime', 3186: 'hbo', 453: 'hulu', 4330: 'paramount', 3353: 'peacock',
@@ -529,7 +538,7 @@ export function skeletonRow(doc: Document, variant: RowVariant = 'poster'): HTML
   const backdrop = variant === 'backdrop';
   const cards = Array.from({ length: backdrop ? 3 : 6 }, () =>
     backdrop
-      ? el(doc, 'li', { class: 'card card-backdrop skeleton-card' }, [el(doc, 'div', { class: 'backdrop-link skeleton' })])
+      ? el(doc, 'li', { class: 'card card-backdrop skeleton-card' }, [el(doc, 'div', { class: 'backdrop-frame skeleton' }), el(doc, 'span', { class: 'skeleton skeleton-line' })])
       : el(doc, 'li', { class: 'card skeleton-card' }, [el(doc, 'div', { class: 'poster poster-card skeleton' }), el(doc, 'span', { class: 'skeleton skeleton-line' })]),
   );
   return el(doc, 'section', { class: 'row', attrs: { 'aria-hidden': 'true' } }, [
@@ -557,9 +566,9 @@ export function skeletonRequests(doc: Document): HTMLElement {
   return el(doc, 'ul', { class: 'request-list', attrs: { 'aria-hidden': 'true' } }, items);
 }
 
-/** A detail page while it loads: the full-bleed backdrop, then the title, chips, the one action and the overview. */
+/** A detail page while it loads: the backdrop card, then the title, chips, the one action and the overview. */
 export function skeletonDetail(doc: Document): HTMLElement {
-  return el(doc, 'div', { class: 'detail detail-full detail-skeleton', attrs: { 'aria-hidden': 'true' } }, [
+  return el(doc, 'div', { class: 'detail detail-skeleton', attrs: { 'aria-hidden': 'true' } }, [
     el(doc, 'div', { class: 'detail-hero skeleton' }),
     el(doc, 'div', { class: 'detail-main' }, [
       el(doc, 'div', { class: 'skeleton skeleton-title' }),
@@ -735,18 +744,18 @@ export function getThisParts(doc: Document, subject: string, choices: Choice[], 
   return { action: box, boxes, ...(selectAll ? { selectAll } : {}) };
 }
 
-/** The backdrop that runs full-bleed under the status bar, fading into the page; a plain glow when a title has none. */
+/** The title's backdrop as an inset rounded card (nothing drawn over it); a plain navy gradient when a title has none. */
 function detailHero(doc: Document, backdropUrl: string | null | undefined): HTMLElement {
   const frame = el(doc, 'div', { class: 'detail-hero' });
-  const image = backdropImage(doc, backdropUrl, 'hero-img', 'eager');
+  const image = backdropImage(doc, backdropUrl, 'hero-img', 'eager', DETAIL_SIZES);
   if (image) frame.append(image);
-  frame.append(el(doc, 'div', { class: 'detail-scrim', attrs: { 'aria-hidden': 'true' } }));
   return frame;
 }
+const DETAIL_SIZES = '(min-width: 64rem) 960px, calc(100vw - 2rem)';
 
 /** The status pill, its note, and the one action: Play (in the library) or Get this (available to get), never both as primaries. */
 function detailAction(doc: Document, play: HTMLElement | undefined, parts: GetThisParts | undefined): HTMLElement | undefined {
-  // A series partly held can still ask for the rest: then Play is the primary and Get this steps back to the glass style.
+  // A series partly held can still ask for the rest: then Play is the primary and Get this steps back to the outlined style.
   if (play && parts) parts.action.querySelector('button')?.classList.replace('button-primary', 'button-secondary');
   return play || parts ? el(doc, 'div', { class: 'detail-action' }, [play, parts?.action]) : undefined;
 }
@@ -769,7 +778,7 @@ export function titleDetail(doc: Document, title: Movie | Series, origin: string
   const head = el(doc, 'div', { class: 'detail-head detail-head-poster' }, [
     poster(doc, title.posterUrl, `Poster for ${title.title}`, 'detail'),
     el(doc, 'div', { class: 'detail-text' }, [
-      el(doc, 'h1', { class: 'screen-title detail-title', text: title.title, attrs: { tabindex: '-1' } }),
+      el(doc, 'h1', { class: 'screen-title detail-title', text: title.title, attrs: { tabindex: '-1', [HEADER_TITLE]: '' } }),
       detailChips(doc, title),
       genres,
       el(doc, 'div', { class: 'actions' }, [failedMovie ? requestBadge(doc, 'failed') : stateBadge(doc, title.state)]),
@@ -783,7 +792,7 @@ export function titleDetail(doc: Document, title: Movie | Series, origin: string
     title.overview ? el(doc, 'p', { class: 'overview', text: title.overview }) : undefined,
   ]);
   if (title.mediaType === 'tv') main.append(seasonList(doc, title, extras.failed, parts));
-  return el(doc, 'article', { class: 'detail detail-full' }, [detailHero(doc, title.backdropUrl), main]);
+  return el(doc, 'article', { class: 'detail' }, [detailHero(doc, title.backdropUrl), main]);
 }
 
 /** A title the household asked for that failed is not asked for again from here: the backend holds the failed record. */
@@ -840,14 +849,14 @@ export function seasonView(doc: Document, season: Season, seriesTitle: string | 
   const count = season.episodes.length;
   const text = el(doc, 'div', { class: 'detail-text' }, [
     back,
-    el(doc, 'h1', { class: 'screen-title detail-title', text: name, attrs: { tabindex: '-1' } }),
+    el(doc, 'h1', { class: 'screen-title detail-title', text: name, attrs: { tabindex: '-1', [HEADER_TITLE]: '' } }),
     count ? el(doc, 'ul', { class: 'chips', attrs: { 'aria-label': 'Details' } }, [el(doc, 'li', { class: 'chip', text: `${count} ${count === 1 ? 'episode' : 'episodes'}` })]) : undefined,
     el(doc, 'div', { class: 'actions' }, [failedHere ? requestBadge(doc, 'failed') : stateBadge(doc, season.state)]),
     stateNote(doc, season.state),
     failedHere ? failedNote(doc) : undefined,
     detailAction(doc, undefined, parts),
   ]);
-  return el(doc, 'article', { class: 'detail detail-full season-view' }, [
+  return el(doc, 'article', { class: 'detail season-view' }, [
     detailHero(doc, extras.backdropUrl),
     el(doc, 'div', { class: 'detail-main' }, [
       el(doc, 'div', { class: 'detail-head' }, [text]),
@@ -929,8 +938,8 @@ export function errorState(doc: Document, kind: ApiErrorKind, onRetry?: () => vo
   return box;
 }
 
-/** What the About screen shows of the signed-in member; `onSignOut` is run by its Sign out button. */
-export interface AboutAccount {
+/** What the Account screen shows of the signed-in member; `onSignOut` is run by its Sign out button. */
+export interface AccountInfo {
   me?: { name: string; household: string } | undefined;
   onSignOut: (button: HTMLButtonElement) => void;
 }
@@ -940,8 +949,8 @@ export function accountText(me: { name: string; household: string } | undefined)
   return me ? [me.name, me.household].filter(Boolean).join(' · ') : 'Signed in';
 }
 
-/** The Account card: who is signed in and the Sign out button (the only place to sign out). */
-function accountGroup(doc: Document, account: AboutAccount): HTMLElement {
+/** The member's card: who is signed in and the Sign out button (the only place to sign out). */
+function accountGroup(doc: Document, account: AccountInfo): HTMLElement {
   const out = el(doc, 'button', { class: 'button button-secondary', text: 'Sign out', attrs: { id: 'signout', type: 'button' } });
   out.addEventListener('click', () => account.onSignOut(out));
   return el(doc, 'section', { class: 'group account', attrs: { 'aria-labelledby': 'account-heading' } }, [
@@ -950,7 +959,7 @@ function accountGroup(doc: Document, account: AboutAccount): HTMLElement {
   ]);
 }
 
-/** Where Sign out was: once signed out, About says so and points back to the sign-in on Home. */
+/** Where Sign out was: once signed out, Account says so and points back to the sign-in on Home. */
 function signedOutGroup(doc: Document): HTMLElement {
   return el(doc, 'section', { class: 'group account-out', attrs: { 'aria-labelledby': 'account-heading' } }, [
     el(doc, 'h2', { class: 'group-label', text: 'Account', attrs: { id: 'account-heading' } }),
@@ -961,19 +970,18 @@ function signedOutGroup(doc: Document): HTMLElement {
   ]);
 }
 
-export function aboutView(doc: Document, account?: AboutAccount, signedOut = false): HTMLElement {
-  return el(doc, 'article', { class: 'about' }, [
-    el(doc, 'h1', { class: 'screen-title', text: 'About & credits', attrs: { tabindex: '-1' } }),
+/**
+ * The Account tab: who is signed in with Sign out (or the way back in), then "About & credits": what JellyPass is, the
+ * TMDB logo and its exact notice, JustWatch's credit and the app's version. The old About address leads here.
+ */
+export function accountView(doc: Document, account?: AccountInfo, signedOut = false): HTMLElement {
+  return el(doc, 'article', { class: 'about account-screen' }, [
+    el(doc, 'h1', { class: 'screen-title visually-hidden', text: 'Account', attrs: { tabindex: '-1', [HEADER_TITLE]: '' } }),
     account ? accountGroup(doc, account) : signedOut ? signedOutGroup(doc) : undefined,
-    el(doc, 'section', { class: 'group' }, [
-      el(doc, 'h2', { class: 'group-label', text: 'About' }),
-      el(doc, 'div', { class: 'inset-card' }, [
-        el(doc, 'p', { text: 'JellyPass is your household’s way to browse what is in your Jellyfin library and to find more to watch.' }),
-      ]),
-    ]),
-    el(doc, 'section', { class: 'group' }, [
-      el(doc, 'h2', { class: 'group-label', text: 'Credits' }),
+    el(doc, 'section', { class: 'group', attrs: { 'aria-labelledby': 'credits-heading' } }, [
+      el(doc, 'h2', { class: 'group-label', text: 'About & credits', attrs: { id: 'credits-heading' } }),
       el(doc, 'div', { class: 'inset-card credits' }, [
+        el(doc, 'p', { text: 'JellyPass is your household’s way to browse what is in your Jellyfin library and to find more to watch.' }),
         el(doc, 'a', { class: 'tmdb-logo-link', attrs: { href: 'https://www.themoviedb.org/', rel: 'noopener noreferrer', 'aria-label': 'The Movie Database (TMDB)' } }, [
           el(doc, 'img', { class: 'tmdb-logo', attrs: { src: 'tmdb-logo.svg', alt: 'TMDB logo', width: '273', height: '36' } }),
         ]),
@@ -988,6 +996,7 @@ export function aboutView(doc: Document, account?: AboutAccount, signedOut = fal
           el(doc, 'a', { text: 'JustWatch', attrs: { href: 'https://www.justwatch.com/', rel: 'noopener noreferrer' } }),
           doc.createTextNode(', through TMDB.'),
         ]),
+        el(doc, 'p', { class: 'muted app-version', text: `JellyPass ${APP_VERSION}` }),
       ]),
     ]),
   ]);

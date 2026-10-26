@@ -1,11 +1,12 @@
 import { ApiError, createApi, createSignInApi, type Api, type ApiErrorKind, type SignInApi } from './api.js';
 import {
-  aboutView,
   accountText,
+  accountView,
   cardList,
   el,
   errorState,
   type GetThisHandler,
+  HEADER_TITLE,
   heroCarousel,
   HOME_FILTERS,
   HOME_TEXT,
@@ -72,8 +73,6 @@ const HOME_LAYOUT: Record<HomeFilter, readonly HomePart[]> = {
     row('upcoming-tv', 'Upcoming series', 'poster', false),
     { part: 'networks' },
     { part: 'studios' },
-    row('top-movies', 'All-time great movies', 'backdrop', false, 'gold'),
-    row('top-tv', 'All-time great TV', 'poster', false, 'gold'),
     { part: 'credit' },
   ],
   movies: [
@@ -83,7 +82,6 @@ const HOME_LAYOUT: Record<HomeFilter, readonly HomePart[]> = {
     row('upcoming', 'Upcoming movies', 'poster', true),
     { part: 'networks' },
     { part: 'studios' },
-    row('top-movies', 'All-time great movies', 'backdrop', false, 'gold'),
     { part: 'credit' },
   ],
   tv: [
@@ -91,7 +89,6 @@ const HOME_LAYOUT: Record<HomeFilter, readonly HomePart[]> = {
     row('popular-tv', 'Popular series', 'backdrop', true),
     row('upcoming-tv', 'Upcoming series', 'poster', true),
     { part: 'networks' },
-    row('top-tv', 'All-time great TV', 'poster', false, 'gold'),
   ],
 };
 /** What a service's row lists under each filter: its films and series mixed, its films, or its series. */
@@ -108,13 +105,13 @@ const doc = document;
 const main = doc.getElementById('screen') as HTMLElement;
 const status = doc.getElementById('status') as HTMLElement;
 const backButton = doc.getElementById('back') as HTMLButtonElement;
-/** Home's top row: the (i) that opens About, the only way to it (and so to Sign out and the TMDB credit). */
-const aboutLink = doc.getElementById('about-link') as HTMLAnchorElement;
-const TAB_ICONS = { home: 'home', search: 'search', requests: 'requests' } as const;
+/** The header: the Back button and the screen's title, nothing else. */
+const appHeader = doc.querySelector('.app-header') as HTMLElement;
+const headerTitle = doc.getElementById('header-title') as HTMLElement;
+const TAB_ICONS = { home: 'home', search: 'search', requests: 'requests', account: 'account' } as const;
 
 // The chrome's icons are drawn here, node by node, so the page itself carries no markup for them.
 backButton.append(icon(doc, 'back'));
-aboutLink.append(icon(doc, 'info'));
 for (const link of doc.querySelectorAll<HTMLAnchorElement>('nav a[data-nav]')) {
   const name = TAB_ICONS[link.dataset['nav'] as keyof typeof TAB_ICONS];
   if (name) link.prepend(icon(doc, name));
@@ -181,7 +178,7 @@ function measure(property: string, element: HTMLElement | null): void {
   }
   const apply = (): void => {
     const height = element.getBoundingClientRect().height;
-    if (height > 0) root.style.setProperty(property, `${height}px`);
+    if (height >= 0) root.style.setProperty(property, `${height}px`);
   };
   apply();
   if (typeof ResizeObserver === 'function') {
@@ -202,14 +199,24 @@ function markSwitch(): void {
   measure('--switch-height', band);
 }
 
+/** The header shows the screen's title (the page's own heading marked `data-header-title`); with neither a Back button nor a title it shrinks to the status bar's safe area (Home). */
+function syncHeader(): void {
+  const text = main.querySelector<HTMLElement>(`h1[${HEADER_TITLE}]`)?.textContent ?? '';
+  headerTitle.textContent = text;
+  if (backButton.hidden && !text) appHeader.setAttribute('data-bare', '');
+  else appHeader.removeAttribute('data-bare');
+}
+
 function show(...nodes: Node[]): void {
   main.replaceChildren(...nodes);
+  syncHeader();
   markSwitch();
   main.setAttribute('aria-busy', 'false');
 }
 
 function busy(...nodes: Node[]): void {
   main.replaceChildren(...nodes);
+  syncHeader();
   markSwitch();
   main.setAttribute('aria-busy', 'true');
   announce('Loading…');
@@ -269,22 +276,26 @@ function showFocusedCard(event: FocusEvent): void {
   // After the browser's own focus scroll, which would otherwise settle last.
   if (link) requestAnimationFrame(() => bringCardIntoRow(link));
 }
+/** The browser's focus scroll can leave a tall card's foot behind the tab bar at large text; the root's bottom scroll padding is the measured tab bar plus the focus ring's room, so the page is nudged up to it. */
+function clearTabBar(box: DOMRect): void {
+  const padding = parseFloat(getComputedStyle(doc.documentElement).scrollPaddingBottom);
+  const limit = (window.innerHeight || doc.documentElement.clientHeight) - (Number.isFinite(padding) ? padding : 0);
+  if (box.bottom > limit && box.height > 0) window.scrollBy(0, box.bottom - limit);
+}
 function bringCardIntoRow(link: Element): void {
   const list = link.closest<HTMLElement>('.row-list');
   if (!list || document.activeElement !== link) return;
   const card = link.closest('.card') ?? link;
   const box = card.getBoundingClientRect();
+  clearTabBar(box);
   const view = list.getBoundingClientRect();
   const right = Math.min(view.right, document.documentElement.clientWidth);
   if (box.left >= view.left && box.right <= right) return;
   list.scrollLeft += box.left - view.left;
 }
 
-/**
- * How the header sits over the screen: over Home's hero (`home`) or a title's backdrop (`detail`), both of which run
- * under the status bar, or as its own bar. Over a hero it is clear until the page is scrolled, then it is the glass bar.
- */
-function setChrome(kind?: 'home' | 'detail'): void {
+/** Home runs its sticky filter band the page's full width (`home`); every other screen has the page's own gutters. */
+function setChrome(kind?: 'home'): void {
   if (kind) doc.body.setAttribute('data-chrome', kind);
   else doc.body.removeAttribute('data-chrome');
 }
@@ -450,7 +461,7 @@ function failure(kind: ApiErrorKind, retry: () => void): void {
 }
 
 interface Route {
-  name: 'home' | 'search' | 'requests' | 'movie' | 'tv' | 'season' | 'about' | SourceKind;
+  name: 'home' | 'search' | 'requests' | 'movie' | 'tv' | 'season' | 'account' | SourceKind;
   id?: number;
   season?: number;
   query?: string;
@@ -468,7 +479,8 @@ function isRouteHash(hash: string): boolean {
 function parse(hash: string): Route {
   const [path = '', queryString = ''] = hash.replace(/^#/, '').split('?', 2);
   if (path === '/search') return { name: 'search', query: new URLSearchParams(queryString).get('q') ?? '' };
-  if (path === '/about') return { name: 'about' };
+  // The old About address is the Account tab now.
+  if (path === '/account' || path === '/about') return { name: 'account' };
   if (path === '/requests') return { name: 'requests' };
   const season = /^\/tv\/(\d{1,10})\/season\/(\d{1,4})$/.exec(path);
   if (season) return { name: 'season', id: Number(season[1]), season: Number(season[2]) };
@@ -485,8 +497,7 @@ function parse(hash: string): Route {
 }
 
 function markNav(route: Route): void {
-  // About is not a tab: reached from Home's (i), it leaves every tab unmarked.
-  const current = route.name === 'about' ? undefined : route.name === 'search' || route.name === 'requests' ? route.name : 'home';
+  const current = route.name === 'search' || route.name === 'requests' || route.name === 'account' ? route.name : 'home';
   for (const link of doc.querySelectorAll<HTMLAnchorElement>('nav a[data-nav]')) {
     if (link.dataset['nav'] === current) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
@@ -499,6 +510,15 @@ async function render(): Promise<void> {
   navigationAbort = abort;
   const mine = ++navigation;
   const current = () => mine === navigation;
+  // An old About address is replaced in place by Account's, so Back and a reload keep to the new one.
+  const legacy = /^#\/about(\?.*)?$/.exec(location.hash);
+  if (legacy) {
+    try {
+      history.replaceState(history.state, '', `#/account${legacy[1] ?? ''}`);
+    } catch {
+      // The route is the same either way.
+    }
+  }
   const route = parse(location.hash);
   capturePosition();
   stampHistory();
@@ -506,16 +526,15 @@ async function render(): Promise<void> {
   restoreCancelled = false;
   shownDepth = depth;
   shownRoute = route;
-  setChrome(route.name === 'home' ? 'home' : route.name === 'movie' || route.name === 'tv' || route.name === 'season' ? 'detail' : undefined);
+  setChrome(route.name === 'home' ? 'home' : undefined);
   backButton.hidden = route.name === 'home';
-  aboutLink.hidden = route.name !== 'home';
   markNav(route);
   const retry = () => void render();
 
-  if (route.name === 'about') {
-    setTitle('About & credits');
+  if (route.name === 'account') {
+    setTitle('Account');
     const signedIn = Boolean(jellyfinToken(localStorage, origin));
-    show(aboutView(doc, signedIn ? { me, onSignOut: (button) => void signOut(button) } : undefined, !signedIn));
+    show(accountView(doc, signedIn ? { me, onSignOut: (button) => void signOut(button) } : undefined, !signedIn));
     announce('');
     focusHeading();
     // The name and household fill in when /me answers (it is asked once); the card is useful without them.
@@ -948,7 +967,7 @@ async function search(initial: string, signal: AbortSignal, current: () => boole
     timer = setTimeout(() => run(input.value), SEARCH_DEBOUNCE_MS);
   });
 
-  show(el(doc, 'h1', { class: 'screen-title', text: 'Search', attrs: { tabindex: '-1' } }), form, results);
+  show(el(doc, 'h1', { class: 'screen-title visually-hidden', text: 'Search', attrs: { tabindex: '-1', [HEADER_TITLE]: '' } }), form, results);
   announce('');
   focusHeading();
   if (initial.trim()) run(initial, true);
@@ -1226,11 +1245,11 @@ async function sourceScreen(route: Route, signal: AbortSignal, current: () => bo
 /** The household's requests, with their titles read from TMDB (through the API) ten at a time. */
 async function requestsScreen(signal: AbortSignal, current: () => boolean): Promise<void> {
   setTitle(REQUESTS_TEXT.title);
-  busy(el(doc, 'h1', { class: 'screen-title', text: REQUESTS_TEXT.title, attrs: { tabindex: '-1' } }), skeletonRequests(doc));
+  busy(el(doc, 'h1', { class: 'screen-title visually-hidden', text: REQUESTS_TEXT.title, attrs: { tabindex: '-1', [HEADER_TITLE]: '' } }), skeletonRequests(doc));
   await loadMe(signal);
   const entries: RequestEntry[] = (await api.requests(signal)).results;
   if (!current()) return;
-  const heading = el(doc, 'h1', { class: 'screen-title', text: REQUESTS_TEXT.title, attrs: { tabindex: '-1' } });
+  const heading = el(doc, 'h1', { class: 'screen-title visually-hidden', text: REQUESTS_TEXT.title, attrs: { tabindex: '-1', [HEADER_TITLE]: '' } });
   if (entries.length === 0) {
     show(heading, el(doc, 'p', { class: 'muted', text: REQUESTS_TEXT.empty }));
     announce('');
@@ -1291,9 +1310,9 @@ async function requestsScreen(signal: AbortSignal, current: () => boolean): Prom
 function resumeIfChanged(): void {
   const signedIn = Boolean(jellyfinToken(localStorage, origin));
   const showingSignIn = Boolean(main.querySelector('[data-screen="signin"]'));
-  const onAbout = parse(location.hash).name === 'about';
-  // About shows an Account card only while signed in, so a sign-in or sign-out elsewhere redraws it.
-  if (onAbout ? signedIn !== Boolean(main.querySelector('.account')) : signedIn === showingSignIn) void render();
+  const onAccount = parse(location.hash).name === 'account';
+  // Account shows its member card only while signed in, so a sign-in or sign-out elsewhere redraws it.
+  if (onAccount ? signedIn !== Boolean(main.querySelector('.account')) : signedIn === showingSignIn) void render();
 }
 
 async function signOut(button: HTMLButtonElement): Promise<void> {
@@ -1310,7 +1329,9 @@ async function signOut(button: HTMLButtonElement): Promise<void> {
     return;
   }
   announce('Signed out.');
-  void render();
+  // Straight to the sign-in screen, in place of Account's entry, so Back never lands on a signed-in-looking Account.
+  replacingEntry = true;
+  location.replace('#/');
 }
 
 backButton.addEventListener('click', goBack);

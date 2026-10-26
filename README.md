@@ -890,7 +890,7 @@ switched off (those answer the same fixed `404`).
   the browser's storage for this address), so **the app and Jellyfin web share
   one session**: **Play** opens Jellyfin web already signed in, and signing in on
   `/web/` signs the app in. The only other thing the app stores is a random
-  device ID of its own. **Sign out** (in About's Account card) revokes the session at
+  device ID of its own. **Sign out** (in the Account tab's member card) revokes the session at
   Jellyfin and clears it from the browser, so it **also signs Jellyfin web out**
   on that address (they are one session). The app API forgets the token as
   the sign-out passes through, so it is refused at once there too. **Open Jellyfin to sign in** stays under the picker as a

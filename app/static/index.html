@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <meta name="color-scheme" content="dark">
-  <meta name="theme-color" content="#06161b">
+  <meta name="theme-color" content="#000b25">
   <meta name="referrer" content="no-referrer">
   <meta name="description" content="Browse your household's Jellyfin library and find more to watch.">
   <title>JellyPass</title>
@@ -22,8 +22,7 @@
   <a class="skip-link" href="#screen">Skip to content</a>
   <header class="app-header">
     <button id="back" class="back-button" type="button" aria-label="Back" hidden></button>
-    <p class="brand">JellyPass</p>
-    <a id="about-link" class="icon-button" href="#/about" aria-label="About and credits" hidden></a>
+    <p id="header-title" class="header-title" aria-hidden="true"></p>
   </header>
   <main id="screen" tabindex="-1" aria-busy="true">
     <noscript><p class="notice">JellyPass needs JavaScript.</p></noscript>
@@ -33,6 +32,7 @@
     <a data-nav="home" href="#/">Home</a>
     <a data-nav="search" href="#/search">Search</a>
     <a data-nav="requests" href="#/requests">My requests</a>
+    <a data-nav="account" href="#/account">Account</a>
   </nav>
 </body>
 </html>

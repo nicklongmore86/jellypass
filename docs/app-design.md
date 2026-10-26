@@ -173,7 +173,7 @@ So `TmdbClient` (`src/tmdb.ts`) reads TMDB's v3 API directly, with JellyPass's o
   and a logo URL never a poster. They are shown unmodified on a light tile. The CSP is unchanged (`img-src 'self'
   https://image.tmdb.org`).
 - **Attribution.** TMDB's API terms require attribution: the README carries TMDB's notice ("This product uses the TMDB
-  API but is not endorsed or certified by TMDB"). Step 1b's About & credits screen shows TMDB's
+  API but is not endorsed or certified by TMDB"). Step 1b's About & credits (now on the Account tab) shows TMDB's
   notice (the wording on TMDB's API terms page: "This product uses TMDB and the TMDB APIs but is not endorsed,
   certified, or otherwise approved by TMDB.") with TMDB's logo, bundled locally and unmodified (the primary short blue
   logo from TMDB's Logos & Attribution page), and a link to themoviedb.org. The logo is shown small, on that screen
@@ -426,8 +426,8 @@ a bad `page` is `400`; both before TMDB, the cache or the caller's view is asked
 | `trending-movies` | `trending/movie/day` | The Movies filter's hero and Trending row; `trending` mixes both kinds, and half of a mixed page cannot be thrown away on the phone without leaving the row half empty. |
 | `trending-tv` | `trending/tv/day` | The same for the TV filter. |
 | `new-movies` | `discover/movie`, `sort_by=popularity.desc`, `region=US`, `with_release_type=2\|3`, `release_date.gte` 60 days before today (UTC), `release_date.lte` today | Films that opened in US theatres (release types 2, theatrical limited, and 3, theatrical) in the last two months, most popular first. `region` and `release_date.*` are used together, as TMDB documents. Seerr 3.5.1 has no equivalent (its sliders are Trending, Popular, Upcoming and Recently Added); `upcoming` stays as Seerr builds it (no region) and is not changed. |
-| `top-movies` | `movie/top_rated` | All-time great movies. TMDB ranks these itself above a vote-count floor, so no floor is set here. |
-| `top-tv` | `tv/top_rated` | All-time great TV. |
+| `top-movies` | `movie/top_rated` | Kept on the server; the app no longer shows an All-time great movies row. TMDB ranks these itself above a vote-count floor, so no floor is set here. |
+| `top-tv` | `tv/top_rated` | Kept on the server; the app no longer shows an All-time great TV row. |
 
 These are cached per household under `discover`, the list and the page, like every discover list, wait for the
 household's fair turn at TMDB, and are the same for every household. `new-movies` is keyed by the page only, so across
@@ -538,7 +538,7 @@ elsewhere; the files are never proxied to Jellyfin.
   Dockerfile builds it with the rest. `scripts/make-app-icons.py` regenerates the PNG icons (Pillow; the PNGs are
   committed). The only new dependency is `linkedom`, a dev dependency, for DOM-level tests.
 - **Routing.** One page, with screens chosen by the URL hash (`#/`, `#/search?q=`, `#/movie/:id`, `#/tv/:id`,
-  `#/tv/:id/season/:n`, `#/requests` (since step 2b), `#/network/:id` and `#/studio/:id` (the discover rows), `#/about`), so the server needs no fallback route and a deep link is just the page.
+  `#/tv/:id/season/:n`, `#/requests` (since step 2b), `#/network/:id` and `#/studio/:id` (the discover rows), `#/account`, and `#/about` as its old name), so the server needs no fallback route and a deep link is just the page.
 - **Sign-in.** The page sits on the household host next to the proxied Jellyfin web client, so it signs in the way
   Jellyfin web does, through the household gateway, and keeps the result where Jellyfin web keeps its own.
   *Flow:* with no token (or a `401` from the API) the app shows a profile picker built from `GET /Users/Public`, which
@@ -561,7 +561,7 @@ elsewhere; the files are never proxied to Jellyfin.
   field (`Id`) and is read back after writing (a failed write is reported, never assumed); the app still reads Jellyfin
   web's entry written by anyone, so a change to the format shows up as the picker appearing, not as a broken app.
   Beyond that it stores one random device ID (`jellypass_device_id`), deliberately not Jellyfin web's `_deviceId2`, so
-  Jellyfin never treats the app's sign-in as a re-login of the web client's device. *Sign-out* (the **Sign out** button in About's Account card, not the header) calls
+  Jellyfin never treats the app's sign-in as a re-login of the web client's device. *Sign-out* (the **Sign out** button in the Account tab's member card, not the header) calls
   `POST /Sessions/Logout` with the token (best effort, five seconds), then removes `UserId` and `AccessToken` from the
   server entries, as Jellyfin web's own sign-out does. As the session is shared, **it signs Jellyfin web out too**. The
   sign-out passes through the household host, so the app API forgets the token at once (see Identity above): its next
@@ -573,7 +573,7 @@ elsewhere; the files are never proxied to Jellyfin.
   in an in-app Safari view, so a Jellyfin sign-in made there would never reach the app. With the in-app sign-in the
   installed app no longer depends on that, but within scope Jellyfin web and **Play** still stay in the installed app
   and share its storage. Only the service worker is limited to `/jellypass/app/`. `GET /me` provides the name and
-  household shown in About's Account card. **Unverified on a real iPhone**: install and sign-in have only been exercised in a
+  household shown in the Account tab's member card. **Unverified on a real iPhone**: install and sign-in have only been exercised in a
   simulated browser and against a real Jellyfin 10.11.3.
 - **Screens.** Home (see "Home's rows" below), Search (debounced 300 ms, one call
   per pause, previous calls aborted, **Load more** by the API's `nextPage`, query kept in the address), movie page,
@@ -587,8 +587,9 @@ elsewhere; the files are never proxied to Jellyfin.
   Disney+, Apple TV, Prime Video, HBO Max (with HBO's own series), Hulu, Paramount+ and Peacock, each one mixed row of the
   service's series and its US films (`GET /discover/network/:id/all`; film, series, film, …, each card saying "year ·
   Movie" or "year · Series"), a **Studios** strip (each studio's logo, a link named "<studio> movies" to its page; drawn
-  from `GET /discover/sources`, no title fetched), **All-time great movies** (backdrop cards) and **All-time great TV**
-  (posters), both when they near the screen, then one line crediting JustWatch for the where-to-watch data. (Compared
+  from `GET /discover/sources`, no title fetched), then one line crediting JustWatch for the where-to-watch data. (Tidepool
+  part 2 removed the **All-time great movies** and **All-time great TV** rows from every filter; `GET /discover/top-movies`
+  and `/discover/top-tv` remain on the server, but the app no longer asks for them. Compared
   with 2.6.0: the studios sit after the services rather than before, since the services are the better row to arrive at;
   Upcoming movies is now fetched on scrolling rather than at once, to make room for New movie releases in the four
   calls; the credit moved to the end of the page so it closes the services-and-studios block.) A network row's
@@ -599,7 +600,7 @@ elsewhere; the files are never proxied to Jellyfin.
   (`aria-checked`; only the chosen one in the tab order; ArrowLeft/Up and ArrowRight/Down wrap and **choose** as they
   move, Home and End go to the ends, focus following, other keys left alone; Enter and Space press the focused button
   as a button does). Each is an **outlined squircle chip** 44 px tall (1.5 px hairline border, radius 12 px, muted text);
-  the chosen one is filled aqua-tint (`--accent-tint`) with an accent border, `--accent-text` text and a **tick** (`✓ All`),
+  the chosen one is filled cyan-tint (`--accent-tint`) with an accent border, `--accent-text` text and a **tick** (`✓ All`),
   a small line icon the app draws on every chip, hidden from assistive technology and shown by the stylesheet on the
   chosen chip only, so each name is still the plain word and the chosen state is never colour alone. The chips sit in a
   **solid band** (`.home-switch`, the page colour, a hairline under it) that is a direct child of `main`, so it **sticks**
@@ -620,9 +621,9 @@ elsewhere; the files are never proxied to Jellyfin.
   no row is half empty. *Movies:* hero and **Trending movies** (`trending-movies`), **Popular movies**, **New movie
   releases**, **Upcoming movies** (these four at once), then **Films on** each of the eight services
   (`/discover/network/:id/films`, a heading linking to the service's Films tab, `#/network/:id?kind=films`), the
-  **Studios** strip, **All-time great movies**, and the JustWatch credit. *TV:* hero and **Trending series**
+  **Studios** strip, and the JustWatch credit. *TV:* hero and **Trending series**
   (`trending-tv`), **Popular series**, **Upcoming series** (these three at once), then **Series on** each service
-  (`/discover/network/:id`, linking to `?kind=series`), and **All-time great TV**; no studios (they make films), no
+  (`/discover/network/:id`, linking to `?kind=series`); no studios (they make films), no
   credit (no where-to-watch data is shown). A service the API lists no films for keeps its series row under All and
   Movies hides it. The hero follows the filter, drawn from the first row's own answer exactly as before, labelled
   "Trending movies" or "Trending series" under the filters. First load: the first row, the four (three under TV) rows
@@ -631,37 +632,36 @@ elsewhere; the files are never proxied to Jellyfin.
   service row) as they near the screen. Choosing a filter fetches that filter's rows the same way, answered from the
   household's cache where the list is the same (Popular movies, say, is one call whichever filter asked first); a
   filter's rows never wait on another's.
-  **Waterlines.** Each row heading is a heavy (800) title with a short **waterline** under it (2.75 rem by 0.25 rem,
-  rounded, `.row-heading::after`): aqua to coral (`--waterline`) by default, gold for the two All-time great rows, and a
-  tasteful approximation of each service's brand colour for its row (Netflix red, Disney+ blue, Apple grey, Prime Video
-  cyan, HBO Max white, Hulu green, Paramount+ blue, Peacock orange; never a logo; HBO is white rather than its violet, as
-  the app has no purple). The class is on the heading (`water-gold`, `water-netflix`, …) and the colour a custom property
-  (`--water-*`) used only as the line's `background`; the page carries no inline style. They are **decorative**: the
-  heading's words say what the row is, no meaning is carried by colour, no text is ever drawn in a waterline colour (nor
-  in coral), and the line is a pseudo-element, so assistive technology never meets it. A test checks each colour is at
-  least 3:1 against the page and the card surface (not required of decoration, but it keeps them visible) and that no
-  two services share one.
-  **Backdrop cards (Popular movies, Popular series, New movie releases, All-time great movies).** These rows use
-  `titleRow(..., 'backdrop')`:
+  **Waterlines.** Each row heading is a heavy (800) title with a short **waterline** under it (0.25 rem tall, rounded,
+  `.row-heading::after` and `::before`): by default a **cyan** line (`--accent`, 2.1 rem) and, after a gap, a short
+  **Jellyfin-purple** end-cap (`--purple`, 0.6 rem), two separate segments and never one blended gradient; a service's
+  row has instead one 2.75 rem line in a tasteful approximation of its brand colour (Netflix red, Disney+ blue, Apple
+  grey, Prime Video cyan, HBO Max white, Hulu green, Paramount+ blue, Peacock orange; never a logo). The class is on the
+  heading (`water-netflix`, …) and the colour a custom property (`--water-*`) used only as the line's `background`; the
+  page carries no inline style. They are **decorative**: the heading's words say what the row is, no meaning is carried by
+  colour, no text is ever drawn in a waterline colour (nor in the purple), and the line is a pseudo-element, so
+  assistive technology never meets it. A test checks each colour is at least 3:1 against the page and the card surface
+  and that no two services share one.
+  **Backdrop cards (Popular movies, Popular series, New movie releases).** These rows use `titleRow(..., 'backdrop')`:
   `ul.row-list.row-list-backdrop` (same id, `aria-labelledby`, `tabindex` and scroll hooks as any row, so Back's capture and
-  restore are unchanged) of `li.card.card-backdrop`. A card is one `<a>` holding a 16:9 `<img>` (the Card DTO's
-  `backdropUrl`, which these rows already carry: no extra call, no server change; `src` w780 and `srcset` w780/w1280 derived
-  only through the backdrop allowlist; `sizes` 92vw on a phone, 36vw from 48 rem; always `loading="lazy"`, as the rows start
-  below the hero), a scrim (`--scrim-text`, solid for 5.75 rem from the foot, then clear), the title (at most two lines) and
-  "year · ★ 7.8 TMDB". The status chip (a dot and its word, top-left) is not in the link and takes no pointer events, so the whole card
-  navigates. No backdrop: the poster (w342) cropped to fit, else a plain gradient. About 92% of the list's width on a phone
-  (the next card peeks), 36% from 48 rem; radius 24 px with a hairline border; a 3 px inset focus ring; no motion of its own. A test composites the
-  scrim over white and black for the title and facts and checks that they fit the solid part. The component
-  (`backdropCardItem`, `RowVariant`) is meant for other rows to adopt; these four do now (Upcoming movies, Upcoming
-  series, All-time great TV, Trending and the services' rows stay posters).
-  **Lazy rows:** everything below the first four rows (Upcoming movies and series, the services' rows and the All-time
-  great rows) holds a row-shaped skeleton (hidden from assistive
+  restore are unchanged) of `li.card.card-backdrop`. A card is one `<a>` holding a **16:9 image frame** (`.backdrop-frame`,
+  radius 24 px, hairline border) and, **below it, on the page's own navy**, the title (at most two lines) and
+  "year · ★ 7.8 TMDB": no text is ever drawn over a picture, so there is no scrim. The frame holds the `<img>` (the Card
+  DTO's `backdropUrl`, which these rows already carry: no extra call, no server change; `src` w780 and `srcset`
+  w780/w1280 derived only through the backdrop allowlist; `sizes` 92vw on a phone, 36vw from 48 rem; always
+  `loading="lazy"`, as the rows start below the hero). The solid **status chip** (a dot and its word) sits on the image's
+  top-left corner; it is not in the link and takes no pointer events, so the whole card navigates. No backdrop: the
+  poster (w342) cropped to fit, else a plain navy gradient frame. About 92% of the list's width on a phone (the next card
+  peeks), 36% from 48 rem; a 3 px inset cyan focus ring with a navy band under it; no motion of its own. The component
+  (`backdropCardItem`, `RowVariant`) is meant for other rows to adopt; these three do now (Upcoming movies, Upcoming
+  series, Trending and the services' rows stay posters).
+  **Lazy rows:** everything below the first four rows (Upcoming movies and series and the services' rows) holds a row-shaped skeleton (hidden from assistive
   technology) and is fetched only when it comes within 400 px of the screen: an `IntersectionObserver` with that
   root margin, or without one, a check on scroll (at most once a frame) and once when Home is drawn. Nothing is watched
   until the first rows are drawn and any position is put back, each row is fetched once per visit to a filter, and
   leaving Home or choosing another filter stops the watching. So a first Home load makes the same four TMDB calls as
   before (plus `GET /me` and `GET /discover/sources`, neither of which calls TMDB); scrolling to the bottom of All adds
-  at most twenty, one each for Upcoming movies, Upcoming series, All-time great movies and All-time great TV and two for
+  at most eighteen, one each for Upcoming movies and Upcoming series and two for
   each service's mixed row as it nears the screen, never all at once. **Network and studio pages**
   show the logo (decorative: the heading names it) and "Popular on <network>" or "<studio> movies" over the same poster
   grid as Search, with **Load more** by the API's `nextPage`; a hash naming a network or studio the API does not list
@@ -672,70 +672,71 @@ elsewhere; the files are never proxied to Jellyfin.
   `?kind=series` or `?kind=films` (anything else is All), replaced in place on switching (no new history entry, so
   Back leaves the page), so a deep link opens on its tab and coming back restores that tab with its pages and scroll.
   A network the API lists no films for has its series alone, no control, and its Films address is "Not found".
-- **Navigation and look (restyle, PR 1; Tidepool, part 1).** Three tabs in a **docked** bar on the foot of the screen,
+- **Navigation and look (Tidepool, in Jellyfin's colours).** Four tabs in a **docked** bar on the foot of the screen,
   full width, rounded at the top (30 px) and over the home indicator's safe area (`env(safe-area-inset-bottom)` is part of
-  its padding): **Home**, **Search**, **My requests** (own inline icons built with `createElementNS`, visible labels, each
-  tab 56 px tall; the active tab is a filled squircle, `--surface-raised`, behind its icon and label, in the accent text
-  colour, with no dot). The bar is 4.5 rem plus the safe area (`--tabbar-height`, no gap: `--tabbar-gap: 0`), and the page's
-  bottom padding and `scroll-padding-bottom` are built from them, so a focused card stops clear of it. **About & credits**
-  is not a tab: it opens from the small (i) button in Home's top row
-  (brand on the left), and no tab is marked while it is shown. About is grouped into inset cards: **Account** (the
-  signed-in name and household from `GET /me`, and the outlined **Sign out** button; signed out, it says so and links to the
-  sign-in on Home), **About** and **Credits** (the TMDB logo and notice are unchanged). The header is **solid** (the page
-  colour, not glass), with a squircle **Back** button (behaviour unchanged) and the brand with a small aqua-over-coral dome.
-  Cards no longer carry a **Play** button: a poster card is one link to the
-  title, with the **status chip** (a dot and the same five words, solid, at the image's **top-left**) and "year ·
-  Movie/Series" under the title; **Play** stays on the
-  title's own page. Search is a three-column grid (two below 21 rem, more from 48 rem) under a squircle field; a request
-  shows a 46x68 thumbnail (the title's TMDB poster, filled in when the title is read), its title, the coarse status and
-  who asked. The look is **Tidepool** and ours: colours, radii and the system font are CSS custom properties at the top of
-  `app.css` (a deep teal-black `--bg` #06161b with no glow; surface #0e262d and raised #153540; text #eafaf6 and muted
-  #9fc3c0; aqua `--accent` #4fe3c1, `--accent-text` #7ff0d6 and `--on-accent` #04201b; coral #ff8a73 for decoration only;
-  the four status pairs; radii 12 px for chips, 20 px for posters, cards, buttons and fields, 24 px for the big cards and
-  30 px for the tab bar and sheets; 800-weight titles), `theme-color` and the manifest's `background_color` are `--bg`,
-  and the app icons are drawn by `scripts/make-app-icons.py` (not yet redrawn for Tidepool). The primary **button** is
-  solid aqua with `--on-accent` text, the secondary an aqua outline on nothing; there is no gradient on any control,
-  no backdrop blur anywhere and no purple. Every text/background pair is a hex token checked at WCAG AA by a test,
-  including `--on-accent` on the aqua, the accent text on the chosen chip's tint and on the active tab, each status
-  chip's word and dot on its colour, and the round hero buttons' icons on their dark overlay over pure white and pure
-  black; the waterlines, the chips' border and the tab fill are checked as non-text. The screens' data, statuses, wording
-  and **Get this** outcomes are unchanged. (Part 2 redraws the hero and the detail pages.)
-- **Hero and full-bleed pages (restyle, PR 2).** The page runs under the status bar (`black-translucent`, safe-area
-  insets) and the header sits above a screen's top image (since Tidepool part 1 it is the same solid bar everywhere, so
-  nothing is drawn under it): `body[data-chrome]` is `home` over Home's hero, `detail` over
-  a title's backdrop, and unset elsewhere (and on Home when there is no hero, or on an error), which now only lets the
-  page's own padding give way to the image; past 40 px of scroll `data-scrolled` is set by a plain scroll listener that
-  never counts as the member taking over (the stylesheet no longer uses it).
-  *Home's hero* shows the first five titles of the first row (Trending) from the answer Home already has for that row:
-  **no extra API call**, and nothing new in the DTO. Each slide is a scroll-snap slide (`scroll-snap-type: x mandatory`)
-  with the backdrop as an `<img>` (`srcset` w780/w1280, `sizes="100vw"`; never a CSS `url()` or inline style), the
-  title (a link to the title's page that stretches over the slide), year, "★ 7.8 TMDB", the household's status pill and a
-  two-line overview; a title with no backdrop gets a plain gradient slide. There is **no autoplay**: it moves only by
-  swipe, the **Previous title** and **Next title** buttons (wrapping round), or the dots, each a button named "Show
-  title N of 5: <title>" with `aria-current` on the one in view; buttons scroll smoothly unless the member prefers
-  reduced motion, and a hidden polite live region says which slide is showing. The hero's `scrollLeft` is part of
-  Home's captured position and is put back with the rows' under the same rules (a touch, wheel, pointer or key before it
-  is back cancels it); the data is fetched again, never kept.
-  *Detail pages* (movie, series, season) have a backdrop of 60 dvh (60 vh where `dvh` is unknown, at least 20 rem) with
-  a gradient into `--bg`; the squircle **Back** stays top-left in the header; the title block overlaps
-  the backdrop's lower 11 rem: a large bold title, a chip row (year, runtime or "N seasons" (specials are not a
-  season), "★ 7.5 TMDB"), genre pills, the status chip and **one** full-width squircle action: **Play** (in the library,
-  only with the household's own Jellyfin link) or **Get this** (available to get). "Requested", "We couldn't get this"
-  and "Can't request" show the pill and one muted fixed note ("Check My requests to follow it.", the admin note, "This
-  title can't be requested."), never a button. A series partly in the library keeps **Play** as its primary and shows
-  **Get this** as the outlined secondary. The poster is hidden on phones and a 9 rem thumbnail from 48 rem. A season page uses
-  its series' backdrop (the series is already read for its name). The text is checked at 4.5:1 over a *white* backdrop:
-  `--scrim-text` (the page colour at 0.84) is solid for 14 rem above the backdrop's foot (17 rem in the hero), more
-  than the title block's overlap, and a test composites it over pure white and pure black for the text, and checks that the
-  chips and status chips (solid) hold their own pairs.
+  its padding): **Home**, **Search**, **My requests** and **Account** (own inline icons built with `createElementNS`,
+  visible labels, each tab 56 px tall; Account's icon is a key, a ring and a toothed shaft, not a person in a circle).
+  The active tab is a cyan-tint squircle with a cyan outline (3:1 against the bar) and a heavier icon stroke, so it is
+  told apart by shape and weight, not colour alone. The bar is 4.5 rem plus the safe area (`--tabbar-height`, no gap),
+  and the page's bottom padding and `scroll-padding-bottom` are built from them, so a focused card stops clear of it.
+  **The header** is solid (the page colour) and carries only the squircle **Back** button (behaviour unchanged) and the
+  screen's **title** (`#header-title`, aria-hidden; the page's own `<h1 data-header-title>` stays the screen's heading
+  for assistive technology and focus, and is visually hidden on Search, My requests and Account, where the header shows
+  it). There is **no JellyPass wordmark and no (i) button**; on Home, which has neither Back nor a title, the header
+  shrinks to the status bar's safe area (`data-bare`), so Home goes straight to the filter chips and the hero.
+  **Account** (`#/account`; the old `#/about` is replaced in place by it) shows the **member card** first (the signed-in
+  name and household from `GET /me`, and the outlined **Sign out** button, which revokes the token at Jellyfin and clears
+  the stored sign-in exactly as before; signed out, it says so and links to the sign-in on Home), then **About &
+  credits**: what JellyPass is, TMDB's logo and its exact notice, the JustWatch credit and the app's version (written
+  into the built client from `package.json`).
+  Cards carry no **Play** button: a poster card is one link to the title, with the **status chip** (a dot and the same
+  five words, solid, at the image's **top-left**) and "year · Movie/Series" under the title; **Play** stays on the title's own
+  page. Search is a three-column grid (two below 21 rem, more from 48 rem) under a squircle field; a request shows a
+  46x68 thumbnail, its title, the coarse status and who asked.
+  **Colours** are CSS custom properties at the top of `app.css`: Jellyfin's navy `--bg` #000b25 with lighter navy
+  surfaces (`--surface` #0b1838, `--surface-raised` #13224a), text #eaf2ff (17.4:1 on the page) and muted #a9bad8;
+  the **main colour is Jellyfin cyan** `--accent` #00a4dc (primary buttons with `--on-accent` #000b25 on it at 6.8:1, the
+  chosen chip's and active tab's outline, focus rings, links), with `--accent-text` #35b8e8 for cyan text on navy and on
+  the chip/tab tint `--accent-tint` #06304d (both at least 4.5:1). **Jellyfin purple** `--purple` #aa5cc3 is a small
+  decoration only: the end-cap of a row heading's waterline. It is never a control, text, border or outline, and no
+  gradient anywhere runs between the purple and the cyan or blue. The four status pairs are solid navy-friendly pairs, a
+  word and a dot at 4.5:1 each. `theme-color` and the manifest's `background_color` are `--bg` and the app icons are
+  redrawn by `scripts/make-app-icons.py`. Radii are 12 px for chips, 20 px for posters, cards, buttons and fields, 24 px
+  for the big cards and 30 px for the tab bar and sheets; titles are 800-weight. There is no gradient on any control and no
+  backdrop blur. Every text/background pair is a hex token checked at WCAG AA by a test, including the hero panel (a
+  `--panel` of the page colour at 0.92, composited over pure white and pure black). The screens' data, statuses, wording
+  and **Get this** outcomes are unchanged.
+- **Hero and detail pages.** The page keeps its own gutters everywhere (nothing runs under the status bar, nothing is drawn
+  under the header); `body[data-chrome='home']` only lets Home's filter band run the full width.
+  *Home's hero* shows the first five titles of the first row (Trending, or the filter's own first row) from the answer Home
+  already has for that row: **no extra API call**, and nothing new in the DTO. Each slide is a scroll-snap slide
+  (`scroll-snap-type: x mandatory`) holding an **inset rounded card** (30 px; 4:5 on a phone, 21:9 from 48 rem) whose
+  backdrop is an `<img>` (`srcset` w780/w1280, `sizes` the card's width; never a CSS `url()` or inline style), and, over
+  its foot, a **navy text panel** (`.hero-panel`, the page colour at 0.92) with the title (a link to the title's page that
+  stretches over the whole card), year, "★ 7.8 TMDB", the household's status chip and a two-line overview, so the text's
+  contrast never depends on the picture (a title with no backdrop is a navy gradient card with the same panel). Below the
+  card, outside it, is the pager: **Previous title** / **Next title** buttons and one round **bubble** button per title
+  (hollow idle, a larger filled one for the title in view, so shape and size and not colour tell them apart; named "Show
+  title N of 5: <title>", `aria-current` on the one in view). There is **no autoplay**: it moves only by swipe or the
+  pager (wrapping round); buttons scroll smoothly unless the member prefers reduced motion, and a hidden polite live
+  region says which slide is showing. The hero's `scrollLeft` is part of Home's captured position and is put back with the
+  rows' under the same rules; the data is fetched again, never kept.
+  *Detail pages* (movie, series, season) start with an **inset rounded backdrop card** (16:9, 30 px radius, nothing drawn
+  over it; a navy gradient when a title has no backdrop), then, below it on the page's navy: a large bold title, a chip row
+  (year, runtime or "N seasons" (specials are not a season), "★ 7.5 TMDB"), genre pills, the status chip and **one**
+  full-width cyan action: **Play** (in the library, only with the household's own Jellyfin link) or **Get this**
+  (available to get). "Requested", "We couldn't get this" and "Can't request" show the chip and one muted fixed note
+  ("Check My requests to follow it.", the admin note, "This title can't be requested."), never a button. A series partly in
+  the library keeps **Play** as its primary and shows **Get this** as the outlined secondary. The poster is hidden on
+  phones and a 9 rem thumbnail from 48 rem. A season page uses its series' backdrop. All text is on the page's own navy.
   *Seasons* are cards (name, "N episodes", status pill, a link to the season). Where the household can ask, the card has
   a round selection control that is still a real `<input type="checkbox">` (`appearance: none`, a 44 px label around it,
   named for its season), and the cards share one `<fieldset>` whose `<legend>` is "Choose the seasons you want". **Select
   all** (shown when there is more than one) only checks or clears the boxes and asks for nothing; **Get this** is the one
   action and sends exactly the checked seasons through the same identical-outcome flow (one confirmation, the same fixed
   errors) as before. *Skeletons* for the hero and for a detail page have the real shapes and are hidden from assistive
-  technology. **Unverified on a real phone**: the safe-area insets under the status bar and over the home indicator, swiping the
-  hero and the icon have only been exercised in a simulated browser (Chromium; not WebKit).
+  technology. **Unverified on a real phone**: the safe-area insets and swiping the hero have only been exercised in a
+  simulated browser (Chromium; not WebKit).
 - **Back and position.** Every screen but Home has a **Back** button first in the header (44 px, `aria-label="Back"`),
   because the installed app has no browser chrome. The app numbers its own history entries in `history.state` (`{jp: n}`,
   nothing else). With `n > 0` Back is `history.back()`, so hardware back and swipe-back are identical; opened on a screen
@@ -1336,7 +1337,7 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
 - Coarse statuses only; no notifications yet.
 - HD only in v1 (`is4k` is always false).
 - No watchlist-star shortcut.
-- Three tabs; About behind Home's (i); Sign out only in About's Account card; no Play on cards (the title page has it).
+- Four tabs (Home, Search, My requests, Account); About & credits on the Account tab; Sign out only in its member card; no Play on cards (the title page has it).
 
 ## Test strategy
 
