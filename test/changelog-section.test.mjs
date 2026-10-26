@@ -53,6 +53,32 @@ function assertSection(notes, { version, nextVersion, subheadings }) {
 }
 
 describe('changelogSection with the real CHANGELOG.md', () => {
+  it('extracts 3.1.1 without its heading, up to the 3.1.0 section', () => {
+    const notes = changelogSection(CHANGELOG, '3.1.1');
+    assertSection(notes, {
+      version: '3.1.1',
+      nextVersion: '3.1.0',
+      subheadings: ['Fixed'],
+    });
+    assert.match(notes, /^This is a patch release for the admin UI only/);
+    const flat = notes.replace(/\s+/g, ' ');
+    assert.match(flat, /There is nothing to configure/);
+    assert.match(flat, /3\.1\.0 reads a state file written by 3\.1\.1/);
+    assert.match(flat, /no file of the household app and none of the household gateway or app API code changed/);
+    assert.match(flat, /restarting JellyPass to upgrade signs every administrator out/);
+    assert.match(flat, /Your session has ended\. Sign in again\./);
+    assert.match(flat, /That username or password was not accepted\./);
+    assert.match(flat, /`ghcr\.io\/nicklongmore86\/jellypass:3\.1\.0`/);
+    assert.match(flat, /No state-file or setting change is needed/);
+    const fixed = notes.indexOf('### Fixed');
+    for (const note of ['**Administrators sign in again', '**To roll back,**']) {
+      assert.ok(notes.indexOf(note) >= 0 && notes.indexOf(note) < fixed, `upgrade note ${note} comes first`);
+    }
+    assert.doesNotMatch(notes, /### Upgrading from/);
+    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b/, 'no server-specific details');
+    assert.deepEqual(split(notes).definitions, []);
+  });
+
   it('extracts 3.1.0 without its heading, up to the 3.0.1 section', () => {
     const notes = changelogSection(CHANGELOG, '3.1.0');
     assertSection(notes, {
