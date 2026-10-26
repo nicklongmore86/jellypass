@@ -320,7 +320,7 @@ On the administrator host the paths do not exist (the admin API's own `401`/`404
 
 | Endpoint | Answer |
 |---|---|
-| `GET /jellypass/app/v1/me` | `{name, household}` (no Seerr call) |
+| `GET /jellypass/app/v1/me` | `{name, household, apiVersion}` (no Seerr call; `apiVersion` is `APP_API_VERSION`, see "Native clients (contract)") |
 | `GET /jellypass/app/v1/search?q=&page=` | `Page` (`q` 1 to 100 characters, `page` 1 to 500) |
 | `GET /jellypass/app/v1/discover/{trending,trending-movies,trending-tv,popular-movies,popular-tv,new-movies,upcoming,upcoming-tv,top-movies,top-tv}?page=` | `Page` (`upcoming` is upcoming movies, `upcoming-tv` upcoming series; see "Home's lists" below) |
 | `GET /jellypass/app/v1/discover/sources` | `Sources` (no TMDB call) |
@@ -521,6 +521,90 @@ every household sees the same delays and `502`s (while TMDB holds every place in
 free, and a call can wait out its 10 seconds). Neither says which titles another household looked at or holds. Use a TMDB
 key for JellyPass alone.
 
+
+### Native clients (contract)
+
+A native client (an iPhone app first) uses the same `/jellypass/app/v1` API as the PWA, with no server change and no
+endpoint of its own. This is the contract it is built against; the server keeps it, and a store build that lags the
+server by months still works.
+
+- **One address, one household.** The household is the one whose address the client calls: `https://jelly-<id>.<domain>`
+  (from `HOUSEHOLD_DOMAIN` and the `jelly-` prefix), decided from the `Host` header the HTTP client sends, never from
+  anything in the request. Every call goes to an absolute URL on that address: `https://<household host>/jellypass/app/v1/...`
+  for the API and `https://<household host>/Users/...` and `/Sessions/Logout` for sign-in and sign-out, through the
+  household gateway. The member enters the address (or opens a setup link that carries only the address, never a
+  token). **A client never ships, fetches or shows a list of households**: a list would tell each household that the
+  others exist. Someone in two households adds two addresses, each with its own sign-in, and the client never merges
+  their answers. The administrator host has no app API.
+- **Checking an address.** `GET /jellypass/app/v1/me` with no token answers `401 {"error":"unauthorized"}` on a host
+  with the app on and `404` everywhere else; it counts one call against the address budget. There is no
+  unauthenticated `v1` endpoint and none will be added: every `v1` path needs a token.
+- **Sign-in** is the PWA's (see "Sign-in" under "App page (step 1b)"): `GET /Users/Public` for the household's
+  profiles, then `POST /Users/AuthenticateByName` with `{"Username", "Pw"}` and `Authorization: MediaBrowser
+  Client="<app name>", Device="<device model>", DeviceId="<random, generated once, kept on the device>",
+  Version="<app version>"`. All four fields are required and non-empty, or the gateway answers `400`. The password is
+  only ever in that one request body. The answer's `AccessToken`, `User.Id` and `ServerId` are what the client keeps.
+- **Every API call** sends the token as `Authorization: MediaBrowser Token="<token>"` and nothing else that identifies
+  the caller: no cookie (the API sets and reads none), no `api_key` or other token in a URL (the API accepts one, for
+  Jellyfin web's sake, but a URL ends up in logs), and no reliance on `Origin`, `Referer` or `Sec-Fetch-*` (the API
+  checks none). `Accept: application/json`; a `POST` sends `Content-Type: application/json`. **CORS stays off**: the API
+  sends no `Access-Control-*` headers, and a preflight gets the same `401` as any call without a token (a native HTTP
+  client never sends one).
+- **Storage.** The token is kept only in the platform's credential store, readable only on that device (on iOS the
+  Keychain with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`), keyed by the address, never in plain files,
+  backups, logs or analytics. API answers are `Cache-Control: no-store` and are not cached on disk (an ephemeral URL
+  session, or the cache off). No third-party analytics, crash-reporting or advertising SDK: each is a new place a
+  title or a household name could go.
+- **Sign-out** is `POST /Sessions/Logout` with the token through the household host (best effort, five seconds), then
+  the token is deleted from the device. The gateway forgets the token at once (see "Identity chain").
+- **Answers.** `401` means the token is no longer good: drop it and show the profile picker. Errors are fixed bodies,
+  the same for every endpoint and every title: `400 {"error":"invalid_request"}`, `401 {"error":"unauthorized"}`,
+  `404 {"error":"not_found"}`, `429 {"error":"too_many_requests"}`, `502 {"error":"unavailable"}`; and, before any
+  token is checked, `404 {"error":"household_not_found"}` on a household address no household has (the household was
+  removed, or the address is mistyped). The client shows fixed wording of its own for each and never shows a body, an
+  upstream message or a status line; for sign-in, the PWA's: `401`/`403` "That didn't work", `429` "Too many
+  attempts", anything else "Can't sign in right now", no network "Check your connection".
+- **"Get this"** always answers the same `202 {"status":"accepted"}` and the client shows the same confirmation for
+  it every time: it never waits for or reads anything to tell what happened, and only `GET /requests` and the
+  titles' `state` say how it went, later. Nothing the client shows may depend on another household.
+- **Budgets.** They are the server's, the same for every client: 300 calls per client address and 200 per member in
+  each 5 minutes, 60 per household in each 10 seconds; "Get this" 10 per member, 30 per address and 30 per household in
+  each 10 minutes; 20 sign-in attempts per address in each 5 minutes. A household's phones usually share one public
+  address, so every call one device makes comes out of the others' budget too: a native client makes no more calls than
+  the PWA does for the same screen (see "Fetch budget" below), fetches rows below the fold only when they near the
+  screen, never polls, and on `429` stops and offers a retry rather than retrying by itself.
+- **Play** opens `play.url`, only when it is exactly `https://<the household host>/web/#/details?id=<play.itemId>`;
+  anything else is ignored.
+
+**Compatibility.** `v1` only ever gains: a new optional field in an answer, a new endpoint, a new value only where
+the contract below already says what a client does with an unknown one. It never removes or renames a field, changes
+a field's type or meaning, makes a present field optional or nullable, or changes a status code or error body. Anything
+that would is a new major version under `/jellypass/app/v2`, served next to `v1` for long enough that store builds can
+move. `GET /me` says which `v1` the server speaks: `apiVersion`, an integer (`APP_API_VERSION` in `src/app-api.ts`),
+`1` in the first release that sends it, one more with each release that adds a field or endpoint to `v1`, never
+lower. A client that needs a field added in revision *n* checks `apiVersion >= n` (a missing `apiVersion` is revision
+0: 3.1.1 and earlier) and can say
+"update the server" instead of failing. No minimum client version is sent: until a `v2` exists every client of `v1`
+is supported. A client:
+
+- ignores fields it does not know, and never rejects an answer for having one;
+- treats an unknown `state` as `unavailable`, and an unknown coarse `status` of a request (or one of its seasons) as
+  `requested`;
+- treats an unknown error code by its HTTP status, and any other status as `unavailable`.
+
+**Fetch budget.** `docs/app-api/fetch-budget.json` lists the calls the PWA makes when each screen is opened: Home
+under **All** 6 at once (`/me`, `/discover/sources` and 4 lists) and 10 more as the lazy rows near the screen,
+**Movies** 6 and 8, **TV** 5 and 8; a movie or series page 3 (`/me`, the title, `/requests`), a season page 4. It also
+holds the server's budgets. `test/app-pwa.test.mjs` ("fetch budget") runs the real app against the API and fails
+if any screen makes a different set of calls, so a change that makes the app chattier has to change the file, and a
+native client is tested against the same numbers.
+
+**Schema.** `docs/app-api/v1.openapi.json` (OpenAPI 3.1, JSON Schema 2020-12) describes every `v1` endpoint, its
+parameters and every answer, errors included; `info.version` is `apiVersion`. Its object schemas are closed
+(`additionalProperties: false`) and list every key as required, because the API always sends every key: that is for
+the server's own test, which checks every answer the app API tests produce against it (see "Test strategy"). A client
+generates its types from it but decodes leniently, as above. A change to an answer changes the document in the same
+pull request, additively.
 
 ## App page (step 1b)
 
@@ -1333,6 +1417,8 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
 ## Decisions
 
 - PWA first; native apps later on the same API.
+- Native clients use `/jellypass/app/v1` as the PWA does, with no endpoint, CORS or authentication of their own (see
+  "Native clients (contract)"). `v1` only gains fields and endpoints; a breaking change is `/jellypass/app/v2`.
 - The Seerr website is restricted to administrators once the app is ready (step 4).
 - Coarse statuses only; no notifications yet.
 - HD only in v1 (`is4k` is always false).
@@ -1390,6 +1476,12 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
   redirects in the guarded lookups, skipping the per-call link check (or doing it only once per client), ignoring an
   invalidation during a confirmation, dropping an evicted stamp without raising the floor, letting a pending lookup
   fill the cache after `clear()`, or counting the size limit in characters.
+- **API schema.** `test/app-api-schema.test.mjs` checks every endpoint's answers (every household state, an empty and a
+  full `GET /requests`, both "Get this" bodies, and a `400`, `401`, `404`, `429` and `502`) against
+  `docs/app-api/v1.openapi.json` with a small validator in `test/support/json-schema.mjs` (no dependency; it knows
+  only the keywords the document uses, and the test refuses any other so none is silently ignored). An undeclared
+  field, a missing one, a wrong type or a value outside its enum fails. It also checks that the document lists exactly
+  the README's endpoints and that `info.version` is `APP_API_VERSION`.
 - **App API.** `test/app-api.test.mjs` runs the app through the household gateway against a fake TMDB serving the
   TMDB fixtures (it refuses calls without JellyPass's key), a fake Seerr that enforces `X-API-User`, serves the
   blocklist and counts any title read as a violation (built from the Seerr fixtures), and a fake Jellyfin that applies

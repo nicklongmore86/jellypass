@@ -5,6 +5,8 @@ export type HouseholdState = 'unavailable' | 'in_library' | 'requested' | 'get_t
 export interface Me {
   name: string;
   household: string;
+  /** The revision of the v1 contract the server speaks (not read by the app). */
+  apiVersion: number;
 }
 
 export interface Play {

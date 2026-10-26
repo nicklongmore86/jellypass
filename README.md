@@ -651,7 +651,7 @@ and nowhere else (on the administrator host they do not exist). The
 
 | Method | Path | Answer |
 | --- | --- | --- |
-| `GET` | `/jellypass/app/v1/me` | `{"name", "household"}`: the caller's Jellyfin display name and household name. |
+| `GET` | `/jellypass/app/v1/me` | `{"name", "household", "apiVersion"}`: the caller's Jellyfin display name and household name, and the revision of the `v1` API the server speaks (an integer, `1` today; it goes up by one with each release that adds a field or endpoint, and never down). `v1` only ever gains fields and endpoints: a breaking change would be `/jellypass/app/v2`. |
 | `GET` | `/jellypass/app/v1/search?q=...&page=N` | A page of title cards. `q` is 1 to 100 characters; `page` 1 to 500, default 1. |
 | `GET` | `/jellypass/app/v1/discover/{list}?page=N` | A page of title cards; `list` is `trending`, `trending-movies`, `trending-tv`, `popular-movies`, `popular-tv`, `new-movies` (films that opened in US theatres in the last 60 days), `upcoming` (upcoming movies), `upcoming-tv` (upcoming series), `top-movies` or `top-tv` (TMDB's top rated). |
 | `GET` | `/jellypass/app/v1/discover/sources` | The streaming services (networks) and studios the app offers, with their TMDB logos; no TMDB call. |
@@ -665,6 +665,10 @@ and nowhere else (on the administrator host they do not exist). The
 | `POST` | `/jellypass/app/v1/movie/{tmdbId}/get` | ["Get this"](#get-this) for a movie (empty body or `{}`): always `202 {"status":"accepted"}`. |
 | `POST` | `/jellypass/app/v1/tv/{tmdbId}/get` | "Get this" for seasons of a series, `{"seasons": [1, 2]}` (1 to 100 seasons from 1 to 999): always `202 {"status":"accepted"}`. |
 | `GET` | `/jellypass/app/v1/requests` | The household's own titles from "Get this", with a coarse status: `{"results": [{"id", "mediaType", "tmdbId", "status", "seasons", "byYou"}]}`. |
+
+The machine-readable contract is [docs/app-api/v1.openapi.json](docs/app-api/v1.openapi.json)
+(OpenAPI 3.1). Native clients follow
+[the native-client contract](docs/app-design.md#native-clients-contract).
 
 - **Sign-in is Jellyfin's.** Send the member's Jellyfin token as Jellyfin web
   does (`Authorization: MediaBrowser Token="..."`, `X-Emby-Token`, or
@@ -719,7 +723,8 @@ and nowhere else (on the administrator host they do not exist). The
   {"error":"unauthorized"}`, `404 {"error":"not_found"}` (unknown path, or a
   title TMDB does not know), `429 {"error":"too_many_requests"}` and `502
   {"error":"unavailable"}` (Jellyfin, Seerr or TMDB failed; details are
-  logged, never returned).
+  logged, never returned); on a household address no household has,
+  `404 {"error":"household_not_found"}` before any token is checked.
 - **Rate limited.** 300 calls per client address (after `TRUSTED_PROXIES`)
   and 200 per signed-in user in each 5-minute window, and 60 per household
   (its own members' calls only) in each 10 seconds; all answer the same

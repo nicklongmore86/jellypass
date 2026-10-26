@@ -1,0 +1,1558 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "JellyPass household app API",
+    "version": "1",
+    "description": "The household app API, /jellypass/app/v1, on household hosts only. info.version is GET /me's apiVersion. v1 only ever gains fields and endpoints; see docs/app-design.md, \"Native clients (contract)\". Schemas are closed (additionalProperties false) so the server's own test catches an undeclared field; a client decodes leniently and ignores fields it does not know. Every answer is Cache-Control: no-store."
+  },
+  "servers": [
+    {
+      "url": "https://{householdHost}/jellypass/app/v1",
+      "variables": {
+        "householdHost": {
+          "default": "jelly-household.example.com",
+          "description": "The household's own address; the household is decided from it."
+        }
+      }
+    }
+  ],
+  "security": [
+    {
+      "jellyfinToken": []
+    }
+  ],
+  "paths": {
+    "/me": {
+      "get": {
+        "operationId": "me",
+        "summary": "Who the caller is, and the API revision.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Me"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Invalid"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "502": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/search": {
+      "get": {
+        "operationId": "search",
+        "summary": "Search titles.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Invalid"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "502": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            },
+            "description": "Trimmed first; blank, or longer than 100 UTF-16 code units once trimmed, is invalid_request."
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500
+            }
+          }
+        ]
+      }
+    },
+    "/discover/{list}": {
+      "get": {
+        "operationId": "discover",
+        "summary": "A discover list.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Invalid"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "502": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "parameters": [
+          {
+            "name": "list",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "enum": [
+                "trending",
+                "trending-movies",
+                "trending-tv",
+                "popular-movies",
+                "popular-tv",
+                "new-movies",
+                "upcoming",
+                "upcoming-tv",
+                "top-movies",
+                "top-tv"
+              ]
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500
+            }
+          }
+        ]
+      }
+    },
+    "/discover/sources": {
+      "get": {
+        "operationId": "sources",
+        "summary": "The allowlisted networks and studios.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Sources"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Invalid"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "502": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/discover/network/{id}": {
+      "get": {
+        "operationId": "networkSeries",
+        "summary": "A network's popular series.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Invalid"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "502": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500
+            }
+          }
+        ]
+      }
+    },
+    "/discover/network/{id}/films": {
+      "get": {
+        "operationId": "networkFilms",
+        "summary": "The films a network's service streams in the US.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Invalid"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "502": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500
+            }
+          }
+        ]
+      }
+    },
+    "/discover/network/{id}/all": {
+      "get": {
+        "operationId": "networkAll",
+        "summary": "A network's series and films mixed.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Invalid"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "502": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500
+            }
+          }
+        ]
+      }
+    },
+    "/discover/studio/{id}": {
+      "get": {
+        "operationId": "studio",
+        "summary": "A studio's popular movies.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Page"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Invalid"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "502": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1
+            }
+          },
+          {
+            "name": "page",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 500
+            }
+          }
+        ]
+      }
+    },
+    "/movie/{tmdbId}": {
+      "get": {
+        "operationId": "movie",
+        "summary": "One movie.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Movie"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Invalid"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "502": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "parameters": [
+          {
+            "name": "tmdbId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2147483647
+            }
+          }
+        ]
+      }
+    },
+    "/tv/{tmdbId}": {
+      "get": {
+        "operationId": "series",
+        "summary": "One series, with its seasons.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Series"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Invalid"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "502": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "parameters": [
+          {
+            "name": "tmdbId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2147483647
+            }
+          }
+        ]
+      }
+    },
+    "/tv/{tmdbId}/season/{n}": {
+      "get": {
+        "operationId": "season",
+        "summary": "One season, with its episodes.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Season"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Invalid"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "502": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        },
+        "parameters": [
+          {
+            "name": "tmdbId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2147483647
+            }
+          },
+          {
+            "name": "n",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 999
+            }
+          }
+        ]
+      }
+    },
+    "/movie/{tmdbId}/get": {
+      "post": {
+        "operationId": "getMovie",
+        "summary": "Get this, for a movie.",
+        "parameters": [
+          {
+            "name": "tmdbId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2147483647
+            }
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetThisMovie"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Always this, whatever happens to the title.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Accepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Invalid"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "502": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/tv/{tmdbId}/get": {
+      "post": {
+        "operationId": "getSeries",
+        "summary": "Get this, for seasons of a series.",
+        "parameters": [
+          {
+            "name": "tmdbId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 2147483647
+            }
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetThisSeries"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Always this, whatever happens to the title.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Accepted"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Invalid"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "502": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/requests": {
+      "get": {
+        "operationId": "requests",
+        "summary": "The household's own requests, with a coarse status.",
+        "responses": {
+          "200": {
+            "description": "OK",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Requests"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Invalid"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "502": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "jellyfinToken": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "Authorization",
+        "description": "MediaBrowser Token=\"<Jellyfin access token>\""
+      }
+    },
+    "responses": {
+      "Invalid": {
+        "description": "400 invalid_request.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/InvalidRequestError"
+            }
+          }
+        }
+      },
+      "Unauthorized": {
+        "description": "401 unauthorized: a missing, invalid or disabled token, or a member of another household, all alike.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/UnauthorizedError"
+            }
+          }
+        }
+      },
+      "NotFound": {
+        "description": "404 not_found: an unknown path, or a title TMDB does not know. 404 household_not_found: the host is a household address no household has (no token is checked; a client signed in there treats it as the household gone).",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/NotFoundError"
+            }
+          }
+        }
+      },
+      "RateLimited": {
+        "description": "429 too_many_requests.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/TooManyRequestsError"
+            }
+          }
+        }
+      },
+      "Unavailable": {
+        "description": "502 unavailable.",
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/UnavailableError"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Error": {
+        "description": "Every error body: one of these codes, always with its own status (see the responses: InvalidRequestError, UnauthorizedError, NotFoundError, TooManyRequestsError, UnavailableError), the same for every endpoint and every title. A client treats an unknown code by its HTTP status.",
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": "string",
+            "enum": [
+              "invalid_request",
+              "unauthorized",
+              "not_found",
+              "household_not_found",
+              "too_many_requests",
+              "unavailable"
+            ]
+          }
+        }
+      },
+      "InvalidRequestError": {
+        "description": "400.",
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": "string",
+            "const": "invalid_request"
+          }
+        }
+      },
+      "UnauthorizedError": {
+        "description": "401.",
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": "string",
+            "const": "unauthorized"
+          }
+        }
+      },
+      "NotFoundError": {
+        "description": "404: not_found on a household host, household_not_found on a host of no household.",
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": "string",
+            "enum": [
+              "not_found",
+              "household_not_found"
+            ]
+          }
+        }
+      },
+      "TooManyRequestsError": {
+        "description": "429.",
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": "string",
+            "const": "too_many_requests"
+          }
+        }
+      },
+      "UnavailableError": {
+        "description": "502.",
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": "string",
+            "const": "unavailable"
+          }
+        }
+      },
+      "HouseholdState": {
+        "type": "string",
+        "enum": [
+          "unavailable",
+          "in_library",
+          "requested",
+          "get_this"
+        ],
+        "description": "The household's own view of a title. A client renders an unknown value as unavailable."
+      },
+      "CoarseStatus": {
+        "type": "string",
+        "enum": [
+          "requested",
+          "ready",
+          "failed"
+        ],
+        "description": "A household request's coarse status. A client renders an unknown value as requested."
+      },
+      "MediaType": {
+        "type": "string",
+        "enum": [
+          "movie",
+          "tv"
+        ]
+      },
+      "Me": {
+        "type": "object",
+        "required": [
+          "name",
+          "household",
+          "apiVersion"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "household": {
+            "type": "string"
+          },
+          "apiVersion": {
+            "type": "integer",
+            "minimum": 1,
+            "description": "The revision of the v1 contract the server speaks: one more with each release that adds a field or endpoint, never lower. Absent before it existed (revision 0)."
+          }
+        }
+      },
+      "Play": {
+        "description": "Set only when state is in_library.",
+        "type": "object",
+        "required": [
+          "itemId",
+          "url"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "itemId": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{32}$"
+          },
+          "url": {
+            "type": "string",
+            "pattern": "^https://[A-Za-z0-9.-]+/web/#/details\\?id=[0-9a-f]{32}$",
+            "description": "Exactly https://<the household host>/web/#/details?id=<itemId>; a client ignores anything else."
+          }
+        }
+      },
+      "Card": {
+        "type": "object",
+        "required": [
+          "mediaType",
+          "tmdbId",
+          "title",
+          "year",
+          "overview",
+          "posterUrl",
+          "backdropUrl",
+          "rating",
+          "state",
+          "play"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "mediaType": {
+            "$ref": "#/components/schemas/MediaType"
+          },
+          "tmdbId": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 9007199254740991,
+            "description": "Any positive whole number TMDB gives, up to 2^53 - 1; only one up to 2147483647 can be opened as /movie/{tmdbId} or /tv/{tmdbId}."
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 300
+          },
+          "year": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 9999
+          },
+          "overview": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "posterUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^https://image\\.tmdb\\.org/t/p/w342/[A-Za-z0-9_-]{1,100}\\.(?:jpg|jpeg|png|webp)$",
+            "description": "TMDB poster at w342; the same file is served at other TMDB widths."
+          },
+          "backdropUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^https://image\\.tmdb\\.org/t/p/w780/[A-Za-z0-9_-]{1,100}\\.(?:jpg|jpeg|png|webp)$",
+            "description": "TMDB backdrop at w780; the PWA also draws the same file at w1280."
+          },
+          "rating": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 10,
+            "description": "TMDB vote average to one decimal; null when TMDB has none."
+          },
+          "state": {
+            "$ref": "#/components/schemas/HouseholdState"
+          },
+          "play": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Play"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        }
+      },
+      "Page": {
+        "type": "object",
+        "required": [
+          "page",
+          "nextPage",
+          "results"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "page": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 500
+          },
+          "nextPage": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 2,
+            "maximum": 500
+          },
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Card"
+            }
+          }
+        }
+      },
+      "Movie": {
+        "type": "object",
+        "required": [
+          "mediaType",
+          "tmdbId",
+          "title",
+          "year",
+          "overview",
+          "posterUrl",
+          "backdropUrl",
+          "rating",
+          "state",
+          "play",
+          "genres",
+          "runtime"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "mediaType": {
+            "type": "string",
+            "const": "movie"
+          },
+          "tmdbId": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647,
+            "description": "The tmdbId of the path."
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 300
+          },
+          "year": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 9999
+          },
+          "overview": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "posterUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^https://image\\.tmdb\\.org/t/p/w342/[A-Za-z0-9_-]{1,100}\\.(?:jpg|jpeg|png|webp)$",
+            "description": "TMDB poster at w342; the same file is served at other TMDB widths."
+          },
+          "backdropUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^https://image\\.tmdb\\.org/t/p/w780/[A-Za-z0-9_-]{1,100}\\.(?:jpg|jpeg|png|webp)$",
+            "description": "TMDB backdrop at w780; the PWA also draws the same file at w1280."
+          },
+          "rating": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 10,
+            "description": "TMDB vote average to one decimal; null when TMDB has none."
+          },
+          "state": {
+            "$ref": "#/components/schemas/HouseholdState"
+          },
+          "play": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Play"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "genres": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            }
+          },
+          "runtime": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "description": "Minutes."
+          }
+        }
+      },
+      "SeasonSummary": {
+        "type": "object",
+        "required": [
+          "seasonNumber",
+          "name",
+          "episodeCount",
+          "state"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "seasonNumber": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "episodeCount": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "state": {
+            "$ref": "#/components/schemas/HouseholdState"
+          }
+        }
+      },
+      "Series": {
+        "type": "object",
+        "required": [
+          "mediaType",
+          "tmdbId",
+          "title",
+          "year",
+          "overview",
+          "posterUrl",
+          "backdropUrl",
+          "rating",
+          "state",
+          "play",
+          "genres",
+          "runtime",
+          "seasons"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "mediaType": {
+            "type": "string",
+            "const": "tv"
+          },
+          "tmdbId": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647,
+            "description": "The tmdbId of the path."
+          },
+          "title": {
+            "type": "string",
+            "maxLength": 300
+          },
+          "year": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 9999
+          },
+          "overview": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "posterUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^https://image\\.tmdb\\.org/t/p/w342/[A-Za-z0-9_-]{1,100}\\.(?:jpg|jpeg|png|webp)$",
+            "description": "TMDB poster at w342; the same file is served at other TMDB widths."
+          },
+          "backdropUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^https://image\\.tmdb\\.org/t/p/w780/[A-Za-z0-9_-]{1,100}\\.(?:jpg|jpeg|png|webp)$",
+            "description": "TMDB backdrop at w780; the PWA also draws the same file at w1280."
+          },
+          "rating": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 10,
+            "description": "TMDB vote average to one decimal; null when TMDB has none."
+          },
+          "state": {
+            "$ref": "#/components/schemas/HouseholdState"
+          },
+          "play": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Play"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "genres": {
+            "type": "array",
+            "maxItems": 20,
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 100
+            }
+          },
+          "runtime": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 1,
+            "description": "The first episode run time, in minutes."
+          },
+          "seasons": {
+            "type": "array",
+            "maxItems": 200,
+            "items": {
+              "$ref": "#/components/schemas/SeasonSummary"
+            }
+          }
+        }
+      },
+      "Episode": {
+        "type": "object",
+        "required": [
+          "episodeNumber",
+          "name",
+          "overview"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "episodeNumber": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "overview": {
+            "type": "string",
+            "maxLength": 4000
+          }
+        }
+      },
+      "Season": {
+        "type": "object",
+        "required": [
+          "tmdbId",
+          "seasonNumber",
+          "name",
+          "overview",
+          "episodes",
+          "state"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "tmdbId": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647,
+            "description": "The tmdbId of the path."
+          },
+          "seasonNumber": {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 999
+          },
+          "name": {
+            "type": "string",
+            "maxLength": 200
+          },
+          "overview": {
+            "type": "string",
+            "maxLength": 4000
+          },
+          "episodes": {
+            "type": "array",
+            "maxItems": 500,
+            "items": {
+              "$ref": "#/components/schemas/Episode"
+            }
+          },
+          "state": {
+            "$ref": "#/components/schemas/HouseholdState"
+          }
+        }
+      },
+      "Source": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "logoUrl"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "logoUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^https://image\\.tmdb\\.org/t/p/w300/[A-Za-z0-9_-]{1,100}\\.(?:jpg|jpeg|png|webp)$",
+            "description": "TMDB logo at w300, or null."
+          }
+        }
+      },
+      "Network": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "logoUrl",
+          "hasFilms"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "logoUrl": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "pattern": "^https://image\\.tmdb\\.org/t/p/w300/[A-Za-z0-9_-]{1,100}\\.(?:jpg|jpeg|png|webp)$",
+            "description": "TMDB logo at w300, or null."
+          },
+          "hasFilms": {
+            "type": "boolean",
+            "description": "Whether /discover/network/{id}/films and /all are offered for it."
+          }
+        }
+      },
+      "Sources": {
+        "description": "JellyPass's own allowlist, in the order Home shows it; no TMDB call, the same for everyone.",
+        "type": "object",
+        "required": [
+          "networks",
+          "studios"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "networks": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Network"
+            }
+          },
+          "studios": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Source"
+            }
+          }
+        }
+      },
+      "RequestSeason": {
+        "type": "object",
+        "required": [
+          "seasonNumber",
+          "status"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "seasonNumber": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 999
+          },
+          "status": {
+            "$ref": "#/components/schemas/CoarseStatus"
+          }
+        }
+      },
+      "Request": {
+        "type": "object",
+        "required": [
+          "id",
+          "mediaType",
+          "tmdbId",
+          "status",
+          "seasons",
+          "byYou"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9_-]{22}$",
+            "description": "Opaque; never a Seerr ID."
+          },
+          "mediaType": {
+            "$ref": "#/components/schemas/MediaType"
+          },
+          "tmdbId": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 2147483647,
+            "description": "Asked for through /movie/{tmdbId}/get or /tv/{tmdbId}/get, so at most 2147483647."
+          },
+          "status": {
+            "$ref": "#/components/schemas/CoarseStatus"
+          },
+          "seasons": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/RequestSeason"
+            },
+            "description": "Empty for a movie."
+          },
+          "byYou": {
+            "type": "boolean",
+            "description": "Whether the caller made any of the household's records for the title."
+          }
+        }
+      },
+      "Requests": {
+        "description": "The household's own titles from Get this, newest first.",
+        "type": "object",
+        "required": [
+          "results"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "results": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Request"
+            }
+          }
+        }
+      },
+      "Accepted": {
+        "description": "The same answer whatever happens to the title.",
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "type": "string",
+            "const": "accepted"
+          }
+        }
+      },
+      "GetThisMovie": {
+        "type": "object",
+        "additionalProperties": false,
+        "properties": {},
+        "description": "An empty object (or no body)."
+      },
+      "GetThisSeries": {
+        "type": "object",
+        "required": [
+          "seasons"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "seasons": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 100,
+            "uniqueItems": true,
+            "items": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 999
+            }
+          }
+        }
+      }
+    }
+  }
+}

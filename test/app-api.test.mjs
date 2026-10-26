@@ -7,6 +7,7 @@ import { readdirSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { parseHTML } from 'linkedom';
 import { setTimeout as delay } from 'node:timers/promises';
+import { APP_API_VERSION } from '../dist/app-api.js';
 import { GrantStore } from '../dist/store.js';
 import { assertNoCanaries } from './support/seerr-fixtures.mjs';
 import {
@@ -86,13 +87,16 @@ function states(page) {
 }
 
 describe('household app API: answers', { timeout: 20_000 }, () => {
-  it('answers /me with the caller\'s name and household only, without asking Seerr or TMDB', async (t) => {
+  it('answers /me with the caller\'s name and household and the API version only, without asking Seerr or TMDB', async (t) => {
     const app = await startApp(t);
     const answer = await app.get(`${APP}/me`);
     assert.equal(answer.status, 200);
-    assert.deepEqual(answer.json(), { name: 'Alice', household: 'Farmhouse' });
+    assert.deepEqual(answer.json(), { name: 'Alice', household: 'Farmhouse', apiVersion: 1 });
     assert.equal(app.seerr.calls.length, 0);
     assert.equal(app.tmdb.calls.length, 0);
+    // The version is the server's, the same for every household and every member.
+    assert.equal(APP_API_VERSION, 1);
+    assert.deepEqual((await app.get(`${APP}/me`, { host: HOST_B, user: BOB })).json(), { name: 'Bob', household: 'Mill', apiVersion: APP_API_VERSION });
   });
 
   it('shapes search results into allowlisted cards with the household state of each', async (t) => {
@@ -1264,7 +1268,7 @@ describe('household app API: sessions', { timeout: 20_000 }, () => {
       [`${APP}/me?api_key=token-alice`, {}],
     ]) {
       const answer = await app.get(pathname, { user: null, headers });
-      assert.deepEqual(answer.json(), { name: 'Alice', household: 'Farmhouse' }, JSON.stringify(headers));
+      assert.deepEqual(answer.json(), { name: 'Alice', household: 'Farmhouse', apiVersion: 1 }, JSON.stringify(headers));
     }
   });
 
