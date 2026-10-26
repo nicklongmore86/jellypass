@@ -121,7 +121,9 @@ checked), **Sign out** (the session's sign-out) and **Change household** (signs 
 **About & credits**, word for word as the PWA (`src/credits.ts`): what JellyPass is, the TMDB logo (the PWA's
 `tmdb-logo.svg`, drawn from the code in `src/TmdbLogo.tsx`, so nothing is loaded) linking to TMDB, TMDB's required
 notice, where titles and images come from, the JustWatch credit, the app's version and build
-(`JellyPass 0.1.0 (build 1)`, from `version`, `ios.buildNumber` and `android.versionCode` in `app.config.ts`) and the
+(`JellyPass 0.1.0 (build 12)`: the installed binary's own version and build number, read with `expo-application`'s
+`nativeApplicationVersion` and `nativeBuildVersion`, since EAS sets the build number; a development client with no
+native values shows `version` from `app.config.ts` alone) and the
 household's API version from `/me`. The links (TMDB and JustWatch only) open in the system browser with
 `Linking.openURL`. The screen makes no call of its own.
 
@@ -344,6 +346,11 @@ Edits reload on the phone as you save. Expo Go needs no Apple or Google develope
 Members install TestFlight and accept an invitation; builds come from EAS through the `Mobile release` workflow
 ([Release builds](#release-builds)).
 
+**Export compliance.** The app's only encryption is the standard HTTPS the OS provides (exempt), so `app.config.ts`
+sets `ios.config.usesNonExemptEncryption: false` (`ITSAppUsesNonExemptEncryption = false` in the Info.plist). App
+Store Connect then asks no encryption questions and a new build goes to testers without stopping at **Missing
+Compliance**. If the app ever adds encryption of its own, this must change, and the questions be answered.
+
 ### Android: a sideloaded APK, not Google Play
 
 Android builds are shared as an APK file that members install directly. There is no Play Store listing and
@@ -385,7 +392,7 @@ try, `production` for a release (what a `mobile-v*` tag builds).
 |---|---|
 | `"distribution": "store"` | An App Store signed iOS build, the only kind TestFlight takes. On Android, a release-signed APK |
 | `"android": { "buildType": "apk" }` | An AAB only installs from Google Play ([APK builds](https://docs.expo.dev/build-reference/apk/)) |
-| `"cli": { "appVersionSource": "remote" }` and `"autoIncrement": true` | EAS keeps the build number (`ios.buildNumber`, `android.versionCode`) and raises it for every build, so TestFlight never refuses a repeat and every APK installs over the last. The first build is 1 ([App versions](https://docs.expo.dev/build-reference/app-versions/)). The version members see is `version` in `app.config.ts` |
+| `"cli": { "appVersionSource": "remote" }` and `"autoIncrement": true` | EAS keeps the build number (iOS `CFBundleVersion`, Android `versionCode`) and raises it for every build, so TestFlight never refuses a repeat and every APK installs over the last. The first build is 1 ([App versions](https://docs.expo.dev/build-reference/app-versions/)). `app.config.ts` has no `ios.buildNumber` or `android.versionCode` (they would be ignored, and drift); the Account screen shows the installed binary's own. The version members see is `version` in `app.config.ts` |
 | `"corepack": true` | The builder installs with the pnpm in `package.json`'s `packageManager` |
 | `submit.production.ios` | The App Store Connect API key, as `$EXPO_ASC_API_KEY_PATH`, `$EXPO_ASC_KEY_ID` and `$EXPO_ASC_ISSUER_ID`: EAS CLI fills a `$NAME` in those three fields from the environment (its `eas-json` package, `submit/resolver.ts`; the fields are in the [eas.json reference](https://docs.expo.dev/build-reference/eas-json/)), and the workflow sets them from the secrets |
 

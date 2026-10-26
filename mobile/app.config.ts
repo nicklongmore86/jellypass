@@ -35,8 +35,8 @@ const config: ExpoConfig = {
   backgroundColor: NAVY,
   ios: {
     bundleIdentifier: IOS_BUNDLE_ID,
-    // The build number, shown with the version on the Account screen; raised for every TestFlight build.
-    buildNumber: '1',
+    // No buildNumber here: EAS keeps it (eas.json's appVersionSource "remote") and raises it for every build. The
+    // Account screen reads the installed binary's own (expo-application).
     supportsTablet: true,
     requireFullScreen: false,
     infoPlist: {
@@ -47,13 +47,14 @@ const config: ExpoConfig = {
         'UIInterfaceOrientationLandscapeLeft',
         'UIInterfaceOrientationLandscapeRight',
       ],
-      ITSAppUsesNonExemptEncryption: false,
     },
+    // The app's only encryption is the standard HTTPS the OS provides (exempt), so App Store Connect asks nothing and a
+    // TestFlight build never waits on "Missing Compliance" (ITSAppUsesNonExemptEncryption in the Info.plist).
+    config: { usesNonExemptEncryption: false },
   },
   android: {
     package: ANDROID_PACKAGE,
-    // Raised for every APK: Android installs an update over the old one only if this is higher.
-    versionCode: 1,
+    // No versionCode here either: EAS raises it for every APK, so each installs over the last.
     // A placeholder from the PWA icon: its ticket already sits inside the adaptive icon's safe zone.
     adaptiveIcon: { foregroundImage: './assets/adaptive-icon.png', backgroundColor: NAVY },
     // No Android backup: the sign-in is only ever on this device (a restored Keystore-encrypted value is unreadable

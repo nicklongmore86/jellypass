@@ -22,6 +22,8 @@ jest.mock('../src/api/transport', () => ({
 // The app config the build embeds, which Jest has no copy of.
 jest.mock('expo-constants', () => ({ __esModule: true, default: { expoConfig: jest.requireActual('../app.config').default } }));
 jest.mock('react-native-safe-area-context', () => jest.requireActual('react-native-safe-area-context/jest/mock').default);
+// The installed binary's version and build number, as the OS would report them for an EAS build.
+jest.mock('expo-application', () => ({ nativeApplicationVersion: '0.1.0', nativeBuildVersion: '42' }));
 
 // Home's own calls (the lazy rows never come near the screen here: Jest lays nothing out).
 const HOME_AT_ONCE = ['trending', 'popular-movies', 'popular-tv', 'new-movies'].map((list) => `GET /jellypass/app/v1/discover/${list}`);
@@ -231,10 +233,10 @@ describe('the Account screen', () => {
     expect(shows(sentenceOf(JUSTWATCH_CREDIT))).toBe(true);
   });
 
-  it('shows the app version and build, and the API version from /me', async () => {
+  it("shows the installed app's version and native build number, and the API version from /me", async () => {
     await start();
     await openTab('Account');
-    expect(shows('JellyPass 0.1.0 (build 1)')).toBe(true);
+    expect(shows('JellyPass 0.1.0 (build 42)')).toBe(true);
     expect(shows('Household API version 1')).toBe(true);
   });
 
