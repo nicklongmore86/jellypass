@@ -1,0 +1,19 @@
+{
+  "tmdbId": 900002,
+  "seasonNumber": 1,
+  "name": "Season 1",
+  "overview": "",
+  "episodes": [
+    {
+      "episodeNumber": 1,
+      "name": "Pilot",
+      "overview": "The first."
+    },
+    {
+      "episodeNumber": 2,
+      "name": "",
+      "overview": ""
+    }
+  ],
+  "state": "in_library"
+}

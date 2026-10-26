@@ -590,6 +590,7 @@ is supported. A client:
 - ignores fields it does not know, and never rejects an answer for having one;
 - treats an unknown `state` as `unavailable`, and an unknown coarse `status` of a request (or one of its seasons) as
   `requested`;
+- treats an image URL that is not on its field's pattern as `null` (that image only, never the whole answer);
 - treats an unknown error code by its HTTP status, and any other status as `unavailable`.
 
 **Fetch budget.** `docs/app-api/fetch-budget.json` lists the calls the PWA makes when each screen is opened: Home
