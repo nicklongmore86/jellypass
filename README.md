@@ -470,15 +470,27 @@ the session's administrator is read again from Jellyfin, so deleting, demoting
 or disabling them ends their session within five minutes.
 
 Every refused sign-in gets the same `401 invalid_credentials` answer after at
-least one second. Failures are limited per client address (eight in five
-minutes) and per name (ten in 15 minutes, whether or not the account exists).
+least one second. The exception is the rate limit, a fixed
+`429 too_many_login_attempts` after the same second, reached per client address
+(eight failures in five minutes) or per name from one address (ten in 15
+minutes). Both count whether or not the account exists and are keyed by the
+caller's address, so a `429` reveals no account and only the address that
+caused it sees it. Failures for a name from anywhere never lock it out: past
+five in 15 minutes its sign-ins wait longer (up to five seconds) before
+Jellyfin is asked, and the right password still signs in.
 
 Browser-session requests that change anything must come from the admin page
 itself (`Sec-Fetch-Site: same-origin`, or an `Origin` naming the admin host),
-and request bodies must be `Content-Type: application/json`. Scripts should use
-`ADMIN_TOKEN` as a bearer token instead of a session cookie; bearer requests are
-not origin-checked. Over HTTPS the session cookie is `__Host-jellypass_session`;
-on plain HTTP it is `jellypass_session`.
+and request bodies must be `Content-Type: application/json`. One from anywhere
+else is `403 cross_origin_request_refused`, before the session is checked. The
+admin host is read from `Host` only, never `X-Forwarded-Host`, so a reverse
+proxy in front of the admin URL must pass the browser's `Host` on unchanged
+(Nginx Proxy Manager does). Proxies that pass a client's own `X-Forwarded-Host` through
+cannot widen the accepted origins, but you may also overwrite that header at
+the proxy (in Nginx, `proxy_set_header X-Forwarded-Host $host;`). Scripts
+should use `ADMIN_TOKEN` as a bearer token instead of a session cookie; bearer
+requests are not origin-checked. Over HTTPS the session cookie is
+`__Host-jellypass_session`; on plain HTTP it is `jellypass_session`.
 
 The UI contains four views:
 

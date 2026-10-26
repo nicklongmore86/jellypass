@@ -173,7 +173,7 @@ describe('forwarded client addresses', { timeout: 10_000 }, () => {
   });
 
   it('rate-limits administrator logins per client behind a trusted proxy', async () => {
-    const webAuth = new WebAuth({ authenticateAdministrator: async () => null }, { loginFailureDelayMs: 0 });
+    const webAuth = new WebAuth({ authenticateAdministrator: async () => null }, { loginFailureDelayMs: 0, nameDelayMaxMs: 0 });
     const port = await startGateway([LOCAL], webAuth);
     const attempt = (client) => send(port, '/auth/login', {
       host: `${LOCAL}:${port}`,
@@ -187,7 +187,7 @@ describe('forwarded client addresses', { timeout: 10_000 }, () => {
   });
 
   it('shares one administrator login bucket across IPv4-mapped spellings', async () => {
-    const webAuth = new WebAuth({ authenticateAdministrator: async () => null }, { loginFailureDelayMs: 0 });
+    const webAuth = new WebAuth({ authenticateAdministrator: async () => null }, { loginFailureDelayMs: 0, nameDelayMaxMs: 0 });
     const port = await startGateway([LOCAL], webAuth);
     const attempt = (client) => send(port, '/auth/login', {
       host: `${LOCAL}:${port}`,

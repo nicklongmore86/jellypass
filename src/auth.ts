@@ -8,12 +8,18 @@ const SESSION_SECONDS = 12 * 60 * 60;
 const FAILURE_WINDOW_MS = 5 * 60 * 1000;
 const MAX_FAILURES = 8;
 const MAX_FAILURE_CLIENTS = 10_000;
-const USERNAME_FAILURE_WINDOW_MS = 15 * 60 * 1000;
-const MAX_USERNAME_FAILURES = 10;
-const MAX_FAILURE_USERNAMES = 10_000;
+const NAME_FAILURE_WINDOW_MS = 15 * 60 * 1000;
+/** Failures for one name from one client address before that pair is refused outright. */
+const MAX_NAME_CLIENT_FAILURES = 10;
+const MAX_FAILURE_NAME_CLIENTS = 10_000;
+/** Failures for one name, from any address, before its sign-ins start to be slowed down. */
+const NAME_FAILURES_BEFORE_DELAY = 5;
+const MAX_FAILURE_NAMES = 10_000;
 const MAX_USERNAME_LENGTH = 256;
 const MAX_PASSWORD_LENGTH = 4096;
 const DEFAULT_LOGIN_FAILURE_DELAY_MS = 1000;
+const DEFAULT_NAME_DELAY_STEP_MS = 250;
+const DEFAULT_NAME_DELAY_MAX_MS = 5000;
 const DEFAULT_RECHECK_INTERVAL_MS = 5 * 60 * 1000;
 const DEFAULT_RECHECK_RETRY_MS = 30 * 1000;
 
@@ -24,6 +30,13 @@ const HOST_SESSION_COOKIE = `__Host-${SESSION_COOKIE}`;
 export interface WebAuthOptions {
   /** The least time a refused administrator sign-in takes, in milliseconds (default one second). */
   loginFailureDelayMs?: number;
+  /**
+   * The first added wait, in milliseconds, before a sign-in for a name that has failed often (default 250); it doubles
+   * with each further failure, up to {@link nameDelayMaxMs}.
+   */
+  nameDelayStepMs?: number;
+  /** The longest added wait before a sign-in for a name that has failed often, in milliseconds (default five seconds). */
+  nameDelayMaxMs?: number;
   /** How often each session's administrator is checked again at Jellyfin, in milliseconds (default five minutes). */
   recheckIntervalMs?: number;
   /** How long a session waits before retrying a check Jellyfin failed to answer, in milliseconds (default 30 seconds). */
@@ -54,8 +67,11 @@ export class WebAuth {
   readonly #sessions = new Map<string, Session>();
   readonly #now: () => number;
   readonly #failures: AttemptCounter;
-  readonly #usernameFailures: AttemptCounter;
+  readonly #nameClientFailures: AttemptCounter;
+  readonly #nameFailures: AttemptCounter;
   readonly #loginFailureDelayMs: number;
+  readonly #nameDelayStepMs: number;
+  readonly #nameDelayMaxMs: number;
   readonly #recheckIntervalMs: number;
   readonly #recheckRetryMs: number;
 
@@ -63,12 +79,15 @@ export class WebAuth {
     this.#jellyfin = jellyfin;
     this.#now = options.now ?? Date.now;
     this.#failures = new AttemptCounter({ windowMs: FAILURE_WINDOW_MS, maxKeys: MAX_FAILURE_CLIENTS, now: this.#now });
-    this.#usernameFailures = new AttemptCounter({
-      windowMs: USERNAME_FAILURE_WINDOW_MS,
-      maxKeys: MAX_FAILURE_USERNAMES,
+    this.#nameClientFailures = new AttemptCounter({
+      windowMs: NAME_FAILURE_WINDOW_MS,
+      maxKeys: MAX_FAILURE_NAME_CLIENTS,
       now: this.#now,
     });
+    this.#nameFailures = new AttemptCounter({ windowMs: NAME_FAILURE_WINDOW_MS, maxKeys: MAX_FAILURE_NAMES, now: this.#now });
     this.#loginFailureDelayMs = options.loginFailureDelayMs ?? DEFAULT_LOGIN_FAILURE_DELAY_MS;
+    this.#nameDelayStepMs = options.nameDelayStepMs ?? DEFAULT_NAME_DELAY_STEP_MS;
+    this.#nameDelayMaxMs = options.nameDelayMaxMs ?? DEFAULT_NAME_DELAY_MAX_MS;
     this.#recheckIntervalMs = options.recheckIntervalMs ?? DEFAULT_RECHECK_INTERVAL_MS;
     this.#recheckRetryMs = options.recheckRetryMs ?? DEFAULT_RECHECK_RETRY_MS;
   }
@@ -77,19 +96,27 @@ export class WebAuth {
    * Administrator sign-in. Only a sign-in that works is answered at once. Every other attempt, whatever went wrong (a
    * malformed body, an unknown name, a wrong password, a user who is not an enabled administrator, or Jellyfin failing to
    * answer), resolves null no sooner than #loginFailureDelayMs after it started, and Jellyfin's own text never leaves
-   * this method. Failures are counted per client address and per normalised name; a name is counted whether or not
-   * Jellyfin has such a user, so the limit says nothing about which accounts exist. Either limit reached rejects with
-   * `too_many_login_attempts`, also no sooner than the delay.
+   * this method.
+   *
+   * Failures are counted per client address, per (normalised name, client address) and per normalised name, each
+   * whether or not Jellyfin has such a user, so no limit says anything about which accounts exist. The first two refuse
+   * outright: either reached rejects with `too_many_login_attempts`, also no sooner than the delay, without asking
+   * Jellyfin. The per-name count never refuses: past a few failures it only adds a wait before Jellyfin is asked
+   * (doubling, up to #nameDelayMaxMs), so guessing one name from many addresses cannot lock its owner out; their right
+   * password from an address of their own still signs in.
    */
   public async login(username: unknown, password: unknown, clientId: string): Promise<{ token: string; username: string } | null> {
     const started = performance.now();
     const floor = () => delay(Math.max(0, this.#loginFailureDelayMs - (performance.now() - started)));
     const name = typeof username === 'string' ? username.trim() : '';
     const nameKey = usernameKey(name);
-    if (this.#failures.attempts(clientId) >= MAX_FAILURES || this.#usernameFailures.attempts(nameKey) >= MAX_USERNAME_FAILURES) {
+    const nameClientKey = `${clientId}\u0000${nameKey}`;
+    if (this.#failures.attempts(clientId) >= MAX_FAILURES || this.#nameClientFailures.attempts(nameClientKey) >= MAX_NAME_CLIENT_FAILURES) {
       await floor();
       throw new Error('too_many_login_attempts');
     }
+    const nameDelay = this.#nameDelayMs(this.#nameFailures.attempts(nameKey));
+    if (nameDelay > 0) await delay(nameDelay);
     let user: Awaited<ReturnType<AdministratorDirectory['authenticateAdministrator']>> = null;
     if (name && name.length <= MAX_USERNAME_LENGTH && typeof password === 'string' && password && password.length <= MAX_PASSWORD_LENGTH) {
       try {
@@ -105,12 +132,14 @@ export class WebAuth {
     }
     if (!user) {
       this.#failures.increment(clientId);
-      this.#usernameFailures.increment(nameKey);
+      this.#nameClientFailures.increment(nameClientKey);
+      this.#nameFailures.increment(nameKey);
       await floor();
       return null;
     }
     this.#failures.delete(clientId);
-    this.#usernameFailures.delete(nameKey);
+    this.#nameClientFailures.delete(nameClientKey);
+    this.#nameFailures.delete(nameKey);
     this.#purgeExpired();
     const now = this.#now();
     const token = randomBytes(32).toString('base64url');
@@ -151,6 +180,12 @@ export class WebAuth {
   public logout(request: IncomingMessage): void {
     const token = cookieValue(request, sessionCookieName(isSecureRequest(request)));
     if (token) this.#sessions.delete(sessionKey(token));
+  }
+
+  #nameDelayMs(failures: number): number {
+    if (failures < NAME_FAILURES_BEFORE_DELAY) return 0;
+    const exponent = Math.min(failures - NAME_FAILURES_BEFORE_DELAY, 30);
+    return Math.min(this.#nameDelayMaxMs, this.#nameDelayStepMs * 2 ** exponent);
   }
 
   async #recheck(key: string, session: Session): Promise<void> {
@@ -218,11 +253,13 @@ export function isSecureRequest(request: IncomingMessage): boolean {
  * Whether a state-changing request was sent by a page on the admin origin itself. Browsers send Sec-Fetch-Site with
  * every request, and page script cannot change it; when it is present it must be `same-origin` (`same-site`, from a
  * sibling host such as a household host or Seerr, is refused). Without it, Origin must name the admin origin: the host
- * the request was sent to (Host, or X-Forwarded-Host from a trusted proxy), with the scheme it arrived over. When a proxy
- * reports HTTPS only an https Origin matches; otherwise either scheme does, since a proxy that terminates TLS may still
- * report the plain hop it forwarded over. A request with neither header (or `Origin: null`) is refused.
+ * the request was sent to, from Host only, with the scheme it arrived over. X-Forwarded-Host is never read, even from a
+ * trusted proxy: a proxy that keeps Host (as Nginx Proxy Manager does) may still pass on a client's own X-Forwarded-Host,
+ * which would let a page on a sibling host name its own origin as the admin one. When a proxy reports HTTPS only an https
+ * Origin matches; otherwise either scheme does, since a proxy that terminates TLS may still report the plain hop it
+ * forwarded over. A request with neither header (or `Origin: null`) is refused.
  */
-export function isSameOriginRequest(request: IncomingMessage, trustedProxy: boolean): boolean {
+export function isSameOriginRequest(request: IncomingMessage): boolean {
   const fetchSite = singleHeader(request.headers['sec-fetch-site']);
   if (fetchSite !== undefined) return fetchSite.trim().toLowerCase() === 'same-origin';
   const origin = singleHeader(request.headers.origin)?.trim();
@@ -235,9 +272,13 @@ export function isSameOriginRequest(request: IncomingMessage, trustedProxy: bool
   }
   if (parsed.origin !== origin || (parsed.protocol !== 'https:' && parsed.protocol !== 'http:')) return false;
   if (isSecureRequest(request) && parsed.protocol !== 'https:') return false;
-  const hosts = [request.headers.host];
-  if (trustedProxy) hosts.push(singleHeader(request.headers['x-forwarded-host'])?.split(',')[0]);
-  return hosts.some((host) => host !== undefined && sameHost(parsed, host.trim()));
+  const host = request.headers.host;
+  return host !== undefined && sameHost(parsed, host.trim());
+}
+
+/** Whether the request carries a session cookie under the name for its scheme (valid or not). */
+export function hasSessionCookie(request: IncomingMessage): boolean {
+  return cookieValue(request, sessionCookieName(isSecureRequest(request))) !== undefined;
 }
 
 function sameHost(origin: URL, host: string): boolean {

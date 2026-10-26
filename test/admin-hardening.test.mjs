@@ -16,6 +16,29 @@ const SIBLING = 'https://jelly-farmhouse.example.test';
 const REFUSED = '{"error":"cross_origin_request_refused"}';
 const INVALID = '{"error":"invalid_credentials"}';
 const MINUTE = 60 * 1000;
+const LIMITED = '{"error":"too_many_login_attempts"}';
+const TOKENS = { webhook: 'webhook-secret', admin: 'admin-secret' };
+
+// Every state-changing admin endpoint, with the body (if any) a cross-site page could send it without a preflight.
+const ENDPOINTS = [
+  ['POST', '/v1/users', JSON.stringify({ username: 'Mallory', password: '', groupId: 'farmhouse', importToJellyseerr: true })],
+  ['POST', '/v1/reconcile'],
+  ['POST', '/v1/library/sync'],
+  ['POST', '/v1/grants/item-1/remap', JSON.stringify({ toItemId: 'item-2' })],
+  ['PUT', '/v1/groups/mallory', JSON.stringify({ name: 'Mallory', userIds: [] })],
+  ['DELETE', '/v1/groups/farmhouse'],
+  ['PUT', '/v1/library/access', JSON.stringify({ itemIds: ['item-1'], userIds: ['bob-id'], groupIds: [] })],
+  ['PUT', '/v1/users/alice-id/sign-in', JSON.stringify({ passwordless: true })],
+  ['POST', '/auth/logout'],
+];
+const CROSS_SITE = [
+  ['cross-site Sec-Fetch-Site', { 'sec-fetch-site': 'cross-site', origin: 'https://attacker.test' }],
+  ['same-site sibling Sec-Fetch-Site', { 'sec-fetch-site': 'same-site', origin: SIBLING }],
+  ['sibling Origin without Sec-Fetch-Site', { origin: SIBLING }],
+  ['Origin null', { origin: 'null' }],
+  ['neither header', {}],
+  ['Sec-Fetch-Site none', { 'sec-fetch-site': 'none' }],
+];
 
 describe('admin surface hardening', { timeout: 20_000 }, () => {
   let jellyfin;
@@ -61,27 +84,6 @@ describe('admin surface hardening', { timeout: 20_000 }, () => {
     assert.equal(response.status, 200, response.body);
     return response.headers['set-cookie'][0].split(';')[0];
   };
-
-  // Every state-changing admin endpoint, with the body (if any) a cross-site page could send it without a preflight.
-  const ENDPOINTS = [
-    ['POST', '/v1/users', JSON.stringify({ username: 'Mallory', password: '', groupId: 'farmhouse', importToJellyseerr: true })],
-    ['POST', '/v1/reconcile'],
-    ['POST', '/v1/library/sync'],
-    ['POST', '/v1/grants/item-1/remap', JSON.stringify({ toItemId: 'item-2' })],
-    ['PUT', '/v1/groups/mallory', JSON.stringify({ name: 'Mallory', userIds: [] })],
-    ['DELETE', '/v1/groups/farmhouse'],
-    ['PUT', '/v1/library/access', JSON.stringify({ itemIds: ['item-1'], userIds: ['bob-id'], groupIds: [] })],
-    ['PUT', '/v1/users/alice-id/sign-in', JSON.stringify({ passwordless: true })],
-    ['POST', '/auth/logout'],
-  ];
-  const CROSS_SITE = [
-    ['cross-site Sec-Fetch-Site', { 'sec-fetch-site': 'cross-site', origin: 'https://attacker.test' }],
-    ['same-site sibling Sec-Fetch-Site', { 'sec-fetch-site': 'same-site', origin: SIBLING }],
-    ['sibling Origin without Sec-Fetch-Site', { origin: SIBLING }],
-    ['Origin null', { origin: 'null' }],
-    ['neither header', {}],
-    ['Sec-Fetch-Site none', { 'sec-fetch-site': 'none' }],
-  ];
 
   it('refuses a cookie-authenticated state change from anywhere but the admin origin, before any side effect', async () => {
     const cookie = await login();
@@ -142,14 +144,26 @@ describe('admin surface hardening', { timeout: 20_000 }, () => {
     assert.equal((await proxied({ origin: 'http://admin.example.test' })).status, 403, 'an HTTPS request needs an https Origin');
     assert.equal((await proxied({ origin: 'https://ADMIN.example.test' })).status, 403, 'browsers send the host in lower case');
     assert.equal((await proxied({ origin: SIBLING })).status, 403);
-    // A proxy that rewrites Host reports the original in X-Forwarded-Host, honoured from a trusted proxy only.
-    assert.equal((await proxied({ host: 'jellypass:8787', 'x-forwarded-host': 'admin.example.test', origin: 'https://admin.example.test' })).status, 200);
+    // X-Forwarded-Host is never read, even from a trusted proxy (this server trusts the test's address): a proxy that
+    // keeps Host may pass a client's own X-Forwarded-Host on, and a sibling page must not widen the admin origin with it.
+    assert.equal((await proxied({ 'x-forwarded-host': 'jelly-farmhouse.example.test', origin: SIBLING })).status, 403);
+    assert.equal((await proxied({ 'x-forwarded-host': 'jelly-farmhouse.example.test, admin.example.test', origin: SIBLING })).status, 403);
+    assert.equal((await proxied({ 'x-forwarded-host': 'jelly-farmhouse.example.test', origin: 'https://admin.example.test' })).status, 200, 'Host decides');
+    assert.equal((await proxied({ host: 'jellypass:8787', 'x-forwarded-host': 'admin.example.test', origin: 'https://admin.example.test' })).status, 403);
+    const spoofedSignIn = await send(port, '/auth/login', {
+      host: 'admin.example.test',
+      'x-forwarded-proto': 'https',
+      'x-forwarded-host': 'jelly-farmhouse.example.test',
+      origin: SIBLING,
+      'content-type': 'application/json',
+    }, { method: 'POST', body: JSON.stringify({ username: 'Admin', password: 'admin-password' }) });
+    assert.deepEqual([spoofedSignIn.status, spoofedSignIn.body], [403, REFUSED]);
     // A proxy that terminates TLS but reports the plain hop it forwarded over: the https Origin still matches its host.
     const plainHop = await send(port, '/v1/library/sync', { cookie, host: 'admin.example.test', origin: 'https://admin.example.test' }, { method: 'POST' });
     assert.equal(plainHop.status, 200);
   });
 
-  it('ignores X-Forwarded-Host from a peer that is not a trusted proxy', async () => {
+  it('ignores X-Forwarded-Host from a peer that is not a trusted proxy too', async () => {
     const webAuth = new WebAuth(new JellyfinClient(jellyfin.url, 'test-key'), { loginFailureDelayMs: 0 });
     const untrusted = makeServer(stubService(), { webhook: 'webhook-secret', admin: 'admin-secret' }, webAuth);
     const untrustedPort = await listen(untrusted);
@@ -377,7 +391,38 @@ describe('administrator sign-in hardening', { timeout: 20_000 }, () => {
     }
   });
 
-  it('limits failures per normalised username across clients, whether or not the account exists', async () => {
+  it('never locks a name out: its owner\'s right password from an address of their own still signs in (Codex\'s repro)', async () => {
+    const clock = { now: 0 };
+    let calls = 0;
+    const webAuth = new WebAuth({
+      authenticateAdministrator: async (username, password) => {
+        calls += 1;
+        return username.toLowerCase() === 'nick' && password === 'right' ? { Id: 'nick-id', Name: 'Nick', Policy: { IsAdministrator: true } } : null;
+      },
+    }, { loginFailureDelayMs: 0, nameDelayStepMs: 1, nameDelayMaxMs: 4, now: () => clock.now });
+    const attackers = ['198.51.100.1', '198.51.100.2'];
+    // Ten wrong passwords for the name from two addresses, each under the per-address limit of eight.
+    for (let index = 0; index < 10; index += 1) assert.equal(await webAuth.login(index % 2 ? 'nick' : 'NICK', 'wrong', attackers[index % 2]), null);
+    assert.equal((await webAuth.login('nick', 'right', '203.0.113.50')).username, 'Nick');
+
+    // The attackers keep going: each address is refused at its own limit, without Jellyfin being asked...
+    for (let round = 0; round < 3; round += 1) {
+      for (const attacker of attackers) assert.equal(await webAuth.login('nick', 'wrong', attacker), null);
+    }
+    for (const attacker of attackers) {
+      const callsBefore = calls;
+      await assert.rejects(webAuth.login('nick', 'wrong', attacker), /too_many_login_attempts/, attacker);
+      await assert.rejects(webAuth.login('nick', 'right', attacker), /too_many_login_attempts/, attacker);
+      assert.equal(calls, callsBefore, `${attacker} is refused before Jellyfin`);
+    }
+    // ...and the owner, on yet another address, still signs in at once.
+    assert.equal((await webAuth.login(' Nick ', 'right', '203.0.113.51')).username, 'Nick');
+    // Still so after more failures from many more addresses.
+    for (let index = 0; index < 40; index += 1) assert.equal(await webAuth.login('nick', 'wrong', `192.0.2.${index}`), null);
+    assert.equal((await webAuth.login('nick', 'right', '203.0.113.52')).username, 'Nick');
+  });
+
+  it('refuses one name from one address after ten failures in 15 minutes, however it is spelled', async () => {
     const clock = { now: 0 };
     let calls = 0;
     const webAuth = new WebAuth({
@@ -385,27 +430,93 @@ describe('administrator sign-in hardening', { timeout: 20_000 }, () => {
         calls += 1;
         return username.toLowerCase() === 'admin' && password === 'right' ? { Id: 'admin-id', Name: 'Admin', Policy: { IsAdministrator: true } } : null;
       },
-    }, { loginFailureDelayMs: 0, now: () => clock.now });
+    }, { loginFailureDelayMs: 0, nameDelayMaxMs: 0, now: () => clock.now });
     const spellings = ['Admin', 'admin', ' ADMIN ', 'ａｄｍｉｎ'];
-    for (let index = 0; index < 10; index += 1) {
-      assert.equal(await webAuth.login(spellings[index % spellings.length], 'wrong', `203.0.113.${index}`), null);
-    }
+    // Eight failures reach the per-address limit; once its five minutes pass, two more reach the per-name-and-address one.
+    for (let index = 0; index < 8; index += 1) assert.equal(await webAuth.login(spellings[index % 4], 'wrong', '203.0.113.9'), null);
+    clock.now += 5 * MINUTE;
+    for (let index = 0; index < 2; index += 1) assert.equal(await webAuth.login(spellings[index % 4], 'wrong', '203.0.113.9'), null);
     const callsBefore = calls;
-    await assert.rejects(webAuth.login('admin', 'right', '203.0.113.200'), /too_many_login_attempts/, 'even the right password is refused');
-    assert.equal(calls, callsBefore, 'a limited name is not tried at Jellyfin');
-    assert.ok(await webAuth.login('someone-else', 'wrong', '203.0.113.201') === null, 'other names are not limited');
+    await assert.rejects(webAuth.login('admin', 'right', '203.0.113.9'), /too_many_login_attempts/);
+    assert.equal(calls, callsBefore, 'not tried at Jellyfin');
+    assert.equal(await webAuth.login('someone-else', 'wrong', '203.0.113.9'), null, 'other names from the address are not limited');
+    assert.equal((await webAuth.login('admin', 'right', '203.0.113.10')).username, 'Admin', 'nor is the name from other addresses');
 
     // A name Jellyfin has no user for is limited in exactly the same way.
-    for (let index = 0; index < 10; index += 1) assert.equal(await webAuth.login('Nobody', 'wrong', `192.0.2.${index}`), null);
-    await assert.rejects(webAuth.login('nobody', 'wrong', '192.0.2.200'), /too_many_login_attempts/);
+    for (let index = 0; index < 8; index += 1) assert.equal(await webAuth.login('Nobody', 'wrong', '192.0.2.9'), null);
+    clock.now += 5 * MINUTE;
+    for (let index = 0; index < 2; index += 1) assert.equal(await webAuth.login('nobody', 'wrong', '192.0.2.9'), null);
+    await assert.rejects(webAuth.login('NOBODY', 'wrong', '192.0.2.9'), /too_many_login_attempts/);
 
+    clock.now += 10 * MINUTE;
+    assert.equal((await webAuth.login('admin', 'right', '203.0.113.9')).username, 'Admin', 'the window ends');
+  });
+
+  it('slows a name down after five failures from anywhere, doubling up to a cap, without ever refusing it', async () => {
+    const clock = { now: 0 };
+    const webAuth = new WebAuth({
+      authenticateAdministrator: async (username, password) => (password === 'right' && username === 'admin'
+        ? { Id: 'admin-id', Name: 'admin', Policy: { IsAdministrator: true } }
+        : null),
+    }, { loginFailureDelayMs: 0, nameDelayStepMs: 40, nameDelayMaxMs: 160, now: () => clock.now });
+    const timed = async (username, password, client) => {
+      const started = performance.now();
+      const result = await webAuth.login(username, password, client);
+      return { result, elapsed: performance.now() - started };
+    };
+    for (const name of ['admin', 'nobody']) {
+      for (let index = 0; index < 5; index += 1) {
+        const { result, elapsed } = await timed(name, 'wrong', `198.51.100.${index}`);
+        assert.equal(result, null);
+        assert.ok(elapsed < 35, `${name} failure ${index + 1} took ${Math.round(elapsed)} ms`);
+      }
+      // 40, 80, 160, then capped at 160.
+      for (const [index, least] of [40, 80, 160, 160].entries()) {
+        const { result, elapsed } = await timed(name, 'wrong', `198.51.100.${10 + index}`);
+        assert.equal(result, null);
+        assert.ok(elapsed >= least - 5 && elapsed < least + 150, `${name}: ${Math.round(elapsed)} ms, expected ${least}`);
+      }
+    }
+    // The right password waits too, then succeeds; success clears the name's count.
+    const right = await timed('admin', 'right', '203.0.113.1');
+    assert.equal(right.result.username, 'admin');
+    assert.ok(right.elapsed >= 155, `${Math.round(right.elapsed)} ms`);
+    assert.ok((await timed('admin', 'wrong', '203.0.113.2')).elapsed < 35);
+    // The count lasts 15 minutes.
     clock.now += 15 * MINUTE;
-    const login = await webAuth.login('admin', 'right', '203.0.113.202');
-    assert.equal(login.username, 'Admin');
+    assert.ok((await timed('nobody', 'wrong', '203.0.113.3')).elapsed < 35);
+  });
+
+  it('answers a limited sign-in with the fixed 429, no sooner than the delay, whatever the name or password', async () => {
+    const DELAY = 200;
+    const webAuth = new WebAuth({
+      authenticateAdministrator: async (username, password) => (password === 'right' ? { Id: 'admin-id', Name: 'Admin', Policy: { IsAdministrator: true } } : null),
+    }, { loginFailureDelayMs: DELAY, nameDelayMaxMs: 0 });
+    const server = makeServer(stubService(), TOKENS, webAuth, { trustedProxies: [LOCAL] });
+    const port = await listen(server);
+    const attempt = (username, password) => send(port, '/auth/login', {
+      'content-type': 'application/json',
+      'sec-fetch-site': 'same-origin',
+      'x-forwarded-for': '198.51.100.77',
+    }, { method: 'POST', body: JSON.stringify({ username, password }) });
+    try {
+      for (let index = 0; index < 8; index += 1) assert.equal((await attempt(`user-${index}`, 'wrong')).body, INVALID);
+      for (const [username, password] of [['Admin', 'right'], ['Admin', 'wrong'], ['Nobody', 'wrong'], ['', '']]) {
+        const started = performance.now();
+        const response = await attempt(username, password);
+        const elapsed = performance.now() - started;
+        assert.deepEqual([response.status, response.body], [429, LIMITED], `${username}/${password}`);
+        assert.equal(response.headers['set-cookie'], undefined);
+        assert.ok(elapsed >= DELAY - 5, `${username}/${password} took ${Math.round(elapsed)} ms`);
+      }
+    } finally {
+      server.closeAllConnections();
+      await close(server);
+    }
   });
 
   it('waits out the delay before answering a limited sign-in', async () => {
-    const webAuth = new WebAuth({ authenticateAdministrator: async () => null }, { loginFailureDelayMs: 200 });
+    const webAuth = new WebAuth({ authenticateAdministrator: async () => null }, { loginFailureDelayMs: 200, nameDelayMaxMs: 0 });
     for (let index = 0; index < 8; index += 1) await webAuth.login('admin', 'wrong', '203.0.113.9').catch(() => {});
     const started = performance.now();
     await assert.rejects(webAuth.login('admin', 'wrong', '203.0.113.9'), /too_many_login_attempts/);
@@ -444,6 +555,85 @@ describe('administrator sign-in hardening', { timeout: 20_000 }, () => {
     assert.deepEqual(await webAuth.session(request), { status: 'none' });
     answer = 'admin';
     assert.deepEqual(await webAuth.session(request), { status: 'none' });
+  });
+});
+
+describe('cross-origin refusal before the session check', { timeout: 20_000 }, () => {
+  it('refuses with the fixed 403 before an overdue session is checked: no Jellyfin call, no 503, the session untouched', async () => {
+    const clock = { now: 0 };
+    let answer = 'down';
+    let reads = 0;
+    const webAuth = new WebAuth({
+      authenticateAdministrator: async () => ({ Id: 'admin-id', Name: 'Admin', Policy: { IsAdministrator: true } }),
+      getUser: async () => {
+        reads += 1;
+        if (answer === 'down') throw new Error('connect ECONNREFUSED');
+        return { Id: 'admin-id', Name: 'Admin', Policy: { IsAdministrator: answer === 'admin' } };
+      },
+    }, { loginFailureDelayMs: 0, now: () => clock.now });
+    // The service throws if it is used at all.
+    const server = makeServer(stubService(), TOKENS, webAuth);
+    const port = await listen(server);
+    try {
+      const signIn = await send(port, '/auth/login', { 'content-type': 'application/json', 'sec-fetch-site': 'same-origin' }, {
+        method: 'POST',
+        body: JSON.stringify({ username: 'Admin', password: 'right' }),
+      });
+      assert.equal(signIn.status, 200);
+      const cookie = signIn.headers['set-cookie'][0].split(';')[0];
+      clock.now += 6 * MINUTE;
+
+      // Jellyfin unavailable, then the administrator demoted: either way every cross-origin change is the same 403.
+      for (const state of ['down', 'demoted']) {
+        answer = state;
+        for (const [method, pathname, body] of ENDPOINTS) {
+          for (const [label, headers] of CROSS_SITE) {
+            const response = await send(port, pathname, { cookie, 'content-type': 'application/json', ...headers }, { method, body });
+            assert.deepEqual([response.status, response.body], [403, REFUSED], `${state}: ${method} ${pathname} with ${label}`);
+            assert.equal(response.headers['set-cookie'], undefined, `${state}: ${method} ${pathname} with ${label}`);
+          }
+        }
+        assert.equal(reads, 0, `${state}: Jellyfin was not asked`);
+      }
+
+      // The session was neither checked nor ended: the first same-origin request checks it, once, and it is still there.
+      answer = 'admin';
+      assert.equal((await send(port, '/auth/session', { cookie })).status, 200);
+      assert.equal(reads, 1);
+    } finally {
+      server.closeAllConnections();
+      await close(server);
+    }
+  });
+
+  it('still answers 401 for a cross-origin change without a session cookie, and checks a same-origin one as before', async () => {
+    const clock = { now: 0 };
+    let reads = 0;
+    const webAuth = new WebAuth({
+      authenticateAdministrator: async () => ({ Id: 'admin-id', Name: 'Admin', Policy: { IsAdministrator: true } }),
+      getUser: async () => {
+        reads += 1;
+        throw new Error('connect ECONNREFUSED');
+      },
+    }, { loginFailureDelayMs: 0, now: () => clock.now });
+    const server = makeServer(stubService(), TOKENS, webAuth);
+    const port = await listen(server);
+    try {
+      const anonymous = await send(port, '/v1/library/sync', { 'sec-fetch-site': 'cross-site' }, { method: 'POST' });
+      assert.deepEqual([anonymous.status, anonymous.body], [401, '{"error":"unauthorized"}']);
+      const signIn = await send(port, '/auth/login', { 'content-type': 'application/json', 'sec-fetch-site': 'same-origin' }, {
+        method: 'POST',
+        body: JSON.stringify({ username: 'Admin', password: 'right' }),
+      });
+      const cookie = signIn.headers['set-cookie'][0].split(';')[0];
+      clock.now += 6 * MINUTE;
+      const sameOrigin = await send(port, '/v1/library/sync', { cookie, 'sec-fetch-site': 'same-origin' }, { method: 'POST' });
+      assert.deepEqual([sameOrigin.status, sameOrigin.body], [503, '{"error":"session_check_unavailable"}']);
+      assert.equal(reads, 1);
+    } finally {
+      server.closeAllConnections();
+      await close(server);
+    }
   });
 });
 

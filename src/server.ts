@@ -4,8 +4,8 @@ import { ConflictError, UserProvisioningError, type AccessService } from './acce
 import { HouseholdApp, type HouseholdAppOptions } from './app-api.js';
 import { ADMIN_APP_JS, ADMIN_FAVICON_SVG, ADMIN_HTML, ADMIN_STYLES } from './admin-ui.js';
 import { APP_PERMISSIONS_POLICY, AppAssets } from './app-assets.js';
-import { expiredSessionCookie, isSameOriginRequest, isSecureRequest, sessionCookie, type WebAuth } from './auth.js';
-import { ClientIpResolver, normaliseIp } from './client-ip.js';
+import { expiredSessionCookie, hasSessionCookie, isSameOriginRequest, isSecureRequest, sessionCookie, type WebAuth } from './auth.js';
+import { ClientIpResolver } from './client-ip.js';
 import type { LogLevel } from './config.js';
 import { HouseholdGateway } from './household-gateway.js';
 import { RECENT_REQUESTS_LIMIT } from './seerr.js';
@@ -104,7 +104,7 @@ export function makeServer(
       // admin origin itself. SameSite=Strict alone is not enough, as every sibling host under the same site (household
       // hosts, Seerr) is same-site. Requests with ADMIN_TOKEN as a bearer token carry no ambient credential and are
       // exempt; so is the Seerr webhook, which has its own token.
-      const sameOrigin = () => isSameOriginRequest(request, clientIp.isTrusted(normaliseIp(request.socket.remoteAddress) ?? ''));
+      const sameOrigin = () => isSameOriginRequest(request);
       const forbidden = () => json(response, 403, { error: 'cross_origin_request_refused' });
 
       if (request.method === 'GET' && url.pathname === '/health') {
@@ -176,10 +176,12 @@ export function makeServer(
         return json(response, result ? 200 : 202, result ? { status: 'granted', grant: result } : { status: 'ignored' });
       }
       if (!authorized(request, tokens.admin)) {
+        // Refused before the session is looked at, so a cross-origin request never starts a session's check at Jellyfin
+        // or sees its outcome (a 503, or a demoted administrator's session ended). Without a session cookie it is 401.
+        if (!SAFE_METHODS.has(request.method ?? 'GET') && hasSessionCookie(request) && !sameOrigin()) return forbidden();
         const session = webAuth ? await webAuth.session(request) : { status: 'none' as const };
         if (session.status === 'unavailable') return json(response, 503, { error: 'session_check_unavailable' });
         if (session.status !== 'active') return json(response, 401, { error: 'unauthorized' });
-        if (!SAFE_METHODS.has(request.method ?? 'GET') && !sameOrigin()) return forbidden();
       }
 
       if (request.method === 'GET' && url.pathname === '/metrics') {
