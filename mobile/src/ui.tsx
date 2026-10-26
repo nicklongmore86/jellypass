@@ -1,5 +1,6 @@
-// The few pieces every sign-in screen is built from, in the Tidepool look (src/theme): a page column, a heading with
-// its waterline, buttons at least a thumb's size, a labelled field and a message line read out when it changes.
+// The few pieces every screen is built from, in the Tidepool look (src/theme): a sign-in page column, a signed-in
+// screen's column under the header, a heading with its waterline, buttons at least a thumb's size, a labelled field and
+// a message line read out when it changes.
 import type { ReactNode } from 'react';
 import {
   ActivityIndicator,
@@ -13,7 +14,7 @@ import {
   View,
   type TextInputProps,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { colors, layout, radii, spacing, typography } from '@/theme';
 
@@ -26,6 +27,27 @@ export function Page({ children }: { children: ReactNode }) {
         </ScrollView>
       </KeyboardAvoidingView>
     </SafeAreaView>
+  );
+}
+
+/**
+ * A signed-in screen's scrolling content, between the header (which takes the status bar's safe area) and the tab bar
+ * (which takes the home indicator's). It stops widening at the PWA's 72rem, or at `maxWidth`, on iPad.
+ */
+export function Screen({ children, maxWidth = layout.maxContentWidth }: { children: ReactNode; maxWidth?: number }) {
+  const insets = useSafeAreaInsets();
+  return (
+    <ScrollView style={styles.page} contentContainerStyle={styles.scroll}>
+      <View
+        testID="screen-column"
+        style={[
+          styles.screenColumn,
+          { maxWidth, paddingLeft: Math.max(spacing.gutter, insets.left), paddingRight: Math.max(spacing.gutter, insets.right) },
+        ]}
+      >
+        {children}
+      </View>
+    </ScrollView>
   );
 }
 
@@ -116,6 +138,7 @@ const styles = StyleSheet.create({
     paddingBottom: spacing.xxl,
     gap: spacing.lg,
   },
+  screenColumn: { width: '100%', alignSelf: 'center', paddingTop: spacing.md, paddingBottom: spacing.xl, gap: 20 },
   heading: { paddingBottom: spacing.sm, gap: spacing.sm },
   title: { ...typography.screenTitle, color: colors.text },
   intro: { ...typography.body, color: colors.muted, marginTop: spacing.sm },
