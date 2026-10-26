@@ -20,9 +20,11 @@ describe('app config', () => {
     expect(config.ios!.bundleIdentifier).toMatch(/^[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+$/);
   });
 
-  it('has no EAS project yet: that comes with the build PR', () => {
-    expect(config.extra?.eas).toBeUndefined();
-    expect(JSON.stringify(config)).not.toMatch(/projectId/);
+  it('is the nicklongmore86/jellypass project on EAS', () => {
+    // Permanent, like the app ids: EAS keeps the signing keys and build numbers under this project, owner and slug.
+    expect(config.extra).toEqual({ eas: { projectId: '1db20c4d-4270-404e-acf4-31a8bd6dd591' } });
+    expect(config.owner).toBe('nicklongmore86');
+    expect(config.slug).toBe('jellypass');
   });
 
   it('is portrait on phones, and turns on iPad and Android tablets', () => {
