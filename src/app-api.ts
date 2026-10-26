@@ -1034,7 +1034,7 @@ export interface SourceDto {
 
 /** A network, and whether it has a films list (`GET /discover/network/:id/films`). */
 export interface NetworkDto extends SourceDto {
-  films: boolean;
+  hasFilms: boolean;
 }
 
 export interface SourcesDto {
@@ -1250,7 +1250,7 @@ function sourceDto(source: TmdbSource): SourceDto {
 /** The allowlisted networks and studios, in the order Home shows them. */
 function sourcesDto(): SourcesDto {
   return {
-    networks: TMDB_NETWORKS.map((network) => ({ ...sourceDto(network), films: Boolean(network.movieProviderIds?.length) })),
+    networks: TMDB_NETWORKS.map((network) => ({ ...sourceDto(network), hasFilms: Boolean(network.movieProviderIds?.length) })),
     studios: TMDB_STUDIOS.map(sourceDto),
   };
 }

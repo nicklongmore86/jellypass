@@ -80,7 +80,7 @@ export interface Source {
 
 /** A network, and whether its streaming service's films can be listed (US where-to-watch data). */
 export interface Network extends Source {
-  films: boolean;
+  hasFilms: boolean;
 }
 
 export interface Sources {

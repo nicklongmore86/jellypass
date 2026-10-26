@@ -2092,7 +2092,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     assert.equal(page.entries.length, entries);
     assertNoCanaries(page.serialize(), 'the page shows data that is not in a DTO');
     // A network the API lists no films for has no tabs, and its Films address is "Not found".
-    const sources = { networks: [{ id: 213, name: 'Netflix', logoUrl: null, films: false }], studios: [] };
+    const sources = { networks: [{ id: 213, name: 'Netflix', logoUrl: null, hasFilms: false }], studios: [] };
     const override = (url) => (url === '/jellypass/app/v1/discover/sources' ? { status: 200, body: Buffer.from(JSON.stringify(sources)), headers: { 'content-type': 'application/json' } } : undefined);
     const plain = await openApp(t, app, { hash: '#/network/213', override });
     await plain.until(() => plain.main().querySelector('ul.grid .card'), 'series only');

@@ -467,10 +467,10 @@ async function home(signal: AbortSignal, current: () => boolean): Promise<void> 
     for (const network of found.networks) {
       const slot = lazySlot(`row-network-${network.id}`);
       networksSlot.append(slot);
-      watch(slot, () => api.source('network', network.id, 1, signal, network.films ? 'all' : undefined),
+      watch(slot, () => api.source('network', network.id, 1, signal, network.hasFilms ? 'all' : undefined),
         (page) => sourceRow(doc, slot.dataset['key'] as string, 'network', network, page), SOURCE_TEXT.heading('network', network.name));
     }
-    if (found.networks.some((network) => network.films)) networksSlot.append(el(doc, 'div', { class: 'home-row' }, [justWatchNote(doc)]));
+    if (found.networks.some((network) => network.hasFilms)) networksSlot.append(el(doc, 'div', { class: 'home-row' }, [justWatchNote(doc)]));
     await Promise.all(again);
   };
   await Promise.all([
@@ -851,7 +851,7 @@ async function sourceScreen(route: Route, signal: AbortSignal, current: () => bo
   const sources = await api.sources(signal);
   const source: Source | undefined = (kind === 'network' ? sources.networks : sources.studios).find((candidate) => candidate.id === id);
   if (!source) throw new ApiError('not_found');
-  const lists: readonly SourceList[] = kind === 'studio' ? ['all'] : (source as Network).films ? SOURCE_LISTS : ['series'];
+  const lists: readonly SourceList[] = kind === 'studio' ? ['all'] : (source as Network).hasFilms ? SOURCE_LISTS : ['series'];
   let list: SourceList = kind === 'studio' ? 'all' : route.list ?? 'all';
   // A network the API lists no films for has its series only, and no All or Films to link to.
   if (!lists.includes(list)) {

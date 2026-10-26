@@ -119,6 +119,9 @@ export function world(options = {}) {
     tmdbMovies: { ...options.tmdbMovies },
     tmdbHang: options.tmdbHang ?? false,
     extraResults: options.extraResults ?? 0,
+    // TMDB's discover lists page by page, if set: `(type, page)` gives that page's results ('movie' or 'tv'), or
+    // undefined for the usual fixture (the same results on every page).
+    tmdbDiscover: options.tmdbDiscover,
     // Seerr's quotas, by Seerr user: `{ movie: { limit, days }, tv: { limit, days } }` (none: no limit).
     quotas: { ...options.quotas },
     // New requests are approved at once (Seerr's auto-approve), or left pending.
@@ -467,6 +470,8 @@ export async function createFakeTmdb(state) {
     if (url.pathname === '/3/search/multi' || url.pathname === '/3/trending/all/day') return list(searchResults());
     if (url.pathname === '/3/discover/movie' || url.pathname === '/3/discover/tv') {
       const type = url.pathname.endsWith('movie') ? 'movie' : 'tv';
+      const paged = state.tmdbDiscover?.(type, page);
+      if (paged) return list(paged);
       // TMDB's discover results carry no media_type.
       return list(searchResults().filter((entry) => entry.media_type === type).map(({ media_type: _, ...entry }) => entry));
     }

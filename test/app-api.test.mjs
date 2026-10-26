@@ -594,11 +594,11 @@ describe('household app API: networks, studios and upcoming series', { timeout: 
       '521 DreamWorks', '420 Marvel Studios', '9993 DC', '41077 A24',
     ]);
     for (const source of [...networks, ...studios]) {
-      assert.deepEqual(Object.keys(source), networks.includes(source) ? ['id', 'name', 'logoUrl', 'films'] : ['id', 'name', 'logoUrl']);
+      assert.deepEqual(Object.keys(source), networks.includes(source) ? ['id', 'name', 'logoUrl', 'hasFilms'] : ['id', 'name', 'logoUrl']);
       assert.match(source.logoUrl, LOGO, source.name);
     }
     // Every network's films can be listed (US where-to-watch data); the provider IDs themselves are never sent.
-    assert.ok(networks.every((network) => network.films === true));
+    assert.ok(networks.every((network) => network.hasFilms === true));
     assert.doesNotMatch(answer.text, /1796|2303|watch/);
     assert.equal(networks[0].logoUrl, 'https://image.tmdb.org/t/p/w300/wwemzKWzjKYJFfCeiB57q3r4Bcm.png');
     assert.equal(tmdbCalls(app).length, 0);
@@ -782,9 +782,87 @@ describe('household app API: films on a service (US where to watch)', { timeout:
     assert.deepEqual(series.results.map((card) => card.mediaType), ['tv']);
     assert.ok(films.results.every((card) => card.mediaType === 'movie'));
     assert.equal(films.results.length, 22);
-    // A page past the series' end is the films alone, still paged.
-    const later = (await app.get(`${APP}/discover/network/213/all?page=2`)).json();
-    assert.equal(later.page, 2);
+  });
+
+  /**
+   * TMDB's discover lists with a different set of titles on every page: `pages` full pages (20) and then a last page of
+   * `last`, nothing after. Films are 5PPII, series 6PPII (P the page, II the index), so no two pages share a title.
+   */
+  const pagedDiscover = (counts) => (type, page) => {
+    const { pages, last } = counts[type];
+    const length = page <= pages ? 20 : page === pages + 1 ? last : 0;
+    return Array.from({ length }, (_, index) => {
+      const id = (type === 'movie' ? 500000 : 600000) + page * 100 + index;
+      return type === 'movie'
+        ? { id, title: `Film ${id}`, release_date: '2020-01-01', poster_path: `/synthetic-poster-${id}.jpg` }
+        : { id, name: `Series ${id}`, first_air_date: '2020-01-01', poster_path: `/synthetic-poster-${id}.jpg` };
+    });
+  };
+  const ids = (type, counts, page) => pagedDiscover(counts)(type, page).map((entry) => `${type} ${entry.id}`);
+  /** The page the API should answer: that page's films and series alternating, film first, the longer one's rest after. */
+  const expectedPage = (counts, page) => {
+    const [films, series] = [ids('movie', counts, page), ids('tv', counts, page)];
+    return Array.from({ length: Math.max(films.length, series.length) }, (_, index) => [films[index], series[index]])
+      .flat().filter((card) => card !== undefined);
+  };
+  /** Loads a service's mixed list with Load more (each answer's nextPage) until it ends: every page's cards and nextPage. */
+  const loadAll = async (app) => {
+    const pages = [];
+    for (let page = 1; page !== null; page = pages.at(-1).nextPage) {
+      assert.ok(page <= 20, 'Load more ends');
+      const answer = (await app.get(`${APP}/discover/network/213/all?page=${page}`)).json();
+      assert.equal(answer.page, page);
+      pages.push({ page, nextPage: answer.nextPage, cards: answer.results.map((card) => `${card.mediaType} ${card.tmdbId}`) });
+    }
+    return pages;
+  };
+  const allIds = (counts) => {
+    const last = Math.max(counts.movie.pages, counts.tv.pages) + 1;
+    return Array.from({ length: last }, (_, page) => [...ids('movie', counts, page + 1), ...ids('tv', counts, page + 1)]).flat();
+  };
+
+  it('pages a service\'s mix on after its films run out: the series alone, then the end', async (t) => {
+    // Films: pages 1-2 full, 5 on page 3. Series: pages 1-4 full, 7 on page 5.
+    const counts = { movie: { pages: 2, last: 5 }, tv: { pages: 4, last: 7 } };
+    const app = await startApp(t, world({ tmdbDiscover: pagedDiscover(counts) }));
+    const pages = await loadAll(app);
+    assert.deepEqual(pages.map((page) => `${page.page}>${page.nextPage}`), ['1>2', '2>3', '3>4', '4>5', '5>null'],
+      'as many pages as the longer list (the series, 5)');
+    for (const page of pages) assert.deepEqual(page.cards, expectedPage(counts, page.page), `page ${page.page}`);
+    // Page 3: the films' last 5, alternating with the first 5 series, then the other 15 series.
+    assert.deepEqual(pages[2].cards.slice(0, 10).map((card) => card.split(' ')[0]), Array(5).fill(['movie', 'tv']).flat());
+    assert.deepEqual(pages[2].cards.slice(10).map((card) => card.split(' ')[0]), Array(15).fill('tv'));
+    assert.equal(pages[2].cards.length, 25);
+    // Pages 4 and 5: the series alone.
+    assert.deepEqual(pages.slice(3).map((page) => page.cards.filter((card) => card.startsWith('movie ')).length), [0, 0]);
+    assert.deepEqual(pages.slice(3).map((page) => page.cards.length), [20, 7]);
+    const cards = pages.flatMap((page) => page.cards);
+    assert.equal(new Set(cards).size, cards.length, 'no card twice');
+    assert.deepEqual([...cards].sort(), allIds(counts).sort(), 'every film and series, none missing');
+    assert.equal(cards.length, 2 * 20 + 5 + 4 * 20 + 7);
+  });
+
+  it('pages a service\'s mix on after its series run out: the films alone, then the end', async (t) => {
+    // Series: page 1 full, 3 on page 2. Films: pages 1-3 full, 11 on page 4.
+    const counts = { movie: { pages: 3, last: 11 }, tv: { pages: 1, last: 3 } };
+    const app = await startApp(t, world({ tmdbDiscover: pagedDiscover(counts) }));
+    const pages = await loadAll(app);
+    assert.deepEqual(pages.map((page) => `${page.page}>${page.nextPage}`), ['1>2', '2>3', '3>4', '4>null'],
+      'as many pages as the longer list (the films, 4)');
+    for (const page of pages) assert.deepEqual(page.cards, expectedPage(counts, page.page), `page ${page.page}`);
+    // Page 2: 3 series alternating with the first 3 films, then the other 17 films.
+    assert.deepEqual(pages[1].cards.slice(0, 6).map((card) => card.split(' ')[0]), Array(3).fill(['movie', 'tv']).flat());
+    assert.deepEqual(pages[1].cards.slice(6).map((card) => card.split(' ')[0]), Array(17).fill('movie'));
+    // Pages 3 and 4: the films alone.
+    assert.deepEqual(pages.slice(2).map((page) => page.cards.filter((card) => card.startsWith('tv ')).length), [0, 0]);
+    assert.deepEqual(pages.slice(2).map((page) => page.cards.length), [20, 11]);
+    const cards = pages.flatMap((page) => page.cards);
+    assert.equal(new Set(cards).size, cards.length, 'no card twice');
+    assert.deepEqual([...cards].sort(), allIds(counts).sort(), 'every film and series, none missing');
+    assert.equal(cards.length, 3 * 20 + 11 + 20 + 3);
+    // Past the end: nothing, and no next page.
+    const past = (await app.get(`${APP}/discover/network/213/all?page=5`)).json();
+    assert.deepEqual([past.page, past.nextPage, past.results.length], [5, null, 0]);
   });
 
   it('caches films apart from series, per service and page, and never across households', async (t) => {

@@ -26,7 +26,7 @@ privacy leak. Such changes are always listed at the top of the release notes.
 - Household app API: `GET /jellypass/app/v1/discover/network/:id/films?page=` (the service's films in the US, TMDB
   discover by its watch providers with `watch_region=US` and `flatrate`) and `GET
   /jellypass/app/v1/discover/network/:id/all?page=` (series and films mixed). `GET /discover/sources` gives each
-  network `films: true`. Only the listed services: any other ID, or any list after a network's ID but `films` or
+  network `hasFilms: true`. Only the listed services: any other ID, or any list after a network's ID but `films` or
   `all`, is `400 invalid_request` before TMDB is asked. Films are cached apart from series, per household.
 
 ### Changed

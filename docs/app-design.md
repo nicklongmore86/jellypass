@@ -345,7 +345,7 @@ DTOs (every key always present; missing values `null`, or `""` for text):
 - `Season`: `tmdbId`, `seasonNumber`, `name`, `overview`, `episodes` (`{episodeNumber, name, overview}`), `state`.
 - `Sources`: `networks` and `studios`, each a list of `{id, name, logoUrl}` (`logoUrl` is
   `https://image.tmdb.org/t/p/w300` plus the allowlisted file pattern, or `null`), in the order Home shows them; each
-  network also has `films` (whether `/films` and `/all` are offered for it: true for all eight). The provider IDs
+  network also has `hasFilms` (whether `/films` and `/all` are offered for it: true for all eight). The provider IDs
   themselves are never sent.
 
 Every DTO is built by copying named TMDB fields (`title`/`name`, `release_date`/`first_air_date`, `overview`,
