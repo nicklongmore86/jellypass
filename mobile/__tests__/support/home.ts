@@ -181,14 +181,20 @@ function heroHeight(): number {
   return frameHeight(slide, number(styleOf(slide).width)) + HERO_PANEL + (controls ? CONTROL + 12 : 0) + (stacked ? CONTROL + 4 : 0);
 }
 
+/** What each Home scroller was last laid out as. */
+const laidOut = new WeakMap<Node, string>();
+
 /**
  * Lays Home out on `size` the way the device would: each row's slot as tall as what it shows now (never less than the
  * height it reserves), one under the other, and again after every change until nothing moves, as the device lays out
- * after every render. So a row that comes back short pulls the rows under it up, as it would on the device.
+ * after every render. So a row that comes back short pulls the rows under it up, as it would on the device. With
+ * `skip`, nothing is laid out (no layout event) if nothing has moved since the last time, as on the device; by default
+ * the same layout is sent again, which Home must take as nothing new.
  */
-export async function layOut(size: ScreenSize = PHONE_SCREEN): Promise<void> {
+export async function layOut(size: ScreenSize = PHONE_SCREEN, unmoved: 'again' | 'skip' = 'again'): Promise<void> {
   shown = size;
-  let last = '';
+  const scroller = screen.queryAllByTestId('home-scroll')[0];
+  let last = scroller && unmoved === 'skip' ? (laidOut.get(scroller) ?? '') : '';
   passes = { first: [], last: [] };
   for (let pass = 0; pass < 20; pass += 1) {
     const slots = screen.queryAllByTestId(/^home-slot-/);
@@ -203,9 +209,10 @@ export async function layOut(size: ScreenSize = PHONE_SCREEN): Promise<void> {
     const record = placed.map(({ slot, top }) => ({ key: String(slot.props.testID).replace(/^home-slot-/, ''), top: BAND + top, skeleton: inside(slot, 'skeleton-row').length > 0 }));
     if (pass === 0) passes.first = record;
     passes.last = record;
-    const now = placed.map(({ top, height }) => `${top}:${height}`).join(',');
+    const now = `${size.width}x${size.height}|` + placed.map(({ top, height }) => `${top}:${height}`).join(',');
     if (now === last) return;
     last = now;
+    if (scroller) laidOut.set(scroller, now);
     await act(async () => {
       for (const node of screen.queryAllByTestId('home-scroll')) fireEvent(node, 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: size.width, height: size.height } } });
       for (const node of screen.queryAllByTestId('screen-column')) fireEvent(node, 'layout', { nativeEvent: { layout: { x: 0, y: BAND, width: size.width, height: y } } });
@@ -281,7 +288,7 @@ export async function scrollToEnd(size: ScreenSize = shown): Promise<void> {
       y = Math.min(y, scrollEnd());
       const end = y >= scrollEnd();
       await scrollEvent('scroll', y);
-      await layOut(size);
+      await layOut(size, 'skip');
       // Done once it is at the end; if rows shrank under it, the scroll view goes up to the new end itself, next.
       if (end && y <= scrollEnd()) break;
     }

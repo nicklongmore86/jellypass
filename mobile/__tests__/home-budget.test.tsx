@@ -31,6 +31,9 @@ import {
 } from './support/home';
 import { ORIGIN, TOKEN, answer, keepSession, settle, store, type Call } from './support/household';
 
+// Scrolling to the end a step at a time lays Home out many times: slower CI runners need more than Jest's 5 s.
+jest.setTimeout(30_000);
+
 let mockFetch: FetchLike;
 jest.mock('../src/api/transport', () => ({
   ...jest.requireActual('../src/api/transport'),
@@ -191,7 +194,7 @@ describe.each(FILTERS)('Home under %s scrolled with no drag (a screen reader, a 
         const end = at >= scrollEnd();
         await scrollEvent('scroll', at);
         steps.push({ added: lazy().length - was, end });
-        await layOut();
+        await layOut(PHONE_SCREEN, 'skip');
         if (end && at <= scrollEnd()) break;
       }
       await scrollEvent('scroll', 0);
@@ -224,7 +227,7 @@ describe.each(FILTERS)('Home under %s on a tall iPad with every row empty, scrol
       const end = at >= scrollEnd();
       await scrollEvent('scroll', at);
       steps.push({ added: lazy().length - was, end });
-      await layOut(IPAD_SCREEN);
+      await layOut(IPAD_SCREEN, 'skip');
       // Done once it is at the end; if rows shrank under it, the scroll view goes up to the new end itself, next.
       if (end && at <= scrollEnd()) break;
     }

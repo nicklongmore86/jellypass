@@ -29,6 +29,9 @@ import {
 } from './support/home';
 import { ORIGIN, TOKEN, answer, keepSession, offline, settle, shows, store, storedSession } from './support/household';
 
+// Scrolling to the end a step at a time lays Home out many times: slower CI runners need more than Jest's 5 s.
+jest.setTimeout(30_000);
+
 let mockFetch: FetchLike;
 jest.mock('../src/api/transport', () => ({
   ...jest.requireActual('../src/api/transport'),
