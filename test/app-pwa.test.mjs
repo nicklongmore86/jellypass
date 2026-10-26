@@ -82,7 +82,7 @@ describe('household app page: serving', { timeout: 30_000 }, () => {
     assert.match(css, /\.segment \{[^}]*min-height: 2\.75rem/, 'a touch target of at least 44px');
     // A focused card clears the floating switch as well as the header while Home is on show (#42's scroll padding, plus the switch).
     assert.match(css, /scroll-padding-top: calc\(3\.75rem \+ env\(safe-area-inset-top\) \+ 0\.5rem\)/);
-    assert.match(css, /:root:has\(body\[data-chrome='home'\]\) \{ scroll-padding-top: calc\(3\.75rem \+ env\(safe-area-inset-top\) \+ 0\.25rem \+ 3\.15rem \+ 0\.5rem\); \}/);
+    assert.match(css, /:root:has\(body\[data-home-switch\]\) \{ scroll-padding-top: calc\(3\.75rem \+ env\(safe-area-inset-top\) \+ 0\.25rem \+ 3\.15rem \+ 0\.5rem\); \}/);
     assert.match(css, /@supports not \(\(-webkit-backdrop-filter: blur\(1px\)\) or \(backdrop-filter: blur\(1px\)\)\)[^@]*\.segmented-home[^@]*background: var\(--surface\)/);
     assert.equal(homeHref('all'), '#/');
     assert.equal(homeHref('movies'), '#/?kind=movies');
@@ -2767,6 +2767,11 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       await failing.until(() => failing.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 3 && failing.main().querySelector('.notice'), 'three rows and one failure');
       assert.equal(failing.document.querySelectorAll('.hero, .hero-slide').length, 0);
       assert.equal(chrome(failing), null);
+      // The sticky switch is still on the page, so the scroll padding that clears it stays on (it is keyed to the switch, not the hero).
+      for (const page of [empty, failing]) assert.equal(page.document.body.getAttribute('data-home-switch'), '');
+      const css = read(BUILT('app.css'));
+      assert.match(css, /:root:has\(body\[data-home-switch\]\) \{ scroll-padding-top: calc\([^;]*3\.15rem/);
+      assert.ok(!/data-chrome='home'\]\) \{ scroll-padding/.test(css));
     });
 
     it('lets the header float over a hero or a backdrop only on the screens that have one', async (t) => {

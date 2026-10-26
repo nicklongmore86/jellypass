@@ -600,7 +600,8 @@ elsewhere; the files are never proxied to Jellyfin.
   as a button does), 44 px tall, in a glass pill (`--material`) with the chosen one filled with the accent gradient and
   dark (`--on-accent`) text. It is a direct child of `main`, so it **sticks** (`position: sticky`) just under the glass
   header and the status bar (`top: 3.75rem + env(safe-area-inset-top) + 0.25rem`, below the header's own layer) while the
-  rows scroll under it; its wrapper takes no pointer events but the pill's. While Home is on show the page's
+  rows scroll under it; its wrapper takes no pointer events but the pill's. While the switch is on the page (`body[data-home-switch]`, set from the switch's presence, so it holds when the hero
+  fails or is empty and `data-chrome` is gone) the page's
   `scroll-padding-top` grows by the switch's height so a focused or scrolled-to card (#51's focus-into-view) never ends up
   behind it. The choice is in the address, `#/` for All and `#/?kind=movies` or `#/?kind=tv` (anything else is All),
   replaced in place on choosing (no history entry, so Back still leaves Home), so a deep link opens on its filter and

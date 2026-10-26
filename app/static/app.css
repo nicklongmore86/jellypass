@@ -263,8 +263,8 @@ main {
 .segmented-home .segment { min-width: 5rem; }
 .segmented-home .segment[aria-checked='true'] { background: var(--accent-gradient); color: var(--on-accent); font-weight: 700; }
 .segmented-home .segment:focus-visible { outline: 3px solid var(--accent-text); outline-offset: 1px; }
-/* While Home is on show, a focused or scrolled-to card also clears the floating switch. */
-:root:has(body[data-chrome='home']) { scroll-padding-top: calc(3.75rem + env(safe-area-inset-top) + 0.25rem + 3.15rem + 0.5rem); }
+/* While the switch is on the page (with or without a hero), a focused or scrolled-to card also clears the floating switch. */
+:root:has(body[data-home-switch]) { scroll-padding-top: calc(3.75rem + env(safe-area-inset-top) + 0.25rem + 3.15rem + 0.5rem); }
 .source-note { margin: 0.25rem 0 1rem; font-size: 0.8rem; }
 /* Three columns on a phone, two on a very narrow one, more on a wide screen. */
 .grid, .skeleton-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 1rem 0.6rem; margin-bottom: 1rem; }

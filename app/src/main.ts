@@ -168,13 +168,21 @@ function kindOf(error: unknown): ApiErrorKind {
   return error instanceof ApiError ? error.kind : 'unavailable';
 }
 
+/** `data-home-switch` is on the body whenever the sticky All | Movies | TV switch is on the page, hero or no hero, so the scroll padding that clears it never depends on the hero. */
+function markSwitch(): void {
+  if (main.querySelector('.home-switch')) doc.body.setAttribute('data-home-switch', '');
+  else doc.body.removeAttribute('data-home-switch');
+}
+
 function show(...nodes: Node[]): void {
   main.replaceChildren(...nodes);
+  markSwitch();
   main.setAttribute('aria-busy', 'false');
 }
 
 function busy(...nodes: Node[]): void {
   main.replaceChildren(...nodes);
+  markSwitch();
   main.setAttribute('aria-busy', 'true');
   announce('Loading…');
 }
