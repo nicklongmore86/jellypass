@@ -4,6 +4,7 @@
 // test/app-pwa.test.mjs and the same flow against a real Jellyfin in test/real-jellyfin.test.mjs.
 import assert from 'node:assert/strict';
 import { request as httpRequest } from 'node:http';
+import { connect } from 'node:net';
 import { describe, it } from 'node:test';
 import { performance } from 'node:perf_hooks';
 import { ALICE, ANN, BOB, CAROL, HOST_A, HOST_B, OUTSIDER, get, post, startApp, world } from './support/household-app.mjs';
@@ -862,3 +863,130 @@ describe('household app sign-in through the gateway', { timeout: 30_000 }, () =>
     });
   });
 });
+
+// Quick Connect signs in whoever authorizes a code, so Jellyfin never asks whether they are the household's; and the
+// Streamyfin plugin hands its settings, Seerr's keys among them, to any signed-in user. A household host answers both
+// itself, the same for anyone, and never asks Jellyfin.
+describe('Quick Connect and Streamyfin on a household host', { timeout: 30_000 }, () => {
+  const QUICK_CONNECT_REFUSED = '{"error":"household_quick_connect_disabled"}';
+  const NOT_FOUND = '{"error":"not_found"}';
+  /** Each spelling Jellyfin routes the same: any case, percent-encoded, trailing slashes, the legacy prefixes. */
+  const spellings = (path) => {
+    const [, first, rest] = /^\/([^/]+)\/(.+)$/.exec(path);
+    return [
+      path,
+      path.toLowerCase(),
+      path.toUpperCase(),
+      `${path}/`,
+      `${path}//`,
+      `/${first}/%${rest.charCodeAt(0).toString(16).toUpperCase()}${rest.slice(1)}`,
+      `/emby${path}`,
+      `/MediaBrowser${path}/`,
+      `/%65mby${path}`,
+      `${path}?Secret=x`,
+    ];
+  };
+  const QUICK_CONNECT = ['/QuickConnect/Initiate', '/QuickConnect/Connect', '/QuickConnect/Authorize', '/Users/AuthenticateWithQuickConnect'];
+  const STREAMYFIN = ['/Streamyfin/config', '/Streamyfin/config/yaml', '/Streamyfin/notification'];
+  const callers = {
+    nobody: {},
+    member: { Authorization: `${WEB_AUTHORIZATION}, Token="token-alice"` },
+    outsider: { Authorization: `${WEB_AUTHORIZATION}, Token="token-outsider"` },
+  };
+  const asks = (app) => app.jellyfin.requests.length;
+
+  it('refuses every Quick Connect call, member or not, in every method and spelling, without asking Jellyfin', async (t) => {
+    const app = await startApp(t);
+    const before = asks(app);
+    for (const path of QUICK_CONNECT) {
+      for (const spelling of spellings(path)) {
+        for (const [who, headers] of Object.entries(callers)) {
+          for (const method of ['GET', 'POST']) {
+            const answer = await get(app.port, spelling, { Host: HOST_A, 'Content-Type': 'application/json', ...headers }, { method, body: method === 'POST' ? '{"Secret":"x"}' : undefined });
+            const label = `${method} ${spelling} as ${who}`;
+            assert.equal(answer.status, 403, label);
+            assert.equal(answer.text, QUICK_CONNECT_REFUSED, label);
+            assert.equal(answer.headers['cache-control'], 'no-store', label);
+            assert.equal(answer.headers['content-type'], 'application/json; charset=utf-8', label);
+          }
+        }
+      }
+    }
+    assert.equal(asks(app), before, 'a Quick Connect call reached Jellyfin');
+  });
+
+  it('says Quick Connect is off in every spelling, member or not, without asking Jellyfin', async (t) => {
+    const app = await startApp(t);
+    const before = asks(app);
+    for (const spelling of spellings('/QuickConnect/Enabled')) {
+      for (const [who, headers] of Object.entries(callers)) {
+        const answer = await get(app.port, spelling, { Host: HOST_A, ...headers });
+        assert.deepEqual([answer.status, answer.text, answer.headers['cache-control']], [200, 'false', 'no-store'], `${spelling} as ${who}`);
+      }
+    }
+    // Jellyfin has no other method there: refused like any other Quick Connect call.
+    assert.equal((await post(app.port, '/QuickConnect/Enabled', { Host: HOST_A }, undefined)).text, QUICK_CONNECT_REFUSED);
+    assert.equal(asks(app), before, 'a Quick Connect call reached Jellyfin');
+  });
+
+  it('answers every Streamyfin plugin call with a 404, member or not, without asking Jellyfin', async (t) => {
+    const app = await startApp(t);
+    const before = asks(app);
+    for (const path of STREAMYFIN) {
+      for (const spelling of [...spellings(path), '/Streamyfin', '/streamyfin/']) {
+        for (const [who, headers] of Object.entries(callers)) {
+          for (const method of ['GET', 'POST', 'DELETE']) {
+            const answer = await get(app.port, spelling, { Host: HOST_A, ...headers }, { method });
+            const label = `${method} ${spelling} as ${who}`;
+            assert.deepEqual([answer.status, answer.text, answer.headers['cache-control']], [404, NOT_FOUND, 'no-store'], label);
+          }
+        }
+      }
+    }
+    assert.equal(asks(app), before, 'a Streamyfin call reached Jellyfin');
+  });
+
+  it('never proxies a WebSocket upgrade to Quick Connect or Streamyfin', async (t) => {
+    const app = await startApp(t);
+    const before = asks(app);
+    for (const path of [...QUICK_CONNECT, '/QuickConnect/Enabled', ...STREAMYFIN]) {
+      for (const spelling of spellings(path)) {
+        assert.match(await upgrade(app.port, spelling, HOST_A), /^HTTP\/1\.1 404 /, spelling);
+      }
+    }
+    assert.equal(asks(app), before, 'an upgrade reached Jellyfin');
+  });
+
+  it('still signs members in by name and refuses anyone else, and still proxies what is merely named alike', async (t) => {
+    const app = await startApp(t, world({ passwords: { [ALICE]: 'alice-pass', [OUTSIDER]: 'out-pass' } }));
+    const signIn = (username, password) => post(app.port, '/Users/AuthenticateByName', { Host: HOST_A, Authorization: AUTHORIZATION }, { Username: username, Pw: password });
+    const alice = await signIn('Alice', 'alice-pass');
+    assert.equal(alice.status, 200);
+    assert.equal(alice.json().User.Id, ALICE);
+    const outsider = await signIn('Outsider', 'out-pass');
+    assert.deepEqual([outsider.status, outsider.text], [401, NOT_A_MEMBER]);
+    // Only Quick Connect's own routes are answered here: a look-alike path still reaches Jellyfin.
+    const before = asks(app);
+    await get(app.port, '/QuickConnectX/Enabled', { Host: HOST_A });
+    await get(app.port, '/StreamyfinX/config', { Host: HOST_A });
+    assert.equal(asks(app), before + 2);
+  });
+});
+
+/** The status line and headers a household host answers a WebSocket upgrade with. */
+function upgrade(port, pathname, host) {
+  return new Promise((resolve, reject) => {
+    const socket = connect(port, '127.0.0.1');
+    let answer = '';
+    socket.once('connect', () => socket.write(`GET ${pathname} HTTP/1.1\r\nHost: ${host}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGVzdA==\r\nSec-WebSocket-Version: 13\r\n\r\n`));
+    socket.on('data', (chunk) => {
+      answer += chunk.toString('utf8');
+      if (answer.includes('\r\n\r\n')) {
+        socket.destroy();
+        resolve(answer);
+      }
+    });
+    socket.once('end', () => resolve(answer));
+    socket.once('error', reject);
+  });
+}

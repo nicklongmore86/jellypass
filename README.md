@@ -545,6 +545,62 @@ second after the attempt, so no answer tells a member's name from anyone
 else's. The exception is the sign-in rate limit: `429`
 (`too_many_login_attempts`) still answers at once. See [the household access design](docs/household-access.md).
 
+Quick Connect is never offered on a household hostname, whatever Jellyfin's
+own setting: it signs in whoever authorizes the code, without the membership
+check above. `GET /QuickConnect/Enabled` answers `false`, and every other
+Quick Connect call (`/QuickConnect/Initiate`, `/QuickConnect/Connect`,
+`/QuickConnect/Authorize`, `/Users/AuthenticateWithQuickConnect`, and any
+other path under `/QuickConnect`) a fixed `403`
+(`household_quick_connect_disabled`). The
+[Streamyfin](https://github.com/streamyfin/jellyfin-plugin-streamyfin)
+plugin's routes (`/Streamyfin` and below), which would hand its settings,
+Seerr's API key among them, to any signed-in user, answer a fixed `404`
+(`not_found`). Both are answered by JellyPass alike for anyone, never reach
+Jellyfin (WebSocket upgrades included), are never cached (`Cache-Control:
+no-store`), and are matched as Jellyfin routes them: in any case,
+percent-encoded or not, with trailing slashes, and under Jellyfin's legacy
+`/emby` and `/mediabrowser` prefixes.
+
+Every other decision a household hostname makes about a path is made the same
+way, on the route Jellyfin takes it to rather than on its spelling: the sign-in
+check above, the household's `/Users/Public` list and login styles, refused
+password recovery, sign-out, the per-item check, and JellyPass's own
+`/jellypass/...` paths. Sign-in by user ID (Jellyfin's obsolete
+`POST /Users/{id}/Authenticate`, which no Jellyfin client uses) is offered to no
+one: every such call, a member's included, counts against the sign-in limit and
+gets the same delayed `401` (`invalid_credentials`) as a refused sign-in by name,
+without asking Jellyfin.
+
+The per-item check covers every route that names an item: anything under
+`/Videos/{id}`, `/Audio/{id}` or `/Items/{id}` (streams, HLS playlists and
+segments, subtitles, attachments, trickplay, playback info, downloads and any
+route Jellyfin adds there later), the user-data, played, favourite and playing
+routes, `/MediaSegments/{id}`, `/Shows/{id}/...`, and the `InstantMix` and
+`Similar` routes of an item, together with any `itemId` query parameter on
+them. Before any of them reaches Jellyfin, Jellyfin is asked, with the caller's
+own credentials, whether the caller may see the item; if not, the answer is a
+fixed `404` (`item_not_found`). Item images are the one exception: Jellyfin
+serves them to anyone and clients load them without credentials. Jellyfin's
+live TV routes for its own transcoder (`/LiveTv/LiveRecordings/...`,
+`/LiveTv/LiveStreamFiles/...`) answer `404` on household hostnames.
+
+No request on a household hostname may name a user other than the caller:
+every user ID in the path (`/Users/{id}/...`, `/Playlists/{id}/Users/{id}`,
+`/Sessions/{id}/User/{id}`) or the query (`userId`, `controllableByUserId`,
+`controllingUserId`, in any case and every copy) must be the caller's own, or
+the answer is the same fixed `404` (`item_not_found`), administrators included.
+Jellyfin itself trusts some of these for the caller. A household member's
+picture is the one exception, since the profile picker loads it without
+credentials.
+
+A path Jellyfin might read otherwise than JellyPass (an encoded slash or
+backslash, a `.` or `..` segment, a backslash, invalid percent-encoding, a
+control or non-ASCII character, one legacy prefix after another, or
+percent-encoding that would change which check applies if decoded once more) is
+answered a fixed `400` (`invalid_request`, `Cache-Control: no-store`) and never
+reaches Jellyfin. A name that is itself percent-encoded, such as
+`/Artists/100%2520%20Real`, is sent on as usual.
+
 Unknown household hostnames fail closed with `404`. Group IDs used as household
 IDs must contain lowercase letters, numbers, and hyphens and be no longer than
 63 characters.
