@@ -285,6 +285,7 @@ export function JustWatchNote() {
 export function FilterChips({ selected, onChoose }: { selected: HomeFilter; onChoose: (filter: HomeFilter) => void }) {
   return (
     <ScrollView
+      testID="home-filters"
       horizontal
       showsHorizontalScrollIndicator={false}
       accessibilityRole="radiogroup"

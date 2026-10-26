@@ -5,10 +5,11 @@ TypeScript (strict) and Expo Router. It talks to a household's JellyPass server 
 `/jellypass/app/v1` API as the PWA, and wears the same Tidepool look: its theme in `src/theme` is ported from
 `app/static/app.css`.
 
-**Sign-in, the tab bar and Account work; the browsing screens come next.** The app connects to a household address,
-signs a member in, keeps the sign-in in the device's credential store and signs out. Once signed in it has the PWA's
-four docked tabs (Home, Search, My requests, Account) with a header and Back, and a finished Account screen; Home,
-Search and My requests are one-line placeholders until their screens come (see [What's next](#whats-next)).
+**Sign-in, the tab bar, Home and Account work; the other browsing screens come next.** The app connects to a household
+address, signs a member in, keeps the sign-in in the device's credential store and signs out. Once signed in it has the
+PWA's four docked tabs (Home, Search, My requests, Account) with a header and Back, a finished Home (its filters, hero
+and rows) and Account screen; a title's page, Search and My requests are one-line placeholders until their screens
+come (see [What's next](#whats-next)).
 
 `mobile/` is separate from the server: it has its own `package.json` and `pnpm-lock.yaml`, it is excluded from
 the Docker build context (`.dockerignore`), and the root `pnpm check`, `pnpm test` and temp-leak check never look
@@ -111,8 +112,9 @@ screen (and a setup link opened over the tabs leaves no second copy of them behi
   the sign-in screens.
 - **Width.** A screen's content stops widening at the PWA's 72rem (1152 pt) and Account's at 40rem (640 pt), centred
   on iPad and wide windows, with the side margins clear of the safe areas.
-- **Home, Search and My requests** are placeholders: their routes (`/home`, `/search`, `/requests`), titles and tabs
-  are final; 3.2 to 3.6 fill them in.
+- **Search and My requests** are placeholders: their routes (`/search`, `/requests`), titles and tabs are final; 3.4 to
+  3.6 fill them in. So is a title's page (`/home/movie/<id>`, `/home/tv/<id>`, header "Movie" or "Series", no call),
+  which 3.3 builds.
 
 **Account** is the PWA's Account tab. **Account**: the member card ("name · household" from the `/me` the sign-in
 checked), **Sign out** (the session's sign-out) and **Change household** (signs out first, then the address step).
@@ -138,6 +140,51 @@ browser, and that nothing but the start-up `/me` is ever sent. Its accessibility
 reading order, the 44 pt targets, that every text on every tab can grow without clipping, the iPad widths and the
 contrast pairs. `credits.test.tsx` fails if the logo, the credits' words or the icons drift from the PWA's files.
 Queries are `queryAll*` only, so a failure never prints the component tree.
+
+## Home (`src/home`, `src/screens/HomeScreen.tsx`)
+
+The PWA's Home (`home()` in `app/src/main.ts`, its pieces in `app/src/render.ts`), natively.
+
+- **Filters.** **All | Movies | TV** as outlined chips (44 pt, 1.5 pt hairline, radius 12) in a solid band that sticks
+  under the header; the chosen one is the cyan tint with a cyan outline and a tick, so never colour alone. A radio
+  group named Show; at large text the chips scroll sideways rather than wrap. The choice stays while the app is open
+  (Home stays mounted under its tab, so coming back from a title or another tab finds it as left); choosing announces
+  "Loading…" then "Movies shown." as the PWA does.
+- **Rows** (`layout.ts`, the PWA's `HOME_LAYOUT`): *All* Trending (posters), Popular movies, Popular series, New movie
+  releases (big 16:9 backdrop cards, text below the image), Upcoming movies, Upcoming series, **Popular on** each of the
+  eight services (mixed films and series), the Studios strip, then the JustWatch credit. *Movies* Trending movies,
+  Popular movies, New movie releases, Upcoming movies, **Films on** each service, Studios, credit. *TV* Trending
+  series, Popular series, Upcoming series, **Series on** each service; no studios or credit. A service with no films
+  keeps its series under All and is left out under Movies. No all-time rows. Headings are heavy with the waterline: a
+  cyan line and a purple cap (two segments, never a gradient), or one line in the service's brand colour; a service's
+  heading is "Popular on" and its logo, read as "Popular on Netflix".
+- **Hero.** The first five titles of the filter's first row, from that row's own answer (no extra call): a rounded
+  card per slide, the backdrop with a solid navy panel **below** it (title, year, "★ 7.8 TMDB", the status, the start
+  of the overview). Swipe, **Previous title** / **Next title** (wrapping) and one round dot per title (hollow, or larger
+  and filled for the one showing, named "Show title 2 of 5: <title>"). It never moves by itself, jumps without
+  animation under Reduce Motion, and the screen reader hears which title is showing. A tap opens the title.
+- **Cards.** A poster card shows the title and "2024 · Movie"; a big card "2024 · ★ 7.8 TMDB". The status is a dot and
+  the PWA's word (Ready to watch, Available to get, Can't request, Requested; with My requests' "We couldn't get this",
+  the PWA's five) on the image's top-left. Each card is one link named "title, year, rating, status", the status said
+  once (the chip is hidden from screen readers). Phones: posters 132 pt, big cards 92% of the column (the next peeks).
+  From 768 pt wide (iPad): posters 168 pt, big cards 36% of the column, the hero 21:9 and w1280 backdrops.
+- **Images** are TMDB's only, through the API client's allowlist (`src/api/urls.ts`); one that fails to load is dropped,
+  leaving its frame. Logos sit on a light tile; with no logo the name is drawn instead.
+- **Calls.** The eager rows and `/discover/sources` at once; every other row only once it comes within 400 pt of the
+  screen, after the eager ones have answered, each once per filter. `/me` is the start-up check's, not asked again.
+  `__tests__/home-budget.test.tsx` pins each filter against `docs/app-api/fetch-budget.json` (the PWA's numbers).
+- **Failures.** Each row fails on its own with the PWA's fixed words (Can't load this right now, Too many requests,
+  You're offline, …) and **Try again** for that row alone; the networks and studios fail as one row. Nothing is retried
+  by itself. A 401 forgets the sign-in and shows the picker ("Your sign-in has expired"). Pull to refresh asks for the
+  filter's first rows and the services again.
+- **Privacy.** Answers live in memory while Home is on screen and are never written to the device; no analytics.
+
+**Tests.** `home.test.tsx` (the rows per filter in order, the services' headings and waterlines, the studios, card
+text and names, status words, TMDB-only images and a broken one dropped, the hero's slides, controls and swipe and
+that it never moves by itself, the filter remembered, each failure's wording with no automatic retry, Try again, a 401,
+pull to refresh, nothing kept on the device, every pressable named and 44 pt, every text free to grow, the iPad and
+phone widths), `home-budget.test.tsx` (above) and `home-text.test.ts` (the words, rows and waterlines against the PWA's
+files). `tabs.test.tsx` counts Home's pressables (its chips are radios) and checks its text too.
 
 ## The API client (`src/api`)
 
@@ -224,8 +271,9 @@ Edits reload on the phone as you save. Expo Go needs no Apple or Google develope
 
 1. **Setup link on the PWA**: a "Set up the app" link on the PWA's Account tab carrying the household's address. Left
    for when the app can be installed (a `jellypass://` link does nothing on a phone without it).
-2. **Screens**: Home with its rows and hero, network and studio pages, Search, movie/series/season pages with
-   **Get this**, My requests, then an accessibility pass. (The tab bar, header, stacks and Account are done.)
+2. **Screens**: movie/series/season pages with **Get this** (3.3), network and studio pages (Home's service headings
+   and studio logos link to them then), Search, My requests, then an accessibility pass. (The tab bar, header, stacks,
+   Home and Account are done.)
 3. **Play**: an in-app Jellyfin web view, optionally a Swiftfin hand-off.
 4. **First release build**: the owner's one-time setup in [Release builds](#release-builds), then a run of the
    `Mobile release` workflow. No Google Play Console account or Play config.
