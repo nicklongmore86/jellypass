@@ -19,6 +19,7 @@ export const ADMIN_HTML = `<!doctype html>
       </a>
       <div class="topbar-actions"><div id="connection" class="connection disconnected" role="status"><span></span><b>Disconnected</b></div><button id="logout" class="button quiet compact" hidden>Sign out</button></div>
     </header>
+    <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
 
     <section id="login-view" class="login-wrap">
       <div class="login-card panel">
@@ -105,6 +106,7 @@ body{background:radial-gradient(circle at 14% 4%,rgba(170,92,195,.2) 0,transpare
 .household-route{margin-top:16px;padding:11px 12px;border:1px solid rgba(0,164,220,.25);border-radius:9px;background:rgba(0,164,220,.07)}.household-route small{display:block;color:var(--muted);font-size:9px;font-weight:800;letter-spacing:.1em;text-transform:uppercase}.household-route a{display:block;margin-top:4px;color:#70dfff;font:11px ui-monospace,SFMono-Regular,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.household-route.unavailable{border-color:var(--line);background:rgba(16,29,56,.45)}
 @media(max-width:900px){.grant-card{grid-template-columns:56px 1fr 1fr}.grant-poster{grid-column:1;grid-row:1}.grant-main{grid-column:2/-1}.grant-owners{grid-column:2}.grant-access{grid-column:3}.grant-card>.card-actions{grid-column:2/-1;justify-content:flex-start}}
 @media(max-width:620px){.grant-card{grid-template-columns:48px 1fr}.grant-poster{width:48px}.grant-main{grid-column:2}.grant-owners,.grant-access,.grant-card>.card-actions{grid-column:1/-1}}
+.notice{margin:0 0 18px;padding:11px 15px;border:1px solid rgba(246,185,77,.45);border-radius:10px;background:rgba(246,185,77,.09);color:#ffe0a7;font-size:13px}
 `;
 
 export const ADMIN_APP_JS = `
@@ -115,6 +117,31 @@ export const ADMIN_APP_JS = `
   const loginView = byId('login-view');
   const appView = byId('app-view');
   const toastNode = byId('toast');
+  const noticeNode = byId('notice');
+  // Text for the error codes JellyPass answers with; other errors already carry a sentence.
+  const errorText = {
+    session_check_unavailable: 'Jellyfin is temporarily unavailable — retrying…',
+    jellyfin_unavailable: 'Jellyfin is temporarily unavailable. Try again in a moment.',
+    shutting_down: 'JellyPass is restarting. Try again in a moment.',
+    unauthorized: 'Your session has ended. Sign in again.',
+    invalid_credentials: 'That username or password was not accepted.',
+    too_many_login_attempts: 'Too many attempts. Try again later.',
+    too_many_requests: 'Too many requests. Try again in a moment.',
+    cross_origin_request_refused: 'This request was refused because it did not come from the admin page. Reload the page and try again.',
+    unsupported_media_type: 'This request was refused. Reload the page and try again.',
+    request_too_large: 'That request is too large.',
+    invalid_request: 'That request was not valid.',
+    not_found: 'That was not found.',
+    item_not_found: 'That item was not found in Jellyfin.',
+  };
+  // While Jellyfin cannot answer the server's session check, the server keeps the session and allows another check
+  // 30 seconds later: the UI keeps its view and asks again, backing off to two minutes, never while the tab is hidden.
+  // Time spent hidden does not count towards the wait: remaining holds what was left of it when the tab was hidden.
+  const SESSION_RETRY_FIRST_MS = 30 * 1000;
+  const SESSION_RETRY_MAX_MS = 2 * 60 * 1000;
+  const sessionRetry = { delay: 0, dueAt: 0, remaining: null, timer: null };
+  // Changes when a session ends (sign-out, 401) or starts (sign-in): an answer to a request made before then has no effect.
+  let sessionEpoch = 0;
   const heroCopy = {
     dashboard: ['Jellyfin access', 'JellyPass dashboard', 'Monitor library access, audiences, and synchronization health.'],
     library: ['Jellyfin library', 'Your media library', 'Browse synchronized movies and series, then assign access in bulk.'],
@@ -147,23 +174,58 @@ export const ADMIN_APP_JS = `
     const config = options || {};
     const headers = new Headers(config.headers || {});
     if (config.body) headers.set('Content-Type', 'application/json');
-    const response = await fetch(path, Object.assign({}, config, { headers }));
-    const text = await response.text();
+    const epoch = sessionEpoch;
+    let response;
+    let text;
+    try {
+      response = await fetch(path, Object.assign({}, config, { headers }));
+      text = await response.text();
+    } catch (error) {
+      // A request that failed after its session ended is as stale as one that was answered.
+      assertSession(epoch);
+      throw error;
+    }
+    assertSession(epoch);
     let body = {};
     try { body = text ? JSON.parse(text) : {}; } catch { body = { error: text }; }
     if (!response.ok) {
       // A session that ended at the server (signed out elsewhere, or the administrator was demoted or disabled).
       if (response.status === 401 && path.indexOf('/auth/') !== 0) setConnected(false);
-      const error = new Error(body.error || ('Request failed (' + response.status + ')'));
-      error.code = body.code;
+      const known = typeof body.error === 'string' && Object.prototype.hasOwnProperty.call(errorText, body.error);
+      if (response.status === 503 && body.error === 'session_check_unavailable') sessionUnavailable();
+      const error = new Error(known ? errorText[body.error] : body.error || ('Request failed (' + response.status + ')'));
+      error.code = body.code || (known ? body.error : undefined);
+      error.status = response.status;
       error.body = body;
       throw error;
     }
+    // A successful answer means the session passed its check again.
+    if (!noticeNode.hidden) sessionAvailable();
     return body;
   }
 
+  // Thrown for an answer that arrived after its session ended or another began: callers show nothing for it.
+  function staleAnswer() {
+    const error = new Error('The session changed while this request was answered');
+    error.stale = true;
+    return error;
+  }
+
+  // Throws a stale answer when the session ended or another began since epoch was read: every view or state change that
+  // follows an await checks this first, so only the session that asked is changed by the answer.
+  function assertSession(epoch) {
+    if (epoch !== sessionEpoch) throw staleAnswer();
+  }
+
   async function load() {
-    const results = await Promise.all([api('/v1/grants'), api('/v1/groups'), api('/v1/users'), api('/v1/library'), api('/v1/requests/recent').catch(() => ({ requests: [], unavailable: true }))]);
+    const epoch = sessionEpoch;
+    // Recent requests are optional: a failure to load them shows an empty widget, but an ended session is not one.
+    const recent = api('/v1/requests/recent').catch((error) => {
+      if (error.stale || error.status === 401) throw error;
+      return { requests: [], unavailable: true };
+    });
+    const results = await Promise.all([api('/v1/grants'), api('/v1/groups'), api('/v1/users'), api('/v1/library'), recent]);
+    assertSession(epoch);
     state.grants = results[0].grants;
     state.groups = results[1].groups;
     state.users = results[2].users;
@@ -453,8 +515,9 @@ export const ADMIN_APP_JS = `
   function summary(label, value) { return node('article', {}, [node('span', { text: label }), node('strong', { text: String(value) })]); }
 
   async function showGrantPlan(grant) {
-    await busy(async () => {
+    await busy(async (live) => {
       const result = await api('/v1/grants/' + encodeURIComponent(grant.itemId) + '/plan');
+      live();
       showPlan('Grant plan', result.plan);
     });
   }
@@ -520,8 +583,9 @@ export const ADMIN_APP_JS = `
   }
 
   async function syncCatalog() {
-    await busy(async () => {
+    await busy(async (live) => {
       const result = await api('/v1/library/sync', { method: 'POST' });
+      live();
       state.catalog = result.items;
       state.catalogSyncedAt = result.lastSyncedAt;
       render();
@@ -595,15 +659,18 @@ export const ADMIN_APP_JS = `
       toast('Select at least one user or group', true);
       return;
     }
-    await busy(async () => {
+    await busy(async (live) => {
       const preview = await api('/v1/library/access?dryRun=true', { method: 'PUT', body: JSON.stringify(body) });
+      live();
       byId('bulk-dialog').close();
       showPlan('Bulk library access plan', preview.result.plans);
       if (confirm('Apply this audience to ' + body.itemIds.length + ' selected title' + (body.itemIds.length === 1 ? '' : 's') + '?')) {
         await api('/v1/library/access', { method: 'PUT', body: JSON.stringify(body) });
+        live();
         byId('plan-dialog').close();
         state.selectedItems.clear();
         await load();
+        live();
         toast('Bulk library access updated');
       }
     });
@@ -612,19 +679,24 @@ export const ADMIN_APP_JS = `
   async function remapGrant(grant) {
     const toItemId = (prompt('Move this grant to Jellyfin item ID. Only a grant whose item was deleted can be moved; its audience is merged with any grant already on that item:') || '').trim();
     if (!toItemId) return;
-    await busy(async () => {
+    await busy(async (live) => {
       const path = '/v1/grants/' + encodeURIComponent(grant.itemId) + '/remap';
       const body = JSON.stringify({ toItemId });
       try {
         const preview = await api(path + '?dryRun=true', { method: 'POST', body });
+        live();
         showPlan('Move plan', [preview.result.sourcePlan, preview.result.plan]);
         if (confirm('Move this grant from ' + grant.itemId + ' to ' + toItemId + '?')) {
           await api(path, { method: 'POST', body });
+          live();
           byId('plan-dialog').close();
           await load();
+          live();
           toast('Grant moved');
         }
       } catch (error) {
+        if (error.stale) throw error;
+        live();
         if (error.code === 'source_item_exists') {
           throw new Error('Not moved: ' + grant.itemId + ' still exists in Jellyfin, and moving its grant would make it visible to every household. Revoke its access explicitly first.');
         }
@@ -632,6 +704,7 @@ export const ADMIN_APP_JS = `
         if (error.code === 'source_reappeared') {
           byId('plan-dialog').close();
           await load();
+          live();
           throw new Error(grant.itemId + ' exists again in Jellyfin: ' + toItemId + ' was granted, but the original grant was kept with its restrictions. Revoke it explicitly if it is no longer needed.');
         }
         throw error;
@@ -640,15 +713,18 @@ export const ADMIN_APP_JS = `
   }
 
   async function revokeRequest(grant, requestId, userId) {
-    await busy(async () => {
+    await busy(async (live) => {
       const path = '/v1/grants/' + encodeURIComponent(grant.itemId) + '/requests/' + encodeURIComponent(requestId);
       const preview = await api(path + '?dryRun=true', { method: 'DELETE' });
+      live();
       byId('requests-dialog').close();
       showPlan('Revocation plan', preview.result.plan);
       if (confirm('Revoke request ' + requestId + ' for ' + userName(userId) + '?')) {
         await api(path, { method: 'DELETE' });
+        live();
         byId('plan-dialog').close();
         await load();
+        live();
         toast('Request revoked');
       }
     });
@@ -663,15 +739,18 @@ export const ADMIN_APP_JS = `
     event.preventDefault();
     const id = byId('group-id').value.trim();
     const body = { name: byId('group-name').value.trim(), userIds: checkedValues('group-user') };
-    await busy(async () => {
+    await busy(async (live) => {
       await api('/v1/groups/' + encodeURIComponent(id), { method: 'PUT', body: JSON.stringify(body) });
+      live();
       const passwordless = new Set(checkedValues('passwordless-user').map((userId) => userId.toLowerCase()));
       const changed = state.users.filter((user) => !user.isAdministrator && Boolean(user.passwordless) !== passwordless.has(user.id.toLowerCase()));
       for (const user of changed) {
         await api('/v1/users/' + encodeURIComponent(user.id) + '/sign-in', { method: 'PUT', body: JSON.stringify({ passwordless: !user.passwordless }) });
+        live();
       }
       byId('group-dialog').close();
       await load();
+      live();
       toast('Group saved');
     });
   }
@@ -693,17 +772,22 @@ export const ADMIN_APP_JS = `
     }
     const groupId = byId('new-user-group').value;
     const importToSeerr = byId('import-to-seerr').checked && !byId('import-to-seerr').disabled;
-    await busy(async () => {
+    await busy(async (live) => {
       try {
         const result = await api('/v1/users', { method: 'POST', body: JSON.stringify({ username, password, groupId, importToJellyseerr: importToSeerr }) });
+        live();
         byId('user-dialog').close();
         await load();
+        live();
         const imported = result.jellyseerr.status === 'imported' ? ' and imported into Seerr' : result.jellyseerr.status === 'already_imported' ? '; Seerr was already linked' : '';
         toast(result.user.name + ' was created and added to ' + result.group.name + imported);
       } catch (error) {
+        if (error.stale) throw error;
+        live();
         if (error.code === 'user_created_jellyseerr_import_failed' || error.code === 'user_created_household_assignment_failed') {
           byId('user-dialog').close();
           await load();
+          live();
         }
         throw error;
       } finally {
@@ -715,9 +799,10 @@ export const ADMIN_APP_JS = `
 
   async function deleteGroup(group) {
     if (!confirm('Delete "' + group.name + '"? It will be removed from every linked title and those policies will be reconciled.')) return;
-    await busy(async () => {
+    await busy(async (live) => {
       await api('/v1/groups/' + encodeURIComponent(group.id), { method: 'DELETE' });
       await load();
+      live();
       toast('Group deleted');
     });
   }
@@ -726,14 +811,17 @@ export const ADMIN_APP_JS = `
     event.preventDefault();
     const itemId = byId('access-item-id').value;
     const groupIds = checkedValues('grant-group');
-    await busy(async () => {
+    await busy(async (live) => {
       const preview = await api('/v1/grants/' + encodeURIComponent(itemId) + '/groups?dryRun=true', { method: 'PUT', body: JSON.stringify({ groupIds }) });
+      live();
       byId('access-dialog').close();
       showPlan('Shared access plan', preview.result.plan);
       if (confirm('Apply this shared-access change now?')) {
         await api('/v1/grants/' + encodeURIComponent(itemId) + '/groups', { method: 'PUT', body: JSON.stringify({ groupIds }) });
+        live();
         byId('plan-dialog').close();
         await load();
+        live();
         toast('Shared access updated');
       }
     });
@@ -742,24 +830,31 @@ export const ADMIN_APP_JS = `
   function checkedValues(name) { return Array.from(document.querySelectorAll('input[name="' + name + '"]:checked')).map((input) => input.value); }
 
   async function reconcilePolicies() {
-    await busy(async () => {
+    await busy(async (live) => {
       const preview = await api('/v1/reconcile?dryRun=true', { method: 'POST' });
+      live();
       showPlan('Reconciliation plan', preview.plans);
       const changes = preview.plans.reduce((total, plan) => total + (plan.item.action !== 'none' ? 1 : 0) + (plan.relatedItems || []).filter((item) => item.action !== 'none').length + plan.users.filter((user) => user.action !== 'none').length, 0);
       if (!changes) return;
       if (confirm('Apply ' + changes + ' previewed reconciliation change' + (changes === 1 ? '' : 's') + '?')) {
         await api('/v1/reconcile', { method: 'POST' });
+        live();
         byId('plan-dialog').close();
         await load();
+        live();
         toast('Policies reconciled');
       }
     });
   }
 
+  // Runs an action with the buttons disabled. operation receives live(), which throws a stale answer once the session
+  // that started the action has ended: the action calls it after each await, before it changes the view.
   async function busy(operation) {
     const enabledButtons = Array.from(document.querySelectorAll('button:not(:disabled)'));
     enabledButtons.forEach((button) => { button.disabled = true; });
-    try { await operation(); } catch (error) { toast(error.message || String(error), true); }
+    const epoch = sessionEpoch;
+    const live = () => assertSession(epoch);
+    try { await operation(live); } catch (error) { if (!error.stale) toast(error.message || String(error), true); }
     finally { enabledButtons.forEach((button) => { button.disabled = false; }); }
   }
 
@@ -771,7 +866,80 @@ export const ADMIN_APP_JS = `
     toastTimer = setTimeout(() => { toastNode.className = 'toast'; }, 4200);
   }
 
+  function sessionUnavailable() {
+    noticeNode.textContent = errorText.session_check_unavailable;
+    noticeNode.hidden = false;
+    // The session is kept at the server, so the sign-in form is not shown.
+    if (appView.hidden) loginView.hidden = true;
+    setHealth('warning', 'Jellyfin unavailable');
+    if (sessionRetry.timer || sessionRetry.remaining !== null) return;
+    sessionRetry.delay = sessionRetry.delay ? Math.min(sessionRetry.delay * 2, SESSION_RETRY_MAX_MS) : SESSION_RETRY_FIRST_MS;
+    sessionRetry.remaining = sessionRetry.delay;
+    armSessionRetry();
+  }
+
+  // Starts the wait that is left while the tab is shown, and pauses it, keeping what is left, while it is hidden.
+  function armSessionRetry() {
+    if (document.visibilityState === 'hidden') {
+      if (!sessionRetry.timer) return;
+      clearTimeout(sessionRetry.timer);
+      sessionRetry.timer = null;
+      sessionRetry.remaining = Math.max(0, sessionRetry.dueAt - Date.now());
+      sessionRetry.dueAt = 0;
+      return;
+    }
+    if (sessionRetry.timer || sessionRetry.remaining === null) return;
+    sessionRetry.dueAt = Date.now() + sessionRetry.remaining;
+    sessionRetry.remaining = null;
+    sessionRetry.timer = setTimeout(retrySession, sessionRetry.dueAt - Date.now());
+  }
+
+  function clearSessionRetry() {
+    clearTimeout(sessionRetry.timer);
+    sessionRetry.timer = null;
+    sessionRetry.dueAt = 0;
+    sessionRetry.remaining = null;
+    sessionRetry.delay = 0;
+  }
+
+  function sessionAvailable() {
+    clearSessionRetry();
+    noticeNode.hidden = true;
+    noticeNode.textContent = '';
+    if (!appView.hidden) updateHealth();
+  }
+
+  async function retrySession() {
+    sessionRetry.timer = null;
+    sessionRetry.dueAt = 0;
+    const connected = !appView.hidden;
+    const epoch = sessionEpoch;
+    try {
+      await api('/auth/session');
+      assertSession(epoch);
+      if (!connected) {
+        await load();
+        assertSession(epoch);
+        setConnected(true);
+      }
+    } catch (error) {
+      if (error.stale || epoch !== sessionEpoch) return;
+      if (error.status === 401) setConnected(false);
+      // Anything else (JellyPass unreachable, or a load that failed) is asked again later.
+      else sessionUnavailable();
+    }
+  }
+
+  document.addEventListener('visibilitychange', armSessionRetry);
+
+  // A session that ends invalidates the answers still on their way, so none of them can show a view, notice or retry.
+  function endSession() {
+    sessionEpoch += 1;
+    sessionAvailable();
+  }
+
   function setConnected(connected) {
+    if (!connected) endSession();
     loginView.hidden = connected;
     appView.hidden = !connected;
     byId('logout').hidden = !connected;
@@ -803,14 +971,20 @@ export const ADMIN_APP_JS = `
     byId('login-error').textContent = '';
     try {
       await api('/auth/login', { method: 'POST', body: JSON.stringify({ username: byId('username').value.trim(), password: byId('password').value }) });
+      // A new session: answers to requests made before it have no effect.
+      sessionEpoch += 1;
+      const epoch = sessionEpoch;
+      clearSessionRetry();
       await load();
+      assertSession(epoch);
       byId('password').value = '';
       setConnected(true);
     } catch (error) {
-      byId('login-error').textContent = ['invalid_credentials', 'unauthorized'].includes(error.message) ? 'That username or password was not accepted.' : error.message === 'too_many_login_attempts' ? 'Too many attempts. Try again later.' : error.message;
+      if (error.stale) return;
+      byId('login-error').textContent = ['invalid_credentials', 'unauthorized'].includes(error.code) ? errorText.invalid_credentials : error.message;
     }
   });
-  byId('logout').addEventListener('click', () => busy(async () => { await api('/auth/logout', { method: 'POST' }); setConnected(false); }));
+  byId('logout').addEventListener('click', () => busy(async (live) => { await api('/auth/logout', { method: 'POST' }); live(); setConnected(false); }));
   byId('grant-search').addEventListener('input', renderGrants);
   byId('reconcile-policies').addEventListener('click', reconcilePolicies);
   byId('sync-library').addEventListener('click', syncCatalog);
@@ -849,6 +1023,15 @@ export const ADMIN_APP_JS = `
   document.querySelectorAll('.tabs button').forEach((button) => button.addEventListener('click', () => activateTab(button.dataset.tab)));
 
   scrollToTop();
-  api('/auth/session').then(load).then(() => setConnected(true)).catch(() => setConnected(false));
+  const firstEpoch = sessionEpoch;
+  api('/auth/session')
+    .then(() => { assertSession(firstEpoch); return load(); })
+    .then(() => { assertSession(firstEpoch); setConnected(true); })
+    .catch((error) => {
+      if (error.stale || firstEpoch !== sessionEpoch) return;
+      // A session Jellyfin could not check is kept: the notice is shown and the check retried.
+      if (error.status === 503 && error.code === 'session_check_unavailable') sessionUnavailable();
+      else setConnected(false);
+    });
 })();
 `;

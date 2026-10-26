@@ -21,12 +21,33 @@ privacy leak. Such changes are always listed at the top of the release notes.
   or glow, and bigger rounded shapes (radii 12/20/24/30 px, 800-weight titles). The header is a solid bar. Home's
   All / Movies / TV filter is a row of outlined chips under the header (the chosen one ticked and tinted aqua; still a
   radio group with the same keys, `?kind=` address and Back restore) in a solid band that sticks under it, above the
-  hero. The floating tab bar is now docked full width with rounded top corners and a filled rounded square behind the
+  hero. The floating tab bar is now docked full width with rounded top corners and an aqua-outlined, tinted rounded square behind the
   active tab (no dot). Row headings have a short aqua-to-coral line under them (a service's brand colour on its rows)
   instead of a vertical bar. A title's status (the same five words) is a dot and a word at the top-left of its image.
   The primary button is solid aqua and the secondary is outlined. The big cards are rounder, with a thin border.
   Part 2 will redraw the hero and the detail pages (this part only recolours them), and the app icons are not yet
   redrawn. The `theme-color` and the installed app's background colour are now the new page colour.
+
+### Fixed
+
+- Body-less admin routes now also reject non-JSON bodies, as documented in
+  3.0.0. A `POST`, `PUT` or `DELETE` to an administrator API route that
+  carries a body not declared as `application/json` is
+  `415 {"error":"unsupported_media_type"}` before anything happens, also on
+  routes that never read their body such as `POST /v1/library/sync`,
+  `POST /v1/reconcile` and `POST /auth/logout`. Requests without a body work as
+  before, whatever their `Content-Type`, and unknown paths and methods are still
+  `404 {"error":"not_found"}` whatever they carry.
+- Admin UI: while Jellyfin cannot answer the five-minute session check (`503 {"error":"session_check_unavailable"}`),
+  the admin UI no longer shows the sign-in form at load, and no longer shows the raw code after an action. The server
+  keeps the session and allows another check 30 seconds after the failed one; the UI now keeps its current view, shows
+  "Jellyfin is temporarily unavailable — retrying…" and asks again on its own, first after 30 seconds and then backing
+  off to every two minutes, paused while the tab is hidden (the time it was hidden does not count towards the wait),
+  and returns to normal once the check passes. A `401` still returns to sign-in, and an answer that arrives after a
+  sign-out, a `401` or a new sign-in no longer changes the view, shows a notice or toast, or starts a retry; this
+  includes a request that fails outright (network error) after the session ended, and the recent-requests widget,
+  whose `401` now returns to sign-in instead of showing the app with empty activity. Other error codes the admin API answers with (such as `cross_origin_request_refused` or
+  `too_many_requests`) are shown as sentences instead of codes.
 
 ## [3.0.0] - 2026-10-26
 
