@@ -310,7 +310,9 @@ docs only say "set up credentials locally first":
    your project**, and sign in with your Apple ID when asked. EAS makes the distribution certificate and keeps it.
    This is the only interactive step; every build after it runs from the workflow.
 7. **TestFlight testers.** Internal testers must be users on your App Store Connect team: invite each member in
-   **Users and Access** with the narrowest role on offer, limited to the JellyPass app. Then, after the first upload,
+   **Users and Access** with the **Marketing** role (the least-privileged role Apple allows for internal testers;
+   some roles can't be internal testers, see [internal testers](https://developer.apple.com/help/glossary/internal-testers/)),
+   limited to the JellyPass app. Then, after the first upload,
    the app's **TestFlight** tab → **Internal Testing → +**, create a group (say "Household"), turn on automatic
    distribution, and add them. Up to 100 internal testers; they need no Beta App Review.
 
@@ -327,7 +329,8 @@ npx eas-cli@24.12.1 credentials --platform android
 ```
 
 Pick the `production` profile, then **Keystore: Manage everything needed to build your project → Download existing
-keystore**. It saves the `.jks` file and prints the keystore password, key alias and key password. Store all four
+keystore**. When EAS asks whether to display sensitive information, answer **yes**: otherwise it saves the `.jks`
+file without printing the passwords. It then prints the keystore password, key alias and key password. Store all four
 together, offline and somewhere other than the dev box (a password manager plus an offline copy), and delete the
 local file. Never commit it (`*.jks` is in `.gitignore`). ([App credentials](https://docs.expo.dev/app-signing/app-credentials/))
 
