@@ -151,6 +151,17 @@ function deviceName(userAgent: string): string {
 let navigation = 0;
 let navigationAbort: AbortController | undefined;
 let me: Me | undefined;
+/** The access token the app last saw; when it changes (or goes), what belonged to the old member goes with it. */
+let seenToken = jellyfinToken(localStorage, origin);
+
+function syncCredentials(): boolean {
+  const token = jellyfinToken(localStorage, origin);
+  if (token === seenToken) return false;
+  seenToken = token;
+  me = undefined;
+  api.forgetAsked();
+  return true;
+}
 let first = true;
 
 function announce(message: string): void {
@@ -430,6 +441,7 @@ async function loadMe(signal: AbortSignal): Promise<void> {
 /** The sign-in screen, in place of whatever was showing; `expired` when a sign-in the app held was refused. */
 function signIn(signal: AbortSignal, current: () => boolean, expired: boolean): void {
   me = undefined;
+  api.forgetAsked();
   setChrome();
   void showSignIn({
     doc,
@@ -519,6 +531,7 @@ async function render(): Promise<void> {
       // The route is the same either way.
     }
   }
+  syncCredentials();
   const route = parse(location.hash);
   capturePosition();
   stampHistory();
@@ -1308,6 +1321,12 @@ async function requestsScreen(signal: AbortSignal, current: () => boolean): Prom
 
 // Signing in or out on the same address (in another tab, or in Jellyfin web) is picked up without a reload.
 function resumeIfChanged(): void {
+  // Any change of token (member to member, to none, from none) redraws the screen from scratch: what it shows was
+  // read for the previous member (badges, the Account name) and is not theirs to see.
+  if (syncCredentials()) {
+    void render();
+    return;
+  }
   const signedIn = Boolean(jellyfinToken(localStorage, origin));
   const showingSignIn = Boolean(main.querySelector('[data-screen="signin"]'));
   const onAccount = parse(location.hash).name === 'account';
@@ -1324,6 +1343,7 @@ async function signOut(button: HTMLButtonElement): Promise<void> {
   const cleared = clearSignIn(localStorage, origin);
   button.disabled = false;
   me = undefined;
+  api.forgetAsked();
   if (!cleared) {
     announce("Couldn't remove your sign-in from this browser.");
     return;

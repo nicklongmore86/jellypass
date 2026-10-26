@@ -18,6 +18,19 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Fixed
+
+- The household app now shows **Requested** right after **Get this** is
+  accepted, on the title and season pages and on every card elsewhere (Home,
+  Search, service and studio pages). The server records a request a couple of
+  seconds after it answers, so the page it reads straight afterwards could still
+  say "Available to get". The app now remembers, in memory only, the titles and
+  seasons its member just asked for: for two minutes at most (by the monotonic clock or, if the device slept, the wall clock moving forward; a clock set back never extends it), dropped as soon as
+  the server says anything else, never stored or sent. It belongs to the member
+  who is signed in: any sign-out, sign-in, change of credentials or refused
+  (401) answer clears it, so another member on the same device never inherits it.
+  The app makes no extra calls, and the server is unchanged.
+
 ## [3.2.0] - 2026-10-26
 
 This is a security release for household hostnames, and a minor release.
