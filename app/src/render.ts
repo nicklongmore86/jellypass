@@ -204,6 +204,8 @@ function backdropImage(
 
 export const HERO_TEXT = {
   label: 'Trending now',
+  /** The carousel's name under Home's Movies and TV filters. */
+  labels: { all: 'Trending now', movies: 'Trending movies', tv: 'Trending series' },
   previous: 'Previous title',
   next: 'Next title',
 } as const;
@@ -277,12 +279,12 @@ function heroSlide(doc: Document, card: Card, index: number, total: number): HTM
  * itself. Swiping works as it does in any scroller; the Previous and Next buttons and the dots (each a labelled
  * button) do the same for those who cannot swipe, and scroll smoothly unless the member prefers reduced motion.
  */
-export function heroCarousel(doc: Document, cards: readonly Card[]): HTMLElement | undefined {
+export function heroCarousel(doc: Document, cards: readonly Card[], filter: HomeFilter = 'all'): HTMLElement | undefined {
   const shown = cards.slice(0, HERO_MAX);
   if (shown.length === 0) return undefined;
   const slides = shown.map((card, index) => heroSlide(doc, card, index, shown.length));
   const track = el(doc, 'div', { class: 'hero-track' }, slides);
-  const section = el(doc, 'section', { class: 'hero', attrs: { 'aria-roledescription': 'carousel', 'aria-label': HERO_TEXT.label } }, [track]);
+  const section = el(doc, 'section', { class: 'hero', attrs: { 'aria-roledescription': 'carousel', 'aria-label': HERO_TEXT.labels[filter] } }, [track]);
   if (shown.length === 1) return section;
 
   const live = el(doc, 'span', { class: 'visually-hidden', attrs: { 'aria-live': 'polite' } });
@@ -340,12 +342,67 @@ export function skeletonHero(doc: Document): HTMLElement {
   ]);
 }
 
+/**
+ * The colour of a row heading's small vertical bar: a service's brand colour (a tasteful approximation, never its logo),
+ * gold for the all-time lists, the app's own purple for everything else. Purely decorative: the heading's words say what
+ * the row is, and the bar is hidden from assistive technology. Each is a class (`accent-<name>`) whose colour is a custom
+ * property in the stylesheet, so the page carries no inline style.
+ */
+export type RowAccent = 'default' | 'gold' | 'netflix' | 'disney' | 'apple' | 'prime' | 'hbo' | 'hulu' | 'paramount' | 'peacock';
+export const ROW_ACCENTS: readonly RowAccent[] = ['default', 'gold', 'netflix', 'disney', 'apple', 'prime', 'hbo', 'hulu', 'paramount', 'peacock'];
+/** The accent of each allowlisted network's row, by its TMDB ID (see TMDB_NETWORKS in src/tmdb.ts). */
+export const NETWORK_ACCENTS: Readonly<Record<number, RowAccent>> = {
+  213: 'netflix', 2739: 'disney', 2552: 'apple', 1024: 'prime', 3186: 'hbo', 453: 'hulu', 4330: 'paramount', 3353: 'peacock',
+};
+
+function accentClass(accent: RowAccent | undefined): string {
+  return accent && accent !== 'default' ? ` accent-${accent}` : '';
+}
+
+/** Home's filter: everything, only films, or only series. */
+export type HomeFilter = 'all' | 'movies' | 'tv';
+export const HOME_FILTERS: readonly HomeFilter[] = ['all', 'movies', 'tv'];
+export const HOME_TEXT = {
+  label: 'Show',
+  filters: { all: 'All', movies: 'Movies', tv: 'TV' },
+  shown: { all: 'All shown.', movies: 'Movies shown.', tv: 'TV shown.' },
+} as const;
+
+/** The address of Home under a filter: All has none (`#/`), the others say so in the query (`?kind=movies`, `?kind=tv`). */
+export function homeHref(filter: HomeFilter): string {
+  return filter === 'all' ? '#/' : `#/?kind=${filter}`;
+}
+
+/**
+ * Home's All | Movies | TV control: a radio group of real buttons (one choice, shown filled), the chosen one `aria-checked`
+ * and the only one in the tab order (arrow keys, Home and End move and choose; see main.ts). It floats in a pill that
+ * sticks under the header while Home scrolls.
+ */
+export function homeSwitch(doc: Document, selected: HomeFilter, panelId: string): HTMLElement {
+  const buttons = HOME_FILTERS.map((filter) => el(doc, 'button', {
+    class: 'segment',
+    text: HOME_TEXT.filters[filter],
+    attrs: {
+      type: 'button',
+      role: 'radio',
+      id: `home-filter-${filter}`,
+      'data-filter': filter,
+      'aria-checked': String(filter === selected),
+      'aria-controls': panelId,
+      tabindex: filter === selected ? '0' : '-1',
+    },
+  }));
+  return el(doc, 'div', { class: 'home-switch' }, [
+    el(doc, 'div', { class: 'segmented segmented-home', attrs: { role: 'radiogroup', 'aria-label': HOME_TEXT.label } }, buttons),
+  ]);
+}
+
 /** A discover row: a heading and a horizontally scrolling list, reachable and scrollable from the keyboard. */
-export function titleRow(doc: Document, id: string, heading: string, page: Page, variant: RowVariant = 'poster'): HTMLElement {
+export function titleRow(doc: Document, id: string, heading: string, page: Page, variant: RowVariant = 'poster', accent?: RowAccent): HTMLElement {
   const list = cardList(doc, page.results, variant === 'backdrop' ? 'row-list row-list-backdrop' : 'row-list', variant);
   list.setAttribute('tabindex', '0');
   list.setAttribute('aria-labelledby', `${id}-heading`);
-  const section = el(doc, 'section', { class: 'row' }, [el(doc, 'h2', { class: 'row-heading', text: heading, attrs: { id: `${id}-heading` } })]);
+  const section = el(doc, 'section', { class: 'row' }, [el(doc, 'h2', { class: `row-heading${accentClass(accent)}`, text: heading, attrs: { id: `${id}-heading` } })]);
   section.append(page.results.length ? list : el(doc, 'p', { class: 'muted', text: 'Nothing to show here right now.' }));
   return section;
 }
@@ -353,7 +410,8 @@ export function titleRow(doc: Document, id: string, heading: string, page: Page,
 /** The words of the network and studio rows and pages. */
 export const SOURCE_TEXT = {
   studios: 'Studios',
-  networkPrefix: 'Popular on',
+  /** A network row's lead-in words by what the row lists: Home's All, or its Movies and TV filters. */
+  networkPrefix: { all: 'Popular on', films: 'Films on', series: 'Series on' },
   heading: (kind: SourceKind, name: string, list: SourceList = 'all') => {
     if (kind === 'studio') return `${name} movies`;
     return `${list === 'films' ? 'Films on' : list === 'series' ? 'Series on' : 'Popular on'} ${name}`;
@@ -399,14 +457,22 @@ export function sourceLogo(doc: Document, source: Source, alt: string, loading: 
  * logo's text alternative; then the same scrolling list as any discover row (a network's: its series and films mixed,
  * each card saying which it is).
  */
-export function sourceRow(doc: Document, id: string, kind: SourceKind, source: Source, page: Page): HTMLElement {
-  const link = el(doc, 'a', { class: 'row-heading-link', attrs: { href: sourceHref(kind, source) } }, [
-    kind === 'network' ? el(doc, 'span', { text: SOURCE_TEXT.networkPrefix }) : undefined,
+export function sourceRow(
+  doc: Document,
+  id: string,
+  kind: SourceKind,
+  source: Source,
+  page: Page,
+  list: SourceList = 'all',
+  accent?: RowAccent,
+): HTMLElement {
+  const link = el(doc, 'a', { class: 'row-heading-link', attrs: { href: sourceHref(kind, source, list) } }, [
+    kind === 'network' ? el(doc, 'span', { text: SOURCE_TEXT.networkPrefix[list] }) : undefined,
     sourceLogo(doc, source, source.name),
     kind === 'studio' ? el(doc, 'span', { text: 'movies' }) : undefined,
     icon(doc, 'next'),
   ]);
-  const section = titleRow(doc, id, '', page);
+  const section = titleRow(doc, id, '', page, 'poster', accent);
   const heading = section.querySelector('h2') as HTMLElement;
   heading.classList.add('row-heading-source');
   heading.replaceChildren(link);

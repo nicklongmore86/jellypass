@@ -66,7 +66,9 @@ export interface Season {
   state: HouseholdState;
 }
 
-export type DiscoverList = 'trending' | 'popular-movies' | 'popular-tv' | 'upcoming' | 'upcoming-tv';
+export type DiscoverList =
+  | 'trending' | 'trending-movies' | 'trending-tv' | 'popular-movies' | 'popular-tv' | 'new-movies' | 'upcoming' | 'upcoming-tv'
+  | 'top-movies' | 'top-tv';
 
 /** A network's popular series, or a studio's popular movies. */
 export type SourceKind = 'network' | 'studio';

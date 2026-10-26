@@ -7,6 +7,13 @@ import {
   errorState,
   type GetThisHandler,
   heroCarousel,
+  HOME_FILTERS,
+  HOME_TEXT,
+  type HomeFilter,
+  homeHref,
+  homeSwitch,
+  NETWORK_ACCENTS,
+  type RowAccent,
   REQUESTS_TEXT,
   requestItem,
   searchForm,
@@ -36,14 +43,59 @@ import { clearSignIn, deviceId, jellyfinToken } from './session.js';
 import { showSignIn } from './signin.js';
 import type { DiscoverList, MediaType, Me, Network, Page, RequestEntry, Source, SourceKind, Sources } from './types.js';
 
-const ROWS: Array<{ list: DiscoverList; heading: string; variant: RowVariant }> = [
-  { list: 'trending', heading: 'Trending', variant: 'poster' },
-  { list: 'popular-movies', heading: 'Popular movies', variant: 'backdrop' },
-  { list: 'popular-tv', heading: 'Popular series', variant: 'backdrop' },
-  { list: 'upcoming', heading: 'Upcoming movies', variant: 'poster' },
-];
-/** Home's rows below the first four: each is fetched only once it comes near the screen (see {@link lazyLoader}). */
-const UPCOMING_TV_ROW = { list: 'upcoming-tv', heading: 'Upcoming series' } as const;
+/** One of Home's rows, fetched from a discover list; `eager` rows are asked for at once, the others as they near the screen. */
+interface HomeRow {
+  part: 'row';
+  list: DiscoverList;
+  heading: string;
+  variant: RowVariant;
+  eager: boolean;
+  accent: RowAccent;
+}
+/** Home is these in order: discover rows, and the places where the services' rows, the studios' strip and the JustWatch credit go. */
+type HomePart = HomeRow | { part: 'networks' } | { part: 'studios' } | { part: 'credit' };
+const row = (list: DiscoverList, heading: string, variant: RowVariant, eager: boolean, accent: RowAccent = 'default'): HomeRow =>
+  ({ part: 'row', list, heading, variant, eager, accent });
+/**
+ * What Home shows under each filter. The first row is also the hero's source. Only the first four rows are eager (three
+ * under TV, which has fewer): that is Home's whole TMDB cost on first load, and everything below waits to near the
+ * screen. Movies and TV ask for their own lists (a mixed page is never filtered on the phone, which would leave rows
+ * half empty): the per-kind trending lists, a service's films or its series.
+ */
+const HOME_LAYOUT: Record<HomeFilter, readonly HomePart[]> = {
+  all: [
+    row('trending', 'Trending', 'poster', true),
+    row('popular-movies', 'Popular movies', 'backdrop', true),
+    row('popular-tv', 'Popular series', 'backdrop', true),
+    row('new-movies', 'New movie releases', 'backdrop', true),
+    row('upcoming', 'Upcoming movies', 'poster', false),
+    row('upcoming-tv', 'Upcoming series', 'poster', false),
+    { part: 'networks' },
+    { part: 'studios' },
+    row('top-movies', 'All-time great movies', 'backdrop', false, 'gold'),
+    row('top-tv', 'All-time great TV', 'poster', false, 'gold'),
+    { part: 'credit' },
+  ],
+  movies: [
+    row('trending-movies', 'Trending movies', 'poster', true),
+    row('popular-movies', 'Popular movies', 'backdrop', true),
+    row('new-movies', 'New movie releases', 'backdrop', true),
+    row('upcoming', 'Upcoming movies', 'poster', true),
+    { part: 'networks' },
+    { part: 'studios' },
+    row('top-movies', 'All-time great movies', 'backdrop', false, 'gold'),
+    { part: 'credit' },
+  ],
+  tv: [
+    row('trending-tv', 'Trending series', 'poster', true),
+    row('popular-tv', 'Popular series', 'backdrop', true),
+    row('upcoming-tv', 'Upcoming series', 'poster', true),
+    { part: 'networks' },
+    row('top-tv', 'All-time great TV', 'poster', false, 'gold'),
+  ],
+};
+/** What a service's row lists under each filter: its films and series mixed, its films, or its series. */
+const NETWORK_LIST: Record<HomeFilter, SourceList> = { all: 'all', movies: 'films', tv: 'series' };
 /** How far below (or above) the screen a lazy row starts loading, so it is usually there by the time it scrolls in. */
 const LAZY_MARGIN_PX = 400;
 const SEARCH_DEBOUNCE_MS = 300;
@@ -116,13 +168,21 @@ function kindOf(error: unknown): ApiErrorKind {
   return error instanceof ApiError ? error.kind : 'unavailable';
 }
 
+/** `data-home-switch` is on the body whenever the sticky All | Movies | TV switch is on the page, hero or no hero, so the scroll padding that clears it never depends on the hero. */
+function markSwitch(): void {
+  if (main.querySelector('.home-switch')) doc.body.setAttribute('data-home-switch', '');
+  else doc.body.removeAttribute('data-home-switch');
+}
+
 function show(...nodes: Node[]): void {
   main.replaceChildren(...nodes);
+  markSwitch();
   main.setAttribute('aria-busy', 'false');
 }
 
 function busy(...nodes: Node[]): void {
   main.replaceChildren(...nodes);
+  markSwitch();
   main.setAttribute('aria-busy', 'true');
   announce('Loading…');
 }
@@ -350,6 +410,8 @@ interface Route {
   query?: string;
   /** A network's page: which of its lists (`?kind=series` or `films`; anything else is All). */
   list?: SourceList;
+  /** Home: which filter (`?kind=movies` or `tv`; anything else is All). */
+  filter?: HomeFilter;
 }
 
 /** Only an empty hash or one that starts `#/` names a screen; anything else (the skip link's `#screen`) is not a route. */
@@ -372,7 +434,8 @@ function parse(hash: string): Route {
   }
   const title = /^\/(movie|tv)\/(\d{1,10})$/.exec(path);
   if (title) return { name: title[1] === 'tv' ? 'tv' : 'movie', id: Number(title[2]) };
-  return { name: 'home' };
+  const filter = new URLSearchParams(queryString).get('kind');
+  return { name: 'home', filter: filter === 'movies' || filter === 'tv' ? filter : 'all' };
 }
 
 function markNav(route: Route): void {
@@ -424,7 +487,7 @@ async function render(): Promise<void> {
   if (!jellyfinToken(localStorage, origin)) return failure('unauthorized', retry);
 
   try {
-    if (route.name === 'home') await home(abort.signal, current);
+    if (route.name === 'home') await home(route.filter ?? 'all', abort.signal, current);
     else if (route.name === 'search') await search(route.query ?? '', abort.signal, current);
     else if (route.name === 'requests') await requestsScreen(abort.signal, current);
     else if (route.name === 'movie' || route.name === 'tv') await title(route, abort.signal, current);
@@ -436,101 +499,191 @@ async function render(): Promise<void> {
   }
 }
 
-async function home(signal: AbortSignal, current: () => boolean): Promise<void> {
+async function home(filter: HomeFilter, signal: AbortSignal, current: () => boolean): Promise<void> {
   setTitle();
-  busy(el(doc, 'h1', { class: 'visually-hidden', text: 'Home', attrs: { tabindex: '-1' } }), skeletonHero(doc), ...ROWS.map((row) => skeletonRow(doc, row.variant)));
+  const eagerRows = HOME_LAYOUT[filter].filter((part): part is HomeRow => part.part === 'row' && part.eager);
+  busy(el(doc, 'h1', { class: 'visually-hidden', text: 'Home', attrs: { tabindex: '-1' } }), skeletonHero(doc), ...eagerRows.map((part) => skeletonRow(doc, part.variant)));
   await loadMe(signal);
   if (!current()) return;
-  const slots = ROWS.map(() => el(doc, 'div', { class: 'home-row' }));
   const heading = el(doc, 'h1', { class: 'visually-hidden', text: 'Home', attrs: { tabindex: '-1' } });
   const heroSlot = el(doc, 'div', {}, [skeletonHero(doc)]);
-  const upcomingTv = lazySlot(`row-${UPCOMING_TV_ROW.list}`);
-  const studiosSlot = el(doc, 'div', { class: 'home-row' });
-  const networksSlot = el(doc, 'div');
-  show(heading, heroSlot, ...slots, upcomingTv, studiosSlot, networksSlot);
-  /** Without a hero (the first row failed or is empty) the header is its own bar again. */
-  const noHero = () => {
-    heroSlot.remove();
-    setChrome();
-  };
-  slots.forEach((slot, index) => slot.append(skeletonRow(doc, (ROWS[index] as (typeof ROWS)[number]).variant)));
-  let unauthorized = false;
-  const restore = restoring;
-  const lazy = lazyLoader(signal);
-  /** Lazy rows fetched again at once because the member is coming back to where they were; awaited before the scroll is put back. */
-  const again: Array<Promise<void>> = [];
-  const watch = (slot: HTMLElement, load: () => Promise<Page>, draw: (page: Page) => HTMLElement, heading: string) => {
-    const run = () => lazyRow(slot, load, draw, heading, signal, current, restore);
-    if (restore?.lazy?.includes(slot.dataset['key'] ?? '') && restoreLive(restore)) again.push(run());
-    else lazy.watch(slot, () => void run());
-  };
-  watch(upcomingTv, () => api.discover(UPCOMING_TV_ROW.list, signal), (page) => titleRow(doc, upcomingTv.dataset['key'] as string, UPCOMING_TV_ROW.heading, page),
-    UPCOMING_TV_ROW.heading);
-  /** The studios' strip and the networks' rows, once the API has said which there are (no TMDB call). */
-  const sources = async (): Promise<void> => {
-    let found: Sources;
-    try {
-      found = await api.sources(signal);
-    } catch (error) {
-      if (!current() || signal.aborted) return;
-      const kind = kindOf(error);
-      if (kind === 'unauthorized') unauthorized = true;
-      else studiosSlot.replaceChildren(rowFailure('Studios and networks', kind, () => void render()));
-      return;
-    }
-    if (!current()) return;
-    if (found.studios.length) {
-      const strip = studioStrip(doc, 'row-studios', found.studios);
-      studiosSlot.replaceChildren(strip);
-      const list = strip.querySelector<HTMLElement>('ul.logo-list');
-      const left = restore?.rows?.['row-studios-heading'];
-      if (list && left && restoreLive(restore)) appScrollLeft(list, left);
-    }
-    // Each network's row is its series and films mixed (two TMDB calls, once it comes near the screen).
-    for (const network of found.networks) {
-      const slot = lazySlot(`row-network-${network.id}`);
-      networksSlot.append(slot);
-      watch(slot, () => api.source('network', network.id, 1, signal, network.hasFilms ? 'all' : undefined),
-        (page) => sourceRow(doc, slot.dataset['key'] as string, 'network', network, page), SOURCE_TEXT.heading('network', network.name));
-    }
-    if (found.networks.some((network) => network.hasFilms)) networksSlot.append(el(doc, 'div', { class: 'home-row' }, [justWatchNote(doc)]));
-    await Promise.all(again);
-  };
-  await Promise.all([
-    sources(),
-    ...ROWS.map(async (row, index) => {
-      const slot = slots[index] as HTMLElement;
-      try {
-        const page = await api.discover(row.list, signal);
-        if (!current()) return;
-        slot.replaceChildren(titleRow(doc, `row-${row.list}`, row.heading, page, row.variant));
-        if (index === 0) {
-          // The hero is drawn from the first row's own answer: it asks for nothing more.
-          const hero = heroCarousel(doc, page.results);
-          if (hero) {
-            heroSlot.replaceChildren(hero);
-            const track = hero.querySelector<HTMLElement>('.hero-track');
-            if (track && restore?.hero && restoreLive(restore)) appScrollLeft(track, restore.hero);
-          } else noHero();
-        }
-        const list = slot.querySelector<HTMLElement>('ul.row-list');
-        const left = restore?.rows?.[`row-${row.list}-heading`];
-        if (list && left && restoreLive(restore)) appScrollLeft(list, left);
-      } catch (error) {
-        if (!current() || signal.aborted) return;
-        const kind = kindOf(error);
-        if (index === 0) noHero();
-        if (kind === 'unauthorized') unauthorized = true;
-        else slot.replaceChildren(rowFailure(row.heading, kind, () => void render()));
+  const panelId = 'home-panel';
+  const switcher = homeSwitch(doc, filter, panelId);
+  const panel = el(doc, 'div', { attrs: { id: panelId, role: 'group', 'aria-labelledby': `home-filter-${filter}` } });
+  show(heading, heroSlot, switcher, panel);
+
+  /** The studios and networks the API lists (no TMDB call), asked for once however often the filter changes. */
+  let found: Sources | undefined;
+  /** Each drawing gets a new number and its own abort; a drawing switched away from stops touching the page. */
+  let drawing = 0;
+  let drawAbort: AbortController | undefined;
+  signal.addEventListener('abort', () => drawAbort?.abort());
+
+  /**
+   * Draws the hero and the rows of one filter, once everything that is asked for at once has answered. `unauthorized` is
+   * true when the API refused the member (the caller shows the sign-in); `start` lets the rows below the fold be asked
+   * for as they near the screen, called once the page is in place and any position put back. Until the drawing is
+   * replaced, that is.
+   */
+  const draw = async (shown: HomeFilter, restore: Position | undefined): Promise<{ unauthorized: boolean; start: () => void }> => {
+    drawAbort?.abort();
+    const controller = new AbortController();
+    drawAbort = controller;
+    const sig = controller.signal;
+    const mine = ++drawing;
+    const live = () => current() && mine === drawing && !sig.aborted;
+    const layout = HOME_LAYOUT[shown];
+    heroSlot.hidden = false;
+    heroSlot.replaceChildren(skeletonHero(doc));
+    setChrome('home');
+    /** Without a hero (the first row failed or is empty) the header is its own bar again. */
+    const noHero = () => {
+      heroSlot.replaceChildren();
+      heroSlot.hidden = true;
+      setChrome();
+    };
+    let unauthorized = false;
+    const lazy = lazyLoader(sig);
+    /** Lazy rows fetched again at once because the member is coming back to where they were; awaited before the scroll is put back. */
+    const again: Array<Promise<void>> = [];
+    const watch = (slot: HTMLElement, load: () => Promise<Page>, drawRow: (page: Page) => HTMLElement, rowHeading: string) => {
+      const run = () => lazyRow(slot, load, drawRow, rowHeading, sig, live, restore);
+      if (restore?.lazy?.includes(slot.dataset['key'] ?? '') && restoreLive(restore)) again.push(run());
+      else lazy.watch(slot, () => void run());
+    };
+    const networksSlot = el(doc, 'div');
+    const studiosSlot = el(doc, 'div', { class: 'home-row' });
+    const creditSlot = el(doc, 'div');
+    const slots: HTMLElement[] = [];
+    const eager: Array<Promise<void>> = [];
+    layout.forEach((part, index) => {
+      if (part.part === 'networks') return void slots.push(networksSlot);
+      if (part.part === 'studios') return void slots.push(studiosSlot);
+      if (part.part === 'credit') return void slots.push(creditSlot);
+      const id = `row-${part.list}`;
+      if (!part.eager) {
+        const slot = lazySlot(id);
+        slots.push(slot);
+        watch(slot, () => api.discover(part.list, sig), (page) => titleRow(doc, id, part.heading, page, part.variant, part.accent), part.heading);
+        return;
       }
-    }),
-    ...again,
-  ]);
+      const slot = el(doc, 'div', { class: 'home-row' }, [skeletonRow(doc, part.variant)]);
+      slots.push(slot);
+      const isHero = index === 0;
+      eager.push((async () => {
+        try {
+          const page = await api.discover(part.list, sig);
+          if (!live()) return;
+          slot.replaceChildren(titleRow(doc, id, part.heading, page, part.variant, part.accent));
+          if (isHero) {
+            // The hero is drawn from the first row's own answer: it asks for nothing more.
+            const hero = heroCarousel(doc, page.results, shown);
+            if (hero) {
+              heroSlot.replaceChildren(hero);
+              const track = hero.querySelector<HTMLElement>('.hero-track');
+              if (track && restore?.hero && restoreLive(restore)) appScrollLeft(track, restore.hero);
+            } else noHero();
+          }
+          const list = slot.querySelector<HTMLElement>('ul.row-list');
+          const left = restore?.rows?.[`${id}-heading`];
+          if (list && left && restoreLive(restore)) appScrollLeft(list, left);
+        } catch (error) {
+          if (!live()) return;
+          const kind = kindOf(error);
+          if (isHero) noHero();
+          if (kind === 'unauthorized') unauthorized = true;
+          else slot.replaceChildren(rowFailure(part.heading, kind, () => void render()));
+        }
+      })());
+    });
+    panel.replaceChildren(...slots);
+    panel.setAttribute('aria-labelledby', `home-filter-${shown}`);
+
+    /** The studios' strip and the services' rows, once the API has said which there are (no TMDB call). */
+    const sources = async (): Promise<void> => {
+      let listing: Sources;
+      try {
+        listing = found ??= await api.sources(sig);
+      } catch (error) {
+        if (!live()) return;
+        const kind = kindOf(error);
+        if (kind === 'unauthorized') unauthorized = true;
+        else (layout.some((part) => part.part === 'studios') ? studiosSlot : networksSlot).replaceChildren(rowFailure('Studios and networks', kind, () => void render()));
+        return;
+      }
+      if (!live()) return;
+      if (listing.studios.length) {
+        const strip = studioStrip(doc, 'row-studios', listing.studios);
+        studiosSlot.replaceChildren(strip);
+        const list = strip.querySelector<HTMLElement>('ul.logo-list');
+        const left = restore?.rows?.['row-studios-heading'];
+        if (list && left && restoreLive(restore)) appScrollLeft(list, left);
+      }
+      // Each service's row: its series and films mixed (two TMDB calls), only its films or only its series (one), once it comes near the screen.
+      const listed = listing.networks.filter((network) => shown !== 'movies' || network.hasFilms);
+      for (const network of listed) {
+        const slot = lazySlot(`row-network-${network.id}`);
+        const list: SourceList = network.hasFilms ? NETWORK_LIST[shown] : 'series';
+        const accent = NETWORK_ACCENTS[network.id];
+        networksSlot.append(slot);
+        watch(slot, () => api.source('network', network.id, 1, sig, list === 'all' || list === 'films' ? list : undefined),
+          (page) => sourceRow(doc, slot.dataset['key'] as string, 'network', network, page, list, accent), SOURCE_TEXT.heading('network', network.name, list));
+      }
+      if (listed.some((network) => network.hasFilms) && shown !== 'tv') creditSlot.append(el(doc, 'div', { class: 'home-row' }, [justWatchNote(doc)]));
+      await Promise.all(again);
+    };
+    await Promise.all([sources(), ...eager, ...again]);
+    return { unauthorized, start: () => (live() ? lazy.start() : undefined) };
+  };
+
+  const drawn = await draw(filter, restoring);
   if (!current()) return;
-  if (unauthorized) throw new ApiError('unauthorized');
+  if (drawn.unauthorized) throw new ApiError('unauthorized');
   announce('');
   focusHeading();
-  lazy.start();
+  drawn.start();
+
+  // The control: choosing replaces the address (not pushes it), so Back still leaves Home, and coming back is to this filter.
+  let chosen = filter;
+  const choose = (next: HomeFilter, focus: boolean): void => {
+    const button = switcher.querySelector<HTMLElement>(`[data-filter="${next}"]`);
+    if (focus) button?.focus();
+    if (next === chosen) return;
+    chosen = next;
+    history.replaceState(history.state, '', homeHref(next));
+    shownRoute = parse(location.hash);
+    // What was being put back belonged to the other filter.
+    restoreCancelled = true;
+    for (const radio of switcher.querySelectorAll<HTMLElement>('[role="radio"]')) {
+      const checked = radio.dataset['filter'] === next;
+      radio.setAttribute('aria-checked', String(checked));
+      radio.setAttribute('tabindex', checked ? '0' : '-1');
+    }
+    // The sticky control stays where it is; a member far down the page starts the new filter at its first row.
+    const edge = heroSlot.offsetHeight || 0;
+    if ((window.scrollY || 0) > edge) appScrollTo(edge);
+    announce('Loading…');
+    void draw(next, undefined).then((result) => {
+      if (!current() || chosen !== next) return;
+      if (result.unauthorized) return failure('unauthorized', () => void render());
+      announce(HOME_TEXT.shown[next]);
+      result.start();
+    });
+  };
+  for (const radio of switcher.querySelectorAll<HTMLElement>('[role="radio"]')) {
+    radio.addEventListener('click', () => choose(radio.dataset['filter'] as HomeFilter, false));
+  }
+  switcher.addEventListener('keydown', (event) => {
+    const at = HOME_FILTERS.indexOf(chosen);
+    const key = (event as KeyboardEvent).key;
+    const last = HOME_FILTERS.length - 1;
+    const next = key === 'ArrowRight' || key === 'ArrowDown' ? HOME_FILTERS[at === last ? 0 : at + 1]
+      : key === 'ArrowLeft' || key === 'ArrowUp' ? HOME_FILTERS[at === 0 ? last : at - 1]
+        : key === 'Home' ? HOME_FILTERS[0] : key === 'End' ? HOME_FILTERS[last] : undefined;
+    if (!next) return;
+    event.preventDefault();
+    choose(next, true);
+  });
 }
 
 /** A Home row that is fetched only when it comes near the screen: a row-shaped skeleton until then, so nothing shifts. */

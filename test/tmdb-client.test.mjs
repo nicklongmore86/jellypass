@@ -83,12 +83,20 @@ describe('TMDB client', () => {
       `GET ${TMDB_API_URL}/3/tv/900002?language=en-US`,
       `GET ${TMDB_API_URL}/3/tv/900002/season/1?language=en-US`,
       `GET ${TMDB_API_URL}/3/trending/all/day?page=3&language=en-US`,
+      // Home's Movies and TV filters: today's trending films, today's trending series.
+      `GET ${TMDB_API_URL}/3/trending/movie/day?page=3&language=en-US`,
+      `GET ${TMDB_API_URL}/3/trending/tv/day?page=3&language=en-US`,
       `GET ${TMDB_API_URL}/3/discover/movie?page=3&sort_by=popularity.desc&include_adult=false&language=en-US`,
       `GET ${TMDB_API_URL}/3/discover/tv?page=3&sort_by=popularity.desc&include_null_first_air_dates=false&language=en-US`,
+      // New movie releases: opened in US theatres (release types 2 and 3) in the 60 days up to today (UTC).
+      `GET ${TMDB_API_URL}/3/discover/movie?page=3&sort_by=popularity.desc&include_adult=false&region=US&with_release_type=2|3&release_date.gte=2026-08-25&release_date.lte=2026-10-24&language=en-US`,
       // Upcoming: released today (UTC) or later.
       `GET ${TMDB_API_URL}/3/discover/movie?page=3&sort_by=popularity.desc&include_adult=false&primary_release_date.gte=2026-10-24&language=en-US`,
       // Upcoming series: first airing from today (UTC) to a year and a half on, Seerr's default upper bound.
       `GET ${TMDB_API_URL}/3/discover/tv?page=3&sort_by=popularity.desc&include_null_first_air_dates=false&first_air_date.gte=2026-10-24&first_air_date.lte=2028-04-24&language=en-US`,
+      // All-time great: TMDB's own top-rated lists.
+      `GET ${TMDB_API_URL}/3/movie/top_rated?page=3&language=en-US`,
+      `GET ${TMDB_API_URL}/3/tv/top_rated?page=3&language=en-US`,
     ]);
     for (const call of calls) {
       assert.equal(call.url.searchParams.get('api_key'), V3_KEY);

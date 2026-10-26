@@ -475,6 +475,11 @@ export async function createFakeTmdb(state) {
       // TMDB's discover results carry no media_type.
       return list(searchResults().filter((entry) => entry.media_type === type).map(({ media_type: _, ...entry }) => entry));
     }
+    const trendingOne = /^\/3\/trending\/(movie|tv)\/day$/.exec(url.pathname);
+    // TMDB's per-kind trending lists carry media_type, as the mixed one does.
+    if (trendingOne) return list(searchResults().filter((entry) => entry.media_type === trendingOne[1]));
+    const topRated = /^\/3\/(movie|tv)\/top_rated$/.exec(url.pathname);
+    if (topRated) return list(searchResults().filter((entry) => entry.media_type === topRated[1]).map(({ media_type: _, ...entry }) => entry));
     const movie = /^\/3\/movie\/([0-9]+)$/.exec(url.pathname);
     if (movie) {
       const tmdbId = Number(movie[1]);
