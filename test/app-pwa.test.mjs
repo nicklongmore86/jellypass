@@ -1999,6 +1999,8 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       Servers: [{ ManualAddress: origin, AccessToken: TOKENS[user], UserId: user }],
     })]] : []));
     const requests = [];
+    // Calls not yet answered, and answers whose body the page is still reading: none means nothing is under way.
+    let pending = 0;
     let meRead = false;
     const location = {
       origin,
@@ -2080,11 +2082,26 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         fetch: async (url, init = {}) => {
           requests.push({ url, init });
           if (init.signal?.aborted) throw new DOMException('aborted', 'AbortError');
-          if (holdMe && url === '/jellypass/app/v1/me') await holdMe;
-          const answer = (await override?.(url, init)) ?? await (init.method === 'POST'
-            ? post(app.port, url, { Host: host, ...init.headers }, init.body ? JSON.parse(init.body) : undefined)
-            : get(app.port, url, { Host: host, ...init.headers }));
+          pending += 1;
+          let answer;
+          try {
+            if (holdMe && url === '/jellypass/app/v1/me') await holdMe;
+            answer = (await override?.(url, init)) ?? await (init.method === 'POST'
+              ? post(app.port, url, { Host: host, ...init.headers }, init.body ? JSON.parse(init.body) : undefined)
+              : get(app.port, url, { Host: host, ...init.headers }));
+          } finally {
+            pending -= 1;
+          }
           const response = new Response(answer.body, { status: answer.status, headers: answer.headers });
+          const read = response.json.bind(response);
+          response.json = async () => {
+            pending += 1;
+            try {
+              return await read();
+            } finally {
+              pending -= 1;
+            }
+          };
           if (url === '/jellypass/app/v1/me') {
             // The signal that /me is fully back: the page has read its body. `until` polls on timers, so the page's continuation has run by the time it sees this.
             const json = response.json.bind(response);
@@ -2152,7 +2169,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       screen.replaceChildren = function (...nodes) { replace.apply(this, nodes); clampScroll(); };
     }
     const back = () => document.getElementById('back');
-    return { document, Event, until, go, main, requests, resizeBand, resizers, watched, reveal, observers, meRead: () => meRead, store, location, back, entries, cursor: () => index, scroll, sessionWrites, history: globals.history, window: globals.window, serialize: () => document.documentElement.outerHTML, listeners, focused: () => focused };
+    return { document, Event, until, go, main, requests, resizeBand, resizers, watched, reveal, observers, meRead: () => meRead, pending: () => pending, store, location, back, entries, cursor: () => index, scroll, sessionWrites, history: globals.history, window: globals.window, serialize: () => document.documentElement.outerHTML, listeners, focused: () => focused };
   }
 
   it('shows the four discover rows with each title\'s badge and no Play button on the cards', async (t) => {
@@ -2345,12 +2362,13 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     // As `METHOD /path` without the prefix, a title's ID as `{tmdbId}` and a season's number as `{n}`, sorted (rows load in parallel).
     const calls = (page, from = 0) => page.requests.slice(from).map((request) => `${request.init.method ?? 'GET'} ${request.url.replace('/jellypass/app/v1', '').replace(/^\/(movie|tv)\/[0-9]+/, '/$1/{tmdbId}').replace(/\/season\/[0-9]+$/, '/season/{n}')}`).sort();
     const settled = async (page) => {
-      // Nothing more is asked for while the page stays as it is.
+      // Every call answered and read, and nothing more asked for once the page has drawn what it read.
       let count;
       do {
         count = page.requests.length;
-        await pause(100);
-      } while (page.requests.length !== count);
+        await page.until(() => page.pending() === 0, 'every call answered and read');
+        await new Promise((resolve) => setImmediate(resolve));
+      } while (page.requests.length !== count || page.pending() !== 0);
     };
     async function revealAll(page) {
       const waiting = () => [...page.main().querySelectorAll('[data-lazy="waiting"]')];
