@@ -520,7 +520,18 @@ elsewhere; the files are never proxied to Jellyfin.
   Peacock. A network row's
   heading is a link to the network's page reading "Popular on" followed by the network's logo, whose `alt` is the
   network's name (its name as text when there is no allowlisted logo). Each row loads and fails on its own, with its own
-  retry. **Lazy rows:** Upcoming series and the network rows hold a row-shaped skeleton (hidden from assistive
+  retry. **Backdrop cards (Popular movies and Popular series).** These two rows use `titleRow(..., 'backdrop')`:
+  `ul.row-list.row-list-backdrop` (same id, `aria-labelledby`, `tabindex` and scroll hooks as any row, so Back's capture and
+  restore are unchanged) of `li.card.card-backdrop`. A card is one `<a>` holding a 16:9 `<img>` (the Card DTO's
+  `backdropUrl`, which these rows already carry: no extra call, no server change; `src` w780 and `srcset` w780/w1280 derived
+  only through the backdrop allowlist; `sizes` 92vw on a phone, 36vw from 48 rem; always `loading="lazy"`, as the rows start
+  below the hero), a scrim (`--scrim-text`, solid for 5.75 rem from the foot, then clear), the title (at most two lines) and
+  "year · ★ 7.8 TMDB". The status pill is the card's corner, not in the link, and takes no pointer events, so the whole card
+  navigates. No backdrop: the poster (w342) cropped to fit, else a plain gradient. About 92% of the list's width on a phone
+  (the next card peeks), 36% from 48 rem; radius 16 px; a 3 px inset focus ring; no motion of its own. A test composites the
+  scrim over white and black for the title and facts and checks that they fit the solid part. The component
+  (`backdropCardItem`, `RowVariant`) is meant for other rows to adopt; only these two do now.
+  **Lazy rows:** Upcoming series and the network rows hold a row-shaped skeleton (hidden from assistive
   technology) and are fetched only when they come within 400 px of the screen: an `IntersectionObserver` with that
   root margin, or without one, a check on scroll (at most once a frame) and once when Home is drawn. Nothing is watched
   until the first four rows are drawn and any position is put back, each row is fetched once per visit, and leaving Home

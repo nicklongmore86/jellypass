@@ -98,6 +98,12 @@ these before upgrading:
 
 ### Changed
 
+- Household app: **Popular movies** and **Popular series** on Home are now large landscape backdrop cards: one nearly
+  full-width 16:9 card per phone screen with the next one peeking in (about three across on a wide screen), the title and
+  "year · ★ rating TMDB" over a dark gradient at the foot, and the status pill on the corner. The whole card is the link
+  to the title's page. A title with no backdrop shows its poster, or a plain card. Trending, Upcoming and the network and
+  studio rows are unchanged. No new calls: the images come from the rows' own answers, and Back still puts each row's
+  scroll position back.
 - Household app: a new look. Dark indigo with a soft glow, a floating glass tab bar (**Home**, **Search**, **My
   requests**), a glass header with a round Back button, rounded poster cards with the status pill on the poster, a
   three-column Search grid under a capsule field, request cards with a poster thumbnail, and new app icons. **About &

@@ -605,6 +605,23 @@ describe('household app page: files', () => {
     const facts = 0.5 + 0.9 * 1.5 + 0.35;
     const overview = 0.5 + 2 * 0.95 * 1.4;
     assert.ok(strip + title + facts + overview <= heroSolid, `${(strip + title + facts + overview).toFixed(1)}rem of hero text in ${heroSolid}rem of solid scrim`);
+    // Backdrop cards: the title and facts sit on the same scrim; its solid part holds a two-line title, the facts and the inset, at the narrowest card.
+    const cardScrim = /\.backdrop-scrim \{[^}]*linear-gradient\(to top, var\(--scrim-text\) 0, var\(--scrim-text\) (\d+(?:\.\d+)?)rem, transparent (\d+(?:\.\d+)?)rem\)/.exec(css);
+    assert.ok(cardScrim, 'the backdrop scrim is the checked scrim token');
+    const cardTitle = Number(/\.backdrop-text \.card-title \{[^}]*font-size: (\d+(?:\.\d+)?)rem/.exec(css)?.[1]);
+    const cardLine = Number(/\.backdrop-text \.card-title \{[^}]*line-height: (\d+(?:\.\d+)?)/.exec(css)?.[1]);
+    const cardMeta = /\.backdrop-text \.card-meta \{[^}]*font-size: (\d+(?:\.\d+)?)rem; line-height: (\d+(?:\.\d+)?)/.exec(css);
+    const cardInset = Number(/\.backdrop-text \{[^}]*bottom: (\d+(?:\.\d+)?)rem/.exec(css)?.[1]);
+    const cardGap = Number(/\.backdrop-text \{[^}]*gap: (\d+(?:\.\d+)?)rem/.exec(css)?.[1]);
+    const cardText = cardInset + 2 * cardTitle * cardLine + cardGap + Number(cardMeta[1]) * Number(cardMeta[2]);
+    assert.ok(cardText <= Number(cardScrim[1]), `${cardText.toFixed(2)}rem of backdrop text in ${cardScrim[1]}rem of solid scrim`);
+    assert.match(css, /\.backdrop-text \.card-title \{[^}]*color: var\(--text\)/);
+    assert.match(css, /\.backdrop-text \.card-meta \{[^}]*color: var\(--muted\)/);
+    // The title is at most two lines, the card is 16:9 and nearly a screen wide, and the pill stays on the corner over the image.
+    assert.match(css, /\.backdrop-link \{[^}]*aspect-ratio: 16 \/ 9/);
+    assert.match(css, /\.row-list-backdrop > \.card \{ flex: 0 0 92%; \}/);
+    assert.match(css, /\.backdrop-link:focus-visible \{ outline: 3px solid var\(--accent\)/);
+    assert.equal(/\.backdrop[a-z-]* \{[^}]*url\(/.test(css), false, 'no CSS url()');
     assert.match(css, /\.app-header::before \{[^}]*\}/);
     assert.match(css, /body\[data-chrome='home'\]:not\(\[data-scrolled\]\) \.app-header::before \{[^}]*var\(--scrim-top\) 0, var\(--scrim-top\) 55%/);
     // The text on the backdrop is the checked tokens, and nothing else is laid over the scrims.
@@ -1122,6 +1139,73 @@ describe('household app page: rendering', () => {
     assert.equal(errorState(document, 'canary-upstream-text').querySelector('h1').textContent, ERROR_TEXT.unavailable.title);
     assert.equal(ERROR_TEXT.rate_limited.title, 'Too many requests');
     assert.equal(ERROR_TEXT.unavailable.body, 'Something went wrong. Try again in a moment.');
+  });
+
+  describe('backdrop cards', () => {
+    const page = (results) => ({ page: 1, nextPage: null, results });
+    const WIDTHS = /^https:\/\/image\.tmdb\.org\/t\/p\/w(?:780|1280)\/[A-Za-z0-9_-]+\.jpg$/;
+
+    it('draws a backdrop with srcset from the two allowed sizes only, the title, "year · ★ rating TMDB" and the pill, all inside one link', async () => {
+      const { document, titleRow } = await renderer();
+      // A w342 or w1280 URL from the API still yields only the derived w780 / w1280 pair; the first card is lazy like the rest.
+      const row = titleRow(document, 'row-popular-movies', 'Popular movies', page([
+        card({ backdropUrl: 'https://image.tmdb.org/t/p/w1280/synthetic-wide.jpg' }),
+        card({ tmdbId: 900004, title: 'Synthetic Movie Four', backdropUrl: 'https://image.tmdb.org/t/p/w780/synthetic-four.jpg', rating: null, year: null }),
+      ]), 'backdrop');
+      const list = row.querySelector('ul');
+      assert.equal(list.className, 'row-list row-list-backdrop');
+      assert.equal(list.getAttribute('tabindex'), '0');
+      assert.equal(list.getAttribute('aria-labelledby'), 'row-popular-movies-heading');
+      const items = [...list.querySelectorAll('li.card-backdrop')];
+      assert.equal(items.length, 2);
+      const img = items[0].querySelector('img');
+      assert.equal(img.getAttribute('src'), 'https://image.tmdb.org/t/p/w780/synthetic-wide.jpg');
+      assert.equal(img.getAttribute('srcset'), 'https://image.tmdb.org/t/p/w780/synthetic-wide.jpg 780w, https://image.tmdb.org/t/p/w1280/synthetic-wide.jpg 1280w');
+      for (const url of img.getAttribute('srcset').split(',').map((part) => part.trim().split(' ')[0])) assert.match(url, WIDTHS);
+      assert.equal(img.getAttribute('sizes'), '(min-width: 48rem) 36vw, 92vw');
+      assert.equal(img.getAttribute('alt'), '');
+      for (const item of items) assert.equal(item.querySelector('img').getAttribute('loading'), 'lazy');
+      assert.equal(items[0].querySelectorAll('a').length, 1, 'the whole card is the one link');
+      assert.equal(items[0].querySelector('a').getAttribute('href'), '#/movie/900003');
+      assert.ok(items[0].querySelector('a').contains(items[0].querySelector('.card-title')));
+      assert.equal(items[0].querySelector('.card-title').textContent, 'Synthetic Movie Three');
+      assert.equal(items[0].querySelector('.card-meta').textContent, '2021 · ★ 7.5 TMDB');
+      assert.equal(items[0].querySelector('.badge').textContent, 'Available to get');
+      assert.equal(items[1].querySelector('.card-meta'), null, 'no year and no rating: no empty line');
+      assert.equal(items[0].querySelectorAll('button, a.button').length, 0);
+    });
+
+    it('falls back to the poster, then to a plain gradient card, and drops a URL that is not TMDB\'s', async () => {
+      const { document, titleRow } = await renderer();
+      const row = titleRow(document, 'row-popular-tv', 'Popular series', page([
+        card({ tmdbId: 1, backdropUrl: null }),
+        card({ tmdbId: 2, backdropUrl: null, posterUrl: null }),
+        card({ tmdbId: 3, backdropUrl: 'https://evil.example/t/p/w780/x.jpg', posterUrl: 'https://evil.example/p.jpg' }),
+        card({ tmdbId: 4, backdropUrl: 'https://image.tmdb.org/t/p/original/x.jpg', posterUrl: null }),
+      ]), 'backdrop');
+      const items = [...row.querySelectorAll('li.card-backdrop')];
+      assert.equal(items[0].querySelector('img').getAttribute('src'), poster);
+      assert.equal(items[0].querySelector('img').getAttribute('srcset'), null, 'a poster has no backdrop sizes');
+      assert.equal(items[0].querySelector('img').className, 'backdrop-img');
+      for (const item of items.slice(1)) {
+        assert.equal(item.querySelector('img'), null);
+        assert.ok(item.querySelector('a').className.includes('backdrop-plain'));
+        assert.ok(item.querySelector('.card-title').textContent);
+      }
+    });
+
+    it('leaves the other rows as poster cards and sets text only through textContent', async () => {
+      const { document, titleRow } = await renderer();
+      const hostile = '<img src=x onerror=alert(1)>';
+      const posters = titleRow(document, 'row-upcoming', 'Upcoming movies', page([card()]));
+      assert.equal(posters.querySelector('ul').className, 'row-list');
+      assert.equal(posters.querySelectorAll('li.card-backdrop, .backdrop-link').length, 0);
+      assert.equal(posters.querySelector('.poster-card img').getAttribute('src'), poster);
+      const backdrops = titleRow(document, 'row-popular-movies', 'Popular movies', page([card({ title: hostile })]), 'backdrop');
+      assert.equal(backdrops.querySelector('.card-title').textContent, hostile);
+      assert.equal(backdrops.querySelectorAll('img').length, 1, 'the title was not parsed as markup');
+      assert.equal(backdrops.querySelectorAll('[style]').length, 0);
+    });
   });
 
   describe('"Get this" and "My requests" markup', () => {
@@ -1932,6 +2016,62 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     assert.equal(await accountName(page), 'Alice · Farmhouse', 'the household and name are on About, not in the header');
   });
 
+  it('draws Popular movies and Popular series as backdrop cards and every other row as posters, with no extra call', async (t) => {
+    const app = await startApp(t);
+    const page = await openApp(t, app);
+    await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4 && page.watched().length === 9, 'Home');
+    const kinds = {};
+    for (const list of page.document.querySelectorAll('ul.row-list[aria-labelledby]')) {
+      kinds[list.getAttribute('aria-labelledby')] = list.className;
+    }
+    assert.deepEqual(kinds, {
+      'row-trending-heading': 'row-list',
+      'row-popular-movies-heading': 'row-list row-list-backdrop',
+      'row-popular-tv-heading': 'row-list row-list-backdrop',
+      'row-upcoming-heading': 'row-list',
+    });
+    for (const id of ['row-popular-movies-heading', 'row-popular-tv-heading']) {
+      const items = [...page.document.getElementById(id).parentElement.querySelectorAll('li.card-backdrop')];
+      assert.ok(items.length > 0, id);
+      for (const item of items) {
+        const img = item.querySelector('img');
+        if (!img) continue;
+        for (const url of (img.getAttribute('srcset') ?? '').split(',').map((part) => part.trim().split(' ')[0]).filter(Boolean)) {
+          assert.match(url, /^https:\/\/image\.tmdb\.org\/t\/p\/w(?:780|1280)\//);
+        }
+        assert.equal(img.getAttribute('loading'), 'lazy');
+        assert.equal(item.querySelectorAll('a').length, 1);
+      }
+    }
+    assert.equal(page.document.querySelectorAll('#row-trending-heading ~ .row-list li.card-backdrop, #row-upcoming-heading ~ .row-list li.card-backdrop').length, 0);
+    assert.ok(page.document.querySelectorAll('.network-row li.card-backdrop, .logo-list li.card-backdrop').length === 0);
+    assert.deepEqual(page.requests.map((request) => request.url.replace(/\?.*/, '')).sort(), [
+      '/jellypass/app/v1/discover/popular-movies', '/jellypass/app/v1/discover/popular-tv', '/jellypass/app/v1/discover/sources',
+      '/jellypass/app/v1/discover/trending', '/jellypass/app/v1/discover/upcoming', '/jellypass/app/v1/me',
+    ]);
+    assert.equal(app.tmdb.calls.filter((call) => call.pathname !== '/3/authentication').length, 4);
+    assertNoCanaries(page.serialize(), 'backdrop cards');
+  });
+
+  // One test (and so one page) per world: a page patches the test DOM's prototypes until its test ends.
+  describe('backdrop rows against other households', () => {
+    const worlds = { baseline: world(), ...Object.fromEntries(Object.entries(otherHouseholdWorlds()).filter(([name]) => !name.startsWith('large'))) };
+    const seen = {};
+    for (const [name, state] of Object.entries(worlds)) {
+      it(`draws the popular rows with ${name === 'baseline' ? 'nothing else going on' : name}`, async (t) => {
+        const app = await startApp(t, state);
+        const page = await openApp(t, app);
+        await page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4, `${name}: Home`);
+        seen[name] = ['row-popular-movies-heading', 'row-popular-tv-heading'].map((id) => page.document.getElementById(id).parentElement.outerHTML).join('\n');
+      });
+    }
+    it('draws them byte for byte the same in every world', () => {
+      assert.ok(Object.keys(seen).length >= 5, Object.keys(seen).join());
+      assert.ok(seen.baseline.includes('card-backdrop'));
+      for (const [name, html] of Object.entries(seen)) assert.equal(html, seen.baseline, name);
+    });
+  });
+
   it('fetches Home\'s rows below the fold only as they come near the screen, one call each', async (t) => {
     const app = await startApp(t);
     const page = await openApp(t, app);
@@ -2370,6 +2510,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       await homeReady(page);
       const rows = [...page.document.querySelectorAll('ul.row-list[aria-labelledby]')];
       const lefts = [120, 8, 340, 55];
+      assert.deepEqual(rows.map((row) => row.classList.contains('row-list-backdrop')), [false, true, true, false], 'the backdrop rows are among those restored');
       rows.forEach((row, index) => { row.scrollLeft = lefts[index]; });
       page.scroll.y = 640;
       page.go(`#/movie/${OWN_MOVIE}`);

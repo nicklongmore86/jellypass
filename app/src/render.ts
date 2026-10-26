@@ -141,6 +141,9 @@ export function playButton(doc: Document, card: Pick<Card, 'play' | 'title'>, or
   return el(doc, 'a', { class: className, text: 'Play', attrs: { href: url, rel: 'noopener', 'aria-label': `Play ${card.title}` } });
 }
 
+/** How a row draws its titles: poster cards, or the large landscape backdrop cards. */
+export type RowVariant = 'poster' | 'backdrop';
+
 /** A poster card: poster with its status pill on the corner, then the title and "year · Movie/Series". Play lives on the detail page. */
 export function cardItem(doc: Document, card: Card): HTMLElement {
   const link = el(doc, 'a', { class: 'card-link', attrs: { href: href(card) } }, [
@@ -151,15 +154,21 @@ export function cardItem(doc: Document, card: Card): HTMLElement {
   return el(doc, 'li', { class: 'card' }, [link, stateBadge(doc, card.state)]);
 }
 
-export function cardList(doc: Document, cards: readonly Card[], className: string): HTMLElement {
-  return el(doc, 'ul', { class: className }, cards.map((card) => cardItem(doc, card)));
+export function cardList(doc: Document, cards: readonly Card[], className: string, variant: RowVariant = 'poster'): HTMLElement {
+  return el(doc, 'ul', { class: className }, cards.map((card) => (variant === 'backdrop' ? backdropCardItem(doc, card) : cardItem(doc, card))));
 }
 
 /** The same TMDB backdrop file at the two widths the app uses; a phone's browser picks one by its own width and density. */
 const BACKDROP_URL = /^(https:\/\/image\.tmdb\.org\/t\/p\/)w(?:780|1280)(\/[A-Za-z0-9_-]{1,100}\.(?:jpg|jpeg|png|webp))$/;
 
 /** A backdrop `<img>` (never a CSS `url()`), only for an allowlisted TMDB URL. w780 is the fallback `src`, w1280 the sharper candidate. */
-function backdropImage(doc: Document, url: string | null | undefined, className: string, loading: 'lazy' | 'eager'): HTMLElement | undefined {
+function backdropImage(
+  doc: Document,
+  url: string | null | undefined,
+  className: string,
+  loading: 'lazy' | 'eager',
+  sizes = '100vw',
+): HTMLElement | undefined {
   const src = safeImageUrl(url);
   if (!src) return undefined;
   const attrs: Record<string, string> = { src, alt: '', width: '780', height: '439', loading, decoding: 'async' };
@@ -169,7 +178,7 @@ function backdropImage(doc: Document, url: string | null | undefined, className:
     const large = `${parts[1]}w1280${parts[2]}`;
     attrs['src'] = small;
     attrs['srcset'] = `${small} 780w, ${large} 1280w`;
-    attrs['sizes'] = '100vw';
+    attrs['sizes'] = sizes;
   }
   return el(doc, 'img', { class: className, attrs });
 }
@@ -189,6 +198,35 @@ function ratingText(rating: number): string {
 
 function ratingLabel(rating: number): string {
   return `TMDB rating ${rating.toFixed(1)} out of 10`;
+}
+
+/** What a backdrop card's `sizes` says: nearly a phone's width, or about a third of a wide screen's, as the stylesheet lays it out. */
+const BACKDROP_CARD_SIZES = '(min-width: 48rem) 36vw, 92vw';
+
+/** "2024 · ★ 7.8 TMDB": the year and the rating, whichever the title has. */
+function backdropMeta(card: Card): string {
+  return [card.year ? String(card.year) : '', typeof card.rating === 'number' ? `${ratingText(card.rating)} TMDB` : ''].filter(Boolean).join(' · ');
+}
+
+/**
+ * A large landscape card: the title's backdrop (a poster when it has none, a plain gradient when it has neither) under a
+ * scrim, with the title and "year · ★ rating" over the foot and the status pill on the corner. The whole card is the link.
+ * Every image is lazy: these rows start below the hero.
+ */
+export function backdropCardItem(doc: Document, card: Card): HTMLElement {
+  const backdrop = backdropImage(doc, card.backdropUrl, 'backdrop-img', 'lazy', BACKDROP_CARD_SIZES);
+  const image = backdrop ?? posterImage(doc, card.posterUrl, '', 'lazy');
+  if (!backdrop && image) image.classList.add('backdrop-img');
+  const meta = backdropMeta(card);
+  const link = el(doc, 'a', { class: `card-link backdrop-link${image ? '' : ' backdrop-plain'}`, attrs: { href: href(card) } }, [
+    image,
+    el(doc, 'span', { class: 'backdrop-scrim', attrs: { 'aria-hidden': 'true' } }),
+    el(doc, 'span', { class: 'backdrop-text' }, [
+      el(doc, 'span', { class: 'card-title', text: card.title }),
+      meta ? el(doc, 'span', { class: 'card-meta', text: meta }) : undefined,
+    ]),
+  ]);
+  return el(doc, 'li', { class: 'card card-backdrop' }, [link, stateBadge(doc, card.state)]);
 }
 
 function heroSlide(doc: Document, card: Card, index: number, total: number): HTMLElement {
@@ -284,8 +322,8 @@ export function skeletonHero(doc: Document): HTMLElement {
 }
 
 /** A discover row: a heading and a horizontally scrolling list, reachable and scrollable from the keyboard. */
-export function titleRow(doc: Document, id: string, heading: string, page: Page): HTMLElement {
-  const list = cardList(doc, page.results, 'row-list');
+export function titleRow(doc: Document, id: string, heading: string, page: Page, variant: RowVariant = 'poster'): HTMLElement {
+  const list = cardList(doc, page.results, variant === 'backdrop' ? 'row-list row-list-backdrop' : 'row-list', variant);
   list.setAttribute('tabindex', '0');
   list.setAttribute('aria-labelledby', `${id}-heading`);
   const section = el(doc, 'section', { class: 'row' }, [el(doc, 'h2', { class: 'row-heading', text: heading, attrs: { id: `${id}-heading` } })]);
@@ -354,13 +392,16 @@ export function sourceHeading(doc: Document, kind: SourceKind, source: Source): 
   ]);
 }
 
-export function skeletonRow(doc: Document): HTMLElement {
-  const cards = Array.from({ length: 6 }, () =>
-    el(doc, 'li', { class: 'card skeleton-card' }, [el(doc, 'div', { class: 'poster poster-card skeleton' }), el(doc, 'span', { class: 'skeleton skeleton-line' })]),
+export function skeletonRow(doc: Document, variant: RowVariant = 'poster'): HTMLElement {
+  const backdrop = variant === 'backdrop';
+  const cards = Array.from({ length: backdrop ? 3 : 6 }, () =>
+    backdrop
+      ? el(doc, 'li', { class: 'card card-backdrop skeleton-card' }, [el(doc, 'div', { class: 'backdrop-link skeleton' })])
+      : el(doc, 'li', { class: 'card skeleton-card' }, [el(doc, 'div', { class: 'poster poster-card skeleton' }), el(doc, 'span', { class: 'skeleton skeleton-line' })]),
   );
   return el(doc, 'section', { class: 'row', attrs: { 'aria-hidden': 'true' } }, [
     el(doc, 'div', { class: 'skeleton skeleton-heading' }),
-    el(doc, 'ul', { class: 'row-list' }, cards),
+    el(doc, 'ul', { class: backdrop ? 'row-list row-list-backdrop' : 'row-list' }, cards),
   ]);
 }
 
