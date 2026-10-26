@@ -595,7 +595,10 @@ is supported. A client:
 
 **Fetch budget.** `docs/app-api/fetch-budget.json` lists the calls the PWA makes when each screen is opened: Home
 under **All** 6 at once (`/me`, `/discover/sources` and 4 lists) and 10 more as the lazy rows near the screen,
-**Movies** 6 and 8, **TV** 5 and 8; a movie or series page 3 (`/me`, the title, `/requests`), a season page 4. It also
+**Movies** 6 and 8, **TV** 5 and 8; a movie or series page 3 (`/me`, the title, `/requests`), a season page 4;
+**Search** on one query 2 (`/me` and the first page; **Load more** is the member's); **My requests** `/me`, `/requests`
+and one title call for each request shown, at most ten before the member asks for more (`titlesAtOnce`; 4 with one movie
+and one series request). It also
 holds the server's budgets. `test/app-pwa.test.mjs` ("fetch budget") runs the real app against the API and fails
 if any screen makes a different set of calls, so a change that makes the app chattier has to change the file, and a
 native client is tested against the same numbers.

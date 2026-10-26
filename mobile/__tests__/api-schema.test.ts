@@ -135,11 +135,14 @@ describe('the client against docs/app-api/v1.openapi.json', () => {
 });
 
 describe('the fetch budget (docs/app-api/fetch-budget.json)', () => {
+  /** A budget entry with its placeholders filled in. */
+  const fill = (entry: string) => entry.replace('{tmdbId}', '900002').replace('{n}', '1').replace('{query}', 'synthetic');
   /** The client call that makes `METHOD /path` from the budget, its placeholders filled in. */
   function callFor(entry: string): (api: ReturnType<typeof clientWith>['api']) => Promise<unknown> {
-    const path = entry.replace(/^GET /, '').replace('{tmdbId}', '900002').replace('{n}', '1');
+    const path = fill(entry).replace(/^GET /, '');
     let match: RegExpExecArray | null;
     if (path === '/me') return (api) => api.me();
+    if ((match = /^\/search\?q=([a-z]+)&page=(\d+)$/.exec(path))) return (api) => api.search(match![1]!, Number(match![2]));
     if (path === '/requests') return (api) => api.requests();
     if (path === '/discover/sources') return (api) => api.sources();
     if ((match = /^\/discover\/network\/(\d+)(?:\/(films|all))?$/.exec(path))) {
@@ -158,6 +161,6 @@ describe('the fetch budget (docs/app-api/fetch-budget.json)', () => {
     expect(entries).toHaveLength(screen.calls);
     const { api, calls } = clientWith((url) => answer(500, `${url}`));
     for (const entry of entries) await callFor(entry)(api).catch(() => undefined);
-    expect(calls.map(sent)).toEqual(entries.map((entry) => entry.replace('{tmdbId}', '900002').replace('{n}', '1')));
+    expect(calls.map(sent)).toEqual(entries.map(fill));
   });
 });

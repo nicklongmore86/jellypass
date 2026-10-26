@@ -2360,7 +2360,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     // and has to change that file, where a native client reads the same numbers.
     const BUDGET = JSON.parse(readFileSync(path.join(import.meta.dirname, '..', 'docs', 'app-api', 'fetch-budget.json'), 'utf8'));
     // As `METHOD /path` without the prefix, a title's ID as `{tmdbId}` and a season's number as `{n}`, sorted (rows load in parallel).
-    const calls = (page, from = 0) => page.requests.slice(from).map((request) => `${request.init.method ?? 'GET'} ${request.url.replace('/jellypass/app/v1', '').replace(/^\/(movie|tv)\/[0-9]+/, '/$1/{tmdbId}').replace(/\/season\/[0-9]+$/, '/season/{n}')}`).sort();
+    const calls = (page, from = 0) => page.requests.slice(from).map((request) => `${request.init.method ?? 'GET'} ${request.url.replace('/jellypass/app/v1', '').replace(/^\/(movie|tv)\/[0-9]+/, '/$1/{tmdbId}').replace(/\/season\/[0-9]+$/, '/season/{n}').replace(/^\/search\?q=[^&]*&/, '/search?q={query}&')}`).sort();
     const settled = async (page) => {
       // Every call answered and read, and nothing more asked for once the page has drawn what it read.
       let count;
@@ -2383,7 +2383,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         perMember: { calls: MAX_APP_REQUESTS_PER_USER, windowSeconds: APP_BUDGET_WINDOW_MS / 1000 },
         perHousehold: { calls: MAX_APP_REQUESTS_PER_HOUSEHOLD_BURST, windowSeconds: APP_BURST_WINDOW_MS / 1000 },
       });
-      assert.deepEqual(Object.keys(BUDGET.screens).sort(), ['home-all', 'home-movies', 'home-tv', 'movie', 'season', 'series']);
+      assert.deepEqual(Object.keys(BUDGET.screens).sort(), ['home-all', 'home-movies', 'home-tv', 'movie', 'requests', 'search', 'season', 'series']);
       for (const [name, screen] of Object.entries(BUDGET.screens)) {
         assert.equal(screen.calls, screen.atOnce.length + (screen.belowTheFold?.length ?? 0), name);
       }
@@ -2415,6 +2415,37 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         assert.equal(page.requests.length, BUDGET.screens[name].calls);
       });
     }
+
+    it('Search, opened directly on a query', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app, { hash: '#/search?q=synthetic' });
+      await page.until(() => page.main().querySelector('ul.grid, .search-results p.muted'), 'the results');
+      await settled(page);
+      assert.deepEqual(calls(page), BUDGET.screens.search.atOnce);
+      assert.equal(page.requests.length, BUDGET.screens.search.calls);
+    });
+
+    it('My requests, opened directly: the list, then one call to name each request shown, a page at a time', async (t) => {
+      const app = await startApp(t);
+      const list = (results) => (url) => (url === '/jellypass/app/v1/requests' ? { status: 200, body: Buffer.from(JSON.stringify({ results })), headers: { 'content-type': 'application/json' } } : undefined);
+      const named = (page) => page.until(() => page.main().querySelectorAll('.request').length > 0
+        && [...page.main().querySelectorAll('.request .card-title')].every((title) => title.textContent !== 'Loading title…'), 'the titles');
+      const two = [
+        { id: 'a', mediaType: 'movie', tmdbId: T_MOVIE, status: 'requested', seasons: [], byYou: true },
+        { id: 'b', mediaType: 'tv', tmdbId: T_TV, status: 'ready', seasons: [{ seasonNumber: 1, status: 'ready' }], byYou: false },
+      ];
+      const page = await openApp(t, app, { hash: '#/requests', override: list(two) });
+      await named(page);
+      await settled(page);
+      assert.deepEqual(calls(page), BUDGET.screens.requests.atOnce);
+      assert.equal(page.requests.length, BUDGET.screens.requests.calls);
+
+      const many = Array.from({ length: 25 }, (_, index) => ({ id: `id${index}`, mediaType: 'movie', tmdbId: T_MOVIE, status: 'requested', seasons: [], byYou: true }));
+      const long = await openApp(t, app, { hash: '#/requests', override: list(many) });
+      await named(long);
+      await settled(long);
+      assert.equal(long.requests.length, 2 + BUDGET.screens.requests.titlesAtOnce);
+    });
   });
 
   describe('Home\'s All | Movies | TV switch', () => {
