@@ -81,9 +81,10 @@ interface Slot {
 
 export function HomeScreen() {
   const { api, expire } = useSession();
-  const home = useHome(api, expire);
-  // What the member just asked for shows as Requested on every card at once, with no call (src/title/asked.ts).
+  // What the member just asked for shows as Requested on every card at once, with no call, and a title's state read
+  // since (its page opened again) wins over the row's older answer (src/title/asked.ts).
   const overlay = useAsked();
+  const home = useHome(api, expire, overlay);
   const { filter, rows, sources, started, near } = home;
   const insets = useSafeAreaInsets();
   const window = useWindowDimensions();

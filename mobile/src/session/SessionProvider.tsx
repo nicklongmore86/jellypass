@@ -81,8 +81,8 @@ export interface Session {
   /** What this member just asked for, shown as requested while the server records it (in memory only). */
   asked: Asked;
   /**
-   * Get this through the signed-in client. Once it is accepted (a 2xx) with the same sign-in as when it was sent, the
-   * title (and the seasons asked for) is added to `asked`. Rejects with the ApiError, or the caller's abort.
+   * Get this through the signed-in client. Once it is accepted (a 2xx) in the same session as when it was sent (no move
+   * since), the title (and the seasons asked for) is added to `asked`. Rejects with the ApiError, or the caller's abort.
    */
   getThis: (mediaType: MediaType, tmdbId: number, seasons: readonly number[], signal?: AbortSignal) => Promise<void>;
 }
@@ -215,12 +215,13 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
 
   const getThis = useCallback(
     async (mediaType: MediaType, tmdbId: number, seasons: readonly number[], signal?: AbortSignal) => {
-      const tokenNow = () => (phaseRef.current.kind === 'signedIn' ? phaseRef.current.session.token : undefined);
-      const before = tokenNow();
-      if (!api || !before) throw new ApiError('unauthorized');
+      // The sign-in this call belongs to: any move since (a sign-out, a 401, any other sign-in, even with the same
+      // token) is another session.
+      const mine = generation.current;
+      if (!api || phaseRef.current.kind !== 'signedIn') throw new ApiError('unauthorized');
       await api.getThis(mediaType, tmdbId, seasons, signal ? { signal } : undefined);
       // Only for the member who asked: not if the sign-in changed (or went) while the call was out.
-      if (tokenNow() === before) asked.add(mediaType, tmdbId, seasons);
+      if (generation.current === mine && askedRef.current === asked) asked.add(mediaType, tmdbId, seasons);
     },
     [api, asked],
   );

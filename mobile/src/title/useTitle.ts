@@ -1,8 +1,9 @@
 // A title page's data and its Get this, as the PWA's title() and season() (app/src/main.ts) ask for them: the movie or
 // series (a season page: the season, and its series for the backdrop and name, best effort) and, at the same time,
 // GET /requests for the seasons the household asked for that did not work out. That is docs/app-api/fetch-budget.json's
-// movie, series and season screens (with the start-up /me). Nothing is retried by itself; a 401 anywhere signs the
-// member out.
+// movie, series and season screens (with the start-up /me). Nothing is retried by itself; a 401 anywhere (the series
+// behind a season page too) signs the member out. Each answer is seen by the session's overlay as it arrives
+// (src/title/asked.ts), so Home's cards show the state it read.
 //
 // Get this is disabled while it is out, and says only whether it was accepted: the same fixed confirmation whatever
 // followed. Once accepted the screen is read again (as the PWA does), and if that fails the confirmation stays, with
@@ -15,6 +16,7 @@ import { ApiError, isAbortError } from '../api/errors';
 import type { MediaType, Movie, Season, Series } from '../api/types';
 import { errorText, type ErrorText } from '../home/text';
 import { useSession } from '../session/SessionProvider';
+import type { Asked } from './asked';
 import { GET_THIS_TEXT, getThisError, type GetThisError } from './text';
 
 export type TitleRoute = { mediaType: MediaType; tmdbId: number } | { mediaType: 'season'; tmdbId: number; seasonNumber: number };
@@ -75,7 +77,10 @@ async function read(api: ApiClient, route: TitleRoute, signal: AbortSignal): Pro
       api.season(route.tmdbId, route.seasonNumber, { signal }),
       api.tv(route.tmdbId, { signal }).then(
         (series) => series,
-        () => undefined,
+        (error: unknown) => {
+          if (isAbortError(error) || (error instanceof ApiError && error.kind === 'unauthorized')) throw error;
+          return undefined;
+        },
       ),
       failedSeasons(api, 'tv', route.tmdbId, signal),
     ]);
@@ -88,8 +93,14 @@ async function read(api: ApiClient, route: TitleRoute, signal: AbortSignal): Pro
   return { title, season: undefined, failed };
 }
 
+/** Hands a fresh answer to the overlay, as the latest the server said for its title and seasons. */
+function seen(asked: Asked, answer: TitleAnswer) {
+  if (answer.title) asked.seen(answer.title);
+  if (answer.season) asked.seen(answer.season);
+}
+
 export function useTitle(route: TitleRoute): TitleData {
-  const { api, expire, getThis } = useSession();
+  const { api, asked, expire, getThis } = useSession();
   const [load, setLoad] = useState<TitleLoad>({ status: 'loading' });
   const [get, setGet] = useState<GetThisState>(IDLE);
   const abort = useRef<AbortController | undefined>(undefined);
@@ -124,7 +135,9 @@ export function useTitle(route: TitleRoute): TitleData {
     const at: TitleRoute = seasonNumber === undefined ? { mediaType: mediaType as MediaType, tmdbId } : { mediaType: 'season', tmdbId, seasonNumber };
     read(api, at, controller.signal).then(
       (answer) => {
-        if (opening.current === mine) setLoad({ status: 'loaded', answer });
+        if (opening.current !== mine) return;
+        seen(asked, answer);
+        setLoad({ status: 'loaded', answer });
       },
       (error: unknown) => {
         const kind = opening.current === mine ? failure(error) : undefined;
@@ -135,7 +148,7 @@ export function useTitle(route: TitleRoute): TitleData {
       opening.current += 1;
       controller.abort();
     };
-  }, [api, mediaType, tmdbId, seasonNumber, failure, attempt]);
+  }, [api, asked, mediaType, tmdbId, seasonNumber, failure, attempt]);
 
   const send = useCallback(
     (seasons: readonly number[]) => {
@@ -175,6 +188,7 @@ export function useTitle(route: TitleRoute): TitleData {
           const answer = await read(api, at, signal);
           if (opening.current !== mine) return;
           busy.current = false;
+          seen(asked, answer);
           setLoad({ status: 'loaded', answer });
           setGet((current) => ({ ...current, reloading: false }));
         } catch (error) {
@@ -183,7 +197,7 @@ export function useTitle(route: TitleRoute): TitleData {
         }
       })();
     },
-    [api, getThis, expire, failure, mediaType, tmdbId, seasonNumber],
+    [api, asked, getThis, expire, failure, mediaType, tmdbId, seasonNumber],
   );
 
   const reload = useCallback(() => {

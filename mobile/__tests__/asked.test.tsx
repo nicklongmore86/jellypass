@@ -1,7 +1,8 @@
 // The Requested overlay (src/title/asked.ts), the PWA's app/src/asked.ts natively: its keys, its two-minute window by
 // the monotonic clock or the wall clock moving forward (never stretched by a clock set back), dropped as soon as the
-// server says anything but get_this, and forgotten on demand. Then its place in the session: added only after a 2xx
-// Get this with the same sign-in as when it was sent, and gone on sign-out, a 401 and any other sign-in.
+// server says anything but get_this, the latest state the server reported for each key (a fresher answer wins over one
+// drawn again from before), and forgotten on demand. Then its place in the session: added only after a 2xx Get this in
+// the same session as when it was sent, and gone (both) on sign-out, a 401 and any other sign-in.
 import { act, render } from '@testing-library/react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
@@ -98,6 +99,67 @@ describe('the overlay', () => {
     expect(heard).toHaveBeenCalledTimes(3);
   });
 
+  it('draws a card kept from an older answer in the state of a fresher one for the same key', () => {
+    const { asked } = clocks();
+    const row = { page: 1, nextPage: null, results: [movieAnswer(7, 'get_this'), movieAnswer(8, 'get_this')] } as unknown as Page;
+    asked.seen(row);
+    asked.add('movie', 7, []);
+    const title = movieAnswer(7, 'requested') as Movie;
+    asked.seen(title);
+    // The title's page said requested: its key is dropped, and the row kept from before shows requested, not get_this.
+    expect(asked.page(row).results.map((card) => `${card.tmdbId}:${card.state}`)).toEqual(['7:requested', '8:get_this']);
+    expect(asked.movie(title).state).toBe('requested');
+    // A card never seen takes the latest the server said.
+    expect(asked.movie(movieAnswer(7, 'get_this') as Movie).state).toBe('requested');
+  });
+
+  it('never lets an older answer drawn again overwrite a fresher one', () => {
+    const { asked } = clocks();
+    const title = movieAnswer(7, 'in_library') as Movie;
+    asked.seen(title);
+    const row = { page: 1, nextPage: null, results: [movieAnswer(7, 'get_this')] } as unknown as Page;
+    asked.seen(row);
+    // The row is the fresher answer now: the title page kept from before shows it, and drawing it changes nothing.
+    expect(asked.movie(title).state).toBe('get_this');
+    expect(asked.page(row).results.map((card) => card.state)).toEqual(['get_this']);
+    expect(asked.movie(title).state).toBe('get_this');
+  });
+
+  it('keeps the latest for a series\' seasons and a season page, keyed tv:<id>:<season>', () => {
+    const { asked } = clocks();
+    const series = seriesAnswer(9, ['get_this', 'get_this']) as Series;
+    asked.seen(series);
+    asked.seen(seasonAnswer(9, 2, 'requested') as Season);
+    expect(asked.series(series).seasons.map((season) => `${season.seasonNumber}:${season.state}`)).toEqual(['0:unavailable', '1:get_this', '2:requested']);
+  });
+
+  it('shows Requested over a fresher get_this while the key lasts, and drops the key on a fresher anything else', () => {
+    const { asked } = clocks();
+    const row = { page: 1, nextPage: null, results: [movieAnswer(7, 'get_this')] } as unknown as Page;
+    asked.seen(row);
+    asked.add('movie', 7, []);
+    asked.seen(movieAnswer(7, 'get_this') as Movie);
+    expect(asked.page(row).results.map((card) => card.state)).toEqual(['requested']);
+    asked.seen(movieAnswer(7, 'unavailable') as Movie);
+    expect(asked.page(row).results.map((card) => card.state)).toEqual(['unavailable']);
+    asked.seen(movieAnswer(7, 'get_this') as Movie);
+    expect(asked.page(row).results.map((card) => card.state)).toEqual(['get_this']);
+  });
+
+  it('forgets the latest states too, and tells whoever listens of every answer seen', () => {
+    const { asked } = clocks();
+    const heard = jest.fn();
+    asked.subscribe(heard);
+    const row = { page: 1, nextPage: null, results: [movieAnswer(7, 'get_this')] } as unknown as Page;
+    asked.seen(row);
+    asked.seen(movieAnswer(7, 'in_library') as Movie);
+    expect(asked.page(row).results.map((card) => card.state)).toEqual(['in_library']);
+    asked.forget();
+    expect(asked.page(row).results.map((card) => card.state)).toEqual(['get_this']);
+    expect(asked.state('movie:7', 'get_this')).toBe('get_this');
+    expect(heard).toHaveBeenCalledTimes(3);
+  });
+
   it('is in memory only: nothing it holds is written to the device', () => {
     const { asked } = clocks();
     asked.add('movie', 7, []);
@@ -186,6 +248,39 @@ describe('in the session', () => {
     expect(requested()).toBe(false);
   });
 
+  /** Signs in again at the household, as the profile picker would, and waits for /me. */
+  async function signInAgain(token: string) {
+    const address = session!.household!;
+    await act(async () => session!.completeSignIn(address, { token, userId: 'synthetic-user-0001', name: 'Ana Lima' }, session!.epoch()));
+    await settle();
+    expect(session!.phase.kind).toBe('signedIn');
+  }
+
+  it.each([
+    ['the same token', TOKEN],
+    ['another token', 'synthetic-other-token-0002'],
+  ])('adds nothing, to either session, when another sign-in (with %s) replaced it while the call was out', async (_what, token) => {
+    const pending = deferred();
+    await start(() => pending.call);
+    const before = session!.asked;
+    let sent!: Promise<void>;
+    await act(async () => {
+      sent = session!.getThis('movie', 7, []);
+    });
+    await act(async () => session!.signOut());
+    await settle();
+    await signInAgain(token);
+    const after = session!.asked;
+    const version = after.version();
+    pending.release(202);
+    await act(async () => sent);
+    expect(after === before).toBe(false);
+    expect(requested(before)).toBe(false);
+    expect(requested(after)).toBe(false);
+    // Nothing at all was written to the new session's overlay.
+    expect(after.version()).toBe(version);
+  });
+
   it('forgets everything on sign-out', async () => {
     await start(() => answer(202, { status: 'accepted' }));
     const before = session!.asked;
@@ -195,6 +290,23 @@ describe('in the session', () => {
     await settle();
     expect(requested(before)).toBe(false);
     expect(requested()).toBe(false);
+  });
+
+  it.each(['sign-out', 'a 401', 'a change of household'] as const)('forgets the latest states the server reported too, on %s', async (move) => {
+    await start(() => answer(202, { status: 'accepted' }));
+    const before = session!.asked;
+    const row = { page: 1, nextPage: null, results: [movieAnswer(7, 'get_this')] } as unknown as Page;
+    await act(async () => {
+      before.seen(row);
+      before.seen(movieAnswer(7, 'in_library') as Movie);
+      await session!.getThis('movie', 7, []);
+    });
+    expect(before.page(row).results.map((card) => card.state)).toEqual(['in_library']);
+    await act(async () => (move === 'sign-out' ? session!.signOut() : move === 'a 401' ? session!.expire() : session!.changeHousehold()));
+    await settle();
+    expect(before.page(row).results.map((card) => card.state)).toEqual(['get_this']);
+    expect(requested(before)).toBe(false);
+    expect(session!.asked.page(row).results.map((card) => card.state)).toEqual(['get_this']);
   });
 
   it('forgets everything on a 401', async () => {

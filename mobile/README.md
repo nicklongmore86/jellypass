@@ -224,14 +224,18 @@ card on the series page). An address that names no title (`07`, `1e3`) is **Not 
   is the one fixed confirmation, "Thanks — we'll get this for your household.", whatever the answer; the page is then
   read again (as the PWA does), and if that fails the confirmation stays with the fixed error and Try again. A 429, no
   answer and anything else get the PWA's three fixed messages and the button back; nothing is ever sent again by
-  itself. A 401 signs the member out.
+  itself. A 401 signs the member out (the series read behind a season page is best effort, but its 401 too).
 - **Requested right after Get this** (`asked.ts`, the PWA's `app/src/asked.ts` from PR #76): the server records a
   request a moment after it answers, so a page read straight afterwards can still say "Available to get". The app keeps,
   in memory only, the keys `movie:<id>`, `tv:<id>` and `tv:<id>:<season>` its member just asked for, added only after a
-  2xx with the same sign-in as when it was sent. A key ends after two minutes by the monotonic clock or the wall clock
-  moving forward (a clock set back never stretches it), and as soon as the server says anything but `get_this` for it.
-  It is one store per signed-in session (`SessionProvider`), shared by every tab, so Home's cards and hero and the title
-  pages show Requested with no call; sign-out, a 401 and any other sign-in (household, member or token) forget it.
+  2xx in the same session as when it was sent (no sign-in move while it was out, even back to the same token). A key
+  ends after two minutes by the monotonic clock or the wall clock moving forward (a clock set back never stretches it),
+  and as soon as the server says anything but `get_this` for it. Beside the keys, the same store keeps the latest state
+  the server reported for each key, numbered in the order the answers arrived (title pages, season pages, Home's rows):
+  a card drawn again from an older answer shows the fresher one's state, so a title found requested (or in the library)
+  on opening it again stays so on Home once its key is dropped. It is one store per signed-in session
+  (`SessionProvider`), shared by every tab, so Home's cards and hero and the title pages show Requested with no call;
+  sign-out, a 401 and any other sign-in (household, member or token) forget both.
 - **Calls.** A movie or series page asks for the title and `GET /requests`, a season page also its series, each once:
   with the start-up `/me`, docs/app-api/fetch-budget.json's `movie`, `series` and `season` screens
   (`__tests__/title-budget.test.tsx`). Nothing is polled.

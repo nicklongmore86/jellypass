@@ -344,6 +344,31 @@ describe('a season page', () => {
     expect(spokenStatus()).toEqual(['Requested']);
   });
 
+  it('signs the member out when the series behind it answers 401, though the season and the requests were read', async () => {
+    useHousehold({
+      seasons: { '9:2': seasonAnswer(9, 2, 'get_this') },
+      override: (call) =>
+        call.route === `GET ${API}/tv/9` ? answer(401, { error: 'unauthorized' }) : call.route === 'GET /Users/Public' ? answer(200, []) : undefined,
+    });
+    const app = await open('/home/tv/9/season/2');
+    await settle();
+    expect([`GET ${API}/tv/9/season/2`, `GET ${API}/requests`].map((route) => gateway.routes().includes(route))).toEqual([true, true]);
+    expect(storedSession()).toBeUndefined();
+    expect(app.getPathname()).toBe('/');
+    expect(shows(/Your sign-in has expired/)).toBe(true);
+  });
+
+  it('still shows the season when the series behind it fails any other way', async () => {
+    useHousehold({
+      seasons: { '9:2': seasonAnswer(9, 2, 'get_this') },
+      override: (call) => (call.route === `GET ${API}/tv/9` ? answer(502, { error: 'unavailable' }) : undefined),
+    });
+    await open('/home/tv/9/season/2');
+    expect(headings()[0]).toBe('Season 2');
+    expect(spokenStatus()).toEqual(['Available to get']);
+    expect(storedSession()).toBeDefined();
+  });
+
   it('offers nothing for a season in the library', async () => {
     useHousehold({ seasons: { '9:1': seasonAnswer(9, 1, 'in_library') } });
     await open('/home/tv/9/season/1');
@@ -366,6 +391,33 @@ describe('Requested right after Get this', () => {
     expect(homeCard('Requested')).toHaveLength(1);
     expect(homeCard('Available to get')).toHaveLength(0);
     expect(gateway.routes().length).toBe(before);
+  });
+
+  it.each([
+    ['requested', 'Requested'],
+    ['in_library', 'Ready to watch'],
+  ] as const)('keeps Home\'s card on the server\'s %s once the title is opened again and its key is dropped', async (state, word) => {
+    let server: 'get_this' | typeof state = 'get_this';
+    useHousehold({ override: (call) => (call.route === `GET ${API}/tv/1002` ? answer(200, seriesAnswer(1002, [server])) : undefined) });
+    await open('/');
+    await pressNode(homeCard('Available to get')[0]!);
+    await pressNode(checkboxNamed('Season 1'));
+    await pressNode(buttonNamed('Get this: Series 1002'));
+    await pressNode(buttonNamed('Back'));
+    expect(homeCard('Requested')).toHaveLength(1);
+    // The server has recorded it now: opening the title again reads that, and the Requested key is dropped.
+    server = state;
+    await pressNode(homeCard('Requested')[0]!);
+    expect(spokenStatus()[0]).toBe(word);
+    await pressNode(buttonNamed('Back'));
+    // Home draws its kept rows again (here: the member asks for another title, so the overlay changes). The row still
+    // holds its first answer (get_this), but the fresher one wins.
+    await act(async () => router.push('/home/movie/7'));
+    await settle();
+    await pressNode(buttonNamed('Get this: Film 7'));
+    await pressNode(buttonNamed('Back'));
+    expect(homeCard(word)).toHaveLength(1);
+    expect(homeCard('Available to get')).toHaveLength(0);
   });
 
   it('ends after two minutes: the server\'s get_this is shown again', async () => {
