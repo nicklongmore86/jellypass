@@ -10,37 +10,36 @@ API, its webhook and app endpoints, and successful responses on the endpoints it
 relays to Jellyfin. Failure responses on relayed Jellyfin endpoints (status,
 body and headers when a request is refused or fails) are not part of that
 interface: they may change in a minor or patch release to close a security or
-privacy leak. Such changes are always listed at the top of the release notes.
+privacy leak. Requests on a household hostname that would get around a
+household check (signing in without the membership check, for example, or
+reaching an item the caller may not see) may likewise be refused in a minor or
+patch release, even where Jellyfin used to answer them with a success. Such
+changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
-The Quick Connect and Streamyfin changes below alter only failure responses on
-relayed Jellyfin endpoints, in the configuration this project documents (Quick Connect
-disabled in Jellyfin, as `docs/household-access.md` requires, and no Streamyfin
-plugin installed): there Jellyfin itself already refused every one of these
-calls, and `GET /QuickConnect/Enabled` already answered `false`. JellyPass's
-versioning policy (at the top of `CHANGELOG.md`) keeps failure responses
-outside the public interface: they may change in a minor or patch release to
-close a security or privacy leak, and are always listed first in the release
-notes. Here they close one: on a Jellyfin with Quick Connect enabled, a
-household hostname offered a sign-in that skipped the household-membership
-check. A Jellyfin that has Quick Connect enabled, or the Streamyfin plugin
-installed, loses those features on household hostnames: that is the leak being
-closed, and they still work on Jellyfin's own address.
+This ships as 3.2.0, a minor release. The Security changes below refuse, on
+household hostnames, requests that got around a household check, some of which
+Jellyfin itself used to answer with a success: Quick Connect (on a Jellyfin
+that has it enabled), sign-in by user ID (a member's included), paths whose
+percent-encoding would change which check applies if decoded once more, and
+every route of an item the caller may not see (HLS playlists and segments,
+subtitles and attachments among them). The rule at the top of this file allows
+exactly this in a minor or patch release: household-check bypasses may be
+refused even where Jellyfin answered them successfully. The other refusals
+(other spellings of a path, Streamyfin, the live TV transcoder routes) change
+only failure responses or close the same bypasses.
 
-The path-matching fix below closes a second leak under the same rule. In every
-setup this project documents, it changes only answers to non-members, and to
-callers asking for what they may not see, on other spellings of household
-routes: where Jellyfin used to answer those with a success that skipped a
-household check, they now get the fixed answer the plain path already gives
-(the `401` sign-in refusal, the household's own `/Users/Public` list, the
-password-recovery `403`, the protected-media `404`). For members, every
-spelling Jellyfin routes answers as before, except that `/Branding/Configuration`
-now carries the household login styles in every spelling, as the plain path
-already did. The one other change is the new fixed `400` for paths Jellyfin might read otherwise than the gateway. Browsers
-and Jellyfin clients do not send these, and they are the spellings a check
-could be skipped by. So this is a failure response closing a leak, which a
-patch release may carry.
+In the setup this project documents (Quick Connect disabled in Jellyfin, as
+`docs/household-access.md` requires, and no Streamyfin plugin installed), a
+member using a supported client sees two differences: the household login
+styles now come with `/Branding/Configuration` in every spelling, and
+jellyfin-web renders ASS/SSA subtitles with its fallback fonts on household
+hostnames, because it loads the fonts embedded in a video without credentials
+and the per-item check needs them. A Jellyfin that has Quick Connect enabled,
+or the Streamyfin plugin installed, loses those features on household
+hostnames; they still work on Jellyfin's own address. The main Jellyfin site
+and the admin host are unaffected.
 
 ### Security
 
@@ -64,7 +63,7 @@ patch release may carry.
   gets a fixed `400 {"error":"invalid_request"}` with
   `Cache-Control: no-store`, the code the household app already documents and
   household sign-in already uses, and never reaches Jellyfin; a WebSocket
-  upgrade to one gets `400` too.
+  upgrade to one gets `400` too. Allowed in a minor release by the household-check rule at the top of this file.
 - **Household hostnames refuse Jellyfin's sign-in by ID.** Jellyfin 10.11
   still routes the obsolete `POST /Users/{id}/Authenticate`, which signs in by
   user ID and password without the household check. No Jellyfin client in use
@@ -74,7 +73,7 @@ patch release may carry.
   same per-address sign-in limit as a sign-in by name and gets the same
   `401 {"error":"invalid_credentials"}` a refused sign-in by name gets, after
   the same minimum delay, without asking Jellyfin. So the answer no longer
-  tells a member's ID from anyone else's.
+  tells a member's ID from anyone else's. Allowed in a minor release by the household-check rule at the top of this file.
 - **Household hostnames check every route that names an item.** Jellyfin
   10.11 serves an item's HLS playlists and segments (`master.m3u8`,
   `main.m3u8`, `live.m3u8`, `hls1/...`, the legacy `hls/...`), its subtitles,
@@ -104,7 +103,7 @@ patch release may carry.
   (`/Videos/{id}/{mediaSourceId}/Attachments/{index}`) without credentials, so
   on a household hostname it renders those subtitles with its fallback fonts;
   Findroid plays `/Videos/{id}/stream` without credentials, which household
-  hostnames already refused before this release.
+  hostnames already refused before this release. Allowed in a minor release by the household-check rule at the top of this file.
 - **Household hostnames no longer relay Quick Connect to Jellyfin.** Quick
   Connect signs in whoever authorizes the code, so it skipped the membership
   check `POST /Users/AuthenticateByName` has there. `GET /QuickConnect/Enabled`
@@ -114,7 +113,7 @@ patch release may carry.
   and `/QuickConnect/Enabled` by any method but `GET`) is a fixed
   `403 {"error":"household_quick_connect_disabled"}` with `Cache-Control:
   no-store`, the same for members and anyone else, and never reaches Jellyfin.
-  Before, every such call but an exact `GET /QuickConnect/Enabled` was relayed.
+  Before, every such call but an exact `GET /QuickConnect/Enabled` was relayed. Allowed in a minor release by the household-check rule at the top of this file.
 - **Household hostnames no longer relay the Streamyfin plugin's routes.**
   `/Streamyfin` and every path below it is a fixed
   `404 {"error":"not_found"}` with `Cache-Control: no-store` and never reaches
