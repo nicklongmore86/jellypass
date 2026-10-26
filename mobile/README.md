@@ -171,14 +171,18 @@ The PWA's Home (`home()` in `app/src/main.ts`, its pieces in `app/src/render.ts`
   From 768 pt wide (iPad): posters 168 pt, big cards 36% of the column, the hero 21:9 and w1280 backdrops.
 - **Images** are TMDB's only, through the API client's allowlist (`src/api/urls.ts`); one that fails to load is dropped,
   leaving its frame. Logos sit on a light tile; with no logo the name is drawn instead.
-- **Calls.** The eager rows and `/discover/sources` at once; every other row only once the member has **dragged** it
-  within 400 pt of the screen (or it is on screen in the first layout after the eager ones have answered), each once
-  per filter. Each filter chosen and each refresh starts again from its first row: the old filter's offset, the app's
-  own scroll back and a glide from before the switch move nothing on. That look at rest is taken once, so rows that
-  come back empty or failed can't pull the rows under them in and load them in turn (on a tall iPad that once loaded
-  every lazy row at rest); a row's slot keeps its skeleton's height only until it answers. `/me` is the start-up
-  check's, not asked again. `__tests__/home-budget.test.tsx` pins each filter against `docs/app-api/fetch-budget.json`
-  (the PWA's numbers), also on a 1366 pt iPad with every row empty, failing or a single title.
+- **Calls.** The eager rows and `/discover/sources` at once; every other row in order, one at a time, as the screen
+  moves down: a scroll event may ask for the next lazy row only once the screen has gone down past where the last one
+  was asked for (or the furthest up it has been since) and that row is within 400 pt of the screen's bottom. At the
+  content's end, where the screen can go no further, every lazy row still on screen is asked for. Any scrolling counts
+  (a drag, a glide, a screen reader's scroll action, a mouse wheel, a keyboard); a layout never asks for anything, so
+  rows that come back empty or failed can't pull the rows under them in and load them in turn (on a tall iPad that once
+  made every lazy call from one drag). Each filter chosen and each refresh starts again from where it starts, once the
+  app's jump back to the first row has landed and a glide from before has stopped; one look at what is on screen at
+  rest, once the eager rows have answered, loads the lazy rows there. Each row is asked for once per filter, and a
+  row's slot keeps its skeleton's height only until it answers. `/me` is the start-up check's, not asked again.
+  `__tests__/home-budget.test.tsx` pins each filter against `docs/app-api/fetch-budget.json` (the PWA's numbers), also
+  on a 1366 pt iPad with every row empty, failing or a single title, and scrolled with no drag at all.
 - **Failures.** Each row fails on its own with the PWA's fixed words (Can't load this right now, Too many requests,
   You're offline, …) and **Try again** for that row alone; the networks and studios fail as one row. Nothing is retried
   by itself. A 401 forgets the sign-in and shows the picker ("Your sign-in has expired"). Pull to refresh asks for the

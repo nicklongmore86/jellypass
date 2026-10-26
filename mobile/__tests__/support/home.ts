@@ -262,11 +262,31 @@ export async function scrollTo(y: number): Promise<void> {
   await layOut(shown);
 }
 
-/** Lays Home out and scrolls to its end, a screen at a time, as a member would; again once the services' rows are there. */
+/** The furthest down the scroll view can go now: the content's end at the screen's bottom. */
+export const scrollEnd = (): number => Math.max(0, contentEnd - shown.height);
+
+/** How far a quick scroll moves between two scroll events: about a frame's worth. */
+const STEP = 100;
+
+/**
+ * Lays Home out and scrolls it from the top to its end in one go, as a member would (a scroll event every STEP points,
+ * laid out as it goes, never past the end the content has then); again once the services' rows are there.
+ */
 export async function scrollToEnd(size: ScreenSize = shown): Promise<void> {
   for (let round = 0; round < 2; round += 1) {
     await layOut(size);
-    for (let y = 0; y <= contentEnd; y += size.height) await scrollTo(y);
+    await scrollEvent('scrollBeginDrag', offsetNow());
+    let y = 0;
+    for (; ; y += STEP) {
+      y = Math.min(y, scrollEnd());
+      const end = y >= scrollEnd();
+      await scrollEvent('scroll', y);
+      await layOut(size);
+      // Done once it is at the end; if rows shrank under it, the scroll view goes up to the new end itself, next.
+      if (end && y <= scrollEnd()) break;
+    }
+    await scrollEvent('scrollEndDrag', y);
+    for (const node of screen.queryAllByTestId('home-scroll')) scrolled.set(node, y);
   }
 }
 

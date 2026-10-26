@@ -1,11 +1,12 @@
 // Home's calls against the server's pinned fetch budget (docs/app-api/fetch-budget.json, read from the repo, not
 // copied): the real app through the router, signed in, with a fake gateway. When Home opens, each filter makes exactly
 // the calls the PWA makes at once (the start-up /me included), nothing below the fold is asked for until it comes near
-// the screen, and scrolling to the end adds exactly the budget's lazy calls, each once. A change that makes Home
-// chattier fails here until the budget file (and the PWA) changes with it. Rows that come back short (empty, failed
-// or a single title) on a tall iPad load only the lazy rows on screen at rest, once: the rows they pull up after that
-// wait for the member to drag. Only the member's own drag (and its glide) in the filter on screen moves Home on: not
-// the offset left from the filter before, nor the app's own scroll back to the first row, nor a glide from before.
+// the screen, and scrolling to the end in one go adds exactly the budget's lazy calls, each once. A change that makes
+// Home chattier fails here until the budget file (and the PWA) changes with it. Lazy rows load in order, one per scroll
+// event that takes the screen further down: rows that come back short (empty, failed or a single title) on a tall iPad
+// load only the lazy rows on screen at rest, once, then one more per step down, however often Home is laid out. Any
+// scrolling moves Home on (a screen reader's scroll action or a mouse wheel sends no drag), but not the offset left
+// from the filter before, the app's own scroll back to the first row, nor a glide from before the switch.
 import { renderRouter } from 'expo-router/testing-library';
 
 import type { FetchLike } from '../src/api/client';
@@ -21,6 +22,7 @@ import {
   listOf,
   pageAnswer,
   PHONE_SCREEN,
+  scrollEnd,
   scrollEvent,
   scrollTo,
   scrollToEnd,
@@ -106,11 +108,9 @@ describe.each(FILTERS)("Home under %s", (filter, name) => {
   it("asks for the budget's lazy calls a few at a time as they near the screen, each once and no others", async () => {
     const { since } = await open();
     await layOut();
-    // A screen down: the next row or two, never everything.
+    // A screen down in one step: the next row, never everything.
     await scrollTo(PHONE_SCREEN.height);
-    const first = since().filter((route) => below.includes(route)).length;
-    expect(first).toBeGreaterThanOrEqual(1);
-    expect(first).toBeLessThanOrEqual(2);
+    expect(since().filter((route) => below.includes(route)).length).toBe(1);
 
     await scrollToEnd();
     await scrollTo(0);
@@ -134,7 +134,7 @@ describe.each(FILTERS)('Home under %s on a tall iPad', (filter, name) => {
   const counted = (since: readonly string[]) => (filter === 'All' ? [...since] : ['GET /me', 'GET /discover/sources', ...since]);
   const lazy = (since: readonly string[]) => since.filter((route) => below.includes(route));
 
-  it.each(SHORT)('with every row %s: loads the lazy rows on screen at rest once, never those pulled up after, then more as the member drags', async (kind, respond) => {
+  it.each(SHORT)('with every row %s: loads the lazy rows on screen at rest once, never those pulled up after, then one per step down', async (kind, respond) => {
     mockWindow = IPAD;
     gateway = homeGateway(homeHousehold(respond));
     mockFetch = gateway.fetch;
@@ -158,14 +158,105 @@ describe.each(FILTERS)('Home under %s on a tall iPad', (filter, name) => {
     if (kind !== 'a single title') expect(skeletonsOnScreen('last').length).toBeGreaterThanOrEqual(1);
     expect(lazy(since()).length).toBe(atRest.length);
 
-    // The member drags a little way: more rows, still each once and from the budget.
+    // Half a screen down in one step: the next row and no other, however often Home is laid out after it.
     await scrollTo(IPAD_SCREEN.height / 2);
-    expect(lazy(since()).length).toBeGreaterThan(atRest.length);
+    expect(lazy(since()).length).toBe(atRest.length + 1);
+    await layOut(IPAD_SCREEN);
+    await layOut(IPAD_SCREEN);
+    expect(lazy(since()).length).toBe(atRest.length + 1);
 
     await scrollToEnd();
     const calls = counted(since());
     expect(sorted(calls)).toEqual(sorted([...budget.atOnce, ...below]));
     expect(calls.length).toBe(budget.calls);
+  });
+});
+
+describe.each(FILTERS)('Home under %s scrolled with no drag (a screen reader, a mouse wheel)', (filter, name) => {
+  const below = BUDGET.screens[name]!.belowTheFold ?? [];
+
+  it('loads the lazy rows in order, at most one per scroll event, all of them by the end', async () => {
+    await start();
+    const before = filter === 'All' ? 0 : made().length;
+    if (filter !== 'All') await choose(filter);
+    const lazy = () => made().slice(before).filter((route) => below.includes(route));
+    await layOut();
+
+    // A step down at a time, laid out after each, and no drag or glide around them; twice, from the top again.
+    const steps: { added: number; end: boolean }[] = [];
+    for (let round = 0; round < 2; round += 1) {
+      for (let y = 100; ; y += 100) {
+        const was = lazy().length;
+        const at = Math.min(y, scrollEnd());
+        const end = at >= scrollEnd();
+        await scrollEvent('scroll', at);
+        steps.push({ added: lazy().length - was, end });
+        await layOut();
+        if (end && at <= scrollEnd()) break;
+      }
+      await scrollEvent('scroll', 0);
+    }
+    // One row a step, except where the screen can go no further: there, every row left on screen.
+    expect(Math.max(...steps.filter((step) => !step.end).map((step) => step.added))).toBe(1);
+    expect(sorted(lazy())).toEqual(sorted(below));
+  });
+});
+
+describe.each(FILTERS)('Home under %s on a tall iPad with every row empty, scrolled to the end once', (filter, name) => {
+  const below = BUDGET.screens[name]!.belowTheFold ?? [];
+
+  it('loads one row per step down, then every row left on screen where it can go no further', async () => {
+    mockWindow = IPAD;
+    gateway = homeGateway(homeHousehold(SHORT[0]![1]));
+    mockFetch = gateway.fetch;
+    await start();
+    const before = filter === 'All' ? 0 : made().length;
+    if (filter !== 'All') await choose(filter);
+    const lazy = () => made().slice(before).filter((route) => below.includes(route));
+    await layOut(IPAD_SCREEN);
+
+    // One scroll from the top to the end, a step at a time, laid out after each: the rows shrink as they answer and
+    // the end keeps moving up, but nothing is left waiting there.
+    const steps: { added: number; end: boolean }[] = [];
+    for (let y = 100; ; y += 100) {
+      const was = lazy().length;
+      const at = Math.min(y, scrollEnd());
+      const end = at >= scrollEnd();
+      await scrollEvent('scroll', at);
+      steps.push({ added: lazy().length - was, end });
+      await layOut(IPAD_SCREEN);
+      // Done once it is at the end; if rows shrank under it, the scroll view goes up to the new end itself, next.
+      if (end && at <= scrollEnd()) break;
+    }
+    expect(Math.max(...steps.filter((step) => !step.end).map((step) => step.added))).toBe(1);
+    expect(sorted(lazy())).toEqual(sorted(below));
+  });
+
+});
+
+describe('Home under All on a tall iPad with every row empty, scrolled back up', () => {
+  const below = BUDGET.screens['home-all']!.belowTheFold ?? [];
+
+  it('loads the next row when the member goes back up and comes down again, short of where the last one was asked for', async () => {
+    mockWindow = IPAD;
+    gateway = homeGateway(homeHousehold(SHORT[0]![1]));
+    mockFetch = gateway.fetch;
+    await start();
+    const lazy = () => made().filter((route) => below.includes(route));
+    await layOut(IPAD_SCREEN);
+
+    // Two big steps down, a row each; laid out again, the rows they shrank leave others on screen, not asked for.
+    await scrollEvent('scroll', 300, 600);
+    await layOut(IPAD_SCREEN);
+    const down = lazy().length;
+    expect(scrollEnd()).toBeGreaterThan(600);
+    expect(down).toBeLessThan(below.length);
+
+    // Up a little, then down again, not as far: the screen has moved down, so the next row is asked for.
+    await scrollEvent('scroll', 400);
+    expect(lazy().length).toBe(down);
+    await scrollEvent('scroll', 500);
+    expect(lazy().length).toBe(down + 1);
   });
 });
 
@@ -191,16 +282,16 @@ describe('Home after the filter changes', () => {
     await layOut();
     expect(lazyTv()).toEqual([]);
 
-    // The member's own drag down TV loads its rows a few at a time.
-    await drag(0, PHONE_SCREEN.height);
+    // A step down TV, with no drag (a screen reader's scroll action), loads its next row; laid out again, no more.
+    await scrollEvent('scroll', PHONE_SCREEN.height);
     await layOut();
-    expect(lazyTv().length).toBeGreaterThanOrEqual(1);
-    expect(lazyTv().length).toBeLessThanOrEqual(2);
+    await layOut();
+    expect(lazyTv().length).toBe(1);
     await scrollToEnd();
     expect(sorted(lazyTv())).toEqual(sorted(tvBelow));
   });
 
-  it('ignores a glide set off under All that carries on after TV is chosen, and one the member did not start', async () => {
+  it('ignores a glide set off under All that carries on after TV is chosen, until the screen moves on in TV', async () => {
     await start();
     await layOut();
     await drag(0, PHONE_SCREEN.height);
@@ -210,19 +301,23 @@ describe('Home after the filter changes', () => {
 
     await choose('TV');
     await layOut();
-    // The old glide runs on far down the page and stops.
+    // The old glide runs on far down the page and stops; then the app's jump back to the first row lands.
     await scrollEvent('scroll', 1600, 2400, 4000);
     await scrollEvent('momentumScrollEnd', 4000);
-    // A glide with no drag of the member's before it in TV: the app's own scrolling.
-    await glide(0, 3000, 5000);
+    await layOut();
+    expect(lazyTv()).toEqual([]);
+    await scrollEvent('scroll', 0);
+    await layOut();
     await layOut();
     expect(lazyTv()).toEqual([]);
 
-    // A drag in TV, and the glide it sets off, load as far as they go: a few rows, not all of them.
-    await drag(0, PHONE_SCREEN.height / 2);
-    await glide(PHONE_SCREEN.height / 2, PHONE_SCREEN.height);
+    // Moving on in TV, by any means: one row per step down, then a glide that carries on, one more per step.
+    await scrollEvent('scroll', PHONE_SCREEN.height / 2);
     await layOut();
-    expect(lazyTv().length).toBeGreaterThanOrEqual(1);
-    expect(lazyTv().length).toBeLessThan(tvBelow.length);
+    expect(lazyTv().length).toBe(1);
+    await drag(PHONE_SCREEN.height / 2, PHONE_SCREEN.height);
+    await glide(PHONE_SCREEN.height, PHONE_SCREEN.height + 100);
+    await layOut();
+    expect(lazyTv().length).toBe(3);
   });
 });

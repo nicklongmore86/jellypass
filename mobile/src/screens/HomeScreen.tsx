@@ -4,15 +4,21 @@
 // after the eager ones have answered, so Home stays inside docs/app-api/fetch-budget.json. Pull to refresh asks again;
 // nothing is retried by itself. The filter stays as chosen while the app is open (Home stays mounted under its tab).
 //
-// Lazy rows are loaded by the member's own scrolling, plus one look per drawing (a filter chosen, or a refresh) at what
-// is on screen at rest. "Near the screen" is measured from `reach`, the deepest the member has dragged in this drawing
-// plus a screen and LAZY_MARGIN. Each drawing starts it again at nothing, whatever the old filter's offset was, and only
-// a drag that began in this drawing (and the glide that follows it) moves it on: never the jump back to the first row,
-// a restored offset, or a glide left over from before the switch. The look at rest is taken once, from the first
-// layout after the eager rows have answered, and loads only the lazy rows on screen then. A row that comes back empty
-// or failed shrinks and pulls the next rows up, but no later layout is looked at, so it can't load them in turn (which
-// on a tall iPad would make every lazy call at once). A row's slot keeps its skeleton's height (skeletonRowHeight) while
-// it waits or loads, so the rows below stay put until it has answered.
+// Lazy rows are loaded in order, one at a time, by the screen moving down, plus one look per drawing (a filter chosen,
+// or a refresh) at what is on screen at rest. A scroll event may ask for the next lazy row only if the screen has gone
+// down past `from` (where the last row was asked for, or the furthest up it has been since) and that row's top is
+// within LAZY_MARGIN of the screen's bottom; it asks for that one row and no more. At the content's end, where the
+// screen can go no further (and where it lands when rows above shrink), a scroll event asks for every lazy row still on
+// screen instead: they are all in view, and nothing is below them. Any scrolling counts, the member's drag
+// and glide as much as a screen reader's scroll action, a mouse wheel or a keyboard, because what moves it on is the
+// screen going down, never a layout: a row that comes back empty or failed shrinks and pulls the next rows up, but that
+// alone asks for nothing (on a tall iPad it once made every lazy call at once). Going back up lowers `from`, so a member
+// whose end moved up as rows shrank can nudge the rest in. Each drawing starts `from` again where it starts, once the
+// scroll view has caught up with it: the app's jump back to the first row has landed and a glide from before has
+// stopped (or the member touches the screen); scroll events until then belong to the old drawing. The look at rest is
+// taken once, from the first layout after the eager rows have answered, and loads only the lazy rows on screen then. A
+// row's slot keeps its skeleton's height (skeletonRowHeight) while it waits or loads, so the rows below stay put until
+// it has answered.
 import { router } from 'expo-router';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
@@ -82,14 +88,18 @@ export function HomeScreen() {
   const scroller = useRef<ScrollViewInstance>(null);
   const scrollY = useRef(0);
   const viewport = useRef(0);
-  /** How far down the member has brought the screen in this drawing: its bottom plus LAZY_MARGIN; 0 until they drag. */
-  const reach = useRef(0);
-  /** This screen's count of drawings: a drag belongs to the drawing it began in. */
+  /** This screen's count of drawings. */
   const drawn = useRef(0);
   /** The offset a drawing starts at, known when it starts: the top, or its first row after a filter is chosen. */
   const origin = useRef(0);
-  /** The member's drag in progress, then the glide it set off; only one that began in this drawing moves `reach`. */
-  const gesture = useRef<{ drawing: number; phase: 'dragging' | 'released' | 'gliding' } | undefined>(undefined);
+  /** Where the next lazy row may be asked for from: the screen must go down past it. */
+  const from = useRef(0);
+  /** The lazy rows asked for in this drawing. */
+  const asked = useRef(new Set<string>());
+  /** The member's touch or glide under way, whatever drawing it began in. */
+  const moving = useRef<'dragging' | 'gliding' | undefined>(undefined);
+  /** A new drawing the scroll view hasn't caught up with: the jump back to `landing` still to come, or an old glide. */
+  const stale = useRef<{ landing: number | undefined; gliding: boolean } | undefined>(undefined);
   /** The drawing whose eager rows have all answered (`started`), so its rows are where they will stay. */
   const ready = useRef(-1);
   /** The drawing whose look at rest has been taken, and whether one is due after this batch of layouts. */
@@ -116,15 +126,31 @@ export function HomeScreen() {
     [parts, listed],
   );
 
-  /** Asks for every lazy row the member has scrolled within reach of; nothing before the eager rows have answered. */
-  const check = useCallback(() => {
-    if (!started || reach.current <= 0) return;
-    const due = slots.filter((slot) => {
-      const y = slotY.current.get(slot.key);
-      return slot.lazy && y !== undefined && columnY.current + y <= reach.current;
+  /** Asks for lazy rows not asked for yet in this drawing. */
+  const ask = useCallback(
+    (keys: readonly string[]) => {
+      const fresh = keys.filter((key) => !asked.current.has(key));
+      for (const key of fresh) asked.current.add(key);
+      if (fresh.length) near(fresh);
+    },
+    [near],
+  );
+
+  /**
+   * The screen has gone down to `y`: asks for the next lazy row, in order, if its top is within LAZY_MARGIN of the
+   * screen's bottom; or, at the content's end, where the screen can go no further, for every lazy row on screen.
+   */
+  const advance = (y: number, height: number, end: boolean): boolean => {
+    if (ready.current !== drawn.current || (y <= 0 && !end)) return false;
+    const waiting = slots.filter((slot) => slot.lazy && !asked.current.has(slot.key));
+    const bottom = y + height + (end ? 0 : LAZY_MARGIN);
+    const due = (end ? waiting : waiting.slice(0, 1)).filter((slot) => {
+      const top = slotY.current.get(slot.key);
+      return top !== undefined && columnY.current + top < bottom;
     });
-    if (due.length) near(due.map((slot) => slot.key));
-  }, [started, slots, near]);
+    ask(due.map((slot) => slot.key));
+    return due.length > 0;
+  };
 
   /** The look at rest: once per drawing, the lazy rows on screen at the drawing's offset, never the margin below. */
   const look = useCallback(() => {
@@ -135,12 +161,11 @@ export function HomeScreen() {
       const y = slotY.current.get(slot.key);
       return slot.lazy && y !== undefined && columnY.current + y < bottom;
     });
-    if (due.length) near(due.map((slot) => slot.key));
-  }, [slots, near]);
+    ask(due.map((slot) => slot.key));
+  }, [slots, ask]);
 
-  /** After a layout: what is within reach, and the look at rest once this batch of layouts has all arrived. */
+  /** After a layout: the look at rest once this batch of layouts has all arrived. Nothing else; a layout moves nothing on. */
   const laidOut = () => {
-    check();
     if (ready.current !== drawn.current || looked.current === drawn.current || looking.current) return;
     looking.current = true;
     const mine = drawn.current;
@@ -150,15 +175,16 @@ export function HomeScreen() {
     });
   };
 
-  /** A new drawing starts at `at`, reaching nothing until the member drags; a gesture from before it is let go. */
-  const restart = (at: number) => {
+  /** A new drawing starts at `at`, after the app's own jump there if it `jumped`; until then scroll events are the old one's. */
+  const restart = (at: number, jumped: boolean) => {
     drawn.current += 1;
     origin.current = Math.max(0, at);
-    reach.current = 0;
-    gesture.current = undefined;
+    from.current = origin.current;
+    asked.current = new Set();
+    const gliding = moving.current === 'gliding';
+    stale.current = jumped || gliding ? { landing: jumped ? origin.current : undefined, gliding } : undefined;
   };
 
-  useEffect(() => check(), [check]);
   // Before any layout of this commit arrives: a `started` left over from the filter just switched from never counts.
   useLayoutEffect(() => {
     ready.current = started ? drawn.current : -1;
@@ -177,14 +203,14 @@ export function HomeScreen() {
     AccessibilityInfo.announceForAccessibility?.('Loading…');
     // The chips stay where they are; a member far down the page starts the new filter at its first row.
     const deep = scrollY.current > heroEnd.current;
+    restart(deep ? heroEnd.current : scrollY.current, deep);
     if (deep) scroller.current?.scrollTo({ y: heroEnd.current, animated: false });
-    restart(deep ? heroEnd.current : scrollY.current);
     home.choose(next);
   };
 
   const onRefresh = async () => {
     setRefreshing(true);
-    restart(scrollY.current);
+    restart(scrollY.current, false);
     try {
       await home.refresh();
     } finally {
@@ -194,32 +220,44 @@ export function HomeScreen() {
 
   const open = (card: Card) => router.push(titlePath(card));
 
-  /** Where the screen is now; `reach` follows it only while the member drags, or glides on from a drag, in this drawing. */
+  /** The scroll view has caught up with the new drawing: it starts moving on from where the screen is now. */
+  const caughtUp = (y: number) => {
+    stale.current = undefined;
+    from.current = y;
+  };
+
+  /** Where the screen is now: going down past `from` may ask for the next lazy row; going up lowers `from`. */
   const follow = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-    const { contentOffset, layoutMeasurement } = event.nativeEvent;
-    scrollY.current = contentOffset.y;
-    const own = gesture.current;
-    if (!own || own.drawing !== drawn.current || own.phase === 'released' || contentOffset.y <= 0) return;
-    const height = viewport.current || layoutMeasurement.height;
-    reach.current = Math.max(reach.current, contentOffset.y + height + LAZY_MARGIN);
-    check();
+    const { contentOffset, contentSize, layoutMeasurement } = event.nativeEvent;
+    const y = contentOffset.y;
+    scrollY.current = y;
+    const old = stale.current;
+    if (old) {
+      if (old.landing !== undefined && y <= old.landing + 1) old.landing = undefined;
+      if (old.landing === undefined && !old.gliding) caughtUp(y);
+      return;
+    }
+    const end = y + layoutMeasurement.height >= contentSize.height - 1;
+    if ((y > from.current || end) && advance(y, viewport.current || layoutMeasurement.height, end)) from.current = y;
+    else if (y < from.current) from.current = y;
   };
   const onScrollBeginDrag = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-    gesture.current = { drawing: drawn.current, phase: 'dragging' };
-    follow(event);
+    moving.current = 'dragging';
+    // The member's touch stops anything left over from before: this drawing moves on from here.
+    if (stale.current) caughtUp(event.nativeEvent.contentOffset.y);
   };
-  const onScrollEndDrag = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-    follow(event);
-    if (gesture.current?.phase === 'dragging') gesture.current = { ...gesture.current, phase: 'released' };
+  const onScrollEndDrag = () => {
+    moving.current = undefined;
   };
-  const onMomentumScrollBegin = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-    // Only the glide straight after the member lets go: not one the app started by scrolling itself.
-    if (gesture.current?.phase === 'released') gesture.current = { ...gesture.current, phase: 'gliding' };
-    follow(event);
+  const onMomentumScrollBegin = () => {
+    moving.current = 'gliding';
   };
   const onMomentumScrollEnd = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
-    follow(event);
-    if (gesture.current?.phase === 'gliding') gesture.current = undefined;
+    moving.current = undefined;
+    const old = stale.current;
+    if (!old) return;
+    old.gliding = false;
+    if (old.landing === undefined) caughtUp(event.nativeEvent.contentOffset.y);
   };
   const onLayout = (event: LayoutChangeEvent) => {
     viewport.current = event.nativeEvent.layout.height;
