@@ -582,7 +582,7 @@ that would is a new major version under `/jellypass/app/v2`, served next to `v1`
 move. `GET /me` says which `v1` the server speaks: `apiVersion`, an integer (`APP_API_VERSION` in `src/app-api.ts`),
 `1` in the first release that sends it, one more with each release that adds a field or endpoint to `v1`, never
 lower. A client that needs a field added in revision *n* checks `apiVersion >= n` (a missing `apiVersion` is revision
-0: 3.1.0 and earlier) and can say
+0: 3.1.1 and earlier) and can say
 "update the server" instead of failing. No minimum client version is sent: until a `v2` exists every client of `v1`
 is supported. A client:
 

@@ -31,6 +31,34 @@ privacy leak. Such changes are always listed at the top of the release notes.
   fields, device-only token storage, fixed errors and wording, the identical **Get this** outcome, and the budgets. `v1`
   only ever gains fields and endpoints; removing, renaming or changing the meaning of anything needs `/jellypass/app/v2`.
 
+## [3.1.1] - 2026-10-26
+
+This is a patch release for the admin UI only. There is nothing to configure:
+no setting is added, removed or renamed, and the state file is unchanged
+(schema v7, with the same fields as 3.1.0), so 3.1.0 reads a state file written
+by 3.1.1. The household app, household hostnames and the Seerr webhook are
+unchanged: no file of the household app and none of the household gateway or
+app API code changed. No server behaviour changed (only the version string
+JellyPass reports to Jellyfin): the administrator API answers as before. Read
+these before upgrading:
+
+- **Administrators sign in again after the upgrade.** Sessions are kept in
+  memory only, so restarting JellyPass to upgrade signs every administrator
+  out, as any restart does.
+- **To roll back,** set `JELLYPASS_IMAGE` back to
+  `ghcr.io/nicklongmore86/jellypass:3.1.0` and recreate the container.
+  Administrators sign in again. No state-file or setting change is needed.
+
+### Fixed
+
+- **Admin UI: a session that ends just after signing in no longer blames the
+  password.** If the session ended (a sign-out elsewhere, or the administrator
+  was demoted or disabled) while the admin UI loaded its data right after a
+  successful sign-in, the sign-in form said "That username or password was
+  not accepted." It now says "Your session has ended. Sign in again." A sign-in
+  the server refuses still shows the username-or-password message, and the
+  too-many-attempts and Jellyfin-unavailable messages are unchanged.
+
 ## [3.1.0] - 2026-10-26
 
 This is a minor release for the household app (`HOUSEHOLD_APP_ENABLED=true`)
@@ -1714,7 +1742,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.1.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.1.1...HEAD
+[3.1.1]: https://github.com/nicklongmore86/jellypass/compare/v3.1.0...v3.1.1
 [3.1.0]: https://github.com/nicklongmore86/jellypass/compare/v3.0.1...v3.1.0
 [3.0.1]: https://github.com/nicklongmore86/jellypass/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/nicklongmore86/jellypass/compare/v2.7.0...v3.0.0

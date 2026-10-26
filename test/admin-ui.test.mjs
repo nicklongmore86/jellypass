@@ -379,3 +379,72 @@ describe('admin UI answers that arrive after the session changed', () => {
     assert.equal(page.toast(), '');
   });
 });
+
+describe('admin UI sign-in', () => {
+  const SIGNED_OUT = JSON.stringify({ login: true, app: false, notice: '', connection: 'Disconnected' });
+  const LOGGED_IN = { status: 200, body: { authenticated: true, username: 'admin' } };
+
+  /** A page that starts signed out and submits the sign-in form once loaded. */
+  async function signIn(answer) {
+    const page = adminPage((path, init) => (path === '/auth/session' && !init?.method ? UNAUTHORIZED : answer(path, init)));
+    await page.settle();
+    assert.equal(JSON.stringify(page.view()), SIGNED_OUT);
+    page.document.getElementById('username').value = 'admin';
+    page.document.getElementById('password').value = 'secret';
+    page.document.getElementById('login-form').dispatchEvent(new page.window.Event('submit'));
+    await page.settle();
+    return page;
+  }
+  const loginError = (page) => page.document.getElementById('login-error').textContent;
+
+  it('says the session ended, not that the password was wrong, for a 401 while loading after sign-in', async () => {
+    const page = await signIn((path) => (path === '/auth/login' ? LOGGED_IN : path === '/v1/groups' ? UNAUTHORIZED : DATA[path]));
+    assert.ok(page.requests.includes('POST /auth/login'));
+    assert.equal(JSON.stringify(page.view()), SIGNED_OUT);
+    assert.equal(loginError(page), 'Your session has ended. Sign in again.');
+    assert.equal(page.pendingRetry(), null);
+  });
+
+  it('still says the username or password was not accepted when the sign-in is refused', async () => {
+    const page = await signIn((path) => (path === '/auth/login' ? { status: 401, body: { error: 'invalid_credentials' } } : DATA[path]));
+    assert.equal(JSON.stringify(page.view()), SIGNED_OUT);
+    assert.equal(loginError(page), 'That username or password was not accepted.');
+    assert.ok(!page.requests.includes('GET /v1/grants'), 'nothing is loaded for a refused sign-in');
+  });
+
+  it('keeps the too-many-attempts wording for a rate-limited sign-in', async () => {
+    const page = await signIn((path) => (path === '/auth/login' ? { status: 429, body: { error: 'too_many_login_attempts' } } : DATA[path]));
+    assert.equal(loginError(page), 'Too many attempts. Try again later.');
+  });
+
+  it('shows the app view after a sign-in whose data loads', async () => {
+    const page = await signIn((path) => (path === '/auth/login' ? LOGGED_IN : DATA[path]));
+    assert.equal(JSON.stringify(page.view()), JSON.stringify({ login: false, app: true, notice: '', connection: 'Library sync required' }));
+    assert.equal(loginError(page), '');
+  });
+
+  it('ignores late answers from the first session after signing out and in again', async () => {
+    const recent = deferred();
+    let first = true;
+    const page = await signIn((path) => {
+      if (path === '/auth/login') return LOGGED_IN;
+      if (path === '/auth/logout') return { status: 200, body: {} };
+      if (path === '/v1/requests/recent' && first) return recent.promise;
+      return DATA[path];
+    });
+    // The first sign-in's load is still waiting for recent requests when the administrator signs out.
+    page.click('logout');
+    await page.settle();
+    assert.equal(JSON.stringify(page.view()), SIGNED_OUT);
+    first = false;
+    page.document.getElementById('login-form').dispatchEvent(new page.window.Event('submit'));
+    await page.settle();
+    assert.equal(JSON.stringify(page.view()), JSON.stringify({ login: false, app: true, notice: '', connection: 'Library sync required' }));
+
+    recent.resolve(UNAUTHORIZED);
+    await page.settle();
+    assert.equal(JSON.stringify(page.view()), JSON.stringify({ login: false, app: true, notice: '', connection: 'Library sync required' }));
+    assert.equal(loginError(page), '');
+    assert.equal(page.toast(), '');
+  });
+});
