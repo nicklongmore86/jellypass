@@ -29,17 +29,18 @@ import {
   studioStrip,
   titleDetail,
   titleRow,
+  type RowVariant,
 } from './render.js';
 import { icon } from './icons.js';
 import { clearSignIn, deviceId, jellyfinToken } from './session.js';
 import { showSignIn } from './signin.js';
 import type { DiscoverList, MediaType, Me, Network, Page, RequestEntry, Source, SourceKind, Sources } from './types.js';
 
-const ROWS: Array<{ list: DiscoverList; heading: string }> = [
-  { list: 'trending', heading: 'Trending' },
-  { list: 'popular-movies', heading: 'Popular movies' },
-  { list: 'popular-tv', heading: 'Popular series' },
-  { list: 'upcoming', heading: 'Upcoming movies' },
+const ROWS: Array<{ list: DiscoverList; heading: string; variant: RowVariant }> = [
+  { list: 'trending', heading: 'Trending', variant: 'poster' },
+  { list: 'popular-movies', heading: 'Popular movies', variant: 'backdrop' },
+  { list: 'popular-tv', heading: 'Popular series', variant: 'backdrop' },
+  { list: 'upcoming', heading: 'Upcoming movies', variant: 'poster' },
 ];
 /** Home's rows below the first four: each is fetched only once it comes near the screen (see {@link lazyLoader}). */
 const UPCOMING_TV_ROW = { list: 'upcoming-tv', heading: 'Upcoming series' } as const;
@@ -149,6 +150,28 @@ function appScrollTo(y: number): void {
 }
 function appScrollLeft(list: HTMLElement, left: number): void {
   list.scrollLeft = left;
+}
+
+/**
+ * A card focused by Tab sits fully in its row: a row scrolls sideways, and the browser's own focus scroll can leave the
+ * card almost off the edge. The card is brought to the row's start (where its scroll snap would put it), straight away
+ * so reduced motion needs nothing special. This is the page's own scroll, not the member's: it neither cancels nor
+ * fights a restoration (the keydown that moved focus already cancelled it).
+ */
+function showFocusedCard(event: FocusEvent): void {
+  const link = event.target instanceof Element ? event.target.closest('.row-list .card-link') : null;
+  // After the browser's own focus scroll, which would otherwise settle last.
+  if (link) requestAnimationFrame(() => bringCardIntoRow(link));
+}
+function bringCardIntoRow(link: Element): void {
+  const list = link.closest<HTMLElement>('.row-list');
+  if (!list || document.activeElement !== link) return;
+  const card = link.closest('.card') ?? link;
+  const box = card.getBoundingClientRect();
+  const view = list.getBoundingClientRect();
+  const right = Math.min(view.right, document.documentElement.clientWidth);
+  if (box.left >= view.left && box.right <= right) return;
+  list.scrollLeft += box.left - view.left;
 }
 
 /**
@@ -415,7 +438,7 @@ async function render(): Promise<void> {
 
 async function home(signal: AbortSignal, current: () => boolean): Promise<void> {
   setTitle();
-  busy(el(doc, 'h1', { class: 'visually-hidden', text: 'Home', attrs: { tabindex: '-1' } }), skeletonHero(doc), ...ROWS.map(() => skeletonRow(doc)));
+  busy(el(doc, 'h1', { class: 'visually-hidden', text: 'Home', attrs: { tabindex: '-1' } }), skeletonHero(doc), ...ROWS.map((row) => skeletonRow(doc, row.variant)));
   await loadMe(signal);
   if (!current()) return;
   const slots = ROWS.map(() => el(doc, 'div', { class: 'home-row' }));
@@ -430,7 +453,7 @@ async function home(signal: AbortSignal, current: () => boolean): Promise<void> 
     heroSlot.remove();
     setChrome();
   };
-  slots.forEach((slot) => slot.append(skeletonRow(doc)));
+  slots.forEach((slot, index) => slot.append(skeletonRow(doc, (ROWS[index] as (typeof ROWS)[number]).variant)));
   let unauthorized = false;
   const restore = restoring;
   const lazy = lazyLoader(signal);
@@ -480,7 +503,7 @@ async function home(signal: AbortSignal, current: () => boolean): Promise<void> 
       try {
         const page = await api.discover(row.list, signal);
         if (!current()) return;
-        slot.replaceChildren(titleRow(doc, `row-${row.list}`, row.heading, page));
+        slot.replaceChildren(titleRow(doc, `row-${row.list}`, row.heading, page, row.variant));
         if (index === 0) {
           // The hero is drawn from the first row's own answer: it asks for nothing more.
           const hero = heroCarousel(doc, page.results);
@@ -1092,6 +1115,7 @@ backButton.addEventListener('click', goBack);
 // Anything the member does with the page or a row ends a restoration still owed; scroll events alone do not.
 for (const type of ['wheel', 'touchstart', 'pointerdown', 'keydown']) window.addEventListener(type, () => { restoreCancelled = true; }, { capture: true, passive: true });
 window.addEventListener('scroll', onScroll, { passive: true });
+document.addEventListener('focusin', showFocusedCard);
 window.addEventListener('hashchange', () => {
   if (isRouteHash(location.hash)) void render();
 });

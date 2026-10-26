@@ -35,6 +35,12 @@ privacy leak. Such changes are always listed at the top of the release notes.
   row); its series alone are the **Series** tab, `#/network/:id?kind=series`.
 - Household app API: a path with anything after a network's ID other than `films` or `all` (for example
   `/discover/network/213/2`) is now `400 invalid_request` instead of `404 not_found`, still before TMDB is asked.
+- Household app: **Popular movies** and **Popular series** on Home are now large landscape backdrop cards: one nearly
+  full-width 16:9 card per phone screen with the next one peeking in (about three across on a wide screen), the title and
+  "year · ★ rating TMDB" over a dark gradient at the foot, and the status pill on the corner. The whole card is the link
+  to the title's page. A title with no backdrop shows its poster, or a plain card. Trending, Upcoming and the network and
+  studio rows are unchanged. No new calls: the images come from the rows' own answers, and Back still puts each row's
+  scroll position back.
 
 ## [2.6.0] - 2026-10-25
 
