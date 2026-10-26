@@ -4217,17 +4217,19 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       });
 
       it('expires after two minutes, then the server\'s answer shows', async (t) => {
-        t.mock.timers.enable({ apis: ['Date'] });
+        let elapsed = 5_000;
+        t.mock.method(performance, 'now', () => elapsed);
         const app = await startApp(t);
         const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}` });
         await ask(page);
         assert.equal(page.main().querySelector('.badge').textContent, 'Requested');
-        t.mock.timers.tick(119_000);
+        const tick = (ms) => { elapsed += ms; };
+        tick(119_000);
         page.go('#/');
         page.go(`#/movie/${T_MOVIE}`);
         await page.until(() => page.main().querySelector('.badge'), 'the title');
         assert.equal(page.main().querySelector('.badge').textContent, 'Requested', 'still inside the window');
-        t.mock.timers.tick(2_000);
+        tick(2_000);
         page.go('#/');
         page.go(`#/movie/${T_MOVIE}`);
         await page.until(() => page.main().querySelector('.badge')?.textContent === 'Available to get', 'server truth');
@@ -4249,6 +4251,40 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         for (const item of seasons) {
           assert.equal(item.querySelector('.badge').textContent, numberOf(item) === '1' ? 'Requested' : 'Available to get', numberOf(item));
         }
+      });
+
+      it('does not carry Requested to another member who signs in while Account was showing (credentials removed elsewhere)', async (t) => {
+        const app = await startApp(t);
+        const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}` });
+        await ask(page);
+        assert.equal(page.main().querySelector('.badge').textContent, 'Requested');
+        const storage = () => { for (const listener of page.listeners.storage ?? []) listener({ key: 'jellyfin_credentials' }); };
+        const origin = page.location.origin;
+        page.go('#/account');
+        await page.until(() => page.main().querySelector('.account'), 'the Account card');
+        // Jellyfin web (another tab) signs out: the credentials go; this tab stays on Account and only redraws it.
+        page.store.set('jellyfin_credentials', JSON.stringify({ Servers: [{ ManualAddress: origin }] }));
+        storage();
+        await page.until(() => page.main().querySelector('.account') === null, 'Account without a member card');
+        // A different member signs in there.
+        page.store.set('jellyfin_credentials', JSON.stringify({ Servers: [{ ManualAddress: origin, AccessToken: TOKENS[ANN], UserId: ANN }] }));
+        storage();
+        await page.until(() => page.main().querySelector('.account'), 'the Account card again');
+        const card = await searchFor(page, 'Synthetic Movie One');
+        assert.equal(statusOf(card), 'Available to get', 'nothing carried over from the previous member');
+        page.go(`#/movie/${T_MOVIE}`);
+        await page.until(() => page.main().querySelector('.badge'), 'the title');
+        assert.equal(page.main().querySelector('.badge').textContent, 'Available to get');
+        assert.ok(page.main().querySelector('button') !== null, 'Get this is offered again');
+      });
+
+      it('clears when the sign-in changes without any storage event or route change (the next read decides)', async (t) => {
+        const app = await startApp(t);
+        const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}` });
+        await ask(page);
+        page.store.set('jellyfin_credentials', JSON.stringify({ Servers: [{ ManualAddress: page.location.origin, AccessToken: TOKENS[ANN], UserId: ANN }] }));
+        const card = await searchFor(page, 'Synthetic Movie One');
+        assert.equal(statusOf(card), 'Available to get');
       });
 
       it('is not added by a call the API refused', async (t) => {
@@ -4617,6 +4653,27 @@ describe('household app: what this member just asked for', { timeout: 30_000 }, 
     assert.equal(overlay.card(movieCard('get_this')).state, 'get_this');
   });
 
+  it('times the window on the monotonic clock: a wall-clock jump neither extends nor cuts it', async (t) => {
+    const { createAsked, ASKED_TTL_MS } = await asked();
+    let monotonic = 10_000;
+    let wall = 1_700_000_000_000;
+    t.mock.method(performance, 'now', () => monotonic);
+    t.mock.method(Date, 'now', () => wall);
+    const overlay = createAsked();
+    overlay.add('movie', 5, []);
+    // The wall clock is set back an hour: the window is not stretched.
+    wall -= 3_600_000;
+    monotonic += ASKED_TTL_MS;
+    assert.equal(overlay.card(movieCard('get_this')).state, 'get_this', 'expired on elapsed time, whatever the wall clock says');
+    overlay.add('movie', 5, []);
+    // The wall clock jumps a day forward: the window is not cut.
+    wall += 86_400_000;
+    monotonic += ASKED_TTL_MS - 1;
+    assert.equal(overlay.card(movieCard('get_this')).state, 'requested', 'still inside the window');
+    monotonic += 1;
+    assert.equal(overlay.card(movieCard('get_this')).state, 'get_this');
+  });
+
   it('keeps season keys apart and marks the series', async () => {
     const { createAsked } = await asked();
     const overlay = createAsked(() => 0);
@@ -4686,6 +4743,88 @@ describe('household app: what this member just asked for', { timeout: 30_000 }, 
       household = 'b';
       await api.me();
       assert.equal((await api.movie(5)).state, 'get_this', 'another household');
+    });
+    describe('belongs to one sign-in', () => {
+      const apiFor = async (handler, tokenRef, asked = undefined) => {
+        const { createApi } = await apiModule();
+        return createApi({ fetch: async (url, init) => handler(String(url), init ?? {}), token: () => tokenRef.value, ...(asked ? { asked } : {}) });
+      };
+      const serve = (state = () => 'get_this', me = () => ({ name: 'n', household: 'a', apiVersion: 1 })) => (url, init) => {
+        if (init.method === 'POST') return json({}, 202);
+        if (url.endsWith('/me')) return json(me());
+        return json(sample(state()));
+      };
+
+      it('drops everything when the token changes, or goes, even with no other signal', async () => {
+        for (const next of ['other-token', undefined]) {
+          const token = { value: 'token' };
+          const api = await apiFor(serve(), token);
+          await api.getThis('movie', 5, []);
+          assert.equal((await api.movie(5)).state, 'requested');
+          token.value = next;
+          if (next) assert.equal((await api.movie(5)).state, 'get_this', 'another sign-in');
+          else await assert.rejects(api.movie(5));
+          // Whoever signs in next, the first member included, starts empty.
+          token.value = 'token';
+          assert.equal((await api.movie(5)).state, 'get_this', `after ${next ?? 'no credentials'}`);
+        }
+      });
+
+      it('does not apply an answer to a member who signed in while it was in flight', async () => {
+        const token = { value: 'token' };
+        const api = await apiFor(serve(), token);
+        await api.getThis('movie', 5, []);
+        const pending = api.movie(5);
+        token.value = 'other-token';
+        assert.equal((await pending).state, 'get_this');
+      });
+
+      it('does not add a key for a call that was accepted after the sign-in changed', async () => {
+        const token = { value: 'token' };
+        const api = await apiFor((url, init) => {
+          if (init.method === 'POST') { token.value = 'other-token'; return json({}, 202); }
+          return json(sample('get_this'));
+        }, token);
+        await api.getThis('movie', 5, []);
+        assert.equal((await api.movie(5)).state, 'get_this');
+      });
+
+      it('clears on a 401 from any call', async () => {
+        for (const call of [(api) => api.movie(5), (api) => api.search('x', 1), (api) => api.requests(), (api) => api.me(), (api) => api.getThis('movie', 6, [])]) {
+          let refuse = false;
+          const token = { value: 'token' };
+          const api = await apiFor((url, init) => (refuse ? json({}, 401) : serve()(url, init)), token);
+          await api.getThis('movie', 5, []);
+          assert.equal((await api.movie(5)).state, 'requested');
+          refuse = true;
+          await assert.rejects(call(api));
+          refuse = false;
+          assert.equal((await api.movie(5)).state, 'get_this', 'the same token, accepted again, still starts empty');
+        }
+      });
+
+      it('clears when /me names another member of the same household, or another household', async () => {
+        for (const [name, household] of [['m2', 'a'], ['n', 'b']]) {
+          let who = { name: 'n', household: 'a', apiVersion: 1 };
+          const token = { value: 'token' };
+          const api = await apiFor(serve(() => 'get_this', () => who), token);
+          await api.me();
+          await api.getThis('movie', 5, []);
+          assert.equal((await api.movie(5)).state, 'requested');
+          who = { name, household, apiVersion: 1 };
+          await api.me();
+          assert.equal((await api.movie(5)).state, 'get_this', `${name} in ${household}`);
+        }
+      });
+
+      it('keeps the overlay for the same member asked again', async () => {
+        const token = { value: 'token' };
+        const api = await apiFor(serve(), token);
+        await api.me();
+        await api.getThis('movie', 5, []);
+        await api.me();
+        assert.equal((await api.movie(5)).state, 'requested');
+      });
     });
   });
 });

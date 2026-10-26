@@ -50,9 +50,23 @@ function kindOf(status: number): ApiErrorKind {
 
 export function createApi(options: ApiOptions): Api {
   const asked = options.asked ?? createAsked();
-  let household: string | undefined;
+  // The overlay belongs to whoever holds this token and this /me identity: any other (or none) starts it empty.
+  let owner: string | undefined;
+  let identity: string | undefined;
+  function sync(token: string | undefined): void {
+    if (token === owner) return;
+    asked.forget();
+    owner = token;
+    identity = undefined;
+  }
+  /** Applies the overlay to an answer, first making sure it still belongs to the member who is signed in now. */
+  const seen = <T>(apply: (value: T) => T) => (value: T): T => {
+    sync(options.token());
+    return apply(value);
+  };
   async function call(path: string, init: { body?: unknown }, signal?: AbortSignal): Promise<Response> {
     const token = options.token();
+    sync(token);
     if (!token) throw new ApiError('unauthorized');
     let response: Response;
     try {
@@ -76,6 +90,11 @@ export function createApi(options: ApiOptions): Api {
     }
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
+      // A refused sign-in is nobody's: whatever was shown as requested for it is dropped.
+      if (response.status === 401) {
+        asked.forget();
+        identity = undefined;
+      }
       throw new ApiError(kindOf(response.status));
     }
     return response;
@@ -93,25 +112,30 @@ export function createApi(options: ApiOptions): Api {
   return {
     me: async (signal) => {
       const me = await get<Me>('/me', signal);
-      // Another household's answers never see this one's overlay.
-      if (household !== undefined && household !== me.household) asked.forget();
-      household = me.household;
+      sync(options.token());
+      // Another member (or household) never sees this one's overlay; /me names the member and the household.
+      const now = `${me.household}\n${me.name}`;
+      if (identity !== undefined && identity !== now) asked.forget();
+      identity = now;
       return me;
     },
-    search: (query, page, signal) => get<Page>(`/search?q=${encodeURIComponent(query)}&page=${page}`, signal).then(asked.page),
-    discover: (list, signal) => get<Page>(`/discover/${list}`, signal).then(asked.page),
+    search: (query, page, signal) => get<Page>(`/search?q=${encodeURIComponent(query)}&page=${page}`, signal).then(seen(asked.page)),
+    discover: (list, signal) => get<Page>(`/discover/${list}`, signal).then(seen(asked.page)),
     sources: (signal) => get<Sources>('/discover/sources', signal),
     source: (kind, id, page, signal, list) =>
-      get<Page>(`/discover/${kind}/${id}${list ? `/${list}` : ''}${page > 1 ? `?page=${page}` : ''}`, signal).then(asked.page),
-    movie: (tmdbId, signal) => get<Movie>(`/movie/${tmdbId}`, signal).then(asked.movie),
-    tv: (tmdbId, signal) => get<Series>(`/tv/${tmdbId}`, signal).then(asked.series),
-    season: (tmdbId, seasonNumber, signal) => get<Season>(`/tv/${tmdbId}/season/${seasonNumber}`, signal).then(asked.season),
+      get<Page>(`/discover/${kind}/${id}${list ? `/${list}` : ''}${page > 1 ? `?page=${page}` : ''}`, signal).then(seen(asked.page)),
+    movie: (tmdbId, signal) => get<Movie>(`/movie/${tmdbId}`, signal).then(seen(asked.movie)),
+    tv: (tmdbId, signal) => get<Series>(`/tv/${tmdbId}`, signal).then(seen(asked.series)),
+    season: (tmdbId, seasonNumber, signal) => get<Season>(`/tv/${tmdbId}/season/${seasonNumber}`, signal).then(seen(asked.season)),
     getThis: async (mediaType, tmdbId, seasons, signal) => {
+      const before = options.token();
       // A movie sends an empty object, a series the seasons asked for; the answer is the same fixed 202 either way.
       const response = await call(`/${mediaType}/${tmdbId}/get`, { body: mediaType === 'tv' ? { seasons } : {} }, signal);
       await response.body?.cancel().catch(() => undefined);
       // Only an accepted call (a 2xx; anything else threw above) is shown as requested while the server records it.
-      asked.add(mediaType, tmdbId, seasons);
+      // ... and only for the member who asked: not if the sign-in changed while the call was out.
+      sync(options.token());
+      if (before !== undefined && owner === before) asked.add(mediaType, tmdbId, seasons);
     },
     requests: (signal) => get<RequestList>('/requests', signal),
     forgetAsked: () => asked.forget(),

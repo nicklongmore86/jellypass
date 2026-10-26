@@ -22,7 +22,8 @@ export interface Asked {
   season(season: Season): Season;
 }
 
-export function createAsked(now: () => number = Date.now): Asked {
+/** Elapsed time on the monotonic clock, so a wall-clock change (a clock set back or forward) never stretches or cuts the window. */
+export function createAsked(now: () => number = () => performance.now()): Asked {
   let expires = new Map<string, number>();
   const titleKey = (mediaType: MediaType, tmdbId: number) => `${mediaType}:${tmdbId}`;
 

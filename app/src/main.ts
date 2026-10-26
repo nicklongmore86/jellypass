@@ -151,6 +151,16 @@ function deviceName(userAgent: string): string {
 let navigation = 0;
 let navigationAbort: AbortController | undefined;
 let me: Me | undefined;
+/** The access token the app last saw; when it changes (or goes), what belonged to the old member goes with it. */
+let seenToken = jellyfinToken(localStorage, origin);
+
+function syncCredentials(): void {
+  const token = jellyfinToken(localStorage, origin);
+  if (token === seenToken) return;
+  seenToken = token;
+  me = undefined;
+  api.forgetAsked();
+}
 let first = true;
 
 function announce(message: string): void {
@@ -520,6 +530,7 @@ async function render(): Promise<void> {
       // The route is the same either way.
     }
   }
+  syncCredentials();
   const route = parse(location.hash);
   capturePosition();
   stampHistory();
@@ -1309,6 +1320,7 @@ async function requestsScreen(signal: AbortSignal, current: () => boolean): Prom
 
 // Signing in or out on the same address (in another tab, or in Jellyfin web) is picked up without a reload.
 function resumeIfChanged(): void {
+  syncCredentials();
   const signedIn = Boolean(jellyfinToken(localStorage, origin));
   const showingSignIn = Boolean(main.querySelector('[data-screen="signin"]'));
   const onAccount = parse(location.hash).name === 'account';
