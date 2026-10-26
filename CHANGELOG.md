@@ -28,26 +28,55 @@ privacy leak. Such changes are always listed at the top of the release notes.
   Part 2 will redraw the hero and the detail pages (this part only recolours them), and the app icons are not yet
   redrawn. The `theme-color` and the installed app's background colour are now the new page colour.
 
+## [3.0.1] - 2026-10-26
+
+This is a patch release for the admin UI and the administrator API. There is
+nothing to configure: no setting is added, removed or renamed, and the state
+file is unchanged (schema v7, with the same fields as 3.0.0), so 3.0.0 reads a
+state file written by 3.0.1. The household app, household hostnames and the
+Seerr webhook are unchanged: no file of the household app and none of the
+household gateway or app API code changed. Read these before upgrading:
+
+- **Administrators sign in again after the upgrade.** Sessions are kept in
+  memory only, so restarting JellyPass to upgrade signs every administrator
+  out, as any restart does.
+- **Scripts that send a non-JSON body to a route that reads none now get
+  `415`.** 3.0.0 documented that every admin request body must be declared as
+  JSON; 3.0.1 also applies it to the routes that never read their body (see
+  Fixed below). Send no body, or declare it as `application/json`.
+- **To roll back,** set `JELLYPASS_IMAGE` back to
+  `ghcr.io/nicklongmore86/jellypass:3.0.0` and recreate the container.
+  Administrators sign in again. No state-file or setting change is needed.
+
 ### Fixed
 
-- Body-less admin routes now also reject non-JSON bodies, as documented in
-  3.0.0. A `POST`, `PUT` or `DELETE` to an administrator API route that
-  carries a body not declared as `application/json` is
-  `415 {"error":"unsupported_media_type"}` before anything happens, also on
-  routes that never read their body such as `POST /v1/library/sync`,
-  `POST /v1/reconcile` and `POST /auth/logout`. Requests without a body work as
-  before, whatever their `Content-Type`, and unknown paths and methods are still
-  `404 {"error":"not_found"}` whatever they carry.
-- Admin UI: while Jellyfin cannot answer the five-minute session check (`503 {"error":"session_check_unavailable"}`),
-  the admin UI no longer shows the sign-in form at load, and no longer shows the raw code after an action. The server
-  keeps the session and allows another check 30 seconds after the failed one; the UI now keeps its current view, shows
-  "Jellyfin is temporarily unavailable — retrying…" and asks again on its own, first after 30 seconds and then backing
-  off to every two minutes, paused while the tab is hidden (the time it was hidden does not count towards the wait),
-  and returns to normal once the check passes. A `401` still returns to sign-in, and an answer that arrives after a
-  sign-out, a `401` or a new sign-in no longer changes the view, shows a notice or toast, or starts a retry; this
-  includes a request that fails outright (network error) after the session ended, and the recent-requests widget,
-  whose `401` now returns to sign-in instead of showing the app with empty activity. Other error codes the admin API answers with (such as `cross_origin_request_refused` or
-  `too_many_requests`) are shown as sentences instead of codes.
+- **Admin UI: a session Jellyfin cannot check for a moment no longer looks
+  signed out.** While Jellyfin cannot answer the five-minute session check
+  (`503 {"error":"session_check_unavailable"}`), the server keeps the session
+  and allows another check 30 seconds later, but the admin UI showed the
+  sign-in form at load and the raw code after an action. It now keeps its
+  current view, shows "Jellyfin is temporarily unavailable — retrying…" and
+  asks again on its own, first after 30 seconds, then doubling to every two
+  minutes, and returns to normal once the check passes. The wait is paused
+  while the tab is hidden, and time spent hidden does not count towards it. A
+  `401` still returns to sign-in, including from the recent-requests widget,
+  which used to show the app with empty activity instead. An answer that
+  arrives after a sign-out, a `401` or a new sign-in, or a request that fails
+  outright after the session ended, no longer changes the view, shows a notice
+  or toast, or starts a retry. Other error codes the admin API answers with
+  (such as `cross_origin_request_refused` or `too_many_requests`) are shown as
+  sentences instead of codes.
+- **Admin: routes that never read a body now also reject one not declared as
+  JSON,** as documented in 3.0.0. A body (a non-zero `Content-Length` or any
+  `Transfer-Encoding`) not declared as `application/json` sent to
+  `POST /auth/logout`, `POST /v1/library/sync`, `POST /v1/reconcile`,
+  `DELETE /v1/grants/{itemId}/requests/{requestId}` or
+  `DELETE /v1/groups/{groupId}` is
+  `415 {"error":"unsupported_media_type"}` before the route does anything,
+  bearer requests included; routes that read a body already answered so.
+  Requests without a body work as before, whatever their `Content-Type`, and
+  unknown paths and methods are still `404 {"error":"not_found"}` whatever
+  they carry.
 
 ## [3.0.0] - 2026-10-26
 
@@ -1602,7 +1631,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.0.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.0.1...HEAD
+[3.0.1]: https://github.com/nicklongmore86/jellypass/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/nicklongmore86/jellypass/compare/v2.7.0...v3.0.0
 [2.7.0]: https://github.com/nicklongmore86/jellypass/compare/v2.6.0...v2.7.0
 [2.6.0]: https://github.com/nicklongmore86/jellypass/compare/v2.5.0...v2.6.0
