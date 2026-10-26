@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer, request as httpRequest } from 'node:http';
+import { connect } from 'node:net';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { AccessService } from '../dist/access-service.js';
@@ -272,6 +273,47 @@ describe('admin surface hardening', { timeout: 20_000 }, () => {
     assert.equal(anonymous.status, 401);
     const wrongToken = await send(port, '/v1/library/sync', { ...plain, authorization: 'Bearer wrong' }, { method: 'POST', body: '{}' });
     assert.equal(wrongToken.status, 401);
+  });
+
+  it('answers unknown admin paths and methods 404 whatever their body, as before', async () => {
+    const cookie = await login();
+    const unknown = [
+      ['POST', '/v1/nonexistent'],
+      ['PUT', '/v1/nonexistent'],
+      ['DELETE', '/v1/nonexistent'],
+      ['PATCH', '/v1/groups/farmhouse'],
+      ['POST', '/v1/groups/farmhouse'],
+      ['PUT', '/v1/library/sync'],
+      ['DELETE', '/v1/reconcile'],
+    ];
+    const requestsBefore = jellyfin.requestedPaths.length;
+    for (const [method, pathname] of unknown) {
+      for (const [label, headers] of [
+        ['bearer', { authorization: 'Bearer admin-secret' }],
+        ['same-origin cookie', { cookie, 'sec-fetch-site': 'same-origin' }],
+      ]) {
+        for (const extra of [{ 'content-type': 'text/plain', 'content-length': '2' }, { 'content-type': 'text/plain', 'transfer-encoding': 'chunked' }, { 'content-length': '2' }]) {
+          const response = await send(port, pathname, { ...headers, ...extra }, { method, body: '{}' });
+          assert.deepEqual([response.status, response.body], [404, '{"error":"not_found"}'], `${label} ${method} ${pathname} ${JSON.stringify(extra)}`);
+        }
+      }
+    }
+    assert.equal(jellyfin.requestedPaths.length, requestsBefore, 'no Jellyfin call was made');
+  });
+
+  it('answers 415 from the headers alone, without waiting for a body that never comes', async () => {
+    const groupsBefore = (await send(port, '/v1/groups', { authorization: 'Bearer admin-secret' })).body;
+    const requestsBefore = jellyfin.requestedPaths.length;
+    for (const [method, pathname] of [['POST', '/v1/library/sync'], ['POST', '/v1/reconcile'], ['DELETE', '/v1/groups/farmhouse']]) {
+      for (const framing of ['Content-Length: 5', 'Transfer-Encoding: chunked']) {
+        const started = Date.now();
+        const response = await sendHeadersOnly(port, `${method} ${pathname} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer admin-secret\r\nContent-Type: text/plain\r\n${framing}\r\n\r\n`);
+        assert.deepEqual([response.status, response.body], [415, '{"error":"unsupported_media_type"}'], `${method} ${pathname} ${framing}`);
+        assert.ok(Date.now() - started < 1_000, `${method} ${pathname} ${framing} answered promptly`);
+      }
+    }
+    assert.equal(jellyfin.requestedPaths.length, requestsBefore, 'no handler ran');
+    assert.equal((await send(port, '/v1/groups', { authorization: 'Bearer admin-secret' })).body, groupsBefore);
   });
 
   it('keeps the Seerr webhook, /health and /metrics as they were', async () => {
@@ -721,5 +763,32 @@ function send(port, pathname, headers, { method = 'GET', body } = {}) {
     });
     request.on('error', reject);
     request.end(body);
+  });
+}
+
+/** Writes a request's head and never its body, then reads the response; fails after two seconds without one. */
+function sendHeadersOnly(port, head) {
+  return new Promise((resolve, reject) => {
+    const socket = connect(port, LOCAL, () => socket.write(head));
+    let received = '';
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error('no response to the headers alone'));
+    }, 2_000);
+    socket.setEncoding('utf8');
+    socket.on('data', (chunk) => {
+      received += chunk;
+      const end = received.indexOf('\r\n\r\n');
+      if (end === -1) return;
+      const length = Number(/\r\ncontent-length: *(\d+)/i.exec(received.slice(0, end))?.[1] ?? 0);
+      if (received.length - end - 4 < length) return;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve({ status: Number(received.split(' ')[1]), body: received.slice(end + 4, end + 4 + length) });
+    });
+    socket.on('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
   });
 }

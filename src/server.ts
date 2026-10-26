@@ -156,7 +156,7 @@ export function makeServer(
       }
       if (request.method === 'POST' && url.pathname === '/auth/logout') {
         if (!sameOrigin()) return forbidden();
-        if (hasBody(request)) requireJsonBody(request);
+        requireJsonIfBody(request);
         webAuth?.logout(request);
         response.setHeader('Set-Cookie', expiredSessionCookie(isSecureRequest(request)));
         return json(response, 200, { status: 'logged_out' });
@@ -184,8 +184,6 @@ export function makeServer(
         if (session.status === 'unavailable') return json(response, 503, { error: 'session_check_unavailable' });
         if (session.status !== 'active') return json(response, 401, { error: 'unauthorized' });
       }
-      // Bodies must be declared as JSON on every state-changing route, including those that never read one.
-      if (!SAFE_METHODS.has(request.method ?? 'GET') && hasBody(request)) requireJsonBody(request);
 
       if (request.method === 'GET' && url.pathname === '/metrics') {
         return text(response, 200, service.renderMetrics(), 'text/plain; version=0.0.4; charset=utf-8');
@@ -243,6 +241,7 @@ export function makeServer(
         return json(response, 200, service.getLibraryCatalog());
       }
       if (request.method === 'POST' && url.pathname === '/v1/library/sync') {
+        requireJsonIfBody(request);
         const catalog = await service.syncLibraryCatalog();
         return json(response, 200, { status: 'synced', ...catalog });
       }
@@ -257,6 +256,7 @@ export function makeServer(
         return json(response, 200, { status: dryRun ? 'planned' : 'updated', result });
       }
       if (request.method === 'POST' && url.pathname === '/v1/reconcile') {
+        requireJsonIfBody(request);
         const dryRun = url.searchParams.get('dryRun') === 'true';
         const plans = await service.reconcileAll({ dryRun });
         return json(response, 200, { status: dryRun ? 'planned' : 'reconciled', plans });
@@ -265,6 +265,7 @@ export function makeServer(
         return json(response, 200, { plan: await service.planGrant(validId(segments[2], 'itemId')) });
       }
       if (request.method === 'DELETE' && segments.length === 5 && segments[0] === 'v1' && segments[1] === 'grants' && segments[3] === 'requests') {
+        requireJsonIfBody(request);
         const dryRun = url.searchParams.get('dryRun') === 'true';
         const result = await service.revokeRequest(validId(segments[2], 'itemId'), validId(segments[4], 'requestId'), dryRun);
         return json(response, 200, { status: dryRun ? 'planned' : 'revoked', result });
@@ -303,6 +304,7 @@ export function makeServer(
         return json(response, 200, { status: 'saved', group });
       }
       if (request.method === 'DELETE' && segments.length === 3 && segments[0] === 'v1' && segments[1] === 'groups') {
+        requireJsonIfBody(request);
         return json(response, 200, { status: 'deleted', result: await service.deleteGroup(validId(segments[2], 'groupId')) });
       }
       return json(response, 404, { error: 'not_found' });
@@ -348,9 +350,13 @@ function sameToken(supplied: string, expectedToken: string): boolean {
   return timingSafeEqual(left, right);
 }
 
-/** Whether the request carries a body: a non-zero Content-Length, or any Transfer-Encoding. */
-function hasBody(request: IncomingMessage): boolean {
-  return request.headers['transfer-encoding'] !== undefined || Number(request.headers['content-length'] ?? 0) > 0;
+/**
+ * Refuses a body not declared as JSON on a matched state-changing route that never reads one, before its handler runs
+ * and without reading the body. A body is a non-zero Content-Length or any Transfer-Encoding; a body-less request passes
+ * whatever its Content-Type. Unknown paths and methods are not checked, so they stay 404.
+ */
+function requireJsonIfBody(request: IncomingMessage): void {
+  if (request.headers['transfer-encoding'] !== undefined || Number(request.headers['content-length'] ?? 0) > 0) requireJsonBody(request);
 }
 
 /** Refuses a body not declared as `application/json` (parameters such as charset allowed), before any of it is read. */
