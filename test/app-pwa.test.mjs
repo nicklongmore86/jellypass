@@ -4169,7 +4169,14 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     describe('shows Requested right after an accepted Get this, while the server records it', () => {
       // The server writes the household's record a moment after it accepts the call. These tests hold that record back
       // for their whole life (startHeld), so every read in them still says get_this: the page's own overlay has to carry it.
-      const startHeld = (t) => startApp(t, world(), { recordDelayMs: 600_000 });
+      // Seerr is held at the request, so the household's record cannot be written until the test is over.
+      const startHeld = async (t) => {
+        const app = await startApp(t);
+        let release;
+        app.seerr.state.holdRequests = new Promise((resolve) => { release = resolve; });
+        t.after(async () => { release(); await app.background.settled(); });
+        return app;
+      };
       const homeReady = (page) => page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4, 'home');
       const cardFor = (page, name) => [...page.main().querySelectorAll('li.card')].find((card) => card.textContent.includes(name));
       const statusOf = (card) => card.querySelector('.badge').textContent;
