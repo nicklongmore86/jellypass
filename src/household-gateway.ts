@@ -14,7 +14,14 @@ import { AttemptCounter } from './rate-limit.js';
 const PUBLIC_USERS_PATH = '/users/public';
 const BRANDING_CONFIGURATION_PATH = '/branding/configuration';
 const QUICK_CONNECT_ENABLED_PATH = '/quickconnect/enabled';
+/** Quick Connect: every route under it, and the sign-in it ends in, which Jellyfin does not scope to a household. */
+const QUICK_CONNECT_PATH = '/quickconnect';
+const AUTHENTICATE_WITH_QUICK_CONNECT_PATH = '/users/authenticatewithquickconnect';
+/** The Streamyfin plugin's routes, which hand its settings (Seerr's keys among them) to any signed-in user. */
+const STREAMYFIN_PATH = '/streamyfin';
 const AUTHENTICATE_BY_NAME_PATH = '/users/authenticatebyname';
+/** Jellyfin's obsolete sign-in by user ID and password, still routed in 10.11 and, like AuthenticateByName, not scoped to a household. */
+const AUTHENTICATE_BY_ID_ROUTE = /^\/users\/([^/]+)\/authenticate$/;
 const LOGOUT_PATH = '/sessions/logout';
 const FORGOT_PASSWORD_PATHS = new Set(['/users/forgotpassword', '/users/forgotpassword/pin']);
 const MAX_TRANSFORMED_JSON_BYTES = 2 * 1024 * 1024;
@@ -218,71 +225,128 @@ export class HouseholdGateway {
 
   public async handle(request: IncomingMessage, response: ServerResponse, householdId: string): Promise<void> {
     const requestUrl = new URL(request.url ?? '/', 'http://localhost');
-    const pathname = requestUrl.pathname.toLowerCase();
-    const appPath = pathname === APP_PATH || pathname.startsWith(`${APP_PATH}/`);
+    // Every decision below is made on the route Jellyfin takes the path to, never on the path as spelled.
+    const route = jellyfinRoute(request.url ?? '/');
+    const appPath = route !== undefined && isAppRoute(route);
     const memberIds = this.#memberIds(householdId);
     if (!memberIds) {
       // No CDN may keep any answer under /jellypass/app, this one included (see NEVER_STORE).
       writeJson(response, 404, { error: 'household_not_found' }, appPath ? NEVER_STORE : {});
       return;
     }
-    if (appPath) {
-      // The app's own files carry nothing user-specific and need no credentials; the API under /v1 always does.
-      // Files only at their exact (lower-case) paths: another spelling is an unknown app path, like any other.
-      if (this.#appAssets?.serve(request, response, requestUrl.pathname)) return;
-      // Every other answer here, whatever writes it (an unknown file, the API, its errors), is never stored by a CDN.
-      for (const [name, value] of Object.entries(NEVER_STORE)) response.setHeader(name, value);
-      await this.#householdApp(request, response, requestUrl, householdId, memberIds);
+    const decision = route === undefined ? undefined : this.#decide(request.method, route, requestUrl.searchParams);
+    if (decision === undefined) {
+      // Jellyfin might route it otherwise than the gateway reads it, so no check here can be trusted to apply.
+      writeJson(response, 400, { error: 'invalid_request' }, NEVER_STORE);
       return;
     }
-    if (request.method === 'GET' && pathname === PUBLIC_USERS_PATH) {
-      await this.#proxyPublicUsers(request, response, memberIds);
-      return;
-    }
-    if (request.method === 'GET' && pathname === BRANDING_CONFIGURATION_PATH) {
-      await this.#proxyBrandingConfiguration(request, response);
-      return;
-    }
-    if (request.method === 'GET' && pathname === QUICK_CONNECT_ENABLED_PATH) {
-      writeJson(response, 200, false);
-      return;
-    }
-    if (request.method === 'POST' && FORGOT_PASSWORD_PATHS.has(pathname)) {
-      writeJson(response, 403, { error: 'household_password_recovery_disabled' });
-      return;
-    }
-    if (this.#app && request.method === 'POST' && isLogoutPath(requestUrl.pathname)) {
-      await this.#proxySignOut(request, response, requestUrl, householdId, this.#app);
-      return;
-    }
-    if (request.method === 'POST' && pathname === AUTHENTICATE_BY_NAME_PATH) {
-      await this.#proxyHouseholdLogin(request, response, memberIds);
-      return;
-    }
-    if (this.#libraryJoin) {
-      const libraryJoinAsset = LIBRARY_JOIN_ASSETS[pathname];
-      if (request.method === 'GET' && libraryJoinAsset) {
-        writeAsset(response, libraryJoinAsset.body, libraryJoinAsset.contentType);
+    switch (decision.kind) {
+      case 'app':
+        // The app's own files carry nothing user-specific and need no credentials; the API under /v1 always does.
+        // Files only at their exact (lower-case) paths: another spelling is an unknown app path, like any other.
+        if (this.#appAssets?.serve(request, response, (request.url ?? '/').split('?', 1)[0] as string)) return;
+        // Every other answer here, whatever writes it (an unknown file, the API, its errors), is never stored by a CDN.
+        for (const [name, value] of Object.entries(NEVER_STORE)) response.setHeader(name, value);
+        await this.#householdApp(request, response, requestUrl, householdId, memberIds);
         return;
-      }
-      if (request.method === 'POST' && pathname === LIBRARY_JOIN_PATH) {
-        await this.#joinLibrary(request, response, requestUrl, this.#libraryJoin);
+      case 'publicUsers':
+        await this.#proxyPublicUsers(request, response, memberIds);
         return;
-      }
-    }
-    const streamedItemId = protectedResourceItemId(requestUrl.pathname);
-    if (streamedItemId) {
-      try {
-        if (!await this.#canAccessItem(request, requestUrl, streamedItemId)) {
+      case 'branding':
+        await this.#proxyBrandingConfiguration(request, response);
+        return;
+      // Quick Connect signs in whoever authorizes the code, member or not, so no household host offers it: whether it
+      // is enabled is always false, and every other Quick Connect call is refused alike, without asking Jellyfin.
+      case 'quickConnectEnabled':
+        writeJson(response, 200, false);
+        return;
+      case 'quickConnect':
+        writeJson(response, 403, { error: 'household_quick_connect_disabled' });
+        return;
+      case 'streamyfin':
+        writeJson(response, 404, { error: 'not_found' });
+        return;
+      case 'forgotPassword':
+        writeJson(response, 403, { error: 'household_password_recovery_disabled' });
+        return;
+      case 'signOut':
+        await this.#proxySignOut(request, response, requestUrl, householdId, this.#app as HouseholdAppHandler);
+        return;
+      case 'signIn':
+        await this.#proxyHouseholdLogin(request, response, memberIds);
+        return;
+      case 'signInById':
+        await this.#refuseSignInById(request, response);
+        return;
+      case 'libraryJoinAsset':
+        writeAsset(response, decision.asset.body, decision.asset.contentType);
+        return;
+      case 'libraryJoin':
+        await this.#joinLibrary(request, response, requestUrl, this.#libraryJoin as NonNullable<HouseholdGatewayOptions['libraryJoin']>);
+        return;
+      case 'notFound':
+        writeJson(response, 404, { error: 'item_not_found' });
+        return;
+      case 'caller':
+        try {
+          if (!await this.#callerMay(request, requestUrl, decision.userIds, decision.itemIds)) {
+            writeJson(response, 404, { error: 'item_not_found' });
+            return;
+          }
+        } catch {
+          writeJson(response, 502, { error: 'jellyfin_unavailable' });
+          return;
+        }
+        break;
+      // A user's picture, which Jellyfin serves to anyone and clients load without credentials (the profile picker):
+      // only the household's own members' pictures, refused otherwise with the same answer as any other check.
+      case 'userImage':
+        if (!decision.userIds.every((userId) => memberIds.some((memberId) => userIdKey(memberId) === userIdKey(userId)))) {
           writeJson(response, 404, { error: 'item_not_found' });
           return;
         }
-      } catch {
-        writeJson(response, 502, { error: 'jellyfin_unavailable' });
-        return;
-      }
+        break;
+      case 'proxy':
+        break;
     }
     await this.#proxy(request, response);
+  }
+
+  /**
+   * What a household host does with a request, decided on its method, its {@link jellyfinRoute} and its query alone;
+   * undefined when Jellyfin might route it otherwise. A route still percent-encoded once decoded (a name such as
+   * `100%25 Real`) is decided as Jellyfin reads it, decoded once, unless decoding it further would change the decision:
+   * then it is undefined, as some other reader on the way (a proxy, a CDN) might decode it again.
+   */
+  #decide(method: string | undefined, route: string, query: URLSearchParams): RouteDecision | undefined {
+    const decision = this.#decideRoute(method, route, query);
+    if (!/%[0-9a-f]{2}/i.test(route)) return decision;
+    const further = furtherDecodedRoute(route);
+    if (further === undefined) return undefined;
+    return JSON.stringify(this.#decideRoute(method, further, query)) === JSON.stringify(decision) ? decision : undefined;
+  }
+
+  #decideRoute(method: string | undefined, route: string, query: URLSearchParams): RouteDecision {
+    if (isAppRoute(route)) return { kind: 'app' };
+    if (method === 'GET' && route === PUBLIC_USERS_PATH) return { kind: 'publicUsers' };
+    if (method === 'GET' && route === BRANDING_CONFIGURATION_PATH) return { kind: 'branding' };
+    if (method === 'GET' && route === QUICK_CONNECT_ENABLED_PATH) return { kind: 'quickConnectEnabled' };
+    if (isQuickConnectRoute(route)) return { kind: 'quickConnect' };
+    if (isStreamyfinRoute(route)) return { kind: 'streamyfin' };
+    if (method === 'POST' && FORGOT_PASSWORD_PATHS.has(route)) return { kind: 'forgotPassword' };
+    if (this.#app && method === 'POST' && route === LOGOUT_PATH) return { kind: 'signOut' };
+    if (method === 'POST' && route === AUTHENTICATE_BY_NAME_PATH) return { kind: 'signIn' };
+    if (method === 'POST' && AUTHENTICATE_BY_ID_ROUTE.test(route)) return { kind: 'signInById' };
+    if (this.#libraryJoin) {
+      const asset = LIBRARY_JOIN_ASSETS[route];
+      if (method === 'GET' && asset) return { kind: 'libraryJoinAsset', asset };
+      if (method === 'POST' && route === LIBRARY_JOIN_PATH) return { kind: 'libraryJoin' };
+    }
+    if (isServerInternalStreamRoute(route)) return { kind: 'notFound' };
+    const userIds = userScopedIds(route, query);
+    if (userIds.length && (method === 'GET' || method === 'HEAD') && isUserImageRoute(route)) return { kind: 'userImage', userIds };
+    const itemIds = itemScopedIds(method, route, query);
+    return userIds.length || itemIds.length ? { kind: 'caller', userIds, itemIds } : { kind: 'proxy' };
   }
 
   public handleUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer, householdId: string): void {
@@ -297,10 +361,18 @@ export class HouseholdGateway {
       socket.end(`HTTP/1.1 503 Service Unavailable\r\n${neverStoreHeaders()}Connection: close\r\n\r\n`);
       return;
     }
-    const pathname = new URL(request.url ?? '/', 'http://localhost').pathname.toLowerCase();
-    const appPath = pathname === APP_PATH || pathname.startsWith(`${APP_PATH}/`);
-    // The app API has no WebSockets, and its paths are never proxied to Jellyfin.
-    if (!this.#memberIds(householdId) || appPath) {
+    const route = jellyfinRoute(request.url ?? '/');
+    const decision = route === undefined
+      ? undefined
+      : this.#decide(request.method, route, new URL(request.url ?? '/', 'http://localhost').searchParams);
+    if (route === undefined || decision === undefined) {
+      socket.end(`HTTP/1.1 400 Bad Request\r\n${neverStoreHeaders()}Connection: close\r\n\r\n`);
+      return;
+    }
+    const appPath = decision.kind === 'app';
+    // Jellyfin's only WebSocket is an ordinary route: anything a household host checks or answers itself (the app API,
+    // which has none, Quick Connect, Streamyfin, a route that names an item or a user) is never proxied as an upgrade.
+    if (!this.#memberIds(householdId) || decision.kind !== 'proxy') {
       socket.end(`HTTP/1.1 404 Not Found\r\n${appPath ? neverStoreHeaders() : ''}Connection: close\r\n\r\n`);
       return;
     }
@@ -587,6 +659,25 @@ export class HouseholdGateway {
   }
 
   /**
+   * Jellyfin's obsolete sign-in by user ID (`POST /Users/{id}/Authenticate?pw=`), which no household host offers: it
+   * is not scoped to a household, and no Jellyfin client in use signs in with it (they all use AuthenticateByName or
+   * Quick Connect). Every call, a member's or not, right password or not, is counted against the same per-address
+   * budget as a sign-in by name and gets the answer a refused sign-in by name gets, no sooner than #loginFailureDelayMs
+   * after it arrived, without asking Jellyfin; so the answer tells nothing about the ID.
+   */
+  async #refuseSignInById(request: IncomingMessage, response: ServerResponse): Promise<void> {
+    if (!this.#allowLoginAttempt(this.#clientAddress(request))) {
+      writeJson(response, 429, { error: 'too_many_login_attempts' });
+      return;
+    }
+    const started = performance.now();
+    // Read (and drop) the body as a sign-in by name does, so the two take the same course.
+    await readLimitedBody(request, MAX_LOGIN_BODY_BYTES).catch(() => undefined);
+    await delay(Math.max(0, this.#loginFailureDelayMs - (performance.now() - started)));
+    writeJson(response, 401, { error: 'invalid_credentials' });
+  }
+
+  /**
    * The member of the household whose name `username` is, as Jellyfin matches names, if any. A name not found in a
    * reused list is looked for again in a fresh one, so a member just added or renamed can sign in at once. Throws if
    * Jellyfin cannot list its users.
@@ -798,17 +889,26 @@ export class HouseholdGateway {
     });
   }
 
-  async #canAccessItem(request: IncomingMessage, requestUrl: URL, itemId: string): Promise<boolean> {
+  /**
+   * Whether the request's own credentials belong to a Jellyfin user who is every one of `userIds` (see
+   * {@link userScopedIds}) and may see every one of `itemIds` (see {@link itemScopedIds}). Jellyfin administrators are
+   * not exempt: on a household host no one acts as another user. Throws if Jellyfin cannot be reached.
+   */
+  async #callerMay(request: IncomingMessage, requestUrl: URL, userIds: string[], itemIds: string[]): Promise<boolean> {
     const current = await this.#currentUser(request, requestUrl);
     if (!current) return false;
-    const itemResponse = await fetch(this.#targetUrl(
-      `/Users/${encodeURIComponent(current.user.Id)}/Items/${encodeURIComponent(itemId)}${current.suffix}`,
-    ), {
-      headers: current.headers,
-      signal: AbortSignal.timeout(15_000),
-    });
-    await itemResponse.body?.cancel();
-    return itemResponse.ok;
+    if (userIds.some((userId) => userIdKey(userId) !== userIdKey(current.user.Id))) return false;
+    for (const itemId of itemIds) {
+      const itemResponse = await fetch(this.#targetUrl(
+        `/Users/${encodeURIComponent(current.user.Id)}/Items/${encodeURIComponent(itemId)}${current.suffix}`,
+      ), {
+        headers: current.headers,
+        signal: AbortSignal.timeout(15_000),
+      });
+      await itemResponse.body?.cancel();
+      if (!itemResponse.ok) return false;
+    }
+    return true;
   }
 
   /**
@@ -1100,12 +1200,145 @@ function libraryJoinInput(value: unknown): { mediaType: 'movie' | 'tv'; tmdbId: 
   return { mediaType, tmdbId };
 }
 
-function protectedResourceItemId(pathname: string): string | undefined {
-  const media = pathname.match(/^\/(?:videos|audio)\/([^/]+)\/(?:stream(?:\.[^/]*)?|master\.m3u8|main\.m3u8)$/i);
-  if (media) return decodeURIComponent(media[1] as string);
-  const download = pathname.match(/^\/items\/([^/]+)\/download$/i);
-  return download ? decodeURIComponent(download[1] as string) : undefined;
+/**
+ * Route roots under which Jellyfin 10.11 reads the next segment as an item's ID (`/Videos/{itemId}/...`), each with the
+ * fixed names it routes there instead (`/Videos/MergeVersions`): lists and searches, which Jellyfin scopes to the caller
+ * itself. Under these roots every other second segment is taken for an item's ID, whatever follows it, so a route this
+ * list does not know of is checked rather than let through.
+ */
+const ITEM_ROUTE_ROOTS = new Map<string, readonly string[]>([
+  ['videos', ['activeencodings', 'mergeversions']],
+  ['audio', []],
+  ['items', ['counts', 'filters', 'filters2', 'latest', 'remotesearch', 'root', 'suggestions']],
+  ['useritems', ['resume']],
+  ['userplayeditems', []],
+  ['userfavoriteitems', []],
+  ['playingitems', []],
+  ['mediasegments', []],
+  ['shows', ['nextup', 'upcoming']],
+]);
+/** The legacy `/Users/{userId}/<collection>/{itemId}` routes, each with the fixed names it routes in the item's place. */
+const USER_ITEM_COLLECTIONS = new Map<string, readonly string[]>([
+  ['items', ['latest', 'resume', 'root']],
+  ['playeditems', []],
+  ['playingitems', []],
+  ['favoriteitems', []],
+]);
+/** Routes named `/<root>/{itemId}/<action>` whose root also takes names elsewhere (`/Artists/{name}`). */
+const ITEM_ACTION_ROOTS = new Set(['albums', 'artists', 'movies', 'songs', 'trailers']);
+const ITEM_ACTIONS = new Set(['instantmix', 'similar']);
+
+/**
+ * The items a request on a household host reads or acts on, from its {@link jellyfinRoute}, each of which the caller
+ * must be able to see before it is proxied: the item ID in the route, and every `itemId` query parameter (in any case,
+ * however Jellyfin reads the query: see {@link jellyfinQueryPairs}), which some of Jellyfin's routes (subtitles) take
+ * over the route's. Empty for a route that names no item.
+ *
+ * Every route that takes an item ID in its path is covered, whether or not Jellyfin checks the caller's access to the
+ * item itself, with one exception: an item's images (`GET`/`HEAD /Items/{itemId}/Images/{type}[/...]`), which Jellyfin
+ * serves to anyone, signed in or not, and which clients load without credentials (an `<img>`), so no check could be
+ * made. Jellyfin still refuses them to a signed-in caller who may not see the item.
+ */
+function itemScopedIds(method: string | undefined, route: string, query: URLSearchParams): string[] {
+  const segments = route.split('/').slice(1);
+  const [root = '', second, third = '', fourth] = segments;
+  const fixed = ITEM_ROUTE_ROOTS.get(root);
+  const userFixed = root === 'users' ? USER_ITEM_COLLECTIONS.get(third) : undefined;
+  let itemId: string | undefined;
+  if (fixed && second !== undefined && !fixed.includes(second)) {
+    const image = root === 'items' && third === 'images' && segments.length >= 4 && (method === 'GET' || method === 'HEAD');
+    if (!image) itemId = second;
+  } else if (userFixed && fourth !== undefined && !userFixed.includes(fourth)) {
+    itemId = fourth;
+  } else if (ITEM_ACTION_ROOTS.has(root) && second !== undefined && segments.length === 3 && ITEM_ACTIONS.has(third)) {
+    itemId = second;
+  }
+  if (itemId === undefined) return [];
+  const ids = [itemId];
+  for (const [name, value] of jellyfinQueryPairs(query)) if (name.toLowerCase() === 'itemid') ids.push(value);
+  return [...new Set(ids)];
 }
+
+/**
+ * The routes Jellyfin 10.11 has under `/Users` with a fixed name in a user ID's place (`/Users/Me`, `/Users/Public`).
+ * Only these exact routes: Jellyfin routes anything longer (`/Users/Me/Views`) to a route that takes a user ID.
+ */
+const USER_FIXED_ROUTES = new Set([
+  '/users/authenticatebyname', '/users/authenticatewithquickconnect', '/users/configuration', '/users/forgotpassword',
+  '/users/forgotpassword/pin', '/users/me', '/users/new', '/users/password', '/users/public',
+]);
+/** The query parameters Jellyfin 10.11 reads a user ID from (in any case). */
+const USER_ID_PARAMETERS = new Set(['userid', 'controllablebyuserid', 'controllinguserid']);
+
+/**
+ * Every user ID a request on a household host names, from its {@link jellyfinRoute} and query, each of which must be
+ * the caller's own before it is proxied: Jellyfin 10.11 takes some of them for the caller without checking
+ * (`GET /Playlists/{id}/Items?userId=`, `GET /Users/{userId}`, `POST /Sessions/{id}/User/{userId}`), so a member could
+ * otherwise act as anyone, another household's members included. They are
+ *
+ * - the second segment of every route under `/Users` but Jellyfin's fixed ones there (USER_FIXED_ROUTES), whatever
+ *   follows it and by any method, so a route Jellyfin adds later is checked too;
+ * - the user in `/Playlists/{playlistId}/Users/{userId}` and `/Sessions/{sessionId}/User/{userId}`;
+ * - every non-empty `userId`, `controllableByUserId` and `controllingUserId` query parameter, in any case, each of
+ *   them where one is given more than once, and however Jellyfin reads the query (see {@link jellyfinQueryPairs}).
+ *
+ * An empty parameter is no user ID: Jellyfin binds it as none given. Empty for a request that names no user.
+ */
+function userScopedIds(route: string, query: URLSearchParams): string[] {
+  const [root = '', second, third, fourth] = route.split('/').slice(1);
+  const ids: string[] = [];
+  if (root === 'users' && second !== undefined && !USER_FIXED_ROUTES.has(route)) ids.push(second);
+  if (root === 'playlists' && third === 'users' && fourth !== undefined) ids.push(fourth);
+  if (root === 'sessions' && third === 'user' && fourth !== undefined) ids.push(fourth);
+  for (const [name, value] of jellyfinQueryPairs(query)) if (value && USER_ID_PARAMETERS.has(name.toLowerCase())) ids.push(value);
+  return [...new Set(ids)];
+}
+
+/** Whether a {@link jellyfinRoute} is one of a user's pictures: `/Users/{userId}/Images/...` or `/UserImage`. */
+function isUserImageRoute(route: string): boolean {
+  return route === '/userimage' || /^\/users\/[^/]+\/images(?:\/|$)/.test(route);
+}
+
+/**
+ * A user ID in the one form Jellyfin's GUID binding reads each of its spellings as (`a11ce000-...`, `{A11CE000-...}`,
+ * `(a11ce000...)`, `a11ce000...`), to compare two of them: without braces, parentheses or dashes, in lower case. A value
+ * Jellyfin does not read as a GUID at all never matches a user's own.
+ */
+function userIdKey(value: string): string {
+  return value.replace(/[{}()-]/g, '').toLowerCase();
+}
+
+/**
+ * Every query parameter Jellyfin 10.11 might read: the query's own, and, for a query that is a single key with no
+ * value and an `=` in it (`?itemId%3D...`), the `&`-separated pairs in that key, which Jellyfin's UrlDecodeQueryFeature
+ * reads as the query instead.
+ */
+function jellyfinQueryPairs(query: URLSearchParams): Array<[string, string]> {
+  const pairs = [...query];
+  const [only] = pairs;
+  if (pairs.length !== 1 || !only || only[1] || !only[0].includes('=')) return pairs;
+  return [...pairs, ...only[0].split('&').map((pair): [string, string] => {
+    const equals = pair.indexOf('=');
+    return equals < 0 ? [pair, ''] : [pair.slice(0, equals), pair.slice(equals + 1)];
+  })];
+}
+
+/**
+ * Jellyfin's anonymous live TV stream routes (`/LiveTv/LiveRecordings/{id}/stream`, `/LiveTv/LiveStreamFiles/{id}/...`),
+ * which Jellyfin's own transcoder reads at Jellyfin's local address and no client is sent to. They check no one, and
+ * their IDs are a recording's timer and a tuner stream, not items, so no household host serves them.
+ */
+function isServerInternalStreamRoute(route: string): boolean {
+  return /^\/livetv\/(?:liverecordings|livestreamfiles)(?:\/|$)/.test(route);
+}
+
+/** What a household host does with a request; see HouseholdGateway.#decide. */
+type RouteDecision =
+  | { kind: 'app' | 'publicUsers' | 'branding' | 'quickConnectEnabled' | 'quickConnect' | 'streamyfin' | 'forgotPassword' }
+  | { kind: 'signOut' | 'signIn' | 'signInById' | 'libraryJoin' | 'notFound' | 'proxy' }
+  | { kind: 'libraryJoinAsset'; asset: { body: string; contentType: string } }
+  | { kind: 'userImage'; userIds: string[] }
+  | { kind: 'caller'; userIds: string[]; itemIds: string[] };
 
 /**
  * A hash of the credentials a request carries, to key the app's short-lived cache of who they belong to, or undefined
@@ -1144,18 +1377,84 @@ function tokenKeys(credentials: JellyfinCredentials): string[] {
   return [...tokens].map((token) => createHash('sha256').update(`token\n${token}`).digest('hex'));
 }
 
+const LEGACY_PREFIXES = new Set(['emby', 'mediabrowser']);
+
 /**
- * Whether Jellyfin routes this path to its sign-out, POST /Sessions/Logout: in any case, percent-encoded or not, with
- * any trailing slashes, as ASP.NET Core matches its routes.
+ * The route Jellyfin 10.11 takes a request target to, which every decision a household host makes about a path is made
+ * on: each segment percent-decoded once and in lower case, without empty segments (so runs of slashes count as one and
+ * a trailing slash as none) and without the legacy `/emby` or `/mediabrowser` prefix Jellyfin strips before routing. It
+ * may match a path Jellyfin itself does not route (`//Users//Public`, say), never the other way round.
+ *
+ * Undefined for a target Jellyfin might read otherwise than this, which is refused rather than proxied: one that is not
+ * a path (`*`, an absolute URL); one with a backslash, a fragment or a character outside printable ASCII; invalid
+ * percent-encoding; an encoded slash or backslash, which Jellyfin keeps inside its segment; a `.` or `..` segment,
+ * encoded or not, which Jellyfin resolves; a control character; and a legacy prefix after another. What is still
+ * percent-encoded once decoded (`%2541` is `%41`) is kept as Jellyfin keeps it: whether decoding it again would change
+ * what the gateway does is HouseholdGateway.#decide's to ask (see {@link furtherDecodedRoute}).
  */
-function isLogoutPath(pathname: string): boolean {
-  let decoded = pathname;
-  try {
-    decoded = decodeURIComponent(pathname);
-  } catch {
-    // Not valid percent-encoding: the path as given.
+function jellyfinRoute(target: string): string | undefined {
+  if (!target.startsWith('/')) return undefined;
+  const queryAt = target.indexOf('?');
+  const path = queryAt < 0 ? target : target.slice(0, queryAt);
+  if (/[^\x21-\x7e]|[\\#]/.test(path)) return undefined;
+  const segments: string[] = [];
+  for (const raw of path.split('/')) {
+    if (!raw) continue;
+    let segment: string;
+    try {
+      segment = decodeURIComponent(raw);
+    } catch {
+      return undefined;
+    }
+    if (segment === '.' || segment === '..' || /[/\\\u0000-\u001f\u007f]/.test(segment)) return undefined;
+    segments.push(segment.toLowerCase());
   }
-  return decoded.toLowerCase().replace(/\/+$/, '') === LOGOUT_PATH;
+  return withoutLegacyPrefix(segments);
+}
+
+/** Decodings tried by {@link furtherDecodedRoute} before a route counts as ambiguous. */
+const MAX_FURTHER_DECODINGS = 4;
+
+/**
+ * A {@link jellyfinRoute} as it reads with each segment percent-decoded again until nothing more decodes, normalised
+ * as jellyfinRoute normalises (a decoded `/` now splits its segment); undefined if that reading has a dot segment, a
+ * backslash, a control character or a repeated legacy prefix, or still decodes after MAX_FURTHER_DECODINGS rounds.
+ */
+function furtherDecodedRoute(route: string): string | undefined {
+  const segments: string[] = [];
+  for (let segment of route.split('/')) {
+    for (let round = 0; /%[0-9a-f]{2}/i.test(segment); round += 1) {
+      if (round === MAX_FURTHER_DECODINGS) return undefined;
+      try {
+        segment = decodeURIComponent(segment);
+      } catch {
+        break;
+      }
+    }
+    segments.push(...segment.split('/'));
+  }
+  const kept = segments.filter(Boolean);
+  if (kept.some((segment) => segment === '.' || segment === '..' || /[\\\u0000-\u001f\u007f]/.test(segment))) return undefined;
+  return withoutLegacyPrefix(kept.map((segment) => segment.toLowerCase()));
+}
+
+/** `/`-joined route segments without one legacy prefix, as Jellyfin strips it; undefined if another follows it. */
+function withoutLegacyPrefix(segments: string[]): string | undefined {
+  const routed = LEGACY_PREFIXES.has(segments[0] ?? '') ? segments.slice(1) : segments;
+  return LEGACY_PREFIXES.has(routed[0] ?? '') ? undefined : `/${routed.join('/')}`;
+}
+
+/** Whether a {@link jellyfinRoute} is the household app's: never proxied to Jellyfin. */
+function isAppRoute(route: string): boolean {
+  return route === APP_PATH || route.startsWith(`${APP_PATH}/`);
+}
+
+function isQuickConnectRoute(route: string): boolean {
+  return route === QUICK_CONNECT_PATH || route.startsWith(`${QUICK_CONNECT_PATH}/`) || route === AUTHENTICATE_WITH_QUICK_CONNECT_PATH;
+}
+
+function isStreamyfinRoute(route: string): boolean {
+  return route === STREAMYFIN_PATH || route.startsWith(`${STREAMYFIN_PATH}/`);
 }
 
 /**
