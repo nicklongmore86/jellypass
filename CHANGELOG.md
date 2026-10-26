@@ -14,6 +14,66 @@ privacy leak. Such changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+## [3.0.0] - 2026-10-26
+
+This is a major release for the administrator API and the admin UI. The
+administrator API is part of JellyPass's public interface, and the versioning
+policy's one exception (at the top of CHANGELOG.md) covers only failure
+responses on endpoints relayed to Jellyfin, so the changes below that refuse
+requests 2.7.0 accepted make this 3.0.0. The
+household app, household hostnames and the Seerr webhook are unchanged: no
+file of the household app and none of the household gateway or app API code
+changed. There is nothing to configure: no setting is added, removed or
+renamed, and the state file is unchanged (schema v7, with the same fields as
+2.7.0), so 2.7.0 reads a state file written by 3.0.0. Read these before
+upgrading:
+
+- **Every administrator must sign in again after upgrading.** Over HTTPS the
+  session cookie is now `__Host-jellypass_session`, and a `jellypass_session`
+  cookie from 2.7.0 is ignored there (restarting JellyPass signs sessions out
+  anyway). Plain HTTP (LAN) keeps `jellypass_session`.
+- **Scripts that use the session cookie need a matching `Origin`, or should
+  use `ADMIN_TOKEN`.** A `POST`, `PUT`, `PATCH` or `DELETE` sent with the
+  session cookie, and every `POST /auth/login`, must carry
+  `Sec-Fetch-Site: same-origin` or an `Origin` equal to the admin host, or it
+  is `403 {"error":"cross_origin_request_refused"}`. Requests with
+  `ADMIN_TOKEN` as a bearer token are not origin-checked; scripts should use
+  it.
+- **Admin request bodies must be declared as JSON.** A body sent without
+  `Content-Type: application/json` (parameters such as `charset` allowed) is
+  `415 {"error":"unsupported_media_type"}`, bearer requests included. The Seerr
+  webhook still accepts any declared type.
+- **A reverse proxy must pass `Host` unchanged.** The admin origin is read
+  from `Host` only, never from `X-Forwarded-Host`, so a proxy that rewrites
+  `Host` to the upstream address makes every sign-in and change from the admin
+  UI a `403`. Nginx Proxy Manager keeps `Host`. You may also overwrite a
+  client's own `X-Forwarded-Host` at the proxy (in Nginx,
+  `proxy_set_header X-Forwarded-Host $host;`); JellyPass ignores it either way.
+- **The admin URL is not gated by default.** Anyone who can reach `/admin/`
+  can try to sign in. JellyPass limits attempts, but put the admin host behind
+  an identity-aware gate such as Cloudflare Access, a VPN or an IP allowlist at
+  the proxy, or keep it on the LAN, on a host of its own.
+- **Failed sign-ins answer differently.** Every refused sign-in, missing
+  fields included (2.7.0 answered `400`), is
+  `401 {"error":"invalid_credentials"}`, no sooner than one second after it
+  arrived, and Jellyfin's own error text is no longer relayed. Past five
+  failures for a name in 15 minutes, from any address, each further sign-in for
+  it waits longer (250 ms, doubling, at most five seconds) before Jellyfin is
+  asked; the right password still signs in.
+- **The rate limit is the one exception:** a fixed
+  `429 {"error":"too_many_login_attempts"}`, also no sooner than one second,
+  after eight failures from one address in five minutes or, new, ten for one
+  name from one address in 15 minutes.
+- **Sessions are checked against Jellyfin every five minutes.** A deleted,
+  demoted or disabled administrator's session ends (`401`); while Jellyfin
+  cannot answer the check, requests with the session get
+  `503 {"error":"session_check_unavailable"}`, retried after 30 seconds.
+- **To roll back,** set `JELLYPASS_IMAGE` back to
+  `ghcr.io/nicklongmore86/jellypass:2.7.0` and recreate the container. Sessions
+  are kept in memory only, so administrators sign in again; a leftover
+  `__Host-jellypass_session` cookie is ignored by 2.7.0. No state-file or
+  setting change is needed.
+
 ### Security
 
 - Admin: a state-changing request (`POST`, `PUT`, `PATCH`, `DELETE`) signed in by the browser session cookie,
@@ -1507,7 +1567,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v2.7.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.0.0...HEAD
+[3.0.0]: https://github.com/nicklongmore86/jellypass/compare/v2.7.0...v3.0.0
 [2.7.0]: https://github.com/nicklongmore86/jellypass/compare/v2.6.0...v2.7.0
 [2.6.0]: https://github.com/nicklongmore86/jellypass/compare/v2.5.0...v2.6.0
 [2.5.0]: https://github.com/nicklongmore86/jellypass/compare/v2.4.1...v2.5.0

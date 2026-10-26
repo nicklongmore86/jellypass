@@ -53,6 +53,40 @@ function assertSection(notes, { version, nextVersion, subheadings }) {
 }
 
 describe('changelogSection with the real CHANGELOG.md', () => {
+  it('extracts 3.0.0 without its heading, up to the 2.7.0 section', () => {
+    const notes = changelogSection(CHANGELOG, '3.0.0');
+    assertSection(notes, {
+      version: '3.0.0',
+      nextVersion: '2.7.0',
+      subheadings: ['Security'],
+    });
+    assert.match(notes, /^This is a major release for the administrator API and the admin UI/);
+    const flat = notes.replace(/\s+/g, ' ');
+    assert.match(flat, /the versioning policy's one exception \(at the top of CHANGELOG\.md\) covers only failure responses on endpoints relayed to Jellyfin/);
+    assert.match(flat, /There is nothing to configure/);
+    assert.match(flat, /2\.7\.0 reads a state file written by 3\.0\.0/);
+    assert.match(flat, /Every administrator must sign in again after upgrading/);
+    assert.match(flat, /`__Host-jellypass_session`/);
+    assert.match(flat, /should use `ADMIN_TOKEN`/);
+    assert.match(flat, /`403 \{"error":"cross_origin_request_refused"\}`/);
+    assert.match(flat, /`415 \{"error":"unsupported_media_type"\}`/);
+    assert.match(flat, /`proxy_set_header X-Forwarded-Host \$host;`/);
+    assert.match(flat, /The admin URL is not gated by default/);
+    assert.match(flat, /Cloudflare Access/);
+    assert.match(flat, /missing fields included \(2\.7\.0 answered `400`\)/);
+    assert.match(flat, /`429 \{"error":"too_many_login_attempts"\}`/);
+    assert.match(flat, /`503 \{"error":"session_check_unavailable"\}`/);
+    assert.match(flat, /`ghcr\.io\/nicklongmore86\/jellypass:2\.7\.0`/);
+    assert.match(flat, /No state-file or setting change is needed/);
+    const security = notes.indexOf('### Security');
+    for (const note of ['**Every administrator must sign in again', '**A reverse proxy must pass `Host` unchanged.**', '**To roll back,**']) {
+      assert.ok(notes.indexOf(note) >= 0 && notes.indexOf(note) < security, `upgrade note ${note} comes first`);
+    }
+    assert.doesNotMatch(notes, /### Upgrading from/);
+    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b/, 'no server-specific details');
+    assert.deepEqual(split(notes).definitions, []);
+  });
+
   it('extracts 2.7.0 without its heading, up to the 2.6.0 section', () => {
     const notes = changelogSection(CHANGELOG, '2.7.0');
     assertSection(notes, {
