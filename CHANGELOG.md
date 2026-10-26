@@ -26,7 +26,10 @@ privacy leak. Such changes are always listed at the top of the release notes.
   instead of a vertical bar. A title's status (the same five words) is a dot and a word at the top-left of its image.
   The primary button is solid aqua and the secondary is outlined. The big cards are rounder, with a thin border.
   Part 2 will redraw the hero and the detail pages (this part only recolours them), and the app icons are not yet
-  redrawn. The `theme-color` and the installed app's background colour are now the new page colour.
+  redrawn. The `theme-color` and the installed app's background colour are now the new page colour. At large text the
+  chosen chip, focus ring included, is scrolled fully into the chip row on every choice and on first load. The app
+  writes no style attributes via markup or `setAttribute`; the three measured chrome heights are root custom properties
+  set via the CSSOM, which `style-src` allows.
 
 ## [3.0.1] - 2026-10-26
 

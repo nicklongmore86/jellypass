@@ -102,9 +102,18 @@ describe('household app page: serving', { timeout: 30_000 }, () => {
     assert.equal(homeHref('all'), '#/');
     assert.equal(homeHref('movies'), '#/?kind=movies');
     assert.equal(homeHref('tv'), '#/?kind=tv');
-    // The scripts set no style attribute, as the CSP forbids: every waterline colour is a class. The one use of the CSSOM is the root's measured --header-box, --tabbar-box and --switch-height (set and removed with setProperty/removeProperty, which style-src does not gate).
+    // The scripts set no style attribute, as the CSP forbids: every waterline colour is a class. No style attributes are written via markup or setAttribute; the root's custom properties are set via the CSSOM, which style-src allows. The one exemption is the root-measurement helper in main.js (measure) and only the three properties --header-box, --tabbar-box and --switch-height.
     for (const file of FILES.filter((name) => name.startsWith('js/'))) {
-      const rest = read(file).replace(/\w+\.style\.(?:setProperty|removeProperty)\(property\b/g, '');
+      let rest = read(file);
+      if (/^js\/main\./.test(file)) {
+        const helper = rest.match(/function measure\(property, element\) \{[^]*?\n\}\n/);
+        assert.ok(helper, 'the measure helper');
+        assert.equal(helper[0].match(/\.style\b/g).length, 2, 'only the remove and set calls');
+        assert.equal((helper[0].match(/\bstyle\.(?:setProperty|removeProperty)\(property\b/g) || []).length, 2);
+        rest = rest.replace(helper[0], '');
+        const callers = [...rest.matchAll(/\bmeasure\((['"])([^'"]+)\1/g)].map((hit) => hit[2]).sort();
+        assert.deepEqual(callers, ['--header-box', '--switch-height', '--tabbar-box']);
+      }
       assert.doesNotMatch(rest, /\.style\b|setAttribute\(['"]style/, file);
     }
   });
@@ -2823,7 +2832,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       // The hero's title opens the title's page.
       assert.equal(slides[0].querySelector('.hero-link').getAttribute('href'), '#/movie/710000');
       // The hero reads like Home's own rows when the page is serialised: no inline style, no script.
-      // (The one exception is the root's measured --header-box, --tabbar-box and --switch-height, written through the CSSOM, which `style-src 'self'` allows.)
+      // (The root's measured --header-box, --tabbar-box and --switch-height are set via the CSSOM, which `style-src 'self'` allows, and so do appear as the root's style attribute.)
       assert.doesNotMatch(page.serialize().replace(/<style[^]*?<\/style>/gi, '').replace(/<html style="(?:--(?:switch-height|header-box|tabbar-box):[0-9.]+px;?\s*)+"/, '<html'), /\sstyle=|<script[^>]*>[^<]/i);
     });
 
@@ -2848,7 +2857,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.equal(switchHeight(), '');
       assert.equal(page.resizers.filter((observer) => observer.targets.size).length, 2, 'only the header and tab bar watched off Home');
       assert.equal(root.style.getPropertyValue('--header-box'), '76px');
-      // The mechanism is CSSOM only: the markup carries no style attribute on any element but the root's one custom property, and the CSP forbids inline styles.
+      // No style attributes are written via markup or setAttribute; the root's custom properties are set via the CSSOM, allowed by style-src (the root's style attribute then reflects them).
       const css = read(BUILT('app.css'));
       assert.match(css, /:root:has\(body\[data-home-switch\]\) \{ scroll-padding-top: calc\([^;]*var\(--switch-height\)/);
       assert.match(APP_CONTENT_SECURITY_POLICY, /style-src 'self'(?!.*unsafe-inline)/);
@@ -2858,6 +2867,22 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.match(source, /measure\(["']--tabbar-box["']/);
       assert.match(source, /style\.setProperty\(property, /);
       assert.doesNotMatch(source, /setAttribute\(['"]style['"]|\.cssText/);
+    });
+
+    it('brings the chosen Home chip, focus ring included, fully into the chip row after the selection settles', () => {
+      const source = read(BUILT('js/main.js'));
+      const css = read(BUILT('app.css'));
+      const reveal = source.match(/function revealChip\(chip\) \{[^]*?\n\}\n/);
+      assert.ok(reveal, 'revealChip');
+      // Measured after two frames (the browser's focus scroll and the tick's width change have settled), the ring (4px) counted in, reduced motion jumps.
+      assert.match(reveal[0], /requestAnimationFrame\(\(\) => window\.requestAnimationFrame\(settle\)\)/);
+      assert.match(source, /CHIP_RING = 4/);
+      assert.match(reveal[0], /prefers-reduced-motion: reduce[^]*behavior: reduced \? ['"]auto['"] : ['"]smooth['"]/);
+      // On the initial render (?kind=tv), on a click or key choice, and when the choice is unchanged.
+      assert.match(source, /show\(heading, switcher, heroSlot, panel\);\s*revealChip\(switcher\.querySelector\(['"]\[aria-checked="true"\]['"]\)\)/);
+      assert.match(source, /if \(next === chosen\)\s*return revealChip\(button\)/);
+      assert.match(source, /radio\.setAttribute\(['"]tabindex['"][^]*?\}\s*revealChip\(button\)/);
+      assert.match(css, /\.segmented-home \{[^}]*scroll-padding-inline: 4px/);
     });
 
     it('has no hero, and the header is its own bar, when the first row is empty or fails', async (t) => {

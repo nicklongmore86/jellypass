@@ -255,7 +255,7 @@ main {
   background: var(--bg); box-shadow: 0 1px 0 var(--hairline);
 }
 /* One row at any text size or zoom: the sticky band must stay short, so at large text the chips scroll sideways (focus brings the chosen one into view) instead of wrapping into a tall band that would fill the screen. The padding keeps the focus ring inside the scroller's clip. */
-.segmented-home { margin: -4px; padding: 4px; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; overscroll-behavior-x: contain; }
+.segmented-home { margin: -4px; padding: 4px; flex-wrap: nowrap; overflow-x: auto; scroll-padding-inline: 4px; scrollbar-width: none; overscroll-behavior-x: contain; }
 .segmented-home::-webkit-scrollbar { display: none; }
 .segmented-home .segment { flex: none; }
 .segmented-home .segment:focus-visible { outline: 3px solid var(--accent-text); outline-offset: 1px; }
