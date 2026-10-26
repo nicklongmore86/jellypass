@@ -435,14 +435,19 @@ personal account, so a valid personal token whose account isn't in the organizat
 
 The step **Check the Expo token can build the project** catches this before a build is spent. It prints who the token
 signs in as and its role in each organization (`eas whoami`, with the email line left out), and fails with the likely
-cause when the token is refused, the account isn't in `rtc-services-llc`, its role there is Viewer, or the project
-can't be read (`eas project:info`). The token itself is never printed. To fix it, make a new token ([step
+cause when the token is refused, the account isn't in `rtc-services-llc`, its role there is anything but Owner, Admin,
+Developer or Release Manager (Viewer, Custom, or a role newer than EAS CLI 24.12.1), or the project can't be read (`eas
+project:info`). The step doesn't print the token; it prints only what EAS CLI says. To fix it, make a new token ([step
 2](#one-time-setup-owner)) or give its account a build role under the organization's **Members** settings on
 expo.dev, then replace the `EXPO_TOKEN` environment secret. To check a token locally without leaving it in shell
 history: `read -rs EXPO_TOKEN && export EXPO_TOKEN && cd mobile && npx eas-cli@24.12.1 whoami && npx eas-cli@24.12.1
 project:info`.
 
 If **Build on EAS** still fails, its log shows EAS CLI's messages (stderr as usual, and the `message` fields of
-whatever it wrote to stdout instead of the build list, or the first 4000 bytes if that isn't JSON). `EXPO_DEBUG`
-stays off in CI: it dumps whole error objects, request context included. **Report the builds** only runs after a
+whatever it wrote to stdout instead of the build list, cut to 4000 characters, or the first 4000 bytes if that isn't
+JSON). The build records `eas build --json` writes have no credential fields. An error message is EAS's free text: it
+can name a file, such as the App Store Connect key's path under the runner's temp folder, but EAS CLI doesn't put the
+key's contents or the Expo token in one. `EXPO_DEBUG` stays off in CI: it dumps whole error objects, request context
+included. EAS CLI's output is printed with workflow commands switched off (`::stop-commands::` and a random marker), so
+a message containing `::error::` or the like shows as text and doesn't act on the run. **Report the builds** only runs after a
 successful build, and says so if the build list isn't valid JSON.
