@@ -7,8 +7,13 @@
 // - A key (`movie:<id>`, `tv:<id>`, `tv:<id>:<season>`) is added only after a 2xx Get this, in the same session as
 //   when it was sent: no sign-in move while the call was out (SessionProvider's getThis).
 // - A key ends once the monotonic clock has run ASKED_TTL_MS or the wall clock has moved forward by that much (the
-//   monotonic clock can pause while the device sleeps); a wall clock set back never stretches it.
-// - A key is dropped as soon as the server says anything but `get_this` for it.
+//   monotonic clock can pause while the device sleeps); a wall clock set back never stretches it. A timer set for the
+//   earliest end drops every key whose time is up and tells the screens once, so a screen left open shows the server's
+//   state again with no call; `recheck()` (the app coming back to the foreground, where a timer may have slept) does the
+//   same at once.
+// - A key is dropped as soon as a fresh answer from the server says anything but `get_this` for it.
+// - Drawing (`state()` and the rest) only reads: a key whose time is up is shown as ended, but only the timer or
+//   `recheck()` drops it and tells anyone.
 // - Beside the keys asked for, the latest state the server reported for each key (`seen`): every fresh answer (a title
 //   page, a season page, a Home row) is seen once, as it arrives, and numbered in order. An answer drawn again later (a
 //   Home row kept from before) shows the state of a fresher answer for the same key if there is one, so a title opened
@@ -22,6 +27,7 @@ export const ASKED_TTL_MS = 2 * 60 * 1000;
 export interface Asked {
   /** The member's accepted Get this: a series also marks the seasons asked for. */
   add(mediaType: MediaType, tmdbId: number, seasons: readonly number[]): void;
+  /** Drops everything, the timer too. */
   forget(): void;
   /** A fresh answer from the server, just arrived: its states become the latest for their keys. */
   seen(answer: Page | Movie | Series | Season): void;
@@ -35,18 +41,31 @@ export interface Asked {
   movie(movie: Movie): Movie;
   series(series: Series): Series;
   season(season: Season): Season;
-  /** Called after every add, seen and forget, for screens to draw the overlay again. */
+  /** Reads both clocks again now: drops the keys whose time is up (telling listeners once if any were) and sets the timer. */
+  recheck(): void;
+  /** Called after every add, seen, forget and key ended, for screens to draw the overlay again. */
   subscribe(listener: () => void): () => void;
-  /** Changes with every add, seen and forget. */
+  /** Changes with every add, seen, forget and key ended. */
   version(): number;
 }
+
+/** Where the overlay's one timer is set: the global setTimeout, or a test's own. */
+export interface Timer {
+  set(run: () => void, ms: number): unknown;
+  clear(handle: unknown): void;
+}
+
+const globalTimer: Timer = {
+  set: (run, ms) => setTimeout(run, ms),
+  clear: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+};
 
 export const titleKey = (mediaType: MediaType, tmdbId: number): string => `${mediaType}:${tmdbId}`;
 export const seasonKey = (tmdbId: number, seasonNumber: number): string => `tv:${tmdbId}:${seasonNumber}`;
 
 const monotonic = (): number => performance.now();
 
-export function createAsked(now: () => number = monotonic, wall: () => number = () => Date.now()): Asked {
+export function createAsked(now: () => number = monotonic, wall: () => number = () => Date.now(), timer: Timer = globalTimer): Asked {
   let expires = new Map<string, { mono: number; wall: number }>();
   /** The latest state the server reported for each key, and the number of the answer that said it. */
   let latest = new Map<string, { state: HouseholdState; at: number }>();
@@ -61,6 +80,43 @@ export function createAsked(now: () => number = monotonic, wall: () => number = 
     for (const listener of [...listeners]) listener();
   };
 
+  /** How long `since` has left, by whichever clock ends it first (a wall clock set back never counts). */
+  const left = (since: { mono: number; wall: number }) => {
+    const sinceWall = wall() - since.wall;
+    return Math.min(ASKED_TTL_MS - (now() - since.mono), sinceWall > 0 ? ASKED_TTL_MS - sinceWall : Infinity);
+  };
+
+  let pending: unknown;
+  let armed = false;
+  /** Sets the one timer for the key that ends first, or none. */
+  const schedule = () => {
+    if (armed) timer.clear(pending);
+    armed = false;
+    if (expires.size === 0) return;
+    let first = Infinity;
+    for (const since of expires.values()) first = Math.min(first, left(since));
+    armed = true;
+    pending = timer.set(
+      () => {
+        armed = false;
+        ended();
+      },
+      Math.max(0, first),
+    );
+  };
+  /** Drops the keys whose time is up, tells listeners once if any were, and sets the timer for the next. */
+  const ended = () => {
+    let dropped = false;
+    for (const [key, since] of expires) {
+      if (left(since) <= 0) {
+        expires.delete(key);
+        dropped = true;
+      }
+    }
+    schedule();
+    if (dropped) changed();
+  };
+
   const asked: Asked = {
     add(mediaType, tmdbId, seasons) {
       const since = { mono: now(), wall: wall() };
@@ -68,9 +124,12 @@ export function createAsked(now: () => number = monotonic, wall: () => number = 
       expires.set(key, since);
       // A series is requested while any of its seasons is (as the server shows it once recorded).
       if (mediaType === 'tv') for (const season of seasons) expires.set(seasonKey(tmdbId, season), since);
+      schedule();
       changed();
     },
     forget() {
+      if (armed) timer.clear(pending);
+      armed = false;
       if (expires.size === 0 && latest.size === 0) return;
       expires = new Map();
       latest = new Map();
@@ -89,23 +148,15 @@ export function createAsked(now: () => number = monotonic, wall: () => number = 
         note(titleKey(answer.mediaType, answer.tmdbId), answer);
         if (answer.mediaType === 'tv') for (const season of answer.seasons) note(seasonKey(answer.tmdbId, season.seasonNumber), season);
       } else note(seasonKey(answer.tmdbId, answer.seasonNumber), answer);
+      schedule();
       changed();
     },
     state(key, reported, at) {
       const fresher = latest.get(key);
       const server = fresher && (at === undefined || fresher.at > at) ? fresher.state : reported;
-      if (server !== 'get_this') {
-        expires.delete(key);
-        return server;
-      }
+      if (server !== 'get_this') return server;
       const since = expires.get(key);
-      if (since === undefined) return server;
-      const sinceWall = wall() - since.wall;
-      if (now() - since.mono >= ASKED_TTL_MS || (sinceWall > 0 && sinceWall >= ASKED_TTL_MS)) {
-        expires.delete(key);
-        return server;
-      }
-      return 'requested';
+      return since !== undefined && left(since) > 0 ? 'requested' : server;
     },
     card: (card) => {
       const state = asked.state(titleKey(card.mediaType, card.tmdbId), card.state, numbers.get(card));
@@ -121,6 +172,7 @@ export function createAsked(now: () => number = monotonic, wall: () => number = 
       })),
     }),
     season: (season) => ({ ...season, state: asked.state(seasonKey(season.tmdbId, season.seasonNumber), season.state, numbers.get(season)) }),
+    recheck: () => ended(),
     subscribe(listener) {
       listeners.add(listener);
       return () => {

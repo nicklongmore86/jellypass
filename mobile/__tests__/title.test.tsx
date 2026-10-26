@@ -8,10 +8,11 @@
 import { act, screen } from '@testing-library/react-native';
 import { router } from 'expo-router';
 import { renderRouter } from 'expo-router/testing-library';
-import { Linking } from 'react-native';
+import { AppState, Linking, type AppStateStatus } from 'react-native';
 
 import type { FetchLike } from '../src/api/client';
 import { layout } from '../src/theme';
+import { ASKED_TTL_MS } from '../src/title/asked';
 import { GET_THIS_TEXT } from '../src/title/text';
 import { API } from './support/home';
 import { ORIGIN, TOKEN, answer, keepSession, offline, settle, shows, store, storedSession, type Call } from './support/household';
@@ -409,25 +410,74 @@ describe('Requested right after Get this', () => {
     server = state;
     await pressNode(homeCard('Requested')[0]!);
     expect(spokenStatus()[0]).toBe(word);
-    await pressNode(buttonNamed('Back'));
-    // Home draws its kept rows again (here: the member asks for another title, so the overlay changes). The row still
-    // holds its first answer (get_this), but the fresher one wins.
-    await act(async () => router.push('/home/movie/7'));
-    await settle();
-    await pressNode(buttonNamed('Get this: Film 7'));
+    // Back on Home at once: the row still holds its first answer (get_this), but the fresher one wins.
     await pressNode(buttonNamed('Back'));
     expect(homeCard(word)).toHaveLength(1);
     expect(homeCard('Available to get')).toHaveLength(0);
   });
 
-  it('ends after two minutes: the server\'s get_this is shown again', async () => {
+  // AppState is React Native's Jest mock: what the app listens with is in its calls.
+  const addEventListener = AppState.addEventListener as jest.MockedFunction<typeof AppState.addEventListener>;
+  beforeEach(() => addEventListener.mockClear());
+  /** Tells the app's AppState listeners it is now `state`. */
+  async function foreground(state: AppStateStatus) {
+    await act(async () => {
+      for (const [type, listener] of addEventListener.mock.calls) if (type === 'change') listener(state);
+    });
+    await settle();
+  }
+
+  it('ends after two minutes on the title page left open: the server\'s get_this is shown again, with no call', async () => {
     await open('/home/movie/7');
     await pressNode(buttonNamed('Get this: Film 7'));
     expect(spokenStatus()).toEqual(['Requested']);
-    await wait(2 * 60_000);
+    const before = gateway.routes().length;
+    await wait(ASKED_TTL_MS - 1_000);
+    expect(spokenStatus()).toEqual(['Requested']);
+    await wait(1_000);
+    expect(spokenStatus()).toEqual(['Available to get']);
+    expect(gateway.routes().length).toBe(before);
+  });
+
+  it('ends after two minutes on Home left open: its card shows the server\'s state again, with no call', async () => {
+    useHousehold({ series: { 1002: seriesAnswer(1002, ['get_this']) } });
+    await open('/');
+    await pressNode(homeCard('Available to get')[0]!);
+    await pressNode(checkboxNamed('Season 1'));
+    await pressNode(buttonNamed('Get this: Series 1002'));
     await pressNode(buttonNamed('Back'));
-    await act(async () => router.push('/home/movie/7'));
-    await settle();
+    expect(homeCard('Requested')).toHaveLength(1);
+    const before = gateway.routes().length;
+    await wait(ASKED_TTL_MS);
+    expect(homeCard('Available to get')).toHaveLength(1);
+    expect(homeCard('Requested')).toHaveLength(0);
+    expect(gateway.routes().length).toBe(before);
+  });
+
+  it('ends on coming back to the foreground once the wall clock has moved two minutes while the app slept', async () => {
+    useHousehold({ series: { 1002: seriesAnswer(1002, ['get_this']) } });
+    await open('/');
+    await pressNode(homeCard('Available to get')[0]!);
+    await pressNode(checkboxNamed('Season 1'));
+    await pressNode(buttonNamed('Get this: Series 1002'));
+    await pressNode(buttonNamed('Back'));
+    const before = gateway.routes().length;
+    // Suspended: the wall clock moved on, the monotonic clock (and the timer) did not.
+    jest.setSystemTime(Date.now() + 10 * ASKED_TTL_MS);
+    await foreground('background');
+    expect(homeCard('Requested')).toHaveLength(1);
+    await foreground('active');
+    expect(homeCard('Available to get')).toHaveLength(1);
+    expect(homeCard('Requested')).toHaveLength(0);
+    expect(gateway.routes().length).toBe(before);
+  });
+
+  it('ends on the title page left open when the app comes back to the foreground after a long sleep', async () => {
+    await open('/home/movie/7');
+    await pressNode(buttonNamed('Get this: Film 7'));
+    expect(spokenStatus()).toEqual(['Requested']);
+    jest.setSystemTime(Date.now() + 10 * ASKED_TTL_MS);
+    await foreground('active');
     expect(spokenStatus()).toEqual(['Available to get']);
   });
 

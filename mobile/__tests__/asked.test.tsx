@@ -1,6 +1,7 @@
 // The Requested overlay (src/title/asked.ts), the PWA's app/src/asked.ts natively: its keys, its two-minute window by
-// the monotonic clock or the wall clock moving forward (never stretched by a clock set back), dropped as soon as the
-// server says anything but get_this, the latest state the server reported for each key (a fresher answer wins over one
+// the monotonic clock or the wall clock moving forward (never stretched by a clock set back), ended by its one timer (set
+// for the earliest end, telling listeners once) or a recheck on coming back to the foreground, never by drawing, dropped
+// as soon as a fresh answer says anything but get_this, the latest state the server reported for each key (a fresher answer wins over one
 // drawn again from before), and forgotten on demand. Then its place in the session: added only after a 2xx Get this in
 // the same session as when it was sent, and gone (both) on sign-out, a 401 and any other sign-in.
 import { act, render } from '@testing-library/react-native';
@@ -14,11 +15,29 @@ import { movieAnswer, seasonAnswer, seriesAnswer } from './support/title';
 
 function clocks() {
   const clock = { mono: 1_000, wall: Date.parse('2026-10-26T12:00:00Z') };
+  /** The overlay's one timer, if set: what it runs and in how long. */
+  let timer: { run: () => void; ms: number } | undefined;
   const asked = createAsked(
     () => clock.mono,
     () => clock.wall,
+    {
+      set: (run, ms) => (timer = { run, ms }),
+      clear: (handle) => {
+        if (handle === timer) timer = undefined;
+      },
+    },
   );
-  return { clock, asked };
+  /** Lets `ms` pass on both clocks, running the timer if it comes due. */
+  const pass = (ms: number) => {
+    const due = timer;
+    clock.mono += ms;
+    clock.wall += ms;
+    if (due && due.ms <= ms && timer === due) {
+      timer = undefined;
+      due.run();
+    }
+  };
+  return { clock, asked, pass, timer: () => timer?.ms };
 }
 
 describe('the overlay', () => {
@@ -55,7 +74,8 @@ describe('the overlay', () => {
     expect(asked.state('movie:7', 'get_this')).toBe('requested');
     clock.mono += 1;
     expect(asked.state('movie:7', 'get_this')).toBe('get_this');
-    // Ended for good: the key is gone.
+    // Ended for good once the overlay reads its clocks: the key is gone.
+    asked.recheck();
     clock.mono -= 10;
     expect(asked.state('movie:7', 'get_this')).toBe('get_this');
   });
@@ -77,11 +97,94 @@ describe('the overlay', () => {
     expect(asked.state('movie:7', 'get_this')).toBe('get_this');
   });
 
-  it.each(['requested', 'in_library', 'unavailable'] as const)('is dropped as soon as the server says %s', (server) => {
-    const { asked } = clocks();
+  it.each(['requested', 'in_library', 'unavailable'] as const)('is dropped as soon as a fresh answer says %s', (server) => {
+    const { asked, timer } = clocks();
     asked.add('movie', 7, []);
+    // Drawn with the server's state over the key, but drawing drops nothing.
     expect(asked.state('movie:7', server)).toBe(server);
+    expect(asked.state('movie:7', 'get_this')).toBe('requested');
+    asked.seen(movieAnswer(7, server) as Movie);
+    // A later answer saying get_this again is not overlaid: the key is gone, and so is its timer.
+    asked.seen(movieAnswer(7, 'get_this') as Movie);
     expect(asked.state('movie:7', 'get_this')).toBe('get_this');
+    expect(timer()).toBeUndefined();
+  });
+
+  it('sets one timer for the key that ends first, and tells whoever listens once when it ends, then sets it for the next', () => {
+    const { asked, pass, timer } = clocks();
+    expect(timer()).toBeUndefined();
+    asked.add('movie', 7, []);
+    expect(timer()).toBe(ASKED_TTL_MS);
+    pass(30_000);
+    asked.add('tv', 9, [1, 2]);
+    // Still set for the movie, the first to end.
+    expect(timer()).toBe(ASKED_TTL_MS - 30_000);
+    const heard = jest.fn();
+    asked.subscribe(heard);
+    const version = asked.version();
+    pass(ASKED_TTL_MS - 30_000);
+    expect(heard).toHaveBeenCalledTimes(1);
+    expect(asked.version()).toBe(version + 1);
+    expect(asked.state('movie:7', 'get_this')).toBe('get_this');
+    expect(asked.state('tv:9', 'get_this')).toBe('requested');
+    // The series and its two seasons end together: once more, once.
+    expect(timer()).toBe(30_000);
+    pass(30_000);
+    expect(heard).toHaveBeenCalledTimes(2);
+    expect(['tv:9', 'tv:9:1', 'tv:9:2'].map((key) => asked.state(key, 'get_this'))).toEqual(['get_this', 'get_this', 'get_this']);
+    expect(timer()).toBeUndefined();
+  });
+
+  it('never tells anyone, nor changes, while it is drawn, even past a key\'s end', () => {
+    const { clock, asked, timer } = clocks();
+    const row = { page: 1, nextPage: null, results: [movieAnswer(7, 'get_this')] } as unknown as Page;
+    asked.seen(row);
+    asked.add('movie', 7, []);
+    const heard = jest.fn();
+    asked.subscribe(heard);
+    const version = asked.version();
+    const draw = () => [asked.state('movie:7', 'get_this'), asked.state('movie:7', 'in_library', 99), asked.page(row).results[0]!.state, asked.movie(movieAnswer(7) as Movie).state];
+    expect(draw()).toEqual(['requested', 'in_library', 'requested', 'requested']);
+    clock.mono += ASKED_TTL_MS;
+    expect(draw()).toEqual(['get_this', 'in_library', 'get_this', 'get_this']);
+    expect(heard).not.toHaveBeenCalled();
+    expect(asked.version()).toBe(version);
+    // The key is still there for the timer to end (and tell everyone).
+    expect(timer()).toBe(ASKED_TTL_MS);
+  });
+
+  it('ends a key on a recheck once the wall clock has moved two minutes while the monotonic clock slept, telling listeners once', () => {
+    const { clock, asked, timer } = clocks();
+    asked.add('movie', 7, []);
+    asked.add('tv', 9, [1]);
+    const heard = jest.fn();
+    asked.subscribe(heard);
+    // Nothing has ended: a recheck tells nobody.
+    asked.recheck();
+    expect(heard).not.toHaveBeenCalled();
+    clock.wall += 10 * ASKED_TTL_MS;
+    asked.recheck();
+    expect(heard).toHaveBeenCalledTimes(1);
+    expect(['movie:7', 'tv:9', 'tv:9:1'].map((key) => asked.state(key, 'get_this'))).toEqual(['get_this', 'get_this', 'get_this']);
+    expect(timer()).toBeUndefined();
+  });
+
+  it('sets its timer by the wall clock too, and never by one set back', () => {
+    const { clock, asked, timer } = clocks();
+    asked.add('movie', 7, []);
+    clock.wall += 90_000;
+    asked.add('movie', 8, []);
+    expect(timer()).toBe(ASKED_TTL_MS - 90_000);
+    clock.wall -= 10 * ASKED_TTL_MS;
+    asked.add('movie', 9, []);
+    expect(timer()).toBe(ASKED_TTL_MS);
+  });
+
+  it('stops its timer when it forgets', () => {
+    const { asked, timer } = clocks();
+    asked.add('movie', 7, []);
+    asked.forget();
+    expect(timer()).toBeUndefined();
   });
 
   it('forgets everything, and tells whoever listens of every add and forget', () => {
@@ -190,7 +293,7 @@ describe('in the session', () => {
       'GET /Users/Public': () => answer(200, []),
       'POST /Sessions/Logout': () => answer(204),
     });
-    await render(
+    const view = await render(
       <SafeAreaProvider initialMetrics={METRICS}>
         <SessionProvider deps={{ fetch: gateway.fetch, identity: async () => IDENTITY }}>
           <Probe />
@@ -198,7 +301,7 @@ describe('in the session', () => {
       </SafeAreaProvider>,
     );
     await settle();
-    return gateway;
+    return Object.assign(gateway, { unmount: () => view.unmount() });
   }
 
   beforeEach(() => {
@@ -307,6 +410,29 @@ describe('in the session', () => {
     expect(before.page(row).results.map((card) => card.state)).toEqual(['get_this']);
     expect(requested(before)).toBe(false);
     expect(session!.asked.page(row).results.map((card) => card.state)).toEqual(['get_this']);
+  });
+
+  it('stops its timer when the session provider goes, and when a sign-out forgets it', async () => {
+    const set = jest.spyOn(global, 'setTimeout');
+    const clear = jest.spyOn(global, 'clearTimeout');
+    try {
+      const timers = () => set.mock.results.filter((_result, index) => set.mock.calls[index]![1] === ASKED_TTL_MS).map((result) => result.value);
+      const view = await start(() => answer(202, { status: 'accepted' }));
+      await act(async () => session!.getThis('movie', 7, []));
+      await act(async () => session!.signOut());
+      await settle();
+      expect(timers()).toHaveLength(1);
+      expect(clear.mock.calls.map(([handle]) => handle)).toContain(timers()[0]);
+      await act(async () => session!.completeSignIn(session!.household!, { token: TOKEN, userId: 'synthetic-user-0001', name: 'Ana Lima' }, session!.epoch()));
+      await settle();
+      await act(async () => session!.getThis('movie', 7, []));
+      expect(timers()).toHaveLength(2);
+      await act(async () => view.unmount());
+      expect(clear.mock.calls.map(([handle]) => handle)).toContain(timers()[1]);
+    } finally {
+      set.mockRestore();
+      clear.mockRestore();
+    }
   });
 
   it('forgets everything on a 401', async () => {

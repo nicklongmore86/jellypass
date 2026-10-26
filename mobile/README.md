@@ -230,7 +230,10 @@ card on the series page). An address that names no title (`07`, `1e3`) is **Not 
   in memory only, the keys `movie:<id>`, `tv:<id>` and `tv:<id>:<season>` its member just asked for, added only after a
   2xx in the same session as when it was sent (no sign-in move while it was out, even back to the same token). A key
   ends after two minutes by the monotonic clock or the wall clock moving forward (a clock set back never stretches it),
-  and as soon as the server says anything but `get_this` for it. Beside the keys, the same store keeps the latest state
+  and as soon as a fresh answer from the server says anything but `get_this` for it. One timer, set for the earliest
+  end, drops the keys whose time is up and redraws every screen once, so a page or Home left open shows the server's
+  state again with no call; coming back to the foreground (`AppState` active) reads both clocks again at once, for a
+  timer that slept with the app. Drawing only reads. Beside the keys, the same store keeps the latest state
   the server reported for each key, numbered in the order the answers arrived (title pages, season pages, Home's rows):
   a card drawn again from an older answer shows the fresher one's state, so a title found requested (or in the library)
   on opening it again stays so on Home once its key is dropped. It is one store per signed-in session

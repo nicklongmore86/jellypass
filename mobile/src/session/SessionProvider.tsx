@@ -11,9 +11,11 @@
 // - Sign-out asks the gateway to forget the session (best effort, five seconds), then deletes the sign-in from the
 //   device whatever came of that.
 // - What the member just asked for (src/title/asked.ts) belongs to one signed-in session: a sign-out, a 401 or any
-//   other sign-in (household, member or token) starts it empty.
+//   other sign-in (household, member or token) starts it empty. Coming back to the foreground reads its clocks again
+//   (a timer may have slept with the app), and leaving the provider stops its timer.
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
+import { AppState } from 'react-native';
 
 import type { HouseholdAddress } from '../api/address';
 import type { ClientIdentity } from '../api/auth';
@@ -210,7 +212,14 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
   );
   useEffect(() => {
     askedRef.current = asked;
-    return () => asked.forget();
+    const foreground = AppState.addEventListener('change', (state) => {
+      if (state === 'active') asked.recheck();
+    });
+    return () => {
+      foreground.remove();
+      if (askedRef.current === asked) askedRef.current = undefined;
+      asked.forget();
+    };
   }, [asked]);
 
   const getThis = useCallback(
