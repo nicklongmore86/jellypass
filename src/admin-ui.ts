@@ -969,8 +969,10 @@ export const ADMIN_APP_JS = `
   byId('login-form').addEventListener('submit', async (event) => {
     event.preventDefault();
     byId('login-error').textContent = '';
+    let accepted = false;
     try {
       await api('/auth/login', { method: 'POST', body: JSON.stringify({ username: byId('username').value.trim(), password: byId('password').value }) });
+      accepted = true;
       // A new session: answers to requests made before it have no effect.
       sessionEpoch += 1;
       const epoch = sessionEpoch;
@@ -981,7 +983,9 @@ export const ADMIN_APP_JS = `
       setConnected(true);
     } catch (error) {
       if (error.stale) return;
-      byId('login-error').textContent = ['invalid_credentials', 'unauthorized'].includes(error.code) ? errorText.invalid_credentials : error.message;
+      // Only the sign-in itself can reject the credentials: a 401 after it was accepted is a session that ended.
+      const rejected = !accepted && ['invalid_credentials', 'unauthorized'].includes(error.code);
+      byId('login-error').textContent = rejected ? errorText.invalid_credentials : accepted && error.status === 401 ? errorText.unauthorized : error.message;
     }
   });
   byId('logout').addEventListener('click', () => busy(async (live) => { await api('/auth/logout', { method: 'POST' }); live(); setConnected(false); }));
