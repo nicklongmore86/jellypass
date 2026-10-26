@@ -53,6 +53,31 @@ function assertSection(notes, { version, nextVersion, subheadings }) {
 }
 
 describe('changelogSection with the real CHANGELOG.md', () => {
+  it('extracts 2.7.0 without its heading, up to the 2.6.0 section', () => {
+    const notes = changelogSection(CHANGELOG, '2.7.0');
+    assertSection(notes, {
+      version: '2.7.0',
+      nextVersion: '2.6.0',
+      subheadings: ['Added', 'Changed'],
+    });
+    assert.match(notes, /^This is a minor release for the household app/);
+    const flat = notes.replace(/\s+/g, ' ');
+    assert.match(flat, /There is nothing to configure/);
+    assert.match(flat, /2\.6\.0 reads a state file written by 2\.7\.0/);
+    assert.match(flat, /\*\*Movies\*\* makes four and \*\*TV\*\* three/);
+    assert.match(flat, /Where-to-watch data is for the US only/);
+    assert.match(flat, /JustWatch is credited/);
+    assert.match(flat, /`\/discover\/network\/213\/2`/);
+    assert.match(flat, /`400 invalid_request` instead of `404 not_found`/);
+    assert.match(flat, /No CDN purge is needed/);
+    assert.match(flat, /`ghcr\.io\/nicklongmore86\/jellypass:2\.6\.0`/);
+    assert.match(flat, /`GET \/jellypass\/app\/v1\/discover\/network\/:id\/films\?page=`/);
+    assert.match(flat, /`hasFilms: true`/);
+    assert.ok(notes.indexOf('**More TMDB calls as members scroll and switch filters.**') < notes.indexOf('### Added'), 'upgrade notes come first');
+    assert.doesNotMatch(notes, /### Upgrading from/);
+    assert.deepEqual(split(notes).definitions, []);
+  });
+
   it('extracts 2.6.0 without its heading, up to the 2.5.0 section', () => {
     const notes = changelogSection(CHANGELOG, '2.6.0');
     assertSection(notes, {
