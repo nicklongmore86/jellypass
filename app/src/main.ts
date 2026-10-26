@@ -154,12 +154,13 @@ let me: Me | undefined;
 /** The access token the app last saw; when it changes (or goes), what belonged to the old member goes with it. */
 let seenToken = jellyfinToken(localStorage, origin);
 
-function syncCredentials(): void {
+function syncCredentials(): boolean {
   const token = jellyfinToken(localStorage, origin);
-  if (token === seenToken) return;
+  if (token === seenToken) return false;
   seenToken = token;
   me = undefined;
   api.forgetAsked();
+  return true;
 }
 let first = true;
 
@@ -1320,7 +1321,12 @@ async function requestsScreen(signal: AbortSignal, current: () => boolean): Prom
 
 // Signing in or out on the same address (in another tab, or in Jellyfin web) is picked up without a reload.
 function resumeIfChanged(): void {
-  syncCredentials();
+  // Any change of token (member to member, to none, from none) redraws the screen from scratch: what it shows was
+  // read for the previous member (badges, the Account name) and is not theirs to see.
+  if (syncCredentials()) {
+    void render();
+    return;
+  }
   const signedIn = Boolean(jellyfinToken(localStorage, origin));
   const showingSignIn = Boolean(main.querySelector('[data-screen="signin"]'));
   const onAccount = parse(location.hash).name === 'account';

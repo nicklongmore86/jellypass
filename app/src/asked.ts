@@ -22,14 +22,18 @@ export interface Asked {
   season(season: Season): Season;
 }
 
-/** Elapsed time on the monotonic clock, so a wall-clock change (a clock set back or forward) never stretches or cuts the window. */
-export function createAsked(now: () => number = () => performance.now()): Asked {
-  let expires = new Map<string, number>();
+/**
+ * A key ends when the monotonic clock has run {@link ASKED_TTL_MS} or the wall clock has moved forward by that much.
+ * WebKit's monotonic clock can pause while the device sleeps, so the wall clock catches a long sleep; a wall clock
+ * set back is ignored (only a positive difference counts), so it can never stretch the window.
+ */
+export function createAsked(now: () => number = () => performance.now(), wall: () => number = () => Date.now()): Asked {
+  let expires = new Map<string, { mono: number; wall: number }>();
   const titleKey = (mediaType: MediaType, tmdbId: number) => `${mediaType}:${tmdbId}`;
 
   const asked: Asked = {
     add(mediaType, tmdbId, seasons) {
-      const until = now() + ASKED_TTL_MS;
+      const until = { mono: now(), wall: wall() };
       const key = titleKey(mediaType, tmdbId);
       expires.set(key, until);
       // A series is requested while any of its seasons is (as the server shows it once recorded).
@@ -43,7 +47,8 @@ export function createAsked(now: () => number = () => performance.now()): Asked 
       }
       const until = expires.get(key);
       if (until === undefined) return server;
-      if (until <= now()) {
+      const sinceWall = wall() - until.wall;
+      if (now() - until.mono >= ASKED_TTL_MS || (sinceWall > 0 && sinceWall >= ASKED_TTL_MS)) {
         expires.delete(key);
         return server;
       }

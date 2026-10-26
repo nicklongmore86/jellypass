@@ -4278,6 +4278,31 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         assert.ok(page.main().querySelector('button') !== null, 'Get this is offered again');
       });
 
+      it('redraws the current screen when one member\'s token is replaced by another\'s, without any navigation', async (t) => {
+        const app = await startApp(t);
+        const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}` });
+        await ask(page);
+        assert.equal(page.main().querySelector('.badge').textContent, 'Requested');
+        page.store.set('jellyfin_credentials', JSON.stringify({ Servers: [{ ManualAddress: page.location.origin, AccessToken: TOKENS[ANN], UserId: ANN }] }));
+        for (const listener of page.listeners.storage ?? []) listener({ key: 'jellyfin_credentials' });
+        await page.until(() => page.main().querySelector('.badge')?.textContent === 'Available to get', 'the title redrawn for the new member');
+        assert.equal(page.location.hash, `#/movie/${T_MOVIE}`, 'no navigation');
+      });
+
+      it('redraws Account with the new member\'s name when the token is replaced, without any navigation', async (t) => {
+        const app = await startApp(t);
+        const page = await openApp(t, app, { hash: '#/account' });
+        await page.until(() => page.main().querySelector('.account-name')?.textContent === 'Alice · Farmhouse', 'Alice\'s card');
+        page.store.set('jellyfin_credentials', JSON.stringify({ Servers: [{ ManualAddress: page.location.origin, AccessToken: TOKENS[ANN], UserId: ANN }] }));
+        for (const listener of page.listeners.storage ?? []) listener({ key: 'jellyfin_credentials' });
+        await page.until(() => {
+          const name = page.main().querySelector('.account-name')?.textContent;
+          return name && name !== 'Signed in' && !name.includes('Alice');
+        }, 'the new member\'s card');
+        assert.equal(page.main().querySelector('.account-name').textContent.includes('Alice'), false);
+        assert.equal(page.location.hash, '#/account', 'no navigation');
+      });
+
       it('clears when the sign-in changes without any storage event or route change (the next read decides)', async (t) => {
         const app = await startApp(t);
         const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}` });
@@ -4653,7 +4678,7 @@ describe('household app: what this member just asked for', { timeout: 30_000 }, 
     assert.equal(overlay.card(movieCard('get_this')).state, 'get_this');
   });
 
-  it('times the window on the monotonic clock: a wall-clock jump neither extends nor cuts it', async (t) => {
+  it('ends on the monotonic clock, or on the wall clock moving forward (sleep); a clock set back never extends it', async (t) => {
     const { createAsked, ASKED_TTL_MS } = await asked();
     let monotonic = 10_000;
     let wall = 1_700_000_000_000;
@@ -4666,12 +4691,18 @@ describe('household app: what this member just asked for', { timeout: 30_000 }, 
     monotonic += ASKED_TTL_MS;
     assert.equal(overlay.card(movieCard('get_this')).state, 'get_this', 'expired on elapsed time, whatever the wall clock says');
     overlay.add('movie', 5, []);
-    // The wall clock jumps a day forward: the window is not cut.
-    wall += 86_400_000;
+    // Backward jump alone: still inside, and not extended past the monotonic limit either.
+    wall -= 3_600_000;
     monotonic += ASKED_TTL_MS - 1;
-    assert.equal(overlay.card(movieCard('get_this')).state, 'requested', 'still inside the window');
+    assert.equal(overlay.card(movieCard('get_this')).state, 'requested', 'a backward jump does not end it');
     monotonic += 1;
-    assert.equal(overlay.card(movieCard('get_this')).state, 'get_this');
+    assert.equal(overlay.card(movieCard('get_this')).state, 'get_this', 'a backward jump does not extend it');
+    // Sleep: the wall clock advances while performance.now() stays put.
+    overlay.add('movie', 5, []);
+    wall += ASKED_TTL_MS - 1;
+    assert.equal(overlay.card(movieCard('get_this')).state, 'requested', 'just inside');
+    wall += 1;
+    assert.equal(overlay.card(movieCard('get_this')).state, 'get_this', 'ended by the wall clock');
   });
 
   it('keeps season keys apart and marks the series', async () => {
