@@ -16,6 +16,14 @@ privacy leak. Such changes are always listed at the top of the release notes.
 
 ### Fixed
 
+- Body-less admin routes now also reject non-JSON bodies, as documented in
+  3.0.0. A `POST`, `PUT` or `DELETE` to an administrator API route that
+  carries a body not declared as `application/json` is
+  `415 {"error":"unsupported_media_type"}` before anything happens, also on
+  routes that never read their body such as `POST /v1/library/sync`,
+  `POST /v1/reconcile` and `POST /auth/logout`. Requests without a body work as
+  before, whatever their `Content-Type`, and unknown paths and methods are still
+  `404 {"error":"not_found"}` whatever they carry.
 - Admin UI: while Jellyfin cannot answer the five-minute session check (`503 {"error":"session_check_unavailable"}`),
   the admin UI no longer shows the sign-in form at load, and no longer shows the raw code after an action. The server
   keeps the session and allows another check 30 seconds after the failed one; the UI now keeps its current view, shows
