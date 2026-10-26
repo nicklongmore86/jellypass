@@ -134,8 +134,11 @@ and the admin host are unaffected.
   `DELETE`) is who the playlist is shared with, not the acting user, and
   Jellyfin checks the caller's own rights there, as it does for
   `Users[].UserId` in `POST /Playlists` and `POST /Playlists/{id}`; a `userId`
-  query parameter on those routes must still be the caller's own.
-  jellyfin-web 10.11 names only the signed-in user (its playlist permission
+  query parameter on those routes must still be the caller's own. Those
+  sharing routes are relayed to Jellyfin unchanged, including two Jellyfin
+  10.11.3 bugs: a first share by path fails with `500`, and removing a share
+  by path answers `204` but keeps it. Sharing through the playlist body is
+  unaffected by either. jellyfin-web 10.11 names only the signed-in user (its playlist permission
   check included), so members using it see no difference. Allowed in a minor
   release by the household-check rule at the top of this file.
 - **Household hostnames no longer relay Quick Connect to Jellyfin.** Quick

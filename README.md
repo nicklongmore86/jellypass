@@ -592,8 +592,10 @@ and every copy) must be the caller's own, or the answer is the same fixed `404`
 these for the caller. A household member's picture is the one exception, since
 the profile picker loads it without credentials. The user in
 `/Playlists/{id}/Users/{id}` is not checked: it is who a playlist is shared
-with, and Jellyfin checks the caller's own rights there, so sharing a playlist
-works by path as by its body.
+with, and Jellyfin checks the caller's own rights there, so those sharing
+routes are relayed unchanged. Jellyfin 10.11.3 itself fails a first share by
+path (`500`) and keeps a share removed by path (`204`); sharing through the
+playlist body works.
 
 A path Jellyfin might read otherwise than JellyPass (an encoded slash or
 backslash, a `.` or `..` segment, a backslash, invalid percent-encoding, a
