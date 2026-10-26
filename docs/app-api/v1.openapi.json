@@ -95,7 +95,8 @@
               "type": "string",
               "minLength": 1,
               "maxLength": 100
-            }
+            },
+            "description": "Trimmed first; blank, or longer than 100 UTF-16 code units once trimmed, is invalid_request."
           },
           {
             "name": "page",
@@ -728,7 +729,7 @@
         "content": {
           "application/json": {
             "schema": {
-              "$ref": "#/components/schemas/Error"
+              "$ref": "#/components/schemas/InvalidRequestError"
             }
           }
         }
@@ -738,17 +739,17 @@
         "content": {
           "application/json": {
             "schema": {
-              "$ref": "#/components/schemas/Error"
+              "$ref": "#/components/schemas/UnauthorizedError"
             }
           }
         }
       },
       "NotFound": {
-        "description": "404 not_found: an unknown path, or a title TMDB does not know.",
+        "description": "404 not_found: an unknown path, or a title TMDB does not know. 404 household_not_found: the host is a household address no household has (no token is checked; a client signed in there treats it as the household gone).",
         "content": {
           "application/json": {
             "schema": {
-              "$ref": "#/components/schemas/Error"
+              "$ref": "#/components/schemas/NotFoundError"
             }
           }
         }
@@ -758,7 +759,7 @@
         "content": {
           "application/json": {
             "schema": {
-              "$ref": "#/components/schemas/Error"
+              "$ref": "#/components/schemas/TooManyRequestsError"
             }
           }
         }
@@ -768,7 +769,7 @@
         "content": {
           "application/json": {
             "schema": {
-              "$ref": "#/components/schemas/Error"
+              "$ref": "#/components/schemas/UnavailableError"
             }
           }
         }
@@ -776,7 +777,7 @@
     },
     "schemas": {
       "Error": {
-        "description": "The only error answers, the same for every endpoint and every title. A client treats an unknown code by its HTTP status.",
+        "description": "Every error body: one of these codes, always with its own status (see the responses: InvalidRequestError, UnauthorizedError, NotFoundError, TooManyRequestsError, UnavailableError), the same for every endpoint and every title. A client treats an unknown code by its HTTP status.",
         "type": "object",
         "required": [
           "error"
@@ -789,9 +790,83 @@
               "invalid_request",
               "unauthorized",
               "not_found",
+              "household_not_found",
               "too_many_requests",
               "unavailable"
             ]
+          }
+        }
+      },
+      "InvalidRequestError": {
+        "description": "400.",
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": "string",
+            "const": "invalid_request"
+          }
+        }
+      },
+      "UnauthorizedError": {
+        "description": "401.",
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": "string",
+            "const": "unauthorized"
+          }
+        }
+      },
+      "NotFoundError": {
+        "description": "404: not_found on a household host, household_not_found on a host of no household.",
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": "string",
+            "enum": [
+              "not_found",
+              "household_not_found"
+            ]
+          }
+        }
+      },
+      "TooManyRequestsError": {
+        "description": "429.",
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": "string",
+            "const": "too_many_requests"
+          }
+        }
+      },
+      "UnavailableError": {
+        "description": "502.",
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "error": {
+            "type": "string",
+            "const": "unavailable"
           }
         }
       },
@@ -885,7 +960,8 @@
           "tmdbId": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 2147483647
+            "maximum": 9007199254740991,
+            "description": "Any positive whole number TMDB gives, up to 2^53 - 1; only one up to 2147483647 can be opened as /movie/{tmdbId} or /tv/{tmdbId}."
           },
           "title": {
             "type": "string",
@@ -998,7 +1074,8 @@
           "tmdbId": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 2147483647
+            "maximum": 2147483647,
+            "description": "The tmdbId of the path."
           },
           "title": {
             "type": "string",
@@ -1129,7 +1206,8 @@
           "tmdbId": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 2147483647
+            "maximum": 2147483647,
+            "description": "The tmdbId of the path."
           },
           "title": {
             "type": "string",
@@ -1249,7 +1327,8 @@
           "tmdbId": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 2147483647
+            "maximum": 2147483647,
+            "description": "The tmdbId of the path."
           },
           "seasonNumber": {
             "type": "integer",
@@ -1399,7 +1478,8 @@
           "tmdbId": {
             "type": "integer",
             "minimum": 1,
-            "maximum": 2147483647
+            "maximum": 2147483647,
+            "description": "Asked for through /movie/{tmdbId}/get or /tv/{tmdbId}/get, so at most 2147483647."
           },
           "status": {
             "$ref": "#/components/schemas/CoarseStatus"

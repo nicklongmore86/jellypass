@@ -559,10 +559,11 @@ server by months still works.
   the token is deleted from the device. The gateway forgets the token at once (see "Identity chain").
 - **Answers.** `401` means the token is no longer good: drop it and show the profile picker. Errors are fixed bodies,
   the same for every endpoint and every title: `400 {"error":"invalid_request"}`, `401 {"error":"unauthorized"}`,
-  `404 {"error":"not_found"}`, `429 {"error":"too_many_requests"}`, `502 {"error":"unavailable"}`. The client shows
-  fixed wording of its own for each and never shows a body, an upstream message or a status line; for sign-in, the
-  PWA's: `401`/`403` "That didn't work", `429` "Too many attempts", anything else "Can't sign in right now", no network
-  "Check your connection".
+  `404 {"error":"not_found"}`, `429 {"error":"too_many_requests"}`, `502 {"error":"unavailable"}`; and, before any
+  token is checked, `404 {"error":"household_not_found"}` on a household address no household has (the household was
+  removed, or the address is mistyped). The client shows fixed wording of its own for each and never shows a body, an
+  upstream message or a status line; for sign-in, the PWA's: `401`/`403` "That didn't work", `429` "Too many
+  attempts", anything else "Can't sign in right now", no network "Check your connection".
 - **"Get this"** always answers the same `202 {"status":"accepted"}` and the client shows the same confirmation for
   it every time: it never waits for or reads anything to tell what happened, and only `GET /requests` and the
   titles' `state` say how it went, later. Nothing the client shows may depend on another household.

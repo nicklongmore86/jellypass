@@ -12,6 +12,8 @@ import { ANNOTATIONS, VALIDATION_KEYWORDS, keywordsOf, validate } from './suppor
 const ROOT = path.join(import.meta.dirname, '..');
 const DOC = JSON.parse(readFileSync(path.join(ROOT, 'docs', 'app-api', 'v1.openapi.json'), 'utf8'));
 const APP = '/jellypass/app/v1';
+/** A TMDB ID past 2147483647 (2^31 - 1), which a card may carry. */
+const HIGH_TMDB_ID = 2147483648;
 const SEED = { version: 7, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], appIdKey: 'cd'.repeat(32) };
 
 /** Every operation in the document, as `METHOD /path`, with a pattern for the paths it serves. */
@@ -32,6 +34,38 @@ function operationFor(method, pathname) {
   assert.ok(matching.length > 0, `${method} ${pathname} is in the document`);
   return matching[0];
 }
+
+/**
+ * Every schema in the document: the components' and each operation's own (parameters, request bodies and answers given
+ * inline rather than by `$ref`).
+ */
+function schemasOf(doc) {
+  const bodies = (content) => Object.values(content ?? {}).map((media) => media.schema);
+  return [
+    ...Object.values(doc.components.schemas),
+    ...Object.values(doc.components.responses).flatMap((response) => bodies(response.content)),
+    ...Object.values(doc.paths).flatMap((item) => Object.values(item)).flatMap((operation) => [
+      ...(operation.parameters ?? []).map((parameter) => parameter.schema),
+      ...bodies(operation.requestBody?.content),
+      ...Object.values(operation.responses).flatMap((response) => bodies(response.content)),
+    ]),
+  ];
+}
+
+/** The keywords the document's schemas use that the validator neither checks nor ignores as an annotation. */
+function unknownKeywords(doc) {
+  const used = new Set(schemasOf(doc).flatMap((schema) => [...keywordsOf(schema)]));
+  return [...used].filter((keyword) => !VALIDATION_KEYWORDS.has(keyword) && !ANNOTATIONS.has(keyword));
+}
+
+/** Each error status and the codes its body may carry, as docs/app-design.md lists them ("Answers."). */
+const ERROR_CODES = {
+  400: ['invalid_request'],
+  401: ['unauthorized'],
+  404: ['not_found', 'household_not_found'],
+  429: ['too_many_requests'],
+  502: ['unavailable'],
+};
 
 /** The schema the document gives for this operation's answer with this status. */
 function responseSchema(operation, status) {
@@ -54,13 +88,7 @@ describe('household app API: the OpenAPI document', { timeout: 60_000 }, () => {
     assert.equal(DOC.openapi, '3.1.0');
     assert.equal(DOC.info.version, String(APP_API_VERSION));
     assert.equal(DOC.servers[0].url, `https://{householdHost}${APP}`);
-    const schemas = [
-      ...Object.values(DOC.components.schemas),
-      ...Object.values(DOC.components.responses).map((response) => response.content['application/json'].schema),
-    ];
-    const used = new Set(schemas.flatMap((schema) => [...keywordsOf(schema)]));
-    const unknown = [...used].filter((keyword) => !VALIDATION_KEYWORDS.has(keyword) && !ANNOTATIONS.has(keyword));
-    assert.deepEqual(unknown, [], 'a keyword the validator would ignore');
+    assert.deepEqual(unknownKeywords(DOC), [], 'a keyword the validator would ignore');
     // Every object is closed and lists every property as required: the API sends every key (null or "" when empty).
     const objects = [];
     const visit = (schema) => {
@@ -68,11 +96,117 @@ describe('household app API: the OpenAPI document', { timeout: 60_000 }, () => {
       if (schema.type === 'object') objects.push(schema);
       for (const nested of [...Object.values(schema.properties ?? {}), ...(schema.anyOf ?? []), schema.items]) visit(nested);
     };
-    for (const schema of Object.values(DOC.components.schemas)) visit(schema);
+    for (const schema of schemasOf(DOC)) visit(schema);
     for (const schema of objects) {
       assert.equal(schema.additionalProperties, false);
       assert.deepEqual([...(schema.required ?? [])].sort(), Object.keys(schema.properties).sort());
     }
+  });
+
+  it('finds a keyword it does not understand wherever a schema is, inline ones included', () => {
+    const withKeyword = (place) => {
+      const doc = structuredClone(DOC);
+      place(doc);
+      return unknownKeywords(doc);
+    };
+    assert.deepEqual(withKeyword((doc) => { doc.paths['/movie/{tmdbId}'].get.parameters[0].schema.format = 'int64'; }), ['format']);
+    assert.deepEqual(withKeyword((doc) => {
+      doc.paths['/tv/{tmdbId}/get'].post.requestBody.content['application/json'].schema = { type: 'object', minProperties: 1 };
+    }), ['minProperties']);
+    assert.deepEqual(withKeyword((doc) => {
+      doc.paths['/me'].get.responses['200'].content['application/json'].schema = { type: 'object', propertyNames: { pattern: '^a' } };
+    }), ['propertyNames']);
+  });
+
+  it('gives each error status its own codes, and refuses a code with another status', () => {
+    const operation = OPERATIONS.find((candidate) => candidate.key === 'GET /me');
+    const codes = Object.values(ERROR_CODES).flat();
+    assert.deepEqual(DOC.components.schemas.Error.properties.error.enum.slice().sort(), codes.slice().sort());
+    for (const [status, allowed] of Object.entries(ERROR_CODES)) {
+      for (const code of codes) {
+        const errors = validate({ error: code }, responseSchema(operation, status), DOC);
+        assert.equal(errors.length === 0, allowed.includes(code), `${status} {"error":"${code}"}: ${errors.join('; ')}`);
+      }
+    }
+    assert.notDeepEqual(validate({ error: 'unavailable' }, responseSchema(operation, 401), DOC), []);
+    // Every operation declares every error status, with the same answers.
+    for (const candidate of OPERATIONS) {
+      for (const status of Object.keys(ERROR_CODES)) assert.equal(responseSchema(candidate, status), responseSchema(operation, status), `${candidate.key} ${status}`);
+    }
+    // The design doc's list of fixed error bodies is the same pairing.
+    const design = readFileSync(path.join(ROOT, 'docs', 'app-design.md'), 'utf8');
+    const answers = design.slice(design.indexOf('- **Answers.**'), design.indexOf('\n- **', design.indexOf('- **Answers.**') + 1));
+    const listed = {};
+    for (const [, status, code] of answers.matchAll(/`([0-9]{3}) \{"error":"([a-z_]+)"\}`/g)) (listed[status] ??= []).push(code);
+    assert.deepEqual(listed, Object.fromEntries(Object.entries(ERROR_CODES).map(([status, list]) => [status, list.slice()])));
+  });
+
+  it('bounds each TMDB ID as the server does: any positive safe integer in a card, at most 2147483647 in a path', () => {
+    const card = { mediaType: 'movie', tmdbId: 1, title: 'T', year: null, overview: '', posterUrl: null, backdropUrl: null, rating: null, state: 'get_this', play: null };
+    const cardSchema = { $ref: '#/components/schemas/Card' };
+    for (const tmdbId of [1, 2147483647, 2147483648, Number.MAX_SAFE_INTEGER]) assert.deepEqual(validate({ ...card, tmdbId }, cardSchema, DOC), [], String(tmdbId));
+    for (const tmdbId of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '1']) assert.notDeepEqual(validate({ ...card, tmdbId }, cardSchema, DOC), [], String(tmdbId));
+    // A title's own page, season and request echo the path's ID, which the server takes only up to 2147483647.
+    for (const name of ['Movie', 'Series', 'Season', 'Request']) {
+      assert.equal(DOC.components.schemas[name].properties.tmdbId.maximum, 2147483647, name);
+      assert.equal(DOC.components.schemas[name].properties.tmdbId.minimum, 1, name);
+    }
+  });
+
+  it('allows exactly the parameters and request bodies the server accepts, at each bound', async (t) => {
+    const app = await startApp(t, world());
+    // A path or query value as the document reads it: a canonical integer as a number, anything else as a string.
+    const valueOf = (raw) => (/^-?(?:0|[1-9][0-9]*)(?:\.[0-9]+)?$/.test(raw) ? Number(raw) : raw);
+    const parameters = (operation, pathname, query) => {
+      const names = [...operation.template.matchAll(/\{([^}]+)\}/g)].map((match) => match[1]);
+      const values = pathname.slice(APP.length).match(operation.pattern.source.replace(/\[\^\/\]\+/g, '([^/]+)'))?.slice(1) ?? [];
+      const given = Object.fromEntries(names.map((name, index) => [name, values[index]]));
+      for (const [name, value] of query) given[name] = value;
+      return (operation.operation.parameters ?? []).flatMap((parameter) => {
+        if (!(parameter.name in given)) return parameter.required ? [`missing ${parameter.name}`] : [];
+        const raw = given[parameter.name];
+        return validate(parameter.schema.type === 'string' ? raw : valueOf(raw), parameter.schema, DOC, parameter.name);
+      });
+    };
+    const id = (value) => `${APP}/movie/${value}`;
+    const reads = [
+      ...['1', '2147483647', '2147483648', '0', '-1', '1.5', '9999999999', 'abc'].map(id),
+      ...['0', '999', '1000', '-1', '2.5'].map((n) => `${APP}/tv/${T_TV}/season/${n}`),
+      ...['1', '500', '501', '0', '-1', '1.5'].map((page) => `${APP}/discover/trending?page=${page}`),
+      `${APP}/search?q=${'a'.repeat(100)}`,
+      `${APP}/search?q=${'a'.repeat(101)}`,
+      `${APP}/search?q=a`,
+    ];
+    for (const target of reads) {
+      const url = new URL(target, 'https://household.invalid');
+      const errors = parameters(operationFor('GET', url.pathname), url.pathname, url.searchParams);
+      const answer = await app.get(target);
+      assert.equal(answer.status === 400, errors.length > 0, `GET ${target} is ${answer.status}; the document says ${errors.join('; ') || 'valid'}`);
+    }
+    const seasons = Array.from({ length: 101 }, (_, index) => index + 1);
+    const bodies = [
+      [`${APP}/movie/${T_MOVIE}/get`, {}],
+      [`${APP}/movie/${T_MOVIE}/get`, { seasons: [1] }],
+      [`${APP}/tv/${T_TV}/get`, { seasons: [999] }],
+      [`${APP}/tv/${T_TV}/get`, { seasons: seasons.slice(0, 100) }],
+      [`${APP}/tv/${T_TV}/get`, { seasons }],
+      [`${APP}/tv/${T_TV}/get`, { seasons: [] }],
+      [`${APP}/tv/${T_TV}/get`, { seasons: [0] }],
+      [`${APP}/tv/${T_TV}/get`, { seasons: [1000] }],
+      [`${APP}/tv/${T_TV}/get`, { seasons: [1.5] }],
+      [`${APP}/tv/${T_TV}/get`, { seasons: [1, 1] }],
+      [`${APP}/tv/${T_TV}/get`, { seasons: [1], extra: true }],
+    ];
+    for (const [target, body] of bodies) {
+      const operation = operationFor('POST', target);
+      const errors = [
+        ...parameters(operation, target, []),
+        ...validate(body, operation.operation.requestBody.content['application/json'].schema, DOC),
+      ];
+      const answer = await app.post(target, body);
+      assert.equal(answer.status === 400, errors.length > 0, `POST ${target} ${JSON.stringify(body).slice(0, 60)} is ${answer.status}; the document says ${errors.join('; ') || 'valid'}`);
+    }
+    await app.background.settled();
   });
 
   it('lists the same endpoints as the README\'s API table', () => {
@@ -96,7 +230,7 @@ describe('household app API: the OpenAPI document', { timeout: 60_000 }, () => {
   it('describes every answer of every endpoint, in every state, and every error', async (t) => {
     const covered = new Set();
     // Household A: a title in its library, one blocklisted, one it can ask for; then asks for a movie and a series.
-    const app = await startApp(t, world({ blocklist: [{ mediaType: 'movie', tmdbId: 900010 }], tmdbMovies: { 900010: { title: 'Synthetic Movie Ten', release_date: '2021-01-01' } } }), { stateFile: SEED });
+    const app = await startApp(t, world({ blocklist: [{ mediaType: 'movie', tmdbId: 900010 }], tmdbMovies: { 900010: { title: 'Synthetic Movie Ten', release_date: '2021-01-01' }, [HIGH_TMDB_ID]: { title: 'Synthetic Movie High', release_date: '2022-01-01' } } }), { stateFile: SEED });
     const reads = [
       `${APP}/me`,
       `${APP}/search?q=synthetic`,
@@ -125,6 +259,8 @@ describe('household app API: the OpenAPI document', { timeout: 60_000 }, () => {
       assert.equal(answer.status, 200, pathname);
       check(covered, 'GET', pathname, answer);
       noteStates(answer.json());
+      // A card's TMDB ID can be past 2147483647: the server keeps any positive safe integer TMDB gives.
+      if (pathname === `${APP}/search?q=synthetic`) assert.ok(answer.json().results.some((card) => card.tmdbId === HIGH_TMDB_ID), 'the high ID is listed');
     }
     for (const [pathname, body] of [[`${APP}/movie/${T_MOVIE}/get`, {}], [`${APP}/movie/${T_MOVIE}/get`, undefined], [`${APP}/tv/${T_TV}/get`, { seasons: [2, 1] }]]) {
       const answer = await app.post(pathname, body);
@@ -152,15 +288,20 @@ describe('household app API: the OpenAPI document', { timeout: 60_000 }, () => {
       ['GET', `${APP}/me`, 401, undefined, { host: HOST_B, user: ALICE }],
       ['GET', `${APP}/movie/123456`, 404],
       ['GET', `${APP}/discover/nonsense`, 404],
+      // A household address no household has: before any token is checked, with or without one.
+      ['GET', `${APP}/me`, 404, undefined, { host: 'jelly-missing.example.test' }],
+      ['GET', `${APP}/me`, 404, undefined, { host: 'jelly-missing.example.test', user: null }],
+      ['POST', `${APP}/movie/${T_MOVIE}/get`, 404, {}, { host: 'jelly-missing.example.test' }],
     ];
     for (const [method, pathname, status, body, options] of errors) {
       const answer = method === 'POST' ? await app.post(pathname, body, options) : await app.get(pathname, options);
       assert.equal(answer.status, status, `${method} ${pathname}`);
       // An unknown path still answers in the document's one error shape.
       if (status === 404 && pathname.endsWith('nonsense')) {
-        assert.deepEqual(validate(answer.json(), { $ref: '#/components/schemas/Error' }, DOC), []);
+        assert.deepEqual(validate(answer.json(), { $ref: '#/components/schemas/NotFoundError' }, DOC), []);
         continue;
       }
+      if (options?.host === 'jelly-missing.example.test') assert.deepEqual(answer.json(), { error: 'household_not_found' });
       check(covered, method, pathname, answer);
     }
     const failing = await startApp(t, world({ failCatalogue: 500 }));

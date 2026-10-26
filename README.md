@@ -723,7 +723,8 @@ The machine-readable contract is [docs/app-api/v1.openapi.json](docs/app-api/v1.
   {"error":"unauthorized"}`, `404 {"error":"not_found"}` (unknown path, or a
   title TMDB does not know), `429 {"error":"too_many_requests"}` and `502
   {"error":"unavailable"}` (Jellyfin, Seerr or TMDB failed; details are
-  logged, never returned).
+  logged, never returned); on a household address no household has,
+  `404 {"error":"household_not_found"}` before any token is checked.
 - **Rate limited.** 300 calls per client address (after `TRUSTED_PROXIES`)
   and 200 per signed-in user in each 5-minute window, and 60 per household
   (its own members' calls only) in each 10 seconds; all answer the same
