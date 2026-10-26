@@ -53,6 +53,40 @@ function assertSection(notes, { version, nextVersion, subheadings }) {
 }
 
 describe('changelogSection with the real CHANGELOG.md', () => {
+  it('extracts 3.1.0 without its heading, up to the 3.0.1 section', () => {
+    const notes = changelogSection(CHANGELOG, '3.1.0');
+    assertSection(notes, {
+      version: '3.1.0',
+      nextVersion: '3.0.1',
+      subheadings: ['Changed'],
+    });
+    assert.match(notes, /^This is a minor release for the household app/);
+    const flat = notes.replace(/\s+/g, ' ');
+    assert.match(flat, /There is nothing to configure/);
+    assert.match(flat, /3\.0\.1 reads a state file written by 3\.1\.0/);
+    assert.match(flat, /the administrator API and the admin UI are unchanged/);
+    assert.match(flat, /`#000b25`/);
+    assert.match(flat, /`#00a4dc`/);
+    assert.match(flat, /`GET \/discover\/top-movies` and `GET \/discover\/top-tv`, are kept/);
+    assert.match(flat, /`ghcr\.io\/nicklongmore86\/jellypass:3\.0\.1`/);
+    assert.match(flat, /No state-file or setting change is needed/);
+    assert.match(flat, /not yet on a physical phone/);
+    const changed = notes.indexOf('### Changed');
+    for (const note of [
+      '**The household app looks different.**',
+      '**The All-time great rows are no longer on Home,**',
+      '**On iPhone, close and reopen the installed app**',
+      '**No CDN purge is needed:**',
+      '**To roll back,**',
+    ]) {
+      assert.ok(notes.indexOf(note) >= 0 && notes.indexOf(note) < changed, `upgrade note ${note} comes first`);
+    }
+    assert.ok(notes.indexOf('the Tidepool look, part 2') < notes.indexOf('the Tidepool look, part 1'));
+    assert.doesNotMatch(notes, /### Upgrading from/);
+    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b/, 'no server-specific details');
+    assert.deepEqual(split(notes).definitions, []);
+  });
+
   it('extracts 3.0.1 without its heading, up to the 3.0.0 section', () => {
     const notes = changelogSection(CHANGELOG, '3.0.1');
     assertSection(notes, {

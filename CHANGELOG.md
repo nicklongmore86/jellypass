@@ -14,26 +14,71 @@ privacy leak. Such changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+## [3.1.0] - 2026-10-26
+
+This is a minor release for the household app (`HOUSEHOLD_APP_ENABLED=true`)
+only: with the app off (the default), nothing changes. It redraws the app in
+Jellyfin's colours and adds an Account tab. There is nothing to configure: no
+setting is added, removed or renamed, and the state file is unchanged (schema
+v7, with the same fields as 3.0.1), so 3.0.1 reads a state file written by
+3.1.0. No server behaviour changed (only the version string JellyPass reports
+to Jellyfin): the app API, the household gateway, webhook
+payloads, the administrator API and the admin UI are unchanged. Read these
+before upgrading:
+
+- **The household app looks different.** It now uses Jellyfin's navy
+  `#000b25` and cyan `#00a4dc`, with Jellyfin purple only as a small
+  decoration and no brand-colour gradient: no purple-to-blue or cyan blends,
+  only subtle navy shading behind images and the loading shimmer (part 1 below
+  describes an intermediate teal look
+  that part 2 replaces). The header no longer shows the JellyPass wordmark or
+  the (i) button: a fourth tab, **Account**, holds **Sign out** and **About &
+  credits**, and old `#/about` links open it. Signing out lands on the
+  sign-in screen, and Back does not return to Account.
+- **The All-time great rows are no longer on Home,** under any filter, so Home
+  makes fewer TMDB calls. Their app endpoints, `GET /discover/top-movies` and
+  `GET /discover/top-tv`, are kept and answer as before.
+- **On iPhone, close and reopen the installed app** to pick up the new look.
+  As we understand it (not tested), the Home Screen icon and its colours may
+  only update after removing the app and adding it to the Home Screen again;
+  do that only if they have not changed.
+- **No CDN purge is needed:** the app's files, the stylesheet, manifest and
+  icons included, are still named by content hash (those fingerprinted files
+  are sent `public, max-age=31536000, immutable`), and the page, the service
+  worker and every other `/jellypass/app` answer are sent `no-store`, so the
+  new files have new addresses. The app's Content Security Policy is
+  unchanged.
+- **To roll back,** set `JELLYPASS_IMAGE` back to
+  `ghcr.io/nicklongmore86/jellypass:3.0.1` and recreate the container. No
+  state-file or setting change is needed. On 3.0.1 a `#/account` link opens
+  Home.
+- **Tested in a simulated browser:** the new look, the Account tab, the hero,
+  the cards and the detail pages are covered by the app's tests in a simulated
+  browser, not yet on a physical phone; see
+  [Household app (PWA)](README.md#household-app-pwa).
+
 ### Changed
 
 - **Household app: the Tidepool look, part 2** (colours, header, tabs, hero, big cards and detail pages; no setting,
   API, data or **Get this** outcome changes). The app now wears **Jellyfin's colours**: Jellyfin navy `#000b25` with
-  lighter navy surfaces, and **Jellyfin cyan `#00a4dc`** as the main colour (primary buttons, the chosen chip, the active
-  tab's outline and tint, links and focus rings), with derived cyan text and on-cyan text that hold at least 4.5:1.
-  Jellyfin purple `#aa5cc3` is only a small decoration (the end-cap of each row heading's waterline, a cyan line then a
-  short purple segment with a gap, never a gradient); there is no teal or coral left, `theme-color`, the manifest and the app
-  icons follow. The **header** no longer shows the JellyPass wordmark or the (i) button: it carries Back and the screen's
-  title, and Home goes straight to the filter chips and the hero. A fourth tab, **Account** (with its own key icon),
-  holds the member card with **Sign out**, then **About & credits** (TMDB's logo and exact notice, the JustWatch credit and
-  the app's version); the old `#/about` address opens it. **Home's hero** is an inset rounded card (4:5 on a phone) with a
-  solid navy text panel (title, year, rating, status chip and a two-line overview, readable whatever the picture), round
-  bubble buttons and Previous/Next below it, no autoplay and reduced motion honoured, and still follows the filter. The
-  **big cards** put the title and "year · ★ rating TMDB" below a 16:9 image (radius 24 px) with a solid status chip at its
-  top-left. **Detail pages** open with an inset rounded backdrop card, then the title, chips, one full-width cyan action
-  and the season cards, on navy. Removed from Home under every filter: the **All-time great movies** and **All-time great
-  TV** rows (the server endpoints stay), so a first load and the lazy rows make fewer calls. Tests cover contrast for the
-  new colour pairs, no teal/coral, no purple on text or controls, no purple-to-blue gradient, the header, the four tabs,
-  Account and Sign out, the hero panel and pager, the card and detail layouts, and the fetch counts.
+  lighter navy surfaces, and **Jellyfin cyan `#00a4dc`** as the main colour (primary buttons, the chosen chip, the
+  active tab's outline and tint, links and focus rings), with derived cyan text and on-cyan text that hold at least
+  4.5:1. Jellyfin purple `#aa5cc3` is only a small decoration (the end-cap of each row heading's waterline, a cyan line
+  then a short purple segment with a gap, never a gradient); there is no teal or coral left, `theme-color`, the manifest
+  and the app icons follow. The **header** no longer shows the JellyPass wordmark or the (i) button: it carries Back and
+  the screen's title, and Home goes straight to the filter chips and the hero. A fourth tab, **Account** (with its own
+  key icon), holds the member card with **Sign out**, then **About & credits** (TMDB's logo and exact notice, the
+  JustWatch credit and the app's version); the old `#/about` address opens it. **Sign out** lands on the sign-in screen,
+  in place of Account's history entry, so Back never returns to a signed-in-looking Account. **Home's hero** is an inset
+  rounded card (4:5 on a phone) with a solid navy text panel (title, year, rating, status chip and a two-line overview,
+  readable whatever the picture), round bubble buttons and Previous/Next below it, no autoplay and reduced motion
+  honoured, and still follows the filter. The **big cards** put the title and "year · ★ rating TMDB" below a 16:9 image
+  (radius 24 px) with a solid status chip at its top-left; at large text a tall focused card is scrolled clear of the
+  tab bar. **Detail pages** open with an inset rounded backdrop card, then the title, chips, one full-width cyan action
+  and the season cards, on navy. Removed from Home under every filter: the **All-time great movies** and **All-time
+  great TV** rows (the server endpoints stay), so a first load and the lazy rows make fewer calls. Tests cover contrast
+  for the new colour pairs, no teal/coral, no purple on text or controls, no purple-to-blue gradient, the header, the
+  four tabs, Account and Sign out, the hero panel and pager, the card and detail layouts, and the fetch counts.
 - **Household app: the Tidepool look, part 1** (the app's whole look changes; no setting, API, data or **Get this**
   outcome does). The page is a deep teal-black with an aqua accent and a touch of coral, solid surfaces with no glass
   or glow, and bigger rounded shapes (radii 12/20/24/30 px, 800-weight titles). The header is a solid bar. Home's
@@ -1652,7 +1697,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.0.1...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.1.0...HEAD
+[3.1.0]: https://github.com/nicklongmore86/jellypass/compare/v3.0.1...v3.1.0
 [3.0.1]: https://github.com/nicklongmore86/jellypass/compare/v3.0.0...v3.0.1
 [3.0.0]: https://github.com/nicklongmore86/jellypass/compare/v2.7.0...v3.0.0
 [2.7.0]: https://github.com/nicklongmore86/jellypass/compare/v2.6.0...v2.7.0
