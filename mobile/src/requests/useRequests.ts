@@ -24,7 +24,7 @@ export interface RequestsData {
   shown: number;
   /** What each shown request knows of its title, by its id. */
   titles: Readonly<Record<string, RequestTitle>>;
-  /** The titles of the last Load more are still being read. */
+  /** The titles of the last Load more are still being read, or the list is being read again: Load more waits. */
   naming: boolean;
   /** The list and the first titles, again: on showing the screen, Try again and pull to refresh. */
   reload: () => Promise<void>;
@@ -44,6 +44,8 @@ export function useRequests(api: ApiClient | undefined, expire: () => Promise<vo
   const live = useRef(true);
   const requests = useRef<readonly Request[]>([]);
   const count = useRef(0);
+  // The list is being read again: until it answers, Load more would name the old list under the new reading.
+  const listing = useRef(false);
 
   useEffect(() => {
     live.current = true;
@@ -116,10 +118,12 @@ export function useRequests(api: ApiClient | undefined, expire: () => Promise<vo
     abort.current = controller;
     const mine = ++reading.current;
     if (!api) return;
-    setNaming(false);
+    listing.current = true;
+    setNaming(true);
     try {
       const list = await api.requests({ signal: controller.signal });
       if (!current(mine)) return;
+      listing.current = false;
       // As many as were showing are named again (the screen shown again keeps its place), at least the first page.
       const again = Math.max(REQUESTS_PER_PAGE, count.current);
       requests.current = list.results;
@@ -130,12 +134,17 @@ export function useRequests(api: ApiClient | undefined, expire: () => Promise<vo
       await name(again, mine, controller.signal);
     } catch (error) {
       if (shows(error, mine)) setLoad({ status: 'failed', error: errorText(error instanceof ApiError ? error.kind : 'unavailable') });
+    } finally {
+      if (current(mine)) {
+        listing.current = false;
+        setNaming(false);
+      }
     }
   }, [api, name, shows]);
 
   const loadMore = useCallback(() => {
     const signal = abort.current?.signal;
-    if (naming || !signal || load.status !== 'loaded' || count.current >= requests.current.length) return;
+    if (listing.current || naming || !signal || load.status !== 'loaded' || count.current >= requests.current.length) return;
     void name(REQUESTS_PER_PAGE, reading.current, signal);
   }, [naming, load, name]);
 

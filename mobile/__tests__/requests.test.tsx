@@ -223,6 +223,44 @@ describe('reading it again', () => {
     expect(entries()).toEqual([SERIES_NAME, FILM_NAME]);
   });
 
+  it('waits for the list read again before Load more names anything, so no title is asked for twice', async () => {
+    const many = Array.from({ length: 25 }, (_, index) => requestEntry(`r${index}`, 'movie', 100 + index, 'requested'));
+    let lists = 0;
+    let releaseList: () => void = () => undefined;
+    useHousehold({
+      requests: { results: many },
+      override: (call) => {
+        if (call.route !== `GET ${API}/requests` || ++lists < 2) return undefined;
+        return new Promise((resolve) => (releaseList = () => resolve(answer(200, { results: many }))));
+      },
+    });
+    const { since } = await openRequests();
+    expect(titleCalls(since())).toHaveLength(10);
+    const scroll = only(screen.queryAllByTestId('requests-scroll'), 'scroll view');
+    let refreshed: Promise<void> = Promise.resolve();
+    await act(async () => {
+      refreshed = scroll.props.refreshControl.props.onRefresh();
+    });
+    await settle();
+    // Pull to refresh is out: Load more waits (shown as Loading…, and pressing it asks for nothing).
+    expect(screen.queryAllByRole('button', { name: 'Load more' })).toHaveLength(0);
+    await pressNode(buttonNamed(/^(Load more|Loading…)$/));
+    await settle();
+    expect(titleCalls(since())).toHaveLength(10);
+    await act(async () => releaseList());
+    await act(async () => refreshed);
+    await settle();
+    expect(entries()).toHaveLength(10);
+    expect(titleCalls(since())).toHaveLength(20);
+    await pressNode(buttonNamed('Load more'));
+    expect(entries()).toHaveLength(20);
+    const calls = titleCalls(since());
+    expect(calls).toHaveLength(30);
+    // The first ten twice (opening, refresh), the next ten once.
+    expect(new Set(calls.slice(20)).size).toBe(10);
+    expect(calls.slice(20).every((route) => !calls.slice(0, 20).includes(route))).toBe(true);
+  });
+
   it('hands each title it reads to the overlay, so Home\'s card shows the state read here', async () => {
     // Home's Trending 2 is series 1002, `get_this` in the row's answer; its own answer says it is requested.
     useHousehold({ requests: { results: [requestEntry('h', 'tv', 1002, 'requested')] }, series: { 1002: seriesAnswer(1002, ['requested']) } });
