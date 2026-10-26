@@ -1,0 +1,45 @@
+{
+  "page": 1,
+  "nextPage": 2,
+  "results": [
+    {
+      "mediaType": "movie",
+      "tmdbId": 900001,
+      "title": "Synthetic Movie One",
+      "year": 2026,
+      "overview": "A synthetic overview.",
+      "posterUrl": "https://image.tmdb.org/t/p/w342/synthetic-poster_1.jpg",
+      "backdropUrl": "https://image.tmdb.org/t/p/w780/synthetic-backdrop_1.jpg",
+      "rating": 7.4,
+      "state": "in_library",
+      "play": {
+        "itemId": "0123456789abcdef0123456789abcdef",
+        "url": "https://jelly-household.example.test/web/#/details?id=0123456789abcdef0123456789abcdef"
+      }
+    },
+    {
+      "mediaType": "tv",
+      "tmdbId": 2147483648,
+      "title": "Synthetic Series Two",
+      "year": null,
+      "overview": "",
+      "posterUrl": null,
+      "backdropUrl": null,
+      "rating": null,
+      "state": "requested",
+      "play": null
+    },
+    {
+      "mediaType": "movie",
+      "tmdbId": 900003,
+      "title": "Synthetic Movie Three",
+      "year": 2026,
+      "overview": "A synthetic overview.",
+      "posterUrl": "https://image.tmdb.org/t/p/w342/c.png",
+      "backdropUrl": "https://image.tmdb.org/t/p/w780/c.webp",
+      "rating": 0,
+      "state": "unavailable",
+      "play": null
+    }
+  ]
+}

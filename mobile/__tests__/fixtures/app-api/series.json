@@ -1,0 +1,34 @@
+{
+  "mediaType": "tv",
+  "tmdbId": 900002,
+  "title": "Synthetic Series",
+  "year": 2026,
+  "overview": "A synthetic overview.",
+  "posterUrl": "https://image.tmdb.org/t/p/w342/synthetic-poster_1.jpg",
+  "backdropUrl": "https://image.tmdb.org/t/p/w780/synthetic-backdrop_1.jpg",
+  "rating": 7.4,
+  "state": "get_this",
+  "play": null,
+  "genres": [],
+  "runtime": null,
+  "seasons": [
+    {
+      "seasonNumber": 0,
+      "name": "Specials",
+      "episodeCount": null,
+      "state": "unavailable"
+    },
+    {
+      "seasonNumber": 1,
+      "name": "Season 1",
+      "episodeCount": 8,
+      "state": "in_library"
+    },
+    {
+      "seasonNumber": 2,
+      "name": "Season 2",
+      "episodeCount": 10,
+      "state": "get_this"
+    }
+  ]
+}

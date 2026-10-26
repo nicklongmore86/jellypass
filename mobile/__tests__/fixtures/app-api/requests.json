@@ -1,0 +1,29 @@
+{
+  "results": [
+    {
+      "id": "AAAAAAAAAAAAAAAAAAAAAA",
+      "mediaType": "tv",
+      "tmdbId": 900002,
+      "status": "requested",
+      "seasons": [
+        {
+          "seasonNumber": 1,
+          "status": "ready"
+        },
+        {
+          "seasonNumber": 2,
+          "status": "failed"
+        }
+      ],
+      "byYou": true
+    },
+    {
+      "id": "BBBBBBBBBBBBBBBBBBBB_-",
+      "mediaType": "movie",
+      "tmdbId": 900001,
+      "status": "ready",
+      "seasons": [],
+      "byYou": false
+    }
+  ]
+}
