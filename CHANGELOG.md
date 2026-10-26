@@ -21,13 +21,16 @@ only: with the app off (the default), nothing changes. It redraws the app in
 Jellyfin's colours and adds an Account tab. There is nothing to configure: no
 setting is added, removed or renamed, and the state file is unchanged (schema
 v7, with the same fields as 3.0.1), so 3.0.1 reads a state file written by
-3.1.0. No server code changed: the app API, the household gateway, webhook
+3.1.0. No server behaviour changed (only the version string JellyPass reports
+to Jellyfin): the app API, the household gateway, webhook
 payloads, the administrator API and the admin UI are unchanged. Read these
 before upgrading:
 
 - **The household app looks different.** It now uses Jellyfin's navy
   `#000b25` and cyan `#00a4dc`, with Jellyfin purple only as a small
-  decoration and no gradient (part 1 below describes an intermediate teal look
+  decoration and no brand-colour gradient: no purple-to-blue or cyan blends,
+  only subtle navy shading behind images and the loading shimmer (part 1 below
+  describes an intermediate teal look
   that part 2 replaces). The header no longer shows the JellyPass wordmark or
   the (i) button: a fourth tab, **Account**, holds **Sign out** and **About &
   credits**, and old `#/about` links open it. Signing out lands on the
@@ -40,7 +43,8 @@ before upgrading:
   only update after removing the app and adding it to the Home Screen again;
   do that only if they have not changed.
 - **No CDN purge is needed:** the app's files, the stylesheet, manifest and
-  icons included, are still named by content hash, and the page, the service
+  icons included, are still named by content hash (those fingerprinted files
+  are sent `public, max-age=31536000, immutable`), and the page, the service
   worker and every other `/jellypass/app` answer are sent `no-store`, so the
   new files have new addresses. The app's Content Security Policy is
   unchanged.
