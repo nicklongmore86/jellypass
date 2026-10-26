@@ -4,13 +4,17 @@
 // after the eager ones have answered, so Home stays inside docs/app-api/fetch-budget.json. Pull to refresh asks again;
 // nothing is retried by itself. The filter stays as chosen while the app is open (Home stays mounted under its tab).
 //
-// Lazy rows are loaded by scrolling, never by layout alone. "Near the screen" is measured from `reach`, the deepest the
-// member has scrolled in this drawing plus a screen and LAZY_MARGIN, and only a scroll moves it on. A row that comes
-// back empty or failed would otherwise shrink to a line, pull the next rows up into the margin and load them, and so
-// on down the page: on a tall iPad, every lazy call at once. As a second guard each row's slot keeps its skeleton's
-// height (skeletonRowHeight), so a short row leaves the rows below it where they were.
+// Lazy rows are loaded by the member's own scrolling, plus one look per drawing (a filter chosen, or a refresh) at what
+// is on screen at rest. "Near the screen" is measured from `reach`, the deepest the member has dragged in this drawing
+// plus a screen and LAZY_MARGIN. Each drawing starts it again at nothing, whatever the old filter's offset was, and only
+// a drag that began in this drawing (and the glide that follows it) moves it on: never the jump back to the first row,
+// a restored offset, or a glide left over from before the switch. The look at rest is taken once, from the first
+// layout after the eager rows have answered, and loads only the lazy rows on screen then. A row that comes back empty
+// or failed shrinks and pulls the next rows up, but no later layout is looked at, so it can't load them in turn (which
+// on a tall iPad would make every lazy call at once). A row's slot keeps its skeleton's height (skeletonRowHeight) while
+// it waits or loads, so the rows below stay put until it has answered.
 import { router } from 'expo-router';
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
   AccessibilityInfo,
   RefreshControl,
@@ -78,8 +82,19 @@ export function HomeScreen() {
   const scroller = useRef<ScrollViewInstance>(null);
   const scrollY = useRef(0);
   const viewport = useRef(0);
-  /** How far down the member has brought the screen in this drawing: its bottom plus LAZY_MARGIN; 0 until they scroll. */
+  /** How far down the member has brought the screen in this drawing: its bottom plus LAZY_MARGIN; 0 until they drag. */
   const reach = useRef(0);
+  /** This screen's count of drawings: a drag belongs to the drawing it began in. */
+  const drawn = useRef(0);
+  /** The offset a drawing starts at, known when it starts: the top, or its first row after a filter is chosen. */
+  const origin = useRef(0);
+  /** The member's drag in progress, then the glide it set off; only one that began in this drawing moves `reach`. */
+  const gesture = useRef<{ drawing: number; phase: 'dragging' | 'released' | 'gliding' } | undefined>(undefined);
+  /** The drawing whose eager rows have all answered (`started`), so its rows are where they will stay. */
+  const ready = useRef(-1);
+  /** The drawing whose look at rest has been taken, and whether one is due after this batch of layouts. */
+  const looked = useRef(-1);
+  const looking = useRef(false);
   const columnY = useRef(0);
   const heroEnd = useRef(0);
   /** Each slot's top within the column, by key, as last laid out. */
@@ -111,12 +126,43 @@ export function HomeScreen() {
     if (due.length) near(due.map((slot) => slot.key));
   }, [started, slots, near]);
 
-  /** A new drawing reaches only as far as the screen is now: nothing lazy, until a scroll, when it is at the top. */
-  const restart = () => {
-    reach.current = scrollY.current > 0 ? scrollY.current + viewport.current + LAZY_MARGIN : 0;
+  /** The look at rest: once per drawing, the lazy rows on screen at the drawing's offset, never the margin below. */
+  const look = useCallback(() => {
+    if (ready.current !== drawn.current || looked.current === drawn.current || viewport.current <= 0) return;
+    looked.current = drawn.current;
+    const bottom = origin.current + viewport.current;
+    const due = slots.filter((slot) => {
+      const y = slotY.current.get(slot.key);
+      return slot.lazy && y !== undefined && columnY.current + y < bottom;
+    });
+    if (due.length) near(due.map((slot) => slot.key));
+  }, [slots, near]);
+
+  /** After a layout: what is within reach, and the look at rest once this batch of layouts has all arrived. */
+  const laidOut = () => {
+    check();
+    if (ready.current !== drawn.current || looked.current === drawn.current || looking.current) return;
+    looking.current = true;
+    const mine = drawn.current;
+    void Promise.resolve().then(() => {
+      looking.current = false;
+      if (drawn.current === mine) look();
+    });
+  };
+
+  /** A new drawing starts at `at`, reaching nothing until the member drags; a gesture from before it is let go. */
+  const restart = (at: number) => {
+    drawn.current += 1;
+    origin.current = Math.max(0, at);
+    reach.current = 0;
+    gesture.current = undefined;
   };
 
   useEffect(() => check(), [check]);
+  // Before any layout of this commit arrives: a `started` left over from the filter just switched from never counts.
+  useLayoutEffect(() => {
+    ready.current = started ? drawn.current : -1;
+  }, [started]);
 
   useEffect(() => {
     if (started && announcing.current === filter) {
@@ -130,14 +176,15 @@ export function HomeScreen() {
     announcing.current = next;
     AccessibilityInfo.announceForAccessibility?.('Loading…');
     // The chips stay where they are; a member far down the page starts the new filter at its first row.
-    if (scrollY.current > heroEnd.current) scroller.current?.scrollTo({ y: heroEnd.current, animated: false });
-    restart();
+    const deep = scrollY.current > heroEnd.current;
+    if (deep) scroller.current?.scrollTo({ y: heroEnd.current, animated: false });
+    restart(deep ? heroEnd.current : scrollY.current);
     home.choose(next);
   };
 
   const onRefresh = async () => {
     setRefreshing(true);
-    restart();
+    restart(scrollY.current);
     try {
       await home.refresh();
     } finally {
@@ -147,20 +194,40 @@ export function HomeScreen() {
 
   const open = (card: Card) => router.push(titlePath(card));
 
-  const onScroll = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+  /** Where the screen is now; `reach` follows it only while the member drags, or glides on from a drag, in this drawing. */
+  const follow = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
     const { contentOffset, layoutMeasurement } = event.nativeEvent;
     scrollY.current = contentOffset.y;
+    const own = gesture.current;
+    if (!own || own.drawing !== drawn.current || own.phase === 'released' || contentOffset.y <= 0) return;
     const height = viewport.current || layoutMeasurement.height;
-    if (contentOffset.y > 0) reach.current = Math.max(reach.current, contentOffset.y + height + LAZY_MARGIN);
+    reach.current = Math.max(reach.current, contentOffset.y + height + LAZY_MARGIN);
     check();
+  };
+  const onScrollBeginDrag = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    gesture.current = { drawing: drawn.current, phase: 'dragging' };
+    follow(event);
+  };
+  const onScrollEndDrag = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    follow(event);
+    if (gesture.current?.phase === 'dragging') gesture.current = { ...gesture.current, phase: 'released' };
+  };
+  const onMomentumScrollBegin = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    // Only the glide straight after the member lets go: not one the app started by scrolling itself.
+    if (gesture.current?.phase === 'released') gesture.current = { ...gesture.current, phase: 'gliding' };
+    follow(event);
+  };
+  const onMomentumScrollEnd = (event: NativeSyntheticEvent<NativeScrollEvent>) => {
+    follow(event);
+    if (gesture.current?.phase === 'gliding') gesture.current = undefined;
   };
   const onLayout = (event: LayoutChangeEvent) => {
     viewport.current = event.nativeEvent.layout.height;
-    check();
+    laidOut();
   };
   const placed = (key: string) => (event: LayoutChangeEvent) => {
     slotY.current.set(key, event.nativeEvent.layout.y);
-    check();
+    laidOut();
   };
 
   const first = parts[0] as HomeRow;
@@ -170,7 +237,7 @@ export function HomeScreen() {
   const titleRow = (part: HomeRow) => {
     const key = rowKey(part);
     return (
-      <View key={key} testID={`home-slot-${key}`} onLayout={placed(key)} style={{ minHeight: skeletonRowHeight(part.variant, widths[part.variant]) }}>
+      <View key={key} testID={`home-slot-${key}`} onLayout={placed(key)} style={{ minHeight: reserved(rows[key], part.variant, widths[part.variant]) }}>
         <RowBody
           state={rows[key]}
           heading={<RowHeading title={part.heading} />}
@@ -188,7 +255,7 @@ export function HomeScreen() {
     const key = networkKey(network.id);
     const prefix = SOURCE_TEXT.networkPrefix[networkList(filter, network)];
     return (
-      <View key={key} testID={`home-slot-${key}`} onLayout={placed(key)} style={{ minHeight: skeletonRowHeight('poster', widths.poster) }}>
+      <View key={key} testID={`home-slot-${key}`} onLayout={placed(key)} style={{ minHeight: reserved(rows[key], 'poster', widths.poster) }}>
         <RowBody
           state={rows[key]}
           heading={
@@ -219,7 +286,11 @@ export function HomeScreen() {
       testID="home-scroll"
       style={styles.page}
       stickyHeaderIndices={[0]}
-      onScroll={onScroll}
+      onScroll={follow}
+      onScrollBeginDrag={onScrollBeginDrag}
+      onScrollEndDrag={onScrollEndDrag}
+      onMomentumScrollBegin={onMomentumScrollBegin}
+      onMomentumScrollEnd={onMomentumScrollEnd}
       scrollEventThrottle={16}
       onLayout={onLayout}
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void onRefresh()} tintColor={colors.accent} />}
@@ -234,7 +305,7 @@ export function HomeScreen() {
         style={[styles.column, { paddingLeft, paddingRight }]}
         onLayout={(event) => {
           columnY.current = event.nativeEvent.layout.y;
-          check();
+          laidOut();
         }}
       >
         <View
@@ -255,6 +326,11 @@ export function HomeScreen() {
       </View>
     </ScrollView>
   );
+}
+
+/** The height a row's slot keeps: its skeleton's while it waits or loads, then only what it shows. */
+function reserved(state: RowState | undefined, variant: RowVariant, cardWidth: number): number | undefined {
+  return state?.status === 'loaded' || state?.status === 'failed' ? undefined : skeletonRowHeight(variant, cardWidth);
 }
 
 /** One row by its state: a skeleton while it waits or loads, the cards, or its failure with Try again. */

@@ -1,7 +1,8 @@
 // Home's tests: a household whose every Home list answers a synthetic page (example.test addresses and TMDB-shaped
 // image URLs only), all eight services and a few studios, and helpers that lay Home out and scroll it the way the
 // device would (Jest lays nothing out by itself, so no lazy row comes near the screen until a test says so): each row
-// as tall as what it shows, so a short row moves the rows under it as it would on the device. Queries
+// as tall as what it shows, so a short row moves the rows under it as it would on the device, and a scroll as the
+// member's drag (begin, move, let go) or its glide, apart from the scroll events the app's own scrolling sends. Queries
 // are queryAll* only and assertions read single fields, so a failure never prints the component tree.
 import { act, fireEvent, screen, within } from '@testing-library/react-native';
 import { StyleSheet } from 'react-native';
@@ -124,6 +125,15 @@ const HERO_PANEL = 160;
 let shown: ScreenSize = PHONE_SCREEN;
 let contentEnd = 0;
 
+/** A slot as one layout pass placed it: its top on the page, and whether it was still a skeleton then. */
+interface Placed {
+  key: string;
+  top: number;
+  skeleton: boolean;
+}
+/** The first and the last pass of the latest layOut(). */
+let passes: { first: Placed[]; last: Placed[] } = { first: [], last: [] };
+
 const styleOf = (node: Node): Record<string, unknown> => StyleSheet.flatten(node.props.style) ?? {};
 const number = (value: unknown): number => (typeof value === 'number' ? value : 0);
 
@@ -179,6 +189,7 @@ function heroHeight(): number {
 export async function layOut(size: ScreenSize = PHONE_SCREEN): Promise<void> {
   shown = size;
   let last = '';
+  passes = { first: [], last: [] };
   for (let pass = 0; pass < 20; pass += 1) {
     const slots = screen.queryAllByTestId(/^home-slot-/);
     let y = COLUMN_TOP + heroHeight() + GAP;
@@ -189,6 +200,9 @@ export async function layOut(size: ScreenSize = PHONE_SCREEN): Promise<void> {
       return { slot, top, height };
     });
     contentEnd = BAND + y;
+    const record = placed.map(({ slot, top }) => ({ key: String(slot.props.testID).replace(/^home-slot-/, ''), top: BAND + top, skeleton: inside(slot, 'skeleton-row').length > 0 }));
+    if (pass === 0) passes.first = record;
+    passes.last = record;
     const now = placed.map(({ top, height }) => `${top}:${height}`).join(',');
     if (now === last) return;
     last = now;
@@ -201,14 +215,50 @@ export async function layOut(size: ScreenSize = PHONE_SCREEN): Promise<void> {
   }
 }
 
-/** Scrolls Home so its top is at `y`, on the screen it was last laid out on, and lays it out again. */
-export async function scrollTo(y: number): Promise<void> {
+/** Where the scroll view would say it is, at `y` on the screen it was last laid out on. */
+const at = (y: number) => ({ nativeEvent: { contentOffset: { x: 0, y }, contentSize: { width: shown.width, height: contentEnd }, layoutMeasurement: shown } });
+
+/** One scroll view event (`scroll`, `scrollBeginDrag`, `momentumScrollEnd`, …) at each offset in turn. */
+export async function scrollEvent(name: string, ...offsets: number[]): Promise<void> {
   await act(async () => {
-    for (const node of screen.queryAllByTestId('home-scroll')) {
-      fireEvent.scroll(node, { nativeEvent: { contentOffset: { x: 0, y }, contentSize: { width: shown.width, height: contentEnd }, layoutMeasurement: shown } });
-    }
+    for (const node of screen.queryAllByTestId('home-scroll')) for (const y of offsets) fireEvent(node, name, at(y));
   });
   await settle();
+}
+
+/** The member's drag from where the screen is to `y`, let go there with no glide. */
+export async function drag(from: number, y: number): Promise<void> {
+  await scrollEvent('scrollBeginDrag', from);
+  await scrollEvent('scroll', y);
+  await scrollEvent('scrollEndDrag', y);
+}
+
+/** The glide after a drag is let go: it begins at `from`, passes each of `offsets` and stops at the last. */
+export async function glide(from: number, ...offsets: number[]): Promise<void> {
+  await scrollEvent('momentumScrollBegin', from);
+  await scrollEvent('scroll', ...offsets);
+  await scrollEvent('momentumScrollEnd', offsets.at(-1) ?? from);
+}
+
+/** Where each Home scroller's top is, as the member last left it (a new render starts at the top). */
+const scrolled = new WeakMap<Node, number>();
+const offsetNow = () => {
+  const node = screen.queryAllByTestId('home-scroll')[0];
+  return node ? (scrolled.get(node) ?? 0) : 0;
+};
+
+/**
+ * The rows still skeletons on screen at the top, in the first pass of the latest layOut() (what Home's look at rest
+ * sees, when it is the first layout of a drawing) or its last (where the rows settled after that).
+ */
+export function skeletonsOnScreen(pass: 'first' | 'last'): string[] {
+  return passes[pass].filter((slot) => slot.skeleton && slot.top < shown.height).map((slot) => slot.key);
+}
+
+/** The member drags Home so its top is at `y`, on the screen it was last laid out on, and it is laid out again. */
+export async function scrollTo(y: number): Promise<void> {
+  await drag(offsetNow(), y);
+  for (const node of screen.queryAllByTestId('home-scroll')) scrolled.set(node, y);
   await layOut(shown);
 }
 
@@ -237,6 +287,8 @@ export async function choose(filter: 'All' | 'Movies' | 'TV'): Promise<void> {
   const found = screen.queryAllByRole('radio', { name: filter });
   if (found.length !== 1) throw new Error(`expected one filter "${filter}", found ${found.length}`);
   await fireEvent.press(found[0]!);
+  // Home takes a member who was down the page back to the first row (the top, as Jest never lays the hero out).
+  for (const node of screen.queryAllByTestId('home-scroll')) scrolled.set(node, 0);
   await settle();
 }
 

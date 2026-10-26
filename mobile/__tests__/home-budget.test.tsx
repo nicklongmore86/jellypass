@@ -3,12 +3,30 @@
 // the calls the PWA makes at once (the start-up /me included), nothing below the fold is asked for until it comes near
 // the screen, and scrolling to the end adds exactly the budget's lazy calls, each once. A change that makes Home
 // chattier fails here until the budget file (and the PWA) changes with it. Rows that come back short (empty, failed
-// or a single title) on a tall iPad must not pull the rows under them near the screen: only the member scrolling does.
+// or a single title) on a tall iPad load only the lazy rows on screen at rest, once: the rows they pull up after that
+// wait for the member to drag. Only the member's own drag (and its glide) in the filter on screen moves Home on: not
+// the offset left from the filter before, nor the app's own scroll back to the first row, nor a glide from before.
 import { renderRouter } from 'expo-router/testing-library';
 
 import type { FetchLike } from '../src/api/client';
 import { BUDGET } from './support/app-api';
-import { budgetRoute, choose, homeGateway, homeHousehold, layOut, listOf, pageAnswer, PHONE_SCREEN, scrollTo, scrollToEnd, type ScreenSize } from './support/home';
+import {
+  budgetRoute,
+  choose,
+  drag,
+  glide,
+  homeGateway,
+  homeHousehold,
+  layOut,
+  listOf,
+  pageAnswer,
+  PHONE_SCREEN,
+  scrollEvent,
+  scrollTo,
+  scrollToEnd,
+  skeletonsOnScreen,
+  type ScreenSize,
+} from './support/home';
 import { ORIGIN, TOKEN, answer, keepSession, settle, store, type Call } from './support/household';
 
 let mockFetch: FetchLike;
@@ -114,8 +132,9 @@ describe.each(FILTERS)('Home under %s on a tall iPad', (filter, name) => {
   const budget = BUDGET.screens[name]!;
   const below = budget.belowTheFold ?? [];
   const counted = (since: readonly string[]) => (filter === 'All' ? [...since] : ['GET /me', 'GET /discover/sources', ...since]);
+  const lazy = (since: readonly string[]) => since.filter((route) => below.includes(route));
 
-  it.each(SHORT)('with every row %s: asks for no lazy row until the member scrolls, then a screen at a time', async (_, respond) => {
+  it.each(SHORT)('with every row %s: loads the lazy rows on screen at rest once, never those pulled up after, then more as the member drags', async (kind, respond) => {
     mockWindow = IPAD;
     gateway = homeGateway(homeHousehold(respond));
     mockFetch = gateway.fetch;
@@ -124,19 +143,86 @@ describe.each(FILTERS)('Home under %s on a tall iPad', (filter, name) => {
     if (filter !== 'All') await choose(filter);
     const since = () => made().slice(before);
 
-    // Laid out, and again as each short row settles: still only the first calls.
+    // The first layout: exactly the lazy rows it shows on screen are asked for, each once, within the budget.
     await layOut(IPAD_SCREEN);
-    await layOut(IPAD_SCREEN);
-    expect(sorted(counted(since()))).toEqual(sorted(budget.atOnce));
+    const onScreen = skeletonsOnScreen('first');
+    const atRest = lazy(since());
+    expect(atRest.length).toBe(onScreen.length);
+    expect(new Set(atRest).size).toBe(atRest.length);
+    if (kind !== 'a single title') expect(onScreen.length).toBeGreaterThanOrEqual(1);
+    expect(since().filter((route) => !below.includes(route) && !budget.atOnce.includes(route))).toEqual([]);
 
-    await scrollTo(IPAD_SCREEN.height);
-    const first = since().filter((route) => below.includes(route)).length;
-    expect(first).toBeGreaterThanOrEqual(1);
-    expect(first).toBeLessThan(below.length);
+    // Those come back short too and pull more rows on screen, laid out again and again: none of them is asked for.
+    await layOut(IPAD_SCREEN);
+    await layOut(IPAD_SCREEN);
+    if (kind !== 'a single title') expect(skeletonsOnScreen('last').length).toBeGreaterThanOrEqual(1);
+    expect(lazy(since()).length).toBe(atRest.length);
+
+    // The member drags a little way: more rows, still each once and from the budget.
+    await scrollTo(IPAD_SCREEN.height / 2);
+    expect(lazy(since()).length).toBeGreaterThan(atRest.length);
 
     await scrollToEnd();
     const calls = counted(since());
     expect(sorted(calls)).toEqual(sorted([...budget.atOnce, ...below]));
     expect(calls.length).toBe(budget.calls);
+  });
+});
+
+describe('Home after the filter changes', () => {
+  const tv = BUDGET.screens['home-tv']!;
+  const tvBelow = tv.belowTheFold ?? [];
+
+  /** Opens Home under All down to its last services, as the member left it. */
+  async function deepUnderAll() {
+    await start();
+    await scrollToEnd();
+    await scrollTo(6000);
+    const before = made().length;
+    return () => made().slice(before).filter((route) => tvBelow.includes(route));
+  }
+
+  it("starts TV at its first row: the old offset and the app's own scroll back, landing late, load nothing", async () => {
+    const lazyTv = await deepUnderAll();
+    await choose('TV');
+    // The jump back to the first row lands after the switch: the scroll view still says where All was left, first.
+    await scrollEvent('scroll', 6000, 5800, 0);
+    await layOut();
+    await layOut();
+    expect(lazyTv()).toEqual([]);
+
+    // The member's own drag down TV loads its rows a few at a time.
+    await drag(0, PHONE_SCREEN.height);
+    await layOut();
+    expect(lazyTv().length).toBeGreaterThanOrEqual(1);
+    expect(lazyTv().length).toBeLessThanOrEqual(2);
+    await scrollToEnd();
+    expect(sorted(lazyTv())).toEqual(sorted(tvBelow));
+  });
+
+  it('ignores a glide set off under All that carries on after TV is chosen, and one the member did not start', async () => {
+    await start();
+    await layOut();
+    await drag(0, PHONE_SCREEN.height);
+    await scrollEvent('momentumScrollBegin', PHONE_SCREEN.height);
+    const before = made().length;
+    const lazyTv = () => made().slice(before).filter((route) => tvBelow.includes(route));
+
+    await choose('TV');
+    await layOut();
+    // The old glide runs on far down the page and stops.
+    await scrollEvent('scroll', 1600, 2400, 4000);
+    await scrollEvent('momentumScrollEnd', 4000);
+    // A glide with no drag of the member's before it in TV: the app's own scrolling.
+    await glide(0, 3000, 5000);
+    await layOut();
+    expect(lazyTv()).toEqual([]);
+
+    // A drag in TV, and the glide it sets off, load as far as they go: a few rows, not all of them.
+    await drag(0, PHONE_SCREEN.height / 2);
+    await glide(PHONE_SCREEN.height / 2, PHONE_SCREEN.height);
+    await layOut();
+    expect(lazyTv().length).toBeGreaterThanOrEqual(1);
+    expect(lazyTv().length).toBeLessThan(tvBelow.length);
   });
 });
