@@ -1,0 +1,20 @@
+node_modules/
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+*.tsbuildinfo
+.metro-health-check*
+.env*.local
+
+# Signing material never belongs in the repo.
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+*.pem
+
+# Generated native projects (EAS and `expo prebuild` make these).
+/ios
+/android
