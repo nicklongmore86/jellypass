@@ -114,6 +114,41 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: npm install --global "eas-cli@${EAS_CLI_VERSION}"
 
+      # Signs in and looks up the project before a build is spent, so a bad token or a missing role fails here with a
+      # readable message instead of a bare "GraphQL request failed." from the build. `eas whoami` lists the token's
+      # account and its role in each organization; its email line is kept out of the (public) log, and the token is
+      # never printed. Troubleshooting: mobile/README.md, "When a release fails".
+      - name: Check the Expo token can build the project
+        env:
+          EXPO_TOKEN: ${{ secrets.EXPO_TOKEN }}
+        run: |
+          causes="Likely cause: the EXPO_TOKEN secret on the mobile-release environment is missing, revoked or mistyped; or the token's account has no build-capable role (Owner, Admin, Release Manager or Developer) in the rtc-services-llc Expo organization, which owns the project. See mobile/README.md, When a release fails."
+          if [ -z "$EXPO_TOKEN" ]; then
+            echo "::error::The EXPO_TOKEN secret is empty. ${causes}"
+            exit 1
+          fi
+          if ! whoami="$(eas whoami 2>&1)"; then
+            printf '%s\n' "$whoami" | sed '/@/d'
+            echo "::error::Expo refused EXPO_TOKEN (eas whoami failed). ${causes}"
+            exit 1
+          fi
+          printf '%s\n' "$whoami" | sed '/@/d'
+          role="$(printf '%s\n' "$whoami" | sed -n 's/.* rtc-services-llc (Role: \([^)]*\)).*/\1/p' | head -n 1)"
+          case "$role" in
+            '')
+              echo "::error::The EXPO_TOKEN account is not a member of the rtc-services-llc Expo organization. ${causes}"
+              exit 1
+              ;;
+            Viewer)
+              echo "::error::The EXPO_TOKEN account only has the Viewer role in rtc-services-llc, which can't start builds. ${causes}"
+              exit 1
+              ;;
+          esac
+          if ! eas project:info; then
+            echo "::error::Signed in as a member of rtc-services-llc (Role: ${role}), but the project in app.config.ts could not be read (eas project:info failed). ${causes}"
+            exit 1
+          fi
+
       - name: Check the TestFlight settings before spending a build
         if: env.PLATFORM != 'android' && env.SUBMIT == 'true'
         run: |
@@ -141,14 +176,35 @@ jobs:
           EXPO_ASC_KEY_ID: ${{ env.PLATFORM != 'android' && secrets.ASC_API_KEY_ID || '' }}
           EXPO_ASC_ISSUER_ID: ${{ env.PLATFORM != 'android' && secrets.ASC_API_ISSUER_ID || '' }}
           EXPO_APPLE_TEAM_ID: ${{ env.PLATFORM != 'android' && secrets.APPLE_TEAM_ID || '' }}
-        # --json prints the finished builds to stdout (the logs go to stderr); --wait is the default, spelled out.
-        run: eas build --platform "$PLATFORM" --profile "$PROFILE" --non-interactive --wait --json > "${RUNNER_TEMP}/builds.json"
-
-      - name: Report the builds
-        if: always()
+        # --json prints the finished builds to stdout (the logs go to stderr, which stays in this log); --wait is the
+        # default, spelled out. When EAS CLI fails, its error can land on stdout instead (run 40404852233 logged only
+        # "GraphQL request failed."), so on failure the file is shown here: it holds EAS's messages and build records,
+        # never credentials. EXPO_DEBUG stays off: it dumps whole error objects, request context included.
         run: |
           builds="${RUNNER_TEMP}/builds.json"
-          [ -s "$builds" ] || exit 0
+          status=0
+          eas build --platform "$PLATFORM" --profile "$PROFILE" --non-interactive --wait --json > "$builds" || status=$?
+          if [ "$status" -ne 0 ]; then
+            echo "::error::EAS CLI exited with ${status}. What it wrote to stdout:"
+            messages="$(jq -r '[.. | objects | .message? | strings] | unique | .[]' "$builds" 2> /dev/null || true)"
+            if [ -n "$messages" ]; then
+              printf '%s\n' "$messages" | head -c 4000
+            else
+              head -c 4000 "$builds"
+            fi
+            echo
+            exit "$status"
+          fi
+
+      - name: Report the builds
+        run: |
+          builds="${RUNNER_TEMP}/builds.json"
+          if ! jq -e 'type == "array"' "$builds" > /dev/null 2>&1; then
+            echo "::error::EAS CLI finished but builds.json is not the list of builds it should be. Its start:"
+            head -c 4000 "$builds"
+            echo
+            exit 1
+          fi
           {
             echo "## JellyPass ${PROFILE} builds"
             echo

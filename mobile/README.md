@@ -400,7 +400,8 @@ local file. Never commit it (`*.jks` is in `.gitignore`). ([App credentials](htt
 builds both apps with `production` and sends iOS to TestFlight.
 
 Each run first runs the mobile checks (`pnpm check`) with no secrets in reach, then waits for your approval as
-the `mobile-release` reviewer. It then builds on EAS (`eas build --non-interactive --wait --json`) and, for iOS,
+the `mobile-release` reviewer. It then checks the Expo token (`eas whoami`, `eas project:info`; see
+[When a release fails](#when-a-release-fails)), builds on EAS (`eas build --non-interactive --wait --json`) and, for iOS,
 uploads that build (`eas submit --platform ios --profile production --id <build> --non-interactive`). On EAS's free
 plan builds queue at low priority, so a run can take an hour or more; the job allows five hours. The run's summary
 lists each build's page on expo.dev and the Android APK's download link. That summary is public on a public repo:
@@ -421,3 +422,27 @@ updates there.
 2. Open the downloaded file. The first time, Android asks to allow the browser (or file manager) to install
    unknown apps: tap **Settings**, turn on **Allow from this source**, and go back. Allow it only for that app.
 3. Tap **Install**. Later APKs install the same way, over the old one, keeping the sign-in.
+
+### When a release fails
+
+**"Error: GraphQL request failed."** is EAS CLI's summary of an error from Expo's API. The reason is a line printed
+before it; under `--json` that line can go to stdout, into `builds.json`, which is why the log once showed only the
+summary (run 40404852233). **Build on EAS** now prints it when the build fails. Almost always it is the token: the
+`EXPO_TOKEN` secret on the `mobile-release` environment is missing, revoked or mistyped, or the account it belongs to
+is not a member of the `rtc-services-llc` Expo organization with a role that can build (Owner, Admin, Release Manager
+or Developer; a Viewer can read the project but not build it). The project belongs to the organization, not to a
+personal account, so a valid personal token whose account isn't in the organization fails the same way.
+
+The step **Check the Expo token can build the project** catches this before a build is spent. It prints who the token
+signs in as and its role in each organization (`eas whoami`, with the email line left out), and fails with the likely
+cause when the token is refused, the account isn't in `rtc-services-llc`, its role there is Viewer, or the project
+can't be read (`eas project:info`). The token itself is never printed. To fix it, make a new token ([step
+2](#one-time-setup-owner)) or give its account a build role under the organization's **Members** settings on
+expo.dev, then replace the `EXPO_TOKEN` environment secret. To check a token locally without leaving it in shell
+history: `read -rs EXPO_TOKEN && export EXPO_TOKEN && cd mobile && npx eas-cli@24.12.1 whoami && npx eas-cli@24.12.1
+project:info`.
+
+If **Build on EAS** still fails, its log shows EAS CLI's messages (stderr as usual, and the `message` fields of
+whatever it wrote to stdout instead of the build list, or the first 4000 bytes if that isn't JSON). `EXPO_DEBUG`
+stays off in CI: it dumps whole error objects, request context included. **Report the builds** only runs after a
+successful build, and says so if the build list isn't valid JSON.
