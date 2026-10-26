@@ -24,6 +24,16 @@ privacy leak. Such changes are always listed at the top of the release notes.
   `POST /v1/reconcile` and `POST /auth/logout`. Requests without a body work as
   before, whatever their `Content-Type`, and unknown paths and methods are still
   `404 {"error":"not_found"}` whatever they carry.
+- Admin UI: while Jellyfin cannot answer the five-minute session check (`503 {"error":"session_check_unavailable"}`),
+  the admin UI no longer shows the sign-in form at load, and no longer shows the raw code after an action. The server
+  keeps the session and allows another check 30 seconds after the failed one; the UI now keeps its current view, shows
+  "Jellyfin is temporarily unavailable — retrying…" and asks again on its own, first after 30 seconds and then backing
+  off to every two minutes, paused while the tab is hidden (the time it was hidden does not count towards the wait),
+  and returns to normal once the check passes. A `401` still returns to sign-in, and an answer that arrives after a
+  sign-out, a `401` or a new sign-in no longer changes the view, shows a notice or toast, or starts a retry; this
+  includes a request that fails outright (network error) after the session ended, and the recent-requests widget,
+  whose `401` now returns to sign-in instead of showing the app with empty activity. Other error codes the admin API answers with (such as `cross_origin_request_refused` or
+  `too_many_requests`) are shown as sentences instead of codes.
 
 ## [3.0.0] - 2026-10-26
 
