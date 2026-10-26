@@ -14,6 +14,16 @@ privacy leak. Such changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Fixed
+
+- Body-less admin routes now also reject non-JSON bodies, as documented in
+  3.0.0. A `POST`, `PUT`, `PATCH` or `DELETE` on the administrator API that
+  carries a body not declared as `application/json` is
+  `415 {"error":"unsupported_media_type"}` before anything happens, also on
+  routes that never read their body such as `POST /v1/library/sync`,
+  `POST /v1/reconcile` and `POST /auth/logout`. Requests without a body work as
+  before, whatever their `Content-Type`.
+
 ## [3.0.0] - 2026-10-26
 
 This is a major release for the administrator API and the admin UI. The

@@ -215,6 +215,65 @@ describe('admin surface hardening', { timeout: 20_000 }, () => {
     assert.equal((await send(port, '/v1/groups/plain', { cookie, 'sec-fetch-site': 'same-origin' }, { method: 'DELETE' })).status, 200);
   });
 
+  it('answers 415 for a non-JSON body on routes that never read one, before any side effect', async () => {
+    const cookie = await login();
+    const routes = [
+      ...ENDPOINTS.map(([method, pathname]) => [method, pathname]),
+      ['DELETE', '/v1/grants/item-1/requests/request-1'],
+      ['PUT', '/v1/grants/item-1/groups'],
+      ['PUT', '/v1/grants/item-1/manual'],
+    ];
+    const groupsBefore = (await send(port, '/v1/groups', { authorization: 'Bearer admin-secret' })).body;
+    const requestsBefore = jellyfin.requestedPaths.length;
+    for (const [method, pathname] of routes) {
+      for (const [label, headers] of [
+        ['bearer', { authorization: 'Bearer admin-secret' }],
+        ['same-origin cookie', { cookie, 'sec-fetch-site': 'same-origin' }],
+      ]) {
+        if (label === 'bearer' && pathname === '/auth/logout') continue; // Sign-out is origin-checked whatever it carries.
+        // Node's client sends a DELETE body without Content-Length unless it is given one.
+        for (const extra of [{ 'content-type': 'text/plain', 'content-length': '2' }, { 'content-type': 'text/plain', 'transfer-encoding': 'chunked' }, { 'content-length': '2' }]) {
+          const response = await send(port, pathname, { ...headers, ...extra }, { method, body: '{}' });
+          assert.equal(response.status, 415, `${label} ${method} ${pathname} ${JSON.stringify(extra)}`);
+          assert.equal(response.body, '{"error":"unsupported_media_type"}');
+        }
+      }
+    }
+    assert.equal(jellyfin.requestedPaths.length, requestsBefore, 'no Jellyfin call was made');
+    assert.equal((await send(port, '/v1/groups', { authorization: 'Bearer admin-secret' })).body, groupsBefore);
+    // The logout attempts did not end the session.
+    assert.equal((await send(port, '/auth/session', { cookie })).status, 200);
+  });
+
+  it('still accepts body-less state changes with any Content-Type, and JSON bodies on them', async () => {
+    const cookie = await login();
+    for (const headers of [{ authorization: 'Bearer admin-secret' }, { cookie, 'sec-fetch-site': 'same-origin' }]) {
+      for (const contentType of [undefined, 'text/plain', 'application/json']) {
+        const typed = { ...headers, ...(contentType ? { 'content-type': contentType } : {}) };
+        assert.equal((await send(port, '/v1/library/sync', typed, { method: 'POST' })).status, 200, `sync ${contentType}`);
+        assert.equal((await send(port, '/v1/reconcile?dryRun=true', typed, { method: 'POST' })).status, 200, `reconcile ${contentType}`);
+      }
+      const json = { ...headers, 'content-type': 'application/json; charset=utf-8' };
+      assert.equal((await send(port, '/v1/library/sync', json, { method: 'POST', body: '{}' })).status, 200);
+      assert.equal((await send(port, '/v1/reconcile?dryRun=true', json, { method: 'POST', body: '{}' })).status, 200);
+    }
+    assert.equal((await send(port, '/auth/logout', { cookie, 'sec-fetch-site': 'same-origin', 'content-type': 'text/plain' }, { method: 'POST' })).status, 200);
+    assert.equal((await send(port, '/auth/session', { cookie })).status, 401);
+  });
+
+  it('checks the origin and the credentials before the body\'s type', async () => {
+    const cookie = await login();
+    const plain = { 'content-type': 'text/plain', 'content-length': '2' };
+    for (const [method, pathname] of ENDPOINTS) {
+      const crossSite = await send(port, pathname, { cookie, ...plain, 'sec-fetch-site': 'cross-site', origin: 'https://attacker.test' }, { method, body: '{}' });
+      assert.deepEqual([crossSite.status, crossSite.body], [403, REFUSED], `${method} ${pathname}`);
+    }
+    const anonymous = await send(port, '/v1/library/sync', plain, { method: 'POST', body: '{}' });
+    assert.equal(anonymous.status, 401);
+    const wrongToken = await send(port, '/v1/library/sync', { ...plain, authorization: 'Bearer wrong' }, { method: 'POST', body: '{}' });
+    assert.equal(wrongToken.status, 401);
+  });
+
   it('keeps the Seerr webhook, /health and /metrics as they were', async () => {
     const webhook = await send(port, '/webhooks/seerr?token=webhook-secret', { 'content-type': 'text/plain', 'sec-fetch-site': 'cross-site' }, {
       method: 'POST',

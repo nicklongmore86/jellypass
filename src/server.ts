@@ -156,6 +156,7 @@ export function makeServer(
       }
       if (request.method === 'POST' && url.pathname === '/auth/logout') {
         if (!sameOrigin()) return forbidden();
+        if (hasBody(request)) requireJsonBody(request);
         webAuth?.logout(request);
         response.setHeader('Set-Cookie', expiredSessionCookie(isSecureRequest(request)));
         return json(response, 200, { status: 'logged_out' });
@@ -183,6 +184,8 @@ export function makeServer(
         if (session.status === 'unavailable') return json(response, 503, { error: 'session_check_unavailable' });
         if (session.status !== 'active') return json(response, 401, { error: 'unauthorized' });
       }
+      // Bodies must be declared as JSON on every state-changing route, including those that never read one.
+      if (!SAFE_METHODS.has(request.method ?? 'GET') && hasBody(request)) requireJsonBody(request);
 
       if (request.method === 'GET' && url.pathname === '/metrics') {
         return text(response, 200, service.renderMetrics(), 'text/plain; version=0.0.4; charset=utf-8');
@@ -343,6 +346,11 @@ function sameToken(supplied: string, expectedToken: string): boolean {
   const left = createHash('sha256').update(supplied).digest();
   const right = createHash('sha256').update(expectedToken).digest();
   return timingSafeEqual(left, right);
+}
+
+/** Whether the request carries a body: a non-zero Content-Length, or any Transfer-Encoding. */
+function hasBody(request: IncomingMessage): boolean {
+  return request.headers['transfer-encoding'] !== undefined || Number(request.headers['content-length'] ?? 0) > 0;
 }
 
 /** Refuses a body not declared as `application/json` (parameters such as charset allowed), before any of it is read. */
