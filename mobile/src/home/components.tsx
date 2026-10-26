@@ -337,7 +337,9 @@ export function Hero({
   tablet: boolean;
   onOpen: (card: Card) => void;
 }) {
-  const [index, setIndex] = useState(0);
+  const [shownIndex, setIndex] = useState(0);
+  // A refresh can bring back fewer titles than the one showing.
+  const index = Math.min(shownIndex, Math.max(0, cards.length - 1));
   const [reduceMotion, setReduceMotion] = useState(false);
   const track = useRef<ScrollViewInstance>(null);
 
