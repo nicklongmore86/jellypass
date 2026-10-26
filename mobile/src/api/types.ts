@@ -51,7 +51,7 @@ export interface Card {
   title: string;
   year: number | null;
   overview: string;
-  /** An allowlisted TMDB poster URL (w342), or null: decode.ts drops any other. */
+  /** An allowlisted TMDB poster URL (w342), or null: decode.ts refuses any other. */
   posterUrl: string | null;
   /** An allowlisted TMDB backdrop URL (w780), or null. */
   backdropUrl: string | null;

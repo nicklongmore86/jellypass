@@ -9,7 +9,9 @@
   "rating": 7.4,
   "state": "get_this",
   "play": null,
-  "genres": [],
+  "genres": [
+    "Drama"
+  ],
   "runtime": null,
   "seasons": [
     {

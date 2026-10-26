@@ -49,10 +49,11 @@ promises (the final ids, the Expo owner, rotation, no update service or analytic
   `Content-Type` on a POST), `credentials: 'omit'`, and nothing else. No `cache` option, because React Native's
   fetch adds `?_=<time>` to a GET sent with `no-store`; the API answers `no-store` itself.
   `signInAuthorization` builds the sign-in header (`Client`, `Device`, `DeviceId`, `Version`) for the sign-in PR.
-- **Types** (`types.ts`) are written by hand from `docs/app-api/v1.openapi.json`, and decoding is lenient
-  (`decode.ts`). Unknown fields are ignored, an unknown `state` is `unavailable`, an unknown request `status` is
-  `requested`, a `/me` without `apiVersion` is revision 0, and an image or Play URL off the allowlist is `null`.
-  Any other wrong shape is an error.
+- **Types** (`types.ts`) are written by hand from `docs/app-api/v1.openapi.json`, and decoding (`decode.ts`) is
+  lenient only where the contract says: unknown fields are ignored, an unknown `state` is `unavailable`, an unknown
+  request `status` is `requested`, a `/me` without `apiVersion` is revision 0, and a Play link that is not exactly
+  the household's own is `null`. Anything else the schema refuses (a wrong type, a missing field, or a number,
+  length, item count or pattern, image URLs included, outside its limits) is `unexpected`.
 - **Errors** are an `ApiError` with a fixed `kind`: `invalid_request` (400, or arguments the API would refuse,
   sent without a call), `unauthorized` (401, or no token), `not_found` (404; `householdNotFound` for
   `household_not_found`), `too_many_requests` (429, with `retryAfterSeconds` when given), `unavailable` (502 and
@@ -72,6 +73,9 @@ promises (the final ids, the Expo owner, rotation, no update service or analytic
 - an enum differs;
 - a fixture in `__tests__/fixtures/app-api` stops matching the document;
 - a decoded answer has a field more or less than the document;
+- decoding accepts or refuses a value the schema does not (`__tests__/api-decode-constraints.test.ts` tries values
+  just inside and just outside every constraint of every answer, and fails on a keyword it cannot try or a
+  constrained field no fixture reaches);
 - an error status maps to the wrong kind;
 - a fetch-budget call takes anything but one request to exactly its path.
 

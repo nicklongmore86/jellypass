@@ -96,7 +96,7 @@ describe('what the client sends', () => {
   });
 });
 
-describe('decoding, leniently', () => {
+describe('decoding, lenient only where the contract says', () => {
   it.each([
     ['me', (api: ApiClient) => api.me()],
     ['page', (api: ApiClient) => api.discover('trending')],
@@ -138,25 +138,25 @@ describe('decoding, leniently', () => {
     ]);
   });
 
-  it('drops images off the TMDB allowlist and a Play link anywhere but the household', async () => {
+  it('drops a Play link anywhere but the household, and one for a title not in the library', async () => {
     const page = fixture('page');
-    const [inLibrary, other, third] = page.results as [Json, Json, Json];
-    inLibrary.posterUrl = 'https://evil.example.test/p.jpg';
-    inLibrary.backdropUrl = 'https://image.tmdb.org/t/p/original/a.jpg';
+    const [inLibrary, other] = page.results as [Json, Json];
     inLibrary.play = { itemId: '0123456789abcdef0123456789abcdef', url: 'https://jelly-other.example.test/web/#/details?id=0123456789abcdef0123456789abcdef' };
-    // A Play link for a title not in the library is dropped too.
-    other.play = { itemId: 'abc', url: `${ORIGIN}/web/#/details?id=abc` };
-    third.posterUrl = 'https://image.tmdb.org/t/p/w300/a.jpg';
-    const sources = fixture('sources');
-    (sources.networks as Json[])[0]!.logoUrl = 'https://image.tmdb.org/t/p/w342/a.png';
-    const { api } = clientWith((url) => answer(200, url.endsWith('/sources') ? sources : page));
-    const decoded = await api.discover('trending');
-    expect(decoded.results.map((card) => [card.posterUrl, card.backdropUrl, card.play])).toEqual([
-      [null, null, null],
-      [null, null, null],
-      [null, 'https://image.tmdb.org/t/p/w780/c.webp', null],
-    ]);
-    expect((await api.sources()).networks.map((network) => network.logoUrl)).toEqual([null, null]);
+    other.play = { itemId: 'abcdefabcdefabcdefabcdefabcdefab', url: `${ORIGIN}/web/#/details?id=abcdefabcdefabcdefabcdefabcdefab` };
+    const { api } = clientWith(() => answer(200, page));
+    expect((await api.discover('trending')).results.map((card) => card.play)).toEqual([null, null, null]);
+  });
+
+  it.each([
+    ['a poster off TMDB', 'page', (body: Json) => ((body.results as Json[])[0]!.posterUrl = 'https://evil.example.test/p.jpg')],
+    ['a backdrop at another width', 'page', (body: Json) => ((body.results as Json[])[0]!.backdropUrl = 'https://image.tmdb.org/t/p/original/a.jpg')],
+    ['a poster at a logo width', 'page', (body: Json) => ((body.results as Json[])[2]!.posterUrl = 'https://image.tmdb.org/t/p/w300/a.jpg')],
+    ['a logo at a poster width', 'sources', (body: Json) => ((body.networks as Json[])[0]!.logoUrl = 'https://image.tmdb.org/t/p/w342/a.png')],
+  ])('refuses %s as unexpected: an image URL off the schema is not the documented shape', async (_name, name, change) => {
+    const body = fixture(name);
+    change(body);
+    const { api } = clientWith(() => answer(200, body));
+    expect((await failure(name === 'sources' ? api.sources() : api.discover('trending'))).kind).toBe('unexpected');
   });
 
   it('reads a /me without apiVersion as revision 0 (3.1.1 and earlier)', async () => {
@@ -177,6 +177,13 @@ describe('decoding, leniently', () => {
     ['a number for a state', 'page', { page: 1, nextPage: null, results: [{ ...(fixture('page').results as Json[])[0], state: 3 }] }],
     ['a series for a movie', 'movie', fixture('series')],
     ['a movie for a series', 'series', fixture('movie')],
+    // Each inside its JSON type but outside the schema's limits.
+    ['page 501', 'page', { ...fixture('page'), page: 501 }],
+    ['nextPage 502', 'page', { ...fixture('page'), nextPage: 502 }],
+    ['year 10000', 'movie', { ...fixture('movie'), year: 10000 }],
+    ['rating -1', 'movie', { ...fixture('movie'), rating: -1 }],
+    ['runtime 0', 'movie', { ...fixture('movie'), runtime: 0 }],
+    ['an empty genre', 'movie', { ...fixture('movie'), genres: [''] }],
     ['a body over the size cap', 'page', `{"page":1,"nextPage":null,"results":[],"pad":"${'x'.repeat(5 * 1024 * 1024)}"}`],
   ];
   it.each(malformed)('turns %s into unexpected', async (_name, kind, body) => {
