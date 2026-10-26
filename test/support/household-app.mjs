@@ -860,6 +860,8 @@ export async function startApp(t, state = world(), options = {}) {
   });
   await listen(server);
   t.after(async () => {
+    // A record held back by `recordDelayMs` is abandoned with the test, not waited for.
+    if (options.recordDelayMs) await background.stop();
     server.closeAllConnections();
     await Promise.all([close(server), seerr.close(), tmdb.close(), jellyfin.close()]);
     // Checked for every test: a request sent before its intent was on disk fails it (see intentOnDisk).

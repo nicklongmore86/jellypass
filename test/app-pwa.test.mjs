@@ -4167,8 +4167,9 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     });
 
     describe('shows Requested right after an accepted Get this, while the server records it', () => {
-      // The server writes the household's record a moment after it accepts the call (and these tests never let
-      // `app.background` run), so every read in them still says get_this: the page's own overlay has to carry it.
+      // The server writes the household's record a moment after it accepts the call. These tests hold that record back
+      // for their whole life (startHeld), so every read in them still says get_this: the page's own overlay has to carry it.
+      const startHeld = (t) => startApp(t, world(), { recordDelayMs: 600_000 });
       const homeReady = (page) => page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4, 'home');
       const cardFor = (page, name) => [...page.main().querySelectorAll('li.card')].find((card) => card.textContent.includes(name));
       const statusOf = (card) => card.querySelector('.badge').textContent;
@@ -4187,7 +4188,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       };
 
       it('on the title page at once, and on Home and Search after Back, with the status said once in the name', async (t) => {
-        const app = await startApp(t);
+        const app = await startHeld(t);
         const page = await openApp(t, app);
         await homeReady(page);
         const before = await searchFor(page, 'Synthetic Movie One');
@@ -4219,7 +4220,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       it('expires after two minutes, then the server\'s answer shows', async (t) => {
         let elapsed = 5_000;
         t.mock.method(performance, 'now', () => elapsed);
-        const app = await startApp(t);
+        const app = await startHeld(t);
         const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}` });
         await ask(page);
         assert.equal(page.main().querySelector('.badge').textContent, 'Requested');
@@ -4237,7 +4238,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       });
 
       it('marks the seasons asked for, and the series as the server will', async (t) => {
-        const app = await startApp(t);
+        const app = await startHeld(t);
         const page = await openApp(t, app, { hash: `#/tv/${T_TV}/season/1` });
         await ask(page);
         assert.equal(page.main().querySelector('.badge').textContent, 'Requested');
@@ -4254,14 +4255,18 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       });
 
       it('does not carry Requested to another member who signs in while Account was showing (credentials removed elsewhere)', async (t) => {
-        const app = await startApp(t);
+        const app = await startHeld(t);
         const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}` });
         await ask(page);
         assert.equal(page.main().querySelector('.badge').textContent, 'Requested');
         const storage = () => { for (const listener of page.listeners.storage ?? []) listener({ key: 'jellyfin_credentials' }); };
         const origin = page.location.origin;
         page.go('#/account');
-        await page.until(() => page.main().querySelector('.account'), 'the Account card');
+        await page.until(
+          () => page.main().querySelector('.account-name')?.textContent === 'Alice · Farmhouse'
+            && page.pending() === 0,
+          'Alice’s Account fully loaded',
+        );
         // Jellyfin web (another tab) signs out: the credentials go; this tab stays on Account and only redraws it.
         page.store.set('jellyfin_credentials', JSON.stringify({ Servers: [{ ManualAddress: origin }] }));
         storage();
@@ -4269,17 +4274,24 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         // A different member signs in there.
         page.store.set('jellyfin_credentials', JSON.stringify({ Servers: [{ ManualAddress: origin, AccessToken: TOKENS[ANN], UserId: ANN }] }));
         storage();
-        await page.until(() => page.main().querySelector('.account'), 'the Account card again');
+        await page.until(
+          () => page.main().querySelector('.account-name')?.textContent === 'Ann · Farmhouse'
+            && page.pending() === 0,
+          'Ann’s Account fully loaded',
+        );
         const card = await searchFor(page, 'Synthetic Movie One');
         assert.equal(statusOf(card), 'Available to get', 'nothing carried over from the previous member');
         page.go(`#/movie/${T_MOVIE}`);
-        await page.until(() => page.main().querySelector('.badge'), 'the title');
+        await page.until(() => page.main().querySelector('.detail .badge') && page.pending() === 0, 'the title fully loaded');
         assert.equal(page.main().querySelector('.badge').textContent, 'Available to get');
         assert.ok(page.main().querySelector('button') !== null, 'Get this is offered again');
+        // The server itself still says get_this for Ann (Alice's record is held back), so only the overlay could have said otherwise.
+        const answer = await get(app.port, `/jellypass/app/v1/movie/${T_MOVIE}`, { Host: HOST_A, Authorization: `MediaBrowser Token="${TOKENS[ANN]}"` });
+        assert.equal(JSON.parse(answer.body).state, 'get_this', 'the server has not recorded Alice\'s request');
       });
 
       it('redraws the current screen when one member\'s token is replaced by another\'s, without any navigation', async (t) => {
-        const app = await startApp(t);
+        const app = await startHeld(t);
         const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}` });
         await ask(page);
         assert.equal(page.main().querySelector('.badge').textContent, 'Requested');
@@ -4290,21 +4302,22 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       });
 
       it('redraws Account with the new member\'s name when the token is replaced, without any navigation', async (t) => {
-        const app = await startApp(t);
+        const app = await startHeld(t);
         const page = await openApp(t, app, { hash: '#/account' });
         await page.until(() => page.main().querySelector('.account-name')?.textContent === 'Alice · Farmhouse', 'Alice\'s card');
         page.store.set('jellyfin_credentials', JSON.stringify({ Servers: [{ ManualAddress: page.location.origin, AccessToken: TOKENS[ANN], UserId: ANN }] }));
         for (const listener of page.listeners.storage ?? []) listener({ key: 'jellyfin_credentials' });
-        await page.until(() => {
-          const name = page.main().querySelector('.account-name')?.textContent;
-          return name && name !== 'Signed in' && !name.includes('Alice');
-        }, 'the new member\'s card');
+        await page.until(
+          () => page.main().querySelector('.account-name')?.textContent === 'Ann · Farmhouse'
+            && page.pending() === 0,
+          'Ann’s Account fully loaded',
+        );
         assert.equal(page.main().querySelector('.account-name').textContent.includes('Alice'), false);
         assert.equal(page.location.hash, '#/account', 'no navigation');
       });
 
       it('clears when the sign-in changes without any storage event or route change (the next read decides)', async (t) => {
-        const app = await startApp(t);
+        const app = await startHeld(t);
         const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}` });
         await ask(page);
         page.store.set('jellyfin_credentials', JSON.stringify({ Servers: [{ ManualAddress: page.location.origin, AccessToken: TOKENS[ANN], UserId: ANN }] }));
@@ -4313,7 +4326,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       });
 
       it('is not added by a call the API refused', async (t) => {
-        const app = await startApp(t);
+        const app = await startHeld(t);
         const page = await openApp(t, app, {
           hash: `#/movie/${T_MOVIE}`,
           override: (url, init) => (init.method === 'POST' ? { status: 502, body: Buffer.from('{}'), headers: {} } : undefined),
@@ -4326,7 +4339,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       });
 
       it('makes no extra call', async (t) => {
-        const app = await startApp(t);
+        const app = await startHeld(t);
         const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}` });
         await page.until(() => page.main().querySelector('button'), 'the button');
         await new Promise((resolve) => setTimeout(resolve, 50));
