@@ -58,7 +58,7 @@ import {
 import { HERO_MAX, HOME_LAYOUT, LAZY_MARGIN, NETWORK_ACCENTS, networkKey, rowKey, TABLET_WIDTH, type HomeRow, type RowVariant } from '../home/layout';
 import { HOME_TEXT, SOURCE_TEXT, type HomeFilter } from '../home/text';
 import { listedNetworks, networkList, useHome, type RowState } from '../home/useHome';
-import { useSession } from '../session/SessionProvider';
+import { useAsked, useSession } from '../session/SessionProvider';
 import { colors, layout, spacing } from '../theme';
 
 /** Where a title opens: its page under the Home tab's stack. */
@@ -82,6 +82,8 @@ interface Slot {
 export function HomeScreen() {
   const { api, expire } = useSession();
   const home = useHome(api, expire);
+  // What the member just asked for shows as Requested on every card at once, with no call (src/title/asked.ts).
+  const overlay = useAsked();
   const { filter, rows, sources, started, near } = home;
   const insets = useSafeAreaInsets();
   const window = useWindowDimensions();
@@ -301,7 +303,7 @@ export function HomeScreen() {
 
   const first = parts[0] as HomeRow;
   const heroState = rows[rowKey(first)];
-  const heroCards = heroState?.status === 'loaded' ? heroState.page.results.slice(0, HERO_MAX) : [];
+  const heroCards = heroState?.status === 'loaded' ? heroState.page.results.slice(0, HERO_MAX).map((card) => overlay.card(card)) : [];
 
   const titleRow = (part: HomeRow) => {
     const key = rowKey(part);
@@ -313,6 +315,7 @@ export function HomeScreen() {
           title={part.heading}
           variant={part.variant}
           cardWidth={widths[part.variant]}
+          overlay={overlay.card}
           onOpen={open}
           onRetry={() => home.retry(key)}
         />
@@ -335,6 +338,7 @@ export function HomeScreen() {
           title={`${prefix} ${network.name}`}
           variant="poster"
           cardWidth={widths.poster}
+          overlay={overlay.card}
           onOpen={open}
           onRetry={() => home.retry(key)}
         />
@@ -410,6 +414,7 @@ function RowBody({
   title,
   variant,
   cardWidth,
+  overlay,
   onOpen,
   onRetry,
 }: {
@@ -418,6 +423,8 @@ function RowBody({
   title: string;
   variant: RowVariant;
   cardWidth: number;
+  /** The card as it is drawn: Requested if the member just asked for it. */
+  overlay: (card: Card) => Card;
   onOpen: (card: Card) => void;
   onRetry: () => void;
 }) {
@@ -426,7 +433,7 @@ function RowBody({
   return (
     <View style={styles.row}>
       {heading}
-      <CardRow cards={state.page.results} variant={variant} cardWidth={cardWidth} onOpen={onOpen} />
+      <CardRow cards={state.page.results.map(overlay)} variant={variant} cardWidth={cardWidth} onOpen={onOpen} />
     </View>
   );
 }

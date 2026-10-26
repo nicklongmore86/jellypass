@@ -12,7 +12,6 @@ import { StyleSheet } from 'react-native';
 
 import type { FetchLike } from '../src/api/client';
 import { STATE_LABELS } from '../src/home/text';
-import { TITLE_PLACEHOLDER_TEXT } from '../src/screens/TitlePlaceholderScreen';
 import { layout } from '../src/theme';
 import {
   API,
@@ -28,6 +27,7 @@ import {
   sourcesAnswer,
 } from './support/home';
 import { ORIGIN, TOKEN, answer, keepSession, offline, settle, shows, store, storedSession } from './support/household';
+import { titleGateway } from './support/title';
 
 // Scrolling to the end a step at a time lays Home out many times: slower CI runners need more than Jest's 5 s.
 jest.setTimeout(30_000);
@@ -207,11 +207,13 @@ describe('the cards', () => {
   });
 
   it('open the title\'s page on the Home tab, with Back', async () => {
+    gateway = titleGateway();
+    mockFetch = gateway.fetch;
     const app = await start();
     await pressNode(link('trending 2, 2021, Series, TMDB rating 6.5 out of 10, Available to get'));
     expect(app.getPathname()).toBe('/home/tv/1002');
-    expect(shows(TITLE_PLACEHOLDER_TEXT)).toBe(true);
-    expect(headings()).toContain('Series');
+    expect(headings()).toContain('Series 1002');
+    expect(gateway.routes()).toContain(`GET ${API}/tv/1002`);
     await pressNode(buttonNamed('Back'));
     expect(app.getPathname()).toBe('/home');
   });
