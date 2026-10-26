@@ -18,7 +18,7 @@ import { makeTempDir } from './support/temp-dir.mjs';
 const baseUrl = process.env.JELLYFIN_REAL_URL;
 const webhookToken = 'real-webhook-secret';
 
-describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () => {
+describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () => {
   let fixture;
   let client;
   let store;
@@ -409,6 +409,8 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
     await request(baseUrl, '/System/Configuration', { method: 'POST', token: fixture.token, body: { ...configuration, QuickConnectAvailable: true } });
     const WEB = 'MediaBrowser Client="Jellyfin Web", Device="Firefox", DeviceId="jellypass-real-quick-connect", Version="10.11.3"';
     // At Jellyfin itself Quick Connect is on and hands out a code, by every route it takes, the legacy prefix included.
+    // Jellyfin 12.x, as in production, no longer serves the /emby/ prefix itself; this 10.11.3 test server still does. The
+    // household host checks /emby/ paths either way.
     assert.equal(await request(baseUrl, '/QuickConnect/Enabled'), true);
     assert.match((await request(baseUrl, '/emby/QuickConnect/Initiate', { method: 'POST', authorization: WEB })).Code, /^\d+$/);
 
@@ -444,6 +446,8 @@ describe('real Jellyfin integration', { timeout: 90_000, skip: !baseUrl }, () =>
     t.after(() => request(baseUrl, `/Users/${fixture.aliceId}/Password`, { method: 'POST', token: fixture.token, body: { ResetPassword: true } }));
     const WEB = 'MediaBrowser Client="Jellyfin Web", Device="Firefox", DeviceId="jellypass-real-paths", Version="10.11.3"';
     // At Jellyfin itself Alice signs in by every one of these spellings, and by her ID.
+    // (Jellyfin 12.x, as in production, no longer serves /emby/ itself, while this 10.11.3 server does; the household host
+    // checks /emby/ paths either way.)
     const spellings = ['/emby/Users/AuthenticateByName', '/MediaBrowser/Users/AuthenticateByName/', '/%65mby/Users/AuthenticateByName', '/Users/AuthenticateByName/', '/Users/%41uthenticateByName'];
     for (const pathname of spellings) {
       assert.equal((await request(baseUrl, pathname, { method: 'POST', authorization: WEB, body: { Username: 'Alice', Pw: 'alice-paths' } })).User.Id, fixture.aliceId, pathname);
@@ -815,7 +819,8 @@ async function sendWebhook(server, body) {
 }
 
 async function setupJellyfin(url) {
-  await waitFor(async () => (await request(url, '/System/Info/Public')).Version === '10.11.3');
+  // A slow runner can take most of a minute to start Jellyfin, and as long again to complete its startup.
+  await waitFor(async () => (await request(url, '/System/Info/Public')).Version === '10.11.3', 90);
   await request(url, '/Startup/User');
   await request(url, '/Startup/Configuration', {
     method: 'POST',
@@ -831,6 +836,16 @@ async function setupJellyfin(url) {
   const token = authentication.AccessToken;
   const alice = await request(url, '/Users/New', { method: 'POST', token, body: { Name: 'Alice', Password: '' } });
   const bob = await request(url, '/Users/New', { method: 'POST', token, body: { Name: 'Bob', Password: '' } });
+  // A library scan saves each item as it read it, so a tag written while one runs is lost: the tests start only once
+  // every scan is over. A fresh Jellyfin scans once at startup and adding the library queues a second scan; the
+  // library's RefreshStatus reads Idle throughout both, so the Scan Media Library task is what is waited on.
+  const tasks = () => request(url, '/ScheduledTasks', { token });
+  const libraryScan = (all) => all.find((task) => task.Key === 'RefreshLibrary');
+  let startupScan;
+  await waitFor(async () => {
+    startupScan = libraryScan(await tasks());
+    return startupScan?.State === 'Idle' && !!startupScan.LastExecutionResult;
+  }, 90);
   await request(url, '/Library/VirtualFolders?name=Movies&collectionType=movies&paths=%2Fmedia&refreshLibrary=true', {
     method: 'POST',
     token,
@@ -842,9 +857,9 @@ async function setupJellyfin(url) {
     return !!item;
   });
   await waitFor(async () => {
-    const libraries = await request(url, '/Library/VirtualFolders', { token });
-    const movies = libraries.find((library) => library.Name === 'Movies');
-    return movies?.RefreshStatus === 'Idle';
+    const all = await tasks();
+    return libraryScan(all).LastExecutionResult?.StartTimeUtc !== startupScan.LastExecutionResult.StartTimeUtc
+      && all.every((task) => task.State === 'Idle');
   });
   return { token, aliceId: alice.Id, bobId: bob.Id, itemId: item.Id };
 }
@@ -867,9 +882,9 @@ async function request(url, pathname, options = {}) {
   return response.json();
 }
 
-async function waitFor(predicate) {
+async function waitFor(predicate, attempts = 40) {
   let lastError;
-  for (let attempt = 0; attempt < 40; attempt += 1) {
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
       if (await predicate()) return;
     } catch (error) {
