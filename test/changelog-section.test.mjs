@@ -79,7 +79,7 @@ describe('changelogSection with the real CHANGELOG.md', () => {
       '**Why this is a minor release.**',
       '**Fonts embedded in subtitles no longer load on household hostnames.**',
       '**Quick Connect stops working on household hostnames.**',
-      '**A playlist can no longer be shared by naming the recipient in the path**',
+      '**Playlist sharing is not refused.**',
       '**Oddly encoded paths get `400`.**',
       '**Some household requests take one more round trip to Jellyfin.**',
       '**To roll back,**',
@@ -91,6 +91,8 @@ describe('changelogSection with the real CHANGELOG.md', () => {
     }
     assert.ok(security < notes.indexOf('### Added'));
     assert.ok((notes.match(/household-check rule/g) ?? []).length >= 10, 'each refusal cites the rule');
+    assert.match(flat, /`GET`\/`POST`\/`DELETE \/Playlists\/\{id\}\/Users\/\{userId\}`\) is relayed to Jellyfin unchanged/);
+    assert.doesNotMatch(flat, /can no longer be shared/);
     assert.doesNotMatch(notes, /### Upgrading from/);
     assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b/, 'no server-specific details');
     assert.deepEqual(split(notes).definitions, []);

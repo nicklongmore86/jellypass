@@ -85,13 +85,14 @@ most two of them: the subtitle fonts and the extra round trip.
   signed-in user Seerr's API key, and with it a way around the household
   app's own checks on what is requested, so refusing them is allowed by the
   household-check rule.
-- **A playlist can no longer be shared by naming the recipient in the path**
-  (`/Playlists/{id}/Users/{userId}`) on a household hostname. Sharing through
-  the playlist itself (`POST /Playlists` and `POST /Playlists/{id}` with
-  `Users[].UserId`), which is what jellyfin-web 10.11 does, is unaffected.
-  Every request that names a user other than the caller is refused, because
-  Jellyfin trusts some of them for the caller; that is a household-check
-  bypass under the rule at the top of this file.
+- **Playlist sharing is not refused.** Sharing by path
+  (`GET`/`POST`/`DELETE /Playlists/{id}/Users/{userId}`) is relayed to
+  Jellyfin unchanged, and Jellyfin checks the caller may see or edit the
+  playlist; only a `userId` query parameter there naming someone else is
+  refused (see the Security section). Jellyfin 10.11.3's own bugs still show
+  on those routes: a first share by path fails with `500`, and removing a
+  share by path answers `204` but keeps it. Sharing through the playlist body,
+  as jellyfin-web does, works.
 - **Oddly encoded paths get `400`.** A path Jellyfin might read otherwise than
   the gateway (an encoded slash, a `.` or `..` segment, invalid
   percent-encoding and the like; the Security section has the full list) gets
