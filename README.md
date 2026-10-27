@@ -163,7 +163,7 @@ JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:3.3.0
 ```
 
 Each release is published as a semantic-version image tag, such as `3.3.0`,
-plus floating `3.2` and `3` tags that move to the newest release in that minor
+plus floating `3.3` and `3` tags that move to the newest release in that minor
 or major line; see [CHANGELOG.md](CHANGELOG.md) for what each one contains. `latest` is rebuilt on
 every push to `main` and may include unreleased changes, so use it, or build
 from source, only to test ahead of a release.
