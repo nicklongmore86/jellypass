@@ -6,10 +6,11 @@
  */
 
 export type HouseholdState = 'in_library' | 'get_this' | 'requested' | 'unavailable';
+export type MediaType = 'movie' | 'tv';
 
 /** The parts of a Card DTO the row shows. */
 export interface Card {
-  mediaType: 'movie' | 'tv';
+  mediaType: MediaType;
   tmdbId: number;
   title: string;
   year: number | null;
@@ -17,39 +18,84 @@ export interface Card {
   state: HouseholdState;
 }
 
-export type Answer = { ok: true; cards: Card[] } | { ok: false; status: number };
+export interface SeasonSummary {
+  seasonNumber: number;
+  name: string;
+  episodeCount: number | null;
+  state: HouseholdState;
+}
+
+/** The parts of a Movie or Series DTO the title view shows. `seasons` is empty for a movie. */
+export interface Title extends Card {
+  overview: string;
+  backdropUrl: string | null;
+  rating: number | null;
+  genres: string[];
+  runtime: number | null;
+  /** Jellyfin's item, only when `play.url` is exactly this origin's own details page for it. */
+  playItemId: string | null;
+  seasons: SeasonSummary[];
+}
+
+/** A failure's status: 0 for no network, 502 for an answer that can't be read. */
+export interface Failure {
+  ok: false;
+  status: number;
+}
+export type Answer = { ok: true; cards: Card[] } | Failure;
+export type TitleAnswer = { ok: true; title: Title } | Failure;
+/** The seasons (0 for a movie) of one title the household asked for that did not work out (`failed` in `GET /requests`). */
+export type FailedAnswer = { ok: true; failed: number[] } | Failure;
 
 const STATES: HouseholdState[] = ['in_library', 'get_this', 'requested', 'unavailable'];
-/** The API's poster URL pattern (Card.posterUrl); any other value is no poster. */
+/** The API's image URL patterns (Card.posterUrl, Card.backdropUrl); any other value is no image. */
 const POSTER_URL = /^https:\/\/image\.tmdb\.org\/t\/p\/w342\/[A-Za-z0-9_-]{1,100}\.(?:jpg|jpeg|png|webp)$/;
+const BACKDROP_URL = /^https:\/\/image\.tmdb\.org\/t\/p\/w780\/[A-Za-z0-9_-]{1,100}\.(?:jpg|jpeg|png|webp)$/;
+/** Play.itemId's pattern. */
+const ITEM_ID = /^[0-9a-f]{32}$/;
 /** The most cards the row shows, from the list's first page. */
 export const MAX_CARDS = 20;
 
 type Fetch = (url: string, init: RequestInit) => Promise<Response>;
 
-/** `GET /discover/trending` (first page): one call. A network failure is status 0. */
-export async function trending(fetcher: Fetch, origin: string, token: string): Promise<Answer> {
+/** One call: the response, or the failure. A `POST` sends `body` as JSON. */
+async function call(fetcher: Fetch, origin: string, token: string, path: string, body?: unknown): Promise<{ ok: true; response: Response } | Failure> {
+  const headers: Record<string, string> = {
+    Accept: 'application/json',
+    Authorization: `MediaBrowser Token="${encodeURIComponent(token).replace(/"/g, '%22')}"`,
+  };
+  const init: RequestInit = { method: body === undefined ? 'GET' : 'POST', credentials: 'omit', headers };
+  if (body !== undefined) {
+    headers['Content-Type'] = 'application/json';
+    init.body = JSON.stringify(body);
+  }
   let response: Response;
   try {
-    response = await fetcher(`${origin}/jellypass/app/v1/discover/trending`, {
-      method: 'GET',
-      credentials: 'omit',
-      headers: {
-        Accept: 'application/json',
-        Authorization: `MediaBrowser Token="${encodeURIComponent(token).replace(/"/g, '%22')}"`,
-      },
-    });
+    response = await fetcher(`${origin}/jellypass/app/v1${path}`, init);
   } catch {
     return { ok: false, status: 0 };
   }
-  if (!response.ok) return { ok: false, status: response.status };
+  return response.ok ? { ok: true, response } : { ok: false, status: response.status };
+}
+
+/** A `GET`'s JSON object, or the failure. */
+async function read(fetcher: Fetch, origin: string, token: string, path: string): Promise<{ ok: true; body: Record<string, unknown> } | Failure> {
+  const answer = await call(fetcher, origin, token, path);
+  if (!answer.ok) return answer;
   let body: unknown;
   try {
-    body = await response.json();
+    body = await answer.response.json();
   } catch {
     return { ok: false, status: 502 };
   }
-  const results = body && typeof body === 'object' ? (body as { results?: unknown }).results : undefined;
+  return body && typeof body === 'object' ? { ok: true, body: body as Record<string, unknown> } : { ok: false, status: 502 };
+}
+
+/** `GET /discover/trending` (first page): one call. */
+export async function trending(fetcher: Fetch, origin: string, token: string): Promise<Answer> {
+  const answer = await read(fetcher, origin, token, '/discover/trending');
+  if (!answer.ok) return answer;
+  const results = answer.body.results;
   if (!Array.isArray(results)) return { ok: false, status: 502 };
   const cards: Card[] = [];
   for (const entry of results) {
@@ -58,6 +104,48 @@ export async function trending(fetcher: Fetch, origin: string, token: string): P
     if (cards.length === MAX_CARDS) break;
   }
   return { ok: true, cards };
+}
+
+/** `GET /movie/{id}` or `GET /tv/{id}`: one call. */
+export async function title(fetcher: Fetch, origin: string, token: string, mediaType: MediaType, tmdbId: number): Promise<TitleAnswer> {
+  const answer = await read(fetcher, origin, token, `/${mediaType}/${tmdbId}`);
+  if (!answer.ok) return answer;
+  const found = titleOf(answer.body, origin);
+  return found && found.mediaType === mediaType && found.tmdbId === tmdbId ? { ok: true, title: found } : { ok: false, status: 502 };
+}
+
+/** `GET /requests`, read only for one title's failed seasons (0 for a movie): one call. */
+export async function failedSeasons(fetcher: Fetch, origin: string, token: string, mediaType: MediaType, tmdbId: number): Promise<FailedAnswer> {
+  const answer = await read(fetcher, origin, token, '/requests');
+  if (!answer.ok) return answer;
+  const results = answer.body.results;
+  if (!Array.isArray(results)) return { ok: false, status: 502 };
+  for (const value of results) {
+    if (!value || typeof value !== 'object') continue;
+    const entry = value as Record<string, unknown>;
+    if (entry.mediaType !== mediaType || entry.tmdbId !== tmdbId) continue;
+    if (mediaType === 'movie') return { ok: true, failed: entry.status === 'failed' ? [0] : [] };
+    const failed: number[] = [];
+    for (const season of Array.isArray(entry.seasons) ? entry.seasons : []) {
+      const { seasonNumber, status } = (season && typeof season === 'object' ? season : {}) as Record<string, unknown>;
+      if (typeof seasonNumber === 'number' && status === 'failed') failed.push(seasonNumber);
+    }
+    return { ok: true, failed };
+  }
+  return { ok: true, failed: [] };
+}
+
+/**
+ * `POST /movie/{id}/get` or `POST /tv/{id}/get` with the seasons asked for: one call, which the add-on never repeats by
+ * itself. Any `2xx` is accepted and its body is not read: the API answers the same whatever it does.
+ */
+export async function getThis(fetcher: Fetch, origin: string, token: string, mediaType: MediaType, tmdbId: number, seasons: number[]): Promise<{ ok: true } | Failure> {
+  const answer = await call(fetcher, origin, token, `/${mediaType}/${tmdbId}/get`, mediaType === 'tv' ? { seasons } : {});
+  return answer.ok ? { ok: true } : answer;
+}
+
+function stateOf(value: unknown): HouseholdState {
+  return STATES.indexOf(value as HouseholdState) >= 0 ? value as HouseholdState : 'unavailable';
 }
 
 /** A Card DTO's shown fields, or undefined for an entry without a title to show. An unknown state is `unavailable`. */
@@ -72,6 +160,45 @@ function cardOf(value: unknown): Card | undefined {
     title: title.slice(0, 300),
     year: typeof year === 'number' && year >= 0 && year <= 9999 ? Math.floor(year) : null,
     posterUrl: typeof posterUrl === 'string' && POSTER_URL.test(posterUrl) ? posterUrl : null,
-    state: STATES.indexOf(state as HouseholdState) >= 0 ? state as HouseholdState : 'unavailable',
+    state: stateOf(state),
+  };
+}
+
+/** A Movie or Series DTO's shown fields. Play is kept only when it is exactly `origin`'s own details page for the item. */
+function titleOf(value: Record<string, unknown>, origin: string): Title | undefined {
+  const card = cardOf(value);
+  if (!card) return undefined;
+  const { overview, backdropUrl, rating, genres, runtime, play, seasons } = value;
+  const link = (play && typeof play === 'object' ? play : {}) as Record<string, unknown>;
+  const itemId = typeof link.itemId === 'string' && ITEM_ID.test(link.itemId) && link.url === `${origin}/web/#/details?id=${link.itemId}` ? link.itemId : null;
+  const shownSeasons: SeasonSummary[] = [];
+  if (card.mediaType === 'tv' && Array.isArray(seasons)) {
+    for (const season of seasons.slice(0, 100)) {
+      if (!season || typeof season !== 'object') continue;
+      const entry = season as Record<string, unknown>;
+      const number = entry.seasonNumber;
+      if (typeof number !== 'number' || number < 0 || Math.floor(number) !== number) continue;
+      shownSeasons.push({
+        seasonNumber: number,
+        name: typeof entry.name === 'string' ? entry.name.slice(0, 200) : '',
+        episodeCount: typeof entry.episodeCount === 'number' && entry.episodeCount >= 0 ? Math.floor(entry.episodeCount) : null,
+        state: stateOf(entry.state),
+      });
+    }
+  }
+  return {
+    mediaType: card.mediaType,
+    tmdbId: card.tmdbId,
+    title: card.title,
+    year: card.year,
+    posterUrl: card.posterUrl,
+    state: card.state,
+    overview: typeof overview === 'string' ? overview.slice(0, 2000) : '',
+    backdropUrl: typeof backdropUrl === 'string' && BACKDROP_URL.test(backdropUrl) ? backdropUrl : null,
+    rating: typeof rating === 'number' && rating >= 0 && rating <= 10 ? rating : null,
+    genres: Array.isArray(genres) ? genres.filter((genre): genre is string => typeof genre === 'string' && genre.length > 0).slice(0, 10).map((genre) => genre.slice(0, 60)) : [],
+    runtime: typeof runtime === 'number' && runtime > 0 ? Math.floor(runtime) : null,
+    playItemId: itemId,
+    seasons: shownSeasons,
   };
 }

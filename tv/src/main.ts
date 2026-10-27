@@ -1,10 +1,13 @@
+import { Asked } from './asked.js';
 import { isHomeShown } from './jellyfin-web.js';
 import { HomeRow } from './row.js';
+import { TitleView } from './title.js';
 
 /**
  * The JellyPass TV add-on's entry (docs/tv-addon.md): one classic script that the household gateway adds to Jellyfin
  * web's page, built by scripts/build-tv.mjs to ES2017 for the TVs' Chromium 63. It waits for Jellyfin web's Home and adds
- * the JellyPass row to it. It calls only the household app API, on the origin this script was loaded from.
+ * the JellyPass row to it; a card opens the JellyPass title view over Home. It calls only the household app API, on the
+ * origin this script was loaded from.
  */
 
 /** The stylesheet's built (fingerprinted) name, next to this script; written in by scripts/build-tv.mjs. */
@@ -34,19 +37,35 @@ function start(): void {
   stylesheet.setAttribute(MARKER, '');
   document.head.appendChild(stylesheet);
 
-  const row = new HomeRow(document, { get ApiClient() { return (window as unknown as { ApiClient?: unknown }).ApiClient; }, fetch: (url, init) => window.fetch(url, init) }, base.origin);
+  const api = { get ApiClient() { return (window as unknown as { ApiClient?: unknown }).ApiClient; }, fetch: (url: string, init: RequestInit) => window.fetch(url, init) };
+  // What the member just asked for: in memory only, shared by the row and the title view.
+  const asked = new Asked(() => Date.now());
+  const title: TitleView = new TitleView(document, api, base.origin, asked, {
+    changed: () => safely(() => row.update()),
+    restoreFocus: (mediaType, tmdbId) => safely(() => row.focusCard(mediaType, tmdbId)),
+    navigate: (hash) => {
+      location.hash = hash;
+    },
+  });
+  const row: HomeRow = new HomeRow(document, api, base.origin, asked, (card) => safely(() => title.open(card)));
   let timer: ReturnType<typeof setTimeout> | undefined;
   const settle = () => {
     if (timer !== undefined) return;
     timer = setTimeout(() => {
       timer = undefined;
+      safely(() => title.update());
       safely(() => row.update());
     }, SETTLE_MS);
   };
   new MutationObserver(settle).observe(document.body ?? document.documentElement, { childList: true, subtree: true });
   document.addEventListener('viewshow', (event) => {
     if (isHomeShown(event)) safely(() => row.homeShown());
+    // Jellyfin web went to another page (its own Back, a menu, a link): the view goes with Home.
+    else safely(() => title.close(false));
   }, true);
+  // Back closes the view before Jellyfin web's own handler (on window, bubbling) sees it.
+  document.addEventListener('keydown', (event) => safely(() => title.key(event)), true);
+  document.addEventListener('focusin', (event) => safely(() => title.focusIn(event)), true);
   row.update();
 }
 

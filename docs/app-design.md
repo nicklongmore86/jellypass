@@ -602,8 +602,9 @@ and one series request); a **network's** page on All, Series or Films and a **st
 `/discover/sources` and the list's first page; **Load more** is the member's). It also
 holds the server's budgets. `test/app-pwa.test.mjs` ("fetch budget") runs the real app against the API and fails
 if any screen makes a different set of calls, so a change that makes the app chattier has to change the file, and a
-native client is tested against the same numbers. The TV add-on's Home row is `tv-home-row` there (one call; see
-`docs/tv-addon.md`), pinned by `test/tv-addon.test.mjs`.
+native client is tested against the same numbers. The TV add-on's Home row is `tv-home-row` there (one call) and its
+title view `tv-movie` and `tv-series` (two calls each, plus what an accepted "Get this" makes; see `docs/tv-addon.md`),
+pinned by `test/tv-addon.test.mjs`.
 
 **Schema.** `docs/app-api/v1.openapi.json` (OpenAPI 3.1, JSON Schema 2020-12) describes every `v1` endpoint, its
 parameters and every answer, errors included; `info.version` is `apiVersion`. Its object schemas are closed
