@@ -589,11 +589,13 @@ export class GrantStore {
 
   /**
    * Writes a "Get this" request intent (see AppRequestIntent) and resolves once the state file has it: only then may
-   * the request be sent. Resolves with its ID (see isAppRequestIntentDurable).
+   * the request be sent. Resolves with its ID (see isAppRequestIntentDurable). `claim` is called with the ID before the
+   * intent is in memory, so its owner holds it before anything that lists intents can see it.
    */
-  public async addAppRequestIntent(intent: AppRequestIntent): Promise<string> {
+  public async addAppRequestIntent(intent: AppRequestIntent, claim?: (id: string) => void): Promise<string> {
     this.#assertOpen();
     const id = randomUUID();
+    claim?.(id);
     this.#state.appRequestIntents = { ...this.#state.appRequestIntents, [id]: clone(intent) };
     await this.#save();
     return id;
