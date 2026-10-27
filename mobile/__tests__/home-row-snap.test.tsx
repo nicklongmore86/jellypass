@@ -5,7 +5,7 @@
 // mid-snap, which is revealed with an animated scrollTo that cancels the snap. On either, a change of width moves the
 // row to the stop that keeps the same card in view, once the row is still. Every assertion compares numbers or strings.
 import { fireEvent, render, screen, within } from '@testing-library/react-native';
-import { AccessibilityInfo, Platform, ScrollView } from 'react-native';
+import { AccessibilityInfo, PixelRatio, Platform, ScrollView } from 'react-native';
 
 import type { Card } from '../src/api/types';
 import { CARD_GAP, CardRow } from '../src/home/components';
@@ -232,6 +232,80 @@ describe('on Android', () => {
     expect(asked()).toEqual([`${STOPS[2]} true`]);
     await event('momentumScrollEnd', STOPS[2]!);
     expect(asked()).toEqual([`${STOPS[2]} true`, `${resnapOffset(STOPS[2]!, PHONE, { ...PHONE, ...WIDE })} false`]);
+  });
+
+  it('counts a reveal that came to rest on the whole pixel nearest its target as done, at density 1', async () => {
+    jest.spyOn(PixelRatio, 'get').mockReturnValue(1);
+    const app = await show();
+    await layout(VIEWPORT);
+    await swipe(0, 200, 300);
+    await focus(5);
+    const reveal = revealOffset(PHONE, 5)!;
+    expect(reveal).toBe(1690.5);
+    await app.rerender(view(WIDE.item, WIDE.viewport));
+    await layout(WIDE.viewport);
+    await event('momentumScrollEnd', 320);
+    expect(asked()).toEqual([`${STOPS[1]} true`, `${reveal} true`]);
+    // Android rounds the reveal's scroll to a physical pixel: it ends at 1691. The held width change now applies.
+    await event('scroll', 1691);
+    await event('momentumScrollEnd', 1691);
+    const resnap = resnapOffset(1691, PHONE, { ...PHONE, ...WIDE })!;
+    expect(asked()).toEqual([`${STOPS[1]} true`, `${reveal} true`, `${resnap} false`]);
+  });
+
+  it('counts a snap that came to rest on the whole pixel nearest its stop as done, at density 1', async () => {
+    jest.spyOn(PixelRatio, 'get').mockReturnValue(1);
+    await show();
+    expect(STOPS[1]).toBe(326.5);
+    // A drag let go a pixel's rounding from a stop is not moved.
+    await swipe(0, 327);
+    expect(asked()).toEqual([]);
+    await swipe(327, 200, 300);
+    await focus(5);
+    // The snap ran on to its stop, rounded to 327: the focused card is still put in view.
+    await event('momentumScrollEnd', 327);
+    const reveal = revealOffset(PHONE, 5)!;
+    expect(asked()).toEqual([`${STOPS[1]} true`, `${reveal} true`, `${reveal} false`]);
+  });
+
+  it('counts sub-pixel rounding as reaching the target at density 3, but not a point short of it', async () => {
+    jest.spyOn(PixelRatio, 'get').mockReturnValue(3);
+    const app = await show();
+    await layout(VIEWPORT);
+    await swipe(0, 200, 300);
+    await focus(5);
+    const reveal = revealOffset(PHONE, 5)!;
+    await app.rerender(view(WIDE.item, WIDE.viewport));
+    await layout(WIDE.viewport);
+    await event('momentumScrollEnd', 320);
+    // A point short is not there yet: the width change is still held.
+    await event('momentumScrollEnd', reveal - 1);
+    expect(asked()).toEqual([`${STOPS[1]} true`, `${reveal} true`]);
+    // 1690.5 pt is 5071.5 px, which Android rounds to 5072 px: 1690.667 pt.
+    const end = Math.round(reveal * 3) / 3;
+    expect(end - reveal).toBeGreaterThan(0.1);
+    await event('momentumScrollEnd', end);
+    const resnap = resnapOffset(end, PHONE, { ...PHONE, ...WIDE })!;
+    expect(asked()).toEqual([`${STOPS[1]} true`, `${reveal} true`, `${resnap} false`]);
+  });
+
+  it('re-targets a reveal when another card takes focus while it runs, and stops once it ends', async () => {
+    jest.spyOn(PixelRatio, 'get').mockReturnValue(1);
+    await show();
+    await swipe(0, 200, 300);
+    await focus(5);
+    await event('scroll', 900);
+    await focus(7);
+    const first = revealOffset(PHONE, 5)!;
+    const second = revealOffset(PHONE, 7)!;
+    expect(asked()).toEqual([`${STOPS[1]} true`, `${first} true`, `${second} true`]);
+    // The cancelled snap's and first reveal's momentum ends, part way, then the second reveal's, rounded.
+    await event('momentumScrollEnd', 320);
+    await event('momentumScrollEnd', 1000);
+    await event('momentumScrollEnd', Math.round(second));
+    // Settled: a further momentum end (as a screen-reader scroll might send) moves nothing.
+    await event('momentumScrollEnd', Math.round(second));
+    expect(asked()).toEqual([`${STOPS[1]} true`, `${first} true`, `${second} true`]);
   });
 
   it('snaps without animation with Reduce Motion on', async () => {

@@ -148,8 +148,11 @@ function SnapRow({
   const android = Platform.OS === 'android';
 
   const near = (a: number, b: number) => Math.abs(a - b) < 0.5;
+  // Android scrolls to whole physical pixels, so a row sent to 1690.5 at density 1 comes to rest at 1691: an offset
+  // within a pixel (and never less than half a point) of where it was sent has reached it.
+  const reached = (a: number, b: number) => Math.abs(a - b) <= Math.max(0.5, 1 / PixelRatio.get()) + 1e-6;
   const moveTo = (to: number | undefined, animated: boolean) => {
-    if (to === undefined || near(to, x.current)) return false;
+    if (to === undefined || reached(to, x.current)) return false;
     x.current = to;
     row.current?.scrollTo({ x: to, animated });
     return true;
@@ -188,9 +191,9 @@ function SnapRow({
     if (dragging.current) return;
     const reveal = revealTo.current;
     if (reveal !== undefined) {
-      if (near(x.current, reveal)) {
+      if (reached(x.current, reveal)) {
         revealTo.current = undefined;
-      } else if (snapTo.current !== undefined && near(x.current, snapTo.current)) {
+      } else if (snapTo.current !== undefined && reached(x.current, snapTo.current)) {
         revealTo.current = undefined;
         moveTo(reveal, false);
       }
