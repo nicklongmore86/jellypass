@@ -55,7 +55,14 @@ is not supported.
   them there as text (`Seasons 1–3`, `Seasons 1, 3`); when their statuses
   differ, each season has its own pill and the request shows none. Each
   entry's screen-reader name says every status once, and the admin note
-  follows what did not work out (the season, when seasons differ).
+  follows what did not work out (the season, when seasons differ). The list
+  is read each time the tab is shown and on pull to refresh, so statuses are
+  always current; a title's name, year and poster read in the last ten
+  minutes of the same sign-in are reused (pull to refresh included), so
+  coming back reads only the list and any request not named before. These
+  titles are kept in memory only (at most 300), never their status, and are
+  forgotten on sign-out, a refused sign-in or any change of household, member
+  or sign-in.
 - **Account**: the member and household, **Sign out**, **Change household**,
   About & credits (TMDB and JustWatch), the app's version and build number,
   and the household's API version.

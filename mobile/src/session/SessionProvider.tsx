@@ -12,7 +12,8 @@
 //   device whatever came of that.
 // - What the member just asked for (src/title/asked.ts) belongs to one signed-in session: a sign-out, a 401 or any
 //   other sign-in (household, member or token) starts it empty. Coming back to the foreground reads its clocks again
-//   (a timer may have slept with the app), and leaving the provider stops its timer.
+//   (a timer may have slept with the app), and leaving the provider stops its timer. The titles My requests has named
+//   (src/requests/titleCache.ts) belong to the same session and are forgotten with it.
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { AppState } from 'react-native';
@@ -25,6 +26,7 @@ import type { MediaType, Me } from '../api/types';
 import { parseLinkAddress } from '../signin/address-input';
 import { createSignInApi, SignInError, type SignInApi, type SignInResult } from '../signin/signin-api';
 import type { StalledKind } from '../signin/wording';
+import { createTitleCache, type TitleCache } from '../requests/titleCache';
 import { createAsked, type Asked } from '../title/asked';
 import { clientIdentity } from './identity';
 import { clearSession, readSession, writeSession, type StoredSession } from './store';
@@ -82,6 +84,8 @@ export interface Session {
   expire: () => Promise<void>;
   /** What this member just asked for, shown as requested while the server records it (in memory only). */
   asked: Asked;
+  /** The titles My requests has named in this session, reused for ten minutes (in memory only, never their state). */
+  titles: TitleCache;
   /**
    * Get this through the signed-in client. Once it is accepted (a 2xx) in the same session as when it was sent (no move
    * since), the title (and the seasons asked for) is added to `asked`. Rejects with the ApiError, or the caller's abort.
@@ -124,8 +128,9 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
 
   // The phase as of the last move, for an answer that comes back later.
   const phaseRef = useRef<Phase>(phase);
-  // The overlay in use now (below), for the moves that forget it.
+  // The overlay and the titles in use now (below), for the moves that forget them.
   const askedRef = useRef<Asked | undefined>(undefined);
+  const titlesRef = useRef<TitleCache | undefined>(undefined);
 
   const move = useCallback((next: Phase) => {
     generation.current += 1;
@@ -180,6 +185,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
       // A link the app held back (to the household it was on) is moot once it moves on.
       setLink(undefined);
       askedRef.current?.forget();
+      titlesRef.current?.forget();
       const session = sessionOf(phase);
       if (session) {
         move({ kind: 'signingOut' });
@@ -199,14 +205,15 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
   const household = phase.kind === 'signin' ? phase.address : sessionOf(phase)?.address;
 
   const signedIn = phase.kind === 'signedIn' ? phase.session : undefined;
-  // A new client and overlay for each sign-in (household, member or token); the old overlay is forgotten as soon as it
-  // is replaced.
-  const { api, asked } = useMemo(
+  // A new client, overlay and titles for each sign-in (household, member or token); the old ones are forgotten as soon
+  // as they are replaced.
+  const { api, asked, titles } = useMemo(
     () => ({
       api: signedIn
         ? createApiClient({ address: signedIn.address, token: () => signedIn.token, ...(fetch ? { fetch } : {}), ...(now ? { now } : {}) })
         : undefined,
       asked: createAsked(),
+      titles: createTitleCache(),
     }),
     [signedIn, fetch, now],
   );
@@ -221,6 +228,13 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
       asked.forget();
     };
   }, [asked]);
+  useEffect(() => {
+    titlesRef.current = titles;
+    return () => {
+      if (titlesRef.current === titles) titlesRef.current = undefined;
+      titles.forget();
+    };
+  }, [titles]);
 
   const getThis = useCallback(
     async (mediaType: MediaType, tmdbId: number, seasons: readonly number[], signal?: AbortSignal) => {
@@ -237,6 +251,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
 
   const expire = useCallback(async () => {
     askedRef.current?.forget();
+    titlesRef.current?.forget();
     const session = sessionOf(phaseRef.current);
     if (!session) return;
     const mine = move({ kind: 'signingOut' });
@@ -304,9 +319,10 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
       api,
       expire,
       asked,
+      titles,
       getThis,
     }),
-    [phase, offer, household, offerLink, leave, move, check, signInApi, clock, api, expire, asked, getThis],
+    [phase, offer, household, offerLink, leave, move, check, signInApi, clock, api, expire, asked, titles, getThis],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
