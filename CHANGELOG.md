@@ -18,6 +18,19 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Changed
+
+- **Household app: one status pill per request on My requests.** A series
+  request no longer shows the same status twice (once under the title and
+  again on its season's row). A request for one season shows a single pill and
+  says the season on the line under the title (`2027 · Series · Season 1`).
+  When several seasons share one status, the request shows one pill and lists
+  them there as text (`Seasons 1–3`, `Seasons 1, 3`); when their statuses
+  differ, each season keeps its own pill and the request shows none. Movies are
+  unchanged. "Ask your JellyPass admin to try again." now also shows on My
+  requests, under whatever did not work out (under the season, when seasons
+  differ). The app API and the server are unchanged.
+
 ## [3.2.2] - 2026-10-27
 
 This is a patch release for the household app (`HOUSEHOLD_APP_ENABLED=true`)

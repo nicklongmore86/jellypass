@@ -1546,10 +1546,14 @@ describe('household app page: rendering', () => {
       const item = requestItem(document, entry);
       assert.equal(item.querySelector('.request-link').getAttribute('href'), '#/tv/900002');
       assert.equal(item.querySelector('.card-title').textContent, REQUESTS_TEXT.loading);
-      assert.equal(item.querySelector(':scope > .badge').textContent, 'Requested');
+      // Seasons that differ: a pill each, none for the entry, and the admin note under the one that failed.
+      assert.equal(item.querySelectorAll(':scope > .badge').length, 0);
       assert.equal(item.querySelector('.request-who').textContent, 'Asked for by you');
       assert.deepEqual([...item.querySelectorAll('.request-season')].map((season) => season.textContent),
-        ['Season 1Ready to watch', 'Season 2Requested', "Season 3We couldn't get this"]);
+        ['Season 1Ready to watch', 'Season 2Requested', "Season 3We couldn't get thisAsk your JellyPass admin to try again."]);
+      assert.equal(item.querySelectorAll('.badge').length, 3);
+      assert.equal(item.querySelectorAll('.failed-note').length, 1);
+      assert.equal(item.querySelector('.card-meta').textContent, 'Series');
       assert.equal(requestItem(document, { ...entry, byYou: false }).querySelector('.request-who').textContent, 'Asked for by someone in your household');
       const hostile = '<img src=x onerror=alert(1)>';
       setRequestTitle(item, { title: hostile, year: 2020, mediaType: 'tv' });
@@ -1562,8 +1566,53 @@ describe('household app page: rendering', () => {
       assert.ok(movie.querySelector('.request-seasons') === null);
       assert.equal(movie.querySelector(':scope > .badge').textContent, "We couldn't get this");
       assert.equal(movie.querySelector('.card-meta').textContent, 'Movie');
+      assert.equal(movie.querySelectorAll('.badge').length, 1);
+      assert.equal(movie.querySelector(':scope > .failed-note').textContent, 'Ask your JellyPass admin to try again.');
       // An unknown status (never sent) is shown as the safe one rather than as raw text.
-      assert.equal(requestItem(document, { ...entry, status: 'canary-status' }).querySelector(':scope > .badge').textContent, "We couldn't get this");
+      assert.equal(requestItem(document, { ...entry, status: 'canary-status', seasons: [] }).querySelector(':scope > .badge').textContent, "We couldn't get this");
+    });
+
+    it('shows one status pill per request: a single season or seasons sharing one status say them on the meta line', async () => {
+      const { document, requestItem, setRequestTitle, requestSeasonsText, requestPills } = await renderer();
+      const base = { id: 'opaqueidopaqueidopaqueid', mediaType: 'tv', tmdbId: 900002, status: 'requested', byYou: true };
+      const pills = (item) => [...item.querySelectorAll('.badge')].map((badge) => badge.textContent);
+      // One season: one pill, the season on the meta line, no season row.
+      const single = requestItem(document, { ...base, seasons: [{ seasonNumber: 1, status: 'requested' }] });
+      assert.deepEqual(pills(single), ['Requested']);
+      assert.equal(single.querySelector(':scope > .badge').textContent, 'Requested');
+      assert.equal(single.querySelector('.card-meta').textContent, 'Series · Season 1');
+      assert.equal(single.querySelectorAll('.request-season, .request-seasons').length, 0);
+      setRequestTitle(single, { title: 'Synthetic Series Two', year: 2027, mediaType: 'tv' });
+      assert.equal(single.querySelector('.card-meta').textContent, '2027 · Series · Season 1');
+      setRequestTitle(single, { title: 'Synthetic Series Two', year: 2027, mediaType: 'tv' });
+      assert.equal(single.querySelector('.card-meta').textContent, '2027 · Series · Season 1');
+      assert.equal(single.querySelector('.request-link').textContent, 'Synthetic Series Two2027 · Series · Season 1');
+      // Several seasons sharing one status: one pill, the seasons as text.
+      const shared = requestItem(document, { ...base, status: 'ready', seasons: [1, 2, 3].map((seasonNumber) => ({ seasonNumber, status: 'ready' })) });
+      assert.deepEqual(pills(shared), ['Ready to watch']);
+      assert.equal(shared.querySelector('.card-meta').textContent, 'Series · Seasons 1–3');
+      assert.equal(shared.querySelectorAll('.request-season').length, 0);
+      const gap = requestItem(document, { ...base, status: 'failed', seasons: [3, 1].map((seasonNumber) => ({ seasonNumber, status: 'failed' })) });
+      assert.deepEqual(pills(gap), ["We couldn't get this"]);
+      assert.equal(gap.querySelector('.card-meta').textContent, 'Series · Seasons 1, 3');
+      assert.equal(gap.querySelectorAll('.failed-note').length, 1);
+      assert.equal(gap.querySelector(':scope > .failed-note').textContent, 'Ask your JellyPass admin to try again.');
+      // Differing: a pill per season only.
+      const mixed = requestItem(document, { ...base, seasons: [{ seasonNumber: 1, status: 'ready' }, { seasonNumber: 2, status: 'requested' }] });
+      assert.deepEqual(pills(mixed), ['Ready to watch', 'Requested']);
+      assert.equal(mixed.querySelectorAll(':scope > .badge').length, 0);
+      assert.equal(mixed.querySelectorAll('.request-season .badge').length, 2);
+      assert.equal(mixed.querySelector('.card-meta').textContent, 'Series');
+      assert.equal(mixed.querySelectorAll('.failed-note').length, 0);
+      // Each status said once in what a screen reader reads.
+      for (const [item, status] of [[single, 'Requested'], [shared, 'Ready to watch'], [gap, "We couldn't get this"]]) {
+        assert.equal(item.textContent.split(status).length - 1, 1, status);
+      }
+      assert.deepEqual([requestSeasonsText([1]), requestSeasonsText([1, 2]), requestSeasonsText([3, 1, 2]), requestSeasonsText([1, 3]), requestSeasonsText([5, 1, 2, 3, 7, 8])],
+        ['Season 1', 'Seasons 1, 2', 'Seasons 1–3', 'Seasons 1, 3', 'Seasons 1–3, 5, 7, 8']);
+      assert.deepEqual(requestPills({ status: 'ready', seasons: [] }), { status: 'ready', seasonsText: '', perSeason: false });
+      assert.deepEqual(requestPills({ status: 'requested', seasons: [{ seasonNumber: 2, status: 'requested' }] }), { status: 'requested', seasonsText: 'Season 2', perSeason: false });
+      assert.deepEqual(requestPills({ status: 'requested', seasons: [{ seasonNumber: 1, status: 'ready' }, { seasonNumber: 2, status: 'failed' }] }), { status: undefined, seasonsText: '', perSeason: true });
     });
 
     it('shows no Seerr ID, name, count, date or progress anywhere in the new markup', async () => {
@@ -4671,7 +4720,10 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.equal(movie.querySelector('.request-who').textContent, 'Asked for by you');
       assert.equal(movie.querySelector('.request-link').getAttribute('href'), `#/movie/${T_MOVIE}`);
       const series = byTitle['Synthetic Series Two'];
-      assert.deepEqual([...series.querySelectorAll('.request-season')].map((season) => season.textContent), ['Season 1Requested']);
+      // One season: one pill, the season on the meta line.
+      assert.equal(series.querySelectorAll('.request-season').length, 0);
+      assert.deepEqual([...series.querySelectorAll('.badge')].map((badge) => badge.textContent), ['Requested']);
+      assert.match(series.querySelector('.card-meta').textContent, /^(\d{4} · )?Series · Season 1$/);
       assert.equal(page.main().querySelector('button.load-more').hidden, true, 'one page of two needs no Load more');
       assert.ok(page.requests.some((request) => request.url === '/jellypass/app/v1/requests'));
       assertNoCanaries(page.serialize(), 'My requests');

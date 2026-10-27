@@ -358,7 +358,8 @@ main {
 .request-link { display: grid; gap: 0.1rem; color: var(--text); text-decoration: none; min-height: 2.75rem; align-content: center; }
 .request-who { font-size: 0.85rem; }
 .request-seasons { display: grid; gap: 0.35rem; width: 100%; }
-.request-season { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; }
+.request-season { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.35rem 0.75rem; }
+.request-season > .failed-note, .request > .failed-note { flex-basis: 100%; margin: 0; font-size: 0.85rem; }
 
 /* Account: grouped, inset cards. */
 .credits { display: grid; gap: 0.75rem; justify-items: start; }

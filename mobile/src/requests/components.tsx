@@ -1,7 +1,8 @@
 // My requests' pieces, the PWA's requestItem() (app/src/render.ts) in the Tidepool look: an entry with its title's
-// thumbnail (TMDB's poster only, through the allowlist), its title and "year · Movie/Series", the coarse status, who
-// asked, each season of a series with its own status, and the admin note where something did not work out: never a
-// button. An entry is one link to its title, named once with everything it shows. Text grows with the system font size
+// thumbnail (TMDB's poster only, through the allowlist), its title and "year · Movie/Series", who asked, and each
+// status once: one chip for a movie, a series of one season or seasons sharing one status (said on the meta line,
+// "2027 · Series · Season 1"), else a chip per season and none for the entry; the admin note under what did not work
+// out. Never a button. An entry is one link to its title, named once with everything it shows. Text grows with the system font size
 // with no line limit, cap or fixed height.
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
@@ -10,7 +11,7 @@ import { safeImageUrl } from '../api/urls';
 import { StatusChip, TmdbImage } from '../home/components';
 import { colors, layout, radii, spacing, typography } from '../theme';
 import { GET_THIS_TEXT } from '../title/text';
-import { requestFailed, requestMeta, requestName, requestSeasonName, requestTitleText, whoText, type RequestTitle } from './text';
+import { requestMeta, requestName, requestNoteHere, requestPills, requestSeasonName, requestTitleText, whoText, type RequestTitle } from './text';
 
 const hidden = { accessibilityElementsHidden: true, importantForAccessibility: 'no-hide-descendants' } as const;
 
@@ -24,6 +25,7 @@ const THUMB = { width: 46, height: 68 };
 
 export function RequestItem({ request, title, onOpen }: { request: Request; title: RequestTitle | undefined; onOpen: (request: Request) => void }) {
   const poster = title?.status === 'loaded' ? title.title.posterUrl : null;
+  const pills = requestPills(request);
   return (
     <Pressable
       testID="request-item"
@@ -38,21 +40,22 @@ export function RequestItem({ request, title, onOpen }: { request: Request; titl
       <View style={styles.body} {...hidden}>
         <View style={styles.titleBlock}>
           <Text style={styles.title}>{requestTitleText(title)}</Text>
-          <Text style={styles.meta}>{requestMeta(request.mediaType, title)}</Text>
+          <Text style={styles.meta}>{requestMeta(request.mediaType, title, pills.seasonsText)}</Text>
         </View>
-        <RequestChip status={request.status} />
+        {pills.status ? <RequestChip status={pills.status} /> : null}
         <Text style={styles.who}>{whoText(request)}</Text>
-        {request.seasons.length ? (
+        {pills.perSeason ? (
           <View style={styles.seasons}>
             {request.seasons.map((season) => (
-              <View key={season.seasonNumber} style={styles.season}>
+              <View key={season.seasonNumber} testID="request-season" style={styles.season}>
                 <Text style={styles.seasonName}>{requestSeasonName(season.seasonNumber)}</Text>
                 <RequestChip status={season.status} />
+                {season.status === 'failed' ? <Text style={[styles.who, styles.seasonNote]}>{GET_THIS_TEXT.failedNote}</Text> : null}
               </View>
             ))}
           </View>
         ) : null}
-        {requestFailed(request) ? <Text style={styles.who}>{GET_THIS_TEXT.failedNote}</Text> : null}
+        {requestNoteHere(request) ? <Text style={styles.who}>{GET_THIS_TEXT.failedNote}</Text> : null}
       </View>
     </Pressable>
   );
@@ -101,6 +104,7 @@ const styles = StyleSheet.create({
   seasons: { gap: 5.6, alignSelf: 'stretch' },
   season: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: spacing.md },
   seasonName: { ...typography.body, fontSize: 15, color: colors.text },
+  seasonNote: { flexBasis: '100%' },
   skeletonItem: { alignItems: 'center' },
   skeleton: { backgroundColor: colors.surfaceRaised },
   skeletonLines: { flex: 1, gap: spacing.sm },

@@ -888,24 +888,67 @@ export const REQUESTS_TEXT = {
 } as const;
 
 /**
+ * A series request's seasons as text, in order, a run of three or more as a range: "Season 1", "Seasons 1, 3",
+ * "Seasons 1–3, 5".
+ */
+export function requestSeasonsText(numbers: readonly number[]): string {
+  const sorted = [...new Set(numbers)].sort((left, right) => left - right);
+  if (sorted.length === 1) return `Season ${sorted[0]}`;
+  const parts: string[] = [];
+  for (let start = 0; start < sorted.length; ) {
+    let end = start;
+    while (end + 1 < sorted.length && sorted[end + 1] === (sorted[end] as number) + 1) end += 1;
+    if (end - start >= 2) parts.push(`${sorted[start]}–${sorted[end]}`);
+    else parts.push(...sorted.slice(start, end + 1).map(String));
+    start = end + 1;
+  }
+  return `Seasons ${parts.join(', ')}`;
+}
+
+/**
+ * Where a request shows its status, so it is shown once: one pill for the entry (a movie, a series of one season, or
+ * seasons that all share one status, listed as text on the meta line), or else one pill per season and none for the
+ * entry.
+ */
+export function requestPills(entry: Pick<RequestEntry, 'status' | 'seasons'>): { status: CoarseStatus | undefined; seasonsText: string; perSeason: boolean } {
+  const shared = new Set(entry.seasons.map((season) => season.status));
+  if (entry.seasons.length === 0) return { status: entry.status, seasonsText: '', perSeason: false };
+  if (shared.size === 1) return { status: entry.seasons[0]?.status, seasonsText: requestSeasonsText(entry.seasons.map((season) => season.seasonNumber)), perSeason: false };
+  return { status: undefined, seasonsText: '', perSeason: true };
+}
+
+/**
  * One of the household's requests. The title text is filled in afterwards (the list carries only a TMDB ID), with
- * {@link setRequestTitle}; until then, and if it cannot be loaded, the entry still shows its status.
+ * {@link setRequestTitle}; until then, and if it cannot be loaded, the entry still shows its status. A status is shown
+ * once (see {@link requestPills}), with the admin note under it where it did not work out.
  */
 export function requestItem(doc: Document, entry: RequestEntry): HTMLElement {
-  const seasons = entry.seasons.map((season) =>
-    el(doc, 'li', { class: 'request-season' }, [el(doc, 'span', { text: `Season ${season.seasonNumber}` }), requestBadge(doc, season.status)]),
-  );
+  const pills = requestPills(entry);
+  const seasons = pills.perSeason
+    ? entry.seasons.map((season) =>
+        el(doc, 'li', { class: 'request-season' }, [
+          el(doc, 'span', { text: `Season ${season.seasonNumber}` }),
+          requestBadge(doc, season.status),
+          season.status === 'failed' ? failedNote(doc) : undefined,
+        ]),
+      )
+    : [];
+  // The note sits under the entry's pill, or under each failed season's; a failed entry with no failed season among
+  // differing ones (never sent) still says so once.
+  const noteHere = pills.status ? pills.status === 'failed' : entry.status === 'failed' && !entry.seasons.some((season) => season.status === 'failed');
+  const kind = [entry.mediaType === 'tv' ? 'Series' : 'Movie', pills.seasonsText].filter(Boolean).join(' · ');
   const thumb = poster(doc, null, '', 'thumb');
   thumb.classList.add('request-thumb');
   return el(doc, 'li', { class: 'request' }, [
     thumb,
     el(doc, 'a', { class: 'request-link', attrs: { href: href(entry) } }, [
       el(doc, 'span', { class: 'card-title', text: REQUESTS_TEXT.loading }),
-      el(doc, 'span', { class: 'card-meta', text: entry.mediaType === 'tv' ? 'Series' : 'Movie' }),
+      el(doc, 'span', { class: 'card-meta', text: kind, attrs: { 'data-kind': kind } }),
     ]),
-    requestBadge(doc, entry.status),
+    pills.status ? requestBadge(doc, pills.status) : undefined,
     el(doc, 'p', { class: 'muted request-who', text: entry.byYou ? REQUESTS_TEXT.byYou : REQUESTS_TEXT.byOther }),
     seasons.length ? el(doc, 'ul', { class: 'request-seasons', attrs: { 'aria-label': 'Seasons' } }, seasons) : undefined,
+    noteHere ? failedNote(doc) : undefined,
   ]);
 }
 
@@ -917,7 +960,8 @@ export function setRequestTitle(
   const meta = item.querySelector('.card-meta');
   if (!name || !meta) return;
   name.textContent = title?.title || REQUESTS_TEXT.titleMissing;
-  if (title) meta.textContent = [title.year ?? '', title.mediaType === 'tv' ? 'Series' : 'Movie'].filter(Boolean).join(' · ');
+  // "2024 · Movie", or "2027 · Series · Season 1" with the seasons the entry put there.
+  if (title) meta.textContent = [title.year ?? '', meta.getAttribute('data-kind') || (title.mediaType === 'tv' ? 'Series' : 'Movie')].filter(Boolean).join(' · ');
   // The thumbnail is the same TMDB poster (w342) the title page uses, only if it is an allowlisted URL.
   const frame = item.querySelector('.request-thumb');
   const image = title ? posterImage(ownerOf(item), title.posterUrl, '', 'lazy') : undefined;
