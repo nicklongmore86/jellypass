@@ -83,31 +83,9 @@ export const JELLYFIN_CLASSES = {
 } as const;
 
 /**
- * The keys Jellyfin web's keyboard navigation turns into its `back` command (scripts/keyboardNavigation.js): the remotes'
- * Back (`461` on webOS, `10009` on Tizen, as `keyCode`; `Back`/`GoBack`/`BrowserBack` as `key`), Escape (Back in TV
- * layout, and the Xbox's) and Backspace (the Hisense's). Jellyfin web's handler is on `window` and skips an event whose
- * default was prevented, so the title view takes Back by preventing it first, from a capturing listener.
- */
-export function isBackKey(event: KeyboardEvent): boolean {
-  if (event.ctrlKey || event.altKey || event.metaKey || event.shiftKey) return false;
-  const code = event.keyCode;
-  return code === 461 || code === 10009 || code === 27 || code === 8
-    || event.key === 'Back' || event.key === 'GoBack' || event.key === 'BrowserBack' || event.key === 'Escape' || event.key === 'Backspace';
-}
-
-/**
  * Jellyfin web's own details page for an item, as its router's hash route (the address the API's `play.url` names). Set
  * as `location.hash` on the page Jellyfin web is running in, it opens there, with its own player: no reload, no new page.
  */
 export function detailsHash(itemId: string): string {
   return `#/details?id=${itemId}`;
 }
-
-/**
- * The title view's own focus scope: Jellyfin web's focus manager keeps the d-pad within the nearest `focuscontainer`
- * (as it does for its dialogs), and finds nothing to move to behind it. Each button in it must not itself be
- * `position: fixed` (the focus manager skips an element whose `offsetParent` is null), so the view is the fixed box and
- * its buttons sit inside it. The stylesheet puts it (`z-index: 1000`) over Jellyfin web's header (`999`) and under its
- * dialogs (`999998` and up), so a dialog Jellyfin web opens still comes first.
- */
-export const JELLYFIN_VIEW_CLASS = 'focuscontainer';

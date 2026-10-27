@@ -1,5 +1,5 @@
 /*
- * The JellyPass TV add-on's row on Jellyfin web's Home and its title view (docs/tv-addon.md). Written for the TVs'
+ * The JellyPass TV add-on's row on Jellyfin web's Home and its title page (docs/tv-addon.md). Written for the TVs'
  * Chromium 63: no flex or grid `gap` (it measures 0 px there), no :focus-visible (the whole rule would be dropped), no
  * aspect-ratio, inset, logical properties, :has() or min()/max()/clamp(); test/tv-addon.test.mjs refuses them. Spacing
  * is margins, a poster's frame is a padding-top box, and focus is :focus, which a remote's focus always is.
@@ -19,9 +19,17 @@
 .jellypass-tv-row-scroller::-webkit-scrollbar {
   display: none;
 }
+/* What Jellyfin's `.itemsContainer` gives its rows (a flex row, the first card in line with the heading), under a class of
+   its own: that class is one Jellyfin web calls `.pause()` on when Home is left. */
 .jellypass-tv-row-list {
+  display: flex;
   flex-wrap: nowrap;
   align-items: flex-start;
+  margin: 0 auto;
+}
+.jellypass-tv-row-list > .card > .cardBox {
+  margin-left: 0;
+  margin-right: 1.2em;
 }
 .jellypass-tv-card-image {
   position: absolute;
@@ -46,63 +54,75 @@
 }
 
 /*
- * The title view: a fixed full-screen box over Home (under Jellyfin web's dialogs), scrolled by its inner box. The
- * buttons inside it are never fixed themselves: Jellyfin web's focus manager skips an element with no offsetParent.
- * Every class in it is its own, `jellypass-tv-title-*`, and the row's are `jellypass-tv-row-*` and `jellypass-tv-card-*`:
- * no rule for one can reach the other (test/tv-addon.test.mjs checks the markup and every selector).
+ * The title page (tv/src/title.ts): a page of Jellyfin web's, laid out as its item details page is (the poster on the
+ * left at 25vw, the text from 32.45vw, as `.detailImageContainer` and `.detailPagePrimaryContent` in
+ * `styles/librarybrowser.scss`), in Jellyfin's own classes for the name, the facts, the buttons and the overview, and its
+ * theme's colours (`--jf-palette-*`, with the stock theme's as the fallback). Jellyfin's page puts its header above and
+ * `.libraryPage` pads the page below it, so nothing here is fixed except the backdrop, which sits behind everything.
+ * Every class of its own is `jellypass-tv-title-*`, and the row's are `jellypass-tv-row-*` and `jellypass-tv-card-*`: no rule
+ * for one can reach the other (test/tv-addon.test.mjs checks the markup and every selector).
  */
-.jellypass-tv-title-view {
+.jellypass-tv-title-page {
+  position: relative;
+  color: inherit;
+}
+/* The backdrop is always drawn, whatever Jellyfin web's Backdrops setting says: across the whole screen, behind the page
+   and under Jellyfin's header (whose own box is above it), darkened as Jellyfin's own backdrop is. */
+.jellypass-tv-title-backdrop {
   position: fixed;
   top: 0;
   right: 0;
   bottom: 0;
   left: 0;
-  z-index: 1000;
   overflow: hidden;
-  background: #000b25;
-  color: #eaf2ff;
-}
-.jellypass-tv-title-scroller {
-  position: relative;
-  height: 100%;
-  overflow-x: hidden;
-  overflow-y: auto;
-  padding: 1.5em 3.3% 3em 3.3%;
-  box-sizing: border-box;
-}
-.jellypass-tv-title-backdrop {
-  position: absolute;
-  top: 0;
-  right: 0;
-  width: 70%;
-  height: 32em;
-  overflow: hidden;
-  opacity: 0.35;
+  background: #101010;
 }
 .jellypass-tv-title-backdrop img {
+  position: absolute;
+  top: 0;
+  left: 0;
   width: 100%;
   height: 100%;
   object-fit: cover;
+  opacity: 0.8;
 }
-.jellypass-tv-title-top {
+.jellypass-tv-title-backdrop::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  background: linear-gradient(to right, rgba(16, 16, 16, 0.7) 0%, rgba(16, 16, 16, 0.3) 70%, rgba(16, 16, 16, 0.15) 100%), linear-gradient(to bottom, rgba(16, 16, 16, 0) 40%, #101010 100%);
+}
+.jellypass-tv-title-body {
   position: relative;
-  margin: 0 0 1.2em 0;
+  padding-bottom: 3em;
+}
+.jellypass-tv-title-state {
+  position: relative;
+  padding-top: 1em;
 }
 .jellypass-tv-title-main {
   position: relative;
   display: flex;
   align-items: flex-start;
+  padding-top: 1em;
 }
 .jellypass-tv-title-poster {
   position: relative;
   display: block;
   flex: 0 0 auto;
-  width: 13em;
-  height: 19.5em;
-  margin: 0 2em 0 0;
+  width: 25vw;
+  margin: 0 4.15vw 0 0;
   overflow: hidden;
-  border-radius: 0.6em;
-  background: #13224a;
+  background: #202020;
+  box-shadow: 0 0.1em 0.5em 0 rgba(0, 0, 0, 0.75);
+}
+.jellypass-tv-title-poster::before {
+  content: '';
+  display: block;
+  padding-top: 150%;
 }
 .jellypass-tv-title-poster img {
   position: absolute;
@@ -117,25 +137,37 @@
   min-width: 0;
 }
 .jellypass-tv-title-name {
-  margin: 0 0 0.3em 0;
   font-size: 2.2em;
-  font-weight: 700;
   line-height: 1.15;
+  white-space: normal;
 }
-.jellypass-tv-title-facts,
-.jellypass-tv-title-genres {
-  margin: 0 0 0.5em 0;
-  color: #a9bad8;
+.jellypass-tv-title-facts {
+  margin: 0 0 0.6em 0;
+}
+/* Jellyfin's own `.mediaInfoItem` spacing is keyed on `[dir]`, which is not always set. */
+.jellypass-tv-title-fact,
+.jellypass-tv-title-facts .jellypass-tv-title-status {
+  margin: 0 1em 0 0;
 }
 .jellypass-tv-title-status {
-  display: inline-block;
-  margin: 0.3em 0 0.6em 0;
-  padding: 0.2em 0.55em;
-  border-radius: 0.5em;
-  background: #000b25;
+  padding: 0.1em 0.5em;
+  border: 0.1em solid currentColor;
+  border-radius: 0.3em;
   font-size: 0.9em;
   font-weight: 600;
   line-height: 1.3;
+}
+.jellypass-tv-title-status-in_library {
+  color: #7fe0a0;
+}
+.jellypass-tv-title-status-get_this {
+  color: #35b8e8;
+}
+.jellypass-tv-title-status-requested {
+  color: #f2c35b;
+}
+.jellypass-tv-title-status-unavailable {
+  color: #a9bad8;
 }
 .jellypass-tv-title-status-failed {
   color: #ff9b8f;
@@ -144,7 +176,7 @@
 .jellypass-tv-title-hint,
 .jellypass-tv-title-loading {
   margin: 0 0 0.6em 0;
-  color: #a9bad8;
+  opacity: 0.75;
 }
 .jellypass-tv-title-error {
   margin: 0 0 0.4em 0;
@@ -152,7 +184,7 @@
   font-weight: 600;
 }
 .jellypass-tv-title-actions {
-  margin: 0.6em 0 0.4em 0;
+  flex-wrap: wrap;
 }
 .jellypass-tv-title-message {
   min-height: 1.4em;
@@ -168,28 +200,17 @@
   max-width: 48em;
   margin: 0.8em 0 0 0;
   line-height: 1.45;
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 6;
-  overflow: hidden;
+}
+.jellypass-tv-title-genres {
+  font-weight: 600;
 }
 .jellypass-tv-title-button {
-  display: inline-block;
   margin: 0 0.8em 0.6em 0;
-  padding: 0.55em 1.6em;
-  border: 0.12em solid #35b8e8;
-  border-radius: 0.5em;
-  background: transparent;
-  color: #eaf2ff;
-  font: inherit;
+  padding: 0.9em 1.6em;
   font-weight: 600;
-  cursor: pointer;
-  outline: none;
 }
-.jellypass-tv-title-primary {
-  background: #00a4dc;
-  border-color: #00a4dc;
-  color: #00122e;
+.jellypass-tv-title-secondary {
+  background: rgba(255, 255, 255, 0.12);
 }
 .jellypass-tv-title-button:disabled {
   opacity: 0.45;
@@ -197,7 +218,7 @@
 }
 .jellypass-tv-title-button:focus,
 .jellypass-tv-title-season-pick:focus {
-  box-shadow: 0 0 0 0.25em #eaf2ff;
+  box-shadow: 0 0 0 0.25em var(--jf-palette-text-primary, #fff);
 }
 .jellypass-tv-title-seasons {
   position: relative;
@@ -218,9 +239,9 @@
   margin: 0 0 0.5em 0;
   padding: 0.6em 1em;
   border: 0;
-  border-radius: 0.5em;
-  background: #13224a;
-  color: #eaf2ff;
+  border-radius: 0.3em;
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
   font: inherit;
   text-align: left;
   outline: none;
@@ -237,8 +258,8 @@
   border-radius: 50%;
 }
 .jellypass-tv-title-season-pick[aria-pressed='true'] .jellypass-tv-title-check {
-  border-color: #00a4dc;
-  background: #00a4dc;
+  border-color: var(--jf-palette-primary-main, #00a4dc);
+  background: var(--jf-palette-primary-main, #00a4dc);
 }
 .jellypass-tv-title-season-name {
   flex: 1 1 auto;
@@ -246,13 +267,10 @@
 }
 .jellypass-tv-title-season-count {
   margin: 0 1em 0 1em;
-  color: #a9bad8;
+  opacity: 0.75;
 }
 .jellypass-tv-title-season .jellypass-tv-title-status {
   margin: 0;
-}
-.layout-tv .jellypass-tv-title-view {
-  font-size: 1.1em;
 }
 
 /*

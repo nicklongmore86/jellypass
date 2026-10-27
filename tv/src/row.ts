@@ -10,7 +10,8 @@ import { currentSession, homeSections, JELLYFIN_CLASSES } from './jellyfin-web.j
  * the row is up leaves it at once. If nothing is left the row is not drawn (a second page is never asked for, so the
  * row's one call stays one). It depends only on the caller's own answer. Everything shown is a fixed string or a DTO
  * field set with `textContent`; no HTML is parsed. It runs no navigation of its own: Jellyfin web's focus manager moves
- * between its cards. Choosing a card opens the title view (title.ts). States are read through the "Get this" overlay
+ * between its cards. Choosing a card opens the title page (title.ts), a page of Jellyfin web's; Back returns to Home and
+ * the card is given focus again. States are read through the "Get this" overlay
  * (asked.ts).
  */
 
@@ -35,6 +36,9 @@ export const ROW_ATTRIBUTE = 'data-jellypass-tv-row';
  * once a minute however often Home is redrawn, and never while Home just stays on screen.
  */
 export const REUSE_MS = 60_000;
+
+/** How long after Home is shown again, from a title's page, the title's card is given focus whenever the row is drawn. */
+export const RETURN_MS = 4_000;
 
 interface Kept {
   userId: string;
@@ -66,6 +70,11 @@ export class HomeRow {
   #row: Element | undefined;
   #drawn: Kept | undefined;
   #cards: Drawn[] = [];
+  /**
+   * The title whose page was opened from a card: when Home is shown again, its card is focused each time the row is drawn,
+   * for RETURN_MS (Jellyfin web redraws Home's sections, and auto-focuses, after it is shown), until the member moves focus.
+   */
+  #returning: { mediaType: MediaType; tmdbId: number; shownAt: number | undefined } | undefined;
 
   public constructor(document: Document, scope: Scope, origin: string, asked: Asked, choose: (card: Card) => void, now: () => number = Date.now) {
     this.#document = document;
@@ -101,6 +110,7 @@ export class HomeRow {
     }
     if (this.#row && this.#row.parentNode === home.container && this.#drawn === kept && this.#rows().length === 1) {
       this.#refreshStatuses();
+      this.#applyReturn();
       return;
     }
     const focus = this.#focusedCard();
@@ -114,6 +124,28 @@ export class HomeRow {
     this.#row = row;
     this.#drawn = kept;
     if (focus) this.#restoreFocus(focus);
+    this.#applyReturn();
+  }
+
+  /**
+   * Back from a title's page: once Home is shown again and the row is on it, focus goes to the card the member came from
+   * (the first card if its title has left the row), after Jellyfin web's own auto-focus has been and gone, and again if
+   * the row is drawn again under it, until the member moves focus themselves or RETURN_MS has passed.
+   */
+  #applyReturn(): void {
+    const back = this.#returning;
+    if (!back || back.shownAt === undefined) return;
+    if (this.#now() - back.shownAt > RETURN_MS) {
+      this.#returning = undefined;
+      return;
+    }
+    const wanted = this.#cards.find((drawn) => drawn.card.mediaType === back.mediaType && drawn.card.tmdbId === back.tmdbId) ?? this.#cards[0];
+    if (wanted && this.#document.activeElement !== wanted.button) wanted.button.focus();
+  }
+
+  /** A key or pointer press by the member: once Home is back, focus is theirs, not the card's to be given. */
+  public userInput(): void {
+    if (this.#returning && this.#returning.shownAt !== undefined) this.#returning = undefined;
   }
 
   /** Which drawn card has focus, if the row has it: its place in the row and its title. */
@@ -132,7 +164,7 @@ export class HomeRow {
     (same ?? this.#cards[Math.min(focus.index, this.#cards.length - 1)])?.button.focus();
   }
 
-  /** Focuses the drawn card for a title (Back from its title view), if it is still there. */
+  /** Focuses the drawn card for a title (Back from its title page), if it is still there. */
   public focusCard(mediaType: MediaType, tmdbId: number): void {
     for (const drawn of this.#cards) {
       if (drawn.card.mediaType === mediaType && drawn.card.tmdbId === tmdbId && this.#row && this.#row.contains(drawn.button)) {
@@ -169,6 +201,7 @@ export class HomeRow {
 
   /** Home is being shown again: an answer older than REUSE_MS is read again (the row stays until the new one comes). */
   public homeShown(): void {
+    if (this.#returning) this.#returning.shownAt = this.#now();
     if (this.#kept && this.#now() - this.#kept.at >= REUSE_MS) this.#kept = undefined;
     this.update();
   }
@@ -185,6 +218,14 @@ export class HomeRow {
       this.#kept = { userId, at: this.#now(), answer };
       this.update();
     }).catch(() => undefined);
+  }
+
+  /** A card chosen: its page is opened, if Jellyfin web is still signed in to this origin, and Back will return to the card. */
+  #open(card: Card): void {
+    const session = currentSession(this.#scope);
+    if (!session || session.origin !== this.#origin) return;
+    this.#returning = { mediaType: card.mediaType, tmdbId: card.tmdbId, shownAt: undefined };
+    this.#choose(card);
   }
 
   #rows(): Element[] {
@@ -212,7 +253,9 @@ export class HomeRow {
     headingContainer.appendChild(element('h2', JELLYFIN_CLASSES.heading, ROW_TEXT.heading));
     section.appendChild(headingContainer);
     const scroller = element('div', 'jellypass-tv-row-scroller padded-left padded-right');
-    const list = element('div', `jellypass-tv-row-list itemsContainer ${JELLYFIN_CLASSES.row}`);
+    // Not `itemsContainer`: Jellyfin web's Home calls `.pause()` on every element with that class when Home is left, and
+    // that is a method of its own custom element, which this plain `div` is not (the page would fail with a TypeError).
+    const list = element('div', `jellypass-tv-row-list ${JELLYFIN_CLASSES.row}`);
     // Jellyfin web's TV layout draws its cards with a focus ring and a focus zoom: its CSS keys on these two classes.
     const tv = document.documentElement.classList.contains('layout-tv');
     this.#cards = [];
@@ -240,7 +283,7 @@ export class HomeRow {
       box.appendChild(element('div', 'cardText cardTextCentered cardText-first jellypass-tv-card-title', card.title));
       if (card.year !== null) box.appendChild(element('div', 'cardText cardText-secondary cardTextCentered jellypass-tv-card-year', String(card.year)));
       button.appendChild(box);
-      button.addEventListener('click', () => this.#choose(card));
+      button.addEventListener('click', () => this.#open(card));
       this.#cards.push({ card, button });
       list.appendChild(button);
     }

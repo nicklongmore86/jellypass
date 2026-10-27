@@ -3,13 +3,13 @@ import { Asked } from './asked.js';
 import { isHomeShown } from './jellyfin-web.js';
 import { PageHost } from './page-host.js';
 import { HomeRow } from './row.js';
-import { TitleView } from './title.js';
+import { TITLE_PATH, TitlePage, titleHash } from './title.js';
 
 /**
  * The JellyPass TV add-on's entry (docs/tv-addon.md): one classic script that the household gateway adds to Jellyfin
  * web's page, built by scripts/build-tv.mjs to ES2017 for the TVs' Chromium 63. It waits for Jellyfin web's Home and adds
- * the JellyPass row to it; a card opens the JellyPass title view over Home. It calls only the household app API, on the
- * origin this script was loaded from.
+ * the JellyPass row to it; a card opens the JellyPass title page, a page of Jellyfin web's own (page-host.ts). It handles
+ * no key. It calls only the household app API, on the origin this script was loaded from.
  */
 
 /** The stylesheet's built (fingerprinted) name, next to this script; written in by scripts/build-tv.mjs. */
@@ -40,22 +40,20 @@ function start(): void {
   document.head.appendChild(stylesheet);
 
   const api = { get ApiClient() { return (window as unknown as { ApiClient?: unknown }).ApiClient; }, fetch: (url: string, init: RequestInit) => window.fetch(url, init) };
-  // What the member just asked for: in memory only, shared by the row and the title view.
+  // What the member just asked for: in memory only, shared by the row and the title page.
   const asked = new Asked(() => performance.now(), () => Date.now(), () => {
     safely(() => row.overlayExpired());
     safely(() => title.overlayExpired());
   });
-  const title: TitleView = new TitleView(document, api, base.origin, asked, {
-    changed: () => safely(() => row.update()),
-    restoreFocus: (mediaType, tmdbId) => safely(() => row.focusCard(mediaType, tmdbId)),
-    navigate: (hash) => {
-      location.hash = hash;
-    },
-  });
-  const row: HomeRow = new HomeRow(document, api, base.origin, asked, (card) => safely(() => title.open(card)));
+  const navigate = (hash: string) => {
+    location.hash = hash;
+  };
+  const title = new TitlePage(document, api, base.origin, asked, { changed: () => safely(() => row.update()), navigate });
+  const row: HomeRow = new HomeRow(document, api, base.origin, asked, (card) => navigate(titleHash(card.mediaType, card.tmdbId)));
   // JellyPass pages at #/jellypass/..., in Jellyfin web's own "page not found" page (tv/src/page-host.ts).
   const host = new PageHost(document, () => location.hash);
   host.register(ABOUT_PATH, renderAbout);
+  host.register(TITLE_PATH, (context) => title.render(context));
   let timer: ReturnType<typeof setTimeout> | undefined;
   const settle = () => {
     if (timer !== undefined) return;
@@ -67,17 +65,19 @@ function start(): void {
     }, SETTLE_MS);
   };
   new MutationObserver(settle).observe(document.body ?? document.documentElement, { childList: true, subtree: true });
-  document.addEventListener('viewshow', (event) => {
+  // Every document listener is a capturing, passive one: it observes, and can neither stop nor prevent what Jellyfin web does.
+  const listen = (type: string, run: (event: Event) => void) => document.addEventListener(type, run, { capture: true, passive: true });
+  listen('viewshow', (event) => {
     if (isHomeShown(event)) safely(() => row.homeShown());
-    // Jellyfin web went to another page (its own Back, a menu, a link): the view goes with Home.
-    else safely(() => title.close(false));
-  }, true);
-  // Back closes the view before Jellyfin web's own handler (on window, bubbling) sees it.
-  document.addEventListener('keydown', (event) => safely(() => title.key(event)), true);
-  document.addEventListener('focusin', (event) => safely(() => title.focusIn(event)), true);
-  document.addEventListener('focusin', (event) => safely(() => host.focusIn(event)), true);
-  for (const type of ['keydown', 'pointerdown', 'mousedown', 'touchstart']) document.addEventListener(type, () => safely(() => host.userInput()), true);
-  document.addEventListener('pageshow', (event) => safely(() => host.pageShown(event)), true);
+  });
+  listen('focusin', (event) => safely(() => host.focusIn(event)));
+  for (const type of ['keydown', 'pointerdown', 'mousedown', 'touchstart']) {
+    listen(type, () => {
+      safely(() => host.userInput());
+      safely(() => row.userInput());
+    });
+  }
+  listen('pageshow', (event) => safely(() => host.pageShown(event)));
   // A hash change is seen at once, so Jellyfin web's "Page not found" is hidden before it is drawn.
   window.addEventListener('hashchange', () => safely(() => host.update()));
   safely(() => host.update());
