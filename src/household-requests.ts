@@ -194,7 +194,7 @@ export class HouseholdRequests {
   readonly #now: () => number;
   readonly #recordDelayMs: number;
   readonly #titleLocks = new Map<string, Promise<unknown>>();
-  /** Intents written by calls still running (see Outcome.intents); memory only. */
+  /** Intents claimed by calls still running (see Outcome.intents), from before they are in memory; memory only. */
   readonly #live = new Set<string>();
   /** When each record was last read from Seerr by refresh(), by record ID; memory only. */
   readonly #checkedAt = new Map<string, number>();
@@ -441,6 +441,8 @@ export class HouseholdRequests {
   ): Promise<void> {
     const member = this.#members.member(input.callerId);
     if (!member) return void this.#recordBranch('request_refused');
+    // Claimed before the intent is in memory: a reconciliation already running never takes it for an orphan. Released
+    // with the call's other intents, however it ends (see #branches).
     const intentId = await this.#store.addAppRequestIntent({
       householdId: input.householdId,
       jellyfinUserId: input.callerId,
@@ -451,9 +453,10 @@ export class HouseholdRequests {
       createdAt: new Date(this.#now()).toISOString(),
       status: 'submitting',
       householdEpoch: epoch,
+    }, (id) => {
+      this.#live.add(id);
+      outcome.intents.push(id);
     });
-    this.#live.add(intentId);
-    outcome.intents.push(intentId);
     let requester: Awaited<ReturnType<typeof member.confirmRequester>>;
     let recheck: Presence;
     try {
@@ -838,6 +841,7 @@ export class HouseholdRequests {
    * passed, or Seerr or Jellyfin still unreadable once APP_SETTLE_DEADLINE_MS has. Until then a failed lookup leaves the
    * intent for the next run. A `settling` intent is settled again; once APP_SETTLE_DEADLINE_MS has passed without a
    * successful read, its request's grant follows the join rules (`unverified`).
+   * An intent a running call claims is left alone, checked again right before each write that would remove it.
    */
   async #reconcileIntents(signal: AbortSignal | undefined): Promise<void> {
     for (const [id, intent] of this.#store.listAppRequestIntents()) {
@@ -908,6 +912,7 @@ export class HouseholdRequests {
     // The request found may not be the one this intent made (Seerr may make that later): the member's other requests
     // for the title from then on follow the join rules all the same.
     const tombstone = this.#tombstone(intent, settled === 'absent' ? [] : [made.id], intent, settled === 'absent' ? [made.id] : []);
+    if (this.#live.has(id)) return;
     await this.#store.writeAppRequests({ add: [record], householdEpoch: intent.householdEpoch as number, removeIntents: [id], tombstones: [tombstone] });
     this.#recordBranch('intent_recovered');
   }
@@ -919,6 +924,7 @@ export class HouseholdRequests {
    * other member's grant for the title.
    */
   async #retire(id: string, intent: AppRequestIntent, requestIds: string[], branch: string): Promise<void> {
+    if (this.#live.has(id)) return;
     await this.#store.writeAppRequests({ removeIntents: [id], tombstones: [this.#tombstone(intent, requestIds, intent)] });
     this.#recordBranch(branch);
   }
@@ -973,6 +979,7 @@ export class HouseholdRequests {
     const requestId = intent.seerrRequestId as string;
     const records = this.#store.listAppRequests()
       .filter(([, record]) => record.branch === 'request' && record.seerrRequestId === requestId && !record.joinOnGrant);
+    if (this.#live.has(id)) return;
     await this.#store.writeAppRequests({
       update: rule ? records.map(([recordId]) => ({ id: recordId, joinOnGrant: rule })) : [],
       removeIntents: [id],

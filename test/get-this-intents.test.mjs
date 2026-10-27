@@ -431,9 +431,9 @@ describe('"Get this": the intent is on disk before its request is sent', { timeo
     const app = await start(t, world({ tmdbMovies }));
     // The regression this guards against: the intent's write is no longer awaited (and here it fails).
     const write = app.store.addAppRequestIntent.bind(app.store);
-    app.store.addAppRequestIntent = async (entry) => {
+    app.store.addAppRequestIntent = async (entry, claim) => {
       const before = new Set(app.store.listAppRequestIntents().map(([id]) => id));
-      write(entry).catch(() => undefined);
+      write(entry, claim).catch(() => undefined);
       return app.store.listAppRequestIntents().map(([id]) => id).find((id) => !before.has(id));
     };
     await rm(app.stateFile);
@@ -477,4 +477,77 @@ describe('"Get this": the intent is on disk before its request is sent', { timeo
     assert.deepEqual(app.seerr.violations, []);
     assert.equal(existsSync(path.dirname(app.stateFile)), false);
   });
+});
+
+describe('"Get this": a reconciliation that runs while a call\'s intent is being written', { timeout: 60_000 }, () => {
+  // Each test here fails on 19d193c, where a call claimed its intent only once the state file had it: a reconciliation
+  // that listed it meanwhile retired it, and the call then sent nothing (`request_unsaved`).
+  /**
+   * Holds the call's intent write until released, once the intent is in memory: a reconciliation run meanwhile lists
+   * it. Resolves `written` with the intent's ID.
+   */
+  function holdIntentWrite(app) {
+    const write = app.store.addAppRequestIntent.bind(app.store);
+    let release;
+    let written;
+    const gate = new Promise((resolve) => { release = resolve; });
+    const entered = new Promise((resolve) => { written = resolve; });
+    app.store.addAppRequestIntent = (entry, claim) => {
+      app.store.addAppRequestIntent = write;
+      const before = new Set(app.store.listAppRequestIntents().map(([id]) => id));
+      const writing = write(entry, claim);
+      written(app.store.listAppRequestIntents().map(([id]) => id).find((id) => !before.has(id)));
+      return gate.then(() => writing);
+    };
+    return { written: entered, release };
+  }
+
+  const declined = (id) => request({ id, seerrUser: SEERR_IDS[ALICE], status: 3 });
+  const variants = {
+    'Seerr has a declined request by the caller for the title': { requests: [declined(7300701)] },
+    'Seerr has several requests by the caller for the title': { requests: [declined(7300701), declined(7300702)] },
+    'the household was replaced meanwhile': { requests: [declined(7300701)], replace: true },
+  };
+
+  for (const [kind, variant] of Object.entries(variants)) {
+    it(`leaves the call's intent alone when ${kind}: one request is sent and recorded`, async (t) => {
+      const app = await start(t, world({ tmdbMovies, requests: { [SEERR_IDS[ALICE]]: variant.requests } }));
+      let atRequest;
+      const postsPush = app.seerr.posts.push.bind(app.seerr.posts);
+      app.seerr.posts.push = (post) => {
+        atRequest = { memory: app.store.listAppRequestIntents().map(([id]) => id), disk: readFile(app.stateFile, 'utf8') };
+        return postsPush(post);
+      };
+      const hold = holdIntentWrite(app);
+      await app.post(GET_MOVIE);
+      const intentId = await hold.written;
+      assert.deepEqual(app.store.listAppRequestIntents().map(([id]) => id), [intentId]);
+      if (variant.replace) {
+        const household = app.store.getGroup('farmhouse');
+        await app.store.deleteGroup('farmhouse');
+        await app.store.upsertGroup({ id: household.id, name: household.name, userIds: household.userIds });
+      }
+      // The scheduled reconciliation (or startup's) runs to the end before the call's write completes.
+      await app.requests.refresh();
+      assert.deepEqual(app.store.listAppRequestIntents().map(([id]) => id), [intentId], kind);
+      assert.deepEqual(app.store.listAppSafetyTombstones(), [], kind);
+      hold.release();
+      await app.background.settled();
+      // Sent once, with its intent in memory and on disk.
+      assert.equal(app.seerr.posts.length, 1, kind);
+      assert.deepEqual(atRequest.memory, [intentId], kind);
+      assert.ok(Object.keys(JSON.parse(await atRequest.disk).appRequestIntents ?? {}).includes(intentId), kind);
+      for (const branch of ['request_unsaved', 'intent_ambiguous', 'intent_detached', 'intent_cancelled']) {
+        assert.equal(metric(app, 'jfa_app_get_this_branches_total', `branch="${branch}"`), 0, `${kind}: ${branch}`);
+      }
+      const record = requestRecord(app);
+      assert.deepEqual([record.status, record.seerrRequestId, record.householdId], ['pending', '7350001', 'farmhouse'], kind);
+      assert.equal(record.detached, variant.replace ? true : undefined, kind);
+      if (!variant.replace) assert.equal((await app.get(`${APP}/movie/${T_MOVIE}`)).json().state, 'requested', kind);
+      assert.deepEqual(app.store.listAppRequestIntents(), [], kind);
+      // A later reconciliation finds nothing to do.
+      await app.requests.refresh();
+      assert.deepEqual(requestRecord(app), record, kind);
+    });
+  }
 });

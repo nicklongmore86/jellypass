@@ -31,6 +31,16 @@ changes are always listed at the top of the release notes.
   requests, under whatever did not work out (under the season, when seasons
   differ). The app API and the server are unchanged.
 
+### Fixed
+
+- **Household app: a "Get this" request is no longer dropped when it coincides
+  with JellyPass's own check of earlier requests.** If that check (at startup or
+  every few minutes) ran while a new request was still being saved, it could
+  mistake the new request for one left over from before and clear it. The
+  request was then never sent, or, if Seerr was slow to answer, it could be sent
+  without showing as Requested for the household. A request is now marked as
+  in progress before it is saved, and the check leaves it alone.
+
 ## [3.2.2] - 2026-10-27
 
 This is a patch release for the household app (`HOUSEHOLD_APP_ENABLED=true`)
