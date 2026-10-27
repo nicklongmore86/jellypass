@@ -28,10 +28,30 @@ changes are always listed at the top of the release notes.
   is drawn, so it never flashes. If Jellyfin web's page is not what the add-on
   expects, nothing is drawn and Jellyfin's page is left alone. The only page so
   far is a small placeholder at `#/jellypass/about`, which nothing links to and
-  which makes no call; the title view is unchanged. Nothing changes on the
+  which makes no call. Nothing changes on the
   admin host or on households the add-on is off for.
 
 ### Changed
+
+- **The TV add-on's title view is now a page of Jellyfin web's, not an
+  overlay.** Choosing a Discover card opens `#/jellypass/title/<movie|tv>/<id>`
+  as a history entry, laid out as Jellyfin's own item details page (poster,
+  name, year, runtime and rating, buttons in Jellyfin's style, overview,
+  genres, and the seasons of a series), under Jellyfin's real header, so its
+  Back and Home buttons are never covered, in the TV layout and the desktop
+  layout. Back returns to Home with the card focused. The title's backdrop is
+  now drawn across the whole screen whatever Jellyfin's Backdrops setting says.
+  The overlay, its key listener and its stacking rules are gone: the add-on
+  handles no key, and every listener it adds on the page only watches (capturing
+  and passive). Play, Get this (same confirmation, words and errors, no
+  automatic retry, season choice with Select all, HD only), the two-minute
+  Requested state, sign-out and member changes, and the call budget
+  (`tv-movie`, `tv-series`) are unchanged. Nothing changes on the admin host or
+  on households the add-on is off for.
+- **The TV add-on no longer breaks Jellyfin's Home when it is left.** The
+  Discover row's list carried a Jellyfin class whose elements Jellyfin calls
+  `.pause()` on when Home is left, which failed with a `TypeError` and an error
+  page in the desktop layout. The row now uses a class of its own.
 
 - **The TV add-on's Home row is now "Discover", in Jellyfin web's own card
   style, and shows only what can be had.** It no longer repeats what Jellyfin's
@@ -42,7 +62,7 @@ changes are always listed at the top of the release notes.
   ring match Jellyfin's own rows in both the TV and the desktop layout, and the
   add-on's own navy colours are gone from the row. If nothing is left the row
   is not drawn. The row still makes one call (`tv-home-row`, unchanged) and
-  depends only on the caller's own answer. The title view is unchanged.
+  depends only on the caller's own answer.
 
 ## [3.3.1] - 2026-10-27
 

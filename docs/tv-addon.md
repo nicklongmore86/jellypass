@@ -2,10 +2,12 @@
 
 ## Status
 
-Steps 1 and 2 of 5 are done, and the **page host** of the redesign (below, "The page host") is in: behind `TV_ADDON_ENABLED`, off by default, the household gateway adds one script to
-Jellyfin web's page on the households listed in `TV_ADDON_HOUSEHOLDS`, and that script adds one **Discover**
-row to Jellyfin web's Home (step 1; redesigned, see "The row"). Choosing a card opens a JellyPass title view over Home, with **Play** or **Get
-this** (step 2, "The title view"). Search, **My requests** and the Samsung loader app come in later steps (see
+Steps 1 and 2 of 5 are done, and so are the first three steps of the redesign (direction A of the 2026-10-27 study): the
+Discover **row** (below, "The row"), the **page host** ("The page host") and the **title page** ("The title page"). Behind
+`TV_ADDON_ENABLED`, off by default, the household gateway adds one script to Jellyfin web's page on the households listed
+in `TV_ADDON_HOUSEHOLDS`, and that script adds one **Discover** row to Jellyfin web's Home. Choosing a card opens a
+JellyPass title page, a page of Jellyfin web's own at `#/jellypass/title/<movie|tv>/<tmdbId>`, with **Play** or **Get
+this**. Search, **My requests** and the Samsung loader app come in later steps (see
 "Rollout"). Nothing has been run on a real TV yet (see "What must be checked on a real TV").
 
 The architecture study behind this design is the 2026-10-27 TV study (route 1, "a JellyPass TV module in jellyfin-web").
@@ -75,16 +77,18 @@ flowchart LR
 - **The add-on's use of Jellyfin web:** checked by reading **Jellyfin web 10.11.11**'s built bundle (the one
   jellyfin-tizen 10.11 builds and JellyQuest used: `35c0793`). It covers the Home template, the Home tab's section
   loading, `window.ApiClient`, the focus manager, the scroll manager and `viewshow`. Then it was run in a simulated
-  Jellyfin web DOM in the tests. For the title view (step 2), the same release's source at that commit:
-  `scripts/keyboardNavigation.js` (the Back keys, the `window` handler that skips a prevented event),
-  `scripts/inputManager.js` (`back` is the router's Back, or exit), `components/focusManager.js` (`focuscontainer`,
-  the `offsetParent` check) and the dialog and header `z-index`es.
-- **Not yet checked:** Jellyfin web 12.x (the production server runs 12.3.0), and any real TV (see below).
-  Before switching it on for the first household, check the row, the title view and D-pad navigation (Back included)
-  in a desktop browser on that household's host against production 12.x, in TV layout: if Home's structure differs the
-  row simply doesn't appear (safe), but a changed focus model could leave a row or a view that can't be navigated, and
-  a changed Back handler could leave Back to Jellyfin web while the view is open (the view would then close as Jellyfin
-  web leaves Home).
+  Jellyfin web DOM in the tests.
+- **Jellyfin web 12.3 (what production runs), the page host and the title page:** the source of tag `v12.3` (identical
+  to 12.4 for every file used) for the fallback route, the header, the item details page's markup and styles, and the
+  theme; and a **real `jellyfin/jellyfin:12.3.0` container**, in the TV layout and the desktop (modern) layout, with a
+  browser (Chromium; the household API and TMDB's images answered by the script, since the container has no gateway):
+  choosing a card, the title page of a movie and of a series, Get this, and Back. That check found and fixed the row's
+  `itemsContainer` class (see "The row"). The scripts and screenshots are kept with the redesign study
+  (`/opt/dev/design-ref/jellypass-tv-redesign/step3/`), not in this repository.
+- **Not yet checked:** any real TV (see below), and Jellyfin web 10.11 (the Tizen builds) beyond the row. Where Jellyfin
+  web's structure differs the add-on draws nothing (safe), but a changed focus model could leave a row or a page that
+  can't be navigated: check the row, the title page and D-pad navigation (Back included) on each Jellyfin web version in
+  use.
 
 ## The add-on
 
@@ -114,11 +118,15 @@ flowchart LR
     own rows, `focuscontainer-x`, and its card markup as `cardBuilder` writes it (`card overflowPortraitCard
     card-hoverable`, `cardBox`, `cardScalable`, `cardPadder-overflowPortrait`, `cardImageContainer`, `cardText`; on a TV
     also `show-focus show-animation`), so Jellyfin web's own CSS sizes, sets the type of and focuses the cards;
-  - for the title view: `focuscontainer` (the focus manager's scope, as for its dialogs), that the focus manager skips
-    an element whose `offsetParent` is null (so the view's buttons are never `position: fixed` themselves), its
-    header's `z-index` (999) and its dialogs' (999998 and up);
-  - the keys Jellyfin web's keyboard navigation turns into `back` (`keyCode` 461 on webOS and 10009 on Tizen, `Back`,
-    Escape, Backspace), and that its `keydown` handler is on `window` and skips an event whose default was prevented;
+  - that Jellyfin web's Home **calls `.pause()` on every `.itemsContainer` in its sections** when Home is left (a method
+    of its own custom element), so the row's list is **not** an `itemsContainer` (it has a class of its own and the
+    few rules that class gave): a plain `div` with that class made Home fail with a `TypeError` as soon as the member left it
+    in the desktop layout;
+  - for the title page, the item details page's own classes, so its CSS applies: `nameContainer` and `itemName`,
+    `itemMiscInfo itemMiscInfo-primary` and `mediaInfoItem`, `mainDetailButtons` (a `focuscontainer-x`), the buttons'
+    `emby-button raised` (and `button-submit` for the primary one, `show-focus` on a TV), `overview`, `itemDetailsGroup`
+    with `detailsGroupItem` and `label`, `padded-left` and `padded-right`, and the theme's `--jf-palette-*` colours (with
+    the stock theme's as the fallback); and that `.libraryPage` (the fallback page has the class) pads a page below the header;
   - the hash route of Jellyfin web's details page, `#/details?id=<item>` (the address the API's `play.url` names).
 
   If any of it is missing or shaped otherwise, the add-on draws nothing. Every entry point is wrapped so a surprise is
@@ -133,9 +141,12 @@ flowchart LR
     web's card markup (see "Jellyfin web coupling") with the poster (only a URL on the API's `w342` TMDB pattern), the
     title and the year. Its accessible name says the status in the app's words ("Available to get"). An unknown state is
     "Can't request", as the contract says, and so is not in the row.
-  - **A title the member asks for** (the title view's **Get this**, shown as Requested for up to two minutes, see "The
-    title view") leaves the row at once, in place, with no call; when the two minutes run out and the server still says
-    Available to get, it is back. Back from the view puts focus on the row's first card if the title's own has left.
+  - **A title the member asks for** (the title page's **Get this**, shown as Requested for up to two minutes, see "The
+    title page") leaves the row at once, in place, with no call; when the two minutes run out and the server still says
+    Available to get, it is back. **Back from the title page** returns to Home with focus on the title's card, or on the
+    row's first card if the title's own has left. Jellyfin web redraws Home's sections after showing it (and
+    auto-focuses), so the row gives the card focus each time it is drawn for four seconds after Home is shown again,
+    and stops at the member's first key or press.
   - **When nothing is left** (every trending title is in the library, Requested or not offered, or the answer failed)
     the row is **not drawn**: no heading, no empty strip. A second page is deliberately not fetched when few titles
     survive the filter: the row stays one call (below), the same for every device on a household's one per-address
@@ -152,7 +163,8 @@ flowchart LR
   web's own (`.card:focus`, with `show-focus show-animation` added when the page is in TV layout, as `cardBuilder` does),
   and so are the card widths, in TV and desktop layout alike. The row adds only its scrolling strip, the poster inside
   Jellyfin's image box, in Jellyfin web's own look (nothing of its own palette).
-- **Choosing a card** opens the title view (below). A card's state is read through the "Get this" overlay, so a title
+- **Choosing a card** opens the title page (below): the add-on sets `location.hash` to
+  `#/jellypass/title/<movie|tv>/<tmdbId>`, a history entry, and only while Jellyfin web is signed in to this origin. A card's state is read through the "Get this" overlay, so a title
   the member just asked for is no longer Available to get and leaves the row (above).
 
 ### The page host
@@ -165,13 +177,18 @@ The host puts a JellyPass page in it, so Jellyfin's header, its Back and Home bu
 and its scrolling all apply, and the add-on handles no key: Back (the remote's, the LG's, the browser's) is Jellyfin
 web's history, and leaves the page as it leaves any other.
 
-- **The router API** (for pages): `host.register('/jellypass/title/:id', render)`. `render({ document, container,
-  params })` draws into `container` only (an empty box inside Jellyfin's page) and returns `{ title, cleanup?, focus? }`.
-  The host sets Jellyfin's header title, calls `cleanup` when the page is left (the address changes, or Jellyfin web
+- **The router API** (for pages): `host.register('/jellypass/title/:mediaType/:tmdbId', render)`. `render({ document,
+  container, params, setTitle, focus })` draws into `container` only (an empty box inside Jellyfin's page) and returns
+  `{ title, cleanup?, focus? }`. The host sets Jellyfin's header title (a page that learns its title later calls
+  `setTitle`, ignored once the page is left), calls `cleanup` when the page is left (the address changes, or Jellyfin web
   removes its page) and removes the container. Focus: a page marks elements `data-jellypass-tv-focus="<key>"`; the host
   remembers (in memory only, for the last 20 pages) the one that had focus, and when Back returns it focuses that
-  element again, else `focus`. Jellyfin web auto-focuses a page on a TV on its `pageshow`; the host puts focus right
-  once more just after it.
+  element again, else `focus`. A page that draws after a read calls `focus(element)` once it has drawn: the remembered
+  element wins, else `element`, and nothing is taken from a member who has pressed a key or the pointer on that page.
+  Jellyfin web auto-focuses a page on a TV on its `pageshow`; the host puts focus right once more just after it.
+- **Listeners.** Every document listener the add-on adds (`viewshow`, `focusin`, `pageshow`, and `keydown`,
+  `pointerdown`, `mousedown`, `touchstart` to notice that the member has pressed something) is explicitly
+  `{ capture: true, passive: true }`: it can only watch, and nothing in the bundle prevents or stops an event (tested).
 - **No flash.** When the address is a registered JellyPass page, the host sets a class on `<html>` at once (on
   `hashchange`, before Jellyfin web has drawn anything), and a rule in the stylesheet hides the children of
   `#fallbackPage` that are not the host's. Jellyfin's "Page not found" is hidden, not removed (React owns it), so it
@@ -183,50 +200,57 @@ web's history, and leaves the page as it leaves any other.
 - **Fails safe.** If `#fallbackPage` is not there, is not a `[data-role=page].page`, or is `hide`, or the address has
   no registered page, nothing is drawn, the class is not set (the rule also checks the page's shape), and Jellyfin's
   page is untouched. A page whose `render` throws is removed, not retried at that address, and Jellyfin's page shows.
-- **Placeholder.** `#/jellypass/about` (`tv/src/about.ts`) is the one page so far: a heading, one line and a link home.
-  Nothing links to it. It makes no call. The title view still opens over Home as before; moving it onto the host is
-  the next step.
+- **Pages.** `#/jellypass/title/<movie|tv>/<tmdbId>` ("The title page"), and `#/jellypass/about` (`tv/src/about.ts`), a
+  placeholder: a heading, one line and a link home. Nothing links to the placeholder and it makes no call.
 - **Coupling** (checked against Jellyfin web 12.3, whose files this uses are identical in 12.4): `FallbackRoute.tsx`
   (`#fallbackPage`), `components/Page.tsx` (`data-role`, `data-title`, the `pageshow` it dispatches),
   `scripts/libraryMenu.js` (`.pageTitle`), `components/autoFocuser.js`. Not checked: other Jellyfin web
   versions (10.11, which the Tizen builds use, among them); where the page is not as above, the add-on draws nothing.
 
-### The title view
+### The title page
 
-`tv/src/title.ts`: the household app's title page for a ten-foot screen, opened over Home when a card is chosen.
+`tv/src/title.ts`: the household app's title page, a page of Jellyfin web's on the page host at
+`#/jellypass/title/<movie|tv>/<tmdbId>` (the address a card opens, and one that works opened directly: a reload or a
+bookmark). It replaces the overlay of step 2: nothing is fixed over Home, no key is handled, and no `z-index` is set.
 
-- **Where.** One `<div>` added to the page's `<body>` (never inside Jellyfin web's own pages), fixed over the whole
-  screen above Jellyfin web's header and under its dialogs, `role="dialog"`, named by its heading. It is a
-  `focuscontainer`, so Jellyfin web's focus manager moves the d-pad between its buttons and nothing behind it, as in
-  Jellyfin web's own dialogs, and its scroll manager scrolls the focused button into view. If Jellyfin web refocuses
-  Home behind it (a redraw), focus is given back to the view; focus in anything else (a Jellyfin web dialog) is left
-  alone. There is never more than one.
-- **What.** A backdrop (faded), the poster, the title, a facts line (year, runtime or "N seasons", "★ 7.5 TMDB"),
-  genres, the status in the app's coarse words ("Ready to watch", "Available to get", "Requested", "Can't request", and
-  "We couldn't get this" for a title or season the household asked for that failed, read from `GET /requests`), the
-  app's fixed note for each, and the overview. A series lists its seasons with their episode counts and statuses.
+- **Where.** In Jellyfin web's fallback page (see "The page host"), under its real header: in the TV layout the legacy
+  header with its **Back** and **Home** buttons and the page's title (the title's name, once read), in the desktop layout
+  its toolbar. Choosing a card is a history entry, so **Back** is Jellyfin web's: it returns to Home with the card
+  focused (see "The row"), and to the title page from Jellyfin's own details page after **Play**. A title that is not a
+  title (`movie` or `tv` and an id of digits with no leading zero) says "Not found" and calls nothing.
+- **Layout**, as Jellyfin web 12.3's own item details page (`apps/legacy/controllers/itemDetails/index.html` and
+  `styles/librarybrowser.scss`): the poster on the left (25vw, a 2:3 box, from 3.3% in), the text column from 32.45vw: the
+  name (`itemName`), the facts line (`mediaInfoItem`: year, runtime or "N seasons", "★ 7.5 TMDB", then the status in the
+  app's coarse words), the buttons (`mainDetailButtons`, Jellyfin's `emby-button raised`, the primary one in its
+  `button-submit` colour), the note for the status, the overview (`overview`) and "Genres" (`itemDetailsGroup`). A
+  series lists its seasons below, with their episode counts and statuses. Colours are Jellyfin's theme
+  (`--jf-palette-*`), apart from the status colours, which are the add-on's own and the same as before. The statuses are
+  "Ready to watch", "Available to get", "Requested", "Can't request", and "We couldn't get this" for a title or season the
+  household asked for that failed (read from `GET /requests`).
+- **Backdrop, always.** The title's backdrop (the API's `w780` TMDB image) is drawn across the whole screen, behind the
+  page and under Jellyfin's header (a `position: fixed` box, darkened, with no `z-index`), **whatever Jellyfin web's
+  per-browser Backdrops setting says**: the add-on does not read that setting (the profiles have it off, and these titles
+  have little else to show). Without a backdrop image the dark ground is still drawn.
 - **One action**, as on the app's title page:
   - **Play** when the title is in the library and the API's `play.url` is exactly
-    `https://<this origin>/web/#/details?id=<play.itemId>`: it closes the view and sets `location.hash` to
-    `#/details?id=<itemId>`, so Jellyfin web opens its own details page for the item in the same page, with its own
-    player. Nothing new plays anything. Any other `play` is no Play.
+    `https://<this origin>/web/#/details?id=<play.itemId>`: it sets `location.hash` to `#/details?id=<itemId>`, so Jellyfin web
+    opens its own details page for the item, with its own player. Nothing new plays anything. Any other `play` is no Play.
   - **Get this** when the household can ask for it. For a series, the seasons it can ask for (specials aside) are
     toggle buttons (`aria-pressed`) with **Select all** when there is more than one; **Get this** stays disabled with
     "Choose the seasons you want below." until one is chosen, and sends exactly the seasons chosen (HD only: the API
     asks for nothing else). A series partly in the library keeps **Play** as its primary, with **Get this** beside it.
   - "Requested", "Can't request" and "We couldn't get this" have no button, only their note. The TV has no My requests
     yet, so "Requested" says "Check My requests in the JellyPass app to follow it."
-- **Focus.** On opening, the Back button, then, once read, Play, else Get this, else the first season to choose, else
-  Back. **Back** (each remote's key, Escape, Backspace, or the on-screen **Back** button) closes the view and puts focus
-  back on the card it was opened from. The add-on takes those keys only while the view is open: a capturing `keydown`
-  listener prevents them before Jellyfin web's own handler, which then skips them. Every other key, and Back with the
-  view closed, is Jellyfin web's. If Jellyfin web shows another page while the view is open (a menu, the browser's own
-  Back), the view closes with Home.
+- **Focus.** Jellyfin's focus manager moves the d-pad within the page and the header. Once the title is read, focus goes
+  to Play, else Get this, else the first season to choose, else Try again; what had focus when the page was last left
+  (coming back from Play) wins, and nothing is taken from a member who has already pressed a key on the page. A change the
+  member makes (a retry, an accepted **Get this**) puts focus on what is new (the confirmation, the button again after a
+  failure). Jellyfin web scrolls the focused element into view and the page scrolls natively.
 - **"Get this"** is the app's identical-outcome flow (docs/app-design.md, '"Get this"'):
   - while its one call is out the button says "Sending…" and is disabled, and so are the season toggles; a second
     press sends nothing;
-  - any `2xx` is accepted, and its body is not read. The view shows the one fixed confirmation, "Thanks — we'll get
-    this for your household.", at once, marks the title (and the seasons) in the overlay, and reads the view again;
+  - any `2xx` is accepted, and its body is not read. The page shows the one fixed confirmation, "Thanks — we'll get
+    this for your household.", at once, marks the title (and the seasons) in the overlay, and reads the page again;
     the seasons asked for are not offered again while it is open. If that read fails, the confirmation stays, with
     "Something went wrong. Try again in a moment." and a **Try again** that only reads;
   - a failure says its fixed words: `429` "Too many tries, try again in a few minutes.", no network "You're offline.
@@ -236,18 +260,22 @@ web's history, and leaves the page as it leaves any other.
 - **Errors reading the title** are the app's fixed states ("Can't load this right now", "Too many requests", "Not
   found", "You're offline", "Sign in to continue"), with a **Try again** that only reads (none for a refused token).
 - **The overlay** (`tv/src/asked.ts`, the app's `app/src/asked.ts`): an accepted "Get this" shows the title (and its
-  seasons) as **Requested** on the view (and out of the row) for up to **two minutes**, while the server records it, and is
+  seasons) as **Requested** on the page (and out of the row) for up to **two minutes**, while the server records it, and is
   dropped as soon as the server says anything but `get_this` for it. As in the app it runs on both clocks: it ends when
   the monotonic clock has run two minutes or the wall clock has moved forward by that much (a TV asleep), and a wall
-  clock set back never stretches it. On a view or row left alone it ends by a timer (at most 15 seconds between looks
-  at the clocks) that draws the statuses again from what is held, with no call; a view whose read after an accepted
+  clock set back never stretches it. On a page or row left alone it ends by a timer (at most 15 seconds between looks
+  at the clocks) that draws the statuses again from what is held, with no call; a page whose read after an accepted
   "Get this" failed is drawn again from the answer it showed before that call, keeping the confirmation and its
   **Try again**, and offering nothing that sends. It is kept in memory for the member
   signed in: another member signing in, signing out, or a refused token (`401`, on the title read or the requests
-  read, each judged on its own) forgets all of it, and the view closes or says sign in. Nothing is stored or sent.
+  read, each judged on its own) forgets all of it, and the page is emptied (Jellyfin web takes the member to its own
+  sign-in or Home) or says sign in.
 - **Same origin only.** Every call is made as the row's are (below), with the token read from `ApiClient` for that one
-  call. A card chosen while Jellyfin web is signed in elsewhere opens nothing; if it signs in elsewhere (or someone else
-  signs in) while the view is open, the view closes and its late answers are dropped.
+  call. A card chosen while Jellyfin web is signed in elsewhere opens nothing, and an address opened then draws nothing and
+  calls nothing; if it signs in elsewhere (or someone else signs in) while the page is open, the page is emptied and its
+  late answers are dropped. Leaving the page drops what is in flight.
+- **Text.** Everything shown is a fixed string or a DTO field set with `textContent`; images are only the API's TMDB URLs
+  (`w342` posters, `w780` backdrops), set with `referrerpolicy="no-referrer"`.
 
 ### API use
 
@@ -272,9 +300,9 @@ The same as the app's. The row shows only Card DTO fields from the allowlist-sha
 guarantees are the server's. A test draws the row in every "other household" world of the app tests (a private grant,
 a pending request, a manual grant, a public title outside the household's libraries, large Seerr records) and checks
 the row is byte-for-byte the same as with no other household. It also checks the row for the Seerr fixtures' canaries.
-Another opens the title view and presses **Get this** in each of those worlds and checks that the calls made (address,
-method, body, headers), the view after the confirmation and the row are byte-for-byte the same as with no other
-household, and that the view holds no canary. As in the app's test, every read of the title after the accepted call
+Another opens the title page and presses **Get this** in each of those worlds and checks that the calls made (address,
+method, body, headers), the page after the confirmation and the row are byte-for-byte the same as with no other
+household, and that the page holds no canary. As in the app's test, every read of the title after the accepted call
 gets the same answer there: what the server says afterwards is the server's matter, tested against the API.
 
 As the study noted, Jellyfin web has no CSP of its own and already runs other plugins' scripts on the same origin,
@@ -292,10 +320,11 @@ The answer (or failure) is kept in memory for the signed-in member:
 - **showing Home again after a minute** asks once more, and the old row stays until the new answer replaces it;
 - **another member** signing in drops the row at once and asks with their token.
 
-The title view is `tv-movie` and `tv-series` there: **two calls** each time a card is chosen, the title
+The title page is `tv-movie` and `tv-series` there: **two calls** each time it is opened (a card chosen, or Back from
+Jellyfin's own details page after Play; the address is the same, so the budget file is unchanged), the title
 (`GET /movie/{tmdbId}` or `GET /tv/{tmdbId}`) and `GET /requests`, which are the app's title page's calls without
 `/me` (the TV shows no member name). Nothing is kept between openings, as in the app. `getThis` is what one accepted
-"Get this" makes: the `POST`, then the view read again (those two calls). A failed one is the `POST` alone. Choosing
+"Get this" makes: the `POST`, then the page read again (those two calls). A failed one is the `POST` alone. Choosing
 seasons, Select all, Back and Play call nothing.
 
 `test/tv-addon.test.mjs` pins all of this against the budget file.
@@ -306,12 +335,13 @@ Each step is its own pull request, behind the same settings:
 
 1. **Foundation (done).** Settings, gateway injection, the build, the Home row (Trending). **Row redesigned (done):**
    it is headed **Discover**, shows only titles Available to get (not in the member's library, not Requested), in Jellyfin web's own card markup (study: direction A).
-2. **Title pages and "Get this" (done).** Choosing a card opens a JellyPass title view over Home: a dialog container
-   Jellyfin web's focus manager scopes to, with Back closing it (Tizen `10009`, webOS `461`, as Jellyfin web maps
-   them). It shows the title's household state and **Play** (to Jellyfin web's own `#/details?id=<play.itemId>`, so
-   Jellyfin's TV player plays it), and **Get this** with a season picker for a series. It uses the same
-   identical-outcome flow and fixed wording as the PWA, and the PWA's title-page calls (without `/me`). See "The title
-   view".
+2. **Title pages and "Get this" (done).** Choosing a card opens a JellyPass title page: first an overlay on Home, now (the
+   redesign's step 3) a page of Jellyfin web's own at `#/jellypass/title/<movie|tv>/<tmdbId>` on the page host, so
+   Jellyfin's header, its Back (Tizen `10009`, webOS `461`, as Jellyfin web maps them), its history and its focus
+   manager apply and the add-on handles no key. It shows the title's household state and **Play** (to Jellyfin web's own
+   `#/details?id=<play.itemId>`, so Jellyfin's TV player plays it), and **Get this** with a season picker for a series.
+   It uses the same identical-outcome flow and fixed wording as the PWA, and the PWA's title-page calls (without
+   `/me`). See "The title page".
 3. **Search.** A JellyPass search screen reusing Jellyfin web's search field and the TV's own keyboard, with no custom
    keyboard; one call per pause, as the PWA does.
 4. **My requests.** The household's requests with their coarse statuses, named ten at a time, as the PWA does.
@@ -342,26 +372,28 @@ that household:
 3. **D-pad.** From **My Media**, Down reaches the row, and Left and Right move one card at a time with no double moves
    and no skipped cards. Down leaves the row to the next Home section and Up returns to it. The focused card's ring is
    visible and the row scrolls to keep it on screen. Back on Home does what it did before.
-4. **Choosing a card** (OK) opens the title view over the whole screen, Jellyfin web's header hidden behind it, with
-   focus on Play, Get this or the first season (a ring visible). Up, Down, Left and Right move only between the view's
-   buttons, never to Home behind it, and the focused button scrolls into view on a long series.
-5. **Back.** The remote's Back closes the view (and only the view: Jellyfin web stays on Home, the app doesn't exit)
-   and focus is on the card it came from. Pressed again on Home, Back does what it did before. Check the LG wrapper
-   delivers Back to the page as `keyCode` 461 (with its "back history" setting as the households have it).
+4. **Choosing a card** (OK) opens the title page: Jellyfin web's own header stays at the top with its Back and Home
+   buttons (Up from the page reaches them), the backdrop is behind the whole page, and focus is on Play, Get this or the
+   first season (a ring visible). The d-pad moves between the page's buttons, and the page scrolls to keep the focused
+   button, or a season of a long series, on screen. It is the same with Jellyfin's Backdrops setting off.
+5. **Back.** The remote's Back (it is Jellyfin web's history, not the add-on's) returns to Home and focus is on the
+   card it came from (not the first thing on Home). Pressed again on Home, Back does what it did before. Check the LG
+   wrapper delivers Back to the page as `keyCode` 461 (with its "back history" setting as the households have it).
 6. **Play** opens Jellyfin web's own details page for the title, and playing from there uses Jellyfin's player as
    usual; Back from there returns to Home with the row.
 7. **Get this**, on a test title: "Sending…", then the confirmation; the status and the row's card say Requested; for
    a series, choosing seasons with OK and Select all work by d-pad, and Get this only becomes reachable once a season is
    chosen. Look the title up later in the phone app's My requests.
-8. **Overlay and members.** Requested lasts until the server says so or two minutes pass. Switching profile closes an
-   open view and shows the new member's statuses.
-9. **Playback and keys after the view.** Playback, the media keys and Back are unaffected, in general and right after
-   leaving the row or the view.
+8. **Overlay and members.** Requested lasts until the server says so or two minutes pass. Switching profile leaves the
+   title page and shows the new member's statuses.
+9. **Playback and keys after the page.** Playback, the media keys and Back are unaffected, in general and right after
+   leaving the row or the title page.
 10. **Look.** Cards, poster frames and spacing are right: no zero gaps, no collapsed posters, text legible from the
-   sofa at 1080p; in the view the poster, the text column, the buttons and the season list line up (flex with
-   margins, no `gap`), and the overview is clipped to six lines.
+   sofa at 1080p; on the title page the poster, the text column, the buttons and the season list line up (flex with
+   margins, no `gap`) and the whole overview shows.
 11. **Redraws.** Leaving Home and coming back (after playing something, say) keeps one row, and it re-reads after a
-   minute. Switching profile shows the new member's row. Home redrawn while the view is open keeps focus in the view.
+   minute. Switching profile shows the new member's row. Leaving Home from the row (to a title page, then to a library) and coming
+   back shows Home as Jellyfin web draws it, with no error page.
 12. **Caching.** After the setting is switched off and the app restarted, the row is gone (the page is `no-store`).
 
 On a **Samsung**, nothing appears until step 5, because the sideloaded app bundles its own Jellyfin web. Checking that
@@ -369,5 +401,5 @@ nothing changed there is enough for now. In a desktop browser on the household h
 web, which is the easiest first check.
 
 For Chromium 63 itself (Samsung 2019): once step 5 exists, check that the bundle runs (the ES2017 gate covers syntax,
-not behaviour), focus is visible, the cards' and the title view's layout measures right by geometry (as JellyQuest
-measured its own), and Tizen's Back (`10009`) closes the view.
+not behaviour), focus is visible, the cards' and the title page's layout measures right by geometry (as JellyQuest
+measured its own), and Tizen's Back (`10009`) returns from the title page to Home.

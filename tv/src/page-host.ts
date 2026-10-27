@@ -30,6 +30,13 @@ export interface PageContext {
   container: HTMLElement;
   /** The values of the pattern's `:name` segments, decoded. */
   params: { [name: string]: string };
+  /** Sets Jellyfin's header title (and the document's) once the page knows it; ignored after the page is left. */
+  setTitle(title: string): void;
+  /**
+   * The page has drawn what it focuses on its own: focus goes to what had it when the page was last left (a
+   * `FOCUS_ATTR` key), else to `fallback`; not once the member has pressed anything on this page, whose focus is theirs.
+   */
+  focus(fallback: HTMLElement | null): void;
 }
 
 /** What a page's render function returns. */
@@ -56,6 +63,8 @@ interface Active {
   cleanup: (() => void) | undefined;
   /** Focus is put right again once, after Jellyfin's own `pageshow` work (its auto-focus) is done. */
   focusPending: boolean;
+  /** The member has pressed a key or the pointer on this page: what the page focuses later is not theirs to take. */
+  acted: boolean;
   /** Jellyfin's `data-title` for its page, put back (with the header and document title it implies) when the host leaves. */
   priorTitle: string | null;
   view: PageView;
@@ -161,7 +170,9 @@ export class PageHost {
 
   /** A key or pointer press by the member: from here focus inside the page is theirs, to be remembered. */
   userInput(): void {
-    if (this.active) this.active.focusPending = false;
+    if (!this.active) return;
+    this.active.focusPending = false;
+    this.active.acted = true;
   }
 
   /** Jellyfin web's `pageshow` on its page (its own work, auto-focus included, is done after this): focus is put right. */
@@ -195,14 +206,28 @@ export class PageHost {
     page.appendChild(container);
     let view: PageView;
     try {
-      view = route.render({ document: this.document, container, params });
+      view = route.render({
+        document: this.document,
+        container,
+        params,
+        setTitle: (title) => {
+          const now = this.active;
+          if (now && now.container === container) this.setTitle(now.page, title);
+        },
+        focus: (fallback) => {
+          const now = this.active;
+          if (!now || now.container !== container) return;
+          now.view.focus = fallback;
+          if (!now.acted) this.restoreFocus(now);
+        },
+      });
     } catch {
       container.remove();
       this.failed = { hash, page };
       this.hosting(false);
       return;
     }
-    const active: Active = { hash, page, container, cleanup: view.cleanup, focusPending: true, priorTitle: page.getAttribute('data-title'), view };
+    const active: Active = { hash, page, container, cleanup: view.cleanup, focusPending: true, acted: false, priorTitle: page.getAttribute('data-title'), view };
     this.active = active;
     this.setTitle(page, view.title);
     this.restoreFocus(active);
