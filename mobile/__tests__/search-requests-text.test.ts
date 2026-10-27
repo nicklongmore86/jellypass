@@ -8,12 +8,14 @@ import type { Request } from '../src/api/types';
 import {
   kindText,
   REQUEST_TITLE_CALLS,
-  requestFailed,
   requestMeta,
   requestName,
+  requestNoteHere,
+  requestPills,
   REQUESTS_PER_PAGE,
   REQUESTS_TEXT,
   requestSeasonName,
+  requestSeasonsText,
   requestTitleText,
   whoText,
 } from '../src/requests/text';
@@ -53,6 +55,60 @@ describe("Search's and My requests' words", () => {
     expect(render).toContain("entry.mediaType === 'tv' ? 'Series' : 'Movie'");
     expect([requestSeasonName(3), kindText('tv'), kindText('movie')]).toEqual(['Season 3', 'Series', 'Movie']);
     expect([whoText({ byYou: true }), whoText({ byYou: false })]).toEqual([REQUESTS_TEXT.byYou, REQUESTS_TEXT.byOther]);
+  });
+
+  it("says a series request's seasons, and where its status pills go, as the PWA does", () => {
+    // The PWA's requestSeasonsText() and requestPills(), line for line.
+    for (const line of [
+      'if (sorted.length === 1) return `Season ${sorted[0]}`;',
+      'if (end - start >= 2) parts.push(`${sorted[start]}–${sorted[end]}`);',
+      'return `Seasons ${parts.join(\', \')}`;',
+      'if (shared.size === 1) return { status: entry.seasons[0]?.status, seasonsText: requestSeasonsText(entry.seasons.map((season) => season.seasonNumber)), perSeason: false };',
+      "return { status: undefined, seasonsText: '', perSeason: true };",
+      "const noteHere = pills.status ? pills.status === 'failed' : entry.status === 'failed' && !entry.seasons.some((season) => season.status === 'failed');",
+      "const kind = [entry.mediaType === 'tv' ? 'Series' : 'Movie', pills.seasonsText].filter(Boolean).join(' · ');",
+    ]) {
+      expect({ line, inPwa: render.includes(line) }).toEqual({ line, inPwa: true });
+    }
+    expect([requestSeasonsText([1]), requestSeasonsText([1, 2]), requestSeasonsText([3, 1, 2]), requestSeasonsText([1, 3]), requestSeasonsText([5, 1, 2, 3, 7, 8])]).toEqual([
+      'Season 1',
+      'Seasons 1, 2',
+      'Seasons 1–3',
+      'Seasons 1, 3',
+      'Seasons 1–3, 5, 7, 8',
+    ]);
+    expect(requestPills({ status: 'ready', seasons: [] })).toEqual({ status: 'ready', seasonsText: '', perSeason: false });
+    expect(requestPills({ status: 'requested', seasons: [{ seasonNumber: 2, status: 'requested' }] })).toEqual({ status: 'requested', seasonsText: 'Season 2', perSeason: false });
+    expect(requestPills({ status: 'requested', seasons: [{ seasonNumber: 1, status: 'ready' }, { seasonNumber: 2, status: 'failed' }] })).toEqual({
+      status: undefined,
+      seasonsText: '',
+      perSeason: true,
+    });
+  });
+
+  it("puts a series request's status where the PWA does at the edges", () => {
+    // The seasons' shared status is the pill, not the request's own overall status.
+    expect(requestPills({ status: 'requested', seasons: [1, 2].map((seasonNumber) => ({ seasonNumber, status: 'ready' as const })) })).toEqual({
+      status: 'ready',
+      seasonsText: 'Seasons 1, 2',
+      perSeason: false,
+    });
+    expect(requestPills({ status: 'failed', seasons: [{ seasonNumber: 4, status: 'requested' }] })).toEqual({ status: 'requested', seasonsText: 'Season 4', perSeason: false });
+    // A season listed twice is said once; listed twice with two statuses, each keeps its pill.
+    expect(requestSeasonsText([2, 1, 2, 1])).toBe('Seasons 1, 2');
+    expect(requestPills({ status: 'ready', seasons: [{ seasonNumber: 1, status: 'ready' }, { seasonNumber: 1, status: 'ready' }] })).toEqual({
+      status: 'ready',
+      seasonsText: 'Season 1',
+      perSeason: false,
+    });
+    expect(requestPills({ status: 'ready', seasons: [{ seasonNumber: 1, status: 'ready' }, { seasonNumber: 1, status: 'failed' }] }).perSeason).toBe(true);
+    // Season 0 (specials) is a season like any other.
+    expect([requestSeasonsText([0]), requestSeasonsText([0, 1, 2]), requestSeasonsText([0, 2])]).toEqual(['Season 0', 'Seasons 0–2', 'Seasons 0, 2']);
+    // A long list stays one line of runs.
+    const many = Array.from({ length: 40 }, (_, index) => index + 1);
+    expect(requestSeasonsText(many)).toBe('Seasons 1–40');
+    expect(requestSeasonsText(many.filter((number) => number % 10 !== 0))).toBe('Seasons 1–9, 11–19, 21–29, 31–39');
+    expect(requestPills({ status: 'ready', seasons: many.map((seasonNumber) => ({ seasonNumber, status: 'ready' as const })) }).seasonsText).toBe('Seasons 1–40');
   });
 });
 
@@ -106,11 +162,25 @@ describe("a request's text", () => {
     expect([requestMeta('movie', named), requestMeta('tv', { status: 'loading' })]).toEqual(['2021 · Movie', 'Series']);
   });
 
-  it('names an entry with everything it shows, once, and the admin note only where something failed', () => {
+  it('names an entry with everything it shows, each status once, and the admin note only where something failed', () => {
     expect(requestName(film, named)).toBe('Dune, 2021 · Movie, Ready to watch, Asked for by someone in your household');
+    // Seasons that differ: each with its status, none for the entry, the note after the one that failed.
     expect(requestName(series, { status: 'missing' })).toBe(
-      "Title unavailable, Series, Requested, Asked for by you, Season 1: Ready to watch, Season 2: We couldn't get this, Ask your JellyPass admin to try again.",
+      "Title unavailable, Series, Asked for by you, Season 1: Ready to watch, Season 2: We couldn't get this, Ask your JellyPass admin to try again.",
     );
-    expect([requestFailed(film), requestFailed(series), requestFailed({ status: 'failed', seasons: [] })]).toEqual([false, true, true]);
+    expect(requestName({ ...series, seasons: [{ seasonNumber: 2, status: 'failed' }, { seasonNumber: 3, status: 'requested' }] }, named)).toBe(
+      "Dune, 2021 · Series, Asked for by you, Season 2: We couldn't get this, Ask your JellyPass admin to try again., Season 3: Requested",
+    );
+    // One season, or seasons sharing one status: on the meta line, one status.
+    const show = { status: 'loaded', title: { title: 'Show', year: 2027, posterUrl: null } } as const;
+    expect(requestName({ ...series, seasons: [{ seasonNumber: 1, status: 'requested' }] }, show)).toBe('Show, 2027 · Series · Season 1, Requested, Asked for by you');
+    expect(requestName({ ...series, status: 'ready', seasons: [1, 2, 3].map((seasonNumber) => ({ seasonNumber, status: 'ready' as const })) }, show)).toBe(
+      'Show, 2027 · Series · Seasons 1–3, Ready to watch, Asked for by you',
+    );
+    expect(requestName({ ...series, status: 'failed', seasons: [1, 3].map((seasonNumber) => ({ seasonNumber, status: 'failed' as const })) }, { status: 'loading' })).toBe(
+      "Loading title…, Series · Seasons 1, 3, We couldn't get this, Asked for by you, Ask your JellyPass admin to try again.",
+    );
+    expect(requestMeta('tv', show, 'Season 1')).toBe('2027 · Series · Season 1');
+    expect([requestNoteHere(film), requestNoteHere(series), requestNoteHere({ status: 'failed', seasons: [] })]).toEqual([false, false, true]);
   });
 });

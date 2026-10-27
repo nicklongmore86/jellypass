@@ -48,7 +48,14 @@ is not supported.
   every card elsewhere, before the server's own answer catches up. Kept in
   memory only, for two minutes at most, and cleared on any sign-out.
 - **Search** for movies and series as you type, with **Load more**.
-- **My requests**: the household's requests and their status.
+- **My requests**: the household's requests and their status, one status
+  pill per request, as in the household web app. A request for one season
+  says the season on the line under the title (`2027 · Series · Season 1`).
+  When several seasons share one status, the request shows one pill and lists
+  them there as text (`Seasons 1–3`, `Seasons 1, 3`); when their statuses
+  differ, each season has its own pill and the request shows none. Each
+  entry's screen-reader name says every status once, and the admin note
+  follows what did not work out (the season, when seasons differ).
 - **Account**: the member and household, **Sign out**, **Change household**,
   About & credits (TMDB and JustWatch), the app's version and build number,
   and the household's API version.

@@ -67,6 +67,10 @@ const thumbnails = () =>
     const images = within(item).queryAllByTestId('tmdb-image', { includeHiddenElements: true });
     return images.length ? String(images[0]!.props.source?.uri) : '';
   });
+const inItems = (count: (item: ReturnType<typeof screen.queryAllByTestId>[number]) => number) => screen.queryAllByTestId('request-item').map(count);
+const chipCounts = () => inItems((item) => within(item).queryAllByTestId('status-chip', { includeHiddenElements: true }).length);
+const seasonRows = () => inItems((item) => within(item).queryAllByTestId('request-season', { includeHiddenElements: true }).length);
+const notes = () => inItems((item) => within(item).queryAllByText(GET_THIS_TEXT.failedNote, { includeHiddenElements: true }).length);
 const titleCalls = (routes: readonly string[]) => routes.filter((route) => /\/(movie|tv)\/\d+$/.test(route));
 const tabSelected = () =>
   screen
@@ -75,7 +79,7 @@ const tabSelected = () =>
     .map((node) => String(node.props.accessibilityLabel));
 
 const SERIES_NAME =
-  "Series 900002, 2023 · Series, Requested, Asked for by you, Season 1: Ready to watch, Season 2: We couldn't get this, Ask your JellyPass admin to try again.";
+  "Series 900002, 2023 · Series, Asked for by you, Season 1: Ready to watch, Season 2: We couldn't get this, Ask your JellyPass admin to try again.";
 const FILM_NAME = 'Film 900001, 2024 · Movie, Ready to watch, Asked for by someone in your household';
 
 describe('the list', () => {
@@ -87,9 +91,44 @@ describe('the list', () => {
     for (const text of ['Series 900002', '2023 · Series', 'Asked for by you', 'Season 1', 'Season 2', 'Asked for by someone in your household']) {
       expect({ text, shown: shows(text, { hidden: true }) }).toEqual({ text, shown: true });
     }
-    // A chip for each request and each of the series' seasons.
+    // The series' seasons differ: a chip for each of them and none for the series; one for the film.
     const list = only(screen.queryAllByTestId('request-list'), 'list');
-    expect(within(list).queryAllByTestId('status-chip', { includeHiddenElements: true })).toHaveLength(4);
+    expect(within(list).queryAllByTestId('status-chip', { includeHiddenElements: true })).toHaveLength(3);
+    expect(seasonRows()).toEqual([2, 0]);
+  });
+
+  it('shows one chip for a series of one season, with the season on the meta line and no season row', async () => {
+    useHousehold({ requests: { results: [requestEntry('s', 'tv', 900002, 'requested', { seasons: [{ seasonNumber: 1, status: 'requested' }] })] } });
+    await openRequests();
+    expect(entries()).toEqual(['Series 900002, 2023 · Series · Season 1, Requested, Asked for by you']);
+    expect(shows('2023 · Series · Season 1', { hidden: true })).toBe(true);
+    expect(chipCounts()).toEqual([1]);
+    expect(seasonRows()).toEqual([0]);
+  });
+
+  it('shows one chip and the seasons as text when they share a status, and a chip per season only when they differ', async () => {
+    const seasons = (numbers: number[], status: string) => numbers.map((seasonNumber) => ({ seasonNumber, status }));
+    useHousehold({
+      requests: {
+        results: [
+          requestEntry('a', 'tv', 900002, 'ready', { seasons: seasons([1, 2, 3], 'ready') }),
+          requestEntry('b', 'tv', 900003, 'failed', { seasons: seasons([1, 3], 'failed') }),
+          requestEntry('c', 'tv', 900004, 'requested', { seasons: [...seasons([1], 'ready'), ...seasons([2], 'requested'), ...seasons([3], 'failed')] }),
+        ],
+      },
+    });
+    await openRequests();
+    expect(entries()).toEqual([
+      'Series 900002, 2023 · Series · Seasons 1–3, Ready to watch, Asked for by you',
+      `Series 900003, 2023 · Series · Seasons 1, 3, We couldn't get this, Asked for by you, ${GET_THIS_TEXT.failedNote}`,
+      `Series 900004, 2023 · Series, Asked for by you, Season 1: Ready to watch, Season 2: Requested, Season 3: We couldn't get this, ${GET_THIS_TEXT.failedNote}`,
+    ]);
+    expect(chipCounts()).toEqual([1, 1, 3]);
+    expect(seasonRows()).toEqual([0, 0, 3]);
+    expect(notes()).toEqual([0, 1, 1]);
+    // The failed season's own row carries the note.
+    const rows = within(screen.queryAllByTestId('request-item')[2]!).queryAllByTestId('request-season', { includeHiddenElements: true });
+    expect(rows.map((row) => within(row).queryAllByText(GET_THIS_TEXT.failedNote, { includeHiddenElements: true }).length)).toEqual([0, 0, 1]);
   });
 
   it('shows TMDB\'s poster as each thumbnail, and nothing from anywhere else', async () => {
@@ -112,7 +151,7 @@ describe('the list', () => {
       },
     });
     const { since } = await openRequests();
-    expect(entries()[0]!.startsWith('Title unavailable, Series, Requested')).toBe(true);
+    expect(entries()[0]!.startsWith('Title unavailable, Series, Asked for by you, Season 1: Ready to watch')).toBe(true);
     expect(entries()[1]!.startsWith('Loading title…, Movie, Ready to watch')).toBe(true);
     await act(async () => releaseFilm());
     await settle();
