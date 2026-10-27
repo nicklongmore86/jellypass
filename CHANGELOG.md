@@ -33,13 +33,16 @@ admin UI, the household app and the TV add-on are unchanged. Read these before
 upgrading:
 
 - **No CDN purge is needed:** none of the household app's or the TV add-on's
-  files and nothing Jellyfin's own web client loads changed, and the new
+  source files and nothing Jellyfin's own web client loads changed (only the
+  embedded version number differs in the built app), and the new
   refusals and narrowed listings are answered `Cache-Control: no-store`.
 - **Clients may notice these changes, on household hostnames only:**
   - A token from one household's hostname, or from the main Jellyfin site, no
-    longer works on another household's hostname: every request with it gets
-    `401 {"error":"unauthorized"}`, so a client that kept such a token must
-    sign in again on that hostname. Members using their own household's
+    longer works on another household's hostname: requests relayed to
+    Jellyfin with it get `401 {"error":"unauthorized"}` (routes that name an
+    item or user keep their `404`; the sign-in screen's own calls are
+    unaffected), so a client that kept such a token must sign in again on that
+    hostname. Members using their own household's
     hostname, and anyone using the main Jellyfin site, are not affected.
   - A sign-out (`POST /Sessions/Logout`) with no token, or with a token that is
     not one of the household's members', gets `401 {"error":"unauthorized"}`
