@@ -908,7 +908,7 @@ export function requestSeasonsText(numbers: readonly number[]): string {
 /**
  * Where a request shows its status, so it is shown once: one pill for the entry (a movie, a series of one season, or
  * seasons that all share one status, listed as text on the meta line), or else one pill per season and none for the
- * entry.
+ * entry. When the seasons share a status, that status is the pill, even if the request's own overall status differs.
  */
 export function requestPills(entry: Pick<RequestEntry, 'status' | 'seasons'>): { status: CoarseStatus | undefined; seasonsText: string; perSeason: boolean } {
   const shared = new Set(entry.seasons.map((season) => season.status));

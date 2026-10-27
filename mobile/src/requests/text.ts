@@ -67,7 +67,8 @@ export function requestSeasonsText(numbers: readonly number[]): string {
 /**
  * Where a request shows its status, so it is shown once (the PWA's requestPills()): one pill for the entry (a movie, a
  * series of one season, or seasons that all share one status, listed as text on the meta line), or else one pill per
- * season and none for the entry.
+ * season and none for the entry. When the seasons share a status, that status is the pill, even if the request's own
+ * overall status differs.
  */
 export function requestPills(request: Pick<Request, 'status' | 'seasons'>): { status: CoarseStatus | undefined; seasonsText: string; perSeason: boolean } {
   const shared = new Set(request.seasons.map((season) => season.status));
@@ -87,11 +88,6 @@ export function requestNoteHere(request: Pick<Request, 'status' | 'seasons'>): b
 
 function statusText(status: CoarseStatus): string {
   return REQUEST_LABELS[status] ?? REQUEST_LABELS.requested;
-}
-
-/** Whether any part of a request did not work out: it shows the admin note, and nothing to press. */
-export function requestFailed(request: Pick<Request, 'status' | 'seasons'>): boolean {
-  return request.status === 'failed' || request.seasons.some((season) => season.status === 'failed');
 }
 
 /**

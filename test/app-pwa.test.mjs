@@ -1615,6 +1615,36 @@ describe('household app page: rendering', () => {
       assert.deepEqual(requestPills({ status: 'requested', seasons: [{ seasonNumber: 1, status: 'ready' }, { seasonNumber: 2, status: 'failed' }] }), { status: undefined, seasonsText: '', perSeason: true });
     });
 
+    it('puts a series request\'s status pill sensibly at the edges: overall status, duplicates, season 0, many seasons', async () => {
+      const { document, requestItem, requestSeasonsText, requestPills } = await renderer();
+      const base = { id: 'opaqueidopaqueidopaqueid', mediaType: 'tv', tmdbId: 900002, byYou: true };
+      const pills = (item) => [...item.querySelectorAll('.badge')].map((badge) => badge.textContent);
+      // The seasons' shared status is the pill, not the request's own overall status.
+      const overall = requestItem(document, { ...base, status: 'requested', seasons: [1, 2].map((seasonNumber) => ({ seasonNumber, status: 'ready' })) });
+      assert.deepEqual(pills(overall), ['Ready to watch']);
+      assert.equal(overall.querySelector('.card-meta').textContent, 'Series · Seasons 1, 2');
+      const notFailed = requestItem(document, { ...base, status: 'failed', seasons: [{ seasonNumber: 4, status: 'requested' }] });
+      assert.deepEqual(pills(notFailed), ['Requested']);
+      assert.equal(notFailed.querySelectorAll('.failed-note').length, 0);
+      // A season listed twice is said once; listed twice with two statuses, each keeps its pill.
+      assert.equal(requestSeasonsText([2, 1, 2, 1]), 'Seasons 1, 2');
+      const twice = requestItem(document, { ...base, status: 'ready', seasons: [{ seasonNumber: 1, status: 'ready' }, { seasonNumber: 1, status: 'ready' }] });
+      assert.deepEqual(pills(twice), ['Ready to watch']);
+      assert.equal(twice.querySelector('.card-meta').textContent, 'Series · Season 1');
+      assert.equal(requestPills({ status: 'ready', seasons: [{ seasonNumber: 1, status: 'ready' }, { seasonNumber: 1, status: 'failed' }] }).perSeason, true);
+      // Season 0 (specials) is a season like any other.
+      assert.deepEqual([requestSeasonsText([0]), requestSeasonsText([0, 1, 2]), requestSeasonsText([0, 2])], ['Season 0', 'Seasons 0–2', 'Seasons 0, 2']);
+      const specials = requestItem(document, { ...base, status: 'requested', seasons: [{ seasonNumber: 0, status: 'requested' }] });
+      assert.equal(specials.querySelector('.card-meta').textContent, 'Series · Season 0');
+      // A long list stays one line of runs, under one pill.
+      const many = Array.from({ length: 40 }, (_, index) => index + 1);
+      assert.equal(requestSeasonsText(many), 'Seasons 1–40');
+      assert.equal(requestSeasonsText(many.filter((number) => number % 10 !== 0)), 'Seasons 1–9, 11–19, 21–29, 31–39');
+      const long = requestItem(document, { ...base, status: 'ready', seasons: many.map((seasonNumber) => ({ seasonNumber, status: 'ready' })) });
+      assert.deepEqual(pills(long), ['Ready to watch']);
+      assert.equal(long.querySelector('.card-meta').textContent, 'Series · Seasons 1–40');
+    });
+
     it('shows no Seerr ID, name, count, date or progress anywhere in the new markup', async () => {
       const { document, titleDetail, seasonView, requestItem, setRequestTitle } = await renderer();
       const traps = ['canary', 'seerr', 'opaqueidopaqueidopaqueid', '7300', 'jellyseerr'];

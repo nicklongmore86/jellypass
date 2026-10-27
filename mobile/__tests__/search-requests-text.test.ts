@@ -8,7 +8,6 @@ import type { Request } from '../src/api/types';
 import {
   kindText,
   REQUEST_TITLE_CALLS,
-  requestFailed,
   requestMeta,
   requestName,
   requestNoteHere,
@@ -86,6 +85,31 @@ describe("Search's and My requests' words", () => {
       perSeason: true,
     });
   });
+
+  it("puts a series request's status where the PWA does at the edges", () => {
+    // The seasons' shared status is the pill, not the request's own overall status.
+    expect(requestPills({ status: 'requested', seasons: [1, 2].map((seasonNumber) => ({ seasonNumber, status: 'ready' as const })) })).toEqual({
+      status: 'ready',
+      seasonsText: 'Seasons 1, 2',
+      perSeason: false,
+    });
+    expect(requestPills({ status: 'failed', seasons: [{ seasonNumber: 4, status: 'requested' }] })).toEqual({ status: 'requested', seasonsText: 'Season 4', perSeason: false });
+    // A season listed twice is said once; listed twice with two statuses, each keeps its pill.
+    expect(requestSeasonsText([2, 1, 2, 1])).toBe('Seasons 1, 2');
+    expect(requestPills({ status: 'ready', seasons: [{ seasonNumber: 1, status: 'ready' }, { seasonNumber: 1, status: 'ready' }] })).toEqual({
+      status: 'ready',
+      seasonsText: 'Season 1',
+      perSeason: false,
+    });
+    expect(requestPills({ status: 'ready', seasons: [{ seasonNumber: 1, status: 'ready' }, { seasonNumber: 1, status: 'failed' }] }).perSeason).toBe(true);
+    // Season 0 (specials) is a season like any other.
+    expect([requestSeasonsText([0]), requestSeasonsText([0, 1, 2]), requestSeasonsText([0, 2])]).toEqual(['Season 0', 'Seasons 0–2', 'Seasons 0, 2']);
+    // A long list stays one line of runs.
+    const many = Array.from({ length: 40 }, (_, index) => index + 1);
+    expect(requestSeasonsText(many)).toBe('Seasons 1–40');
+    expect(requestSeasonsText(many.filter((number) => number % 10 !== 0))).toBe('Seasons 1–9, 11–19, 21–29, 31–39');
+    expect(requestPills({ status: 'ready', seasons: many.map((seasonNumber) => ({ seasonNumber, status: 'ready' as const })) }).seasonsText).toBe('Seasons 1–40');
+  });
 });
 
 describe("Search's sizes", () => {
@@ -157,7 +181,6 @@ describe("a request's text", () => {
       "Loading title…, Series · Seasons 1, 3, We couldn't get this, Asked for by you, Ask your JellyPass admin to try again.",
     );
     expect(requestMeta('tv', show, 'Season 1')).toBe('2027 · Series · Season 1');
-    expect([requestFailed(film), requestFailed(series), requestFailed({ status: 'failed', seasons: [] })]).toEqual([false, true, true]);
     expect([requestNoteHere(film), requestNoteHere(series), requestNoteHere({ status: 'failed', seasons: [] })]).toEqual([false, false, true]);
   });
 });
