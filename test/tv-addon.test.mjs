@@ -573,6 +573,35 @@ describe('TV add-on: the title view and "Get this"', { timeout: 120_000 }, () =>
     assert.ok(css.includes('.jellypass-tv-title-button:focus') && css.includes('.jellypass-tv-title-season-pick:focus'));
   });
 
+  it('colours each status by its state: no rule for every status, later in the stylesheet, outweighs the state\'s colour', () => {
+    const css = readFileSync(path.join(DIST_TV, STYLESHEET), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const rules = [...css.matchAll(/([^{}@]+)\{([^{}]*)\}/g)].flatMap(([, selectors, body], order) => selectors.split(',').map((selector) => ({ selector: selector.trim(), body, order })));
+    // The colour the cascade gives an element: the most specific matching rule (selectors here are classes only), then the last.
+    const colour = (element) => {
+      const winner = rules
+        .filter(({ selector, body }) => /(?:^|;|\s)color:/.test(body) && !/:/.test(selector) && element.matches(selector))
+        .map(({ selector, body, order }) => ({ weight: (selector.match(/\./g) ?? []).length, order, value: /(?:^|;|\s)color:\s*([^;]+)/.exec(body)[1].trim() }))
+        .sort((a, b) => a.weight - b.weight || a.order - b.order)
+        .pop();
+      return winner ? winner.value : null;
+    };
+    const { document } = parseHTML('<html><body><div class="jellypass-tv-title-view"><div class="jellypass-tv-title-text"></div><div class="jellypass-tv-title-season"></div></div></body></html>');
+    const states = { in_library: '#7fe0a0', get_this: '#35b8e8', requested: '#f2c35b', unavailable: '#a9bad8', failed: '#ff9b8f' };
+    const found = {};
+    const expected = {};
+    for (const where of ['.jellypass-tv-title-text', '.jellypass-tv-title-season']) {
+      for (const [state, value] of Object.entries(states)) {
+        const status = document.createElement('span');
+        status.className = `jellypass-tv-title-status jellypass-tv-title-status-${state}`;
+        document.querySelector(where).appendChild(status);
+        found[`${where} ${state}`] = colour(status);
+        expected[`${where} ${state}`] = value;
+      }
+    }
+    // Strings only: the colours found against the state's own.
+    assert.deepEqual(found, expected);
+  });
+
   it('names the view and the row apart: no class is on both, each keeps to its own prefix, and no rule for one reaches the other', async (t) => {
     const app = await startApp(t, webWorld(), tvOn());
     const page = await atHome(t, app);
@@ -1038,6 +1067,48 @@ describe('TV add-on: the title view and "Get this"', { timeout: 120_000 }, () =>
     assert.equal(text(page, '.jellypass-tv-title-status'), 'Requested');
     assert.equal(page.posts().length, 1);
     await app.background.settled();
+  });
+
+  it('still lets Requested run out on a view whose read after an accepted Get this failed, with no call, keeping the note and the retry', async (t) => {
+    const app = await startHeld(t);
+    let posts = 0;
+    let broken = true;
+    const page = await atHome(t, app, {
+      override: (pathname, init) => {
+        if (init.method === 'POST') { posts += 1; return undefined; }
+        return posts >= 2 && broken && pathname === `/jellypass/app/v1/tv/${T_TV}` ? { status: 502, body: '{"error":"canary upstream text"}' } : undefined;
+      },
+    });
+    await choose(page, T_TV);
+    const toggles = () => [...page.view().querySelectorAll('.jellypass-tv-title-season-pick')];
+    const [first, second] = toggles().map((toggle) => Number(toggle.getAttribute('data-season')));
+    // Each season's status by its place in the list (a season asked for is no longer a toggle with data-season).
+    const order = (await app.get(`/jellypass/app/v1/tv/${T_TV}`)).json().seasons.map((season) => season.seasonNumber);
+    const seasonStatuses = () => [first, second].map((season) => page.view().querySelectorAll('.jellypass-tv-title-season')[order.indexOf(season)].querySelector('.jellypass-tv-title-status').textContent);
+    page.click(page.view().querySelector(`[data-season="${first}"]`));
+    page.click(page.view().querySelector('.jellypass-tv-title-get'));
+    await page.settled();
+    page.click(page.view().querySelector(`[data-season="${second}"]`));
+    page.click(page.view().querySelector('.jellypass-tv-title-get'));
+    await page.settled();
+    assert.equal(posts, 2);
+    assert.equal(text(page, '.jellypass-tv-title-refresh'), 'Something went wrong. Try again in a moment.');
+    assert.deepEqual(seasonStatuses(), ['Requested', 'Available to get'], 'the view as drawn before the second was sent');
+    const before = page.requests.length;
+    page.advance(120_000);
+    // Both seasons' Requested have run out: the view says what the server last said, drawn again with no call.
+    assert.deepEqual(seasonStatuses(), ['Available to get', 'Available to get']);
+    assert.equal(page.card(T_TV).querySelector('.jellypass-tv-card-status').textContent, 'Available to get');
+    assert.equal(text(page, '.jellypass-tv-title-message'), CONFIRMATION);
+    assert.equal(text(page, '.jellypass-tv-title-refresh'), 'Something went wrong. Try again in a moment.');
+    assert.deepEqual(buttons(page), ['Back', 'Try again'], 'nothing that sends');
+    lacks(page.view().outerHTML, /canary|upstream/i);
+    assert.equal(page.requests.length, before, 'no call');
+    broken = false;
+    page.click(page.view().querySelector('.jellypass-tv-title-retry'));
+    await page.settled();
+    assert.deepEqual(page.calls(before), BUDGET.screens['tv-series'].atOnce, 'the retry only reads');
+    assert.equal(posts, 2);
   });
 
   it('shows a fixed error when the title can\'t be read, with a retry that reads it again; a refused token says sign in and forgets the overlay', async (t) => {

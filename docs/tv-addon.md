@@ -189,7 +189,9 @@ flowchart LR
   dropped as soon as the server says anything but `get_this` for it. As in the app it runs on both clocks: it ends when
   the monotonic clock has run two minutes or the wall clock has moved forward by that much (a TV asleep), and a wall
   clock set back never stretches it. On a view or row left alone it ends by a timer (at most 15 seconds between looks
-  at the clocks) that draws the statuses again from what is held, with no call. It is kept in memory for the member
+  at the clocks) that draws the statuses again from what is held, with no call; a view whose read after an accepted
+  "Get this" failed is drawn again from the answer it showed before that call, keeping the confirmation and its
+  **Try again**, and offering nothing that sends. It is kept in memory for the member
   signed in: another member signing in, signing out, or a refused token (`401`, on the title read or the requests
   read, each judged on its own) forgets all of it, and the view closes or says sign in. Nothing is stored or sent.
 - **Same origin only.** Every call is made as the row's are (below), with the token read from `ApiClient` for that one

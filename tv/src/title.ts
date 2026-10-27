@@ -115,6 +115,8 @@ interface Drawn {
   found: Title;
   failed: number[];
   confirmed: boolean;
+  /** Drawn with the note and retry of an accepted "Get this" whose view could not be read again. */
+  refreshFailed: boolean;
   /** The statuses drawn (the title's, then each season's), to tell whether the overlay now shows otherwise. */
   shown: string;
 }
@@ -123,6 +125,7 @@ interface Drawn {
 interface Kept {
   focus: Element | undefined;
   picked: number[];
+  refreshFailed: boolean;
 }
 
 /** The classes that name a button (or the message) in the view, for finding its new self after a redraw. */
@@ -200,7 +203,7 @@ export class TitleView {
     if (!open || !drawn || this.#shown(drawn.found) === drawn.shown) return;
     const picked = Array.prototype.slice.call(open.body.querySelectorAll('.jellypass-tv-title-season-pick[aria-pressed="true"]')) as Element[];
     const focus = open.lastFocus && open.body.contains(open.lastFocus) ? open.lastFocus : undefined;
-    this.#draw(open, drawn.found, drawn.failed, drawn.confirmed, { focus, picked: picked.map((toggle) => Number(toggle.getAttribute('data-season'))) });
+    this.#draw(open, drawn.found, drawn.failed, drawn.confirmed, { focus, picked: picked.map((toggle) => Number(toggle.getAttribute('data-season'))), refreshFailed: drawn.refreshFailed });
   }
 
   /** The statuses the overlay gives a title and its seasons now, as `Drawn.shown`. */
@@ -269,9 +272,10 @@ export class TitleView {
 
   /**
    * Reads the title and the household's requests (for a failed request's note) together, then draws it. After an
-   * accepted "Get this" (`confirmed`), the confirmation stays whatever the read does.
+   * accepted "Get this" (`confirmed`), the confirmation stays whatever the read does, and `before` (what the view was
+   * drawn from when it was sent) is what a Requested running out draws it again from if the read fails.
    */
-  #load(open: Open, session: Session, confirmed: boolean): void {
+  #load(open: Open, session: Session, confirmed: boolean, before?: Drawn): void {
     const load = ++this.#loads;
     open.load = load;
     if (!confirmed) open.drawn = undefined;
@@ -296,7 +300,7 @@ export class TitleView {
       const refused = (!answer.ok && answer.status === 401) || (!failed.ok && failed.status === 401);
       if (refused) this.#forget();
       if (!answer.ok || refused) {
-        if (confirmed) this.#refreshFailed(open, refused);
+        if (confirmed) this.#refreshFailed(open, refused, before);
         else this.#error(open, refused ? 'unauthorized' : kindOf(answer as Failure));
         return;
       }
@@ -327,12 +331,20 @@ export class TitleView {
     this.#focus(open, retry ?? open.body.querySelector('.jellypass-tv-title-back'));
   }
 
-  /** After an accepted "Get this" whose view could not be read again: the confirmation stays, with a retry that only reads. */
-  #refreshFailed(open: Open, refused: boolean): void {
-    open.drawn = undefined;
+  /**
+   * After an accepted "Get this" whose view could not be read again: the confirmation stays, with a retry that only
+   * reads. A Requested running out still draws it again, from the answer it was drawn from before (`before`, with what it
+   * shows now), keeping the confirmation and the retry; not after a refused token, whose overlay is gone.
+   */
+  #refreshFailed(open: Open, refused: boolean, before: Drawn | undefined): void {
+    open.drawn = before && !refused ? { found: before.found, failed: before.failed, confirmed: true, refreshFailed: true, shown: before.shown } : undefined;
     const message = open.body.querySelector('.jellypass-tv-title-message');
     const box = message ? message.parentNode : null;
     if (!box || open.body.querySelector('.jellypass-tv-title-refresh')) return;
+    this.#refreshNote(open, box, refused);
+  }
+
+  #refreshNote(open: Open, box: Node, refused: boolean): void {
     box.appendChild(this.#el('p', 'jellypass-tv-title-note jellypass-tv-title-refresh', refused ? ERROR_TEXT.unauthorized.body : TITLE_TEXT.refreshFailed));
     if (refused) return;
     const retry = this.#button('jellypass-tv-title-retry', TITLE_TEXT.tryAgain);
@@ -373,7 +385,9 @@ export class TitleView {
     const seasonChoices = found.mediaType === 'tv'
       ? seasons.filter((season) => season.state === 'get_this' && season.seasonNumber >= 1 && askedHere.indexOf(season.seasonNumber) < 0 && !isFailed(season.seasonNumber, season.state))
       : [];
-    const canGet = movieChoice || seasonChoices.length > 0;
+    // After an accepted "Get this" whose view could not be read again, nothing here sends until Try again reads it.
+    const refreshFailed = kept !== undefined && kept.refreshFailed;
+    const canGet = !refreshFailed && (movieChoice || seasonChoices.length > 0);
 
     const parts: HTMLElement[] = [];
     if (found.backdropUrl) {
@@ -428,6 +442,7 @@ export class TitleView {
     actionBox.appendChild(actions);
     if (hint) actionBox.appendChild(hint);
     actionBox.appendChild(message);
+    if (refreshFailed) this.#refreshNote(open, actionBox, false);
     text.appendChild(actionBox);
     if (found.overview) text.appendChild(this.#el('p', 'jellypass-tv-title-overview', found.overview));
     main.appendChild(text);
@@ -472,7 +487,7 @@ export class TitleView {
 
     if (get) this.#wireGetThis(open, found, { get, hint, message, toggles, selectAll, picking });
     this.#fill(open, parts);
-    open.drawn = { found, failed, confirmed, shown: [state].concat(seasons.map((season) => season.state)).join(' ') };
+    open.drawn = { found, failed, confirmed, refreshFailed, shown: [state].concat(seasons.map((season) => season.state)).join(' ') };
     const again = kept && kept.focus ? this.#same(open, kept.focus) : null;
     if (again) this.#focus(open, again);
     else if (confirmed) this.#focus(open, message);
@@ -560,7 +575,7 @@ export class TitleView {
           for (const node of [get, hint, selectAll]) if (node && node.parentNode) node.parentNode.removeChild(node);
           for (const toggle of toggles) toggle.setAttribute('aria-pressed', 'false');
           this.#focus(open, message);
-          if (now && now.userId === open.userId) this.#load(open, now, true);
+          if (now && now.userId === open.userId) this.#load(open, now, true, drawn);
           else this.close(false);
           return;
         }
