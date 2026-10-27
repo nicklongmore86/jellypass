@@ -679,7 +679,7 @@ describe('household app page: files', () => {
     // The big card is a 16:9 image 24px round, nearly a screen wide on a phone, with its chip at the top-left.
     matches(css, /\.backdrop-frame \{[^}]*aspect-ratio: 16 \/ 9[^}]*border-radius: var\(--radius-backdrop\)/);
     matches(css, /--radius-backdrop: 24px;/);
-    matches(css, /\.row-list-backdrop > \.card \{ flex: 0 0 92%; \}/);
+    matches(css, /\.row-list-backdrop > \.card \{ flex: 0 0 min\(92%, calc\(100% - var\(--gutter-end\)\)\); \}/);
     matches(css, /\.backdrop-link:focus-visible \.backdrop-frame::after \{[^}]*border: 3px solid var\(--accent\)/);
     assert.equal(/\.backdrop[a-z-]* \{[^}]*url\(/.test(css), false, 'no CSS url()');
     lacks(css, /\.app-header::before/);
@@ -1103,9 +1103,48 @@ describe('household app page: rendering', () => {
   it('brings a focused card fully into its row: the handler is wired and the rows still snap to a card\'s start', () => {
     const main = read(BUILT('js/main.js'));
     assert.match(main, /addEventListener\('focusin', showFocusedCard\)/);
-    assert.match(main, /list\.scrollLeft \+= box\.left - view\.left/);
+    assert.match(main, /list\.scrollLeft \+= rowFocusShift\(box, view, /);
+    assert.match(main, /closest\('\.row-list \.card-link, \.logo-list \.logo-link'\)/, 'the Studios logo tiles are included');
     assert.doesNotMatch(main.slice(main.indexOf('function showFocusedCard'), main.indexOf('function showFocusedCard') + 1100), /restoreCancelled/, 'a focus scroll is not the member\'s input');
-    assert.match(read(BUILT('app.css')), /\.row-list > \.card \{[^}]*scroll-snap-align: start/);
+    assert.match(read(BUILT('app.css')), /\.row-list > \.card \{[^}]*scroll-snap-align: center/);
+  });
+
+  it('clamps a focused card into its row: centred when it fits, leading edge at the snapport start when wider', async () => {
+    const { rowFocusShift } = await import(pathToFileURL(path.join(DIST_APP, BUILT('js/render.js'))).href);
+    const view = { left: 16, width: 358 };
+    // Fits (300 wide in a 326 snapport): centre 150 + 16 + 163 -> shift to the port centre.
+    assert.equal(rowFocusShift({ left: 200, right: 500 }, view, 32), 350 - (16 + 163));
+    // Exactly the snapport: centred and flush are the same.
+    assert.equal(rowFocusShift({ left: 40, right: 366 }, view, 32), 40 - 16);
+    // Wider (329.36 > 326): the leading edge lands on the row start, not 1.7px past it.
+    assert.equal(rowFocusShift({ left: 100, right: 429.36 }, view, 32), 84);
+    // A bad padding reads as none.
+    assert.equal(rowFocusShift({ left: 16, right: 374 }, view, NaN), 0);
+    const css = read(BUILT('app.css'));
+    assert.match(css, /\.row-list-backdrop > \.card \{ flex: 0 0 min\(92%, calc\(100% - var\(--gutter-end\)\)\)/);
+    assert.match(css, /\.row-list > \.card \{[^}]*max-width: calc\(100% - var\(--gutter-end\)\)/);
+  });
+
+  it('snaps every horizontal card row to a centred card, first at the start, last at the end, never stopping a flick', () => {
+    const css = read(BUILT('app.css'));
+    const rule = (selector) => css.match(new RegExp(`${selector.replace(/[.>]/g, '\\$&')} \\{([^}]*)\\}`))?.[1] ?? '';
+    for (const list of ['.row-list', '.logo-list']) {
+      assert.match(rule(list), /scroll-snap-type: x mandatory/, list);
+      assert.match(rule(list), /scroll-padding-inline: 0 var\(--gutter-end\)/, list);
+    }
+    for (const [card, first, last] of [['.row-list > .card', '.row-list > .card:first-child', '.row-list > .card:last-child'], ['.logo-card', '.logo-card:first-child', '.logo-card:last-child']]) {
+      assert.match(rule(card), /scroll-snap-align: center/, card);
+      assert.match(rule(first), /scroll-snap-align: start/, first);
+      assert.match(rule(last), /scroll-snap-align: end/, last);
+      assert.match(rule(last), /scroll-margin-right: var\(--gutter-end\)/, last);
+    }
+    // Backdrop rows are .row-list too, and the service rows use the same class names.
+    assert.match(read(BUILT('js/render.js')), /'row-list row-list-backdrop' : 'row-list'/);
+    assert.equal((css.match(/scroll-snap-stop:/g) ?? []).length, 1, 'only the hero pages one slide at a time');
+    assert.match(css, /\.hero-slide \{[^}]*scroll-snap-stop: always/);
+    // Reduced motion adds no animation and leaves the snap in place.
+    const reduced = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
+    assert.doesNotMatch(reduced, /scroll-snap-type|scroll-behavior: smooth/);
   });
 
   it('shows each household state as its own coarse badge on the card, and no Play button on any card', async () => {
