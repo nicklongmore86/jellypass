@@ -219,6 +219,8 @@ export class HouseholdGateway {
   #loginUsers: { list: Promise<Array<{ Id: string; Name: string }>>; expires: number } | undefined;
   /** The Jellyfin user each request's credentials belong to, undefined where Jellyfin rejects them, by credentialKey. */
   readonly #tokenOwners = new Map<string, { owner: Promise<string | undefined>; tokenKeys: string[]; expires: number }>();
+  /** The app's verifications at Jellyfin now, with the tokens (hashes) each holds: a sign-out with one of them spoils it. */
+  readonly #ownerLookups = new Set<{ tokenKeys: readonly string[]; spoiled: boolean }>();
   readonly #loginAttempts = new AttemptCounter({ windowMs: LOGIN_ATTEMPT_WINDOW_MS, maxKeys: MAX_LOGIN_CLIENTS });
   readonly #libraryJoinAttempts = new AttemptCounter({ windowMs: LIBRARY_JOIN_WINDOW_MS, maxKeys: MAX_LOGIN_CLIENTS });
   readonly #libraryJoin: HouseholdGatewayOptions['libraryJoin'];
@@ -654,9 +656,17 @@ export class HouseholdGateway {
       credentialKey: credentialKey(credentials),
       tokenKeys: tokenKeys(credentials),
       currentUser: async () => {
-        const user = (await this.#userFor(credentials, { serverErrorsThrow: true }))?.user;
-        // Whose the token is holds for the household host's own check too (see #tokenIsMember), a sign-out's included.
-        if (carriesToken(credentials)) this.#rememberTokenOwner(credentials, Promise.resolve(user?.Id));
+        const lookup = { tokenKeys: tokenKeys(credentials), spoiled: false };
+        this.#ownerLookups.add(lookup);
+        let user: CurrentUser | undefined;
+        try {
+          user = (await this.#userFor(credentials, { serverErrorsThrow: true }))?.user;
+        } finally {
+          this.#ownerLookups.delete(lookup);
+        }
+        // Whose the token is holds for the household host's own check too (see #tokenIsMember), a sign-out's included,
+        // unless one of its tokens was signed out while Jellyfin was asked: Jellyfin may have answered before revoking it.
+        if (carriesToken(credentials) && !lookup.spoiled) this.#rememberTokenOwner(credentials, Promise.resolve(user?.Id));
         return user ? callerOf(user) : undefined;
       },
       getAsCaller: (pathname, query) => this.#callerJson(credentials, pathname, query),
@@ -1281,7 +1291,11 @@ export class HouseholdGateway {
     return owner !== undefined && isMemberId(memberIds, owner);
   }
 
-  /** Keeps whom credentials that carry a token belong to (see #tokenIsMember) for TOKEN_OWNER_TTL_MS; a failure is not kept. */
+  /**
+   * Keeps whom credentials that carry a token belong to (see #tokenIsMember) for TOKEN_OWNER_TTL_MS; a failure is not
+   * kept. Kept while Jellyfin is still being asked too, so a sign-out of one of its tokens meanwhile forgets it (see
+   * #forgetTokenOwners) and an answer from before Jellyfin revoked the token is never kept.
+   */
   #rememberTokenOwner(credentials: JellyfinCredentials, owner: Promise<string | undefined>): Promise<string | undefined> {
     const key = credentialKey(credentials) as string;
     const created = { owner, tokenKeys: tokenKeys(credentials), expires: Date.now() + TOKEN_OWNER_TTL_MS };
@@ -1294,12 +1308,18 @@ export class HouseholdGateway {
     return owner;
   }
 
-  /** Forgets whom credentials holding any of these tokens (hashes, as {@link tokenKeys}) belong to. */
+  /**
+   * Forgets whom credentials holding any of these tokens (hashes, as {@link tokenKeys}) belong to, those still being
+   * asked included, and spoils the app's verifications of them now at Jellyfin so their answers are not kept.
+   */
   #forgetTokenOwners(keys: readonly string[]): void {
     if (!keys.length) return;
     const forgotten = new Set(keys);
     for (const [key, entry] of this.#tokenOwners) {
       if (entry.tokenKeys.some((tokenKey) => forgotten.has(tokenKey))) this.#tokenOwners.delete(key);
+    }
+    for (const lookup of this.#ownerLookups) {
+      if (lookup.tokenKeys.some((tokenKey) => forgotten.has(tokenKey))) lookup.spoiled = true;
     }
   }
 

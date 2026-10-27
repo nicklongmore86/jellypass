@@ -229,6 +229,17 @@ describe('household app sign-in through the gateway', { timeout: 30_000 }, () =>
       assert.equal((await signOut(app, alice)).status, 204);
       release();
       assert.equal((await first).status, 200);
+      // Nor does the household host keep whose it is: a relayed call and a second sign-out ask Jellyfin afresh, which
+      // refuses the revoked token, so both get the fixed 401 and nothing is sent on.
+      const checks = verifications(app);
+      const relayed = await get(app.port, '/Items', alice);
+      assert.equal(relayed.status, 401);
+      assert.equal(relayed.text, UNAUTHORIZED);
+      const again = await signOut(app, alice);
+      assert.equal(again.status, 401);
+      assert.equal(again.text, UNAUTHORIZED);
+      assert.deepEqual(app.jellyfin.logouts, [alice.Authorization.match(/Token="([^"]*)"/)[1]]);
+      assert.ok(verifications(app) > checks, 'Jellyfin was asked again');
       assert.equal((await me(app, alice)).text, UNAUTHORIZED);
     });
 
