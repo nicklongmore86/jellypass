@@ -53,6 +53,38 @@ function assertSection(notes, { version, nextVersion, subheadings }) {
 }
 
 describe('changelogSection with the real CHANGELOG.md', () => {
+  it('extracts 3.2.4 without its heading, up to the 3.2.3 section', () => {
+    const notes = changelogSection(CHANGELOG, '3.2.4');
+    assertSection(notes, {
+      version: '3.2.4',
+      nextVersion: '3.2.3',
+      subheadings: ['Security'],
+    });
+    assert.match(notes, /^This is a security patch release for household hostnames/);
+    const flat = notes.replace(/\s+/g, ' ');
+    assert.match(flat, /Jellyfin Enhanced 12\.13 and 12\.14, whose routes are the same/);
+    assert.match(flat, /There is nothing to configure/);
+    assert.match(flat, /3\.2\.3 reads a state file written by 3\.2\.4/);
+    assert.match(flat, /\*\*No CDN purge is needed:\*\*/);
+    assert.match(flat, /`ghcr\.io\/nicklongmore86\/jellypass:3\.2\.3`/);
+    assert.match(flat, /rolling back relays the routes below to Jellyfin again/);
+    assert.match(flat, /turn off its Jellyseerr integration/);
+    assert.match(flat, /`ActiveStreamsAllUsers`\) off/);
+    assert.match(flat, /`ActivityFeedOwnOnlyForNonAdmins`\) on/);
+    assert.match(flat, /no longer relay the Jellyfin Enhanced plugin's Seerr routes/);
+    assert.match(flat, /no longer relay the Jellyfin Enhanced plugin's reviews or its lookup of library items by provider ID/);
+    assert.equal(flat.match(/Allowed in a patch release by the household-check rule at the top of this file/g)?.length, 2);
+    const security = notes.indexOf('### Security');
+    for (const note of ['**No CDN purge is needed:**', '**To roll back,**', '**If you use Jellyfin Enhanced,**']) {
+      assert.ok(notes.indexOf(note) >= 0 && notes.indexOf(note) < security, `upgrade note ${note} comes first`);
+    }
+    assert.doesNotMatch(notes, /Mobile app/, 'mobile/ is unchanged since 3.2.3');
+    assert.doesNotMatch(notes, /### Upgrading from/);
+    assert.doesNotMatch(notes, /eas-cli|workflow|\btests?\b/i, 'no tests or CI');
+    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b/, 'no server-specific details');
+    assert.deepEqual(split(notes).definitions, []);
+  });
+
   it('extracts 3.2.3 without its heading, up to the 3.2.2 section', () => {
     const notes = changelogSection(CHANGELOG, '3.2.3');
     assertSection(notes, {

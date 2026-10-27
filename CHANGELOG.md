@@ -43,6 +43,33 @@ changes are always listed at the top of the release notes.
   pages and "Get this", Search, My requests and the Samsung app, and what to
   check on a TV.
 
+## [3.2.4] - 2026-10-27
+
+This is a security patch release for household hostnames, with the household
+app on or off. It matters only if the
+[Jellyfin Enhanced](https://github.com/n00bcodr/Jellyfin-Enhanced) plugin is
+installed in Jellyfin; without it, nothing changes. It applies to Jellyfin
+Enhanced 12.13 and 12.14, whose routes are the same. There is nothing to
+configure: no setting is added, removed or renamed, and the state file is
+unchanged (schema v7, with the same fields as 3.2.3), so 3.2.3 reads a state
+file written by 3.2.4. The app API (`docs/app-api/v1.openapi.json`), webhook
+payloads, the administrator API, the admin UI and the household app are
+unchanged. Read these before upgrading:
+
+- **No CDN purge is needed:** none of the household app's files and nothing
+  Jellyfin's own web client loads changed, and the refused routes are answered
+  `Cache-Control: no-store`.
+- **To roll back,** set `JELLYPASS_IMAGE` back to
+  `ghcr.io/nicklongmore86/jellypass:3.2.3` and recreate the container. No
+  state-file or setting change is needed, but rolling back relays the routes
+  below to Jellyfin again on household hostnames.
+- **If you use Jellyfin Enhanced,** also turn off its Jellyseerr integration
+  unless you need it, keep its option to show every user's active streams
+  (`ActiveStreamsAllUsers`) off, and keep its option to show users other than
+  administrators only their own activity (`ActivityFeedOwnOnlyForNonAdmins`)
+  on. JellyPass cannot check those for you, and they also apply on the main
+  Jellyfin site, which JellyPass does not filter.
+
 ### Security
 
 - **Household hostnames no longer relay the Jellyfin Enhanced plugin's Seerr
@@ -2180,7 +2207,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.2.3...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.2.4...HEAD
+[3.2.4]: https://github.com/nicklongmore86/jellypass/compare/v3.2.3...v3.2.4
 [3.2.3]: https://github.com/nicklongmore86/jellypass/compare/v3.2.2...v3.2.3
 [3.2.2]: https://github.com/nicklongmore86/jellypass/compare/v3.2.1...v3.2.2
 [3.2.1]: https://github.com/nicklongmore86/jellypass/compare/v3.2.0...v3.2.1
