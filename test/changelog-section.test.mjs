@@ -53,6 +53,39 @@ function assertSection(notes, { version, nextVersion, subheadings }) {
 }
 
 describe('changelogSection with the real CHANGELOG.md', () => {
+  it('extracts 3.2.3 without its heading, up to the 3.2.2 section', () => {
+    const notes = changelogSection(CHANGELOG, '3.2.3');
+    assertSection(notes, {
+      version: '3.2.3',
+      nextVersion: '3.2.2',
+      subheadings: ['Changed', 'Fixed'],
+    });
+    assert.match(notes, /^This is a patch release for the household app/);
+    const flat = notes.replace(/\s+/g, ' ');
+    assert.match(flat, /There is nothing to configure/);
+    assert.match(flat, /3\.2\.2 reads a state file written by 3\.2\.3/);
+    assert.match(flat, /webhook payloads, the administrator API and the admin UI are unchanged/);
+    assert.match(flat, /\*\*No CDN purge is needed:\*\*/);
+    assert.match(flat, /`ghcr\.io\/nicklongmore86\/jellypass:3\.2\.2`/);
+    assert.match(flat, /No state-file or setting change is needed/);
+    assert.match(flat, /It is documentation: the API is unchanged/);
+    assert.match(flat, /\*\*Mobile app \(not in the server image\)\.\*\*/);
+    assert.match(flat, /first release, 1\.0\.0, since 3\.2\.2/);
+    assert.match(flat, /\[changelog\]\(mobile\/CHANGELOG\.md\)/);
+    assert.match(flat, /one status pill per request on My requests/);
+    assert.match(flat, /My requests reuses the titles it has already read/);
+    assert.match(flat, /a "Get this" request is no longer dropped/);
+    const changed = notes.indexOf('### Changed');
+    assert.ok(changed < notes.indexOf('### Fixed'), 'the My requests changes come first');
+    for (const note of ['**Close and reopen the installed app**', '**No CDN purge is needed:**', '**To roll back,**']) {
+      assert.ok(notes.indexOf(note) >= 0 && notes.indexOf(note) < changed, `upgrade note ${note} comes first`);
+    }
+    assert.doesNotMatch(notes, /### Upgrading from/);
+    assert.doesNotMatch(notes, /eas-cli|workflow|\btests?\b/i, 'no tests or CI');
+    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b/, 'no server-specific details');
+    assert.deepEqual(split(notes).definitions, []);
+  });
+
   it('extracts 3.2.2 without its heading, up to the 3.2.1 section', () => {
     const notes = changelogSection(CHANGELOG, '3.2.2');
     assertSection(notes, {
