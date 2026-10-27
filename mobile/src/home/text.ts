@@ -62,13 +62,32 @@ export const SOURCE_TEXT = {
   networkPrefix: { all: 'Popular on', films: 'Films on', series: 'Series on' },
   /** JustWatch's credit, wherever a service's films (TMDB's where-to-watch data, from JustWatch) are shown. */
   justWatch: 'Where to watch: US streaming availability from JustWatch, via TMDB.',
+  /** A network page's three lists, as its tabs name them, and the tabs' own name. */
+  lists: { all: 'All', series: 'Series', films: 'Films' },
+  listsLabel: 'Show',
 } as const;
 
 /** A network's lists: its films and series mixed (`all`), or either alone. */
 export type SourceList = 'all' | 'series' | 'films';
+export const SOURCE_LISTS: readonly SourceList[] = ['all', 'series', 'films'];
 
 export function studioName(name: string): string {
   return `${name} movies`;
+}
+
+/** A network's or studio's page heading: "Popular on", "Series on" or "Films on" the network, or "<studio> movies". */
+export function sourceHeading(kind: 'network' | 'studio', name: string, list: SourceList = 'all'): string {
+  return kind === 'studio' ? studioName(name) : `${SOURCE_TEXT.networkPrefix[list]} ${name}`;
+}
+
+/** A studio's tile on Home, as a link: "Pixar, studio". */
+export function studioLinkName(name: string): string {
+  return `${name}, studio`;
+}
+
+/** A service row's heading on Home, as a link to its page: "Popular on Netflix, see all". */
+export function networkLinkName(prefix: string, name: string): string {
+  return `${prefix} ${name}, see all`;
 }
 
 export function stateLabel(state: HouseholdState): string {

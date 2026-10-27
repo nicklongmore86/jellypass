@@ -43,8 +43,10 @@ import {
   REQUEST_LABELS,
   RETRY_TEXT,
   shortOverview,
+  networkLinkName,
   SOURCE_TEXT,
   stateLabel,
+  studioLinkName,
   studioName,
   type ErrorText,
   type HomeFilter,
@@ -214,8 +216,27 @@ export function LogoTile({ source, size }: { source: Source; size: 'small' | 'la
   );
 }
 
-/** "Popular on" and the network's logo: one heading, named in words. */
-export function NetworkHeading({ prefix, network }: { prefix: string; network: Source }) {
+/**
+ * "Popular on" and the network's logo: one heading, named in words. With `onOpen` it is a link to the network's page
+ * ("Popular on Netflix, see all"), with the PWA's chevron after the logo.
+ */
+export function NetworkHeading({ prefix, network, onOpen }: { prefix: string; network: Source; onOpen?: () => void }) {
+  if (onOpen) {
+    return (
+      <Pressable
+        accessibilityRole="link"
+        accessibilityLabel={networkLinkName(prefix, network.name)}
+        onPress={onOpen}
+        style={({ pressed }) => [styles.networkHeading, styles.headingLink, pressed && styles.pressed]}
+      >
+        <Text style={styles.rowHeadingText}>{prefix}</Text>
+        <LogoTile source={network} size="small" />
+        <View {...hidden}>
+          <Icon name="next" color={colors.text} size={20} />
+        </View>
+      </Pressable>
+    );
+  }
   return (
     <View accessible accessibilityRole="header" accessibilityLabel={`${prefix} ${network.name}`} style={styles.networkHeading}>
       <Text style={styles.rowHeadingText}>{prefix}</Text>
@@ -293,19 +314,41 @@ export function RowFailure({ heading, error, onRetry }: { heading: string; error
   );
 }
 
-/** The studios: a strip of their logos, each named "<studio> movies". No title is fetched for it. */
-export function StudioStrip({ studios }: { studios: readonly Source[] }) {
+/**
+ * The studios: a strip of their logos, each named "<studio> movies" (with `onOpen`, a link to the studio's page named
+ * "<studio>, studio"). No title is fetched for it.
+ */
+export function StudioStrip({ studios, onOpen }: { studios: readonly Source[]; onOpen?: (studio: Source) => void }) {
   return (
     <View style={styles.row}>
       <RowHeading title={SOURCE_TEXT.studios} />
       <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.rowList}>
         {studios.map((studio) => (
-          <View key={studio.id} accessible accessibilityRole="image" accessibilityLabel={studioName(studio.name)}>
-            <LogoTile source={studio} size="large" />
-          </View>
+          <StudioTile key={studio.id} studio={studio} onOpen={onOpen} />
         ))}
       </ScrollView>
     </View>
+  );
+}
+
+/** A studio's logo in the strip: a link to its page, or with nowhere to go, an image named "<studio> movies". */
+function StudioTile({ studio, onOpen }: { studio: Source; onOpen: ((studio: Source) => void) | undefined }) {
+  if (!onOpen) {
+    return (
+      <View accessible accessibilityRole="image" accessibilityLabel={studioName(studio.name)}>
+        <LogoTile source={studio} size="large" />
+      </View>
+    );
+  }
+  return (
+    <Pressable
+      accessibilityRole="link"
+      accessibilityLabel={studioLinkName(studio.name)}
+      onPress={() => onOpen(studio)}
+      style={({ pressed }) => [styles.studioLink, pressed && styles.pressed]}
+    >
+      <LogoTile source={studio} size="large" />
+    </Pressable>
   );
 }
 
@@ -557,6 +600,8 @@ const styles = StyleSheet.create({
   rowHeading: { gap: spacing.sm, alignSelf: 'flex-start' },
   rowHeadingText: { ...typography.rowHeading, color: colors.text },
   networkHeading: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.sm },
+  headingLink: { minHeight: layout.touchTarget, minWidth: layout.touchTarget },
+  studioLink: { minHeight: layout.touchTarget, minWidth: layout.touchTarget, borderRadius: radii.card },
   waterline: { flexDirection: 'row', height: layout.waterline.height },
   waterlineAccent: { width: layout.waterline.accentWidth, borderRadius: layout.waterline.height, backgroundColor: colors.accent },
   waterlineCap: {

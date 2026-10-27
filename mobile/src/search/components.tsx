@@ -41,9 +41,19 @@ export function SearchField({ value, onChangeText, onSubmit }: { value: string; 
 }
 
 /** Poster cards in `columns` columns, each `cardWidth` wide; each is one link, named once. */
-export function ResultsGrid({ cards, cardWidth, onOpen }: { cards: readonly Card[]; cardWidth: number; onOpen: (card: Card) => void }) {
+export function ResultsGrid({
+  cards,
+  cardWidth,
+  onOpen,
+  testID = 'search-grid',
+}: {
+  cards: readonly Card[];
+  cardWidth: number;
+  onOpen: (card: Card) => void;
+  testID?: string;
+}) {
   return (
-    <View testID="search-grid" style={styles.grid}>
+    <View testID={testID} style={styles.grid}>
       {cards.map((card, index) => (
         // A title can come back on two pages when TMDB's order moves between them: the place keeps the key unique.
         <PosterCard key={`${index}-${card.mediaType}-${card.tmdbId}`} card={card} width={cardWidth} onOpen={onOpen} />
