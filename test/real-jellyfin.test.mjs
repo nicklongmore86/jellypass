@@ -403,7 +403,7 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     assert.deepEqual(await malformed({ Authorization: WEB }, (username) => ({ Username: username })), noClient);
   });
 
-  it('keeps Quick Connect, Streamyfin and Jellyfin Enhanced\'s Seerr off a household host, though Jellyfin itself offers Quick Connect', async (t) => {
+  it('keeps Quick Connect, Streamyfin and Jellyfin Enhanced\'s Seerr, reviews and provider lookup off a household host, though Jellyfin itself offers Quick Connect', async (t) => {
     const configuration = await request(baseUrl, '/System/Configuration', { token: fixture.token });
     t.after(() => request(baseUrl, '/System/Configuration', { method: 'POST', token: fixture.token, body: configuration }));
     await request(baseUrl, '/System/Configuration', { method: 'POST', token: fixture.token, body: { ...configuration, QuickConnectAvailable: true } });
@@ -434,14 +434,16 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     }
     const streamyfin = await getWithHeaders(port, '/Streamyfin/config', host);
     assert.deepEqual([streamyfin.status, streamyfin.text], [404, '{"error":"not_found"}']);
-    // Jellyfin Enhanced's Seerr routes are answered by the gateway alike; its other routes still reach Jellyfin, which
+    // Jellyfin Enhanced's Seerr, reviews and provider lookup routes are answered by the gateway alike; its other routes still reach Jellyfin, which
     // (without the plugin here) answers them itself.
-    for (const pathname of ['/JellyfinEnhanced/jellyseerr/search?query=x', '/emby/JellyfinEnhanced/jellyseerr/status/', '/jellyfinenhanced/ARR/requests', '/JellyfinEnhanced/proxy/avatar?path=/x', '/JellyfinEnhanced//tmdb/%67enres/movie']) {
+    for (const pathname of ['/JellyfinEnhanced/jellyseerr/search?query=x', '/emby/JellyfinEnhanced/jellyseerr/status/', '/jellyfinenhanced/ARR/requests', '/JellyfinEnhanced/proxy/avatar?path=/x', '/JellyfinEnhanced//tmdb/%67enres/movie', '/emby/JellyfinEnhanced/Reviews/movie/603/', '/JellyfinEnhanced/reviews/ratings?keys=movie:603', '/jellyfinenhanced/ITEMS/by-providers?Tmdb=603']) {
       const answer = await getWithHeaders(port, pathname, host);
       assert.deepEqual([answer.status, answer.text], [404, '{"error":"not_found"}'], pathname);
     }
     const requested = await postWithHeaders(port, '/JellyfinEnhanced/jellyseerr/request', host, { mediaType: 'movie', mediaId: 603 });
     assert.deepEqual([requested.status, requested.text], [404, '{"error":"not_found"}']);
+    const reviewed = await postWithHeaders(port, '/JellyfinEnhanced/reviews/movie/603', host, { content: 'x', rating: 5 });
+    assert.deepEqual([reviewed.status, reviewed.text], [404, '{"error":"not_found"}']);
     const script = await getWithHeaders(port, '/JellyfinEnhanced/script', host);
     assert.notEqual(script.text, '{"error":"not_found"}');
   });

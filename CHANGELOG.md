@@ -38,6 +38,22 @@ changes are always listed at the top of the release notes.
   Jellyfin site and the admin host are unaffected. Allowed in a patch release
   by the household-check rule at the top of this file: these routes get around
   the household app's checks on what members see and request.
+- **Household hostnames no longer relay the Jellyfin Enhanced plugin's reviews
+  or its lookup of library items by provider ID.** Its reviews showed any
+  signed-in household member other users' reviews and names, for titles the
+  member may not be able to see, and took reviews from them; its lookup by
+  provider ID searched the whole library, so a member could find out whether a
+  title they may not see is on the server, and its ID.
+  `/JellyfinEnhanced/reviews` and every path below it, and
+  `/JellyfinEnhanced/items/by-providers`, now get the same fixed
+  `404 {"error":"not_found"}` with `Cache-Control: no-store` as the plugin's
+  Seerr routes, for anyone, matched the same way, and never reach Jellyfin; a
+  WebSocket upgrade to them is answered `404`. The plugin's reviews and the
+  features that look items up by provider ID stop working on household
+  hostnames; its other features are unaffected. The main Jellyfin site and the
+  admin host are unaffected. Allowed in a patch release by the household-check
+  rule at the top of this file: these routes get around the household app's
+  checks on which items a member may see.
 
 ## [3.2.3] - 2026-10-27
 

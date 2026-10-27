@@ -975,9 +975,11 @@ describe('Quick Connect and Streamyfin on a household host', { timeout: 30_000 }
 
 // The Jellyfin Enhanced plugin relays Seerr to any signed-in user: its answers carry mediaInfo (other households'
 // requests), its request list names other requesters, and it requests past the household app's own checks. A household
-// host answers every one of those routes itself, as it does Streamyfin's, and never asks Jellyfin; the plugin's other
-// routes (its scripts, settings and own lookups) are still relayed.
-describe('Jellyfin Enhanced Seerr routes on a household host', { timeout: 60_000 }, () => {
+// host answers every one of those routes itself, as it does Streamyfin's, and never asks Jellyfin. It does the same for
+// the plugin's reviews, which hand out other users' reviews and names whatever the caller may see, and its lookup by
+// provider ID, which searches the whole library. The plugin's other routes (its scripts, settings and own lookups) are
+// still relayed.
+describe('Jellyfin Enhanced Seerr, reviews and provider lookup routes on a household host', { timeout: 60_000 }, () => {
   const NOT_FOUND = '{"error":"not_found"}';
   const alternate = (text) => [...text].map((char, index) => (index % 2 ? char.toUpperCase() : char.toLowerCase())).join('');
   /** Each spelling Jellyfin routes the same: any case, percent-encoded, trailing or doubled slashes, the legacy prefixes. */
@@ -1076,6 +1078,16 @@ describe('Jellyfin Enhanced Seerr routes on a household host', { timeout: 60_000
     '/JellyfinEnhanced/arr/validate/sonarr',
     '/JellyfinEnhanced/arr/validate/radarr',
   ];
+  // Its reviews, read and write, and its lookup of library items by provider ID, with their parameters filled in.
+  const UNCHECKED = [
+    '/JellyfinEnhanced/reviews',
+    '/JellyfinEnhanced/reviews/movie/603',
+    '/JellyfinEnhanced/reviews/tv/1399',
+    '/JellyfinEnhanced/reviews/ratings',
+    '/JellyfinEnhanced/reviews/admin/all',
+    '/JellyfinEnhanced/reviews/admin/0123456789abcdef0123456789abcdef/movie/603',
+    '/JellyfinEnhanced/items/by-providers',
+  ];
   // Its other routes carry nothing from Seerr: its scripts and settings, and lookups made with its own TMDB key.
   const NOT_SEERR = [
     '/JellyfinEnhanced/script',
@@ -1097,6 +1109,17 @@ describe('Jellyfin Enhanced Seerr routes on a household host', { timeout: 60_000
     '/JellyfinEnhancedX/jellyseerr/search',
     '/JellyfinEnhanced/tmdb/search/personx',
     '/jellyseerr/search',
+    '/JellyfinEnhanced/anilist/reviews',
+    '/JellyfinEnhanced/reviewsx/movie/603',
+    '/JellyfinEnhancedX/reviews/movie/603',
+    '/JellyfinEnhanced/items',
+    '/JellyfinEnhanced/items/by-providersx',
+    '/JellyfinEnhanced/item-stats/0123456789abcdef0123456789abcdef/0123456789abcdef0123456789abcdef',
+    '/JellyfinEnhanced/activity',
+    '/JellyfinEnhanced/active-streams/sessions',
+    '/JellyfinEnhanced/translate',
+    '/JellyfinEnhanced/translate/languages',
+    '/reviews/movie/603',
   ];
   const callers = {
     nobody: {},
@@ -1105,10 +1128,10 @@ describe('Jellyfin Enhanced Seerr routes on a household host', { timeout: 60_000
   };
   const asks = (app) => app.jellyfin.requests.length;
 
-  it('answers every Seerr route of the plugin with a 404, member or not, in every method and spelling, without asking Jellyfin', async (t) => {
+  it('answers every Seerr, reviews and provider lookup route of the plugin with a 404, member or not, in every method and spelling, without asking Jellyfin', async (t) => {
     const app = await startApp(t);
     const before = asks(app);
-    for (const path of SEERR) {
+    for (const path of [...SEERR, ...UNCHECKED]) {
       for (const spelling of spellings(path)) {
         for (const [who, headers] of Object.entries(callers)) {
           for (const method of ['GET', 'POST', 'DELETE']) {
@@ -1120,24 +1143,45 @@ describe('Jellyfin Enhanced Seerr routes on a household host', { timeout: 60_000
         }
       }
     }
-    assert.equal(asks(app), before, 'a Jellyfin Enhanced Seerr call reached Jellyfin');
+    assert.equal(asks(app), before, 'a refused Jellyfin Enhanced call reached Jellyfin');
+  });
+
+  it('answers the reviews and provider lookup routes with a 404 by every method, with the query the plugin reads, without asking Jellyfin', async (t) => {
+    const app = await startApp(t);
+    const before = asks(app);
+    const paths = [
+      '/JellyfinEnhanced/reviews/ratings?keys=movie:603,tv:1399',
+      '/JellyfinEnhanced/items/by-providers?providers[Tmdb]=603&types=Movie',
+      '/JellyfinEnhanced/items/by-providers?Tmdb=603',
+    ];
+    for (const path of [...UNCHECKED, ...paths]) {
+      for (const [who, headers] of Object.entries(callers)) {
+        for (const method of ['HEAD', 'PUT', 'PATCH', 'OPTIONS']) {
+          const answer = await get(app.port, path, { Host: HOST_A, ...headers }, { method });
+          const label = `${method} ${path} as ${who}`;
+          assert.deepEqual([answer.status, answer.headers['cache-control']], [404, 'no-store'], label);
+          if (method !== 'HEAD') assert.equal(answer.text, NOT_FOUND, label);
+        }
+      }
+    }
+    assert.equal(asks(app), before, 'a refused Jellyfin Enhanced call reached Jellyfin');
   });
 
   it('refuses a path that is a Seerr route only once decoded again, without asking Jellyfin', async (t) => {
     const app = await startApp(t);
     const before = asks(app);
     // %256A is %6A once decoded, which some reader on the way might decode again to j.
-    for (const path of ['/JellyfinEnhanced/%256Aellyseerr/search', '/%254AellyfinEnhanced/arr/requests', '/JellyfinEnhanced/tmdb/genres/%256Dovie']) {
+    for (const path of ['/JellyfinEnhanced/%256Aellyseerr/search', '/%254AellyfinEnhanced/arr/requests', '/JellyfinEnhanced/tmdb/genres/%256Dovie', '/JellyfinEnhanced/%2572eviews/movie/603', '/JellyfinEnhanced/items/%2562y-providers']) {
       const answer = await get(app.port, path, { Host: HOST_A, ...callers.member });
       assert.deepEqual([answer.status, answer.text, answer.headers['cache-control']], [400, '{"error":"invalid_request"}', 'no-store'], path);
     }
     assert.equal(asks(app), before, 'an encoded Jellyfin Enhanced Seerr call reached Jellyfin');
   });
 
-  it('never proxies a WebSocket upgrade to a Seerr route of the plugin', async (t) => {
+  it('never proxies a WebSocket upgrade to a refused route of the plugin', async (t) => {
     const app = await startApp(t);
     const before = asks(app);
-    for (const path of ['/JellyfinEnhanced/jellyseerr/search', '/JellyfinEnhanced/arr/requests', '/JellyfinEnhanced/proxy/avatar', '/JellyfinEnhanced/tmdb/search/person']) {
+    for (const path of ['/JellyfinEnhanced/jellyseerr/search', '/JellyfinEnhanced/arr/requests', '/JellyfinEnhanced/proxy/avatar', '/JellyfinEnhanced/tmdb/search/person', '/JellyfinEnhanced/reviews/movie/603', '/JellyfinEnhanced/items/by-providers']) {
       for (const spelling of spellings(path)) {
         assert.match(await upgrade(app.port, spelling, HOST_A), /^HTTP\/1\.1 404 /, spelling);
       }
@@ -1164,7 +1208,7 @@ describe('Jellyfin Enhanced Seerr routes on a household host', { timeout: 60_000
     for (const host of ['jellypass.example.test', '127.0.0.1']) {
       const unrelated = await get(app.port, '/JellyfinEnhanced/script', { Host: host });
       assert.notEqual(unrelated.text, NOT_FOUND);
-      for (const path of ['/JellyfinEnhanced/jellyseerr/search', '/JellyfinEnhanced/arr/requests', '/JellyfinEnhanced/proxy/avatar', '/JellyfinEnhanced/tmdb/genres/movie']) {
+      for (const path of ['/JellyfinEnhanced/jellyseerr/search', '/JellyfinEnhanced/arr/requests', '/JellyfinEnhanced/proxy/avatar', '/JellyfinEnhanced/tmdb/genres/movie', '/JellyfinEnhanced/reviews/movie/603', '/JellyfinEnhanced/items/by-providers?Tmdb=603']) {
         const answer = await get(app.port, path, { Host: host });
         assert.deepEqual([answer.status, answer.text], [unrelated.status, unrelated.text], `${host}${path}`);
       }

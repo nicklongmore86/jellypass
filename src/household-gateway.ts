@@ -20,12 +20,18 @@ const AUTHENTICATE_WITH_QUICK_CONNECT_PATH = '/users/authenticatewithquickconnec
 /** The Streamyfin plugin's routes, which hand its settings (Seerr's keys among them) to any signed-in user. */
 const STREAMYFIN_PATH = '/streamyfin';
 /**
- * The Jellyfin Enhanced plugin's routes that relay Seerr (or Sonarr and Radarr, which Seerr's requests feed): its
- * answers carry other users' requests and their requesters, and it takes requests past the household app's own checks.
- * The `tmdb` ones are relayed to Seerr's search and genre lists despite their name. Its other routes (its scripts,
- * settings and its own TMDB lookups among them) carry nothing from Seerr and are relayed.
+ * The Jellyfin Enhanced plugin's routes (12.13) that a household host answers itself, each with every path below it:
+ * - those that relay Seerr (or Sonarr and Radarr, which Seerr's requests feed): their answers carry other users'
+ *   requests and their requesters, and they take requests past the household app's own checks. Of its `tmdb` routes
+ *   only these four go to Seerr (its search and genre lists); `tmdb/validate` and the rest of `tmdb/...` go to TMDB
+ *   with the plugin's own key, carry nothing from Seerr and are relayed.
+ * - `reviews`, read and write: they hand out other users' reviews and names without checking that the caller may see
+ *   the item.
+ * - `items/by-providers`: it looks a provider ID up across the whole library without checking that the caller may see
+ *   what it finds.
+ * Its other routes (its scripts and settings among them) are relayed.
  */
-const JELLYFIN_ENHANCED_SEERR_PATHS = [
+const JELLYFIN_ENHANCED_REFUSED_PATHS = [
   '/jellyfinenhanced/jellyseerr',
   '/jellyfinenhanced/arr',
   '/jellyfinenhanced/proxy',
@@ -33,6 +39,8 @@ const JELLYFIN_ENHANCED_SEERR_PATHS = [
   '/jellyfinenhanced/tmdb/search/keyword',
   '/jellyfinenhanced/tmdb/genres/movie',
   '/jellyfinenhanced/tmdb/genres/tv',
+  '/jellyfinenhanced/reviews',
+  '/jellyfinenhanced/items/by-providers',
 ];
 const AUTHENTICATE_BY_NAME_PATH = '/users/authenticatebyname';
 /** Jellyfin's obsolete sign-in by user ID and password, still routed in 10.11 and, like AuthenticateByName, not scoped to a household. */
@@ -279,7 +287,7 @@ export class HouseholdGateway {
         writeJson(response, 403, { error: 'household_quick_connect_disabled' });
         return;
       case 'streamyfin':
-      case 'jellyfinEnhancedSeerr':
+      case 'jellyfinEnhanced':
         writeJson(response, 404, { error: 'not_found' });
         return;
       case 'forgotPassword':
@@ -349,7 +357,7 @@ export class HouseholdGateway {
     if (method === 'GET' && route === QUICK_CONNECT_ENABLED_PATH) return { kind: 'quickConnectEnabled' };
     if (isQuickConnectRoute(route)) return { kind: 'quickConnect' };
     if (isStreamyfinRoute(route)) return { kind: 'streamyfin' };
-    if (isJellyfinEnhancedSeerrRoute(route)) return { kind: 'jellyfinEnhancedSeerr' };
+    if (isRefusedJellyfinEnhancedRoute(route)) return { kind: 'jellyfinEnhanced' };
     if (method === 'POST' && FORGOT_PASSWORD_PATHS.has(route)) return { kind: 'forgotPassword' };
     if (this.#app && method === 'POST' && route === LOGOUT_PATH) return { kind: 'signOut' };
     if (method === 'POST' && route === AUTHENTICATE_BY_NAME_PATH) return { kind: 'signIn' };
@@ -388,7 +396,7 @@ export class HouseholdGateway {
     }
     const appPath = decision.kind === 'app';
     // Jellyfin's only WebSocket is an ordinary route: anything a household host checks or answers itself (the app API,
-    // which has none, Quick Connect, Streamyfin, Jellyfin Enhanced's Seerr, a route that names an item or a user) is never proxied as an upgrade.
+    // which has none, Quick Connect, Streamyfin, Jellyfin Enhanced's refused routes, a route that names an item or a user) is never proxied as an upgrade.
     if (!this.#memberIds(householdId) || decision.kind !== 'proxy') {
       socket.end(`HTTP/1.1 404 Not Found\r\n${appPath ? neverStoreHeaders() : ''}Connection: close\r\n\r\n`);
       return;
@@ -1355,7 +1363,7 @@ function isServerInternalStreamRoute(route: string): boolean {
 
 /** What a household host does with a request; see HouseholdGateway.#decide. */
 type RouteDecision =
-  | { kind: 'app' | 'publicUsers' | 'branding' | 'quickConnectEnabled' | 'quickConnect' | 'streamyfin' | 'jellyfinEnhancedSeerr' | 'forgotPassword' }
+  | { kind: 'app' | 'publicUsers' | 'branding' | 'quickConnectEnabled' | 'quickConnect' | 'streamyfin' | 'jellyfinEnhanced' | 'forgotPassword' }
   | { kind: 'signOut' | 'signIn' | 'signInById' | 'libraryJoin' | 'notFound' | 'proxy' }
   | { kind: 'libraryJoinAsset'; asset: { body: string; contentType: string } }
   | { kind: 'userImage'; userIds: string[] }
@@ -1478,8 +1486,8 @@ function isStreamyfinRoute(route: string): boolean {
   return route === STREAMYFIN_PATH || route.startsWith(`${STREAMYFIN_PATH}/`);
 }
 
-function isJellyfinEnhancedSeerrRoute(route: string): boolean {
-  return JELLYFIN_ENHANCED_SEERR_PATHS.some((path) => route === path || route.startsWith(`${path}/`));
+function isRefusedJellyfinEnhancedRoute(route: string): boolean {
+  return JELLYFIN_ENHANCED_REFUSED_PATHS.some((path) => route === path || route.startsWith(`${path}/`));
 }
 
 /**
