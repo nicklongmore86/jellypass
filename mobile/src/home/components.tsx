@@ -224,6 +224,7 @@ export function NetworkHeading({ prefix, network, onOpen }: { prefix: string; ne
   if (onOpen) {
     return (
       <Pressable
+        testID="row-heading-link"
         accessibilityRole="link"
         accessibilityLabel={networkLinkName(prefix, network.name)}
         onPress={onOpen}

@@ -161,7 +161,7 @@ function frameHeight(node: Node, width?: number): number {
 /** How tall a row's slot draws: what it holds now (skeleton, cards, failure or the "nothing" line), or its own minimum. */
 function slotHeight(slot: Node): number {
   const skeleton = inside(slot, 'skeleton-row')[0];
-  const card = within(slot).queryAllByRole('link')[0];
+  const card = within(slot).queryAllByRole('link').find((node) => node.props.testID !== 'row-heading-link');
   let content: number;
   if (skeleton) content = 26 + ROW_GAP + frameHeight(skeleton) + 4;
   else if (card) content = HEADING + ROW_GAP + frameHeight(card, number(styleOf(card).width)) + CARD_TEXT;
@@ -297,10 +297,14 @@ export async function scrollToEnd(size: ScreenSize = shown): Promise<void> {
   }
 }
 
-/** The headings on screen, in order: their words, or their accessible name when drawn with a logo. */
+/**
+ * The headings on screen, in order: their words, or their accessible name when drawn with a logo. A service row's
+ * heading is a link to its page ("Popular on Netflix, see all"), and counts as one.
+ */
 export function headings(): string[] {
   return screen
-    .queryAllByRole('header')
+    .queryAllByRole(/^(header|link)$/)
+    .filter((node) => node.props.accessibilityRole === 'header' || node.props.testID === 'row-heading-link')
     .map((node) => String(node.props.accessibilityLabel ?? [node.props.children].flat().join('')))
     .filter((text) => text !== '');
 }

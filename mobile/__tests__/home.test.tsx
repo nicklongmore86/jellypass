@@ -106,7 +106,7 @@ describe('the rows', () => {
       'New movie releases',
       'Upcoming movies',
       'Upcoming series',
-      ...SERVICE_NAMES.map((name) => `Popular on ${name}`),
+      ...SERVICE_NAMES.map((name) => `Popular on ${name}, see all`),
       'Studios',
     ]);
     expect(shows('Where to watch: US streaming availability from JustWatch, via TMDB.')).toBe(true);
@@ -123,7 +123,7 @@ describe('the rows', () => {
       'Popular movies',
       'New movie releases',
       'Upcoming movies',
-      ...SERVICE_NAMES.map((name) => `Films on ${name}`),
+      ...SERVICE_NAMES.map((name) => `Films on ${name}, see all`),
       'Studios',
     ]);
     expect(shows('Where to watch: US streaming availability from JustWatch, via TMDB.')).toBe(true);
@@ -133,7 +133,7 @@ describe('the rows', () => {
     await start();
     await choose('TV');
     await scrollToEnd();
-    expect(headings()).toEqual(['Trending series', 'Popular series', 'Upcoming series', ...SERVICE_NAMES.map((name) => `Series on ${name}`)]);
+    expect(headings()).toEqual(['Trending series', 'Popular series', 'Upcoming series', ...SERVICE_NAMES.map((name) => `Series on ${name}, see all`)]);
     expect(shows('Where to watch: US streaming availability from JustWatch, via TMDB.')).toBe(false);
   });
 
@@ -141,7 +141,7 @@ describe('the rows', () => {
     useHousehold(undefined, sourcesAnswer((id) => id !== 453));
     await start();
     await scrollToEnd();
-    expect(headings()).toContain('Series on Hulu');
+    expect(headings()).toContain('Series on Hulu, see all');
     expect(gateway.routes()).toContain(`GET ${API}/discover/network/453`);
     await choose('Movies');
     await scrollToEnd();
@@ -159,10 +159,10 @@ describe('the rows', () => {
     expect(screen.queryAllByTestId('tmdb-logo-image', { includeHiddenElements: true }).length).toBeGreaterThanOrEqual(8);
   });
 
-  it('shows the studios as their logos, each named "<studio> movies", and a name where there is no logo', async () => {
+  it('shows the studios as their logos, each a link named "<studio>, studio", and a name where there is no logo', async () => {
     await start();
     await scrollToEnd();
-    expect(screen.queryAllByRole('image').map((node) => node.props.accessibilityLabel)).toEqual(['Disney movies', 'Marvel Studios movies', 'A24 movies']);
+    expect(links().filter((name) => name.endsWith(', studio'))).toEqual(['Disney, studio', 'Marvel Studios, studio', 'A24, studio']);
     expect(shows('A24', { hidden: true })).toBe(true);
   });
 
@@ -189,7 +189,8 @@ describe('the cards', () => {
     expect(link('trending 2, 2021, Series, TMDB rating 6.5 out of 10, Available to get')).toBeTruthy();
     expect(link('popular-movies 3, 2022, TMDB rating 7.0 out of 10, Can\'t request')).toBeTruthy();
     expect(link('popular-tv 4, 2023, TMDB rating 7.5 out of 10, Requested')).toBeTruthy();
-    for (const name of links()) {
+    // Every card's link; the studios' tiles and the services' headings are links to their pages, with no status.
+    for (const name of links().filter((label) => !label.endsWith(', studio') && !label.endsWith(', see all'))) {
       const said = Object.values(STATE_LABELS).filter((word) => name.includes(word));
       expect({ name, said: said.length }).toEqual({ name, said: 1 });
     }
