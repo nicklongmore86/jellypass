@@ -917,6 +917,81 @@ export function requestPills(entry: Pick<RequestEntry, 'status' | 'seasons'>): {
   return { status: undefined, seasonsText: '', perSeason: true };
 }
 
+/** My requests' filters: status, kind and "Asked by me". They only choose which of the list's entries are shown. */
+export type RequestStatusFilter = 'all' | CoarseStatus;
+export type RequestKindFilter = 'all' | 'movie' | 'tv';
+export interface RequestFilter {
+  status: RequestStatusFilter;
+  kind: RequestKindFilter;
+  byYou: boolean;
+}
+export const REQUEST_STATUS_FILTERS: readonly RequestStatusFilter[] = ['all', 'requested', 'ready', 'failed'];
+export const REQUEST_KIND_FILTERS: readonly RequestKindFilter[] = ['all', 'movie', 'tv'];
+export const NO_REQUEST_FILTER: Readonly<RequestFilter> = { status: 'all', kind: 'all', byYou: false };
+
+export const REQUEST_FILTER_TEXT = {
+  statusLabel: 'Status',
+  kindLabel: 'Type',
+  whoLabel: 'Who',
+  status: { all: 'All', requested: 'Requested', ready: 'Ready to watch', failed: "Couldn't get this" },
+  kind: { all: 'All', movie: 'Films', tv: 'Series' },
+  byYou: 'Asked by me',
+  showAll: 'Show all requests',
+  more: 'Load more to look further.',
+} as const;
+
+export function requestFilterActive(filter: RequestFilter): boolean {
+  return filter.status !== 'all' || filter.kind !== 'all' || filter.byYou;
+}
+
+/**
+ * The statuses an entry shows (see {@link requestPills}): its one pill, or each season's pill when the seasons differ,
+ * plus the entry's own "failed" when the admin note is under the entry rather than under a season. A series matches a
+ * status filter if any status it shows is that status, so a series with Season 1 ready and Season 2 requested is in
+ * both Ready to watch and Requested.
+ */
+export function requestStatuses(entry: Pick<RequestEntry, 'status' | 'seasons'>): CoarseStatus[] {
+  const pills = requestPills(entry);
+  if (pills.status) return [pills.status];
+  const seen = new Set<CoarseStatus>(entry.seasons.map((season) => season.status));
+  if (entry.status === 'failed') seen.add('failed');
+  return [...seen];
+}
+
+/** Whether an entry passes every part of the filter; no part reads anything but the entry (no calls). */
+export function matchesRequestFilter(entry: Pick<RequestEntry, 'status' | 'seasons' | 'mediaType' | 'byYou'>, filter: RequestFilter): boolean {
+  if (filter.kind !== 'all' && entry.mediaType !== filter.kind) return false;
+  if (filter.byYou && !entry.byYou) return false;
+  return filter.status === 'all' || requestStatuses(entry).includes(filter.status);
+}
+
+/** What My requests says when a filter leaves nothing, for that combination; `more` when unnamed requests are still to load. */
+export function requestFilterEmptyText(filter: RequestFilter, more = false): string {
+  const noun = filter.kind === 'movie' ? 'films' : filter.kind === 'tv' ? 'series' : 'requests';
+  const status = filter.status === 'requested' ? ' still requested' : filter.status === 'ready' ? ' ready to watch' : filter.status === 'failed' ? " we couldn't get" : '';
+  const who = filter.byYou ? `${status ? ',' : ''} asked for by you` : '';
+  return [`No ${noun}${status}${who}.`, more ? REQUEST_FILTER_TEXT.more : ''].filter(Boolean).join(' ');
+}
+
+/**
+ * My requests' filters: two groups of toggle buttons (Status, Type) and an "Asked by me" toggle, in the Home chips' look
+ * (the chosen chip is tinted, outlined and ticked). Each group is named; the chosen chip is `aria-pressed`.
+ */
+export function requestFilterBar(doc: Document, filter: RequestFilter): HTMLElement {
+  const chip = (group: string, value: string, label: string, pressed: boolean): HTMLElement => {
+    const button = el(doc, 'button', { class: 'segment', text: label, attrs: { type: 'button', 'data-filter-group': group, 'data-filter': value, 'aria-pressed': String(pressed) } });
+    button.prepend(icon(doc, 'check'));
+    return button;
+  };
+  const group = (name: string, label: string, chips: HTMLElement[]) =>
+    el(doc, 'div', { class: 'segmented segmented-requests', attrs: { role: 'group', 'aria-label': label, 'data-filter-group': name } }, chips);
+  return el(doc, 'div', { class: 'request-filters' }, [
+    group('status', REQUEST_FILTER_TEXT.statusLabel, REQUEST_STATUS_FILTERS.map((value) => chip('status', value, REQUEST_FILTER_TEXT.status[value], filter.status === value))),
+    group('kind', REQUEST_FILTER_TEXT.kindLabel, REQUEST_KIND_FILTERS.map((value) => chip('kind', value, REQUEST_FILTER_TEXT.kind[value], filter.kind === value))),
+    group('who', REQUEST_FILTER_TEXT.whoLabel, [chip('byYou', 'byYou', REQUEST_FILTER_TEXT.byYou, filter.byYou)]),
+  ]);
+}
+
 /**
  * One of the household's requests. The title text is filled in afterwards (the list carries only a TMDB ID), with
  * {@link setRequestTitle}; until then, and if it cannot be loaded, the entry still shows its status. A status is shown

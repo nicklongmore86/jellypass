@@ -9,9 +9,23 @@ import { Pressable, StyleSheet, Text, View } from 'react-native';
 import type { CoarseStatus, HouseholdState, Request } from '../api/types';
 import { safeImageUrl } from '../api/urls';
 import { StatusChip, TmdbImage } from '../home/components';
+import { Icon } from '../icons';
 import { colors, layout, radii, spacing, typography } from '../theme';
 import { GET_THIS_TEXT } from '../title/text';
-import { requestMeta, requestName, requestNoteHere, requestPills, requestSeasonName, requestTitleText, whoText, type RequestTitle } from './text';
+import {
+  REQUEST_FILTER_TEXT,
+  REQUEST_KIND_FILTERS,
+  REQUEST_STATUS_FILTERS,
+  requestMeta,
+  requestName,
+  requestNoteHere,
+  requestPills,
+  requestSeasonName,
+  requestTitleText,
+  whoText,
+  type RequestFilter,
+  type RequestTitle,
+} from './text';
 
 const hidden = { accessibilityElementsHidden: true, importantForAccessibility: 'no-hide-descendants' } as const;
 
@@ -22,6 +36,47 @@ export function RequestChip({ status }: { status: CoarseStatus }) {
 }
 
 const THUMB = { width: 46, height: 68 };
+
+function FilterChip({ role, label, checked, testID, onPress }: { role: 'radio' | 'checkbox'; label: string; checked: boolean; testID: string; onPress: () => void }) {
+  return (
+    <Pressable
+      testID={testID}
+      accessibilityRole={role}
+      accessibilityLabel={label}
+      accessibilityState={{ checked, selected: checked }}
+      onPress={onPress}
+      style={({ pressed }) => [styles.filter, checked && styles.filterChecked, pressed && styles.pressed]}
+    >
+      {checked ? <Icon name="check" color={colors.accentText} size={17.6} strokeWidth={2.6} /> : null}
+      <Text style={[styles.filterText, checked && styles.filterTextChecked]}>{label}</Text>
+    </Pressable>
+  );
+}
+
+/**
+ * My requests' filters, the PWA's requestFilterBar() (app/src/render.ts) in Home's chip look: Status and Type are radio
+ * groups of outlined chips, "Asked by me" a checkbox chip; the chosen one is filled with the cyan tint, outlined in cyan and
+ * ticked, never colour alone. Chips wrap onto more lines at large text rather than hide. Choosing one reads nothing.
+ */
+export function RequestFilters({ filter, onChange }: { filter: RequestFilter; onChange: (filter: RequestFilter) => void }) {
+  return (
+    <View testID="request-filters" style={styles.filters}>
+      <View testID="request-filter-group-status" accessibilityRole="radiogroup" accessibilityLabel={REQUEST_FILTER_TEXT.statusLabel} style={styles.filterGroup}>
+        {REQUEST_STATUS_FILTERS.map((status) => (
+          <FilterChip key={status} role="radio" testID={`request-filter-status-${status}`} label={REQUEST_FILTER_TEXT.status[status]} checked={filter.status === status} onPress={() => onChange({ ...filter, status })} />
+        ))}
+      </View>
+      <View testID="request-filter-group-kind" accessibilityRole="radiogroup" accessibilityLabel={REQUEST_FILTER_TEXT.kindLabel} style={styles.filterGroup}>
+        {REQUEST_KIND_FILTERS.map((kind) => (
+          <FilterChip key={kind} role="radio" testID={`request-filter-kind-${kind}`} label={REQUEST_FILTER_TEXT.kind[kind]} checked={filter.kind === kind} onPress={() => onChange({ ...filter, kind })} />
+        ))}
+      </View>
+      <View accessibilityLabel={REQUEST_FILTER_TEXT.whoLabel} style={styles.filterGroup}>
+        <FilterChip role="checkbox" testID="request-filter-by-you" label={REQUEST_FILTER_TEXT.byYou} checked={filter.byYou} onPress={() => onChange({ ...filter, byYou: !filter.byYou })} />
+      </View>
+    </View>
+  );
+}
 
 export function RequestItem({ request, title, onOpen }: { request: Request; title: RequestTitle | undefined; onOpen: (request: Request) => void }) {
   const poster = title?.status === 'loaded' ? title.title.posterUrl : null;
@@ -80,6 +135,23 @@ export function SkeletonRequests() {
 
 const styles = StyleSheet.create({
   list: { gap: 9.6 },
+  filters: { gap: spacing.sm },
+  filterGroup: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+  filter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6.4,
+    minHeight: layout.touchTarget,
+    minWidth: 72,
+    paddingHorizontal: 17.6,
+    borderWidth: 1.5,
+    borderColor: colors.hairline,
+    borderRadius: radii.chip,
+  },
+  filterChecked: { backgroundColor: colors.accentTint, borderColor: colors.accent },
+  filterText: { fontSize: 15.2, lineHeight: 20, fontWeight: '700', color: colors.muted },
+  filterTextChecked: { color: colors.accentText },
   item: {
     flexDirection: 'row',
     alignItems: 'flex-start',

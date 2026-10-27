@@ -20,6 +20,19 @@ changes are always listed at the top of the release notes.
 
 ### Added
 
+- **My requests in the household web app can be filtered.** Chips above the
+  list choose a status (All, Requested, Ready to watch, Couldn't get this), a
+  type (All, Films, Series) and an "Asked by me" toggle, and they combine. A
+  series matches a status if any status it shows has it: a series with
+  Season 1 ready and Season 2 requested appears under both Ready to watch and
+  Requested. When nothing matches, the screen says what is missing for that
+  combination and offers "Show all requests". Choosing a filter makes no call
+  to the app API or TMDB and does not change which titles are reused; it only
+  hides entries already on the page, so with more than ten requests the filter
+  applies to the ones loaded so far and Load more names the next ten. The
+  choice is kept while the app is open and cleared on sign-out or when another
+  member signs in. Nothing changes on the server, its API or its call budget.
+
 - **The TV add-on can now show JellyPass pages inside Jellyfin web, at
   `#/jellypass/...`.** A page is drawn into Jellyfin's own "page not found"
   page, so Jellyfin's real header, its Back and Home buttons, its history and

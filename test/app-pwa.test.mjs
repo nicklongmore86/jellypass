@@ -2600,6 +2600,175 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.deepEqual(calls(page, before), BUDGET.screens.requests.revisit);
       assert.deepEqual([...page.main().querySelectorAll('.request .card-title')].map((title) => title.textContent), ['Synthetic Movie One', 'Synthetic Series Two']);
     });
+    describe('My requests filters', () => {
+      const entry = (id, mediaType, status, byYou, seasons = []) => ({ id, mediaType, tmdbId: 910_000 + Number(id.slice(1)), status, seasons, byYou });
+      const LIST = [
+        entry('r1', 'movie', 'requested', true),
+        entry('r2', 'movie', 'ready', false),
+        entry('r3', 'tv', 'requested', true, [{ seasonNumber: 1, status: 'ready' }, { seasonNumber: 2, status: 'requested' }]),
+        entry('r4', 'tv', 'failed', false),
+        entry('r5', 'movie', 'failed', true),
+        entry('r6', 'tv', 'ready', false, [{ seasonNumber: 1, status: 'ready' }]),
+      ];
+      const list = (results) => (url) => (url === '/jellypass/app/v1/requests' ? { status: 200, body: Buffer.from(JSON.stringify({ results })), headers: { 'content-type': 'application/json' } } : undefined);
+      const named = (page, count) => page.until(() => page.main().querySelectorAll('.request').length === count
+        && [...page.main().querySelectorAll('.request .card-title')].every((title) => title.textContent !== 'Loading title…'), 'the titles');
+      const ids = (page) => [...page.main().querySelectorAll('.request')].filter((item) => !item.hidden).map((item) => item.querySelector('.request-link').getAttribute('href').replace(/^#\/(movie|tv)\/91000/, 'r'));
+      const chip = (page, group, value) => page.main().querySelector(`button[data-filter-group="${group}"][data-filter="${value}"]`);
+      const press = (page, group, value) => chip(page, group, value).dispatchEvent(new page.Event('click', { bubbles: true }));
+      const pressed = (page) => [...page.main().querySelectorAll('.request-filters button')].filter((button) => button.getAttribute('aria-pressed') === 'true').map((button) => button.textContent);
+      const emptyText = (page) => { const box = page.main().querySelector('.request-none'); return box.hidden ? null : box.querySelector('p').textContent; };
+      const open = async (t, results = LIST) => {
+        const app = await startApp(t);
+        const page = await openApp(t, app, { hash: '#/requests', override: list(results) });
+        await named(page, results.length);
+        await settled(page);
+        return { app, page };
+      };
+
+      it('is Status, Type and Asked by me: named groups of real buttons, All chosen, 44px chips from the Home chips', async (t) => {
+        const { page } = await open(t);
+        const groups = [...page.main().querySelectorAll('.request-filters [role="group"]')];
+        assert.deepEqual(groups.map((group) => group.getAttribute('aria-label')), ['Status', 'Type', 'Who']);
+        assert.deepEqual([...groups[0].querySelectorAll('button')].map((button) => button.textContent), ['All', 'Requested', 'Ready to watch', "Couldn't get this"]);
+        assert.deepEqual([...groups[1].querySelectorAll('button')].map((button) => button.textContent), ['All', 'Films', 'Series']);
+        assert.deepEqual([...groups[2].querySelectorAll('button')].map((button) => button.textContent), ['Asked by me']);
+        for (const button of page.main().querySelectorAll('.request-filters button')) {
+          assert.equal(button.getAttribute('type'), 'button');
+          assert.equal(button.className, 'segment');
+        }
+        assert.deepEqual(pressed(page), ['All', 'All']);
+        assert.deepEqual(ids(page), ['r1', 'r2', 'r3', 'r4', 'r5', 'r6']);
+        assert.equal(emptyText(page), null);
+        const css = read(BUILT('app.css'));
+        matches(css, /\.segment\{[^}]*min-height:\s*2\.75rem|\.segment \{[^}]*min-height:\s*2\.75rem/, 'a chip is 44px tall at least');
+        matches(css, /\.segment\[aria-pressed='true'\]/, 'a pressed chip is styled like a chosen one');
+      });
+
+      it('filters by status, type and Asked by me, alone and together, and a series matches a status any of its seasons shows', async (t) => {
+        const { page } = await open(t);
+        press(page, 'status', 'requested');
+        assert.deepEqual(ids(page), ['r1', 'r3'], 'r3 has a season still requested');
+        press(page, 'status', 'ready');
+        assert.deepEqual(ids(page), ['r2', 'r3', 'r6'], 'r3 has a season ready too');
+        press(page, 'status', 'failed');
+        assert.deepEqual(ids(page), ['r4', 'r5']);
+        assert.equal(page.main().querySelectorAll('.request:not([hidden]) .failed-note').length, 2, 'the admin note stays under each failed entry');
+        press(page, 'status', 'all');
+        press(page, 'kind', 'tv');
+        assert.deepEqual(ids(page), ['r3', 'r4', 'r6']);
+        press(page, 'kind', 'movie');
+        assert.deepEqual(ids(page), ['r1', 'r2', 'r5']);
+        press(page, 'kind', 'all');
+        press(page, 'byYou', 'byYou');
+        assert.deepEqual(ids(page), ['r1', 'r3', 'r5']);
+        assert.deepEqual(pressed(page), ['All', 'All', 'Asked by me']);
+        press(page, 'status', 'requested');
+        press(page, 'kind', 'tv');
+        assert.deepEqual(ids(page), ['r3']);
+        assert.deepEqual(pressed(page), ['Requested', 'Series', 'Asked by me']);
+        press(page, 'byYou', 'byYou');
+        assert.deepEqual(ids(page), ['r3']);
+        press(page, 'kind', 'movie');
+        press(page, 'status', 'ready');
+        assert.deepEqual(ids(page), ['r2']);
+      });
+
+      it('makes no call when a filter changes: the same calls, the same titles, the cache untouched', async (t) => {
+        const { app, page } = await open(t);
+        const before = page.requests.length;
+        const tmdb = app.tmdb.calls.length;
+        for (const [group, value] of [['status', 'ready'], ['kind', 'tv'], ['byYou', 'byYou'], ['status', 'failed'], ['kind', 'movie'], ['status', 'all'], ['kind', 'all'], ['byYou', 'byYou']]) {
+          press(page, group, value);
+          await settled(page);
+        }
+        assert.equal(page.requests.length, before, 'no call to the API');
+        assert.equal(app.tmdb.calls.length, tmdb, 'no call to TMDB');
+        assert.equal(before, 2 + LIST.length, 'Me, the list, then one call to name each');
+        assert.deepEqual(ids(page), ['r1', 'r2', 'r3', 'r4', 'r5', 'r6']);
+      });
+
+      it('leaves the reuse of read titles alone: with a filter chosen, a revisit reads the list only', async (t) => {
+        const known = [
+          { id: 'a', mediaType: 'movie', tmdbId: T_MOVIE, status: 'requested', seasons: [], byYou: true },
+          { id: 'b', mediaType: 'tv', tmdbId: T_TV, status: 'ready', seasons: [{ seasonNumber: 1, status: 'ready' }], byYou: false },
+        ];
+        const { page } = await open(t, known);
+        press(page, 'status', 'ready');
+        await settled(page);
+        assert.equal(page.requests.length, BUDGET.screens.requests.calls);
+        page.go('#/account');
+        await page.until(() => page.main().querySelector('.account'), 'Account');
+        await settled(page);
+        const mark = page.requests.length;
+        page.go('#/requests');
+        await named(page, 2);
+        await settled(page);
+        assert.deepEqual(calls(page, mark), BUDGET.screens.requests.revisit);
+        assert.deepEqual(pressed(page), ['Ready to watch', 'All']);
+        assert.deepEqual([...page.main().querySelectorAll('.request:not([hidden]) .card-title')].map((title) => title.textContent), ['Synthetic Series Two']);
+      });
+
+      it('says what a filter left nothing of, for each filter, and Show all requests clears them', async (t) => {
+        const only = [entry('r1', 'movie', 'requested', false), entry('r2', 'tv', 'ready', false, [{ seasonNumber: 1, status: 'ready' }])];
+        const { page } = await open(t, only);
+        const text = (status, kind, byYou) => {
+          press(page, 'status', status);
+          press(page, 'kind', kind);
+          if (byYou !== (pressed(page).includes('Asked by me'))) press(page, 'byYou', 'byYou');
+          return emptyText(page);
+        };
+        assert.equal(text('failed', 'all', false), "No requests we couldn't get.");
+        assert.equal(text('ready', 'movie', false), 'No films ready to watch.');
+        assert.equal(text('requested', 'tv', false), 'No series still requested.');
+        assert.equal(text('all', 'all', true), 'No requests asked for by you.');
+        assert.equal(text('all', 'tv', true), 'No series asked for by you.');
+        assert.equal(text('ready', 'tv', true), 'No series ready to watch, asked for by you.');
+        assert.equal(text('failed', 'movie', true), "No films we couldn't get, asked for by you.");
+        assert.deepEqual(ids(page), []);
+        assert.ok(!page.main().querySelector('.request-none button').hidden);
+        page.main().querySelector('.request-none button').dispatchEvent(new page.Event('click', { bubbles: true }));
+        assert.equal(emptyText(page), null);
+        assert.deepEqual(pressed(page), ['All', 'All']);
+        assert.deepEqual(ids(page), ['r1', 'r2']);
+        assert.ok(page.main().querySelector('.request-none button').hidden, 'nothing to clear');
+        // Some matches: no empty text.
+        assert.equal(text('ready', 'all', false), null);
+      });
+
+      it('keeps the filters while the app is open (leaving and coming back) and drops them for another member or a sign-out', async (t) => {
+        const { app, page } = await open(t);
+        press(page, 'status', 'ready');
+        press(page, 'kind', 'movie');
+        press(page, 'byYou', 'byYou');
+        assert.deepEqual(ids(page), []);
+        page.go('#/account');
+        await page.until(() => page.main().querySelector('.account'), 'Account');
+        page.go('#/requests');
+        await named(page, LIST.length);
+        assert.deepEqual(pressed(page), ['Ready to watch', 'Films', 'Asked by me'], 'remembered');
+        assert.deepEqual(ids(page), []);
+        assert.ok(emptyText(page));
+        // Another member signs in (Jellyfin web in another tab): the screen is drawn again for them, unfiltered.
+        const signIn = (user) => {
+          page.store.set('jellyfin_credentials', JSON.stringify({ Servers: [{ ManualAddress: page.location.origin, AccessToken: TOKENS[user], UserId: user }] }));
+          for (const listener of page.listeners.storage ?? []) listener({ key: 'jellyfin_credentials' });
+        };
+        signIn(ANN);
+        await page.until(() => ids(page).length === LIST.length, 'the list again, unfiltered');
+        assert.deepEqual(pressed(page), ['All', 'All']);
+        // Chosen again, then signed out elsewhere and back in as the same member: still dropped.
+        press(page, 'kind', 'tv');
+        assert.deepEqual(ids(page), ['r3', 'r4', 'r6']);
+        page.store.set('jellyfin_credentials', JSON.stringify({ Servers: [{ ManualAddress: page.location.origin }] }));
+        for (const listener of page.listeners.storage ?? []) listener({ key: 'jellyfin_credentials' });
+        await page.until(() => page.main().querySelector('ul.profiles'), 'signed out');
+        signIn(ANN);
+        await page.until(() => ids(page).length === LIST.length, 'the list again');
+        assert.deepEqual(pressed(page), ['All', 'All']);
+        assert.ok(app);
+      });
+    });
   });
 
   describe('Home\'s All | Movies | TV switch', () => {

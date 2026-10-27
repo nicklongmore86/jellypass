@@ -112,3 +112,59 @@ export function requestName(request: Request, title: RequestTitle | undefined): 
     .filter(Boolean)
     .join(', ');
 }
+
+/** My requests' filters, the PWA's (app/src/render.ts): status, kind and "Asked by me". They only choose which entries show. */
+export type RequestStatusFilter = 'all' | CoarseStatus;
+export type RequestKindFilter = 'all' | 'movie' | 'tv';
+export interface RequestFilter {
+  status: RequestStatusFilter;
+  kind: RequestKindFilter;
+  byYou: boolean;
+}
+export const REQUEST_STATUS_FILTERS: readonly RequestStatusFilter[] = ['all', 'requested', 'ready', 'failed'];
+export const REQUEST_KIND_FILTERS: readonly RequestKindFilter[] = ['all', 'movie', 'tv'];
+export const NO_REQUEST_FILTER: Readonly<RequestFilter> = { status: 'all', kind: 'all', byYou: false };
+
+export const REQUEST_FILTER_TEXT = {
+  statusLabel: 'Status',
+  kindLabel: 'Type',
+  whoLabel: 'Who',
+  status: { all: 'All', requested: 'Requested', ready: 'Ready to watch', failed: "Couldn't get this" },
+  kind: { all: 'All', movie: 'Films', tv: 'Series' },
+  byYou: 'Asked by me',
+  showAll: 'Show all requests',
+  more: 'Load more to look further.',
+} as const;
+
+export function requestFilterActive(filter: RequestFilter): boolean {
+  return filter.status !== 'all' || filter.kind !== 'all' || filter.byYou;
+}
+
+/**
+ * The statuses an entry shows (see {@link requestPills}): its one chip, or each season's chip when the seasons differ,
+ * plus the entry's own "failed" when the admin note is under the entry rather than under a season. A series matches a
+ * status filter if any status it shows is that status, so a series with Season 1 ready and Season 2 requested is in
+ * both Ready to watch and Requested.
+ */
+export function requestStatuses(request: Pick<Request, 'status' | 'seasons'>): CoarseStatus[] {
+  const pills = requestPills(request);
+  if (pills.status) return [pills.status];
+  const seen = new Set<CoarseStatus>(request.seasons.map((season) => season.status));
+  if (request.status === 'failed') seen.add('failed');
+  return [...seen];
+}
+
+/** Whether an entry passes every part of the filter; nothing but the entry is read (no calls). */
+export function matchesRequestFilter(request: Pick<Request, 'status' | 'seasons' | 'mediaType' | 'byYou'>, filter: RequestFilter): boolean {
+  if (filter.kind !== 'all' && request.mediaType !== filter.kind) return false;
+  if (filter.byYou && !request.byYou) return false;
+  return filter.status === 'all' || requestStatuses(request).includes(filter.status);
+}
+
+/** What My requests says when a filter leaves nothing, for that combination; `more` when unnamed requests are still to load. */
+export function requestFilterEmptyText(filter: RequestFilter, more = false): string {
+  const noun = filter.kind === 'movie' ? 'films' : filter.kind === 'tv' ? 'series' : 'requests';
+  const status = filter.status === 'requested' ? ' still requested' : filter.status === 'ready' ? ' ready to watch' : filter.status === 'failed' ? " we couldn't get" : '';
+  const who = filter.byYou ? `${status ? ',' : ''} asked for by you` : '';
+  return [`No ${noun}${status}${who}.`, more ? REQUEST_FILTER_TEXT.more : ''].filter(Boolean).join(' ');
+}
