@@ -56,6 +56,8 @@ interface Active {
   cleanup: (() => void) | undefined;
   /** Focus is put right again once, after Jellyfin's own `pageshow` work (its auto-focus) is done. */
   focusPending: boolean;
+  /** Jellyfin's `data-title` for its page, put back (with the header and document title it implies) when the host leaves. */
+  priorTitle: string | null;
   view: PageView;
 }
 
@@ -143,7 +145,9 @@ export class PageHost {
     const active = this.active;
     const target = event.target as Element | null;
     if (!active || !target || !active.container.contains(target)) return;
-    active.focusPending = false;
+    // Until the correction has run or the member has pressed something, focus inside the page is Jellyfin's own
+    // auto-focus: it neither cancels the correction nor replaces the remembered element.
+    if (active.focusPending) return;
     const key = (target as Element).closest ? (target as Element).closest(`[${FOCUS_ATTR}]`) : null;
     const value = key && active.container.contains(key) ? key.getAttribute(FOCUS_ATTR) : null;
     if (value === null) return;
@@ -153,6 +157,11 @@ export class PageHost {
       const oldest = this.focusKeys.keys().next();
       if (!oldest.done) this.focusKeys.delete(oldest.value);
     }
+  }
+
+  /** A key or pointer press by the member: from here focus inside the page is theirs, to be remembered. */
+  userInput(): void {
+    if (this.active) this.active.focusPending = false;
   }
 
   /** Jellyfin web's `pageshow` on its page (its own work, auto-focus included, is done after this): focus is put right. */
@@ -193,7 +202,7 @@ export class PageHost {
       this.hosting(false);
       return;
     }
-    const active: Active = { hash, page, container, cleanup: view.cleanup, focusPending: true, view };
+    const active: Active = { hash, page, container, cleanup: view.cleanup, focusPending: true, priorTitle: page.getAttribute('data-title'), view };
     this.active = active;
     this.setTitle(page, view.title);
     this.restoreFocus(active);
@@ -211,6 +220,15 @@ export class PageHost {
       // A page's cleanup must not stop Jellyfin web going on.
     }
     active.container.remove();
+    // Jellyfin web reuses its fallback page on a location change and its `pageshow` work does not run again, so what the
+    // host set is put back as Jellyfin's `pageshow` would set it. A page Jellyfin removed is left to Jellyfin.
+    if (this.fallbackPage() === active.page) {
+      if (active.priorTitle === null) active.page.removeAttribute('data-title');
+      else {
+        active.page.setAttribute('data-title', active.priorTitle);
+        this.setHeader(active.priorTitle);
+      }
+    }
   }
 
   private restoreFocus(active: Active): void {
@@ -232,6 +250,10 @@ export class PageHost {
   /** The header's title as Jellyfin web's `libraryMenu.setTitle` sets it, on its page too, so its `pageshow` agrees. */
   private setTitle(page: Element, title: string): void {
     page.setAttribute('data-title', title);
+    this.setHeader(title);
+  }
+
+  private setHeader(title: string): void {
     const heading = this.document.querySelector('.skinHeader .pageTitle') as HTMLElement | null;
     if (heading) {
       heading.classList.remove('pageTitleWithLogo');

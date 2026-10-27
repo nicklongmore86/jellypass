@@ -1511,6 +1511,8 @@ describe('TV add-on: the page host\'s router', { timeout: 60_000 }, () => {
       /** The page functions' log, copied out of the sandbox's realm. */
       get log() { return [...scope.__log]; },
       sync,
+      /** The member pressing a key or pointer. */
+      input: () => scope.__host.userInput(),
       focused: () => LIVE_FOCUS(document),
       /** Jellyfin web showing its page: `pageshow` dispatched on it, then its auto-focus (the next effect, in the same task). */
       shown(pageEl, stealFocus) {
@@ -1555,6 +1557,7 @@ describe('TV add-on: the page host\'s router', { timeout: 60_000 }, () => {
     const first = showFallback(box.document);
     box.sync('#/jellypass/item/movie/1');
     assert.equal(box.focused().getAttribute('data-jellypass-tv-focus'), 'one', 'first time: the page\'s own');
+    box.input();
     box.document.querySelectorAll('[data-jellypass-tv-focus]')[1].focus();
     // To a Jellyfin page, and Back: Jellyfin web draws a new fallback page.
     first.remove();
@@ -1580,6 +1583,45 @@ describe('TV add-on: the page host\'s router', { timeout: 60_000 }, () => {
     box.shown(fallback, null);
     await pause(30);
     assert.equal(box.focused(), outside);
+  });
+
+  it('does not let Jellyfin web\'s programmatic focus replace the remembered element or cancel the correction', async () => {
+    const box = await sandbox();
+    const first = showFallback(box.document);
+    box.sync('#/jellypass/item/movie/1');
+    box.input();
+    box.document.querySelectorAll('[data-jellypass-tv-focus]')[1].focus();
+    first.remove();
+    box.sync('#/details?id=x');
+    const second = showFallback(box.document);
+    box.sync('#/jellypass/item/movie/1');
+    assert.equal(box.focused().getAttribute('data-jellypass-tv-focus'), 'two');
+    // Jellyfin's pageshow auto-focus picks 'one' (inside the page): the correction still returns to 'two'.
+    const one = box.document.querySelectorAll('[data-jellypass-tv-focus]')[0];
+    box.shown(second, one);
+    await pause(30);
+    assert.equal(box.focused().getAttribute('data-jellypass-tv-focus'), 'two');
+    // And 'two' is still what Back returns to.
+    second.remove();
+    box.sync('#/details?id=y');
+    showFallback(box.document);
+    box.sync('#/jellypass/item/movie/1');
+    assert.equal(box.focused().getAttribute('data-jellypass-tv-focus'), 'two');
+  });
+
+  it('gives Jellyfin\'s title back when the host leaves a retained fallback page (about -> a genuine missing page)', async () => {
+    const box = await sandbox();
+    showFallback(box.document);
+    box.sync('#/jellypass/item/movie/1');
+    const fallback = box.document.getElementById('fallbackPage');
+    assert.equal(fallback.getAttribute('data-title'), 'Item 1');
+    assert.equal(box.document.title, 'Item 1');
+    // Jellyfin web keeps the same fallback component for the next unknown route and does not run pageshow again.
+    box.sync('#/genuine-missing');
+    assert.equal(box.document.querySelector('[data-jellypass-tv-page]'), null);
+    assert.equal(fallback.getAttribute('data-title'), 'Page not found');
+    assert.equal(box.document.querySelector('.pageTitle').textContent, 'Page not found');
+    assert.equal(box.document.title, 'Page not found');
   });
 
   it('shows Jellyfin\'s page as it is when a page fails to draw, and does not try again there', async () => {

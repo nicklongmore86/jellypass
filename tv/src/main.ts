@@ -76,6 +76,7 @@ function start(): void {
   document.addEventListener('keydown', (event) => safely(() => title.key(event)), true);
   document.addEventListener('focusin', (event) => safely(() => title.focusIn(event)), true);
   document.addEventListener('focusin', (event) => safely(() => host.focusIn(event)), true);
+  for (const type of ['keydown', 'pointerdown', 'mousedown', 'touchstart']) document.addEventListener(type, () => safely(() => host.userInput()), true);
   document.addEventListener('pageshow', (event) => safely(() => host.pageShown(event)), true);
   // A hash change is seen at once, so Jellyfin web's "Page not found" is hidden before it is drawn.
   window.addEventListener('hashchange', () => safely(() => host.update()));
