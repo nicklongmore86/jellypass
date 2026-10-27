@@ -3,6 +3,7 @@
 // answers are built from the canary-laden Seerr 3.5.1 fixtures.
 import { readFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
+import { gzipSync } from 'node:zlib';
 import { request as httpRequest, createServer } from 'node:http';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
@@ -529,9 +530,13 @@ export async function createFakeJellyfinForApp(state) {
   let down = false;
   const server = createServer((request, response) => {
     const url = new URL(request.url, 'http://localhost');
-    requests.push({ method: request.method, path: `${url.pathname}${url.search}`, pathname: url.pathname });
+    requests.push({ method: request.method, path: `${url.pathname}${url.search}`, pathname: url.pathname, headers: request.headers });
     if (down) return send(response, 503, { message: 'down' });
     const route = routePath(url.pathname);
+    // Jellyfin web's files, only in a world that serves them (`state.webPage`, even `{}`); otherwise they are answered like any other path.
+    if (state.webPage && (route === '/web' || route === '/web/index.html') && (request.method === 'GET' || request.method === 'HEAD')) return webPage(request, response);
+    const webFile = state.webPage ? WEB_FILES[route] : undefined;
+    if (webFile && request.method === 'GET') return response.writeHead(200, { 'Content-Type': webFile.type, 'Content-Length': Buffer.byteLength(webFile.body) }).end(webFile.body);
     if (route === '/users/public' && request.method === 'GET') {
       // Like Jellyfin, every user but hidden and disabled ones: the household gateway is what narrows this to a household.
       return send(response, 200, Object.entries(state.jellyfinUsers).filter(([, user]) => !user.Policy.IsHidden && !user.Policy.IsDisabled).map(([Id, user]) => ({
@@ -724,6 +729,26 @@ export async function createFakeJellyfinForApp(state) {
     return send(response, 404, {});
   }
 
+  /**
+   * Jellyfin web's page, as Jellyfin 10.11 serves it: with validators (and a 304 to a matching If-None-Match), a range
+   * when asked for one, gzip when the client accepts it, and the headers in `state.webPage.headers`. `state.webPage`
+   * changes it: `body`, `status`, `type`, `headers`, and `gzipAlways` (gzip whatever the client accepts).
+   */
+  function webPage(request, response) {
+    const page = { body: JELLYFIN_WEB_PAGE, status: 200, type: 'text/html; charset=utf-8', ...state.webPage };
+    const headers = { 'Content-Type': page.type, ETag: '"jellyfin-web-etag"', 'Last-Modified': 'Tue, 21 Oct 2025 10:00:00 GMT', 'Accept-Ranges': 'bytes', 'Cache-Control': 'no-cache', ...page.headers };
+    if (page.status !== 200) return response.writeHead(page.status, headers).end(page.body);
+    if (request.headers['if-none-match'] === '"jellyfin-web-etag"') return response.writeHead(304, headers).end();
+    let body = Buffer.from(page.body);
+    if (request.headers.range) return response.writeHead(206, { ...headers, 'Content-Range': `bytes 0-9/${body.length}`, 'Content-Length': 10 }).end(request.method === 'HEAD' ? undefined : body.subarray(0, 10));
+    if (page.gzipAlways || /\bgzip\b/.test(request.headers['accept-encoding'] ?? '')) {
+      body = gzipSync(body);
+      headers['Content-Encoding'] = 'gzip';
+    }
+    response.writeHead(200, { ...headers, 'Content-Length': body.length });
+    response.end(request.method === 'HEAD' ? undefined : body);
+  }
+
   await listen(server);
   return {
     url: `http://127.0.0.1:${server.address().port}`,
@@ -756,6 +781,14 @@ function authorizationToken(header) {
  * The route Jellyfin 10.11 takes a path to: percent-decoded but for `%2F`, in any case, without trailing slashes and
  * without the legacy `/emby` or `/mediabrowser` prefix it strips before routing.
  */
+/** Jellyfin web 10.11's page, shortened: what matters is its `</head>`, its own scripts and stylesheet. */
+export const JELLYFIN_WEB_PAGE = '<!DOCTYPE html><html class="preload"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Jellyfin</title><link href="main.jellyfin.f725276386e5b19afe0c.css" rel="stylesheet"></head><body dir="ltr"><div class="backdropContainer"></div><div class="mainAnimatedPages skinBody"></div><script defer="defer" src="main.jellyfin.bundle.js?2a5c7a9e8f0b7b8d1b6e"></script></body></html>';
+/** Other files of Jellyfin web's, which are never changed. */
+const WEB_FILES = {
+  '/web/main.jellyfin.bundle.js': { type: 'application/javascript', body: 'window.jellyfinWeb = true;</head>' },
+  '/web/other.html': { type: 'text/html; charset=utf-8', body: '<html><head></head><body>other</body></html>' },
+};
+
 function routePath(pathname) {
   return decodeURIComponent(pathname.replace(/%2f/gi, '%252F')).toLowerCase().replace(/\/+$/, '').replace(/^\/(?:emby|mediabrowser)(?=\/)/, '');
 }
@@ -852,7 +885,7 @@ export async function startApp(t, state = world(), options = {}) {
   server = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' }, undefined, {
     background,
     ...(options.trustedProxies ? { trustedProxies: options.trustedProxies } : {}),
-    householdGateway: { jellyfinUrl: jellyfin.url, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: options.loginFailureDelayMs ?? 0, ...(options.loginTimeoutMs ? { loginTimeoutMs: options.loginTimeoutMs } : {}), ...(options.signOutTimeoutMs ? { signOutTimeoutMs: options.signOutTimeoutMs } : {}) },
+    householdGateway: { jellyfinUrl: jellyfin.url, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: options.loginFailureDelayMs ?? 0, ...(options.loginTimeoutMs ? { loginTimeoutMs: options.loginTimeoutMs } : {}), ...(options.signOutTimeoutMs ? { signOutTimeoutMs: options.signOutTimeoutMs } : {}), ...(options.tvAddon ? { tvAddon: options.tvAddon } : {}) },
     ...(options.app === false ? {} : {
       householdApp: {
         catalogue: new TmdbClient(TMDB_KEY, { baseUrl: tmdb.url, ...(options.now ? { now: options.now } : {}) }),

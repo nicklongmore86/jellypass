@@ -45,6 +45,11 @@ export interface Config {
   householdHostPrefix: string;
   /** Serves the household app API on household hosts; needs Seerr, TMDB_API_KEY and HOUSEHOLD_DOMAIN. */
   householdAppEnabled: boolean;
+  /**
+   * The TV add-on (docs/tv-addon.md): the households whose hosts add it to Jellyfin web's page, or 'all'. Undefined
+   * while TV_ADDON_ENABLED is off, and then nothing on any host changes.
+   */
+  tvAddonHouseholds?: string[] | 'all';
   requestBackfillEnabled: boolean;
   requestBackfillSince?: Date;
   logLevel: LogLevel;
@@ -114,6 +119,7 @@ export function loadConfig(): Config {
   if (householdAppEnabled && (!householdDomain || !seerrUrl || !tmdbApiKey)) {
     throw new Error('HOUSEHOLD_DOMAIN, SEERR_URL, SEERR_API_KEY and TMDB_API_KEY are required when HOUSEHOLD_APP_ENABLED is true');
   }
+  const tvAddonHouseholds = parseTvAddon(householdAppEnabled);
   const logLevel = parseLogLevel(process.env.LOG_LEVEL);
   const webSocketIdleTimeoutMs = webSocketTimeout('WS_IDLE_TIMEOUT_MS', DEFAULT_WS_IDLE_TIMEOUT_MS);
   const webSocketUpstreamIdleTimeoutMs = webSocketTimeout('WS_UPSTREAM_IDLE_TIMEOUT_MS', DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS);
@@ -140,6 +146,7 @@ export function loadConfig(): Config {
     ...(householdDomain ? { householdDomain } : {}),
     householdHostPrefix,
     householdAppEnabled,
+    ...(tvAddonHouseholds ? { tvAddonHouseholds } : {}),
     requestBackfillEnabled,
     ...(requestBackfillSince ? { requestBackfillSince } : {}),
     logLevel,
@@ -168,6 +175,24 @@ function parseBackfillSince(value: string): Date {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) throw invalid();
   return date;
+}
+
+/**
+ * TV_ADDON_ENABLED (default false) and TV_ADDON_HOUSEHOLDS: a comma-separated list of household (group) IDs, or `*` for
+ * every household, required when the add-on is on so it is switched on deliberately, one household first. The add-on
+ * calls the household app API, so it needs HOUSEHOLD_APP_ENABLED.
+ */
+function parseTvAddon(householdAppEnabled: boolean): string[] | 'all' | undefined {
+  if (!booleanEnvironment('TV_ADDON_ENABLED', false)) return undefined;
+  if (!householdAppEnabled) throw new Error('HOUSEHOLD_APP_ENABLED is required when TV_ADDON_ENABLED is true');
+  const input = process.env.TV_ADDON_HOUSEHOLDS?.trim() ?? '';
+  if (input === '*') return 'all';
+  const households = [...new Set(input.split(',').map((id) => id.trim().toLowerCase()).filter(Boolean))];
+  if (!households.length) throw new Error('TV_ADDON_HOUSEHOLDS is required when TV_ADDON_ENABLED is true: household IDs separated by commas, or *');
+  if (households.some((id) => !/^[a-z0-9_-]{1,128}$/.test(id))) {
+    throw new Error('TV_ADDON_HOUSEHOLDS must list household IDs (letters, numbers, hyphens and underscores) separated by commas, or *');
+  }
+  return households;
 }
 
 /** Unknown values fall back to `info` with a warning rather than blocking startup over a logging setting. */

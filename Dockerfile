@@ -1,10 +1,11 @@
 FROM node:24-alpine AS build
 WORKDIR /app
-COPY package.json pnpm-lock.yaml tsconfig.json tsconfig.app.json ./
+COPY package.json pnpm-lock.yaml pnpm-workspace.yaml tsconfig.json tsconfig.app.json tsconfig.tv.json ./
 RUN corepack enable && pnpm install --frozen-lockfile
 COPY src ./src
 COPY app ./app
-COPY scripts/build-app.mjs ./scripts/build-app.mjs
+COPY tv ./tv
+COPY scripts/build-app.mjs scripts/build-tv.mjs ./scripts/
 RUN pnpm build && rm -rf dist/app-js
 
 FROM node:24-alpine

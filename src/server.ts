@@ -10,6 +10,7 @@ import type { LogLevel } from './config.js';
 import { HouseholdGateway } from './household-gateway.js';
 import { RECENT_REQUESTS_LIMIT } from './seerr.js';
 import { BackgroundTasks } from './shutdown.js';
+import { TvAssets } from './tv-assets.js';
 import { parseWebhook } from './webhook.js';
 
 const BODY_LIMIT = 64 * 1024;
@@ -40,6 +41,11 @@ export interface ServerOptions {
     loginTimeoutMs?: number;
     /** How long a sign-out through a household host may take at Jellyfin, in milliseconds (default 15 seconds). */
     signOutTimeoutMs?: number;
+    /**
+     * The TV add-on (docs/tv-addon.md) on these households' hosts (by household ID), or on every household's. Without
+     * it, no household host changes.
+     */
+    tvAddon?: { households: string[] | 'all' };
   };
   /**
    * Runs household "Add to my library" joins after their answer. Pass the BackgroundTasks shutdown stops, so it can
@@ -65,9 +71,20 @@ export function makeServer(
   options?: ServerOptions,
 ): JellyPassServer {
   const background = options?.background ?? new BackgroundTasks();
+  const { tvAddon: tvOption, ...gatewayOptions } = options?.householdGateway ?? {};
+  const tvHouseholds = tvOption?.households;
   const householdGateway = options?.householdGateway
     ? new HouseholdGateway({
-        ...options.householdGateway,
+        ...gatewayOptions,
+        jellyfinUrl: options.householdGateway.jellyfinUrl,
+        domain: options.householdGateway.domain,
+        hostPrefix: options.householdGateway.hostPrefix,
+        ...(tvHouseholds ? {
+          tvAddon: {
+            enabled: (householdId: string) => tvHouseholds === 'all' || tvHouseholds.includes(householdId.toLowerCase()),
+            assets: TvAssets.load(),
+          },
+        } : {}),
         trustedProxies: options.trustedProxies ?? [],
         memberIds: (householdId) => service.getHouseholdMemberIds(householdId),
         isPasswordless: (userId) => service.isPasswordless(userId),

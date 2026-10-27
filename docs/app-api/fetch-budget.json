@@ -1,5 +1,5 @@
 {
-  "description": "The household app API calls the PWA makes when each screen is opened directly, signed in: 'atOnce' when the screen opens, 'belowTheFold' once every lazy row has come near the screen (each fetched once). Sorted, as 'METHOD /path' under /jellypass/app/v1. Search is opened on one query ('{query}'); a network's page (on All, Series or Films) and a studio's page on one ID the API lists ('{id}'), first page only (Load more asks for each further page); My requests with one movie and one series request: each request shown is named with one title call, at most 'titlesAtOnce' of them before the member asks for more; shown again within ten minutes of naming them in the same sign-in, it reads the list again ('revisit') and names only the requests whose title it has not read (titles are kept in memory for ten minutes, never their state). Pinned by test/app-pwa.test.mjs ('fetch budget'). A native client makes no more calls than these for the same screen: a household's devices usually share one address and so one per-address budget. See docs/app-design.md, 'Native clients (contract)'.",
+  "description": "The household app API calls the PWA makes when each screen is opened directly, signed in: 'atOnce' when the screen opens, 'belowTheFold' once every lazy row has come near the screen (each fetched once). Sorted, as 'METHOD /path' under /jellypass/app/v1. Search is opened on one query ('{query}'); a network's page (on All, Series or Films) and a studio's page on one ID the API lists ('{id}'), first page only (Load more asks for each further page); My requests with one movie and one series request: each request shown is named with one title call, at most 'titlesAtOnce' of them before the member asks for more; shown again within ten minutes of naming them in the same sign-in, it reads the list again ('revisit') and names only the requests whose title it has not read (titles are kept in memory for ten minutes, never their state). Pinned by test/app-pwa.test.mjs ('fetch budget'). A native client makes no more calls than these for the same screen: a household's devices usually share one address and so one per-address budget. The TV add-on's Home row ('tv-home-row', docs/tv-addon.md) is pinned by test/tv-addon.test.mjs: its one call when Home is laid out, at most once a minute however often Home is redrawn or shown, and none while Home stays on screen. See docs/app-design.md, 'Native clients (contract)'.",
   "limits": {
     "perAddress": {
       "calls": 300,
@@ -154,6 +154,12 @@
         "GET /discover/sources",
         "GET /discover/studio/{id}",
         "GET /me"
+      ]
+    },
+    "tv-home-row": {
+      "calls": 1,
+      "atOnce": [
+        "GET /discover/trending"
       ]
     }
   }

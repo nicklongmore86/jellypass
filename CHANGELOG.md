@@ -18,6 +18,31 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Added
+
+- **TV add-on, step 1 (off by default).** With `TV_ADDON_ENABLED=true` and
+  the households listed in `TV_ADDON_HOUSEHOLDS` (household IDs separated by
+  commas, or `*` for all; required when the add-on is on, and it needs
+  `HOUSEHOLD_APP_ENABLED=true`), those households' hostnames add one
+  `<script>` to Jellyfin web's page (`/web/`, `/web/index.html`). It adds a
+  **JellyPass: Trending** row to Jellyfin web's Home, after its first section,
+  showing the household's own view of Trending from the app API with the
+  app's coarse statuses. The row is drawn for remote-control navigation by
+  Jellyfin web's own focus manager on LG TVs (the LG app loads Jellyfin web
+  from the server) and in browsers. Choosing a card only says that title
+  pages are coming. The script and its stylesheet are served fingerprinted at
+  `/jellypass/tv/` and built for Chromium 63 (ES2017). The page is sent
+  `no-store` without Jellyfin's validators, and asked of Jellyfin whole and
+  unencoded. Anything other than a whole HTML page is relayed unchanged. The
+  row makes one app API call (`GET /discover/trending`) when Home is laid out,
+  and at most one a minute after that; `docs/app-api/fetch-budget.json` lists
+  it as `tv-home-row`. With the add-on off, on any household not listed, and
+  on the admin host, nothing changes: `/jellypass/tv` is still relayed to
+  Jellyfin there. Nothing has been checked on a real TV yet. See
+  [docs/tv-addon.md](docs/tv-addon.md) for the design, the rollout of title
+  pages and "Get this", Search, My requests and the Samsung app, and what to
+  check on a TV.
+
 ## [3.2.4] - 2026-10-27
 
 This is a security patch release for household hostnames, with the household
