@@ -16,7 +16,7 @@ export const METRICS = { frame: { x: 0, y: 0, width: 390, height: 844 }, insets:
 export const OTHER_ORIGIN = 'https://jelly-elsewhere.example.test';
 export const PASSWORD = 'synthetic-password-do-not-log';
 
-export const IDENTITY: ClientIdentity = { client: 'JellyPass iOS', device: 'Test Phone', deviceId: 'synthetic-device-0001', version: '0.1.0' };
+export const IDENTITY: ClientIdentity = { client: 'JellyPass iOS', device: 'Test Phone', deviceId: 'synthetic-device-0001', version: '1.0.0' };
 
 export const PROFILES = [
   { Id: 'u-ana', Name: 'Ana Lima', HasPassword: false },

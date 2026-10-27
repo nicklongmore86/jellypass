@@ -133,8 +133,8 @@ describe('Authorization headers', () => {
   });
 
   it('names the client, device, device ID and version for sign-in, encoded, and needs all four', () => {
-    const identity = { client: 'JellyPass', device: 'iPhone 17 "Pro"', deviceId: 'b5c1-device', version: '0.1.0' };
-    expect(signInAuthorization(identity)).toBe('MediaBrowser Client="JellyPass", Device="iPhone%2017%20%22Pro%22", DeviceId="b5c1-device", Version="0.1.0"');
+    const identity = { client: 'JellyPass', device: 'iPhone 17 "Pro"', deviceId: 'b5c1-device', version: '1.0.0' };
+    expect(signInAuthorization(identity)).toBe('MediaBrowser Client="JellyPass", Device="iPhone%2017%20%22Pro%22", DeviceId="b5c1-device", Version="1.0.0"');
     for (const key of ['client', 'device', 'deviceId', 'version'] as const) {
       expect(() => signInAuthorization({ ...identity, [key]: '  ' })).toThrow(`${key} is required`);
     }

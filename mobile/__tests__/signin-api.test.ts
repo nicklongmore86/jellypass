@@ -75,7 +75,7 @@ describe('sign-in', () => {
     expect(init.headers).toEqual({
       Accept: 'application/json',
       'Content-Type': 'application/json',
-      Authorization: 'MediaBrowser Client="JellyPass%20iOS", Device="Test%20Phone", DeviceId="synthetic-device-0001", Version="0.1.0"',
+      Authorization: 'MediaBrowser Client="JellyPass%20iOS", Device="Test%20Phone", DeviceId="synthetic-device-0001", Version="1.0.0"',
     });
     expect(JSON.parse(init.body!)).toEqual({ Username: 'ben', Pw: PASSWORD });
     expect(url).not.toContain(PASSWORD);
