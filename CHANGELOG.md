@@ -18,12 +18,51 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+## [3.2.2] - 2026-10-27
+
+This is a patch release for the household app (`HOUSEHOLD_APP_ENABLED=true`)
+only: with the app off (the default), nothing changes. There is nothing to
+configure: no setting is added, removed or renamed, and the state file is
+unchanged (schema v7, with the same fields as 3.2.1), so 3.2.1 reads a state
+file written by 3.2.2. No server behaviour changed (only the version string
+JellyPass reports to Jellyfin): the app API, the household gateway, webhook
+payloads, the administrator API and the admin UI are unchanged. Read these
+before upgrading:
+
+- **Close and reopen the installed app** to pick up the change. An open app
+  keeps running the files it loaded until then.
+- **No CDN purge is needed:** the app's files, the stylesheet included, are
+  still named by content hash (those fingerprinted files are sent
+  `public, max-age=31536000, immutable`), and the page, the service worker and
+  every other `/jellypass/app` answer are sent `no-store`, so the changed files
+  have new addresses.
+- **To roll back,** set `JELLYPASS_IMAGE` back to
+  `ghcr.io/nicklongmore86/jellypass:3.2.1` and recreate the container. No
+  state-file or setting change is needed.
+
+The app API's fetch budget (`docs/app-api/fetch-budget.json`) now also lists
+the calls the app makes on **Search** and **My requests**. That documents what
+the app already did; neither the app's calls nor the server changed.
+
+The mobile app's source (`mobile/`) also changed since 3.2.1. It is not part
+of this release: it is not in the image and nothing in it runs on the server.
+
+### Changed
+
 - **Household app: card rows settle with a card centred.** Backdrop rows,
-  poster rows (including a service's "Popular on" rows) and the studios strip
-  now snap to the centre of a card, like the mobile app. A fast flick can still
-  pass several cards; the first card sits at the row's start and the last at its
-  end. The Home hero keeps paging one slide at a time. App files only: no
-  setting, API or state-file change.
+  poster rows (including a service's "Popular on" rows) and the Studios strip
+  now snap to the centre of a card instead of loosely to a card's start. A fast
+  flick can still pass several cards; the first card sits at the row's start
+  and the last at its end. Rows now snap with reduced motion on too (snapping
+  adds no animation). The Home hero keeps paging one slide at a time.
+
+### Fixed
+
+- **Household app: a card reached with Tab is no longer clipped by its row.**
+  The focused card is centred in its row, where the row's snap leaves it, or,
+  if it is wider than the row, lined up with the row's start. Studios logo
+  tiles now get the same treatment, and a backdrop card is never wider than
+  the row it sits in.
 
 ## [3.2.1] - 2026-10-26
 
@@ -2013,7 +2052,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.2.1...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.2.2...HEAD
+[3.2.2]: https://github.com/nicklongmore86/jellypass/compare/v3.2.1...v3.2.2
 [3.2.1]: https://github.com/nicklongmore86/jellypass/compare/v3.2.0...v3.2.1
 [3.2.0]: https://github.com/nicklongmore86/jellypass/compare/v3.1.1...v3.2.0
 [3.1.1]: https://github.com/nicklongmore86/jellypass/compare/v3.1.0...v3.1.1
