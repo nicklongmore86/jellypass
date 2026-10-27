@@ -276,9 +276,11 @@ async function openJellyfinWeb(t, app, { user = ALICE, host = HOST_A, serverAddr
   const held = new Map();
   const storage = new Proxy({}, { get: (_target, name) => (...args) => stored.push([name, ...args]) });
   const location = { href: `https://${host}/web/#/home.html`, origin: `https://${host}`, hash: '#/home.html' };
+  const windowListeners = [];
   const scope = {
     document,
     location,
+    addEventListener: (type, listener) => windowListeners.push([type, listener]),
     MutationObserver,
     setTimeout: (run, delay = 0) => {
       if (delay < 1000) return setTimeout(run, delay);
@@ -353,6 +355,12 @@ async function openJellyfinWeb(t, app, { user = ALICE, host = HOST_A, serverAddr
     /** How many timers are held on the monotonic clock. */
     timers: () => held.size,
     run,
+    /** Jellyfin web's router going to `hash`: the address changes and `hashchange` reaches the window's listeners. */
+    goTo(hash) {
+      location.hash = hash;
+      location.href = `https://${host}/web/${hash}`;
+      for (const [type, listener] of windowListeners) if (type === 'hashchange') listener(new Event('hashchange'));
+    },
     /** As `METHOD /path` under /jellypass/app/v1, a title's ID as `{tmdbId}`, sorted. */
     calls: (from = 0) => requests.slice(from).map((request) => `${request.init.method ?? 'GET'} ${new URL(request.url).pathname.replace('/jellypass/app/v1', '').replace(/^\/(movie|tv)\/[0-9]+/, '/$1/{tmdbId}')}`).sort(),
     /** Every call as made, for comparing two runs: address, method, body and headers. */
@@ -709,13 +717,14 @@ describe('TV add-on: the title view and "Get this"', { timeout: 120_000 }, () =>
       assert.ok(rules.some(({ selector, body }) => /position:\s*fixed/.test(body) && matching(selector, [view])), 'the view\'s root is the fixed box');
       page.key(461);
     }
-    // Every selector in the built stylesheet names classes of one of the two only.
+    // Every selector in the built stylesheet names classes of one of the three only (the page host's is `jellypass-tv-hosting`).
+    const isHost = (name) => name === 'jellypass-tv-hosting';
     const mixed = rules.map(({ selector }) => selector).filter((selector) => {
       const names = (selector.match(/\.jellypass-tv[a-z0-9_-]*/g) ?? []).map((name) => name.slice(1));
       assert.ok(names.length > 0, selector);
-      return !(names.every(isRow) || names.every(isView));
+      return !(names.every(isRow) || names.every(isView) || names.every(isHost));
     });
-    assert.deepEqual(mixed, [], 'selectors outside, or across, the two prefixes');
+    assert.deepEqual(mixed, [], 'selectors outside, or across, the row, the view and the page host');
   });
 
   it('opens a movie over Home from its card, in the app\'s words, with Get this focused and the d-pad kept in the view, in the budget\'s calls', async (t) => {
@@ -1268,5 +1277,369 @@ describe('TV add-on: the title view and "Get this"', { timeout: 120_000 }, () =>
     page.click(card);
     await page.settled();
     assert.deepEqual([page.view() === null, page.requests.length], [true, before]);
+  });
+});
+
+/**
+ * The parts of Jellyfin web 12.3 the page host relies on, as it lays them out (checked against its source:
+ * `scripts/libraryMenu.js` for the header, `components/router/FallbackRoute.tsx` and `components/Page.tsx` for the page).
+ */
+const HEADER = '<div class="skinHeader focuscontainer-x"><button type="button" class="headerButton headerButtonLeft headerBackButton"></button><button type="button" class="headerButton headerHomeButton"></button><h3 class="pageTitle pageTitleWithLogo pageTitleWithDefaultLogo" aria-hidden="true"></h3></div>';
+const NOT_FOUND = '<div class="padded-left padded-right"><h1>Page not found</h1><p>The page you requested could not be found.</p><a class="button-link" href="#/home">Go home</a></div>';
+/** Jellyfin web's router showing its fallback page (React renders it into the page container). */
+const showFallback = (document, { attrs = 'id="fallbackPage" data-role="page" class="page mainAnimatedPage libraryPage" data-title="Page not found" data-backbutton="true" data-menubutton="false"' } = {}) => {
+  document.querySelector('.mainAnimatedPages').insertAdjacentHTML('beforeend', `<div ${attrs}>${NOT_FOUND}</div>`);
+  return document.querySelector('[data-title="Page not found"]');
+};
+const leaveFallback = (document) => {
+  for (const page of document.querySelectorAll('[data-title]')) page.remove();
+};
+const hosting = (page) => page.document.documentElement.classList.contains('jellypass-tv-hosting');
+const hosted = (page) => page.document.querySelector('[data-jellypass-tv-page]');
+const headerTitle = (page) => page.document.querySelector('.skinHeader .pageTitle').textContent;
+
+describe('TV add-on: the page host', { timeout: 60_000 }, () => {
+  const open = async (t, options) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const page = await openJellyfinWeb(t, app, options);
+    page.document.body.insertAdjacentHTML('afterbegin', HEADER);
+    return page;
+  };
+
+  it('fills Jellyfin web\'s "Page not found" page at #/jellypass/about under its own header, with Jellyfin\'s title, and asks for nothing', async (t) => {
+    const page = await open(t);
+    page.home();
+    await page.settled();
+    const calls = page.requests.length;
+    page.goTo('#/jellypass/about');
+    showFallback(page.document);
+    await page.settled();
+    const box = hosted(page);
+    assert.ok(box, 'the JellyPass page is drawn');
+    assert.equal(box.parentNode.id, 'fallbackPage', 'in Jellyfin\'s own page');
+    assert.deepEqual([...box.querySelectorAll('h1')].map((h) => h.textContent), ['JellyPass']);
+    assert.equal(headerTitle(page), 'JellyPass');
+    assert.equal(page.document.title, 'JellyPass');
+    assert.equal(page.document.getElementById('fallbackPage').getAttribute('data-title'), 'JellyPass', 'so Jellyfin web\'s own pageshow sets the same title');
+    // The header's logo look is Jellyfin's: gone, as its own setTitle takes it off.
+    assert.equal(page.document.querySelector('.pageTitle').className, 'pageTitle');
+    // Jellyfin web's own content is left in the page (React owns it), only hidden by the stylesheet.
+    assert.ok(hosting(page));
+    assert.ok(page.document.querySelector('#fallbackPage > .padded-left h1'));
+    assert.equal(page.requests.length, calls, 'no call is made');
+    assert.equal(page.rows().length, 1, 'Home\'s row is as it was, not copied into the page');
+    assert.equal(page.document.querySelectorAll('[data-jellypass-tv-page] [data-jellypass-tv-row]').length, 0);
+  });
+
+  it('hides "Page not found" before it is drawn: the hiding is set when the address changes, not when the page appears', async (t) => {
+    const page = await open(t);
+    assert.ok(!hosting(page));
+    page.goTo('#/jellypass/about');
+    assert.ok(hosting(page), 'set at once by the hash change');
+    showFallback(page.document);
+    assert.ok(hosting(page), 'still set when the page is drawn, before the add-on has filled it');
+    await page.settled();
+    assert.ok(hosted(page));
+    const css = readFileSync(path.join(DIST_TV, STYLESHEET), 'utf8');
+    assert.match(css, /html\.jellypass-tv-hosting #fallbackPage\[data-role="page"\]\.page:not\(\.hide\) > :not\(\[data-jellypass-tv-page\]\)\s*\{\s*display:\s*none !important/);
+  });
+
+  it('is already on a JellyPass address when Jellyfin web loads it', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const served = await app.get('/web/index.html', { host: HOST_A, user: null });
+    assert.ok(served.text.includes(TAG));
+    const page = await open(t);
+    page.goTo('#/jellypass/about');
+    page.run();
+    assert.ok(hosting(page));
+  });
+
+  it('draws nothing for a path it has no page for, or an address outside #/jellypass/, and leaves Jellyfin\'s page as it is', async (t) => {
+    const page = await open(t);
+    for (const hash of ['#/jellypass/nope', '#/jellypass/', '#/jellypass', '#/jellypass/about/more', '#/jellypassx/about', '#/nope', '#!/jellypass/about']) {
+      page.goTo(hash);
+      showFallback(page.document);
+      await page.settled();
+      assert.ok(!hosting(page), hash);
+      assert.equal(hosted(page), null, hash);
+      assert.equal(headerTitle(page), '', hash);
+      assert.equal(page.document.getElementById('fallbackPage').getAttribute('data-title'), 'Page not found', hash);
+      leaveFallback(page.document);
+    }
+  });
+
+  it('fails safe: Jellyfin\'s page not as expected means nothing is drawn, nothing is hidden and nothing is touched', async (t) => {
+    for (const attrs of [
+      'data-role="page" class="page" data-title="Page not found"',
+      'id="fallbackPage" class="page" data-title="Page not found"',
+      'id="fallbackPage" data-role="page" data-title="Page not found"',
+      'id="fallbackPage" data-role="page" class="page hide" data-title="Page not found"',
+    ]) {
+      const page = await open(t);
+      page.goTo('#/jellypass/about');
+      showFallback(page.document, { attrs });
+      await page.settled();
+      assert.equal(hosted(page), null, attrs);
+      assert.equal(headerTitle(page), '', attrs);
+      assert.equal(page.document.querySelector('[data-title]').getAttribute('data-title'), 'Page not found', attrs);
+      if (attrs.startsWith('id=')) assert.ok(!hosting(page), `${attrs}: not hidden`);
+    }
+  });
+
+  it('still draws when the header is not there (the desktop layout hides Jellyfin\'s own and has no title), setting the document\'s title', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const page = await openJellyfinWeb(t, app);
+    page.goTo('#/jellypass/about');
+    showFallback(page.document);
+    await page.settled();
+    assert.ok(hosted(page));
+    assert.equal(page.document.title, 'JellyPass');
+  });
+
+  it('cleans up when the route is left: to Home, to another page of Jellyfin web\'s, or to an address it has no page for', async (t) => {
+    const page = await open(t);
+    page.goTo('#/jellypass/about');
+    showFallback(page.document);
+    await page.settled();
+    assert.ok(hosted(page));
+    // Jellyfin web's router goes to another unknown address: it keeps the same fallback page.
+    page.goTo('#/somewhere-else');
+    await page.settled();
+    assert.equal(hosted(page), null);
+    assert.ok(!hosting(page), 'Jellyfin\'s own "Page not found" is shown again');
+    // And back, then away to Home, where its page is gone.
+    page.goTo('#/jellypass/about');
+    await page.settled();
+    assert.ok(hosted(page));
+    page.goTo('#/home');
+    leaveFallback(page.document);
+    await page.settled();
+    assert.equal(hosted(page), null);
+    assert.ok(!hosting(page));
+    // Home is Home again: the row is drawn by the add-on as before.
+    page.home();
+    page.shown();
+    await page.settled();
+    assert.equal(page.rows().length, 1);
+  });
+
+  it('draws the page again when Jellyfin web returns to it (history Back), on its new page', async (t) => {
+    const page = await open(t);
+    page.goTo('#/jellypass/about');
+    showFallback(page.document);
+    await page.settled();
+    leaveFallback(page.document);
+    page.goTo('#/details?id=abc');
+    await page.settled();
+    assert.equal(hosted(page), null);
+    page.goTo('#/jellypass/about');
+    showFallback(page.document);
+    await page.settled();
+    assert.equal(page.document.querySelectorAll('[data-jellypass-tv-page]').length, 1);
+    assert.equal(headerTitle(page), 'JellyPass');
+  });
+
+  it('handles no key: Back is Jellyfin web\'s, and nothing is prevented or stopped', async (t) => {
+    const page = await open(t);
+    page.goTo('#/jellypass/about');
+    showFallback(page.document);
+    await page.settled();
+    const link = page.document.querySelector('[data-jellypass-tv-page] a');
+    assert.ok(link);
+    link.focus();
+    for (const keyCode of [461, 10009, 27, 8, 13, 37, 38, 39, 40]) {
+      assert.equal(page.key(keyCode).defaultPrevented, false, `key ${keyCode}`);
+    }
+    // The page has no key handler of its own: the bundle's only keydown listener is the title view's, which does nothing while that view is closed.
+    const source = readFileSync(path.join(DIST_TV, SCRIPT), 'utf8');
+    assert.equal(count(source, 'addEventListener("keydown"'), 1);
+  });
+
+  it('does nothing on Home\'s own address', async (t) => {
+    const page = await open(t);
+    page.home();
+    await page.settled();
+    page.goTo('#/home.html');
+    await page.settled();
+    assert.equal(hosted(page), null);
+    assert.ok(!hosting(page));
+  });
+});
+
+describe('TV add-on: the page host\'s router', { timeout: 60_000 }, () => {
+  const TV_SRC = path.join(import.meta.dirname, '..', 'tv', 'src');
+  const ENTRY = `
+    import { FOCUS_ATTR, PageHost } from './page-host.ts';
+    const log = [];
+    window.__log = log;
+    const host = new PageHost(document, () => location.hash);
+    window.__host = host;
+    host.register('/jellypass/item/:kind/:id', ({ document, container, params }) => {
+      log.push('render ' + params.kind + '/' + params.id);
+      const one = document.createElement('button');
+      one.setAttribute(FOCUS_ATTR, 'one');
+      const two = document.createElement('button');
+      two.setAttribute(FOCUS_ATTR, 'two');
+      container.appendChild(one);
+      container.appendChild(two);
+      return { title: 'Item ' + params.id, focus: one, cleanup: () => log.push('cleanup ' + params.kind + '/' + params.id) };
+    });
+    host.register('/jellypass/broken', () => { log.push('render broken'); throw new Error('boom'); });
+    host.register('/jellypass/throws-on-leave', ({ container }) => ({ title: 'T', cleanup: () => { throw new Error('boom'); } }));
+    document.addEventListener('focusin', (e) => host.focusIn(e), true);
+    document.addEventListener('pageshow', (e) => host.pageShown(e), true);
+  `;
+  let code;
+  const sandbox = async () => {
+    if (!code) {
+      const { build } = await import('esbuild');
+      const result = await build({ stdin: { contents: ENTRY, resolveDir: TV_SRC, loader: 'ts' }, bundle: true, format: 'iife', target: 'es2017', write: false, logLevel: 'silent' });
+      code = result.outputFiles[0].text;
+    }
+    const { document, Event, CustomEvent } = parseHTML('<html><body><div class="mainAnimatedPages"></div></body></html>');
+    document.body.insertAdjacentHTML('afterbegin', HEADER);
+    const location = { hash: '#/home' };
+    const scope = { document, location, setTimeout, clearTimeout };
+    scope.window = scope;
+    vm.runInContext(code, vm.createContext(scope));
+    const sync = (hash) => {
+      location.hash = hash;
+      scope.__host.update();
+    };
+    return {
+      document,
+      /** The page functions' log, copied out of the sandbox's realm. */
+      get log() { return [...scope.__log]; },
+      sync,
+      /** The member pressing a key or pointer. */
+      input: () => scope.__host.userInput(),
+      focused: () => LIVE_FOCUS(document),
+      /** Jellyfin web showing its page: `pageshow` dispatched on it, then its auto-focus (the next effect, in the same task). */
+      shown(pageEl, stealFocus) {
+        pageEl.dispatchEvent(new CustomEvent('pageshow', { bubbles: true, detail: { isRestored: false } }));
+        if (stealFocus) stealFocus.focus();
+      },
+    };
+  };
+
+  it('matches a pattern with :params, decoded, and gives the page its container, title and cleanup', async () => {
+    const box = await sandbox();
+    box.sync('#/jellypass/item/movie/12%2034?x=1');
+    const fallback = showFallback(box.document);
+    box.sync('#/jellypass/item/movie/12%2034?x=1');
+    assert.deepEqual(box.log, ['render movie/12 34']);
+    assert.equal(box.document.querySelector('.pageTitle').textContent, 'Item 12 34');
+    box.sync('#/jellypass/item/movie');
+    assert.deepEqual(box.log, ['render movie/12 34', 'cleanup movie/12 34']);
+    assert.equal(box.document.querySelector('[data-jellypass-tv-page]'), null);
+    assert.ok(fallback.querySelector('h1'), 'Jellyfin\'s own content is untouched');
+    box.sync('#/jellypass/item/movie/%E0%A4%A');
+    assert.equal(box.log.length, 2, 'a path that does not decode matches nothing');
+  });
+
+  it('renders once however often it is asked, and cleans up once when the page changes under it', async () => {
+    const box = await sandbox();
+    showFallback(box.document);
+    for (let i = 0; i < 4; i += 1) box.sync('#/jellypass/item/tv/9');
+    assert.deepEqual(box.log, ['render tv/9']);
+    // The same fallback page, another JellyPass page: the first is cleaned up, the second drawn.
+    box.sync('#/jellypass/item/tv/10');
+    assert.deepEqual(box.log, ['render tv/9', 'cleanup tv/9', 'render tv/10']);
+    assert.equal(box.document.querySelectorAll('[data-jellypass-tv-page]').length, 1);
+    // Jellyfin web removes its page (a new route): cleaned up even though the address is still ours.
+    leaveFallback(box.document);
+    box.sync('#/jellypass/item/tv/10');
+    assert.deepEqual(box.log.slice(-1), ['cleanup tv/10']);
+  });
+
+  it('restores focus to what had it when Back returns, else to the page\'s first element', async () => {
+    const box = await sandbox();
+    const first = showFallback(box.document);
+    box.sync('#/jellypass/item/movie/1');
+    assert.equal(box.focused().getAttribute('data-jellypass-tv-focus'), 'one', 'first time: the page\'s own');
+    box.input();
+    box.document.querySelectorAll('[data-jellypass-tv-focus]')[1].focus();
+    // To a Jellyfin page, and Back: Jellyfin web draws a new fallback page.
+    first.remove();
+    box.sync('#/details?id=x');
+    showFallback(box.document);
+    box.sync('#/jellypass/item/movie/1');
+    assert.equal(box.focused().getAttribute('data-jellypass-tv-focus'), 'two', 'back: where it was');
+    // Another title has its own memory.
+    box.sync('#/jellypass/item/movie/2');
+    assert.equal(box.focused().getAttribute('data-jellypass-tv-focus'), 'one');
+  });
+
+  it('puts focus right once more after Jellyfin web\'s own auto-focus on pageshow, and only once', async () => {
+    const box = await sandbox();
+    const fallback = showFallback(box.document);
+    box.sync('#/jellypass/item/movie/1');
+    const outside = box.document.querySelector('.headerHomeButton');
+    box.shown(fallback, outside);
+    await pause(30);
+    assert.equal(box.focused().getAttribute('data-jellypass-tv-focus'), 'one');
+    // Later, the member moves on; a later pageshow does not pull focus back.
+    outside.focus();
+    box.shown(fallback, null);
+    await pause(30);
+    assert.equal(box.focused(), outside);
+  });
+
+  it('does not let Jellyfin web\'s programmatic focus replace the remembered element or cancel the correction', async () => {
+    const box = await sandbox();
+    const first = showFallback(box.document);
+    box.sync('#/jellypass/item/movie/1');
+    box.input();
+    box.document.querySelectorAll('[data-jellypass-tv-focus]')[1].focus();
+    first.remove();
+    box.sync('#/details?id=x');
+    const second = showFallback(box.document);
+    box.sync('#/jellypass/item/movie/1');
+    assert.equal(box.focused().getAttribute('data-jellypass-tv-focus'), 'two');
+    // Jellyfin's pageshow auto-focus picks 'one' (inside the page): the correction still returns to 'two'.
+    const one = box.document.querySelectorAll('[data-jellypass-tv-focus]')[0];
+    box.shown(second, one);
+    await pause(30);
+    assert.equal(box.focused().getAttribute('data-jellypass-tv-focus'), 'two');
+    // And 'two' is still what Back returns to.
+    second.remove();
+    box.sync('#/details?id=y');
+    showFallback(box.document);
+    box.sync('#/jellypass/item/movie/1');
+    assert.equal(box.focused().getAttribute('data-jellypass-tv-focus'), 'two');
+  });
+
+  it('gives Jellyfin\'s title back when the host leaves a retained fallback page (about -> a genuine missing page)', async () => {
+    const box = await sandbox();
+    showFallback(box.document);
+    box.sync('#/jellypass/item/movie/1');
+    const fallback = box.document.getElementById('fallbackPage');
+    assert.equal(fallback.getAttribute('data-title'), 'Item 1');
+    assert.equal(box.document.title, 'Item 1');
+    // Jellyfin web keeps the same fallback component for the next unknown route and does not run pageshow again.
+    box.sync('#/genuine-missing');
+    assert.equal(box.document.querySelector('[data-jellypass-tv-page]'), null);
+    assert.equal(fallback.getAttribute('data-title'), 'Page not found');
+    assert.equal(box.document.querySelector('.pageTitle').textContent, 'Page not found');
+    assert.equal(box.document.title, 'Page not found');
+  });
+
+  it('shows Jellyfin\'s page as it is when a page fails to draw, and does not try again there', async () => {
+    const box = await sandbox();
+    showFallback(box.document);
+    for (let i = 0; i < 3; i += 1) box.sync('#/jellypass/broken');
+    assert.deepEqual(box.log, ['render broken']);
+    assert.equal(box.document.querySelector('[data-jellypass-tv-page]'), null, 'its container is removed');
+    assert.ok(!box.document.documentElement.classList.contains('jellypass-tv-hosting'));
+    assert.equal(box.document.querySelector('.pageTitle').textContent, '');
+  });
+
+  it('is not stopped by a cleanup that throws', async () => {
+    const box = await sandbox();
+    showFallback(box.document);
+    box.sync('#/jellypass/throws-on-leave');
+    assert.ok(box.document.querySelector('[data-jellypass-tv-page]'));
+    box.sync('#/jellypass/item/movie/3');
+    assert.deepEqual(box.log, ['render movie/3']);
   });
 });

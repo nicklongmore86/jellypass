@@ -1,5 +1,7 @@
+import { ABOUT_PATH, renderAbout } from './about.js';
 import { Asked } from './asked.js';
 import { isHomeShown } from './jellyfin-web.js';
+import { PageHost } from './page-host.js';
 import { HomeRow } from './row.js';
 import { TitleView } from './title.js';
 
@@ -51,11 +53,15 @@ function start(): void {
     },
   });
   const row: HomeRow = new HomeRow(document, api, base.origin, asked, (card) => safely(() => title.open(card)));
+  // JellyPass pages at #/jellypass/..., in Jellyfin web's own "page not found" page (tv/src/page-host.ts).
+  const host = new PageHost(document, () => location.hash);
+  host.register(ABOUT_PATH, renderAbout);
   let timer: ReturnType<typeof setTimeout> | undefined;
   const settle = () => {
     if (timer !== undefined) return;
     timer = setTimeout(() => {
       timer = undefined;
+      safely(() => host.update());
       safely(() => title.update());
       safely(() => row.update());
     }, SETTLE_MS);
@@ -69,6 +75,12 @@ function start(): void {
   // Back closes the view before Jellyfin web's own handler (on window, bubbling) sees it.
   document.addEventListener('keydown', (event) => safely(() => title.key(event)), true);
   document.addEventListener('focusin', (event) => safely(() => title.focusIn(event)), true);
+  document.addEventListener('focusin', (event) => safely(() => host.focusIn(event)), true);
+  for (const type of ['keydown', 'pointerdown', 'mousedown', 'touchstart']) document.addEventListener(type, () => safely(() => host.userInput()), true);
+  document.addEventListener('pageshow', (event) => safely(() => host.pageShown(event)), true);
+  // A hash change is seen at once, so Jellyfin web's "Page not found" is hidden before it is drawn.
+  window.addEventListener('hashchange', () => safely(() => host.update()));
+  safely(() => host.update());
   row.update();
 }
 

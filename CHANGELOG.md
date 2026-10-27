@@ -18,6 +18,19 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Added
+
+- **The TV add-on can now show JellyPass pages inside Jellyfin web, at
+  `#/jellypass/...`.** A page is drawn into Jellyfin's own "page not found"
+  page, so Jellyfin's real header, its Back and Home buttons, its history and
+  its focus handling apply, in the TV layout and the desktop layout, and the
+  add-on handles no key. Jellyfin's "page not found" text is hidden before it
+  is drawn, so it never flashes. If Jellyfin web's page is not what the add-on
+  expects, nothing is drawn and Jellyfin's page is left alone. The only page so
+  far is a small placeholder at `#/jellypass/about`, which nothing links to and
+  which makes no call; the title view is unchanged. Nothing changes on the
+  admin host or on households the add-on is off for.
+
 ### Changed
 
 - **The TV add-on's Home row is now "Discover", in Jellyfin web's own card

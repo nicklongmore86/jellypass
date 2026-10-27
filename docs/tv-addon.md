@@ -2,7 +2,7 @@
 
 ## Status
 
-Steps 1 and 2 of 5 are done: behind `TV_ADDON_ENABLED`, off by default, the household gateway adds one script to
+Steps 1 and 2 of 5 are done, and the **page host** of the redesign (below, "The page host") is in: behind `TV_ADDON_ENABLED`, off by default, the household gateway adds one script to
 Jellyfin web's page on the households listed in `TV_ADDON_HOUSEHOLDS`, and that script adds one **Discover**
 row to Jellyfin web's Home (step 1; redesigned, see "The row"). Choosing a card opens a JellyPass title view over Home, with **Play** or **Get
 this** (step 2, "The title view"). Search, **My requests** and the Samsung loader app come in later steps (see
@@ -154,6 +154,42 @@ flowchart LR
   Jellyfin's image box, in Jellyfin web's own look (nothing of its own palette).
 - **Choosing a card** opens the title view (below). A card's state is read through the "Get this" overlay, so a title
   the member just asked for is no longer Available to get and leaves the row (above).
+
+### The page host
+
+`tv/src/page-host.ts`: a host inside Jellyfin web for JellyPass pages at `#/jellypass/...`. Jellyfin web has no route
+extension point, but its route table ends in a "page not found" route (`components/router/FallbackRoute.tsx`, the
+same in the TV and the desktop layout): a real Jellyfin page, `<div id="fallbackPage" data-role="page" class="page
+mainAnimatedPage libraryPage">`, under Jellyfin's own header. An unknown hash such as `#/jellypass/about` lands on it.
+The host puts a JellyPass page in it, so Jellyfin's header, its Back and Home buttons, its history, its focus manager
+and its scrolling all apply, and the add-on handles no key: Back (the remote's, the LG's, the browser's) is Jellyfin
+web's history, and leaves the page as it leaves any other.
+
+- **The router API** (for pages): `host.register('/jellypass/title/:id', render)`. `render({ document, container,
+  params })` draws into `container` only (an empty box inside Jellyfin's page) and returns `{ title, cleanup?, focus? }`.
+  The host sets Jellyfin's header title, calls `cleanup` when the page is left (the address changes, or Jellyfin web
+  removes its page) and removes the container. Focus: a page marks elements `data-jellypass-tv-focus="<key>"`; the host
+  remembers (in memory only, for the last 20 pages) the one that had focus, and when Back returns it focuses that
+  element again, else `focus`. Jellyfin web auto-focuses a page on a TV on its `pageshow`; the host puts focus right
+  once more just after it.
+- **No flash.** When the address is a registered JellyPass page, the host sets a class on `<html>` at once (on
+  `hashchange`, before Jellyfin web has drawn anything), and a rule in the stylesheet hides the children of
+  `#fallbackPage` that are not the host's. Jellyfin's "Page not found" is hidden, not removed (React owns it), so it
+  is shown again if the page is left for another unknown address.
+- **The title.** `data-title` on Jellyfin's page (read by `scripts/libraryMenu.js` on `pageshow`), the header's
+  `.skinHeader .pageTitle` (as `libraryMenu.setTitle` sets it) and `document.title`. In the **desktop** (modern) layout
+  Jellyfin web hides that header and has its own toolbar with no page title and no Back button, so there the title is
+  the browser tab's and Back is the browser's history.
+- **Fails safe.** If `#fallbackPage` is not there, is not a `[data-role=page].page`, or is `hide`, or the address has
+  no registered page, nothing is drawn, the class is not set (the rule also checks the page's shape), and Jellyfin's
+  page is untouched. A page whose `render` throws is removed, not retried at that address, and Jellyfin's page shows.
+- **Placeholder.** `#/jellypass/about` (`tv/src/about.ts`) is the one page so far: a heading, one line and a link home.
+  Nothing links to it. It makes no call. The title view still opens over Home as before; moving it onto the host is
+  the next step.
+- **Coupling** (checked against Jellyfin web 12.3, whose files this uses are identical in 12.4): `FallbackRoute.tsx`
+  (`#fallbackPage`), `components/Page.tsx` (`data-role`, `data-title`, the `pageshow` it dispatches),
+  `scripts/libraryMenu.js` (`.pageTitle`), `components/autoFocuser.js`. Not checked: other Jellyfin web
+  versions (10.11, which the Tizen builds use, among them); where the page is not as above, the add-on draws nothing.
 
 ### The title view
 
