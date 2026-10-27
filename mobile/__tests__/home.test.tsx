@@ -495,6 +495,10 @@ describe('accessibility', () => {
     await scrollToEnd();
     const found = pressables();
     expect(found.length).toBeGreaterThan(150);
+    // Among them, the studios' tiles and the services' headings, each a link to its page.
+    const named = found.map((node) => String(node.props.accessibilityLabel));
+    expect(named.filter((name) => name.endsWith(', studio'))).toEqual(['Disney, studio', 'Marvel Studios, studio', 'A24, studio']);
+    expect(named.filter((name) => name.endsWith(', see all'))).toEqual(SERVICE_NAMES.map((name) => `Popular on ${name}, see all`));
     const problems = found
       .map((node) => {
         const what = String(node.props.accessibilityLabel ?? textOf(node));
