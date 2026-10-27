@@ -602,7 +602,8 @@ and one series request); a **network's** page on All, Series or Films and a **st
 `/discover/sources` and the list's first page; **Load more** is the member's). It also
 holds the server's budgets. `test/app-pwa.test.mjs` ("fetch budget") runs the real app against the API and fails
 if any screen makes a different set of calls, so a change that makes the app chattier has to change the file, and a
-native client is tested against the same numbers.
+native client is tested against the same numbers. The TV add-on's Home row is `tv-home-row` there (one call; see
+`docs/tv-addon.md`), pinned by `test/tv-addon.test.mjs`.
 
 **Schema.** `docs/app-api/v1.openapi.json` (OpenAPI 3.1, JSON Schema 2020-12) describes every `v1` endpoint, its
 parameters and every answer, errors included; `info.version` is `apiVersion`. Its object schemas are closed
@@ -622,7 +623,8 @@ elsewhere; the files are never proxied to Jellyfin.
   compiled by `tsc` alone (`tsconfig.app.json`: DOM libraries, ES modules) to `dist/app/js`, and `scripts/build-app.mjs`
   writes the served files (`app/static`: page, stylesheet, manifest, service worker, icons, TMDB logo, and the compiled
   client from `dist/app-js`) to `dist/app`, **content-hashing every file but the page and the worker** (see "Fingerprinted
-  files"). The
+  files"). The one exception to "no bundler" is the TV add-on (`tv/`, built by esbuild to ES2017 by its own
+  `scripts/build-tv.mjs`; see `docs/tv-addon.md`), which the PWA never uses. The
   server reads `dist/app` once at startup (`src/app-assets.ts`) and refuses to start the app if it is missing. The
   Dockerfile builds it with the rest. `scripts/make-app-icons.py` regenerates the PNG icons (Pillow; the PNGs are
   committed). The only new dependency is `linkedom`, a dev dependency, for DOM-level tests.

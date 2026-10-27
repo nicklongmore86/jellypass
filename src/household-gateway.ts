@@ -10,6 +10,7 @@ import { ClientIpResolver, normaliseIp } from './client-ip.js';
 import { DEFAULT_WS_IDLE_TIMEOUT_MS, DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS, type LogLevel } from './config.js';
 import { LIBRARY_JOIN_HTML, LIBRARY_JOIN_JS, LIBRARY_JOIN_STYLES } from './household-ui.js';
 import { AttemptCounter } from './rate-limit.js';
+import type { TvAssets } from './tv-assets.js';
 
 const PUBLIC_USERS_PATH = '/users/public';
 const BRANDING_CONFIGURATION_PATH = '/branding/configuration';
@@ -66,6 +67,19 @@ const DEFAULT_SIGN_OUT_TIMEOUT_MS = 15_000;
 const LOGIN_CLIENT_FIELDS = ['client', 'device', 'deviceid', 'version'];
 const LIBRARY_JOIN_PATH = '/jellypass/add';
 const APP_PATH = '/jellypass/app';
+/** The TV add-on's files, on a household host it is on for (see docs/tv-addon.md). */
+const TV_PATH = '/jellypass/tv';
+/** The routes Jellyfin answers with Jellyfin web's page: `/web/` (the trailing slash is not part of a route) and `/web/index.html`. */
+const WEB_PAGE_ROUTES = new Set(['/web', '/web/index.html']);
+/** Largest Jellyfin web page the TV add-on is added to, in bytes; a larger one is relayed as it is. */
+const MAX_WEB_PAGE_BYTES = 1024 * 1024;
+/**
+ * Request headers not sent to Jellyfin for its web page when the TV add-on is added to it: the page must come back
+ * whole (no range), unencoded (so the tag can be added) and fresh (a 304 would leave the browser on a copy without it).
+ */
+const WEB_PAGE_DROPPED_REQUEST_HEADERS = ['accept-encoding', 'range', 'if-range', 'if-none-match', 'if-modified-since', 'if-match', 'if-unmodified-since'];
+/** Jellyfin's answer headers that no longer describe the page once the tag is added to it. */
+const WEB_PAGE_DROPPED_RESPONSE_HEADERS = ['content-length', 'transfer-encoding', 'etag', 'last-modified', 'content-md5', 'digest', 'accept-ranges', 'cache-control', 'expires', 'pragma', 'age'];
 /** Largest Jellyfin answer read for the household app with the caller's own credentials, in bytes. */
 const MAX_CALLER_JSON_BYTES = 16 * 1024 * 1024;
 const LIBRARY_JOIN_ASSETS: Record<string, { body: string; contentType: string }> = {
@@ -156,6 +170,12 @@ export interface HouseholdGatewayOptions {
   app?: HouseholdAppHandler;
   /** The app's own files at /jellypass/app/ (the page, script, styles, manifest, service worker). Only served with `app`. */
   appAssets?: AppAssets;
+  /**
+   * The TV add-on (docs/tv-addon.md), on the household hosts `enabled` says: their Jellyfin web page (`/web/`,
+   * `/web/index.html`) gets one `<script>` for it, and /jellypass/tv/* serves its files. Every other household host,
+   * and every other path, is answered exactly as without it.
+   */
+  tvAddon?: { enabled: (householdId: string) => boolean; assets: TvAssets };
 }
 
 /** Jellyfin's whole answer, as read by {@link HouseholdGateway.#sendWhole}. */
@@ -193,6 +213,7 @@ export class HouseholdGateway {
   readonly #libraryJoin: HouseholdGatewayOptions['libraryJoin'];
   readonly #app: HouseholdGatewayOptions['app'];
   readonly #appAssets: HouseholdGatewayOptions['appAssets'];
+  readonly #tvAddon: HouseholdGatewayOptions['tvAddon'];
   readonly #libraryJoinsByUser = new AttemptCounter({ windowMs: LIBRARY_JOIN_WINDOW_MS, maxKeys: MAX_LOGIN_CLIENTS });
   readonly #libraryJoinsInAll = new AttemptCounter({ windowMs: LIBRARY_JOIN_WINDOW_MS, maxKeys: 1 });
   readonly #webSocketIdleTimeoutMs: number;
@@ -223,6 +244,7 @@ export class HouseholdGateway {
     this.#libraryJoin = options.libraryJoin;
     this.#app = options.app;
     this.#appAssets = options.app ? options.appAssets : undefined;
+    this.#tvAddon = options.tvAddon;
   }
 
   public householdId(hostHeader: string | undefined): string | undefined {
@@ -257,7 +279,8 @@ export class HouseholdGateway {
       writeJson(response, 404, { error: 'household_not_found' }, appPath ? NEVER_STORE : {});
       return;
     }
-    const decision = route === undefined ? undefined : this.#decide(request.method, route, requestUrl.searchParams);
+    const tv = this.#tvAssetsFor(householdId);
+    const decision = route === undefined ? undefined : this.#decide(request.method, route, requestUrl.searchParams, tv !== undefined);
     if (decision === undefined) {
       // Jellyfin might route it otherwise than the gateway reads it, so no check here can be trusted to apply.
       writeJson(response, 400, { error: 'invalid_request' }, NEVER_STORE);
@@ -271,6 +294,13 @@ export class HouseholdGateway {
         // Every other answer here, whatever writes it (an unknown file, the API, its errors), is never stored by a CDN.
         for (const [name, value] of Object.entries(NEVER_STORE)) response.setHeader(name, value);
         await this.#householdApp(request, response, requestUrl, householdId, memberIds);
+        return;
+      case 'tvAsset':
+        if ((tv as TvAssets).serve(request, response, (request.url ?? '/').split('?', 1)[0] as string)) return;
+        writeJson(response, 404, { error: 'not_found' });
+        return;
+      case 'webPage':
+        await this.#proxyWebPage(request, response, tv as TvAssets);
         return;
       case 'publicUsers':
         await this.#proxyPublicUsers(request, response, memberIds);
@@ -342,16 +372,19 @@ export class HouseholdGateway {
    * `100%25 Real`) is decided as Jellyfin reads it, decoded once, unless decoding it further would change the decision:
    * then it is undefined, as some other reader on the way (a proxy, a CDN) might decode it again.
    */
-  #decide(method: string | undefined, route: string, query: URLSearchParams): RouteDecision | undefined {
-    const decision = this.#decideRoute(method, route, query);
+  #decide(method: string | undefined, route: string, query: URLSearchParams, tv: boolean): RouteDecision | undefined {
+    const decision = this.#decideRoute(method, route, query, tv);
     if (!/%[0-9a-f]{2}/i.test(route)) return decision;
     const further = furtherDecodedRoute(route);
     if (further === undefined) return undefined;
-    return JSON.stringify(this.#decideRoute(method, further, query)) === JSON.stringify(decision) ? decision : undefined;
+    return JSON.stringify(this.#decideRoute(method, further, query, tv)) === JSON.stringify(decision) ? decision : undefined;
   }
 
-  #decideRoute(method: string | undefined, route: string, query: URLSearchParams): RouteDecision {
+  /** `tv`: the TV add-on is on for the household; without it, no route is decided otherwise than before it existed. */
+  #decideRoute(method: string | undefined, route: string, query: URLSearchParams, tv: boolean): RouteDecision {
     if (isAppRoute(route)) return { kind: 'app' };
+    if (tv && (route === TV_PATH || route.startsWith(`${TV_PATH}/`))) return { kind: 'tvAsset' };
+    if (tv && (method === 'GET' || method === 'HEAD') && WEB_PAGE_ROUTES.has(route)) return { kind: 'webPage' };
     if (method === 'GET' && route === PUBLIC_USERS_PATH) return { kind: 'publicUsers' };
     if (method === 'GET' && route === BRANDING_CONFIGURATION_PATH) return { kind: 'branding' };
     if (method === 'GET' && route === QUICK_CONNECT_ENABLED_PATH) return { kind: 'quickConnectEnabled' };
@@ -389,7 +422,7 @@ export class HouseholdGateway {
     const route = jellyfinRoute(request.url ?? '/');
     const decision = route === undefined
       ? undefined
-      : this.#decide(request.method, route, new URL(request.url ?? '/', 'http://localhost').searchParams);
+      : this.#decide(request.method, route, new URL(request.url ?? '/', 'http://localhost').searchParams, this.#tvAssetsFor(householdId) !== undefined);
     if (route === undefined || decision === undefined) {
       socket.end(`HTTP/1.1 400 Bad Request\r\n${neverStoreHeaders()}Connection: close\r\n\r\n`);
       return;
@@ -510,6 +543,11 @@ export class HouseholdGateway {
       return closed;
     }));
     return sockets.length;
+  }
+
+  /** The TV add-on's files if it is on for this household, else undefined. */
+  #tvAssetsFor(householdId: string): TvAssets | undefined {
+    return this.#tvAddon?.enabled(householdId) ? this.#tvAddon.assets : undefined;
   }
 
   #exchange(): Exchange {
@@ -878,6 +916,83 @@ export class HouseholdGateway {
   }
 
   /**
+   * Jellyfin web's page with the TV add-on's `<script>` added (see {@link TvAssets.inject}). It is asked for whole,
+   * unencoded and unconditionally; a 200 `text/html` answer gets the tag, and is sent with its other headers (Jellyfin's
+   * own security headers among them) as Jellyfin sent them, but `no-store` and without validators, which no longer
+   * describe it. Anything else (another status, another type, an encoded or oversized body, a page with no `</head>`)
+   * is relayed exactly as Jellyfin sent it. A HEAD is asked as a GET, so its headers are the GET's.
+   */
+  async #proxyWebPage(request: IncomingMessage, response: ServerResponse, tv: TvAssets): Promise<void> {
+    const headers: IncomingHttpHeaders = { ...request.headers };
+    for (const name of WEB_PAGE_DROPPED_REQUEST_HEADERS) delete headers[name];
+    headers['accept-encoding'] = 'identity';
+    const head = request.method === 'HEAD';
+    await new Promise<void>((resolve) => {
+      const exchange = this.#exchange();
+      const upstream = this.#transport().request({ ...this.#requestOptions(request, headers), method: 'GET' }, (upstreamResponse) => {
+        const encoding = upstreamResponse.headers['content-encoding'];
+        const declared = Number(upstreamResponse.headers['content-length']);
+        const html = upstreamResponse.statusCode === 200
+          && /^text\/html\s*(?:;|$)/i.test(upstreamResponse.headers['content-type'] ?? '')
+          && (encoding === undefined || encoding.trim().toLowerCase() === 'identity')
+          && !(declared > MAX_WEB_PAGE_BYTES);
+        const relay = (prefix: Buffer[]) => {
+          response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
+          if (head) {
+            upstreamResponse.destroy();
+            response.end();
+            return resolve();
+          }
+          for (const chunk of prefix) response.write(chunk);
+          relayResponse(upstreamResponse, response, exchange, resolve, { writeHead: false });
+        };
+        if (!html) return relay([]);
+        const chunks: Buffer[] = [];
+        let size = 0;
+        const onData = (chunk: Buffer) => {
+          size += chunk.length;
+          chunks.push(chunk);
+          if (size <= MAX_WEB_PAGE_BYTES) return;
+          upstreamResponse.off('data', onData);
+          upstreamResponse.off('end', onEnd);
+          upstreamResponse.pause();
+          relay(chunks);
+        };
+        const onEnd = () => {
+          if (response.headersSent) return resolve();
+          const page = Buffer.concat(chunks);
+          const injected = tv.inject(page);
+          if (!injected) {
+            response.writeHead(200, upstreamResponse.headers);
+            response.end(head ? undefined : page);
+            return resolve();
+          }
+          const answer: IncomingHttpHeaders = { ...upstreamResponse.headers };
+          for (const name of WEB_PAGE_DROPPED_RESPONSE_HEADERS) delete answer[name];
+          response.writeHead(200, { ...answer, ...NEVER_STORE, 'content-length': String(injected.length) });
+          response.end(head ? undefined : injected);
+          resolve();
+        };
+        upstreamResponse.on('data', onData);
+        upstreamResponse.once('end', onEnd);
+        upstreamResponse.on('error', (error) => {
+          exchange.error('upstream', 'web page response', error);
+          if (!response.headersSent) writeJson(response, 502, { error: 'jellyfin_unavailable' });
+          else response.destroy();
+          resolve();
+        });
+        upstreamResponse.once('close', () => {
+          if (upstreamResponse.complete || response.headersSent) return;
+          writeJson(response, 502, { error: 'jellyfin_unavailable' });
+          resolve();
+        });
+      });
+      guardUpstream(upstream, response, exchange, resolve);
+      upstream.end();
+    });
+  }
+
+  /**
    * The household's profile picker: Jellyfin's own public list, narrowed to the household's members. Jellyfin leaves
    * hidden (and disabled) users off it, and so does the picker; a hidden member signs in by name instead.
    */
@@ -1189,7 +1304,13 @@ function guardUpstream(upstream: http.ClientRequest, response: ServerResponse, e
   });
 }
 
-function relayResponse(upstreamResponse: IncomingMessage, response: ServerResponse, exchange: Exchange, resolve: () => void): void {
+function relayResponse(
+  upstreamResponse: IncomingMessage,
+  response: ServerResponse,
+  exchange: Exchange,
+  resolve: () => void,
+  { writeHead = true }: { writeHead?: boolean } = {},
+): void {
   upstreamResponse.on('error', (error) => {
     exchange.error('upstream', 'proxy upstream response', error);
     response.destroy();
@@ -1198,7 +1319,7 @@ function relayResponse(upstreamResponse: IncomingMessage, response: ServerRespon
   upstreamResponse.once('close', () => {
     if (!upstreamResponse.complete) response.destroy();
   });
-  response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
+  if (writeHead) response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
   upstreamResponse.pipe(response);
   upstreamResponse.once('end', resolve);
 }
@@ -1364,7 +1485,7 @@ function isServerInternalStreamRoute(route: string): boolean {
 /** What a household host does with a request; see HouseholdGateway.#decide. */
 type RouteDecision =
   | { kind: 'app' | 'publicUsers' | 'branding' | 'quickConnectEnabled' | 'quickConnect' | 'streamyfin' | 'jellyfinEnhanced' | 'forgotPassword' }
-  | { kind: 'signOut' | 'signIn' | 'signInById' | 'libraryJoin' | 'notFound' | 'proxy' }
+  | { kind: 'signOut' | 'signIn' | 'signInById' | 'libraryJoin' | 'notFound' | 'proxy' | 'tvAsset' | 'webPage' }
   | { kind: 'libraryJoinAsset'; asset: { body: string; contentType: string } }
   | { kind: 'userImage'; userIds: string[] }
   | { kind: 'caller'; userIds: string[]; itemIds: string[] };

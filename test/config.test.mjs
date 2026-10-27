@@ -10,7 +10,7 @@ const BASE = {
   SEERR_URL: 'http://seerr.test',
   SEERR_API_KEY: 'seerr-key',
 };
-const KEYS = [...Object.keys(BASE), 'REQUEST_BACKFILL_SINCE', 'REQUEST_BACKFILL_ENABLED', 'LOG_LEVEL', 'WS_IDLE_TIMEOUT_MS', 'WS_UPSTREAM_IDLE_TIMEOUT_MS', 'JELLYQUEST_BRIDGE_ENABLED', 'TRUSTED_PROXIES', 'TMDB_API_KEY', 'HOUSEHOLD_APP_ENABLED', 'HOUSEHOLD_DOMAIN'];
+const KEYS = [...Object.keys(BASE), 'REQUEST_BACKFILL_SINCE', 'REQUEST_BACKFILL_ENABLED', 'LOG_LEVEL', 'WS_IDLE_TIMEOUT_MS', 'WS_UPSTREAM_IDLE_TIMEOUT_MS', 'JELLYQUEST_BRIDGE_ENABLED', 'TRUSTED_PROXIES', 'TMDB_API_KEY', 'HOUSEHOLD_APP_ENABLED', 'HOUSEHOLD_DOMAIN', 'TV_ADDON_ENABLED', 'TV_ADDON_HOUSEHOLDS'];
 const saved = Object.fromEntries(KEYS.map((key) => [key, process.env[key]]));
 
 function load(overrides = {}) {
@@ -63,6 +63,34 @@ describe('household app configuration', () => {
     }
     assert.throws(() => load({ ...ready, SEERR_URL: undefined, SEERR_API_KEY: undefined }), /SEERR_URL, SEERR_API_KEY and TMDB_API_KEY are required/);
     assert.throws(() => load({ ...ready, HOUSEHOLD_APP_ENABLED: 'yes' }), /HOUSEHOLD_APP_ENABLED must be true, false, 1, or 0/);
+  });
+});
+
+describe('TV add-on configuration', () => {
+  afterEach(restoreEnvironment);
+  const app = { HOUSEHOLD_APP_ENABLED: 'true', HOUSEHOLD_DOMAIN: 'example.test', TMDB_API_KEY: TMDB_V3_KEY };
+
+  it('is off by default, even with households listed', () => {
+    assert.equal(load(app).tvAddonHouseholds, undefined);
+    assert.equal(load({ ...app, TV_ADDON_HOUSEHOLDS: 'farmhouse' }).tvAddonHouseholds, undefined);
+    assert.equal(load({ ...app, TV_ADDON_ENABLED: 'false', TV_ADDON_HOUSEHOLDS: '*' }).tvAddonHouseholds, undefined);
+  });
+
+  it('is on for the households listed, or every household with *', () => {
+    assert.deepEqual(load({ ...app, TV_ADDON_ENABLED: 'true', TV_ADDON_HOUSEHOLDS: 'farmhouse' }).tvAddonHouseholds, ['farmhouse']);
+    assert.deepEqual(load({ ...app, TV_ADDON_ENABLED: '1', TV_ADDON_HOUSEHOLDS: ' Farmhouse, mill,,farmhouse ' }).tvAddonHouseholds, ['farmhouse', 'mill']);
+    assert.equal(load({ ...app, TV_ADDON_ENABLED: 'true', TV_ADDON_HOUSEHOLDS: '*' }).tvAddonHouseholds, 'all');
+  });
+
+  it('needs the household app and a list of households, each a household ID', () => {
+    assert.throws(() => load({ TV_ADDON_ENABLED: 'true', TV_ADDON_HOUSEHOLDS: 'farmhouse' }), /HOUSEHOLD_APP_ENABLED is required when TV_ADDON_ENABLED is true/);
+    for (const households of [undefined, '', ' , ']) {
+      assert.throws(() => load({ ...app, TV_ADDON_ENABLED: 'true', TV_ADDON_HOUSEHOLDS: households }), /TV_ADDON_HOUSEHOLDS is required when TV_ADDON_ENABLED is true/, String(households));
+    }
+    for (const households of ['farm house', 'farmhouse;mill', '*,farmhouse', 'jelly-farmhouse.example.test']) {
+      assert.throws(() => load({ ...app, TV_ADDON_ENABLED: 'true', TV_ADDON_HOUSEHOLDS: households }), /TV_ADDON_HOUSEHOLDS must list household IDs/, households);
+    }
+    assert.throws(() => load({ ...app, TV_ADDON_ENABLED: 'yes', TV_ADDON_HOUSEHOLDS: 'farmhouse' }), /TV_ADDON_ENABLED must be true, false, 1, or 0/);
   });
 });
 

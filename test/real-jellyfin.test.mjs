@@ -448,6 +448,44 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     assert.notEqual(script.text, '{"error":"not_found"}');
   });
 
+  it('adds the TV add-on to Jellyfin web\'s real page exactly once, on the household it is on for only', async (t) => {
+    const householdStore = new GrantStore(path.join(await makeTempDir(t, 'jfa-real-tv-'), 'grants.json'));
+    await householdStore.load();
+    await householdStore.upsertGroup({ id: 'tvhouse', name: 'TV House', userIds: [fixture.bobId] });
+    await householdStore.upsertGroup({ id: 'otherhouse', name: 'Other House', userIds: [] });
+    const gateway = makeServer(new AccessService(client, householdStore), { webhook: webhookToken, admin: 'real-admin-secret' }, undefined, {
+      householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-', tvAddon: { households: ['tvhouse'] } },
+    });
+    await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise((resolve) => gateway.close(resolve)));
+    const port = gateway.address().port;
+    const direct = await new Promise((resolve, reject) => {
+      httpRequest(`${baseUrl}/web/index.html`, (response) => {
+        const chunks = [];
+        response.on('data', (chunk) => chunks.push(chunk));
+        response.on('end', () => resolve({ status: response.statusCode, text: Buffer.concat(chunks).toString('utf8') }));
+      }).on('error', reject).end();
+    });
+    assert.equal(direct.status, 200);
+    assert.ok(/<\/head>/i.test(direct.text), 'Jellyfin web\'s page has a </head>');
+    const tag = /<script defer src="(\/jellypass\/tv\/jellypass-tv\.[0-9a-f]{12}\.js)" data-jellypass-tv><\/script>/;
+    for (const pathname of ['/web/index.html', '/web/']) {
+      // Whatever encodings and validators the browser offers, the page comes back whole, with the tag.
+      const page = await getWithHeaders(port, pathname, { Host: 'jelly-tvhouse.example.test', 'Accept-Encoding': 'gzip, br', 'If-Modified-Since': new Date().toUTCString() });
+      assert.equal(page.status, 200, pathname);
+      assert.equal(page.headers['content-encoding'], undefined, pathname);
+      assert.equal(page.headers['cache-control'], 'no-store', pathname);
+      assert.equal(page.headers.etag, undefined, pathname);
+      assert.equal(page.text.split('data-jellypass-tv').length - 1, 1, pathname);
+      assert.equal(page.text.replace(tag, ''), direct.text, `${pathname}: Jellyfin's page with the tag and nothing else`);
+      assert.ok(page.text.indexOf('data-jellypass-tv') < page.text.search(/<\/head>/i), `${pathname}: in the head`);
+      const script = await getWithHeaders(port, tag.exec(page.text)[1], { Host: 'jelly-tvhouse.example.test' });
+      assert.deepEqual([script.status, script.headers['content-type']], [200, 'text/javascript; charset=utf-8']);
+    }
+    const other = await getWithHeaders(port, '/web/index.html', { Host: 'jelly-otherhouse.example.test', 'Accept-Encoding': 'identity' });
+    assert.deepEqual([other.status, other.text], [200, direct.text]);
+  });
+
   it('checks a household sign-in, profile list and protected media in every spelling Jellyfin routes', async (t) => {
     const originalBob = user(await client.getUsers(), fixture.bobId);
     t.after(() => client.updatePolicy(fixture.bobId, originalBob.Policy));
