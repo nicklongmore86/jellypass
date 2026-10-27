@@ -15,6 +15,7 @@ My requests, the movie, series and season pages with Play and Get this, and the 
 the Docker build context (`.dockerignore`), and the root `pnpm check`, `pnpm test` and temp-leak check never look
 at it. Its CI is `.github/workflows/mobile.yaml`, which runs only when `mobile/`, `app/static/app.css` or `docs/app-api/` changes. Release builds
 are `.github/workflows/mobile-release.yaml` ([Release builds](#release-builds)).
+The app has its own version and [`CHANGELOG.md`](CHANGELOG.md), apart from the server's ([Versioning](#versioning)).
 
 ## Never ship a household list
 
@@ -118,9 +119,9 @@ checked), **Sign out** (the session's sign-out) and **Change household** (signs 
 **About & credits**, word for word as the PWA (`src/credits.ts`): what JellyPass is, the TMDB logo (the PWA's
 `tmdb-logo.svg`, drawn from the code in `src/TmdbLogo.tsx`, so nothing is loaded) linking to TMDB, TMDB's required
 notice, where titles and images come from, the JustWatch credit, the app's version and build
-(`JellyPass 0.1.0 (build 12)`: the installed binary's own version and build number, read with `expo-application`'s
+(`JellyPass 1.0.0 (build 12)`: the installed binary's own version and build number, read with `expo-application`'s
 `nativeApplicationVersion` and `nativeBuildVersion`, since EAS sets the build number; a development client with no
-native values shows `version` from `app.config.ts` alone) and the
+native values shows `version` from `package.json`, through `app.config.ts`, alone) and the
 household's API version from `/me`. The links (TMDB and JustWatch only) open in the system browser with
 `Linking.openURL`. The screen makes no call of its own.
 
@@ -455,6 +456,33 @@ environment, and the signing credentials live on EAS.
 - **iOS** goes to TestFlight for internal testing.
 - **Android** is an APK that members sideload ([Distribution](#android-a-sideloaded-apk-not-google-play)).
 
+### Versioning
+
+The app has its own version, separate from the server's: `version` in `mobile/package.json`, the one place it is
+written (`app.config.ts` reads it; `__tests__/app-config.test.ts` checks nothing else sets it). Its history is
+[`CHANGELOG.md`](CHANGELOG.md), apart from the server's; each release there names the JellyPass server it needs.
+
+- **[Semantic Versioning](https://semver.org/).** A **patch** (1.0.1) for fixes, a **minor** (1.1.0) for new features,
+  a **major** (2.0.0) only when the app needs a newer server or a newer app API (a higher `apiVersion` or a new API
+  path), so a member on an older household server knows the update needs the household upgraded first.
+- **Build numbers are automatic.** EAS sets iOS `CFBundleVersion` and Android `versionCode` for every build
+  (`appVersionSource: "remote"`, `autoIncrement`); the version is never raised to get a new build. Expo's
+  [App versions](https://docs.expo.dev/build-reference/app-versions/): with the remote source only the build numbers
+  are kept on EAS, and the version members see (`CFBundleShortVersionString`, `versionName`) is still the app config's
+  `version`.
+- **Each release is a PR** that bumps `version` in `mobile/package.json` and moves the notes from `## [Unreleased]` to
+  a `## [<version>] - <date>` section in `CHANGELOG.md` (with its link at the bottom). Once it is merged, tag the
+  merge commit and push the tag:
+
+  ```sh
+  git fetch origin && git tag mobile-v1.0.1 origin/main && git push origin mobile-v1.0.1
+  ```
+
+  The tag starts the `Mobile release` workflow ([Run a build](#run-a-build)), which first checks the tag against
+  `package.json` and `CHANGELOG.md`.
+- **A run by hand (workflow_dispatch) is a test build:** the same version as `main`, a higher build number, and no
+  GitHub release. TestFlight and the APK show it as, say, `1.0.0 (build 7)` beside the tagged `1.0.0 (build 5)`.
+
 ### What's in the repo
 
 `eas.json` has two build profiles, the same for both platforms apart from their name: `preview` for a build to
@@ -464,7 +492,7 @@ try, `production` for a release (what a `mobile-v*` tag builds).
 |---|---|
 | `"distribution": "store"` | An App Store signed iOS build, the only kind TestFlight takes. On Android, a release-signed APK |
 | `"android": { "buildType": "apk" }` | An AAB only installs from Google Play ([APK builds](https://docs.expo.dev/build-reference/apk/)) |
-| `"cli": { "appVersionSource": "remote" }` and `"autoIncrement": true` | EAS keeps the build number (iOS `CFBundleVersion`, Android `versionCode`) and raises it for every build, so TestFlight never refuses a repeat and every APK installs over the last. The first build is 1 ([App versions](https://docs.expo.dev/build-reference/app-versions/)). `app.config.ts` has no `ios.buildNumber` or `android.versionCode` (they would be ignored, and drift); the Account screen shows the installed binary's own. The version members see is `version` in `app.config.ts` |
+| `"cli": { "appVersionSource": "remote" }` and `"autoIncrement": true` | EAS keeps the build number (iOS `CFBundleVersion`, Android `versionCode`) and raises it for every build, so TestFlight never refuses a repeat and every APK installs over the last. The first build is 1 ([App versions](https://docs.expo.dev/build-reference/app-versions/)). `app.config.ts` has no `ios.buildNumber` or `android.versionCode` (they would be ignored, and drift); the Account screen shows the installed binary's own. The version members see is `version` in `package.json`, which `app.config.ts` reads ([Versioning](#versioning)) |
 | `"corepack": true` | The builder installs with the pnpm in `package.json`'s `packageManager` |
 | `submit.production.ios` | The App Store Connect API key, as `$EXPO_ASC_API_KEY_PATH`, `$EXPO_ASC_KEY_ID` and `$EXPO_ASC_ISSUER_ID`: EAS CLI fills a `$NAME` in those three fields from the environment (its `eas-json` package, `submit/resolver.ts`; the fields are in the [eas.json reference](https://docs.expo.dev/build-reference/eas-json/)), and the workflow sets them from the secrets |
 
@@ -582,8 +610,12 @@ local file. Never commit it (`*.jks` is in `.gitignore`). ([App credentials](htt
 - **profile:** `preview` or `production`;
 - **Send the iOS build to TestFlight:** on or off.
 
-**From a tag:** push a `mobile-v*` tag (for example `mobile-v0.1.0`, matching `version` in `app.config.ts`). It
-builds both apps with `production` and sends iOS to TestFlight.
+**From a tag:** push `mobile-v<version>` on the merge commit of a release PR (for example `mobile-v1.0.0`; see
+[Versioning](#versioning)). It builds both apps with `production`, sends iOS to TestFlight and, once both builds are
+done, publishes a GitHub release titled "JellyPass app <version>" with that version's notes from `CHANGELOG.md`
+(never marked Latest, so the repository's latest release stays the server's). Before anything is installed, the
+checks refuse a tag that isn't exactly `mobile-v` and `version` from `package.json`, or whose version has no notes
+in `CHANGELOG.md` (`scripts/mobile-release-tag.mjs`), so a mistyped tag never spends a build.
 
 Each run first runs the mobile checks (`pnpm check`) with no secrets in reach, then waits for your approval as
 the `mobile-release` reviewer. It then checks the Expo token (`eas whoami`, `eas project:info`; see

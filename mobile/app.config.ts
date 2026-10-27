@@ -1,5 +1,10 @@
 import type { ExpoConfig } from 'expo/config';
 
+// The app's version (CFBundleShortVersionString, Android's versionName), kept in one place: package.json. A release
+// bumps it there, with mobile/CHANGELOG.md, and the `mobile-v<version>` tag must match it (mobile/README.md,
+// "Versioning"). EAS keeps only the build numbers.
+import { version } from './package.json';
+
 // FINAL, PERMANENT app ids (the owner's decision): never change them. A different iOS bundle id or Android package
 // is a different app: members would have to install it afresh and sign in again, and TestFlight starts over. Android
 // also needs every APK signed with the same key, forever (mobile/README.md). The two are spelled differently because
@@ -21,7 +26,7 @@ const config: ExpoConfig = {
   // project's owner on expo.dev, or EAS CLI refuses to run.
   owner: 'rtc-services-llc',
   extra: { eas: { projectId: EAS_PROJECT_ID } },
-  version: '0.1.0',
+  version,
   // Turns freely ('default': Android's `unspecified`), so Android tablets rotate; an Android phone is locked to portrait
   // at launch (src/orientation.ts), as Android has no per-form-factor setting. The iPhone stays portrait and the iPad
   // turns all four ways: both are spelled out in infoPlist below, which Expo uses in place of this value on iOS (App

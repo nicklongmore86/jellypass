@@ -43,7 +43,7 @@ export function installedVersion(): InstalledVersion {
 }
 
 /**
- * "JellyPass 0.1.0 (build 12)": the installed app's version and build number (CFBundleShortVersionString and
+ * "JellyPass 1.0.0 (build 12)": the installed app's version and build number (CFBundleShortVersionString and
  * CFBundleVersion on iOS, versionName and versionCode on Android). EAS sets the build number for each build (eas.json's
  * remote version source), so the app config has none; with no native value (a development client) the config's
  * `version` stands in and no build is shown.
