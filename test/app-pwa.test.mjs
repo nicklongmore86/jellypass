@@ -2422,7 +2422,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         perMember: { calls: MAX_APP_REQUESTS_PER_USER, windowSeconds: APP_BUDGET_WINDOW_MS / 1000 },
         perHousehold: { calls: MAX_APP_REQUESTS_PER_HOUSEHOLD_BURST, windowSeconds: APP_BURST_WINDOW_MS / 1000 },
       });
-      assert.deepEqual(Object.keys(BUDGET.screens).sort(), ['home-all', 'home-movies', 'home-tv', 'movie', 'requests', 'search', 'season', 'series']);
+      assert.deepEqual(Object.keys(BUDGET.screens).sort(), ['home-all', 'home-movies', 'home-tv', 'movie', 'network', 'network-films', 'network-series', 'requests', 'search', 'season', 'series', 'studio']);
       for (const [name, screen] of Object.entries(BUDGET.screens)) {
         assert.equal(screen.calls, screen.atOnce.length + (screen.belowTheFold?.length ?? 0), name);
       }
@@ -2463,6 +2463,18 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.deepEqual(calls(page), BUDGET.screens.search.atOnce);
       assert.equal(page.requests.length, BUDGET.screens.search.calls);
     });
+
+    // A network's or studio's listed ID as `{id}` (Home's own rows name theirs, so the shared `calls` keeps them).
+    for (const [name, hash] of [['network', '#/network/213'], ['network-series', '#/network/213?kind=series'], ['network-films', '#/network/213?kind=films'], ['studio', '#/studio/3']]) {
+      it(`a ${name.replace('-', "'s ")} page, opened directly: the sources, then the list's first page`, async (t) => {
+        const app = await startApp(t);
+        const page = await openApp(t, app, { hash });
+        await page.until(() => page.main().querySelector('.source-panel ul.grid, .source-panel p.muted'), name);
+        await settled(page);
+        assert.deepEqual(calls(page).map((call) => call.replace(/\/discover\/(network|studio)\/[0-9]+/, '/discover/$1/{id}')).sort(), BUDGET.screens[name].atOnce);
+        assert.equal(page.requests.length, BUDGET.screens[name].calls);
+      });
+    }
 
     it('My requests, opened directly: the list, then one call to name each request shown, a page at a time', async (t) => {
       const app = await startApp(t);

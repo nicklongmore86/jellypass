@@ -136,7 +136,12 @@ describe('the client against docs/app-api/v1.openapi.json', () => {
 
 describe('the fetch budget (docs/app-api/fetch-budget.json)', () => {
   /** A budget entry with its placeholders filled in. */
-  const fill = (entry: string) => entry.replace('{tmdbId}', '900002').replace('{n}', '1').replace('{query}', 'synthetic');
+  const fill = (entry: string) =>
+    entry
+      .replace('{tmdbId}', '900002')
+      .replace('{n}', '1')
+      .replace('{query}', 'synthetic')
+      .replace(/\/(network|studio)\/\{id\}/, (_, kind: string) => `/${kind}/${kind === 'network' ? 213 : 3}`);
   /** The client call that makes `METHOD /path` from the budget, its placeholders filled in. */
   function callFor(entry: string): (api: ReturnType<typeof clientWith>['api']) => Promise<unknown> {
     const path = fill(entry).replace(/^GET /, '');
@@ -149,6 +154,7 @@ describe('the fetch budget (docs/app-api/fetch-budget.json)', () => {
       const [, id, list] = match;
       return (api) => api.network(Number(id), list as 'films' | 'all' | undefined);
     }
+    if ((match = /^\/discover\/studio\/(\d+)$/.exec(path))) return (api) => api.studio(Number(match![1]));
     if ((match = /^\/discover\/([a-z-]+)$/.exec(path))) return (api) => api.discover(match![1] as (typeof DISCOVER_LISTS)[number]);
     if ((match = /^\/movie\/(\d+)$/.exec(path))) return (api) => api.movie(Number(match![1]));
     if ((match = /^\/tv\/(\d+)\/season\/(\d+)$/.exec(path))) return (api) => api.season(Number(match![1]), Number(match![2]));
