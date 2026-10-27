@@ -159,11 +159,11 @@ as semantic-version tags. For predictable production upgrades, set
 `JELLYPASS_IMAGE` in `.env` to a versioned image such as:
 
 ```dotenv
-JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:3.2.4
+JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:3.3.0
 ```
 
-Each release is published as a semantic-version image tag, such as `3.2.4`,
-plus floating `3.2` and `3` tags that move to the newest release in that minor
+Each release is published as a semantic-version image tag, such as `3.3.0`,
+plus floating `3.3` and `3` tags that move to the newest release in that minor
 or major line; see [CHANGELOG.md](CHANGELOG.md) for what each one contains. `latest` is rebuilt on
 every push to `main` and may include unreleased changes, so use it, or build
 from source, only to test ahead of a release.
@@ -1167,6 +1167,9 @@ and needs no CDN purge; only the household app changes; see the 3.2.3 notes.
 Upgrading from 3.2.3 to 3.2.4 changes neither the state file nor any setting,
 and needs no CDN purge; household hostnames refuse more of the Jellyfin
 Enhanced plugin's routes; see the 3.2.4 notes.
+Upgrading from 3.2.4 to 3.3.0 changes neither the state file nor any existing
+setting, and changes nothing unless the new `TV_ADDON_ENABLED` is set; see the
+3.3.0 notes.
 Drain before rolling back to 2.3.x or 2.2.1: stop new "Get this" calls, wait
 until no request intents or deferred webhooks are left (at most 30 minutes plus
 one reconciliation interval, or restart JellyPass to reconcile at once), then

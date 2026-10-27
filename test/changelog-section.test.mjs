@@ -53,6 +53,45 @@ function assertSection(notes, { version, nextVersion, subheadings }) {
 }
 
 describe('changelogSection with the real CHANGELOG.md', () => {
+  it('extracts 3.3.0 without its heading, up to the 3.2.4 section', () => {
+    const notes = changelogSection(CHANGELOG, '3.3.0');
+    assertSection(notes, {
+      version: '3.3.0',
+      nextVersion: '3.2.4',
+      subheadings: ['Added'],
+    });
+    assert.match(notes, /^This is a minor release\. It adds the TV add-on/);
+    const flat = notes.replace(/\s+/g, ' ');
+    assert.match(flat, /\*\*It is off by default: unless `TV_ADDON_ENABLED` is set, nothing changes\*\*/);
+    assert.match(flat, /3\.2\.4 reads a state file written by 3\.3\.0/);
+    assert.match(flat, /\*\*It needs the household app:\*\* `HOUSEHOLD_APP_ENABLED=true`/);
+    assert.match(flat, /tested only against Jellyfin web 10\.11 and in simulated browsers/);
+    assert.match(flat, /in a desktop browser on that household's address .* then on an LG TV/);
+    assert.match(flat, /purge Cloudflare's cache once/);
+    assert.match(flat, /\*\*Samsung TVs show nothing yet:\*\*/);
+    assert.match(flat, /`ghcr\.io\/nicklongmore86\/jellypass:3\.2\.4`/);
+    assert.match(flat, /3\.2\.4 ignores `TV_ADDON_ENABLED` and `TV_ADDON_HOUSEHOLDS`/);
+    assert.match(flat, /\*\*TV add-on, step 1 \(off by default\)\.\*\*/);
+    assert.match(flat, /\*\*TV add-on, step 2: title pages and "Get this"/);
+    const added = notes.indexOf('### Added');
+    for (const note of [
+      '**To switch it on for some households,**',
+      '**It needs the household app:**',
+      '**It has been tested only against Jellyfin web 10.11',
+      '**You may need to purge Cloudflare\'s cache once**',
+      '**Samsung TVs show nothing yet:**',
+      '**To roll back,**',
+    ]) {
+      assert.ok(notes.indexOf(note) >= 0 && notes.indexOf(note) < added, `upgrade note ${note} comes first`);
+    }
+    assert.doesNotMatch(notes, /### Security/);
+    assert.doesNotMatch(notes, /Mobile app/, 'mobile/ is unchanged since 3.2.4');
+    assert.doesNotMatch(notes, /### Upgrading from/);
+    assert.doesNotMatch(notes, /eas-cli|workflow|\btests?\b/i, 'no tests or CI');
+    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|starrgroup|farmhouse/, 'no server-specific details');
+    assert.deepEqual(split(notes).definitions, []);
+  });
+
   it('extracts 3.2.4 without its heading, up to the 3.2.3 section', () => {
     const notes = changelogSection(CHANGELOG, '3.2.4');
     assertSection(notes, {

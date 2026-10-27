@@ -18,6 +18,42 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+## [3.3.0] - 2026-10-27
+
+This is a minor release. It adds the TV add-on, a JellyPass row and title view
+inside Jellyfin web on household hostnames, with two new optional settings,
+`TV_ADDON_ENABLED` and `TV_ADDON_HOUSEHOLDS`. **It is off by default: unless
+`TV_ADDON_ENABLED` is set, nothing changes** on any host. No setting is removed
+or renamed, and the state file is unchanged (schema v7, with the same fields as
+3.2.4), so 3.2.4 reads a state file written by 3.3.0. The app API
+(`docs/app-api/v1.openapi.json`), webhook payloads, the administrator API, the
+admin UI and the household app are unchanged. Read these before switching the
+add-on on:
+
+- **To switch it on for some households,** set `TV_ADDON_ENABLED=true` and
+  `TV_ADDON_HOUSEHOLDS` to their household (group) IDs separated by commas
+  (`*` means every household), then recreate the container. Start with one
+  household. The list is required when the add-on is on, and startup stops on
+  an empty or invalid list.
+- **It needs the household app:** `HOUSEHOLD_APP_ENABLED=true`, because the
+  add-on reads the app API. Startup stops if the add-on is on without it.
+- **It has been tested only against Jellyfin web 10.11 and in simulated
+  browsers,** never on a real TV or on Jellyfin web 12.x. Before rolling it out
+  more widely, check it in a desktop browser on that household's address
+  (Jellyfin web in TV layout: the row, the title view, the arrow keys and Back),
+  then on an LG TV; [docs/tv-addon.md](docs/tv-addon.md) lists what to check.
+- **You may need to purge Cloudflare's cache once** for that household's
+  `/web/` page. From now on the page is sent `no-store`, but that can't remove
+  a copy cached before. Check that the household address's `/web/` page comes
+  back with the `data-jellypass-tv` tag and `no-store`, or purge it, before
+  testing on a TV.
+- **Samsung TVs show nothing yet:** the sideloaded Samsung app bundles its own
+  Jellyfin web, and needs the JellyPass loader app planned for a later step.
+- **To roll back,** set `JELLYPASS_IMAGE` back to
+  `ghcr.io/nicklongmore86/jellypass:3.2.4` and recreate the container. No
+  state-file change is needed. 3.2.4 ignores `TV_ADDON_ENABLED` and
+  `TV_ADDON_HOUSEHOLDS`, so the add-on goes away with it.
+
 ### Added
 
 - **TV add-on, step 1 (off by default).** With `TV_ADDON_ENABLED=true` and
@@ -39,9 +75,8 @@ changes are always listed at the top of the release notes.
   it as `tv-home-row`. With the add-on off, on any household not listed, and
   on the admin host, nothing changes: `/jellypass/tv` is still relayed to
   Jellyfin there. Nothing has been checked on a real TV yet. See
-  [docs/tv-addon.md](docs/tv-addon.md) for the design, the rollout of title
-  pages and "Get this", Search, My requests and the Samsung app, and what to
-  check on a TV.
+  [docs/tv-addon.md](docs/tv-addon.md) for the design, the later steps
+  (Search, My requests and the Samsung app), and what to check on a TV.
 - **TV add-on, step 2: title pages and "Get this" (off by default, with the
   add-on).** Choosing a card in the JellyPass row opens a JellyPass title view
   over Jellyfin web's Home, laid out for the TV and navigated by Jellyfin web's
@@ -2224,7 +2259,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.2.4...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.3.0...HEAD
+[3.3.0]: https://github.com/nicklongmore86/jellypass/compare/v3.2.4...v3.3.0
 [3.2.4]: https://github.com/nicklongmore86/jellypass/compare/v3.2.3...v3.2.4
 [3.2.3]: https://github.com/nicklongmore86/jellypass/compare/v3.2.2...v3.2.3
 [3.2.2]: https://github.com/nicklongmore86/jellypass/compare/v3.2.1...v3.2.2
