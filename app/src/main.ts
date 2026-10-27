@@ -278,7 +278,7 @@ function appScrollLeft(list: HTMLElement, left: number): void {
 
 /**
  * A card focused by Tab sits fully in its row: a row scrolls sideways, and the browser's own focus scroll can leave the
- * card almost off the edge. The card is brought to the row's start (where its scroll snap would put it), straight away
+ * card almost off the edge. The card is centred (where its scroll snap would put it, so the row's re-snap leaves it there), straight away
  * so reduced motion needs nothing special. This is the page's own scroll, not the member's: it neither cancels nor
  * fights a restoration (the keydown that moved focus already cancelled it).
  */
@@ -302,7 +302,10 @@ function bringCardIntoRow(link: Element): void {
   const view = list.getBoundingClientRect();
   const right = Math.min(view.right, document.documentElement.clientWidth);
   if (box.left >= view.left && box.right <= right) return;
-  list.scrollLeft += box.left - view.left;
+  // The row snaps a card to the centre of its padded port (the end gutter is scroll padding); the browser clamps the first and last.
+  const padEnd = parseFloat(getComputedStyle(list).scrollPaddingRight);
+  const port = view.left + (view.width - (Number.isFinite(padEnd) ? padEnd : 0)) / 2;
+  list.scrollLeft += (box.left + box.right) / 2 - port;
 }
 
 /** Home runs its sticky filter band the page's full width (`home`); every other screen has the page's own gutters. */

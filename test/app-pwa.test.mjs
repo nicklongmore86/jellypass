@@ -1103,9 +1103,31 @@ describe('household app page: rendering', () => {
   it('brings a focused card fully into its row: the handler is wired and the rows still snap to a card\'s start', () => {
     const main = read(BUILT('js/main.js'));
     assert.match(main, /addEventListener\('focusin', showFocusedCard\)/);
-    assert.match(main, /list\.scrollLeft \+= box\.left - view\.left/);
+    assert.match(main, /list\.scrollLeft \+= \(box\.left \+ box\.right\) \/ 2 - port/);
     assert.doesNotMatch(main.slice(main.indexOf('function showFocusedCard'), main.indexOf('function showFocusedCard') + 1100), /restoreCancelled/, 'a focus scroll is not the member\'s input');
-    assert.match(read(BUILT('app.css')), /\.row-list > \.card \{[^}]*scroll-snap-align: start/);
+    assert.match(read(BUILT('app.css')), /\.row-list > \.card \{[^}]*scroll-snap-align: center/);
+  });
+
+  it('snaps every horizontal card row to a centred card, first at the start, last at the end, never stopping a flick', () => {
+    const css = read(BUILT('app.css'));
+    const rule = (selector) => css.match(new RegExp(`${selector.replace(/[.>]/g, '\\$&')} \\{([^}]*)\\}`))?.[1] ?? '';
+    for (const list of ['.row-list', '.logo-list']) {
+      assert.match(rule(list), /scroll-snap-type: x mandatory/, list);
+      assert.match(rule(list), /scroll-padding-inline: 0 var\(--gutter-end\)/, list);
+    }
+    for (const [card, first, last] of [['.row-list > .card', '.row-list > .card:first-child', '.row-list > .card:last-child'], ['.logo-card', '.logo-card:first-child', '.logo-card:last-child']]) {
+      assert.match(rule(card), /scroll-snap-align: center/, card);
+      assert.match(rule(first), /scroll-snap-align: start/, first);
+      assert.match(rule(last), /scroll-snap-align: end/, last);
+      assert.match(rule(last), /scroll-margin-right: var\(--gutter-end\)/, last);
+    }
+    // Backdrop rows are .row-list too, and the service rows use the same class names.
+    assert.match(read(BUILT('js/render.js')), /'row-list row-list-backdrop' : 'row-list'/);
+    assert.equal((css.match(/scroll-snap-stop:/g) ?? []).length, 1, 'only the hero pages one slide at a time');
+    assert.match(css, /\.hero-slide \{[^}]*scroll-snap-stop: always/);
+    // Reduced motion adds no animation and leaves the snap in place.
+    const reduced = css.slice(css.indexOf('@media (prefers-reduced-motion: reduce)'));
+    assert.doesNotMatch(reduced, /scroll-snap-type|scroll-behavior: smooth/);
   });
 
   it('shows each household state as its own coarse badge on the card, and no Play button on any card', async () => {

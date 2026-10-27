@@ -18,6 +18,13 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+- **Household app: card rows settle with a card centred.** Backdrop rows,
+  poster rows (including a service's "Popular on" rows) and the studios strip
+  now snap to the centre of a card, like the mobile app. A fast flick can still
+  pass several cards; the first card sits at the row's start and the last at its
+  end. The Home hero keeps paging one slide at a time. App files only: no
+  setting, API or state-file change.
+
 ## [3.2.1] - 2026-10-26
 
 This is a patch release for the household app (`HOUSEHOLD_APP_ENABLED=true`)
