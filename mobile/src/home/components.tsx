@@ -6,17 +6,19 @@
 // - A card is one link whose name is its title, year and rating, then its status, said once; the status chip drawn on
 //   the image is hidden from screen readers.
 // - Text grows with the system font size with no line limit, cap or fixed height: titles wrap, the chips scroll.
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { Children, createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   AccessibilityInfo,
   Image,
   PixelRatio,
+  Platform,
   Pressable,
   ScrollView,
   StyleSheet,
   Text,
   View,
   type ImageStyle,
+  type LayoutChangeEvent,
   type NativeScrollEvent,
   type NativeSyntheticEvent,
   type ScrollViewInstance,
@@ -28,7 +30,7 @@ import { backdropSources, safeImageUrl, safeLogoUrl } from '../api/urls';
 import { Icon } from '../icons';
 import { colors, layout, radii, spacing, status as statusColors, typography, water } from '../theme';
 import { Button } from '../ui';
-import type { RowVariant } from './layout';
+import { nearestStop, resnapOffset, revealOffset, snapOffsets, type RowShape, type RowVariant } from './layout';
 import {
   backdropMeta,
   cardName,
@@ -53,6 +55,210 @@ import {
 } from './text';
 
 const SKELETON_HEADING_HEIGHT = 26;
+
+/** The space between the cards in a row, and how wide a studio's logo tile is. */
+export const CARD_GAP = spacing.md;
+export const STUDIO_TILE_WIDTH = 136;
+
+/**
+ * A sideways row snaps so a swipe always comes to rest with a card centred (snapOffsets). A fast flick still glides
+ * across several cards: the momentum is left alone, at the normal rate, and only where it stops is moved to the nearest
+ * card.
+ *
+ * - iOS snaps natively, with snapToOffsets. Nothing more is animated, so it is the same with Reduce Motion on.
+ * - Android is not given snapToOffsets: React Native turns any snap stops into native paging there, and a paged
+ *   ReactHorizontalScrollView neither scrolls a focused card into view nor lets Tab reach a card off screen
+ *   (requestChildFocus, addFocusables). Instead, once a touch's glide stops, the row is moved to the nearest stop with
+ *   scrollTo (SnapRow), without animation under Reduce Motion. Only a touch does that: a row scrolled by focus, a
+ *   screen reader or a keyboard is left where that put it.
+ */
+export function rowSnapping(count: number, item: number, viewport: number, os = Platform.OS) {
+  const offsets = snapOffsets(count, item, CARD_GAP, viewport);
+  if (!offsets) return {};
+  return os === 'android' ? ({ decelerationRate: 'normal' } as const) : ({ snapToOffsets: offsets, decelerationRate: 'normal' } as const);
+}
+
+/** Whether the member asked for reduced motion; false until the system says. */
+function useReduceMotion(): boolean {
+  const [reduceMotion, setReduceMotion] = useState(false);
+  useEffect(() => {
+    let live = true;
+    AccessibilityInfo.isReduceMotionEnabled?.()
+      .then((value) => {
+        if (live) setReduceMotion(value);
+      })
+      .catch(() => undefined);
+    return () => {
+      live = false;
+    };
+  }, []);
+  return reduceMotion;
+}
+
+type ScrollEvent = NativeSyntheticEvent<NativeScrollEvent>;
+
+/** What a card in a SnapRow calls when it takes focus. */
+const CardFocus = createContext<(() => void) | undefined>(undefined);
+
+/**
+ * A sideways row of `count` items `item` wide in a `viewport` that wide, snapping as rowSnapping says. Its cards tell it
+ * when they take focus (CardFocus), so a card reached by the keyboard mid-glide is not then scrolled away from.
+ *
+ * On Android a touch's end is told by onMomentumScrollEnd, which always follows the drag's onScrollEndDrag there (the
+ * native handlePostTouchScrolling sends it once the row has been still a few frames, glide or none) and never follows
+ * a focus or accessibility scroll. The snap's own scrollTo ends with one too; it is ignored, as the touch is over by
+ * then, as is the one sent when a new touch stops a running glide or snap, as a finger is down.
+ *
+ * An animated snap runs on its own native animator, which a focus scroll does not stop (ReactHorizontalScrollView's
+ * scrollToChild only calls scrollBy), so it would carry a card focused mid-snap off screen. A card that takes focus
+ * then is revealed with an animated scrollTo of its own: starting one cancels the running one first
+ * (startFlingAnimator), where a scrollTo without animation would not. The cancelled snap still sends a momentum end,
+ * part way; should the snap have run to its stop instead (the reveal found nothing to do, or started after it), the
+ * card is put in view there without animation.
+ *
+ * When the row's width changes (the device turned, or an iPad's split view resized) it is moved, without animation,
+ * to the stop that keeps the same card in view (resnapOffset), on either platform: neither re-snaps by itself. A change
+ * that comes while the row is moving (a finger on it, a glide, a snap or a reveal) waits until it is still: after a
+ * touch, the row goes to the nearest stop, as the finger chose where it is in the new shape.
+ */
+function SnapRow({
+  testID,
+  count,
+  item,
+  viewport,
+  children,
+}: {
+  testID: string;
+  count: number;
+  item: number;
+  viewport: number;
+  children: ReactNode;
+}) {
+  const reduceMotion = useReduceMotion();
+  const row = useRef<ScrollViewInstance>(null);
+  const x = useRef(0);
+  const width = useRef(0);
+  const shape = useRef<RowShape>({ count, item, gap: CARD_GAP, viewport });
+  // A finger is on the row; a touch moved the row and its glide has not ended yet.
+  const dragging = useRef(false);
+  const touched = useRef(false);
+  // Where a running animated snap, and a focused card's reveal that replaced it, are taking the row.
+  const snapTo = useRef<number | undefined>(undefined);
+  const revealTo = useRef<number | undefined>(undefined);
+  // The row's shape before a width change that came while it was moving, until it is still.
+  const resized = useRef<RowShape | undefined>(undefined);
+  const android = Platform.OS === 'android';
+
+  const near = (a: number, b: number) => Math.abs(a - b) < 0.5;
+  // Android scrolls to whole physical pixels, so a row sent to 1690.5 at density 1 comes to rest at 1691: an offset
+  // within a pixel (and never less than half a point) of where it was sent has reached it.
+  const reached = (a: number, b: number) => Math.abs(a - b) <= Math.max(0.5, 1 / PixelRatio.get()) + 1e-6;
+  const moveTo = (to: number | undefined, animated: boolean) => {
+    if (to === undefined || reached(to, x.current)) return false;
+    x.current = to;
+    row.current?.scrollTo({ x: to, animated });
+    return true;
+  };
+  const still = () => !dragging.current && !touched.current && snapTo.current === undefined && revealTo.current === undefined;
+  /** A width change held while the row moved, applied once it is still. */
+  const settle = (afterTouch: boolean) => {
+    const before = resized.current;
+    if (!before || !still()) return;
+    resized.current = undefined;
+    const now = shape.current;
+    const offsets = snapOffsets(now.count, now.item, now.gap, now.viewport);
+    moveTo(afterTouch ? offsets && nearestStop(offsets, x.current) : resnapOffset(x.current, before, now), false);
+  };
+  const onScroll = (event: ScrollEvent) => {
+    x.current = event.nativeEvent.contentOffset.x;
+  };
+  const onScrollBeginDrag = () => {
+    // A touch stops a running snap or reveal (onInterceptTouchEvent cancels the animator).
+    dragging.current = true;
+    touched.current = true;
+    snapTo.current = undefined;
+    revealTo.current = undefined;
+  };
+  const onScrollEndDrag = (event: ScrollEvent) => {
+    dragging.current = false;
+    onScroll(event);
+    // iOS sends no momentum end for a drag let go without a glide.
+    if (!android && !event.nativeEvent.velocity?.x) {
+      touched.current = false;
+      settle(true);
+    }
+  };
+  const onMomentumScrollEnd = (event: ScrollEvent) => {
+    onScroll(event);
+    if (dragging.current) return;
+    const reveal = revealTo.current;
+    if (reveal !== undefined) {
+      if (reached(x.current, reveal)) {
+        revealTo.current = undefined;
+      } else if (snapTo.current !== undefined && reached(x.current, snapTo.current)) {
+        revealTo.current = undefined;
+        moveTo(reveal, false);
+      }
+      snapTo.current = undefined;
+      settle(false);
+      return;
+    }
+    if (snapTo.current !== undefined) {
+      snapTo.current = undefined;
+      settle(false);
+      return;
+    }
+    const glided = touched.current;
+    touched.current = false;
+    if (!android || !glided || resized.current) {
+      settle(true);
+      return;
+    }
+    const offsets = snapOffsets(count, item, CARD_GAP, viewport);
+    const to = offsets && nearestStop(offsets, x.current);
+    if (moveTo(to, !reduceMotion) && !reduceMotion) snapTo.current = to;
+  };
+  const onCardFocus = (index: number) => {
+    touched.current = false;
+    if (snapTo.current === undefined && revealTo.current === undefined) return;
+    const to = revealOffset(shape.current, index);
+    if (to === undefined) return;
+    revealTo.current = to;
+    row.current?.scrollTo({ x: to, animated: true });
+  };
+  const onLayout = (event: LayoutChangeEvent) => {
+    const now = event.nativeEvent.layout.width;
+    const before = shape.current;
+    const after = { count, item, gap: CARD_GAP, viewport };
+    shape.current = after;
+    if (width.current > 0 && !near(now, width.current)) {
+      if (still()) moveTo(resnapOffset(x.current, before, after), false);
+      else resized.current ??= before;
+    }
+    width.current = now;
+  };
+
+  return (
+    <ScrollView
+      ref={row}
+      testID={testID}
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      contentContainerStyle={styles.rowList}
+      scrollEventThrottle={16}
+      onScroll={onScroll}
+      onLayout={onLayout}
+      onScrollBeginDrag={onScrollBeginDrag}
+      onScrollEndDrag={onScrollEndDrag}
+      onMomentumScrollEnd={onMomentumScrollEnd}
+      {...rowSnapping(count, item, viewport)}
+    >
+      {Children.map(children, (child, index) => (
+        <CardFocus value={() => onCardFocus(index)}>{child}</CardFocus>
+      ))}
+    </ScrollView>
+  );
+}
 
 const hidden = { accessibilityElementsHidden: true, importantForAccessibility: 'no-hide-descendants' } as const;
 
@@ -120,11 +326,13 @@ export function backdropUri(url: string | null, width: number, scale = PixelRati
 
 /** A poster card: poster with its status chip at the top-left, then the title and "year · Movie/Series". */
 export function PosterCard({ card, width, onOpen }: { card: Card; width: number; onOpen: (card: Card) => void }) {
+  const onFocus = useContext(CardFocus);
   return (
     <Pressable
       accessibilityRole="link"
       accessibilityLabel={cardName(card, true)}
       onPress={() => onOpen(card)}
+      onFocus={onFocus}
       style={({ pressed }) => [styles.card, { width }, pressed && styles.pressed]}
     >
       <View style={[styles.poster, !safeImageUrl(card.posterUrl) && styles.frameEmpty]}>
@@ -143,6 +351,7 @@ export function PosterCard({ card, width, onOpen }: { card: Card; width: number;
  * navy: no text is ever drawn over a picture.
  */
 export function BackdropCard({ card, width, onOpen }: { card: Card; width: number; onOpen: (card: Card) => void }) {
+  const onFocus = useContext(CardFocus);
   const backdrop = backdropUri(card.backdropUrl, width);
   const meta = backdropMeta(card);
   return (
@@ -150,6 +359,7 @@ export function BackdropCard({ card, width, onOpen }: { card: Card; width: numbe
       accessibilityRole="link"
       accessibilityLabel={cardName(card)}
       onPress={() => onOpen(card)}
+      onFocus={onFocus}
       style={({ pressed }) => [styles.card, styles.backdropCard, { width }, pressed && styles.pressed]}
     >
       <View style={styles.backdropFrame}>
@@ -246,21 +456,23 @@ export function NetworkHeading({ prefix, network, onOpen }: { prefix: string; ne
   );
 }
 
-/** A row of title cards that scrolls sideways. */
+/** A row of title cards that scrolls sideways, `viewport` wide, coming to rest with a card centred. */
 export function CardRow({
   cards,
   variant,
   cardWidth,
+  viewport,
   onOpen,
 }: {
   cards: readonly Card[];
   variant: RowVariant;
   cardWidth: number;
+  viewport: number;
   onOpen: (card: Card) => void;
 }) {
   if (cards.length === 0) return <Text style={styles.muted}>{EMPTY_ROW_TEXT}</Text>;
   return (
-    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.rowList}>
+    <SnapRow testID="card-row" count={cards.length} item={cardWidth} viewport={viewport}>
       {cards.map((card) =>
         variant === 'backdrop' ? (
           <BackdropCard key={`${card.mediaType}-${card.tmdbId}`} card={card} width={cardWidth} onOpen={onOpen} />
@@ -268,7 +480,7 @@ export function CardRow({
           <PosterCard key={`${card.mediaType}-${card.tmdbId}`} card={card} width={cardWidth} onOpen={onOpen} />
         ),
       )}
-    </ScrollView>
+    </SnapRow>
   );
 }
 
@@ -316,24 +528,26 @@ export function RowFailure({ heading, error, onRetry }: { heading: string; error
 }
 
 /**
- * The studios: a strip of their logos, each named "<studio> movies" (with `onOpen`, a link to the studio's page named
- * "<studio>, studio"). No title is fetched for it.
+ * The studios: a strip of their logos, snapping like a row, each named "<studio> movies" (with `onOpen`, a link to the
+ * studio's page named "<studio>, studio"). No title is fetched for it.
  */
-export function StudioStrip({ studios, onOpen }: { studios: readonly Source[]; onOpen?: (studio: Source) => void }) {
+export function StudioStrip({ studios, viewport, onOpen }: { studios: readonly Source[]; viewport: number; onOpen?: (studio: Source) => void }) {
   return (
     <View style={styles.row}>
       <RowHeading title={SOURCE_TEXT.studios} />
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.rowList}>
+      <SnapRow testID="studio-strip" count={studios.length} item={STUDIO_TILE_WIDTH} viewport={viewport}>
         {studios.map((studio) => (
           <StudioTile key={studio.id} studio={studio} onOpen={onOpen} />
         ))}
-      </ScrollView>
+      </SnapRow>
     </View>
   );
 }
 
 /** A studio's logo in the strip: a link to its page, or with nowhere to go, an image named "<studio> movies". */
 function StudioTile({ studio, onOpen }: { studio: Source; onOpen: ((studio: Source) => void) | undefined }) {
+  // The strip's SnapRow keeps a tile reached by the keyboard mid-snap in view, as it does a card.
+  const onFocus = useContext(CardFocus);
   if (!onOpen) {
     return (
       <View accessible accessibilityRole="image" accessibilityLabel={studioName(studio.name)}>
@@ -346,6 +560,7 @@ function StudioTile({ studio, onOpen }: { studio: Source; onOpen: ((studio: Sour
       accessibilityRole="link"
       accessibilityLabel={studioLinkName(studio.name)}
       onPress={() => onOpen(studio)}
+      onFocus={onFocus}
       style={({ pressed }) => [styles.studioLink, pressed && styles.pressed]}
     >
       <LogoTile source={studio} size="large" />
@@ -419,20 +634,8 @@ export function Hero({
   const [shownIndex, setIndex] = useState(0);
   // A refresh can bring back fewer titles than the one showing.
   const index = Math.min(shownIndex, Math.max(0, cards.length - 1));
-  const [reduceMotion, setReduceMotion] = useState(false);
+  const reduceMotion = useReduceMotion();
   const track = useRef<ScrollViewInstance>(null);
-
-  useEffect(() => {
-    let live = true;
-    AccessibilityInfo.isReduceMotionEnabled?.()
-      .then((value) => {
-        if (live) setReduceMotion(value);
-      })
-      .catch(() => undefined);
-    return () => {
-      live = false;
-    };
-  }, []);
 
   if (cards.length === 0) return null;
   const total = cards.length;
@@ -597,12 +800,12 @@ const styles = StyleSheet.create({
   backdropMeta: { fontSize: 13.6, lineHeight: 18, color: colors.muted },
 
   row: { gap: spacing.md },
-  rowList: { gap: spacing.md, paddingBottom: spacing.xxs },
+  rowList: { gap: CARD_GAP, paddingBottom: spacing.xxs },
   rowHeading: { gap: spacing.sm, alignSelf: 'flex-start' },
   rowHeadingText: { ...typography.rowHeading, color: colors.text },
   networkHeading: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.sm },
   headingLink: { minHeight: layout.touchTarget, minWidth: layout.touchTarget },
-  studioLink: { minHeight: layout.touchTarget, minWidth: layout.touchTarget, borderRadius: radii.card },
+  studioLink: { width: STUDIO_TILE_WIDTH, minHeight: layout.touchTarget, borderRadius: radii.card },
   waterline: { flexDirection: 'row', height: layout.waterline.height },
   waterlineAccent: { width: layout.waterline.accentWidth, borderRadius: layout.waterline.height, backgroundColor: colors.accent },
   waterlineCap: {
@@ -615,7 +818,7 @@ const styles = StyleSheet.create({
 
   logoTile: { alignItems: 'center', justifyContent: 'center', backgroundColor: colors.logoTile },
   logoTileSmall: { width: 104, minHeight: 36, paddingVertical: 4.8, paddingHorizontal: 8.8, borderRadius: radii.chip },
-  logoTileLarge: { width: 136, minHeight: 72, paddingVertical: spacing.md, paddingHorizontal: spacing.lg, borderRadius: radii.card },
+  logoTileLarge: { width: STUDIO_TILE_WIDTH, minHeight: 72, paddingVertical: spacing.md, paddingHorizontal: spacing.lg, borderRadius: radii.card },
   logoImage: { width: '100%', aspectRatio: 3 },
   logoText: { fontSize: 12.8, lineHeight: 15, fontWeight: '700', textAlign: 'center', color: colors.logoText },
 

@@ -313,6 +313,7 @@ export function HomeScreen() {
           title={part.heading}
           variant={part.variant}
           cardWidth={widths[part.variant]}
+          viewport={columnWidth}
           overlay={overlay.card}
           onOpen={open}
           onRetry={() => home.retry(key)}
@@ -336,6 +337,7 @@ export function HomeScreen() {
           title={`${prefix} ${network.name}`}
           variant="poster"
           cardWidth={widths.poster}
+          viewport={columnWidth}
           overlay={overlay.card}
           onOpen={open}
           onRetry={() => home.retry(key)}
@@ -391,7 +393,7 @@ export function HomeScreen() {
         {parts.map((part) => {
           if (part.part === 'row') return titleRow(part);
           if (part.part === 'networks') return hasStudios ? listed.map(networkRow) : [sourcesFailure, ...listed.map(networkRow)];
-          if (part.part === 'studios') return sourcesFailure ?? (studios.length ? <StudioStrip key="studios" studios={studios} onOpen={openStudio} /> : null);
+          if (part.part === 'studios') return sourcesFailure ?? (studios.length ? <StudioStrip key="studios" studios={studios} viewport={columnWidth} onOpen={openStudio} /> : null);
           // The JustWatch credit closes the services: only where a service's films are shown.
           return listed.some((network) => network.hasFilms) && filter !== 'tv' ? <JustWatchNote key="credit" /> : null;
         })}
@@ -412,6 +414,7 @@ function RowBody({
   title,
   variant,
   cardWidth,
+  viewport,
   overlay,
   onOpen,
   onRetry,
@@ -421,6 +424,8 @@ function RowBody({
   title: string;
   variant: RowVariant;
   cardWidth: number;
+  /** How wide the row shows: the column. */
+  viewport: number;
   /** The card as it is drawn: Requested if the member just asked for it. */
   overlay: (card: Card) => Card;
   onOpen: (card: Card) => void;
@@ -431,7 +436,7 @@ function RowBody({
   return (
     <View style={styles.row}>
       {heading}
-      <CardRow cards={state.page.results.map(overlay)} variant={variant} cardWidth={cardWidth} onOpen={onOpen} />
+      <CardRow cards={state.page.results.map(overlay)} variant={variant} cardWidth={cardWidth} viewport={viewport} onOpen={onOpen} />
     </View>
   );
 }
