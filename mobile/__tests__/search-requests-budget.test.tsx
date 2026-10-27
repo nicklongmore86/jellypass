@@ -2,7 +2,8 @@
 // the repo, not copied): the real app through the router, signed in, with a fake gateway. A search makes exactly the
 // call the PWA makes for Search opened on a query (the start-up /me counted as the PWA's own), however fast the member
 // types, and My requests makes the PWA's calls for the same household: the list, then one title call for each request
-// shown, at most titlesAtOnce before the member asks for more. Nothing is polled or retried while either is open. A
+// shown, at most titlesAtOnce before the member asks for more; shown again within ten minutes, only the budget's
+// `revisit` calls (the list, its titles reused). Nothing is polled or retried while either is open. A
 // change that makes either chattier fails here until the budget file (and the PWA) changes with it.
 import { act } from '@testing-library/react-native';
 import { router } from 'expo-router';
@@ -87,7 +88,7 @@ describe('Search', () => {
 });
 
 describe('My requests', () => {
-  const budget = BUDGET.screens['requests']! as (typeof BUDGET.screens)[string] & { titlesAtOnce: number };
+  const budget = BUDGET.screens['requests']! as (typeof BUDGET.screens)[string] & { titlesAtOnce: number; revisit: string[] };
 
   it('is pinned in the budget file with no lazy calls, naming ten at once', () => {
     expect({ total: budget.atOnce.length, lazy: budget.belowTheFold ?? [], titles: budget.titlesAtOnce }).toEqual({ total: budget.calls, lazy: [], titles: 10 });
@@ -99,6 +100,19 @@ describe('My requests', () => {
     expect(sorted(['GET /me', ...since()])).toEqual(sorted(budget.atOnce));
     await wait(10 * 60_000);
     expect(since()).toHaveLength(budget.calls - 1);
+  });
+
+  it("makes only the budget's revisit calls when shown again within ten minutes, and nothing more while it is open", async () => {
+    useHousehold({ requests: { results: [requestEntry('m', 'movie', 7, 'requested'), requestEntry('s', 'tv', 9, 'ready', { seasons: [{ seasonNumber: 1, status: 'ready' }] })] } });
+    const { since } = await open('/requests');
+    expect(since().length).toBe(budget.calls - 1);
+    await act(async () => router.navigate('/'));
+    await settle();
+    const before = since().length;
+    await act(async () => router.navigate('/requests'));
+    await settle();
+    await wait(60_000);
+    expect(since().slice(before).join(' ')).toBe(budget.revisit.join(' '));
   });
 
   it('names at most titlesAtOnce requests until the member asks for more', async () => {

@@ -1257,7 +1257,10 @@ async function sourceScreen(route: Route, signal: AbortSignal, current: () => bo
   focusHeading();
 }
 
-/** The household's requests, with their titles read from TMDB (through the API) ten at a time. */
+/**
+ * The household's requests, read on every visit, with their titles read from TMDB (through the API) ten at a time. A
+ * title already read in this sign-in (the last ten minutes) is reused, so coming back reads only the list.
+ */
 async function requestsScreen(signal: AbortSignal, current: () => boolean): Promise<void> {
   setTitle(REQUESTS_TEXT.title);
   busy(el(doc, 'h1', { class: 'screen-title visually-hidden', text: REQUESTS_TEXT.title, attrs: { tabindex: '-1', [HEADER_TITLE]: '' } }), skeletonRequests(doc));
@@ -1292,7 +1295,8 @@ async function requestsScreen(signal: AbortSignal, current: () => boolean): Prom
         const index = next++;
         const entry = batch[index] as RequestEntry;
         try {
-          const found = entry.mediaType === 'tv' ? await api.tv(entry.tmdbId, signal) : await api.movie(entry.tmdbId, signal);
+          // A title named in the last ten minutes of this sign-in is not read again; the status is always the list's.
+          const found = await api.requestTitle(entry.mediaType, entry.tmdbId, signal);
           if (current()) setRequestTitle(items[index] as HTMLElement, found);
         } catch (error) {
           if (!current() || signal.aborted) return;

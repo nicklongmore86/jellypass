@@ -3,7 +3,8 @@
 // for a series), who asked, and "We couldn't get this" with the admin note and no button. The PWA's fixed wording
 // when there is nothing and on each failure, Try again, never retried by itself, a 401 signing out; read again each
 // time it is shown and on pull to refresh; Load more. Title answers are seen by the overlay, so Home shows the state
-// read here. An entry opens its title on the My requests tab's own stack. Then accessibility, the iPad width and
+// read here. Titles named in the last ten minutes of the sign-in are reused (never their status, never seen again by the
+// overlay): shown again, it reads the list and only the titles it has not named. An entry opens its title on the My requests tab's own stack. Then accessibility, the iPad width and
 // privacy. The calls are pinned against the budget by search-requests-budget.test.tsx. Queries are queryAll* and
 // assertions read single fields, so a failure never prints the component tree.
 import { act, screen, within } from '@testing-library/react-native';
@@ -30,6 +31,23 @@ jest.mock('../src/api/transport', () => ({
 }));
 jest.mock('expo-constants', () => ({ __esModule: true, default: { expoConfig: jest.requireActual('../app.config').default } }));
 jest.mock('react-native-safe-area-context', () => jest.requireActual('react-native-safe-area-context/jest/mock').default);
+// Every answer the session's overlay is handed, as `mediaType:tmdbId` (a title) or `page` (a Home row).
+const mockSeen: string[] = [];
+jest.mock('../src/title/asked', () => {
+  const actual = jest.requireActual('../src/title/asked');
+  return {
+    ...actual,
+    createAsked: (...args: unknown[]) => {
+      const asked = actual.createAsked(...args);
+      const seen = asked.seen;
+      asked.seen = (answer: { mediaType?: string; tmdbId?: number }) => {
+        mockSeen.push(answer.mediaType ? `${answer.mediaType}:${answer.tmdbId}` : 'page');
+        seen(answer);
+      };
+      return asked;
+    },
+  };
+});
 
 const PHONE = { width: 390, height: 844, scale: 2, fontScale: 1 };
 let mockWindow = PHONE;
@@ -47,6 +65,7 @@ const FIXTURE = fixture('requests') as { results: unknown[] };
 
 beforeEach(() => {
   mockWindow = PHONE;
+  mockSeen.length = 0;
   store.__items.clear();
   keepSession(TOKEN, ORIGIN);
   useHousehold({ requests: FIXTURE });
@@ -252,13 +271,13 @@ describe('reading it again', () => {
     expect(since().filter((route) => route === `GET ${API}/requests`).length).toBeGreaterThanOrEqual(2);
   });
 
-  it('reads the list and its titles again on pull to refresh', async () => {
+  it('reads the list again on pull to refresh, keeping the titles it named', async () => {
     const { since } = await openRequests();
     const before = since().length;
     const scroll = only(screen.queryAllByTestId('requests-scroll'), 'scroll view');
     await act(async () => scroll.props.refreshControl.props.onRefresh());
     await settle();
-    expect(since().slice(before).sort()).toEqual([`GET ${API}/movie/900001`, `GET ${API}/requests`, `GET ${API}/tv/900002`]);
+    expect(since().slice(before)).toEqual([`GET ${API}/requests`]);
     expect(entries()).toEqual([SERIES_NAME, FILM_NAME]);
   });
 
@@ -290,14 +309,13 @@ describe('reading it again', () => {
     await act(async () => refreshed);
     await settle();
     expect(entries()).toHaveLength(10);
-    expect(titleCalls(since())).toHaveLength(20);
+    // The first ten were named on opening: the refresh reads none again.
+    expect(titleCalls(since())).toHaveLength(10);
     await pressNode(buttonNamed('Load more'));
     expect(entries()).toHaveLength(20);
     const calls = titleCalls(since());
-    expect(calls).toHaveLength(30);
-    // The first ten twice (opening, refresh), the next ten once.
-    expect(new Set(calls.slice(20)).size).toBe(10);
-    expect(calls.slice(20).every((route) => !calls.slice(0, 20).includes(route))).toBe(true);
+    expect(calls).toHaveLength(20);
+    expect(new Set(calls).size).toBe(20);
   });
 
   it('hands each title it reads to the overlay, so Home\'s card shows the state read here', async () => {
@@ -307,6 +325,74 @@ describe('reading it again', () => {
     await openRequests();
     expect(card('Requested')).toHaveLength(1);
     expect(card('Available to get')).toHaveLength(0);
+  });
+});
+
+describe('reusing the titles it named', () => {
+  const listCalls = (routes: readonly string[]) => routes.filter((route) => route === `GET ${API}/requests`);
+  /** Leaves for Home and comes back; returns the calls made by coming back. */
+  async function showAgain(since: () => string[]) {
+    await act(async () => router.navigate('/'));
+    await settle();
+    const before = since().length;
+    await act(async () => router.navigate('/requests'));
+    await settle();
+    return () => since().slice(before);
+  }
+  const film = (index: number, status: 'requested' | 'ready' | 'failed' = 'requested') => requestEntry(`r${index}`, 'movie', 100 + index, status);
+
+  it('reads the list and each title on the first visit, then only the list within ten minutes, with the statuses it says now', async () => {
+    const list = { results: [film(0), film(1), film(2)] };
+    useHousehold({ requests: list });
+    const { since } = await openRequests();
+    expect(listCalls(since()).length).toBe(1);
+    expect(titleCalls(since()).join(' ')).toBe([100, 101, 102].map((id) => `GET ${API}/movie/${id}`).join(' '));
+    expect(mockSeen.filter((key) => key !== 'page').join(' ')).toBe('movie:100 movie:101 movie:102');
+    list.results = [film(0, 'ready'), film(1, 'failed'), film(2)];
+    const again = await showAgain(since);
+    expect(listCalls(again()).length).toBe(1);
+    expect(titleCalls(again()).length).toBe(0);
+    // A kept title is not handed to the overlay again.
+    expect(mockSeen.filter((key) => key !== 'page').join(' ')).toBe('movie:100 movie:101 movie:102');
+    expect(entries()[0]).toBe('Film 100, 2024 · Movie, Ready to watch, Asked for by you');
+    expect(entries()[1]!.startsWith("Film 101, 2024 · Movie, We couldn't get this, Asked for by you")).toBe(true);
+    expect(entries()[2]).toBe('Film 102, 2024 · Movie, Requested, Asked for by you');
+  });
+
+  it('reads only the titles it has not named: a new request, and those Load more shows', async () => {
+    const list = { results: Array.from({ length: 12 }, (_, index) => film(index)) };
+    useHousehold({ requests: list });
+    const { since } = await openRequests();
+    expect(titleCalls(since()).length).toBe(10);
+    list.results = [film(99), ...list.results];
+    const again = await showAgain(since);
+    expect(titleCalls(again()).join(' ')).toBe(`GET ${API}/movie/199`);
+    expect(entries()[0]!.startsWith('Film 199, 2024 · Movie')).toBe(true);
+    await pressNode(buttonNamed('Load more'));
+    expect(entries()).toHaveLength(13);
+    // Shown again, it named 99 and 0–8; Load more names 9 (named already), 10 and 11.
+    expect(titleCalls(again()).join(' ')).toBe([199, 110, 111].map((id) => `GET ${API}/movie/${id}`).join(' '));
+  });
+
+  it('reads every title again once ten minutes have passed', async () => {
+    useHousehold({ requests: { results: [film(0), film(1)] } });
+    const { since } = await openRequests();
+    expect(titleCalls(since()).length).toBe(2);
+    await wait(10 * 60_000);
+    const again = await showAgain(since);
+    expect(titleCalls(again()).join(' ')).toBe([100, 101].map((id) => `GET ${API}/movie/${id}`).join(' '));
+    expect(mockSeen.filter((key) => key !== 'page').length).toBe(4);
+  });
+
+  it('does not keep a title that could not be read', async () => {
+    let failing = true;
+    useHousehold({ requests: { results: [film(0)] }, override: (call) => (failing && call.route === `GET ${API}/movie/100` ? answer(502, { error: 'unavailable' }) : undefined) });
+    const { since } = await openRequests();
+    expect(entries()[0]!.startsWith('Title unavailable, Movie')).toBe(true);
+    failing = false;
+    const again = await showAgain(since);
+    expect(titleCalls(again()).join(' ')).toBe(`GET ${API}/movie/100`);
+    expect(entries()[0]).toBe('Film 100, 2024 · Movie, Requested, Asked for by you');
   });
 });
 

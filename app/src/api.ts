@@ -1,4 +1,5 @@
 import { createAsked, type Asked } from './asked.js';
+import { createTitleCache, type TitleCache, type TitleDetails } from './titles.js';
 import type { DiscoverList, MediaType, Me, Movie, Page, RequestList, Season, Series, SourceKind, Sources } from './types.js';
 
 export const API_PREFIX = '/jellypass/app/v1';
@@ -18,6 +19,8 @@ export interface ApiOptions {
   token: () => string | undefined;
   /** The titles this member asked for in this page's life; shown as requested while the server catches up. */
   asked?: Asked;
+  /** The titles My requests has named in this sign-in; forgotten with the overlay. */
+  titles?: TitleCache;
 }
 
 export interface Api {
@@ -37,6 +40,11 @@ export interface Api {
   /** "Get this": resolves once the API accepted the call (it always answers the same), and says nothing about what follows. */
   getThis(mediaType: MediaType, tmdbId: number, seasons: readonly number[], signal?: AbortSignal): Promise<void>;
   requests(signal?: AbortSignal): Promise<RequestList>;
+  /**
+   * A title's name, year and poster for My requests: from the title's own answer (seen by the overlay), or, without a
+   * call, from one read in the last ten minutes of this sign-in. Never its state.
+   */
+  requestTitle(mediaType: MediaType, tmdbId: number, signal?: AbortSignal): Promise<TitleDetails>;
   /** Forgets what this member just asked for (sign-out). */
   forgetAsked(): void;
 }
@@ -50,12 +58,20 @@ function kindOf(status: number): ApiErrorKind {
 
 export function createApi(options: ApiOptions): Api {
   const asked = options.asked ?? createAsked();
+  const titles = options.titles ?? createTitleCache();
+  // Bumped each time the titles are forgotten: a title read before is not kept for whoever is signed in after.
+  let titlesEpoch = 0;
+  function forget(): void {
+    asked.forget();
+    titles.forget();
+    titlesEpoch += 1;
+  }
   // The overlay belongs to whoever holds this token and this /me identity: any other (or none) starts it empty.
   let owner: string | undefined;
   let identity: string | undefined;
   function sync(token: string | undefined): void {
     if (token === owner) return;
-    asked.forget();
+    forget();
     owner = token;
     identity = undefined;
   }
@@ -92,7 +108,7 @@ export function createApi(options: ApiOptions): Api {
       await response.body?.cancel().catch(() => undefined);
       // A refused sign-in is nobody's: whatever was shown as requested for it is dropped.
       if (response.status === 401) {
-        asked.forget();
+        forget();
         identity = undefined;
       }
       throw new ApiError(kindOf(response.status));
@@ -109,13 +125,16 @@ export function createApi(options: ApiOptions): Api {
     }
   }
 
+  const movie = (tmdbId: number, signal?: AbortSignal) => get<Movie>(`/movie/${tmdbId}`, signal).then(seen(asked.movie));
+  const tv = (tmdbId: number, signal?: AbortSignal) => get<Series>(`/tv/${tmdbId}`, signal).then(seen(asked.series));
+
   return {
     me: async (signal) => {
       const me = await get<Me>('/me', signal);
       sync(options.token());
       // Another member (or household) never sees this one's overlay; /me names the member and the household.
       const now = `${me.household}\n${me.name}`;
-      if (identity !== undefined && identity !== now) asked.forget();
+      if (identity !== undefined && identity !== now) forget();
       identity = now;
       return me;
     },
@@ -124,8 +143,8 @@ export function createApi(options: ApiOptions): Api {
     sources: (signal) => get<Sources>('/discover/sources', signal),
     source: (kind, id, page, signal, list) =>
       get<Page>(`/discover/${kind}/${id}${list ? `/${list}` : ''}${page > 1 ? `?page=${page}` : ''}`, signal).then(seen(asked.page)),
-    movie: (tmdbId, signal) => get<Movie>(`/movie/${tmdbId}`, signal).then(seen(asked.movie)),
-    tv: (tmdbId, signal) => get<Series>(`/tv/${tmdbId}`, signal).then(seen(asked.series)),
+    movie,
+    tv,
     season: (tmdbId, seasonNumber, signal) => get<Season>(`/tv/${tmdbId}/season/${seasonNumber}`, signal).then(seen(asked.season)),
     getThis: async (mediaType, tmdbId, seasons, signal) => {
       const before = options.token();
@@ -138,7 +157,20 @@ export function createApi(options: ApiOptions): Api {
       if (before !== undefined && owner === before) asked.add(mediaType, tmdbId, seasons);
     },
     requests: (signal) => get<RequestList>('/requests', signal),
-    forgetAsked: () => asked.forget(),
+    requestTitle: async (mediaType, tmdbId, signal) => {
+      sync(options.token());
+      // A kept title is used as it is: its state is not handed to the overlay again.
+      const kept = titles.get(mediaType, tmdbId);
+      if (kept) return kept;
+      const epoch = titlesEpoch;
+      const found = mediaType === 'tv' ? await tv(tmdbId, signal) : await movie(tmdbId, signal);
+      const details: TitleDetails = { title: found.title, year: found.year, mediaType, posterUrl: found.posterUrl };
+      // Kept only for the sign-in that read it: not if it changed (or was forgotten) while the call was out.
+      sync(options.token());
+      if (epoch === titlesEpoch) titles.set({ ...details, tmdbId });
+      return details;
+    },
+    forgetAsked: () => forget(),
   };
 }
 
