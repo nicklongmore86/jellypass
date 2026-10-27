@@ -1,9 +1,9 @@
 // The Home tab through the real router, signed in, with a fake gateway: the rows of each filter in the PWA's order, the
 // hero, the filter chips, the cards' text, names and status words, TMDB-only images (a bad one dropped, not the
 // screen), each row's own failure with Try again and nothing retried by itself, pull to refresh, a 401, the iPad
-// layout, and that every pressable is named and a thumb's size and every text can grow. The calls themselves are
-// pinned by home-budget.test.tsx. Queries are queryAll* and assertions read single fields, so a failure never prints
-// the component tree.
+// layout, the sideways rows coming to rest with a card centred, and that every pressable is named and a thumb's size
+// and every text can grow. The calls themselves are pinned by home-budget.test.tsx. Queries are queryAll* and
+// assertions read single fields, so a failure never prints the component tree.
 import { act, fireEvent, screen, within } from '@testing-library/react-native';
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -11,7 +11,10 @@ import { renderRouter } from 'expo-router/testing-library';
 import { StyleSheet } from 'react-native';
 
 import type { FetchLike } from '../src/api/client';
+import { CARD_GAP, STUDIO_TILE_WIDTH } from '../src/home/components';
+import { snapOffsets } from '../src/home/layout';
 import { STATE_LABELS } from '../src/home/text';
+import { cardWidths } from '../src/screens/HomeScreen';
 import { layout } from '../src/theme';
 import {
   API,
@@ -555,6 +558,83 @@ describe('on iPad', () => {
     await start();
     expect(widthOf('trending 1, 2020, Movie, TMDB rating 6.0 out of 10, Ready to watch')).toBe(132);
     expect(widthOf('popular-movies 1, 2020, TMDB rating 6.0 out of 10, Ready to watch')).toBe(Math.round((390 - 32) * 0.92));
+  });
+});
+
+describe('the sideways rows', () => {
+  /** Each card row's and the studios' strip's stops, as numbers, with the width of what it holds. */
+  const rows = () =>
+    [...screen.queryAllByTestId('card-row'), ...screen.queryAllByTestId('studio-strip')].map((node) => {
+      const links = within(node).queryAllByRole('link');
+      const tiles = within(node).queryAllByRole('image');
+      return {
+        id: String(node.props.testID),
+        count: links.length || tiles.length,
+        item: links.length ? Number(flat(links[0]!).width) : STUDIO_TILE_WIDTH,
+        offsets: (node.props.snapToOffsets as number[] | undefined) ?? [],
+        horizontal: node.props.horizontal === true,
+        deceleration: String(node.props.decelerationRate),
+        oneAtATime: node.props.disableIntervalMomentum,
+        interval: node.props.snapToInterval,
+        paging: node.props.pagingEnabled,
+      };
+    });
+
+  async function checkAll(width: number, tablet: boolean) {
+    const column = width - 32;
+    const widths = cardWidths(column, tablet);
+    const found = rows();
+    // Trending, the three big-card rows, Upcoming movies and series, the eight services, and the studios.
+    expect(found.filter((row) => row.id === 'card-row').length).toBe(6 + 8);
+    expect(found.filter((row) => row.id === 'studio-strip').length).toBe(1);
+    expect([...new Set(found.map((row) => row.item))].sort()).toEqual([widths.backdrop, widths.poster, STUDIO_TILE_WIDTH].sort());
+    const wrong = found.filter((row) => {
+      const expected = snapOffsets(row.count, row.item, CARD_GAP, column) ?? [];
+      return expected.length !== row.offsets.length || expected.some((offset, at) => Math.abs(offset - row.offsets[at]!) > 1e-9);
+    });
+    expect(wrong.map((row) => `${row.id} ${row.item}`)).toEqual([]);
+    // Free momentum, so a fast flick still travels several cards; only where it stops snaps. A row that fits whole
+    // (the studios on an iPad) has nowhere to scroll and no stops.
+    const snapping = found.filter((row) => row.offsets.length > 0);
+    expect(found.filter((row) => !row.offsets.length && row.count * row.item + (row.count - 1) * CARD_GAP > column).length).toBe(0);
+    expect([...new Set(snapping.map((row) => `${row.horizontal} ${row.deceleration} ${row.oneAtATime} ${row.interval} ${row.paging}`))]).toEqual([
+      'true normal undefined undefined undefined',
+    ]);
+    expect(snapping.filter((row) => row.id === 'card-row').length).toBe(6 + 8);
+    return found;
+  }
+
+  it('on a phone: every row and the studios snap with a card centred, from the row start to its end', async () => {
+    await start();
+    await scrollToEnd();
+    const found = await checkAll(PHONE.width, false);
+    const big = found.find((row) => row.item === cardWidths(PHONE.width - 32, false).backdrop)!;
+    expect(big.offsets[0]).toBe(0);
+    expect(big.offsets.at(-1)).toBe(big.count * big.item + (big.count - 1) * CARD_GAP - (PHONE.width - 32));
+  });
+
+  it('on iPad: the same, for its wider cards and column', async () => {
+    mockWindow = IPAD;
+    await start();
+    await scrollToEnd({ width: IPAD.width, height: IPAD.height });
+    await checkAll(IPAD.width, true);
+  });
+
+  it('keeps the hero paged a slide at a time, as before', async () => {
+    await start();
+    const track = only(screen.queryAllByTestId('hero-track'), 'hero track');
+    expect(track.props.pagingEnabled).toBe(true);
+    expect(track.props.snapToOffsets).toBeUndefined();
+  });
+
+  it('keeps the same stops on coming Back from a title, so a row left at rest is still at a stop', async () => {
+    const app = await start();
+    const before = rows().map((row) => row.offsets.join(','));
+    expect(before.length).toBeGreaterThan(0);
+    await pressNode(screen.queryAllByRole('link')[0]!);
+    expect(app.getPathname()).toMatch(/^\/home\/(movie|tv)\/\d+$/);
+    await pressNode(buttonNamed('Back'));
+    expect(rows().map((row) => row.offsets.join(','))).toEqual(before);
   });
 });
 

@@ -28,7 +28,7 @@ import { backdropSources, safeImageUrl, safeLogoUrl } from '../api/urls';
 import { Icon } from '../icons';
 import { colors, layout, radii, spacing, status as statusColors, typography, water } from '../theme';
 import { Button } from '../ui';
-import type { RowVariant } from './layout';
+import { snapOffsets, type RowVariant } from './layout';
 import {
   backdropMeta,
   cardName,
@@ -51,6 +51,20 @@ import {
 } from './text';
 
 const SKELETON_HEADING_HEIGHT = 26;
+
+/** The space between the cards in a row, and how wide a studio's logo tile is. */
+export const CARD_GAP = spacing.md;
+export const STUDIO_TILE_WIDTH = 136;
+
+/**
+ * A sideways row snaps so a swipe always comes to rest with a card centred (snapOffsets). A fast flick still glides
+ * across several cards: the momentum is left alone, at the normal rate, and only where it stops is moved to the nearest
+ * card. Nothing more is animated, so it is the same with Reduce Motion on.
+ */
+export function rowSnapping(count: number, item: number, viewport: number) {
+  const offsets = snapOffsets(count, item, CARD_GAP, viewport);
+  return offsets ? ({ snapToOffsets: offsets, decelerationRate: 'normal' } as const) : {};
+}
 
 const hidden = { accessibilityElementsHidden: true, importantForAccessibility: 'no-hide-descendants' } as const;
 
@@ -224,21 +238,29 @@ export function NetworkHeading({ prefix, network }: { prefix: string; network: S
   );
 }
 
-/** A row of title cards that scrolls sideways. */
+/** A row of title cards that scrolls sideways, `viewport` wide, coming to rest with a card centred. */
 export function CardRow({
   cards,
   variant,
   cardWidth,
+  viewport,
   onOpen,
 }: {
   cards: readonly Card[];
   variant: RowVariant;
   cardWidth: number;
+  viewport: number;
   onOpen: (card: Card) => void;
 }) {
   if (cards.length === 0) return <Text style={styles.muted}>{EMPTY_ROW_TEXT}</Text>;
   return (
-    <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.rowList}>
+    <ScrollView
+      testID="card-row"
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      contentContainerStyle={styles.rowList}
+      {...rowSnapping(cards.length, cardWidth, viewport)}
+    >
       {cards.map((card) =>
         variant === 'backdrop' ? (
           <BackdropCard key={`${card.mediaType}-${card.tmdbId}`} card={card} width={cardWidth} onOpen={onOpen} />
@@ -293,12 +315,18 @@ export function RowFailure({ heading, error, onRetry }: { heading: string; error
   );
 }
 
-/** The studios: a strip of their logos, each named "<studio> movies". No title is fetched for it. */
-export function StudioStrip({ studios }: { studios: readonly Source[] }) {
+/** The studios: a strip of their logos, each named "<studio> movies", snapping like a row. No title is fetched for it. */
+export function StudioStrip({ studios, viewport }: { studios: readonly Source[]; viewport: number }) {
   return (
     <View style={styles.row}>
       <RowHeading title={SOURCE_TEXT.studios} />
-      <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.rowList}>
+      <ScrollView
+        testID="studio-strip"
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.rowList}
+        {...rowSnapping(studios.length, STUDIO_TILE_WIDTH, viewport)}
+      >
         {studios.map((studio) => (
           <View key={studio.id} accessible accessibilityRole="image" accessibilityLabel={studioName(studio.name)}>
             <LogoTile source={studio} size="large" />
@@ -553,7 +581,7 @@ const styles = StyleSheet.create({
   backdropMeta: { fontSize: 13.6, lineHeight: 18, color: colors.muted },
 
   row: { gap: spacing.md },
-  rowList: { gap: spacing.md, paddingBottom: spacing.xxs },
+  rowList: { gap: CARD_GAP, paddingBottom: spacing.xxs },
   rowHeading: { gap: spacing.sm, alignSelf: 'flex-start' },
   rowHeadingText: { ...typography.rowHeading, color: colors.text },
   networkHeading: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.sm },
@@ -569,7 +597,7 @@ const styles = StyleSheet.create({
 
   logoTile: { alignItems: 'center', justifyContent: 'center', backgroundColor: colors.logoTile },
   logoTileSmall: { width: 104, minHeight: 36, paddingVertical: 4.8, paddingHorizontal: 8.8, borderRadius: radii.chip },
-  logoTileLarge: { width: 136, minHeight: 72, paddingVertical: spacing.md, paddingHorizontal: spacing.lg, borderRadius: radii.card },
+  logoTileLarge: { width: STUDIO_TILE_WIDTH, minHeight: 72, paddingVertical: spacing.md, paddingHorizontal: spacing.lg, borderRadius: radii.card },
   logoImage: { width: '100%', aspectRatio: 3 },
   logoText: { fontSize: 12.8, lineHeight: 15, fontWeight: '700', textAlign: 'center', color: colors.logoText },
 

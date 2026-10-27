@@ -82,3 +82,22 @@ export function rowKey(part: HomeRow): string {
 export function networkKey(id: number): string {
   return `row-network-${id}`;
 }
+
+/**
+ * Where a sideways row of `count` items, each `item` wide with `gap` between them, comes to rest in a `viewport` that
+ * wide: with an item centred, but for the ends, where the first item sits at the row's start and the last at its end.
+ * A centred stop within half a step of either end is left out, so a row never rests a sliver short of its start or
+ * end. Nothing when the row fits whole, as there is nowhere to scroll.
+ */
+export function snapOffsets(count: number, item: number, gap: number, viewport: number): number[] | undefined {
+  const end = count * item + Math.max(0, count - 1) * gap - viewport;
+  if (count < 2 || viewport <= 0 || end <= 0) return undefined;
+  const step = item + gap;
+  const offsets = [0];
+  for (let at = 1; at < count - 1; at += 1) {
+    const centred = at * step - (viewport - item) / 2;
+    if (centred - offsets.at(-1)! >= step / 2 && end - centred >= step / 2) offsets.push(centred);
+  }
+  offsets.push(end);
+  return offsets;
+}
