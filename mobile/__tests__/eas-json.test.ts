@@ -167,7 +167,7 @@ describe('the mobile-release workflow', () => {
 });
 
 // The token check runs as GitHub runs it (bash -eo pipefail), with `eas` replaced by a script that prints what EAS CLI
-// 26.0.0's `eas whoami` would (commands/account/view.js; chalk colours the "limited" part).
+// 25.3.0's `eas whoami` would (commands/account/view.js; chalk colours the "limited" part).
 describe('the Expo token check', () => {
   const script = /- name: Check the Expo token can build the project\n(?: {8}.*\n)*? {8}run: \|\n((?: {10}.*\n|\n)*)/
     .exec(workflow)?.[1]

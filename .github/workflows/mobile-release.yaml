@@ -96,7 +96,7 @@ jobs:
       PROFILE: ${{ inputs.profile || 'production' }}
       SUBMIT: ${{ github.event_name != 'workflow_dispatch' || inputs.submit }}
       # Pinned like the actions; eas.json's cli.version is the floor.
-      EAS_CLI_VERSION: 26.0.0
+      EAS_CLI_VERSION: 25.3.0
       # EAS CLI warns, before a production build starts, that an app without expo-dev-client "uses Expo Go for
       # development". It's advice only, and this variable, read by the CLI from its own environment (eas.json's build
       # env only reaches the builder), hides it without changing the build.
@@ -162,7 +162,7 @@ jobs:
           # The token builds with the narrower role, so that's the one checked.
           role="${grant##*, limited to }"
           role="${role% by the current credentials}"
-          # The labels `eas whoami` prints at 26.0.0 (commands/account/view.js, from the permissions by
+          # The labels `eas whoami` prints at 25.3.0 (commands/account/view.js, from the permissions by
           # user/roles.js). Anything else (Viewer, Runner, `Custom: ...`, or a role added after this CLI version) is
           # refused rather than guessed at.
           case "$role" in
