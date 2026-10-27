@@ -254,3 +254,12 @@
 .layout-tv .jellypass-tv-title-view {
   font-size: 1.1em;
 }
+
+/*
+ * The page host (tv/src/page-host.ts): while a JellyPass page's hash is current, what Jellyfin web's "page not found"
+ * page holds is hidden (the class is set before the page is drawn, so it never shows); the JellyPass page is in the
+ * same page, in a box of its own.
+ */
+html.jellypass-tv-hosting #fallbackPage[data-role="page"].page:not(.hide) > :not([data-jellypass-tv-page]) {
+  display: none !important;
+}
