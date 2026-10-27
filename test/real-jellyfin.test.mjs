@@ -802,8 +802,14 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     await householdStore.load();
     await householdStore.upsertGroup({ id: 'farmhouse', name: 'Farmhouse', userIds: [fixture.aliceId] });
     await householdStore.upsertGroup({ id: 'fearing', name: 'Fearing', userIds: [fixture.bobId] });
+    // With the household app on, as deployed, sign-out is the household host's own route.
+    const seerr = await createFakeSeerr(world());
+    const tmdb = await createFakeTmdb(world());
+    t.after(() => Promise.all([seerr.close(), tmdb.close()]));
+    const admin = new SeerrClient(seerr.url, 'seerr-key');
     const gateway = makeServer(new AccessService(client, householdStore), { webhook: webhookToken, admin: 'real-admin-secret' }, undefined, {
       householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: 0 },
+      householdApp: { catalogue: new TmdbClient(TMDB_KEY, { baseUrl: tmdb.url }), blocklist: admin, members: new SeerrUserMap(admin) },
     });
     await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
     t.after(() => new Promise((resolve) => gateway.close(resolve)));
@@ -842,6 +848,16 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     assert.deepEqual((await getWithHeaders(port, '/SyncPlay/List', as(farmhouse, alice))).json(), []);
     assert.deepEqual((await getWithHeaders(port, `/SyncPlay/${bobGroup.GroupId}`, as(farmhouse, alice))).text, '{"error":"item_not_found"}');
     assert.deepEqual((await getWithHeaders(port, '/SyncPlay/List', as(fearing, bob))).json().map((group) => group.GroupId), [bobGroup.GroupId]);
+    // Jellyfin lets anyone join any group by its ID, then sends them its participants' names; farmhouse's host joins
+    // Alice to no group that is not farmhouse's, and answers a group Jellyfin does not have alike.
+    const join = (host, token, groupId) => getWithHeaders(port, '/SyncPlay/Join', { ...as(host, token), 'Content-Type': 'application/json' }, { method: 'POST', body: JSON.stringify({ GroupId: groupId }) });
+    for (const groupId of [bobGroup.GroupId, 'ffffffffffffffffffffffffffffffff']) {
+      assert.deepEqual([(await join(farmhouse, alice, groupId)).text], ['{"error":"item_not_found"}'], groupId);
+    }
+    const stillBobs = (await atJellyfin(`/SyncPlay/${bobGroup.GroupId}`, bob)).json();
+    assert.deepEqual(stillBobs.Participants, ['Bob'], 'Alice joined Bob\'s group');
+    // A group that is the household's own is joined as Jellyfin joins it.
+    assert.equal((await join(fearing, bob, bobGroup.GroupId)).status, 204);
 
     // Allowed to control other users' sessions, Alice is listed Bob's at Jellyfin, never on farmhouse's host.
     const originalAlice = user(await client.getUsers(), fixture.aliceId);
@@ -875,6 +891,18 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
       assert.match(await rawUpgrade(port, `/socket?api_key=${token}&deviceId=jellypass-real-scope`, fearing), /^HTTP\/1\.1 401 /);
     }
     assert.match(await rawUpgrade(port, `/socket?api_key=${alice}&deviceId=jellypass-real-scope`, farmhouse), /^HTTP\/1\.1 101 /);
+
+    // Signing Bob out through farmhouse's host gets the answer a token Jellyfin never issued gets, and revokes nothing.
+    const signOut = (host, token) => postWithHeaders(port, '/Sessions/Logout', as(host, token), undefined);
+    const unknown = await signOut(farmhouse, 'ffffffffffffffffffffffffffffffff');
+    assert.deepEqual([unknown.status, unknown.text], [401, '{"error":"unauthorized"}']);
+    const bobOut = await signOut(farmhouse, bob);
+    assert.deepEqual([bobOut.status, bobOut.text, bobOut.headers['content-type']], [unknown.status, unknown.text, unknown.headers['content-type']]);
+    assert.equal((await atJellyfin('/Users/Me', bob)).status, 200, 'Bob\'s token was revoked through another household\'s host');
+    assert.equal((await getWithHeaders(port, '/System/Info', as(fearing, bob))).status, 200);
+    // Alice's own sign-out through her household's host still revokes her token.
+    assert.equal((await signOut(farmhouse, alice)).status, 204);
+    assert.equal((await atJellyfin('/Users/Me', alice)).status, 401);
   });
 
   it('finds a title\'s items by TMDB ID with JellyPass\'s key, the "Get this" decision input for "Jellyfin already has it"', async () => {

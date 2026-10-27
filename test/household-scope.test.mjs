@@ -30,11 +30,13 @@ const sessions = [
   { Id: 'session-nobody', UserId: '00000000000000000000000000000000', DeviceName: 'Bob laptop', AdditionalUsers: [] },
   { Id: 'session-anonymous', DeviceName: 'Somebody', AdditionalUsers: [] },
 ];
+const GROUPS = { farmhouse: 'f0f0f0f0000000000000000000000001', mill: 'b1b1b1b1000000000000000000000002', mixed: 'c2c2c2c2000000000000000000000003', empty: 'e3e3e3e3000000000000000000000004' };
+const NO_SUCH_GROUP = 'deadbeef00000000000000000000dead';
 const syncPlayGroups = [
-  { GroupId: 'farmhouse-group', GroupName: 'Alice\'s group', State: 'Idle', Participants: ['Alice', 'ann'], LastUpdatedAt: '2026-10-27T00:00:00Z' },
-  { GroupId: 'mill-group', GroupName: 'Bob\'s group', State: 'Idle', Participants: ['Bob'], LastUpdatedAt: '2026-10-27T00:00:00Z' },
-  { GroupId: 'mixed-group', GroupName: 'Alice\'s group', State: 'Playing', Participants: ['Alice', 'Bob'], LastUpdatedAt: '2026-10-27T00:00:00Z' },
-  { GroupId: 'empty-group', GroupName: 'Outsider\'s group', State: 'Idle', Participants: [], LastUpdatedAt: '2026-10-27T00:00:00Z' },
+  { GroupId: GROUPS.farmhouse, GroupName: 'Alice\'s group', State: 'Idle', Participants: ['Alice', 'ann'], LastUpdatedAt: '2026-10-27T00:00:00Z' },
+  { GroupId: GROUPS.mill, GroupName: 'Bob\'s group', State: 'Idle', Participants: ['Bob'], LastUpdatedAt: '2026-10-27T00:00:00Z' },
+  { GroupId: GROUPS.mixed, GroupName: 'Alice\'s group', State: 'Playing', Participants: ['Alice', 'Bob'], LastUpdatedAt: '2026-10-27T00:00:00Z' },
+  { GroupId: GROUPS.empty, GroupName: 'Outsider\'s group', State: 'Idle', Participants: [], LastUpdatedAt: '2026-10-27T00:00:00Z' },
 ];
 const scopeWorld = () => world({ passwords, sessions, syncPlayGroups });
 
@@ -75,14 +77,12 @@ describe('household host user listings', { timeout: 60_000 }, () => {
       assert.equal(answer.status, 200, path);
       assert.deepEqual(answer.json(), [syncPlayGroups[0]], path);
     }
-    assert.deepEqual((await get(app.port, '/SyncPlay/List', as(HOST_B, 'token-bob'))).json().map((group) => group.GroupId), ['mill-group']);
-    assert.deepEqual((await get(app.port, '/SyncPlay/farmhouse-group', as(HOST_A, 'token-alice'))).json(), syncPlayGroups[0]);
-    for (const id of ['mill-group', 'mixed-group', 'empty-group']) {
+    assert.deepEqual((await get(app.port, '/SyncPlay/List', as(HOST_B, 'token-bob'))).json().map((group) => group.GroupId), [GROUPS.mill]);
+    assert.deepEqual((await get(app.port, `/SyncPlay/${GROUPS.farmhouse}`, as(HOST_A, 'token-alice'))).json(), syncPlayGroups[0]);
+    for (const id of [GROUPS.mill, GROUPS.mixed, GROUPS.empty, NO_SUCH_GROUP]) {
       const answer = await get(app.port, `/emby/syncplay/${id}`, as(HOST_A, 'token-alice'));
       assert.deepEqual([answer.status, answer.text], [404, ITEM_NOT_FOUND], id);
     }
-    // Jellyfin's own answer for a group it does not have is relayed.
-    assert.equal((await get(app.port, '/SyncPlay/no-such-group', as(HOST_A, 'token-alice'))).text, '{}');
   });
 
   it('fails closed when Jellyfin\'s listing is not one', async (t) => {
@@ -91,6 +91,89 @@ describe('household host user listings', { timeout: 60_000 }, () => {
     const app = await startApp(t, state);
     const answer = await get(app.port, '/Sessions', as(HOST_A, 'token-alice'));
     assert.deepEqual([answer.status, answer.text], [502, '{"error":"invalid_jellyfin_sessions"}']);
+  });
+
+  it('relays only a 200 listing, narrowed: any other answer gets a fixed one, never Jellyfin\'s body (Codex)', async (t) => {
+    const state = scopeWorld();
+    const app = await startApp(t, state);
+    const bobUser = { Id: BOB, Name: 'Bob', ServerId: 'server' };
+    const bobGroup = syncPlayGroups[1];
+    const lists = [
+      ['/Users', 'invalid_jellyfin_users', [bobUser]],
+      ['/Sessions', 'invalid_jellyfin_sessions', [sessions[1]]],
+      ['/SyncPlay/List', 'invalid_jellyfin_syncplay_groups', [bobGroup]],
+      [`/SyncPlay/${GROUPS.mill}`, 'invalid_jellyfin_syncplay_group', bobGroup],
+    ];
+    for (const [path, invalid, bobs] of lists) {
+      for (const [status, expected, headers] of [
+        [201, [502, `{"error":"${invalid}"}`]],
+        [203, [502, `{"error":"${invalid}"}`]],
+        [302, [502, `{"error":"${invalid}"}`], { Location: '/elsewhere' }],
+        [400, [400, '{"error":"jellyfin_refused"}']],
+        [401, [401, NOT_A_MEMBER]],
+        [403, [403, '{"error":"jellyfin_refused"}']],
+        [404, [404, ITEM_NOT_FOUND]],
+        [500, [502, '{"error":"jellyfin_unavailable"}']],
+        [503, [502, '{"error":"jellyfin_unavailable"}']],
+      ]) {
+        state.listingAnswer = { status, body: bobs, headers };
+        const answer = await get(app.port, path, as(HOST_A, 'token-alice'));
+        assert.deepEqual([answer.status, answer.text], expected, `${path} ${status}`);
+        assert.equal(answer.headers.location, undefined, `${path} ${status}`);
+      }
+    }
+  });
+});
+
+describe('household host SyncPlay joins', { timeout: 60_000 }, () => {
+  const join = (app, host, token, body) => get(app.port, '/SyncPlay/Join', { ...as(host, token), 'Content-Type': 'application/json' }, { method: 'POST', body: typeof body === 'string' ? body : JSON.stringify(body) });
+  const joinsSent = (app) => app.jellyfin.requests.filter((request) => /^\/syncplay\/join$/i.test(request.pathname)).length;
+
+  it('joins a member only to a group all of whose participants are the household\'s members (Codex)', async (t) => {
+    const state = scopeWorld();
+    const app = await startApp(t, state);
+    const dashed = GROUPS.farmhouse.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5').toUpperCase();
+    for (const body of [{ GroupId: GROUPS.farmhouse }, { GroupId: dashed }, { groupId: `{${dashed}}` }]) {
+      const answer = await join(app, HOST_A, 'token-alice', body);
+      assert.equal(answer.status, 204, JSON.stringify(body));
+    }
+    assert.deepEqual(state.syncPlayJoins, [ALICE, ALICE, ALICE].map((userId) => ({ userId, groupId: GROUPS.farmhouse })));
+    // Jellyfin is sent the checked group alone, in one form.
+    assert.ok(app.jellyfin.requests.filter((request) => /^\/syncplay\/join$/i.test(request.pathname)).every((request) => request.method === 'POST'));
+    // Bob's own household joins him to his own group.
+    assert.equal((await join(app, HOST_B, 'token-bob', { GroupId: GROUPS.mill })).status, 204);
+    assert.equal(joinsSent(app), 4);
+  });
+
+  it('refuses any other group, and one Jellyfin does not have, with the same fixed 404, without asking Jellyfin to join it', async (t) => {
+    const state = scopeWorld();
+    const app = await startApp(t, state);
+    for (const groupId of [GROUPS.mill, GROUPS.mixed, GROUPS.empty, NO_SUCH_GROUP]) {
+      for (const path of ['/SyncPlay/Join', '/syncplay/join/', '/emby/SyncPlay/Join']) {
+        const answer = await get(app.port, path, { ...as(HOST_A, 'token-alice'), 'Content-Type': 'application/json' }, { method: 'POST', body: JSON.stringify({ GroupId: groupId }) });
+        assert.deepEqual([answer.status, answer.text], [404, ITEM_NOT_FOUND], `${groupId} ${path}`);
+      }
+    }
+    assert.equal(joinsSent(app), 0);
+    assert.deepEqual(state.syncPlayJoins, []);
+  });
+
+  it('refuses a join it cannot read as Jellyfin does, and another household\'s token, without asking Jellyfin', async (t) => {
+    const state = scopeWorld();
+    const app = await startApp(t, state);
+    for (const body of ['not json', '[]', '{}', JSON.stringify({ GroupId: 42 }), JSON.stringify({ GroupId: 'farmhouse' }),
+      JSON.stringify({ GroupId: GROUPS.mill, groupid: GROUPS.farmhouse }),
+      JSON.stringify({ GroupId: `{${GROUPS.farmhouse}` })]) {
+      const answer = await join(app, HOST_A, 'token-alice', body);
+      assert.deepEqual([answer.status, answer.text], [400, '{"error":"invalid_request"}'], body);
+    }
+    // A repeated key is read as Jellyfin reads it, the last one, and only the group checked is sent on.
+    assert.equal((await join(app, HOST_A, 'token-alice', `{"GroupId":"${GROUPS.farmhouse}","GroupId":"${GROUPS.mill}"}`)).text, ITEM_NOT_FOUND);
+    for (const token of ['token-bob', 'no-such-token']) {
+      assert.deepEqual((await join(app, HOST_A, token, { GroupId: GROUPS.farmhouse })).text, NOT_A_MEMBER, token);
+    }
+    assert.equal(joinsSent(app), 0);
+    assert.deepEqual(state.syncPlayJoins, []);
   });
 });
 
@@ -206,6 +289,27 @@ describe('household host tokens', { timeout: 60_000 }, () => {
     assert.equal((await post(app.port, '/Sessions/Logout', alice, undefined)).status, 204);
     assert.equal((await get(app.port, '/System/Info', alice)).text, NOT_A_MEMBER);
     assert.equal(verifications(app), 2);
+  });
+
+  it('refuses a sign-out with another household\'s, an outsider\'s or an unknown token alike, revoking nothing (Codex)', async (t) => {
+    const app = await startApp(t, scopeWorld());
+    const signIn = async (host, Username, Pw) => (await post(app.port, '/Users/AuthenticateByName', { Host: host, Authorization: WEB }, { Username, Pw })).json().AccessToken;
+    const bob = await signIn(HOST_B, 'Bob', 'bob-pass');
+    assert.notEqual((await get(app.port, '/System/Info', as(HOST_B, bob))).text, NOT_A_MEMBER);
+    const unknown = await post(app.port, '/Sessions/Logout', as(HOST_A, 'no-such-token'), undefined);
+    assert.deepEqual([unknown.status, unknown.text], [401, NOT_A_MEMBER]);
+    for (const headers of [as(HOST_A, bob), { Host: HOST_A, 'X-Emby-Token': bob }, as(HOST_A, 'token-bob'), as(HOST_A, 'token-outsider'), { Host: HOST_A, Authorization: WEB }]) {
+      const answer = await post(app.port, '/Sessions/Logout', headers, undefined);
+      assert.deepEqual([answer.status, answer.text, answer.headers['content-type'], answer.headers['cache-control']],
+        [unknown.status, unknown.text, unknown.headers['content-type'], unknown.headers['cache-control']], JSON.stringify(headers));
+    }
+    assert.deepEqual(app.jellyfin.logouts, []);
+    assert.equal(app.jellyfin.requests.filter((request) => request.pathname === '/Sessions/Logout').length, 0, 'a sign-out reached Jellyfin');
+    // Bob's token still works on his own household's host, and his own sign-out there still revokes it.
+    assert.notEqual((await get(app.port, '/System/Info', as(HOST_B, bob))).text, NOT_A_MEMBER);
+    assert.equal((await post(app.port, '/Sessions/Logout', as(HOST_B, bob), undefined)).status, 204);
+    assert.deepEqual(app.jellyfin.logouts, [bob]);
+    assert.equal((await get(app.port, '/System/Info', as(HOST_B, bob))).text, NOT_A_MEMBER);
   });
 
   it('answers 502 without relaying the call when Jellyfin cannot say whose a token is', async (t) => {

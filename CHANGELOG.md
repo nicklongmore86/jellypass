@@ -60,6 +60,38 @@ changes are always listed at the top of the release notes.
   "Add to my library" and sign-out keep their own checks. The main Jellyfin
   site and the admin host are unaffected. Allowed in a patch release by the
   same household-check rule.
+- **Signing out through a household hostname now takes a member's token.**
+  `POST /Sessions/Logout` was relayed whoever's token it carried, so another
+  household's member, or anyone with a token from the main Jellyfin site,
+  could revoke it through a household hostname (`204`), and tell it from a
+  token Jellyfin never issued (`401`). Now a sign-out is relayed only if
+  Jellyfin's `GET /Users/Me` says its token is a member's of that household;
+  any other, and a sign-out with no token, gets the same
+  `401 {"error":"unauthorized"}`, never reaches Jellyfin and revokes nothing.
+  A member's own sign-out forgets and revokes the token as before. If
+  Jellyfin cannot say whose the token is, the sign-out is not sent and gets
+  `502 {"error":"jellyfin_unavailable"}` (it was `503` when Jellyfin was
+  down). Allowed in a patch release by the same household-check rule.
+- **Household user listings fail closed on any answer but Jellyfin's `200`.**
+  `GET /Users`, `GET /Sessions`, `GET /SyncPlay/List`, `GET /SyncPlay/{id}`
+  and `GET /Users/Public` relayed any other answer from Jellyfin unchanged,
+  body included, so a `201` (say) listing another household's member reached
+  the caller. Now any other `2xx` or `3xx` gets `502` with a fixed error, a
+  `401` and a `404` their household host's fixed answers, any other `4xx` its
+  status with `{"error":"jellyfin_refused"}`, and a `5xx`
+  `502 {"error":"jellyfin_unavailable"}`. `GET /SyncPlay/{id}` for a group
+  Jellyfin does not have now gets the same fixed
+  `404 {"error":"item_not_found"}` as another household's group.
+- **A household hostname joins a SyncPlay group only if it is the
+  household's own.** Jellyfin lets anyone join any SyncPlay group by its ID
+  (`POST /SyncPlay/Join`), then sends them its participants' names over the
+  WebSocket. On a household hostname a join is now relayed only for a group
+  all of whose participants, as Jellyfin's `GET /SyncPlay/{id}` describes
+  them, are the household's members; any other group, and one Jellyfin does
+  not have, gets the fixed `404 {"error":"item_not_found"}` and is never
+  joined. A body that is not `{"GroupId": "<GUID>"}` gets
+  `400 {"error":"invalid_request"}`. WebSocket messages are not filtered.
+  Allowed in a patch release by the same household-check rule.
 
 ## [3.3.0] - 2026-10-27
 
