@@ -53,8 +53,8 @@ of this release: it is not in the image and nothing in it runs on the server.
   poster rows (including a service's "Popular on" rows) and the Studios strip
   now snap to the centre of a card instead of loosely to a card's start. A fast
   flick can still pass several cards; the first card sits at the row's start
-  and the last at its end. Rows now snap with reduced motion on too (snapping
-  adds no animation). The Home hero keeps paging one slide at a time.
+  and the last at its end. Rows now snap with reduced motion on too, without
+  added CSS animation. The Home hero keeps paging one slide at a time.
 
 ### Fixed
 
