@@ -94,6 +94,13 @@ export function world(options = {}) {
     episodes: [...(options.episodes ?? [])],
     // Private playlists by ID: `{ owner, items, shares: [{ UserId, CanEdit }] }`.
     playlists: structuredClone(options.playlists ?? {}),
+    // Jellyfin's sessions and SyncPlay groups, as its GET /Sessions and GET /SyncPlay/List answer them.
+    sessions: structuredClone(options.sessions ?? []),
+    syncPlayGroups: structuredClone(options.syncPlayGroups ?? []),
+    // Every SyncPlay group a POST /SyncPlay/Join joined someone to: `{ userId, groupId }`.
+    syncPlayJoins: [],
+    // When set (`{ status, body }`), Jellyfin's answer to every user listing above, whatever it is asked.
+    listingAnswer: options.listingAnswer,
     jellyfinUsers: {
       [ALICE]: { Name: 'Alice', Policy: { BlockedTags: ['jellypass-held-elsewhere'], EnabledFolders: ['shared'] } },
       [ANN]: { Name: 'Ann', Policy: { BlockedTags: ['jellypass-held-elsewhere'], EnabledFolders: ['shared'] } },
@@ -596,7 +603,7 @@ export async function createFakeJellyfinForApp(state) {
       };
       return state.holdLogout ? state.holdLogout(request, response).then(signOut) : signOut();
     }
-    const token = authorizationToken(request.headers.authorization ?? '') ?? request.headers['x-emby-token'] ?? url.searchParams.get('api_key');
+    const token = authorizationToken(request.headers.authorization ?? '') ?? request.headers['x-emby-token'] ?? url.searchParams.get('api_key') ?? tokensOf(request, url)[0];
     // JellyPass's own API key: users and every item, as an administrator sees them, and the updates reconciliation makes.
     if (token === 'jellyfin-key') return administer(request, response, url);
     const userId = minted_.find((entry) => entry.token === token && !entry.revoked)?.userId
@@ -613,6 +620,31 @@ export async function createFakeJellyfinForApp(state) {
     if (request.method === 'GET' && ownItem) {
       const found = state.items.find((entry) => entry.Id === ownItem[2]);
       return ownItem[1] === userId && found && sees(user, found) ? send(response, 200, { Id: found.Id, Name: found.Name, Type: found.Type }) : send(response, 404, {});
+    }
+    // Jellyfin 10.11 lists every user to any signed-in caller; every session (`state.sessions`) to one allowed to control
+    // other users' sessions, as every caller is here; and every SyncPlay group (`state.syncPlayGroups`) with its
+    // participants' names to anyone. The household gateway is what narrows these to a household.
+    if (state.listingAnswer && request.method === 'GET' && (['/users', '/sessions', '/syncplay/list'].includes(route) || /^\/syncplay\/[^/]+$/.test(route))) {
+      return send(response, state.listingAnswer.status, state.listingAnswer.body, state.listingAnswer.headers);
+    }
+    if (request.method === 'GET' && route === '/users') {
+      return send(response, 200, Object.entries(state.jellyfinUsers).map(([Id, entry]) => ({ Name: entry.Name, ServerId: 'server', Id, Policy: entry.Policy })));
+    }
+    if (request.method === 'GET' && route === '/sessions') return send(response, 200, state.sessions);
+    if (request.method === 'GET' && route === '/syncplay/list') return send(response, 200, state.syncPlayGroups);
+    // Like Jellyfin 10.11, anyone may join any group that exists, by its ID in any form Jellyfin parses.
+    const groupKey = (id) => String(id).replace(/[{}-]/g, '').toLowerCase();
+    if (request.method === 'POST' && route === '/syncplay/join') {
+      return readJson(request).then((body) => {
+        const found = state.syncPlayGroups.find((entry) => groupKey(entry.GroupId) === groupKey(body.GroupId));
+        if (found) state.syncPlayJoins.push({ userId, groupId: found.GroupId });
+        return send(response, 204, undefined);
+      });
+    }
+    const group = /^\/syncplay\/([^/]+)$/.exec(route);
+    if (request.method === 'GET' && group) {
+      const found = state.syncPlayGroups.find((entry) => groupKey(entry.GroupId) === groupKey(group[1]));
+      return found ? send(response, 200, found) : send(response, 404, {});
     }
     const playlist = /^\/playlists\/([0-9a-f]{32})(?:\/(items|users)(?:\/([0-9a-f]{32}))?)?$/.exec(route);
     if (playlist && state.playlists[playlist[1]]) return answerPlaylist(request, response, userId, playlist[1], playlist[2], playlist[3]);

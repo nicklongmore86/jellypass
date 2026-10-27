@@ -57,6 +57,12 @@ const MAX_LOGIN_CLIENTS = 10_000;
 const MAX_LOGIN_RESPONSE_BYTES = 1024 * 1024;
 /** How long Jellyfin's user list, which household sign-in checks names against, is reused. */
 const LOGIN_USERS_TTL_MS = 10_000;
+/** How long the Jellyfin user a request's credentials belong to (or that Jellyfin rejects them) is reused. */
+const TOKEN_OWNER_TTL_MS = 60_000;
+/** Most credentials whose Jellyfin user is kept at once; the oldest go first. */
+const MAX_TOKEN_OWNERS = 10_000;
+/** The fixed answer to a request whose token is not a member's of the household, whether or not Jellyfin knows it. */
+const NOT_A_MEMBER = { error: 'unauthorized' };
 /** The least time a refused household sign-in takes, so its timing does not tell why it was refused. */
 const DEFAULT_LOGIN_FAILURE_DELAY_MS = 1000;
 /** How long a household sign-in waits for Jellyfin's answer before it counts as no answer. */
@@ -185,6 +191,9 @@ interface WholeAnswer {
   body: Buffer;
 }
 
+/** A Jellyfin user listing a household host narrows to the household's own members; see HouseholdGateway.#proxyUserList. */
+type UserList = 'users' | 'sessions' | 'syncPlayGroups' | 'syncPlayGroup';
+
 interface CurrentUser {
   Id: string;
   Name?: string;
@@ -208,6 +217,10 @@ export class HouseholdGateway {
   readonly #loginTimeoutMs: number;
   readonly #signOutTimeoutMs: number;
   #loginUsers: { list: Promise<Array<{ Id: string; Name: string }>>; expires: number } | undefined;
+  /** The Jellyfin user each request's credentials belong to, undefined where Jellyfin rejects them, by credentialKey. */
+  readonly #tokenOwners = new Map<string, { owner: Promise<string | undefined>; tokenKeys: string[]; expires: number }>();
+  /** The app's verifications at Jellyfin now, with the tokens (hashes) each holds: a sign-out with one of them spoils it. */
+  readonly #ownerLookups = new Set<{ tokenKeys: readonly string[]; spoiled: boolean }>();
   readonly #loginAttempts = new AttemptCounter({ windowMs: LOGIN_ATTEMPT_WINDOW_MS, maxKeys: MAX_LOGIN_CLIENTS });
   readonly #libraryJoinAttempts = new AttemptCounter({ windowMs: LIBRARY_JOIN_WINDOW_MS, maxKeys: MAX_LOGIN_CLIENTS });
   readonly #libraryJoin: HouseholdGatewayOptions['libraryJoin'];
@@ -286,6 +299,21 @@ export class HouseholdGateway {
       writeJson(response, 400, { error: 'invalid_request' }, NEVER_STORE);
       return;
     }
+    if (TOKEN_CHECKED_KINDS.has(decision.kind)) {
+      // A token works on a household host only for that household's members: anyone else's, and one Jellyfin does not
+      // know, get the same fixed answer, so it tells nothing about the token.
+      let member: boolean;
+      try {
+        member = await this.#tokenIsMember(this.#credentials(request, requestUrl), memberIds);
+      } catch {
+        writeJson(response, 502, { error: 'jellyfin_unavailable' });
+        return;
+      }
+      if (!member) {
+        writeJson(response, 401, NOT_A_MEMBER);
+        return;
+      }
+    }
     switch (decision.kind) {
       case 'app':
         // The app's own files carry nothing user-specific and need no credentials; the API under /v1 always does.
@@ -324,7 +352,7 @@ export class HouseholdGateway {
         writeJson(response, 403, { error: 'household_password_recovery_disabled' });
         return;
       case 'signOut':
-        await this.#proxySignOut(request, response, requestUrl, householdId, this.#app as HouseholdAppHandler);
+        await this.#proxySignOut(request, response, requestUrl, householdId, memberIds, this.#app as HouseholdAppHandler);
         return;
       case 'signIn':
         await this.#proxyHouseholdLogin(request, response, memberIds);
@@ -341,9 +369,12 @@ export class HouseholdGateway {
       case 'notFound':
         writeJson(response, 404, { error: 'item_not_found' });
         return;
+      case 'userList':
+      case 'syncPlayJoin':
       case 'caller':
         try {
-          if (!await this.#callerMay(request, requestUrl, decision.userIds, decision.itemIds)) {
+          const checked = decision.kind === 'caller' || decision.userIds.length > 0;
+          if (checked && !await this.#callerMay(request, requestUrl, memberIds, decision.userIds, decision.kind === 'caller' ? decision.itemIds : [])) {
             writeJson(response, 404, { error: 'item_not_found' });
             return;
           }
@@ -351,11 +382,19 @@ export class HouseholdGateway {
           writeJson(response, 502, { error: 'jellyfin_unavailable' });
           return;
         }
+        if (decision.kind === 'userList') {
+          await this.#proxyUserList(request, response, decision.list, memberIds);
+          return;
+        }
+        if (decision.kind === 'syncPlayJoin') {
+          await this.#proxySyncPlayJoin(request, response, requestUrl, memberIds);
+          return;
+        }
         break;
       // A user's picture, which Jellyfin serves to anyone and clients load without credentials (the profile picker):
       // only the household's own members' pictures, refused otherwise with the same answer as any other check.
       case 'userImage':
-        if (!decision.userIds.every((userId) => memberIds.some((memberId) => userIdKey(memberId) === userIdKey(userId)))) {
+        if (!decision.userIds.every((userId) => isMemberId(memberIds, userId))) {
           writeJson(response, 404, { error: 'item_not_found' });
           return;
         }
@@ -403,6 +442,9 @@ export class HouseholdGateway {
     if (isServerInternalStreamRoute(route)) return { kind: 'notFound' };
     const userIds = userScopedIds(route, query);
     if (userIds.length && (method === 'GET' || method === 'HEAD') && isUserImageRoute(route)) return { kind: 'userImage', userIds };
+    const list = method === 'GET' ? userListOf(route) : undefined;
+    if (list) return { kind: 'userList', list, userIds };
+    if (method === 'POST' && route === SYNCPLAY_JOIN_ROUTE) return { kind: 'syncPlayJoin', userIds };
     const itemIds = itemScopedIds(method, route, query);
     return userIds.length || itemIds.length ? { kind: 'caller', userIds, itemIds } : { kind: 'proxy' };
   }
@@ -430,10 +472,32 @@ export class HouseholdGateway {
     const appPath = decision.kind === 'app';
     // Jellyfin's only WebSocket is an ordinary route: anything a household host checks or answers itself (the app API,
     // which has none, Quick Connect, Streamyfin, Jellyfin Enhanced's refused routes, a route that names an item or a user) is never proxied as an upgrade.
-    if (!this.#memberIds(householdId) || decision.kind !== 'proxy') {
+    const memberIds = this.#memberIds(householdId);
+    if (!memberIds || decision.kind !== 'proxy') {
       socket.end(`HTTP/1.1 404 Not Found\r\n${appPath ? neverStoreHeaders() : ''}Connection: close\r\n\r\n`);
       return;
     }
+    const credentials = this.#credentials(request, new URL(request.url ?? '/', 'http://localhost'));
+    if (!carriesToken(credentials)) {
+      this.#relayUpgrade(request, socket, head, exchange);
+      return;
+    }
+    // As for any other request (see #handle), a token that is not a member's gets one fixed answer. Shutdown closes an
+    // upgrade still being checked like any other.
+    this.#webSockets.set(socket, () => socket.destroy());
+    socket.once('close', () => this.#webSockets.delete(socket));
+    this.#tokenIsMember(credentials, memberIds).then((member) => {
+      if (socket.destroyed) return;
+      if (this.#closing) socket.end(`HTTP/1.1 503 Service Unavailable\r\n${neverStoreHeaders()}Connection: close\r\n\r\n`);
+      else if (!member) socket.end(`HTTP/1.1 401 Unauthorized\r\n${neverStoreHeaders()}Connection: close\r\n\r\n`);
+      else this.#relayUpgrade(request, socket, head, exchange);
+    }, () => {
+      if (!socket.destroyed) socket.end(`HTTP/1.1 502 Bad Gateway\r\n${neverStoreHeaders()}Connection: close\r\n\r\n`);
+    });
+  }
+
+  /** Relays a WebSocket upgrade the household host has checked to Jellyfin, and then its bytes both ways. */
+  #relayUpgrade(request: IncomingMessage, socket: Duplex, head: Buffer, exchange: Exchange): void {
     const upstream = this.#transport().request(this.#requestOptions(request));
     let upgraded = false;
     this.#webSockets.set(socket, () => {
@@ -592,7 +656,17 @@ export class HouseholdGateway {
       credentialKey: credentialKey(credentials),
       tokenKeys: tokenKeys(credentials),
       currentUser: async () => {
-        const user = (await this.#userFor(credentials, { serverErrorsThrow: true }))?.user;
+        const lookup = { tokenKeys: tokenKeys(credentials), spoiled: false };
+        this.#ownerLookups.add(lookup);
+        let user: CurrentUser | undefined;
+        try {
+          user = (await this.#userFor(credentials, { serverErrorsThrow: true }))?.user;
+        } finally {
+          this.#ownerLookups.delete(lookup);
+        }
+        // Whose the token is holds for the household host's own check too (see #tokenIsMember), a sign-out's included,
+        // unless one of its tokens was signed out while Jellyfin was asked: Jellyfin may have answered before revoking it.
+        if (carriesToken(credentials) && !lookup.spoiled) this.#rememberTokenOwner(credentials, Promise.resolve(user?.Id));
         return user ? callerOf(user) : undefined;
       },
       getAsCaller: (pathname, query) => this.#callerJson(credentials, pathname, query),
@@ -772,13 +846,25 @@ export class HouseholdGateway {
   }
 
   /**
-   * A sign-out through the household host, sent to Jellyfin as the client sent it. The app forgets the sessions of its
-   * tokens and keeps them back until Jellyfin's request is over (see {@link HouseholdAppHandler.signingOut}): that is
-   * when Jellyfin answers, fails or takes longer than #signOutTimeoutMs, never when the client leaves, as Jellyfin may
-   * still revoke the token after. So it is not sent on when its client leaves, and is read whole before it is sent.
-   * Refused (503) when the app has too many sign-outs at Jellyfin already.
+   * A sign-out through the household host, sent to Jellyfin as the client sent it, but only with a member's token:
+   * Jellyfin ends the session of the token it reads first, which is the one GET /Users/Me answers for, so that token
+   * must be a member's of the household (see #tokenIsMember). Any other, valid at Jellyfin or not, and a sign-out with no
+   * token at all, gets the same fixed 401 as any other route, is never sent to Jellyfin and so revokes nothing, and
+   * nothing is forgotten for it. The app forgets the sessions of a member's sign-out's tokens and keeps them back until
+   * Jellyfin's request is over (see {@link HouseholdAppHandler.signingOut}): that is when Jellyfin answers, fails or
+   * takes longer than #signOutTimeoutMs, never when the client leaves, as Jellyfin may still revoke the token after. So
+   * it is not sent on when its client leaves, and is read whole before it is sent. Refused (503) when the app has too
+   * many sign-outs at Jellyfin already. When Jellyfin cannot say whose the token is, it is forgotten all the same, as
+   * for a sign-out Jellyfin did not answer, and not sent (502).
    */
-  async #proxySignOut(request: IncomingMessage, response: ServerResponse, requestUrl: URL, householdId: string, app: HouseholdAppHandler): Promise<void> {
+  async #proxySignOut(
+    request: IncomingMessage,
+    response: ServerResponse,
+    requestUrl: URL,
+    householdId: string,
+    memberIds: string[],
+    app: HouseholdAppHandler,
+  ): Promise<void> {
     let body: Buffer;
     try {
       body = await readLimitedBody(request, MAX_LOGIN_BODY_BYTES);
@@ -787,9 +873,18 @@ export class HouseholdGateway {
       return;
     }
     const credentials = this.#credentials(request, requestUrl);
-    const mediaBrowserToken = request.headers['x-mediabrowser-token'];
-    if (typeof mediaBrowserToken === 'string') credentials.headers.set('x-mediabrowser-token', mediaBrowserToken);
+    let member: boolean | undefined;
+    try {
+      member = carriesToken(credentials) && await this.#tokenIsMember(credentials, memberIds);
+    } catch {
+      member = undefined;
+    }
+    if (member === false) {
+      if (!response.destroyed) writeJson(response, 401, NOT_A_MEMBER);
+      return;
+    }
     const keys = tokenKeys(credentials);
+    this.#forgetTokenOwners(keys);
     const done = app.signingOut(keys, { clientId: this.#clientAddress(request), householdId });
     if (!done) {
       if (!response.destroyed) writeJson(response, 503, { error: 'too_many_sign_outs' }, { 'Retry-After': '1' });
@@ -798,9 +893,10 @@ export class HouseholdGateway {
     const headers: IncomingHttpHeaders = { ...request.headers, 'content-length': String(body.length) };
     let answer: WholeAnswer | undefined;
     try {
-      answer = await this.#sendWhole(request, headers, body, { totalTimeoutMs: this.#signOutTimeoutMs, context: 'household sign-out' });
+      if (member) answer = await this.#sendWhole(request, headers, body, { totalTimeoutMs: this.#signOutTimeoutMs, context: 'household sign-out' });
     } finally {
       done(answer !== undefined);
+      this.#forgetTokenOwners(keys);
     }
     if (response.destroyed) return;
     if (!answer) writeJson(response, 502, { error: 'jellyfin_unavailable' });
@@ -1009,7 +1105,109 @@ export class HouseholdGateway {
         // prompt for a password. Members marked passwordless in JellyPass sign in with one tap.
         this.#isPasswordless(user.Id as string) ? { ...user, HasPassword: false, HasConfiguredPassword: false } : user
       );
-    });
+    }, { failClosed: true });
+  }
+
+  /**
+   * A Jellyfin user listing narrowed to the household's members, in Jellyfin's own order and schema: Jellyfin lists every
+   * user to any signed-in caller (`GET /Users`), every remote-controllable session to one allowed to control others'
+   * (`GET /Sessions`), and every SyncPlay group with its participants' names to anyone (`GET /SyncPlay/List`,
+   * `GET /SyncPlay/{id}`). Only members' users, sessions all of whose users are members, and groups all of whose
+   * participants are members are kept; a single group that is not gets the fixed 404. Fails closed (see #proxyJson):
+   * only Jellyfin's 200 is relayed, narrowed.
+   */
+  async #proxyUserList(request: IncomingMessage, response: ServerResponse, list: UserList, memberIds: string[]): Promise<void> {
+    const member = (id: unknown) => typeof id === 'string' && isMemberId(memberIds, id);
+    if (list === 'users') {
+      await this.#proxyJson(request, response, 'invalid_jellyfin_users', (value) => jsonObjects(value).filter((user) => member(user.Id)), { failClosed: true });
+      return;
+    }
+    if (list === 'sessions') {
+      await this.#proxyJson(request, response, 'invalid_jellyfin_sessions', (value) => jsonObjects(value).filter((session) =>
+        member(session.UserId) && (session.AdditionalUsers === undefined || session.AdditionalUsers === null
+          || (Array.isArray(session.AdditionalUsers) && session.AdditionalUsers.every((user) =>
+            Boolean(user) && typeof user === 'object' && member((user as Record<string, unknown>).UserId))))), { failClosed: true });
+      return;
+    }
+    let ours: (group: unknown) => boolean;
+    try {
+      ours = await this.#householdSyncPlayGroup(memberIds);
+    } catch {
+      writeJson(response, 502, { error: 'jellyfin_unavailable' });
+      return;
+    }
+    if (list === 'syncPlayGroups') {
+      await this.#proxyJson(request, response, 'invalid_jellyfin_syncplay_groups', (value) => jsonObjects(value).filter(ours), { failClosed: true });
+      return;
+    }
+    await this.#proxyJson(request, response, 'invalid_jellyfin_syncplay_group', (value) => ours(value) ? value : REFUSED, { failClosed: true });
+  }
+
+  /**
+   * Whether a SyncPlay group as Jellyfin describes it (`GroupInfoDto`) is the household's own: it has at least one
+   * participant, and all of them are members. SyncPlay names participants only by name, so they are matched to the
+   * members' names (Jellyfin's are unique in any case). Throws if Jellyfin's user list cannot be read.
+   */
+  async #householdSyncPlayGroup(memberIds: string[]): Promise<(group: unknown) => boolean> {
+    const allowed = new Set(memberIds.map(userIdKey));
+    const names = new Set((await this.#jellyfinUsers(false)).filter((user) => allowed.has(userIdKey(user.Id))).map((user) => user.Name.toLowerCase()));
+    return (group) => {
+      const participants = group && typeof group === 'object' && !Array.isArray(group) ? (group as Record<string, unknown>).Participants : undefined;
+      return Array.isArray(participants) && participants.length > 0
+        && participants.every((name) => typeof name === 'string' && names.has(name.toLowerCase()));
+    };
+  }
+
+  /**
+   * Joining a SyncPlay group (`POST /SyncPlay/Join`, `{"GroupId": ...}`): Jellyfin 10.11 lets anyone join any group by
+   * its ID (SyncPlayManager.JoinGroup checks only the caller's SyncPlay access and the group's existence), and then sends
+   * the joiner the group's participants' names over the WebSocket (`GroupJoined`, `UserJoined`). On a household host
+   * only a group that is the household's own (see #householdSyncPlayGroup), as Jellyfin's GET /SyncPlay/{id} describes
+   * it to the caller, may be joined; any other group, and one Jellyfin does not have, gets the fixed 404 without the
+   * join reaching Jellyfin. Jellyfin is sent the checked group ID alone, so it joins no other. Every other SyncPlay
+   * route acts on the group the caller's session is already in, so needs no check of its own.
+   */
+  async #proxySyncPlayJoin(request: IncomingMessage, response: ServerResponse, requestUrl: URL, memberIds: string[]): Promise<void> {
+    let groupId: string | undefined;
+    try {
+      groupId = syncPlayJoinGroupId(await readLimitedBody(request, MAX_LOGIN_BODY_BYTES));
+    } catch {
+      if (!response.destroyed) writeJson(response, 413, { error: 'request_too_large' });
+      return;
+    }
+    if (groupId === undefined) {
+      writeJson(response, 400, { error: 'invalid_request' });
+      return;
+    }
+    try {
+      const credentials = this.#credentials(request, requestUrl);
+      const url = this.#targetUrl(`/SyncPlay/${groupId}`);
+      for (const [name, value] of credentials.query) url.searchParams.append(name, value);
+      const groupResponse = await fetch(url, { headers: credentials.headers, redirect: 'manual', signal: AbortSignal.timeout(15_000) });
+      if (groupResponse.status >= 500) {
+        await groupResponse.body?.cancel().catch(() => undefined);
+        throw new Error(`Jellyfin GET /SyncPlay/{id} returned ${groupResponse.status}`);
+      }
+      const group = groupResponse.status === 200 ? await groupResponse.json().catch(() => undefined) as unknown : undefined;
+      if (groupResponse.status !== 200) await groupResponse.body?.cancel().catch(() => undefined);
+      if (!(await this.#householdSyncPlayGroup(memberIds))(group)) {
+        writeJson(response, 404, { error: 'item_not_found' });
+        return;
+      }
+    } catch {
+      writeJson(response, 502, { error: 'jellyfin_unavailable' });
+      return;
+    }
+    const body = Buffer.from(JSON.stringify({ GroupId: groupId }));
+    const headers: IncomingHttpHeaders = { ...request.headers, 'content-type': 'application/json', 'content-length': String(body.length) };
+    delete headers['content-encoding'];
+    const answer = await this.#sendWhole(request, headers, body, { totalTimeoutMs: 15_000, context: 'household SyncPlay join' });
+    if (response.destroyed) return;
+    if (!answer) writeJson(response, 502, { error: 'jellyfin_unavailable' });
+    else {
+      response.writeHead(answer.status, answer.headers);
+      response.end(answer.body);
+    }
   }
 
   async #proxyBrandingConfiguration(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -1031,12 +1229,13 @@ export class HouseholdGateway {
 
   /**
    * Whether the request's own credentials belong to a Jellyfin user who is every one of `userIds` (see
-   * {@link userScopedIds}) and may see every one of `itemIds` (see {@link itemScopedIds}). Jellyfin administrators are
-   * not exempt: on a household host no one acts as another user. Throws if Jellyfin cannot be reached.
+   * {@link userScopedIds}), is a member of the household and may see every one of `itemIds` (see {@link itemScopedIds}).
+   * Jellyfin administrators are not exempt: on a household host no one acts as another user. Throws if Jellyfin cannot
+   * be reached.
    */
-  async #callerMay(request: IncomingMessage, requestUrl: URL, userIds: string[], itemIds: string[]): Promise<boolean> {
+  async #callerMay(request: IncomingMessage, requestUrl: URL, memberIds: string[], userIds: string[], itemIds: string[]): Promise<boolean> {
     const current = await this.#currentUser(request, requestUrl);
-    if (!current) return false;
+    if (!current || !isMemberId(memberIds, current.user.Id)) return false;
     if (userIds.some((userId) => userIdKey(userId) !== userIdKey(current.user.Id))) return false;
     for (const itemId of itemIds) {
       const itemResponse = await fetch(this.#targetUrl(
@@ -1061,17 +1260,67 @@ export class HouseholdGateway {
 
   #credentials(request: IncomingMessage, requestUrl: URL): JellyfinCredentials {
     const headers = new Headers({ Accept: 'application/json' });
-    for (const name of ['authorization', 'x-emby-authorization', 'x-emby-token']) {
+    for (const name of ['authorization', 'x-emby-authorization', 'x-emby-token', 'x-mediabrowser-token']) {
       const value = request.headers[name];
       if (typeof value === 'string') headers.set(name, value);
     }
     const query = new URLSearchParams();
-    for (const [name, value] of requestUrl.searchParams) {
+    for (const [name, value] of jellyfinQueryPairs(requestUrl.searchParams)) {
       if (['apikey', 'api_key', 'access_token'].includes(name.toLowerCase()) && value) {
         query.append(name, value);
       }
     }
     return { headers, query };
+  }
+
+  /**
+   * Whether credentials that carry a Jellyfin token (see {@link carriesToken}) belong to a member of the household, as
+   * Jellyfin's GET /Users/Me reports it; true for credentials without one, which Jellyfin answers as anyone's. Who a
+   * token belongs to never changes, so it is reused for TOKEN_OWNER_TTL_MS, as is Jellyfin's rejecting it (a sign-out
+   * through a household host forgets its tokens at once); membership is checked afresh every time. Throws if Jellyfin
+   * cannot be reached or fails.
+   */
+  async #tokenIsMember(credentials: JellyfinCredentials, memberIds: string[]): Promise<boolean> {
+    if (!carriesToken(credentials)) return true;
+    const key = credentialKey(credentials) as string;
+    const now = Date.now();
+    const entry = this.#tokenOwners.get(key);
+    const owner = await (entry && entry.expires > now
+      ? entry.owner
+      : this.#rememberTokenOwner(credentials, this.#userFor(credentials, { serverErrorsThrow: true }).then((current) => current?.user.Id)));
+    return owner !== undefined && isMemberId(memberIds, owner);
+  }
+
+  /**
+   * Keeps whom credentials that carry a token belong to (see #tokenIsMember) for TOKEN_OWNER_TTL_MS; a failure is not
+   * kept. Kept while Jellyfin is still being asked too, so a sign-out of one of its tokens meanwhile forgets it (see
+   * #forgetTokenOwners) and an answer from before Jellyfin revoked the token is never kept.
+   */
+  #rememberTokenOwner(credentials: JellyfinCredentials, owner: Promise<string | undefined>): Promise<string | undefined> {
+    const key = credentialKey(credentials) as string;
+    const created = { owner, tokenKeys: tokenKeys(credentials), expires: Date.now() + TOKEN_OWNER_TTL_MS };
+    this.#tokenOwners.delete(key);
+    this.#tokenOwners.set(key, created);
+    while (this.#tokenOwners.size > MAX_TOKEN_OWNERS) this.#tokenOwners.delete(this.#tokenOwners.keys().next().value as string);
+    owner.catch(() => {
+      if (this.#tokenOwners.get(key) === created) this.#tokenOwners.delete(key);
+    });
+    return owner;
+  }
+
+  /**
+   * Forgets whom credentials holding any of these tokens (hashes, as {@link tokenKeys}) belong to, those still being
+   * asked included, and spoils the app's verifications of them now at Jellyfin so their answers are not kept.
+   */
+  #forgetTokenOwners(keys: readonly string[]): void {
+    if (!keys.length) return;
+    const forgotten = new Set(keys);
+    for (const [key, entry] of this.#tokenOwners) {
+      if (entry.tokenKeys.some((tokenKey) => forgotten.has(tokenKey))) this.#tokenOwners.delete(key);
+    }
+    for (const lookup of this.#ownerLookups) {
+      if (lookup.tokenKeys.some((tokenKey) => forgotten.has(tokenKey))) lookup.spoiled = true;
+    }
   }
 
   /**
@@ -1147,11 +1396,19 @@ export class HouseholdGateway {
     }
   }
 
+  /**
+   * Relays a Jellyfin JSON answer through `transform`. With `failClosed`, for answers that reveal users, only a 200 is
+   * relayed (transformed): a 401 or 404 gets the fixed answer of that status, any other 4xx a fixed
+   * `{"error":"jellyfin_refused"}`, a 5xx `502 jellyfin_unavailable`, and any other status `502` with
+   * `invalidResponseCode`, so no other answer's body (a 201 that lists someone, say) is ever relayed. Without it, any
+   * answer but a 200 is relayed as it is.
+   */
   async #proxyJson(
     request: IncomingMessage,
     response: ServerResponse,
     invalidResponseCode: string,
-    transform: (value: unknown) => unknown,
+    transform: (value: unknown) => unknown | typeof REFUSED,
+    options: { failClosed?: boolean } = {},
   ): Promise<void> {
     await new Promise<void>((resolve) => {
       const headers: IncomingHttpHeaders = { ...request.headers, 'accept-encoding': 'identity' };
@@ -1177,13 +1434,27 @@ export class HouseholdGateway {
         upstreamResponse.once('end', () => {
           if (response.headersSent) return resolve();
           const body = Buffer.concat(chunks);
+          if (upstreamResponse.statusCode !== 200 && options.failClosed) {
+            const status = upstreamResponse.statusCode ?? 502;
+            if (status === 401) writeJson(response, 401, NOT_A_MEMBER);
+            else if (status === 404) writeJson(response, 404, { error: 'item_not_found' });
+            else if (status >= 400 && status < 500) writeJson(response, status, { error: 'jellyfin_refused' });
+            else if (status >= 500) writeJson(response, 502, { error: 'jellyfin_unavailable' });
+            else writeJson(response, 502, { error: invalidResponseCode });
+            return resolve();
+          }
           if (upstreamResponse.statusCode !== 200) {
             response.writeHead(upstreamResponse.statusCode ?? 502, sanitizedHeaders(upstreamResponse.headers, body.length));
             response.end(body);
             return resolve();
           }
           try {
-            const encoded = Buffer.from(JSON.stringify(transform(JSON.parse(body.toString('utf8')) as unknown)));
+            const transformed = transform(JSON.parse(body.toString('utf8')) as unknown);
+            if (transformed === REFUSED) {
+              writeJson(response, 404, { error: 'item_not_found' });
+              return resolve();
+            }
+            const encoded = Buffer.from(JSON.stringify(transformed));
             response.writeHead(200, sanitizedHeaders(upstreamResponse.headers, encoded.length));
             response.end(encoded);
           } catch {
@@ -1458,6 +1729,26 @@ function userIdKey(value: string): string {
   return value.replace(/[{}()-]/g, '').toLowerCase();
 }
 
+/** Whether `userId` is one of `memberIds`, compared as Jellyfin reads user IDs (see {@link userIdKey}). */
+function isMemberId(memberIds: readonly string[], userId: string): boolean {
+  const key = userIdKey(userId);
+  return key !== '' && memberIds.some((memberId) => userIdKey(memberId) === key);
+}
+
+/** The {@link UserList} a `GET` {@link jellyfinRoute} is, if any. */
+function userListOf(route: string): UserList | undefined {
+  if (route === '/users') return 'users';
+  if (route === '/sessions') return 'sessions';
+  if (route === '/syncplay/list') return 'syncPlayGroups';
+  return /^\/syncplay\/[^/]+$/.test(route) ? 'syncPlayGroup' : undefined;
+}
+
+/** A JSON array's objects, for a listing to be narrowed; throws if it is not an array. */
+function jsonObjects(value: unknown): Array<Record<string, unknown>> {
+  if (!Array.isArray(value)) throw new Error('a Jellyfin listing must be an array');
+  return value.filter((entry): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry));
+}
+
 /**
  * Every query parameter Jellyfin 10.11 might read: the query's own, and, for a query that is a single key with no
  * value and an `=` in it (`?itemId%3D...`), the `&`-separated pairs in that key, which Jellyfin's UrlDecodeQueryFeature
@@ -1488,7 +1779,44 @@ type RouteDecision =
   | { kind: 'signOut' | 'signIn' | 'signInById' | 'libraryJoin' | 'notFound' | 'proxy' | 'tvAsset' | 'webPage' }
   | { kind: 'libraryJoinAsset'; asset: { body: string; contentType: string } }
   | { kind: 'userImage'; userIds: string[] }
+  | { kind: 'userList'; list: UserList; userIds: string[] }
+  | { kind: 'syncPlayJoin'; userIds: string[] }
   | { kind: 'caller'; userIds: string[]; itemIds: string[] };
+
+/**
+ * The decisions whose requests reach Jellyfin with the caller's own token, which must then be a member's (see
+ * HouseholdGateway.#tokenIsMember). Not among them: what a household host answers itself; sign-in and what comes before
+ * it (the profile picker and branding), which Jellyfin answers alike whoever asks; the household app and "Add to my
+ * library", which have their own checks (the app's membership, and the caller's own grants); routes that name an item
+ * or a user, whose own check refuses a non-member with its fixed 404; and sign-out, which checks its token itself (see
+ * HouseholdGateway.#proxySignOut) so that a sign-out Jellyfin cannot be asked about is still forgotten.
+ */
+const TOKEN_CHECKED_KINDS = new Set<RouteDecision['kind']>(['proxy', 'userImage', 'webPage', 'userList', 'syncPlayJoin']);
+
+/** Jellyfin's route for joining a SyncPlay group; see HouseholdGateway.#proxySyncPlayJoin. */
+const SYNCPLAY_JOIN_ROUTE = '/syncplay/join';
+
+/**
+ * The group a `POST /SyncPlay/Join` body names, as 32 lower-case hex digits, or undefined unless it is a JSON object
+ * with exactly one `GroupId` property (any case, as Jellyfin reads it) that is a GUID in a form Jellyfin parses.
+ */
+function syncPlayJoinGroupId(body: Buffer): string | undefined {
+  let value: unknown;
+  try {
+    value = JSON.parse(body.toString('utf8'));
+  } catch {
+    return undefined;
+  }
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const ids = Object.entries(value).filter(([name]) => name.toLowerCase() === 'groupid').map(([, id]) => id);
+  if (ids.length !== 1 || typeof ids[0] !== 'string') return undefined;
+  const match = /^(?:([0-9a-f]{32})|\{?([0-9a-f]{8})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{4})-([0-9a-f]{12})\}?)$/i.exec(ids[0]);
+  if (!match || (ids[0].startsWith('{') !== ids[0].endsWith('}'))) return undefined;
+  return (match[1] ?? match.slice(2).join('')).toLowerCase();
+}
+
+/** What a JSON transform returns for an answer the caller may not have: the fixed 404 is sent instead. */
+const REFUSED = Symbol('refused');
 
 /**
  * A hash of the credentials a request carries, to key the app's short-lived cache of who they belong to, or undefined
@@ -1525,6 +1853,16 @@ function tokenKeys(credentials: JellyfinCredentials): string[] {
     tokens.add(value);
   }
   return [...tokens].map((token) => createHash('sha256').update(`token\n${token}`).digest('hex'));
+}
+
+/**
+ * Whether credentials carry a Jellyfin token: any {@link tokenKeys} reads, or an `Authorization` or
+ * `X-Emby-Authorization` header naming a token in any spelling, so a header Jellyfin might read otherwise is still
+ * checked. Jellyfin web's sign-in calls carry none.
+ */
+function carriesToken(credentials: JellyfinCredentials): boolean {
+  if (tokenKeys(credentials).length) return true;
+  return ['authorization', 'x-emby-authorization'].some((name) => /token/i.test(credentials.headers.get(name) ?? ''));
 }
 
 const LEGACY_PREFIXES = new Set(['emby', 'mediabrowser']);

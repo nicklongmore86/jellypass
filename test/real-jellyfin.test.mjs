@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
 import { request as httpRequest } from 'node:http';
+import { connect } from 'node:net';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { AccessService, accessTag } from '../dist/access-service.js';
@@ -795,6 +796,115 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     assert.equal((await send('GET', items, tokens.bob)).status, 404);
   });
 
+  it('shows Alice in farmhouse only farmhouse\'s users, sessions and SyncPlay groups, and refuses her token on another household\'s host', async (t) => {
+    const WEB = 'MediaBrowser Client="Jellyfin Web", Device="Firefox", DeviceId="jellypass-real-scope", Version="10.11.3"';
+    const householdStore = new GrantStore(path.join(await makeTempDir(t, 'jfa-real-scope-'), 'grants.json'));
+    await householdStore.load();
+    await householdStore.upsertGroup({ id: 'farmhouse', name: 'Farmhouse', userIds: [fixture.aliceId] });
+    await householdStore.upsertGroup({ id: 'fearing', name: 'Fearing', userIds: [fixture.bobId] });
+    // With the household app on, as deployed, sign-out is the household host's own route.
+    const seerr = await createFakeSeerr(world());
+    const tmdb = await createFakeTmdb(world());
+    t.after(() => Promise.all([seerr.close(), tmdb.close()]));
+    const admin = new SeerrClient(seerr.url, 'seerr-key');
+    const gateway = makeServer(new AccessService(client, householdStore), { webhook: webhookToken, admin: 'real-admin-secret' }, undefined, {
+      householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: 0 },
+      householdApp: { catalogue: new TmdbClient(TMDB_KEY, { baseUrl: tmdb.url }), blocklist: admin, members: new SeerrUserMap(admin) },
+    });
+    await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
+    t.after(() => new Promise((resolve) => gateway.close(resolve)));
+    const port = gateway.address().port;
+    const farmhouse = 'jelly-farmhouse.example.test';
+    const fearing = 'jelly-fearing.example.test';
+    const signIn = async (host, name, device) => {
+      const answer = await postWithHeaders(port, '/Users/AuthenticateByName', { Host: host, Authorization: WEB.replace('jellypass-real-scope', device) }, { Username: name, Pw: '' });
+      assert.equal(answer.status, 200, answer.text);
+      return answer.json().AccessToken;
+    };
+    const alice = await signIn(farmhouse, 'Alice', 'jellypass-real-scope-alice');
+    const bob = await signIn(fearing, 'Bob', 'jellypass-real-scope-bob');
+    const as = (host, token) => ({ Host: host, Authorization: `${WEB}, Token="${token}"` });
+    const atJellyfin = (pathname, token) => getWithHeaders(new URL(baseUrl).port, pathname, { Host: new URL(baseUrl).host, 'X-Emby-Token': token });
+
+    // Jellyfin lists every user to Alice; farmhouse's host lists only her, in every filter.
+    const everyone = await atJellyfin('/Users', alice);
+    assert.ok(everyone.json().some((user) => user.Id === fixture.bobId), 'Jellyfin no longer lists every user to a member: revisit the gateway\'s /Users filter');
+    // Each filter is still Jellyfin's own (a new user is hidden in 10.11, so `isHidden=false` leaves Alice off too).
+    for (const pathname of ['/Users', '/users?isHidden=true', '/Users?isHidden=false', '/emby/Users/', '/Users?isDisabled=false']) {
+      const own = (await atJellyfin(pathname, alice)).json().filter((user) => user.Id === fixture.aliceId).map((user) => user.Name);
+      const answer = await getWithHeaders(port, pathname, as(farmhouse, alice));
+      assert.equal(answer.status, 200, answer.text);
+      assert.deepEqual(answer.json().map((user) => user.Name), own, pathname);
+    }
+    assert.deepEqual((await getWithHeaders(port, '/Users', as(farmhouse, alice))).json().map((user) => user.Name), ['Alice']);
+
+    // Bob's SyncPlay group, listed with his name to anyone at Jellyfin, is not farmhouse's.
+    const newGroup = await getWithHeaders(new URL(baseUrl).port, '/SyncPlay/New', { Host: new URL(baseUrl).host, 'X-Emby-Token': bob, 'Content-Type': 'application/json' }, { method: 'POST', body: JSON.stringify({ GroupName: 'Bob group' }) });
+    assert.equal(newGroup.status, 200, newGroup.text);
+    t.after(() => getWithHeaders(new URL(baseUrl).port, '/SyncPlay/Leave', { Host: new URL(baseUrl).host, 'X-Emby-Token': bob }, { method: 'POST' }));
+    const groups = (await atJellyfin('/SyncPlay/List', alice)).json();
+    const bobGroup = groups.find((group) => group.Participants.includes('Bob'));
+    assert.ok(bobGroup, 'Jellyfin no longer lists other users\' SyncPlay groups: revisit the gateway\'s SyncPlay filter');
+    assert.deepEqual((await getWithHeaders(port, '/SyncPlay/List', as(farmhouse, alice))).json(), []);
+    assert.deepEqual((await getWithHeaders(port, `/SyncPlay/${bobGroup.GroupId}`, as(farmhouse, alice))).text, '{"error":"item_not_found"}');
+    assert.deepEqual((await getWithHeaders(port, '/SyncPlay/List', as(fearing, bob))).json().map((group) => group.GroupId), [bobGroup.GroupId]);
+    // Jellyfin lets anyone join any group by its ID, then sends them its participants' names; farmhouse's host joins
+    // Alice to no group that is not farmhouse's, and answers a group Jellyfin does not have alike.
+    const join = (host, token, groupId) => getWithHeaders(port, '/SyncPlay/Join', { ...as(host, token), 'Content-Type': 'application/json' }, { method: 'POST', body: JSON.stringify({ GroupId: groupId }) });
+    for (const groupId of [bobGroup.GroupId, 'ffffffffffffffffffffffffffffffff']) {
+      assert.deepEqual([(await join(farmhouse, alice, groupId)).text], ['{"error":"item_not_found"}'], groupId);
+    }
+    const stillBobs = (await atJellyfin(`/SyncPlay/${bobGroup.GroupId}`, bob)).json();
+    assert.deepEqual(stillBobs.Participants, ['Bob'], 'Alice joined Bob\'s group');
+    // A group that is the household's own is joined as Jellyfin joins it.
+    assert.equal((await join(fearing, bob, bobGroup.GroupId)).status, 204);
+
+    // Allowed to control other users' sessions, Alice is listed Bob's at Jellyfin, never on farmhouse's host.
+    const originalAlice = user(await client.getUsers(), fixture.aliceId);
+    t.after(() => client.updatePolicy(fixture.aliceId, originalAlice.Policy));
+    await client.updatePolicy(fixture.aliceId, { ...originalAlice.Policy, EnableRemoteControlOfOtherUsers: true });
+    // Bob's session is remote-controllable once his client has a WebSocket open and has said it takes commands.
+    const socket = new WebSocket(`${baseUrl.replace(/^http/, 'ws')}/socket?api_key=${bob}&deviceId=jellypass-real-scope-bob`);
+    t.after(() => socket.close());
+    await new Promise((resolve, reject) => {
+      socket.onopen = resolve;
+      socket.onerror = reject;
+    });
+    const capabilities = await getWithHeaders(new URL(baseUrl).port, '/Sessions/Capabilities/Full', { Host: new URL(baseUrl).host, 'X-Emby-Token': bob, 'Content-Type': 'application/json' }, { method: 'POST', body: JSON.stringify({ PlayableMediaTypes: ['Video'], SupportedCommands: ['DisplayMessage'], SupportsMediaControl: true }) });
+    assert.equal(capabilities.status, 204, capabilities.text);
+    const controllable = `/Sessions?controllableByUserId=${fixture.aliceId}`;
+    await waitFor(async () => (await atJellyfin(controllable, alice)).json().some((session) => session.UserId === fixture.bobId), 10).catch(() => undefined);
+    assert.ok((await atJellyfin(controllable, alice)).json().some((session) => session.UserId === fixture.bobId), 'Jellyfin no longer lists Bob\'s session to Alice: revisit the gateway\'s /Sessions filter');
+    const sessions = await getWithHeaders(port, controllable, as(farmhouse, alice));
+    assert.equal(sessions.status, 200, sessions.text);
+    assert.ok(sessions.json().every((session) => session.UserId === fixture.aliceId), sessions.text);
+
+    // Alice's token works on farmhouse's host, and on fearing's gets the same fixed answer as a token Jellyfin never issued.
+    assert.equal((await getWithHeaders(port, '/System/Info', as(farmhouse, alice))).status, 200);
+    assert.equal((await atJellyfin('/System/Info', alice)).status, 200);
+    for (const token of [alice, 'ffffffffffffffffffffffffffffffff']) {
+      for (const pathname of ['/System/Info', '/Users', `/Users/${fixture.aliceId}/Views`, '/Items?Recursive=true', `/Items/${fixture.itemId}/PlaybackInfo`]) {
+        const answer = await getWithHeaders(port, pathname, as(fearing, token));
+        const expected = pathname.includes(fixture.aliceId) || pathname.includes(fixture.itemId) ? [404, '{"error":"item_not_found"}'] : [401, '{"error":"unauthorized"}'];
+        assert.deepEqual([answer.status, answer.text], expected, `${pathname} ${token === alice ? 'Alice' : 'unknown'}`);
+      }
+      assert.match(await rawUpgrade(port, `/socket?api_key=${token}&deviceId=jellypass-real-scope`, fearing), /^HTTP\/1\.1 401 /);
+    }
+    assert.match(await rawUpgrade(port, `/socket?api_key=${alice}&deviceId=jellypass-real-scope`, farmhouse), /^HTTP\/1\.1 101 /);
+
+    // Signing Bob out through farmhouse's host gets the answer a token Jellyfin never issued gets, and revokes nothing.
+    const signOut = (host, token) => postWithHeaders(port, '/Sessions/Logout', as(host, token), undefined);
+    const unknown = await signOut(farmhouse, 'ffffffffffffffffffffffffffffffff');
+    assert.deepEqual([unknown.status, unknown.text], [401, '{"error":"unauthorized"}']);
+    const bobOut = await signOut(farmhouse, bob);
+    assert.deepEqual([bobOut.status, bobOut.text, bobOut.headers['content-type']], [unknown.status, unknown.text, unknown.headers['content-type']]);
+    assert.equal((await atJellyfin('/Users/Me', bob)).status, 200, 'Bob\'s token was revoked through another household\'s host');
+    assert.equal((await getWithHeaders(port, '/System/Info', as(fearing, bob))).status, 200);
+    // Alice's own sign-out through her household's host still revokes her token.
+    assert.equal((await signOut(farmhouse, alice)).status, 204);
+    assert.equal((await atJellyfin('/Users/Me', alice)).status, 401);
+  });
+
   it('finds a title\'s items by TMDB ID with JellyPass\'s key, the "Get this" decision input for "Jellyfin already has it"', async () => {
     const original = await client.getItem(fixture.itemId);
     await client.updateItem({ ...original, ProviderIds: { ...original.ProviderIds, Tmdb: '424242' } });
@@ -949,4 +1059,22 @@ function user(users, id) {
   const found = users.find((entry) => entry.Id === id);
   assert.ok(found, `user ${id} should exist`);
   return found;
+}
+
+/** A WebSocket upgrade's answer, up to the end of its headers. */
+function rawUpgrade(port, pathname, host) {
+  return new Promise((resolve, reject) => {
+    const socket = connect(port, '127.0.0.1');
+    let answer = '';
+    socket.once('connect', () => socket.write(`GET ${pathname} HTTP/1.1\r\nHost: ${host}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n`));
+    socket.on('data', (chunk) => {
+      answer += chunk.toString('utf8');
+      if (answer.includes('\r\n\r\n')) {
+        socket.destroy();
+        resolve(answer);
+      }
+    });
+    socket.once('end', () => resolve(answer));
+    socket.once('error', reject);
+  });
 }
