@@ -502,7 +502,7 @@ exactly the five secrets.
 
 ### How the workflow talks to EAS and Apple
 
-EAS CLI is pinned (`EAS_CLI_VERSION`, 24.12.1; `eas.json` asks for at least that) and always runs with
+EAS CLI is pinned (`EAS_CLI_VERSION`, 25.3.0; `eas.json` asks for at least that) and always runs with
 `--non-interactive`. It reads these environment variables
 ([Building on CI](https://docs.expo.dev/build/building-on-ci/)):
 
@@ -515,10 +515,11 @@ EAS CLI is pinned (`EAS_CLI_VERSION`, 24.12.1; `eas.json` asks for at least that
 | `EXPO_APPLE_TEAM_ID` | secret `APPLE_TEAM_ID` | The Apple Developer team |
 | `EXPO_APPLE_TEAM_TYPE` | environment variable `APPLE_TEAM_TYPE`, default `INDIVIDUAL` | `INDIVIDUAL`, `COMPANY_OR_ORGANIZATION` or `IN_HOUSE` |
 | `DISABLE_EAS_ANALYTICS`, `EXPO_NO_TELEMETRY` | set to 1 | No usage telemetry from EAS CLI or Expo CLI |
+| `EAS_BUILD_NO_EXPO_GO_WARNING` | set to `true` | Hides EAS CLI's advisory "uses Expo Go for development" warning before a production build (the app has no `expo-dev-client`). The CLI reads it from its own environment, not from a build profile's `env`; the build is the same either way |
 
 The Apple variables only reach the build step when iOS is being built.
 
-**What EAS does by itself, and what it can't.** Read from EAS CLI's source (`credentials/` at v24.12.1), since the
+**What EAS does by itself, and what it can't.** Read from EAS CLI's source (`credentials/` at v25.3.0), since the
 docs only say "set up credentials locally first":
 
 - **Android keystore:** on the first Android build with no keystore, `--non-interactive` generates one (random
@@ -573,7 +574,7 @@ docs only say "set up credentials locally first":
      `COMPANY_OR_ORGANIZATION` only if the Apple membership is an organisation's (it defaults to `INDIVIDUAL`).
 
    Then delete the downloaded `.p8` from your computer, or keep it only in a password manager.
-6. **iOS distribution certificate, once.** On any computer (Linux is fine), in a checkout of `main`: `cd mobile && pnpm install && npx eas-cli@24.12.1 credentials --platform ios`. Sign in to
+6. **iOS distribution certificate, once.** On any computer (Linux is fine), in a checkout of `main`: `cd mobile && pnpm install && npx eas-cli@25.3.0 credentials --platform ios`. Sign in to
    Expo, pick the `production` profile, then **Build Credentials → All: Set up all the required credentials to build
    your project**, and sign in with your Apple ID when asked. EAS makes the distribution certificate and keeps it.
    This is the only interactive step; every build after it runs from the workflow.
@@ -593,7 +594,7 @@ afresh.
 
 ```sh
 cd mobile
-npx eas-cli@24.12.1 credentials --platform android
+npx eas-cli@25.3.0 credentials --platform android
 ```
 
 Pick the `production` profile, then **Keystore: Manage everything needed to build your project → Download existing
@@ -654,12 +655,13 @@ personal account, so a valid personal token whose account isn't in the organizat
 The step **Check the Expo token can build the project** catches this before a build is spent. It prints who the token
 signs in as and its role in each organization (`eas whoami`, with the email line left out), and fails with the likely
 cause when the token is refused, the account isn't in `rtc-services-llc`, its role there is anything but Owner, Admin,
-Developer or Release Manager (Viewer, Custom, or a role newer than EAS CLI 24.12.1), or the project can't be read (`eas
-project:info`). The step doesn't print the token; it prints only what EAS CLI says. To fix it, make a new token ([step
-2](#one-time-setup-owner)) or give its account a build role under the organization's **Members** settings on
-expo.dev, then replace the `EXPO_TOKEN` environment secret. To check a token locally without leaving it in shell
-history: `read -rs EXPO_TOKEN && export EXPO_TOKEN && cd mobile && npx eas-cli@24.12.1 whoami && npx eas-cli@24.12.1
-project:info`.
+Developer or Release Manager (Viewer, Runner, Custom, or a role newer than EAS CLI 25.3.0), or the token's permission
+grant limits it to such a role (`eas whoami` then says `limited to ... by the current credentials`), or the project
+can't be read (`eas project:info`). The step doesn't print the token; it prints only what EAS CLI says. To fix it,
+make a new token ([step 2](#one-time-setup-owner)) or give its account a build role under the organization's
+**Members** settings on expo.dev, then replace the `EXPO_TOKEN` environment secret. To check a token locally without
+leaving it in shell history: `read -rs EXPO_TOKEN && export EXPO_TOKEN && cd mobile && npx eas-cli@25.3.0 whoami &&
+npx eas-cli@25.3.0 project:info`.
 
 If **Build on EAS** still fails, its log shows EAS CLI's messages (stderr as usual, and the `message` fields of
 whatever it wrote to stdout instead of the build list, cut to 4000 characters, or the first 4000 bytes if that isn't
