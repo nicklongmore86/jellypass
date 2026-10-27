@@ -18,6 +18,37 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+## [3.2.3] - 2026-10-27
+
+This is a patch release for the household app (`HOUSEHOLD_APP_ENABLED=true`)
+only: with the app off (the default), nothing changes. There is nothing to
+configure: no setting is added, removed or renamed, and the state file is
+unchanged (schema v7, with the same fields as 3.2.2), so 3.2.2 reads a state
+file written by 3.2.3. The app API (`docs/app-api/v1.openapi.json`), webhook
+payloads, the administrator API and the admin UI are unchanged; on the server,
+only how JellyPass saves a "Get this" request changed (see Fixed). Read these
+before upgrading:
+
+- **Close and reopen the installed app** to pick up the change. An open app
+  keeps running the files it loaded until then.
+- **No CDN purge is needed:** the app's files, the stylesheet and the
+  scripts included, are still named by content hash (those fingerprinted files
+  are sent `public, max-age=31536000, immutable`), and the page, the service
+  worker and every other `/jellypass/app` answer are sent `no-store`, so the
+  changed files have new addresses.
+- **To roll back,** set `JELLYPASS_IMAGE` back to
+  `ghcr.io/nicklongmore86/jellypass:3.2.2` and recreate the container. No
+  state-file or setting change is needed.
+
+The app API's fetch budget (`docs/app-api/fetch-budget.json`) now also lists
+the calls on coming back to **My requests** (`revisit`) and on a network's or
+a studio's page. It is documentation: the API is unchanged.
+
+**Mobile app (not in the server image).** The household app for iPhone, iPad
+and Android (`mobile/`) reached its first release, 1.0.0, since 3.2.2. It has
+its own version and its own [changelog](mobile/CHANGELOG.md); nothing in it
+runs on the server.
+
 ### Changed
 
 - **Household app: one status pill per request on My requests.** A series
@@ -29,7 +60,7 @@ changes are always listed at the top of the release notes.
   differ, each season keeps its own pill and the request shows none. Movies are
   unchanged. "Ask your JellyPass admin to try again." now also shows on My
   requests, under whatever did not work out (under the season, when seasons
-  differ). The app API and the server are unchanged.
+  differ). Only the app changed for this.
 - **Household app: My requests reuses the titles it has already read.** The
   list is still read on every visit, so statuses are always current, but a
   title's name, year and poster read in the last ten minutes of the same
@@ -40,7 +71,7 @@ changes are always listed at the top of the release notes.
   kept in memory only (at most 300), never their status, and are forgotten on
   sign-out, a refused sign-in, or another member, household or sign-in. The
   app API's fetch budget (`docs/app-api/fetch-budget.json`) lists the calls on
-  coming back as `revisit`. The server is unchanged.
+  coming back as `revisit`. Only the app changed for this.
 
 ### Fixed
 
@@ -48,9 +79,10 @@ changes are always listed at the top of the release notes.
   with JellyPass's own check of earlier requests.** If that check (at startup or
   every few minutes) ran while a new request was still being saved, it could
   mistake the new request for one left over from before and clear it. The
-  request was then never sent, or, if Seerr was slow to answer, it could be sent
-  without showing as Requested for the household. A request is now marked as
-  in progress before it is saved, and the check leaves it alone.
+  request was then never sent, or, if Seerr's answer to it was lost (a timeout,
+  for example), it could be sent without showing as Requested for the household.
+  A request is now marked as in progress before it is saved, and the check
+  leaves it alone.
 
 ## [3.2.2] - 2026-10-27
 
@@ -2086,7 +2118,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.2.2...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.2.3...HEAD
+[3.2.3]: https://github.com/nicklongmore86/jellypass/compare/v3.2.2...v3.2.3
 [3.2.2]: https://github.com/nicklongmore86/jellypass/compare/v3.2.1...v3.2.2
 [3.2.1]: https://github.com/nicklongmore86/jellypass/compare/v3.2.0...v3.2.1
 [3.2.0]: https://github.com/nicklongmore86/jellypass/compare/v3.1.1...v3.2.0
