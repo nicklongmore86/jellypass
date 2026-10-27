@@ -156,8 +156,8 @@ The PWA's Home (`home()` in `app/src/main.ts`, its pieces in `app/src/render.ts`
   series, Popular series, Upcoming series, **Series on** each service; no studios or credit. A service with no films
   keeps its series under All and is left out under Movies. No all-time rows. Headings are heavy with the waterline: a
   cyan line and a purple cap (two segments, never a gradient), or one line in the service's brand colour; a service's
-  heading is "Popular on" and its logo with a chevron, a link to the service's page (on the list the row shows) named
-  "Popular on Netflix, see all". Each studio's logo is a link to its page named "Pixar, studio".
+  heading is "Popular on" and its logo (a header, named "Popular on Netflix"), then a chevron, a 44 pt link of its own
+  to the service's page (on the list the row shows) named "See all Popular on Netflix". Each studio's logo is a link to its page named "Pixar, studio".
 - **Hero.** The first five titles of the filter's first row, from that row's own answer (no extra call): a rounded
   card per slide, the backdrop with a solid navy panel **below** it (title, year, "★ 7.8 TMDB", the status, the start
   of the overview). Swipe, **Previous title** / **Next title** (wrapping) and one round dot per title (hollow, or larger

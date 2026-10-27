@@ -85,9 +85,9 @@ export function studioLinkName(name: string): string {
   return `${name}, studio`;
 }
 
-/** A service row's heading on Home, as a link to its page: "Popular on Netflix, see all". */
+/** The link beside a service row's heading on Home, to its page: "See all Popular on Netflix". */
 export function networkLinkName(prefix: string, name: string): string {
-  return `${prefix} ${name}, see all`;
+  return `See all ${prefix} ${name}`;
 }
 
 export function stateLabel(state: HouseholdState): string {

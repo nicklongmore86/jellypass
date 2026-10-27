@@ -427,31 +427,30 @@ export function LogoTile({ source, size }: { source: Source; size: 'small' | 'la
 }
 
 /**
- * "Popular on" and the network's logo: one heading, named in words. With `onOpen` it is a link to the network's page
- * ("Popular on Netflix, see all"), with the PWA's chevron after the logo.
+ * "Popular on" and the network's logo: one heading, named in words, so a screen reader's headings still land on it.
+ * With `onOpen`, the PWA's chevron after the logo is a link of its own to the network's page ("See all Popular on
+ * Netflix"); the heading itself is not pressable.
  */
 export function NetworkHeading({ prefix, network, onOpen }: { prefix: string; network: Source; onOpen?: () => void }) {
-  if (onOpen) {
-    return (
+  const heading = (
+    <View accessible accessibilityRole="header" accessibilityLabel={`${prefix} ${network.name}`} style={styles.networkHeading}>
+      <Text style={styles.rowHeadingText}>{prefix}</Text>
+      <LogoTile source={network} size="small" />
+    </View>
+  );
+  if (!onOpen) return heading;
+  return (
+    <View style={styles.networkHeading}>
+      {heading}
       <Pressable
         testID="row-heading-link"
         accessibilityRole="link"
         accessibilityLabel={networkLinkName(prefix, network.name)}
         onPress={onOpen}
-        style={({ pressed }) => [styles.networkHeading, styles.headingLink, pressed && styles.pressed]}
+        style={({ pressed }) => [styles.headingLink, pressed && styles.pressed]}
       >
-        <Text style={styles.rowHeadingText}>{prefix}</Text>
-        <LogoTile source={network} size="small" />
-        <View {...hidden}>
-          <Icon name="next" color={colors.text} size={20} />
-        </View>
+        <Icon name="next" color={colors.text} size={20} />
       </Pressable>
-    );
-  }
-  return (
-    <View accessible accessibilityRole="header" accessibilityLabel={`${prefix} ${network.name}`} style={styles.networkHeading}>
-      <Text style={styles.rowHeadingText}>{prefix}</Text>
-      <LogoTile source={network} size="small" />
     </View>
   );
 }
@@ -804,7 +803,7 @@ const styles = StyleSheet.create({
   rowHeading: { gap: spacing.sm, alignSelf: 'flex-start' },
   rowHeadingText: { ...typography.rowHeading, color: colors.text },
   networkHeading: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.sm },
-  headingLink: { minHeight: layout.touchTarget, minWidth: layout.touchTarget },
+  headingLink: { minHeight: layout.touchTarget, minWidth: layout.touchTarget, alignItems: 'center', justifyContent: 'center' },
   studioLink: { width: STUDIO_TILE_WIDTH, minHeight: layout.touchTarget, borderRadius: radii.card },
   waterline: { flexDirection: 'row', height: layout.waterline.height },
   waterlineAccent: { width: layout.waterline.accentWidth, borderRadius: layout.waterline.height, backgroundColor: colors.accent },

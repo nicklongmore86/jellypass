@@ -39,6 +39,8 @@ beforeEach(() => {
   // The mock ScrollView's scrollTo is already a jest.fn, shared by every row and test: start each test with no calls.
   scrolls = jest.spyOn(ScrollView.prototype, 'scrollTo').mockImplementation(() => undefined);
   scrolls.mockClear();
+  // The preset's isReduceMotionEnabled is a jest.fn whose answer a spy's restore does not undo: start each test with it off.
+  jest.spyOn(AccessibilityInfo, 'isReduceMotionEnabled').mockResolvedValue(false);
 });
 afterEach(() => {
   jest.restoreAllMocks();
@@ -406,8 +408,6 @@ describe('resnapOffset', () => {
 describe("the studios' strip, its tiles links to their pages", () => {
   beforeEach(() => {
     jest.replaceProperty(Platform, 'OS', 'android');
-    // The preset's mock is a jest.fn that a Reduce Motion test above leaves answering true: restoring a spy on it does not undo that.
-    jest.spyOn(AccessibilityInfo, 'isReduceMotionEnabled').mockResolvedValue(false);
   });
 
   const studios = Array.from({ length: 11 }, (_, at) => ({ id: at + 1, name: `Studio ${at + 1}`, logoUrl: null }));

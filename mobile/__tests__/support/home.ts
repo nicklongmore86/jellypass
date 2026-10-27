@@ -297,14 +297,10 @@ export async function scrollToEnd(size: ScreenSize = shown): Promise<void> {
   }
 }
 
-/**
- * The headings on screen, in order: their words, or their accessible name when drawn with a logo. A service row's
- * heading is a link to its page ("Popular on Netflix, see all"), and counts as one.
- */
+/** The headings on screen, in order: their words, or their accessible name when drawn with a logo. */
 export function headings(): string[] {
   return screen
-    .queryAllByRole(/^(header|link)$/)
-    .filter((node) => node.props.accessibilityRole === 'header' || node.props.testID === 'row-heading-link')
+    .queryAllByRole('header')
     .map((node) => String(node.props.accessibilityLabel ?? [node.props.children].flat().join('')))
     .filter((text) => text !== '');
 }

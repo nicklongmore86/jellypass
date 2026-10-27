@@ -102,10 +102,10 @@ describe('from Home', () => {
     expect(app.getPathname()).toMatch(/^\/(home)?$/);
   });
 
-  it("opens a service's page from its row heading, on the list that row showed", async () => {
+  it("opens a service's page from the See all link by its row heading, on the list that row showed", async () => {
     const app = await start();
     await scrollToEnd();
-    await pressNode(linkNamed('Popular on Netflix, see all'));
+    await pressNode(linkNamed('See all Popular on Netflix'));
     expect(app.getPathname()).toBe('/home/network/213');
     expect(title()).toBe('Popular on Netflix');
     expect(tabs()).toEqual(['All ✓', 'Series', 'Films']);

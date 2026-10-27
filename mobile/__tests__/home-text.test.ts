@@ -84,7 +84,7 @@ describe('the network and studio pages', () => {
   });
 
   it("names Home's links to them", () => {
-    expect([studioLinkName('Pixar'), networkLinkName('Popular on', 'Netflix')]).toEqual(['Pixar, studio', 'Popular on Netflix, see all']);
+    expect([studioLinkName('Pixar'), networkLinkName('Popular on', 'Netflix')]).toEqual(['Pixar, studio', 'See all Popular on Netflix']);
   });
 });
 
