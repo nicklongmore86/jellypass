@@ -31,6 +31,58 @@ changes are always listed at the top of the release notes.
   is not drawn. The row still makes one call (`tv-home-row`, unchanged) and
   depends only on the caller's own answer. The title view is unchanged.
 
+## [3.3.1] - 2026-10-27
+
+This is a security patch release for household hostnames, with the household
+app on or off. It closes two gaps that were present before 3.3.0: one
+household could list another household's members, and a Jellyfin token from
+one household's hostname, or from the main Jellyfin site, worked on any other
+household's hostname. The main Jellyfin site and the admin host are
+unaffected. There is nothing to configure: no setting is added, removed or
+renamed, and the state file is unchanged (schema v7, with the same fields as
+3.3.0), so 3.3.0 reads a state file written by 3.3.1. The app API
+(`docs/app-api/v1.openapi.json`), webhook payloads, the administrator API, the
+admin UI, the household app and the TV add-on are unchanged. Read these before
+upgrading:
+
+- **No CDN purge is needed:** none of the household app's or the TV add-on's
+  source files and nothing Jellyfin's own web client loads changed (only the
+  embedded version number differs in the built app), and the new
+  refusals and narrowed listings are answered `Cache-Control: no-store`.
+- **Clients may notice these changes, on household hostnames only:**
+  - A token from one household's hostname, or from the main Jellyfin site, no
+    longer works on another household's hostname: requests relayed to
+    Jellyfin with it get `401 {"error":"unauthorized"}` (routes that name an
+    item or user keep their `404`; the sign-in screen's own calls are
+    unaffected), so a client that kept such a token must sign in again on that
+    hostname. Members using their own household's
+    hostname, and anyone using the main Jellyfin site, are not affected.
+  - A sign-out (`POST /Sessions/Logout`) with no token, or with a token that is
+    not one of the household's members', gets `401 {"error":"unauthorized"}`
+    and revokes nothing.
+  - A sign-out while Jellyfin cannot say whose the token is (Jellyfin down,
+    unless that token was checked in the past minute) gets
+    `502 {"error":"jellyfin_unavailable"}` and is not sent to Jellyfin.
+  - User lists (`GET /Users`), session lists (`GET /Sessions`) and SyncPlay
+    group lists show only the household's own members, and joining another
+    household's SyncPlay group gets `404 {"error":"item_not_found"}`.
+- **Two gaps remain, by design:**
+  - SyncPlay's WebSocket messages are not filtered. A member who joined a
+    household group still learns the names of anyone who joins it later
+    through the main Jellyfin site, or in the moment between the check and the
+    join; another household's members cannot join it through their own
+    household hostnames.
+  - Whose a token is, is remembered for up to a minute. A token signed out
+    elsewhere (on the main Jellyfin site, say, or by an administrator) may
+    still be passed to Jellyfin for that minute, which then refuses it itself;
+    a sign-out through the household hostname forgets it at once, and
+    membership is checked on every request.
+- **To roll back,** set `JELLYPASS_IMAGE` back to
+  `ghcr.io/nicklongmore86/jellypass:3.3.0` and recreate the container. No
+  state-file or setting change is needed, but rolling back reopens both gaps:
+  household hostnames list every Jellyfin user again and accept any
+  household's tokens.
+
 ### Security
 
 - **Household hostnames no longer show one household another's members.**
@@ -83,8 +135,9 @@ changes are always listed at the top of the release notes.
   `401 {"error":"unauthorized"}`, never reaches Jellyfin and revokes nothing.
   A member's own sign-out forgets and revokes the token as before. If
   Jellyfin cannot say whose the token is, the sign-out is not sent and gets
-  `502 {"error":"jellyfin_unavailable"}` (it was `503` when Jellyfin was
-  down). Allowed in a patch release by the same household-check rule.
+  `502 {"error":"jellyfin_unavailable"}`; before, it was sent anyway and
+  Jellyfin's own answer relayed. Allowed in a patch release by the same
+  household-check rule.
 - **Household user listings fail closed on any answer but Jellyfin's `200`.**
   `GET /Users`, `GET /Sessions`, `GET /SyncPlay/List`, `GET /SyncPlay/{id}`
   and `GET /Users/Public` relayed any other answer from Jellyfin unchanged,
@@ -94,7 +147,8 @@ changes are always listed at the top of the release notes.
   status with `{"error":"jellyfin_refused"}`, and a `5xx`
   `502 {"error":"jellyfin_unavailable"}`. `GET /SyncPlay/{id}` for a group
   Jellyfin does not have now gets the same fixed
-  `404 {"error":"item_not_found"}` as another household's group.
+  `404 {"error":"item_not_found"}` as another household's group. Allowed in a
+  patch release by the same household-check rule.
 - **A household hostname joins a SyncPlay group only if it is the
   household's own.** Jellyfin lets anyone join any SyncPlay group by its ID
   (`POST /SyncPlay/Join`), then sends them its participants' names over the
@@ -2347,7 +2401,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.3.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.3.1...HEAD
+[3.3.1]: https://github.com/nicklongmore86/jellypass/compare/v3.3.0...v3.3.1
 [3.3.0]: https://github.com/nicklongmore86/jellypass/compare/v3.2.4...v3.3.0
 [3.2.4]: https://github.com/nicklongmore86/jellypass/compare/v3.2.3...v3.2.4
 [3.2.3]: https://github.com/nicklongmore86/jellypass/compare/v3.2.2...v3.2.3

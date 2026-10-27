@@ -53,6 +53,48 @@ function assertSection(notes, { version, nextVersion, subheadings }) {
 }
 
 describe('changelogSection with the real CHANGELOG.md', () => {
+  it('extracts 3.3.1 without its heading, up to the 3.3.0 section', () => {
+    const notes = changelogSection(CHANGELOG, '3.3.1');
+    assertSection(notes, {
+      version: '3.3.1',
+      nextVersion: '3.3.0',
+      subheadings: ['Security'],
+    });
+    assert.match(notes, /^This is a security patch release for household hostnames/);
+    const flat = notes.replace(/\s+/g, ' ');
+    assert.match(flat, /The main Jellyfin site and the admin host are unaffected/);
+    assert.match(flat, /There is nothing to configure/);
+    assert.match(flat, /3\.3\.0 reads a state file written by 3\.3\.1/);
+    assert.match(flat, /\*\*No CDN purge is needed:\*\*/);
+    assert.match(flat, /no longer works on another household's hostname/);
+    assert.match(flat, /with no token, or with a token that is not one of the household's members', gets `401 \{"error":"unauthorized"\}`/);
+    assert.match(flat, /`502 \{"error":"jellyfin_unavailable"\}` and is not sent to Jellyfin/);
+    assert.match(flat, /show only the household's own members/);
+    assert.match(flat, /SyncPlay's WebSocket messages are not filtered/);
+    assert.match(flat, /remembered for up to a minute/);
+    assert.match(flat, /`ghcr\.io\/nicklongmore86\/jellypass:3\.3\.0`/);
+    assert.match(flat, /rolling back reopens both gaps/);
+    assert.match(flat, /no longer show one household another's members/);
+    assert.match(flat, /now works only with its own members' tokens/);
+    assert.equal(flat.match(/Allowed in a patch release by the household-check rule at the top of this file/g)?.length, 1);
+    assert.equal(flat.match(/Allowed in a patch release by the same household-check rule/g)?.length, 4);
+    const security = notes.indexOf('### Security');
+    for (const note of [
+      '**No CDN purge is needed:**',
+      '**Clients may notice these changes, on household hostnames only:**',
+      '**Two gaps remain, by design:**',
+      '**To roll back,**',
+    ]) {
+      assert.ok(notes.indexOf(note) >= 0 && notes.indexOf(note) < security, `upgrade note ${note} comes first`);
+    }
+    assert.doesNotMatch(notes, /### (?:Added|Changed|Fixed)/);
+    assert.doesNotMatch(notes, /Mobile app/, 'mobile/ is unchanged since 3.3.0');
+    assert.doesNotMatch(notes, /### Upgrading from/);
+    assert.doesNotMatch(notes, /eas-cli|workflow|\btests?\b/i, 'no tests or CI');
+    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|starrgroup|farmhouse/, 'no server-specific details');
+    assert.deepEqual(split(notes).definitions, []);
+  });
+
   it('extracts 3.3.0 without its heading, up to the 3.2.4 section', () => {
     const notes = changelogSection(CHANGELOG, '3.3.0');
     assertSection(notes, {
