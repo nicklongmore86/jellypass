@@ -1,20 +1,20 @@
 /*
- * The JellyPass TV add-on's row on Jellyfin web's Home (docs/tv-addon.md). Written for the TVs' Chromium 63: no flex or
- * grid `gap` (it measures 0 px there), no :focus-visible (the whole rule would be dropped), no aspect-ratio, inset,
- * logical properties, :has() or min()/max()/clamp(); test/tv-addon.test.mjs refuses them. Spacing is margins, a
- * poster's frame is a padding-top box, and focus is :focus, which a remote's focus always is.
+ * The JellyPass TV add-on's row on Jellyfin web's Home and its title view (docs/tv-addon.md). Written for the TVs'
+ * Chromium 63: no flex or grid `gap` (it measures 0 px there), no :focus-visible (the whole rule would be dropped), no
+ * aspect-ratio, inset, logical properties, :has() or min()/max()/clamp(); test/tv-addon.test.mjs refuses them. Spacing
+ * is margins, a poster's frame is a padding-top box, and focus is :focus, which a remote's focus always is.
  */
-.jellypass-tv-scroller {
+.jellypass-tv-row-scroller {
   overflow-x: auto;
   overflow-y: hidden;
   padding-top: 0.75em;
   padding-bottom: 0.75em;
   scrollbar-width: none;
 }
-.jellypass-tv-scroller::-webkit-scrollbar {
+.jellypass-tv-row-scroller::-webkit-scrollbar {
   display: none;
 }
-.jellypass-tv-list {
+.jellypass-tv-row-list {
   display: flex;
   flex-wrap: nowrap;
   align-items: flex-start;
@@ -35,7 +35,7 @@
   outline: none;
   transition: transform 0.15s ease-out;
 }
-.jellypass-tv-poster {
+.jellypass-tv-card-poster {
   position: relative;
   display: block;
   width: 100%;
@@ -45,7 +45,7 @@
   border-radius: 0.6em;
   background: #13224a;
 }
-.jellypass-tv-poster img {
+.jellypass-tv-card-poster img {
   position: absolute;
   top: 0;
   left: 0;
@@ -53,7 +53,7 @@
   height: 100%;
   object-fit: cover;
 }
-.jellypass-tv-status {
+.jellypass-tv-card-status {
   position: absolute;
   top: 0.5em;
   left: 0.5em;
@@ -65,19 +65,23 @@
   font-weight: 600;
   line-height: 1.3;
 }
-.jellypass-tv-status-in_library {
+.jellypass-tv-card-status-in_library,
+.jellypass-tv-title-status-in_library {
   color: #7fe0a0;
 }
-.jellypass-tv-status-get_this {
+.jellypass-tv-card-status-get_this,
+.jellypass-tv-title-status-get_this {
   color: #35b8e8;
 }
-.jellypass-tv-status-requested {
+.jellypass-tv-card-status-requested,
+.jellypass-tv-title-status-requested {
   color: #f2c35b;
 }
-.jellypass-tv-status-unavailable {
+.jellypass-tv-card-status-unavailable,
+.jellypass-tv-title-status-unavailable {
   color: #a9bad8;
 }
-.jellypass-tv-title {
+.jellypass-tv-card-title {
   display: block;
   margin: 0.45em 0.2em 0 0.2em;
   overflow: hidden;
@@ -86,36 +90,241 @@
   white-space: nowrap;
   text-overflow: ellipsis;
 }
-.jellypass-tv-year {
+.jellypass-tv-card-year {
   display: block;
   margin: 0.1em 0.2em 0 0.2em;
   color: #a9bad8;
   font-size: 0.85em;
 }
-.jellypass-tv-card:focus .jellypass-tv-poster {
+.jellypass-tv-card:focus .jellypass-tv-card-poster {
   box-shadow: 0 0 0 0.25em #00a4dc;
 }
 .jellypass-tv-card:focus {
   transform: scale(1.06);
-}
-.jellypass-tv-note {
-  min-height: 1.4em;
-  margin: 0;
-  color: #a9bad8;
 }
 /* Ten feet away: bigger cards and type in Jellyfin web's TV layout. */
 .layout-tv .jellypass-tv-card {
   width: 12.5em;
   margin-right: 1.2em;
 }
-.layout-tv .jellypass-tv-title {
+.layout-tv .jellypass-tv-card-title {
   font-size: 1.1em;
 }
-.layout-tv .jellypass-tv-card:focus .jellypass-tv-poster {
+.layout-tv .jellypass-tv-card:focus .jellypass-tv-card-poster {
   box-shadow: 0 0 0 0.3em #00a4dc;
 }
 @media (prefers-reduced-motion: reduce) {
   .jellypass-tv-card {
     transition: none;
   }
+}
+
+/*
+ * The title view: a fixed full-screen box over Home (under Jellyfin web's dialogs), scrolled by its inner box. The
+ * buttons inside it are never fixed themselves: Jellyfin web's focus manager skips an element with no offsetParent.
+ * Every class in it is its own, `jellypass-tv-title-*`, and the row's are `jellypass-tv-row-*` and `jellypass-tv-card-*`:
+ * no rule for one can reach the other (test/tv-addon.test.mjs checks the markup and every selector).
+ */
+.jellypass-tv-title-view {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 1000;
+  overflow: hidden;
+  background: #000b25;
+  color: #eaf2ff;
+}
+.jellypass-tv-title-scroller {
+  position: relative;
+  height: 100%;
+  overflow-x: hidden;
+  overflow-y: auto;
+  padding: 1.5em 3.3% 3em 3.3%;
+  box-sizing: border-box;
+}
+.jellypass-tv-title-backdrop {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 70%;
+  height: 32em;
+  overflow: hidden;
+  opacity: 0.35;
+}
+.jellypass-tv-title-backdrop img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.jellypass-tv-title-top {
+  position: relative;
+  margin: 0 0 1.2em 0;
+}
+.jellypass-tv-title-main {
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+}
+.jellypass-tv-title-poster {
+  position: relative;
+  display: block;
+  flex: 0 0 auto;
+  width: 13em;
+  height: 19.5em;
+  margin: 0 2em 0 0;
+  overflow: hidden;
+  border-radius: 0.6em;
+  background: #13224a;
+}
+.jellypass-tv-title-poster img {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.jellypass-tv-title-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.jellypass-tv-title-name {
+  margin: 0 0 0.3em 0;
+  font-size: 2.2em;
+  font-weight: 700;
+  line-height: 1.15;
+}
+.jellypass-tv-title-facts,
+.jellypass-tv-title-genres {
+  margin: 0 0 0.5em 0;
+  color: #a9bad8;
+}
+.jellypass-tv-title-status {
+  display: inline-block;
+  margin: 0.3em 0 0.6em 0;
+  padding: 0.2em 0.55em;
+  border-radius: 0.5em;
+  background: #000b25;
+  font-size: 0.9em;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.jellypass-tv-title-status-failed {
+  color: #ff9b8f;
+}
+.jellypass-tv-title-note,
+.jellypass-tv-title-hint,
+.jellypass-tv-title-loading {
+  margin: 0 0 0.6em 0;
+  color: #a9bad8;
+}
+.jellypass-tv-title-error {
+  margin: 0 0 0.4em 0;
+  font-size: 1.3em;
+  font-weight: 600;
+}
+.jellypass-tv-title-actions {
+  margin: 0.6em 0 0.4em 0;
+}
+.jellypass-tv-title-message {
+  min-height: 1.4em;
+  margin: 0.3em 0 0.6em 0;
+  font-weight: 600;
+  outline: none;
+}
+.jellypass-tv-title-message.jellypass-tv-title-error {
+  font-size: 1em;
+  color: #ff9b8f;
+}
+.jellypass-tv-title-overview {
+  max-width: 48em;
+  margin: 0.8em 0 0 0;
+  line-height: 1.45;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 6;
+  overflow: hidden;
+}
+.jellypass-tv-title-button {
+  display: inline-block;
+  margin: 0 0.8em 0.6em 0;
+  padding: 0.55em 1.6em;
+  border: 0.12em solid #35b8e8;
+  border-radius: 0.5em;
+  background: transparent;
+  color: #eaf2ff;
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  outline: none;
+}
+.jellypass-tv-title-primary {
+  background: #00a4dc;
+  border-color: #00a4dc;
+  color: #00122e;
+}
+.jellypass-tv-title-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.jellypass-tv-title-button:focus,
+.jellypass-tv-title-season-pick:focus {
+  box-shadow: 0 0 0 0.25em #eaf2ff;
+}
+.jellypass-tv-title-seasons {
+  position: relative;
+  margin: 2em 0 0 0;
+}
+.jellypass-tv-title-seasons-heading {
+  margin: 0 0 0.4em 0;
+  font-size: 1.4em;
+}
+.jellypass-tv-title-season-list {
+  max-width: 48em;
+}
+.jellypass-tv-title-season {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0 0 0.5em 0;
+  padding: 0.6em 1em;
+  border: 0;
+  border-radius: 0.5em;
+  background: #13224a;
+  color: #eaf2ff;
+  font: inherit;
+  text-align: left;
+  outline: none;
+}
+.jellypass-tv-title-season-pick {
+  cursor: pointer;
+}
+.jellypass-tv-title-check {
+  flex: 0 0 auto;
+  width: 1em;
+  height: 1em;
+  margin: 0 0.8em 0 0;
+  border: 0.15em solid #a9bad8;
+  border-radius: 50%;
+}
+.jellypass-tv-title-season-pick[aria-pressed='true'] .jellypass-tv-title-check {
+  border-color: #00a4dc;
+  background: #00a4dc;
+}
+.jellypass-tv-title-season-name {
+  flex: 1 1 auto;
+  font-weight: 600;
+}
+.jellypass-tv-title-season-count {
+  margin: 0 1em 0 1em;
+  color: #a9bad8;
+}
+.jellypass-tv-title-season .jellypass-tv-title-status {
+  margin: 0;
+}
+.layout-tv .jellypass-tv-title-view {
+  font-size: 1.1em;
 }

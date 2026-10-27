@@ -29,8 +29,8 @@ changes are always listed at the top of the release notes.
   showing the household's own view of Trending from the app API with the
   app's coarse statuses. The row is drawn for remote-control navigation by
   Jellyfin web's own focus manager on LG TVs (the LG app loads Jellyfin web
-  from the server) and in browsers. Choosing a card only says that title
-  pages are coming. The script and its stylesheet are served fingerprinted at
+  from the server) and in browsers. Choosing a card opens a title view (step 2,
+  below). The script and its stylesheet are served fingerprinted at
   `/jellypass/tv/` and built for Chromium 63 (ES2017). The page is sent
   `no-store` without Jellyfin's validators, and asked of Jellyfin whole and
   unencoded. Anything other than a whole HTML page is relayed unchanged. The
@@ -42,6 +42,23 @@ changes are always listed at the top of the release notes.
   [docs/tv-addon.md](docs/tv-addon.md) for the design, the rollout of title
   pages and "Get this", Search, My requests and the Samsung app, and what to
   check on a TV.
+- **TV add-on, step 2: title pages and "Get this" (off by default, with the
+  add-on).** Choosing a card in the JellyPass row opens a JellyPass title view
+  over Jellyfin web's Home, laid out for the TV and navigated by Jellyfin web's
+  own focus manager. It shows the title's household status in the app's
+  coarse words and one action: **Play**, which opens Jellyfin web's own
+  details page for the title on the same host (Jellyfin's own player), or
+  **Get this**, with a season picker for a series. "Get this" behaves exactly
+  as in the app: one fixed confirmation whatever happened, fixed words for
+  each failure, never retried by itself, and the title shown as Requested on
+  the view and the row for up to two minutes while the server records it (in
+  memory only, forgotten when another member signs in, on sign-out or when
+  either read is refused); it ends on a screen left alone too, with no call. The
+  remote's Back closes the view and puts focus back on the card. The view
+  makes two app API calls when opened (`tv-movie` and `tv-series` in
+  `docs/app-api/fetch-budget.json`) and an accepted "Get this" three. Nothing
+  has been checked on a real TV yet; see
+  [docs/tv-addon.md](docs/tv-addon.md) for what to check.
 
 ## [3.2.4] - 2026-10-27
 
