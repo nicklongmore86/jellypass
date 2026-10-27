@@ -6,7 +6,7 @@
 // - A card is one link whose name is its title, year and rating, then its status, said once; the status chip drawn on
 //   the image is hidden from screen readers.
 // - Text grows with the system font size with no line limit, cap or fixed height: titles wrap, the chips scroll.
-import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
+import { Children, createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   AccessibilityInfo,
   Image,
@@ -30,7 +30,7 @@ import { backdropSources, safeImageUrl, safeLogoUrl } from '../api/urls';
 import { Icon } from '../icons';
 import { colors, layout, radii, spacing, status as statusColors, typography, water } from '../theme';
 import { Button } from '../ui';
-import { nearestStop, resnapOffset, snapOffsets, type RowShape, type RowVariant } from './layout';
+import { nearestStop, resnapOffset, revealOffset, snapOffsets, type RowShape, type RowVariant } from './layout';
 import {
   backdropMeta,
   cardName,
@@ -107,8 +107,17 @@ const CardFocus = createContext<(() => void) | undefined>(undefined);
  * a focus or accessibility scroll. The snap's own scrollTo ends with one too; it is ignored, as the touch is over by
  * then, as is the one sent when a new touch stops a running glide or snap, as a finger is down.
  *
+ * An animated snap runs on its own native animator, which a focus scroll does not stop (ReactHorizontalScrollView's
+ * scrollToChild only calls scrollBy), so it would carry a card focused mid-snap off screen. A card that takes focus
+ * then is revealed with an animated scrollTo of its own: starting one cancels the running one first
+ * (startFlingAnimator), where a scrollTo without animation would not. The cancelled snap still sends a momentum end,
+ * part way; should the snap have run to its stop instead (the reveal found nothing to do, or started after it), the
+ * card is put in view there without animation.
+ *
  * When the row's width changes (the device turned, or an iPad's split view resized) it is moved, without animation,
- * to the stop that keeps the same card in view (resnapOffset), on either platform: neither re-snaps by itself.
+ * to the stop that keeps the same card in view (resnapOffset), on either platform: neither re-snaps by itself. A change
+ * that comes while the row is moving (a finger on it, a glide, a snap or a reveal) waits until it is still: after a
+ * touch, the row goes to the nearest stop, as the finger chose where it is in the new shape.
  */
 function SnapRow({
   testID,
@@ -131,44 +140,96 @@ function SnapRow({
   // A finger is on the row; a touch moved the row and its glide has not ended yet.
   const dragging = useRef(false);
   const touched = useRef(false);
+  // Where a running animated snap, and a focused card's reveal that replaced it, are taking the row.
+  const snapTo = useRef<number | undefined>(undefined);
+  const revealTo = useRef<number | undefined>(undefined);
+  // The row's shape before a width change that came while it was moving, until it is still.
+  const resized = useRef<RowShape | undefined>(undefined);
   const android = Platform.OS === 'android';
 
+  const near = (a: number, b: number) => Math.abs(a - b) < 0.5;
   const moveTo = (to: number | undefined, animated: boolean) => {
-    if (to === undefined || Math.abs(to - x.current) < 0.5) return;
+    if (to === undefined || near(to, x.current)) return false;
     x.current = to;
     row.current?.scrollTo({ x: to, animated });
+    return true;
+  };
+  const still = () => !dragging.current && !touched.current && snapTo.current === undefined && revealTo.current === undefined;
+  /** A width change held while the row moved, applied once it is still. */
+  const settle = (afterTouch: boolean) => {
+    const before = resized.current;
+    if (!before || !still()) return;
+    resized.current = undefined;
+    const now = shape.current;
+    const offsets = snapOffsets(now.count, now.item, now.gap, now.viewport);
+    moveTo(afterTouch ? offsets && nearestStop(offsets, x.current) : resnapOffset(x.current, before, now), false);
   };
   const onScroll = (event: ScrollEvent) => {
     x.current = event.nativeEvent.contentOffset.x;
   };
-  const touchSnap = android
-    ? {
-        onScrollBeginDrag: () => {
-          dragging.current = true;
-          touched.current = true;
-        },
-        onScrollEndDrag: (event: ScrollEvent) => {
-          dragging.current = false;
-          onScroll(event);
-        },
-        onMomentumScrollEnd: (event: ScrollEvent) => {
-          onScroll(event);
-          if (dragging.current || !touched.current) return;
-          touched.current = false;
-          const offsets = snapOffsets(count, item, CARD_GAP, viewport);
-          if (offsets) moveTo(nearestStop(offsets, x.current), !reduceMotion);
-        },
+  const onScrollBeginDrag = () => {
+    // A touch stops a running snap or reveal (onInterceptTouchEvent cancels the animator).
+    dragging.current = true;
+    touched.current = true;
+    snapTo.current = undefined;
+    revealTo.current = undefined;
+  };
+  const onScrollEndDrag = (event: ScrollEvent) => {
+    dragging.current = false;
+    onScroll(event);
+    // iOS sends no momentum end for a drag let go without a glide.
+    if (!android && !event.nativeEvent.velocity?.x) {
+      touched.current = false;
+      settle(true);
+    }
+  };
+  const onMomentumScrollEnd = (event: ScrollEvent) => {
+    onScroll(event);
+    if (dragging.current) return;
+    const reveal = revealTo.current;
+    if (reveal !== undefined) {
+      if (near(x.current, reveal)) {
+        revealTo.current = undefined;
+      } else if (snapTo.current !== undefined && near(x.current, snapTo.current)) {
+        revealTo.current = undefined;
+        moveTo(reveal, false);
       }
-    : {};
-  const onCardFocus = () => {
+      snapTo.current = undefined;
+      settle(false);
+      return;
+    }
+    if (snapTo.current !== undefined) {
+      snapTo.current = undefined;
+      settle(false);
+      return;
+    }
+    const glided = touched.current;
     touched.current = false;
+    if (!android || !glided || resized.current) {
+      settle(true);
+      return;
+    }
+    const offsets = snapOffsets(count, item, CARD_GAP, viewport);
+    const to = offsets && nearestStop(offsets, x.current);
+    if (moveTo(to, !reduceMotion) && !reduceMotion) snapTo.current = to;
+  };
+  const onCardFocus = (index: number) => {
+    touched.current = false;
+    if (snapTo.current === undefined && revealTo.current === undefined) return;
+    const to = revealOffset(shape.current, index);
+    if (to === undefined) return;
+    revealTo.current = to;
+    row.current?.scrollTo({ x: to, animated: true });
   };
   const onLayout = (event: LayoutChangeEvent) => {
     const now = event.nativeEvent.layout.width;
     const before = shape.current;
     const after = { count, item, gap: CARD_GAP, viewport };
     shape.current = after;
-    if (width.current > 0 && Math.abs(now - width.current) >= 0.5) moveTo(resnapOffset(x.current, before, after), false);
+    if (width.current > 0 && !near(now, width.current)) {
+      if (still()) moveTo(resnapOffset(x.current, before, after), false);
+      else resized.current ??= before;
+    }
     width.current = now;
   };
 
@@ -182,10 +243,14 @@ function SnapRow({
       scrollEventThrottle={16}
       onScroll={onScroll}
       onLayout={onLayout}
-      {...touchSnap}
+      onScrollBeginDrag={onScrollBeginDrag}
+      onScrollEndDrag={onScrollEndDrag}
+      onMomentumScrollEnd={onMomentumScrollEnd}
       {...rowSnapping(count, item, viewport)}
     >
-      <CardFocus value={onCardFocus}>{children}</CardFocus>
+      {Children.map(children, (child, index) => (
+        <CardFocus value={() => onCardFocus(index)}>{child}</CardFocus>
+      ))}
     </ScrollView>
   );
 }

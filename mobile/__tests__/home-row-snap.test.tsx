@@ -1,14 +1,15 @@
 // How a sideways card row comes to rest, on each platform. iOS snaps natively (snapToOffsets). Android is never given
 // snap stops, as React Native would turn them into native paging, which stops Tab reaching a card off screen and a
 // focused card being scrolled into view; there, once a touch's glide stops, the row is moved to the nearest stop with
-// scrollTo, and nothing else (a focus or screen-reader scroll, the snap's own scroll) moves it. On either, a change of
-// width moves the row to the stop that keeps the same card in view. Every assertion compares numbers or strings.
+// scrollTo, and nothing else (a focus or screen-reader scroll, the snap's own scroll) moves it, but for a card focused
+// mid-snap, which is revealed with an animated scrollTo that cancels the snap. On either, a change of width moves the
+// row to the stop that keeps the same card in view, once the row is still. Every assertion compares numbers or strings.
 import { fireEvent, render, screen, within } from '@testing-library/react-native';
 import { AccessibilityInfo, Platform, ScrollView } from 'react-native';
 
 import type { Card } from '../src/api/types';
 import { CARD_GAP, CardRow } from '../src/home/components';
-import { nearestStop, resnapOffset, snapOffsets } from '../src/home/layout';
+import { nearestStop, resnapOffset, revealOffset, snapOffsets } from '../src/home/layout';
 
 jest.setTimeout(30_000);
 
@@ -64,11 +65,20 @@ async function show(item = ITEM, viewport = VIEWPORT) {
   return render(view(item, viewport));
 }
 
-const at = (x: number) => ({ nativeEvent: { contentOffset: { x, y: 0 }, velocity: { x: 0, y: 0 } } });
+const at = (x: number, velocity = 0) => ({ nativeEvent: { contentOffset: { x, y: 0 }, velocity: { x: velocity, y: 0 } } });
 
-async function event(name: string, x: number) {
-  await fireEvent(row(), name, at(x));
+async function event(name: string, x: number, velocity = 0) {
+  await fireEvent(row(), name, at(x, velocity));
 }
+
+async function focus(card: number) {
+  await fireEvent(within(row()).queryAllByRole('link')[card]!, 'focus');
+}
+
+const PHONE = { count: COUNT, item: ITEM, gap: CARD_GAP, viewport: VIEWPORT };
+/** A 390 pt phone turned to 844 pt wide: the column and big card both grow. */
+const WIDE = { viewport: 812, item: 600 };
+const WIDE_STOPS = snapOffsets(COUNT, WIDE.item, CARD_GAP, WIDE.viewport)!;
 
 async function layout(width: number) {
   await fireEvent(row(), 'layout', { nativeEvent: { layout: { x: 0, y: 0, width, height: 240 } } });
@@ -160,6 +170,70 @@ describe('on Android', () => {
     expect(asked()).toEqual([]);
   });
 
+  it('stops a running snap when a card takes focus, revealing that card instead', async () => {
+    await show();
+    await swipe(0, 200, 300);
+    // The snap to stop 1 is under way when the keyboard focuses card 5, which it would carry off screen.
+    await event('scroll', 310);
+    await focus(5);
+    const reveal = 5 * (ITEM + CARD_GAP) - (VIEWPORT - ITEM) / 2;
+    expect(revealOffset(PHONE, 5)).toBe(reveal);
+    // The animated scrollTo is what cancels the snap's animator (startFlingAnimator); a plain one would not.
+    expect(asked()).toEqual([`${STOPS[1]} true`, `${reveal} true`]);
+    // The cancelled snap's momentum end, part way, then the reveal's own: neither moves the row again.
+    await event('momentumScrollEnd', 320);
+    await event('scroll', reveal);
+    await event('momentumScrollEnd', reveal);
+    expect(asked()).toEqual([`${STOPS[1]} true`, `${reveal} true`]);
+  });
+
+  it('puts the focused card in view without animation if the snap ran on to its stop regardless', async () => {
+    await show();
+    await swipe(0, 200, 300);
+    await focus(5);
+    // The reveal found the row already where it asked, so nothing cancelled the snap, which ended at its stop.
+    await event('momentumScrollEnd', STOPS[1]!);
+    const reveal = revealOffset(PHONE, 5)!;
+    expect(asked()).toEqual([`${STOPS[1]} true`, `${reveal} true`, `${reveal} false`]);
+  });
+
+  it('leaves a row alone when a card takes focus after its snap has ended', async () => {
+    await show();
+    await swipe(0, 200, 300);
+    await event('momentumScrollEnd', STOPS[1]!);
+    await focus(5);
+    expect(asked()).toEqual([`${STOPS[1]} true`]);
+  });
+
+  it('holds a width change that comes mid-drag until the glide stops, then goes to the nearest stop once', async () => {
+    const app = await show();
+    await layout(VIEWPORT);
+    await event('scrollBeginDrag', 0);
+    await event('scroll', 200);
+    await app.rerender(view(WIDE.item, WIDE.viewport));
+    await layout(WIDE.viewport);
+    expect(asked()).toEqual([]);
+    await event('scrollEndDrag', 400);
+    await event('scroll', 700);
+    expect(asked()).toEqual([]);
+    await event('momentumScrollEnd', 700);
+    expect(asked()).toEqual([`${nearestStop(WIDE_STOPS, 700)} false`]);
+    await event('momentumScrollEnd', nearestStop(WIDE_STOPS, 700));
+    expect(asked()).toEqual([`${nearestStop(WIDE_STOPS, 700)} false`]);
+  });
+
+  it('holds a width change that comes mid-snap until the snap ends', async () => {
+    const app = await show();
+    await layout(VIEWPORT);
+    await swipe(0, 600);
+    expect(asked()).toEqual([`${STOPS[2]} true`]);
+    await app.rerender(view(WIDE.item, WIDE.viewport));
+    await layout(WIDE.viewport);
+    expect(asked()).toEqual([`${STOPS[2]} true`]);
+    await event('momentumScrollEnd', STOPS[2]!);
+    expect(asked()).toEqual([`${STOPS[2]} true`, `${resnapOffset(STOPS[2]!, PHONE, { ...PHONE, ...WIDE })} false`]);
+  });
+
   it('snaps without animation with Reduce Motion on', async () => {
     jest.spyOn(AccessibilityInfo, 'isReduceMotionEnabled').mockResolvedValue(true);
     await show();
@@ -175,9 +249,29 @@ describe('on iOS', () => {
     expect((props.snapToOffsets as number[]).join(',')).toBe(STOPS.join(','));
     expect(String(props.decelerationRate)).toBe('normal');
     expect(props.pagingEnabled).toBeUndefined();
-    expect(props.onMomentumScrollEnd).toBeUndefined();
     await swipe(0, 200, 300);
+    await focus(3);
     expect(asked()).toEqual([]);
+  });
+
+  it('holds a width change that comes mid-drag until the drag ends, or its glide if it has one', async () => {
+    const app = await show();
+    await layout(VIEWPORT);
+    await event('scrollBeginDrag', 0);
+    await event('scroll', 200);
+    await app.rerender(view(WIDE.item, WIDE.viewport));
+    await layout(WIDE.viewport);
+    await event('scrollEndDrag', 700, 1.5);
+    expect(asked()).toEqual([]);
+    await event('momentumScrollEnd', 900);
+    expect(asked()).toEqual([`${nearestStop(WIDE_STOPS, 900)} false`]);
+
+    await event('scrollBeginDrag', 2000);
+    await app.rerender(view(ITEM, VIEWPORT));
+    await layout(VIEWPORT);
+    expect(asked()).toEqual([`${nearestStop(WIDE_STOPS, 900)} false`]);
+    await event('scrollEndDrag', 2000);
+    expect(asked()).toEqual([`${nearestStop(WIDE_STOPS, 900)} false`, `${nearestStop(STOPS, 2000)} false`]);
   });
 });
 
@@ -185,9 +279,6 @@ describe.each(['ios', 'android'] as const)('on %s, when the row changes width', 
   beforeEach(() => {
     jest.replaceProperty(Platform, 'OS', os);
   });
-
-  /** A 390 pt phone turned to 844 pt wide: the column and big card both grow. */
-  const WIDE = { viewport: 812, item: 600 };
 
   it('keeps the same card centred, at the new stop, without animation', async () => {
     const app = await show();
@@ -219,8 +310,17 @@ describe.each(['ios', 'android'] as const)('on %s, when the row changes width', 
   });
 });
 
+describe('revealOffset', () => {
+  it('centres a card that fits, keeps the row within its ends, and starts a card wider than the row at its start', () => {
+    expect(revealOffset(PHONE, 0)).toBe(0);
+    expect(revealOffset(PHONE, COUNT - 1)).toBe(STOPS.at(-1));
+    expect(revealOffset({ ...PHONE, item: 400 }, 3)).toBe(3 * (400 + CARD_GAP));
+    expect(revealOffset({ ...PHONE, count: 1 }, 0)).toBeUndefined();
+  });
+});
+
 describe('resnapOffset', () => {
-  const phone = { count: COUNT, item: ITEM, gap: CARD_GAP, viewport: VIEWPORT };
+  const phone = PHONE;
 
   it('goes to the nearest stop when only the width changed, and nowhere when the row now fits whole', () => {
     expect(resnapOffset(700, phone, phone)).toBe(STOPS[2]);

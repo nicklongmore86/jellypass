@@ -131,3 +131,14 @@ export function resnapOffset(x: number, before: RowShape, after: RowShape): numb
   const card = Math.round((previous[at]! + (before.viewport - before.item) / 2) / (before.item + before.gap));
   return nearestStop(next, card * (after.item + after.gap) - (after.viewport - after.item) / 2);
 }
+
+/**
+ * Where a row puts item `index` fully in view: centred if it fits the viewport, else at the viewport's start, kept
+ * within the row's ends. Nothing when the row fits whole.
+ */
+export function revealOffset({ count, item, gap, viewport }: RowShape, index: number): number | undefined {
+  const end = count * item + Math.max(0, count - 1) * gap - viewport;
+  if (count < 1 || viewport <= 0 || end <= 0) return undefined;
+  const start = index * (item + gap);
+  return Math.min(end, Math.max(0, item <= viewport ? start - (viewport - item) / 2 : start));
+}
