@@ -3,8 +3,8 @@
 ## Status
 
 Steps 1 and 2 of 5 are done: behind `TV_ADDON_ENABLED`, off by default, the household gateway adds one script to
-Jellyfin web's page on the households listed in `TV_ADDON_HOUSEHOLDS`, and that script adds one **JellyPass: Trending**
-row to Jellyfin web's Home (step 1). Choosing a card opens a JellyPass title view over Home, with **Play** or **Get
+Jellyfin web's page on the households listed in `TV_ADDON_HOUSEHOLDS`, and that script adds one **Discover**
+row to Jellyfin web's Home (step 1; redesigned, see "The row"). Choosing a card opens a JellyPass title view over Home, with **Play** or **Get
 this** (step 2, "The title view"). Search, **My requests** and the Samsung loader app come in later steps (see
 "Rollout"). Nothing has been run on a real TV yet (see "What must be checked on a real TV").
 
@@ -111,7 +111,9 @@ flowchart LR
     `.verticalSection.section0` placeholder, which Jellyfin web writes for every section at once when it loads them;
   - the `viewshow` event that each page dispatches (and which bubbles) as it is shown;
   - the class names the row borrows: `verticalSection` and the section heading's classes, so it lines up with Home's
-    own rows, and `focuscontainer-x`;
+    own rows, `focuscontainer-x`, and its card markup as `cardBuilder` writes it (`card overflowPortraitCard
+    card-hoverable`, `cardBox`, `cardScalable`, `cardPadder-overflowPortrait`, `cardImageContainer`, `cardText`; on a TV
+    also `show-focus show-animation`), so Jellyfin web's own CSS sizes, sets the type of and focuses the cards;
   - for the title view: `focuscontainer` (the focus manager's scope, as for its dialogs), that the focus manager skips
     an element whose `offsetParent` is null (so the view's buttons are never `position: fixed` themselves), its
     header's `z-index` (999) and its dialogs' (999998 and up);
@@ -123,11 +125,22 @@ flowchart LR
   swallowed, never thrown into Jellyfin web. Nothing is logged, because a message could carry what the page holds.
 - **The row.** Once Home is laid out and shown, and Jellyfin web is signed in to **the same origin the script came
   from**, the row is one Home section inserted after Home's first (on a default Home, after **My Media**):
-  - the heading **JellyPass: Trending**;
-  - up to 20 cards from the first page of `GET /discover/trending`, each a `<button type="button">` with the poster
-    (only a URL on the API's `w342` TMDB pattern), the title, the year and the **coarse status** in the app's words:
-    "Ready to watch", "Available to get", "Requested", "Can't request". An unknown state is "Can't request", as the
-    contract says.
+  - the heading **Discover**;
+  - the cards of the first page of `GET /discover/trending` (up to 20) that are **Available to get**, and no others.
+    A title whose state is `in_library` ("Ready to watch") is left out, because Jellyfin web's own rows show it; a
+    **Requested** title is left out too (it will live in My requests, a later step); "Can't request" is not offered. So
+    the row has **no badge**: every card in it can be asked for. Each card is a `<button type="button">` in Jellyfin
+    web's card markup (see "Jellyfin web coupling") with the poster (only a URL on the API's `w342` TMDB pattern), the
+    title and the year. Its accessible name says the status in the app's words ("Available to get"). An unknown state is
+    "Can't request", as the contract says, and so is not in the row.
+  - **A title the member asks for** (the title view's **Get this**, shown as Requested for up to two minutes, see "The
+    title view") leaves the row at once, in place, with no call; when the two minutes run out and the server still says
+    Available to get, it is back. Back from the view puts focus on the row's first card if the title's own has left.
+  - **When nothing is left** (every trending title is in the library, Requested or not offered, or the answer failed)
+    the row is **not drawn**: no heading, no empty strip. A second page is deliberately not fetched when few titles
+    survive the filter: the row stays one call (below), the same for every device on a household's one per-address
+    budget, and a short row is still right. The filter reads only the caller's own `state` in their own answer, never
+    anything of another household.
 
   Everything is set with `textContent`; nothing is parsed as HTML. Jellyfin web redraws Home's sections when its home
   settings change, and a `MutationObserver` (changes gathered for 50 ms) puts the row back. There is never more than one.
@@ -135,10 +148,12 @@ flowchart LR
   moves between focusable elements (any `<button>`) by their place on the screen within the nearest focus container.
   The row's list is a `focuscontainer-x`, so Left and Right stay in the row and Up and Down leave it, as in Home's own
   rows. Jellyfin web's scroll manager scrolls the focused card into view (it listens to `focusin` on a TV). The
-  add-on handles no keys: it has no layer of its own, so Back is Jellyfin web's. The focused card gets a 0.3 em
-  Jellyfin-cyan ring and a slight scale, drawn with `:focus`. In TV layout (`.layout-tv`) cards are 12.5 em wide.
-- **Choosing a card** opens the title view (below). A card's status is drawn through the "Get this" overlay, so a title
-  the member just asked for says **Requested** on the row too; it is updated in place, so focus stays on the card.
+  add-on handles no keys: it has no layer of its own, so Back is Jellyfin web's. The focus ring and zoom are Jellyfin
+  web's own (`.card:focus`, with `show-focus show-animation` added when the page is in TV layout, as `cardBuilder` does),
+  and so are the card widths, in TV and desktop layout alike. The row adds only its scrolling strip, the poster inside
+  Jellyfin's image box, in Jellyfin web's own look (nothing of its own palette).
+- **Choosing a card** opens the title view (below). A card's state is read through the "Get this" overlay, so a title
+  the member just asked for is no longer Available to get and leaves the row (above).
 
 ### The title view
 
@@ -185,7 +200,7 @@ flowchart LR
 - **Errors reading the title** are the app's fixed states ("Can't load this right now", "Too many requests", "Not
   found", "You're offline", "Sign in to continue"), with a **Try again** that only reads (none for a refused token).
 - **The overlay** (`tv/src/asked.ts`, the app's `app/src/asked.ts`): an accepted "Get this" shows the title (and its
-  seasons) as **Requested** on the view and the row for up to **two minutes**, while the server records it, and is
+  seasons) as **Requested** on the view (and out of the row) for up to **two minutes**, while the server records it, and is
   dropped as soon as the server says anything but `get_this` for it. As in the app it runs on both clocks: it ends when
   the monotonic clock has run two minutes or the wall clock has moved forward by that much (a TV asleep), and a wall
   clock set back never stretches it. On a view or row left alone it ends by a timer (at most 15 seconds between looks
@@ -232,7 +247,8 @@ small, dependency-free and at an exact fingerprinted path.
 
 ### Fetch budget
 
-`tv-home-row` in `docs/app-api/fetch-budget.json`: **one call**, `GET /discover/trending`, when Home is first laid out.
+`tv-home-row` in `docs/app-api/fetch-budget.json`: **one call**, `GET /discover/trending`, when Home is first laid out
+(unchanged by the filter: it is applied to that one answer, and no second page is asked for).
 The answer (or failure) is kept in memory for the signed-in member:
 
 - Jellyfin web redrawing Home or showing it again **within a minute** asks nothing;
@@ -252,7 +268,8 @@ seasons, Select all, Back and Play call nothing.
 
 Each step is its own pull request, behind the same settings:
 
-1. **Foundation (done).** Settings, gateway injection, the build, the Home row (Trending).
+1. **Foundation (done).** Settings, gateway injection, the build, the Home row (Trending). **Row redesigned (done):**
+   it is headed **Discover**, shows only titles Available to get (not in the member's library, not Requested), in Jellyfin web's own card markup (study: direction A).
 2. **Title pages and "Get this" (done).** Choosing a card opens a JellyPass title view over Home: a dialog container
    Jellyfin web's focus manager scopes to, with Back closing it (Tizen `10009`, webOS `461`, as Jellyfin web maps
    them). It shows the title's household state and **Play** (to Jellyfin web's own `#/details?id=<play.itemId>`, so
