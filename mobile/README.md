@@ -5,11 +5,11 @@ TypeScript (strict) and Expo Router. It talks to a household's JellyPass server 
 `/jellypass/app/v1` API as the PWA, and wears the same Tidepool look: its theme in `src/theme` is ported from
 `app/static/app.css`.
 
-**Sign-in, the tab bar, Home, Search, My requests, the title pages with Get this, and Account work; the network and
-studio pages come next.** The app connects to a household address, signs a member in, keeps the sign-in in the
+**Sign-in, the tab bar, Home, Search, My requests, the title pages with Get this, the network and studio pages, and
+Account work.** The app connects to a household address, signs a member in, keeps the sign-in in the
 device's credential store and signs out. Once signed in it has the PWA's four docked tabs (Home, Search, My requests,
-Account) with a header and Back, a finished Home (its filters, hero and rows), Search, My requests, the movie, series
-and season pages with Play and Get this, and the Account screen (see [What's next](#whats-next)).
+Account) with a header and Back, a finished Home (its filters, hero and rows), the network and studio pages, Search,
+My requests, the movie, series and season pages with Play and Get this, and the Account screen (see [What's next](#whats-next)).
 
 `mobile/` is separate from the server: it has its own `package.json` and `pnpm-lock.yaml`, it is excluded from
 the Docker build context (`.dockerignore`), and the root `pnpm check`, `pnpm test` and temp-leak check never look
@@ -156,7 +156,8 @@ The PWA's Home (`home()` in `app/src/main.ts`, its pieces in `app/src/render.ts`
   series, Popular series, Upcoming series, **Series on** each service; no studios or credit. A service with no films
   keeps its series under All and is left out under Movies. No all-time rows. Headings are heavy with the waterline: a
   cyan line and a purple cap (two segments, never a gradient), or one line in the service's brand colour; a service's
-  heading is "Popular on" and its logo, read as "Popular on Netflix".
+  heading is "Popular on" and its logo with a chevron, a link to the service's page (on the list the row shows) named
+  "Popular on Netflix, see all". Each studio's logo is a link to its page named "Pixar, studio".
 - **Hero.** The first five titles of the filter's first row, from that row's own answer (no extra call): a rounded
   card per slide, the backdrop with a solid navy panel **below** it (title, year, "★ 7.8 TMDB", the status, the start
   of the overview). Swipe, **Previous title** / **Next title** (wrapping) and one round dot per title (hollow, or larger
@@ -199,6 +200,31 @@ that it never moves by itself, the filter remembered, each failure's wording wit
 pull to refresh, nothing kept on the device, every pressable named and 44 pt high and wide, every text free to grow,
 the iPad and phone widths, the hero's controls on a 320 pt phone), `home-budget.test.tsx` (above) and `home-text.test.ts` (the words, rows and waterlines against the PWA's
 files). `tabs.test.tsx` counts Home's pressables (its chips are radios) and checks its text too.
+
+## Network and studio pages (`src/source`, `src/screens/SourceScreen.tsx`)
+
+The PWA's `#/network/:id` and `#/studio/:id` (`sourceScreen()` in `app/src/main.ts`), on Home's stack at
+`/home/network/<id>` and `/home/studio/<id>`, opened from a service row's heading and a studio's logo.
+
+- **Page.** The header says "Popular on Netflix" ("Series on" or "Films on" on those tabs) or "Pixar movies", over the
+  logo (decorative: the header names it), then the same poster grid as Search (three columns on a phone, two on a very
+  narrow one, as many as fit on an iPad) with **Load more** by the API's `nextPage`. A card opens its title on Home's
+  stack, drawn through the overlay (Requested right after Get this, the latest state read anywhere).
+- **Tabs.** A network the API lists films for (`hasFilms`) has **All | Series | Films**, a tab list of 44 pt tabs; the
+  one chosen is put in the address in place (`?kind=series` or `films`, anything else is All), so it stays under a title
+  opened from it and on coming back. A network with no films has its series alone and no tabs; its Films address is
+  Not found. The JustWatch credit closes the All and Films lists.
+- **IDs.** Only those `/discover/sources` lists: one that is not a plain number is Not found with no call; a number the
+  API does not list is Not found after the sources (no TMDB call), with no title asked for.
+- **Calls.** The sources, then the list's first page (`/me` is the start-up check's); one page per Load more, one
+  first page per tab chosen. A late answer (a tab switched away from, a Load more under it) is dropped. Failures show
+  the fixed words with **Try again** for that call alone; nothing is retried by itself; a 401 forgets the sign-in.
+  Nothing is written to the device.
+
+**Tests.** `source.test.tsx` (opened from Home, the grid and Load more, the tabs kept under a title, Not found, each
+failure, a 401, late answers, the overlay, every pressable named and 44 pt, every text free to grow, phone and iPad
+columns) and `source-budget.test.tsx` (the calls against `docs/app-api/fetch-budget.json`'s `network`,
+`network-series`, `network-films` and `studio`, which `test/app-pwa.test.mjs` pins for the PWA).
 
 ## Title pages and Get this (`src/title`, `src/screens/TitleScreen.tsx`)
 
@@ -379,8 +405,8 @@ Edits reload on the phone as you save. Expo Go needs no Apple or Google develope
 
 1. **Setup link on the PWA**: a "Set up the app" link on the PWA's Account tab carrying the household's address. Left
    for when the app can be installed (a `jellypass://` link does nothing on a phone without it).
-2. **Screens**: network and studio pages (Home's service headings and studio logos link to them then), then an
-   accessibility pass. (The tab bar, header, stacks, Home, Search, My requests, the title pages and Account are done.)
+2. **Screens**: an accessibility pass. (The tab bar, header, stacks, Home, the network and studio pages, Search, My
+   requests, the title pages and Account are done.)
 3. **Play**: an in-app Jellyfin web view, optionally a Swiftfin hand-off.
 4. **First release build**: the owner's one-time setup in [Release builds](#release-builds), then a run of the
    `Mobile release` workflow. No Google Play Console account or Play config.

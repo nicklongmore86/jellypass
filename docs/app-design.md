@@ -598,7 +598,8 @@ under **All** 6 at once (`/me`, `/discover/sources` and 4 lists) and 10 more as 
 **Movies** 6 and 8, **TV** 5 and 8; a movie or series page 3 (`/me`, the title, `/requests`), a season page 4;
 **Search** on one query 2 (`/me` and the first page; **Load more** is the member's); **My requests** `/me`, `/requests`
 and one title call for each request shown, at most ten before the member asks for more (`titlesAtOnce`; 4 with one movie
-and one series request). It also
+and one series request); a **network's** page on All, Series or Films and a **studio's** page 3 each (`/me`,
+`/discover/sources` and the list's first page; **Load more** is the member's). It also
 holds the server's budgets. `test/app-pwa.test.mjs` ("fetch budget") runs the real app against the API and fails
 if any screen makes a different set of calls, so a change that makes the app chattier has to change the file, and a
 native client is tested against the same numbers.
