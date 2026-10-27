@@ -193,12 +193,12 @@ main {
 }
 .row-list::-webkit-scrollbar { display: none; }
 /* Rows settle with a card centred in the visible content (the list runs to the screen edge, so scroll-padding takes the end gutter off), the first card at the row start and the last at its end. A fast flick may pass several cards: no scroll-snap-stop. */
-.row-list > .card { flex: 0 0 8.25rem; scroll-snap-align: center; }
+.row-list > .card { flex: 0 0 8.25rem; max-width: calc(100% - var(--gutter-end)); scroll-snap-align: center; }
 .row-list > .card:first-child { scroll-snap-align: start; }
 .row-list > .card:last-child { margin-right: var(--gutter-end); scroll-snap-align: end; scroll-margin-right: var(--gutter-end); }
 
 /* Backdrop cards: one nearly full-width 16:9 image per phone screen with the next peeking in; about three across on a wide one. The title and "year · ★ rating" sit below the image on the page's own navy, so no text is ever drawn over a picture. */
-.row-list-backdrop > .card { flex: 0 0 92%; }
+.row-list-backdrop > .card { flex: 0 0 min(92%, calc(100% - var(--gutter-end))); }
 .card-backdrop .backdrop-link { gap: 0.5rem; }
 .backdrop-frame {
   position: relative; display: block; aspect-ratio: 16 / 9; overflow: hidden; border-radius: var(--radius-backdrop);

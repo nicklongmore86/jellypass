@@ -38,6 +38,7 @@ import {
   titleDetail,
   titleRow,
   type RowVariant,
+  rowFocusShift,
 } from './render.js';
 import { icon } from './icons.js';
 import { clearSignIn, deviceId, jellyfinToken } from './session.js';
@@ -278,12 +279,12 @@ function appScrollLeft(list: HTMLElement, left: number): void {
 
 /**
  * A card focused by Tab sits fully in its row: a row scrolls sideways, and the browser's own focus scroll can leave the
- * card almost off the edge. The card is centred (where its scroll snap would put it, so the row's re-snap leaves it there), straight away
+ * card almost off the edge. The card is centred (where its scroll snap would put it, so the row's re-snap leaves it there), or started at the row's edge if it is wider than the row, straight away
  * so reduced motion needs nothing special. This is the page's own scroll, not the member's: it neither cancels nor
  * fights a restoration (the keydown that moved focus already cancelled it).
  */
 function showFocusedCard(event: FocusEvent): void {
-  const link = event.target instanceof Element ? event.target.closest('.row-list .card-link') : null;
+  const link = event.target instanceof Element ? event.target.closest('.row-list .card-link, .logo-list .logo-link') : null;
   // After the browser's own focus scroll, which would otherwise settle last.
   if (link) requestAnimationFrame(() => bringCardIntoRow(link));
 }
@@ -294,18 +295,16 @@ function clearTabBar(box: DOMRect): void {
   if (box.bottom > limit && box.height > 0) window.scrollBy(0, box.bottom - limit);
 }
 function bringCardIntoRow(link: Element): void {
-  const list = link.closest<HTMLElement>('.row-list');
+  const list = link.closest<HTMLElement>('.row-list, .logo-list');
   if (!list || document.activeElement !== link) return;
-  const card = link.closest('.card') ?? link;
+  const card = link.closest('.card, .logo-card') ?? link;
   const box = card.getBoundingClientRect();
   clearTabBar(box);
   const view = list.getBoundingClientRect();
   const right = Math.min(view.right, document.documentElement.clientWidth);
   if (box.left >= view.left && box.right <= right) return;
-  // The row snaps a card to the centre of its padded port (the end gutter is scroll padding); the browser clamps the first and last.
-  const padEnd = parseFloat(getComputedStyle(list).scrollPaddingRight);
-  const port = view.left + (view.width - (Number.isFinite(padEnd) ? padEnd : 0)) / 2;
-  list.scrollLeft += (box.left + box.right) / 2 - port;
+  // A card that fits is centred (where the row's snap settles); one wider than the snapport starts at its leading edge.
+  list.scrollLeft += rowFocusShift(box, view, parseFloat(getComputedStyle(list).scrollPaddingRight));
 }
 
 /** Home runs its sticky filter band the page's full width (`home`); every other screen has the page's own gutters. */

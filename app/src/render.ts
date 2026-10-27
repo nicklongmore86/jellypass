@@ -101,6 +101,17 @@ export function safeImageUrl(url: unknown): string | undefined {
 }
 
 /** A logo URL the API returned, only if it is one of TMDB's allowlisted logo URLs. */
+/**
+ * How far a row must scroll to show a focused card fully. A card that fits the row's snapport (the list less its end
+ * gutter) is centred, which is where its mandatory snap settles; a wider one is aligned to the snapport's start instead,
+ * so its leading edge is never clipped (a centred oversized card would hang out of both sides).
+ */
+export function rowFocusShift(card: { left: number; right: number }, view: { left: number; width: number }, padEnd: number): number {
+  const port = Math.max(0, view.width - (Number.isFinite(padEnd) ? padEnd : 0));
+  if (card.right - card.left > port) return card.left - view.left;
+  return (card.left + card.right) / 2 - (view.left + port / 2);
+}
+
 export function safeLogoUrl(url: unknown): string | undefined {
   return typeof url === 'string' && TMDB_LOGO.test(url) ? url : undefined;
 }
