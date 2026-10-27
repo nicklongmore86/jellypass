@@ -2570,11 +2570,35 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.deepEqual(calls(page), BUDGET.screens.requests.atOnce);
       assert.equal(page.requests.length, BUDGET.screens.requests.calls);
 
-      const many = Array.from({ length: 25 }, (_, index) => ({ id: `id${index}`, mediaType: 'movie', tmdbId: T_MOVIE, status: 'requested', seasons: [], byYou: true }));
+      // Each its own title (a title read once in this sign-in is not read again).
+      const many = Array.from({ length: 25 }, (_, index) => ({ id: `id${index}`, mediaType: 'movie', tmdbId: 910_000 + index, status: 'requested', seasons: [], byYou: true }));
       const long = await openApp(t, app, { hash: '#/requests', override: list(many) });
       await named(long);
       await settled(long);
       assert.equal(long.requests.length, 2 + BUDGET.screens.requests.titlesAtOnce);
+    });
+
+    it('My requests, shown again within ten minutes: the list only, its titles reused', async (t) => {
+      const app = await startApp(t);
+      const two = [
+        { id: 'a', mediaType: 'movie', tmdbId: T_MOVIE, status: 'requested', seasons: [], byYou: true },
+        { id: 'b', mediaType: 'tv', tmdbId: T_TV, status: 'ready', seasons: [{ seasonNumber: 1, status: 'ready' }], byYou: false },
+      ];
+      const page = await openApp(t, app, { hash: '#/requests', override: (url) => (url === '/jellypass/app/v1/requests' ? { status: 200, body: Buffer.from(JSON.stringify({ results: two })), headers: { 'content-type': 'application/json' } } : undefined) });
+      await page.until(() => page.main().querySelectorAll('.request .card-title').length === 2
+        && [...page.main().querySelectorAll('.request .card-title')].every((title) => title.textContent !== 'Loading title…'), 'the titles');
+      await settled(page);
+      assert.equal(page.requests.length, BUDGET.screens.requests.calls);
+      page.go('#/account');
+      await page.until(() => page.main().querySelector('.account'), 'Account');
+      await settled(page);
+      const before = page.requests.length;
+      page.go('#/requests');
+      await page.until(() => page.main().querySelectorAll('.request .card-title').length === 2
+        && [...page.main().querySelectorAll('.request .card-title')].every((title) => title.textContent !== 'Loading title…'), 'the titles again');
+      await settled(page);
+      assert.deepEqual(calls(page, before), BUDGET.screens.requests.revisit);
+      assert.deepEqual([...page.main().querySelectorAll('.request .card-title')].map((title) => title.textContent), ['Synthetic Movie One', 'Synthetic Series Two']);
     });
   });
 
@@ -4290,6 +4314,80 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       return { gate, release };
     };
     const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
+    const jsonAnswer = (value) => ({ status: 200, body: Buffer.from(JSON.stringify(value)), headers: { 'content-type': 'application/json' } });
+    /** Any film 910000 and up: "Film <id>", 2024, get_this. */
+    const syntheticTitle = (url) => {
+      const id = Number(/\/movie\/(91\d{4})$/.exec(url)?.[1]);
+      return id ? jsonAnswer({ mediaType: 'movie', tmdbId: id, title: `Film ${id}`, year: 2024, overview: '', posterUrl: null, backdropUrl: null, rating: null, state: 'get_this', play: null, genres: [], runtime: null }) : undefined;
+    };
+
+    describe('reuses the titles it has read in this sign-in, never their state', () => {
+      const entry = (index, status = 'requested') => ({ id: `id${index}`, mediaType: 'movie', tmdbId: 910_000 + index, status, seasons: [], byYou: true });
+      const titleCalls = (page, from = 0) => page.requests.slice(from).map((request) => request.url).filter((url) => /\/(movie|tv)\/\d+$/.test(url));
+      const listCalls = (page, from = 0) => page.requests.slice(from).filter((request) => request.url === '/jellypass/app/v1/requests').length;
+      const named = (page, count) => page.until(() => page.main().querySelectorAll('.request').length === count
+        && [...page.main().querySelectorAll('.request .card-title')].every((title) => title.textContent !== 'Loading title…'), `${count} titles`);
+      async function openList(t, list) {
+        const app = await startApp(t);
+        const page = await openApp(t, app, { hash: '#/requests', override: (url) => (url === '/jellypass/app/v1/requests' ? jsonAnswer({ results: list.value }) : syntheticTitle(url)) });
+        return page;
+      }
+      async function visitAgain(page, count) {
+        page.go('#/account');
+        await page.until(() => page.main().querySelector('.account'), 'Account');
+        await settle();
+        const before = page.requests.length;
+        page.go('#/requests');
+        await named(page, count);
+        await settle();
+        return before;
+      }
+
+      it('reads the list and each title once, then only the list on each visit, with the statuses the list says now', async (t) => {
+        const list = { value: [entry(0), entry(1), entry(2)] };
+        const page = await openList(t, list);
+        await named(page, 3);
+        await settle();
+        assert.equal(titleCalls(page).length, 3);
+        assert.equal(listCalls(page), 1);
+        list.value = [entry(0, 'ready'), entry(1, 'failed'), entry(2)];
+        const before = await visitAgain(page, 3);
+        assert.equal(titleCalls(page, before).length, 0);
+        assert.equal(listCalls(page, before), 1);
+        assert.deepEqual([...page.main().querySelectorAll('.request .card-title')].map((title) => title.textContent), ['Film 910000', 'Film 910001', 'Film 910002']);
+        assert.deepEqual([...page.main().querySelectorAll('.request > .badge')].map((badge) => badge.textContent), ['Ready to watch', "We couldn't get this", 'Requested']);
+        assert.equal(page.main().querySelector('.request .card-meta').textContent, '2024 · Movie');
+      });
+
+      it('reads only the titles it has not read: a new request, and those Load more shows', async (t) => {
+        const list = { value: Array.from({ length: 12 }, (_, index) => entry(index)) };
+        const page = await openList(t, list);
+        await named(page, 10);
+        await settle();
+        assert.equal(titleCalls(page).length, 10);
+        list.value = [entry(99), ...list.value];
+        const before = await visitAgain(page, 10);
+        assert.deepEqual(titleCalls(page, before), ['/jellypass/app/v1/movie/910099']);
+        const more = page.main().querySelector('button.load-more');
+        more.dispatchEvent(new page.Event('click'));
+        await named(page, 13);
+        await settle();
+        // Shown again, it named 99 and 0–8; Load more names 9 (read already), 10 and 11.
+        assert.deepEqual(titleCalls(page, before), ['/jellypass/app/v1/movie/910099', '/jellypass/app/v1/movie/910010', '/jellypass/app/v1/movie/910011']);
+      });
+
+      it('does not keep a title that could not be read', async (t) => {
+        const list = { value: [entry(0)] };
+        let failing = true;
+        const app = await startApp(t);
+        const page = await openApp(t, app, { hash: '#/requests', override: (url) => (url === '/jellypass/app/v1/requests' ? jsonAnswer({ results: list.value }) : failing && url.endsWith('/movie/910000') ? { status: 502, body: Buffer.from('{}'), headers: {} } : syntheticTitle(url)) });
+        await page.until(() => page.main().querySelector('.request .card-title')?.textContent === 'Title unavailable', 'unavailable');
+        failing = false;
+        const before = await visitAgain(page, 1);
+        assert.deepEqual(titleCalls(page, before), ['/jellypass/app/v1/movie/910000']);
+        assert.equal(page.main().querySelector('.request .card-title').textContent, 'Film 910000');
+      });
+    });
 
     it('asks for a movie: disables the button while the call is in flight, confirms, and shows the state afterwards', async (t) => {
       const app = await startApp(t);
@@ -4781,9 +4879,9 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       await flaky.until(() => flaky.main().querySelector('p.muted')?.textContent.startsWith('Nothing requested'), 'the list after a retry');
 
       const results = Array.from({ length: 25 }, (_, index) => ({
-        id: `id${index}`, mediaType: 'movie', tmdbId: index % 2 ? T_MOVIE : OWN_MOVIE, status: ['requested', 'ready', 'failed'][index % 3], seasons: [], byYou: index % 2 === 0,
+        id: `id${index}`, mediaType: 'movie', tmdbId: 910_000 + index, status: ['requested', 'ready', 'failed'][index % 3], seasons: [], byYou: index % 2 === 0,
       }));
-      const long = await openApp(t, app, { hash: '#/requests', override: (url) => (url === '/jellypass/app/v1/requests' ? { status: 200, body: Buffer.from(JSON.stringify({ results })), headers: { 'content-type': 'application/json' } } : undefined) });
+      const long = await openApp(t, app, { hash: '#/requests', override: (url) => (url === '/jellypass/app/v1/requests' ? jsonAnswer({ results }) : syntheticTitle(url)) });
       await long.until(() => long.main().querySelectorAll('.request').length === 10, 'ten requests');
       await long.until(() => [...long.main().querySelectorAll('.request .card-title')].every((title) => title.textContent !== 'Loading title…'), 'their titles');
       const titleCalls = () => long.requests.filter((request) => /\/movie\/\d+$/.test(request.url)).length;
@@ -4959,6 +5057,122 @@ describe('household app: what this member just asked for', { timeout: 30_000 }, 
       await api.me();
       assert.equal((await api.movie(5)).state, 'get_this', 'another household');
     });
+    describe("My requests' titles", () => {
+      const titlesModule = () => import(pathToFileURL(path.join(DIST_APP, BUILT('js/titles.js'))).href);
+      const details = (title) => ({ title, year: 2020, mediaType: 'movie', posterUrl: null });
+
+      it('keeps a title ten minutes on both clocks, ends it if the wall clock goes back, and keeps the 300 used last', async () => {
+        const { createTitleCache, TITLE_CACHE_TTL_MS, TITLE_CACHE_SIZE } = await titlesModule();
+        assert.equal(TITLE_CACHE_TTL_MS, 600_000);
+        assert.equal(TITLE_CACHE_SIZE, 300);
+        let mono = 1000;
+        let wall = 1_700_000_000_000;
+        const cache = createTitleCache(() => mono, () => wall);
+        cache.set({ ...details('A'), tmdbId: 5 });
+        assert.equal(cache.get('movie', 5)?.title, 'A');
+        assert.equal(cache.get('tv', 5), undefined, 'a series with the same ID is another title');
+        mono += 599_999;
+        assert.equal(cache.get('movie', 5)?.title, 'A');
+        mono += 1;
+        assert.equal(cache.get('movie', 5), undefined, 'ended on the monotonic clock');
+        cache.set({ ...details('A'), tmdbId: 5 });
+        wall += 600_000;
+        assert.equal(cache.get('movie', 5), undefined, 'ended by the wall clock (a sleep)');
+        cache.set({ ...details('A'), tmdbId: 5 });
+        wall -= 1;
+        assert.equal(cache.get('movie', 5), undefined, 'ended by a wall clock set back');
+        for (let id = 1; id <= 300; id += 1) cache.set({ ...details(`T${id}`), tmdbId: id });
+        assert.equal(cache.get('movie', 1)?.title, 'T1', 'used again: now the most recent');
+        cache.set({ ...details('T301'), tmdbId: 301 });
+        assert.equal(cache.get('movie', 2), undefined, 'the least recently used went');
+        assert.equal(cache.get('movie', 1)?.title, 'T1');
+        assert.equal(cache.get('movie', 301)?.title, 'T301');
+        cache.forget();
+        assert.equal(cache.get('movie', 1), undefined);
+      });
+
+      async function counted({ token = { value: 'token' }, who = () => ({ name: 'n', household: 'a', apiVersion: 1 }), state = () => 'get_this', refuse = () => false, clock } = {}) {
+        const { createApi } = await apiModule();
+        const { createTitleCache } = await titlesModule();
+        const reads = [];
+        const api = createApi({
+          fetch: async (url, init = {}) => {
+            if (refuse()) return json({}, 401);
+            if (init.method === 'POST') return json({}, 202);
+            if (String(url).endsWith('/me')) return json(who());
+            reads.push(String(url).replace('/jellypass/app/v1', ''));
+            return json({ ...sample(state()), title: `Read ${reads.length}`, seasons: [] });
+          },
+          token: () => token.value,
+          ...(clock ? { titles: createTitleCache(() => clock.mono, () => clock.wall) } : {}),
+        });
+        return { api, reads };
+      }
+
+      it('reads a title once, and again once ten minutes have passed', async () => {
+        const clock = { mono: 0, wall: 1_700_000_000_000 };
+        const { api, reads } = await counted({ clock });
+        assert.deepEqual(await api.requestTitle('movie', 5), { title: 'Read 1', year: 2020, mediaType: 'movie', posterUrl: null });
+        assert.equal((await api.requestTitle('movie', 5)).title, 'Read 1');
+        assert.deepEqual(reads, ['/movie/5']);
+        await api.requestTitle('tv', 5);
+        assert.deepEqual(reads, ['/movie/5', '/tv/5']);
+        clock.mono += 600_000;
+        clock.wall += 600_000;
+        assert.equal((await api.requestTitle('movie', 5)).title, 'Read 3');
+        assert.deepEqual(reads, ['/movie/5', '/tv/5', '/movie/5']);
+      });
+
+      it('starts empty for another token, after a 401, for another member or household, and on sign-out', async () => {
+        const token = { value: 'token' };
+        let refused = false;
+        let who = { name: 'n', household: 'a', apiVersion: 1 };
+        const { api, reads } = await counted({ token, who: () => who, refuse: () => refused });
+        await api.me();
+        const read = async () => { await api.requestTitle('movie', 5); return reads.length; };
+        assert.equal(await read(), 1);
+        assert.equal(await read(), 1, 'kept');
+        token.value = 'other';
+        assert.equal(await read(), 2, 'another token');
+        refused = true;
+        await assert.rejects(api.requests());
+        refused = false;
+        assert.equal(await read(), 3, 'after a 401');
+        await api.me();
+        assert.equal(await read(), 3, 'the same member asked again');
+        who = { name: 'm2', household: 'a', apiVersion: 1 };
+        await api.me();
+        assert.equal(await read(), 4, 'another member');
+        who = { name: 'm2', household: 'b', apiVersion: 1 };
+        await api.me();
+        assert.equal(await read(), 5, 'another household');
+        api.forgetAsked();
+        assert.equal(await read(), 6, 'sign-out');
+      });
+
+      it('does not keep a title read for a sign-in that changed while it was out', async () => {
+        const token = { value: 'token' };
+        const { api, reads } = await counted({ token });
+        const pending = api.requestTitle('movie', 5);
+        token.value = 'other';
+        await pending;
+        await api.requestTitle('movie', 5);
+        assert.equal(reads.length, 2);
+      });
+
+      it('never hands a kept title\'s state to the overlay', async () => {
+        let state = 'in_library';
+        const { api, reads } = await counted({ state: () => state });
+        await api.requestTitle('movie', 5);
+        await api.getThis('movie', 5, []);
+        // Reused: the in_library read before must not end what the member just asked for.
+        await api.requestTitle('movie', 5);
+        assert.equal(reads.length, 1);
+        state = 'get_this';
+        assert.equal((await api.movie(5)).state, 'requested');
+      });
+    });
+
     describe('belongs to one sign-in', () => {
       const apiFor = async (handler, tokenRef, asked = undefined) => {
         const { createApi } = await apiModule();

@@ -1,7 +1,8 @@
 // The My requests tab, the PWA's requestsScreen() (app/src/main.ts) natively: the household's requests from GET
 // /requests, each with its title's thumbnail and name, the coarse status (per season for a series), who asked, and the
 // admin note where something did not work out; Load more for the next ten. The list is read each time the screen is
-// shown (as the PWA reads it on each visit) and on pull to refresh; nothing is retried by itself. An entry opens its
+// shown (as the PWA reads it on each visit) and on pull to refresh, its titles only if not named in the last ten
+// minutes of this sign-in; nothing is retried by itself. An entry opens its
 // title on the My requests tab's own stack, so Back comes back here.
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
@@ -22,9 +23,9 @@ import { colors, spacing, typography } from '../theme';
 export const REQUESTS_MAX_WIDTH = 736;
 
 export function RequestsScreen() {
-  const { api, expire } = useSession();
+  const { api, expire, titles } = useSession();
   const overlay = useAsked();
-  const data = useRequests(api, expire, overlay);
+  const data = useRequests(api, expire, overlay, titles);
   const { reload, stop } = data;
   const insets = useSafeAreaInsets();
   const [refreshing, setRefreshing] = useState(false);

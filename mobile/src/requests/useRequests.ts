@@ -1,12 +1,16 @@
 // My requests' data, as the PWA's requestsScreen() (app/src/main.ts) asks for it: GET /requests each time the screen
-// is shown (its first opening, coming back to it, and pull to refresh), then the first REQUESTS_PER_PAGE requests are
-// named from their title's own answer (GET /movie or /tv, REQUEST_TITLE_CALLS at a time), and each Load more names
-// the next ones the same way. Shown again, it names as many as were showing, as the PWA does coming back. A title that cannot be read leaves its request's status in place ("Title unavailable");
-// a failed list stays until the member taps Try again. Nothing is retried by itself, and a 401 anywhere signs the
-// member out. Every title answer is seen by the session's overlay (src/title/asked.ts) as it arrives, as the PWA's
-// API layer does with it, so the title's latest state is what Home, Search and its page show.
+// is shown (its first opening, coming back to it, Try again and pull to refresh), then the first REQUESTS_PER_PAGE
+// requests are named from their title's own answer (GET /movie or /tv, REQUEST_TITLE_CALLS at a time), and each Load
+// more names the next ones the same way. Shown again, it names as many as were showing, as the PWA does coming back.
+// A title named in the last ten minutes of this sign-in (the session's title cache, src/requests/titleCache.ts) is
+// named from there with no call, pull to refresh included (a title's name rarely changes; its status always comes
+// from the list). A title that cannot be read leaves its request's status in place ("Title unavailable") and is not
+// kept; a failed list stays until the member taps Try again. Nothing is retried by itself, and a 401 anywhere signs
+// the member out. Every title answer read is seen by the session's overlay (src/title/asked.ts) as it arrives, as the
+// PWA's API layer does with it, so the title's latest state is what Home, Search and its page show; a kept title is
+// not seen again, so an older state never stands in for a fresher one.
 //
-// Everything is kept in memory only, for as long as the screen is on: no answer is ever written to the device.
+// Everything is kept in memory only: no answer is ever written to the device.
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import type { ApiClient } from '../api/client';
@@ -15,6 +19,7 @@ import type { Request } from '../api/types';
 import { errorText, type ErrorText } from '../home/text';
 import type { Asked } from '../title/asked';
 import { REQUEST_TITLE_CALLS, REQUESTS_PER_PAGE, type RequestTitle } from './text';
+import type { TitleCache } from './titleCache';
 
 export type RequestsLoad = { status: 'loading' } | { status: 'loaded'; requests: readonly Request[] } | { status: 'failed'; error: ErrorText };
 
@@ -33,7 +38,7 @@ export interface RequestsData {
   stop: () => void;
 }
 
-export function useRequests(api: ApiClient | undefined, expire: () => Promise<void>, overlay: Asked): RequestsData {
+export function useRequests(api: ApiClient | undefined, expire: () => Promise<void>, overlay: Asked, cache: TitleCache): RequestsData {
   const [load, setLoad] = useState<RequestsLoad>({ status: 'loading' });
   const [shown, setShown] = useState(0);
   const [titles, setTitles] = useState<Record<string, RequestTitle>>({});
@@ -70,7 +75,7 @@ export function useRequests(api: ApiClient | undefined, expire: () => Promise<vo
     [expire],
   );
 
-  /** Names the next `size` requests, a few title calls at a time. */
+  /** Names the next `size` requests: those kept at once, the others a few title calls at a time. */
   const name = useCallback(
     async (size: number, mine: number, signal: AbortSignal): Promise<void> => {
       if (!api) return;
@@ -79,22 +84,32 @@ export function useRequests(api: ApiClient | undefined, expire: () => Promise<vo
       setShown(count.current);
       if (batch.length === 0) return;
       setNaming(true);
-      // A title already named (the screen shown again) keeps its name while it is read again.
+      const kept = new Map(batch.map((request) => [request.id, cache.get(request.mediaType, request.tmdbId)]));
+      const unread = batch.filter((request) => !kept.get(request.id));
+      // A title kept is named at once; one already named (the screen shown again) keeps its name while it is read again.
       setTitles((now) => ({
         ...now,
-        ...Object.fromEntries(batch.map((request) => [request.id, now[request.id]?.status === 'loaded' ? now[request.id]! : ({ status: 'loading' } as RequestTitle)])),
+        ...Object.fromEntries(
+          batch.map((request) => {
+            const details = kept.get(request.id);
+            if (details) return [request.id, { status: 'loaded', title: details } as RequestTitle];
+            return [request.id, now[request.id]?.status === 'loaded' ? now[request.id]! : ({ status: 'loading' } as RequestTitle)];
+          }),
+        ),
       }));
       let next = 0;
       let stopped = false;
       const worker = async (): Promise<void> => {
-        while (next < batch.length && !stopped && current(mine)) {
-          const request = batch[next++]!;
+        while (next < unread.length && !stopped && current(mine)) {
+          const request = unread[next++]!;
           let title: RequestTitle;
           try {
             const found = request.mediaType === 'tv' ? await api.tv(request.tmdbId, { signal }) : await api.movie(request.tmdbId, { signal });
             if (!current(mine)) return;
             overlay.seen(found);
-            title = { status: 'loaded', title: found };
+            const details = { title: found.title, year: found.year, posterUrl: found.posterUrl };
+            cache.set(request.mediaType, request.tmdbId, details);
+            title = { status: 'loaded', title: details };
           } catch (error) {
             if (!shows(error, mine)) {
               stopped = true;
@@ -106,10 +121,10 @@ export function useRequests(api: ApiClient | undefined, expire: () => Promise<vo
           setTitles((now) => ({ ...now, [request.id]: title }));
         }
       };
-      await Promise.all(Array.from({ length: Math.min(REQUEST_TITLE_CALLS, batch.length) }, worker));
+      await Promise.all(Array.from({ length: Math.min(REQUEST_TITLE_CALLS, unread.length) }, worker));
       if (current(mine)) setNaming(false);
     },
-    [api, overlay, shows],
+    [api, overlay, cache, shows],
   );
 
   const reload = useCallback(async (): Promise<void> => {

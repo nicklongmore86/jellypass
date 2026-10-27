@@ -30,6 +30,17 @@ changes are always listed at the top of the release notes.
   unchanged. "Ask your JellyPass admin to try again." now also shows on My
   requests, under whatever did not work out (under the season, when seasons
   differ). The app API and the server are unchanged.
+- **Household app: My requests reuses the titles it has already read.** The
+  list is still read on every visit, so statuses are always current, but a
+  title's name, year and poster read in the last ten minutes of the same
+  sign-in are reused instead of asked for again: coming back to My requests
+  now makes one call (`GET /requests`) plus one per request not seen before,
+  where it used to make one per request shown (11 calls for ten requests, 51
+  for fifty). Load more still names only the requests it adds. The titles are
+  kept in memory only (at most 300), never their status, and are forgotten on
+  sign-out, a refused sign-in, or another member, household or sign-in. The
+  app API's fetch budget (`docs/app-api/fetch-budget.json`) lists the calls on
+  coming back as `revisit`. The server is unchanged.
 
 ### Fixed
 
