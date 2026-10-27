@@ -148,7 +148,8 @@ describe('the mobile-release workflow', () => {
 
   it('publishes a tag\'s GitHub release from mobile/CHANGELOG.md once the builds are done, never as Latest', () => {
     expect(release).toMatch(/^ {4}needs: build$/m);
-    expect(release).toMatch(/^ {4}if: startsWith\(github\.ref, 'refs\/tags\/mobile-v'\)$/m);
+    // Only a tag push publishes: a run by hand on a `mobile-v*` tag is a test build (maybe preview, maybe one app).
+    expect(release).toMatch(/^ {4}if: github\.event_name == 'push' && startsWith\(github\.ref, 'refs\/tags\/mobile-v'\)$/m);
     expect(release).toMatch(/node scripts\/changelog-section\.mjs "\$version" mobile\/CHANGELOG\.md/);
     const publishes = release.match(/gh release (create|edit) .*$/gm) ?? [];
     expect(publishes).toHaveLength(2);

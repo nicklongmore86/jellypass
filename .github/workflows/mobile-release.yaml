@@ -64,7 +64,9 @@ jobs:
           cache-dependency-path: mobile/pnpm-lock.yaml
       # A tag builds the version it names, or nothing: `mobile-v<version>` must be `version` in mobile/package.json
       # (which app.config.ts reads) and mobile/CHANGELOG.md must have notes for it (mobile/README.md, "Versioning").
-      # The tag reaches the script as GITHUB_REF_NAME, never spliced into the command.
+      # The tag reaches the script as GITHUB_REF_NAME, never spliced into the command. Only on a tag push (the push
+      # trigger takes nothing else), the same gate as the release job: a run by hand is a test build of any ref, even a
+      # `mobile-v*` tag, so it isn't held to the tag's version and publishes nothing.
       - name: Check the tag matches the app's version and changelog
         if: github.event_name == 'push'
         run: node ../scripts/mobile-release-tag.mjs "$GITHUB_REF_NAME" package.json CHANGELOG.md
@@ -272,13 +274,15 @@ jobs:
         if: always()
         run: rm -f "${RUNNER_TEMP}/asc-api-key.p8"
 
-  # A tag's builds, once done, get a GitHub release with the version's notes from mobile/CHANGELOG.md (the same script
-  # as the server's release notes, given the app's changelog). Never marked Latest, so the repository's latest release
-  # stays the server's. A run by hand is a test build and publishes nothing. No secrets: only this job's own token,
-  # which can write releases and nothing else.
+  # A pushed tag's builds, once done, get a GitHub release with the version's notes from mobile/CHANGELOG.md (the same
+  # script as the server's release notes, given the app's changelog). Never marked Latest, so the repository's latest
+  # release stays the server's. Only a tag push publishes: a run by hand is a test build and publishes nothing, even
+  # when started on a `mobile-v*` tag (its inputs may pick the preview profile or one app). Re-running a tag push's run
+  # keeps its push event, so it still publishes. No secrets: only this job's own token. GitHub has no releases-only
+  # permission, so `contents: write` also lets it push commits and tags; this job only runs `gh release`.
   release:
     needs: build
-    if: startsWith(github.ref, 'refs/tags/mobile-v')
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/mobile-v')
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
