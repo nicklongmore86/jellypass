@@ -555,7 +555,13 @@ other path under `/QuickConnect`) a fixed `403`
 [Streamyfin](https://github.com/streamyfin/jellyfin-plugin-streamyfin)
 plugin's routes (`/Streamyfin` and below), which would hand its settings,
 Seerr's API key among them, to any signed-in user, answer a fixed `404`
-(`not_found`). Both are answered by JellyPass alike for anyone, never reach
+(`not_found`), and so do the
+[Jellyfin Enhanced](https://github.com/n00bcodr/Jellyfin-Enhanced) plugin's
+Seerr routes (`/JellyfinEnhanced/jellyseerr`, `/JellyfinEnhanced/arr` and
+`/JellyfinEnhanced/proxy` and below, and its Seerr search and genre lists),
+which would show members other households' requests and let them request in
+Seerr past the household app's checks; the plugin's other features keep
+working. All of these are answered by JellyPass alike for anyone, never reach
 Jellyfin (WebSocket upgrades included), are never cached (`Cache-Control:
 no-store`), and are matched as Jellyfin routes them: in any case,
 percent-encoded or not, with trailing slashes, and under Jellyfin's legacy

@@ -973,6 +973,206 @@ describe('Quick Connect and Streamyfin on a household host', { timeout: 30_000 }
   });
 });
 
+// The Jellyfin Enhanced plugin relays Seerr to any signed-in user: its answers carry mediaInfo (other households'
+// requests), its request list names other requesters, and it requests past the household app's own checks. A household
+// host answers every one of those routes itself, as it does Streamyfin's, and never asks Jellyfin; the plugin's other
+// routes (its scripts, settings and own lookups) are still relayed.
+describe('Jellyfin Enhanced Seerr routes on a household host', { timeout: 60_000 }, () => {
+  const NOT_FOUND = '{"error":"not_found"}';
+  const alternate = (text) => [...text].map((char, index) => (index % 2 ? char.toUpperCase() : char.toLowerCase())).join('');
+  /** Each spelling Jellyfin routes the same: any case, percent-encoded, trailing or doubled slashes, the legacy prefixes. */
+  const spellings = (path) => {
+    const [, first, rest] = /^\/([^/]+)\/(.+)$/.exec(path);
+    return [
+      path,
+      path.toLowerCase(),
+      path.toUpperCase(),
+      alternate(path),
+      `${path}/`,
+      `${path}//`,
+      `/${first}//${rest}`,
+      `//${first}/${rest}`,
+      `/${first}/%${rest.charCodeAt(0).toString(16).toUpperCase()}${rest.slice(1)}`,
+      `/%${first.charCodeAt(0).toString(16)}${first.slice(1)}/${rest}`,
+      `/emby${path}`,
+      `/Emby${path}/`,
+      `/MediaBrowser${path}`,
+      `/mediabrowser${path}/`,
+      `/%65mby${path}`,
+      `${path}?query=x&take=20`,
+    ];
+  };
+  // Every Seerr route of Jellyfin Enhanced 12.13 (Controllers/JellyfinEnhancedController.cs), and the Sonarr and Radarr
+  // ones that list what Seerr's requests fetched, with their parameters filled in.
+  const SEERR = [
+    '/JellyfinEnhanced/jellyseerr',
+    '/JellyfinEnhanced/jellyseerr/status',
+    '/JellyfinEnhanced/jellyseerr/validate',
+    '/JellyfinEnhanced/jellyseerr/user-status',
+    '/JellyfinEnhanced/jellyseerr/user',
+    '/JellyfinEnhanced/jellyseerr/quota',
+    '/JellyfinEnhanced/jellyseerr/permission-audit',
+    '/JellyfinEnhanced/jellyseerr/trigger-recently-added-scan',
+    '/JellyfinEnhanced/jellyseerr/search',
+    '/JellyfinEnhanced/jellyseerr/sonarr',
+    '/JellyfinEnhanced/jellyseerr/radarr',
+    '/JellyfinEnhanced/jellyseerr/sonarr/lookup/1399',
+    '/JellyfinEnhanced/jellyseerr/settings/radarr',
+    '/JellyfinEnhanced/jellyseerr/settings/partial-requests',
+    '/JellyfinEnhanced/jellyseerr/radarr/0',
+    '/JellyfinEnhanced/jellyseerr/request',
+    '/JellyfinEnhanced/jellyseerr/request/tv/1399/seasons',
+    '/JellyfinEnhanced/jellyseerr/movie/603',
+    '/JellyfinEnhanced/jellyseerr/movie/603/similar',
+    '/JellyfinEnhanced/jellyseerr/movie/603/recommendations',
+    '/JellyfinEnhanced/jellyseerr/movie/603/ratingscombined',
+    '/JellyfinEnhanced/jellyseerr/movie-collections',
+    '/JellyfinEnhanced/jellyseerr/tv/1399',
+    '/JellyfinEnhanced/jellyseerr/tv/1399/season/1',
+    '/JellyfinEnhanced/jellyseerr/tv/1399/similar',
+    '/JellyfinEnhanced/jellyseerr/tv/1399/recommendations',
+    '/JellyfinEnhanced/jellyseerr/tv/1399/ratings',
+    '/JellyfinEnhanced/jellyseerr/discover/trending',
+    '/JellyfinEnhanced/jellyseerr/discover/movies',
+    '/JellyfinEnhanced/jellyseerr/discover/movies/upcoming',
+    '/JellyfinEnhanced/jellyseerr/discover/movies/studio/2',
+    '/JellyfinEnhanced/jellyseerr/discover/movies/genre/28',
+    '/JellyfinEnhanced/jellyseerr/discover/movies/keyword/9715',
+    '/JellyfinEnhanced/jellyseerr/discover/tv',
+    '/JellyfinEnhanced/jellyseerr/discover/tv/upcoming',
+    '/JellyfinEnhanced/jellyseerr/discover/tv/network/49',
+    '/JellyfinEnhanced/jellyseerr/discover/tv/studio/2',
+    '/JellyfinEnhanced/jellyseerr/discover/tv/genre/18',
+    '/JellyfinEnhanced/jellyseerr/discover/tv/keyword/9715',
+    '/JellyfinEnhanced/jellyseerr/discover/genreslider/movie',
+    '/JellyfinEnhanced/jellyseerr/discover/genreslider/tv',
+    '/JellyfinEnhanced/jellyseerr/person/287',
+    '/JellyfinEnhanced/jellyseerr/person/287/combined_credits',
+    '/JellyfinEnhanced/jellyseerr/collection/10',
+    '/JellyfinEnhanced/jellyseerr/overrideRule',
+    '/JellyfinEnhanced/jellyseerr/watchlist',
+    '/JellyfinEnhanced/jellyseerr/sync-watchlist',
+    '/JellyfinEnhanced/jellyseerr/import-users',
+    '/JellyfinEnhanced/jellyseerr/issue',
+    '/JellyfinEnhanced/jellyseerr/issue/7',
+    '/JellyfinEnhanced/tmdb/search/person',
+    '/JellyfinEnhanced/tmdb/search/keyword',
+    '/JellyfinEnhanced/tmdb/genres/movie',
+    '/JellyfinEnhanced/tmdb/genres/tv',
+    '/JellyfinEnhanced/proxy/avatar',
+    '/JellyfinEnhanced/arr',
+    '/JellyfinEnhanced/arr/requests',
+    '/JellyfinEnhanced/arr/requests/7/approve',
+    '/JellyfinEnhanced/arr/requests/7/decline',
+    '/JellyfinEnhanced/arr/queue',
+    '/JellyfinEnhanced/arr/history',
+    '/JellyfinEnhanced/arr/calendar',
+    '/JellyfinEnhanced/arr/calendar/user-data',
+    '/JellyfinEnhanced/arr/links',
+    '/JellyfinEnhanced/arr/movie-instances',
+    '/JellyfinEnhanced/arr/identify-url',
+    '/JellyfinEnhanced/arr/series-slug',
+    '/JellyfinEnhanced/arr/series-slugs',
+    '/JellyfinEnhanced/arr/validate/sonarr',
+    '/JellyfinEnhanced/arr/validate/radarr',
+  ];
+  // Its other routes carry nothing from Seerr: its scripts and settings, and lookups made with its own TMDB key.
+  const NOT_SEERR = [
+    '/JellyfinEnhanced/script',
+    '/JellyfinEnhanced/bundle.js',
+    '/JellyfinEnhanced/js/enhanced/helpers.js',
+    '/JellyfinEnhanced/version',
+    '/JellyfinEnhanced/public-config',
+    '/JellyfinEnhanced/bootstrap',
+    '/JellyfinEnhanced/locales/en.json',
+    '/JellyfinEnhanced/tag-styles',
+    '/JellyfinEnhanced/tmdb/movie/603',
+    '/JellyfinEnhanced/tmdb/search/movie',
+    '/JellyfinEnhanced/tmdb/genre/movie/list',
+    '/JellyfinEnhanced/tmdb/validate',
+    '/JellyfinEnhanced/watch-providers',
+    '/JellyfinEnhanced/proxyx/avatar',
+    '/JellyfinEnhanced/jellyseerrx/search',
+    '/JellyfinEnhanced/arrx/queue',
+    '/JellyfinEnhancedX/jellyseerr/search',
+    '/JellyfinEnhanced/tmdb/search/personx',
+    '/jellyseerr/search',
+  ];
+  const callers = {
+    nobody: {},
+    member: { Authorization: `${WEB_AUTHORIZATION}, Token="token-alice"` },
+    outsider: { Authorization: `${WEB_AUTHORIZATION}, Token="token-outsider"` },
+  };
+  const asks = (app) => app.jellyfin.requests.length;
+
+  it('answers every Seerr route of the plugin with a 404, member or not, in every method and spelling, without asking Jellyfin', async (t) => {
+    const app = await startApp(t);
+    const before = asks(app);
+    for (const path of SEERR) {
+      for (const spelling of spellings(path)) {
+        for (const [who, headers] of Object.entries(callers)) {
+          for (const method of ['GET', 'POST', 'DELETE']) {
+            const answer = await get(app.port, spelling, { Host: HOST_A, 'Content-Type': 'application/json', ...headers }, { method, body: method === 'POST' ? '{"mediaType":"movie","mediaId":603}' : undefined });
+            const label = `${method} ${spelling} as ${who}`;
+            assert.deepEqual([answer.status, answer.text, answer.headers['cache-control']], [404, NOT_FOUND, 'no-store'], label);
+            assert.equal(answer.headers['content-type'], 'application/json; charset=utf-8', label);
+          }
+        }
+      }
+    }
+    assert.equal(asks(app), before, 'a Jellyfin Enhanced Seerr call reached Jellyfin');
+  });
+
+  it('refuses a path that is a Seerr route only once decoded again, without asking Jellyfin', async (t) => {
+    const app = await startApp(t);
+    const before = asks(app);
+    // %256A is %6A once decoded, which some reader on the way might decode again to j.
+    for (const path of ['/JellyfinEnhanced/%256Aellyseerr/search', '/%254AellyfinEnhanced/arr/requests', '/JellyfinEnhanced/tmdb/genres/%256Dovie']) {
+      const answer = await get(app.port, path, { Host: HOST_A, ...callers.member });
+      assert.deepEqual([answer.status, answer.text, answer.headers['cache-control']], [400, '{"error":"invalid_request"}', 'no-store'], path);
+    }
+    assert.equal(asks(app), before, 'an encoded Jellyfin Enhanced Seerr call reached Jellyfin');
+  });
+
+  it('never proxies a WebSocket upgrade to a Seerr route of the plugin', async (t) => {
+    const app = await startApp(t);
+    const before = asks(app);
+    for (const path of ['/JellyfinEnhanced/jellyseerr/search', '/JellyfinEnhanced/arr/requests', '/JellyfinEnhanced/proxy/avatar', '/JellyfinEnhanced/tmdb/search/person']) {
+      for (const spelling of spellings(path)) {
+        assert.match(await upgrade(app.port, spelling, HOST_A), /^HTTP\/1\.1 404 /, spelling);
+      }
+    }
+    assert.equal(asks(app), before, 'an upgrade reached Jellyfin');
+  });
+
+  it('still relays the plugin\'s other routes, and what is merely named alike, to Jellyfin', async (t) => {
+    const app = await startApp(t);
+    for (const path of NOT_SEERR) {
+      for (const spelling of [path, path.toLowerCase(), `/emby${path}/`]) {
+        const before = asks(app);
+        const answer = await get(app.port, spelling, { Host: HOST_A, ...callers.member });
+        assert.notEqual(answer.text, NOT_FOUND, spelling);
+        assert.equal(asks(app), before + 1, `${spelling} did not reach Jellyfin`);
+        assert.equal(app.jellyfin.requests.at(-1).pathname, spelling, spelling);
+      }
+    }
+  });
+
+  it('leaves the admin host as it was', async (t) => {
+    const app = await startApp(t);
+    const before = asks(app);
+    for (const host of ['jellypass.example.test', '127.0.0.1']) {
+      const unrelated = await get(app.port, '/JellyfinEnhanced/script', { Host: host });
+      assert.notEqual(unrelated.text, NOT_FOUND);
+      for (const path of ['/JellyfinEnhanced/jellyseerr/search', '/JellyfinEnhanced/arr/requests', '/JellyfinEnhanced/proxy/avatar', '/JellyfinEnhanced/tmdb/genres/movie']) {
+        const answer = await get(app.port, path, { Host: host });
+        assert.deepEqual([answer.status, answer.text], [unrelated.status, unrelated.text], `${host}${path}`);
+      }
+    }
+    assert.equal(asks(app), before);
+  });
+});
+
 /** The status line and headers a household host answers a WebSocket upgrade with. */
 function upgrade(port, pathname, host) {
   return new Promise((resolve, reject) => {

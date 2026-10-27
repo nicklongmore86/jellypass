@@ -18,6 +18,27 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Security
+
+- **Household hostnames no longer relay the Jellyfin Enhanced plugin's Seerr
+  routes.** With the plugin's Seerr feature on, any signed-in household member
+  could see Seerr's answers with other households' requests in them, the
+  request list with other requesters' names, and what Sonarr and Radarr fetched
+  for them, and could request titles in Seerr directly, past the household
+  app's own checks on what may be requested. `/JellyfinEnhanced/jellyseerr`,
+  `/JellyfinEnhanced/arr` and `/JellyfinEnhanced/proxy`, every path below each,
+  and the plugin's Seerr search and genre lists
+  (`/JellyfinEnhanced/tmdb/search/person`, `/tmdb/search/keyword`,
+  `/tmdb/genres/movie` and `/tmdb/genres/tv`) are now a fixed
+  `404 {"error":"not_found"}` with `Cache-Control: no-store`, the same for
+  anyone, and never reach Jellyfin; a WebSocket upgrade to them is answered
+  `404`. They are matched as Jellyfin routes them, like the Streamyfin plugin's
+  routes. The plugin's Seerr panels stop working on household hostnames; its
+  other features, its scripts and settings included, are unaffected. The main
+  Jellyfin site and the admin host are unaffected. Allowed in a patch release
+  by the household-check rule at the top of this file: these routes get around
+  the household app's checks on what members see and request.
+
 ## [3.2.3] - 2026-10-27
 
 This is a patch release for the household app (`HOUSEHOLD_APP_ENABLED=true`)

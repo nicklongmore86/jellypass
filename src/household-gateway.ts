@@ -19,6 +19,21 @@ const QUICK_CONNECT_PATH = '/quickconnect';
 const AUTHENTICATE_WITH_QUICK_CONNECT_PATH = '/users/authenticatewithquickconnect';
 /** The Streamyfin plugin's routes, which hand its settings (Seerr's keys among them) to any signed-in user. */
 const STREAMYFIN_PATH = '/streamyfin';
+/**
+ * The Jellyfin Enhanced plugin's routes that relay Seerr (or Sonarr and Radarr, which Seerr's requests feed): its
+ * answers carry other users' requests and their requesters, and it takes requests past the household app's own checks.
+ * The `tmdb` ones are relayed to Seerr's search and genre lists despite their name. Its other routes (its scripts,
+ * settings and its own TMDB lookups among them) carry nothing from Seerr and are relayed.
+ */
+const JELLYFIN_ENHANCED_SEERR_PATHS = [
+  '/jellyfinenhanced/jellyseerr',
+  '/jellyfinenhanced/arr',
+  '/jellyfinenhanced/proxy',
+  '/jellyfinenhanced/tmdb/search/person',
+  '/jellyfinenhanced/tmdb/search/keyword',
+  '/jellyfinenhanced/tmdb/genres/movie',
+  '/jellyfinenhanced/tmdb/genres/tv',
+];
 const AUTHENTICATE_BY_NAME_PATH = '/users/authenticatebyname';
 /** Jellyfin's obsolete sign-in by user ID and password, still routed in 10.11 and, like AuthenticateByName, not scoped to a household. */
 const AUTHENTICATE_BY_ID_ROUTE = /^\/users\/([^/]+)\/authenticate$/;
@@ -264,6 +279,7 @@ export class HouseholdGateway {
         writeJson(response, 403, { error: 'household_quick_connect_disabled' });
         return;
       case 'streamyfin':
+      case 'jellyfinEnhancedSeerr':
         writeJson(response, 404, { error: 'not_found' });
         return;
       case 'forgotPassword':
@@ -333,6 +349,7 @@ export class HouseholdGateway {
     if (method === 'GET' && route === QUICK_CONNECT_ENABLED_PATH) return { kind: 'quickConnectEnabled' };
     if (isQuickConnectRoute(route)) return { kind: 'quickConnect' };
     if (isStreamyfinRoute(route)) return { kind: 'streamyfin' };
+    if (isJellyfinEnhancedSeerrRoute(route)) return { kind: 'jellyfinEnhancedSeerr' };
     if (method === 'POST' && FORGOT_PASSWORD_PATHS.has(route)) return { kind: 'forgotPassword' };
     if (this.#app && method === 'POST' && route === LOGOUT_PATH) return { kind: 'signOut' };
     if (method === 'POST' && route === AUTHENTICATE_BY_NAME_PATH) return { kind: 'signIn' };
@@ -371,7 +388,7 @@ export class HouseholdGateway {
     }
     const appPath = decision.kind === 'app';
     // Jellyfin's only WebSocket is an ordinary route: anything a household host checks or answers itself (the app API,
-    // which has none, Quick Connect, Streamyfin, a route that names an item or a user) is never proxied as an upgrade.
+    // which has none, Quick Connect, Streamyfin, Jellyfin Enhanced's Seerr, a route that names an item or a user) is never proxied as an upgrade.
     if (!this.#memberIds(householdId) || decision.kind !== 'proxy') {
       socket.end(`HTTP/1.1 404 Not Found\r\n${appPath ? neverStoreHeaders() : ''}Connection: close\r\n\r\n`);
       return;
@@ -1338,7 +1355,7 @@ function isServerInternalStreamRoute(route: string): boolean {
 
 /** What a household host does with a request; see HouseholdGateway.#decide. */
 type RouteDecision =
-  | { kind: 'app' | 'publicUsers' | 'branding' | 'quickConnectEnabled' | 'quickConnect' | 'streamyfin' | 'forgotPassword' }
+  | { kind: 'app' | 'publicUsers' | 'branding' | 'quickConnectEnabled' | 'quickConnect' | 'streamyfin' | 'jellyfinEnhancedSeerr' | 'forgotPassword' }
   | { kind: 'signOut' | 'signIn' | 'signInById' | 'libraryJoin' | 'notFound' | 'proxy' }
   | { kind: 'libraryJoinAsset'; asset: { body: string; contentType: string } }
   | { kind: 'userImage'; userIds: string[] }
@@ -1459,6 +1476,10 @@ function isQuickConnectRoute(route: string): boolean {
 
 function isStreamyfinRoute(route: string): boolean {
   return route === STREAMYFIN_PATH || route.startsWith(`${STREAMYFIN_PATH}/`);
+}
+
+function isJellyfinEnhancedSeerrRoute(route: string): boolean {
+  return JELLYFIN_ENHANCED_SEERR_PATHS.some((path) => route === path || route.startsWith(`${path}/`));
 }
 
 /**
