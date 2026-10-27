@@ -58,7 +58,7 @@ import {
 import { HERO_MAX, HOME_LAYOUT, LAZY_MARGIN, NETWORK_ACCENTS, networkKey, rowKey, TABLET_WIDTH, type HomeRow, type RowVariant } from '../home/layout';
 import { HOME_TEXT, SOURCE_TEXT, type HomeFilter } from '../home/text';
 import { listedNetworks, networkList, useHome, type RowState } from '../home/useHome';
-import { titlePath } from '../navigation/titles';
+import { networkPath, studioPath, titlePath } from '../navigation/titles';
 import { useAsked, useSession } from '../session/SessionProvider';
 import { colors, layout, spacing } from '../theme';
 
@@ -249,6 +249,7 @@ export function HomeScreen() {
   };
 
   const open = (card: Card) => router.push(titlePath('home', card));
+  const openStudio = (studio: Source) => router.push(studioPath(studio.id));
 
   /** The scroll view has caught up with the new drawing: it starts moving on from where the screen is now. */
   const caughtUp = (y: number) => {
@@ -330,7 +331,7 @@ export function HomeScreen() {
           state={rows[key]}
           heading={
             <RowHeading title={`${prefix} ${network.name}`} accent={NETWORK_ACCENTS[network.id]}>
-              <NetworkHeading prefix={prefix} network={network} />
+              <NetworkHeading prefix={prefix} network={network} onOpen={() => router.push(networkPath(network.id, networkList(filter, network)))} />
             </RowHeading>
           }
           title={`${prefix} ${network.name}`}
@@ -392,7 +393,7 @@ export function HomeScreen() {
         {parts.map((part) => {
           if (part.part === 'row') return titleRow(part);
           if (part.part === 'networks') return hasStudios ? listed.map(networkRow) : [sourcesFailure, ...listed.map(networkRow)];
-          if (part.part === 'studios') return sourcesFailure ?? (studios.length ? <StudioStrip key="studios" studios={studios} viewport={columnWidth} /> : null);
+          if (part.part === 'studios') return sourcesFailure ?? (studios.length ? <StudioStrip key="studios" studios={studios} viewport={columnWidth} onOpen={openStudio} /> : null);
           // The JustWatch credit closes the services: only where a service's films are shown.
           return listed.some((network) => network.hasFilms) && filter !== 'tv' ? <JustWatchNote key="credit" /> : null;
         })}

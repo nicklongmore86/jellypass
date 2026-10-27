@@ -162,10 +162,10 @@ describe('the rows', () => {
     expect(screen.queryAllByTestId('tmdb-logo-image', { includeHiddenElements: true }).length).toBeGreaterThanOrEqual(8);
   });
 
-  it('shows the studios as their logos, each named "<studio> movies", and a name where there is no logo', async () => {
+  it('shows the studios as their logos, each a link named "<studio>, studio", and a name where there is no logo', async () => {
     await start();
     await scrollToEnd();
-    expect(screen.queryAllByRole('image').map((node) => node.props.accessibilityLabel)).toEqual(['Disney movies', 'Marvel Studios movies', 'A24 movies']);
+    expect(links().filter((name) => name.endsWith(', studio'))).toEqual(['Disney, studio', 'Marvel Studios, studio', 'A24, studio']);
     expect(shows('A24', { hidden: true })).toBe(true);
   });
 
@@ -192,7 +192,8 @@ describe('the cards', () => {
     expect(link('trending 2, 2021, Series, TMDB rating 6.5 out of 10, Available to get')).toBeTruthy();
     expect(link('popular-movies 3, 2022, TMDB rating 7.0 out of 10, Can\'t request')).toBeTruthy();
     expect(link('popular-tv 4, 2023, TMDB rating 7.5 out of 10, Requested')).toBeTruthy();
-    for (const name of links()) {
+    // Every card's link; the studios' tiles and the See all links by the services' headings are links to their pages, with no status.
+    for (const name of links().filter((label) => !label.endsWith(', studio') && !label.startsWith('See all '))) {
       const said = Object.values(STATE_LABELS).filter((word) => name.includes(word));
       expect({ name, said: said.length }).toEqual({ name, said: 1 });
     }
@@ -494,6 +495,10 @@ describe('accessibility', () => {
     await scrollToEnd();
     const found = pressables();
     expect(found.length).toBeGreaterThan(150);
+    // Among them, the studios' tiles and the See all link by each service's heading, each a link to its page.
+    const named = found.map((node) => String(node.props.accessibilityLabel));
+    expect(named.filter((name) => name.endsWith(', studio'))).toEqual(['Disney, studio', 'Marvel Studios, studio', 'A24, studio']);
+    expect(named.filter((name) => name.startsWith('See all '))).toEqual(SERVICE_NAMES.map((name) => `See all Popular on ${name}`));
     const problems = found
       .map((node) => {
         const what = String(node.props.accessibilityLabel ?? textOf(node));

@@ -17,8 +17,11 @@ import {
   posterMeta,
   REQUEST_LABELS,
   RETRY_TEXT,
+  networkLinkName,
   shortOverview,
   SOURCE_TEXT,
+  sourceHeading,
+  studioLinkName,
   STATE_LABELS,
   stateLabel,
 } from '../src/home/text';
@@ -44,6 +47,8 @@ describe("Home's words", () => {
     ...Object.values(SOURCE_TEXT.networkPrefix),
     SOURCE_TEXT.studios,
     SOURCE_TEXT.justWatch,
+    ...Object.values(SOURCE_TEXT.lists),
+    SOURCE_TEXT.listsLabel,
     EMPTY_ROW_TEXT,
     RETRY_TEXT,
   ])('has %j word for word as the PWA', (text) => {
@@ -64,6 +69,22 @@ describe("Home's words", () => {
       'unavailable',
       'unavailable',
     ]);
+  });
+});
+
+describe('the network and studio pages', () => {
+  it("heads a page as the PWA's SOURCE_TEXT.heading does", () => {
+    expect([sourceHeading('studio', 'Pixar'), sourceHeading('network', 'Netflix'), sourceHeading('network', 'Netflix', 'series'), sourceHeading('network', 'Netflix', 'films')]).toEqual([
+      'Pixar movies',
+      'Popular on Netflix',
+      'Series on Netflix',
+      'Films on Netflix',
+    ]);
+    expect(render).toContain('return `${name} movies`;');
+  });
+
+  it("names Home's links to them", () => {
+    expect([studioLinkName('Pixar'), networkLinkName('Popular on', 'Netflix')]).toEqual(['Pixar, studio', 'See all Popular on Netflix']);
   });
 });
 

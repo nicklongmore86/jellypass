@@ -45,8 +45,10 @@ import {
   REQUEST_LABELS,
   RETRY_TEXT,
   shortOverview,
+  networkLinkName,
   SOURCE_TEXT,
   stateLabel,
+  studioLinkName,
   studioName,
   type ErrorText,
   type HomeFilter,
@@ -424,12 +426,31 @@ export function LogoTile({ source, size }: { source: Source; size: 'small' | 'la
   );
 }
 
-/** "Popular on" and the network's logo: one heading, named in words. */
-export function NetworkHeading({ prefix, network }: { prefix: string; network: Source }) {
-  return (
+/**
+ * "Popular on" and the network's logo: one heading, named in words, so a screen reader's headings still land on it.
+ * With `onOpen`, the PWA's chevron after the logo is a link of its own to the network's page ("See all Popular on
+ * Netflix"); the heading itself is not pressable.
+ */
+export function NetworkHeading({ prefix, network, onOpen }: { prefix: string; network: Source; onOpen?: () => void }) {
+  const heading = (
     <View accessible accessibilityRole="header" accessibilityLabel={`${prefix} ${network.name}`} style={styles.networkHeading}>
       <Text style={styles.rowHeadingText}>{prefix}</Text>
       <LogoTile source={network} size="small" />
+    </View>
+  );
+  if (!onOpen) return heading;
+  return (
+    <View style={styles.networkHeading}>
+      {heading}
+      <Pressable
+        testID="row-heading-link"
+        accessibilityRole="link"
+        accessibilityLabel={networkLinkName(prefix, network.name)}
+        onPress={onOpen}
+        style={({ pressed }) => [styles.headingLink, pressed && styles.pressed]}
+      >
+        <Icon name="next" color={colors.text} size={20} />
+      </Pressable>
     </View>
   );
 }
@@ -505,19 +526,44 @@ export function RowFailure({ heading, error, onRetry }: { heading: string; error
   );
 }
 
-/** The studios: a strip of their logos, each named "<studio> movies", snapping like a row. No title is fetched for it. */
-export function StudioStrip({ studios, viewport }: { studios: readonly Source[]; viewport: number }) {
+/**
+ * The studios: a strip of their logos, snapping like a row, each named "<studio> movies" (with `onOpen`, a link to the
+ * studio's page named "<studio>, studio"). No title is fetched for it.
+ */
+export function StudioStrip({ studios, viewport, onOpen }: { studios: readonly Source[]; viewport: number; onOpen?: (studio: Source) => void }) {
   return (
     <View style={styles.row}>
       <RowHeading title={SOURCE_TEXT.studios} />
       <SnapRow testID="studio-strip" count={studios.length} item={STUDIO_TILE_WIDTH} viewport={viewport}>
         {studios.map((studio) => (
-          <View key={studio.id} accessible accessibilityRole="image" accessibilityLabel={studioName(studio.name)}>
-            <LogoTile source={studio} size="large" />
-          </View>
+          <StudioTile key={studio.id} studio={studio} onOpen={onOpen} />
         ))}
       </SnapRow>
     </View>
+  );
+}
+
+/** A studio's logo in the strip: a link to its page, or with nowhere to go, an image named "<studio> movies". */
+function StudioTile({ studio, onOpen }: { studio: Source; onOpen: ((studio: Source) => void) | undefined }) {
+  // The strip's SnapRow keeps a tile reached by the keyboard mid-snap in view, as it does a card.
+  const onFocus = useContext(CardFocus);
+  if (!onOpen) {
+    return (
+      <View accessible accessibilityRole="image" accessibilityLabel={studioName(studio.name)}>
+        <LogoTile source={studio} size="large" />
+      </View>
+    );
+  }
+  return (
+    <Pressable
+      accessibilityRole="link"
+      accessibilityLabel={studioLinkName(studio.name)}
+      onPress={() => onOpen(studio)}
+      onFocus={onFocus}
+      style={({ pressed }) => [styles.studioLink, pressed && styles.pressed]}
+    >
+      <LogoTile source={studio} size="large" />
+    </Pressable>
   );
 }
 
@@ -757,6 +803,8 @@ const styles = StyleSheet.create({
   rowHeading: { gap: spacing.sm, alignSelf: 'flex-start' },
   rowHeadingText: { ...typography.rowHeading, color: colors.text },
   networkHeading: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.sm },
+  headingLink: { minHeight: layout.touchTarget, minWidth: layout.touchTarget, alignItems: 'center', justifyContent: 'center' },
+  studioLink: { width: STUDIO_TILE_WIDTH, minHeight: layout.touchTarget, borderRadius: radii.card },
   waterline: { flexDirection: 'row', height: layout.waterline.height },
   waterlineAccent: { width: layout.waterline.accentWidth, borderRadius: layout.waterline.height, backgroundColor: colors.accent },
   waterlineCap: {

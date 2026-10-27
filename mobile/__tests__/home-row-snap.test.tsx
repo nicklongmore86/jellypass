@@ -8,7 +8,7 @@ import { fireEvent, render, screen, within } from '@testing-library/react-native
 import { AccessibilityInfo, PixelRatio, Platform, ScrollView } from 'react-native';
 
 import type { Card } from '../src/api/types';
-import { CARD_GAP, CardRow } from '../src/home/components';
+import { CARD_GAP, CardRow, STUDIO_TILE_WIDTH, StudioStrip } from '../src/home/components';
 import { nearestStop, resnapOffset, revealOffset, snapOffsets } from '../src/home/layout';
 
 jest.setTimeout(30_000);
@@ -39,6 +39,8 @@ beforeEach(() => {
   // The mock ScrollView's scrollTo is already a jest.fn, shared by every row and test: start each test with no calls.
   scrolls = jest.spyOn(ScrollView.prototype, 'scrollTo').mockImplementation(() => undefined);
   scrolls.mockClear();
+  // The preset's isReduceMotionEnabled is a jest.fn whose answer a spy's restore does not undo: start each test with it off.
+  jest.spyOn(AccessibilityInfo, 'isReduceMotionEnabled').mockResolvedValue(false);
 });
 afterEach(() => {
   jest.restoreAllMocks();
@@ -400,5 +402,36 @@ describe('resnapOffset', () => {
     expect(resnapOffset(700, phone, phone)).toBe(STOPS[2]);
     expect(resnapOffset(700, phone, { ...phone, count: 1 })).toBeUndefined();
     expect(resnapOffset(0, { ...phone, count: 1 }, phone)).toBe(0);
+  });
+});
+
+describe("the studios' strip, its tiles links to their pages", () => {
+  beforeEach(() => {
+    jest.replaceProperty(Platform, 'OS', 'android');
+  });
+
+  const studios = Array.from({ length: 11 }, (_, at) => ({ id: at + 1, name: `Studio ${at + 1}`, logoUrl: null }));
+  const strip = (): Node => {
+    const found = screen.queryAllByTestId('studio-strip');
+    if (found.length !== 1) throw new Error(`expected one studio strip, found ${found.length}`);
+    return found[0]!;
+  };
+
+  it('stops a running snap when a studio takes focus, revealing that studio instead, as a card', async () => {
+    const opened: number[] = [];
+    await render(<StudioStrip studios={studios} viewport={VIEWPORT} onOpen={(studio) => opened.push(studio.id)} />);
+    const shape = { count: studios.length, item: STUDIO_TILE_WIDTH, gap: CARD_GAP, viewport: VIEWPORT };
+    const stops = snapOffsets(shape.count, shape.item, shape.gap, shape.viewport)!;
+    await fireEvent(strip(), 'scrollBeginDrag', at(0));
+    await fireEvent(strip(), 'scroll', at(100));
+    await fireEvent(strip(), 'scrollEndDrag', at(100));
+    await fireEvent(strip(), 'momentumScrollEnd', at(120));
+    const snap = nearestStop(stops, 120)!;
+    const tiles = within(strip()).queryAllByRole('link');
+    expect(tiles.map((node) => String(node.props.accessibilityLabel)).slice(0, 2)).toEqual(['Studio 1, studio', 'Studio 2, studio']);
+    await fireEvent(tiles[6]!, 'focus');
+    expect(asked()).toEqual([`${snap} true`, `${revealOffset(shape, 6)} true`]);
+    await fireEvent.press(tiles[6]!);
+    expect(opened).toEqual([7]);
   });
 });

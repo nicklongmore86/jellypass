@@ -161,7 +161,7 @@ function frameHeight(node: Node, width?: number): number {
 /** How tall a row's slot draws: what it holds now (skeleton, cards, failure or the "nothing" line), or its own minimum. */
 function slotHeight(slot: Node): number {
   const skeleton = inside(slot, 'skeleton-row')[0];
-  const card = within(slot).queryAllByRole('link')[0];
+  const card = within(slot).queryAllByRole('link').find((node) => node.props.testID !== 'row-heading-link');
   let content: number;
   if (skeleton) content = 26 + ROW_GAP + frameHeight(skeleton) + 4;
   else if (card) content = HEADING + ROW_GAP + frameHeight(card, number(styleOf(card).width)) + CARD_TEXT;

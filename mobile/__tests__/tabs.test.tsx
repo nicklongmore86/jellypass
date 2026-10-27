@@ -417,8 +417,8 @@ describe('accessibility', () => {
   // Every pressable (anything that answers a press, whatever its role), not just the buttons and tabs: each is a
   // button, link or tab with a name, and at least a thumb's height.
   // Home stays mounted under the other tabs: its 3 filter chips, the hero's 3 slides, Previous, Next and 3 dots, and the
-  // first four rows' 3 cards each (the fixture page has 3 titles).
-  const HOME = 3 + 3 + 2 + 3 + 4 * 3;
+  // first four rows' 3 cards each (the fixture page has 3 titles), and the fixture's one studio, a link to its page.
+  const HOME = 3 + 3 + 2 + 3 + 4 * 3 + 1;
   it.each([
     ['Home', 'Home', 4 + HOME],
     ['Search', 'Search', 4 + HOME],
