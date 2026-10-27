@@ -4,6 +4,11 @@
  * aspect-ratio, inset, logical properties, :has() or min()/max()/clamp(); test/tv-addon.test.mjs refuses them. Spacing
  * is margins, a poster's frame is a padding-top box, and focus is :focus, which a remote's focus always is.
  */
+/*
+ * The row's cards are Jellyfin web's own (`card overflowPortraitCard`, `cardBox`, `cardText` ...): its CSS sizes them,
+ * sets their type and draws the focus ring and zoom on a TV. What follows is only what the row adds: the scrolling
+ * strip, the poster inside Jellyfin's image box in Jellyfin web's own look.
+ */
 .jellypass-tv-row-scroller {
   overflow-x: auto;
   overflow-y: hidden;
@@ -15,37 +20,10 @@
   display: none;
 }
 .jellypass-tv-row-list {
-  display: flex;
   flex-wrap: nowrap;
   align-items: flex-start;
 }
-.jellypass-tv-card {
-  position: relative;
-  flex: 0 0 auto;
-  width: 9.5em;
-  margin: 0 0.9em 0 0;
-  padding: 0;
-  border: 0;
-  border-radius: 0.6em;
-  background: transparent;
-  color: inherit;
-  font: inherit;
-  text-align: left;
-  cursor: pointer;
-  outline: none;
-  transition: transform 0.15s ease-out;
-}
-.jellypass-tv-card-poster {
-  position: relative;
-  display: block;
-  width: 100%;
-  height: 0;
-  padding-top: 150%;
-  overflow: hidden;
-  border-radius: 0.6em;
-  background: #13224a;
-}
-.jellypass-tv-card-poster img {
+.jellypass-tv-card-image {
   position: absolute;
   top: 0;
   left: 0;
@@ -53,70 +31,18 @@
   height: 100%;
   object-fit: cover;
 }
-.jellypass-tv-card-status {
-  position: absolute;
-  top: 0.5em;
-  left: 0.5em;
-  padding: 0.2em 0.55em;
-  border-radius: 0.5em;
-  background: #000b25;
-  color: #eaf2ff;
-  font-size: 0.8em;
-  font-weight: 600;
-  line-height: 1.3;
-}
-.jellypass-tv-card-status-in_library,
+
 .jellypass-tv-title-status-in_library {
   color: #7fe0a0;
 }
-.jellypass-tv-card-status-get_this,
 .jellypass-tv-title-status-get_this {
   color: #35b8e8;
 }
-.jellypass-tv-card-status-requested,
 .jellypass-tv-title-status-requested {
   color: #f2c35b;
 }
-.jellypass-tv-card-status-unavailable,
 .jellypass-tv-title-status-unavailable {
   color: #a9bad8;
-}
-.jellypass-tv-card-title {
-  display: block;
-  margin: 0.45em 0.2em 0 0.2em;
-  overflow: hidden;
-  font-size: 0.95em;
-  font-weight: 600;
-  white-space: nowrap;
-  text-overflow: ellipsis;
-}
-.jellypass-tv-card-year {
-  display: block;
-  margin: 0.1em 0.2em 0 0.2em;
-  color: #a9bad8;
-  font-size: 0.85em;
-}
-.jellypass-tv-card:focus .jellypass-tv-card-poster {
-  box-shadow: 0 0 0 0.25em #00a4dc;
-}
-.jellypass-tv-card:focus {
-  transform: scale(1.06);
-}
-/* Ten feet away: bigger cards and type in Jellyfin web's TV layout. */
-.layout-tv .jellypass-tv-card {
-  width: 12.5em;
-  margin-right: 1.2em;
-}
-.layout-tv .jellypass-tv-card-title {
-  font-size: 1.1em;
-}
-.layout-tv .jellypass-tv-card:focus .jellypass-tv-card-poster {
-  box-shadow: 0 0 0 0.3em #00a4dc;
-}
-@media (prefers-reduced-motion: reduce) {
-  .jellypass-tv-card {
-    transition: none;
-  }
 }
 
 /*

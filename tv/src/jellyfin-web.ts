@@ -66,7 +66,9 @@ export function isHomeShown(event: Event): boolean {
  * Class names Jellyfin web's focus manager and layout read, used on the row so its d-pad navigation drives it: a
  * section (`verticalSection`, with its heading classes, so the row lines up with Home's own), and `focuscontainer-x` on
  * the list, so Left and Right stay in the row and Up and Down leave it, as in Home's own rows. The cards are plain
- * `<button>`s, which the focus manager moves between by their place on the screen; Jellyfin web's scroll manager scrolls
+ * `<button>`s in Jellyfin web's card markup (`card`, `cardBox`, `cardScalable`, `cardPadder`, `cardImageContainer`,
+ * `cardText`, as its `cardBuilder` writes them, so its sizes, type and `:focus` ring apply), which the focus manager
+ * moves between by their place on the screen; Jellyfin web's scroll manager scrolls
  * the one focused into view on a TV.
  */
 export const JELLYFIN_CLASSES = {
@@ -74,6 +76,10 @@ export const JELLYFIN_CLASSES = {
   headingContainer: 'sectionTitleContainer sectionTitleContainer-cards padded-left',
   heading: 'sectionTitle sectionTitle-cards',
   row: 'focuscontainer-x',
+  /** Jellyfin web's own portrait card in a row (its width follows the screen), as `cardBuilder` names it. */
+  card: 'card overflowPortraitCard card-hoverable',
+  /** What `cardBuilder` adds on a TV: the focus ring and zoom its CSS draws. */
+  cardTv: 'show-focus show-animation',
 } as const;
 
 /**

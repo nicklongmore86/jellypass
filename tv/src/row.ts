@@ -3,11 +3,15 @@ import type { Asked } from './asked.js';
 import { currentSession, homeSections, JELLYFIN_CLASSES } from './jellyfin-web.js';
 
 /**
- * The JellyPass row on Jellyfin web's Home: the household's view of Trending, as the app API answers it, drawn as one
- * Home section after Home's first. Everything shown is a fixed string or a DTO field set with `textContent`; no HTML is
- * parsed. It runs no navigation of its own: Jellyfin web's focus manager moves between its cards (see JELLYFIN_CLASSES).
- * Choosing a card opens the title view (title.ts). Statuses are drawn through the "Get this" overlay (asked.ts), so a
- * title just asked for says Requested here too.
+ * The JellyPass row on Jellyfin web's Home: what is trending and can be had, from the app API's Trending answer, drawn as
+ * one Home section after Home's first, in Jellyfin web's own card markup (see JELLYFIN_CLASSES). Only titles that are
+ * Available to get are drawn: one in the caller's library (`in_library`) is in Jellyfin's own rows already, and one
+ * Requested belongs to My requests; neither is in the row, so the row has no badge. A title the member asks for while
+ * the row is up leaves it at once. If nothing is left the row is not drawn (a second page is never asked for, so the
+ * row's one call stays one). It depends only on the caller's own answer. Everything shown is a fixed string or a DTO
+ * field set with `textContent`; no HTML is parsed. It runs no navigation of its own: Jellyfin web's focus manager moves
+ * between its cards. Choosing a card opens the title view (title.ts). States are read through the "Get this" overlay
+ * (asked.ts).
  */
 
 /** The coarse statuses, worded as the household app words them. */
@@ -19,7 +23,7 @@ export const STATE_LABELS: Record<HouseholdState, string> = {
 };
 
 export const ROW_TEXT = {
-  heading: 'JellyPass: Trending',
+  heading: 'Discover',
 } as const;
 
 /** Marks the row (one at most is ever on the page). */
@@ -42,8 +46,6 @@ interface Kept {
 interface Drawn {
   card: Card;
   button: HTMLElement;
-  status: HTMLElement;
-  shown: HouseholdState;
 }
 
 interface Scope {
@@ -103,8 +105,10 @@ export class HomeRow {
     }
     this.#removeRows();
     // A failed or empty answer draws nothing (and is not asked again until Home is next shown, after REUSE_MS).
-    if (!kept.answer.ok || !kept.answer.cards.length) return;
-    const row = this.#draw(kept.answer.cards);
+    // Only what can be had: not what is in this member's library (Jellyfin web's rows show it) nor what is Requested.
+    const cards = kept.answer.ok ? this.#belongs(kept.answer.cards) : [];
+    if (!cards.length) return;
+    const row = this.#draw(cards);
     home.container.insertBefore(row, home.first.nextSibling);
     this.#row = row;
     this.#drawn = kept;
@@ -118,23 +122,31 @@ export class HomeRow {
         return;
       }
     }
+    // The title left the row (it was just asked for): focus goes to the row's first card, if any.
+    this.#cards[0]?.button.focus();
   }
 
-  /** A Requested ran out (asked.ts): the drawn row's statuses are drawn again, in place, from its answer (no call). */
+  /** A Requested ran out (asked.ts): the row is drawn again from the answer it holds, the title back in it (no call). */
   public overlayExpired(): void {
-    if (this.#row && this.#row.parentNode) this.#refreshStatuses();
+    this.update();
   }
 
-  /** Redraws, in place (focus stays where it is), any card whose status the overlay now shows otherwise. */
+  /**
+   * The overlay now shows a title otherwise (asked for, or its Requested ran out): if the cards that belong in the row
+   * are no longer the ones drawn, the row is drawn again from its answer (no call). Otherwise nothing moves, so focus stays.
+   */
   #refreshStatuses(): void {
-    for (const drawn of this.#cards) {
-      const state = this.#asked.state(drawn.card.mediaType, drawn.card.tmdbId, drawn.card.state);
-      if (state === drawn.shown) continue;
-      drawn.shown = state;
-      drawn.status.className = `jellypass-tv-card-status jellypass-tv-card-status-${state}`;
-      drawn.status.textContent = STATE_LABELS[state];
-      drawn.button.setAttribute('aria-label', cardLabel(drawn.card, state));
-    }
+    const kept = this.#drawn;
+    if (!kept || !kept.answer.ok) return;
+    const key = (cards: Card[]): string => cards.map((card) => `${card.mediaType}:${card.tmdbId}`).join(',');
+    if (key(this.#belongs(kept.answer.cards)) === key(this.#cards.map((drawn) => drawn.card))) return;
+    this.#drawn = undefined;
+    this.update();
+  }
+
+  /** The cards of an answer that belong in the row: only those Available to get, as the overlay has them. */
+  #belongs(cards: Card[]): Card[] {
+    return cards.filter((card) => this.#asked.state(card.mediaType, card.tmdbId, card.state) === 'get_this');
   }
 
   /** Home is being shown again: an answer older than REUSE_MS is read again (the row stays until the new one comes). */
@@ -182,30 +194,36 @@ export class HomeRow {
     headingContainer.appendChild(element('h2', JELLYFIN_CLASSES.heading, ROW_TEXT.heading));
     section.appendChild(headingContainer);
     const scroller = element('div', 'jellypass-tv-row-scroller padded-left padded-right');
-    const list = element('div', `jellypass-tv-row-list ${JELLYFIN_CLASSES.row}`);
+    const list = element('div', `jellypass-tv-row-list itemsContainer ${JELLYFIN_CLASSES.row}`);
+    // Jellyfin web's TV layout draws its cards with a focus ring and a focus zoom: its CSS keys on these two classes.
+    const tv = document.documentElement.classList.contains('layout-tv');
     this.#cards = [];
     for (const card of cards) {
-      const button = element('button', 'jellypass-tv-card') as HTMLButtonElement;
+      const button = element('button', `${JELLYFIN_CLASSES.card} jellypass-tv-card${tv ? ` ${JELLYFIN_CLASSES.cardTv}` : ''}`) as HTMLButtonElement;
       button.type = 'button';
       button.setAttribute('data-media-type', card.mediaType);
       button.setAttribute('data-tmdb-id', String(card.tmdbId));
       const state = this.#asked.state(card.mediaType, card.tmdbId, card.state);
       button.setAttribute('aria-label', cardLabel(card, state));
-      const poster = element('span', 'jellypass-tv-card-poster');
+      const box = element('div', 'cardBox cardBox-bottompadded');
+      const frame = element('div', 'cardScalable');
+      frame.appendChild(element('div', 'cardPadder cardPadder-overflowPortrait'));
+      const image = element('div', 'cardImageContainer coveredImage cardContent');
       if (card.posterUrl) {
-        const image = document.createElement('img');
-        image.setAttribute('alt', '');
-        image.setAttribute('referrerpolicy', 'no-referrer');
-        image.setAttribute('src', card.posterUrl);
-        poster.appendChild(image);
+        const poster = document.createElement('img');
+        poster.className = 'jellypass-tv-card-image';
+        poster.setAttribute('alt', '');
+        poster.setAttribute('referrerpolicy', 'no-referrer');
+        poster.setAttribute('src', card.posterUrl);
+        image.appendChild(poster);
       }
-      button.appendChild(poster);
-      const status = element('span', `jellypass-tv-card-status jellypass-tv-card-status-${state}`, STATE_LABELS[state]);
-      button.appendChild(status);
-      button.appendChild(element('span', 'jellypass-tv-card-title', card.title));
-      if (card.year !== null) button.appendChild(element('span', 'jellypass-tv-card-year', String(card.year)));
+      frame.appendChild(image);
+      box.appendChild(frame);
+      box.appendChild(element('div', 'cardText cardTextCentered cardText-first jellypass-tv-card-title', card.title));
+      if (card.year !== null) box.appendChild(element('div', 'cardText cardText-secondary cardTextCentered jellypass-tv-card-year', String(card.year)));
+      button.appendChild(box);
       button.addEventListener('click', () => this.#choose(card));
-      this.#cards.push({ card, button, status, shown: state });
+      this.#cards.push({ card, button });
       list.appendChild(button);
     }
     scroller.appendChild(list);

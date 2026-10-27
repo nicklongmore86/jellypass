@@ -18,6 +18,19 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Changed
+
+- **The TV add-on's Home row is now "Discover", in Jellyfin web's own card
+  style, and shows only what can be had.** It no longer repeats what Jellyfin's
+  own rows show: titles already in the member's library ("Ready to watch") are
+  left out, and so are "Requested" titles (they will be in My requests), so the
+  row has no badge. A title the member asks for leaves the row. The cards use
+  Jellyfin web's card markup, so their size, type, near-black look and focus
+  ring match Jellyfin's own rows in both the TV and the desktop layout, and the
+  add-on's own navy colours are gone from the row. If nothing is left the row
+  is not drawn. The row still makes one call (`tv-home-row`, unchanged) and
+  depends only on the caller's own answer. The title view is unchanged.
+
 ### Security
 
 - **Household hostnames no longer show one household another's members.**
