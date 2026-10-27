@@ -1,7 +1,9 @@
 // The release pipeline's promises (mobile/README.md, "Release builds"): eas.json has the two profiles every release
 // needs, nothing turns on EAS Update or puts a credential in the repo, and the workflow that drives EAS only runs by
 // hand or from a tag, behind the `mobile-release` environment, with exactly the five secrets.
-import { readFileSync } from 'fs';
+import { spawnSync } from 'child_process';
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
 import { join } from 'path';
 
 type Profile = {
@@ -117,6 +119,12 @@ describe('the mobile-release workflow', () => {
     expect(easJson.cli.version).toBe(`>= ${pinned}`);
   });
 
+  it('hides EAS CLI\'s Expo Go advice from the CLI\'s own environment, not a build profile\'s', () => {
+    const build = /^ {2}build:\n([\s\S]*?)^ {4}steps:/m.exec(code)?.[1] ?? '';
+    expect(build).toMatch(/^ {6}EAS_BUILD_NO_EXPO_GO_WARNING: 'true'$/m);
+    for (const profile of Object.values(easJson.build)) expect(profile.env ?? {}).not.toHaveProperty('EAS_BUILD_NO_EXPO_GO_WARNING');
+  });
+
   it('checks the app before building, and builds and submits without prompts', () => {
     expect(code).toMatch(/^ {4}needs: check$/m);
     expect(code).toMatch(/run: pnpm check$/m);
@@ -155,5 +163,76 @@ describe('the mobile-release workflow', () => {
     expect(publishes).toHaveLength(2);
     for (const command of publishes) expect(command).toMatch(/--latest=false/);
     expect(release).toMatch(/gh release create .*--verify-tag/);
+  });
+});
+
+// The token check runs as GitHub runs it (bash -eo pipefail), with `eas` replaced by a script that prints what EAS CLI
+// 26.0.0's `eas whoami` would (commands/account/view.js; chalk colours the "limited" part).
+describe('the Expo token check', () => {
+  const script = /- name: Check the Expo token can build the project\n(?: {8}.*\n)*? {8}run: \|\n((?: {10}.*\n|\n)*)/
+    .exec(workflow)?.[1]
+    ?.replace(/^ {10}/gm, '');
+  let bin: string;
+  beforeAll(() => {
+    bin = mkdtempSync(join(tmpdir(), 'eas-stub-'));
+    writeFileSync(
+      join(bin, 'eas'),
+      '#!/bin/sh\ncase "$1" in whoami) printf "%s\\n" "$STUB_WHOAMI" ;; project:info) printf "%s\\n" "$STUB_INFO" ;; esac\n',
+    );
+    chmodSync(join(bin, 'eas'), 0o755);
+  });
+  afterAll(() => rmSync(bin, { recursive: true, force: true }));
+
+  const run = (accounts: string[]) => {
+    const whoami = ['robot (authenticated using EXPO_TOKEN)', 'someone@example.com', '', 'Accounts:', ...accounts].join('\n');
+    const result = spawnSync('bash', ['--noprofile', '--norc', '-eo', 'pipefail', '-c', script!], {
+      encoding: 'utf8',
+      env: {
+        NODE_ENV: 'test',
+        PATH: `${bin}:${process.env.PATH}`,
+        EXPO_TOKEN: 'not-a-real-token',
+        STUB_WHOAMI: whoami,
+        STUB_INFO: 'fullName  @rtc-services-llc/jellypass',
+      },
+    });
+    return { status: result.status, errors: result.stdout.split('\n').filter((line) => line.startsWith('::error::')), out: result.stdout };
+  };
+
+  it('is found in the workflow', () => {
+    expect(script).toMatch(/eas whoami/);
+  });
+
+  it.each(['Owner', 'Admin', 'Developer', 'Release Manager'])('lets a %s build', (role) => {
+    const { status, errors, out } = run(['• someone (Role: Owner)', `• rtc-services-llc (Role: ${role})`]);
+    expect(errors).toEqual([]);
+    expect(status).toBe(0);
+    expect(out).toContain('@rtc-services-llc/jellypass');
+    expect(out).not.toContain('@example.com');
+  });
+
+  it.each(['Viewer', 'Runner', 'Custom: publish, view', 'No permissions'])('refuses a %s', (role) => {
+    const { status, errors } = run([`• rtc-services-llc (Role: ${role})`]);
+    expect(status).toBe(1);
+    expect(errors).toEqual([expect.stringContaining(`role in rtc-services-llc is ${role}, not one that can start builds`)]);
+  });
+
+  it('refuses a token whose permission grant leaves too little, whatever the account\'s role', () => {
+    const { status, errors } = run(['• rtc-services-llc (Role: Owner, \x1b[33mlimited to Viewer by the current credentials\x1b[39m)']);
+    expect(status).toBe(1);
+    expect(errors).toEqual([
+      expect.stringContaining("role in rtc-services-llc is Owner, but the token's permission grant limits it to Viewer"),
+    ]);
+  });
+
+  it('lets a token build when its grant still leaves a build role', () => {
+    const { status, errors } = run(['• rtc-services-llc (Role: Owner, \x1b[33mlimited to Developer by the current credentials\x1b[39m)']);
+    expect(errors).toEqual([]);
+    expect(status).toBe(0);
+  });
+
+  it('refuses an account outside the organization', () => {
+    const { status, errors } = run(['• someone (Role: Owner)', '• other-org (Role: Developer)']);
+    expect(status).toBe(1);
+    expect(errors).toEqual([expect.stringContaining('is not a member of the rtc-services-llc Expo organization')]);
   });
 });

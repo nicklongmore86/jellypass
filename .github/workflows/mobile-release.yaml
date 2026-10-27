@@ -96,7 +96,11 @@ jobs:
       PROFILE: ${{ inputs.profile || 'production' }}
       SUBMIT: ${{ github.event_name != 'workflow_dispatch' || inputs.submit }}
       # Pinned like the actions; eas.json's cli.version is the floor.
-      EAS_CLI_VERSION: 24.12.1
+      EAS_CLI_VERSION: 26.0.0
+      # EAS CLI warns, before a production build starts, that an app without expo-dev-client "uses Expo Go for
+      # development". It's advice only, and this variable, read by the CLI from its own environment (eas.json's build
+      # env only reaches the builder), hides it without changing the build.
+      EAS_BUILD_NO_EXPO_GO_WARNING: 'true'
       # No usage telemetry from either CLI.
       EXPO_NO_TELEMETRY: 1
       DISABLE_EAS_ANALYTICS: 1
@@ -150,11 +154,17 @@ jobs:
             exit 1
           fi
           print_eas_output "$(printf '%s\n' "$whoami" | sed '/@/d')"
-          # The first match only, with sed quitting rather than a pipe into head, which pipefail would turn into a
-          # failure.
-          role="$(printf '%s\n' "$whoami" | sed -n 's/.* rtc-services-llc (Role: \([^)]*\)).*/\1/p;T;q')"
-          # The labels `eas whoami` prints at 24.12.1 (commands/account/view.js). Anything else (Viewer, Custom, or a
-          # role added after this CLI version) is refused rather than guessed at.
+          # What's in the brackets of the organization's line, colours removed: `• rtc-services-llc (Role: Developer)`,
+          # or, when the token's permission grant is narrower than the account's role, `• rtc-services-llc (Role:
+          # Owner, limited to Viewer by the current credentials)`. The first match only, with sed quitting rather than
+          # a pipe into head, which pipefail would turn into a failure.
+          grant="$(printf '%s\n' "$whoami" | sed -n 's/\x1b\[[0-9;]*m//g; / rtc-services-llc (Role: [^)]*)/{s/.* rtc-services-llc (Role: \([^)]*\)).*/\1/p;q}')"
+          # The token builds with the narrower role, so that's the one checked.
+          role="${grant##*, limited to }"
+          role="${role% by the current credentials}"
+          # The labels `eas whoami` prints at 26.0.0 (commands/account/view.js, from the permissions by
+          # user/roles.js). Anything else (Viewer, Runner, `Custom: ...`, or a role added after this CLI version) is
+          # refused rather than guessed at.
           case "$role" in
             Owner | Admin | Developer | 'Release Manager') ;;
             '')
@@ -162,7 +172,11 @@ jobs:
               exit 1
               ;;
             *)
-              echo "::error::The EXPO_TOKEN account's role in rtc-services-llc is ${role}, not one that can start builds. ${causes}"
+              if [ "$role" != "$grant" ]; then
+                echo "::error::The EXPO_TOKEN account's role in rtc-services-llc is ${grant%%, limited to *}, but the token's permission grant limits it to ${role}, which can't start builds. Make a token without that limit. ${causes}"
+              else
+                echo "::error::The EXPO_TOKEN account's role in rtc-services-llc is ${role}, not one that can start builds. ${causes}"
+              fi
               exit 1
               ;;
           esac
