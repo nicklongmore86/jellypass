@@ -624,10 +624,14 @@ export class TitlePage {
   }
 }
 
-/** The title a route's params name: `movie` or `tv`, and a TMDB id as the API has them (digits, no leading zero). */
+/** The largest TMDB id the API's title paths take (a 32-bit signed integer). */
+const MAX_TMDB_ID = 2_147_483_647;
+
+/** The title a route's params name: `movie` or `tv`, and a TMDB id as the API has them (digits, no leading zero, within range). */
 function chosenOf(params: { [name: string]: string }): Chosen | undefined {
   const mediaType = params.mediaType;
   const id = params.tmdbId;
   if ((mediaType !== 'movie' && mediaType !== 'tv') || !id || !/^[1-9][0-9]{0,9}$/.test(id)) return undefined;
-  return { mediaType, tmdbId: Number(id) };
+  const tmdbId = Number(id);
+  return tmdbId > MAX_TMDB_ID ? undefined : { mediaType, tmdbId };
 }

@@ -405,6 +405,12 @@ async function openJellyfinWeb(t, app, { user = ALICE, host = HOST_A, serverAddr
       return event;
     },
     click: (element) => element.dispatchEvent(new Event('click')),
+    /** A pointer (or touch) press on what has focus (or the page). */
+    press(type) {
+      const event = new Event(type, { bubbles: true, cancelable: true });
+      (FOCUSED.get(document) ?? document.body).dispatchEvent(event);
+      return event;
+    },
     /** Jellyfin web laying out Home's sections (its home tab does this on first show and on a settings change). */
     home() {
       sections.classList.add('homeSectionsContainer');
@@ -850,7 +856,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     const series = (await app.get(`/jellypass/app/v1/tv/${T_TV}`)).json();
     assert.equal(text(page, 'h1'), series.title);
     assert.equal(headerTitle(page), series.title);
-    for (const address of ['movie/abc', 'film/1', 'movie/01', 'movie/12345678901', 'movie/-1', 'tv/1.5']) {
+    for (const address of ['movie/abc', 'film/1', 'movie/01', 'movie/12345678901', 'movie/9999999999', 'movie/2147483648', 'movie/-1', 'tv/1.5']) {
       const other = await openJellyfinWeb(t, app);
       other.document.body.insertAdjacentHTML('afterbegin', HEADER);
       other.goTo(`#/jellypass/title/${address}`);
@@ -912,6 +918,62 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
       assert.ok(!hosting(page));
       assert.ok(page.focused() === page.card(tmdbId), `focus is back on the card of ${tmdbId}`);
     }
+  });
+
+  it('takes the largest id the API\'s title paths take, and no call for the next one up', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    for (const [id, calls] of [[2147483647, true], [2147483648, false]]) {
+      const page = await openJellyfinWeb(t, app);
+      page.document.body.insertAdjacentHTML('afterbegin', HEADER);
+      page.goTo(`#/jellypass/title/movie/${id}`);
+      showFallback(page.document);
+      await page.settled();
+      assert.equal(page.requests.length > 0, calls, `${id}`);
+      if (!calls) assert.equal(text(page, '.jellypass-tv-title-error'), 'Not found', `${id}`);
+    }
+  });
+
+  describe('focus after Back', () => {
+    /** Home with the title's card focused by Back, then focus moved off it (to Jellyfin web's own card), as a redraw would find it. */
+    const backed = async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const page = await atHome(t, app);
+      await choose(page, T_MOVIE);
+      await home(page);
+      assert.ok(page.focused() === page.card(T_MOVIE), 'Back focused the card');
+      page.document.querySelector('.verticalSection .card').focus();
+      assert.ok(page.focused() !== page.card(T_MOVIE), 'focus has left the card');
+      return page;
+    };
+    const redraw = async (page) => {
+      page.home();
+      await page.settled();
+    };
+
+    it('is given back to the card when Jellyfin web redraws Home within the window and the member has pressed nothing', async (t) => {
+      const page = await backed(t);
+      await redraw(page);
+      assert.ok(page.focused() === page.card(T_MOVIE));
+    });
+
+    for (const [name, press] of [
+      ['a key press', (page) => page.key(40)],
+      ['a pointer press', (page) => page.press('pointerdown')],
+    ]) {
+      it(`is not given back to the card after ${name}`, async (t) => {
+        const page = await backed(t);
+        press(page);
+        await redraw(page);
+        assert.ok(page.focused() !== page.card(T_MOVIE), 'focus stays where the member left it');
+      });
+    }
+
+    it('is not given back to the card once the window has run out', async (t) => {
+      const page = await backed(t);
+      page.advance(4_001);
+      await redraw(page);
+      assert.ok(page.focused() !== page.card(T_MOVIE), 'focus stays where it is');
+    });
   });
 
   it('drops what is in flight when Jellyfin web goes to another page, and Back through it returns to the title page, then Home with the card', async (t) => {
