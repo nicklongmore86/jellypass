@@ -46,7 +46,10 @@ flowchart LR
     as Jellyfin sent them. `Content-Length` is the new length. `ETag`, `Last-Modified`, `Accept-Ranges`, `Expires`,
     `Age`, `Pragma` and Jellyfin's `Cache-Control` are dropped, because they described the page without the tag. The
     page is sent `Cache-Control`, `CDN-Cache-Control` and `Cloudflare-CDN-Cache-Control: no-store` (as the PWA's page
-    is), so neither a browser nor Cloudflare keeps a copy from before or after a change of setting.
+    is), so neither a browser nor Cloudflare stores the page from now on. These headers can't remove a copy
+    cached *before* the gateway started sending them (an older Jellyfin web page a browser or Cloudflare already
+    holds). On rollout, check that the household host's page comes back with the tag and `no-store`, or purge
+    Cloudflare's cache for that host's `/web/` page once, before testing on a TV.
   - **Anything else is relayed exactly as Jellyfin sent it:** another status (a `302`, a `500`), another type, an
     encoding Jellyfin used anyway, a page with no `</head>`, a larger page, every other file of Jellyfin web (its HTML
     included), every other path. A `HEAD` gets the `GET`'s headers and no body.
@@ -74,6 +77,9 @@ flowchart LR
   loading, `window.ApiClient`, the focus manager, the scroll manager and `viewshow`. Then it was run in a simulated
   Jellyfin web DOM in the tests.
 - **Not yet checked:** Jellyfin web 12.x (the production server runs 12.3.0), and any real TV (see below).
+  Before switching it on for the first household, check the row and D-pad navigation in a desktop browser on that
+  household's host against production 12.x: if Home's structure differs the row simply doesn't appear (safe), but a
+  changed focus model could leave a row that can't be navigated.
 
 ## The add-on
 
