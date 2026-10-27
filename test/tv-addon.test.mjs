@@ -40,12 +40,17 @@ const tvOn = (households = ['farmhouse']) => ({ tvAddon: { households } });
  * focus() fires `focusin` as a browser does (the title view listens for it).
  */
 const FOCUSED = new WeakMap();
+let LIVE_FOCUS;
 {
   const { HTMLElement, Event } = parseHTML('<html><body></body></html>');
   HTMLElement.prototype.focus = function focus() {
     FOCUSED.set(this.ownerDocument, this);
     this.dispatchEvent(new Event('focusin', { bubbles: true }));
   };
+  // A detached element is not focused: activeElement is the last focused one only while it is in the live document.
+  const live = (document) => { const el = FOCUSED.get(document); return el && document.documentElement.contains(el) ? el : null; };
+  Object.defineProperty(Object.getPrototypeOf(parseHTML('<html><body></body></html>').document), 'activeElement', { configurable: true, get() { return live(this) ?? this.body ?? null; } });
+  LIVE_FOCUS = live;
 }
 /** Whether a title is in the row: it is there only while Available to get (strings, never the card). */
 const onRow = (page, tmdbId) => (page.card(tmdbId) ? 'Available to get' : 'not in the row');
@@ -355,7 +360,7 @@ async function openJellyfinWeb(t, app, { user = ALICE, host = HOST_A, serverAddr
     posts: () => requests.filter((request) => request.init.method === 'POST'),
     card: (tmdbId) => document.querySelector(`[data-jellypass-tv-row] button[data-tmdb-id="${tmdbId}"]`),
     view: () => document.querySelector('[data-jellypass-tv-title]'),
-    focused: () => FOCUSED.get(document) ?? null,
+    focused: () => LIVE_FOCUS(document),
     /** A key pressed on what has focus (or the page), as a remote sends it: `keyCode` only, as Chromium 63 has it. */
     key(keyCode) {
       const event = new Event('keydown', { bubbles: true, cancelable: true });
@@ -778,7 +783,7 @@ describe('TV add-on: the title view and "Get this"', { timeout: 120_000 }, () =>
     page.document.querySelector('.mainAnimatedPages').appendChild(other);
     other.dispatchEvent(new page.Event('viewshow', { bubbles: true }));
     assert.equal(page.view() === null, true);
-    assert.ok(page.focused() === get, 'focus not moved to the card');
+    assert.ok(page.focused() !== page.card(T_MOVIE), 'focus not moved to the card');
   });
 
   it('plays a title in the library through Jellyfin web\'s own details page on this host, and nothing else', async (t) => {
@@ -1208,7 +1213,7 @@ describe('TV add-on: the title view and "Get this"', { timeout: 120_000 }, () =>
     const page = await atHome(t, app, {
       override: (pathname) => {
         if (!failing) return undefined;
-        if (pathname === `/jellypass/app/v1/movie/${T_MOVIE}`) return { status: 502, body: '{"error":"canary upstream text"}' };
+        if (pathname === `/jellypass/app/v1/tv/${T_TV}`) return { status: 502, body: '{"error":"canary upstream text"}' };
         if (pathname === '/jellypass/app/v1/requests') return { status: 401, body: '{}' };
         return undefined;
       },
@@ -1225,6 +1230,23 @@ describe('TV add-on: the title view and "Get this"', { timeout: 120_000 }, () =>
     await page.settled();
     assert.equal(onRow(page, T_MOVIE), 'Available to get');
     assert.equal(page.timers(), 0);
+  });
+
+  it('keeps focus on the card it is on when another title\'s Requested runs out and the row is drawn again', async (t) => {
+    const app = await startHeld(t);
+    const page = await atHome(t, app);
+    await choose(page, T_MOVIE);
+    page.click(page.view().querySelector('.jellypass-tv-title-get'));
+    await page.settled();
+    page.key(461);
+    assert.equal(onRow(page, T_MOVIE), 'not in the row');
+    const other = page.card(T_TV);
+    other.focus();
+    assert.ok(page.focused() === other, 'focus');
+    page.advance(120_000);
+    assert.equal(onRow(page, T_MOVIE), 'Available to get');
+    assert.ok(page.focused() === page.card(T_TV), 'the same title is focused');
+    assert.ok(page.document.documentElement.contains(page.focused()), 'and in the page');
   });
 
   it('calls only the origin it came from: signed in elsewhere, the view closes and nothing is sent there', async (t) => {

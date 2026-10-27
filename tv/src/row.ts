@@ -103,6 +103,7 @@ export class HomeRow {
       this.#refreshStatuses();
       return;
     }
+    const focus = this.#focusedCard();
     this.#removeRows();
     // A failed or empty answer draws nothing (and is not asked again until Home is next shown, after REUSE_MS).
     // Only what can be had: not what is in this member's library (Jellyfin web's rows show it) nor what is Requested.
@@ -112,6 +113,23 @@ export class HomeRow {
     home.container.insertBefore(row, home.first.nextSibling);
     this.#row = row;
     this.#drawn = kept;
+    if (focus) this.#restoreFocus(focus);
+  }
+
+  /** Which drawn card has focus, if the row has it: its place in the row and its title. */
+  #focusedCard(): { index: number; mediaType: MediaType; tmdbId: number } | undefined {
+    const active = this.#document.activeElement;
+    if (!active || !this.#row || !this.#row.contains(active)) return undefined;
+    const index = this.#cards.findIndex((drawn) => drawn.button === active || drawn.button.contains(active));
+    if (index < 0) return undefined;
+    const { mediaType, tmdbId } = this.#cards[index]!.card;
+    return { index, mediaType, tmdbId };
+  }
+
+  /** The row was drawn again while it had focus: focus goes to the same title, else the card now in its place, never to the page. */
+  #restoreFocus(focus: { index: number; mediaType: MediaType; tmdbId: number }): void {
+    const same = this.#cards.find((drawn) => drawn.card.mediaType === focus.mediaType && drawn.card.tmdbId === focus.tmdbId);
+    (same ?? this.#cards[Math.min(focus.index, this.#cards.length - 1)])?.button.focus();
   }
 
   /** Focuses the drawn card for a title (Back from its title view), if it is still there. */
