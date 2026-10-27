@@ -62,6 +62,12 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: mobile/pnpm-lock.yaml
+      # A tag builds the version it names, or nothing: `mobile-v<version>` must be `version` in mobile/package.json
+      # (which app.config.ts reads) and mobile/CHANGELOG.md must have notes for it (mobile/README.md, "Versioning").
+      # The tag reaches the script as GITHUB_REF_NAME, never spliced into the command.
+      - name: Check the tag matches the app's version and changelog
+        if: github.event_name == 'push'
+        run: node ../scripts/mobile-release-tag.mjs "$GITHUB_REF_NAME" package.json CHANGELOG.md
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
       - name: Check the EAS project ID is committed
@@ -265,3 +271,37 @@ jobs:
       - name: Delete the App Store Connect API key
         if: always()
         run: rm -f "${RUNNER_TEMP}/asc-api-key.p8"
+
+  # A tag's builds, once done, get a GitHub release with the version's notes from mobile/CHANGELOG.md (the same script
+  # as the server's release notes, given the app's changelog). Never marked Latest, so the repository's latest release
+  # stays the server's. A run by hand is a test build and publishes nothing. No secrets: only this job's own token,
+  # which can write releases and nothing else.
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/mobile-v')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 22
+      - name: Extract release notes from mobile/CHANGELOG.md
+        run: |
+          version="$(node scripts/mobile-release-tag.mjs "$GITHUB_REF_NAME")"
+          node scripts/changelog-section.mjs "$version" mobile/CHANGELOG.md > "${RUNNER_TEMP}/release-notes.md"
+          echo "VERSION=${version}" >> "$GITHUB_ENV"
+      - name: Create or update the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="JellyPass app ${VERSION}"
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+            gh release edit "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --title "$title" --notes-file "${RUNNER_TEMP}/release-notes.md" --latest=false
+          else
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --verify-tag --title "$title" --notes-file "${RUNNER_TEMP}/release-notes.md" --latest=false
+          fi

@@ -1,5 +1,8 @@
 // The app's identity and the promises the README makes about it: iPad support, no telemetry or update service,
 // and no household address built in.
+import { readFileSync } from 'fs';
+import { join } from 'path';
+
 import config from '../app.config';
 
 describe('app config', () => {
@@ -39,6 +42,29 @@ describe('app config', () => {
       'UIInterfaceOrientationLandscapeLeft',
       'UIInterfaceOrientationLandscapeRight',
     ]);
+  });
+
+  it('is the version in package.json, the one place a release bumps it', () => {
+    // EAS keeps only the build numbers (appVersionSource "remote"); the version members see is this one, and a
+    // `mobile-v<version>` tag must match it (scripts/mobile-release-tag.mjs).
+    const pkg = require('../package.json') as { version: string };
+    expect(pkg.version).toMatch(/^\d+\.\d+\.\d+$/);
+    expect(config.version).toBe(pkg.version);
+    expect(readFileSync(join(__dirname, '../app.config.ts'), 'utf8')).not.toMatch(/version: '/);
+  });
+
+  it('has release notes in CHANGELOG.md for that version, as a mobile-v<version> tag requires', () => {
+    // What scripts/mobile-release-tag.mjs asks of a tag: a dated, non-empty "## [<version>]" section, with its link.
+    const { version } = require('../package.json') as { version: string };
+    const changelog = readFileSync(join(__dirname, '../CHANGELOG.md'), 'utf8');
+    // The sections, each from its "## [" heading to the next.
+    const sections = changelog.split(/^(?=## \[)/m);
+    const section = sections.find((text) => text.startsWith(`## [${version}] - `)) ?? '';
+    expect(section).toMatch(/^## \[[^\]]+\] - \d{4}-\d{2}-\d{2}\n/);
+    const notes = section.split('\n').slice(1).filter((line) => !/^\[[^\]]+\]: /.test(line));
+    expect(notes.join('').trim()).not.toBe('');
+    expect(changelog).toMatch(/^## \[Unreleased\]$/m);
+    expect(changelog).toContain(`[${version}]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v${version}`);
   });
 
   it('leaves the build numbers to EAS', () => {

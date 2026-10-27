@@ -73,6 +73,9 @@ describe('eas.json', () => {
   });
 });
 
+// The release job, the last in the file.
+const release = /^ {2}release:\n([\s\S]*)$/m.exec(code)?.[1] ?? '';
+
 describe('the mobile-release workflow', () => {
   it('runs only by hand or from a mobile-v* tag, never on a pull request or a branch push', () => {
     const on = /^on:\n([\s\S]*?)^\S/m.exec(code)?.[1] ?? '';
@@ -89,7 +92,10 @@ describe('the mobile-release workflow', () => {
 
   it('can read the repo and nothing more, and keeps its secrets behind the mobile-release environment', () => {
     expect(code).toMatch(/^permissions:\n {2}contents: read\n\n/m);
-    expect(code.match(/^ +permissions:/gm)).toBeNull();
+    // Only the release job may write, and only releases (contents), with no secrets and no environment.
+    expect(code.match(/^ +permissions:.*$/gm)).toEqual(['    permissions:']);
+    expect(release).toMatch(/^ {4}permissions:\n {6}contents: write\n {4}steps:/m);
+    expect(release).not.toMatch(/secrets\.|environment:/);
     expect(code.match(/environment: mobile-release$/gm)).toHaveLength(1);
     const secrets = [...new Set([...code.matchAll(/secrets\.([A-Z0-9_]+)/g)].map((match) => match[1]))].sort();
     expect(secrets).toEqual(['APPLE_TEAM_ID', 'ASC_API_ISSUER_ID', 'ASC_API_KEY_ID', 'ASC_API_KEY_P8', 'EXPO_TOKEN']);
@@ -126,5 +132,27 @@ describe('the mobile-release workflow', () => {
     expect(code).not.toMatch(/set -x|set -o xtrace|ACTIONS_STEP_DEBUG/);
     // A secret only ever reaches a step through `env:`, never spliced into a script.
     for (const line of code.match(/^.*secrets\..*$/gm) ?? []) expect(line).toMatch(/^\s+[A-Z0-9_]+: \$\{\{[^}]*\}\}$/);
+  });
+
+  it('checks a tag against package.json and mobile/CHANGELOG.md before installing anything', () => {
+    const check = /^ {2}check:\n([\s\S]*?)^ {2}build:/m.exec(code)?.[1] ?? '';
+    const step = /- name: Check the tag matches[^\n]*\n\s+if: github\.event_name == 'push'\n\s+run: (.*)$/m.exec(check);
+    expect(step?.[1]).toBe('node ../scripts/mobile-release-tag.mjs "$GITHUB_REF_NAME" package.json CHANGELOG.md');
+    expect(check.indexOf('mobile-release-tag')).toBeLessThan(check.indexOf('pnpm install'));
+    // The tag (like the inputs) only ever reaches a script through the environment, never spliced in with an
+    // expression: no `${{` anywhere in a run: script, one line or a block.
+    const scripts = [...code.matchAll(/^( +)(?:- )?run: (?:\|\n((?:\1 {2}.*\n|\n)*)|(.*)$)/gm)].map((match) => match[2] ?? match[3] ?? '');
+    expect(scripts.length).toBeGreaterThan(10);
+    for (const script of scripts) expect(script).not.toMatch(/\$\{\{/);
+  });
+
+  it('publishes a tag\'s GitHub release from mobile/CHANGELOG.md once the builds are done, never as Latest', () => {
+    expect(release).toMatch(/^ {4}needs: build$/m);
+    expect(release).toMatch(/^ {4}if: startsWith\(github\.ref, 'refs\/tags\/mobile-v'\)$/m);
+    expect(release).toMatch(/node scripts\/changelog-section\.mjs "\$version" mobile\/CHANGELOG\.md/);
+    const publishes = release.match(/gh release (create|edit) .*$/gm) ?? [];
+    expect(publishes).toHaveLength(2);
+    for (const command of publishes) expect(command).toMatch(/--latest=false/);
+    expect(release).toMatch(/gh release create .*--verify-tag/);
   });
 });
