@@ -654,8 +654,10 @@ describe('household app sign-in through the gateway', { timeout: 30_000 }, () =>
       await post(app.port, '/Sessions/Logouts', alice, undefined);
       await post(app.port, '/Sessions/Logout/Other', alice, undefined);
       assert.deepEqual(app.jellyfin.logouts, []);
+      // The household host checked once that the relayed calls' token is a member's; the app asked nothing more.
+      assert.equal(verifications(app), 2);
       assert.equal((await me(app, alice)).status, 200);
-      assert.equal(verifications(app), 1, 'still answered from the cache');
+      assert.equal(verifications(app), 2, 'still answered from the cache');
     });
 
     it('still trusts a token revoked outside JellyPass for up to five minutes', async (t) => {
@@ -1126,7 +1128,8 @@ describe('Jellyfin Enhanced Seerr, reviews and provider lookup routes on a house
     member: { Authorization: `${WEB_AUTHORIZATION}, Token="token-alice"` },
     outsider: { Authorization: `${WEB_AUTHORIZATION}, Token="token-outsider"` },
   };
-  const asks = (app) => app.jellyfin.requests.length;
+  // The household host's own check that a token is a member's (GET /Users/Me) is not a call relayed to Jellyfin.
+  const asks = (app) => app.jellyfin.requests.filter((request) => request.pathname !== '/Users/Me').length;
 
   it('answers every Seerr, reviews and provider lookup route of the plugin with a 404, member or not, in every method and spelling, without asking Jellyfin', async (t) => {
     const app = await startApp(t);

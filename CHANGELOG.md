@@ -18,6 +18,49 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Security
+
+- **Household hostnames no longer show one household another's members.**
+  Jellyfin lists every user, with their name and settings, to any signed-in
+  user at `GET /Users`; every SyncPlay group with its participants' names to
+  anyone at `GET /SyncPlay/List` and `GET /SyncPlay/{id}`; and, to a user
+  allowed to control other users' sessions, those sessions with their users'
+  names at `GET /Sessions`. On a household hostname these were relayed
+  unchanged. They are now narrowed to the household's own members, as
+  `GET /Users/Public` already was, keeping Jellyfin's order and schema:
+  `GET /Users` lists only members (whatever its `isHidden` and `isDisabled`
+  filters), `GET /Sessions` only sessions all of whose users are members, and
+  `GET /SyncPlay/List` only groups all of whose participants are members; a
+  group that is not gets the fixed `404 {"error":"item_not_found"}` at
+  `GET /SyncPlay/{id}`. A `userId` or `controllableByUserId` in their query
+  must still be the caller's own. They are matched as Jellyfin routes them,
+  like every household check. Allowed in a patch release by the
+  household-check rule at the top of this file: "Requests on a household
+  hostname that would get around a household check [...] may likewise be
+  refused in a minor or patch release, even where Jellyfin used to answer them
+  with a success."
+- **A household hostname now works only with its own members' tokens.** A
+  Jellyfin token issued on one household's hostname, or on the main Jellyfin
+  site, was accepted on every other household's hostname. Now every request
+  relayed to Jellyfin that carries a token (in an `Authorization`,
+  `X-Emby-Authorization`, `X-Emby-Token` or `X-MediaBrowser-Token` header, or
+  an `api_key`, `ApiKey` or `access_token` query parameter, in any case) is
+  relayed only if Jellyfin's `GET /Users/Me` says the token is a member's of
+  that household. Any other token, valid at Jellyfin or not, gets the same
+  fixed, non-cacheable `401 {"error":"unauthorized"}` and never reaches
+  Jellyfin; a WebSocket upgrade with one gets `401`. Routes that name an item
+  or a user keep their fixed `404 {"error":"item_not_found"}`, now also for a
+  token that is not a member's. Who a token belongs to is remembered for a
+  minute (a sign-out through the household hostname forgets it at once);
+  membership is checked on every request, so taking a member out of a
+  household takes effect at once. A request with no token is relayed as
+  before, and the sign-in screen's calls (`GET /Users/Public`,
+  `GET /Branding/Configuration`, `POST /Users/AuthenticateByName`) are
+  answered whatever token they carry. The household app, the TV add-on,
+  "Add to my library" and sign-out keep their own checks. The main Jellyfin
+  site and the admin host are unaffected. Allowed in a patch release by the
+  same household-check rule.
+
 ## [3.3.0] - 2026-10-27
 
 This is a minor release. It adds the TV add-on, a JellyPass row and title view
