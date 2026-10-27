@@ -52,7 +52,8 @@ changes are always listed at the top of the release notes.
   as in the app: one fixed confirmation whatever happened, fixed words for
   each failure, never retried by itself, and the title shown as Requested on
   the view and the row for up to two minutes while the server records it (in
-  memory only, forgotten when another member signs in or on sign-out). The
+  memory only, forgotten when another member signs in, on sign-out or when
+  either read is refused); it ends on a screen left alone too, with no call. The
   remote's Back closes the view and puts focus back on the card. The view
   makes two app API calls when opened (`tv-movie` and `tv-series` in
   `docs/app-api/fetch-budget.json`) and an accepted "Get this" three. Nothing

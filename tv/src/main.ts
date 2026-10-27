@@ -39,7 +39,10 @@ function start(): void {
 
   const api = { get ApiClient() { return (window as unknown as { ApiClient?: unknown }).ApiClient; }, fetch: (url: string, init: RequestInit) => window.fetch(url, init) };
   // What the member just asked for: in memory only, shared by the row and the title view.
-  const asked = new Asked(() => Date.now());
+  const asked = new Asked(() => performance.now(), () => Date.now(), () => {
+    safely(() => row.overlayExpired());
+    safely(() => title.overlayExpired());
+  });
   const title: TitleView = new TitleView(document, api, base.origin, asked, {
     changed: () => safely(() => row.update()),
     restoreFocus: (mediaType, tmdbId) => safely(() => row.focusCard(mediaType, tmdbId)),

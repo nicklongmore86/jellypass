@@ -120,13 +120,18 @@ export class HomeRow {
     }
   }
 
+  /** A Requested ran out (asked.ts): the drawn row's statuses are drawn again, in place, from its answer (no call). */
+  public overlayExpired(): void {
+    if (this.#row && this.#row.parentNode) this.#refreshStatuses();
+  }
+
   /** Redraws, in place (focus stays where it is), any card whose status the overlay now shows otherwise. */
   #refreshStatuses(): void {
     for (const drawn of this.#cards) {
       const state = this.#asked.state(drawn.card.mediaType, drawn.card.tmdbId, drawn.card.state);
       if (state === drawn.shown) continue;
       drawn.shown = state;
-      drawn.status.className = `jellypass-tv-status jellypass-tv-status-${state}`;
+      drawn.status.className = `jellypass-tv-card-status jellypass-tv-card-status-${state}`;
       drawn.status.textContent = STATE_LABELS[state];
       drawn.button.setAttribute('aria-label', cardLabel(drawn.card, state));
     }
@@ -176,8 +181,8 @@ export class HomeRow {
     const headingContainer = element('div', JELLYFIN_CLASSES.headingContainer);
     headingContainer.appendChild(element('h2', JELLYFIN_CLASSES.heading, ROW_TEXT.heading));
     section.appendChild(headingContainer);
-    const scroller = element('div', 'jellypass-tv-scroller padded-left padded-right');
-    const list = element('div', `jellypass-tv-list ${JELLYFIN_CLASSES.row}`);
+    const scroller = element('div', 'jellypass-tv-row-scroller padded-left padded-right');
+    const list = element('div', `jellypass-tv-row-list ${JELLYFIN_CLASSES.row}`);
     this.#cards = [];
     for (const card of cards) {
       const button = element('button', 'jellypass-tv-card') as HTMLButtonElement;
@@ -186,7 +191,7 @@ export class HomeRow {
       button.setAttribute('data-tmdb-id', String(card.tmdbId));
       const state = this.#asked.state(card.mediaType, card.tmdbId, card.state);
       button.setAttribute('aria-label', cardLabel(card, state));
-      const poster = element('span', 'jellypass-tv-poster');
+      const poster = element('span', 'jellypass-tv-card-poster');
       if (card.posterUrl) {
         const image = document.createElement('img');
         image.setAttribute('alt', '');
@@ -195,10 +200,10 @@ export class HomeRow {
         poster.appendChild(image);
       }
       button.appendChild(poster);
-      const status = element('span', `jellypass-tv-status jellypass-tv-status-${state}`, STATE_LABELS[state]);
+      const status = element('span', `jellypass-tv-card-status jellypass-tv-card-status-${state}`, STATE_LABELS[state]);
       button.appendChild(status);
-      button.appendChild(element('span', 'jellypass-tv-title', card.title));
-      if (card.year !== null) button.appendChild(element('span', 'jellypass-tv-year', String(card.year)));
+      button.appendChild(element('span', 'jellypass-tv-card-title', card.title));
+      if (card.year !== null) button.appendChild(element('span', 'jellypass-tv-card-year', String(card.year)));
       button.addEventListener('click', () => this.#choose(card));
       this.#cards.push({ card, button, status, shown: state });
       list.appendChild(button);

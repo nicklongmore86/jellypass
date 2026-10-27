@@ -107,7 +107,26 @@ interface Open {
   askedHere: number[];
   /** The last element in the view that had focus, given back if focus strays behind the view. */
   lastFocus: Element | undefined;
+  /** The answer the view is drawn from, while it can be drawn again from it alone (not loading, failed or sending). */
+  drawn: Drawn | undefined;
 }
+
+interface Drawn {
+  found: Title;
+  failed: number[];
+  confirmed: boolean;
+  /** The statuses drawn (the title's, then each season's), to tell whether the overlay now shows otherwise. */
+  shown: string;
+}
+
+/** What survives the view being drawn again in place: where focus was, and the seasons ticked. */
+interface Kept {
+  focus: Element | undefined;
+  picked: number[];
+}
+
+/** The classes that name a button (or the message) in the view, for finding its new self after a redraw. */
+const FOCUS_CLASSES = ['jellypass-tv-title-back', 'jellypass-tv-title-play', 'jellypass-tv-title-get', 'jellypass-tv-title-select-all', 'jellypass-tv-title-retry', 'jellypass-tv-title-message'];
 
 export class TitleView {
   readonly #document: Document;
@@ -136,14 +155,14 @@ export class TitleView {
     const session = this.#session();
     const body = this.#document.body;
     if (!session || !body) return;
-    const element = this.#el('div', `jellypass-tv-title ${JELLYFIN_VIEW_CLASS}`);
+    const element = this.#el('div', `jellypass-tv-title-view ${JELLYFIN_VIEW_CLASS}`);
     element.setAttribute(VIEW_ATTRIBUTE, '');
     element.setAttribute('role', 'dialog');
     element.setAttribute('aria-modal', 'true');
     element.setAttribute('aria-labelledby', HEADING_ID);
     const content = this.#el('div', 'jellypass-tv-title-scroller');
     element.appendChild(content);
-    const open: Open = { chosen, userId: session.userId, element, body: content, load: 0, askedHere: [], lastFocus: undefined };
+    const open: Open = { chosen, userId: session.userId, element, body: content, load: 0, askedHere: [], lastFocus: undefined, drawn: undefined };
     element.addEventListener('focusin', (event) => {
       open.lastFocus = event.target as Element;
     });
@@ -169,6 +188,26 @@ export class TitleView {
     const session = this.#session();
     if (!session || session.userId !== open.userId) this.close(false);
     else if (!open.element.parentNode) this.close(false);
+  }
+
+  /**
+   * A Requested ran out while the view was left open (asked.ts): if that changes what it shows, it is drawn again from
+   * the answer it holds, with no call, keeping focus and the seasons ticked. Not while loading, failed or sending.
+   */
+  public overlayExpired(): void {
+    const open = this.#open;
+    const drawn = open ? open.drawn : undefined;
+    if (!open || !drawn || this.#shown(drawn.found) === drawn.shown) return;
+    const picked = Array.prototype.slice.call(open.body.querySelectorAll('.jellypass-tv-title-season-pick[aria-pressed="true"]')) as Element[];
+    const focus = open.lastFocus && open.body.contains(open.lastFocus) ? open.lastFocus : undefined;
+    this.#draw(open, drawn.found, drawn.failed, drawn.confirmed, { focus, picked: picked.map((toggle) => Number(toggle.getAttribute('data-season'))) });
+  }
+
+  /** The statuses the overlay gives a title and its seasons now, as `Drawn.shown`. */
+  #shown(found: Title): string {
+    const states = [this.#asked.state(found.mediaType, found.tmdbId, found.state)];
+    for (const season of found.seasons) states.push(this.#asked.state(found.mediaType, found.tmdbId, season.state, season.seasonNumber));
+    return states.join(' ');
   }
 
   /** A key pressed anywhere (a capturing listener): Back closes the view, before Jellyfin web sees it. */
@@ -205,7 +244,7 @@ export class TitleView {
   }
 
   #button(className: string, text: string): HTMLButtonElement {
-    const button = this.#el('button', `jellypass-tv-button ${className}`, text) as HTMLButtonElement;
+    const button = this.#el('button', `jellypass-tv-title-button ${className}`, text) as HTMLButtonElement;
     button.type = 'button';
     return button;
   }
@@ -215,7 +254,7 @@ export class TitleView {
     const body = open.body;
     while (body.firstChild) body.removeChild(body.firstChild);
     const top = this.#el('div', 'jellypass-tv-title-top');
-    const back = this.#button('jellypass-tv-back', TITLE_TEXT.back);
+    const back = this.#button('jellypass-tv-title-back', TITLE_TEXT.back);
     back.addEventListener('click', () => this.close(true));
     top.appendChild(back);
     body.appendChild(top);
@@ -235,10 +274,11 @@ export class TitleView {
   #load(open: Open, session: Session, confirmed: boolean): void {
     const load = ++this.#loads;
     open.load = load;
+    if (!confirmed) open.drawn = undefined;
     const { mediaType, tmdbId } = open.chosen;
     if (!confirmed) {
       this.#fill(open, [this.#heading(open.chosen.title), this.#el('p', 'jellypass-tv-title-loading', TITLE_TEXT.loading)]);
-      this.#focus(open, open.body.querySelector('.jellypass-tv-back'));
+      this.#focus(open, open.body.querySelector('.jellypass-tv-title-back'));
     }
     const fetcher = this.#scope.fetch;
     void Promise.all([
@@ -251,9 +291,9 @@ export class TitleView {
         this.close(false);
         return;
       }
-      // A refused token is nobody's: whatever was shown as requested for it is dropped. A failed requests read is
-      // otherwise only a note left out, as in the app.
-      const refused = !answer.ok ? answer.status === 401 : !failed.ok && failed.status === 401;
+      // A refused token is nobody's: whatever was shown as requested for it is dropped, whichever of the two reads was
+      // refused. A failed requests read is otherwise only a note left out, as in the app.
+      const refused = (!answer.ok && answer.status === 401) || (!failed.ok && failed.status === 401);
       if (refused) this.#forget();
       if (!answer.ok || refused) {
         if (confirmed) this.#refreshFailed(open, refused);
@@ -272,28 +312,30 @@ export class TitleView {
 
   /** A fixed error state, with a retry that only reads the view again (never sends anything). */
   #error(open: Open, kind: ErrorKind): void {
+    open.drawn = undefined;
     const text = ERROR_TEXT[kind];
     const parts = [this.#heading(open.chosen.title), this.#el('p', 'jellypass-tv-title-error', text.title), this.#el('p', 'jellypass-tv-title-note', text.body)];
     let retry: HTMLButtonElement | undefined;
     if (kind !== 'unauthorized') {
-      retry = this.#button('jellypass-tv-retry', TITLE_TEXT.tryAgain);
+      retry = this.#button('jellypass-tv-title-retry', TITLE_TEXT.tryAgain);
       retry.addEventListener('click', () => this.#reload(open));
       const actions = this.#el('div', 'jellypass-tv-title-actions');
       actions.appendChild(retry);
       parts.push(actions);
     }
     this.#fill(open, parts);
-    this.#focus(open, retry ?? open.body.querySelector('.jellypass-tv-back'));
+    this.#focus(open, retry ?? open.body.querySelector('.jellypass-tv-title-back'));
   }
 
   /** After an accepted "Get this" whose view could not be read again: the confirmation stays, with a retry that only reads. */
   #refreshFailed(open: Open, refused: boolean): void {
+    open.drawn = undefined;
     const message = open.body.querySelector('.jellypass-tv-title-message');
     const box = message ? message.parentNode : null;
     if (!box || open.body.querySelector('.jellypass-tv-title-refresh')) return;
     box.appendChild(this.#el('p', 'jellypass-tv-title-note jellypass-tv-title-refresh', refused ? ERROR_TEXT.unauthorized.body : TITLE_TEXT.refreshFailed));
     if (refused) return;
-    const retry = this.#button('jellypass-tv-retry', TITLE_TEXT.tryAgain);
+    const retry = this.#button('jellypass-tv-title-retry', TITLE_TEXT.tryAgain);
     retry.addEventListener('click', () => this.#reload(open));
     box.appendChild(retry);
   }
@@ -312,7 +354,8 @@ export class TitleView {
     if (element && this.#open === open) (element as HTMLElement).focus();
   }
 
-  #draw(open: Open, found: Title, failed: number[], confirmed: boolean): void {
+  /** Draws the view from an answer; `kept` when it is drawn again in place (overlayExpired). */
+  #draw(open: Open, found: Title, failed: number[], confirmed: boolean, kept?: Kept): void {
     const asked = this.#asked;
     const state: HouseholdState = asked.state(found.mediaType, found.tmdbId, found.state);
     const seasons: SeasonSummary[] = found.seasons.map((season) => ({
@@ -339,7 +382,7 @@ export class TitleView {
       parts.push(backdrop);
     }
     const main = this.#el('div', 'jellypass-tv-title-main');
-    const poster = this.#el('span', 'jellypass-tv-poster jellypass-tv-title-poster');
+    const poster = this.#el('span', 'jellypass-tv-title-poster');
     if (found.posterUrl) poster.appendChild(this.#image(found.posterUrl));
     main.appendChild(poster);
     const text = this.#el('div', 'jellypass-tv-title-text');
@@ -353,13 +396,13 @@ export class TitleView {
     if (facts.length) text.appendChild(this.#el('p', 'jellypass-tv-title-facts', facts.join(' · ')));
     if (found.genres.length) text.appendChild(this.#el('p', 'jellypass-tv-title-genres', found.genres.join(', ')));
     text.appendChild(failedMovie
-      ? this.#el('span', 'jellypass-tv-status jellypass-tv-status-failed', TITLE_TEXT.failed)
-      : this.#el('span', `jellypass-tv-status jellypass-tv-status-${state}`, STATE_LABELS[state]));
+      ? this.#el('span', 'jellypass-tv-title-status jellypass-tv-title-status-failed', TITLE_TEXT.failed)
+      : this.#el('span', `jellypass-tv-title-status jellypass-tv-title-status-${state}`, STATE_LABELS[state]));
     if (state === 'unavailable' || state === 'requested') text.appendChild(this.#el('p', 'jellypass-tv-title-note', STATE_NOTES[state]));
     if (failedAny) text.appendChild(this.#el('p', 'jellypass-tv-title-note', TITLE_TEXT.failedNote));
 
     const actions = this.#el('div', 'jellypass-tv-title-actions');
-    const play = state === 'in_library' && found.playItemId ? this.#button('jellypass-tv-play jellypass-tv-primary', TITLE_TEXT.play) : undefined;
+    const play = state === 'in_library' && found.playItemId ? this.#button('jellypass-tv-title-play jellypass-tv-title-primary', TITLE_TEXT.play) : undefined;
     if (play) {
       const itemId = found.playItemId as string;
       play.setAttribute('aria-label', `${TITLE_TEXT.play} ${found.title}`);
@@ -374,7 +417,7 @@ export class TitleView {
     message.setAttribute('role', 'status');
     message.setAttribute('tabindex', '-1');
     // A series partly in the library keeps Play as its primary; Get this steps back beside it, as in the app.
-    const get = canGet ? this.#button(play ? 'jellypass-tv-get jellypass-tv-secondary' : 'jellypass-tv-get jellypass-tv-primary', TITLE_TEXT.getThis) : undefined;
+    const get = canGet ? this.#button(play ? 'jellypass-tv-title-get jellypass-tv-title-secondary' : 'jellypass-tv-title-get jellypass-tv-title-primary', TITLE_TEXT.getThis) : undefined;
     const picking = found.mediaType === 'tv';
     const hint = get && picking ? this.#el('p', 'jellypass-tv-title-hint', TITLE_TEXT.chooseBelow) : undefined;
     if (get) {
@@ -394,33 +437,33 @@ export class TitleView {
     const toggles: HTMLButtonElement[] = [];
     let selectAll: HTMLButtonElement | undefined;
     if (found.mediaType === 'tv') {
-      const section = this.#el('div', 'jellypass-tv-seasons');
-      section.appendChild(this.#el('h2', 'jellypass-tv-seasons-heading', TITLE_TEXT.seasons));
+      const section = this.#el('div', 'jellypass-tv-title-seasons');
+      section.appendChild(this.#el('h2', 'jellypass-tv-title-seasons-heading', TITLE_TEXT.seasons));
       if (get) {
         section.appendChild(this.#el('p', 'jellypass-tv-title-note', TITLE_TEXT.chooseSeasons));
         if (seasonChoices.length > 1) {
-          selectAll = this.#button('jellypass-tv-select-all jellypass-tv-secondary', TITLE_TEXT.selectAll);
+          selectAll = this.#button('jellypass-tv-title-select-all jellypass-tv-title-secondary', TITLE_TEXT.selectAll);
           section.appendChild(selectAll);
         }
       }
-      const list = this.#el('div', 'jellypass-tv-season-list');
+      const list = this.#el('div', 'jellypass-tv-title-season-list');
       for (const season of seasons) {
         const name = season.name || `Season ${season.seasonNumber}`;
         const pickable = get !== undefined && seasonChoices.indexOf(season) >= 0;
-        const item = pickable ? this.#button('jellypass-tv-season jellypass-tv-season-pick', '') : this.#el('div', 'jellypass-tv-season');
+        const item = pickable ? this.#button('jellypass-tv-title-season jellypass-tv-title-season-pick', '') : this.#el('div', 'jellypass-tv-title-season');
         if (pickable) {
-          item.setAttribute('aria-pressed', 'false');
+          item.setAttribute('aria-pressed', kept && kept.picked.indexOf(season.seasonNumber) >= 0 ? 'true' : 'false');
           item.setAttribute('data-season', String(season.seasonNumber));
-          item.appendChild(this.#el('span', 'jellypass-tv-check'));
+          item.appendChild(this.#el('span', 'jellypass-tv-title-check'));
           toggles.push(item as HTMLButtonElement);
         }
-        item.appendChild(this.#el('span', 'jellypass-tv-season-name', name));
+        item.appendChild(this.#el('span', 'jellypass-tv-title-season-name', name));
         if (season.episodeCount !== null) {
-          item.appendChild(this.#el('span', 'jellypass-tv-season-count', `${season.episodeCount} ${season.episodeCount === 1 ? 'episode' : 'episodes'}`));
+          item.appendChild(this.#el('span', 'jellypass-tv-title-season-count', `${season.episodeCount} ${season.episodeCount === 1 ? 'episode' : 'episodes'}`));
         }
         item.appendChild(isFailed(season.seasonNumber, season.state)
-          ? this.#el('span', 'jellypass-tv-status jellypass-tv-status-failed', TITLE_TEXT.failed)
-          : this.#el('span', `jellypass-tv-status jellypass-tv-status-${season.state}`, STATE_LABELS[season.state]));
+          ? this.#el('span', 'jellypass-tv-title-status jellypass-tv-title-status-failed', TITLE_TEXT.failed)
+          : this.#el('span', `jellypass-tv-title-status jellypass-tv-title-status-${season.state}`, STATE_LABELS[season.state]));
         list.appendChild(item);
       }
       section.appendChild(list);
@@ -429,8 +472,19 @@ export class TitleView {
 
     if (get) this.#wireGetThis(open, found, { get, hint, message, toggles, selectAll, picking });
     this.#fill(open, parts);
-    if (confirmed) this.#focus(open, message);
-    else this.#focus(open, play ?? (get && !get.disabled ? get : toggles[0]) ?? open.body.querySelector('.jellypass-tv-back'));
+    open.drawn = { found, failed, confirmed, shown: [state].concat(seasons.map((season) => season.state)).join(' ') };
+    const again = kept && kept.focus ? this.#same(open, kept.focus) : null;
+    if (again) this.#focus(open, again);
+    else if (confirmed) this.#focus(open, message);
+    else this.#focus(open, play ?? (get && !get.disabled ? get : toggles[0]) ?? open.body.querySelector('.jellypass-tv-title-back'));
+  }
+
+  /** In a view just drawn again, the element standing for `before` (the same season, or the same button), if any. */
+  #same(open: Open, before: Element): Element | null {
+    const season = before.getAttribute('data-season');
+    if (season !== null) return open.body.querySelector(`[data-season="${Number(season)}"]`);
+    for (const name of FOCUS_CLASSES) if (before.classList.contains(name)) return open.body.querySelector(`.${name}`);
+    return null;
   }
 
   #image(url: string): HTMLImageElement {
@@ -479,6 +533,9 @@ export class TitleView {
         return;
       }
       const seasons = picking ? chosen() : [];
+      // Not drawn again while the call is out: its answer decides what the view shows next.
+      const drawn = open.drawn;
+      open.drawn = undefined;
       get.disabled = true;
       for (const toggle of toggles) toggle.disabled = true;
       if (selectAll) selectAll.disabled = true;
@@ -513,6 +570,7 @@ export class TitleView {
           this.#error(open, 'unauthorized');
           return;
         }
+        open.drawn = drawn;
         const kind = kindOf(answer);
         message.className = 'jellypass-tv-title-message jellypass-tv-title-error';
         message.textContent = kind === 'rate_limited' ? TITLE_TEXT.rate_limited : kind === 'offline' ? TITLE_TEXT.offline : TITLE_TEXT.unavailable;
