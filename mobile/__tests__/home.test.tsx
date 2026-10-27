@@ -8,7 +8,7 @@ import { act, fireEvent, screen, within } from '@testing-library/react-native';
 import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { renderRouter } from 'expo-router/testing-library';
-import { StyleSheet } from 'react-native';
+import { ScrollView, StyleSheet } from 'react-native';
 
 import type { FetchLike } from '../src/api/client';
 import { CARD_GAP, STUDIO_TILE_WIDTH } from '../src/home/components';
@@ -627,14 +627,30 @@ describe('the sideways rows', () => {
     expect(track.props.snapToOffsets).toBeUndefined();
   });
 
-  it('keeps the same stops on coming Back from a title, so a row left at rest is still at a stop', async () => {
+  it('keeps each row where it was left, and its stops, on coming Back from a title', async () => {
+    // The mock ScrollView's scrollTo is a jest.fn every row shares.
+    const scrolls = jest.spyOn(ScrollView.prototype, 'scrollTo').mockImplementation(() => undefined);
+    scrolls.mockClear();
     const app = await start();
     const before = rows().map((row) => row.offsets.join(','));
     expect(before.length).toBeGreaterThan(0);
+    const first = () => screen.queryAllByTestId('card-row')[0]!;
+    const { offsets } = rows()[0]!;
+    const column = PHONE.width - 32;
+    // The member leaves the first row a little past its third stop (as a focused card can) and opens a title.
+    await fireEvent(first(), 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: column, height: 240 } } });
+    await fireEvent(first(), 'scroll', { nativeEvent: { contentOffset: { x: offsets[2]! + 40, y: 0 } } });
+    const row = first();
     await pressNode(screen.queryAllByRole('link')[0]!);
     expect(app.getPathname()).toMatch(/^\/home\/(movie|tv)\/\d+$/);
     await pressNode(buttonNamed('Back'));
-    expect(rows().map((row) => row.offsets.join(','))).toEqual(before);
+    expect(rows().map((found) => found.offsets.join(','))).toEqual(before);
+    // The same row, not a new one at its start: a change of width now snaps it from where it was left.
+    expect(first() === row).toBe(true);
+    expect(scrolls.mock.calls.length).toBe(0);
+    await fireEvent(first(), 'layout', { nativeEvent: { layout: { x: 0, y: 0, width: column - 1, height: 240 } } });
+    expect(scrolls.mock.calls.map(([to]) => (to as { x: number }).x)).toEqual([offsets[2]]);
+    scrolls.mockRestore();
   });
 });
 

@@ -101,3 +101,33 @@ export function snapOffsets(count: number, item: number, gap: number, viewport: 
   offsets.push(end);
   return offsets;
 }
+
+/** The stop nearest `x`: where a row let go at `x` comes to rest. */
+export function nearestStop(offsets: readonly number[], x: number): number {
+  return offsets.reduce((best, offset) => (Math.abs(offset - x) < Math.abs(best - x) ? offset : best), offsets[0] ?? 0);
+}
+
+/** A sideways row's shape: `count` items, each `item` wide, `gap` apart, in a `viewport` that wide. */
+export interface RowShape {
+  count: number;
+  item: number;
+  gap: number;
+  viewport: number;
+}
+
+/**
+ * Where a row resting near `x` should rest once its shape changes (the device turned, or an iPad's split view
+ * resized): at its start or end if it was there, else at the new stop nearest where the same card is now centred.
+ * Nothing when the row now fits whole.
+ */
+export function resnapOffset(x: number, before: RowShape, after: RowShape): number | undefined {
+  const next = snapOffsets(after.count, after.item, after.gap, after.viewport);
+  if (!next) return undefined;
+  const previous = snapOffsets(before.count, before.item, before.gap, before.viewport);
+  if (!previous) return 0;
+  const at = previous.indexOf(nearestStop(previous, x));
+  if (at === 0) return 0;
+  if (at === previous.length - 1) return next.at(-1)!;
+  const card = Math.round((previous[at]! + (before.viewport - before.item) / 2) / (before.item + before.gap));
+  return nearestStop(next, card * (after.item + after.gap) - (after.viewport - after.item) / 2);
+}
