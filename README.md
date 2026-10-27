@@ -560,7 +560,10 @@ Seerr's API key among them, to any signed-in user, answer a fixed `404`
 Seerr routes (`/JellyfinEnhanced/jellyseerr`, `/JellyfinEnhanced/arr` and
 `/JellyfinEnhanced/proxy` and below, and its Seerr search and genre lists),
 which would show members other households' requests and let them request in
-Seerr past the household app's checks; the plugin's other features keep
+Seerr past the household app's checks, and its reviews
+(`/JellyfinEnhanced/reviews` and below) and lookup by provider ID
+(`/JellyfinEnhanced/items/by-providers`), which would show members other
+users' reviews and titles they may not see; the plugin's other features keep
 working. All of these are answered by JellyPass alike for anyone, never reach
 Jellyfin (WebSocket upgrades included), are never cached (`Cache-Control:
 no-store`), and are matched as Jellyfin routes them: in any case,
