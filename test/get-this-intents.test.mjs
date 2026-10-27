@@ -3,6 +3,7 @@
 // a settle-time read that fails, a title Jellyfin holds without TMDB metadata or a Seerr link, and the order of the
 // request branch's last steps.
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, it } from 'node:test';
@@ -456,5 +457,24 @@ describe('"Get this": the intent is on disk before its request is sent', { timeo
     await getThis(app, `${APP}/movie/${OTHER_MOVIE}/get`);
     assert.equal(app.seerr.posts.length, 2);
     assert.deepEqual(app.seerr.violations, []);
+  });
+
+  it('checks a request that reaches Seerr as the test ends against the state file, still there', async () => {
+    // A test context of its own, whose hooks run as node:test runs them: in the order they were registered.
+    const hooks = [];
+    const context = { name: 'late request', fullName: 'late request', after: (hook) => hooks.push(hook) };
+    const app = await start(context, world({ tmdbMovies }));
+    await app.store.addAppRequestIntent(intent());
+    const sender = await app.members.member(ALICE).confirmRequester();
+    // A branch still in flight when the test body ends: its request reaches Seerr while the app is being shut down.
+    const close = app.seerr.close;
+    app.seerr.close = async () => {
+      await sender.createRequest({ mediaType: 'movie', tmdbId: T_MOVIE });
+      return close();
+    };
+    for (const hook of hooks) await hook();
+    assert.equal(app.seerr.posts.length, 1);
+    assert.deepEqual(app.seerr.violations, []);
+    assert.equal(existsSync(path.dirname(app.stateFile)), false);
   });
 });

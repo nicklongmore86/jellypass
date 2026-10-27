@@ -794,6 +794,16 @@ export async function startApp(t, state = world(), options = {}) {
   const seerr = options.seerr ? { ...options.seerr, close: async () => undefined } : await createFakeSeerr(state);
   const tmdb = await createFakeTmdb(state);
   const jellyfin = await createFakeJellyfinForApp(state);
+  let server;
+  // Registered before the state file's directory is made, so it runs before that directory is removed (t.after hooks
+  // run in the order they were registered; see makeTempDir): a branch still in flight when the test ends can reach the
+  // fake Seerr until it is closed, and its request must find the state file there to be checked against.
+  t.after(async () => {
+    server?.closeAllConnections();
+    await Promise.all([server && close(server), seerr.close(), tmdb.close(), jellyfin.close()]);
+    // Checked for every test: a request sent before its intent was on disk fails it (see intentOnDisk).
+    if (seerr.violations?.includes(UNSAVED_INTENT)) throw new Error(UNSAVED_INTENT);
+  });
   const stateFile = path.join(await makeTempDir(t, 'jfa-app-'), 'grants.json');
   if (options.stateFile) await writeFile(stateFile, JSON.stringify(options.stateFile));
   if (!options.seerr) seerr.onRequest = intentOnDisk(stateFile);
@@ -839,7 +849,7 @@ export async function startApp(t, state = world(), options = {}) {
     ...(options.now ? { now: options.now } : {}),
     recordDelayMs: options.recordDelayMs ?? 0,
   });
-  const server = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' }, undefined, {
+  server = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' }, undefined, {
     background,
     ...(options.trustedProxies ? { trustedProxies: options.trustedProxies } : {}),
     householdGateway: { jellyfinUrl: jellyfin.url, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: options.loginFailureDelayMs ?? 0, ...(options.loginTimeoutMs ? { loginTimeoutMs: options.loginTimeoutMs } : {}), ...(options.signOutTimeoutMs ? { signOutTimeoutMs: options.signOutTimeoutMs } : {}) },
@@ -859,12 +869,6 @@ export async function startApp(t, state = world(), options = {}) {
     }),
   });
   await listen(server);
-  t.after(async () => {
-    server.closeAllConnections();
-    await Promise.all([close(server), seerr.close(), tmdb.close(), jellyfin.close()]);
-    // Checked for every test: a request sent before its intent was on disk fails it (see intentOnDisk).
-    if (seerr.violations?.includes(UNSAVED_INTENT)) throw new Error(UNSAVED_INTENT);
-  });
   const port = server.address().port;
   return {
     port,
