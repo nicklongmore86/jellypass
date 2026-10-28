@@ -7,9 +7,10 @@ Discover **row** (below, "The row"), the **page host** ("The page host") and the
 `TV_ADDON_ENABLED`, off by default, the household gateway adds one script to Jellyfin web's page on the households listed
 in `TV_ADDON_HOUSEHOLDS`, and that script adds one **Discover** row to Jellyfin web's Home. Choosing a card opens a
 JellyPass title page, a page of Jellyfin web's own at `#/jellypass/title/<movie|tv>/<tmdbId>`, with **Play** or **Get
-this**. The **Samsung app** (step 5) is built: a JellyPass build of Jellyfin's Tizen app whose loader adds the same
-script from the household host, and the household host's cross-origin rules for it (see "The Samsung app"); it has not
-been installed on a TV. Search and **My requests** come in later steps (see "Rollout"). Nothing has been run on a real TV
+this**. On Jellyfin web's own **Search** page the same script adds a **Discover** row of what was searched for and can be
+had ("The Search row"). The **Samsung app** (step 5) is built: a JellyPass build of Jellyfin's Tizen app whose loader adds
+the same script from the household host, and the household host's cross-origin rules for it (see "The Samsung app"); it
+has not been installed on a TV. **My requests** comes in a later step (see "Rollout"). Nothing has been run on a real TV
 yet (see "What must be checked on a real TV").
 
 The architecture study behind this design is the 2026-10-27 TV study (route 1, "a JellyPass TV module in jellyfin-web").
@@ -105,8 +106,10 @@ flowchart LR
   (`pnpm-workspace.yaml`); its platform package carries the binary.
 - **Gates** (`test/tv-addon.test.mjs`):
   - the built script parses with acorn as `ecmaVersion: 2017`, `sourceType: 'script'`;
-  - it names no browser API Chromium 63 lacks (`replaceChildren`, `AbortController`, `ResizeObserver`, `queueMicrotask`,
-    `structuredClone`, `.flat()`, `.at()`, `focus({preventScroll})`, …). None is polyfilled, because none is used;
+  - it names no browser API Chromium 63 lacks (`replaceChildren`, `ResizeObserver`, `queueMicrotask`,
+    `structuredClone`, `.flat()`, `.at()`, `focus({preventScroll})`, …). None is polyfilled, because none is used. The one
+    exception is `AbortController` (Chromium 66), which the Search row uses to cancel a stale call only where
+    `typeof AbortController` says it exists; the test counts that every use is behind that check;
   - it uses no `console`, storage, cookies or HTML parsing;
   - the stylesheet uses no flex or grid `gap` (it measures 0 px on M63, which caused JellyQuest's skipping bug), no
     `:focus-visible` (the whole rule would be dropped), `aspect-ratio`, `inset`, logical properties, `:has()` or
@@ -129,6 +132,11 @@ flowchart LR
     `emby-button raised` (and `button-submit` for the primary one, `show-focus` on a TV), `overview`, `itemDetailsGroup`
     with `detailsGroupItem` and `label`, `padded-left` and `padded-right`, and the theme's `--jf-palette-*` colours (with
     the stock theme's as the fallback); and that `.libraryPage` (the fallback page has the class) pads a page below the header;
+  - for the Search row, Jellyfin web's Search page (`apps/legacy/routes/search.tsx`, the same in the TV and the desktop
+    layout): `#searchPage` (a `[data-role=page].page`, not `hide`) holding `.searchFields input#searchTextInput`, whose
+    value is the query as typed (Jellyfin web lists results 500 ms after it stops changing, in `.searchResults` or
+    `.noItemsMessage`, as children of that page), and the `viewshow` the page dispatches as it is shown. If the page or
+    the field is not as that, nothing is drawn and nothing is asked;
   - the hash route of Jellyfin web's details page, `#/details?id=<item>` (the address the API's `play.url` names).
 
   If any of it is missing or shaped otherwise, the add-on draws nothing. Every entry point is wrapped so a surprise is
@@ -279,6 +287,44 @@ bookmark). It replaces the overlay of step 2: nothing is fixed over Home, no key
 - **Text.** Everything shown is a fixed string or a DTO field set with `textContent`; images are only the API's TMDB URLs
   (`w342` posters, `w780` backdrops), set with `referrerpolicy="no-referrer"`.
 
+### The Search row
+
+`tv/src/search.ts`. On Jellyfin web's **Search** page, once the member has typed something, one **Discover** section is
+added **after Jellyfin's own results** (as the page's last child, put back below them whenever Jellyfin web redraws its
+results): the cards of `GET /search?q=<query>&page=1` (first page only, up to 20) that are **Available to get**, and no
+others, so a title Jellyfin's results already show (`in_library`), a Requested one and one that can't be requested are
+left out. It is the same component as Home's row (`tv/src/cards.ts`: same heading, same `verticalSection`, same
+`card overflowPortraitCard` markup, never `itemsContainer`), under its own marker (`data-jellypass-tv-search-row`). It is
+**not drawn** when there is no query, when nothing is left, or when the call failed.
+
+- **Typing.** The query is read from Jellyfin web's search field (trimmed, as Jellyfin web trims it), on the field's
+  `input` events and on every page change (the TV's letter picker changes the field without an `input` event). It is
+  asked for once it has been **still for 600 ms**, a little longer than Jellyfin web's own 500 ms so Jellyfin's results
+  are up first. Calls are **at least a second apart**, however fast the words change (a household's devices share one
+  per-address budget of 300 calls in 5 minutes). Nothing is asked while the field is empty or blank, or longer than
+  the API's 100 characters.
+- **Stale calls.** When the words change, the old words' row goes at once and a call still out for them is **cancelled**
+  (`AbortController`, where the browser has it: Chromium 66 and later; on Chromium 63 the call is not cancelled but its
+  answer is dropped when it comes). Only the answer for the words now in the field is ever drawn.
+- **Same words, no call.** An answer (or a failure) is kept in memory for **a minute** for its words, so Back from a title
+  and typing the same words again ask nothing, and a failed call is not repeated. A `429` stops all search calls for the
+  `Retry-After` the server sent (30 seconds if it sent none); words typed meanwhile are asked for when that has passed.
+- **Choosing a card** opens the title page, as on Home (`#/jellypass/title/<movie|tv>/<tmdbId>`, a history entry). Jellyfin
+  web's Search page keeps the query in its address (`#/search?query=...`), so **Back** returns to it with the query in the
+  field, the row drawn from the answer kept (no call) and **focus on the card the member came from**, given each time the row is
+  drawn for four seconds after the page is shown (Jellyfin web auto-focuses the field), until the member's first key or
+  press. (The page host's focus memory is for the pages it hosts; the Search page is Jellyfin's, so it uses the same
+  return rule as Home's row.)
+- **Remote and keyboard.** No listener of its own for any key. Jellyfin web's focus manager moves between its results and the
+  row's cards by their place on the screen (the list is a `focuscontainer-x`), and its scroll manager scrolls to the
+  focused card. The only document listeners added are the passive, capturing `input` and `viewshow` observers.
+- **Fail safe.** If Jellyfin web's Search page is missing, hidden, not a page, or has no `#searchTextInput` inside
+  `.searchFields`, nothing is drawn, nothing is asked and any row is removed.
+- **Privacy.** The row is drawn only from the caller's own answer (its token decides, the words are the caller's own)
+  and its `state`; the other-household worlds of the app tests give byte-for-byte the same calls and the same row. Text is
+  set with `textContent`, images are only the API's `w342` TMDB URLs, and nothing is stored (the words are kept in memory
+  for a minute and not sent anywhere but this API).
+
 ### API use
 
 - **Where.** Only `https://<the origin the add-on's script came from>/jellypass/app/v1/...`, and only while Jellyfin
@@ -328,6 +374,10 @@ Jellyfin's own details page after Play; the address is the same, so the budget f
 `/me` (the TV shows no member name). Nothing is kept between openings, as in the app. `getThis` is what one accepted
 "Get this" makes: the `POST`, then the page read again (those two calls). A failed one is the `POST` alone. Choosing
 seasons, Select all, Back and Play call nothing.
+
+`tv-search-row`: **one call**, `GET /search?q={query}&page=1`, per settled query (above): none while the field is empty,
+none for words typed within 600 ms of the next, none for the same words within a minute, and at least a second between
+two calls. It has no `/me` (the TV shows no member name).
 
 `test/tv-addon.test.mjs` pins all of this against the budget file.
 
@@ -529,8 +579,9 @@ Each step is its own pull request, behind the same settings:
    `#/details?id=<play.itemId>`, so Jellyfin's TV player plays it), and **Get this** with a season picker for a series.
    It uses the same identical-outcome flow and fixed wording as the PWA, and the PWA's title-page calls (without
    `/me`). See "The title page".
-3. **Search.** A JellyPass search screen reusing Jellyfin web's search field and the TV's own keyboard, with no custom
-   keyboard; one call per pause, as the PWA does.
+3. **Search (done, redesign step 5).** A **Discover** row on Jellyfin web's own Search page, under its results, from the app's
+   search (Available to get only), one call per settled query. No screen or keyboard of our own: it reuses Jellyfin
+   web's search field, so on a TV it is the TV's own keyboard, voice or letter picker. See "The Search row".
 4. **My requests.** The household's requests with their coarse statuses, named ten at a time, as the PWA does.
 5. **Samsung loader app (Tizen) (built; not installed).** See "The Samsung app".
    - CORS on `/jellypass/app/v1/*` and `/jellypass/tv/*` for the app's origin only (`file://` or `null`, not `*`), no
@@ -582,7 +633,12 @@ that household:
 11. **Redraws.** Leaving Home and coming back (after playing something, say) keeps one row, and it re-reads after a
    minute. Switching profile shows the new member's row. Leaving Home from the row (to a title page, then to a library) and coming
    back shows Home as Jellyfin web draws it, with no error page.
-12. **Caching.** After the setting is switched off and the app restarted, the row is gone (the page is `no-store`).
+12. **Search.** Open Jellyfin's Search, type a title the library has not got: after about a second a **Discover** row
+   appears under Jellyfin's results with that title, and not when the library has it or it is already Requested. Typing
+   quickly asks once; clearing the field takes the row away; the remote moves down from Jellyfin's last row into the row
+   and Left/Right between its cards; OK opens the title page and Back returns to the Search page with the query still in
+   the field and the card focused. Check it with the TV's voice search and its keyboard.
+13. **Caching.** After the setting is switched off and the app restarted, the row is gone (the page is `no-store`).
 
 On a **Samsung**, nothing appears with the stock Jellyfin app, because it bundles its own Jellyfin web. With the
 JellyPass build installed (see "The Samsung app"), the same checks apply, plus those listed there under "Check on each

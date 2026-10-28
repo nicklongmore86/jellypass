@@ -20,6 +20,18 @@ changes are always listed at the top of the release notes.
 
 ### Added
 
+- **TV add-on: a Discover row on Jellyfin web's Search page.** For households the
+  (experimental, off by default) TV add-on is on for, searching in Jellyfin web
+  now also shows a **Discover** row under Jellyfin's own results: the titles
+  from the household app's search that can be had ("Available to get"), in the
+  same cards as the Home row, never what is already in the library, Requested
+  or not available. It asks once the words have been still for 600 ms, never
+  while the search field is empty, at least a second apart, cancels a call the
+  words have outgrown and waits out a `429`; choosing a card opens the title
+  page and Back returns to the Search page with the query and the card
+  focused. No setting, state file, app API or gateway change; nothing changes
+  on a host the add-on is not on for. See
+  [docs/tv-addon.md](docs/tv-addon.md) ("The Search row").
 - **TV add-on: the Samsung app** (`docs/tv-addon.md`, "The Samsung app"). Still
   experimental and off by default: **unless `TV_ADDON_ENABLED` is set, nothing
   changes** on any host, and on a household the add-on is not on for nothing
