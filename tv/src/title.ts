@@ -2,6 +2,7 @@ import { failedSeasons, getThis, title as readTitle, type Failure, type Househol
 import type { Asked } from './asked.js';
 import { currentSession, detailsHash, type Session } from './jellyfin-web.js';
 import { FOCUS_ATTR, type PageContext, type PageView } from './page-host.js';
+import { REQUESTS_HASH, REQUESTS_TEXT } from './requests-model.js';
 import { STATE_LABELS } from './row.js';
 
 /**
@@ -40,13 +41,13 @@ export const TITLE_TEXT = {
   tryAgain: 'Try again',
 } as const;
 
-/** What a title says besides its status when it has no button. The TV has no My requests yet, so it points to the app. */
+/** What a title says besides its status when it has no button; a requested title's note points to My requests, beside it. */
 export const STATE_NOTES = {
   unavailable: "This title can't be requested.",
-  requested: 'Check My requests in the JellyPass app to follow it.',
+  requested: 'Follow it in My requests.',
 } as const;
 
-type ErrorKind = 'unauthorized' | 'rate_limited' | 'unavailable' | 'not_found' | 'offline';
+export type ErrorKind = 'unauthorized' | 'rate_limited' | 'unavailable' | 'not_found' | 'offline';
 
 /** The page's fixed error states, the household app's words (app/src/render.ts, ERROR_TEXT). */
 export const ERROR_TEXT: Record<ErrorKind, { title: string; body: string }> = {
@@ -68,7 +69,7 @@ export const VIEW_ATTRIBUTE = 'data-jellypass-tv-title';
 /** The header's title until the title is known. */
 const PAGE_TITLE = 'JellyPass';
 
-function kindOf(failure: Failure): ErrorKind {
+export function kindOf(failure: Failure): ErrorKind {
   if (failure.status === 0) return 'offline';
   if (failure.status === 401) return 'unauthorized';
   if (failure.status === 404) return 'not_found';
@@ -140,7 +141,7 @@ interface Kept {
 }
 
 /** The classes that name a button (or the message) on the page, for finding its new self after a redraw. */
-const FOCUS_CLASSES = ['jellypass-tv-title-play', 'jellypass-tv-title-get', 'jellypass-tv-title-select-all', 'jellypass-tv-title-retry', 'jellypass-tv-title-message'];
+const FOCUS_CLASSES = ['jellypass-tv-title-play', 'jellypass-tv-title-get', 'jellypass-tv-title-requests', 'jellypass-tv-title-select-all', 'jellypass-tv-title-retry', 'jellypass-tv-title-message'];
 
 export class TitlePage {
   readonly #document: Document;
@@ -449,6 +450,16 @@ export class TitlePage {
     if (get) {
       get.setAttribute('aria-label', `${TITLE_TEXT.getThis}: ${found.title}`);
       actions.appendChild(get);
+    }
+    // A title the household is following (asked for now, requested, or one that did not work out) links to My requests.
+    const following = confirmed || state === 'requested' || failedAny || seasons.some((season) => season.state === 'requested');
+    if (following) {
+      const requests = this.#button('jellypass-tv-title-requests jellypass-tv-title-secondary', REQUESTS_TEXT.link, 'requests');
+      requests.addEventListener('click', () => {
+        if (this.#open !== open) return;
+        this.#host.navigate(REQUESTS_HASH);
+      });
+      actions.appendChild(requests);
     }
     const actionBox = this.#el('div', 'jellypass-tv-title-action');
     if (actions.firstChild) actionBox.appendChild(actions);

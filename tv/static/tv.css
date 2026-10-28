@@ -274,6 +274,227 @@
 }
 
 /*
+ * Home's "My requests" card, the last in the Discover strip: Jellyfin's own card (so its size and focus ring apply) with
+ * a plain face in place of a poster.
+ */
+.jellypass-tv-card-link-face {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0.5em;
+  box-sizing: border-box;
+  background: rgba(255, 255, 255, 0.08);
+  font-weight: 600;
+  text-align: center;
+}
+
+/*
+ * The My requests page (tv/src/requests.ts): a page of Jellyfin web's on the page host, in Jellyfin's near-black look, its
+ * own classes for the buttons and theme colours (`--jf-palette-*`, with the stock theme's as the fallback). Every class of
+ * its own is `jellypass-tv-requests-*` or `jellypass-tv-request-*`. Spacing is margins (no `gap`), focus is `:focus`.
+ */
+.jellypass-tv-requests-page {
+  position: relative;
+  padding-bottom: 3em;
+  color: inherit;
+}
+.jellypass-tv-requests-heading {
+  margin: 0.6em 0 0.5em 0;
+}
+.jellypass-tv-requests-loading,
+.jellypass-tv-requests-note {
+  margin: 0 0 0.6em 0;
+  opacity: 0.75;
+}
+.jellypass-tv-requests-error {
+  margin: 0 0 0.4em 0;
+  font-size: 1.3em;
+  font-weight: 600;
+}
+.jellypass-tv-requests-message {
+  min-height: 1.4em;
+  margin: 0 0 0.8em 0;
+  font-weight: 600;
+  outline: none;
+}
+.jellypass-tv-requests-announce {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+}
+.jellypass-tv-requests-button {
+  margin: 0 0.8em 0.6em 0;
+  padding: 0.8em 1.4em;
+  font-weight: 600;
+}
+.jellypass-tv-requests-secondary {
+  background: rgba(255, 255, 255, 0.12);
+}
+.jellypass-tv-requests-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+.jellypass-tv-requests-button:focus,
+.jellypass-tv-request-open:focus {
+  box-shadow: 0 0 0 0.25em var(--jf-palette-text-primary, #fff);
+}
+.jellypass-tv-requests-filters {
+  margin: 0 0 0.8em 0;
+}
+.jellypass-tv-requests-filter-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  margin: 0 0 0.2em 0;
+}
+.jellypass-tv-requests-filter-label {
+  flex: 0 0 auto;
+  min-width: 5em;
+  margin: 0 0.8em 0.6em 0;
+  opacity: 0.75;
+}
+.jellypass-tv-requests-chip {
+  padding: 0.6em 1.2em;
+  border-radius: 2em;
+  background: rgba(255, 255, 255, 0.08);
+}
+.jellypass-tv-requests-chip[aria-pressed='true'] {
+  background: rgba(0, 164, 220, 0.3);
+  background: var(--jf-palette-primary-main, rgba(0, 164, 220, 0.3));
+  box-shadow: inset 0 0 0 0.12em var(--jf-palette-primary-main, #00a4dc);
+}
+.jellypass-tv-requests-chip[aria-pressed='true']:focus {
+  box-shadow: 0 0 0 0.25em var(--jf-palette-text-primary, #fff);
+}
+.jellypass-tv-requests-list {
+  max-width: 60em;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.jellypass-tv-request {
+  margin: 0 0 0.8em 0;
+}
+.jellypass-tv-request[hidden],
+.jellypass-tv-requests-page [hidden] {
+  display: none !important;
+}
+.jellypass-tv-request-open {
+  display: flex;
+  align-items: flex-start;
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0.7em;
+  border: 0;
+  border-radius: 0.3em;
+  background: rgba(255, 255, 255, 0.08);
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+  outline: none;
+}
+.jellypass-tv-request-poster {
+  position: relative;
+  display: block;
+  flex: 0 0 auto;
+  width: 5em;
+  margin: 0 1em 0 0;
+  overflow: hidden;
+  background: #202020;
+}
+.jellypass-tv-request-poster::before {
+  content: '';
+  display: block;
+  padding-top: 150%;
+}
+.jellypass-tv-request-poster img {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.jellypass-tv-request-text {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.jellypass-tv-request-text > span {
+  display: block;
+  margin: 0 0 0.3em 0;
+}
+.jellypass-tv-request-name {
+  font-size: 1.3em;
+  font-weight: 600;
+  line-height: 1.2;
+}
+.jellypass-tv-request-meta,
+.jellypass-tv-request-who,
+.jellypass-tv-request-on,
+.jellypass-tv-request-note {
+  opacity: 0.75;
+}
+.jellypass-tv-request .jellypass-tv-request-text > .jellypass-tv-request-pill {
+  display: inline-block;
+}
+.jellypass-tv-request-pill {
+  margin: 0 0.5em 0.3em 0;
+  padding: 0.1em 0.5em;
+  border: 0.1em solid currentColor;
+  border-radius: 0.3em;
+  font-size: 0.9em;
+  font-weight: 600;
+  line-height: 1.3;
+}
+.jellypass-tv-request-pill-requested {
+  color: #f2c35b;
+}
+.jellypass-tv-request-pill-ready {
+  color: #7fe0a0;
+}
+.jellypass-tv-request-pill-failed {
+  color: #ff9b8f;
+}
+.jellypass-tv-request-season {
+  display: block;
+  margin: 0 0 0.2em 0;
+}
+.jellypass-tv-request-season-name {
+  margin: 0 0.6em 0 0;
+}
+.jellypass-tv-requests-cancel {
+  margin: 0.4em 0 0 0;
+}
+.jellypass-tv-requests-cancel-panel {
+  max-width: 48em;
+  padding: 0.7em 1em;
+  border-radius: 0.3em;
+  background: rgba(255, 255, 255, 0.08);
+}
+.jellypass-tv-requests-cancel-heading {
+  margin: 0 0 0.3em 0;
+  font-weight: 600;
+}
+.jellypass-tv-requests-cancel-actions {
+  display: flex;
+  flex-wrap: wrap;
+}
+.jellypass-tv-requests-cancel-message {
+  min-height: 1.4em;
+  margin: 0;
+  font-weight: 600;
+}
+.jellypass-tv-requests-error-text {
+  color: #ff9b8f;
+}
+
+/*
  * The page host (tv/src/page-host.ts): while a JellyPass page's hash is current, what Jellyfin web's "page not found"
  * page holds is hidden (the class is set before the page is drawn, so it never shows); the JellyPass page is in the
  * same page, in a box of its own.

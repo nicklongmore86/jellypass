@@ -1,6 +1,6 @@
 import { trending, type Answer, type Card, type MediaType } from './api.js';
 import type { Asked } from './asked.js';
-import { drawCards, ROW_TEXT, STATE_LABELS, type Drawn } from './cards.js';
+import { drawCards, LINK_ATTRIBUTE, ROW_TEXT, STATE_LABELS, type Drawn } from './cards.js';
 import { currentSession, homeSections } from './jellyfin-web.js';
 
 /**
@@ -49,6 +49,8 @@ export class HomeRow {
   readonly #origin: string;
   readonly #asked: Asked;
   readonly #choose: (card: Card) => void;
+  /** The strip's last card, "My requests": opens the page at `#/jellypass/requests` (main.ts). */
+  readonly #openRequests: () => void;
   readonly #now: () => number;
   #kept: Kept | undefined;
   #loading: { userId: string } | undefined;
@@ -59,14 +61,15 @@ export class HomeRow {
    * The title whose page was opened from a card: when Home is shown again, its card is focused each time the row is drawn,
    * for RETURN_MS (Jellyfin web redraws Home's sections, and auto-focuses, after it is shown), until the member moves focus.
    */
-  #returning: { mediaType: MediaType; tmdbId: number; shownAt: number | undefined } | undefined;
+  #returning: { mediaType: MediaType; tmdbId: number; shownAt: number | undefined; link?: boolean } | undefined;
 
-  public constructor(document: Document, scope: Scope, origin: string, asked: Asked, choose: (card: Card) => void, now: () => number = Date.now) {
+  public constructor(document: Document, scope: Scope, origin: string, asked: Asked, choose: (card: Card) => void, openRequests: () => void = () => undefined, now: () => number = Date.now) {
     this.#document = document;
     this.#scope = scope;
     this.#origin = origin;
     this.#asked = asked;
     this.#choose = choose;
+    this.#openRequests = openRequests;
     this.#now = now;
   }
 
@@ -124,8 +127,10 @@ export class HomeRow {
       this.#returning = undefined;
       return;
     }
-    const wanted = this.#cards.find((drawn) => drawn.card.mediaType === back.mediaType && drawn.card.tmdbId === back.tmdbId) ?? this.#cards[0];
-    if (wanted && this.#document.activeElement !== wanted.button) wanted.button.focus();
+    // Back from My requests returns to its link; from a title, to the title's card.
+    const link = back.link ? this.#row?.querySelector(`[${LINK_ATTRIBUTE}]`) as HTMLElement | null | undefined : undefined;
+    const wanted = link ?? (this.#cards.find((drawn) => drawn.card.mediaType === back.mediaType && drawn.card.tmdbId === back.tmdbId) ?? this.#cards[0])?.button;
+    if (wanted && this.#document.activeElement !== wanted) wanted.focus();
   }
 
   /** A key or pointer press by the member: once Home is back, focus is theirs, not the card's to be given. */
@@ -213,6 +218,14 @@ export class HomeRow {
     this.#choose(card);
   }
 
+  /** The "My requests" card chosen: its page is opened, if Jellyfin web is still signed in to this origin, and Back will return to the card. */
+  #requests(): void {
+    const session = currentSession(this.#scope);
+    if (!session || session.origin !== this.#origin) return;
+    this.#returning = { mediaType: 'movie', tmdbId: 0, shownAt: undefined, link: true };
+    this.#openRequests();
+  }
+
   #rows(): Element[] {
     return Array.prototype.slice.call(this.#document.querySelectorAll(`[${ROW_ATTRIBUTE}]`)) as Element[];
   }
@@ -229,6 +242,7 @@ export class HomeRow {
       attribute: ROW_ATTRIBUTE,
       state: (card) => this.#asked.state(card.mediaType, card.tmdbId, card.state),
       choose: (card) => this.#open(card),
+      link: { label: ROW_TEXT.requests, open: () => this.#requests() },
     });
     this.#cards = drawn;
     return section;

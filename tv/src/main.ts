@@ -2,6 +2,8 @@ import { ABOUT_PATH, renderAbout } from './about.js';
 import { Asked } from './asked.js';
 import { isHomeShown, isSearchShown } from './jellyfin-web.js';
 import { PageHost } from './page-host.js';
+import { RequestsPage } from './requests.js';
+import { REQUESTS_HASH, REQUESTS_PATH } from './requests-model.js';
 import { HomeRow } from './row.js';
 import { SearchRow } from './search.js';
 import { TITLE_PATH, TitlePage, titleHash } from './title.js';
@@ -51,12 +53,15 @@ function start(): void {
     location.hash = hash;
   };
   const title = new TitlePage(document, api, base.origin, asked, { changed: () => safely(() => row.update()), navigate });
-  const row: HomeRow = new HomeRow(document, api, base.origin, asked, (card) => navigate(titleHash(card.mediaType, card.tmdbId)));
+  const row: HomeRow = new HomeRow(document, api, base.origin, asked, (card) => navigate(titleHash(card.mediaType, card.tmdbId)), () => navigate(REQUESTS_HASH));
+  // A cancel in My requests puts the title back to Get this: Home's row and the Search row draw from the same overlay.
+  const requests = new RequestsPage(document, api, base.origin, asked, { changed: () => { safely(() => row.update()); safely(() => search.overlayChanged()); }, navigate }, () => performance.now(), () => Date.now());
   const search: SearchRow = new SearchRow(document, api, base.origin, asked, (card) => navigate(titleHash(card.mediaType, card.tmdbId)));
   // JellyPass pages at #/jellypass/..., in Jellyfin web's own "page not found" page (tv/src/page-host.ts).
   const host = new PageHost(document, () => location.hash);
   host.register(ABOUT_PATH, renderAbout);
   host.register(TITLE_PATH, (context) => title.render(context));
+  host.register(REQUESTS_PATH, (context) => requests.render(context));
   let timer: ReturnType<typeof setTimeout> | undefined;
   const settle = () => {
     if (timer !== undefined) return;
@@ -64,6 +69,7 @@ function start(): void {
       timer = undefined;
       safely(() => host.update());
       safely(() => title.update());
+      safely(() => requests.update());
       safely(() => row.update());
       safely(() => search.update());
     }, SETTLE_MS);
