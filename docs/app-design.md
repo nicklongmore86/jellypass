@@ -1464,8 +1464,9 @@ names it again) and its household joins on arrival.
 access: by item, Seerr request, title, and when it was cancelled and granted. An administrator decides with the
 existing grant tools: give it to households (`PUT /v1/grants/:itemId/groups`) or users (`PUT .../manual`); it leaves
 the list once anyone has access. Revoking the request (`DELETE /v1/grants/:itemId/requests/:requestId`) on a grant
-with no other audience makes the title public. The admin UI's Requests tab is a later step; until then the API and the
-outstanding readout (`withdrawals.held`, `jfa_app_held_titles`) show them.
+with no other audience makes the title public. The admin UI's Requests tab lists them and releases them to chosen
+households (see "Administrators' Requests tab"); the outstanding readout (`withdrawals.held`, `jfa_app_held_titles`)
+counts them.
 
 **An administrator deletes a cancelled request** (decision 3, made precise). An administrator deleting a request in
 Seerr sends every household following it back to **Get this**, whether or not anyone cancelled: their records are
@@ -1587,11 +1588,122 @@ request from its grant (it is pruned at once). Or accept that those requesters g
   withdrawals or holds wait their turn (one more interval per 50), and with no bound at all if scheduled
   reconciliation is turned off (`RECONCILE_INTERVAL_SECONDS=0`: only webhooks and catalog syncs then check). It holds
   only HD items found by TMDB ID or Seerr's HD link, so an item with neither stays public; and it lasts 400 days after
-  the cancel. **Administrators should cancel through JellyPass** (the upcoming administrators' Requests tab) rather than
+  the cancel. **Administrators should cancel through JellyPass** (the administrators' Requests tab) rather than
   deleting a request in Seerr: a cancel there can write the hold before Seerr forgets the request, so the request is
   never lost and the gap above (waiting to notice the delete) disappears. Applying a hold is still asynchronous, though:
   a title that arrives can be public until the next webhook, catalog sync or reconciliation applies the hold, so even
   that path gives prompt protection, not a strict guarantee.
+
+## Administrators' Requests tab
+
+The admin site's **Requests** tab (admin host only, admin token or session, with every other admin route's protections:
+the browser session's state changes must come from the admin origin, bodies must be `application/json`) lists every
+household's "Get this" records and acts on their Seerr requests with the admin key. Decided with the user
+(2026-10-28): Approve is included (so administrators need not open Seerr for members without auto-approve); an
+administrator's cancel (like a delete in Seerr) sends every household following the request back to **Get this**; a
+decline shows them **We couldn't get this**; "Also remove from Radarr" is offered for movies only, and only while
+Jellyfin does not have the movie (never for a series: Seerr would remove the whole series from Sonarr, files
+included); a request is dated by its day only.
+
+| Endpoint | Answer |
+|---|---|
+| `GET /v1/app/requests` | `{radarr, requests: [...], held: [...]}` (below) |
+| `POST /v1/app/requests/:requestId/approve` | `{status: "approved", changed}` |
+| `POST /v1/app/requests/:requestId/decline` | `{status: "declined", changed}` |
+| `POST /v1/app/requests/:requestId/cancel` (empty, `{}` or `{"removeFromRadarr": true}`) | `{status: "cancelled", changed, titleHold, removedFromRadarr}` |
+| `POST /v1/app/held/:requestId/release` (`{"householdIds": [...]}`) | `{status: "released", changed, itemId}` |
+
+`:requestId` is a Seerr request ID that some household's record names (anything else is `404`; not a positive integer,
+`400`). Refusals are `409` with a `code`: `request_declined` (approve), `request_not_pending` (decline),
+`request_not_cancellable` (a declined or completed request), `request_granted` (the title arrived: change its access
+in Grants instead), `request_gone` (approve or decline of a request Seerr no longer has), `radarr_removal_not_offered`,
+`title_not_held`. A Seerr call that fails is `502` with a fixed sentence (the detail, which carries only Seerr's route
+and status, is logged). The actions are limited to 60 a minute, all administrators together (`429
+too_many_requests`); listing is not counted. Without the household app (or Seerr) every one answers `404
+requests_not_configured`.
+
+**The listing.** One row per Seerr request, with every household whose record names it (and one per record that names
+none: a join, or an interest that found no request): `requestId`, `mediaType`, `tmdbId`, `title` and `year` (TMDB's,
+read from Seerr's title record and kept 24 hours; `null` when not read), `seasons`, `status` (the requester's record:
+`requested`, `ready`, `failed`, `declined`, `deleted`, or `cancelled` when its member withdrew it), `seerrStatus`
+(`pending`, `approved`, `declined`, `failed`, `completed`, `gone`, or `unknown` when Seerr could not be read),
+`requester` (`{id, name}`: the request record's member, else the earliest record's), `householdId` and
+`householdName` (theirs), `requestedOn` (the UTC day of the earliest record), `followers` (other households still
+following it), `households` (`{id, name, status}` each), `withdrawn` (a withdrawal still decides its grant), `held`
+(its grant is held for no household) and `actions` (`approve`, `decline`, `cancel`, `removeFromRadarr`: what the
+server would accept now). Settled records (`deleted`, withdrawn) are listed for 30 days after they last changed.
+Seerr is read once per title (its requests' statuses and its name), at most 100 titles a listing, titles with a
+waiting record first, never as a member; an `held` entry is `GET /v1/app/held`'s with the title's name. `radarr` is
+whether Seerr has an HD Radarr server (`GET /api/v1/settings/radarr`, of which only `is4k` is read: no credential is
+copied). The admin UI filters the rows itself (household, status, type, title or requester).
+
+**Each action runs in the title's turn** (the per-title queue "Get this" and cancels take), and writes in AccessService's
+write queue, so it never races a follower being recorded, a webhook, the backfill or a refresh. Each is idempotent:
+repeated after it took effect, it answers the same outcome with `changed: false` and calls Seerr for no write.
+
+- **Approve** (Seerr `POST /request/:id/approve`, a pending request only): Seerr sends it to Radarr or Sonarr; the
+  households keep following it. Approved or further already: unchanged.
+- **Decline** (Seerr `POST /request/:id/decline`, a pending request only), in one turn of the write queue with what
+  it records, so no webhook, replay, backfill or title hold decides the request's grant in between: every record still
+  following it (`pending` or `failed`) is `declined` at once, so each household sees **We couldn't get this** without
+  waiting for the refresh, and a **declined withdrawal** (`AppWithdrawal` with `requester`, every household that named
+  it, and `declinedAt`) is added. The decline applies to every follower, not only the requester's household. Should
+  the title still arrive through the declined request (a late `MEDIA_AVAILABLE`, its replay, the backfill or
+  reconcileAll, which all decide a grant by the same rule), the grant records the request but gives none of those
+  households, nor the requester, access: with nobody left, it is **held for no household** (listed under Held
+  titles), never public. For a genuine request (no record names a join rule) the withdrawal is also marked to become
+  a hold (`titleHold`) and records its requester when their Jellyfin ID is known (`requesterId`: the request record's
+  member, else Seerr's requester), as a cancel's does, so once Seerr forgets the declined request (an administrator
+  deletes it there) the withdrawal becomes a **title hold** even for a Seerr user no Jellyfin user is linked to (its
+  held grant then records the request with no requester, who is never an owner of it): the title
+  that still arrives with no request to scan is held for no household (decided by the safety markers as they are
+  then, so a tombstone naming the request still makes it a join), and a late `MEDIA_AVAILABLE` for the request still
+  gives none of the declined households access. A join request's declined withdrawal has neither: once Seerr
+  forgets the request it is forgotten (its grant follows the join rules, never a new grant). Either lapses like any
+  other withdrawal after 400 days and counts in `GET /v1/app/outstanding` (`withdrawals`, and `titleHolds` once it is
+  one). Declined already (in Seerr, say): the records and the withdrawal are brought up to date.
+  A request granted already is refused (`409 request_granted`).
+- **Cancel** (a pending, approved or failed request whose grant is not decided yet):
+  1. If `removeFromRadarr` is asked, it is checked first, before anything changes: a movie, Jellyfin has no HD item of
+     it (by TMDB ID or Seerr's HD link), and Seerr has an HD Radarr server; otherwise `409
+     radarr_removal_not_offered`.
+  2. **In one write, before Seerr is asked anything:** every record still following the request is `deleted` (each
+     household is back to **Get this**, as decision 3 has it), and a withdrawal for the request (`AppWithdrawal`, with
+     `requester` and every household that named it) is added. Marked to become a hold (`titleHold`, with
+     `requesterId`, the request record's member, or Seerr's requester for a request JellyPass only followed, when
+     their Jellyfin ID is known: the hold needs none) when the request is a genuine one (no record's
+     `joinOnGrant`: Jellyfin had no item of the title when it was made, so any item of it is its arrival), unless every
+     HD item Jellyfin has of the title now is on an active grant already (decided: nothing to hold). An item that
+     arrived but that no grant holds yet (its webhook has not come, or failed) is held like a later arrival, never
+     left public once Seerr forgets the request. A request that follows the join rules gets none: a public title
+     stays public. A grant decided after this write gives nobody access through the request (the grant
+     rule's **withdrawn** step), whether or not the rest succeeds; one decided before it makes the cancel `409
+     request_granted`.
+  3. With `removeFromRadarr`: Seerr `DELETE /media/:mediaId/file` (HD), which has Radarr remove the movie and delete
+     its files with the credentials Seerr holds. JellyPass holds no Radarr credential.
+  4. Seerr `DELETE /request/:id` with the admin key (any status).
+  5. In the write queue, the request is recorded as gone: the withdrawal marked so becomes a **title hold**
+     (`seerrGoneAt`) at once, so whatever arrives is held for no household (listed under Held titles), never public;
+     one without is forgotten, and an arrival then follows the ordinary rules (a title Jellyfin already had stays as
+     it is). This closes the gap a delete in Seerr leaves (see "Residuals"): the hold exists before Seerr forgets the
+     request. Applying it is still asynchronous (the next webhook, catalog sync or reconciliation).
+
+  If step 3 or 4 fails, the answer is `502` and the households stay withdrawn: the request is still in Seerr, and its
+  grant, should it arrive, is held for no household. Cancelling again repeats steps 3 to 5. A request Seerr no longer
+  has is answered `cancelled` (`changed: false` when nothing was left to do), its households sent back to Get this.
+- **Release** a held title (`GET /v1/app/held`) to chosen households: they are added to its grant
+  (`PUT /v1/grants/:itemId/groups` with the grant's groups and them), so only they (and anyone the grant already had)
+  can watch it; the requester stays excluded. Whether it is still held and the change are decided in one turn of the
+  write queue (`AccessService.releaseHeld`), so the first of two concurrent releases wins and the second is decided
+  after it: a title no longer held whose grant has every one of them already is answered `changed: false`; any other
+  is `409 title_not_held` (change it in Grants). Audiences are never merged by a second release, nor silently
+  dropped.
+
+The households' own answers never change shape: an approve, decline or cancel reaches them as the same coarse
+statuses the refresh writes, uniform for every household following the request.
+
+Logs name the action, the Seerr request ID and the outcome (`removedFromRadarr`, `titleHold`), never a title, member,
+household or credential.
 
 ## Coarse statuses
 
@@ -1632,10 +1744,11 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
 |---|---|---|
 | v1, as the member (confirmed per call) | `POST /request` ("Get this" request branch); `DELETE /request/:id` (a cancel, only the member's own pending request; see "Cancelling (step 2c)"); `GET /user/:self/requests` (not called by the app); `GET /user/:self/quota` ("Get this" eligibility); `GET /auth/me` (own permissions); `GET /discover/watchlist` | `SeerrMemberClient` |
 | v1, admin key | `GET /user/jellyfin/:jellyfinUserId` (user lookup); `GET /user/:id` (link check, its `id` and `jellyfinUserId`); `GET /blocklist` (each entry's `mediaType` and `tmdbId`) | `SeerrClient.findUserByJellyfinId`, `SeerrClient.jellyfinUserIdOf`, `SeerrClient.blocklist` |
+| Admin key, administrators' Requests tab only (admin host) | `POST /request/:id/approve`, `POST /request/:id/decline`, `DELETE /request/:id`, `DELETE /media/:id/file` (HD, movies only), `GET /settings/radarr` (only `is4k` read); plus the title and request reads below | `SeerrClient.approveRequest`, `declineRequest`, `deleteRequest`, `removeMovieFromRadarr`, `radarrConfigured` |
 | v1, admin key, "Get this" background work only (never part of an answer) | `GET /movie/:id` and `GET /tv/:id` (the media record's ID and Jellyfin items, and each request's ID, status, quality, seasons and requester); `GET /request/:id` (the status and media record of a request JellyPass's records name) | `SeerrClient.titleRequests`, `SeerrClient.requestState` |
 | TMDB v3 (not Seerr) | `GET /search/multi`; `GET /trending/all/day`; `GET /discover/{movie,tv}`; `GET /movie/:id`; `GET /tv/:id`; `GET /tv/:id/season/:n`; `GET /authentication` (startup) | `TmdbClient` |
 | Later | Recommendations and similar titles, genre and keyword discovery, watchlist writes | Not yet |
-| Admin-only | Approving, declining and deleting requests, issues, users, settings, blocklist management | Seerr website, administrators |
+| Admin-only | Approving, declining and deleting requests (also in the administrators' Requests tab), issues, users, settings, blocklist management | Seerr website, administrators |
 | Never for a member | `GET /user`, `GET /user/:id` (as the member), `GET /request/count`, `GET /media`, `GET /request` (all requests), and every Seerr title endpoint (`/search`, `/discover/*`, `/movie/:id`, `/tv/:id`), whose answers carry other households' records (read only with the admin key, in the background, above) | Not exposed |
 
 ## Phased plan
@@ -1648,7 +1761,7 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
    households"): (2a, done) the API, records, `requested` and the household's requests (see '"Get this" as
    implemented (step 2a)'); (2b, done) the PWA's **Get this** button with its season picker and **My requests** (see
    "The PWA's button (step 2b)"); (2c) cancelling a request: the server (see "Cancelling (step 2c)"), then the PWA's
-   and the native app's Cancel, then an administrators' Requests tab for titles held for no household.
+   and the native app's Cancel, then the administrators' Requests tab (done; see "Administrators' Requests tab").
 3. **PWA**: (done) the household app itself, served on household hosts. It was delivered by steps 1b (screens, install,
    sign-in) and 2b (**Get this**, **My requests**); what remains is testing the installed app on real phones.
 4. **Cut-over**: the Seerr website restricted to administrators. Required: it closes late requests made directly to

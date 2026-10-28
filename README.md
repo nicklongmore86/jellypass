@@ -494,10 +494,17 @@ should use `ADMIN_TOKEN` as a bearer token instead of a session cookie; bearer
 requests are not origin-checked. Over HTTPS the session cookie is
 `__Host-jellypass_session`; on plain HTTP it is `jellypass_session`.
 
-The UI contains four views:
+The UI contains five views:
 
 - **Dashboard** — grant counts, synchronization health, and up to 12 recent
   Seerr requests linked to the synchronized catalog.
+- **Requests** — with the household app enabled, every household's requests
+  from the app, filtered by household, status, type, title or requester, with
+  **Approve**, **Decline** and **Cancel request** (for every household
+  following it; for a movie Jellyfin does not have, optionally **Also remove
+  from Radarr** through Seerr), and the **Held titles** a cancel left with
+  nobody, which **Release** gives to chosen households. See
+  [`docs/app-design.md`](docs/app-design.md), "Administrators' Requests tab".
 - **Library** — catalog search, filters, sorting, pagination, and bulk access
   assignment for up to 500 selected items.
 - **Grants** — active automated and manual grants, owners, groups, sync status,
@@ -1400,6 +1407,11 @@ blocked-tag policy.
 | `POST` | `/webhooks/seerr` | Authenticated Seerr availability webhook. |
 | `GET` | `/v1/app/outstanding` | What household app "Get this" still protects or has in flight: safety markers, request intents, deferred webhooks and cancels that still decide a grant (`withdrawals`), with `"clear": true` once all are 0. Check it before rolling back. |
 | `GET` | `/v1/app/held` | Titles a household app cancel left held for no household (private to everyone but Jellyfin administrators) until an administrator gives them to someone. Read-only. |
+| `GET` | `/v1/app/requests` | Every household's app requests by Seerr request, with Seerr's status, followers and the actions offered, and the held titles (the admin UI's Requests tab). |
+| `POST` | `/v1/app/requests/{requestId}/approve` | Approve a pending request in Seerr. |
+| `POST` | `/v1/app/requests/{requestId}/decline` | Decline a pending request in Seerr; every household following it sees "We couldn't get this". |
+| `POST` | `/v1/app/requests/{requestId}/cancel` | Send every household following it back to "Get this", hold the title should it arrive, then delete the request in Seerr; `{"removeFromRadarr": true}` also removes a movie Jellyfin does not have from Radarr. |
+| `POST` | `/v1/app/held/{requestId}/release` | Give a held title to `{"householdIds": [...]}`. |
 | `GET` | `/v1/grants` | List grants and synchronization state. |
 | `GET` | `/v1/grants/{itemId}/plan` | Preview changes for one grant. |
 | `DELETE` | `/v1/grants/{itemId}/requests/{requestId}` | Revoke one request owner; supports `?dryRun=true`. |

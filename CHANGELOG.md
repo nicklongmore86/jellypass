@@ -20,6 +20,45 @@ changes are always listed at the top of the release notes.
 
 ### Added
 
+- **Administrators' Requests tab** (`docs/app-design.md`, "Administrators'
+  Requests tab"). A new **Requests** tab in the admin site lists every
+  household's "Get this" requests (title, type, seasons, status, requester,
+  household, day requested, Seerr's status, how many other households follow
+  it, and whether it is held), filtered on the page by household, status, type,
+  and title or requester. Each row offers, after a confirmation:
+  - **Approve** and **Decline** a pending request in Seerr. A decline shows
+    every household following it **We couldn't get this** at once, and is
+    recorded: should the title still arrive through the declined request (a
+    late webhook, its replay, the backfill), none of those households is given
+    it, and it is held for no household. This holds even after the declined
+    request is deleted in Seerr (the decline then becomes a title hold), and
+    for a request made by a Seerr user no Jellyfin user is linked to.
+  - **Cancel request** for every household: each goes back to **Get this**,
+    and the request is deleted in Seerr. JellyPass records the cancel (so the
+    title is held for no household if it still arrives) **before** Seerr
+    forgets the request, closing the window a delete in Seerr's own website
+    leaves. A title that arrived in Jellyfin before the cancel but was not
+    granted yet is held too; only a request that follows the join rules (a
+    title Jellyfin already had) leaves a public title public. This holds
+    whoever made the request, a Seerr user no Jellyfin user is linked to
+    included. **Also remove from Radarr** is offered only for a movie Jellyfin
+    does not have, and only when Seerr has an HD Radarr server; it goes
+    through Seerr, with the credentials Seerr holds. It is never offered for a
+    series (Seerr would remove the whole series from Sonarr, files included).
+  - A **Held titles** section lists titles cancelled with nobody following
+    them that arrived anyway, and **Release** gives one to chosen households.
+    Of two releases of the same title at once, only the first takes effect;
+    the other is refused (`409 title_not_held`) unless it asked for the same
+    households.
+- Admin API (admin host only, with the admin token or a session, and the same
+  origin and JSON checks as every other admin change): `GET /v1/app/requests`;
+  `POST /v1/app/requests/{requestId}/approve`, `/decline` and `/cancel`
+  (optional `{"removeFromRadarr": true}`); `POST /v1/app/held/{requestId}/release`
+  (`{"householdIds": [...]}`). Every action is idempotent, logged by request ID
+  only, and limited to 60 a minute (`429 too_many_requests`). Refusals are
+  `409` with a `code`. Without the household app, these answer
+  `404 requests_not_configured`.
+
 - **Household web app: Cancel request on My requests.** An entry the server
   lists as `cancellable` (apiVersion 2) has a **Cancel request** button that
   asks first, in words ("This withdraws your household's request. If it has
@@ -45,6 +84,7 @@ changes are always listed at the top of the release notes.
   focused. No setting, state file, app API or gateway change; nothing changes
   on a host the add-on is not on for. See
   [docs/tv-addon.md](docs/tv-addon.md) ("The Search row").
+
 - **TV add-on: the Samsung app** (`docs/tv-addon.md`, "The Samsung app"). Still
   experimental and off by default: **unless `TV_ADDON_ENABLED` is set, nothing
   changes** on any host, and on a household the add-on is not on for nothing

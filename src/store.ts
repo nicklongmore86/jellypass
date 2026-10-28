@@ -29,6 +29,18 @@ export const MAX_HOUSEHOLDS = 100;
  * were made (see GrantStore.writeAppRequests); pending records are never pruned.
  */
 export const APP_REQUEST_RETENTION_MS = 400 * 24 * 60 * 60 * 1000;
+
+/**
+ * The requester a held grant records for a request whose requester's Jellyfin ID is not known (AppWithdrawal
+ * `titleHold`): never an owner, as the requester withdrew the request (see GrantStore.resolveOwners), and the
+ * withdrawal is kept for as long as a grant records it.
+ */
+export const UNKNOWN_REQUESTER = '';
+
+/** Whether a withdrawal becomes a title hold once Seerr no longer has its request (AppWithdrawal `seerrGoneAt`). */
+export function becomesTitleHold(withdrawal: AppWithdrawal): boolean {
+  return withdrawal.requester === true && (withdrawal.requesterId !== undefined || withdrawal.titleHold === true);
+}
 /** The most settled "Get this" records kept per household; its own oldest are pruned first. Pending ones are never. */
 export const MAX_APP_REQUESTS_PER_HOUSEHOLD = 2000;
 /** The most deferred webhooks remembered (see GrantStore.deferWebhook); beyond it the oldest are left to the backfill. */
@@ -624,9 +636,8 @@ export class GrantStore {
    * no longer has, by request ID. A hold that granted some of its title's items is still one (its request is handled)
    * until every item has an active grant (`dropTitleHolds` in writeAppRequests).
    */
-  public listAppTitleHolds(now = Date.now()): Array<[string, AppWithdrawal & { requesterId: string }]> {
-    return this.listOutstandingAppWithdrawals(now).filter((entry): entry is [string, AppWithdrawal & { requesterId: string }] =>
-      entry[1].seerrGoneAt !== undefined && entry[1].requesterId !== undefined);
+  public listAppTitleHolds(now = Date.now()): Array<[string, AppWithdrawal]> {
+    return this.listOutstandingAppWithdrawals(now).filter(([, withdrawal]) => withdrawal.seerrGoneAt !== undefined && becomesTitleHold(withdrawal));
   }
 
   /** Records requests as handled without granting them (a "Get this" request granted as a join); see hasHandledRequest. */
@@ -682,12 +693,14 @@ export class GrantStore {
     /** Requests "Get this" made and settled as genuine: no member-wide tombstone for the member and title covers them. */
     exempt?: Array<{ mediaType: 'movie' | 'tv'; tmdbId: number; jellyfinUserId: string; requestId: string }>;
     /** Households withdrawing from Seerr requests (see AppWithdrawal), merged into any withdrawal already kept. */
-    withdraw?: Array<{ requestId: string; mediaType: 'movie' | 'tv'; tmdbId: number; householdId: string; requester: boolean; requesterId?: string }>;
+    withdraw?: Array<{
+      requestId: string; mediaType: 'movie' | 'tv'; tmdbId: number; householdId: string; requester: boolean; requesterId?: string; titleHold?: boolean; declined?: boolean;
+    }>;
     /** Withdrawals no longer needed: the member deleted their pending request, or a title hold found its title granted. */
     forgetWithdrawals?: string[];
     /**
      * Requests Seerr no longer has (an administrator deleted them), not handled: a withdrawal of one with `requesterId`
-     * becomes a title hold (AppWithdrawal `seerrGoneAt`), any other is forgotten.
+     * or `titleHold` becomes a title hold (AppWithdrawal `seerrGoneAt`), any other is forgotten.
      */
     requestsGone?: string[];
     /**
@@ -757,9 +770,11 @@ export class GrantStore {
         householdIds: [...new Set([...(before?.householdIds ?? []), normalizeId(entry.householdId)])].sort(),
         ...(entry.requester || before?.requester ? { requester: true as const } : {}),
         ...(requesterId ? { requesterId } : {}),
+        ...(before?.titleHold || (entry.requester && entry.titleHold) ? { titleHold: true as const } : {}),
         createdAt: before?.createdAt ?? now,
         ...(before?.grantedAt ? { grantedAt: before.grantedAt } : {}),
         ...(before?.seerrGoneAt ? { seerrGoneAt: before.seerrGoneAt } : {}),
+        ...(before?.declinedAt || entry.declined ? { declinedAt: before?.declinedAt ?? now } : {}),
       };
     }
     for (const id of input.forgetWithdrawals ?? []) delete withdrawals[id];
@@ -767,7 +782,7 @@ export class GrantStore {
     for (const id of input.requestsGone ?? []) {
       const withdrawal = withdrawals[id];
       if (!withdrawal || handled.has(id)) continue;
-      if (withdrawal.requesterId) withdrawals[id] = { ...withdrawal, seerrGoneAt: withdrawal.seerrGoneAt ?? now };
+      if (becomesTitleHold(withdrawal)) withdrawals[id] = { ...withdrawal, seerrGoneAt: withdrawal.seerrGoneAt ?? now };
       else delete withdrawals[id];
     }
     for (const id of input.dropTitleHolds ?? []) {

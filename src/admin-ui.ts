@@ -41,7 +41,7 @@ export const ADMIN_HTML = `<!doctype html>
         <div><div id="hero-eyebrow" class="eyebrow">Jellyfin access</div><h1 id="hero-title">JellyPass dashboard</h1><p id="hero-subtitle" class="subtitle">Monitor library access, audiences, and synchronization health.</p></div>
       </div>
 
-      <nav class="tabs" aria-label="Admin sections"><button class="active" data-tab="dashboard">Dashboard</button><button data-tab="library">Library <span id="library-count"></span></button><button data-tab="grants">Grants <span id="grant-count"></span></button><button data-tab="groups">Groups <span id="group-count"></span></button></nav>
+      <nav class="tabs" aria-label="Admin sections"><button class="active" data-tab="dashboard">Dashboard</button><button data-tab="requests">Requests <span id="requests-count"></span></button><button data-tab="library">Library <span id="library-count"></span></button><button data-tab="grants">Grants <span id="grant-count"></span></button><button data-tab="groups">Groups <span id="group-count"></span></button></nav>
       <section id="dashboard-panel" class="tab-panel">
         <div class="section-tools"><div><h2>Access overview</h2><p>A compact view of JellyPass activity and policy health.</p></div></div>
         <div class="stats" aria-label="Access summary">
@@ -51,6 +51,14 @@ export const ADMIN_HTML = `<!doctype html>
         </div>
         <div class="recent-head"><div><div class="eyebrow">Activity</div><h2>Recent requests</h2></div><p>The latest requests successfully linked to your Jellyfin library.</p></div>
         <div id="recent-requests" class="recent-grid"></div>
+      </section>
+      <section id="requests-panel" class="tab-panel" hidden>
+        <div class="section-tools"><div><h2>Household requests</h2><p>What households asked for in the app. Approve, decline or cancel a request for every household following it.</p></div><button id="refresh-requests" class="button quiet" type="button">Refresh</button></div>
+        <div class="requests-toolbar"><label class="search"><span aria-hidden="true">⌕</span><input id="requests-search" type="search" placeholder="Search title or requester" aria-label="Search by title or requester"></label><select id="requests-household" aria-label="Filter by household"><option value="">All households</option></select><select id="requests-status" aria-label="Filter by status"><option value="">All statuses</option><option value="waiting">Waiting (pending or approved)</option><option value="pending">Pending in Seerr</option><option value="approved">Approved in Seerr</option><option value="ready">Ready</option><option value="failed">Declined or failed</option><option value="cancelled">Cancelled or deleted</option><option value="held">Held for no household</option></select><select id="requests-type" aria-label="Filter by type"><option value="">Films and series</option><option value="movie">Films</option><option value="tv">Series</option></select></div>
+        <p id="requests-summary" class="requests-summary" role="status" aria-live="polite"></p>
+        <div id="household-requests-list" class="request-rows"></div>
+        <div class="recent-head"><div><div class="eyebrow">Cancelled, then arrived</div><h2>Held titles</h2></div><p>Titles nobody follows any more. They are hidden from every household until you release them.</p></div>
+        <div id="held-list" class="request-rows"></div>
       </section>
       <section id="grants-panel" class="tab-panel" hidden>
         <div class="section-tools"><div><h2>Protected titles</h2><p>Requests and shared groups currently controlling access.</p></div><div class="grant-tools"><label class="search"><span>⌕</span><input id="grant-search" type="search" placeholder="Search item, owner, or request"></label><button id="reconcile-policies" class="button quiet">Reconcile policies</button></div></div>
@@ -76,6 +84,8 @@ export const ADMIN_HTML = `<!doctype html>
   <dialog id="access-dialog"><form id="access-form"><div class="dialog-head"><div><div class="eyebrow">Grant access</div><h2>Shared groups</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><p id="access-item" class="mono"></p><fieldset><legend>Groups with access</legend><div id="group-options" class="check-list"></div></fieldset><input id="access-item-id" type="hidden"><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button class="button primary" type="submit">Preview changes</button></div></form></dialog>
   <dialog id="requests-dialog"><div class="dialog-head"><div><div class="eyebrow">Direct access</div><h2>Seerr requests</h2></div><button class="dialog-close icon button" aria-label="Close">×</button></div><p id="requests-item" class="mono"></p><div id="requests-list" class="request-list"></div></dialog>
   <dialog id="bulk-dialog"><form id="bulk-form"><div class="dialog-head"><div><div class="eyebrow">Bulk access</div><h2>Assign selected media</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><p id="bulk-summary" class="hint"></p><fieldset><legend>Individual Jellyfin users</legend><div id="bulk-user-options" class="check-list"></div></fieldset><fieldset><legend>Access groups</legend><div id="bulk-group-options" class="check-list"></div></fieldset><p class="hint">This replaces existing manual users and groups for every selected title. Seerr request owners are preserved.</p><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button class="button primary" type="submit">Preview bulk changes</button></div></form></dialog>
+  <dialog id="request-action-dialog" aria-labelledby="request-action-title"><form id="request-action-form"><div class="dialog-head"><div><div class="eyebrow">Household request</div><h2 id="request-action-title">Confirm</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><p id="request-action-text"></p><p id="request-action-warning" class="hint" hidden></p><label id="request-radarr-option" class="check" hidden><input id="request-radarr" type="checkbox"><span><strong>Also remove from Radarr</strong><small>Radarr stops downloading this movie and deletes any files it has for it.</small></span></label><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Keep it</button><button id="request-action-confirm" class="button primary" type="submit">Confirm</button></div></form></dialog>
+  <dialog id="release-dialog" aria-labelledby="release-title"><form id="release-form"><div class="dialog-head"><div><div class="eyebrow">Held title</div><h2 id="release-title">Release</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><p id="release-text" class="hint"></p><fieldset><legend>Households to give it to</legend><div id="release-options" class="check-list"></div></fieldset><p id="release-error" class="form-error" role="alert"></p><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button class="button primary" type="submit">Release</button></div></form></dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="/admin/app.js" defer></script>
 </body>
@@ -106,13 +116,16 @@ body{background:radial-gradient(circle at 14% 4%,rgba(170,92,195,.2) 0,transpare
 .household-route{margin-top:16px;padding:11px 12px;border:1px solid rgba(0,164,220,.25);border-radius:9px;background:rgba(0,164,220,.07)}.household-route small{display:block;color:var(--muted);font-size:9px;font-weight:800;letter-spacing:.1em;text-transform:uppercase}.household-route a{display:block;margin-top:4px;color:#70dfff;font:11px ui-monospace,SFMono-Regular,monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.household-route.unavailable{border-color:var(--line);background:rgba(16,29,56,.45)}
 @media(max-width:900px){.grant-card{grid-template-columns:56px 1fr 1fr}.grant-poster{grid-column:1;grid-row:1}.grant-main{grid-column:2/-1}.grant-owners{grid-column:2}.grant-access{grid-column:3}.grant-card>.card-actions{grid-column:2/-1;justify-content:flex-start}}
 @media(max-width:620px){.grant-card{grid-template-columns:48px 1fr}.grant-poster{width:48px}.grant-main{grid-column:2}.grant-owners,.grant-access,.grant-card>.card-actions{grid-column:1/-1}}
+.requests-toolbar{display:grid;grid-template-columns:minmax(240px,1fr) repeat(3,minmax(150px,auto));gap:10px;margin-bottom:10px}.requests-toolbar .search input{width:100%}.requests-toolbar select{color:var(--text);background:#080e17;border:1px solid var(--line);border-radius:10px;padding:11px 13px;outline:none}.requests-summary{color:var(--muted);font-size:12px;margin:0 0 10px}.request-rows{display:grid;gap:8px}.request-row{display:grid;grid-template-columns:minmax(220px,1.4fr) minmax(170px,1fr) minmax(150px,.8fr) auto;gap:16px;align-items:center;padding:13px 15px;background:linear-gradient(145deg,rgba(16,29,56,.86),rgba(6,14,33,.9));border:1px solid var(--line);border-radius:12px}.request-row h3{font-size:15px;margin:0 0 3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.request-row .meta{display:block}.request-row .pill.status-requested,.request-row .pill.seerr-pending,.request-row .pill.seerr-approved{color:#ffe0a7;background:rgba(246,185,77,.1)}.request-row .pill.status-ready,.request-row .pill.seerr-completed{color:#a9f0d0;background:rgba(69,214,154,.1)}.request-row .pill.status-failed,.request-row .pill.status-declined,.request-row .pill.seerr-declined,.request-row .pill.seerr-failed,.request-row .pill.held{color:#ffc0c5;background:rgba(255,109,118,.1)}.request-row .card-actions{flex-wrap:wrap}.request-rows>.empty{padding:32px}
+@media(max-width:900px){.requests-toolbar{grid-template-columns:1fr 1fr}.request-row{grid-template-columns:1fr 1fr}.request-row .card-actions{grid-column:1/-1;justify-content:flex-start}}
+@media(max-width:620px){.requests-toolbar,.request-row{grid-template-columns:1fr}}
 .notice{margin:0 0 18px;padding:11px 15px;border:1px solid rgba(246,185,77,.45);border-radius:10px;background:rgba(246,185,77,.09);color:#ffe0a7;font-size:13px}
 `;
 
 export const ADMIN_APP_JS = `
 (() => {
   'use strict';
-  const state = { grants: [], groups: [], users: [], seerrImportAvailable: false, catalog: [], catalogSyncedAt: null, recentRequests: [], recentRequestsUnavailable: false, selectedItems: new Set(), catalogPage: 1, catalogPageSize: 25, activeTab: 'dashboard' };
+  const state = { grants: [], groups: [], users: [], seerrImportAvailable: false, catalog: [], catalogSyncedAt: null, recentRequests: [], recentRequestsUnavailable: false, selectedItems: new Set(), catalogPage: 1, catalogPageSize: 25, activeTab: 'dashboard', appRequests: [], heldTitles: [], requestsLoaded: false, requestsUnavailable: '', pendingAction: null, pendingRelease: null };
   const byId = (id) => document.getElementById(id);
   const loginView = byId('login-view');
   const appView = byId('app-view');
@@ -133,6 +146,14 @@ export const ADMIN_APP_JS = `
     invalid_request: 'That request was not valid.',
     not_found: 'That was not found.',
     item_not_found: 'That item was not found in Jellyfin.',
+    requests_not_configured: 'Requests need the household app and Seerr.',
+    request_declined: 'That request was declined in Seerr.',
+    request_not_pending: 'Only a pending request can be declined.',
+    request_not_cancellable: 'Only a pending, approved or failed request can be cancelled.',
+    request_granted: 'That title has arrived. Change its access in Grants instead.',
+    request_gone: 'Seerr no longer has that request.',
+    radarr_removal_not_offered: 'Removing from Radarr is not available for this title.',
+    title_not_held: 'That title is no longer held. Change its access in Grants.',
   };
   // While Jellyfin cannot answer the server's session check, the server keeps the session and allows another check
   // 30 seconds later: the UI keeps its view and asks again, backing off to two minutes, never while the tab is hidden.
@@ -147,6 +168,7 @@ export const ADMIN_APP_JS = `
     library: ['Jellyfin library', 'Your media library', 'Browse synchronized movies and series, then assign access in bulk.'],
     grants: ['Access policies', 'Access grants', 'Review protected titles, request owners, and applied Jellyfin policies.'],
     groups: ['Shared audiences', 'Access groups', 'Organize Jellyfin users into reusable library-access audiences.'],
+    requests: ['Household app', 'Requests', 'Approve, decline or cancel what households asked for, and release held titles.'],
   };
 
   function scrollToTop() {
@@ -419,7 +441,7 @@ export const ADMIN_APP_JS = `
 
   function userName(id) {
     const user = state.users.find((entry) => entry.id.toLowerCase() === String(id).toLowerCase());
-    return user ? user.name : id;
+    return user ? user.name : id || 'Unknown requester';
   }
 
   function catalogItem(itemId) {
@@ -1008,7 +1030,208 @@ export const ADMIN_APP_JS = `
   byId('group-form').addEventListener('submit', saveGroup);
   byId('user-form').addEventListener('submit', createUser);
   byId('access-form').addEventListener('submit', previewAccess);
+  byId('request-action-form').addEventListener('submit', confirmRequestAction);
+  byId('release-form').addEventListener('submit', confirmRelease);
+  byId('refresh-requests').addEventListener('click', loadRequests);
+  ['requests-search', 'requests-household', 'requests-status', 'requests-type'].forEach((id) => byId(id).addEventListener(id === 'requests-search' ? 'input' : 'change', renderRequests));
   document.querySelectorAll('.dialog-close').forEach((button) => button.addEventListener('click', () => button.closest('dialog').close()));
+  const ROW_STATUS = { requested: 'Requested', ready: 'Ready', failed: 'Failed', declined: 'Declined', deleted: 'Deleted', cancelled: 'Cancelled' };
+  const SEERR_STATUS = { pending: 'Pending', approved: 'Approved', declined: 'Declined', failed: 'Failed', completed: 'Completed', gone: 'Gone from Seerr', unknown: 'Seerr unreadable' };
+
+  // The Requests tab is loaded when it is opened (and refreshed), never with the rest: it reads Seerr.
+  async function loadRequests() {
+    const epoch = sessionEpoch;
+    byId('requests-summary').textContent = 'Loading…';
+    try {
+      const body = await api('/v1/app/requests');
+      assertSession(epoch);
+      state.appRequests = body.requests || [];
+      state.heldTitles = body.held || [];
+      state.requestsUnavailable = '';
+    } catch (error) {
+      if (error.stale) return;
+      state.appRequests = [];
+      state.heldTitles = [];
+      state.requestsUnavailable = error.message;
+      if (error.status === 401) return;
+    }
+    state.requestsLoaded = true;
+    renderRequests();
+  }
+
+  function titleText(entry) {
+    return (entry.title || (entry.mediaType === 'movie' ? 'Film' : 'Series') + ' · TMDB ' + entry.tmdbId) + (entry.year ? ' (' + entry.year + ')' : '');
+  }
+
+  function householdName(id) {
+    const group = state.groups.find((entry) => entry.id === id);
+    return group ? group.name : id;
+  }
+
+  function matchesStatus(row, status) {
+    if (!status) return true;
+    if (status === 'waiting') return row.seerrStatus === 'pending' || row.seerrStatus === 'approved';
+    if (status === 'pending' || status === 'approved') return row.seerrStatus === status;
+    if (status === 'failed') return row.status === 'failed' || row.status === 'declined';
+    if (status === 'cancelled') return row.status === 'cancelled' || row.status === 'deleted';
+    if (status === 'held') return row.held;
+    return row.status === status;
+  }
+
+  function filteredRequests() {
+    const query = byId('requests-search').value.trim().toLowerCase();
+    const household = byId('requests-household').value;
+    const status = byId('requests-status').value;
+    const type = byId('requests-type').value;
+    return state.appRequests.filter((row) => (!type || row.mediaType === type)
+      && (!household || row.households.some((entry) => entry.id === household))
+      && matchesStatus(row, status)
+      && (!query || [titleText(row), row.requester.name].some((text) => text.toLowerCase().includes(query))));
+  }
+
+  function renderRequests() {
+    byId('requests-count').textContent = state.requestsLoaded ? String(state.appRequests.length) : '';
+    const select = byId('requests-household');
+    const chosen = select.value;
+    const households = new Map(state.groups.map((group) => [group.id, group.name]));
+    state.appRequests.forEach((row) => row.households.forEach((entry) => { if (!households.has(entry.id)) households.set(entry.id, entry.name); }));
+    select.replaceChildren(node('option', { value: '', text: 'All households' }), ...[...households].sort((left, right) => left[1].localeCompare(right[1]))
+      .map(([id, name]) => node('option', { value: id, text: name })));
+    select.value = households.has(chosen) ? chosen : '';
+    const list = byId('household-requests-list');
+    if (state.requestsUnavailable) {
+      byId('requests-summary').textContent = '';
+      list.replaceChildren(node('div', { class: 'empty' }, [node('strong', { text: 'Requests unavailable' }), node('span', { text: state.requestsUnavailable })]));
+    } else {
+      const rows = filteredRequests();
+      byId('requests-summary').textContent = rows.length === state.appRequests.length
+        ? state.appRequests.length + ' request' + (state.appRequests.length === 1 ? '' : 's')
+        : rows.length + ' of ' + state.appRequests.length + ' requests shown';
+      list.replaceChildren(...(rows.length ? rows.map(requestRow) : [node('div', { class: 'empty' }, [
+        node('strong', { text: state.appRequests.length ? 'No requests match' : 'No household requests yet' }),
+        node('span', { text: state.appRequests.length ? 'Change the filters to see more.' : 'Requests appear here when a household asks for a title in the app.' }),
+      ])]));
+    }
+    const held = byId('held-list');
+    held.replaceChildren(...(state.heldTitles.length ? state.heldTitles.map(heldRow) : [node('div', { class: 'empty' }, [
+      node('strong', { text: 'Nothing held' }),
+      node('span', { text: 'A cancelled title that arrives with nobody following it is listed here.' }),
+    ])]));
+  }
+
+  function requestRow(row) {
+    const title = titleText(row);
+    const pills = [node('span', { class: 'pill status-' + row.status, text: ROW_STATUS[row.status] || row.status })];
+    if (row.seerrStatus) pills.push(node('span', { class: 'pill seerr-' + row.seerrStatus, text: 'Seerr: ' + (SEERR_STATUS[row.seerrStatus] || row.seerrStatus) }));
+    if (row.held) pills.push(node('span', { class: 'pill held', text: 'Held' }));
+    else if (row.withdrawn) pills.push(node('span', { class: 'pill', text: 'Withdrawn' }));
+    const actions = [];
+    if (row.actions.approve) actions.push(actionButton('Approve', 'button primary', row, 'approve'));
+    if (row.actions.decline) actions.push(actionButton('Decline', 'button quiet', row, 'decline'));
+    if (row.actions.cancel) actions.push(actionButton('Cancel request', 'button danger', row, 'cancel'));
+    const following = row.households.map((entry) => entry.name + (entry.status === 'requested' ? '' : ' (' + (ROW_STATUS[entry.status] || entry.status).toLowerCase() + ')'));
+    return node('article', { class: 'request-row' }, [
+      node('div', { class: 'grant-main' }, [
+        node('div', { class: 'grant-title' }, [node('h3', { text: title, title }), node('span', { class: 'type', text: row.mediaType === 'movie' ? 'Film' : 'Series' })]),
+        node('span', { class: 'meta', text: 'Requested ' + row.requestedOn + ' by ' + row.requester.name + ' · ' + row.householdName }),
+        row.seasons.length ? node('span', { class: 'meta', text: 'Seasons ' + row.seasons.join(', ') }) : node('span'),
+      ]),
+      node('div', { class: 'grant-section' }, [node('strong', { text: 'Households' }), node('small', { text: following.join(', ') + (row.followers ? ' · ' + row.followers + ' following' : '') })]),
+      node('div', { class: 'pill-row' }, pills),
+      node('div', { class: 'card-actions' }, actions),
+    ]);
+  }
+
+  function actionButton(label, className, row, action) {
+    const button = node('button', { class: className, type: 'button', text: label });
+    button.setAttribute('aria-label', label + ': ' + titleText(row));
+    button.addEventListener('click', () => openRequestAction(row, action));
+    return button;
+  }
+
+  function openRequestAction(row, action) {
+    const title = titleText(row);
+    const others = row.households.length;
+    const copy = {
+      approve: ['Approve request', 'Approve ' + title + ' in Seerr? It is sent to ' + (row.mediaType === 'movie' ? 'Radarr' : 'Sonarr') + ' to download.', ''],
+      decline: ['Decline request', 'Decline ' + title + ' in Seerr? ' + (others === 1 ? 'The household that asked sees' : 'All ' + others + ' households following it see') + ' “We couldn’t get this”.', ''],
+      cancel: ['Cancel request', 'Cancel ' + title + ' for every household? ' + (others === 1 ? 'The household that asked goes' : 'All ' + others + ' households go') + ' back to “Get this”, and the request is deleted in Seerr.',
+        (row.mediaType === 'movie' && row.actions.removeFromRadarr ? 'Without removing it from Radarr, it may still download. It is then held for no household until you release it'
+          : 'It may still download. It is then held for no household until you release it') + '. A request that follows the join rules (a title or series Jellyfin already had) is the exception: a public title stays public.'],
+    }[action];
+    state.pendingAction = { row, action };
+    byId('request-action-title').textContent = copy[0];
+    byId('request-action-text').textContent = copy[1];
+    byId('request-action-warning').textContent = copy[2];
+    byId('request-action-warning').hidden = !copy[2];
+    byId('request-radarr').checked = false;
+    byId('request-radarr-option').hidden = !(action === 'cancel' && row.mediaType === 'movie' && row.actions.removeFromRadarr);
+    byId('request-action-confirm').textContent = copy[0];
+    byId('request-action-confirm').className = 'button ' + (action === 'approve' ? 'primary' : 'danger');
+    byId('request-action-dialog').showModal();
+  }
+
+  async function confirmRequestAction(event) {
+    event.preventDefault();
+    const pending = state.pendingAction;
+    if (!pending) return;
+    const body = pending.action === 'cancel' && !byId('request-radarr-option').hidden && byId('request-radarr').checked ? { removeFromRadarr: true } : undefined;
+    await busy(async (live) => {
+      const result = await api('/v1/app/requests/' + encodeURIComponent(pending.row.requestId) + '/' + pending.action, Object.assign({ method: 'POST' }, body ? { body: JSON.stringify(body) } : {}));
+      live();
+      state.pendingAction = null;
+      byId('request-action-dialog').close();
+      const done = { approve: 'Approved', decline: 'Declined', cancel: 'Cancelled' }[pending.action];
+      toast(result.changed === false ? 'Already ' + done.toLowerCase() + '.' : done + (result.removedFromRadarr ? ' and removed from Radarr.' : '.'));
+    });
+    // Also after a failure: a cancel Seerr could not finish has still sent the households back to Get this.
+    if (state.activeTab === 'requests') await loadRequests();
+  }
+
+  function heldRow(entry) {
+    const title = titleText(entry);
+    const release = node('button', { class: 'button primary', type: 'button', text: 'Release' });
+    release.setAttribute('aria-label', 'Release ' + title);
+    release.addEventListener('click', () => openRelease(entry));
+    return node('article', { class: 'request-row' }, [
+      node('div', { class: 'grant-main' }, [
+        node('div', { class: 'grant-title' }, [node('h3', { text: title, title }), node('span', { class: 'type', text: entry.mediaType === 'movie' ? 'Film' : 'Series' })]),
+        node('span', { class: 'meta', text: 'Cancelled ' + entry.cancelledAt.slice(0, 10) + (entry.grantedAt ? ' · arrived ' + entry.grantedAt.slice(0, 10) : '') }),
+      ]),
+      node('div', { class: 'grant-section' }, [node('strong', { text: 'Who can watch' }), node('small', { text: 'Nobody but Jellyfin administrators' })]),
+      node('div', { class: 'pill-row' }, [node('span', { class: 'pill held', text: 'Held' })]),
+      node('div', { class: 'card-actions' }, [release]),
+    ]);
+  }
+
+  function openRelease(entry) {
+    state.pendingRelease = entry;
+    byId('release-title').textContent = 'Release ' + titleText(entry);
+    byId('release-text').textContent = 'The households you choose can watch it. Everyone else still cannot.';
+    byId('release-error').textContent = '';
+    byId('release-options').replaceChildren(...state.groups.map((group) => checkOption('release-household', group.id, group.name, group.id, false)));
+    byId('release-dialog').showModal();
+  }
+
+  async function confirmRelease(event) {
+    event.preventDefault();
+    const entry = state.pendingRelease;
+    if (!entry) return;
+    const householdIds = checkedValues('release-household');
+    if (!householdIds.length) {
+      byId('release-error').textContent = 'Choose at least one household.';
+      return;
+    }
+    await busy(async (live) => {
+      await api('/v1/app/held/' + encodeURIComponent(entry.requestId) + '/release', { method: 'POST', body: JSON.stringify({ householdIds }) });
+      live();
+      state.pendingRelease = null;
+      byId('release-dialog').close();
+      toast('Released to ' + householdIds.map(householdName).join(', ') + '.');
+    });
+    if (state.activeTab === 'requests') await loadRequests();
+  }
+
   function activateTab(tab) {
     if (state.activeTab === 'library' && tab !== 'library') resetLibraryView();
     state.activeTab = tab;
@@ -1021,6 +1244,8 @@ export const ADMIN_APP_JS = `
     byId('grants-panel').hidden = tab !== 'grants';
     byId('library-panel').hidden = tab !== 'library';
     byId('groups-panel').hidden = tab !== 'groups';
+    byId('requests-panel').hidden = tab !== 'requests';
+    if (tab === 'requests') loadRequests();
     scrollToTop();
   }
 

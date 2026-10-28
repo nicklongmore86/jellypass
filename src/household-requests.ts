@@ -4,7 +4,7 @@ import { getThisEligibility, managesSeerrRequests, readBlocklist, type MediaType
 import type { JellyfinClient } from './jellyfin.js';
 import { SeerrError, SeerrUnmappedUserError, type SeerrClient, type SeerrMemberClient, type SeerrTitleRecord } from './seerr.js';
 import type { BackgroundTasks } from './shutdown.js';
-import type { GrantStore } from './store.js';
+import { becomesTitleHold, type GrantStore } from './store.js';
 import type { AppRequestIntent, AppRequestRecord, AppRequestStatus, AppSafetyTombstone } from './types.js';
 
 /**
@@ -373,6 +373,15 @@ export class HouseholdRequests {
     this.#recordBranch('cancel_deleted');
     // Seerr no longer has the request, so nothing can grant it: its withdrawal is not needed.
     await this.#joins.serialized(() => this.#store.writeAppRequests({ forgetWithdrawals: [requestId] }));
+  }
+
+  /**
+   * Runs `work` in the title's turn: after every "Get this" and cancel already holding it, and before any that come
+   * later, so an administrator's action on the title's request never races a call recording a follower of it (see
+   * AdminRequests).
+   */
+  public inTitleTurn<T>(mediaType: MediaType, tmdbId: number, work: () => Promise<T>): Promise<T> {
+    return this.#withLock(this.#titleLocks, `${mediaType}:${tmdbId}`, work);
   }
 
   /** The caller's own view of a listed title; one that fails to read is taken as holding nothing (as in list). */
@@ -990,7 +999,7 @@ export class HouseholdRequests {
    * title hold; a check already under way is joined rather than repeated. Never rejects.
    */
   public checkTitleHolds(options: { signal?: AbortSignal } = {}): Promise<void> {
-    const possible = this.#store.listAppWithdrawals().some(([requestId, withdrawal]) => withdrawal.requesterId !== undefined
+    const possible = this.#store.listAppWithdrawals().some(([requestId, withdrawal]) => becomesTitleHold(withdrawal)
       && (withdrawal.seerrGoneAt !== undefined || !this.#store.hasHandledRequest(requestId)));
     if (!possible || options.signal?.aborted) return Promise.resolve();
     this.#holdCheck ??= this.#refreshWithdrawals(options.signal).catch((error: unknown) => {
@@ -1023,7 +1032,7 @@ export class HouseholdRequests {
     const now = this.#now();
     const due = this.#store.listAppWithdrawals()
       .filter(([requestId, withdrawal]) => !withdrawal.seerrGoneAt && !this.#store.hasHandledRequest(requestId)
-        && (withdrawal.requesterId !== undefined || now - (this.#checkedAt.get(`withdrawal:${requestId}`) ?? 0) >= REFRESH_REQUEST_EVERY_MS))
+        && (becomesTitleHold(withdrawal) || now - (this.#checkedAt.get(`withdrawal:${requestId}`) ?? 0) >= REFRESH_REQUEST_EVERY_MS))
       .sort(([left], [right]) => (this.#checkedAt.get(`withdrawal:${left}`) ?? 0) - (this.#checkedAt.get(`withdrawal:${right}`) ?? 0))
       .slice(0, MAX_REFRESH_READS);
     const gone: string[] = [];
