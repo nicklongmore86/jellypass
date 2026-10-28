@@ -441,7 +441,7 @@ export const ADMIN_APP_JS = `
 
   function userName(id) {
     const user = state.users.find((entry) => entry.id.toLowerCase() === String(id).toLowerCase());
-    return user ? user.name : id;
+    return user ? user.name : id || 'Unknown requester';
   }
 
   function catalogItem(itemId) {

@@ -4,7 +4,7 @@ import { getThisEligibility, managesSeerrRequests, readBlocklist, type MediaType
 import type { JellyfinClient } from './jellyfin.js';
 import { SeerrError, SeerrUnmappedUserError, type SeerrClient, type SeerrMemberClient, type SeerrTitleRecord } from './seerr.js';
 import type { BackgroundTasks } from './shutdown.js';
-import type { GrantStore } from './store.js';
+import { becomesTitleHold, type GrantStore } from './store.js';
 import type { AppRequestIntent, AppRequestRecord, AppRequestStatus, AppSafetyTombstone } from './types.js';
 
 /**
@@ -999,7 +999,7 @@ export class HouseholdRequests {
    * title hold; a check already under way is joined rather than repeated. Never rejects.
    */
   public checkTitleHolds(options: { signal?: AbortSignal } = {}): Promise<void> {
-    const possible = this.#store.listAppWithdrawals().some(([requestId, withdrawal]) => withdrawal.requesterId !== undefined
+    const possible = this.#store.listAppWithdrawals().some(([requestId, withdrawal]) => becomesTitleHold(withdrawal)
       && (withdrawal.seerrGoneAt !== undefined || !this.#store.hasHandledRequest(requestId)));
     if (!possible || options.signal?.aborted) return Promise.resolve();
     this.#holdCheck ??= this.#refreshWithdrawals(options.signal).catch((error: unknown) => {
@@ -1032,7 +1032,7 @@ export class HouseholdRequests {
     const now = this.#now();
     const due = this.#store.listAppWithdrawals()
       .filter(([requestId, withdrawal]) => !withdrawal.seerrGoneAt && !this.#store.hasHandledRequest(requestId)
-        && (withdrawal.requesterId !== undefined || now - (this.#checkedAt.get(`withdrawal:${requestId}`) ?? 0) >= REFRESH_REQUEST_EVERY_MS))
+        && (becomesTitleHold(withdrawal) || now - (this.#checkedAt.get(`withdrawal:${requestId}`) ?? 0) >= REFRESH_REQUEST_EVERY_MS))
       .sort(([left], [right]) => (this.#checkedAt.get(`withdrawal:${left}`) ?? 0) - (this.#checkedAt.get(`withdrawal:${right}`) ?? 0))
       .slice(0, MAX_REFRESH_READS);
     const gone: string[] = [];

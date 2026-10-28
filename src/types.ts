@@ -214,7 +214,7 @@ export interface GrantState {
  *
  * Kept while the request is not handled (at most APP_REQUEST_RETENTION_MS after the cancel), and with `requester` for as
  * long as a grant records the request. Once Seerr no longer has the request (an administrator deleted it), one with
- * `requesterId` is kept as a **title hold** (`seerrGoneAt`): the download may go on without it, so the first HD item of
+ * `requesterId` or `titleHold` is kept as a **title hold** (`seerrGoneAt`): the download may go on without it, so the first HD item of
  * the title Jellyfin has with no grant is granted to that request, held for no household (AccessService
  * applyTitleHolds); every other withdrawal is forgotten then.
  */
@@ -230,13 +230,21 @@ export interface AppWithdrawal {
    * when such a request was made, so any HD item of it that appears later is its arrival.
    */
   requesterId?: string;
-  /** When the refresh found that Seerr no longer has the request, for a withdrawal with `requesterId`: a title hold. */
+  /**
+   * With `requester`, a genuine request whose requester's Jellyfin ID is not known (an administrator declined or
+   * cancelled the request of a Seerr user no Jellyfin user is linked to): it becomes a title hold all the same (see
+   * GrantStore.becomesTitleHold), its grant recording the request with no requester (UNKNOWN_REQUESTER). A withdrawal
+   * with `requesterId` becomes one with or without this.
+   */
+  titleHold?: true;
+  /** When the refresh found that Seerr no longer has the request, for a withdrawal that becomes a title hold: one. */
   seerrGoneAt?: string;
   /**
    * When an administrator declined the request (the admin Requests tab), with `requester` and every household that
    * named it: should it still be granted (a late MEDIA_AVAILABLE, its replay, the backfill), none of them is given it,
-   * so the title is held for no household. For a genuine request it records `requesterId` too, so should Seerr then
-   * forget the request, it becomes a title hold (`seerrGoneAt`) like a cancel's. Kept and forgotten like any other
+   * so the title is held for no household. For a genuine request it records `titleHold` (and `requesterId` when the
+   * requester's Jellyfin ID is known), so should Seerr then forget the request, it becomes a title hold (`seerrGoneAt`)
+   * like a cancel's. Kept and forgotten like any other
    * withdrawal.
    */
   declinedAt?: string;

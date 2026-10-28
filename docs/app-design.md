@@ -1651,12 +1651,14 @@ repeated after it took effect, it answers the same outcome with `changed: false`
   the title still arrive through the declined request (a late `MEDIA_AVAILABLE`, its replay, the backfill or
   reconcileAll, which all decide a grant by the same rule), the grant records the request but gives none of those
   households, nor the requester, access: with nobody left, it is **held for no household** (listed under Held
-  titles), never public. For a genuine request (no record names a join rule) the withdrawal also records its
-  requester (`requesterId`: the request record's member, else Seerr's requester), as a cancel's does, so once Seerr
-  forgets the declined request (an administrator deletes it there) the withdrawal becomes a **title hold**: the title
+  titles), never public. For a genuine request (no record names a join rule) the withdrawal is also marked to become
+  a hold (`titleHold`) and records its requester when their Jellyfin ID is known (`requesterId`: the request record's
+  member, else Seerr's requester), as a cancel's does, so once Seerr forgets the declined request (an administrator
+  deletes it there) the withdrawal becomes a **title hold** even for a Seerr user no Jellyfin user is linked to (its
+  held grant then records the request with no requester, who is never an owner of it): the title
   that still arrives with no request to scan is held for no household (decided by the safety markers as they are
   then, so a tombstone naming the request still makes it a join), and a late `MEDIA_AVAILABLE` for the request still
-  gives none of the declined households access. A join request's declined withdrawal has no `requesterId`: once Seerr
+  gives none of the declined households access. A join request's declined withdrawal has neither: once Seerr
   forgets the request it is forgotten (its grant follows the join rules, never a new grant). Either lapses like any
   other withdrawal after 400 days and counts in `GET /v1/app/outstanding` (`withdrawals`, and `titleHolds` once it is
   one). Declined already (in Seerr, say): the records and the withdrawal are brought up to date.
@@ -1667,8 +1669,9 @@ repeated after it took effect, it answers the same outcome with `changed: false`
      radarr_removal_not_offered`.
   2. **In one write, before Seerr is asked anything:** every record still following the request is `deleted` (each
      household is back to **Get this**, as decision 3 has it), and a withdrawal for the request (`AppWithdrawal`, with
-     `requester` and every household that named it) is added. With `requesterId` (the request record's member, or
-     Seerr's requester for a request JellyPass only followed) when the request is a genuine one (no record's
+     `requester` and every household that named it) is added. Marked to become a hold (`titleHold`, with
+     `requesterId`, the request record's member, or Seerr's requester for a request JellyPass only followed, when
+     their Jellyfin ID is known: the hold needs none) when the request is a genuine one (no record's
      `joinOnGrant`: Jellyfin had no item of the title when it was made, so any item of it is its arrival), unless every
      HD item Jellyfin has of the title now is on an active grant already (decided: nothing to hold). An item that
      arrived but that no grant holds yet (its webhook has not come, or failed) is held like a later arrival, never
@@ -1679,7 +1682,7 @@ repeated after it took effect, it answers the same outcome with `changed: false`
   3. With `removeFromRadarr`: Seerr `DELETE /media/:mediaId/file` (HD), which has Radarr remove the movie and delete
      its files with the credentials Seerr holds. JellyPass holds no Radarr credential.
   4. Seerr `DELETE /request/:id` with the admin key (any status).
-  5. In the write queue, the request is recorded as gone: the withdrawal with `requesterId` becomes a **title hold**
+  5. In the write queue, the request is recorded as gone: the withdrawal marked so becomes a **title hold**
      (`seerrGoneAt`) at once, so whatever arrives is held for no household (listed under Held titles), never public;
      one without is forgotten, and an arrival then follows the ordinary rules (a title Jellyfin already had stays as
      it is). This closes the gap a delete in Seerr leaves (see "Residuals"): the hold exists before Seerr forgets the

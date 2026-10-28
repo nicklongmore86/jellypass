@@ -14,6 +14,7 @@ import {
   T_MOVIE,
   T_TV,
   get,
+  seerrRequest,
   startApp,
   world,
 } from './support/household-app.mjs';
@@ -67,6 +68,23 @@ async function followed(t, options = {}, startOptions = {}) {
   await getThis(app);
   await getThis(app, AS_BOB);
   assert.deepEqual(statuses(app), [[HOME, 'request', 'pending'], [OTHER, 'interest', 'pending']]);
+  return app;
+}
+
+/** A Seerr user no Jellyfin user is linked to (live Seerr has one: user 15), and the pending request it made of the movie. */
+const UNLINKED = 15;
+const UNLINKED_REQUEST = 7380101;
+
+/** The unlinked Seerr user's request, which both households follow as an interest ("Get this" joins it). */
+async function followedUnlinked(t, options = {}, startOptions = {}) {
+  const made = seerrRequest({ type: 'movie', tmdbId: T_MOVIE, status: options.autoApprove ? 2 : 1 });
+  made.id = UNLINKED_REQUEST;
+  made.requestedBy = { ...made.requestedBy, id: UNLINKED, jellyfinUserId: null };
+  const app = await start(t, world({ ...options, requests: { [UNLINKED]: [made] } }), startOptions);
+  await getThis(app);
+  await getThis(app, AS_BOB);
+  assert.deepEqual(statuses(app), [[HOME, 'interest', 'pending'], [OTHER, 'interest', 'pending']]);
+  assert.deepEqual(app.store.listAppRequests().map(([, record]) => record.seerrRequestId), [String(UNLINKED_REQUEST), String(UNLINKED_REQUEST)]);
   return app;
 }
 
@@ -219,6 +237,33 @@ describe('admin requests: approve and decline', { timeout: 60_000 }, () => {
     assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, []);
   });
 
+  it('holds a title that arrives through a declined request of a Seerr user no Jellyfin user is linked to, by every arrival path', async (t) => {
+    const app = await followedUnlinked(t);
+    assert.deepEqual((await act(app, UNLINKED_REQUEST, 'decline')).json(), { status: 'declined', changed: true });
+    // Seerr still has the request (declined), and its requester has no Jellyfin ID: the grant records nobody.
+    app.jellyfin.state.items.push(movieItem());
+    seerrRequestOf(app, UNLINKED_REQUEST).media.jellyfinMediaId = ITEMS.tMovie;
+    assert.ok([200, 202].includes((await webhook(app, UNLINKED_REQUEST, '')).status));
+    const grant = app.store.get(ITEMS.tMovie);
+    assert.deepEqual([grant?.active, grant?.requests, grant?.groupIds, grant?.owners], [true, { [String(UNLINKED_REQUEST)]: '' }, [], []]);
+    for (const user of [ALICE, BOB]) assert.ok(blocked(app, user), user);
+    assert.deepEqual((await listing(app)).held.map((title) => [title.requestId, title.itemId]), [[String(UNLINKED_REQUEST), ITEMS.tMovie]]);
+    await app.requests.refresh();
+    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, []);
+
+    // The backfill, for a request no webhook came for, does the same.
+    const missed = await followedUnlinked(t);
+    assert.deepEqual((await act(missed, UNLINKED_REQUEST, 'decline')).json(), { status: 'declined', changed: true });
+    missed.jellyfin.state.items.push(movieItem());
+    const made = seerrRequestOf(missed, UNLINKED_REQUEST);
+    made.status = 2;
+    made.media = { ...made.media, status: 5, jellyfinMediaId: ITEMS.tMovie };
+    await missed.service.backfillRequests(new Date(0));
+    const backfilled = missed.store.get(ITEMS.tMovie);
+    assert.deepEqual([backfilled?.requests, backfilled?.groupIds, backfilled?.owners], [{ [String(UNLINKED_REQUEST)]: '' }, [], []]);
+    for (const user of [ALICE, BOB]) assert.ok(blocked(missed, user), user);
+  });
+
   // Codex's repro (PR #111): a declined request that an administrator then deletes in Seerr must keep its protection,
   // against the title arriving with no request to scan and against a late MEDIA_AVAILABLE for the request alike.
   describe('a declined request Seerr then forgets', () => {
@@ -269,6 +314,45 @@ describe('admin requests: approve and decline', { timeout: 60_000 }, () => {
       await app.requests.refresh();
       assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, []);
       assert.deepEqual((await listing(app)).held.map((title) => [title.requestId, title.itemId]), [[String(FIRST), ITEMS.tMovie]]);
+    });
+
+    // Codex's repro (PR #111): the requester is a Seerr user no Jellyfin user is linked to, so the hold cannot record
+    // them; it must not depend on their Jellyfin ID.
+    it('becomes a title hold for a Seerr user no Jellyfin user is linked to, followed by both households', async (t) => {
+      let clock = Date.now();
+      const app = await followedUnlinked(t, {}, { now: () => clock });
+      assert.deepEqual((await act(app, UNLINKED_REQUEST, 'decline')).json(), { status: 'declined', changed: true });
+      const [[requestId, withdrawal]] = app.store.listAppWithdrawals();
+      assert.deepEqual([requestId, withdrawal.requester, withdrawal.titleHold, withdrawal.requesterId, withdrawal.householdIds],
+        [String(UNLINKED_REQUEST), true, true, undefined, [HOME, OTHER]]);
+      forget(app, UNLINKED_REQUEST);
+      clock += 11 * 60 * 1000;
+      await app.requests.refresh();
+      assert.deepEqual(app.store.listAppTitleHolds().map(([id, hold]) => [id, hold.seerrGoneAt !== undefined]), [[String(UNLINKED_REQUEST), true]]);
+      const outstanding = (await admin(app, '/v1/app/outstanding')).json();
+      assert.deepEqual([outstanding.clear, outstanding.withdrawals.total, outstanding.withdrawals.titleHolds], [false, 1, 1]);
+      // A late MEDIA_AVAILABLE before the hold is applied (Seerr has no Jellyfin ID for the requester) gives it nobody.
+      app.jellyfin.state.items.push(movieItem());
+      await webhook(app, UNLINKED_REQUEST, '');
+      for (const user of [ALICE, BOB]) assert.ok(blocked(app, user), user);
+      const grant = app.store.get(ITEMS.tMovie);
+      assert.deepEqual([grant?.active, grant?.requests, grant?.groupIds, grant?.owners], [true, { [String(UNLINKED_REQUEST)]: '' }, [], []]);
+      for (const user of [ALICE, BOB]) assert.ok(blocked(app, user), user);
+      assert.deepEqual((await listing(app)).held.map((title) => [title.requestId, title.itemId]), [[String(UNLINKED_REQUEST), ITEMS.tMovie]]);
+      // A late MEDIA_AVAILABLE after it (handled already) changes nothing either.
+      assert.ok([200, 202].includes((await webhook(app, UNLINKED_REQUEST, '')).status));
+      assert.deepEqual([app.store.get(ITEMS.tMovie).groupIds, app.store.get(ITEMS.tMovie).owners], [[], []]);
+      for (const user of [ALICE, BOB]) assert.ok(blocked(app, user), user);
+      assert.deepEqual(statuses(app), [[HOME, 'interest', 'declined'], [OTHER, 'interest', 'declined']]);
+      // The hold is applied: it stays a withdrawal (keeping the unknown requester out), no longer a hold.
+      assert.deepEqual(app.store.listAppTitleHolds(), []);
+      assert.deepEqual(app.store.listAppWithdrawals().map(([id, kept]) => [id, kept.seerrGoneAt]), [[String(UNLINKED_REQUEST), undefined]]);
+      // Released to one household, it is that household's only.
+      assert.deepEqual((await admin(app, `/v1/app/held/${UNLINKED_REQUEST}/release`, { method: 'POST', body: { householdIds: [OTHER] } })).json(),
+        { status: 'released', changed: true, itemId: ITEMS.tMovie });
+      assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, [OTHER]);
+      assert.ok(blocked(app, ALICE));
+      assert.ok(!blocked(app, BOB));
     });
 
     it('is forgotten for a join request: no title hold, and its grant follows the join rules, never a new grant', async (t) => {
@@ -363,6 +447,26 @@ describe('admin requests: cancel', { timeout: 60_000 }, () => {
     const listed = await listing(app);
     assert.deepEqual(listed.held.map(({ requestId, itemId, title, mediaType }) => [requestId, itemId, title, mediaType]),
       [[String(FIRST), ITEMS.tMovie, 'Synthetic Movie One', 'movie']]);
+  });
+
+  it('holds what arrives for a Seerr user no Jellyfin user is linked to, followed by both households', async (t) => {
+    let clock = Date.now();
+    const app = await followedUnlinked(t, { autoApprove: true }, { now: () => clock });
+    const answer = await act(app, UNLINKED_REQUEST, 'cancel');
+    assert.deepEqual([answer.status, answer.json()], [200, { status: 'cancelled', changed: true, titleHold: true, removedFromRadarr: false }]);
+    assert.equal(seerrRequestOf(app, UNLINKED_REQUEST), undefined);
+    assert.deepEqual(app.store.listAppTitleHolds().map(([id, hold]) => [id, hold.titleHold, hold.requesterId, hold.householdIds]),
+      [[String(UNLINKED_REQUEST), true, undefined, [HOME, OTHER]]]);
+    assert.deepEqual(statuses(app), [[HOME, 'interest', 'deleted'], [OTHER, 'interest', 'deleted']]);
+    clock += 11 * 60 * 1000;
+    await app.requests.refresh();
+    assert.equal(app.store.listAppTitleHolds().length, 1);
+    app.jellyfin.state.items.push(movieItem());
+    await app.requests.refresh();
+    const grant = app.store.get(ITEMS.tMovie);
+    assert.deepEqual([grant?.active, grant?.requests, grant?.groupIds, grant?.owners], [true, { [String(UNLINKED_REQUEST)]: '' }, [], []]);
+    for (const user of [ALICE, BOB]) assert.ok(blocked(app, user), user);
+    assert.deepEqual((await listing(app)).held.map((title) => [title.requestId, title.itemId]), [[String(UNLINKED_REQUEST), ITEMS.tMovie]]);
   });
 
   it('keeps the households withdrawn when Seerr cannot delete the request, so a title that then arrives is held, never given', async (t) => {

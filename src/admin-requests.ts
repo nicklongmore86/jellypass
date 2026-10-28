@@ -3,7 +3,7 @@ import type { JellyfinClient } from './jellyfin.js';
 import type { HouseholdRequests } from './household-requests.js';
 import { AttemptCounter } from './rate-limit.js';
 import { SeerrError, type SeerrClient, type SeerrTitleRecord } from './seerr.js';
-import { normalizeId, type GrantStore } from './store.js';
+import { becomesTitleHold, normalizeId, type GrantStore } from './store.js';
 import type { AppRequestRecord } from './types.js';
 
 /** Administrator actions allowed in each window of {@link ADMIN_ACTION_WINDOW_MS}, all administrators together. */
@@ -277,11 +277,12 @@ export class AdminRequests {
    * Declines a pending request in Seerr and, in the same turn of the write queue (so no webhook, replay, backfill or
    * title hold decides its grant in between), marks every record following it `declined` at once (each household sees
    * "We couldn't get this") and writes a declined withdrawal (AppWithdrawal `declinedAt`, with `requester` and every
-   * household that named it, and for a genuine request its requester, `requesterId`): should the title still arrive
-   * through the request, its grant gives none of them (nor the requester) access, so it is held for no household, never
-   * public; should Seerr then forget the request, the withdrawal becomes a title hold, so this holds still (for the
-   * arrival and for a late webhook alike). Declined already: brought up to date. A
-   * request granted already is left as it is (`409 request_granted`).
+   * household that named it, and for a genuine request `titleHold`, with its requester, `requesterId`, when their
+   * Jellyfin ID is known): should the title still arrive through the request, its grant gives none of them (nor the
+   * requester) access, so it is held for no household, never public; should Seerr then forget the request, the
+   * withdrawal becomes a title hold whether or not the requester is known (a Seerr user no Jellyfin user is linked to),
+   * so this holds still (for the arrival and for a late webhook alike). Declined already: brought up to date. A request
+   * granted already is left as it is (`409 request_granted`).
    */
   public async decline(requestId: string): Promise<{ status: 'declined'; changed: boolean }> {
     const title = this.#titleOf(requestId);
@@ -289,9 +290,10 @@ export class AdminRequests {
     return this.#requests.inTitleTurn(title.mediaType, title.tmdbId, async () => {
       const state = await this.#state(requestId);
       if (state.status !== PENDING && state.status !== DECLINED) throw new ConflictError('only a pending request can be declined', 'request_not_pending');
-      // The requester a title hold records (as for a cancel), for a genuine request only (no join rule): should Seerr
-      // forget the declined request, its withdrawal becomes a title hold, so the title still arrives held for no
-      // household and a late webhook still gives none of them it. A join request's withdrawal is forgotten then.
+      // A genuine request only (no join rule) becomes a title hold (as for a cancel), with its requester when known:
+      // should Seerr forget the declined request, the title still arrives held for no household and a late webhook
+      // still gives none of them it, never depending on the requester's Jellyfin ID (the hold needs none). A join
+      // request's withdrawal is forgotten then.
       const genuine = !this.#naming(requestId).some(([, record]) => record.joinOnGrant !== undefined);
       let asked = genuine ? this.#naming(requestId).find(([, record]) => record.branch === 'request')?.[1].jellyfinUserId : undefined;
       if (genuine && !asked) {
@@ -315,11 +317,12 @@ export class AdminRequests {
         const known = this.#store.listAppWithdrawals().find(([id]) => id === requestId)?.[1];
         const households = [...new Set(this.#naming(requestId).map(([, record]) => record.householdId))];
         if (update.length === 0 && known?.declinedAt && households.every((id) => known.householdIds.includes(id))
-          && (!requesterId || known.requesterId)) return declined;
+          && (!genuine || known.titleHold) && (!requesterId || known.requesterId)) return declined;
         await this.#store.writeAppRequests({
           update,
           withdraw: households.map((householdId) => ({
-            requestId, mediaType: title.mediaType, tmdbId: title.tmdbId, householdId, requester: true, declined: true, ...(requesterId ? { requesterId } : {}),
+            requestId, mediaType: title.mediaType, tmdbId: title.tmdbId, householdId, requester: true, declined: true,
+            ...(genuine ? { titleHold: true } : {}), ...(requesterId ? { requesterId } : {}),
           })),
         });
         return declined || update.length > 0;
@@ -359,17 +362,17 @@ export class AdminRequests {
           throw new ConflictError('removing from Radarr is offered only for a movie Jellyfin does not have, with Radarr set up in Seerr', 'radarr_removal_not_offered');
         }
       }
-      // The requester whom a title hold records: only for a genuine request (no join rule; Jellyfin had no item of the
-      // title when it was made, so any item of it is its arrival), unless every item Jellyfin has now is on an active
-      // grant already (decided: nothing to hold). An item that arrived but whose grant is not decided yet (no webhook
-      // granted it so far) is held, never left public once Seerr forgets the request.
+      // A title hold, with its requester when known: only for a genuine request (no join rule; Jellyfin had no item of
+      // the title when it was made, so any item of it is its arrival), unless every item Jellyfin has now is on an
+      // active grant already (decided: nothing to hold). An item that arrived but whose grant is not decided yet (no
+      // webhook granted it so far) is held, never left public once Seerr forgets the request, whether or not the
+      // requester has a Jellyfin ID (a Seerr user no Jellyfin user is linked to).
       const records = this.#naming(requestId);
       const asked = records.find(([, record]) => record.branch === 'request')?.[1].jellyfinUserId
         ?? seerrTitle.requests.find((request) => request.id === requestId)?.requesterJellyfinId;
       const undecided = !present || items.some((itemId) => this.#store.get(itemId)?.active !== true);
       const genuine = undecided && !records.some(([, record]) => record.joinOnGrant !== undefined);
-      const requesterId = genuine && asked ? normalizeId(asked) : undefined;
-      await this.#withdrawAll(requestId, title, requesterId, false);
+      await this.#withdrawAll(requestId, title, genuine ? { requesterId: asked ? normalizeId(asked) : undefined } : undefined, false);
       let removedFromRadarr = false;
       if (options.removeFromRadarr) {
         try {
@@ -413,9 +416,15 @@ export class AdminRequests {
   /**
    * Sends every household following the request back to Get this, with a withdrawal for the request (all of them,
    * `requester`), in one write in the write queue. Resolves whether anything changed. Refused if a grant was decided
-   * for the request meanwhile. `gone`: Seerr no longer has it, so it is treated as found gone by the refresh.
+   * for the request meanwhile. `hold`: it becomes a title hold (AppWithdrawal `titleHold`), with its requester when
+   * known. `gone`: Seerr no longer has it, so it is treated as found gone by the refresh.
    */
-  async #withdrawAll(requestId: string, title: { mediaType: MediaType; tmdbId: number }, requesterId: string | undefined, gone: boolean): Promise<boolean> {
+  async #withdrawAll(
+    requestId: string,
+    title: { mediaType: MediaType; tmdbId: number },
+    hold: { requesterId: string | undefined } | undefined,
+    gone: boolean,
+  ): Promise<boolean> {
     return this.#service.serialized(async () => {
       if (this.#store.hasHandledRequest(requestId)) throw new ConflictError('the request was granted already; revoke its access instead', 'request_granted');
       const following = this.#following(requestId);
@@ -434,7 +443,8 @@ export class AdminRequests {
             tmdbId: title.tmdbId,
             householdId,
             requester: true,
-            ...(requesterId ? { requesterId } : {}),
+            ...(hold ? { titleHold: true } : {}),
+            ...(hold?.requesterId ? { requesterId: hold.requesterId } : {}),
           })),
         }),
       });
@@ -472,7 +482,7 @@ export class AdminRequests {
   }
 
   #isTitleHold(requestId: string): boolean {
-    return this.#store.listAppWithdrawals().some(([id, withdrawal]) => id === requestId && withdrawal.seerrGoneAt !== undefined && withdrawal.requesterId !== undefined);
+    return this.#store.listAppWithdrawals().some(([id, withdrawal]) => id === requestId && withdrawal.seerrGoneAt !== undefined && becomesTitleHold(withdrawal));
   }
 
   #count(): void {
