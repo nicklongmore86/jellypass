@@ -4,10 +4,13 @@ import {
   type DiscoverSources,
   type Failure,
   type NetworkList,
+  DISCOVER_LISTS,
   discoverList,
   discoverSources,
   networkList,
   studioList,
+  validId,
+  validPage,
 } from './api.js';
 import type { SessionWatch, Stamp } from './session-watch.js';
 
@@ -48,6 +51,17 @@ export function discoverKey(request: DiscoverRequest): string {
   }
 }
 
+/** Whether the readers would send `request`: checked before the cache or a call in flight is looked at, so an address they would refuse never shares an entry (or a call) with a valid one. */
+function valid(request: DiscoverRequest): boolean {
+  switch (request.kind) {
+    case 'list': return DISCOVER_LISTS.indexOf(request.list) >= 0 && (request.page === undefined || validPage(request.page));
+    case 'sources': return true;
+    case 'network': return validId(request.id) && (request.list === 'series' || request.list === 'films' || request.list === 'all') && (request.page === undefined || validPage(request.page));
+    case 'studio': return validId(request.id) && (request.page === undefined || validPage(request.page));
+    default: return false;
+  }
+}
+
 interface Kept {
   /** The parsed answer, or the failure it was. */
   result: { ok: true; value: unknown } | Failure;
@@ -66,7 +80,7 @@ interface Kept {
  *   {@link DISCOVER_CACHE_TTL_MS} on both the monotonic and the wall clock (a sleep ends it, so does a clock set back).
  * - **One call per address.** Two askers of the same address at once share one call; a kept answer costs none (so Back
  *   from a title and switching chips back are free).
- * - **No retry by itself.** A failure is remembered for {@link DISCOVER_FAILURE_MS}; asking again sooner needs `retry`. A `429`
+ * - **No retry by itself.** A failure (a `429` apart) is remembered for {@link DISCOVER_FAILURE_MS}; asking again sooner needs `retry`. A `429`
  *   stops every call until its `Retry-After` is over (or {@link DISCOVER_BACKOFF_MS} when it did not say), a retry included;
  *   what is asked in that time gets the `429` again, with the time left, without a call. A `401` empties the cache.
  */
@@ -93,7 +107,7 @@ export class DiscoverData {
 
   /** What is kept for `request` right now (no call, no clock beyond the TTL), so a page can draw its rows before anything is asked. */
   public peek<R extends DiscoverRequest>(request: R): { ok: true; value: ValueOf<R> } | Failure | undefined {
-    if (!this.#sync()) return undefined;
+    if (!this.#sync() || !valid(request)) return undefined;
     const kept = this.#recall(discoverKey(request), true);
     return kept ? (kept.result as { ok: true; value: ValueOf<R> } | Failure) : undefined;
   }
@@ -105,6 +119,7 @@ export class DiscoverData {
   public async get<R extends DiscoverRequest>(request: R, options: { retry?: boolean } = {}): Promise<DiscoverResult<R>> {
     const session = this.#sync();
     if (!session) return { ok: false, status: 401 };
+    if (!valid(request)) return { ok: false, status: 400 };
     const key = discoverKey(request);
     const kept = this.#recall(key, !options.retry);
     if (kept) return kept.result as DiscoverResult<R>;
@@ -184,8 +199,9 @@ export class DiscoverData {
     if (!this.#watch.holds(stamp)) return { ok: false, stale: true };
     if (!result.ok && result.status === 401) this.forget();
     if (!result.ok && result.status === 429) this.#blockedUntil = Math.max(this.#blockedUntil, this.#now() + (result.retryAfterMs ?? DISCOVER_BACKOFF_MS));
-    // A refused token (401: the cache is emptied above) and an address the reader would not send (400) are not remembered.
-    if (result.ok || (result.status !== 401 && result.status !== 400)) {
+    // A refused token (401: the cache is emptied above), an address the reader would not send (400) and a rate limit (the
+    // block above holds it, to its deadline, not for the failure's 30 seconds) are not remembered.
+    if (result.ok || (result.status !== 401 && result.status !== 400 && result.status !== 429)) {
       this.#entries.delete(key);
       this.#entries.set(key, { result, mono: this.#now(), wall: this.#wall() });
       while (this.#entries.size > DISCOVER_CACHE_SIZE) {

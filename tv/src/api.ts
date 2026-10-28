@@ -180,8 +180,8 @@ export type NetworkList = 'series' | 'films' | 'all';
 function pageQuery(page: number): string {
   return page > 1 ? `?page=${page}` : '';
 }
-const validPage = (page: number): boolean => Number.isInteger(page) && page >= 1 && page <= MAX_PAGE;
-const validId = (id: number): boolean => Number.isInteger(id) && id >= 1 && id <= Number.MAX_SAFE_INTEGER;
+export const validPage = (page: number): boolean => Number.isInteger(page) && page >= 1 && page <= MAX_PAGE;
+export const validId = (id: number): boolean => Number.isInteger(id) && id >= 1 && id <= Number.MAX_SAFE_INTEGER;
 
 /** `GET /discover/{list}?page=`: one call. A list or page the API does not have is a `400` that is not sent. */
 export async function discoverList(fetcher: Fetch, origin: string, token: string, list: DiscoverList, page = 1): Promise<PageAnswer> {

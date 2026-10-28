@@ -10,7 +10,7 @@ import { before, describe, it } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import { parse } from 'acorn';
 import { build } from 'esbuild';
-import { ALICE, HOST_A, startApp, world } from './support/household-app.mjs';
+import { ALICE, BOB, HOST_A, startApp, world } from './support/household-app.mjs';
 import { validate } from './support/json-schema.mjs';
 import { makeTempDir } from './support/temp-dir.mjs';
 
@@ -442,6 +442,63 @@ describe('TV Discover data layer: the answer cache', () => {
   });
 });
 
+describe('TV Discover data layer: invalid requests', () => {
+  const invalid = [
+    ['page 0', { kind: 'list', list: 'trending', page: 0 }],
+    ['a negative page', { kind: 'list', list: 'trending', page: -1 }],
+    ['a page that is NaN', { kind: 'list', list: 'trending', page: Number.NaN }],
+    ['a page past the limit', { kind: 'list', list: 'trending', page: 501 }],
+    ['a list the API does not have', { kind: 'list', list: 'top-movies' }],
+    ['a network id of 0', { kind: 'network', id: 0, list: 'all' }],
+    ['a network list that does not exist', { kind: 'network', id: 213, list: 'movies' }],
+    ['a studio page of 1.5', { kind: 'studio', id: 5, page: 1.5 }],
+    ['a studio id that is NaN', { kind: 'studio', id: Number.NaN }],
+  ];
+
+  it('answers an invalid page 400 even after page one is cached: the two never share an entry', async () => {
+    const { data, api } = discover();
+    assert.ok((await data.get({ kind: 'list', list: 'trending' })).ok);
+    assert.ok((await data.get({ kind: 'studio', id: 5 })).ok);
+    assert.ok((await data.get({ kind: 'network', id: 213, list: 'series' })).ok);
+    assert.equal(api.calls.length, 3);
+    for (const [name, request] of invalid) {
+      assert.deepEqual(await data.get(request), { ok: false, status: 400 }, name);
+      assert.equal(data.peek(request), undefined, `${name}: nothing is shown for it`);
+    }
+    assert.deepEqual(await data.get({ kind: 'list', list: 'trending', page: 0 }, { retry: true }), { ok: false, status: 400 });
+    assert.equal(api.calls.length, 3, 'no call was made, and the kept answers are still there');
+    assert.ok(data.peek({ kind: 'list', list: 'trending' }));
+  });
+
+  it('does not let an invalid page join the call in flight for page one, nor page one join an invalid one', { timeout: 5_000 }, async () => {
+    const pending = [];
+    const { data, api } = discover((pathname) => new Promise((resolve) => { pending.push({ pathname, resolve }); }));
+    const valid = data.get({ kind: 'list', list: 'trending' });
+    const bad = data.get({ kind: 'list', list: 'trending', page: 0 });
+    assert.deepEqual(await bad, { ok: false, status: 400 }, 'answered without waiting for the call');
+    await until(() => pending.length === 1);
+    pending[0].resolve(json(page([card(1)])));
+    assert.ok((await valid).ok);
+    assert.equal(api.calls.length, 1);
+    // The other way round: the invalid one asked first.
+    const first = data.get({ kind: 'list', list: 'upcoming', page: Number.NaN });
+    const second = data.get({ kind: 'list', list: 'upcoming' });
+    assert.deepEqual(await first, { ok: false, status: 400 });
+    await until(() => pending.length === 2);
+    pending[1].resolve(json(page([card(2)])));
+    assert.ok((await second).ok);
+    assert.equal(api.calls.length, 2);
+  });
+
+  it('answers an invalid request 400 without a session being asked about: no session is still a 401', async () => {
+    const scope = webScope();
+    scope.as(undefined);
+    const { data, api } = discover(undefined, { scope });
+    assert.equal((await data.get({ kind: 'list', list: 'trending', page: 0 })).status, 401);
+    assert.equal(api.calls.length, 0);
+  });
+});
+
 describe('TV Discover data layer: the session', () => {
   it('asks nothing without a signed-in member', async () => {
     const scope = webScope();
@@ -524,6 +581,47 @@ describe('TV Discover data layer: the session', () => {
     assert.ok((await next).ok);
   });
 
+  it('keeps the new session\'s answer when the old session\'s call for the same key is still in flight: two calls, the old answer dropped', async () => {
+    const pending = [];
+    const { data, api, scope } = discover((pathname) => new Promise((resolve) => { pending.push({ pathname, resolve }); }));
+    const request = { kind: 'list', list: 'trending' };
+    const old = data.get(request);
+    await until(() => pending.length === 1);
+    scope.as({ userId: 'ann', token: 'token-ann' });
+    const current = data.get(request);
+    await until(() => pending.length === 2);
+    assert.deepEqual(api.calls.map((call) => call.authorization), ['MediaBrowser Token="token-alice"', 'MediaBrowser Token="token-ann"']);
+    pending[1].resolve(json(page([card(2)])));
+    const answer = await current;
+    assert.ok(answer.ok);
+    assert.equal(answer.value.cards[0].tmdbId, 2);
+    pending[0].resolve(json(page([card(1)])));
+    assert.deepEqual(await old, { ok: false, stale: true });
+    const kept = data.peek(request);
+    assert.ok(kept && kept.ok);
+    assert.equal(kept.value.cards[0].tmdbId, 2, 'the old answer did not replace the new one');
+    assert.ok((await data.get(request)).ok);
+    assert.equal(api.calls.length, 2, 'nothing further was asked');
+  });
+
+  it('keeps nothing of the old session when its call ends after the new one\'s, either', async () => {
+    const pending = [];
+    const { data, scope } = discover((pathname) => new Promise((resolve) => { pending.push({ pathname, resolve }); }));
+    const request = { kind: 'sources' };
+    const old = data.get(request);
+    await until(() => pending.length === 1);
+    scope.as({ userId: 'ann', token: 'token-ann' });
+    pending[0].resolve(json({ networks: [{ id: 1, name: 'Old', logoUrl: null }], studios: [] }));
+    assert.deepEqual(await old, { ok: false, stale: true });
+    assert.equal(data.peek(request), undefined);
+    const current = data.get(request);
+    await until(() => pending.length === 2);
+    pending[1].resolve(json({ networks: [{ id: 2, name: 'New', logoUrl: null }], studios: [] }));
+    const answer = await current;
+    assert.ok(answer.ok);
+    assert.equal(answer.value.networks[0].name, 'New');
+  });
+
   it('empties the cache on a 401 of the current session, and keeps nothing of it', async () => {
     let refused = false;
     const { data, api } = discover(() => (refused ? json({}, 401) : json(page([card(1)]))));
@@ -560,6 +658,45 @@ describe('TV Discover data layer: a 429', () => {
     assert.equal(api.calls.length, 3);
   });
 
+  it('does not report a stale wait: a 7 s Retry-After is over after 8 s, and the endpoint that works again is called', async () => {
+    let limited = true;
+    const { data, api, advance } = discover(() => (limited ? json({}, 429, { 'retry-after': '7' }) : json(page([card(1)]))));
+    const request = { kind: 'list', list: 'trending' };
+    assert.deepEqual(await data.get(request), { ok: false, status: 429, retryAfterMs: 7000 });
+    advance(8_000);
+    limited = false;
+    assert.equal(data.peek(request), undefined, 'the 429 is not kept as the answer past its deadline');
+    const answer = await data.get(request);
+    assert.ok(answer.ok);
+    assert.equal(api.calls.length, 2);
+  });
+
+  it('reports the wait that remains for an address that was itself answered 429, never the one first said', async () => {
+    const { data, api, advance } = discover(() => json({}, 429, { 'retry-after': '7' }));
+    const request = { kind: 'list', list: 'trending' };
+    await data.get(request);
+    advance(3_000);
+    assert.deepEqual(await data.get(request), { ok: false, status: 429, retryAfterMs: 4000 });
+    assert.equal(api.calls.length, 1);
+  });
+
+  it('does not let a remembered 429 outlast a later, shorter block, nor a failure memo outlast its own 30 seconds', async () => {
+    let mode = '429';
+    const { data, api, advance } = discover((pathname) => (mode === '429' ? json({}, 429, { 'retry-after': '5' }) : mode === '500' ? json({}, 500) : json(page([card(1)]))));
+    await data.get({ kind: 'list', list: 'trending' });
+    advance(5_000);
+    mode = '500';
+    assert.equal((await data.get({ kind: 'list', list: 'popular-tv' })).status, 500);
+    advance(10_000);
+    assert.equal((await data.get({ kind: 'list', list: 'popular-tv' })).status, 500, 'a 500 is remembered, within its 30 seconds');
+    assert.equal(api.calls.length, 2);
+    mode = 'ok';
+    assert.ok((await data.get({ kind: 'list', list: 'trending' })).ok, 'the 429\'d address is asked again once the block is over');
+    advance(20_000);
+    assert.ok((await data.get({ kind: 'list', list: 'popular-tv' })).ok, 'the 500 memo is over');
+    assert.equal(api.calls.length, 4);
+  });
+
   it('waits 30 seconds when the 429 did not say, and keeps the wait across a sign-in', async () => {
     const { data, api, advance, scope } = discover(() => json({}, 429));
     assert.deepEqual(await data.get({ kind: 'sources' }), { ok: false, status: 429 });
@@ -581,6 +718,53 @@ describe('TV Discover data layer: a 429', () => {
     assert.equal((await one).status, 429);
     assert.ok((await two).ok, 'its answer is kept');
     assert.ok(data.peek({ kind: 'list', list: 'popular-tv' }));
+  });
+});
+
+describe('TV Discover data layer: other households', () => {
+  it('answers Alice the same, with the same calls, whatever another household holds or has requested', async (t) => {
+    const quiet = await startApp(t, world());
+    const sent = await quiet.get('/jellypass/app/v1/discover/trending', { user: ALICE });
+    assert.equal(sent.status, 200);
+    const ids = (await sent.json()).results.slice(0, 2).map((entry) => entry.tmdbId);
+    assert.equal(ids.length, 2);
+    const busy = await startApp(t, world({
+      media: Object.fromEntries(ids.map((id, index) => [id, { id: 7390000 + index, mediaType: 'movie', tmdbId: id, status: 5 }])),
+      requests: {
+        21: ids.map((id, index) => ({
+          id: 9100 + index, status: 2, type: 'movie', is4k: false, createdAt: new Date().toISOString(), seasons: [],
+          media: { id: 7390000 + index, mediaType: 'movie', tmdbId: id, status: 5 },
+          requestedBy: { id: 21, jellyfinUserId: BOB },
+        })),
+      },
+    }));
+    const through = (app) => {
+      const calls = [];
+      const fetcher = async (url, init) => {
+        const target = new URL(url);
+        calls.push(`${target.pathname}${target.search}`);
+        const answer = await app.get(`${target.pathname}${target.search}`, { host: HOST_A, user: null, headers: init.headers });
+        return new Response(answer.body, { status: answer.status, headers: { 'content-type': 'application/json' } });
+      };
+      const watch = new mod.SessionWatch(webScope(), ORIGIN);
+      const data = new mod.DiscoverData(fetcher, ORIGIN, watch, () => 1_000, () => 1_700_000_000_000);
+      return { data, calls };
+    };
+    const asks = [
+      { kind: 'list', list: 'trending' }, { kind: 'list', list: 'upcoming', page: 2 }, { kind: 'sources' },
+      { kind: 'network', id: 213, list: 'all' }, { kind: 'studio', id: 41077 }, { kind: 'list', list: 'trending' },
+    ];
+    const run = async (app) => {
+      const { data, calls } = through(app);
+      const answers = [];
+      for (const request of asks) answers.push(JSON.stringify(await data.get(request)));
+      return { answers, calls };
+    };
+    const one = await run(quiet);
+    const two = await run(busy);
+    assert.deepEqual(two.calls, one.calls);
+    assert.equal(one.calls.length, 5, 'the repeated address was kept');
+    two.answers.forEach((answer, index) => assert.ok(answer === one.answers[index], `answer ${index} is the same whatever another household holds`));
   });
 });
 
