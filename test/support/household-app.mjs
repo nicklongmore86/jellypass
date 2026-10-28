@@ -44,6 +44,7 @@ export const SHARED_HOUSEHOLDS = [
 // Seerr users, one per Jellyfin user.
 export const SEERR_IDS = { [ALICE]: 11, [ANN]: 12, [BOB]: 21, [CAROL]: 41, [OUTSIDER]: 31 };
 export const ADMIN = 2;
+export const MANAGE_REQUESTS = 16;
 export const REQUEST = 32;
 export const REQUEST_MOVIE = 262_144;
 export const REQUEST_TV = 524_288;
@@ -144,6 +145,9 @@ export function world(options = {}) {
     holdQuota: undefined,
     // A promise each admin title read (GET /api/v1/movie|tv/:id) waits for before Seerr answers, if set.
     holdTitles: undefined,
+    // A promise each admin request read (GET /api/v1/request/:id) waits for before Seerr answers, if set: the request is
+    // read as it was when the call arrived.
+    holdRequestStates: undefined,
   };
 }
 
@@ -237,6 +241,8 @@ export async function createFakeSeerr(state) {
   const violations = [];
   // Every POST /api/v1/request that reached Seerr, with its acting user and body.
   const posts = [];
+  // Every DELETE /api/v1/request/:id that reached Seerr, with its acting user, the request and Seerr's answer.
+  const deletes = [];
   let onRequest;
   let nextRequestId = 7350001;
   const server = createServer((request, response) => {
@@ -249,6 +255,8 @@ export async function createFakeSeerr(state) {
     const user = state.seerrUsers[acting];
     if (!/^[1-9][0-9]*$/.test(actingUser) || !user) return send(response, 403, { message: 'canary forbidden' });
     if (request.method === 'POST' && url.pathname === '/api/v1/request') return createRequest(request, response, acting, user);
+    const deleting = /^\/api\/v1\/request\/([0-9]+)$/.exec(url.pathname);
+    if (request.method === 'DELETE' && deleting) return deleteRequest(response, acting, user, Number(deleting[1]));
     if (request.method !== 'GET') {
       violations.push(`${request.method} ${url.pathname}`);
       return send(response, 405, { message: 'canary' });
@@ -357,6 +365,22 @@ export async function createFakeSeerr(state) {
     return send(response, 201, created);
   }
 
+  /**
+   * DELETE /api/v1/request/:id as `acting`, as Seerr 3.5.1 allows it: to a user who manages requests, or to the
+   * request's own requester while it is pending (1); anyone else gets 401, an unknown request 404.
+   */
+  function deleteRequest(response, acting, user, id) {
+    const owner = Object.keys(state.requests).find((seerrId) => state.requests[seerrId].some((entry) => entry.id === id));
+    const found = owner === undefined ? undefined : state.requests[owner].find((entry) => entry.id === id);
+    const manages = (user.permissions & (ADMIN | MANAGE_REQUESTS)) !== 0;
+    const status = !found ? 404 : manages || (Number(owner) === acting && found.status === 1) ? 204 : 401;
+    deletes.push({ actingUser: acting, id, status });
+    if (status !== 204) return send(response, status, { message: 'canary refused' });
+    state.requests[owner] = state.requests[owner].filter((entry) => entry.id !== id);
+    response.writeHead(204);
+    response.end();
+  }
+
   function admin(url, response) {
     const title = /^\/api\/v1\/(movie|tv)\/([0-9]+)$/.exec(url.pathname);
     if (title) {
@@ -371,8 +395,10 @@ export async function createFakeSeerr(state) {
     }
     const byRequest = /^\/api\/v1\/request\/([0-9]+)$/.exec(url.pathname);
     if (byRequest) {
+      // Read as it is now, answered once `holdRequestStates` (if set when it arrived) resolves.
       const found = [...allRequests(), ...Object.values(state.media).flatMap((info) => info?.requests ?? [])].find((entry) => entry.id === Number(byRequest[1]));
-      return found ? send(response, 200, found) : send(response, 404, { message: 'canary' });
+      const answer = () => found ? send(response, 200, found) : send(response, 404, { message: 'canary' });
+      return state.holdRequestStates ? state.holdRequestStates.then(answer) : answer();
     }
     const byJellyfin = /^\/api\/v1\/user\/jellyfin\/([0-9a-f]{32})$/.exec(url.pathname);
     if (byJellyfin) {
@@ -410,6 +436,7 @@ export async function createFakeSeerr(state) {
     calls,
     violations,
     posts,
+    deletes,
     state,
     set onRequest(check) { onRequest = check; },
     close: () => close(server),
@@ -918,6 +945,7 @@ export async function startApp(t, state = world(), options = {}) {
     background,
     ...(options.trustedProxies ? { trustedProxies: options.trustedProxies } : {}),
     householdGateway: { jellyfinUrl: jellyfin.url, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: options.loginFailureDelayMs ?? 0, ...(options.loginTimeoutMs ? { loginTimeoutMs: options.loginTimeoutMs } : {}), ...(options.signOutTimeoutMs ? { signOutTimeoutMs: options.signOutTimeoutMs } : {}), ...(options.tvAddon ? { tvAddon: options.tvAddon } : {}) },
+    ...(options.requests === false ? {} : { titleHolds: requests }),
     ...(options.app === false ? {} : {
       householdApp: {
         catalogue: new TmdbClient(TMDB_KEY, { baseUrl: tmdb.url, ...(options.now ? { now: options.now } : {}) }),

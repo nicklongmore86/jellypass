@@ -49,11 +49,56 @@ changes are always listed at the top of the release notes.
     `ghcr.io/georift/install-jellyfin-tizen` image. The install procedure is
     in `docs/tv-addon.md`.
 
+- **Members can cancel a request they made, before it arrives (server and
+  API; the app's Cancel buttons come in a later release).**
+  `POST /jellypass/app/v1/requests/{id}/cancel` always answers the same
+  `202 {"status":"accepted"}`, and the member always sees the same afterwards:
+  the entry leaves My requests and the title shows Get this again. Only the
+  member who asked may cancel, and not once anything of the title is ready for
+  them. In the background, the Seerr request is deleted as the member only
+  while it is still pending and no other household follows it; otherwise it is
+  kept, and when the title arrives the cancelling household is not given it.
+  Households still following it are; with none, the title is **held for no
+  household** (private to everyone but Jellyfin administrators, never public)
+  until an administrator gives it to someone, and the new admin-only
+  `GET /v1/app/held` lists such titles. Access already given is never taken
+  back, and another household following the request sees nothing change.
+  If an administrator then deletes a request its requester cancelled, every
+  household is back to Get this, but the title is still held for no household
+  when it arrives (the download may go on without the request): JellyPass keeps
+  a **title hold** and holds each HD item of the title as it appears, unless a
+  "Get this" safety marker says the request follows the join rules. This is
+  eventual protection, not a guarantee: the title can be public for up to about
+  one reconciliation interval (`RECONCILE_INTERVAL_SECONDS`, 5 minutes by
+  default) after it arrives, so administrators should cancel through JellyPass
+  rather than delete such a request in Seerr. Cancels share the "Get this"
+  limits.
+- **`GET /jellypass/app/v1/requests` entries gain `cancellable` and
+  `requestedOn`** (the day the household last asked, `YYYY-MM-DD`, never a
+  time). `apiVersion` in `GET /me` is now `2`.
+- **`GET /v1/app/outstanding` counts cancels that still decide a grant**
+  (`withdrawals`, with `waiting`, `titleHolds`, `granted` and `held`), and `clear` waits for
+  them; new gauges `jfa_app_withdrawals{kind}` and `jfa_app_held_titles`.
+
+  **Upgrading** keeps the state file at schema v7 and needs no migration: it
+  gains `appWithdrawals` with the first cancel, and cancelled records a
+  `withdrawn` mark on the existing `deleted` status. **Rolling back** to
+  3.4.0 or earlier keeps every household's lists as they are, but
+  grants a cancelled request to its requester's households and gives a
+  requester who cancelled access to such a title that has arrived: check that
+  `GET /v1/app/outstanding` shows no `withdrawals` first (see "Cancelling" in
+  `docs/app-design.md` for how to clear them).
+
 ### Changed
 
 - The native-client contract (`docs/app-design.md`): "CORS stays off" now has
   one exception, the Samsung app's origin on a household host the TV add-on is
   on for (above).
+- **A request an administrator deletes in Seerr now sends every household
+  following it back to Get this.** The requester's entry already left My
+  requests; a household that followed the same request (its interest) showed
+  "We couldn't get this" instead. Both now leave the list, and the title can be
+  asked for again.
 
 ## [3.4.0] - 2026-10-27
 

@@ -196,6 +196,11 @@ describe('household app API: the OpenAPI document', { timeout: 60_000 }, () => {
       [`${APP}/tv/${T_TV}/get`, { seasons: [1.5] }],
       [`${APP}/tv/${T_TV}/get`, { seasons: [1, 1] }],
       [`${APP}/tv/${T_TV}/get`, { seasons: [1], extra: true }],
+      [`${APP}/requests/${'A'.repeat(22)}/cancel`, {}],
+      [`${APP}/requests/${'A'.repeat(22)}/cancel`, { seasons: [1] }],
+      [`${APP}/requests/${'A'.repeat(21)}/cancel`, {}],
+      [`${APP}/requests/${'A'.repeat(23)}/cancel`, {}],
+      [`${APP}/requests/${'A'.repeat(21)}=/cancel`, {}],
     ];
     for (const [target, body] of bodies) {
       const operation = operationFor('POST', target);
@@ -275,6 +280,16 @@ describe('household app API: the OpenAPI document', { timeout: 60_000 }, () => {
       noteStates(answer.json());
       if (pathname.endsWith('/requests')) assert.deepEqual(answer.json().results.map((entry) => entry.mediaType).sort(), ['movie', 'tv']);
     }
+    // Cancelling one of them, and an ID the household does not list: the same answer.
+    const [listedEntry] = (await app.get(`${APP}/requests`)).json().results;
+    for (const id of [listedEntry.id, 'Z'.repeat(22)]) {
+      const pathname = `${APP}/requests/${id}/cancel`;
+      const answer = await app.post(pathname, undefined);
+      assert.equal(answer.status, 202);
+      check(covered, 'POST', pathname, answer);
+    }
+    await app.background.settled();
+    check(covered, 'GET', `${APP}/requests`, await app.get(`${APP}/requests`));
     assert.deepEqual([...states].sort(), DOC.components.schemas.HouseholdState.enum.slice().sort(), 'every state was checked');
     // Another household and member: the same document.
     check(covered, 'GET', `${APP}/me`, await app.get(`${APP}/me`, { host: HOST_B, user: BOB }));
@@ -284,6 +299,7 @@ describe('household app API: the OpenAPI document', { timeout: 60_000 }, () => {
       ['GET', `${APP}/movie/abc`, 400],
       ['GET', `${APP}/search?q=`, 400],
       ['POST', `${APP}/tv/${T_TV}/get`, 400, { seasons: [] }],
+      ['POST', `${APP}/requests/not-an-id/cancel`, 400, {}],
       ['GET', `${APP}/me`, 401, undefined, { user: null }],
       ['GET', `${APP}/me`, 401, undefined, { host: HOST_B, user: ALICE }],
       ['GET', `${APP}/movie/123456`, 404],

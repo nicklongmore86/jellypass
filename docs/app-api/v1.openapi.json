@@ -2,7 +2,7 @@
   "openapi": "3.1.0",
   "info": {
     "title": "JellyPass household app API",
-    "version": "1",
+    "version": "2",
     "description": "The household app API, /jellypass/app/v1, on household hosts only. info.version is GET /me's apiVersion. v1 only ever gains fields and endpoints; see docs/app-design.md, \"Native clients (contract)\". Schemas are closed (additionalProperties false) so the server's own test catches an undeclared field; a client decodes leniently and ignores fields it does not know. Every answer is Cache-Control: no-store."
   },
   "servers": [
@@ -691,6 +691,62 @@
               "application/json": {
                 "schema": {
                   "$ref": "#/components/schemas/Requests"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/Invalid"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "502": {
+            "$ref": "#/components/responses/Unavailable"
+          }
+        }
+      }
+    },
+    "/requests/{id}/cancel": {
+      "post": {
+        "operationId": "cancelRequest",
+        "summary": "Cancel one of the caller's own requests: always the same 202, whatever becomes of it.",
+        "description": "The entry leaves the caller's list and the title can be asked for again; what happens to the Seerr request is decided in the background and never shown (see docs/app-design.md, \"Cancelling (step 2c)\"). Counted against the Get this budgets. An ID the household does not list, or an entry that cannot be cancelled (any more), gets the same 202 and nothing happens. Added in apiVersion 2.",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{22}$"
+            },
+            "description": "An entry's id from GET /requests."
+          }
+        ],
+        "requestBody": {
+          "required": false,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/GetThisMovie"
+              }
+            }
+          }
+        },
+        "responses": {
+          "202": {
+            "description": "Always this, whatever happens to the request.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Accepted"
                 }
               }
             }
@@ -1463,7 +1519,9 @@
           "tmdbId",
           "status",
           "seasons",
-          "byYou"
+          "byYou",
+          "cancellable",
+          "requestedOn"
         ],
         "additionalProperties": false,
         "properties": {
@@ -1494,6 +1552,15 @@
           "byYou": {
             "type": "boolean",
             "description": "Whether the caller made any of the household's records for the title."
+          },
+          "cancellable": {
+            "type": "boolean",
+            "description": "Whether the caller may cancel it now (POST /requests/{id}/cancel): their own request, still Requested, nothing of it ready yet and not still being sent. From the household's own records only. Added in apiVersion 2: a client that finds no such field has no cancel."
+          },
+          "requestedOn": {
+            "type": "string",
+            "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$",
+            "description": "The day (UTC, YYYY-MM-DD) the household last asked for the title; never a time. Added in apiVersion 2."
           }
         }
       },

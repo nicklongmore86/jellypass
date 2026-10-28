@@ -70,6 +70,7 @@ async function main(): Promise<void> {
     ...(config.householdAppEnabled && seerr && members && catalogue ? {
       householdApp: { catalogue, blocklist: seerr, members, ...(requests ? { requests } : {}) },
     } : {}),
+    ...(requests ? { titleHolds: requests } : {}),
   });
   const backfillSince = config.requestBackfillEnabled ? config.requestBackfillSince : undefined;
   const backfillRequests = async (signal: AbortSignal) => {
@@ -115,6 +116,8 @@ async function main(): Promise<void> {
         detail: error instanceof Error ? error.message : String(error),
       }));
     });
+    // New items: a cancelled request Seerr lost since the last reconciliation is found now, and its title held.
+    if (!signal.aborted) await requests?.checkTitleHolds({ signal });
   });
   const catalogSyncTimer = config.catalogSyncIntervalSeconds > 0
     ? setInterval(syncCatalog, config.catalogSyncIntervalSeconds * 1000)

@@ -498,6 +498,16 @@ export class SeerrMemberClient {
     };
   }
 
+  /**
+   * Deletes the Seerr request `requestId` as this member (DELETE /api/v1/request/:id), for the household app's cancel.
+   * Seerr allows it only for the request's own requester while it is pending, or for a user who manages requests (the
+   * caller checks the member does not: see docs/app-design.md, "Cancelling (step 2c)"); anything else is refused (401).
+   */
+  public cancelRequest(requestId: string): Promise<void> {
+    if (typeof requestId !== 'string' || !/^[1-9][0-9]{0,15}$/.test(requestId)) throw new TypeError('request ID is invalid');
+    return this.#send('DELETE', '/api/v1/request/:id', () => `/api/v1/request/${requestId}`).then(() => undefined);
+  }
+
   /** This member's own requests, newest first. The user ID in the path is always the confirmed acting user's. */
   public ownRequests(take = 20, skip = 0): Promise<unknown> {
     const count = Math.min(Math.max(Math.trunc(take), 1), 100);
@@ -521,7 +531,7 @@ export class SeerrMemberClient {
     return this.#send('GET', '/api/v1/discover/watchlist', () => `/api/v1/discover/watchlist?${parameters}`);
   }
 
-  async #send(method: 'GET' | 'POST', route: string, path: (user: string) => string, body?: unknown): Promise<unknown> {
+  async #send(method: 'GET' | 'POST' | 'DELETE', route: string, path: (user: string) => string, body?: unknown): Promise<unknown> {
     const key = this.#jellyfinUserId;
     const { user } = await this.#confirm();
     // Sent at once: nothing is awaited between Seerr confirming the link and the call leaving.
@@ -568,7 +578,7 @@ function requestBody(input: SeerrRequestInput): unknown {
 async function actingUserJson(
   admin: SeerrClient,
   user: SeerrUserId,
-  method: 'GET' | 'POST',
+  method: 'GET' | 'POST' | 'DELETE',
   route: string,
   path: string,
   body?: unknown,
@@ -597,7 +607,7 @@ async function actingUserJson(
  */
 async function guardedSeerrJson(
   baseUrl: string,
-  method: 'GET' | 'POST',
+  method: 'GET' | 'POST' | 'DELETE',
   route: string,
   path: string,
   headers: Record<string, string>,
@@ -605,6 +615,8 @@ async function guardedSeerrJson(
   limit = MAX_GUARDED_RESPONSE_BYTES,
 ): Promise<unknown> {
   const bytes = await guardedSeerrBytes(baseUrl, method, route, path, headers, body, limit);
+  // Seerr answers a DELETE with 204 and no body.
+  if (method === 'DELETE' && bytes.byteLength === 0) return undefined;
   try {
     return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(bytes)) as unknown;
   } catch {
@@ -616,7 +628,7 @@ async function guardedSeerrJson(
 /** {@link guardedSeerrJson}'s call, up to reading the body's bytes. */
 async function guardedSeerrBytes(
   baseUrl: string,
-  method: 'GET' | 'POST',
+  method: 'GET' | 'POST' | 'DELETE',
   route: string,
   path: string,
   headers: Record<string, string>,

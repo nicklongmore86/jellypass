@@ -91,6 +91,7 @@ export const OPERATIONS: Record<string, Operation> = {
   'POST /movie/{tmdbId}/get': { call: (api) => api.getThis('movie', 900001), sends: 'POST /movie/900001/get', status: 202, fixture: 'accepted' },
   'POST /tv/{tmdbId}/get': { call: (api) => api.getThis('tv', 900002, [1, 2]), sends: 'POST /tv/900002/get', status: 202, fixture: 'accepted' },
   'GET /requests': { call: (api) => api.requests(), sends: 'GET /requests', status: 200, fixture: 'requests' },
+  'POST /requests/{id}/cancel': { call: (api) => api.cancelRequest('AAAAAAAAAAAAAAAAAAAAAA'), sends: 'POST /requests/AAAAAAAAAAAAAAAAAAAAAA/cancel', status: 202, fixture: 'accepted' },
 };
 
 /** `METHOD path` of a recorded call, under /jellypass/app/v1. */
