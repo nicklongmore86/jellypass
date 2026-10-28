@@ -18,6 +18,16 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Added
+
+- TV add-on: internal groundwork for a full **Discover** page (nothing of it is visible yet, and nothing changes on any
+  household's TV). The add-on can now read the Discover lists, the services' and studios' pages and the sources list from
+  the existing household API, keeps the answers in memory for ten minutes (forgotten on a sign-out, another member or a new
+  sign-in, and an answer that arrives after one is ignored), waits out a "too many requests" answer without trying again by
+  itself, and has the card limit per row and the status words ready for the page. The call budget for the page is written in
+  `docs/app-api/fetch-budget.json` (`tv-discover`: 5 calls when it opens, 10 more as rows come near the screen, none on
+  coming back) and pinned by a test. No server, API or setting change.
+
 ### Fixed
 
 - TV add-on: the add-on's own cards (the **Discover** title cards on Home and on Search, and the **My requests** card at

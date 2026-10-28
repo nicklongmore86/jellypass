@@ -37,6 +37,41 @@ export interface Title extends Card {
   seasons: SeasonSummary[];
 }
 
+/**
+ * A Card DTO as the Discover page draws it: the row's fields and the three the hero reads (`overview`, `backdropUrl`,
+ * `rating`). The title page's {@link Title} has the same three, read from its own answer.
+ */
+export interface DiscoverCard extends Card {
+  overview: string;
+  backdropUrl: string | null;
+  rating: number | null;
+}
+
+/** One page of a discover list, a network's or a studio's: its cards, and the next page's number when there is one. */
+export interface DiscoverPage {
+  page: number;
+  nextPage: number | null;
+  cards: DiscoverCard[];
+}
+
+/** An allowlisted studio (`Source`). */
+export interface DiscoverStudio {
+  id: number;
+  name: string;
+  logoUrl: string | null;
+}
+
+/** An allowlisted streaming service (`Network`): `hasFilms` is whether its `/films` and `/all` lists are offered. */
+export interface DiscoverNetwork extends DiscoverStudio {
+  hasFilms: boolean;
+}
+
+/** `GET /discover/sources`: JellyPass's own allowlist, in the order Home shows it. */
+export interface DiscoverSources {
+  networks: DiscoverNetwork[];
+  studios: DiscoverStudio[];
+}
+
 /** A failure's status: 0 for no network, 502 for an answer that can't be read. */
 export interface Failure {
   ok: false;
@@ -45,6 +80,8 @@ export interface Failure {
   retryAfterMs?: number;
 }
 export type Answer = { ok: true; cards: Card[] } | Failure;
+export type PageAnswer = { ok: true; page: DiscoverPage } | Failure;
+export type SourcesAnswer = { ok: true; sources: DiscoverSources } | Failure;
 export type TitleAnswer = { ok: true; title: Title } | Failure;
 /** The seasons (0 for a movie) of one title the household asked for that did not work out (`failed` in `GET /requests`). */
 export type FailedAnswer = { ok: true; failed: number[] } | Failure;
@@ -73,10 +110,16 @@ const STATES: HouseholdState[] = ['in_library', 'get_this', 'requested', 'unavai
 /** The API's image URL patterns (Card.posterUrl, Card.backdropUrl); any other value is no image. */
 const POSTER_URL = /^https:\/\/image\.tmdb\.org\/t\/p\/w342\/[A-Za-z0-9_-]{1,100}\.(?:jpg|jpeg|png|webp)$/;
 const BACKDROP_URL = /^https:\/\/image\.tmdb\.org\/t\/p\/w780\/[A-Za-z0-9_-]{1,100}\.(?:jpg|jpeg|png|webp)$/;
+/** A source's logo (`Network.logoUrl`, `Source.logoUrl`). */
+const LOGO_URL = /^https:\/\/image\.tmdb\.org\/t\/p\/w300\/[A-Za-z0-9_-]{1,100}\.(?:jpg|jpeg|png|webp)$/;
 /** Play.itemId's pattern. */
 const ITEM_ID = /^[0-9a-f]{32}$/;
 /** The most cards the row shows, from the list's first page. */
 export const MAX_CARDS = 20;
+/** The most networks or studios kept from `GET /discover/sources` (the allowlist has about ten of each). */
+export const MAX_SOURCES = 50;
+/** The API's last page number (`page`, 1 to 500). */
+export const MAX_PAGE = 500;
 /** The most requests My requests keeps from a list answer. */
 export const MAX_REQUESTS = 500;
 /** A request id's shape (the API's are 22 URL-safe characters; any of this shape is passed on, nothing else is). */
@@ -127,6 +170,56 @@ export async function trending(fetcher: Fetch, origin: string, token: string): P
   return cardsOf(await read(fetcher, origin, token, '/discover/trending'));
 }
 
+/** The discover lists (`GET /discover/{list}`) the Discover page asks for. */
+export type DiscoverList = 'trending' | 'trending-movies' | 'trending-tv' | 'popular-movies' | 'popular-tv' | 'new-movies' | 'upcoming' | 'upcoming-tv';
+export const DISCOVER_LISTS: ReadonlyArray<DiscoverList> = ['trending', 'trending-movies', 'trending-tv', 'popular-movies', 'popular-tv', 'new-movies', 'upcoming', 'upcoming-tv'];
+/** A network's lists: its series (the plain address), its films, or both mixed. */
+export type NetworkList = 'series' | 'films' | 'all';
+
+/** A path's `page` query: none for the first page (so a first page has the same address wherever it is asked for). */
+function pageQuery(page: number): string {
+  return page > 1 ? `?page=${page}` : '';
+}
+const validPage = (page: number): boolean => Number.isInteger(page) && page >= 1 && page <= MAX_PAGE;
+const validId = (id: number): boolean => Number.isInteger(id) && id >= 1 && id <= Number.MAX_SAFE_INTEGER;
+
+/** `GET /discover/{list}?page=`: one call. A list or page the API does not have is a `400` that is not sent. */
+export async function discoverList(fetcher: Fetch, origin: string, token: string, list: DiscoverList, page = 1): Promise<PageAnswer> {
+  if (DISCOVER_LISTS.indexOf(list) < 0 || !validPage(page)) return { ok: false, status: 400 };
+  return pageOf(await read(fetcher, origin, token, `/discover/${list}${pageQuery(page)}`), page);
+}
+
+/** `GET /discover/network/{id}[/films|/all]?page=`: one call. */
+export async function networkList(fetcher: Fetch, origin: string, token: string, id: number, list: NetworkList, page = 1): Promise<PageAnswer> {
+  if (!validId(id) || !validPage(page) || (list !== 'series' && list !== 'films' && list !== 'all')) return { ok: false, status: 400 };
+  const suffix = list === 'series' ? '' : `/${list}`;
+  return pageOf(await read(fetcher, origin, token, `/discover/network/${id}${suffix}${pageQuery(page)}`), page);
+}
+
+/** `GET /discover/studio/{id}?page=`: one call. */
+export async function studioList(fetcher: Fetch, origin: string, token: string, id: number, page = 1): Promise<PageAnswer> {
+  if (!validId(id) || !validPage(page)) return { ok: false, status: 400 };
+  return pageOf(await read(fetcher, origin, token, `/discover/studio/${id}${pageQuery(page)}`), page);
+}
+
+/** `GET /discover/sources` (the allowlist: no TMDB call on the server): one call. */
+export async function discoverSources(fetcher: Fetch, origin: string, token: string): Promise<SourcesAnswer> {
+  const answer = await read(fetcher, origin, token, '/discover/sources');
+  if (!answer.ok) return answer;
+  const { networks, studios } = answer.body;
+  if (!Array.isArray(networks) || !Array.isArray(studios)) return { ok: false, status: 502 };
+  const found: DiscoverSources = { networks: [], studios: [] };
+  for (const value of networks.slice(0, MAX_SOURCES)) {
+    const source = sourceOf(value);
+    if (source) found.networks.push({ id: source.id, name: source.name, logoUrl: source.logoUrl, hasFilms: (value as Record<string, unknown>).hasFilms === true });
+  }
+  for (const value of studios.slice(0, MAX_SOURCES)) {
+    const source = sourceOf(value);
+    if (source) found.studios.push(source);
+  }
+  return { ok: true, sources: found };
+}
+
 /** The longest search the API takes (`q`, 1 to 100 characters). */
 export const MAX_QUERY = 100;
 
@@ -148,6 +241,29 @@ function cardsOf(answer: { ok: true; body: Record<string, unknown> } | Failure):
     if (cards.length === MAX_CARDS) break;
   }
   return { ok: true, cards };
+}
+
+/** A list answer's page: its cards (at most MAX_CARDS) and the page numbers, read leniently (a bad number is the one asked for / none). */
+function pageOf(answer: { ok: true; body: Record<string, unknown> } | Failure, asked: number): PageAnswer {
+  if (!answer.ok) return answer;
+  const { page, nextPage, results } = answer.body;
+  if (!Array.isArray(results)) return { ok: false, status: 502 };
+  const cards: DiscoverCard[] = [];
+  for (const entry of results) {
+    const card = discoverCardOf(entry);
+    if (card) cards.push(card);
+    if (cards.length === MAX_CARDS) break;
+  }
+  const shown = typeof page === 'number' && validPage(page) ? page : asked;
+  return { ok: true, page: { page: shown, nextPage: typeof nextPage === 'number' && validPage(nextPage) && nextPage > shown ? nextPage : null, cards } };
+}
+
+/** A Network or Source entry's id, name and logo, or undefined for one without an id or a name. */
+function sourceOf(value: unknown): DiscoverStudio | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const { id, name, logoUrl } = value as Record<string, unknown>;
+  if (typeof id !== 'number' || !validId(id) || typeof name !== 'string' || !name) return undefined;
+  return { id, name: name.slice(0, 100), logoUrl: typeof logoUrl === 'string' && LOGO_URL.test(logoUrl) ? logoUrl : null };
 }
 
 /** `GET /movie/{id}` or `GET /tv/{id}`: one call. */
@@ -261,6 +377,24 @@ function cardOf(value: unknown): Card | undefined {
     year: typeof year === 'number' && year >= 0 && year <= 9999 ? Math.floor(year) : null,
     posterUrl: typeof posterUrl === 'string' && POSTER_URL.test(posterUrl) ? posterUrl : null,
     state: stateOf(state),
+  };
+}
+
+/** A Card DTO's fields for the Discover page (see {@link DiscoverCard}), or undefined for an entry without a title to show. */
+function discoverCardOf(value: unknown): DiscoverCard | undefined {
+  const card = cardOf(value);
+  if (!card) return undefined;
+  const { overview, backdropUrl, rating } = value as Record<string, unknown>;
+  return {
+    mediaType: card.mediaType,
+    tmdbId: card.tmdbId,
+    title: card.title,
+    year: card.year,
+    posterUrl: card.posterUrl,
+    state: card.state,
+    overview: typeof overview === 'string' ? overview.slice(0, 2000) : '',
+    backdropUrl: typeof backdropUrl === 'string' && BACKDROP_URL.test(backdropUrl) ? backdropUrl : null,
+    rating: typeof rating === 'number' && rating >= 0 && rating <= 10 ? rating : null,
   };
 }
 
