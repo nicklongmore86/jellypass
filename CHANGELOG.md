@@ -31,14 +31,17 @@ changes are always listed at the top of the release notes.
     recorded: should the title still arrive through the declined request (a
     late webhook, its replay, the backfill), none of those households is given
     it, and it is held for no household. This holds even after the declined
-    request is deleted in Seerr (the decline then becomes a title hold).
+    request is deleted in Seerr (the decline then becomes a title hold), and
+    for a request made by a Seerr user no Jellyfin user is linked to.
   - **Cancel request** for every household: each goes back to **Get this**,
     and the request is deleted in Seerr. JellyPass records the cancel (so the
     title is held for no household if it still arrives) **before** Seerr
     forgets the request, closing the window a delete in Seerr's own website
     leaves. A title that arrived in Jellyfin before the cancel but was not
     granted yet is held too; only a request that follows the join rules (a
-    title Jellyfin already had) leaves a public title public. **Also remove from Radarr** is offered only for a movie Jellyfin
+    title Jellyfin already had) leaves a public title public. This holds
+    whoever made the request, a Seerr user no Jellyfin user is linked to
+    included. **Also remove from Radarr** is offered only for a movie Jellyfin
     does not have, and only when Seerr has an HD Radarr server; it goes
     through Seerr, with the credentials Seerr holds. It is never offered for a
     series (Seerr would remove the whole series from Sonarr, files included).
