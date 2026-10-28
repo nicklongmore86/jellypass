@@ -10,18 +10,44 @@
 // PWA's API layer does with it, so the title's latest state is what Home, Search and its page show; a kept title is
 // not seen again, so an older state never stands in for a fresher one.
 //
+// Cancel request (the cancellable entries' button) is asked first (`cancel.target` is the request the confirmation sheet
+// is for) and sent once on confirming: the sheet's buttons are disabled while the call is out, nothing is retried by
+// itself, and each failure has its own fixed words (src/requests/text.ts). On the fixed 202 the sheet closes, the entry
+// leaves the list at once, `notice` says "Request cancelled" (every time, whatever the server does with it), the
+// session's overlay shows the title as Get this again, and the list is read again (its titles are kept, so that is the
+// one GET /requests; docs/app-api/fetch-budget.json, "requests", "cancel"). A 401 signs the member out.
+//
 // Everything is kept in memory only: no answer is ever written to the device.
 import { useCallback, useEffect, useRef, useState } from 'react';
+import { AccessibilityInfo } from 'react-native';
 
 import type { ApiClient } from '../api/client';
 import { ApiError, isAbortError } from '../api/errors';
 import type { Request } from '../api/types';
 import { errorText, type ErrorText } from '../home/text';
 import type { Asked } from '../title/asked';
-import { REQUEST_TITLE_CALLS, REQUESTS_PER_PAGE, type RequestTitle } from './text';
+import { CANCEL_TEXT, cancelError, type CancelError, REQUEST_TITLE_CALLS, REQUESTS_PER_PAGE, type RequestTitle } from './text';
 import type { TitleCache } from './titleCache';
 
 export type RequestsLoad = { status: 'loading' } | { status: 'loaded'; requests: readonly Request[] } | { status: 'failed'; error: ErrorText };
+
+export interface CancelState {
+  /** The request the confirmation sheet is asking about, or undefined when no sheet is showing. */
+  target: Request | undefined;
+  /** The call is out: both of the sheet's buttons are disabled. */
+  sending: boolean;
+  error: CancelError | undefined;
+  /** "Request cancelled" after an accepted Cancel, until the screen is left or the next Cancel. */
+  notice: string | undefined;
+  /** Opens the confirmation for a request. */
+  ask: (request: Request) => void;
+  /** Closes the confirmation, sending nothing. */
+  keep: () => void;
+  /** Sends the Cancel. */
+  confirm: () => void;
+}
+
+export type CancelRequest = (request: Pick<Request, 'id' | 'mediaType' | 'tmdbId'>, signal?: AbortSignal) => Promise<void>;
 
 export interface RequestsData {
   load: RequestsLoad;
@@ -36,9 +62,10 @@ export interface RequestsData {
   loadMore: () => void;
   /** The screen is no longer shown: whatever is out is dropped. */
   stop: () => void;
+  cancel: CancelState;
 }
 
-export function useRequests(api: ApiClient | undefined, expire: () => Promise<void>, overlay: Asked, cache: TitleCache): RequestsData {
+export function useRequests(api: ApiClient | undefined, expire: () => Promise<void>, overlay: Asked, cache: TitleCache, cancelRequest?: CancelRequest): RequestsData {
   const [load, setLoad] = useState<RequestsLoad>({ status: 'loading' });
   const [shown, setShown] = useState(0);
   const [titles, setTitles] = useState<Record<string, RequestTitle>>({});
@@ -163,10 +190,65 @@ export function useRequests(api: ApiClient | undefined, expire: () => Promise<vo
     void name(REQUESTS_PER_PAGE, reading.current, signal);
   }, [naming, load, name]);
 
+  const [target, setTarget] = useState<Request | undefined>(undefined);
+  const [sending, setSending] = useState(false);
+  const [cancelFailed, setCancelFailed] = useState<CancelError | undefined>(undefined);
+  const [notice, setNotice] = useState<string | undefined>(undefined);
+  /** A Cancel is out: a second tap sends nothing. */
+  const cancelling = useRef(false);
+
+  const ask = useCallback((request: Request) => {
+    if (cancelling.current) return;
+    setCancelFailed(undefined);
+    setTarget(request);
+  }, []);
+  const keep = useCallback(() => {
+    if (cancelling.current) return;
+    setTarget(undefined);
+    setCancelFailed(undefined);
+  }, []);
+  const confirm = useCallback(() => {
+    if (!target || !cancelRequest || cancelling.current) return;
+    cancelling.current = true;
+    setSending(true);
+    setCancelFailed(undefined);
+    const request = target;
+    void (async () => {
+      try {
+        await cancelRequest(request);
+      } catch (error) {
+        cancelling.current = false;
+        if (!live.current || isAbortError(error)) return;
+        setSending(false);
+        if (error instanceof ApiError && error.kind === 'unauthorized') {
+          void expire();
+          return;
+        }
+        const message = cancelError(error instanceof ApiError ? error.kind : 'unavailable');
+        setCancelFailed(message);
+        AccessibilityInfo.announceForAccessibility?.(CANCEL_TEXT[message]);
+        return;
+      }
+      cancelling.current = false;
+      if (!live.current) return;
+      // Accepted: the same confirmation whatever became of it. The entry leaves the list now; the list is read again.
+      setSending(false);
+      setTarget(undefined);
+      setNotice(CANCEL_TEXT.confirmation);
+      AccessibilityInfo.announceForAccessibility?.(CANCEL_TEXT.confirmation);
+      requests.current = requests.current.filter((candidate) => candidate.id !== request.id);
+      count.current = Math.min(count.current, requests.current.length);
+      setShown(count.current);
+      setLoad((now) => (now.status === 'loaded' ? { status: 'loaded', requests: requests.current } : now));
+      await reload();
+    })();
+  }, [target, cancelRequest, expire, reload]);
+
   const stop = useCallback(() => {
     reading.current += 1;
     abort.current?.abort();
   }, []);
 
-  return { load, shown, titles, naming, reload, loadMore, stop };
+  const cancel: CancelState = { target, sending, error: cancelFailed, notice, ask, keep, confirm };
+  return { load, shown, titles, naming, reload, loadMore, stop, cancel };
 }

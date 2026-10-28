@@ -4,6 +4,7 @@ import {
   accountView,
   cardList,
   el,
+  ERROR_TEXT,
   errorState,
   type GetThisHandler,
   HEADER_TITLE,
@@ -24,6 +25,8 @@ import {
   type RequestFilter,
   REQUESTS_TEXT,
   requestItem,
+  CANCEL_TEXT,
+  type CancelHandler,
   searchForm,
   searchStatusText,
   seasonView,
@@ -1272,19 +1275,55 @@ async function sourceScreen(route: Route, signal: AbortSignal, current: () => bo
  * The household's requests, read on every visit, with their titles read from TMDB (through the API) ten at a time. A
  * title already read in this sign-in (the last ten minutes) is reused, so coming back reads only the list.
  */
-async function requestsScreen(signal: AbortSignal, current: () => boolean): Promise<void> {
+async function requestsScreen(signal: AbortSignal, current: () => boolean, again?: { notice: string; keep: number }): Promise<void> {
   setTitle(REQUESTS_TEXT.title);
-  busy(el(doc, 'h1', { class: 'screen-title visually-hidden', text: REQUESTS_TEXT.title, attrs: { tabindex: '-1', [HEADER_TITLE]: '' } }), skeletonRequests(doc));
+  // After a cancel the screen stays as it is while the list is read again, and the one fixed confirmation is shown.
+  if (!again) busy(el(doc, 'h1', { class: 'screen-title visually-hidden', text: REQUESTS_TEXT.title, attrs: { tabindex: '-1', [HEADER_TITLE]: '' } }), skeletonRequests(doc));
   await loadMe(signal);
   const entries: RequestEntry[] = (await api.requests(signal)).results;
   if (!current()) return;
   const heading = el(doc, 'h1', { class: 'screen-title visually-hidden', text: REQUESTS_TEXT.title, attrs: { tabindex: '-1', [HEADER_TITLE]: '' } });
-  if (entries.length === 0) {
-    show(heading, el(doc, 'p', { class: 'muted', text: REQUESTS_TEXT.empty }));
+  const notice = again ? el(doc, 'p', { class: 'get-message', text: again.notice, attrs: { role: 'status', tabindex: '-1' } }) : undefined;
+  const settle = () => {
     announce('');
-    focusHeading();
+    if (notice) notice.focus({ preventScroll: true });
+    else focusHeading();
+  };
+  if (entries.length === 0) {
+    show(heading, ...(notice ? [notice] : []), el(doc, 'p', { class: 'muted', text: REQUESTS_TEXT.empty }));
+    settle();
     return;
   }
+  // Cancel is offered by a server that sends `cancellable` (apiVersion 2); an entry the caller may not cancel has none.
+  const onCancel: CancelHandler = async (entry, onAccepted) => {
+    try {
+      await api.cancelRequest(entry, signal);
+    } catch (error) {
+      if (signal.aborted) return 'unavailable';
+      const kind = kindOf(error);
+      if (kind === 'unauthorized' && current()) failure(kind, () => void render());
+      return kind;
+    }
+    onAccepted();
+    if (!current()) return 'accepted';
+    // The list is read again (the entry is gone, the title is Get this again) with the one fixed confirmation.
+    try {
+      await requestsScreen(signal, current, { notice: CANCEL_TEXT.confirmation, keep: shown });
+    } catch (error) {
+      if (signal.aborted || !current()) return 'accepted';
+      if (kindOf(error) === 'unauthorized') {
+        failure('unauthorized', () => void render());
+        return 'unauthorized';
+      }
+      const note = el(doc, 'p', { class: 'get-message', text: CANCEL_TEXT.confirmation, attrs: { role: 'status', tabindex: '-1' } });
+      const retry = el(doc, 'button', { class: 'button', text: 'Try again', attrs: { type: 'button' } });
+      retry.addEventListener('click', () => void render());
+      show(heading, note, el(doc, 'p', { class: 'muted get-refresh', text: ERROR_TEXT.unavailable.body }), retry);
+      note.focus({ preventScroll: true });
+      return 'refresh_failed';
+    }
+    return 'accepted';
+  };
   const back = restoring;
   const list = el(doc, 'ul', { class: 'request-list' });
   // The filters only hide or show entries already on the page: choosing one reads nothing, so no call is made and the
@@ -1303,7 +1342,7 @@ async function requestsScreen(signal: AbortSignal, current: () => boolean): Prom
     const batch = entries.slice(shown, shown + size);
     shown += batch.length;
     requestsShown = shown;
-    const items = batch.map((entry) => requestItem(doc, entry));
+    const items = batch.map((entry) => requestItem(doc, entry, onCancel));
     list.append(...items);
     batch.forEach((entry, index) => rows.push({ entry, item: items[index] as HTMLElement }));
     applyFilter();
@@ -1371,14 +1410,13 @@ async function requestsScreen(signal: AbortSignal, current: () => boolean): Prom
     const first = shown;
     void showMore().then(() => rows.slice(first).find(({ item }) => !item.hidden)?.item.querySelector('a')?.focus());
   });
-  show(heading, bar, list, hint, none, more);
-  announce('');
-  focusHeading();
+  show(heading, ...(notice ? [notice] : []), bar, list, hint, none, more);
+  settle();
   // Coming back, the entries that were showing are drawn at once (their titles follow) and the scroll put back.
-  const again = Math.max(REQUESTS_PER_PAGE, back?.loaded ?? 0);
+  const size = Math.max(REQUESTS_PER_PAGE, again?.keep ?? back?.loaded ?? 0);
   requestsShown = 0;
-  await showMore(again);
-  if (again === REQUESTS_PER_PAGE && restoreLive(back)) appScrollTo(back.y);
+  await showMore(size);
+  if (size === REQUESTS_PER_PAGE && !again && restoreLive(back)) appScrollTo(back.y);
 }
 
 // Signing in or out on the same address (in another tab, or in Jellyfin web) is picked up without a reload.

@@ -20,6 +20,19 @@ changes are always listed at the top of the release notes.
 
 ### Added
 
+- **Household web app: Cancel request on My requests.** An entry the server
+  lists as `cancellable` (apiVersion 2) has a **Cancel request** button that
+  asks first, in words ("This withdraws your household's request. If it has
+  already been approved, the download may still finish, but it won't be added
+  for your household."), and then sends `POST /requests/:id/cancel`. On the
+  fixed `202` the page always says **Request cancelled**, drops the entry,
+  reads the list again, and shows the title as **Get this** again on Home,
+  Search and its page while the server catches up. Each entry also shows the
+  day it was requested. Keyboard and screen reader: real buttons, focus moves
+  into the confirmation and back, Escape keeps the request. Nothing is shown
+  of what became of the cancel, or of other households; an older server (no
+  `cancellable`) shows no button. The call budget gains a `cancel` entry for
+  "requests" in `docs/app-api/fetch-budget.json`.
 - **TV add-on: the Samsung app** (`docs/tv-addon.md`, "The Samsung app"). Still
   experimental and off by default: **unless `TV_ADDON_ENABLED` is set, nothing
   changes** on any host, and on a household the add-on is not on for nothing

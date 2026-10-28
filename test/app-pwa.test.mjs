@@ -2478,7 +2478,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     // and has to change that file, where a native client reads the same numbers.
     const BUDGET = JSON.parse(readFileSync(path.join(import.meta.dirname, '..', 'docs', 'app-api', 'fetch-budget.json'), 'utf8'));
     // As `METHOD /path` without the prefix, a title's ID as `{tmdbId}` and a season's number as `{n}`, sorted (rows load in parallel).
-    const calls = (page, from = 0) => page.requests.slice(from).map((request) => `${request.init.method ?? 'GET'} ${request.url.replace('/jellypass/app/v1', '').replace(/^\/(movie|tv)\/[0-9]+/, '/$1/{tmdbId}').replace(/\/season\/[0-9]+$/, '/season/{n}').replace(/^\/search\?q=[^&]*&/, '/search?q={query}&')}`).sort();
+    const calls = (page, from = 0) => page.requests.slice(from).map((request) => `${request.init.method ?? 'GET'} ${request.url.replace('/jellypass/app/v1', '').replace(/^\/(movie|tv)\/[0-9]+/, '/$1/{tmdbId}').replace(/^\/requests\/[A-Za-z0-9_-]{22}\/cancel$/, '/requests/{id}/cancel').replace(/\/season\/[0-9]+$/, '/season/{n}').replace(/^\/search\?q=[^&]*&/, '/search?q={query}&')}`).sort();
     const settled = async (page) => {
       // Every call answered and read, and nothing more asked for once the page has drawn what it read.
       let count;
@@ -2600,6 +2600,146 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.deepEqual(calls(page, before), BUDGET.screens.requests.revisit);
       assert.deepEqual([...page.main().querySelectorAll('.request .card-title')].map((title) => title.textContent), ['Synthetic Movie One', 'Synthetic Series Two']);
     });
+    describe('My requests: Cancel request', () => {
+      const ID = 'AAAAAAAAAAAAAAAAAAAAAA';
+      const ID2 = 'BBBBBBBBBBBBBBBBBBBBBB';
+      const json = (body, status = 200) => ({ status, body: Buffer.from(JSON.stringify(body)), headers: { 'content-type': 'application/json' } });
+      const entry = (id, tmdbId, extras = {}) => ({ id, mediaType: tmdbId === T_TV ? 'tv' : 'movie', tmdbId, status: 'requested', seasons: [], byYou: true, ...extras });
+      const named = (page, count) => page.until(() => page.main().querySelectorAll('.request').length === count
+        && [...page.main().querySelectorAll('.request .card-title')].every((title) => title.textContent !== 'Loading title…'), 'the titles');
+      const click = (page, node) => node.dispatchEvent(new page.Event('click', { bubbles: true }));
+      /** A server whose list is `state.list` and whose cancel answers `state.cancel` (and takes the entry off the list when it is 202). */
+      const server = (state) => (url, init) => {
+        if (url === '/jellypass/app/v1/requests') return json({ results: state.list });
+        if (init?.method === 'POST' && /\/requests\/[A-Za-z0-9_-]{22}\/cancel$/.test(url)) {
+          state.posts.push({ url, body: init.body });
+          if (state.cancel === 202) {
+            state.list = state.list.filter((item) => !url.includes(item.id));
+            return json({ status: 'accepted' }, 202);
+          }
+          return { status: state.cancel, body: Buffer.from('{"error":"upstream said something private"}'), headers: { 'content-type': 'application/json' } };
+        }
+        return undefined;
+      };
+
+      it('offers Cancel request only on entries the server says are cancellable, and shows the day asked, no time', async (t) => {
+        const app = await startApp(t);
+        const state = { posts: [], cancel: 202, list: [
+          entry(ID, T_MOVIE, { cancellable: true, requestedOn: '2026-10-27' }),
+          entry(ID2, T_TV, { cancellable: false, requestedOn: '2026-01-02' }),
+          entry('CCCCCCCCCCCCCCCCCCCCCC', 910_003),
+        ] };
+        const page = await openApp(t, app, { hash: '#/requests', override: server(state) });
+        await named(page, 3);
+        const items = [...page.main().querySelectorAll('.request')];
+        assert.deepEqual(items.map((item) => item.querySelectorAll('button.request-cancel').length), [1, 0, 0], 'an older server (no cancellable) has none');
+        const button = items[0].querySelector('button.request-cancel');
+        assert.equal(button.textContent, 'Cancel request');
+        assert.equal(button.getAttribute('aria-label'), 'Cancel request: ' + items[0].querySelector('.card-title').textContent);
+        assert.deepEqual(items.map((item) => item.querySelector('.request-on')?.textContent), ['Requested on Oct 27, 2026', 'Requested on Jan 2, 2026', undefined]);
+        assert.equal(state.posts.length, 0);
+      });
+
+      it('asks first: the confirmation says what Cancel does, Keep (or Escape) sends nothing and puts focus back', async (t) => {
+        const app = await startApp(t);
+        const state = { posts: [], cancel: 202, list: [entry(ID, T_MOVIE, { cancellable: true, requestedOn: '2026-10-27' })] };
+        const page = await openApp(t, app, { hash: '#/requests', override: server(state) });
+        await named(page, 1);
+        const item = page.main().querySelector('.request');
+        const panel = item.querySelector('.request-cancel-panel');
+        assert.equal(panel.hidden, true);
+        click(page, item.querySelector('.request-cancel'));
+        assert.equal(panel.hidden, false);
+        assert.equal(panel.getAttribute('role'), 'group');
+        assert.equal(panel.querySelector('.request-cancel-body').textContent, "This withdraws your household's request. If it has already been approved, the download may still finish, but it won't be added for your household.");
+        assert.deepEqual([...panel.querySelectorAll('button')].map((button) => button.textContent), ['Cancel request', 'Keep request']);
+        assert.equal(page.focused()?.textContent, 'Cancel this request?');
+        click(page, [...panel.querySelectorAll('button')][1]);
+        assert.equal(panel.hidden, true);
+        assert.equal(page.focused()?.classList.contains('request-cancel'), true);
+        click(page, item.querySelector('.request-cancel'));
+        panel.dispatchEvent(Object.assign(new page.Event('keydown', { bubbles: true }), { key: 'Escape' }));
+        assert.equal(panel.hidden, true);
+        assert.equal(state.posts.length, 0, 'nothing sent until confirmed');
+        assert.equal(page.requests.filter((request) => request.init.method === 'POST').length, 0);
+      });
+
+      it('confirming sends one POST with an empty object, drops the entry, says Request cancelled, and reads the list again (the pinned budget)', async (t) => {
+        const app = await startApp(t);
+        const state = { posts: [], cancel: 202, list: [entry(ID, T_MOVIE, { cancellable: true, requestedOn: '2026-10-27' }), entry(ID2, T_TV, { cancellable: true, requestedOn: '2026-10-26' })] };
+        const page = await openApp(t, app, { hash: '#/requests', override: server(state) });
+        await named(page, 2);
+        await settled(page);
+        const before = page.requests.length;
+        const item = page.main().querySelector('.request');
+        click(page, item.querySelector('.request-cancel'));
+        click(page, item.querySelector('.request-cancel-actions button'));
+        await page.until(() => page.main().querySelectorAll('.request').length === 1 && page.main().querySelector('.get-message')?.textContent === 'Request cancelled', 'the entry gone and the confirmation');
+        await settled(page);
+        assert.equal(state.posts.length, 1);
+        assert.equal(state.posts[0].url, `/jellypass/app/v1/requests/${ID}/cancel`);
+        assert.equal(state.posts[0].body, '{}');
+        assert.deepEqual(calls(page, before), BUDGET.screens.requests.cancel);
+        assert.equal(page.main().querySelector('.request .request-link').getAttribute('href'), `#/tv/${T_TV}`);
+        assert.equal(page.focused()?.textContent, 'Request cancelled');
+        assert.equal(page.main().querySelector('.request .card-title').textContent !== 'Loading title…', true, 'the other entry stays named without a title call');
+      });
+
+      it('cancelling the last request leaves the confirmation and the empty message', async (t) => {
+        const app = await startApp(t);
+        const state = { posts: [], cancel: 202, list: [entry(ID, T_MOVIE, { cancellable: true, requestedOn: '2026-10-27' })] };
+        const page = await openApp(t, app, { hash: '#/requests', override: server(state) });
+        await named(page, 1);
+        const item = page.main().querySelector('.request');
+        click(page, item.querySelector('.request-cancel'));
+        click(page, item.querySelector('.request-cancel-actions button'));
+        await page.until(() => page.main().querySelector('.get-message')?.textContent === 'Request cancelled' && page.main().querySelector('p.muted')?.textContent.startsWith('Nothing requested yet'), 'confirmation and empty');
+        assert.equal(page.main().querySelectorAll('.request').length, 0);
+      });
+
+      for (const [status, text] of [[429, 'Too many tries, try again in a few minutes.'], [500, "We couldn't cancel that just now. Try again in a moment."], [404, "We couldn't cancel that just now. Try again in a moment."]]) {
+        it(`a ${status} is its one fixed message, nothing from the response, no retry; the entry stays and can be tried again`, async (t) => {
+          const app = await startApp(t);
+          const state = { posts: [], cancel: status, list: [entry(ID, T_MOVIE, { cancellable: true, requestedOn: '2026-10-27' })] };
+          const page = await openApp(t, app, { hash: '#/requests', override: server(state) });
+          await named(page, 1);
+          const item = page.main().querySelector('.request');
+          click(page, item.querySelector('.request-cancel'));
+          const [confirm, keep] = item.querySelectorAll('.request-cancel-actions button');
+          click(page, confirm);
+          await page.until(() => item.querySelector('.request-cancel-panel .get-message')?.textContent === text, 'the fixed message');
+          await pause(80);
+          assert.equal(state.posts.length, 1, 'never repeated by the app');
+          assert.equal(page.main().querySelectorAll('.request').length, 1);
+          assert.equal(confirm.disabled, false);
+          assert.equal(keep.disabled, false);
+          assert.equal(confirm.textContent, 'Cancel request');
+          assert.ok(!page.serialize().includes('upstream said'));
+          state.cancel = 202;
+          click(page, confirm);
+          await page.until(() => page.main().querySelectorAll('.request').length === 0, 'cancelled on the second try');
+          assert.equal(state.posts.length, 2);
+        });
+      }
+
+      it('shows the same thing whatever the server did with a cancel it accepted: the same 202 leaves the same page', async (t) => {
+        const run = async (list) => {
+          const app = await startApp(t);
+          const state = { posts: [], cancel: 202, list };
+          const page = await openApp(t, app, { hash: '#/requests', override: server(state) });
+          await named(page, 1);
+          const item = page.main().querySelector('.request');
+          click(page, item.querySelector('.request-cancel'));
+          click(page, item.querySelector('.request-cancel-actions button'));
+          await page.until(() => page.main().querySelector('.get-message')?.textContent === 'Request cancelled', 'cancelled');
+          return page.main().textContent;
+        };
+        const a = await run([entry(ID, T_MOVIE, { cancellable: true, requestedOn: '2026-10-27' })]);
+        const b = await run([entry(ID, T_MOVIE, { cancellable: true, requestedOn: '2026-10-27', byYou: false })]);
+        assert.equal(a, b);
+      });
+    });
+
     describe('My requests filters', () => {
       const entry = (id, mediaType, status, byYou, seasons = []) => ({ id, mediaType, tmdbId: 910_000 + Number(id.slice(1)), status, seasons, byYou });
       const LIST = [
@@ -5170,6 +5310,57 @@ describe('household app: what this member just asked for', { timeout: 30_000 }, 
     overlay.add('movie', 5, []);
     assert.equal(overlay.card(movieCard('in_library')).state, 'in_library');
     assert.equal(overlay.card(movieCard('get_this')).state, 'get_this');
+  });
+
+  it('a cancelled title is shown as available to get while the server still says requested, until it says anything else, and again after asking', async () => {
+    const { createAsked, ASKED_TTL_MS } = await asked();
+    let now = 1000;
+    const overlay = createAsked(() => now);
+    overlay.add('movie', 5, []);
+    overlay.withdraw('movie', 5);
+    assert.equal(overlay.card(movieCard('requested')).state, 'get_this', 'cancelled, the server not caught up');
+    assert.equal(overlay.card(movieCard('get_this')).state, 'get_this', 'the asked key was dropped with it');
+    assert.equal(overlay.card(movieCard('in_library')).state, 'in_library', 'a title that arrived is shown as it is');
+    overlay.withdraw('movie', 5);
+    overlay.add('movie', 5, []);
+    assert.equal(overlay.card(movieCard('requested')).state, 'requested', 'asked for again');
+    overlay.withdraw('movie', 5);
+    now += ASKED_TTL_MS + 1;
+    assert.equal(overlay.card(movieCard('requested')).state, 'requested', 'ended: the server alone');
+    overlay.withdraw('tv', 7);
+    const series = { ...movieCard('requested'), mediaType: 'tv', tmdbId: 7, seasons: [{ seasonNumber: 1, state: 'requested' }, { seasonNumber: 2, state: 'in_library' }] };
+    assert.deepEqual(overlay.series(series).seasons.map((season) => season.state), ['get_this', 'in_library'], 'its seasons too');
+    overlay.forget();
+    assert.equal(overlay.card(movieCard('requested')).state, 'requested');
+    assert.equal(overlay.series(series).state, 'requested', 'forgotten with the rest');
+  });
+
+  it('a 202 for Cancel withdraws the title in the overlay; any other answer, and a changed sign-in, does not', async (t) => {
+    const { createApi } = await apiModule();
+    const { createAsked } = await asked();
+    const calls = [];
+    let status = 202;
+    let token = 'token-a';
+    const overlay = createAsked();
+    const api = createApi({
+      token: () => token,
+      asked: overlay,
+      fetch: async (url, init) => { calls.push({ url, init }); return new Response(status === 202 ? '{"status":"accepted"}' : '{}', { status }); },
+    });
+    const target = { id: 'AAAAAAAAAAAAAAAAAAAAAA', mediaType: 'movie', tmdbId: 5 };
+    status = 500;
+    await assert.rejects(api.cancelRequest(target));
+    assert.equal(overlay.card(movieCard('requested')).state, 'requested');
+    status = 202;
+    await api.cancelRequest(target);
+    assert.equal(calls.at(-1).url, '/jellypass/app/v1/requests/AAAAAAAAAAAAAAAAAAAAAA/cancel');
+    assert.equal(calls.at(-1).init.method, 'POST');
+    assert.equal(calls.at(-1).init.body, '{}');
+    assert.equal(overlay.card(movieCard('requested')).state, 'get_this');
+    const other = createAsked();
+    const switching = createApi({ token: () => token, asked: other, fetch: async () => { token = 'token-b'; return new Response('{}', { status: 202 }); } });
+    await switching.cancelRequest(target);
+    assert.equal(other.card(movieCard('requested')).state, 'requested', 'not for whoever signed in while the call was out');
   });
 
   it('ends on the monotonic clock, or on the wall clock moving forward (sleep); a clock set back never extends it', async (t) => {

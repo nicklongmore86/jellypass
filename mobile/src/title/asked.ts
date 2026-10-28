@@ -12,6 +12,10 @@
 //   state again with no call; `recheck()` (the app coming back to the foreground, where a timer may have slept) does the
 //   same at once.
 // - A key is dropped as soon as a fresh answer from the server says anything but `get_this` for it.
+// - The other way round, after an accepted Cancel (`withdraw`): the title, and every season of it, is shown as
+//   `get_this` while the server (or the latest state it reported, `seen` below) still says `requested`, for the same
+//   time and by the same clocks and timer; it ends as soon as a fresh answer says `get_this` for the title (the server
+//   caught up), or the title is asked for again. A title that is in the library, or unavailable, is shown as it is.
 // - Drawing (`state()` and the rest) only reads: a key whose time is up is shown as ended, but only the timer or
 //   `recheck()` drops it and tells anyone.
 // - Beside the keys asked for, the latest state the server reported for each key (`seen`): every fresh answer (a title
@@ -27,6 +31,11 @@ export const ASKED_TTL_MS = 2 * 60 * 1000;
 export interface Asked {
   /** The member's accepted Get this: a series also marks the seasons asked for. */
   add(mediaType: MediaType, tmdbId: number, seasons: readonly number[]): void;
+  /**
+   * The member's accepted Cancel of a request: its asked keys are dropped, and the title is shown as Get this while the
+   * server still says requested (see above).
+   */
+  withdraw(mediaType: MediaType, tmdbId: number): void;
   /** Drops everything, the timer too. */
   forget(): void;
   /** A fresh answer from the server, just arrived: its states become the latest for their keys. */
@@ -67,6 +76,8 @@ const monotonic = (): number => performance.now();
 
 export function createAsked(now: () => number = monotonic, wall: () => number = () => Date.now(), timer: Timer = globalTimer): Asked {
   let expires = new Map<string, { mono: number; wall: number }>();
+  /** The titles (`movie:<id>`, `tv:<id>`) whose Cancel was accepted, covering the title's key and its seasons'. */
+  let withdrawn = new Map<string, { mono: number; wall: number }>();
   /** The latest state the server reported for each key, and the number of the answer that said it. */
   let latest = new Map<string, { state: HouseholdState; at: number }>();
   /** The number each seen answer's card or season was given. */
@@ -92,9 +103,9 @@ export function createAsked(now: () => number = monotonic, wall: () => number = 
   const schedule = () => {
     if (armed) timer.clear(pending);
     armed = false;
-    if (expires.size === 0) return;
+    if (expires.size === 0 && withdrawn.size === 0) return;
     let first = Infinity;
-    for (const since of expires.values()) first = Math.min(first, left(since));
+    for (const since of [...expires.values(), ...withdrawn.values()]) first = Math.min(first, left(since));
     armed = true;
     pending = timer.set(
       () => {
@@ -107,10 +118,12 @@ export function createAsked(now: () => number = monotonic, wall: () => number = 
   /** Drops the keys whose time is up, tells listeners once if any were, and sets the timer for the next. */
   const ended = () => {
     let dropped = false;
-    for (const [key, since] of expires) {
-      if (left(since) <= 0) {
-        expires.delete(key);
-        dropped = true;
+    for (const map of [expires, withdrawn]) {
+      for (const [key, since] of map) {
+        if (left(since) <= 0) {
+          map.delete(key);
+          dropped = true;
+        }
       }
     }
     schedule();
@@ -121,17 +134,26 @@ export function createAsked(now: () => number = monotonic, wall: () => number = 
     add(mediaType, tmdbId, seasons) {
       const since = { mono: now(), wall: wall() };
       const key = titleKey(mediaType, tmdbId);
+      withdrawn.delete(key);
       expires.set(key, since);
       // A series is requested while any of its seasons is (as the server shows it once recorded).
       if (mediaType === 'tv') for (const season of seasons) expires.set(seasonKey(tmdbId, season), since);
       schedule();
       changed();
     },
+    withdraw(mediaType, tmdbId) {
+      const key = titleKey(mediaType, tmdbId);
+      for (const asked of [...expires.keys()]) if (asked === key || asked.startsWith(`${key}:`)) expires.delete(asked);
+      withdrawn.set(key, { mono: now(), wall: wall() });
+      schedule();
+      changed();
+    },
     forget() {
       if (armed) timer.clear(pending);
       armed = false;
-      if (expires.size === 0 && latest.size === 0) return;
+      if (expires.size === 0 && withdrawn.size === 0 && latest.size === 0) return;
       expires = new Map();
+      withdrawn = new Map();
       latest = new Map();
       numbers = new WeakMap();
       changed();
@@ -142,6 +164,7 @@ export function createAsked(now: () => number = monotonic, wall: () => number = 
         latest.set(key, { state: item.state, at });
         numbers.set(item, at);
         if (item.state !== 'get_this') expires.delete(key);
+        else withdrawn.delete(key.split(':').slice(0, 2).join(':'));
       };
       if ('results' in answer) for (const card of answer.results) note(titleKey(card.mediaType, card.tmdbId), card);
       else if ('mediaType' in answer) {
@@ -154,6 +177,10 @@ export function createAsked(now: () => number = monotonic, wall: () => number = 
     state(key, reported, at) {
       const fresher = latest.get(key);
       const server = fresher && (at === undefined || fresher.at > at) ? fresher.state : reported;
+      if (server === 'requested') {
+        const cancelled = withdrawn.get(key.split(':').slice(0, 2).join(':'));
+        return cancelled !== undefined && left(cancelled) > 0 ? 'get_this' : server;
+      }
       if (server !== 'get_this') return server;
       const since = expires.get(key);
       return since !== undefined && left(since) > 0 ? 'requested' : server;

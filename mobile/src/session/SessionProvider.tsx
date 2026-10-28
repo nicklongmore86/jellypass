@@ -22,7 +22,7 @@ import type { HouseholdAddress } from '../api/address';
 import type { ClientIdentity } from '../api/auth';
 import { createApiClient, type ApiClient, type FetchLike } from '../api/client';
 import { ApiError } from '../api/errors';
-import type { MediaType, Me } from '../api/types';
+import type { MediaType, Me, Request } from '../api/types';
 import { parseLinkAddress } from '../signin/address-input';
 import { createSignInApi, SignInError, type SignInApi, type SignInResult } from '../signin/signin-api';
 import type { StalledKind } from '../signin/wording';
@@ -94,6 +94,12 @@ export interface Session {
    * since), the title (and the seasons asked for) is added to `asked`. Rejects with the ApiError, or the caller's abort.
    */
   getThis: (mediaType: MediaType, tmdbId: number, seasons: readonly number[], signal?: AbortSignal) => Promise<void>;
+  /**
+   * Cancels one of the member's own requests (an entry of `requests()`) through the signed-in client. Once it is accepted
+   * in the same session as when it was sent, the title is withdrawn in `asked` (shown as Get this again). Rejects with
+   * the ApiError, or the caller's abort.
+   */
+  cancelRequest: (request: Pick<Request, 'id' | 'mediaType' | 'tmdbId'>, signal?: AbortSignal) => Promise<void>;
 }
 
 const SessionContext = createContext<Session | undefined>(undefined);
@@ -263,6 +269,16 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
     [api, asked],
   );
 
+  const cancelRequest = useCallback(
+    async (request: Pick<Request, 'id' | 'mediaType' | 'tmdbId'>, signal?: AbortSignal) => {
+      const mine = generation.current;
+      if (!api || phaseRef.current.kind !== 'signedIn') throw new ApiError('unauthorized');
+      await api.cancelRequest(request.id, signal ? { signal } : undefined);
+      if (generation.current === mine && askedRef.current === asked) asked.withdraw(request.mediaType, request.tmdbId);
+    },
+    [api, asked],
+  );
+
   const expire = useCallback(async () => {
     askedRef.current?.forget();
     titlesRef.current?.forget();
@@ -337,8 +353,9 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
       titles,
       requestFilters,
       getThis,
+      cancelRequest,
     }),
-    [phase, offer, household, offerLink, leave, move, check, signInApi, clock, api, expire, asked, titles, requestFilters, getThis],
+    [phase, offer, household, offerLink, leave, move, check, signInApi, clock, api, expire, asked, titles, requestFilters, getThis, cancelRequest],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

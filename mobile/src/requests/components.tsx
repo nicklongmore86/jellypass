@@ -2,9 +2,10 @@
 // thumbnail (TMDB's poster only, through the allowlist), its title and "year · Movie/Series", who asked, and each
 // status once: one chip for a movie, a series of one season or seasons sharing one status (said on the meta line,
 // "2027 · Series · Season 1"), else a chip per season and none for the entry; the admin note under what did not work
-// out. Never a button. An entry is one link to its title, named once with everything it shows. Text grows with the system font size
+// out, and the day it was asked. An entry is one link to its title, named once with everything it shows, and, when the server
+// says the caller may cancel it, a Cancel request button of its own beneath the link (44pt), which opens CancelSheet. Text grows with the system font size
 // with no line limit, cap or fixed height.
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Modal, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 
 import type { CoarseStatus, HouseholdState, Request } from '../api/types';
 import { safeImageUrl } from '../api/urls';
@@ -13,11 +14,15 @@ import { Icon } from '../icons';
 import { colors, layout, radii, spacing, typography } from '../theme';
 import { GET_THIS_TEXT } from '../title/text';
 import {
+  CANCEL_TEXT,
+  cancelName,
+  type CancelError,
   REQUEST_FILTER_TEXT,
   REQUEST_KIND_FILTERS,
   REQUEST_STATUS_FILTERS,
   requestMeta,
   requestName,
+  requestedOnText,
   requestNoteHere,
   requestPills,
   requestSeasonName,
@@ -78,10 +83,23 @@ export function RequestFilters({ filter, onChange }: { filter: RequestFilter; on
   );
 }
 
-export function RequestItem({ request, title, onOpen }: { request: Request; title: RequestTitle | undefined; onOpen: (request: Request) => void }) {
+export function RequestItem({
+  request,
+  title,
+  onOpen,
+  onCancel,
+}: {
+  request: Request;
+  title: RequestTitle | undefined;
+  onOpen: (request: Request) => void;
+  /** Opens the confirmation for this request; only an entry the server lists as cancellable has the button. */
+  onCancel?: (request: Request) => void;
+}) {
   const poster = title?.status === 'loaded' ? title.title.posterUrl : null;
   const pills = requestPills(request);
+  const day = requestedOnText(request.requestedOn);
   return (
+    <View testID="request-entry" style={styles.entry}>
     <Pressable
       testID="request-item"
       accessibilityRole="link"
@@ -99,6 +117,7 @@ export function RequestItem({ request, title, onOpen }: { request: Request; titl
         </View>
         {pills.status ? <RequestChip status={pills.status} /> : null}
         <Text style={styles.who}>{whoText(request)}</Text>
+        {day ? <Text testID="request-on" style={styles.who}>{day}</Text> : null}
         {pills.perSeason ? (
           <View style={styles.seasons}>
             {request.seasons.map((season) => (
@@ -113,6 +132,74 @@ export function RequestItem({ request, title, onOpen }: { request: Request; titl
         {requestNoteHere(request) ? <Text style={styles.who}>{GET_THIS_TEXT.failedNote}</Text> : null}
       </View>
     </Pressable>
+    {request.cancellable && onCancel ? (
+      <Pressable
+        testID="request-cancel"
+        accessibilityRole="button"
+        accessibilityLabel={cancelName(title)}
+        onPress={() => onCancel(request)}
+        style={({ pressed }) => [styles.cancel, pressed && styles.pressed]}
+      >
+        <Text style={styles.cancelText}>{CANCEL_TEXT.button}</Text>
+      </Pressable>
+    ) : null}
+    </View>
+  );
+}
+
+/**
+ * The confirmation before a Cancel: a sheet that says what Cancel does, with Cancel request and Keep request (both 44pt;
+ * Android's back and the system's dismiss gesture keep the request). While the call is out both are disabled; a failure
+ * is one fixed line. It scrolls, so the words fit at the largest text size, and stops widening on iPad.
+ */
+export function CancelSheet({
+  request,
+  title,
+  sending,
+  error,
+  onConfirm,
+  onKeep,
+}: {
+  request: Request | undefined;
+  title: RequestTitle | undefined;
+  sending: boolean;
+  error: CancelError | undefined;
+  onConfirm: () => void;
+  onKeep: () => void;
+}) {
+  return (
+    <Modal visible={request !== undefined} transparent animationType="fade" onRequestClose={() => (sending ? undefined : onKeep())} supportedOrientations={['portrait', 'landscape']}>
+      <View style={styles.scrim} accessibilityViewIsModal>
+        <ScrollView testID="cancel-sheet" style={styles.sheet} contentContainerStyle={styles.sheetContent} bounces={false}>
+          <Text accessibilityRole="header" style={styles.sheetTitle}>{CANCEL_TEXT.heading}</Text>
+          <Text style={styles.sheetName}>{requestTitleText(title)}</Text>
+          <Text style={styles.sheetBody}>{CANCEL_TEXT.body}</Text>
+          {error ? (
+            <Text testID="cancel-error" accessibilityRole="alert" accessibilityLiveRegion="polite" style={styles.sheetError}>{CANCEL_TEXT[error]}</Text>
+          ) : null}
+          <Pressable
+            testID="cancel-confirm"
+            accessibilityRole="button"
+            accessibilityState={{ disabled: sending, busy: sending }}
+            disabled={sending}
+            onPress={onConfirm}
+            style={({ pressed }) => [styles.sheetButton, styles.sheetConfirm, (pressed || sending) && styles.pressed]}
+          >
+            <Text style={styles.sheetConfirmText}>{sending ? CANCEL_TEXT.sending : CANCEL_TEXT.confirm}</Text>
+          </Pressable>
+          <Pressable
+            testID="cancel-keep"
+            accessibilityRole="button"
+            accessibilityState={{ disabled: sending }}
+            disabled={sending}
+            onPress={onKeep}
+            style={({ pressed }) => [styles.sheetButton, styles.sheetKeep, (pressed || sending) && styles.pressed]}
+          >
+            <Text style={styles.sheetKeepText}>{CANCEL_TEXT.keep}</Text>
+          </Pressable>
+        </ScrollView>
+      </View>
+    </Modal>
   );
 }
 
@@ -152,6 +239,7 @@ const styles = StyleSheet.create({
   filterChecked: { backgroundColor: colors.accentTint, borderColor: colors.accent },
   filterText: { fontSize: 15.2, lineHeight: 20, fontWeight: '700', color: colors.muted },
   filterTextChecked: { color: colors.accentText },
+  entry: { borderRadius: radii.card, borderWidth: 1, borderColor: colors.hairline, backgroundColor: colors.surface },
   item: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -159,11 +247,31 @@ const styles = StyleSheet.create({
     minHeight: layout.touchTarget,
     paddingVertical: 11.2,
     paddingHorizontal: 12.8,
-    borderRadius: radii.card,
-    borderWidth: 1,
-    borderColor: colors.hairline,
-    backgroundColor: colors.surface,
   },
+  cancel: {
+    minHeight: layout.touchTarget,
+    justifyContent: 'center',
+    marginHorizontal: 12.8,
+    marginBottom: 11.2,
+    paddingHorizontal: 17.6,
+    alignSelf: 'flex-start',
+    borderWidth: 1.5,
+    borderColor: colors.accent,
+    borderRadius: radii.chip,
+  },
+  cancelText: { fontSize: 15.2, lineHeight: 20, fontWeight: '700', color: colors.accentText },
+  scrim: { flex: 1, backgroundColor: 'rgba(0, 0, 0, 0.6)', justifyContent: 'center', padding: spacing.gutter },
+  sheet: { alignSelf: 'center', width: '100%', maxWidth: 560, maxHeight: '90%', flexGrow: 0, borderRadius: radii.card, backgroundColor: colors.surface, borderWidth: 1, borderColor: colors.hairline },
+  sheetContent: { padding: spacing.lg, gap: spacing.md },
+  sheetTitle: { ...typography.cardTitle, fontSize: 20, lineHeight: 26, color: colors.text },
+  sheetName: { ...typography.body, fontWeight: '700', color: colors.text },
+  sheetBody: { ...typography.body, color: colors.muted },
+  sheetError: { ...typography.body, color: colors.text },
+  sheetButton: { minHeight: layout.touchTarget, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 17.6, paddingVertical: 8, borderRadius: radii.chip },
+  sheetConfirm: { backgroundColor: colors.accent },
+  sheetConfirmText: { fontSize: 16, lineHeight: 21, fontWeight: '700', color: colors.onAccent },
+  sheetKeep: { borderWidth: 1.5, borderColor: colors.accent },
+  sheetKeepText: { fontSize: 16, lineHeight: 21, fontWeight: '700', color: colors.accentText },
   pressed: { backgroundColor: colors.surfaceRaised },
   thumb: { ...THUMB, borderRadius: radii.chip, backgroundColor: colors.surfaceRaised, overflow: 'hidden' },
   thumbEmpty: { borderWidth: 1, borderColor: colors.hairline },
@@ -177,7 +285,7 @@ const styles = StyleSheet.create({
   season: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: spacing.md },
   seasonName: { ...typography.body, fontSize: 15, color: colors.text },
   seasonNote: { flexBasis: '100%' },
-  skeletonItem: { alignItems: 'center' },
+  skeletonItem: { alignItems: 'center', borderWidth: 1, borderColor: colors.hairline, backgroundColor: colors.surface, borderRadius: radii.card },
   skeleton: { backgroundColor: colors.surfaceRaised },
   skeletonLines: { flex: 1, gap: spacing.sm },
   skeletonLine: { height: 12, borderRadius: 6, width: '80%' },

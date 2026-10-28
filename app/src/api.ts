@@ -1,6 +1,6 @@
 import { createAsked, type Asked } from './asked.js';
 import { createTitleCache, type TitleCache, type TitleDetails } from './titles.js';
-import type { DiscoverList, MediaType, Me, Movie, Page, RequestList, Season, Series, SourceKind, Sources } from './types.js';
+import type { DiscoverList, MediaType, Me, Movie, Page, RequestEntry, RequestList, Season, Series, SourceKind, Sources } from './types.js';
 
 export const API_PREFIX = '/jellypass/app/v1';
 
@@ -40,6 +40,11 @@ export interface Api {
   /** "Get this": resolves once the API accepted the call (it always answers the same), and says nothing about what follows. */
   getThis(mediaType: MediaType, tmdbId: number, seasons: readonly number[], signal?: AbortSignal): Promise<void>;
   requests(signal?: AbortSignal): Promise<RequestList>;
+  /**
+   * Cancels one of the caller's own requests (an entry of `requests()`): resolves once the API accepted the call, which
+   * always answers the same and says nothing about what became of it. The title is then shown as available to get again.
+   */
+  cancelRequest(entry: Pick<RequestEntry, 'id' | 'mediaType' | 'tmdbId'>, signal?: AbortSignal): Promise<void>;
   /**
    * A title's name, year and poster for My requests: from the title's own answer (seen by the overlay), or, without a
    * call, from one read in the last ten minutes of this sign-in. Never its state.
@@ -157,6 +162,14 @@ export function createApi(options: ApiOptions): Api {
       if (before !== undefined && owner === before) asked.add(mediaType, tmdbId, seasons);
     },
     requests: (signal) => get<RequestList>('/requests', signal),
+    cancelRequest: async (entry, signal) => {
+      const before = options.token();
+      const response = await call(`/requests/${encodeURIComponent(entry.id)}/cancel`, { body: {} }, signal);
+      await response.body?.cancel().catch(() => undefined);
+      // Only an accepted call, and only for the member who made it: not if the sign-in changed while the call was out.
+      sync(options.token());
+      if (before !== undefined && owner === before) asked.withdraw(entry.mediaType, entry.tmdbId);
+    },
     requestTitle: async (mediaType, tmdbId, signal) => {
       sync(options.token());
       // A kept title is used as it is: its state is not handed to the overlay again.

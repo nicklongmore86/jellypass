@@ -3,7 +3,8 @@
 // admin note where something did not work out; Load more for the next ten. The list is read each time the screen is
 // shown (as the PWA reads it on each visit) and on pull to refresh, its titles only if not named in the last ten
 // minutes of this sign-in; nothing is retried by itself. An entry opens its
-// title on the My requests tab's own stack, so Back comes back here.
+// title on the My requests tab's own stack, so Back comes back here. An entry the server lists as cancellable has a
+// Cancel request button, which asks first (CancelSheet) and then cancels (useRequests).
 import { router, useFocusEffect } from 'expo-router';
 import { useCallback, useState } from 'react';
 import { RefreshControl, ScrollView, StyleSheet, Text, View } from 'react-native';
@@ -13,7 +14,7 @@ import type { Request } from '../api/types';
 import { ErrorNotice } from '../home/components';
 import { titlePath } from '../navigation/titles';
 import { useRequestFilter } from '../requests/filters';
-import { RequestFilters, RequestItem, SkeletonRequests } from '../requests/components';
+import { CancelSheet, RequestFilters, RequestItem, SkeletonRequests } from '../requests/components';
 import { matchesRequestFilter, REQUEST_FILTER_TEXT, requestFilterActive, requestFilterEmptyText, REQUESTS_TEXT } from '../requests/text';
 import { useRequests } from '../requests/useRequests';
 import { LoadMore } from '../search/components';
@@ -25,11 +26,11 @@ import { Button } from '../ui';
 export const REQUESTS_MAX_WIDTH = 736;
 
 export function RequestsScreen() {
-  const { api, expire, titles, requestFilters } = useSession();
+  const { api, expire, titles, requestFilters, cancelRequest } = useSession();
   const filter = useRequestFilter(requestFilters);
   const overlay = useAsked();
-  const data = useRequests(api, expire, overlay, titles);
-  const { reload, stop } = data;
+  const data = useRequests(api, expire, overlay, titles, cancelRequest);
+  const { reload, stop, cancel } = data;
   const insets = useSafeAreaInsets();
   const [refreshing, setRefreshing] = useState(false);
 
@@ -64,6 +65,9 @@ export function RequestsScreen() {
         testID="screen-column"
         style={[styles.column, { paddingLeft: Math.max(spacing.gutter, insets.left), paddingRight: Math.max(spacing.gutter, insets.right) }]}
       >
+        {cancel.notice ? (
+          <Text testID="cancel-notice" accessibilityRole="alert" accessibilityLiveRegion="polite" style={styles.notice}>{cancel.notice}</Text>
+        ) : null}
         {load.status === 'loading' ? <SkeletonRequests /> : null}
         {load.status === 'failed' ? <ErrorNotice error={load.error} onRetry={() => void reload()} secondary={false} /> : null}
         {load.status === 'loaded' && load.requests.length === 0 ? <Text style={styles.muted}>{REQUESTS_TEXT.empty}</Text> : null}
@@ -71,7 +75,7 @@ export function RequestsScreen() {
         {load.status === 'loaded' && load.requests.length ? (
           <View testID="request-list" style={styles.list}>
             {visible.map((request) => (
-              <RequestItem key={request.id} request={request} title={data.titles[request.id]} onOpen={open} />
+              <RequestItem key={request.id} request={request} title={data.titles[request.id]} onOpen={open} onCancel={cancel.ask} />
             ))}
           </View>
         ) : null}
@@ -86,6 +90,14 @@ export function RequestsScreen() {
         ) : null}
         {load.status === 'loaded' && data.shown < load.requests.length ? <LoadMore loading={data.naming} onPress={data.loadMore} /> : null}
       </View>
+      <CancelSheet
+        request={cancel.target}
+        title={cancel.target ? data.titles[cancel.target.id] : undefined}
+        sending={cancel.sending}
+        error={cancel.error}
+        onConfirm={cancel.confirm}
+        onKeep={cancel.keep}
+      />
     </ScrollView>
   );
 }
@@ -95,5 +107,6 @@ const styles = StyleSheet.create({
   column: { width: '100%', maxWidth: REQUESTS_MAX_WIDTH, alignSelf: 'center', paddingTop: spacing.md, paddingBottom: spacing.xxl, gap: spacing.lg },
   list: { gap: 9.6 },
   muted: { ...typography.body, color: colors.muted },
+  notice: { ...typography.body, fontWeight: '700', color: colors.text },
   none: { gap: spacing.md, alignItems: 'flex-start' },
 });
