@@ -53,6 +53,55 @@ function assertSection(notes, { version, nextVersion, subheadings }) {
 }
 
 describe('changelogSection with the real CHANGELOG.md', () => {
+  it('extracts 3.5.0 without its heading, up to the 3.4.0 section', () => {
+    const notes = changelogSection(CHANGELOG, '3.5.0');
+    assertSection(notes, {
+      version: '3.5.0',
+      nextVersion: '3.4.0',
+      subheadings: ['Added', 'Changed'],
+    });
+    assert.match(notes, /^This is a minor release\. Members can cancel their own requests/);
+    const flat = notes.replace(/\s+/g, ' ');
+    assert.match(flat, /\*\*Nothing to configure\.\*\* No setting is new/);
+    assert.match(flat, /\*\*unless `TV_ADDON_ENABLED` is set, nothing about the TV changes\*\* on any host/);
+    assert.match(flat, /\*\*The state file stays at schema v7 and needs no migration\.\*\* .* gains `appWithdrawals`/);
+    assert.match(flat, /A state file written by 3\.5\.0 loads in 3\.4\.0/);
+    assert.match(flat, /fails to sync \("Jellyfin user not found"\) and keeps what it last applied/);
+    assert.match(flat, /block `POST \/jellypass\/app\/v1\/requests\/\*\/cancel`/);
+    assert.match(flat, /`DELETE \/v1\/grants\/\{itemId\}\/requests\/\{requestId\}`/);
+    assert.match(flat, /answers `"clear": true`: set `JELLYPASS_IMAGE` to `ghcr\.io\/nicklongmore86\/jellypass:3\.4\.0`/);
+    assert.match(flat, /about one reconciliation interval \(`RECONCILE_INTERVAL_SECONDS`, 5 minutes by default\) from the later of the delete and the arrival/);
+    assert.match(flat, /\(`RECONCILE_INTERVAL_SECONDS=0`\), when it has no bound/);
+    assert.match(flat, /JellyPass's image does not contain it, and upgrading the server installs nothing on a TV/);
+    assert.match(flat, /`mobile\/CHANGELOG\.md` \(Unreleased\) and arrive with the app's own next release/);
+    assert.match(flat, /`POST \/jellypass\/app\/v1\/requests\/\{id\}\/cancel` always answers the same `202 \{"status":"accepted"\}`/);
+    assert.match(flat, /`apiVersion` in `GET \/me` is now `2`/);
+    assert.match(flat, /`POST \/v1\/app\/held\/\{requestId\}\/release`/);
+    assert.match(flat, /limited to 60 a minute \(`429 too_many_requests`\)/);
+    assert.match(flat, /\*\*My requests in the household web app can be filtered\.\*\*/);
+    assert.match(flat, /`GET`\/`HEAD \/jellypass\/tv\/manifest\.json`/);
+    assert.match(flat, /now sends every household following it back to Get this/);
+    assert.doesNotMatch(flat, /come in a later release/, 'the apps\' Cancel buttons ship in this release');
+    const added = notes.indexOf('### Added');
+    for (const note of [
+      '**Nothing to configure.**',
+      '**The state file stays at schema v7 and needs no migration.**',
+      '**Rolling back to 3.4.0 loses the cancel\'s protection.**',
+      '**No CDN purge is needed.**',
+      '**Administrators should cancel through the Requests tab, not by deleting a',
+      '**A residual window remains.**',
+      '**The Samsung app is a separate, sideloaded build.**',
+      '**The iPhone, iPad and Android app ships separately.**',
+    ]) {
+      assert.ok(notes.indexOf(note) >= 0 && notes.indexOf(note) < added, `upgrade note ${note} comes first`);
+    }
+    assert.doesNotMatch(notes, /### (?:Security|Fixed)/);
+    assert.doesNotMatch(notes, /### Upgrading from/);
+    assert.doesNotMatch(notes, /eas-cli|workflow|\btests?\b/i, 'no tests or CI');
+    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref/, 'no server-specific details');
+    assert.deepEqual(split(notes).definitions, []);
+  });
+
   it('extracts 3.4.0 without its heading, up to the 3.3.1 section', () => {
     const notes = changelogSection(CHANGELOG, '3.4.0');
     assertSection(notes, {
