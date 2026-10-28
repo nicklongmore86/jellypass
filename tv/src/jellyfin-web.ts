@@ -56,6 +56,25 @@ export function homeSections(document: Document): { container: Element; first: E
   return container && first && first.parentNode === container ? { container, first } : undefined;
 }
 
+/**
+ * Jellyfin web's Search page, once it is shown: `#searchPage` (the legacy app's `routes/search.tsx`, the same in the TV
+ * and the desktop layout), a `[data-role=page].page` that is not `hide`, whose `#searchTextInput` holds the query as the
+ * member typed it (a controlled input: Jellyfin web debounces it by 500 ms before it lists results). Undefined unless
+ * the page and the input are as expected, so a Jellyfin web that has changed them gets no row.
+ */
+export function searchPage(document: Document): { page: Element; input: HTMLInputElement } | undefined {
+  const page = document.getElementById('searchPage');
+  if (!page || page.getAttribute('data-role') !== 'page' || !page.classList.contains('page') || page.classList.contains('hide')) return undefined;
+  const input = page.querySelector('.searchFields input#searchTextInput') as HTMLInputElement | null;
+  return input && typeof input.value === 'string' ? { page, input } : undefined;
+}
+
+/** Whether `event` (a `viewshow`) is Jellyfin web's Search page being shown. */
+export function isSearchShown(event: Event): boolean {
+  const target = event.target as Element | null;
+  return Boolean(target && target.id === 'searchPage');
+}
+
 /** Whether `event` (a `viewshow`, which Jellyfin web dispatches on each page as it is shown) is Home being shown. */
 export function isHomeShown(event: Event): boolean {
   const target = event.target as Element | null;

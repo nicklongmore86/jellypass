@@ -1,6 +1,7 @@
-import { trending, type Answer, type Card, type HouseholdState, type MediaType } from './api.js';
+import { trending, type Answer, type Card, type MediaType } from './api.js';
 import type { Asked } from './asked.js';
-import { currentSession, homeSections, JELLYFIN_CLASSES } from './jellyfin-web.js';
+import { drawCards, ROW_TEXT, STATE_LABELS, type Drawn } from './cards.js';
+import { currentSession, homeSections } from './jellyfin-web.js';
 
 /**
  * The JellyPass row on Jellyfin web's Home: what is trending and can be had, from the app API's Trending answer, drawn as
@@ -15,17 +16,7 @@ import { currentSession, homeSections, JELLYFIN_CLASSES } from './jellyfin-web.j
  * (asked.ts).
  */
 
-/** The coarse statuses, worded as the household app words them. */
-export const STATE_LABELS: Record<HouseholdState, string> = {
-  in_library: 'Ready to watch',
-  get_this: 'Available to get',
-  unavailable: "Can't request",
-  requested: 'Requested',
-};
-
-export const ROW_TEXT = {
-  heading: 'Discover',
-} as const;
+export { ROW_TEXT, STATE_LABELS };
 
 /** Marks the row (one at most is ever on the page). */
 export const ROW_ATTRIBUTE = 'data-jellypass-tv-row';
@@ -44,12 +35,6 @@ interface Kept {
   userId: string;
   at: number;
   answer: Answer;
-}
-
-/** A drawn card, with what its status is drawn from. */
-interface Drawn {
-  card: Card;
-  button: HTMLElement;
 }
 
 interface Scope {
@@ -240,61 +225,12 @@ export class HomeRow {
   }
 
   #draw(cards: Card[]): Element {
-    const document = this.#document;
-    const element = (tag: string, className: string, text?: string): HTMLElement => {
-      const node = document.createElement(tag);
-      node.className = className;
-      if (text !== undefined) node.textContent = text;
-      return node;
-    };
-    const section = element('div', `${JELLYFIN_CLASSES.section} jellypass-tv-row`);
-    section.setAttribute(ROW_ATTRIBUTE, '');
-    const headingContainer = element('div', JELLYFIN_CLASSES.headingContainer);
-    headingContainer.appendChild(element('h2', JELLYFIN_CLASSES.heading, ROW_TEXT.heading));
-    section.appendChild(headingContainer);
-    const scroller = element('div', 'jellypass-tv-row-scroller padded-left padded-right');
-    // Not `itemsContainer`: Jellyfin web's Home calls `.pause()` on every element with that class when Home is left, and
-    // that is a method of its own custom element, which this plain `div` is not (the page would fail with a TypeError).
-    const list = element('div', `jellypass-tv-row-list ${JELLYFIN_CLASSES.row}`);
-    // Jellyfin web's TV layout draws its cards with a focus ring and a focus zoom: its CSS keys on these two classes.
-    const tv = document.documentElement.classList.contains('layout-tv');
-    this.#cards = [];
-    for (const card of cards) {
-      const button = element('button', `${JELLYFIN_CLASSES.card} jellypass-tv-card${tv ? ` ${JELLYFIN_CLASSES.cardTv}` : ''}`) as HTMLButtonElement;
-      button.type = 'button';
-      button.setAttribute('data-media-type', card.mediaType);
-      button.setAttribute('data-tmdb-id', String(card.tmdbId));
-      const state = this.#asked.state(card.mediaType, card.tmdbId, card.state);
-      button.setAttribute('aria-label', cardLabel(card, state));
-      const box = element('div', 'cardBox cardBox-bottompadded');
-      const frame = element('div', 'cardScalable');
-      frame.appendChild(element('div', 'cardPadder cardPadder-overflowPortrait'));
-      const image = element('div', 'cardImageContainer coveredImage cardContent');
-      if (card.posterUrl) {
-        const poster = document.createElement('img');
-        poster.className = 'jellypass-tv-card-image';
-        poster.setAttribute('alt', '');
-        poster.setAttribute('referrerpolicy', 'no-referrer');
-        poster.setAttribute('src', card.posterUrl);
-        image.appendChild(poster);
-      }
-      frame.appendChild(image);
-      box.appendChild(frame);
-      box.appendChild(element('div', 'cardText cardTextCentered cardText-first jellypass-tv-card-title', card.title));
-      if (card.year !== null) box.appendChild(element('div', 'cardText cardText-secondary cardTextCentered jellypass-tv-card-year', String(card.year)));
-      button.appendChild(box);
-      button.addEventListener('click', () => this.#open(card));
-      this.#cards.push({ card, button });
-      list.appendChild(button);
-    }
-    scroller.appendChild(list);
-    section.appendChild(scroller);
+    const { section, drawn } = drawCards(this.#document, cards, {
+      attribute: ROW_ATTRIBUTE,
+      state: (card) => this.#asked.state(card.mediaType, card.tmdbId, card.state),
+      choose: (card) => this.#open(card),
+    });
+    this.#cards = drawn;
     return section;
   }
-}
-
-/** A card's accessible name: the title, the year and the status, said once. */
-function cardLabel(card: Card, state: HouseholdState): string {
-  const label = STATE_LABELS[state];
-  return card.year === null ? `${card.title}, ${label}` : `${card.title}, ${card.year}, ${label}`;
 }
