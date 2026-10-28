@@ -1635,9 +1635,15 @@ repeated after it took effect, it answers the same outcome with `changed: false`
   the title still arrive through the declined request (a late `MEDIA_AVAILABLE`, its replay, the backfill or
   reconcileAll, which all decide a grant by the same rule), the grant records the request but gives none of those
   households, nor the requester, access: with nobody left, it is **held for no household** (listed under Held
-  titles), never public. It has no `requesterId`, so it never becomes a title hold: once Seerr forgets the declined
-  request it is forgotten like any withdrawal without one (nothing can then grant the request), and it lapses like
-  any other after 400 days. Declined already (in Seerr, say): the records and the withdrawal are brought up to date.
+  titles), never public. For a genuine request (no record names a join rule) the withdrawal also records its
+  requester (`requesterId`: the request record's member, else Seerr's requester), as a cancel's does, so once Seerr
+  forgets the declined request (an administrator deletes it there) the withdrawal becomes a **title hold**: the title
+  that still arrives with no request to scan is held for no household (decided by the safety markers as they are
+  then, so a tombstone naming the request still makes it a join), and a late `MEDIA_AVAILABLE` for the request still
+  gives none of the declined households access. A join request's declined withdrawal has no `requesterId`: once Seerr
+  forgets the request it is forgotten (its grant follows the join rules, never a new grant). Either lapses like any
+  other withdrawal after 400 days and counts in `GET /v1/app/outstanding` (`withdrawals`, and `titleHolds` once it is
+  one). Declined already (in Seerr, say): the records and the withdrawal are brought up to date.
   A request granted already is refused (`409 request_granted`).
 - **Cancel** (a pending, approved or failed request whose grant is not decided yet):
   1. If `removeFromRadarr` is asked, it is checked first, before anything changes: a movie, Jellyfin has no HD item of

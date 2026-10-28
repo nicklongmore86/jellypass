@@ -121,7 +121,9 @@ export class AdminSeerrError extends Error {
  * - approve: a pending request is approved in Seerr. The households keep following it.
  * - decline: a pending request is declined in Seerr, and in the same turn of the write queue every record following it
  *   is `declined` (each household sees "We couldn't get this") and a declined withdrawal names every household: should
- *   the title arrive through the request after all, none of them is given it, and it is held for no household.
+ *   the title arrive through the request after all, none of them is given it, and it is held for no household; for a
+ *   genuine request this holds after Seerr forgets it too (the withdrawal records `requesterId`, so it becomes a
+ *   title hold).
  * - cancel: every household following the request is sent back to Get this (its records `deleted`), and, in the same
  *   write and before Seerr is asked to forget it, a withdrawal for the request with `requester` (and, for a genuine
  *   request whose arrived items, if any, no active grant holds yet, `requesterId`) is written; then, optionally, the
@@ -275,8 +277,10 @@ export class AdminRequests {
    * Declines a pending request in Seerr and, in the same turn of the write queue (so no webhook, replay, backfill or
    * title hold decides its grant in between), marks every record following it `declined` at once (each household sees
    * "We couldn't get this") and writes a declined withdrawal (AppWithdrawal `declinedAt`, with `requester` and every
-   * household that named it): should the title still arrive through the request, its grant gives none of them (nor
-   * the requester) access, so it is held for no household, never public. Declined already: brought up to date. A
+   * household that named it, and for a genuine request its requester, `requesterId`): should the title still arrive
+   * through the request, its grant gives none of them (nor the requester) access, so it is held for no household, never
+   * public; should Seerr then forget the request, the withdrawal becomes a title hold, so this holds still (for the
+   * arrival and for a late webhook alike). Declined already: brought up to date. A
    * request granted already is left as it is (`409 request_granted`).
    */
   public async decline(requestId: string): Promise<{ status: 'declined'; changed: boolean }> {
@@ -285,6 +289,16 @@ export class AdminRequests {
     return this.#requests.inTitleTurn(title.mediaType, title.tmdbId, async () => {
       const state = await this.#state(requestId);
       if (state.status !== PENDING && state.status !== DECLINED) throw new ConflictError('only a pending request can be declined', 'request_not_pending');
+      // The requester a title hold records (as for a cancel), for a genuine request only (no join rule): should Seerr
+      // forget the declined request, its withdrawal becomes a title hold, so the title still arrives held for no
+      // household and a late webhook still gives none of them it. A join request's withdrawal is forgotten then.
+      const genuine = !this.#naming(requestId).some(([, record]) => record.joinOnGrant !== undefined);
+      let asked = genuine ? this.#naming(requestId).find(([, record]) => record.branch === 'request')?.[1].jellyfinUserId : undefined;
+      if (genuine && !asked) {
+        const seerrTitle = await this.#seerr.titleRequests(title.mediaType, title.tmdbId).catch((error: unknown) => { throw seerrFailure('Seerr could not be read', error); });
+        asked = seerrTitle?.requests.find((request) => request.id === requestId)?.requesterJellyfinId;
+      }
+      const requesterId = asked ? normalizeId(asked) : undefined;
       const changed = await this.#service.serialized(async () => {
         if (this.#store.hasHandledRequest(requestId)) throw new ConflictError('the request was granted already; revoke its access instead', 'request_granted');
         let declined = false;
@@ -300,10 +314,13 @@ export class AdminRequests {
           .map(([id]) => ({ id, status: 'declined' as const }));
         const known = this.#store.listAppWithdrawals().find(([id]) => id === requestId)?.[1];
         const households = [...new Set(this.#naming(requestId).map(([, record]) => record.householdId))];
-        if (update.length === 0 && known?.declinedAt && households.every((id) => known.householdIds.includes(id))) return declined;
+        if (update.length === 0 && known?.declinedAt && households.every((id) => known.householdIds.includes(id))
+          && (!requesterId || known.requesterId)) return declined;
         await this.#store.writeAppRequests({
           update,
-          withdraw: households.map((householdId) => ({ requestId, mediaType: title.mediaType, tmdbId: title.tmdbId, householdId, requester: true, declined: true })),
+          withdraw: households.map((householdId) => ({
+            requestId, mediaType: title.mediaType, tmdbId: title.tmdbId, householdId, requester: true, declined: true, ...(requesterId ? { requesterId } : {}),
+          })),
         });
         return declined || update.length > 0;
       });

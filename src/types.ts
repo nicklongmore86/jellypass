@@ -235,7 +235,9 @@ export interface AppWithdrawal {
   /**
    * When an administrator declined the request (the admin Requests tab), with `requester` and every household that
    * named it: should it still be granted (a late MEDIA_AVAILABLE, its replay, the backfill), none of them is given it,
-   * so the title is held for no household. Kept and forgotten like any other withdrawal.
+   * so the title is held for no household. For a genuine request it records `requesterId` too, so should Seerr then
+   * forget the request, it becomes a title hold (`seerrGoneAt`) like a cancel's. Kept and forgotten like any other
+   * withdrawal.
    */
   declinedAt?: string;
   createdAt: string;

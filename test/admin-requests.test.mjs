@@ -62,8 +62,8 @@ const blocked = (app, userId) => (app.jellyfin.state.jellyfinUsers[userId].Polic
 const statuses = (app) => app.store.listAppRequests().map(([, record]) => [record.householdId, record.branch, record.status]).sort();
 
 /** Alice asks for the movie and Bob's household follows her request. */
-async function followed(t, options = {}) {
-  const app = await start(t, world(options));
+async function followed(t, options = {}, startOptions = {}) {
+  const app = await start(t, world(options), startOptions);
   await getThis(app);
   await getThis(app, AS_BOB);
   assert.deepEqual(statuses(app), [[HOME, 'request', 'pending'], [OTHER, 'interest', 'pending']]);
@@ -200,7 +200,7 @@ describe('admin requests: approve and decline', { timeout: 60_000 }, () => {
     assert.deepEqual((await act(app, FIRST, 'decline')).json(), { status: 'declined', changed: true });
     const [[requestId, withdrawal]] = app.store.listAppWithdrawals();
     assert.deepEqual([requestId, withdrawal.requester, withdrawal.householdIds, withdrawal.requesterId, typeof withdrawal.declinedAt],
-      [String(FIRST), true, [HOME, OTHER], undefined, 'string']);
+      [String(FIRST), true, [HOME, OTHER], ALICE, 'string']);
     // The row is declined, not withdrawn.
     assert.deepEqual((({ status, withdrawn, held: isHeld }) => ({ status, withdrawn, held: isHeld }))((await listing(app)).requests[0]),
       { status: 'declined', withdrawn: false, held: false });
@@ -217,6 +217,90 @@ describe('admin requests: approve and decline', { timeout: 60_000 }, () => {
     assert.deepEqual((await listing(app)).held.map((title) => [title.requestId, title.itemId]), [[String(FIRST), ITEMS.tMovie]]);
     await app.requests.refresh();
     assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, []);
+  });
+
+  // Codex's repro (PR #111): a declined request that an administrator then deletes in Seerr must keep its protection,
+  // against the title arriving with no request to scan and against a late MEDIA_AVAILABLE for the request alike.
+  describe('a declined request Seerr then forgets', () => {
+    const forget = (app, id) => {
+      for (const [seerrId, requests] of Object.entries(app.seerr.state.requests)) app.seerr.state.requests[seerrId] = requests.filter((entry) => entry.id !== id);
+    };
+    /** Alice's request, followed by Bob's household, declined, then deleted in Seerr; the refresh runs 11 minutes on. */
+    async function declinedThenForgotten(t) {
+      let clock = Date.now();
+      const app = await followed(t, {}, { now: () => clock });
+      assert.deepEqual((await act(app, FIRST, 'decline')).json(), { status: 'declined', changed: true });
+      forget(app, FIRST);
+      assert.equal(seerrRequestOf(app, FIRST), undefined);
+      clock += 11 * 60 * 1000;
+      await app.requests.refresh();
+      return app;
+    }
+
+    it('becomes a title hold: the title that arrives is held for no household, and a late webhook gives none of them it', async (t) => {
+      const app = await declinedThenForgotten(t);
+      assert.deepEqual(app.store.listAppWithdrawals().map(([requestId, withdrawal]) => [requestId, withdrawal.requesterId, withdrawal.householdIds, withdrawal.seerrGoneAt !== undefined, typeof withdrawal.declinedAt]),
+        [[String(FIRST), ALICE, [HOME, OTHER], true, 'string']]);
+      const outstanding = (await admin(app, '/v1/app/outstanding')).json();
+      assert.deepEqual([outstanding.clear, outstanding.withdrawals.total, outstanding.withdrawals.titleHolds], [false, 1, 1]);
+      app.jellyfin.state.items.push(movieItem());
+      await app.requests.refresh();
+      const grant = app.store.get(ITEMS.tMovie);
+      assert.deepEqual([grant?.active, Object.keys(grant?.requests ?? {}), grant?.groupIds, grant?.owners], [true, [String(FIRST)], [], []]);
+      for (const user of [ALICE, BOB]) assert.ok(blocked(app, user), user);
+      assert.deepEqual((await listing(app)).held.map((title) => [title.requestId, title.itemId]), [[String(FIRST), ITEMS.tMovie]]);
+      // The late MEDIA_AVAILABLE (handled already) changes nothing.
+      assert.ok([200, 202].includes((await webhook(app, FIRST, ALICE)).status));
+      assert.deepEqual([app.store.get(ITEMS.tMovie).groupIds, app.store.get(ITEMS.tMovie).owners], [[], []]);
+      for (const user of [ALICE, BOB]) assert.ok(blocked(app, user), user);
+      assert.deepEqual(statuses(app), [[HOME, 'request', 'declined'], [OTHER, 'interest', 'declined']]);
+      // The hold is applied: it stays a withdrawal (keeping the requester out), no longer a hold.
+      assert.deepEqual(app.store.listAppTitleHolds(), []);
+      assert.deepEqual(app.store.listAppWithdrawals().map(([requestId, withdrawal]) => [requestId, withdrawal.seerrGoneAt]), [[String(FIRST), undefined]]);
+    });
+
+    it('refuses the declined households a late webhook that comes before any hold is applied', async (t) => {
+      const app = await declinedThenForgotten(t);
+      app.jellyfin.state.items.push(movieItem());
+      assert.ok([200, 202].includes((await webhook(app, FIRST, ALICE)).status));
+      const grant = app.store.get(ITEMS.tMovie);
+      assert.deepEqual([grant?.active, Object.keys(grant?.requests ?? {}), grant?.groupIds, grant?.owners], [true, [String(FIRST)], [], []]);
+      for (const user of [ALICE, BOB]) assert.ok(blocked(app, user), user);
+      await app.requests.refresh();
+      assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, []);
+      assert.deepEqual((await listing(app)).held.map((title) => [title.requestId, title.itemId]), [[String(FIRST), ITEMS.tMovie]]);
+    });
+
+    it('is forgotten for a join request: no title hold, and its grant follows the join rules, never a new grant', async (t) => {
+      // Bob's private grant of the series, with season 1; household A asks for season 2, which Jellyfin lacks.
+      let clock = Date.now();
+      const series = { Id: ITEMS.tSeries, Name: 'Synthetic Series Two', Type: 'Series', ProviderIds: { Tmdb: String(T_TV) }, Tags: [], library: 'shared' };
+      const episode = (season) => ({ Id: `4444000044440000444400004444000${season}`, SeriesId: ITEMS.tSeries, ParentIndexNumber: season });
+      const app = await start(t, world({
+        items: [series],
+        episodes: [episode(1)],
+        grants: [{ request: { itemId: ITEMS.tSeries, mediaType: 'tv', requestId: '7300502', userId: BOB, groupIds: [OTHER] } }],
+      }), { now: () => clock });
+      await member(app, GET_TV, { seasons: [2] });
+      assert.equal(app.store.listAppRequests()[0][1].joinOnGrant, 'existing-series');
+      assert.deepEqual((await act(app, FIRST, 'decline')).json(), { status: 'declined', changed: true });
+      assert.deepEqual(app.store.listAppWithdrawals().map(([requestId, withdrawal]) => [requestId, withdrawal.requesterId]), [[String(FIRST), undefined]]);
+      forget(app, FIRST);
+      clock += 11 * 60 * 1000;
+      await app.requests.refresh();
+      assert.deepEqual([app.store.listAppWithdrawals(), app.store.listAppTitleHolds()], [[], []]);
+      app.jellyfin.state.episodes.push(episode(2));
+      await app.requests.refresh();
+      assert.ok([200, 202].includes((await app.webhook({
+        notificationType: 'MEDIA_AVAILABLE',
+        event: 'Series Request Now Available',
+        media: { mediaType: 'tv', jellyfinMediaId: ITEMS.tSeries },
+        request: { id: String(FIRST), requestedBy: { jellyfinUserId: ALICE } },
+      })).status));
+      const grant = app.store.get(ITEMS.tSeries);
+      assert.deepEqual([Object.keys(grant.requests), grant.groupIds], [['7300502'], [OTHER]]);
+      assert.equal((await admin(app, '/v1/app/held')).json().total, 0);
+    });
   });
 
   it('writes the declined marker in the same turn of the write queue as Seerr\'s decline, so no webhook grants in between', async (t) => {
