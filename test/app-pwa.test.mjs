@@ -2736,6 +2736,49 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         assert.equal(text('ready', 'all', false), null);
       });
 
+      it('says more may match, under the entries that pass, while a filter is on and entries are still to load', async (t) => {
+        const twelve = Array.from({ length: 12 }, (_, index) => entry(`r${index + 1}`, 'movie', index % 2 ? 'ready' : 'requested', false));
+        const app = await startApp(t);
+        const page = await openApp(t, app, { hash: '#/requests', override: list(twelve) });
+        await named(page, 10);
+        await settled(page);
+        const hint = () => { const node = page.main().querySelector('.request-more-hint'); return node && !node.hidden ? node.textContent : null; };
+        assert.equal(hint(), null);
+        press(page, 'status', 'ready');
+        assert.equal(ids(page).length, 5);
+        assert.equal(hint(), 'More may match — Load more to look further.');
+        assert.equal(emptyText(page), null);
+        page.main().querySelector('.load-more').dispatchEvent(new page.Event('click', { bubbles: true }));
+        await named(page, 12);
+        assert.equal(ids(page).length, 6);
+        assert.equal(hint(), null);
+      });
+
+      it('drops the filters on a 401, even when the same token signs in again', async (t) => {
+        let refuse = false;
+        const serve = list(LIST);
+        const app = await startApp(t);
+        const page = await openApp(t, app, { hash: '#/requests', override: (url) => (refuse && url === '/jellypass/app/v1/requests' ? { status: 401, body: Buffer.from('{"error":"unauthorized"}'), headers: { 'content-type': 'application/json' } } : serve(url)) });
+        await named(page, LIST.length);
+        press(page, 'status', 'ready');
+        press(page, 'kind', 'movie');
+        press(page, 'byYou', 'byYou');
+        assert.deepEqual(pressed(page), ['Ready to watch', 'Films', 'Asked by me']);
+        page.go('#/account');
+        await page.until(() => page.main().querySelector('.account'), 'Account');
+        refuse = true;
+        page.go('#/requests');
+        await page.until(() => page.main().querySelector('h1')?.textContent === 'Sign in', 'the sign-in state');
+        // The same token is still stored, so the person is back on My requests with it: the filters are not.
+        refuse = false;
+        page.go('#/account');
+        await page.until(() => page.main().querySelector('.account'), 'Account again');
+        page.go('#/requests');
+        await named(page, LIST.length);
+        assert.deepEqual(pressed(page), ['All', 'All']);
+        assert.deepEqual(ids(page), LIST.map((item) => item.id));
+      });
+
       it('keeps the filters while the app is open (leaving and coming back) and drops them for another member or a sign-out', async (t) => {
         const { app, page } = await open(t);
         press(page, 'status', 'ready');

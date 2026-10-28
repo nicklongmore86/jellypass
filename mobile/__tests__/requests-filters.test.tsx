@@ -265,6 +265,22 @@ describe('the screen', () => {
     expect(ids()).toEqual(['r1', 'r2', 'r3', 'r4', 'r5', 'r6']);
   });
 
+  it('says more may match, under the entries that pass, while a filter is on and entries are still to load', async () => {
+    const twelve = Array.from({ length: 12 }, (_, index) => requestEntry(`r${index + 1}`, 'movie', 910001 + index, index % 2 ? 'ready' : 'requested'));
+    useHousehold({ requests: { results: twelve } });
+    await openRequests();
+    const hint = () => screen.queryAllByText(REQUEST_FILTER_TEXT.more).length;
+    expect(hint()).toBe(0);
+    await choose('request-filter-status-ready');
+    expect(ids()).toHaveLength(5);
+    expect(hint()).toBe(1);
+    expect(screen.queryAllByTestId('request-filter-empty')).toHaveLength(0);
+    await pressNode(only(screen.queryAllByRole('button', { name: 'Load more' }), 'Load more'));
+    await settle();
+    expect(ids()).toHaveLength(6);
+    expect(hint()).toBe(0);
+  });
+
   it('keeps the choice while the app is open: leaving the tab and coming back', async () => {
     const app = await openRequests();
     await choose('request-filter-status-failed');

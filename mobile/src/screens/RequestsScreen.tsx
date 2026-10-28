@@ -75,6 +75,9 @@ export function RequestsScreen() {
             ))}
           </View>
         ) : null}
+        {load.status === 'loaded' && visible.length > 0 && requestFilterActive(filter) && data.shown < load.requests.length ? (
+          <Text testID="request-filter-more" style={styles.muted}>{REQUEST_FILTER_TEXT.more}</Text>
+        ) : null}
         {load.status === 'loaded' && load.requests.length && data.shown > 0 && visible.length === 0 ? (
           <View testID="request-filter-empty" style={styles.none}>
             <Text style={styles.muted}>{requestFilterEmptyText(filter, data.shown < load.requests.length)}</Text>

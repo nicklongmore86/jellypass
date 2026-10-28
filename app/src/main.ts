@@ -453,6 +453,7 @@ async function loadMe(signal: AbortSignal): Promise<void> {
 /** The sign-in screen, in place of whatever was showing; `expired` when a sign-in the app held was refused. */
 function signIn(signal: AbortSignal, current: () => boolean, expired: boolean): void {
   me = undefined;
+  requestFilter = { ...NO_REQUEST_FILTER };
   api.forgetAsked();
   setChrome();
   void showSignIn({
@@ -1294,6 +1295,7 @@ async function requestsScreen(signal: AbortSignal, current: () => boolean): Prom
   const noneText = el(doc, 'p', { class: 'muted' });
   const showAll = el(doc, 'button', { class: 'button button-secondary', text: REQUEST_FILTER_TEXT.showAll, attrs: { type: 'button' } });
   none.append(noneText, showAll);
+  const hint = el(doc, 'p', { class: 'muted request-more-hint', text: REQUEST_FILTER_TEXT.more, attrs: { hidden: '' } });
   const more = el(doc, 'button', { class: 'button button-secondary load-more', text: 'Load more', attrs: { type: 'button' } });
   let shown = 0;
 
@@ -1337,6 +1339,8 @@ async function requestsScreen(signal: AbortSignal, current: () => boolean): Prom
       any ||= visible;
     }
     none.hidden = any;
+    // With entries showing, the filter may still be missing some that are not on the page yet (with none showing, the empty text says it).
+    hint.hidden = !any || !requestFilterActive(requestFilter) || shown >= entries.length;
     noneText.textContent = requestFilterEmptyText(requestFilter, shown < entries.length);
     showAll.hidden = !requestFilterActive(requestFilter);
     for (const button of bar.querySelectorAll<HTMLElement>('button[data-filter]')) {
@@ -1367,7 +1371,7 @@ async function requestsScreen(signal: AbortSignal, current: () => boolean): Prom
     const first = shown;
     void showMore().then(() => rows.slice(first).find(({ item }) => !item.hidden)?.item.querySelector('a')?.focus());
   });
-  show(heading, bar, list, none, more);
+  show(heading, bar, list, hint, none, more);
   announce('');
   focusHeading();
   // Coming back, the entries that were showing are drawn at once (their titles follow) and the scroll put back.

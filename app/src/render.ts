@@ -937,7 +937,7 @@ export const REQUEST_FILTER_TEXT = {
   kind: { all: 'All', movie: 'Films', tv: 'Series' },
   byYou: 'Asked by me',
   showAll: 'Show all requests',
-  more: 'Load more to look further.',
+  more: 'More may match — Load more to look further.',
 } as const;
 
 export function requestFilterActive(filter: RequestFilter): boolean {
