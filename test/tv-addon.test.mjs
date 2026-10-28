@@ -2342,6 +2342,54 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     assert.equal(page.document.documentElement.contains(page.focused()), true, 'and is in the page');
   });
 
+  it('moves focus to the My requests card, never off the page, when a redraw removes the only title card that has it', async (t) => {
+    const app = await startHeld(t);
+    let gone = false;
+    const page = await atHome(t, app, {
+      override: async (pathname) => {
+        if (pathname !== '/jellypass/app/v1/discover/trending') return undefined;
+        const real = (await app.get(pathname)).json();
+        const only = real.results.find((card) => card.tmdbId === T_MOVIE);
+        return { status: 200, body: JSON.stringify({ ...real, results: gone ? [] : [{ ...only, state: 'get_this' }] }) };
+      },
+    });
+    assert.equal(page.cards().length, 1);
+    page.card(T_MOVIE).focus();
+    assert.equal(page.focused() === page.card(T_MOVIE), true, 'the only title card has focus');
+    // The title leaves the answer (asked for elsewhere); Home is shown again after the answer is old: the row is drawn again.
+    gone = true;
+    page.advance(60_001); // the row's REUSE_MS
+    page.shown();
+    await page.settled();
+    assert.equal(page.cards().length, 0, 'the title card is gone');
+    assert.equal(page.requestsLink() !== null, true, 'the My requests card is drawn');
+    assert.equal(page.focused() === page.requestsLink(), true, 'the My requests card has focus');
+    assert.equal(page.document.documentElement.contains(page.focused()), true, 'and it is in the page');
+  });
+
+  it('draws a ring on the focused My requests card in the stylesheet: inside its face, from :focus, in the page\'s text colour', async (t) => {
+    const css = readFileSync(path.join(DIST_TV, STYLESHEET), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const rules = [...css.matchAll(/([^{}@]+)\{([^{}]*)\}/g)].flatMap(([, selectors, body]) => selectors.split(',').map((selector) => ({ selector: selector.trim(), body })));
+    const page = await atHome(t, await startApp(t, webWorld(), tvOn()));
+    const link = page.requestsLink();
+    const face = link.querySelector('.jellypass-tv-card-link-face');
+    assert.equal(face !== null, true, 'the card has its face');
+    // The rule whose selector, with :focus taken as on, matches the face of the link card, and not a title card's.
+    const ring = rules.filter(({ selector, body }) => /:focus$|:focus\s/.test(selector) && /box-shadow/.test(body)
+      && face.matches(selector.replace(/:focus/g, '')) && !page.card(T_MOVIE).querySelector('.cardImageContainer').matches(selector.replace(/:focus/g, '')));
+    assert.equal(ring.length >= 1, true, 'a :focus rule draws a box-shadow on the My requests face');
+    for (const { body } of ring) {
+      const shadows = body.match(/box-shadow:\s*[^;]+/g) ?? [];
+      // Inside the face (Jellyfin's `.card` contains its paint: an outer ring is cut off in the desktop layout), at least 0.2em
+      // thick, white where no theme colour is set: 15:1 on Jellyfin's near-black, above the 3:1 an indicator needs.
+      assert.equal(shadows.every((shadow) => /inset\s+0\s+0\s+0\s+0?\.(?:2|25|3)\d*em\s+(?:#fff\b|var\(--jf-palette-text-primary,\s*#fff\))/.test(shadow)), true, 'the ring is an inset 0.25em white shadow');
+      // The plain colour comes first, so a browser without var() keeps it.
+      assert.equal(shadows.length === 2 && !/var\(/.test(shadows[0]) && /var\(/.test(shadows[1]), true, 'a fallback before the themed value');
+    }
+    // Only :focus (Chromium 63 has no :focus-visible), and no outline rule on the card that could replace the ring.
+    assert.equal(/:focus-visible/.test(css), false, 'no :focus-visible');
+  });
+
   it('calls only the origin it came from: signed in elsewhere, the page is emptied and nothing is sent there; a card chosen then opens nothing', async (t) => {
     const app = await startApp(t, webWorld(), tvOn());
     const page = await atHome(t, app);
