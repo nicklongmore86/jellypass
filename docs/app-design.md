@@ -1517,6 +1517,22 @@ existing `deleted`. No migration is needed; a state file without them loads unch
 are (the store writes unknown fields back) and read a withdrawn record as `deleted`: not listed, not refreshed, not
 blocking "Get this", so the household's view survives a rollback. What they do not do is apply the grant rule.
 
+**The apps' Cancel request (step 2c, clients).** The household web app and the iPhone/iPad/Android app show **Cancel
+request** on each My requests entry whose `cancellable` is true, and nowhere else: a server before `apiVersion` 2 sends
+no such field (so no button), and an entry the caller may not cancel has none. Each entry also shows `requestedOn` as
+the member's locale writes that UTC day (no time): "Requested on Oct 27, 2026". The button asks first (an inline
+confirmation in the web app, a sheet in the mobile app): "This withdraws your household's request. If it has already been
+approved, the download may still finish, but it won't be added for your household.", with **Cancel request** and
+**Keep request**. Confirming sends one `POST /requests/:id/cancel` with `{}` (both buttons disabled while it is out,
+never repeated by the app). On the fixed `202` the app shows the same **Request cancelled** every time, whatever the
+server then did, takes the entry off the list at once and reads the list again; the overlay (the in-memory memory of what
+the member asked for, and the latest state each title was reported in) shows the title as **Get this** again while the
+server still says requested (two minutes, or until the server says anything but requested, or the member asks again), so
+Home, Search and the title pages do not keep showing Requested. A `429` has the same fixed words as Get this's; any
+other failure one fixed line; a `401` signs out; nothing is retried by itself. The call budget is
+`docs/app-api/fetch-budget.json`, "requests", "cancel": the POST and the list read again (the titles stay named). A
+title page does not offer Cancel yet (My requests is where it is).
+
 **Rolling back** to a version before step 2c (3.4.0 or earlier): a request a withdrawal names is granted there as an ordinary request
 (to the requester's households), and a request its requester withdrew that is already on a grant gives that requester
 access again (their user, not their households); a title hold is not read at all, so its title arrives public. So

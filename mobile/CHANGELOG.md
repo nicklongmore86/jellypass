@@ -17,6 +17,20 @@ build.
 
 ### Added
 
+- **My requests: Cancel request.** An entry the server lists as cancellable
+  (a JellyPass server with API version 2 or later) has a **Cancel request**
+  button, 44pt, named by its request for VoiceOver and TalkBack. It opens a
+  sheet that says what cancelling does ("This withdraws your household's
+  request. If it has already been approved, the download may still finish, but
+  it won't be added for your household.") with **Cancel request** and **Keep
+  request**; it scrolls at the largest text size and stops widening on iPad.
+  Confirming sends the cancel once; the screen always says **Request
+  cancelled**, drops the entry and reads the list again, and the title shows
+  **Get this** again on Home, Search and its page. A busy server (429), no
+  connection and any other failure each have one fixed message, and nothing is
+  retried by itself. Each entry also shows the day it was requested. On an
+  older server there is no button. Needs a JellyPass server with the cancel
+  endpoint (the next server release after 3.4.0).
 - **My requests can be filtered.** Chips above the list choose a status (All,
   Requested, Ready to watch, Couldn't get this), a type (All, Films, Series)
   and "Asked by me", and they combine, as in the household web app. A series

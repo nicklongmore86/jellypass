@@ -15,7 +15,7 @@ export const DOC = JSON.parse(readFileSync(path.join(DOCS, 'v1.openapi.json'), '
   components: { schemas: Record<string, Json>; responses: Record<string, Json> };
 };
 export const BUDGET = JSON.parse(readFileSync(path.join(DOCS, 'fetch-budget.json'), 'utf8')) as {
-  screens: Record<string, { calls: number; atOnce: string[]; belowTheFold?: string[] }>;
+  screens: Record<string, { calls: number; atOnce: string[]; belowTheFold?: string[]; revisit?: string[]; cancel?: string[] }>;
 };
 
 export function fixture(name: string): Json {

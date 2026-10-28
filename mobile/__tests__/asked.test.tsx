@@ -249,6 +249,68 @@ describe('the overlay', () => {
     expect(asked.page(row).results.map((card) => card.state)).toEqual(['get_this']);
   });
 
+  it('shows a cancelled title as get_this while the server still says requested, for the window, until a fresher get_this or asking again', () => {
+    const { asked } = clocks();
+    asked.add('movie', 7, []);
+    asked.withdraw('movie', 7);
+    expect(asked.state('movie:7', 'requested')).toBe('get_this');
+    expect(asked.state('movie:7', 'get_this')).toBe('get_this');
+    expect(asked.state('movie:7', 'in_library')).toBe('in_library');
+    expect(asked.state('movie:8', 'requested')).toBe('requested');
+    // Its seasons too.
+    asked.withdraw('tv', 9);
+    expect(asked.state('tv:9:2', 'requested')).toBe('get_this');
+    expect(asked.series(seriesAnswer(9, ['requested', 'in_library']) as Series).seasons.map((season) => season.state)).toEqual(['unavailable', 'get_this', 'in_library']);
+    // The latest state the server reported is overlaid too, not just the one drawn.
+    asked.seen(movieAnswer(7, 'requested') as Movie);
+    expect(asked.movie(movieAnswer(7, 'requested') as Movie).state).toBe('get_this');
+    // The server caught up: its own answer alone from here, even if it says requested later.
+    asked.seen(movieAnswer(7, 'get_this') as Movie);
+    expect(asked.state('movie:7', 'requested', 999)).toBe('requested');
+    // Asking again ends it.
+    asked.withdraw('movie', 7);
+    asked.add('movie', 7, []);
+    expect(asked.state('movie:7', 'requested')).toBe('requested');
+  });
+
+  it('ends a cancelled series per key: a season that moved off requested does not end the others or the title', () => {
+    const { asked } = clocks();
+    asked.withdraw('tv', 9);
+    const first = seriesAnswer(9, ['get_this', 'requested']) as Series;
+    asked.seen(first);
+    expect(asked.series(first).seasons.map((season) => season.state)).toEqual(['unavailable', 'get_this', 'get_this']);
+    // Season 1 reported get_this, which ended its own withdrawal only: season 2 (and the title) stay withdrawn.
+    const second = seriesAnswer(9, ['requested', 'requested']) as Series;
+    asked.seen(second);
+    expect(asked.series(second).seasons.map((season) => season.state)).toEqual(['unavailable', 'requested', 'get_this']);
+  });
+
+  it('ends a withdrawal for good on any state but requested', () => {
+    for (const other of ['in_library', 'unavailable', 'get_this'] as const) {
+      const { asked } = clocks();
+      asked.withdraw('movie', 7);
+      asked.seen(movieAnswer(7, other) as Movie);
+      const again = movieAnswer(7, 'requested') as Movie;
+      asked.seen(again);
+      expect(asked.movie(again).state).toBe('requested');
+    }
+  });
+
+  it('ends a cancelled title\'s window with the asked keys\': by its timer, telling listeners once, and forgets it', () => {
+    const { asked, pass, timer } = clocks();
+    let told = 0;
+    asked.subscribe(() => (told += 1));
+    asked.withdraw('movie', 7);
+    expect(told).toBe(1);
+    expect(timer()).toBe(ASKED_TTL_MS);
+    pass(ASKED_TTL_MS);
+    expect(told).toBe(2);
+    expect(asked.state('movie:7', 'requested')).toBe('requested');
+    asked.withdraw('movie', 7);
+    asked.forget();
+    expect(asked.state('movie:7', 'requested')).toBe('requested');
+  });
+
   it('forgets the latest states too, and tells whoever listens of every answer seen', () => {
     const { asked } = clocks();
     const heard = jest.fn();
