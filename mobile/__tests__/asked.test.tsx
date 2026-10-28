@@ -273,6 +273,29 @@ describe('the overlay', () => {
     expect(asked.state('movie:7', 'requested')).toBe('requested');
   });
 
+  it('ends a cancelled series per key: a season that moved off requested does not end the others or the title', () => {
+    const { asked } = clocks();
+    asked.withdraw('tv', 9);
+    const first = seriesAnswer(9, ['get_this', 'requested']) as Series;
+    asked.seen(first);
+    expect(asked.series(first).seasons.map((season) => season.state)).toEqual(['unavailable', 'get_this', 'get_this']);
+    // Season 1 reported get_this, which ended its own withdrawal only: season 2 (and the title) stay withdrawn.
+    const second = seriesAnswer(9, ['requested', 'requested']) as Series;
+    asked.seen(second);
+    expect(asked.series(second).seasons.map((season) => season.state)).toEqual(['unavailable', 'requested', 'get_this']);
+  });
+
+  it('ends a withdrawal for good on any state but requested', () => {
+    for (const other of ['in_library', 'unavailable', 'get_this'] as const) {
+      const { asked } = clocks();
+      asked.withdraw('movie', 7);
+      asked.seen(movieAnswer(7, other) as Movie);
+      const again = movieAnswer(7, 'requested') as Movie;
+      asked.seen(again);
+      expect(asked.movie(again).state).toBe('requested');
+    }
+  });
+
   it('ends a cancelled title\'s window with the asked keys\': by its timer, telling listeners once, and forgets it', () => {
     const { asked, pass, timer } = clocks();
     let told = 0;

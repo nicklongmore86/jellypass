@@ -202,6 +202,31 @@ describe('cancelling', () => {
     expect(noticeText()).toBe('Request cancelled');
   });
 
+  it('clears Request cancelled on leaving the screen, and when another cancel is opened', async () => {
+    list = [
+      requestEntry(SERIES_ID, 'tv', 900002, 'requested', { cancellable: true, requestedOn: '2026-10-27' }),
+      requestEntry('MMMMMMMMMMMMMMMMMMMMMM', 'movie', 900001, 'requested', { cancellable: true, requestedOn: '2026-10-26' }),
+    ];
+    const { app } = await openSheet();
+    await pressNode(first('cancel-confirm'));
+    expect(noticeText()).toBe('Request cancelled');
+    // Opening the other request's sheet takes the confirmation of the first away.
+    await pressNode(first('request-cancel'));
+    expect(sheetShown()).toBe(true);
+    expect(screen.queryAllByTestId('cancel-notice')).toHaveLength(0);
+    await pressNode(first('cancel-keep'));
+    await pressNode(first('request-cancel'));
+    await pressNode(first('cancel-confirm'));
+    expect(noticeText()).toBe('Request cancelled');
+    // Leaving and coming back shows no confirmation.
+    await act(async () => router.navigate('/'));
+    await settle();
+    await act(async () => router.navigate('/requests'));
+    await settle();
+    expect(app.getPathname()).toBe('/requests');
+    expect(screen.queryAllByTestId('cancel-notice')).toHaveLength(0);
+  });
+
   it('signs the member out on a 401', async () => {
     cancelAs = { status: 401, body: { error: 'unauthorized' } };
     const { app } = await openSheet();

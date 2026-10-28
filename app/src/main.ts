@@ -1271,6 +1271,11 @@ async function sourceScreen(route: Route, signal: AbortSignal, current: () => bo
   focusHeading();
 }
 
+/** Counts the readings of the list; only the latest one is drawn. */
+let listReads = 0;
+/** Entries whose cancel was accepted, with the reading count at that moment: a list read issued before it may still list them. */
+const cancelledAt = new Map<string, number>();
+
 /**
  * The household's requests, read on every visit, with their titles read from TMDB (through the API) ten at a time. A
  * title already read in this sign-in (the last ten minutes) is reused, so coming back reads only the list.
@@ -1280,8 +1285,13 @@ async function requestsScreen(signal: AbortSignal, current: () => boolean, again
   // After a cancel the screen stays as it is while the list is read again, and the one fixed confirmation is shown.
   if (!again) busy(el(doc, 'h1', { class: 'screen-title visually-hidden', text: REQUESTS_TEXT.title, attrs: { tabindex: '-1', [HEADER_TITLE]: '' } }), skeletonRequests(doc));
   await loadMe(signal);
-  const entries: RequestEntry[] = (await api.requests(signal)).results;
-  if (!current()) return;
+  const read = ++listReads;
+  const listed = (await api.requests(signal)).results;
+  // An older reading answering after a newer one was issued is dropped; the newer one draws.
+  if (!current() || read !== listReads) return;
+  // A cancelled entry stays off a reading issued before its cancel was accepted; one issued after it is the server's word.
+  for (const [id, at] of [...cancelledAt]) if (at < read) cancelledAt.delete(id);
+  const entries: RequestEntry[] = listed.filter((entry) => !cancelledAt.has(entry.id));
   const heading = el(doc, 'h1', { class: 'screen-title visually-hidden', text: REQUESTS_TEXT.title, attrs: { tabindex: '-1', [HEADER_TITLE]: '' } });
   const notice = again ? el(doc, 'p', { class: 'get-message', text: again.notice, attrs: { role: 'status', tabindex: '-1' } }) : undefined;
   const settle = () => {
@@ -1304,6 +1314,7 @@ async function requestsScreen(signal: AbortSignal, current: () => boolean, again
       if (kind === 'unauthorized' && current()) failure(kind, () => void render());
       return kind;
     }
+    cancelledAt.set(entry.id, listReads);
     onAccepted();
     if (!current()) return 'accepted';
     // The list is read again (the entry is gone, the title is Get this again) with the one fixed confirmation.

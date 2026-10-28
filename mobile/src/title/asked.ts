@@ -78,6 +78,11 @@ export function createAsked(now: () => number = monotonic, wall: () => number = 
   let expires = new Map<string, { mono: number; wall: number }>();
   /** The titles (`movie:<id>`, `tv:<id>`) whose Cancel was accepted, covering the title's key and its seasons'. */
   let withdrawn = new Map<string, { mono: number; wall: number }>();
+  /** Keys (the title's or a season's) whose withdrawal ended: the server said something but `requested` for them. */
+  const over = new Set<string>();
+  const endTitle = (title: string) => {
+    for (const key of [...over]) if (key === title || key.startsWith(`${title}:`)) over.delete(key);
+  };
   /** The latest state the server reported for each key, and the number of the answer that said it. */
   let latest = new Map<string, { state: HouseholdState; at: number }>();
   /** The number each seen answer's card or season was given. */
@@ -122,6 +127,7 @@ export function createAsked(now: () => number = monotonic, wall: () => number = 
       for (const [key, since] of map) {
         if (left(since) <= 0) {
           map.delete(key);
+          if (map === withdrawn) endTitle(key);
           dropped = true;
         }
       }
@@ -135,6 +141,7 @@ export function createAsked(now: () => number = monotonic, wall: () => number = 
       const since = { mono: now(), wall: wall() };
       const key = titleKey(mediaType, tmdbId);
       withdrawn.delete(key);
+      endTitle(key);
       expires.set(key, since);
       // A series is requested while any of its seasons is (as the server shows it once recorded).
       if (mediaType === 'tv') for (const season of seasons) expires.set(seasonKey(tmdbId, season), since);
@@ -144,6 +151,7 @@ export function createAsked(now: () => number = monotonic, wall: () => number = 
     withdraw(mediaType, tmdbId) {
       const key = titleKey(mediaType, tmdbId);
       for (const asked of [...expires.keys()]) if (asked === key || asked.startsWith(`${key}:`)) expires.delete(asked);
+      endTitle(key);
       withdrawn.set(key, { mono: now(), wall: wall() });
       schedule();
       changed();
@@ -154,6 +162,7 @@ export function createAsked(now: () => number = monotonic, wall: () => number = 
       if (expires.size === 0 && withdrawn.size === 0 && latest.size === 0) return;
       expires = new Map();
       withdrawn = new Map();
+      over.clear();
       latest = new Map();
       numbers = new WeakMap();
       changed();
@@ -164,7 +173,8 @@ export function createAsked(now: () => number = monotonic, wall: () => number = 
         latest.set(key, { state: item.state, at });
         numbers.set(item, at);
         if (item.state !== 'get_this') expires.delete(key);
-        else withdrawn.delete(key.split(':').slice(0, 2).join(':'));
+        // A withdrawal ends per key, for good, on any answer but requested.
+        if (item.state !== 'requested' && withdrawn.has(key.split(':').slice(0, 2).join(':'))) over.add(key);
       };
       if ('results' in answer) for (const card of answer.results) note(titleKey(card.mediaType, card.tmdbId), card);
       else if ('mediaType' in answer) {
@@ -179,7 +189,7 @@ export function createAsked(now: () => number = monotonic, wall: () => number = 
       const server = fresher && (at === undefined || fresher.at > at) ? fresher.state : reported;
       if (server === 'requested') {
         const cancelled = withdrawn.get(key.split(':').slice(0, 2).join(':'));
-        return cancelled !== undefined && left(cancelled) > 0 ? 'get_this' : server;
+        return cancelled !== undefined && left(cancelled) > 0 && !over.has(key) ? 'get_this' : server;
       }
       if (server !== 'get_this') return server;
       const since = expires.get(key);

@@ -2685,6 +2685,38 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         assert.equal(page.main().querySelector('.request .card-title').textContent !== 'Loading title…', true, 'the other entry stays named without a title call');
       });
 
+      it('overlapping cancel refreshes: an older list answering last never brings a cancelled entry back', async (t) => {
+        const app = await startApp(t);
+        const ID3 = 'CCCCCCCCCCCCCCCCCCCCCC';
+        const all = [entry(ID, T_MOVIE, { cancellable: true }), entry(ID2, T_TV, { cancellable: true }), entry(ID3, T_MOVIE, { cancellable: true })];
+        const state = { posts: [], cancel: 202, list: all };
+        const reads = [];
+        const inner = server(state);
+        const override = (url, init) => {
+          if (url === '/jellypass/app/v1/requests') {
+            reads.push(reads.length);
+            // The first read opens the screen; the second (A's refresh) is held and answers with the list from before both cancels.
+            if (reads.length === 2) return new Promise((resolve) => { state.release = () => resolve(json({ results: all })); });
+          }
+          return inner(url, init);
+        };
+        const page = await openApp(t, app, { hash: '#/requests', override });
+        await named(page, 3);
+        await settled(page);
+        const items = [...page.main().querySelectorAll('.request')];
+        click(page, items[0].querySelector('.request-cancel'));
+        click(page, items[0].querySelector('.request-cancel-actions button'));
+        await page.until(() => reads.length === 2, 'A refresh in flight');
+        click(page, items[1].querySelector('.request-cancel'));
+        click(page, items[1].querySelector('.request-cancel-actions button'));
+        await page.until(() => reads.length === 3 && page.main().querySelectorAll('.request').length === 1, 'B refresh answered first');
+        state.release();
+        await settled(page);
+        await settled(page);
+        assert.equal(page.main().querySelectorAll('.request').length, 1, 'only the third entry is left');
+        assert.equal(state.posts.length, 2);
+      });
+
       it('cancelling the last request leaves the confirmation and the empty message', async (t) => {
         const app = await startApp(t);
         const state = { posts: [], cancel: 202, list: [entry(ID, T_MOVIE, { cancellable: true, requestedOn: '2026-10-27' })] };
@@ -5333,6 +5365,29 @@ describe('household app: what this member just asked for', { timeout: 30_000 }, 
     overlay.forget();
     assert.equal(overlay.card(movieCard('requested')).state, 'requested');
     assert.equal(overlay.series(series).state, 'requested', 'forgotten with the rest');
+  });
+
+  it('a cancelled series ends per key: a season that moved off requested does not end the others or the title', async () => {
+    const { createAsked } = await asked();
+    const overlay = createAsked(() => 1000);
+    const series = (states) => ({ ...movieCard('requested'), mediaType: 'tv', tmdbId: 7, seasons: states.map((state, i) => ({ seasonNumber: i + 1, state })) });
+    overlay.withdraw('tv', 7);
+    assert.deepEqual(overlay.series(series(['get_this', 'requested'])).seasons.map((season) => season.state), ['get_this', 'get_this']);
+    assert.equal(overlay.series(series(['get_this', 'requested'])).state, 'get_this', 'the title too');
+    assert.equal(overlay.series(series(['requested', 'requested'])).seasons[1].state, 'get_this', 'season 2 still withdrawn');
+    assert.equal(overlay.series(series(['requested', 'requested'])).seasons[0].state, 'requested', 'season 1 ended on its own get_this');
+    assert.equal(overlay.series(series(['requested', 'in_library'])).state, 'get_this', 'the title key has its own state');
+  });
+
+  it('a withdrawal ends for good on any state but requested: withdraw, in_library, then requested shows Requested', async () => {
+    const { createAsked } = await asked();
+    for (const other of ['in_library', 'failed', 'unavailable', 'get_this']) {
+      const overlay = createAsked(() => 1000);
+      overlay.withdraw('movie', 5);
+      assert.equal(overlay.card(movieCard('requested')).state, 'get_this');
+      assert.equal(overlay.card(movieCard(other)).state, other);
+      assert.equal(overlay.card(movieCard('requested')).state, 'requested', `after ${other}`);
+    }
   });
 
   it('a 202 for Cancel withdraws the title in the overlay; any other answer, and a changed sign-in, does not', async (t) => {

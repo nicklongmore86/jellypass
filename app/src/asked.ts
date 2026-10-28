@@ -37,6 +37,11 @@ export function createAsked(now: () => number = () => performance.now(), wall: (
   let expires = new Map<string, { mono: number; wall: number }>();
   /** Titles (`movie:<id>`, `tv:<id>`) whose cancel was accepted, covering the title's own key and its seasons'. */
   let withdrawn = new Map<string, { mono: number; wall: number }>();
+  /** Keys (the title's or a season's) whose withdrawal ended: the server said something but `requested` for them. */
+  let ended = new Set<string>();
+  const endTitle = (title: string) => {
+    for (const key of [...ended]) if (key === title || key.startsWith(`${title}:`)) ended.delete(key);
+  };
   const live = (since: { mono: number; wall: number }) => {
     const sinceWall = wall() - since.wall;
     return now() - since.mono < ASKED_TTL_MS && !(sinceWall > 0 && sinceWall >= ASKED_TTL_MS);
@@ -48,6 +53,7 @@ export function createAsked(now: () => number = () => performance.now(), wall: (
       const until = { mono: now(), wall: wall() };
       const key = titleKey(mediaType, tmdbId);
       withdrawn.delete(key);
+      endTitle(key);
       expires.set(key, until);
       // A series is requested while any of its seasons is (as the server shows it once recorded).
       if (mediaType === 'tv') for (const season of seasons) expires.set(`${key}:${season}`, until);
@@ -55,15 +61,22 @@ export function createAsked(now: () => number = () => performance.now(), wall: (
     withdraw(mediaType, tmdbId) {
       const key = titleKey(mediaType, tmdbId);
       for (const asked of [...expires.keys()]) if (asked === key || asked.startsWith(`${key}:`)) expires.delete(asked);
+      endTitle(key);
       withdrawn.set(key, { mono: now(), wall: wall() });
     },
-    forget: () => { expires = new Map(); withdrawn = new Map(); },
+    forget: () => { expires = new Map(); withdrawn = new Map(); ended = new Set(); },
     state(key, server) {
       const title = key.split(':').slice(0, 2).join(':');
       const since = withdrawn.get(title);
       if (since !== undefined) {
-        if (!live(since) || server === 'get_this') withdrawn.delete(title);
-        else if (server === 'requested') return 'get_this';
+        if (!live(since)) {
+          withdrawn.delete(title);
+          endTitle(title);
+        } else if (!ended.has(key)) {
+          // Each key (the title, every season) ends on its own: any answer but requested ends it for good.
+          if (server === 'requested') return 'get_this';
+          ended.add(key);
+        }
       }
       if (server !== 'get_this') {
         expires.delete(key);

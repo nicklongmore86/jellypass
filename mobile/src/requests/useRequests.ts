@@ -200,6 +200,7 @@ export function useRequests(api: ApiClient | undefined, expire: () => Promise<vo
   const ask = useCallback((request: Request) => {
     if (cancelling.current) return;
     setCancelFailed(undefined);
+    setNotice(undefined);
     setTarget(request);
   }, []);
   const keep = useCallback(() => {
@@ -212,6 +213,7 @@ export function useRequests(api: ApiClient | undefined, expire: () => Promise<vo
     cancelling.current = true;
     setSending(true);
     setCancelFailed(undefined);
+    setNotice(undefined);
     const request = target;
     void (async () => {
       try {
@@ -247,6 +249,7 @@ export function useRequests(api: ApiClient | undefined, expire: () => Promise<vo
   const stop = useCallback(() => {
     reading.current += 1;
     abort.current?.abort();
+    setNotice(undefined);
   }, []);
 
   const cancel: CancelState = { target, sending, error: cancelFailed, notice, ask, keep, confirm };
