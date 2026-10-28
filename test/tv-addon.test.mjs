@@ -1941,8 +1941,8 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     const page = await atHome(t, app);
     assert.ok(page.listeners.length >= 6, page.listeners.join('; '));
     const types = [...new Set(page.listeners.map((entry) => entry.split(' ')[0]))].sort();
-    assert.deepEqual(types, ['focusin', 'keydown', 'mousedown', 'pageshow', 'pointerdown', 'touchstart', 'viewshow']);
-    // The host's document listeners, the input ones included, are explicitly capturing and passive: they only observe.
+    assert.deepEqual(types, ['focusin', 'input', 'keydown', 'mousedown', 'pageshow', 'pointerdown', 'touchstart', 'viewshow']);
+    // The host's document listeners, the search field's input one included, are explicitly capturing and passive: they only observe.
     for (const entry of page.listeners) assert.ok(entry.endsWith(' {"capture":true,"passive":true}'), entry);
     const source = readFileSync(path.join(DIST_TV, SCRIPT), 'utf8');
     lacks(source, /\bpreventDefault\b|\bstopPropagation\b|\bstopImmediatePropagation\b/);
