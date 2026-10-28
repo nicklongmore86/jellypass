@@ -101,18 +101,56 @@ function manifestScript(scope: Scope, origin: string): Promise<string | undefine
   });
 }
 
-/** Starts the loader in `scope` (the page's window) for `document`. Runs once per page, however often it is started. */
+/**
+ * Starts the loader in `scope` (the page's window) for `document`. Runs once per page, however often it is started.
+ *
+ * The add-on counts as loaded only once its script's `load` fires. If the script fails to load (a release deployed
+ * between the manifest and the script, so the name is gone; no network), its tag is removed, so neither the loader nor
+ * the add-on takes it for a loaded one, and the host is asked for the manifest again later, as after a failed manifest.
+ */
 export function startLoader(scope: Scope, document: Document, patterns: readonly string[]): void {
   if (scope.__jellypassTvLoader) return;
   scope.__jellypassTvLoader = true;
   let loaded = false;
   let asking = false;
+  /** The add-on's tag this loader added, while the browser loads it. */
+  let adding: HTMLScriptElement | undefined;
   let host: string | undefined;
   let retryAt = 0;
   let wait = FIRST_RETRY_MS;
+  const backOff = () => {
+    retryAt = scope.performance.now() + wait;
+    wait = Math.min(wait * 2, MOST_RETRY_MS);
+  };
+  const add = (origin: string, name: string) => {
+    const script = document.createElement('script');
+    script.addEventListener('load', () => {
+      if (adding !== script) return;
+      adding = undefined;
+      loaded = true;
+    });
+    script.addEventListener('error', () => {
+      if (adding !== script) return;
+      adding = undefined;
+      try {
+        if (script.parentNode) script.parentNode.removeChild(script);
+      } catch {
+        // Fails safe: the tag is left, and is taken for the add-on's on the next look.
+      }
+      backOff();
+    });
+    script.setAttribute('src', `${origin}${SCRIPT_PATH}${name}`);
+    script.setAttribute(MARKER, '');
+    adding = script;
+    (document.head || document.documentElement).appendChild(script);
+  };
   const check = () => {
-    if (document.querySelector(`script[${MARKER}]`)) loaded = true;
-    if (loaded || asking) return;
+    if (loaded || asking || adding) return;
+    // A page that already has the add-on (not from this loader: its own tag is `adding` until it loads) is never given another.
+    if (document.querySelector(`script[${MARKER}]`)) {
+      loaded = true;
+      return;
+    }
     const origin = householdOrigin(scope.ApiClient, patterns);
     if (!origin) return;
     if (origin !== host) {
@@ -128,19 +166,14 @@ export function startLoader(scope: Scope, document: Document, patterns: readonly
         if (loaded) return;
         // Only for the server Jellyfin web is still connected to: one it left while the manifest was asked is not used.
         if (name && householdOrigin(scope.ApiClient, patterns) === origin && !document.querySelector(`script[${MARKER}]`)) {
-          const script = document.createElement('script');
-          script.setAttribute('src', `${origin}${SCRIPT_PATH}${name}`);
-          script.setAttribute(MARKER, '');
-          (document.head || document.documentElement).appendChild(script);
-          loaded = true;
+          add(origin, name);
           return;
         }
-        if (!name) {
-          retryAt = scope.performance.now() + wait;
-          wait = Math.min(wait * 2, MOST_RETRY_MS);
-        }
+        if (!name) backOff();
       } catch {
-        // Fails safe: Jellyfin web is left as it is.
+        // Fails safe: Jellyfin web is left as it is, and the host is asked again later.
+        adding = undefined;
+        backOff();
       }
     });
   };

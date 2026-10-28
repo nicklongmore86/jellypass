@@ -90,7 +90,8 @@ describe('Samsung app: cross-origin rules on a household host', { timeout: 30_00
       assert.deepEqual(shape(answer), baseline, origin);
       const read = await app.get('/jellypass/app/v1/me', { headers: { Origin: origin } });
       assert.deepEqual(corsHeaders(read), [], origin);
-      assert.equal(read.headers.vary, undefined, origin);
+      // Whether an answer allows the app depends on Origin, so every one says so, whatever Origin it was asked with.
+      assert.equal(read.headers.vary, 'Origin', origin);
     }
     for (const [method, asked] of [['DELETE', undefined], ['PUT', 'authorization'], ['PATCH', undefined], ['post', undefined], ['GET', 'authorization, x-emby-token'], ['GET', 'cookie'], ['POST', 'content-type, x-requested-with']]) {
       const answer = await preflight(app, '/jellypass/app/v1/me', {
@@ -144,8 +145,8 @@ describe('Samsung app: cross-origin rules on a household host', { timeout: 30_00
         const file = await app.get(`/jellypass/tv/${name}`, { user: null, headers: { Origin: origin } });
         assert.equal(file.status, 200);
         assert.equal(file.headers['access-control-allow-origin'], origin);
-        // Kept by the CDN for good and the same for everyone, so it doesn't vary.
-        assert.equal(file.headers.vary, undefined);
+        // Kept for good by browsers and the CDN: a copy made for one origin is not another's.
+        assert.equal(file.headers.vary, 'Origin');
         assert.equal(file.headers['cache-control'], 'public, max-age=31536000, immutable');
       }
       const page = await app.get('/jellypass/app/', { user: null, headers: { Origin: origin } });
@@ -153,6 +154,37 @@ describe('Samsung app: cross-origin rules on a household host', { timeout: 30_00
       assert.deepEqual(corsHeaders(page), []);
       const missing = await app.get('/jellypass/tv/jellypass-tv.000000000000.js', { user: null, headers: { Origin: origin } });
       assert.deepEqual([missing.status, missing.headers['access-control-allow-origin']], [404, origin]);
+    }
+  });
+});
+
+describe('Samsung app: caches', { timeout: 30_000 }, () => {
+  it('varies every answer that could allow the app on Origin, its fingerprinted files included, and nothing else on it', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const askers = [undefined, ...APP_ORIGINS, ...OTHER_ORIGINS];
+    for (const [pathname, user] of [[`/jellypass/tv/${SCRIPT}`, null], [`/jellypass/tv/${STYLESHEET}`, null], [MANIFEST, null], ['/jellypass/tv/jellypass-tv.000000000000.js', null], ['/jellypass/app/v1/me', undefined], ['/jellypass/app/v1/me', null]]) {
+      const answers = [];
+      for (const origin of askers) {
+        const answer = await app.get(pathname, { user, headers: origin === undefined ? {} : { Origin: origin } });
+        assert.equal(answer.headers.vary, 'Origin', `${pathname} ${origin}`);
+        // Only the one header depends on Origin, with one of the two fixed values; the answer is otherwise the same.
+        assert.ok([undefined, ...APP_ORIGINS].includes(answer.headers['access-control-allow-origin']), `${pathname} ${origin}`);
+        assert.equal(answer.headers['access-control-allow-origin'] === undefined, !APP_ORIGINS.includes(origin), `${pathname} ${origin}`);
+        const { 'access-control-allow-origin': _allowed, ...rest } = shape(answer).headers;
+        answers.push({ ...shape(answer), headers: rest });
+      }
+      for (const answer of answers.slice(1)) assert.deepEqual(answer, answers[0], pathname);
+      // The fingerprinted files alone are stored, and only they could be served from a cache to another origin.
+      const stored = answers[0].headers['cache-control'];
+      assert.equal(stored === 'public, max-age=31536000, immutable', answers[0].status === 200 && pathname.startsWith('/jellypass/tv/jellypass-tv.'), pathname);
+      if (stored !== 'public, max-age=31536000, immutable') assert.equal(stored, 'no-store', pathname);
+    }
+    // A preflight's answer, and the old answer to one asking for more, vary too.
+    for (const origin of [undefined, 'null', 'https://evil.example']) {
+      for (const asked of ['GET', 'DELETE']) {
+        const answer = await preflight(app, MANIFEST, { ...(origin ? { Origin: origin } : {}), 'Access-Control-Request-Method': asked });
+        assert.equal(answer.headers.vary, 'Origin', `${origin} ${asked}`);
+      }
     }
   });
 });
@@ -192,7 +224,7 @@ const loaderScript = async () => (built ??= await buildLoader({ hosts: HOSTS }))
  * names (undefined: no ApiClient).
  */
 async function runLoader({ answer = () => jsonResponse({ script: NAME }), page = '<!DOCTYPE html><html><head></head><body></body></html>' } = {}) {
-  const { document } = parseHTML(page);
+  const { document, Event } = parseHTML(page);
   let now = 0;
   let timers = [];
   const calls = [];
@@ -218,6 +250,7 @@ async function runLoader({ answer = () => jsonResponse({ script: NAME }), page =
   };
   const box = {
     document,
+    Event,
     calls,
     context,
     run,
@@ -242,6 +275,13 @@ async function runLoader({ answer = () => jsonResponse({ script: NAME }), page =
       await settle();
     },
     scripts: () => [...document.querySelectorAll('script')].map((script) => script.getAttribute('src')),
+    /** The browser's answer to the add-on's tag: `load` or `error`, fired on it. */
+    finish: async (type) => {
+      const script = document.querySelector('script[data-jellypass-tv]');
+      assert.ok(script, `no tag to fire ${type} on`);
+      script.dispatchEvent(new Event(type));
+      await settle();
+    },
   };
   await run();
   return box;
@@ -274,6 +314,9 @@ describe('Samsung app: the loader as built', () => {
     assert.equal(script.parentNode, box.document.head);
     assert.equal(script.hasAttribute('data-jellypass-tv'), true, 'the add-on finds its own script by its marker');
     await box.advance(60 * 60000);
+    assert.equal(box.calls.length, 1, 'nothing more is asked while the tag loads');
+    await box.finish('load');
+    await box.advance(60 * 60000);
     assert.equal(box.calls.length, 1, 'loaded once, and then it stops looking');
     assert.equal(box.pending(), 0);
     // Started again on the same page, it does nothing.
@@ -298,7 +341,7 @@ describe('Samsung app: the loader as built', () => {
     const others = [
       'https://jelly.example.test', `http://${HOST_A}`, `https://${HOST_A}:8443`, `https://user:pw@${HOST_A}`, `https://${HOST_A}.evil.example`,
       `https://evil.example/${HOST_A}`, 'https://jelly-a.b.example.test', 'https://jelly-.example.test', 'https://x.exact.example.org', 'https://exact.example.org.evil',
-      'https://10.172.40.88:8096', 'not an address', '', 42, null,
+      'https://192.0.2.88:8096', 'not an address', '', 42, null,
       () => {
         throw new Error('ApiClient broke');
       },
@@ -365,6 +408,58 @@ describe('Samsung app: the loader as built', () => {
     assert.deepEqual(box.scripts(), [`https://${HOST_A}/jellypass/tv/${NAME}`]);
   });
 
+  it('removes a tag that fails to load, and asks the manifest again later, less and less often, until one loads', async () => {
+    // A release deployed between the manifest and the script: each answer names the release of its moment.
+    const names = ['jellypass-tv.000000000001.js', 'jellypass-tv.000000000002.js', 'jellypass-tv.000000000003.js', 'jellypass-tv.000000000004.js'];
+    let release = 0;
+    const box = await runLoader({ answer: () => jsonResponse({ script: names[release] }) });
+    box.server(`https://${HOST_A}`);
+    await box.advance(1000);
+    assert.deepEqual(box.scripts(), [`https://${HOST_A}/jellypass/tv/${names[0]}`]);
+    const first = box.document.querySelector('script[data-jellypass-tv]');
+    release = 1;
+    await box.finish('error');
+    assert.deepEqual(box.scripts(), [], 'the failed tag is removed, so the add-on never takes it for its own');
+    await box.advance(29_000);
+    assert.equal(box.calls.length, 1, 'not asked again at once');
+    await box.advance(1000);
+    assert.equal(box.calls.length, 2, 'asked again after 30 s');
+    assert.deepEqual(box.scripts(), [`https://${HOST_A}/jellypass/tv/${names[1]}`], 'with the name the manifest gives now');
+    // A failed manifest and a failed script back off together.
+    await box.finish('error');
+    await box.advance(60_000);
+    assert.equal(box.calls.length, 3, 'then after 60 s');
+    release = 2;
+    await box.finish('error');
+    await box.advance(119_000);
+    assert.deepEqual([box.calls.length, box.scripts()], [3, []]);
+    await box.advance(1000);
+    assert.deepEqual([box.calls.length, box.scripts()], [4, [`https://${HOST_A}/jellypass/tv/${names[2]}`]], 'then after 120 s');
+    // A late event on a tag already removed changes nothing: this one's failure is still retried, after 240 s.
+    first.dispatchEvent(new box.Event('load'));
+    release = 3;
+    await box.finish('error');
+    await box.advance(239_000);
+    assert.equal(box.calls.length, 4);
+    await box.advance(1000);
+    assert.deepEqual([box.calls.length, box.scripts()], [5, [`https://${HOST_A}/jellypass/tv/${names[3]}`]]);
+    await box.finish('load');
+    await box.advance(60 * 60000);
+    assert.deepEqual([box.calls.length, box.pending()], [5, 0], 'loaded: it stops');
+    assert.deepEqual(box.scripts(), [`https://${HOST_A}/jellypass/tv/${names[3]}`]);
+  });
+
+  it('asks a newly named server at once after a tag failed to load for another', async () => {
+    const box = await runLoader();
+    box.server(`https://${HOST_B}`);
+    await box.advance(1000);
+    await box.finish('error');
+    box.server(`https://${HOST_A}`);
+    await box.advance(1000);
+    assert.deepEqual(box.calls.map((call) => new URL(call.url).host), [HOST_B, HOST_A]);
+    assert.deepEqual(box.scripts(), [`https://${HOST_A}/jellypass/tv/${NAME}`]);
+  });
+
   it('asks a newly named server at once, and never loads for a server Jellyfin web left while it was asked', async () => {
     let release;
     const box = await runLoader({
@@ -421,7 +516,7 @@ describe('Samsung app: the build tooling', () => {
   });
 
   it('takes only lower-case host names, with at most one * in the first label', () => {
-    assert.deepEqual(parseHosts(' jelly-*.starrgroup.io , exact.example.org '), ['jelly-*.starrgroup.io', 'exact.example.org']);
+    assert.deepEqual(parseHosts(' jelly-*.example.org , exact.example.org '), ['jelly-*.example.org', 'exact.example.org']);
     for (const bad of ['', ' , ', 'Jelly-*.example.org', 'jelly-*', 'localhost', '*.*.example.org', 'jelly.*.example.org', 'jelly-**.example.org', 'https://jelly.example.org', 'jelly.example.org:443', 'jelly.example.org/']) {
       assert.throws(() => parseHosts(bad), /--hosts/, bad);
     }

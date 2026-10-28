@@ -551,8 +551,8 @@ server by months still works.
   sends no `Access-Control-*` headers, and a preflight gets the same `401` as any call without a token (a native HTTP
   client never sends one). The one exception is the JellyPass build of Jellyfin's Samsung app, a packaged web page
   whose origin is `file://` or `null`: on a household host the TV add-on is on for, that origin (and no other) gets a
-  `204` preflight and `Access-Control-Allow-Origin` on every answer, never credentials (see `docs/tv-addon.md`, "The
-  Samsung app").
+  `204` preflight and `Access-Control-Allow-Origin` on every answer, never credentials, and every answer there says
+  `Vary: Origin` (see `docs/tv-addon.md`, "The Samsung app").
 - **Storage.** The token is kept only in the platform's credential store, readable only on that device (on iOS the
   Keychain with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`), keyed by the address, never in plain files,
   backups, logs or analytics. API answers are `Cache-Control: no-store` and are not cached on disk (an ephemeral URL

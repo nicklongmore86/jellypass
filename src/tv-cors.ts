@@ -24,8 +24,6 @@ const FAMILIES = {
 } as const;
 type Family = keyof typeof FAMILIES;
 
-/** One of the add-on's fingerprinted files (see tv-assets.ts). */
-const FINGERPRINTED = /^\/jellypass\/tv\/jellypass-tv\.[0-9a-f]{12}\.(?:js|css)$/;
 /** How long a browser may keep a preflight's answer, in seconds (Chromium caps it at 600). */
 const PREFLIGHT_MAX_AGE = '600';
 
@@ -44,9 +42,18 @@ export function corsFamily(pathname: string): Family | undefined {
  * Applies the rules to one request in `family`: a preflight from the app's origin for a method and headers the family
  * allows is answered `204` here (returns true, before any token is looked at); any other request from that origin gets
  * `Access-Control-Allow-Origin` with it on whatever answer follows (returns false). Anything else, from another origin or
- * with no `Origin`, or a preflight asking for more, is left exactly as it was (returns false, no header set).
+ * with no `Origin`, or a preflight asking for more, is answered as it was (returns false), with only `Vary: Origin`.
+ *
+ * Every answer in a family says `Vary: Origin`, whatever `Origin` (or none) its request sent, the add-on's
+ * fingerprinted files (kept for good by browsers and the CDN) included: whether an answer allows the app depends on it,
+ * so a cache that honours `Vary` never gives a copy made for one origin to another. Nothing else depends on `Origin`:
+ * the body never does, and the allowed origin is one of two fixed values, never one copied from a request. So even a
+ * cache that ignores `Vary` can only give a copy that allows the app's origin to someone else (it lets no web page read
+ * anything; the files are public and the same for everyone, and everything else here is never stored), or a copy
+ * without the header to the app, which loads the files with `<script>` and `<link>` and needs no CORS for them.
  */
 export function applyTvCors(request: IncomingMessage, response: ServerResponse, family: Family): boolean {
+  response.setHeader('Vary', 'Origin');
   const origin = request.headers.origin;
   if (typeof origin !== 'string' || !TIZEN_APP_ORIGINS.has(origin)) return false;
   const rules = FAMILIES[family];
@@ -71,11 +78,6 @@ export function applyTvCors(request: IncomingMessage, response: ServerResponse, 
     return true;
   }
   response.setHeader('Access-Control-Allow-Origin', origin);
-  // The add-on's fingerprinted files are the same for everyone and kept by the CDN for good, so they don't vary: a copy
-  // with or without the header is right for anyone (a <script> or <link> reads them without CORS). Everything else in
-  // these families is never stored.
-  const pathname = (request.url ?? '').split('?', 1)[0] as string;
-  if (!(family === 'tv' && FINGERPRINTED.test(pathname))) response.setHeader('Vary', 'Origin');
   return false;
 }
 

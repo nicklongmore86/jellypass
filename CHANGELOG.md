@@ -35,14 +35,19 @@ changes are always listed at the top of the release notes.
     (`/jellypass/tv/*`, `GET` and `HEAD`). A preflight from that origin is
     answered `204` before any token is checked; its other answers carry
     `Access-Control-Allow-Origin` with that origin. Credentials are never
-    allowed. Every other origin, every other household, the household app's
-    own pages and the administrator host answer exactly as before.
+    allowed. Every answer on those paths there, whatever its `Origin`, the
+    add-on's long-cached files included, now carries `Vary: Origin`. Apart
+    from that header, every other origin answers exactly as before, and every
+    other household, the household app's own pages and the administrator host
+    answer exactly as before.
   - `tv/samsung/`: a script that builds that app (`Jellyfin.wgt`, the same app
     id as Jellyfin's, `AprZAARz4r.Jellyfin`, so it replaces it) from Jellyfin
     web 12.3 and jellyfin-tizen at pinned commits, adds a loader that loads the
-    add-on from the household host the app is signed in to, and signs it in the
-    pinned `ghcr.io/georift/install-jellyfin-tizen` image. The install runbook
-    is in `docs/tv-addon.md`.
+    add-on from the household host the app is signed in to (if the script
+    fails to load, it removes the tag and asks for the manifest again later,
+    less and less often), and signs it in the pinned
+    `ghcr.io/georift/install-jellyfin-tizen` image. The install procedure is
+    in `docs/tv-addon.md`.
 
 ### Changed
 
