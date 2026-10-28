@@ -248,6 +248,8 @@ main {
 .segment .icon { display: none; width: 1.1rem; height: 1.1rem; stroke-width: 2.6; }
 .segment[aria-selected='true'], .segment[aria-checked='true'] { background: var(--accent-tint); border-color: var(--accent); color: var(--accent-text); }
 .segment[aria-checked='true'] .icon { display: block; }
+.segment[aria-pressed='true'] { background: var(--accent-tint); border-color: var(--accent); color: var(--accent-text); }
+.segment[aria-pressed='true'] .icon { display: block; }
 /* Home's All | Movies | TV: a solid band that sticks just under the header (and the status bar), so rows scroll away beneath it. */
 .home-switch {
   position: sticky; z-index: 5; top: var(--header-box);
@@ -258,6 +260,10 @@ main {
 .segmented-home { margin: -4px; padding: 4px; flex-wrap: nowrap; overflow-x: auto; scroll-padding-inline: 4px; scrollbar-width: none; overscroll-behavior-x: contain; }
 .segmented-home::-webkit-scrollbar { display: none; }
 .segmented-home .segment { flex: none; }
+/* My requests' filters: Status, Type and Asked by me; at large text or zoom the chips wrap onto more lines (the page scrolls, nothing sticks). */
+.request-filters { display: grid; gap: 0.5rem; max-width: 46rem; margin-bottom: 1rem; }
+.request-filters .segmented { margin-bottom: 0; }
+.request-filters .segment:focus-visible { outline: 3px solid var(--accent-text); outline-offset: 1px; }
 .segmented-home .segment:focus-visible { outline: 3px solid var(--accent-text); outline-offset: 1px; }
 /* While the switch is on the page (with or without a hero), a focused or scrolled-to card also clears the band. */
 :root:has(body[data-home-switch]) { scroll-padding-top: calc(var(--header-box) + var(--switch-height) + 0.5rem); }

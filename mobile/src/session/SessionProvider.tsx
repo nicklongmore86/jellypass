@@ -26,6 +26,7 @@ import type { MediaType, Me } from '../api/types';
 import { parseLinkAddress } from '../signin/address-input';
 import { createSignInApi, SignInError, type SignInApi, type SignInResult } from '../signin/signin-api';
 import type { StalledKind } from '../signin/wording';
+import { createRequestFilterStore, type RequestFilterStore } from '../requests/filters';
 import { createTitleCache, type TitleCache } from '../requests/titleCache';
 import { createAsked, type Asked } from '../title/asked';
 import { clientIdentity } from './identity';
@@ -86,6 +87,8 @@ export interface Session {
   asked: Asked;
   /** The titles My requests has named in this session, reused for ten minutes (in memory only, never their state). */
   titles: TitleCache;
+  /** My requests' filters, kept while the app is open and reset with the session (in memory only). */
+  requestFilters: RequestFilterStore;
   /**
    * Get this through the signed-in client. Once it is accepted (a 2xx) in the same session as when it was sent (no move
    * since), the title (and the seasons asked for) is added to `asked`. Rejects with the ApiError, or the caller's abort.
@@ -131,6 +134,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
   // The overlay and the titles in use now (below), for the moves that forget them.
   const askedRef = useRef<Asked | undefined>(undefined);
   const titlesRef = useRef<TitleCache | undefined>(undefined);
+  const filtersRef = useRef<RequestFilterStore | undefined>(undefined);
 
   const move = useCallback((next: Phase) => {
     generation.current += 1;
@@ -186,6 +190,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
       setLink(undefined);
       askedRef.current?.forget();
       titlesRef.current?.forget();
+      filtersRef.current?.reset();
       const session = sessionOf(phase);
       if (session) {
         move({ kind: 'signingOut' });
@@ -207,13 +212,14 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
   const signedIn = phase.kind === 'signedIn' ? phase.session : undefined;
   // A new client, overlay and titles for each sign-in (household, member or token); the old ones are forgotten as soon
   // as they are replaced.
-  const { api, asked, titles } = useMemo(
+  const { api, asked, titles, requestFilters } = useMemo(
     () => ({
       api: signedIn
         ? createApiClient({ address: signedIn.address, token: () => signedIn.token, ...(fetch ? { fetch } : {}), ...(now ? { now } : {}) })
         : undefined,
       asked: createAsked(),
       titles: createTitleCache(),
+      requestFilters: createRequestFilterStore(),
     }),
     [signedIn, fetch, now],
   );
@@ -236,6 +242,14 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
     };
   }, [titles]);
 
+  useEffect(() => {
+    filtersRef.current = requestFilters;
+    return () => {
+      if (filtersRef.current === requestFilters) filtersRef.current = undefined;
+      requestFilters.reset();
+    };
+  }, [requestFilters]);
+
   const getThis = useCallback(
     async (mediaType: MediaType, tmdbId: number, seasons: readonly number[], signal?: AbortSignal) => {
       // The sign-in this call belongs to: any move since (a sign-out, a 401, any other sign-in, even with the same
@@ -252,6 +266,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
   const expire = useCallback(async () => {
     askedRef.current?.forget();
     titlesRef.current?.forget();
+    filtersRef.current?.reset();
     const session = sessionOf(phaseRef.current);
     if (!session) return;
     const mine = move({ kind: 'signingOut' });
@@ -320,9 +335,10 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
       expire,
       asked,
       titles,
+      requestFilters,
       getThis,
     }),
-    [phase, offer, household, offerLink, leave, move, check, signInApi, clock, api, expire, asked, titles, getThis],
+    [phase, offer, household, offerLink, leave, move, check, signInApi, clock, api, expire, asked, titles, requestFilters, getThis],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

@@ -15,6 +15,13 @@ import {
   homeSwitch,
   NETWORK_ACCENTS,
   type RowAccent,
+  matchesRequestFilter,
+  NO_REQUEST_FILTER,
+  REQUEST_FILTER_TEXT,
+  requestFilterActive,
+  requestFilterBar,
+  requestFilterEmptyText,
+  type RequestFilter,
   REQUESTS_TEXT,
   requestItem,
   searchForm,
@@ -152,6 +159,8 @@ function deviceName(userAgent: string): string {
 let navigation = 0;
 let navigationAbort: AbortController | undefined;
 let me: Me | undefined;
+/** My requests' filters, kept while the app is open (like the other in-memory state), and reset with any change of member or a sign-out. */
+let requestFilter: RequestFilter = { ...NO_REQUEST_FILTER };
 /** The access token the app last saw; when it changes (or goes), what belonged to the old member goes with it. */
 let seenToken = jellyfinToken(localStorage, origin);
 
@@ -160,6 +169,7 @@ function syncCredentials(): boolean {
   if (token === seenToken) return false;
   seenToken = token;
   me = undefined;
+  requestFilter = { ...NO_REQUEST_FILTER };
   api.forgetAsked();
   return true;
 }
@@ -443,6 +453,7 @@ async function loadMe(signal: AbortSignal): Promise<void> {
 /** The sign-in screen, in place of whatever was showing; `expired` when a sign-in the app held was refused. */
 function signIn(signal: AbortSignal, current: () => boolean, expired: boolean): void {
   me = undefined;
+  requestFilter = { ...NO_REQUEST_FILTER };
   api.forgetAsked();
   setChrome();
   void showSignIn({
@@ -1276,6 +1287,15 @@ async function requestsScreen(signal: AbortSignal, current: () => boolean): Prom
   }
   const back = restoring;
   const list = el(doc, 'ul', { class: 'request-list' });
+  // The filters only hide or show entries already on the page: choosing one reads nothing, so no call is made and the
+  // titles named so far stay named. Load more names the next ten of the list, which the filter then applies to.
+  const rows: Array<{ entry: RequestEntry; item: HTMLElement }> = [];
+  const bar = requestFilterBar(doc, requestFilter);
+  const none = el(doc, 'div', { class: 'request-none', attrs: { hidden: '' } });
+  const noneText = el(doc, 'p', { class: 'muted' });
+  const showAll = el(doc, 'button', { class: 'button button-secondary', text: REQUEST_FILTER_TEXT.showAll, attrs: { type: 'button' } });
+  none.append(noneText, showAll);
+  const hint = el(doc, 'p', { class: 'muted request-more-hint', text: REQUEST_FILTER_TEXT.more, attrs: { hidden: '' } });
   const more = el(doc, 'button', { class: 'button button-secondary load-more', text: 'Load more', attrs: { type: 'button' } });
   let shown = 0;
 
@@ -1285,6 +1305,8 @@ async function requestsScreen(signal: AbortSignal, current: () => boolean): Prom
     requestsShown = shown;
     const items = batch.map((entry) => requestItem(doc, entry));
     list.append(...items);
+    batch.forEach((entry, index) => rows.push({ entry, item: items[index] as HTMLElement }));
+    applyFilter();
     if (size > REQUESTS_PER_PAGE && restoreLive(back)) appScrollTo(back.y);
     more.hidden = shown >= entries.length;
     more.disabled = false;
@@ -1309,13 +1331,47 @@ async function requestsScreen(signal: AbortSignal, current: () => boolean): Prom
     await Promise.all(Array.from({ length: Math.min(REQUEST_TITLE_CALLS, batch.length) }, worker));
   }
 
+  function applyFilter(): void {
+    let any = false;
+    for (const { entry, item } of rows) {
+      const visible = matchesRequestFilter(entry, requestFilter);
+      item.hidden = !visible;
+      any ||= visible;
+    }
+    none.hidden = any;
+    // With entries showing, the filter may still be missing some that are not on the page yet (with none showing, the empty text says it).
+    hint.hidden = !any || !requestFilterActive(requestFilter) || shown >= entries.length;
+    noneText.textContent = requestFilterEmptyText(requestFilter, shown < entries.length);
+    showAll.hidden = !requestFilterActive(requestFilter);
+    for (const button of bar.querySelectorAll<HTMLElement>('button[data-filter]')) {
+      const group = button.dataset['filterGroup'];
+      button.setAttribute('aria-pressed', String(group === 'byYou' ? requestFilter.byYou : requestFilter[group as 'status' | 'kind'] === button.dataset['filter']));
+    }
+  }
+  bar.addEventListener('click', (event) => {
+    const button = (event.target as Element).closest<HTMLElement>('button[data-filter]');
+    if (!button) return;
+    const group = button.dataset['filterGroup'];
+    const value = button.dataset['filter'];
+    if (group === 'byYou') requestFilter = { ...requestFilter, byYou: !requestFilter.byYou };
+    else if (group === 'status') requestFilter = { ...requestFilter, status: value as RequestFilter['status'] };
+    else if (group === 'kind') requestFilter = { ...requestFilter, kind: value as RequestFilter['kind'] };
+    applyFilter();
+    announce(`${rows.filter(({ item }) => !item.hidden).length} shown.`);
+  });
+  showAll.addEventListener('click', () => {
+    requestFilter = { ...NO_REQUEST_FILTER };
+    applyFilter();
+    announce('All shown.');
+    bar.querySelector<HTMLElement>('button[data-filter]')?.focus();
+  });
   more.addEventListener('click', () => {
     more.disabled = true;
     more.textContent = 'Loading…';
     const first = shown;
-    void showMore().then(() => (list.children[first] as HTMLElement | undefined)?.querySelector('a')?.focus());
+    void showMore().then(() => rows.slice(first).find(({ item }) => !item.hidden)?.item.querySelector('a')?.focus());
   });
-  show(heading, list, more);
+  show(heading, bar, list, hint, none, more);
   announce('');
   focusHeading();
   // Coming back, the entries that were showing are drawn at once (their titles follow) and the scroll put back.
@@ -1349,6 +1405,7 @@ async function signOut(button: HTMLButtonElement): Promise<void> {
   const cleared = clearSignIn(localStorage, origin);
   button.disabled = false;
   me = undefined;
+  requestFilter = { ...NO_REQUEST_FILTER };
   api.forgetAsked();
   if (!cleared) {
     announce("Couldn't remove your sign-in from this browser.");
