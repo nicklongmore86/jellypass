@@ -98,6 +98,9 @@ export class RequestsPage {
   #drawnCount = 0;
   #open: Open | undefined;
   #loads = 0;
+  /** The session last seen by `update` (member and token), and a count bumped whenever it changes: a cancel answers only to its own. */
+  #sessionKey: string | undefined;
+  #generation = 0;
 
   public constructor(document: Document, scope: Scope, origin: string, asked: Asked, host: RequestsHost, now: () => number, wall: () => number) {
     this.#document = document;
@@ -127,17 +130,22 @@ export class RequestsPage {
    */
   public update(): void {
     const session = this.#session();
+    const key = session ? `${session.userId}\n${session.token}` : undefined;
+    if (key !== this.#sessionKey) {
+      // Any sign-out, new sign-in or token change ends the cancels still in flight: they belong to the session that sent them.
+      this.#sessionKey = key;
+      this.#generation += 1;
+    }
+    // Whether or not the page is open, another member (or no one) forgets the filters, the names and how much was shown.
+    this.#member(session ? session.userId : undefined);
+    const open = this.#open;
     if (!session) {
-      this.#member(undefined);
-      const open = this.#open;
       if (open) this.#end(open);
       return;
     }
-    const open = this.#open;
     if (!open) return;
     if (session.userId !== open.userId || !open.view.parentNode) {
       this.#asked.sync(session.userId);
-      this.#member(session.userId);
       this.#end(open);
     }
   }
@@ -589,17 +597,22 @@ export class RequestsPage {
       message.className = 'jellypass-tv-requests-cancel-message';
       message.textContent = '';
       const { mediaType, tmdbId, id } = row.entry;
+      const generation = this.#generation;
       void cancelRequest(this.#scope.fetch, this.#origin, session.token, id).then((answer) => {
         if (answer.ok) {
-          // Shown as available to get while the server withdraws it, only for the member who cancelled (not if the sign-in changed).
+          // Shown as available to get while the server withdraws it, only in the session that cancelled: a sign-out or a
+          // new sign-in since (even as the same member, with a new token) drops the answer before it touches anything.
           const now = this.#session();
-          if (now && now.userId === session.userId) {
-            this.#asked.sync(now.userId);
-            this.#asked.withdraw(now.userId, mediaType, tmdbId);
+          const same = now !== undefined && now.userId === session.userId && now.token === session.token && this.#generation === generation;
+          if (!same) {
+            if (this.#open === open) this.#end(open);
+            return;
           }
+          this.#asked.sync(now.userId);
+          this.#asked.withdraw(now.userId, mediaType, tmdbId);
           this.#host.changed();
           if (this.#open !== open) return;
-          if (now && now.userId === open.userId) this.#cancelled(open, row, now);
+          if (now.userId === open.userId) this.#cancelled(open, row, now);
           else this.#end(open);
           return;
         }

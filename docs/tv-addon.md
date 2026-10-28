@@ -88,15 +88,14 @@ flowchart LR
   theme; and a **real `jellyfin/jellyfin:12.3.0` container**, in the TV layout and the desktop (modern) layout, with a
   browser (Chromium; the household API and TMDB's images answered by the script, since the container has no gateway):
   choosing a card, the title page of a movie and of a series, Get this, and Back. That check found and fixed the row's
-  `itemsContainer` class (see "The row"). The scripts and screenshots are kept with the redesign study
-  (`/opt/dev/design-ref/jellypass-tv-redesign/step3/`), not in this repository.
+  `itemsContainer` class (see "The row"). The scripts and screenshots are kept with the redesign study, not in
+  this repository.
 - **Jellyfin web 12.3, My requests:** a real `jellyfin/jellyfin:12.3.0` container again, in the TV and the desktop layout, with a
   browser (the household API and TMDB's images answered by the script): the **My requests** card on Home, the page
   under Jellyfin's header, Jellyfin's own focus manager moving down through the chips, requests and Cancel buttons (the TV
   layout's arrow keys; Tab in the desktop layout), the filters, the cancel confirmation and a cancel, a title page of a
   followed title with its **My requests** button, Back to the same request, and Back to Home with the card focused. The
-  script and screenshots are kept with the redesign study (`/opt/dev/design-ref/jellypass-tv-redesign/step6/`), not in this
-  repository.
+  script and screenshots are kept with the redesign study, not in this repository.
 - **Not yet checked:** any real TV (see below), and Jellyfin web 10.11 (the Tizen builds) beyond the row. Where Jellyfin
   web's structure differs the add-on draws nothing (safe), but a changed focus model could leave a row or a page that
   can't be navigated: check the row, the title page and D-pad navigation (Back included) on each Jellyfin web version in

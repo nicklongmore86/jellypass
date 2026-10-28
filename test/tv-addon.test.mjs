@@ -2861,6 +2861,31 @@ describe('TV add-on: My requests', { timeout: 180_000 }, () => {
     assert.deepEqual(pressed(page), ['status:all', 'kind:all'], 'a sign-out starts the filters afresh');
   });
 
+  it('forgets the filters and the names when the member changes while the page is closed', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const state = { cancel: 202, list: [entry(A, T_MOVIE), entry(B, OWN_MOVIE, { byYou: false })] };
+    const page = await open(t, app, state);
+    await goToRequests(page);
+    page.click(chip(page, 'byYou', 'byYou'));
+    assert.equal(shown(page).length, 1);
+    page.route('#/details?id=someitem');
+    await page.settled();
+    // Another member, then Alice again, each seen by the add-on while the page is closed.
+    page.session.user = ANN;
+    page.session.token = TOKENS[ANN];
+    page.document.body.insertAdjacentHTML('beforeend', '<i></i>');
+    await page.settled();
+    page.session.user = ALICE;
+    page.session.token = TOKENS[ALICE];
+    page.document.body.insertAdjacentHTML('beforeend', '<i></i>');
+    await page.settled();
+    const calls = page.requests.length;
+    await goToRequests(page);
+    assert.deepEqual(pressed(page), ['status:all', 'kind:all'], 'the filter did not follow the member back');
+    assert.equal(shown(page).length, 2);
+    assert.ok(page.requests.slice(calls).some((request) => /\/(?:movie|tv)\//.test(request.url)), 'the names are read again, not reused from the earlier session');
+  });
+
   it('names the requests ten at a time with a few calls at once, and Load more names the next ten', async (t) => {
     const app = await startApp(t, webWorld(), tvOn());
     let inFlight = 0;
@@ -3120,6 +3145,59 @@ describe('TV add-on: My requests', { timeout: 180_000 }, () => {
       assert.deepEqual([...page.view().querySelectorAll('button')].map((button) => button.textContent), ['Get this']);
       // After two minutes the server's word stands again.
       page.advance(120_000);
+      assert.equal(part(page.view(), '.jellypass-tv-title-status'), 'Requested');
+    });
+
+    it('drops a cancel answered after a sign-out and a new sign-in as the same member: the new session shows the server\'s Requested', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const asRequested = async (pathname) => json({ ...(await app.get(pathname)).json(), state: 'requested' });
+      const state = { cancel: 202, list: [entry(A, T_MOVIE, { cancellable: true })], titles: (pathname) => (pathname === `/jellypass/app/v1/movie/${T_MOVIE}` ? asRequested(pathname) : undefined) };
+      const page = await open(t, app, state);
+      await goToRequests(page);
+      let release;
+      state.hold = new Promise((resolve) => { release = resolve; });
+      page.click(cancelOpen(items(page)[0]));
+      page.click(confirmOf(items(page)[0]));
+      await pause(40);
+      assert.equal(state.posts.length, 1);
+      // Leave, sign out, sign back in as the same member with a new token, then the old answer comes.
+      page.route('#/details?id=someitem');
+      await pause(40);
+      page.session.token = null;
+      page.session.user = null;
+      page.document.body.insertAdjacentHTML('beforeend', '<i></i>');
+      await pause(40);
+      page.session.user = ALICE;
+      page.session.token = 'a-new-token-for-alice';
+      page.document.body.insertAdjacentHTML('beforeend', '<i></i>');
+      await pause(40);
+      release();
+      await page.settled();
+      await pause(40);
+      page.route(`#/jellypass/title/movie/${T_MOVIE}`);
+      await page.settled();
+      assert.equal(part(page.view(), '.jellypass-tv-title-status'), 'Requested', 'the old session\'s cancel does not cover the new session');
+    });
+
+    it('drops a cancel answered after a new token without a sign-out call in between', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const asRequested = async (pathname) => json({ ...(await app.get(pathname)).json(), state: 'requested' });
+      const state = { cancel: 202, list: [entry(A, T_MOVIE, { cancellable: true })], titles: (pathname) => (pathname === `/jellypass/app/v1/movie/${T_MOVIE}` ? asRequested(pathname) : undefined) };
+      const page = await open(t, app, state);
+      await goToRequests(page);
+      let release;
+      state.hold = new Promise((resolve) => { release = resolve; });
+      page.click(cancelOpen(items(page)[0]));
+      page.click(confirmOf(items(page)[0]));
+      await pause(40);
+      page.route('#/details?id=someitem');
+      await pause(40);
+      page.session.token = 'a-new-token-for-alice';
+      release();
+      await page.settled();
+      await pause(40);
+      page.route(`#/jellypass/title/movie/${T_MOVIE}`);
+      await page.settled();
       assert.equal(part(page.view(), '.jellypass-tv-title-status'), 'Requested');
     });
 
