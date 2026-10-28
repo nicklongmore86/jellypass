@@ -525,8 +525,8 @@ HOUSEHOLD_DOMAIN=example.com
 HOUSEHOLD_HOST_PREFIX=jelly-
 ```
 
-the group ID `farmhouse` receives the URL
-`https://jelly-farmhouse.example.com`. On that hostname, JellyPass filters
+the group ID `grove` receives the URL
+`https://jelly-grove.example.com`. On that hostname, JellyPass filters
 Jellyfin's public-user response to the group's members and proxies supported
 Jellyfin HTTP, streaming, byte-range, HLS, and WebSocket traffic.
 
@@ -637,7 +637,7 @@ but must never learn who requested it or which household holds it.
 
 With Seerr configured (`SEERR_URL` and `SEERR_API_KEY`), every household
 hostname serves a small page at `/jellypass/add`, for example
-`https://jelly-farmhouse.example.com/jellypass/add`. A member who is signed in
+`https://jelly-grove.example.com/jellypass/add`. A member who is signed in
 to Jellyfin on that hostname pastes a Seerr or TMDB link to a movie or series
 (or a bare TMDB ID) and selects **Add to my library**. Share the link with
 households. The page reuses the Jellyfin web client's sign-in on the same

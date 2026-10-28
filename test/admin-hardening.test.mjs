@@ -13,7 +13,7 @@ import { createFakeJellyfin } from './support/fake-jellyfin.mjs';
 import { makeTempDir } from './support/temp-dir.mjs';
 
 const LOCAL = '127.0.0.1';
-const SIBLING = 'https://jelly-farmhouse.example.test';
+const SIBLING = 'https://jelly-grove.example.test';
 const REFUSED = '{"error":"cross_origin_request_refused"}';
 const INVALID = '{"error":"invalid_credentials"}';
 const MINUTE = 60 * 1000;
@@ -22,12 +22,12 @@ const TOKENS = { webhook: 'webhook-secret', admin: 'admin-secret' };
 
 // Every state-changing admin endpoint, with the body (if any) a cross-site page could send it without a preflight.
 const ENDPOINTS = [
-  ['POST', '/v1/users', JSON.stringify({ username: 'Mallory', password: '', groupId: 'farmhouse', importToJellyseerr: true })],
+  ['POST', '/v1/users', JSON.stringify({ username: 'Mallory', password: '', groupId: 'grove', importToJellyseerr: true })],
   ['POST', '/v1/reconcile'],
   ['POST', '/v1/library/sync'],
   ['POST', '/v1/grants/item-1/remap', JSON.stringify({ toItemId: 'item-2' })],
   ['PUT', '/v1/groups/mallory', JSON.stringify({ name: 'Mallory', userIds: [] })],
-  ['DELETE', '/v1/groups/farmhouse'],
+  ['DELETE', '/v1/groups/grove'],
   ['PUT', '/v1/library/access', JSON.stringify({ itemIds: ['item-1'], userIds: ['bob-id'], groupIds: [] })],
   ['PUT', '/v1/users/alice-id/sign-in', JSON.stringify({ passwordless: true })],
   ['POST', '/v1/app/requests/7380001/approve'],
@@ -57,7 +57,7 @@ describe('admin surface hardening', { timeout: 20_000 }, () => {
     jellyfin = await createFakeJellyfin();
     store = new GrantStore(path.join(await makeTempDir(null, 'jfa-admin-hardening-'), 'grants.json'));
     await store.load();
-    await store.upsertGroup({ id: 'farmhouse', name: 'Farmhouse', userIds: ['alice-id', 'bob-id'] });
+    await store.upsertGroup({ id: 'grove', name: 'Grove', userIds: ['alice-id', 'bob-id'] });
     imports = [];
     const seerr = {
       async importJellyfinUser(jellyfinUserId) {
@@ -151,14 +151,14 @@ describe('admin surface hardening', { timeout: 20_000 }, () => {
     assert.equal((await proxied({ origin: SIBLING })).status, 403);
     // X-Forwarded-Host is never read, even from a trusted proxy (this server trusts the test's address): a proxy that
     // keeps Host may pass a client's own X-Forwarded-Host on, and a sibling page must not widen the admin origin with it.
-    assert.equal((await proxied({ 'x-forwarded-host': 'jelly-farmhouse.example.test', origin: SIBLING })).status, 403);
-    assert.equal((await proxied({ 'x-forwarded-host': 'jelly-farmhouse.example.test, admin.example.test', origin: SIBLING })).status, 403);
-    assert.equal((await proxied({ 'x-forwarded-host': 'jelly-farmhouse.example.test', origin: 'https://admin.example.test' })).status, 200, 'Host decides');
+    assert.equal((await proxied({ 'x-forwarded-host': 'jelly-grove.example.test', origin: SIBLING })).status, 403);
+    assert.equal((await proxied({ 'x-forwarded-host': 'jelly-grove.example.test, admin.example.test', origin: SIBLING })).status, 403);
+    assert.equal((await proxied({ 'x-forwarded-host': 'jelly-grove.example.test', origin: 'https://admin.example.test' })).status, 200, 'Host decides');
     assert.equal((await proxied({ host: 'jellypass:8787', 'x-forwarded-host': 'admin.example.test', origin: 'https://admin.example.test' })).status, 403);
     const spoofedSignIn = await send(port, '/auth/login', {
       host: 'admin.example.test',
       'x-forwarded-proto': 'https',
-      'x-forwarded-host': 'jelly-farmhouse.example.test',
+      'x-forwarded-host': 'jelly-grove.example.test',
       origin: SIBLING,
       'content-type': 'application/json',
     }, { method: 'POST', body: JSON.stringify({ username: 'Admin', password: 'admin-password' }) });
@@ -285,8 +285,8 @@ describe('admin surface hardening', { timeout: 20_000 }, () => {
       ['POST', '/v1/nonexistent'],
       ['PUT', '/v1/nonexistent'],
       ['DELETE', '/v1/nonexistent'],
-      ['PATCH', '/v1/groups/farmhouse'],
-      ['POST', '/v1/groups/farmhouse'],
+      ['PATCH', '/v1/groups/grove'],
+      ['POST', '/v1/groups/grove'],
       ['PUT', '/v1/library/sync'],
       ['DELETE', '/v1/reconcile'],
     ];
@@ -308,7 +308,7 @@ describe('admin surface hardening', { timeout: 20_000 }, () => {
   it('answers 415 from the headers alone, without waiting for a body that never comes', async () => {
     const groupsBefore = (await send(port, '/v1/groups', { authorization: 'Bearer admin-secret' })).body;
     const requestsBefore = jellyfin.requestedPaths.length;
-    for (const [method, pathname] of [['POST', '/v1/library/sync'], ['POST', '/v1/reconcile'], ['DELETE', '/v1/groups/farmhouse']]) {
+    for (const [method, pathname] of [['POST', '/v1/library/sync'], ['POST', '/v1/reconcile'], ['DELETE', '/v1/groups/grove']]) {
       for (const framing of ['Content-Length: 5', 'Transfer-Encoding: chunked']) {
         const started = Date.now();
         const response = await sendHeadersOnly(port, `${method} ${pathname} HTTP/1.1\r\nHost: 127.0.0.1\r\nAuthorization: Bearer admin-secret\r\nContent-Type: text/plain\r\n${framing}\r\n\r\n`);
@@ -502,29 +502,29 @@ describe('administrator sign-in hardening', { timeout: 20_000 }, () => {
     const webAuth = new WebAuth({
       authenticateAdministrator: async (username, password) => {
         calls += 1;
-        return username.toLowerCase() === 'nick' && password === 'right' ? { Id: 'nick-id', Name: 'Nick', Policy: { IsAdministrator: true } } : null;
+        return username.toLowerCase() === 'carol' && password === 'right' ? { Id: 'carol-id', Name: 'Carol', Policy: { IsAdministrator: true } } : null;
       },
     }, { loginFailureDelayMs: 0, nameDelayStepMs: 1, nameDelayMaxMs: 4, now: () => clock.now });
     const attackers = ['198.51.100.1', '198.51.100.2'];
     // Ten wrong passwords for the name from two addresses, each under the per-address limit of eight.
-    for (let index = 0; index < 10; index += 1) assert.equal(await webAuth.login(index % 2 ? 'nick' : 'NICK', 'wrong', attackers[index % 2]), null);
-    assert.equal((await webAuth.login('nick', 'right', '203.0.113.50')).username, 'Nick');
+    for (let index = 0; index < 10; index += 1) assert.equal(await webAuth.login(index % 2 ? 'carol' : 'CAROL', 'wrong', attackers[index % 2]), null);
+    assert.equal((await webAuth.login('carol', 'right', '203.0.113.50')).username, 'Carol');
 
     // The attackers keep going: each address is refused at its own limit, without Jellyfin being asked...
     for (let round = 0; round < 3; round += 1) {
-      for (const attacker of attackers) assert.equal(await webAuth.login('nick', 'wrong', attacker), null);
+      for (const attacker of attackers) assert.equal(await webAuth.login('carol', 'wrong', attacker), null);
     }
     for (const attacker of attackers) {
       const callsBefore = calls;
-      await assert.rejects(webAuth.login('nick', 'wrong', attacker), /too_many_login_attempts/, attacker);
-      await assert.rejects(webAuth.login('nick', 'right', attacker), /too_many_login_attempts/, attacker);
+      await assert.rejects(webAuth.login('carol', 'wrong', attacker), /too_many_login_attempts/, attacker);
+      await assert.rejects(webAuth.login('carol', 'right', attacker), /too_many_login_attempts/, attacker);
       assert.equal(calls, callsBefore, `${attacker} is refused before Jellyfin`);
     }
     // ...and the owner, on yet another address, still signs in at once.
-    assert.equal((await webAuth.login(' Nick ', 'right', '203.0.113.51')).username, 'Nick');
+    assert.equal((await webAuth.login(' Carol ', 'right', '203.0.113.51')).username, 'Carol');
     // Still so after more failures from many more addresses.
-    for (let index = 0; index < 40; index += 1) assert.equal(await webAuth.login('nick', 'wrong', `192.0.2.${index}`), null);
-    assert.equal((await webAuth.login('nick', 'right', '203.0.113.52')).username, 'Nick');
+    for (let index = 0; index < 40; index += 1) assert.equal(await webAuth.login('carol', 'wrong', `192.0.2.${index}`), null);
+    assert.equal((await webAuth.login('carol', 'right', '203.0.113.52')).username, 'Carol');
   });
 
   it('refuses one name from one address after ten failures in 15 minutes, however it is spelled', async () => {

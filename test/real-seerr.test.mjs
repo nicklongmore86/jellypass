@@ -169,12 +169,12 @@ describe('real Seerr', { timeout: 60_000, skip: !baseUrl || !apiKey }, () => {
     const app = await startApp(t, state, {
       seerr: { url: baseUrl, apiKey },
       households: [
-        { id: 'farmhouse', name: 'Farmhouse', userIds: [REQUESTER_JELLYFIN_ID, MEMBER, SHARED_JELLYFIN_ID] },
+        { id: 'grove', name: 'Grove', userIds: [REQUESTER_JELLYFIN_ID, MEMBER, SHARED_JELLYFIN_ID] },
         { id: 'mill', name: 'Mill', userIds: [NEIGHBOUR_JELLYFIN_ID, SHARED_JELLYFIN_ID] },
       ],
     });
     calls = [];
-    const as = (token, pathname, host = 'jelly-farmhouse.example.test') =>
+    const as = (token, pathname, host = 'jelly-grove.example.test') =>
       app.get(pathname, { host, user: null, headers: { Authorization: `MediaBrowser Token="${token}"` } });
     const first = await as('token-requester', '/jellypass/app/v1/movie/603');
     assert.equal(first.status, 200, first.text);
@@ -222,7 +222,7 @@ describe('real Seerr', { timeout: 60_000, skip: !baseUrl || !apiKey }, () => {
       jellyfinUsers: Object.fromEntries(people.map(([id, , name]) => [id, { Name: name, Policy: { BlockedTags: [], EnableAllFolders: true } }])),
     }), {
       seerr: { url: baseUrl, apiKey },
-      households: [{ id: 'farmhouse', name: 'Farmhouse', userIds: [REQUESTER_JELLYFIN_ID] }, { id: 'mill', name: 'Mill', userIds: [SHARED_JELLYFIN_ID] }],
+      households: [{ id: 'grove', name: 'Grove', userIds: [REQUESTER_JELLYFIN_ID] }, { id: 'mill', name: 'Mill', userIds: [SHARED_JELLYFIN_ID] }],
     });
     const asRequester = { user: null, headers: { Authorization: 'MediaBrowser Token="token-requester"' } };
     const getThis = async (tmdbId) => {
@@ -242,7 +242,7 @@ describe('real Seerr', { timeout: 60_000, skip: !baseUrl || !apiKey }, () => {
     assert.equal(first.text, '{"status":"accepted"}');
     assert.equal(records().length, 1, JSON.stringify(calls.map((call) => `${call.method} ${call.url.pathname}`)));
     const [made] = records();
-    assert.deepEqual([made.branch, made.householdId, made.status], ['request', 'farmhouse', 'pending']);
+    assert.deepEqual([made.branch, made.householdId, made.status], ['request', 'grove', 'pending']);
     // Sent as the member, naming only the title, in HD.
     const posted = calls.filter((call) => call.method === 'POST' && call.url.pathname === '/api/v1/request');
     assert.equal(posted.length, 1);
@@ -297,7 +297,7 @@ describe('real Seerr', { timeout: 60_000, skip: !baseUrl || !apiKey }, () => {
       jellyfinUsers: { [CANCELLER_JELLYFIN_ID]: { Name: 'Canceller', Policy: { BlockedTags: [], EnableAllFolders: true } } },
     }), {
       seerr: { url: baseUrl, apiKey },
-      households: [{ id: 'farmhouse', name: 'Farmhouse', userIds: [CANCELLER_JELLYFIN_ID] }],
+      households: [{ id: 'grove', name: 'Grove', userIds: [CANCELLER_JELLYFIN_ID] }],
     });
     const asCanceller = { user: null, headers: { Authorization: 'MediaBrowser Token="token-canceller"' } };
     // Schindler's List: nobody holds or asked for it.
@@ -384,7 +384,7 @@ describe('real Seerr', { timeout: 60_000, skip: !baseUrl || !apiKey }, () => {
       tmdbMovies: Object.fromEntries([[155, 'The Dark Knight', '2008-07-16'], [603, 'The Matrix', '1999-03-30']].map(([id, title, date]) => [id, { title, release_date: date }])),
     }), {
       seerr: { url: baseUrl, apiKey },
-      households: [{ id: 'farmhouse', name: 'Farmhouse', userIds: people.map(([id]) => id) }],
+      households: [{ id: 'grove', name: 'Grove', userIds: people.map(([id]) => id) }],
     });
     // Seerr's own quotas: user 7 a lifetime movie quota already used, user 8 a series quota with nothing used.
     const quota = async (user) => (await (await originalFetch(`${baseUrl}/api/v1/user/${user}/quota`, { headers: { Accept: 'application/json', 'X-Api-Key': apiKey } })).json());

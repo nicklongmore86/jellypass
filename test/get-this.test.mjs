@@ -163,17 +163,17 @@ describe('household app "Get this": branches', { timeout: 60_000 }, () => {
       const made = records(app);
       if (branch === 'request') {
         assert.deepEqual(app.seerr.posts, [{ actingUser: SEERR_IDS[ALICE], body: { mediaType: 'movie', mediaId: T_MOVIE, is4k: false } }], name);
-        assert.deepEqual(made, [{ householdId: 'farmhouse', jellyfinUserId: ALICE, mediaType: 'movie', tmdbId: T_MOVIE, seasons: [], branch: 'request', status: 'pending', seerrRequestId: '7350001', seerrMediaId: 7360001 }]);
+        assert.deepEqual(made, [{ householdId: 'grove', jellyfinUserId: ALICE, mediaType: 'movie', tmdbId: T_MOVIE, seasons: [], branch: 'request', status: 'pending', seerrRequestId: '7350001', seerrMediaId: 7360001 }]);
       } else {
         // Late requests: a title Jellyfin has (or that is requested) never reaches Seerr's request endpoint.
         assert.deepEqual(app.seerr.posts, [], name);
       }
       if (branch === 'interest') {
-        assert.deepEqual(made, [{ householdId: 'farmhouse', jellyfinUserId: ALICE, mediaType: 'movie', tmdbId: T_MOVIE, seasons: [], branch: 'interest', status: 'pending', seerrRequestId: '7300601', seerrMediaId: 7360001 }]);
+        assert.deepEqual(made, [{ householdId: 'grove', jellyfinUserId: ALICE, mediaType: 'movie', tmdbId: T_MOVIE, seasons: [], branch: 'interest', status: 'pending', seerrRequestId: '7300601', seerrMediaId: 7360001 }]);
       }
       if (branch === 'join') {
-        assert.deepEqual(made, [{ householdId: 'farmhouse', jellyfinUserId: ALICE, mediaType: 'movie', tmdbId: T_MOVIE, seasons: [], branch: 'join', status: 'completed', itemIds: [ITEMS.tMovie], seerrMediaId: 7360001 }]);
-        assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['farmhouse', 'mill']);
+        assert.deepEqual(made, [{ householdId: 'grove', jellyfinUserId: ALICE, mediaType: 'movie', tmdbId: T_MOVIE, seasons: [], branch: 'join', status: 'completed', itemIds: [ITEMS.tMovie], seerrMediaId: 7360001 }]);
+        assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['grove', 'mill']);
         assert.equal((await app.get(`${APP}/movie/${T_MOVIE}`)).json().state, 'in_library');
       }
       if (branch === 'none' || branch === 'visible') assert.deepEqual(made, [], name);
@@ -230,7 +230,7 @@ describe('household app "Get this": branches', { timeout: 60_000 }, () => {
     }));
     assert.equal((await getThis(app, GET_TV, { seasons: [3, 1, 2] })).status, 202);
     assert.deepEqual(app.seerr.posts, [{ actingUser: SEERR_IDS[ALICE], body: { mediaType: 'tv', mediaId: T_TV, seasons: [3], is4k: false } }]);
-    const base = { householdId: 'farmhouse', jellyfinUserId: ALICE, mediaType: 'tv', tmdbId: T_TV, seerrMediaId: 7360002 };
+    const base = { householdId: 'grove', jellyfinUserId: ALICE, mediaType: 'tv', tmdbId: T_TV, seerrMediaId: 7360002 };
     assert.deepEqual(records(app), [
       { ...base, seasons: [2], branch: 'interest', status: 'pending', seerrRequestId: '7300602' },
       { ...base, seasons: [1], branch: 'join', status: 'completed', itemIds: [ITEMS.tSeries], readySeasons: [1] },
@@ -298,7 +298,7 @@ describe('household app "Get this": branches', { timeout: 60_000 }, () => {
     assert.equal(app.seerr.posts.length, 1);
     // Whichever came first made the request; the other follows it.
     const made = records(app);
-    assert.deepEqual(made.map((record) => record.householdId).sort(), ['farmhouse', 'mill']);
+    assert.deepEqual(made.map((record) => record.householdId).sort(), ['grove', 'mill']);
     assert.deepEqual(made.map((record) => record.branch).sort(), ['interest', 'request']);
     assert.equal(new Set(made.map((record) => record.seerrRequestId)).size, 1);
   });
@@ -497,10 +497,10 @@ describe('household app "Get this": every outcome follows the request', { timeou
 describe('household app "Get this": households', { timeout: 60_000 }, () => {
   it('keeps a record with the household it was made for, whatever membership does later', async (t) => {
     const app = await start(t, world({ tmdbMovies }), { households: [
-      { id: 'farmhouse', name: 'Farmhouse', userIds: [ALICE, ANN, CAROL] },
+      { id: 'grove', name: 'Grove', userIds: [ALICE, ANN, CAROL] },
       { id: 'mill', name: 'Mill', userIds: [BOB, CAROL] },
     ] });
-    // Carol, in both households, asks on Farmhouse's host: the record is Farmhouse's alone.
+    // Carol, in both households, asks on Grove's host: the record is Grove's alone.
     await getThis(app, GET_MOVIE, undefined, { user: CAROL });
     const state = async (host, user) => (await app.get(`${APP}/movie/${T_MOVIE}`, { host, user })).json().state;
     const listed = async (host, user) => (await app.get(`${APP}/requests`, { host, user })).json().results.map((entry) => [entry.status, entry.byYou]);
@@ -513,26 +513,26 @@ describe('household app "Get this": households', { timeout: 60_000 }, () => {
     await check('as made');
     assert.equal(await state(HOST_B, CAROL), 'get_this');
     assert.deepEqual(await listed(HOST_A, CAROL), [['requested', true]]);
-    // Carol leaves Farmhouse: the household keeps its record and she keeps nothing.
-    await app.store.upsertGroup({ id: 'farmhouse', name: 'Farmhouse', userIds: [ALICE, ANN] });
-    await check('Carol left Farmhouse');
+    // Carol leaves Grove: the household keeps its record and she keeps nothing.
+    await app.store.upsertGroup({ id: 'grove', name: 'Grove', userIds: [ALICE, ANN] });
+    await check('Carol left Grove');
     // Ann moves to Mill: her household's record does not follow her.
-    await app.store.upsertGroup({ id: 'farmhouse', name: 'Farmhouse', userIds: [ALICE] });
+    await app.store.upsertGroup({ id: 'grove', name: 'Grove', userIds: [ALICE] });
     await app.store.upsertGroup({ id: 'mill', name: 'Mill', userIds: [BOB, CAROL, ANN] });
     await check('Ann moved to Mill');
     assert.equal(await state(HOST_B, ANN), 'get_this');
-    assert.deepEqual(app.store.listAppRequests().map(([, record]) => record.householdId), ['farmhouse']);
+    assert.deepEqual(app.store.listAppRequests().map(([, record]) => record.householdId), ['grove']);
   });
 
   it('joins only the household whose host was used, never the caller\'s other households', async (t) => {
     const { state } = getThisWorlds()['held by household B through its request'];
     const app = await start(t, state, { households: [
-      { id: 'farmhouse', name: 'Farmhouse', userIds: [ALICE, ANN] },
+      { id: 'grove', name: 'Grove', userIds: [ALICE, ANN] },
       { id: 'mill', name: 'Mill', userIds: [BOB] },
       { id: 'barn', name: 'Barn', userIds: [ALICE, CAROL] },
     ] });
     await getThis(app);
-    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['farmhouse', 'mill']);
+    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['grove', 'mill']);
   });
 
   it('joins an interested household when the grant is created, and an administrator\'s removal sticks', async (t) => {
@@ -543,8 +543,8 @@ describe('household app "Get this": households', { timeout: 60_000 }, () => {
       // The title arrives in Jellyfin.
       app.jellyfin.state.items.push(movieItem());
       if (removed) {
-        // An administrator gave the item to both households, then took it away from Farmhouse.
-        await app.service.setManualAccess({ itemId: ITEMS.tMovie, mediaType: 'movie', userIds: [], groupIds: ['farmhouse', 'mill'] });
+        // An administrator gave the item to both households, then took it away from Grove.
+        await app.service.setManualAccess({ itemId: ITEMS.tMovie, mediaType: 'movie', userIds: [], groupIds: ['grove', 'mill'] });
         await app.service.setManualAccess({ itemId: ITEMS.tMovie, mediaType: 'movie', userIds: [], groupIds: ['mill'] });
       }
       app.seerr.state.requests[SEERR_IDS[BOB]][0].status = 5;
@@ -555,7 +555,7 @@ describe('household app "Get this": households', { timeout: 60_000 }, () => {
         request: { id: '7300601', requestedBy: { jellyfinUserId: BOB } },
       });
       assert.equal(answer.status, 200, answer.text);
-      assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, removed ? ['mill'] : ['farmhouse', 'mill']);
+      assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, removed ? ['mill'] : ['grove', 'mill']);
       assert.equal((await app.get(`${APP}/movie/${T_MOVIE}`)).json().state, removed ? 'get_this' : 'in_library');
       assert.equal((await app.get(`${APP}/movie/${T_MOVIE}`, { user: ANN })).json().state, removed ? 'get_this' : 'in_library');
       assert.deepEqual((await app.get(`${APP}/requests`)).json().results.map((entry) => entry.status), [removed ? 'failed' : 'ready']);
@@ -563,24 +563,24 @@ describe('household app "Get this": households', { timeout: 60_000 }, () => {
   });
 
   it('never joins a household an administrator removed, in the join branch or for an interest, even for a member the removal did not mark', async (t) => {
-    // The join branch: Farmhouse was given the title, then an administrator took it away; Bob's request still holds it.
+    // The join branch: Grove was given the title, then an administrator took it away; Bob's request still holds it.
     const { state } = getThisWorlds()['held by household B through its request'];
     const held = await start(t, state);
-    await held.service.setGrantGroups(ITEMS.tMovie, ['farmhouse', 'mill']);
+    await held.service.setGrantGroups(ITEMS.tMovie, ['grove', 'mill']);
     await held.service.setGrantGroups(ITEMS.tMovie, ['mill']);
     await getThis(held);
     assert.deepEqual(held.store.get(ITEMS.tMovie).groupIds, ['mill']);
     assert.deepEqual(records(held), []);
     assert.deepEqual(held.seerr.posts, []);
-    // An interest: Ann asked while Bob's request was pending, left Farmhouse, and came back after the administrator
-    // removed Farmhouse from the title, so only the household carries the mark.
+    // An interest: Ann asked while Bob's request was pending, left Grove, and came back after the administrator
+    // removed Grove from the title, so only the household carries the mark.
     const app = await start(t, world({ requests: { [SEERR_IDS[BOB]]: [request({ id: 7300601, seerrUser: SEERR_IDS[BOB], status: 2 })] } }));
     await getThis(app, GET_MOVIE, undefined, { user: ANN });
-    await app.store.upsertGroup({ id: 'farmhouse', name: 'Farmhouse', userIds: [ALICE] });
+    await app.store.upsertGroup({ id: 'grove', name: 'Grove', userIds: [ALICE] });
     app.jellyfin.state.items.push(movieItem());
-    await app.service.setManualAccess({ itemId: ITEMS.tMovie, mediaType: 'movie', userIds: [], groupIds: ['farmhouse', 'mill'] });
+    await app.service.setManualAccess({ itemId: ITEMS.tMovie, mediaType: 'movie', userIds: [], groupIds: ['grove', 'mill'] });
     await app.service.setManualAccess({ itemId: ITEMS.tMovie, mediaType: 'movie', userIds: [], groupIds: ['mill'] });
-    await app.store.upsertGroup({ id: 'farmhouse', name: 'Farmhouse', userIds: [ALICE, ANN] });
+    await app.store.upsertGroup({ id: 'grove', name: 'Grove', userIds: [ALICE, ANN] });
     assert.equal(app.store.isAccessRemoved(ITEMS.tMovie, 'userIds', ANN), false);
     app.seerr.state.requests[SEERR_IDS[BOB]][0].status = 5;
     await app.webhook({
@@ -616,7 +616,7 @@ describe('household app "Get this": households', { timeout: 60_000 }, () => {
     await app.store.grant({ itemId: ITEMS.tMovie, mediaType: 'movie', requestId: '7300601', userId: BOB, groupIds: ['mill'] });
     app.seerr.state.requests[SEERR_IDS[BOB]][0].status = 5;
     await app.requests.refresh();
-    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['farmhouse', 'mill']);
+    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['grove', 'mill']);
     assert.equal(records(app)[0].status, 'completed');
   });
 
@@ -625,8 +625,8 @@ describe('household app "Get this": households', { timeout: 60_000 }, () => {
     await getThis(app);
     assert.deepEqual((await app.get(`${APP}/requests`, { host: HOST_B, user: BOB })).json(), { results: [] });
     assert.equal((await app.get(`${APP}/movie/${T_MOVIE}`, { host: HOST_B, user: BOB })).json().state, 'get_this');
-    await app.service.deleteGroup('farmhouse');
-    await app.store.upsertGroup({ id: 'farmhouse', name: 'Farmhouse again', userIds: [ALICE, ANN] });
+    await app.service.deleteGroup('grove');
+    await app.store.upsertGroup({ id: 'grove', name: 'Grove again', userIds: [ALICE, ANN] });
     assert.deepEqual((await app.get(`${APP}/requests`)).json(), { results: [] });
     assert.equal((await app.get(`${APP}/movie/${T_MOVIE}`)).json().state, 'get_this');
     // Kept, detached: the request's grant still follows its record.
@@ -773,12 +773,12 @@ describe('household app "Get this": what the household sees afterwards', { timeo
     await getThis(app);
     await getThis(app, GET_MOVIE, undefined, { host: HOST_B, user: BOB });
     await getThis(app, OTHER_GET);
-    const farmhouse = (await app.get(`${APP}/requests`)).json().results;
+    const grove = (await app.get(`${APP}/requests`)).json().results;
     const mill = (await app.get(`${APP}/requests`, { host: HOST_B, user: BOB })).json().results;
-    assert.equal(farmhouse.length, 2);
-    assert.notEqual(farmhouse[0].id, farmhouse[1].id);
-    assert.notEqual(farmhouse.find((entry) => entry.tmdbId === T_MOVIE).id, mill[0].id);
-    assert.equal((await app.get(`${APP}/requests`, { user: ANN })).json().results[0].id, farmhouse[0].id);
+    assert.equal(grove.length, 2);
+    assert.notEqual(grove[0].id, grove[1].id);
+    assert.notEqual(grove.find((entry) => entry.tmdbId === T_MOVIE).id, mill[0].id);
+    assert.equal((await app.get(`${APP}/requests`, { user: ANN })).json().results[0].id, grove[0].id);
   });
 });
 
@@ -823,7 +823,7 @@ describe('household app "Get this": input, budgets, shutdown and metrics', { tim
     const nobody = { seerrUsers: Object.fromEntries([ALICE, ANN, CAROL, OUTSIDER].map((user) => [SEERR_IDS[user], { jellyfinUserId: user, permissions: 0 }])) };
     const app = await start(t, world(nobody), {
       trustedProxies: ['127.0.0.1'],
-      households: [{ id: 'farmhouse', name: 'Farmhouse', userIds: [ALICE, ANN, CAROL, OUTSIDER] }, { id: 'mill', name: 'Mill', userIds: [BOB] }],
+      households: [{ id: 'grove', name: 'Grove', userIds: [ALICE, ANN, CAROL, OUTSIDER] }, { id: 'mill', name: 'Mill', userIds: [BOB] }],
     });
     const from = (address, user) => app.post(GET_MOVIE, undefined, { user, headers: { 'X-Forwarded-For': address } });
     const statuses = async (count, address, user) => {
@@ -890,7 +890,7 @@ describe('household app "Get this": input, budgets, shutdown and metrics', { tim
 
 describe('"Get this" records in the store', () => {
   const record = (overrides = {}) => ({
-    householdId: 'farmhouse', jellyfinUserId: ALICE, mediaType: 'movie', tmdbId: T_MOVIE, seasons: [], branch: 'interest', status: 'pending',
+    householdId: 'grove', jellyfinUserId: ALICE, mediaType: 'movie', tmdbId: T_MOVIE, seasons: [], branch: 'interest', status: 'pending',
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), ...overrides,
   });
 
@@ -904,8 +904,8 @@ describe('"Get this" records in the store', () => {
     const many = Array.from({ length: MAX_APP_REQUESTS_PER_HOUSEHOLD + 5 }, (_, index) => record({ tmdbId: index + 1, status: 'declined', createdAt: new Date(Date.now() - (index + 1) * 1000).toISOString() }));
     await store.writeAppRequests({ add: many });
     const kept = store.listAppRequests().map(([, entry]) => entry);
-    assert.equal(kept.filter((entry) => entry.householdId === 'farmhouse').length, MAX_APP_REQUESTS_PER_HOUSEHOLD);
-    assert.ok(!kept.some((entry) => entry.householdId === 'farmhouse' && entry.tmdbId > MAX_APP_REQUESTS_PER_HOUSEHOLD));
+    assert.equal(kept.filter((entry) => entry.householdId === 'grove').length, MAX_APP_REQUESTS_PER_HOUSEHOLD);
+    assert.ok(!kept.some((entry) => entry.householdId === 'grove' && entry.tmdbId > MAX_APP_REQUESTS_PER_HOUSEHOLD));
     // Another household's volume never removes Mill's record.
     assert.equal(kept.filter((entry) => entry.householdId === 'mill').length, 1);
     await store.close();

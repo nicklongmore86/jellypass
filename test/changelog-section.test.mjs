@@ -90,7 +90,7 @@ describe('changelogSection with the real CHANGELOG.md', () => {
     assert.doesNotMatch(notes, /Mobile app/, 'mobile/ is unchanged since 3.3.1');
     assert.doesNotMatch(notes, /### Upgrading from/);
     assert.doesNotMatch(notes, /eas-cli|workflow|\btests?\b/i, 'no tests or CI');
-    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|starrgroup|farmhouse|design-ref/, 'no server-specific details');
+    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref/, 'no server-specific details');
     assert.deepEqual(split(notes).definitions, []);
   });
 
@@ -132,7 +132,7 @@ describe('changelogSection with the real CHANGELOG.md', () => {
     assert.doesNotMatch(notes, /Mobile app/, 'mobile/ is unchanged since 3.3.0');
     assert.doesNotMatch(notes, /### Upgrading from/);
     assert.doesNotMatch(notes, /eas-cli|workflow|\btests?\b/i, 'no tests or CI');
-    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|starrgroup|farmhouse/, 'no server-specific details');
+    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]/, 'no server-specific details');
     assert.deepEqual(split(notes).definitions, []);
   });
 
@@ -171,7 +171,7 @@ describe('changelogSection with the real CHANGELOG.md', () => {
     assert.doesNotMatch(notes, /Mobile app/, 'mobile/ is unchanged since 3.2.4');
     assert.doesNotMatch(notes, /### Upgrading from/);
     assert.doesNotMatch(notes, /eas-cli|workflow|\btests?\b/i, 'no tests or CI');
-    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|starrgroup|farmhouse/, 'no server-specific details');
+    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]/, 'no server-specific details');
     assert.deepEqual(split(notes).definitions, []);
   });
 

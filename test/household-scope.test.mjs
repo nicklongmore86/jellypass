@@ -30,10 +30,10 @@ const sessions = [
   { Id: 'session-nobody', UserId: '00000000000000000000000000000000', DeviceName: 'Bob laptop', AdditionalUsers: [] },
   { Id: 'session-anonymous', DeviceName: 'Somebody', AdditionalUsers: [] },
 ];
-const GROUPS = { farmhouse: 'f0f0f0f0000000000000000000000001', mill: 'b1b1b1b1000000000000000000000002', mixed: 'c2c2c2c2000000000000000000000003', empty: 'e3e3e3e3000000000000000000000004' };
+const GROUPS = { grove: 'f0f0f0f0000000000000000000000001', mill: 'b1b1b1b1000000000000000000000002', mixed: 'c2c2c2c2000000000000000000000003', empty: 'e3e3e3e3000000000000000000000004' };
 const NO_SUCH_GROUP = 'deadbeef00000000000000000000dead';
 const syncPlayGroups = [
-  { GroupId: GROUPS.farmhouse, GroupName: 'Alice\'s group', State: 'Idle', Participants: ['Alice', 'ann'], LastUpdatedAt: '2026-10-27T00:00:00Z' },
+  { GroupId: GROUPS.grove, GroupName: 'Alice\'s group', State: 'Idle', Participants: ['Alice', 'ann'], LastUpdatedAt: '2026-10-27T00:00:00Z' },
   { GroupId: GROUPS.mill, GroupName: 'Bob\'s group', State: 'Idle', Participants: ['Bob'], LastUpdatedAt: '2026-10-27T00:00:00Z' },
   { GroupId: GROUPS.mixed, GroupName: 'Alice\'s group', State: 'Playing', Participants: ['Alice', 'Bob'], LastUpdatedAt: '2026-10-27T00:00:00Z' },
   { GroupId: GROUPS.empty, GroupName: 'Outsider\'s group', State: 'Idle', Participants: [], LastUpdatedAt: '2026-10-27T00:00:00Z' },
@@ -78,7 +78,7 @@ describe('household host user listings', { timeout: 60_000 }, () => {
       assert.deepEqual(answer.json(), [syncPlayGroups[0]], path);
     }
     assert.deepEqual((await get(app.port, '/SyncPlay/List', as(HOST_B, 'token-bob'))).json().map((group) => group.GroupId), [GROUPS.mill]);
-    assert.deepEqual((await get(app.port, `/SyncPlay/${GROUPS.farmhouse}`, as(HOST_A, 'token-alice'))).json(), syncPlayGroups[0]);
+    assert.deepEqual((await get(app.port, `/SyncPlay/${GROUPS.grove}`, as(HOST_A, 'token-alice'))).json(), syncPlayGroups[0]);
     for (const id of [GROUPS.mill, GROUPS.mixed, GROUPS.empty, NO_SUCH_GROUP]) {
       const answer = await get(app.port, `/emby/syncplay/${id}`, as(HOST_A, 'token-alice'));
       assert.deepEqual([answer.status, answer.text], [404, ITEM_NOT_FOUND], id);
@@ -132,12 +132,12 @@ describe('household host SyncPlay joins', { timeout: 60_000 }, () => {
   it('joins a member only to a group all of whose participants are the household\'s members (Codex)', async (t) => {
     const state = scopeWorld();
     const app = await startApp(t, state);
-    const dashed = GROUPS.farmhouse.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5').toUpperCase();
-    for (const body of [{ GroupId: GROUPS.farmhouse }, { GroupId: dashed }, { groupId: `{${dashed}}` }]) {
+    const dashed = GROUPS.grove.replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, '$1-$2-$3-$4-$5').toUpperCase();
+    for (const body of [{ GroupId: GROUPS.grove }, { GroupId: dashed }, { groupId: `{${dashed}}` }]) {
       const answer = await join(app, HOST_A, 'token-alice', body);
       assert.equal(answer.status, 204, JSON.stringify(body));
     }
-    assert.deepEqual(state.syncPlayJoins, [ALICE, ALICE, ALICE].map((userId) => ({ userId, groupId: GROUPS.farmhouse })));
+    assert.deepEqual(state.syncPlayJoins, [ALICE, ALICE, ALICE].map((userId) => ({ userId, groupId: GROUPS.grove })));
     // Jellyfin is sent the checked group alone, in one form.
     assert.ok(app.jellyfin.requests.filter((request) => /^\/syncplay\/join$/i.test(request.pathname)).every((request) => request.method === 'POST'));
     // Bob's own household joins him to his own group.
@@ -161,16 +161,16 @@ describe('household host SyncPlay joins', { timeout: 60_000 }, () => {
   it('refuses a join it cannot read as Jellyfin does, and another household\'s token, without asking Jellyfin', async (t) => {
     const state = scopeWorld();
     const app = await startApp(t, state);
-    for (const body of ['not json', '[]', '{}', JSON.stringify({ GroupId: 42 }), JSON.stringify({ GroupId: 'farmhouse' }),
-      JSON.stringify({ GroupId: GROUPS.mill, groupid: GROUPS.farmhouse }),
-      JSON.stringify({ GroupId: `{${GROUPS.farmhouse}` })]) {
+    for (const body of ['not json', '[]', '{}', JSON.stringify({ GroupId: 42 }), JSON.stringify({ GroupId: 'grove' }),
+      JSON.stringify({ GroupId: GROUPS.mill, groupid: GROUPS.grove }),
+      JSON.stringify({ GroupId: `{${GROUPS.grove}` })]) {
       const answer = await join(app, HOST_A, 'token-alice', body);
       assert.deepEqual([answer.status, answer.text], [400, '{"error":"invalid_request"}'], body);
     }
     // A repeated key is read as Jellyfin reads it, the last one, and only the group checked is sent on.
-    assert.equal((await join(app, HOST_A, 'token-alice', `{"GroupId":"${GROUPS.farmhouse}","GroupId":"${GROUPS.mill}"}`)).text, ITEM_NOT_FOUND);
+    assert.equal((await join(app, HOST_A, 'token-alice', `{"GroupId":"${GROUPS.grove}","GroupId":"${GROUPS.mill}"}`)).text, ITEM_NOT_FOUND);
     for (const token of ['token-bob', 'no-such-token']) {
-      assert.deepEqual((await join(app, HOST_A, token, { GroupId: GROUPS.farmhouse })).text, NOT_A_MEMBER, token);
+      assert.deepEqual((await join(app, HOST_A, token, { GroupId: GROUPS.grove })).text, NOT_A_MEMBER, token);
     }
     assert.equal(joinsSent(app), 0);
     assert.deepEqual(state.syncPlayJoins, []);
@@ -280,9 +280,9 @@ describe('household host tokens', { timeout: 60_000 }, () => {
     assert.equal((await get(app.port, '/System/Info', { ...alice, Host: HOST_B })).text, NOT_A_MEMBER);
     assert.equal(verifications(app), 1);
     // Taken out of the household, she is refused at once.
-    await app.store.upsertGroup({ id: 'farmhouse', name: 'Farmhouse', userIds: [ANN] });
+    await app.store.upsertGroup({ id: 'grove', name: 'Grove', userIds: [ANN] });
     assert.equal((await get(app.port, '/System/Info', alice)).text, NOT_A_MEMBER);
-    await app.store.upsertGroup({ id: 'farmhouse', name: 'Farmhouse', userIds: [ALICE, ANN] });
+    await app.store.upsertGroup({ id: 'grove', name: 'Grove', userIds: [ALICE, ANN] });
     assert.notEqual((await get(app.port, '/System/Info', alice)).text, NOT_A_MEMBER);
     assert.equal(verifications(app), 1);
     // A sign-out through the household host forgets the token: Jellyfin is asked again, and now refuses it.
@@ -323,10 +323,10 @@ describe('household host tokens', { timeout: 60_000 }, () => {
   });
 
   it('leaves the main Jellyfin hostname alone: it is no household\'s', () => {
-    const gateway = new HouseholdGateway({ jellyfinUrl: 'http://127.0.0.1:8096', domain: 'starrgroup.io', hostPrefix: 'jelly-', memberIds: () => [] });
-    assert.equal(gateway.householdId('jelly.starrgroup.io'), undefined);
-    assert.equal(gateway.householdId('jelly.starrgroup.io:443'), undefined);
-    assert.equal(gateway.householdId('jelly-farmhouse.starrgroup.io'), 'farmhouse');
+    const gateway = new HouseholdGateway({ jellyfinUrl: 'http://127.0.0.1:8096', domain: 'example.org', hostPrefix: 'jelly-', memberIds: () => [] });
+    assert.equal(gateway.householdId('jelly.example.org'), undefined);
+    assert.equal(gateway.householdId('jelly.example.org:443'), undefined);
+    assert.equal(gateway.householdId('jelly-grove.example.org'), 'grove');
   });
 });
 

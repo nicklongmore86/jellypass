@@ -91,7 +91,7 @@ describe('household app API: answers', { timeout: 20_000 }, () => {
     const app = await startApp(t);
     const answer = await app.get(`${APP}/me`);
     assert.equal(answer.status, 200);
-    assert.deepEqual(answer.json(), { name: 'Alice', household: 'Farmhouse', apiVersion: 2 });
+    assert.deepEqual(answer.json(), { name: 'Alice', household: 'Grove', apiVersion: 2 });
     assert.equal(app.seerr.calls.length, 0);
     assert.equal(app.tmdb.calls.length, 0);
     // The version is the server's, the same for every household and every member.
@@ -229,40 +229,40 @@ describe('household app API: household states', { timeout: 20_000 }, () => {
   }
 
   const pending = [seerrRequest({ type: 'movie', tmdbId: T_MOVIE, status: 1 }), seerrRequest({ type: 'tv', tmdbId: T_TV, status: 2, seasons: [2] })];
-  const FARMHOUSE = (...userIds) => ({ id: 'farmhouse', name: 'Farmhouse', userIds });
+  const GROVE = (...userIds) => ({ id: 'grove', name: 'Grove', userIds });
   const MILL = (...userIds) => ({ id: 'mill', name: 'Mill', userIds });
 
   it('never shows a Seerr request as requested, not even one by a member of this household alone', async (t) => {
-    await membershipChanges(t, { [SEERR_IDS[ANN]]: pending, [SEERR_IDS[ALICE]]: pending }, [[FARMHOUSE(ALICE, ANN), MILL(BOB)]]);
+    await membershipChanges(t, { [SEERR_IDS[ANN]]: pending, [SEERR_IDS[ALICE]]: pending }, [[GROVE(ALICE, ANN), MILL(BOB)]]);
   });
 
   it('keeps a shared member\'s old request hidden once they leave the other household (Codex\'s repro)', async (t) => {
-    // Bob, in Farmhouse and Mill, asked for T for Mill. Leaving Mill does not make his old request Farmhouse's.
+    // Bob, in Grove and Mill, asked for T for Mill. Leaving Mill does not make his old request Grove's.
     await membershipChanges(t, { [SEERR_IDS[BOB]]: pending }, [
-      [FARMHOUSE(ALICE, ANN, BOB), MILL(BOB)],
-      [FARMHOUSE(ALICE, ANN, BOB), MILL()],
+      [GROVE(ALICE, ANN, BOB), MILL(BOB)],
+      [GROVE(ALICE, ANN, BOB), MILL()],
     ]);
   });
 
   it('keeps a request hidden when its requester moves to another household', async (t) => {
-    // Ann asked for T while in Farmhouse alone; moving to Mill does not make it Mill's.
+    // Ann asked for T while in Grove alone; moving to Mill does not make it Mill's.
     await membershipChanges(t, { [SEERR_IDS[ANN]]: pending }, [
-      [FARMHOUSE(ALICE, ANN), MILL(BOB)],
-      [FARMHOUSE(ALICE), MILL(BOB, ANN)],
+      [GROVE(ALICE, ANN), MILL(BOB)],
+      [GROVE(ALICE), MILL(BOB, ANN)],
     ]);
   });
 
   it('keeps a request hidden when a shared member becomes exclusive to one household', async (t) => {
     await membershipChanges(t, { [SEERR_IDS[CAROL]]: pending }, [
-      [FARMHOUSE(ALICE, ANN, CAROL), MILL(BOB, CAROL)],
-      [FARMHOUSE(ALICE, ANN, CAROL), MILL(BOB)],
+      [GROVE(ALICE, ANN, CAROL), MILL(BOB, CAROL)],
+      [GROVE(ALICE, ANN, CAROL), MILL(BOB)],
     ]);
   });
 
   it('keeps a request hidden when an exclusive member joins another household too', async (t) => {
     await membershipChanges(t, { [SEERR_IDS[ANN]]: pending }, [
-      [FARMHOUSE(ALICE, ANN), MILL(BOB)],
-      [FARMHOUSE(ALICE, ANN), MILL(BOB, ANN)],
+      [GROVE(ALICE, ANN), MILL(BOB)],
+      [GROVE(ALICE, ANN), MILL(BOB, ANN)],
     ]);
   });
 
@@ -576,7 +576,7 @@ describe('household app API: identity', { timeout: 20_000 }, () => {
       assert.equal(call.query.get('api_key'), TMDB_KEY);
       assert.equal(call.query.get('language'), 'en-US');
       // Nothing about the caller, their household or their Jellyfin session reaches TMDB.
-      assert.doesNotMatch(`${call.path}\n${JSON.stringify(call.headers)}`, /a11ce000|farmhouse|token-alice|x-api-user|authorization/i);
+      assert.doesNotMatch(`${call.path}\n${JSON.stringify(call.headers)}`, /a11ce000|grove|token-alice|x-api-user|authorization/i);
     }
     assert.deepEqual(asAlice.map((call) => call.pathname), [
       '/3/search/multi', '/3/search/multi', '/3/trending/all/day', '/3/trending/movie/day', '/3/trending/tv/day', '/3/discover/movie',
@@ -1016,13 +1016,13 @@ describe('household app API: one cache per household', { timeout: 120_000 }, () 
     assert.equal(refusal.status, 400);
     assert.deepEqual(await refusal.json(), { error: 'groups must be at most 100' });
     // Renaming or changing an existing household is still allowed at the limit.
-    await app.store.upsertGroup({ id: 'farmhouse', name: 'Farmhouse', userIds: [ALICE, ANN] });
+    await app.store.upsertGroup({ id: 'grove', name: 'Grove', userIds: [ALICE, ANN] });
   });
 
   it('caches nothing for any household when a state file holds more households than supported, and still loads it', async (t) => {
     const at = '2026-10-24T12:00:00.000Z';
     const groups = Object.fromEntries([
-      { id: 'farmhouse', name: 'Farmhouse', userIds: [ALICE, ANN].sort() },
+      { id: 'grove', name: 'Grove', userIds: [ALICE, ANN].sort() },
       { id: 'mill', name: 'Mill', userIds: [BOB] },
       ...Array.from({ length: 99 }, (_, index) => ({ id: `h${index}`, name: `H${index}`, userIds: [] })),
     ].map((group) => [group.id, { ...group, createdAt: at, updatedAt: at }]));
@@ -1268,7 +1268,7 @@ describe('household app API: sessions', { timeout: 20_000 }, () => {
       [`${APP}/me?api_key=token-alice`, {}],
     ]) {
       const answer = await app.get(pathname, { user: null, headers });
-      assert.deepEqual(answer.json(), { name: 'Alice', household: 'Farmhouse', apiVersion: 2 }, JSON.stringify(headers));
+      assert.deepEqual(answer.json(), { name: 'Alice', household: 'Grove', apiVersion: 2 }, JSON.stringify(headers));
     }
   });
 
@@ -1284,7 +1284,7 @@ describe('household app API: sessions', { timeout: 20_000 }, () => {
     assert.equal((await app.get(`${APP}/me`)).status, 200);
     assert.equal(verifications(), 2);
     // Removed from the household: refused at once, though the token is still cached.
-    await app.store.upsertGroup({ id: 'farmhouse', name: 'Farmhouse', userIds: [ANN] });
+    await app.store.upsertGroup({ id: 'grove', name: 'Grove', userIds: [ANN] });
     assert.equal((await app.get(`${APP}/me`)).text, UNAUTHORIZED);
     assert.equal(verifications(), 2);
   });

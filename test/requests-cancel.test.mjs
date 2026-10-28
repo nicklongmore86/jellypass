@@ -213,7 +213,7 @@ describe('cancelling a request nobody else follows', { timeout: 60_000 }, () => 
 
     // An administrator gives it to household A: it is no longer held, but the requester's withdrawal still decides
     // who the request gives access to until the request is revoked.
-    assert.equal((await admin(app, `/v1/grants/${ITEMS.tMovie}/groups`, { method: 'PUT', body: { groupIds: ['farmhouse'] } })).status, 200);
+    assert.equal((await admin(app, `/v1/grants/${ITEMS.tMovie}/groups`, { method: 'PUT', body: { groupIds: ['grove'] } })).status, 200);
     assert.deepEqual((await admin(app, '/v1/app/held')).json(), { total: 0, titles: [] });
     assert.equal(await movieState(app), 'in_library');
     outstanding = (await admin(app, '/v1/app/outstanding')).json();
@@ -221,7 +221,7 @@ describe('cancelling a request nobody else follows', { timeout: 60_000 }, () => 
     assert.equal((await admin(app, `/v1/grants/${ITEMS.tMovie}/requests/${FIRST}`, { method: 'DELETE' })).status, 200);
     outstanding = (await admin(app, '/v1/app/outstanding')).json();
     assert.deepEqual([outstanding.clear, outstanding.withdrawals.total], [true, 0]);
-    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['farmhouse']);
+    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['grove']);
   });
 
   it('joins the household when the member asks again after cancelling, and the request is granted', async (t) => {
@@ -233,7 +233,7 @@ describe('cancelling a request nobody else follows', { timeout: 60_000 }, () => 
     assert.equal(app.seerr.posts.length, 1);
     assert.deepEqual((await entries(app)).map((entry) => [entry.status, entry.cancellable]), [['requested', true]]);
     await arrive(app);
-    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['farmhouse']);
+    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['grove']);
     assert.equal(await movieState(app), 'in_library');
     assert.deepEqual((await entries(app)).map((entry) => [entry.status, entry.cancellable]), [['ready', false]]);
     assert.deepEqual((await admin(app, '/v1/app/held')).json().total, 0);
@@ -264,7 +264,7 @@ describe('cancelling a request another household follows', { timeout: 60_000 }, 
     const app = await start(t, world());
     await getThis(app, AS_BOB);
     await getThis(app);
-    assert.equal(app.store.listAppRequests().find(([, record]) => record.householdId === 'farmhouse')[1].branch, 'interest');
+    assert.equal(app.store.listAppRequests().find(([, record]) => record.householdId === 'grove')[1].branch, 'interest');
     const bobBefore = [await entries(app, AS_BOB), await movieState(app, AS_BOB)];
     await cancel(app);
     assert.deepEqual(app.seerr.deletes, []);
@@ -298,7 +298,7 @@ describe('cancelling: who and what', { timeout: 60_000 }, () => {
     assert.deepEqual((await entries(app)).map((entry) => [entry.status, entry.cancellable]), [['ready', false]]);
     await cancel(app);
     assert.equal(app.store.listAppRequests()[0][1].status, 'completed');
-    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['farmhouse']);
+    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['grove']);
     assert.equal(await movieState(app), 'in_library');
 
     const series = await start(t, world({ autoApprove: true }));
@@ -310,7 +310,7 @@ describe('cancelling: who and what', { timeout: 60_000 }, () => {
     assert.deepEqual([entry.status, entry.seasons, entry.cancellable], ['requested', [{ seasonNumber: 1, status: 'ready' }, { seasonNumber: 2, status: 'requested' }], false]);
     await cancelId(series, entry.id);
     assert.equal(series.store.listAppRequests()[0][1].status, 'pending');
-    assert.deepEqual(series.store.get(ITEMS.tSeries).groupIds, ['farmhouse']);
+    assert.deepEqual(series.store.get(ITEMS.tSeries).groupIds, ['grove']);
     assert.deepEqual(series.seerr.deletes, []);
   });
 
@@ -332,7 +332,7 @@ describe('cancelling: who and what', { timeout: 60_000 }, () => {
       seen[arrived] = { before, answer: [answer.status, answer.text], after: await entries(app), state: await movieState(app) };
       if (arrived) {
         // Too late to change the grant: the household keeps it, and no withdrawal is recorded.
-        assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['farmhouse']);
+        assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['grove']);
         assert.equal(await movieState(app, AS_ANN), 'in_library');
         assert.equal((await admin(app, '/v1/app/outstanding')).json().withdrawals.total, 0);
         assert.equal(branch(app, 'cancel_too_late'), 1);
@@ -420,7 +420,7 @@ describe('cancelling: races', { timeout: 60_000 }, () => {
     await Promise.all([granted, cancelled]);
     await app.background.settled();
     const grant = app.store.get(ITEMS.tMovie);
-    assert.deepEqual(grant.groupIds, ['farmhouse']);
+    assert.deepEqual(grant.groupIds, ['grove']);
     assert.ok(grant.owners.includes(ALICE));
     assert.ok(!blocked(app, ALICE));
     assert.equal(await movieState(app), 'in_library');
@@ -552,7 +552,7 @@ describe('an administrator deletes a request in Seerr', { timeout: 60_000 }, () 
     app.seerr.state.media[T_MOVIE] = { id: 7360001, mediaType: 'movie', tmdbId: T_MOVIE, status: 2, requests: [] };
     await app.requests.refresh();
     assert.deepEqual(app.store.listAppRequests().map(([, record]) => [record.householdId, record.branch, record.status]).sort(),
-      [['farmhouse', 'request', 'deleted'], ['mill', 'interest', 'deleted']]);
+      [['grove', 'request', 'deleted'], ['mill', 'interest', 'deleted']]);
     for (const options of [{}, AS_BOB]) {
       assert.deepEqual(await entries(app, options), []);
       assert.equal(await movieState(app, options), 'get_this');
@@ -663,7 +663,7 @@ describe('an administrator deletes a request its requester cancelled', { timeout
 
     // Asking again joins the held title, as after any cancel.
     await getThis(app);
-    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['farmhouse']);
+    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['grove']);
     assert.ok(!blocked(app, ALICE));
     assert.ok(blocked(app, BOB));
     assert.equal(await movieState(app), 'in_library');
@@ -726,7 +726,7 @@ describe('title holds: every hold, every item, and the safety markers as they ar
   /** `count` title holds, as the refresh leaves them: Alice cancelled each genuine request, and Seerr then lost it. */
   async function holds(app, count, { first = FIRST, tmdbId = (index) => T_MOVIE + index } = {}) {
     const withdrawn = Array.from({ length: count }, (_, index) => ({
-      requestId: String(first + index), mediaType: 'movie', tmdbId: tmdbId(index), householdId: 'farmhouse', requester: true, requesterId: ALICE,
+      requestId: String(first + index), mediaType: 'movie', tmdbId: tmdbId(index), householdId: 'grove', requester: true, requesterId: ALICE,
     }));
     await app.store.writeAppRequests({ withdraw: withdrawn });
     await app.store.writeAppRequests({ requestsGone: withdrawn.map((entry) => entry.requestId) });
@@ -900,7 +900,7 @@ describe('cancelling: the refresh never undoes a cancel', { timeout: 60_000 }, (
     // The request is granted, but the interest's join was not settled then (the refresh joins it).
     app.jellyfin.state.items.push(movieItem());
     seerrRequestOf(app, FIRST).status = 5;
-    await app.store.grant({ itemId: ITEMS.tMovie, requestId: String(FIRST), userId: ALICE, groupIds: ['farmhouse'] });
+    await app.store.grant({ itemId: ITEMS.tMovie, requestId: String(FIRST), userId: ALICE, groupIds: ['grove'] });
     const [entry] = await entries(app, AS_BOB);
     const gate = holdRequestRead(app);
     const refreshed = app.requests.refresh();
@@ -910,7 +910,7 @@ describe('cancelling: the refresh never undoes a cancel', { timeout: 60_000 }, (
     await refreshed;
     await app.background.settled();
     const grant = app.store.get(ITEMS.tMovie);
-    assert.deepEqual(grant.groupIds, ['farmhouse']);
+    assert.deepEqual(grant.groupIds, ['grove']);
     assert.ok(!grant.owners.includes(BOB));
     const bob = app.store.listAppRequests().find(([, record]) => record.householdId === 'mill')[1];
     assert.deepEqual([bob.status, bob.withdrawn], ['deleted', true]);

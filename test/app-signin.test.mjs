@@ -57,7 +57,7 @@ describe('household app sign-in through the gateway', { timeout: 30_000 }, () =>
     assert.equal(authentications(app).length, 1);
     assert.equal(app.jellyfin.signIns[0].header, AUTHORIZATION);
     const me = await app.get('/jellypass/app/v1/me', { user: null, headers: { Authorization: `MediaBrowser Token="${AccessToken}"` } });
-    assert.deepEqual(me.json(), { name: 'Alice', household: 'Farmhouse', apiVersion: 2 });
+    assert.deepEqual(me.json(), { name: 'Alice', household: 'Grove', apiVersion: 2 });
     // Names match as Jellyfin matches them.
     assert.equal((await signIn(app, HOST_A, 'alice', 'alice-pass')).status, 200);
     // A wrong password is refused with the gateway's own fixed answer, never Jellyfin's text.
@@ -730,7 +730,7 @@ describe('household app sign-in through the gateway', { timeout: 30_000 }, () =>
     // The token is what the app API accepts.
     const { AccessToken } = (await signIn(app, HOST_A, 'ann', 'ann-pass')).json();
     const me = await app.get('/jellypass/app/v1/me', { user: null, headers: { Authorization: `MediaBrowser Token="${AccessToken}"` } });
-    assert.deepEqual(me.json(), { name: 'Ann', household: 'Farmhouse', apiVersion: 2 });
+    assert.deepEqual(me.json(), { name: 'Ann', household: 'Grove', apiVersion: 2 });
     // Hidden Bob, on his own household's host only.
     assert.equal((await signIn(app, HOST_B, 'Bob', 'bob-pass', { Authorization: WEB_AUTHORIZATION })).status, 200);
     // A hidden member marked passwordless signs in by name with an empty password.

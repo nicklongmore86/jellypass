@@ -10,7 +10,7 @@ import { GrantStore } from '../dist/store.js';
 import { createFakeJellyfin } from './support/fake-jellyfin.mjs';
 import { makeTempDir } from './support/temp-dir.mjs';
 
-const HOUSEHOLD_HOST = 'jelly-farmhouse.example.test';
+const HOUSEHOLD_HOST = 'jelly-grove.example.test';
 const JOIN_PATH = '/jellypass/add';
 
 describe('household "Add to my library"', { timeout: 10_000 }, () => {
@@ -24,7 +24,7 @@ describe('household "Add to my library"', { timeout: 10_000 }, () => {
     const client = new JellyfinClient(jellyfin.url, 'test-key');
     const carol = await client.createUser('Carol', 'user-password');
     const dave = await client.createUser('Dave', 'user-password');
-    await store.upsertGroup({ id: 'farmhouse', name: 'Farmhouse', userIds: ['alice-id', 'bob-id'] });
+    await store.upsertGroup({ id: 'grove', name: 'Grove', userIds: ['alice-id', 'bob-id'] });
     await store.upsertGroup({ id: 'cottage', name: 'Cottage', userIds: [carol.Id] });
     const lookups = [];
     const seerrClient = seerr ? {
@@ -102,15 +102,15 @@ describe('household "Add to my library"', { timeout: 10_000 }, () => {
     const forged = await join('not-a-real-token');
     assert.equal(forged.status, 401);
     assert.ok(jellyfin.requestedPaths.includes('/Users/Me'), 'the token is checked with Jellyfin');
-    assert.deepEqual(store.get('item-1').groupIds, ['farmhouse']);
+    assert.deepEqual(store.get('item-1').groupIds, ['grove']);
 
     // Carol's own token decides who joins, whatever user ID the body names.
     const token = await login('Carol');
-    const accepted = await join(token, { mediaType: 'movie', tmdbId: 603, userId: 'bob-id', groupIds: ['farmhouse'] });
+    const accepted = await join(token, { mediaType: 'movie', tmdbId: 603, userId: 'bob-id', groupIds: ['grove'] });
     assert.equal(accepted.status, 202);
     await settled();
     const grant = store.get('item-1');
-    assert.deepEqual(grant.groupIds, ['cottage', 'farmhouse']);
+    assert.deepEqual(grant.groupIds, ['cottage', 'grove']);
     assert.equal(grant.joins[0].userId, carol.Id);
     assert.deepEqual(jellyfin.user(carol.Id).Policy.BlockedTags, []);
   });
@@ -133,7 +133,7 @@ describe('household "Add to my library"', { timeout: 10_000 }, () => {
   it('joins a request grant for a caller in no household as a user and leaves manual-only grants alone', async (t) => {
     const { jellyfin, store, service, login, join, grantForAlice, settled, dave } = await gateway(t);
     await grantForAlice();
-    await service.setManualAccess({ itemId: 'item-2', mediaType: 'movie', userIds: [], groupIds: ['farmhouse'] });
+    await service.setManualAccess({ itemId: 'item-2', mediaType: 'movie', userIds: [], groupIds: ['grove'] });
     const manual = store.get('item-2');
     const token = await login('Dave');
 
@@ -168,7 +168,7 @@ describe('household "Add to my library"', { timeout: 10_000 }, () => {
     await record('already accessible (requester)', alice, { mediaType: 'movie', tmdbId: 603 });
     await record('privately held by another household', carolToken, { mediaType: 'movie', tmdbId: 603 });
     await record('already accessible (joined)', carolToken, { mediaType: 'movie', tmdbId: 603 });
-    await service.setManualAccess({ itemId: 'item-2', userIds: [], groupIds: ['farmhouse'] });
+    await service.setManualAccess({ itemId: 'item-2', userIds: [], groupIds: ['grove'] });
     await record('not request-derived', carolToken, { mediaType: 'movie', tmdbId: 604 });
     await record('television lookup', carolToken, { mediaType: 'tv', tmdbId: 603 });
     assert.equal(store.get('item-1').joins[0].userId, carol.Id, 'the cases include a real join');
@@ -180,7 +180,7 @@ describe('household "Add to my library"', { timeout: 10_000 }, () => {
       assert.equal(response.status, first.response.status, label);
       assert.equal(response.body, first.response.body, label);
       assert.deepEqual(comparableHeaders(response.headers), comparableHeaders(first.response.headers), label);
-      for (const secret of ['alice', 'farmhouse', 'cottage', 'item-1', 'item-2', '17', carol.Id]) {
+      for (const secret of ['alice', 'grove', 'cottage', 'item-1', 'item-2', '17', carol.Id]) {
         assert.ok(!response.body.toLowerCase().includes(secret), `${label} must not mention ${secret}`);
       }
     }
@@ -188,7 +188,7 @@ describe('household "Add to my library"', { timeout: 10_000 }, () => {
     assert.match(metrics, /jfa_library_joins_total\{result="joined"\} 1\n/);
     assert.match(metrics, /jfa_library_joins_total\{result="unchanged"\} 6\n/);
     assert.match(metrics, /jfa_library_joins_total\{result="error"\} 1\n/);
-    assert.doesNotMatch(metrics.split('\n').filter((line) => line.startsWith('jfa_library_joins_total')).join('\n'), /item|tmdb|farmhouse|cottage/);
+    assert.doesNotMatch(metrics.split('\n').filter((line) => line.startsWith('jfa_library_joins_total')).join('\n'), /item|tmdb|grove|cottage/);
   });
 
   it('answers before the Seerr lookup settles, so the time taken cannot depend on the title', async (t) => {
@@ -206,7 +206,7 @@ describe('household "Add to my library"', { timeout: 10_000 }, () => {
     assert.equal(store.get('item-1').joins, undefined);
     release();
     await settled();
-    assert.deepEqual(store.get('item-1').groupIds, ['cottage', 'farmhouse'], 'the join still happens afterwards');
+    assert.deepEqual(store.get('item-1').groupIds, ['cottage', 'grove'], 'the join still happens afterwards');
   });
 
   it('answers without waiting for the write queue, however long it is held', async (t) => {
@@ -220,7 +220,7 @@ describe('household "Add to my library"', { timeout: 10_000 }, () => {
     assert.equal(store.get('item-1').joins, undefined, 'the join is still waiting for the queue');
     await release();
     await settled();
-    assert.deepEqual(store.get('item-1').groupIds, ['cottage', 'farmhouse']);
+    assert.deepEqual(store.get('item-1').groupIds, ['cottage', 'grove']);
   });
 
   it('classifies a join that changes nothing without waiting for the write queue', async (t) => {
@@ -252,7 +252,7 @@ describe('household "Add to my library"', { timeout: 10_000 }, () => {
       await release();
       await settled();
       assert.deepEqual(lookups, [`movie/${tmdbId}`, `movie/${tmdbId}`, `movie/${tmdbId}`, 'movie/603']);
-      assert.deepEqual(store.get('item-1').groupIds, ['cottage', 'farmhouse'], 'the probe joined');
+      assert.deepEqual(store.get('item-1').groupIds, ['cottage', 'grove'], 'the probe joined');
       assert.doesNotMatch(service.renderMetrics(), /result="dropped"/);
     });
   }
@@ -340,7 +340,7 @@ describe('household "Add to my library"', { timeout: 10_000 }, () => {
     await shutdown;
     assert.deepEqual(events, ['join settled', 'store closing']);
     assert.deepEqual(exits, [0]);
-    assert.deepEqual(store.get('item-1').groupIds, ['farmhouse'], 'the lookup finished after shutdown began, so nothing was joined');
+    assert.deepEqual(store.get('item-1').groupIds, ['grove'], 'the lookup finished after shutdown began, so nothing was joined');
     assert.deepEqual(jellyfin.user(carol.Id).Policy.BlockedTags, ['jfa:private:item-1']);
   });
 

@@ -5,7 +5,7 @@ import { after, before, describe, it } from 'node:test';
 import { WebAuth } from '../dist/auth.js';
 import { makeServer } from '../dist/server.js';
 
-const HOUSEHOLD_HOST = 'jelly-farmhouse.example.test';
+const HOUSEHOLD_HOST = 'jelly-grove.example.test';
 const LOCAL = '127.0.0.1';
 /** The client metadata Jellyfin requires of a sign-in; without it the gateway refuses one before Jellyfin sees it. */
 const CLIENT = 'MediaBrowser Client="JellyPass Test", Device="Test", DeviceId="jellypass-forwarded-test", Version="1.0.0"';
@@ -215,7 +215,7 @@ function send(port, path, headers, { method = 'GET', body } = {}) {
 
 function stubService() {
   return {
-    getHouseholdMemberIds: (householdId) => (householdId === 'farmhouse' ? ['alice-id'] : undefined),
+    getHouseholdMemberIds: (householdId) => (householdId === 'grove' ? ['alice-id'] : undefined),
     listJellyfinUsers: async () => [{ Id: 'alice-id', Name: 'Alice', Policy: {} }],
     isPasswordless: () => false,
     canJoinLibrary: () => false,

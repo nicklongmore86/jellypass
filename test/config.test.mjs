@@ -72,25 +72,25 @@ describe('TV add-on configuration', () => {
 
   it('is off by default, even with households listed', () => {
     assert.equal(load(app).tvAddonHouseholds, undefined);
-    assert.equal(load({ ...app, TV_ADDON_HOUSEHOLDS: 'farmhouse' }).tvAddonHouseholds, undefined);
+    assert.equal(load({ ...app, TV_ADDON_HOUSEHOLDS: 'grove' }).tvAddonHouseholds, undefined);
     assert.equal(load({ ...app, TV_ADDON_ENABLED: 'false', TV_ADDON_HOUSEHOLDS: '*' }).tvAddonHouseholds, undefined);
   });
 
   it('is on for the households listed, or every household with *', () => {
-    assert.deepEqual(load({ ...app, TV_ADDON_ENABLED: 'true', TV_ADDON_HOUSEHOLDS: 'farmhouse' }).tvAddonHouseholds, ['farmhouse']);
-    assert.deepEqual(load({ ...app, TV_ADDON_ENABLED: '1', TV_ADDON_HOUSEHOLDS: ' Farmhouse, mill,,farmhouse ' }).tvAddonHouseholds, ['farmhouse', 'mill']);
+    assert.deepEqual(load({ ...app, TV_ADDON_ENABLED: 'true', TV_ADDON_HOUSEHOLDS: 'grove' }).tvAddonHouseholds, ['grove']);
+    assert.deepEqual(load({ ...app, TV_ADDON_ENABLED: '1', TV_ADDON_HOUSEHOLDS: ' Grove, mill,,grove ' }).tvAddonHouseholds, ['grove', 'mill']);
     assert.equal(load({ ...app, TV_ADDON_ENABLED: 'true', TV_ADDON_HOUSEHOLDS: '*' }).tvAddonHouseholds, 'all');
   });
 
   it('needs the household app and a list of households, each a household ID', () => {
-    assert.throws(() => load({ TV_ADDON_ENABLED: 'true', TV_ADDON_HOUSEHOLDS: 'farmhouse' }), /HOUSEHOLD_APP_ENABLED is required when TV_ADDON_ENABLED is true/);
+    assert.throws(() => load({ TV_ADDON_ENABLED: 'true', TV_ADDON_HOUSEHOLDS: 'grove' }), /HOUSEHOLD_APP_ENABLED is required when TV_ADDON_ENABLED is true/);
     for (const households of [undefined, '', ' , ']) {
       assert.throws(() => load({ ...app, TV_ADDON_ENABLED: 'true', TV_ADDON_HOUSEHOLDS: households }), /TV_ADDON_HOUSEHOLDS is required when TV_ADDON_ENABLED is true/, String(households));
     }
-    for (const households of ['farm house', 'farmhouse;mill', '*,farmhouse', 'jelly-farmhouse.example.test']) {
+    for (const households of ['farm house', 'grove;mill', '*,grove', 'jelly-grove.example.test']) {
       assert.throws(() => load({ ...app, TV_ADDON_ENABLED: 'true', TV_ADDON_HOUSEHOLDS: households }), /TV_ADDON_HOUSEHOLDS must list household IDs/, households);
     }
-    assert.throws(() => load({ ...app, TV_ADDON_ENABLED: 'yes', TV_ADDON_HOUSEHOLDS: 'farmhouse' }), /TV_ADDON_ENABLED must be true, false, 1, or 0/);
+    assert.throws(() => load({ ...app, TV_ADDON_ENABLED: 'yes', TV_ADDON_HOUSEHOLDS: 'grove' }), /TV_ADDON_ENABLED must be true, false, 1, or 0/);
   });
 });
 

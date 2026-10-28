@@ -280,8 +280,8 @@ implemented (step 2a)'). Both are decided from the household's own records and t
 
 Seerr records who made a request, not which household it was for, and a Jellyfin user can belong to several
 households (administrators often do). Neither who asked nor which households they belong to **now** can say which
-household a past request was for. Codex's repros: Bob, in Farmhouse and Mill, makes a pending request for Mill; when
-Alice in Farmhouse saw it as `requested`, it leaked Mill's request; when only members of one household counted, removing
+household a past request was for. Codex's repros: Bob, in Grove and Mill, makes a pending request for Mill; when
+Alice in Grove saw it as `requested`, it leaked Mill's request; when only members of one household counted, removing
 Bob from Mill made Alice see the same old Mill request as `requested`. Moving a member between households, or a shared
 member becoming exclusive, re-attributed their old requests the same way.
 

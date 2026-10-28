@@ -34,7 +34,7 @@ const count = (text, part) => text.split(part).length - 1;
 const pause = (ms = 20) => new Promise((resolve) => setTimeout(resolve, ms));
 /** A world whose Jellyfin serves Jellyfin web's page (see createFakeJellyfinForApp). */
 const webWorld = (options) => Object.assign(world(options), { webPage: {} });
-const tvOn = (households = ['farmhouse']) => ({ tvAddon: { households } });
+const tvOn = (households = ['grove']) => ({ tvAddon: { households } });
 /** What Jellyfin was asked for under /web or /jellypass/tv, as `METHOD path`. */
 /**
  * linkedom keeps no focus: the element focus() was last called on, per document, stands in for `activeElement`, and
@@ -625,7 +625,7 @@ describe('TV add-on: the Home row', { timeout: 60_000 }, () => {
     assert.deepEqual(page.calls(), BUDGET.screens['tv-home-row'].atOnce);
     assert.equal(page.requests.length, BUDGET.screens['tv-home-row'].calls);
     const [request] = page.requests;
-    assert.equal(request.url, 'https://jelly-farmhouse.example.test/jellypass/app/v1/discover/trending');
+    assert.equal(request.url, 'https://jelly-grove.example.test/jellypass/app/v1/discover/trending');
     assert.equal(request.init.credentials, 'omit');
     assert.deepEqual({ ...request.init.headers }, { Accept: 'application/json', Authorization: `MediaBrowser Token="${TOKENS[ALICE]}"` });
 
@@ -654,7 +654,7 @@ describe('TV add-on: the Home row', { timeout: 60_000 }, () => {
     }
     // Its stylesheet, next to the script.
     const links = [...page.document.querySelectorAll('link[data-jellypass-tv]')];
-    assert.deepEqual(links.map((link) => link.getAttribute('href')), [`https://jelly-farmhouse.example.test/jellypass/tv/${STYLESHEET}`]);
+    assert.deepEqual(links.map((link) => link.getAttribute('href')), [`https://jelly-grove.example.test/jellypass/tv/${STYLESHEET}`]);
   });
 
   it('shows only Available to get: what is in the caller\'s library or Requested is left out, with no badge, and nothing but the caller\'s own answer decides it', async (t) => {
@@ -809,7 +809,7 @@ describe('TV add-on: the Home row', { timeout: 60_000 }, () => {
 });
 
 describe('TV add-on: the Search row', { timeout: 120_000 }, () => {
-  const SEARCH = 'https://jelly-farmhouse.example.test/jellypass/app/v1/search';
+  const SEARCH = 'https://jelly-grove.example.test/jellypass/app/v1/search';
   const RESULTS = '<div class="searchResults padded-top padded-bottom-page"><div class="verticalSection"><h2 class="sectionTitle">Movies</h2><button type="button" class="card">In the library</button></div></div>';
   /** Jellyfin web's Search page (routes/search.tsx) mounted with `query` in its field, as its router does, Home hidden. */
   const mount = (page, query = '', { results = query ? RESULTS : '' } = {}) => {
@@ -1209,7 +1209,7 @@ describe('TV add-on: the Search row', { timeout: 120_000 }, () => {
     type(page, 'something');
     await settle(page);
     assert.deepEqual([row(page), searches(page).length], [null, 2]);
-    assert.ok(page.requests.every((request) => request.url.startsWith('https://jelly-farmhouse.example.test/')), 'never sent elsewhere');
+    assert.ok(page.requests.every((request) => request.url.startsWith('https://jelly-grove.example.test/')), 'never sent elsewhere');
   });
 
   /** Caches `synthetic`, leaves Search, and applies `away` while the page is absent; then back on Search, the calls made. */
@@ -1434,7 +1434,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     assert.deepEqual(page.calls(before), BUDGET.screens['tv-movie'].atOnce);
     assert.equal(page.requests.length - before, BUDGET.screens['tv-movie'].calls);
     for (const request of page.requests.slice(before)) {
-      assert.ok(request.url.startsWith('https://jelly-farmhouse.example.test/jellypass/app/v1/'));
+      assert.ok(request.url.startsWith('https://jelly-grove.example.test/jellypass/app/v1/'));
       assert.equal(request.init.credentials, 'omit');
       assert.deepEqual({ ...request.init.headers }, { Accept: 'application/json', Authorization: `MediaBrowser Token="${TOKENS[ALICE]}"` });
     }
@@ -1661,7 +1661,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     assert.equal(text(page, '.jellypass-tv-title-status'), 'Ready to watch');
     assert.ok(page.focused() === page.view().querySelector('.jellypass-tv-title-play'), 'focus');
     // A play link for anywhere else is no Play.
-    for (const url of [`https://jelly-mill.example.test/web/#/details?id=${ITEMS.ownMovie}`, `https://jelly-farmhouse.example.test/web/#/details?id=${ITEMS.ownMovie}&x=1`]) {
+    for (const url of [`https://jelly-mill.example.test/web/#/details?id=${ITEMS.ownMovie}`, `https://jelly-grove.example.test/web/#/details?id=${ITEMS.ownMovie}&x=1`]) {
       const real = (await app.get(`/jellypass/app/v1/movie/${OWN_MOVIE}`)).json();
       const forged = await withTrending(t, app, (results) => results.map((card) => (card.tmdbId === OWN_MOVIE ? { ...card, state: 'get_this' } : card)), (pathname) => (pathname === `/jellypass/app/v1/movie/${OWN_MOVIE}` ? { status: 200, body: JSON.stringify({ ...real, play: { itemId: ITEMS.ownMovie, url } }) } : undefined));
       forged.document.body.insertAdjacentHTML('afterbegin', HEADER);
@@ -1718,7 +1718,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     await page.settled();
     assert.equal(page.posts().length, 1, 'a second press while in flight sent nothing');
     const [post] = page.posts();
-    assert.equal(post.url, `https://jelly-farmhouse.example.test/jellypass/app/v1/movie/${T_MOVIE}/get`);
+    assert.equal(post.url, `https://jelly-grove.example.test/jellypass/app/v1/movie/${T_MOVIE}/get`);
     assert.equal(post.init.body, '{}');
     assert.equal(post.init.credentials, 'omit');
     assert.deepEqual({ ...post.init.headers }, { Accept: 'application/json', Authorization: `MediaBrowser Token="${TOKENS[ALICE]}"`, 'Content-Type': 'application/json' });
@@ -2156,9 +2156,9 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     page.document.body.appendChild(page.document.createElement('div'));
     await page.settled();
     assert.equal(page.view() === null, true);
-    for (const request of page.requests) assert.ok(request.url.startsWith('https://jelly-farmhouse.example.test/'), 'only this origin');
+    for (const request of page.requests) assert.ok(request.url.startsWith('https://jelly-grove.example.test/'), 'only this origin');
     // A card chosen while signed in elsewhere opens nothing.
-    page.session.serverAddress = 'https://jelly-farmhouse.example.test';
+    page.session.serverAddress = 'https://jelly-grove.example.test';
     await home(page);
     const card = page.card(T_MOVIE);
     page.session.serverAddress = 'https://jelly-mill.example.test';
