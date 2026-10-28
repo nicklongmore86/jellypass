@@ -375,6 +375,15 @@ export class HouseholdRequests {
     await this.#joins.serialized(() => this.#store.writeAppRequests({ forgetWithdrawals: [requestId] }));
   }
 
+  /**
+   * Runs `work` in the title's turn: after every "Get this" and cancel already holding it, and before any that come
+   * later, so an administrator's action on the title's request never races a call recording a follower of it (see
+   * AdminRequests).
+   */
+  public inTitleTurn<T>(mediaType: MediaType, tmdbId: number, work: () => Promise<T>): Promise<T> {
+    return this.#withLock(this.#titleLocks, `${mediaType}:${tmdbId}`, work);
+  }
+
   /** The caller's own view of a listed title; one that fails to read is taken as holding nothing (as in list). */
   async #readView(ownView: CancelInput['ownView'], entry: ListedTitle): Promise<OwnView> {
     try {

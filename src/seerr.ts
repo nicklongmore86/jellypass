@@ -192,6 +192,54 @@ export class SeerrClient {
     return { status, ...optional('mediaId', positiveSafeInteger(ownField(ownField(answer, 'media'), 'id'))) };
   }
 
+  /**
+   * Approves a pending request (POST /api/v1/request/:id/approve with the admin key), for the administrators' Requests
+   * tab (docs/app-design.md, "Administrators' Requests tab"). Seerr refuses (`409`) a request that is not pending.
+   */
+  public approveRequest(requestId: string): Promise<void> {
+    const path = `/api/v1/request/${requestPathId(requestId)}/approve`;
+    return this.#guardedAdmin('POST', '/api/v1/request/:id/approve', path, {}).then(() => undefined);
+  }
+
+  /** Declines a pending request (POST /api/v1/request/:id/decline with the admin key); see approveRequest. */
+  public declineRequest(requestId: string): Promise<void> {
+    const path = `/api/v1/request/${requestPathId(requestId)}/decline`;
+    return this.#guardedAdmin('POST', '/api/v1/request/:id/decline', path, {}).then(() => undefined);
+  }
+
+  /**
+   * Deletes a request (DELETE /api/v1/request/:id with the admin key, which manages requests), at any status. Resolves
+   * false when Seerr has no such request (already deleted). Seerr does not touch Radarr or Sonarr.
+   */
+  public deleteRequest(requestId: string): Promise<boolean> {
+    const path = `/api/v1/request/${requestPathId(requestId)}`;
+    return this.#guardedAdmin('DELETE', '/api/v1/request/:id', path).then(() => true, (error: unknown) => {
+      if (error instanceof SeerrError && error.status === 404) return false;
+      throw error;
+    });
+  }
+
+  /**
+   * Removes a movie from Radarr (DELETE /api/v1/media/:id/file, HD, with the admin key): Seerr asks its Radarr server
+   * to remove the movie and delete its files, with the credentials Seerr holds. Only ever called for a movie (for a
+   * series Seerr would remove the whole series from Sonarr, files included).
+   */
+  public removeMovieFromRadarr(mediaId: number): Promise<void> {
+    if (!Number.isSafeInteger(mediaId) || mediaId <= 0) throw new TypeError('media ID is invalid');
+    return this.#guardedAdmin('DELETE', '/api/v1/media/:id/file', `/api/v1/media/${mediaId}/file?is4k=false`).then(() => undefined);
+  }
+
+  /** Whether Seerr has an HD Radarr server (GET /api/v1/settings/radarr with the admin key); only the flag is read. */
+  public async radarrConfigured(): Promise<boolean> {
+    const servers = await this.#guardedGet('/api/v1/settings/radarr', '/api/v1/settings/radarr');
+    return Array.isArray(servers) && servers.some((server) => ownField(server, 'is4k') !== true);
+  }
+
+  /** An admin-key write with the acting-user client's guards (see #guardedGet). */
+  #guardedAdmin(method: 'POST' | 'DELETE', route: string, path: string, body?: unknown): Promise<unknown> {
+    return guardedSeerrJson(this.#baseUrl, method, route, path, { Accept: 'application/json', 'X-Api-Key': this.#apiKey }, body);
+  }
+
   /** Seerr's GET /api/v1/user/:id as the admin, or undefined when that user does not exist (or is not the one asked for). */
   async #userRecord(user: SeerrUserId): Promise<{ jellyfinUserId?: unknown } | undefined> {
     let answer: { id?: unknown; jellyfinUserId?: unknown };
@@ -802,6 +850,12 @@ export async function readCappedBody(response: Response, limit: number): Promise
 }
 
 /** One own property of a JSON object, or undefined; never anything inherited. */
+/** A Seerr request ID for a path: a positive decimal integer, or TypeError. */
+function requestPathId(requestId: string): string {
+  if (typeof requestId !== 'string' || !/^[1-9][0-9]{0,15}$/.test(requestId)) throw new TypeError('request ID is invalid');
+  return requestId;
+}
+
 function ownField(value: unknown, name: string): unknown {
   if (!value || typeof value !== 'object' || Array.isArray(value) || !Object.hasOwn(value, name)) return undefined;
   return (value as Record<string, unknown>)[name];

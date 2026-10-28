@@ -1,4 +1,5 @@
 import { AccessService } from './access-service.js';
+import { AdminRequests } from './admin-requests.js';
 import { WebAuth } from './auth.js';
 import { loadConfig } from './config.js';
 import { JellyfinClient } from './jellyfin.js';
@@ -70,7 +71,10 @@ async function main(): Promise<void> {
     ...(config.householdAppEnabled && seerr && members && catalogue ? {
       householdApp: { catalogue, blocklist: seerr, members, ...(requests ? { requests } : {}) },
     } : {}),
-    ...(requests ? { titleHolds: requests } : {}),
+    ...(requests && seerr ? {
+      titleHolds: requests,
+      adminRequests: new AdminRequests({ store, seerr, jellyfin, service, requests }),
+    } : {}),
   });
   const backfillSince = config.requestBackfillEnabled ? config.requestBackfillSince : undefined;
   const backfillRequests = async (signal: AbortSignal) => {
