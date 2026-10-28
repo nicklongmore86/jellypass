@@ -44,8 +44,8 @@ changes are always listed at the top of the release notes.
 
   **Upgrading** keeps the state file at schema v7 and needs no migration: it
   gains `appWithdrawals` with the first cancel, and cancelled records a
-  `withdrawn` mark on the existing `deleted` status. **Rolling back** to a
-  version without cancelling keeps every household's lists as they are, but
+  `withdrawn` mark on the existing `deleted` status. **Rolling back** to
+  3.4.0 or earlier keeps every household's lists as they are, but
   grants a cancelled request to its requester's households and gives a
   requester who cancelled access to such a title that has arrived: check that
   `GET /v1/app/outstanding` shows no `withdrawals` first (see "Cancelling" in

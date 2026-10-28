@@ -1470,7 +1470,7 @@ existing `deleted`. No migration is needed; a state file without them loads unch
 are (the store writes unknown fields back) and read a withdrawn record as `deleted`: not listed, not refreshed, not
 blocking "Get this", so the household's view survives a rollback. What they do not do is apply the grant rule.
 
-**Rolling back** to a version before step 2c: a request a withdrawal names is granted there as an ordinary request
+**Rolling back** to a version before step 2c (3.4.0 or earlier): a request a withdrawal names is granted there as an ordinary request
 (to the requester's households), and a request its requester withdrew that is already on a grant gives that requester
 access again (their user, not their households). So `GET /v1/app/outstanding` counts `withdrawals` (`waiting`: not
 handled yet; `granted`: on a grant, requester excluded; `held`: of those, held for no household) and `clear` waits for

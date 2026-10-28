@@ -1207,11 +1207,11 @@ yet (pending, declined or never available) lasts until it is, up to 400 days;
 see
 [Store, bounds and rollback](docs/app-design.md#get-this-as-implemented-step-2a).
 Request cancelling keeps the state file at schema v7, adding `appWithdrawals`
-and a `withdrawn` mark on cancelled records. Before rolling back to a version
-without it, `GET /v1/app/outstanding` must show no `withdrawals` either: a
-version without cancelling grants a cancelled request to its requester's
-households, and gives a requester who cancelled access to a title they
-cancelled that has arrived (held or followed); see
+and a `withdrawn` mark on cancelled records. Before rolling back to 3.4.0 or
+earlier, `GET /v1/app/outstanding` must show no `withdrawals` either: those
+versions grant a cancelled request to its requester's households, and give a
+requester who cancelled access to a title they cancelled that has arrived
+(held or followed); see
 [Cancelling](docs/app-design.md#cancelling-step-2c) for how to clear them.
 Rolling back from
 2.2.0 to 2.1.1, 2.1.0 or 2.0.0 keeps the state file readable, but those
