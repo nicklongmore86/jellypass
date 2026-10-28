@@ -471,6 +471,45 @@ two calls. It has no `/me` (the TV shows no member name).
 
 `test/tv-addon.test.mjs` pins all of this against the budget file.
 
+`tv-discover*`: the **Discover page's** calls, for a page that is **not drawn yet** (only its data layer exists; see "Discover
+data layer" below). They are the app's Home without `/me`: `tv-discover` (All) is **5 calls when the page opens**
+(`trending`, `popular-movies`, `popular-tv`, `new-movies` and `sources`) and **10 more as the lazy rows come near the
+screen** (`upcoming`, `upcoming-tv` and one list per service), **15 in all**, and **none when the member comes back to it**
+(from a title, or from another chip to All): the answers are kept. `tv-discover-movies` and `tv-discover-tv` are the same for
+those chips opened directly; `tv-discover-network` and `tv-discover-studio` are a service's or a studio's page asked
+directly (first page; a service whose row was already loaded costs nothing). `test/tv-discover-data.test.mjs` pins them.
+
+## Discover data layer
+
+Groundwork for a full Discover page on the TV (a mirror of the app's Home: hero, kind chips, rows, services, studios). **Nothing
+of it is drawn or user-visible yet**, and the server and the API are unchanged. It is three modules of the add-on, built
+into the bundle once the page uses them:
+
+- **Readers** (`tv/src/api.ts`): `discoverList` (the eight lists the page needs), `networkList` (a service's series, films
+  or both), `studioList` and `discoverSources`, each **one call** on the household app API and read leniently like the
+  others (a bad URL, state or number is cleaned, not trusted). A `DiscoverCard` is the row's `Card` plus `overview`,
+  `backdropUrl` and `rating` for the hero. A page keeps at most 20 cards (the API's), a list of sources at most 50. An address
+  the API does not have (a list off the enum, a page outside 1 to 500, an id below 1) is a `400` that is **not sent**.
+- **Model** (`tv/src/discover-model.ts`): the page's layout per chip, **pinned to the app's `HOME_LAYOUT`** by a test; the
+  call plan per chip (what the budget file lists); a **row shows at most 14 cards** on a TV (the study's 12 to 14: about a
+  screen and a half of posters; the API's 20 are two screens, too many decoded images for a 2019 set, and a service's own
+  page has the rest); the hero takes 5 slides from the first row's first cards with a backdrop; and the **badges**, from the
+  card's state alone (the household's own view): "In your library", "Requested", "Available to get", "Can't request" (the
+  app's words, except that the app says "Ready to watch" for a title in the library). "Hide what I have" hides `in_library`
+  and `requested` cards and fills the row from what is left.
+- **Answer cache** (`tv/src/discover-data.ts`, `DiscoverData`): per session, in memory only, keyed by address (the first page
+  is the same entry wherever it is asked for), **ten minutes** on both clocks, at most **60** addresses (least recently used
+  first). It uses the add-on's shared session check (`SessionWatch`: member, token, generation): a sign-out, another member
+  or a new token empties it, and an answer that comes back for an old session is **dropped whole** (`stale`: not stored, not
+  shown, its `401` or `429` not acted on). Two askers of one address share one call. A failure is remembered for 30 seconds
+  (a member's "Try again" passes it); **nothing is ever retried by itself**. A `429` stops every call until its `Retry-After`
+  (30 seconds when it did not say, as the Search row), a retry included, and answers what is asked meanwhile with the time left.
+  A `401` empties the cache. `peek` gives a kept answer without a call, so a page can draw its rows at once when the
+  member comes back.
+
+It uses nothing newer than the rest of the add-on (ES2017 after the build; no `AbortController`, `IntersectionObserver` or
+`loading="lazy"`); `test/tv-discover-data.test.mjs` parses the built modules as ES2017.
+
 ## The Samsung app
 
 The compatibility targets are Samsung sets on Tizen 5.0 (Chromium 63, e.g. 2019 models) and Tizen 5.5 (Chromium 69,

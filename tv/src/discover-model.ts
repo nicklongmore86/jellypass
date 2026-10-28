@@ -1,0 +1,160 @@
+import type { DiscoverCard, DiscoverList, DiscoverNetwork, HouseholdState, NetworkList } from './api.js';
+
+/**
+ * What the Discover page shows and how it chooses, as the household app's Home does (app/src/main.ts `HOME_LAYOUT`, the
+ * status words of app/src/render.ts), with the same words. Nothing here reads anything but what it is given: no call,
+ * no storage, no document. The page itself (hero, rows, chips) is a later change; this is its data.
+ */
+
+/** The page's route on the page host, and the address a link opens it at; a service's and a studio's page hang off it. */
+export const DISCOVER_PATH = '/jellypass/discover';
+export const DISCOVER_HASH = '#/jellypass/discover';
+
+/** The kind chips: the app's All / Movies / TV (a chip shows other lists, it does not filter the loaded ones). */
+export type DiscoverFilter = 'all' | 'movies' | 'tv';
+export const DISCOVER_FILTERS: ReadonlyArray<DiscoverFilter> = ['all', 'movies', 'tv'];
+
+/**
+ * How many cards a row keeps on a TV. The API's pages hold 20, which is two full screens of posters (about nine and a
+ * half fit at 1080p) and, on a 2019 set with about 1 GB, too many decoded images (a w342 poster is about 0.7 MB). 14 is
+ * a screen and a half: the member can see that more is coming, a service's own page has the rest, and the hero's five
+ * slides come from the first row's first five.
+ */
+export const DISCOVER_ROW_CARDS = 14;
+/** How many slides the hero has (the app's `HERO_MAX`), taken from the first row's first cards that have a backdrop (the app draws a slide without one; a full-bleed TV hero would be empty). */
+export const HERO_SLIDES = 5;
+
+export interface DiscoverRow {
+  part: 'row';
+  list: DiscoverList;
+  heading: string;
+  variant: 'poster' | 'backdrop';
+  /** Asked for when the page opens; otherwise when the row comes near the screen. */
+  eager: boolean;
+}
+export type DiscoverPart = DiscoverRow | { part: 'networks' } | { part: 'studios' } | { part: 'credit' };
+
+const row = (list: DiscoverList, heading: string, variant: DiscoverRow['variant'], eager: boolean): DiscoverRow => ({ part: 'row', list, heading, variant, eager });
+
+/**
+ * The page's parts per chip, in order: the app's Home layout (a test pins the two together). `networks` is the services'
+ * rows, `studios` the logo strip, `credit` the JustWatch line. The app shows the studios and the credit on All and Movies.
+ */
+export const DISCOVER_LAYOUT: Readonly<Record<DiscoverFilter, ReadonlyArray<DiscoverPart>>> = {
+  all: [
+    row('trending', 'Trending', 'poster', true),
+    row('popular-movies', 'Popular movies', 'backdrop', true),
+    row('popular-tv', 'Popular series', 'backdrop', true),
+    row('new-movies', 'New movie releases', 'backdrop', true),
+    row('upcoming', 'Upcoming movies', 'poster', false),
+    row('upcoming-tv', 'Upcoming series', 'poster', false),
+    { part: 'networks' },
+    { part: 'studios' },
+    { part: 'credit' },
+  ],
+  movies: [
+    row('trending-movies', 'Trending movies', 'poster', true),
+    row('popular-movies', 'Popular movies', 'backdrop', true),
+    row('new-movies', 'New movie releases', 'backdrop', true),
+    row('upcoming', 'Upcoming movies', 'poster', true),
+    { part: 'networks' },
+    { part: 'studios' },
+    { part: 'credit' },
+  ],
+  tv: [
+    row('trending-tv', 'Trending series', 'poster', true),
+    row('popular-tv', 'Popular series', 'backdrop', true),
+    row('upcoming-tv', 'Upcoming series', 'poster', true),
+    { part: 'networks' },
+  ],
+};
+
+/** What a service's row lists under each chip: its films and series mixed, its films, or its series. */
+export const NETWORK_LIST_FOR: Readonly<Record<DiscoverFilter, NetworkList>> = { all: 'all', movies: 'films', tv: 'series' };
+
+/** The list a service's row asks for under a chip: a service with no films listed has its series only. */
+export function networkListFor(filter: DiscoverFilter, network: Pick<DiscoverNetwork, 'hasFilms'>): NetworkList {
+  return network.hasFilms ? NETWORK_LIST_FOR[filter] : 'series';
+}
+
+/** The services whose rows a chip shows: on Movies only those with films. */
+export function networksFor(filter: DiscoverFilter, networks: ReadonlyArray<DiscoverNetwork>): DiscoverNetwork[] {
+  return networks.filter((network) => filter !== 'movies' || network.hasFilms);
+}
+
+/**
+ * The calls opening the page under a chip makes, in the order the budget file lists them (as `GET /discover/...`
+ * paths, sorted): `atOnce` is every eager row and the sources, `belowTheFold` the lazy rows and each service's row,
+ * once they have come near the screen. `back` is what coming back to the page from a title makes: none, the answers
+ * are kept (discover-data.ts).
+ */
+export function plannedCalls(filter: DiscoverFilter, networks: ReadonlyArray<DiscoverNetwork>): { atOnce: string[]; belowTheFold: string[]; back: string[] } {
+  const rows = DISCOVER_LAYOUT[filter].filter((part): part is DiscoverRow => part.part === 'row');
+  const atOnce = rows.filter((part) => part.eager).map((part) => `GET /discover/${part.list}`);
+  atOnce.push('GET /discover/sources');
+  const belowTheFold = rows.filter((part) => !part.eager).map((part) => `GET /discover/${part.list}`);
+  for (const network of networksFor(filter, networks)) {
+    const list = networkListFor(filter, network);
+    belowTheFold.push(`GET /discover/network/${network.id}${list === 'series' ? '' : `/${list}`}`);
+  }
+  return { atOnce: atOnce.sort(), belowTheFold: belowTheFold.sort(), back: [] };
+}
+
+/**
+ * A title's state as the household's own view words it: the words are fixed. They are the app's status pills' (app/src/render.ts)
+ * except for a title in the library, which the app calls "Ready to watch" (a pill on a title page, next to Play) and the Discover
+ * page, whose cards stand beside titles that are not, calls "In your library" (the owner's choice).
+ */
+export const STATE_LABELS: Readonly<Record<HouseholdState, string>> = {
+  in_library: 'In your library',
+  requested: 'Requested',
+  get_this: 'Available to get',
+  unavailable: "Can't request",
+};
+
+/**
+ * The badge a card carries: the state's words, and a `tone` for the colour that goes with them (the words are always
+ * there, so the colour is never the only sign). The state is the one the API gave for the caller's household, with
+ * nothing of another household's or of any member's own in it.
+ */
+export function badgeOf(state: HouseholdState): { label: string; tone: 'owned' | 'pending' | 'open' | 'closed' } {
+  switch (state) {
+    case 'in_library': return { label: STATE_LABELS.in_library, tone: 'owned' };
+    case 'requested': return { label: STATE_LABELS.requested, tone: 'pending' };
+    case 'get_this': return { label: STATE_LABELS.get_this, tone: 'open' };
+    default: return { label: STATE_LABELS.unavailable, tone: 'closed' };
+  }
+}
+
+/**
+ * Whether "Hide what I have" hides a card: the titles already in the library and those the household has asked for.
+ * What is left is what can still be got (and what cannot be requested, which the chip does not touch).
+ */
+export function isHeld(card: Pick<DiscoverCard, 'state'>): boolean {
+  return card.state === 'in_library' || card.state === 'requested';
+}
+
+/** A row's cards for the TV: those the chip leaves (hiding comes first, so a row stays as full as the page allows), at most {@link DISCOVER_ROW_CARDS}. */
+export function rowCards<T extends Pick<DiscoverCard, 'state'>>(cards: ReadonlyArray<T>, hideHeld = false): T[] {
+  const kept: T[] = [];
+  for (const card of cards) {
+    if (hideHeld && isHeld(card)) continue;
+    kept.push(card);
+    if (kept.length === DISCOVER_ROW_CARDS) break;
+  }
+  return kept;
+}
+
+/** The hero's slides: the first row's first cards with a backdrop to draw, at most {@link HERO_SLIDES}. */
+export function heroCards(cards: ReadonlyArray<DiscoverCard>): DiscoverCard[] {
+  const slides: DiscoverCard[] = [];
+  for (const card of cards) {
+    if (!card.backdropUrl) continue;
+    slides.push(card);
+    if (slides.length === HERO_SLIDES) break;
+  }
+  return slides;
+}
+
+/** The notice the page ends with (the app's `TMDB_NOTICE`, required wherever TMDB's data is shown). */
+export const TMDB_NOTICE = 'This product uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB.';
