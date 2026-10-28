@@ -333,9 +333,9 @@ seasons, Select all, Back and Play call nothing.
 
 ## The Samsung app
 
-The households' Samsungs (2019 `UN55RU7100`, Tizen 5.0, Chromium 63; 2020 `UN65TU7000`, Tizen 5.5, Chromium 69) run
-Jellyfin's Tizen app sideloaded, which **bundles its own Jellyfin web**: the gateway's tag never reaches it. The JellyPass
-build of that app (`tv/samsung/`) is the stock app plus one small loader, which adds the same add-on script from the
+The compatibility targets are Samsung sets on Tizen 5.0 (Chromium 63, e.g. 2019 models) and Tizen 5.5 (Chromium 69,
+e.g. 2020 models) running Jellyfin's Tizen app sideloaded, which
+**bundles its own Jellyfin web**: the gateway's tag never reaches it. The JellyPass build of that app (`tv/samsung/`) is the stock app plus one small loader, which adds the same add-on script from the
 household host the member signed in to. It keeps the app id `AprZAARz4r.Jellyfin`, so it **replaces** the Jellyfin app
 rather than sitting beside it.
 
@@ -349,9 +349,9 @@ flowchart LR
 ### The app's origin and the household host's rules
 
 - **The origin.** The app is a packaged web app: its page is `file:///www/index.html` (read with the inspector on both
-  sets, recorded in `jellyquest-tizen`). Chromium M63/M69 sends a `file:` page's origin as **`file://`** when the
-  runtime lets the page read local files, as Tizen does for a packaged app (JellyQuest's packaged `fetch` of its own
-  files worked), and as **`null`** when it does not. Samsung documents neither, and reports disagree (some see `null`,
+  sets). Chromium M63/M69 sends a `file:` page's origin as **`file://`** when the
+  runtime lets the page read local files, as Tizen does for a packaged app (a packaged app's `fetch` of its own
+  files works), and as **`null`** when it does not. Samsung documents neither, and reports disagree (some see `null`,
   some no `Origin` at all), so the rules accept exactly those two values. A request with no `Origin` needs no CORS and
   is answered as always. If a set sends something else, the manifest can't be read and the add-on simply doesn't
   appear (see "Check on each Samsung").
@@ -507,8 +507,7 @@ With the add-on on for the household and the app signed in to its host:
 1. **It loads**: the Discover row appears on Home (within a few seconds of Home showing). If not, look at the manifest
    request in the Web Inspector: the `Origin` it sent (record it here) and whether the answer has
    `Access-Control-Allow-Origin`. The inspector needs the app launched in debug mode from Tizen Studio or Samsung's
-   Tizen TV VS Code extension; a plain `sdb` launch has no inspector target (jellyquest-tizen's runbook, "Browser
-   console and Web Inspector").
+   Tizen TV VS Code extension; a plain `sdb` launch has no inspector target.
 2. **The API works cross-origin**: the row's `GET /discover/trending` and a title page's reads are `200`; **Get this**
    (a `POST` with `Content-Type`, so it is preflighted) is accepted.
 3. Then "What must be checked on a real TV" above, items 3 to 12, with Tizen's Back (`10009`).
@@ -536,12 +535,12 @@ Each step is its own pull request, behind the same settings:
      credentials; preflight `204` before any token check; the native-client contract updated, since it makes the one
      exception to "CORS stays off". (`Cross-Origin-Resource-Policy` is not needed: the add-on's files are sent without
      one, which a `<script>` from any page may load.)
-   - `tv/samsung/`: the build of Jellyfin's Tizen app (jellyfin-tizen, not `jellyquest-tizen`, whose overlay is gone)
+   - `tv/samsung/`: the build of Jellyfin's Tizen app (jellyfin-tizen)
      whose only change to Jellyfin web is the loader. Once Jellyfin web has its server address, the loader asks that
      household host's `/jellypass/tv/manifest.json` for the current name and adds
      `<script src="https://<that host>/jellypass/tv/<current name>">`, so a JellyPass change needs no resideload.
-   - It replaces the Jellyfin app on the households' Samsungs, and JellyQuest is removed from the TVs (operations: the
-     deployment's own runbook, following "Install runbook" in "The Samsung app").
+   - It replaces the stock Jellyfin app on the TVs (operations: the deployment's own runbook, following "Install
+     runbook" in "The Samsung app").
 
 Before switching it on for a household, the owner checks steps 1 and 2 on a real LG TV (below) with one household
 listed.
