@@ -47,6 +47,9 @@ const LENIENT: Record<string, (decoded: unknown, path: Path) => void> = {
   'CoarseStatus enum': (decoded, path) => expect(at(decoded, path)).toBe('requested'),
   // "a missing apiVersion is revision 0"
   'Me required apiVersion': (decoded) => expect((decoded as Json).apiVersion).toBe(0),
+  // Request fields added in apiVersion 2: a server before it sends neither (and has no cancel).
+  'Request required cancellable': (decoded, path) => expect(at(decoded, path)).toBe(false),
+  'Request required requestedOn': (decoded, path) => expect(at(decoded, path)).toBeNull(),
   // Play.url: "a client ignores anything else"; the URL is built from itemId, so a bad itemId is ignored the same way.
   'Play.itemId pattern': (decoded, path) => expect(at(decoded, path.slice(0, -1))).toBeNull(),
   'Play.url pattern': (decoded, path) => expect(at(decoded, path.slice(0, -1))).toBeNull(),

@@ -41,6 +41,8 @@ export interface Title extends Card {
 export interface Failure {
   ok: false;
   status: number;
+  /** For a `429`: how long the server asked to wait, in milliseconds, when it said (a number of seconds). */
+  retryAfterMs?: number;
 }
 export type Answer = { ok: true; cards: Card[] } | Failure;
 export type TitleAnswer = { ok: true; title: Title } | Failure;
@@ -59,12 +61,13 @@ export const MAX_CARDS = 20;
 type Fetch = (url: string, init: RequestInit) => Promise<Response>;
 
 /** One call: the response, or the failure. A `POST` sends `body` as JSON. */
-async function call(fetcher: Fetch, origin: string, token: string, path: string, body?: unknown): Promise<{ ok: true; response: Response } | Failure> {
+async function call(fetcher: Fetch, origin: string, token: string, path: string, body?: unknown, signal?: AbortSignal): Promise<{ ok: true; response: Response } | Failure> {
   const headers: Record<string, string> = {
     Accept: 'application/json',
     Authorization: `MediaBrowser Token="${encodeURIComponent(token).replace(/"/g, '%22')}"`,
   };
   const init: RequestInit = { method: body === undefined ? 'GET' : 'POST', credentials: 'omit', headers };
+  if (signal) init.signal = signal;
   if (body !== undefined) {
     headers['Content-Type'] = 'application/json';
     init.body = JSON.stringify(body);
@@ -75,12 +78,16 @@ async function call(fetcher: Fetch, origin: string, token: string, path: string,
   } catch {
     return { ok: false, status: 0 };
   }
-  return response.ok ? { ok: true, response } : { ok: false, status: response.status };
+  if (response.ok) return { ok: true, response };
+  const failure: Failure = { ok: false, status: response.status };
+  const wait = response.status === 429 && response.headers ? Number(response.headers.get('retry-after')) : NaN;
+  if (wait > 0 && wait <= 3600) failure.retryAfterMs = Math.ceil(wait * 1000);
+  return failure;
 }
 
 /** A `GET`'s JSON object, or the failure. */
-async function read(fetcher: Fetch, origin: string, token: string, path: string): Promise<{ ok: true; body: Record<string, unknown> } | Failure> {
-  const answer = await call(fetcher, origin, token, path);
+async function read(fetcher: Fetch, origin: string, token: string, path: string, signal?: AbortSignal): Promise<{ ok: true; body: Record<string, unknown> } | Failure> {
+  const answer = await call(fetcher, origin, token, path, undefined, signal);
   if (!answer.ok) return answer;
   let body: unknown;
   try {
@@ -93,7 +100,20 @@ async function read(fetcher: Fetch, origin: string, token: string, path: string)
 
 /** `GET /discover/trending` (first page): one call. */
 export async function trending(fetcher: Fetch, origin: string, token: string): Promise<Answer> {
-  const answer = await read(fetcher, origin, token, '/discover/trending');
+  return cardsOf(await read(fetcher, origin, token, '/discover/trending'));
+}
+
+/** The longest search the API takes (`q`, 1 to 100 characters). */
+export const MAX_QUERY = 100;
+
+/** `GET /search?q=&page=1` (first page only): one call, which `signal` can cancel. */
+export async function search(fetcher: Fetch, origin: string, token: string, query: string, signal?: AbortSignal): Promise<Answer> {
+  if (!query || query.length > MAX_QUERY) return { ok: false, status: 400 };
+  return cardsOf(await read(fetcher, origin, token, `/search?q=${encodeURIComponent(query)}&page=1`, signal));
+}
+
+/** The cards of a list answer's first page, at most MAX_CARDS. */
+function cardsOf(answer: { ok: true; body: Record<string, unknown> } | Failure): Answer {
   if (!answer.ok) return answer;
   const results = answer.body.results;
   if (!Array.isArray(results)) return { ok: false, status: 502 };

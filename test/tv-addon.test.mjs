@@ -57,6 +57,100 @@ let LIVE_FOCUS;
 const onRow = (page, tmdbId) => (page.card(tmdbId) ? 'Available to get' : 'not in the row');
 const webCalls = (app) => app.jellyfin.requests.filter((request) => /^\/(?:emby\/)?(?:web|jellypass\/tv)\b/i.test(request.pathname)).map((request) => `${request.method} ${request.path}`);
 
+/** The objects the page's globals hang off (a reference through one, or through a name bound to one, is a reference to the global). */
+const GLOBAL_OBJECTS = new Set(['window', 'self', 'globalThis', 'top', 'parent', 'frames']);
+const typeofAbortController = (node) => node.type === 'UnaryExpression' && node.operator === 'typeof' && node.argument.type === 'Identifier' && node.argument.name === 'AbortController';
+const isString = (node, text) => (node.type === 'Literal' && node.value === text) || (node.type === 'TemplateLiteral' && node.expressions.length === 0 && node.quasis[0].value.cooked === text);
+const namesAbortController = (node) => node.type === 'Identifier' ? node.name === 'AbortController' : node.type === 'Literal' || node.type === 'TemplateLiteral' ? isString(node, 'AbortController') : false;
+/**
+ * Whether `test` being true (`then`) or false (`otherwise`) proves AbortController exists: only a positive availability
+ * check does (`typeof AbortController !== 'undefined'` or `=== 'function'`, `!` of the opposite, `&&` of one, `||` of one
+ * the other way). An inverted check proves it in the other branch only, and anything unrecognised proves nothing.
+ */
+function availability(test) {
+  const none = { then: false, otherwise: false };
+  if (test.type === 'UnaryExpression' && test.operator === '!') {
+    const inner = availability(test.argument);
+    return { then: inner.otherwise, otherwise: inner.then };
+  }
+  if (test.type === 'LogicalExpression') {
+    const left = availability(test.left);
+    const right = availability(test.right);
+    return test.operator === '&&' ? { then: left.then || right.then, otherwise: false } : test.operator === '||' ? { then: false, otherwise: left.otherwise || right.otherwise } : none;
+  }
+  if (test.type === 'BinaryExpression' && ['===', '!==', '==', '!='].includes(test.operator)) {
+    const [operand, text] = typeofAbortController(test.left) ? [test.left, test.right] : typeofAbortController(test.right) ? [test.right, test.left] : [];
+    if (!operand) return none;
+    const equal = test.operator === '===' || test.operator === '==';
+    const present = isString(text, 'function') ? equal : isString(text, 'undefined') ? !equal : undefined;
+    if (present === undefined) return none;
+    return present ? { then: true, otherwise: false } : { then: false, otherwise: true };
+  }
+  return none;
+}
+
+/**
+ * Every use of AbortController in `source` that is not (a) the operand of a `typeof`, or (b) reachable only where a
+ * positive `typeof AbortController` check holds (an `if`/`?:` branch, or the right of `&&`/`||`); plus every way round
+ * the name: a member named AbortController on anything (`window['AbortController']`, `self.AbortController`), a
+ * destructured one (`const { AbortController } = window`), computed access to a global object, and names bound to one.
+ */
+function unguardedAbortControllers(source) {
+  const found = [];
+  const tree = parse(source, { ecmaVersion: 2017, sourceType: 'script' });
+  const visit = (node, fn) => {
+    if (!node || typeof node.type !== 'string') return;
+    fn(node);
+    for (const key of Object.keys(node)) {
+      const child = node[key];
+      if (Array.isArray(child)) for (const one of child) visit(one, fn);
+      else if (child && typeof child === 'object') visit(child, fn);
+    }
+  };
+  // Names bound to a global object (`var w = window`), followed through further bindings in source order.
+  const globals = new Set(GLOBAL_OBJECTS);
+  const isGlobal = (node) => node && ((node.type === 'Identifier' && globals.has(node.name)) || (node.type === 'ThisExpression') || (node.type === 'SequenceExpression' && isGlobal(node.expressions[node.expressions.length - 1])) || (node.type === 'LogicalExpression' && (isGlobal(node.left) || isGlobal(node.right))) || (node.type === 'ConditionalExpression' && (isGlobal(node.consequent) || isGlobal(node.alternate))));
+  visit(tree, (node) => {
+    if (node.type === 'VariableDeclarator' && node.id.type === 'Identifier' && isGlobal(node.init)) globals.add(node.id.name);
+    if (node.type === 'AssignmentExpression' && node.left.type === 'Identifier' && isGlobal(node.right)) globals.add(node.left.name);
+  });
+  const walk = (node, guarded) => {
+    if (!node || typeof node.type !== 'string') return;
+    if (node.type === 'Identifier' && node.name === 'AbortController' && !guarded) found.push(node.start);
+    if (typeofAbortController(node)) return;
+    if (node.type === 'MemberExpression') {
+      const named = node.computed ? namesAbortController(node.property) : node.property.name === 'AbortController';
+      // Computed access to a global object is not followed (what is looked up cannot be known); `this` is only a global outside functions, but is refused everywhere.
+      if (named || (node.computed && isGlobal(node.object) && node.property.type !== 'Literal')) found.push(node.start);
+    }
+    if (node.type === 'ObjectPattern') {
+      for (const one of node.properties) {
+        if (one.type === 'RestElement' || (one.type === 'Property' && (namesAbortController(one.key) || one.computed))) found.push(one.start);
+      }
+    }
+    if (node.type === 'IfStatement' || node.type === 'ConditionalExpression') {
+      const proves = availability(node.test);
+      walk(node.test, guarded);
+      walk(node.consequent, guarded || proves.then);
+      walk(node.alternate, guarded || proves.otherwise);
+      return;
+    }
+    if (node.type === 'LogicalExpression' && (node.operator === '&&' || node.operator === '||')) {
+      const proves = availability(node.left);
+      walk(node.left, guarded);
+      walk(node.right, guarded || (node.operator === '&&' ? proves.then : proves.otherwise));
+      return;
+    }
+    for (const key of Object.keys(node)) {
+      const child = node[key];
+      if (Array.isArray(child)) for (const one of child) walk(one, guarded);
+      else if (child && typeof child === 'object') walk(child, guarded);
+    }
+  };
+  walk(tree, false);
+  return found;
+}
+
 describe('TV add-on: the build', () => {
   it('is one script and one stylesheet, each named for a hash of its content, and the script names the stylesheet', () => {
     assert.equal(FILES.length, 2);
@@ -79,9 +173,58 @@ describe('TV add-on: the build', () => {
 
   it('calls no browser API that Chromium 63 lacks, and polyfills none', () => {
     const source = readFileSync(path.join(DIST_TV, SCRIPT), 'utf8');
-    for (const api of [/\breplaceChildren\b/, /\bAbortController\b/, /\bResizeObserver\b/, /\bfromEntries\b/, /\.flatMap\(/, /\.flat\(/, /\bqueueMicrotask\b/, /\bstructuredClone\b/, /\brandomUUID\b/, /\.replaceAll\(/, /\.matchAll\(/, /\ballSettled\b/, /\bglobalThis\b/, /\.finally\(/, /\.at\(/, /\btoSorted\b/, /\bscrollTo\(\{/, /preventScroll/]) {
+    for (const api of [/\breplaceChildren\b/, /\bResizeObserver\b/, /\bfromEntries\b/, /\.flatMap\(/, /\.flat\(/, /\bqueueMicrotask\b/, /\bstructuredClone\b/, /\brandomUUID\b/, /\.replaceAll\(/, /\.matchAll\(/, /\ballSettled\b/, /\bglobalThis\b/, /\.finally\(/, /\.at\(/, /\btoSorted\b/, /\bscrollTo\(\{/, /preventScroll/]) {
       lacks(source, api, `the bundle uses ${api}`);
     }
+    // AbortController (Chromium 66) is only ever used where the browser has it: every use sits behind a `typeof` check.
+    assert.deepEqual(unguardedAbortControllers(source), [], 'AbortController is feature-detected');
+    // The gate itself: positive availability checks guard, in every form the product may take them.
+    for (const accepted of [
+      "var c = typeof AbortController === 'function' ? new AbortController() : void 0;",
+      "var c = typeof AbortController !== 'undefined' ? new AbortController() : void 0;",
+      "var c = typeof AbortController == 'function' ? new AbortController() : void 0;",
+      "var c = 'function' === typeof AbortController ? new AbortController() : void 0;",
+      "var c = typeof AbortController === 'undefined' ? void 0 : new AbortController();",
+      "var c = typeof AbortController !== 'function' ? void 0 : new AbortController();",
+      "var c = !(typeof AbortController === 'undefined') ? new AbortController() : void 0;",
+      "if (typeof AbortController === 'function') { var c = new AbortController(); }",
+      "if (typeof AbortController !== 'undefined') { var c = new AbortController(); } else { var d = 1; }",
+      "if (typeof AbortController === 'undefined') { var d = 1; } else { var c = new AbortController(); }",
+      "var c = typeof AbortController === 'function' && new AbortController();",
+      "var c = typeof AbortController !== 'undefined' && ready && new AbortController();",
+      "var c = typeof AbortController === 'undefined' || new AbortController();",
+      "var c = typeof AbortController === 'function' && typeof x === 'function' ? new AbortController() : 0;",
+    ]) assert.deepEqual(unguardedAbortControllers(accepted), [], accepted);
+    // Inverted, partial or unrelated checks, and uses outside the branch, are found.
+    for (const [rejected, why] of [
+      ["var c = typeof AbortController === 'undefined' ? new AbortController() : void 0;", 'then-branch of an `=== undefined` check'],
+      ["var c = typeof AbortController !== 'function' ? new AbortController() : void 0;", 'then-branch of a `!== function` check'],
+      ["var c = typeof AbortController !== 'undefined' ? void 0 : new AbortController();", 'else-branch of a `!== undefined` check'],
+      ["var c = typeof AbortController === 'function' ? 0 : new AbortController();", 'else-branch'],
+      ["if (typeof AbortController === 'undefined') { var c = new AbortController(); }", 'if-branch of an `=== undefined` check'],
+      ["if (typeof AbortController !== 'undefined') { } else { var c = new AbortController(); }", 'else-branch of an `if`'],
+      ["var c = typeof AbortController === 'undefined' && new AbortController();", '`&&` after an `=== undefined` check'],
+      ["var c = typeof AbortController !== 'undefined' || new AbortController();", '`||` after a `!== undefined` check'],
+      ["var c = typeof AbortController === 'function' || ready ? new AbortController() : 0;", '`||` proves nothing in the then-branch'],
+      ["var c = typeof AbortController ? new AbortController() : 0;", 'a bare typeof is not an availability check'],
+      ["var c = typeof AbortController === 'object' ? new AbortController() : 0;", 'a typeof compared with something else'],
+      ["var ok = typeof AbortController === 'function' ? 1 : 0; var c = new AbortController();", 'unguarded constructor, with a typeof elsewhere'],
+      ["if (typeof AbortController === 'function') { } var c = new AbortController();", 'constructor after the guarded block'],
+      ['var s = AbortController.prototype;', 'any other reference'],
+      ["var c = typeof AbortController === 'function' ? window['AbortController'] : 0;", 'computed access, even guarded'],
+      ["var c = window['AbortController'];", 'computed access'],
+      ['var c = window.AbortController;', 'window.AbortController'],
+      ['var c = self.AbortController;', 'self.AbortController'],
+      ['var c = globalThis.AbortController;', 'globalThis.AbortController'],
+      ['var c = new window.AbortController();', 'new window.AbortController'],
+      ['const { AbortController } = window; var c = new AbortController();', 'destructured from window'],
+      ["const { AbortController: AC } = self; var c = new AC();", 'renamed destructuring'],
+      ["const { ['AbortController']: AC } = window; var c = new AC();", 'computed destructuring'],
+      ['var w = window; var c = new w.AbortController();', 'an alias of window'],
+      ["var w = window; var k = 'Abort' + 'Controller'; var c = new w[k]();", 'computed access through an alias'],
+      ['var AC = window.AbortController; var c = new AC();', 'a name bound from window'],
+      ["var c = typeof window.AbortController === 'function' ? new window.AbortController() : 0;", 'a member check is not a bare-name check'],
+    ]) assert.ok(unguardedAbortControllers(rejected).length > 0, `${why}: ${rejected}`);
     // Nothing is logged, and nothing is kept in storage.
     lacks(source, /\bconsole\./);
     lacks(source, /\b(?:localStorage|sessionStorage|indexedDB|document\.cookie)\b/);
@@ -262,7 +405,7 @@ describe('TV add-on: the gateway', { timeout: 30_000 }, () => {
  * DOM, in its own VM context), signed in as `user`. Its network is the test server. `home()` lays out Home's sections
  * as Jellyfin web does; `clock` holds the add-on's clocks, `now` its `Date.now` and `mono` its `performance.now`.
  */
-async function openJellyfinWeb(t, app, { user = ALICE, host = HOST_A, serverAddress = `https://${host}`, override } = {}) {
+async function openJellyfinWeb(t, app, { user = ALICE, host = HOST_A, serverAddress = `https://${host}`, override, scopeExtras } = {}) {
   const served = await app.get('/web/index.html', { host, user: null });
   const { document, Event, CustomEvent, MutationObserver } = parseHTML(served.text);
   // Every listener the add-on puts on the document, as `type options` (strings, so nothing crosses realms).
@@ -319,7 +462,7 @@ async function openJellyfinWeb(t, app, { user = ALICE, host = HOST_A, serverAddr
         const target = new URL(url);
         // `override` may answer a call itself ({ status, body }), or throw for no network.
         const replaced = override ? await override(target.pathname, init) : undefined;
-        if (replaced) return new Response(replaced.body, { status: replaced.status, headers: { 'content-type': 'application/json' } });
+        if (replaced) return new Response(replaced.body, { status: replaced.status, headers: { 'content-type': 'application/json', ...replaced.headers } });
         const answer = await get(app.port, `${target.pathname}${target.search}`, { Host: target.host, ...init.headers }, { method: init.method ?? 'GET', body: init.body });
         return new Response(answer.body, { status: answer.status, headers: { 'content-type': answer.headers['content-type'] ?? 'application/json' } });
       } finally {
@@ -328,6 +471,7 @@ async function openJellyfinWeb(t, app, { user = ALICE, host = HOST_A, serverAddr
     },
   };
   scope.window = scope;
+  Object.assign(scope, scopeExtras);
   const context = vm.createContext(scope);
   const source = (await app.get(document.querySelector('script[data-jellypass-tv]').getAttribute('src'), { host, user: null })).text;
   const run = () => vm.runInContext(source, context);
@@ -661,6 +805,487 @@ describe('TV add-on: the Home row', { timeout: 60_000 }, () => {
     page.home();
     await page.settled();
     assert.deepEqual([page.requests.length, page.rows().length, page.document.querySelectorAll('link[data-jellypass-tv]').length], [1, 1, 1]);
+  });
+});
+
+describe('TV add-on: the Search row', { timeout: 120_000 }, () => {
+  const SEARCH = 'https://jelly-grove.example.test/jellypass/app/v1/search';
+  const RESULTS = '<div class="searchResults padded-top padded-bottom-page"><div class="verticalSection"><h2 class="sectionTitle">Movies</h2><button type="button" class="card">In the library</button></div></div>';
+  /** Jellyfin web's Search page (routes/search.tsx) mounted with `query` in its field, as its router does, Home hidden. */
+  const mount = (page, query = '', { results = query ? RESULTS : '' } = {}) => {
+    const { document } = page;
+    document.getElementById('searchPage')?.remove();
+    document.getElementById('indexPage').classList.add('hide');
+    document.querySelector('.mainAnimatedPages').insertAdjacentHTML('beforeend', `<div id="searchPage" data-role="page" class="page mainAnimatedPage libraryPage allLibraryPage noSecondaryNavPage"><div class="padded-left padded-right searchFields"><div class="searchFieldsInner"><div class="inputContainer"><input id="searchTextInput" class="searchfields-txtSearch" type="text" value=""></div></div></div>${results}</div>`);
+    const input = document.getElementById('searchTextInput');
+    input.value = query;
+    input.focus();
+    document.getElementById('searchPage').dispatchEvent(new page.Event('viewshow', { bubbles: true }));
+    return input;
+  };
+  /** The member typing: the field's value changes and `input` is dispatched, as a keyboard does. */
+  const type = (page, text) => {
+    const input = page.document.getElementById('searchTextInput');
+    input.value = text;
+    input.dispatchEvent(new page.Event('input', { bubbles: true }));
+  };
+  /** The field settled: Jellyfin web's debounce and ours have passed and the call has been answered. */
+  const settle = async (page) => {
+    await pause(600 + 120);
+    await page.settled();
+  };
+  const searches = (page) => page.requests.map((request) => request.url).filter((url) => url.startsWith(SEARCH)).map((url) => decodeURIComponent(url.slice(SEARCH.length)));
+  const row = (page) => page.document.querySelector('[data-jellypass-tv-search-row]');
+  const titles = (page) => [...page.document.querySelectorAll('[data-jellypass-tv-search-row] .jellypass-tv-card-title')].map((node) => node.textContent);
+  /** What the API answers for a search, the cards that can be had in its order. */
+  const canBeHad = async (app, query) => (await app.get(`/jellypass/app/v1/search?q=${encodeURIComponent(query)}&page=1`)).json().results.slice(0, 20).filter((card) => card.state === 'get_this');
+  const open = async (t, app, options) => {
+    const page = await openJellyfinWeb(t, app, options);
+    page.document.body.insertAdjacentHTML('afterbegin', HEADER);
+    page.home();
+    await page.settled();
+    return page;
+  };
+
+  it('is written in the budget file: one call per settled query, the app\'s search without /me', () => {
+    assert.deepEqual(BUDGET.screens['tv-search-row'], { calls: 1, atOnce: ['GET /search?q={query}&page=1'] });
+    assert.ok(BUDGET.screens.search.atOnce.includes('GET /search?q={query}&page=1'));
+  });
+
+  it('draws one Discover row below Jellyfin\'s results with only what can be had, in the Home row\'s cards, in one call', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const page = await open(t, app);
+    mount(page, '');
+    await page.settled();
+    assert.equal(row(page), null, 'no row for an empty field');
+    assert.deepEqual(searches(page), []);
+    const calls = page.requests.length;
+
+    type(page, 'synthetic');
+    mount(page, 'synthetic');
+    await settle(page);
+    assert.deepEqual(searches(page), ['?q=synthetic&page=1']);
+    assert.equal(page.requests.length - calls, BUDGET.screens['tv-search-row'].calls);
+    const request = page.requests.at(-1);
+    assert.equal(request.init.credentials, 'omit');
+    assert.deepEqual({ ...request.init.headers }, { Accept: 'application/json', Authorization: `MediaBrowser Token="${TOKENS[ALICE]}"` });
+
+    const shown = await canBeHad(app, 'synthetic');
+    const all = (await app.get('/jellypass/app/v1/search?q=synthetic&page=1')).json().results;
+    assert.ok(shown.length > 0 && all.length > shown.length, 'the answer holds titles that can\'t be had');
+    assert.deepEqual(titles(page), shown.map((card) => card.title));
+    const searchPage = page.document.getElementById('searchPage');
+    assert.equal(searchPage.querySelectorAll('[data-jellypass-tv-search-row]').length, 1);
+    assert.ok(row(page) === searchPage.lastElementChild, 'below Jellyfin\'s own results');
+    assert.equal(row(page).querySelector('h2.sectionTitle').textContent, 'Discover');
+    assert.ok(row(page).classList.contains('verticalSection'));
+    // Never Jellyfin's itemsContainer (it is paused through a custom element's method), and Left/Right stay in the row.
+    assert.equal(row(page).querySelector('.itemsContainer'), null);
+    assert.ok(row(page).querySelector('.jellypass-tv-row-list').classList.contains('focuscontainer-x'));
+    // Cards in Jellyfin web's own markup and classes (the next test compares them with the Home row's), no badge.
+    const searchCard = row(page).querySelector('button');
+    for (const name of ['card', 'overflowPortraitCard', 'card-hoverable', 'jellypass-tv-card']) assert.ok(searchCard.classList.contains(name), name);
+    assert.ok(searchCard.querySelector('.cardBox .cardScalable .cardPadder-overflowPortrait') && searchCard.querySelector('.cardImageContainer img'));
+    assert.equal(searchCard.getAttribute('aria-label').split(', ').pop(), 'Available to get');
+    assert.equal(page.document.querySelectorAll('.jellypass-tv-card-status').length, 0);
+    assert.deepEqual([...row(page).querySelectorAll('img')].map((img) => img.getAttribute('src')), shown.map((card) => card.posterUrl));
+  });
+
+  it('draws a Home card and a Search card from one component: the same markup for the same title', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const page = await open(t, app);
+    const home = page.cards()[0].outerHTML;
+    const first = (await canBeHad(app, 'x'))[0];
+    const trending = (await app.get('/jellypass/app/v1/discover/trending')).json().results[0];
+    assert.equal(first.tmdbId, trending.tmdbId, 'the fake answers both with the same titles');
+    mount(page, 'x');
+    await settle(page);
+    assert.equal(row(page).querySelector('button').outerHTML, home);
+  });
+
+  it('asks nothing while the field is empty or blank, and once per settled query however many keys were pressed', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const page = await open(t, app);
+    mount(page, '');
+    type(page, '   ');
+    await settle(page);
+    assert.deepEqual(searches(page), []);
+    // Keys within the debounce are one query.
+    for (const text of ['d', 'du', 'dun', 'dune']) {
+      type(page, text);
+      await pause(100);
+    }
+    assert.deepEqual(searches(page), [], 'asked before the field was still');
+    await settle(page);
+    assert.deepEqual(searches(page), ['?q=dune&page=1']);
+    // The same words typed again, and surrounding blanks, ask nothing more.
+    type(page, ' dune ');
+    await settle(page);
+    assert.deepEqual(searches(page), ['?q=dune&page=1']);
+    assert.equal(titles(page).length > 0, true);
+  });
+
+  it('takes the row away as soon as the words change and cancels what is out for them, dropping its answer', async (t) => {
+    const aborted = [];
+    class Controller {
+      constructor() { this.signal = { aborted: false }; aborted.push(this.signal); }
+      abort() { this.signal.aborted = true; }
+    }
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    const app = await startApp(t, webWorld(), tvOn());
+    const real = (await app.get('/jellypass/app/v1/search?q=a&page=1')).json();
+    const page = await open(t, app, {
+      scopeExtras: { AbortController: Controller },
+      override: async (pathname, init) => {
+        if (!pathname.endsWith('/search')) return undefined;
+        const query = new URL(page.requests.at(-1).url).searchParams.get('q');
+        if (query === 'slow') {
+          await held;
+          return { status: 200, body: JSON.stringify({ ...real, results: real.results.slice(0, 2).map((card) => ({ ...card, title: 'STALE', state: 'get_this' })) }) };
+        }
+        return undefined;
+      },
+    });
+    mount(page, 'quick');
+    await settle(page);
+    assert.ok(row(page));
+    type(page, 'slow');
+    assert.equal(row(page), null, 'the old words\' row goes at once');
+    await settle(page);
+    // Held in flight; the member types on.
+    page.advance(1000);
+    assert.deepEqual(searches(page), ['?q=quick&page=1', '?q=slow&page=1']);
+    assert.equal(aborted.length, 2);
+    assert.equal(aborted[1].aborted, false);
+    type(page, 'fresh');
+    assert.equal(aborted[1].aborted, true, 'cancelled');
+    release();
+    await page.settled();
+    assert.deepEqual(titles(page), [], 'the stale answer is not drawn');
+    assert.equal(page.document.body.textContent.includes('STALE'), false);
+    // The new words are asked at least a second after the last call.
+    assert.deepEqual(searches(page), ['?q=quick&page=1', '?q=slow&page=1']);
+    page.advance(1000);
+    await page.settled();
+    assert.deepEqual(searches(page), ['?q=quick&page=1', '?q=slow&page=1', '?q=fresh&page=1']);
+    assert.ok(titles(page).length > 0);
+  });
+
+  it('drops a stale answer even where the browser has no AbortController, and cancels nothing there', async (t) => {
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    const app = await startApp(t, webWorld(), tvOn());
+    const page = await open(t, app, { override: async (pathname) => (pathname.endsWith('/search') && new URL(page.requests.at(-1).url).searchParams.get('q') === 'slow' ? (await held, { status: 200, body: JSON.stringify({ results: [{ mediaType: 'movie', tmdbId: 7, title: 'STALE', year: 2020, posterUrl: null, state: 'get_this' }] }) }) : undefined) });
+    mount(page, 'slow');
+    await pause(600 + 120);
+    assert.equal(page.requests.at(-1).init.signal, undefined, 'asked, and held in flight');
+    type(page, 'other');
+    release();
+    await page.settled();
+    assert.equal(page.document.body.textContent.includes('STALE'), false);
+  });
+
+  it('draws nothing when nothing can be had or the call failed, and asks the same words only once', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const none = JSON.stringify({ results: (await app.get('/jellypass/app/v1/search?q=a&page=1')).json().results.map((card) => ({ ...card, state: card.state === 'get_this' ? 'requested' : card.state })) });
+    let mode = 'none';
+    const page = await open(t, app, { override: (pathname) => (pathname.endsWith('/search') ? (mode === 'none' ? { status: 200, body: none } : mode === 'garbage' ? { status: 200, body: '[]' } : { status: 500, body: '{}' }) : undefined) });
+    mount(page, 'one');
+    await settle(page);
+    assert.deepEqual([row(page), searches(page).length], [null, 1], 'all Requested, in the library or not for sale: no row');
+    mode = 'garbage';
+    type(page, 'two');
+    page.advance(1000);
+    await settle(page);
+    mode = 'error';
+    type(page, 'three');
+    page.advance(1000);
+    await settle(page);
+    assert.deepEqual([row(page), searches(page).length], [null, 3]);
+    // A failure is kept like an answer: more page changes ask nothing.
+    page.document.getElementById('searchPage').insertAdjacentHTML('beforeend', '<div>more</div>');
+    await settle(page);
+    assert.equal(searches(page).length, 3);
+  });
+
+  it('waits out a 429 for as long as the server asked, then asks only for new words', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    let limited = true;
+    const page = await open(t, app, { override: (pathname) => (pathname.endsWith('/search') && limited ? { status: 429, body: '{}', headers: { 'retry-after': '45' } } : undefined) });
+    mount(page, 'busy');
+    await settle(page);
+    assert.deepEqual([row(page), searches(page).length], [null, 1]);
+    limited = false;
+    type(page, 'busier');
+    await settle(page);
+    page.advance(30_000);
+    await page.settled();
+    assert.equal(searches(page).length, 1, 'still within the 45 seconds the server asked for');
+    page.advance(15_000);
+    await page.settled();
+    assert.deepEqual(searches(page), ['?q=busy&page=1', '?q=busier&page=1']);
+    assert.ok(titles(page).length > 0);
+  });
+
+  it('keeps several answers: alpha, beta, alpha asks twice', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const page = await open(t, app);
+    mount(page, 'alpha');
+    await settle(page);
+    type(page, 'beta');
+    page.advance(1000);
+    await settle(page);
+    type(page, 'alpha');
+    await settle(page);
+    assert.deepEqual(searches(page), ['?q=alpha&page=1', '?q=beta&page=1'], 'alpha is answered from memory');
+    assert.ok(titles(page).length > 0, 'and drawn');
+  });
+
+  it('keeps no more than 20 answers: the least recently used is asked for again', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const page = await open(t, app);
+    mount(page, 'w0');
+    await settle(page);
+    for (let i = 1; i <= 20; i += 1) {
+      type(page, `w${i}`);
+      page.advance(1000);
+      await settle(page);
+    }
+    type(page, 'w0');
+    page.advance(1000);
+    await settle(page);
+    assert.equal(searches(page).length, 22, 'w0 was the 21st answer back: dropped');
+    type(page, 'w20');
+    page.advance(1000);
+    await settle(page);
+    assert.equal(searches(page).length, 22, 'a recent one is still kept');
+  });
+
+  it('honours a 429 that comes back for words already left: the next search waits for what the server asked', async (t) => {
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    const app = await startApp(t, webWorld(), tvOn());
+    const page = await open(t, app, {
+      override: async (pathname) => {
+        if (!pathname.endsWith('/search')) return undefined;
+        if (new URL(page.requests.at(-1).url).searchParams.get('q') === 'slow') {
+          await held;
+          return { status: 429, body: '{}', headers: { 'retry-after': '45' } };
+        }
+        return undefined;
+      },
+    });
+    mount(page, 'slow');
+    await pause(600 + 120);
+    type(page, 'fresh');
+    release();
+    await page.settled();
+    assert.equal(page.document.body.textContent.includes('STALE'), false);
+    page.advance(30_000);
+    await page.settled();
+    assert.deepEqual(searches(page), ['?q=slow&page=1'], 'still within the 45 seconds');
+    page.advance(15_000);
+    await page.settled();
+    assert.deepEqual(searches(page), ['?q=slow&page=1', '?q=fresh&page=1']);
+  });
+
+  it('opens the title page from a card and returns on Back to the query and the card, with no new call', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const page = await open(t, app);
+    mount(page, 'synthetic');
+    await settle(page);
+    const shown = await canBeHad(app, 'synthetic');
+    const target = shown[shown.length - 1];
+    const card = row(page).querySelector(`button[data-tmdb-id="${target.tmdbId}"]`);
+    const from = '#/search?query=synthetic';
+    page.location.hash = from;
+    page.click(card);
+    assert.equal(page.location.hash, `#/jellypass/title/${target.mediaType}/${target.tmdbId}`);
+    page.document.getElementById('searchPage').remove();
+    page.follow(from);
+    await page.settled();
+    assert.ok(page.view(), 'the title page is open');
+    assert.equal(row(page), null);
+    page.back();
+    assert.equal(page.location.hash, from);
+    mount(page, 'synthetic');
+    await page.settled();
+    assert.equal(page.view(), null);
+    assert.deepEqual(searches(page), ['?q=synthetic&page=1'], 'the same words are not asked again');
+    assert.equal(titles(page).length, shown.length);
+    assert.ok(page.focused() === page.document.querySelector(`[data-jellypass-tv-search-row] button[data-tmdb-id="${target.tmdbId}"]`), 'focus is on the card');
+    assert.equal(page.document.getElementById('searchTextInput').value, 'synthetic');
+  });
+
+  it('leaves focus to the member once they press a key after Back', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const page = await open(t, app);
+    mount(page, 'synthetic');
+    await settle(page);
+    const card = row(page).querySelector('button');
+    page.location.hash = '#/search?query=synthetic';
+    page.click(card);
+    page.document.getElementById('searchPage').remove();
+    page.follow('#/search?query=synthetic');
+    await page.settled();
+    page.back();
+    const input = mount(page, 'synthetic');
+    page.key(40);
+    input.focus();
+    await page.settled();
+    assert.ok(page.focused() === input, 'the field keeps the focus the member had');
+  });
+
+  it('handles no key and adds only passive capturing listeners (the focus manager moves between the cards)', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const page = await open(t, app);
+    mount(page, 'synthetic');
+    await settle(page);
+    for (const keyCode of [461, 10009, 27, 8, 37, 38, 39, 40, 13]) assert.equal(page.key(keyCode).defaultPrevented, false, `${keyCode}`);
+    for (const listener of page.listeners) assert.ok(listener.endsWith('{"capture":true,"passive":true}'), listener);
+  });
+
+  it('draws nothing and asks nothing when Jellyfin web\'s Search page is not as expected', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    for (const [name, change] of [
+      ['no field', (page) => page.document.getElementById('searchTextInput').remove()],
+      ['another field id', (page) => page.document.getElementById('searchTextInput').setAttribute('id', 'q')],
+      ['not a page', (page) => page.document.getElementById('searchPage').setAttribute('data-role', 'dialog')],
+      ['hidden', (page) => page.document.getElementById('searchPage').classList.add('hide')],
+      ['field outside the fields', (page) => page.document.getElementById('searchPage').appendChild(page.document.getElementById('searchTextInput'))],
+    ]) {
+      const page = await open(t, app);
+      const input = mount(page, 'synthetic');
+      change(page);
+      input.value = 'synthetic again';
+      input.dispatchEvent(new page.Event('input', { bubbles: true }));
+      await settle(page);
+      assert.deepEqual([name, searches(page), row(page)], [name, [], null]);
+    }
+  });
+
+  it('removes the row and asks nothing when the page is left, and draws nothing on another page', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const page = await open(t, app);
+    mount(page, 'synthetic');
+    await settle(page);
+    assert.ok(row(page));
+    type(page, 'synthetic two');
+    page.document.getElementById('searchPage').remove();
+    page.home();
+    await settle(page);
+    assert.deepEqual(searches(page), ['?q=synthetic&page=1'], 'the pending words were never asked');
+    assert.equal(row(page), null);
+    // Clearing the field takes the row away and asks nothing.
+    mount(page, 'synthetic');
+    await page.settled();
+    type(page, '');
+    await settle(page);
+    assert.equal(row(page), null);
+  });
+
+  it('follows the member signed in: signed out or signed in elsewhere there is no row and no call, and another member asks with their token', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const page = await open(t, app);
+    mount(page, 'synthetic');
+    await settle(page);
+    assert.ok(row(page));
+    page.session.user = ANN;
+    page.session.token = TOKENS[ANN];
+    type(page, 'synthetic');
+    assert.equal(row(page), null, 'the member before\'s row goes at once');
+    page.advance(1000);
+    await settle(page);
+    assert.equal(searches(page).length, 2, 'another member\'s words are asked for with their own token');
+    assert.equal(page.requests.at(-1).init.headers.Authorization, `MediaBrowser Token="${TOKENS[ANN]}"`);
+    page.session.token = null;
+    type(page, 'something else');
+    await settle(page);
+    assert.deepEqual([row(page), searches(page).length], [null, 2]);
+    page.session.token = TOKENS[ALICE];
+    page.session.user = ALICE;
+    page.session.serverAddress = 'https://elsewhere.example.test';
+    type(page, 'something');
+    await settle(page);
+    assert.deepEqual([row(page), searches(page).length], [null, 2]);
+    assert.ok(page.requests.every((request) => request.url.startsWith('https://jelly-grove.example.test/')), 'never sent elsewhere');
+  });
+
+  /** Caches `synthetic`, leaves Search, and applies `away` while the page is absent; then back on Search, the calls made. */
+  const awayAndBack = async (t, away, back) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const page = await open(t, app);
+    mount(page, 'synthetic');
+    await settle(page);
+    assert.deepEqual(searches(page), ['?q=synthetic&page=1']);
+    page.document.getElementById('searchPage').remove();
+    page.home();
+    await page.settled();
+    away(page);
+    // Something happens on the page (as it does all the time): update() runs with Search absent.
+    page.document.body.insertAdjacentHTML('beforeend', '<div></div>');
+    await page.settled();
+    back(page);
+    page.advance(1000);
+    mount(page, 'synthetic');
+    await settle(page);
+    return searches(page);
+  };
+
+  it('forgets the answers when the member signs out while Search is absent: the same member signing back in asks again', async (t) => {
+    const calls = await awayAndBack(t, (page) => { page.session.token = null; }, (page) => { page.session.token = TOKENS[ALICE]; });
+    assert.deepEqual(calls, ['?q=synthetic&page=1', '?q=synthetic&page=1']);
+  });
+
+  it('forgets the answers when another member is signed in while Search is absent, even if the first member returns', async (t) => {
+    const calls = await awayAndBack(t, (page) => { page.session.user = ANN; page.session.token = TOKENS[ANN]; }, (page) => { page.session.user = ALICE; page.session.token = TOKENS[ALICE]; });
+    assert.deepEqual(calls, ['?q=synthetic&page=1', '?q=synthetic&page=1']);
+  });
+
+  it('keeps the answers while the same member stays signed in and Search is absent', async (t) => {
+    const calls = await awayAndBack(t, () => {}, () => {});
+    assert.deepEqual(calls, ['?q=synthetic&page=1']);
+  });
+
+  it('draws a title the member asked for as gone, and a Requested that ran out as back, with no call', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const page = await open(t, app);
+    mount(page, 'synthetic');
+    await settle(page);
+    const before = titles(page);
+    assert.ok(before.length > 1);
+    const calls = page.requests.length;
+    page.document.getElementById('searchPage').insertAdjacentHTML('beforeend', '<div></div>');
+    await page.settled();
+    assert.deepEqual([titles(page), page.requests.length], [before, calls], 'redrawn pages change nothing');
+  });
+
+  it('is byte-for-byte the same whatever other households hold or asked for: the calls and the row', async (t) => {
+    const snapshot = async (state) => {
+      const app = await startApp(t, Object.assign(state, { webPage: {} }), tvOn());
+      const page = await open(t, app);
+      mount(page, 'synthetic');
+      await settle(page);
+      assert.ok(row(page));
+      assertNoCanaries(row(page).outerHTML, 'the row shows Seerr data planted as a canary');
+      assertNoCanaries(page.document.body.outerHTML, 'the page holds Seerr data planted as a canary');
+      return JSON.stringify({ trace: page.trace(), row: row(page).outerHTML });
+    };
+    const baseline = await snapshot(world());
+    for (const [name, state] of Object.entries(otherHouseholdWorlds())) assert.ok(await snapshot(state) === baseline, name);
+  });
+
+  it('sets text with textContent only: a title that is markup stays text', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const evil = '<img src=x onerror=alert(1)><b>bold</b>';
+    const real = (await app.get('/jellypass/app/v1/search?q=a&page=1')).json();
+    const page = await open(t, app, { override: (pathname) => (pathname.endsWith('/search') ? { status: 200, body: JSON.stringify({ ...real, results: real.results.map((card) => ({ ...card, state: 'get_this', title: evil, posterUrl: 'https://evil.example.test/x.jpg' })) }) } : undefined) });
+    mount(page, 'a');
+    await settle(page);
+    assert.ok(titles(page).every((title) => title === evil));
+    assert.equal(row(page).querySelectorAll('b').length, 0);
+    assert.equal(row(page).querySelectorAll('img').length, 0, 'only a TMDB image is ever drawn');
   });
 });
 
@@ -1555,8 +2180,8 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     const page = await atHome(t, app);
     assert.ok(page.listeners.length >= 6, page.listeners.join('; '));
     const types = [...new Set(page.listeners.map((entry) => entry.split(' ')[0]))].sort();
-    assert.deepEqual(types, ['focusin', 'keydown', 'mousedown', 'pageshow', 'pointerdown', 'touchstart', 'viewshow']);
-    // The host's document listeners, the input ones included, are explicitly capturing and passive: they only observe.
+    assert.deepEqual(types, ['focusin', 'input', 'keydown', 'mousedown', 'pageshow', 'pointerdown', 'touchstart', 'viewshow']);
+    // The host's document listeners, the search field's input one included, are explicitly capturing and passive: they only observe.
     for (const entry of page.listeners) assert.ok(entry.endsWith(' {"capture":true,"passive":true}'), entry);
     const source = readFileSync(path.join(DIST_TV, SCRIPT), 'utf8');
     lacks(source, /\bpreventDefault\b|\bstopPropagation\b|\bstopImmediatePropagation\b/);

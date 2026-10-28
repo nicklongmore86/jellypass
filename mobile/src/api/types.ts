@@ -135,6 +135,10 @@ export interface Request {
   seasons: RequestSeason[];
   /** Whether the caller made any of the household's records for the title. */
   byYou: boolean;
+  /** Whether the caller may cancel it now (`cancelRequest`); false from a server before `apiVersion` 2, which has no cancel. */
+  cancellable: boolean;
+  /** The day (`YYYY-MM-DD`) the household last asked for it; null from a server before `apiVersion` 2. */
+  requestedOn: string | null;
 }
 
 export interface Requests {

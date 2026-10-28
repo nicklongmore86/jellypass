@@ -1,6 +1,7 @@
 // My requests' fixed words and sizes, word for word as the PWA's requestItem() and REQUESTS_TEXT (app/src/render.ts)
 // and requestsScreen() (app/src/main.ts) have them. __tests__/requests-text.test.ts fails if one drifts.
 import type { Card, CoarseStatus, MediaType, Request } from '../api/types';
+import type { ApiErrorKind } from '../api/errors';
 import { REQUEST_LABELS } from '../home/text';
 import { GET_THIS_TEXT } from '../title/text';
 
@@ -12,6 +13,51 @@ export const REQUESTS_TEXT = {
   byYou: 'Asked for by you',
   byOther: 'Asked for by someone in your household',
 } as const;
+
+/**
+ * Cancelling a request, word for word as the PWA's CANCEL_TEXT (app/src/render.ts). The confirmation is one fixed
+ * sentence whatever became of the cancel; each failure has its own fixed words.
+ */
+export const CANCEL_TEXT = {
+  button: 'Cancel request',
+  heading: 'Cancel this request?',
+  body: "This withdraws your household's request. If it has already been approved, the download may still finish, but it won't be added for your household.",
+  confirm: 'Cancel request',
+  keep: 'Keep request',
+  sending: 'Cancelling…',
+  confirmation: 'Request cancelled',
+  rate_limited: 'Too many tries, try again in a few minutes.',
+  offline: "You're offline. Check your connection, then try again.",
+  unavailable: "We couldn't cancel that just now. Try again in a moment.",
+} as const;
+
+export type CancelError = 'rate_limited' | 'offline' | 'unavailable';
+
+/** The fixed message for a Cancel that was not accepted (`unauthorized` never gets here: it signs the member out). */
+export function cancelError(kind: ApiErrorKind): CancelError {
+  if (kind === 'too_many_requests') return 'rate_limited';
+  if (kind === 'network') return 'offline';
+  return 'unavailable';
+}
+
+/** The accessible name of an entry's Cancel button: it names its request. */
+export function cancelName(title: RequestTitle | undefined): string {
+  return title?.status === 'loaded' && title.title.title ? `${CANCEL_TEXT.button}: ${title.title.title}` : CANCEL_TEXT.button;
+}
+
+/** The day a request was made as the member's locale writes it, no time (the API sends a UTC day, read and written as one); undefined if there is none. */
+export function requestedOnText(day: string | null | undefined): string | undefined {
+  if (typeof day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return undefined;
+  const date = new Date(`${day}T00:00:00Z`);
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== day) return undefined;
+  let text: string;
+  try {
+    text = date.toLocaleDateString(undefined, { dateStyle: 'medium', timeZone: 'UTC' });
+  } catch {
+    text = day;
+  }
+  return `Requested on ${text}`;
+}
 
 /** The requests shown at first and added by each Load more, each named with one title call, a few calls at a time. */
 export const REQUESTS_PER_PAGE = 10;
@@ -104,6 +150,7 @@ export function requestName(request: Request, title: RequestTitle | undefined): 
     requestMeta(request.mediaType, title, pills.seasonsText),
     pills.status ? statusText(pills.status) : '',
     whoText(request),
+    requestedOnText(request.requestedOn) ?? '',
     ...(pills.perSeason
       ? request.seasons.map((season) => [`${requestSeasonName(season.seasonNumber)}: ${statusText(season.status)}`, season.status === 'failed' ? note : ''].filter(Boolean).join(', '))
       : []),

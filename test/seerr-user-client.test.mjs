@@ -60,6 +60,7 @@ const MEMBER_CALLS = {
   quota: (client) => client.quota(),
   ownUser: (client) => client.ownUser(),
   watchlist: (client) => client.watchlist(1),
+  cancelRequest: (client) => client.cancelRequest('7300041'),
 };
 
 const memberClient = (baseUrl = BASE_URL, user = MEMBER) =>
@@ -75,6 +76,11 @@ const ADMIN_CALLS = {
   getRequest: (client) => client.getRequest('5'),
   titleRequests: (client) => client.titleRequests('movie', 900001),
   requestState: (client) => client.requestState('5'),
+  approveRequest: (client) => client.approveRequest('5'),
+  declineRequest: (client) => client.declineRequest('5'),
+  deleteRequest: (client) => client.deleteRequest('5'),
+  removeMovieFromRadarr: (client) => client.removeMovieFromRadarr(7),
+  radarrConfigured: (client) => client.radarrConfigured(),
   getJellyfinItemId: (client) => client.getJellyfinItemId('movie', 900001),
   importJellyfinUser: (client) => client.importJellyfinUser(MEMBER_JELLYFIN_ID),
   listRequestsSince: (client) => client.listRequestsSince(new Date('2026-01-01T00:00:00.000Z')),
@@ -144,9 +150,10 @@ describe('acting-user Seerr clients', () => {
       '42 GET /api/v1/user/42/quota',
       '42 GET /api/v1/auth/me',
       '42 GET /api/v1/discover/watchlist?page=1',
+      '42 DELETE /api/v1/request/7300041',
     ]);
     // The member is confirmed before every call.
-    assert.equal(calls.filter((request) => request.url.pathname === `/api/v1/user/${MEMBER}`).length, 6);
+    assert.equal(calls.filter((request) => request.url.pathname === `/api/v1/user/${MEMBER}`).length, 7);
   });
 
   it('confirms the requester first, then sends one request later without confirming again, unless its mapping was invalidated', async () => {
@@ -193,6 +200,14 @@ describe('acting-user Seerr clients', () => {
       () => member.createRequest({ mediaType: 'tv', tmdbId: 1, seasons: ['1'] }),
       () => member.ownRequests(Number.NaN),
       () => member.watchlist(-1),
+      () => member.cancelRequest('0'),
+      () => admin.approveRequest('5/../settings'),
+      () => admin.declineRequest('0'),
+      () => admin.deleteRequest(5),
+      () => admin.removeMovieFromRadarr(0),
+      () => admin.removeMovieFromRadarr('7'),
+      () => member.cancelRequest('5/../user'),
+      () => member.cancelRequest(5),
       () => admin.titleRequests('person', 1),
       () => admin.titleRequests('movie', 0),
       () => admin.titleRequests('tv', '1'),
@@ -202,6 +217,18 @@ describe('acting-user Seerr clients', () => {
     ];
     for (const call of invalid) assert.throws(call, TypeError, String(call));
     assert.equal(calls.length, 0);
+  });
+
+  it('deletes a request as the member, sending no body and reading Seerr\'s empty 204 as done', async () => {
+    respond = () => new Response(null, { status: 204 });
+    assert.equal(await memberClient().cancelRequest('7300041'), undefined);
+    const [request] = actingCalls();
+    assert.deepEqual([request.method, request.url.pathname, request.body, request.headers.get('x-api-user')], ['DELETE', '/api/v1/request/7300041', undefined, String(MEMBER)]);
+    // Seerr refuses anything but the member's own pending request (or a manager's): by status and route only.
+    respond = () => new Response('canary refused', { status: 401 });
+    const refused = await memberClient().cancelRequest('7300042').catch((error) => error);
+    assert.ok(refused instanceof SeerrError);
+    assert.equal(refused.message, 'Seerr DELETE /api/v1/request/:id returned 401');
   });
 
   it('returns Seerr JSON unchanged for the caller to shape', async () => {
@@ -382,7 +409,7 @@ describe('Seerr calls made for the household app, against a real redirect', () =
       const error = await call(servers).catch((caught) => caught);
       assert.ok(error instanceof SeerrError, String(error));
       assert.equal(error.status, 302);
-      assert.match(error.message, /^Seerr (GET|POST) \/api\/v1\/[a-z/:]+ returned 302$/i);
+      assert.match(error.message, /^Seerr (GET|POST|DELETE) \/api\/v1\/[a-z/:]+ returned 302$/i);
       // The message is the route template only (checked above), so it holds no IDs; nor may anything else in the error.
       assert.doesNotMatch(`${error.message}\n${error.stack}`, /canary|redirected|aaaaaaaa/);
       assert.deepEqual(servers.reached, []);

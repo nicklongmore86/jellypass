@@ -30,6 +30,10 @@ const ENDPOINTS = [
   ['DELETE', '/v1/groups/grove'],
   ['PUT', '/v1/library/access', JSON.stringify({ itemIds: ['item-1'], userIds: ['bob-id'], groupIds: [] })],
   ['PUT', '/v1/users/alice-id/sign-in', JSON.stringify({ passwordless: true })],
+  ['POST', '/v1/app/requests/7380001/approve'],
+  ['POST', '/v1/app/requests/7380001/decline'],
+  ['POST', '/v1/app/requests/7380001/cancel', JSON.stringify({ removeFromRadarr: true })],
+  ['POST', '/v1/app/held/7380001/release', JSON.stringify({ householdIds: ['grove'] })],
   ['POST', '/auth/logout'],
 ];
 const CROSS_SITE = [

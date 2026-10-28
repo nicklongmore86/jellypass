@@ -8,6 +8,7 @@ import { request as httpRequest, createServer } from 'node:http';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { AccessService } from '../../dist/access-service.js';
+import { AdminRequests } from '../../dist/admin-requests.js';
 import { JellyfinClient } from '../../dist/jellyfin.js';
 import { SeerrClient } from '../../dist/seerr.js';
 import { HouseholdRequests } from '../../dist/household-requests.js';
@@ -44,6 +45,7 @@ export const SHARED_HOUSEHOLDS = [
 // Seerr users, one per Jellyfin user.
 export const SEERR_IDS = { [ALICE]: 11, [ANN]: 12, [BOB]: 21, [CAROL]: 41, [OUTSIDER]: 31 };
 export const ADMIN = 2;
+export const MANAGE_REQUESTS = 16;
 export const REQUEST = 32;
 export const REQUEST_MOVIE = 262_144;
 export const REQUEST_TV = 524_288;
@@ -144,6 +146,11 @@ export function world(options = {}) {
     holdQuota: undefined,
     // A promise each admin title read (GET /api/v1/movie|tv/:id) waits for before Seerr answers, if set.
     holdTitles: undefined,
+    // A promise each admin request read (GET /api/v1/request/:id) waits for before Seerr answers, if set: the request is
+    // read as it was when the call arrived.
+    holdRequestStates: undefined,
+    // Seerr's Radarr servers (GET /api/v1/settings/radarr): one HD server, its secrets canaries.
+    radarrServers: options.radarrServers ?? [{ id: 0, name: 'canary radarr', hostname: 'radarr.canary.invalid', apiKey: 'canary-radarr-key', is4k: false, isDefault: true }],
   };
 }
 
@@ -237,6 +244,11 @@ export async function createFakeSeerr(state) {
   const violations = [];
   // Every POST /api/v1/request that reached Seerr, with its acting user and body.
   const posts = [];
+  // Every DELETE /api/v1/request/:id that reached Seerr, with its acting user, the request and Seerr's answer.
+  const deletes = [];
+  // The admin key's writes (see adminWrite), and the Seerr media IDs removed from Radarr.
+  const adminWrites = [];
+  const radarrRemovals = [];
   let onRequest;
   let nextRequestId = 7350001;
   const server = createServer((request, response) => {
@@ -244,11 +256,13 @@ export async function createFakeSeerr(state) {
     const actingUser = request.headers['x-api-user'];
     calls.push({ method: request.method, path: `${url.pathname}${url.search}`, pathname: url.pathname, actingUser });
     if (request.headers['x-api-key'] !== 'seerr-key') return send(response, 401, { message: 'canary unauthorized' });
-    if (actingUser === undefined) return admin(url, response);
+    if (actingUser === undefined) return request.method === 'GET' ? admin(url, response) : adminWrite(request.method, url, response);
     const acting = Number(actingUser);
     const user = state.seerrUsers[acting];
     if (!/^[1-9][0-9]*$/.test(actingUser) || !user) return send(response, 403, { message: 'canary forbidden' });
     if (request.method === 'POST' && url.pathname === '/api/v1/request') return createRequest(request, response, acting, user);
+    const deleting = /^\/api\/v1\/request\/([0-9]+)$/.exec(url.pathname);
+    if (request.method === 'DELETE' && deleting) return deleteRequest(response, acting, user, Number(deleting[1]));
     if (request.method !== 'GET') {
       violations.push(`${request.method} ${url.pathname}`);
       return send(response, 405, { message: 'canary' });
@@ -357,6 +371,60 @@ export async function createFakeSeerr(state) {
     return send(response, 201, created);
   }
 
+  /**
+   * DELETE /api/v1/request/:id as `acting`, as Seerr 3.5.1 allows it: to a user who manages requests, or to the
+   * request's own requester while it is pending (1); anyone else gets 401, an unknown request 404.
+   */
+  function deleteRequest(response, acting, user, id) {
+    const owner = Object.keys(state.requests).find((seerrId) => state.requests[seerrId].some((entry) => entry.id === id));
+    const found = owner === undefined ? undefined : state.requests[owner].find((entry) => entry.id === id);
+    const manages = (user.permissions & (ADMIN | MANAGE_REQUESTS)) !== 0;
+    const status = !found ? 404 : manages || (Number(owner) === acting && found.status === 1) ? 204 : 401;
+    deletes.push({ actingUser: acting, id, status });
+    if (status !== 204) return send(response, status, { message: 'canary refused' });
+    state.requests[owner] = state.requests[owner].filter((entry) => entry.id !== id);
+    response.writeHead(204);
+    response.end();
+  }
+
+  /**
+   * The administrators' Requests tab's writes with the admin key, as Seerr 3.5.1 answers them: approve and decline only
+   * a pending request (`409` otherwise), delete any request, and remove a movie from Radarr (`409` without an HD Radarr
+   * server). Each is recorded in `adminWrites` and shown to `state.onAdminWrite(method, pathname)` as it arrives;
+   * `state.failAdminWrites` (a path prefix) makes those answer `500`.
+   */
+  function adminWrite(method, url, response) {
+    adminWrites.push(`${method} ${url.pathname}`);
+    state.onAdminWrite?.(method, url.pathname);
+    if (state.failAdminWrites && url.pathname.startsWith(state.failAdminWrites)) return send(response, 500, { message: 'canary failure' });
+    const owner = (id) => Object.keys(state.requests).find((seerrId) => state.requests[seerrId].some((entry) => entry.id === id));
+    const decide = /^\/api\/v1\/request\/([0-9]+)\/(approve|decline)$/.exec(url.pathname);
+    if (method === 'POST' && decide) {
+      const id = Number(decide[1]);
+      const found = owner(id) === undefined ? undefined : state.requests[owner(id)].find((entry) => entry.id === id);
+      if (!found) return send(response, 404, { message: 'canary' });
+      if (found.status !== 1) return send(response, 409, { message: 'Only pending requests can be approved or declined.' });
+      found.status = decide[2] === 'approve' ? 2 : 3;
+      return send(response, 200, found);
+    }
+    const deleting = /^\/api\/v1\/request\/([0-9]+)$/.exec(url.pathname);
+    if (method === 'DELETE' && deleting) {
+      const id = Number(deleting[1]);
+      const seerrId = owner(id);
+      if (seerrId === undefined) return send(response, 404, { message: 'canary' });
+      state.requests[seerrId] = state.requests[seerrId].filter((entry) => entry.id !== id);
+      return send(response, 204);
+    }
+    const file = /^\/api\/v1\/media\/([0-9]+)\/file$/.exec(url.pathname);
+    if (method === 'DELETE' && file) {
+      if (!(state.radarrServers ?? []).some((server) => !server.is4k)) return send(response, 409, { message: 'No Radarr server configured to delete media files' });
+      radarrRemovals.push(Number(file[1]));
+      return send(response, 204);
+    }
+    violations.push(`admin ${method} ${url.pathname}`);
+    return send(response, 405, { message: 'canary' });
+  }
+
   function admin(url, response) {
     const title = /^\/api\/v1\/(movie|tv)\/([0-9]+)$/.exec(url.pathname);
     if (title) {
@@ -371,8 +439,10 @@ export async function createFakeSeerr(state) {
     }
     const byRequest = /^\/api\/v1\/request\/([0-9]+)$/.exec(url.pathname);
     if (byRequest) {
+      // Read as it is now, answered once `holdRequestStates` (if set when it arrived) resolves.
       const found = [...allRequests(), ...Object.values(state.media).flatMap((info) => info?.requests ?? [])].find((entry) => entry.id === Number(byRequest[1]));
-      return found ? send(response, 200, found) : send(response, 404, { message: 'canary' });
+      const answer = () => found ? send(response, 200, found) : send(response, 404, { message: 'canary' });
+      return state.holdRequestStates ? state.holdRequestStates.then(answer) : answer();
     }
     const byJellyfin = /^\/api\/v1\/user\/jellyfin\/([0-9a-f]{32})$/.exec(url.pathname);
     if (byJellyfin) {
@@ -386,6 +456,7 @@ export async function createFakeSeerr(state) {
       return user ? send(response, 200, { id: Number(byId[1]), permissions: user.permissions, jellyfinUserId: user.jellyfinUserId, email: 'canary@example.invalid' })
         : send(response, 404, { message: 'canary' });
     }
+    if (url.pathname === '/api/v1/settings/radarr') return send(response, 200, state.radarrServers ?? []);
     if (url.pathname === '/api/v1/blocklist') {
       const take = Number(url.searchParams.get('take'));
       const skip = Number(url.searchParams.get('skip'));
@@ -410,6 +481,9 @@ export async function createFakeSeerr(state) {
     calls,
     violations,
     posts,
+    deletes,
+    adminWrites,
+    radarrRemovals,
     state,
     set onRequest(check) { onRequest = check; },
     close: () => close(server),
@@ -918,6 +992,10 @@ export async function startApp(t, state = world(), options = {}) {
     background,
     ...(options.trustedProxies ? { trustedProxies: options.trustedProxies } : {}),
     householdGateway: { jellyfinUrl: jellyfin.url, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: options.loginFailureDelayMs ?? 0, ...(options.loginTimeoutMs ? { loginTimeoutMs: options.loginTimeoutMs } : {}), ...(options.signOutTimeoutMs ? { signOutTimeoutMs: options.signOutTimeoutMs } : {}), ...(options.tvAddon ? { tvAddon: options.tvAddon } : {}) },
+    ...(options.requests === false ? {} : {
+      titleHolds: requests,
+      adminRequests: new AdminRequests({ store, seerr: admin, jellyfin: jellyfinClient, service, requests, ...(options.now ? { now: options.now } : {}) }),
+    }),
     ...(options.app === false ? {} : {
       householdApp: {
         catalogue: new TmdbClient(TMDB_KEY, { baseUrl: tmdb.url, ...(options.now ? { now: options.now } : {}) }),

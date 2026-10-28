@@ -9,6 +9,7 @@ import {
   kindText,
   REQUEST_TITLE_CALLS,
   requestMeta,
+  requestedOnText,
   requestName,
   requestNoteHere,
   requestPills,
@@ -148,8 +149,10 @@ describe("a request's text", () => {
       { seasonNumber: 2, status: 'failed' },
     ],
     byYou: true,
+    cancellable: false,
+    requestedOn: null,
   };
-  const film: Request = { id: 'b', mediaType: 'movie', tmdbId: 7, status: 'ready', seasons: [], byYou: false };
+  const film: Request = { id: 'b', mediaType: 'movie', tmdbId: 7, status: 'ready', seasons: [], byYou: false, cancellable: false, requestedOn: null };
   const named = { status: 'loaded', title: { title: 'Dune', year: 2021, posterUrl: null } } as const;
 
   it('says the title once it is read, "Loading title…" until then and "Title unavailable" if it cannot be', () => {
@@ -180,6 +183,9 @@ describe("a request's text", () => {
     expect(requestName({ ...series, status: 'failed', seasons: [1, 3].map((seasonNumber) => ({ seasonNumber, status: 'failed' as const })) }, { status: 'loading' })).toBe(
       "Loading title…, Series · Seasons 1, 3, We couldn't get this, Asked for by you, Ask your JellyPass admin to try again.",
     );
+    // The day it was asked, after who asked: a locale date, never a time; none from a server before apiVersion 2.
+    expect(requestName({ ...series, seasons: [{ seasonNumber: 1, status: 'requested' }], requestedOn: '2026-10-27' }, show)).toBe('Show, 2027 · Series · Season 1, Requested, Asked for by you, Requested on Oct 27, 2026');
+    expect(['2026-10-27', '2026-01-02', null, '2026-13-40', '2026-10-27T23:59:00Z', 'x'].map(requestedOnText)).toEqual(['Requested on Oct 27, 2026', 'Requested on Jan 2, 2026', undefined, undefined, undefined, undefined]);
     expect(requestMeta('tv', show, 'Season 1')).toBe('2027 · Series · Season 1');
     expect([requestNoteHere(film), requestNoteHere(series), requestNoteHere({ status: 'failed', seasons: [] })]).toEqual([false, false, true]);
   });

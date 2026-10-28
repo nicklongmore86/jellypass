@@ -2,13 +2,14 @@ import type { LogLevel } from './config.js';
 import type { JellyfinClient } from './jellyfin.js';
 import { Metrics } from './metrics.js';
 import { RECENT_REQUESTS_LIMIT, SeerrError, type SeerrClient } from './seerr.js';
-import { normalizeId, type GrantMove, type GrantRemainder, type GrantStore } from './store.js';
+import { normalizeId, UNKNOWN_REQUESTER, type GrantMove, type GrantRemainder, type GrantStore } from './store.js';
 import type {
   AccessGroup,
   AccessRemovals,
   AppRequestRecord,
   AppRequestStatus,
   AppSafetyTombstone,
+  AppWithdrawal,
   ChangePlan,
   GrantRecord,
   IgnoredWebhook,
@@ -33,6 +34,9 @@ const GRANTABLE_REQUEST_STATUSES = new Set([2, 5]);
 
 /** What a household app join did: see AccessService.joinHousehold. */
 export type HouseholdJoinResult = 'joined' | 'already' | 'refused' | 'ungranted' | 'error' | 'cancelled';
+
+/** Most title holds (see AccessService.applyTitleHolds) read in one run, least recently checked first; the rest wait for the next. */
+const MAX_TITLE_HOLD_READS = 50;
 
 /** Most entries {@link AccessService.appOutstanding} lists of each kind, oldest first; the counts are always complete. */
 export const MAX_OUTSTANDING_ENTRIES = 200;
@@ -60,6 +64,34 @@ export interface AppOutstanding {
   };
   /** Kept without a time, so no age. */
   deferredWebhooks: { total: number };
+  /**
+   * Household app cancels that still decide a grant (see AppWithdrawal): `waiting`, the request is not handled yet;
+   * `granted`, a grant records a request its requester withdrew, and gives that requester no access through it.
+   */
+  withdrawals: {
+    total: number;
+    byKind: { waiting: number; granted: number };
+    /**
+     * The title holds: Seerr no longer has the request, and its title's items are held as they arrive until every one is
+     * on a grant (see AccessService.applyTitleHolds); `waiting` until the first is held, `granted` after.
+     */
+    titleHolds: number;
+    /** Of `granted`, the titles held for no household (see AccessService.appHeld). */
+    held: number;
+    oldestAgeSeconds: number | null;
+    entries: Array<{ kind: 'waiting' | 'granted'; mediaType: string; tmdbId: number; createdAt: string }>;
+  };
+}
+
+/**
+ * Titles a household app cancel left held for no household (admin host only): the request's requester withdrew it, no
+ * household still followed it when it was granted (or none has joined since), and no administrator has given it to
+ * anyone yet. The item is private to every user but Jellyfin's administrators until an administrator decides
+ * (households or users through the grant tools, or revoking the request to make it public).
+ */
+export interface AppHeldTitles {
+  total: number;
+  titles: Array<{ itemId: string; requestId: string; mediaType: string; tmdbId: number; cancelledAt: string; grantedAt?: string }>;
 }
 
 interface PlanContext {
@@ -132,6 +164,9 @@ export class AccessService {
   readonly #seerr: SeerrClient | undefined;
   #queue: Promise<void> = Promise.resolve();
   readonly #backfillMissingItems = new Set<string>();
+  /** Each title hold's last turn in #applyTitleHolds (see #holdTurn), so the least recently checked go first. */
+  readonly #holdTurns = new Map<string, number>();
+  #holdTurn = 0;
   readonly #debug: boolean;
 
   public constructor(
@@ -199,8 +234,14 @@ export class AccessService {
       createdAt: intent.createdAt,
     }));
     const deferred = this.#store.listDeferredWebhooks().length;
+    const withdrawals = this.#store.listOutstandingAppWithdrawals(now).map(([requestId, withdrawal]) => ({
+      kind: this.#store.hasHandledRequest(requestId) ? 'granted' as const : 'waiting' as const,
+      mediaType: withdrawal.mediaType,
+      tmdbId: withdrawal.tmdbId,
+      createdAt: withdrawal.createdAt,
+    }));
     return {
-      clear: markers.length === 0 && intents.length === 0 && deferred === 0,
+      clear: markers.length === 0 && intents.length === 0 && deferred === 0 && withdrawals.length === 0,
       safetyMarkers: {
         total: markers.length,
         byKind: { request: markers.filter((marker) => marker.kind === 'request').length, member: markers.filter((marker) => marker.kind === 'member').length },
@@ -214,7 +255,176 @@ export class AccessService {
         entries: oldestFirst(intents),
       },
       deferredWebhooks: { total: deferred },
+      withdrawals: {
+        total: withdrawals.length,
+        byKind: { waiting: withdrawals.filter((entry) => entry.kind === 'waiting').length, granted: withdrawals.filter((entry) => entry.kind === 'granted').length },
+        titleHolds: this.#store.listAppTitleHolds(now).length,
+        held: this.appHeld().total,
+        oldestAgeSeconds: age(withdrawals.map((entry) => entry.createdAt)),
+        entries: oldestFirst(withdrawals),
+      },
     };
+  }
+
+  /** See {@link AppHeldTitles}. */
+  public appHeld(): AppHeldTitles {
+    const titles = this.#store.listOutstandingAppWithdrawals().flatMap(([requestId, withdrawal]) => {
+      if (!withdrawal.requester || !this.#store.hasHandledRequest(requestId)) return [];
+      const grant = this.#store.findGrantForRequest(requestId);
+      if (!grant?.active || this.#store.resolveOwners(grant).length > 0) return [];
+      return [{
+        itemId: grant.itemId,
+        requestId,
+        mediaType: withdrawal.mediaType,
+        tmdbId: withdrawal.tmdbId,
+        cancelledAt: withdrawal.createdAt,
+        ...(withdrawal.grantedAt ? { grantedAt: withdrawal.grantedAt } : {}),
+      }];
+    }).sort((left, right) => left.cancelledAt.localeCompare(right.cancelledAt));
+    return { total: titles.length, titles: titles.slice(0, MAX_OUTSTANDING_ENTRIES) };
+  }
+
+  /**
+   * Gives a title held for no household (see appHeld) to `groupIds`, added to the households its grant has, and applies
+   * it. The check and the write are one turn of the write queue, so of two releases of the same title only the first
+   * finds it held: a later one whose households the grant has already is `unchanged`, any other `not_held`.
+   */
+  public releaseHeld(requestId: string, groupIds: string[]): Promise<{ result: 'released' | 'unchanged'; itemId: string } | { result: 'not_found' } | { result: 'not_held' }> {
+    return this.#exclusive(async () => {
+      const grant = this.#store.findGrantForRequest(requestId);
+      if (!grant?.active) return { result: 'not_found' as const };
+      const wanted = groupIds.map(normalizeId);
+      const withdrawal = this.#store.getAppWithdrawal(requestId);
+      const held = withdrawal?.requester === true && this.#store.hasHandledRequest(requestId) && this.#store.resolveOwners(grant).length === 0;
+      if (!held) return wanted.every((id) => grant.groupIds.includes(id)) ? { result: 'unchanged' as const, itemId: grant.itemId } : { result: 'not_held' as const };
+      const result = await this.#store.setGrantGroups(grant.itemId, [...new Set([...grant.groupIds, ...wanted])]);
+      await this.#reconcileGrant(result.current);
+      return { result: 'released' as const, itemId: grant.itemId };
+    });
+  }
+
+  /**
+   * Applies the title holds (docs/app-design.md, "Cancelling (step 2c)"; AppWithdrawal `seerrGoneAt`): a request its
+   * requester withdrew and an administrator then deleted in Seerr may still download, and with no request nothing would
+   * grant its title, which would arrive public. For each hold, the title's HD items Jellyfin has now (see #heldItems)
+   * are decided by the safety markers as they are now, in #grantRule's order (see #holdRule), never by what the cancel
+   * captured: while a "Get this" intent names the title, the hold waits; if the request follows the join rules (a
+   * record or safety tombstone says so now), it is granted as a join (#grantAsJoin), never privately; otherwise each
+   * item no active grant holds is granted to the deleted request with no household and its requester left out (as
+   * #grantGroups and GrantStore.resolveOwners do for any request its requester withdrew): held for no household, and
+   * listed by appHeld; the households following the title then (an awaiting interest) join as for any grant. A hold is
+   * kept until every item has an active grant (or the request was revoked from it), so an item whose grant failed is
+   * tried again on the next run, and is then dropped: the title is private. At most {@link MAX_TITLE_HOLD_READS} holds a
+   * run, those checked longest ago first, so every hold gets its turn however many there are; a failure is logged and
+   * tried again on the next. Run while there are holds by the household app's refresh (each scheduled reconciliation),
+   * after each MEDIA_AVAILABLE webhook, and by the backfill, reconcileAll and the library catalog sync, so a title that
+   * arrives with no request to scan is held by whichever runs first.
+   */
+  public applyTitleHolds(options: { signal?: AbortSignal } = {}): Promise<void> {
+    if (this.#store.listAppTitleHolds().length === 0) return Promise.resolve();
+    return this.#exclusive(() => this.#applyTitleHolds(options.signal));
+  }
+
+  /** applyTitleHolds, in the write queue; nothing to do (and no Jellyfin read) while there are no holds. */
+  async #applyTitleHolds(signal?: AbortSignal): Promise<void> {
+    const holds = this.#store.listAppTitleHolds();
+    const known = new Set(holds.map(([requestId]) => requestId));
+    for (const requestId of [...this.#holdTurns.keys()]) if (!known.has(requestId)) this.#holdTurns.delete(requestId);
+    const due = holds
+      .sort(([left], [right]) => (this.#holdTurns.get(left) ?? 0) - (this.#holdTurns.get(right) ?? 0))
+      .slice(0, MAX_TITLE_HOLD_READS);
+    for (const [requestId, hold] of due) {
+      throwIfAborted(signal);
+      this.#holdTurns.set(requestId, ++this.#holdTurn);
+      try {
+        const itemIds = await this.#heldItems(hold.mediaType, hold.tmdbId);
+        throwIfAborted(signal);
+        if (itemIds.length === 0) continue;
+        const rule = this.#holdRule(requestId, hold);
+        if (rule === 'defer') continue;
+        if (rule === 'join') {
+          // Handled once joined, and no grant records it: no longer a hold (GrantStore.listAppTitleHolds).
+          for (const itemId of itemIds) {
+            throwIfAborted(signal);
+            await this.#grantAsJoin(itemId, requestId, signal);
+          }
+          console.log(JSON.stringify({ level: 'info', message: 'household app title hold granted as a join: a safety marker covers its request', requestId }));
+          continue;
+        }
+        const decided = (itemId: string) => this.#store.get(itemId)?.active === true || this.#store.isRequestRevoked(requestId, itemId);
+        for (const itemId of itemIds.filter((entry) => !decided(entry))) {
+          throwIfAborted(signal);
+          const grant = await this.#store.grant({
+            itemId,
+            requestId,
+            userId: hold.requesterId ?? UNKNOWN_REQUESTER,
+            groupIds: this.#grantGroups(requestId, hold.requesterId ?? UNKNOWN_REQUESTER),
+            mediaType: hold.mediaType,
+          });
+          console.log(JSON.stringify({ level: 'info', message: 'household app title held: its cancelled request was deleted in Seerr', requestId, itemId: grant.itemId }));
+          await this.#reconcileGrant(grant, signal);
+          throwIfAborted(signal);
+          await this.#settleAppRequests(grant.itemId, requestId, signal);
+        }
+        if (itemIds.every(decided)) {
+          await this.#store.writeAppRequests({ dropTitleHolds: [requestId] });
+          console.log(JSON.stringify({ level: 'info', message: 'household app title hold dropped: every item of its title is on a grant', requestId }));
+        }
+      } catch (error) {
+        rethrowIfCancelled(error, signal);
+        console.error(JSON.stringify({
+          level: 'error',
+          message: 'household app title hold could not be applied',
+          requestId,
+          detail: error instanceof Error ? error.message : String(error),
+        }));
+      }
+    }
+  }
+
+  /**
+   * How a title hold is applied now: #grantRule for a request Seerr no longer has, read from the markers as they are at
+   * apply time (a tombstone written after the cancel captured `requesterId`, say by a later settle of the request's
+   * intent, whose join rule a withdrawn record no longer takes, still wins). `join` when a record or a tombstone names
+   * the request, `defer` while a "Get this" intent names the title, `join` when a member-wide tombstone covers the
+   * requester's request (it was made no later than the cancel, the most Seerr's lost request still tells), else
+   * `grant` (held for no household). A requester whose Jellyfin ID is not known (AppWithdrawal `titleHold`) is no
+   * member, so no member-wide tombstone covers them.
+   */
+  #holdRule(requestId: string, hold: AppWithdrawal): GrantRule {
+    const tombstones = this.#store.listAppSafetyTombstones();
+    if (this.#grantsAsJoin(requestId) || tombstones.some((tombstone) => tombstone.requestIds.includes(requestId))) return 'join';
+    if (this.#store.hasAppRequestIntent(hold.mediaType, hold.tmdbId)) return 'defer';
+    if (hold.requesterId === undefined) return 'grant';
+    const now = Date.now();
+    const request: RequestFacts = { mediaType: hold.mediaType, tmdbId: hold.tmdbId, requester: hold.requesterId, createdAt: Date.parse(hold.createdAt) };
+    return tombstones.some((tombstone) => tombstone.jellyfinUserId !== undefined && now < Date.parse(tombstone.expiresAt)
+      && covers(tombstone, requestId, request)) ? 'join' : 'grant';
+  }
+
+  /**
+   * The HD movie or series items Jellyfin holds of a title, read with JellyPass's key: every item with its TMDB ID and
+   * Seerr's HD item for it, never the item Seerr links as the 4K one only, and never an item matched by name only.
+   * Throws when Jellyfin, or Seerr (with the admin key), cannot be read: a hold is applied only once both are.
+   */
+  async #heldItems(mediaType: 'movie' | 'tv', tmdbId: number): Promise<string[]> {
+    const title = this.#seerr ? await this.#seerr.titleRequests(mediaType, tmdbId) : undefined;
+    const hd = title?.jellyfinMediaId ? normalizeId(title.jellyfinMediaId) : undefined;
+    const fourK = title?.jellyfinMediaId4k ? normalizeId(title.jellyfinMediaId4k) : undefined;
+    const [byTmdb, linked] = await Promise.all([
+      this.#jellyfin.findItemsByTmdbId(mediaType, tmdbId),
+      hd ? this.#jellyfin.existingItems(mediaType, [hd]) : Promise.resolve([]),
+    ]);
+    return [...new Set([...byTmdb, ...linked].map(normalizeId))].filter((itemId) => itemId !== fourK || itemId === hd).sort();
+  }
+
+  /**
+   * Runs `work` in the write queue grants are decided in, so no webhook, replay, backfill or join runs meanwhile: for
+   * the household app's cancel, whose withdrawal must be written either wholly before or wholly after a grant of the
+   * request is decided (see AppWithdrawal). `work` must not call back into this service.
+   */
+  public serialized<T>(work: () => Promise<T>): Promise<T> {
+    return this.#exclusive(work);
   }
 
   /** Counts a household app "Get this" call by what its eligibility check decided; never by title. */
@@ -356,6 +566,8 @@ export class AccessService {
       const items = await this.#jellyfin.fetchLibraryCatalog();
       throwIfAborted(options.signal);
       const catalog = await this.#store.replaceCatalog(items);
+      // New items: a title whose request Seerr lost is held as it appears.
+      await this.#applyTitleHolds(options.signal);
       const grants = new Map(this.#store.list().filter((grant) => grant.active).map((grant) => [normalizeId(grant.itemId), grant]));
       return { ...catalog, items: catalog.items.map((item) => {
         const grant = grants.get(normalizeId(item.id));
@@ -384,7 +596,13 @@ export class AccessService {
         this.#metrics.increment('jfa_webhooks_total', { result: 'ignored' });
         return null;
       }
-      return this.#grantWebhook(event);
+      try {
+        return await this.#grantWebhook(event);
+      } finally {
+        // Something arrived: a title whose request Seerr lost has no webhook of its own (and one for such a request
+        // cannot be granted, Seerr no longer having it), so the holds are applied whether or not this one was granted.
+        await this.#applyTitleHolds();
+      }
     });
   }
 
@@ -429,7 +647,7 @@ export class AccessService {
         itemId: resolved.itemId,
         requestId: event.request.id,
         userId: resolved.userId,
-        groupIds: this.#store.listGroupIdsForUser(resolved.userId),
+        groupIds: this.#grantGroups(event.request.id, resolved.userId),
         ...(resolved.mediaType ? { mediaType: resolved.mediaType } : {}),
       });
       await this.#reconcileGrant(grant);
@@ -647,7 +865,8 @@ export class AccessService {
   /**
    * The household app's join branch of "Get this": adds `householdId` (only the household whose host the call was made
    * on, never the caller's other households, and only while it is the household the call was made for: the same
-   * `householdEpoch`) to the grant of each of `itemIds` through the library join rules (see
+   * `householdEpoch`; with `recordId`, only while that record is still followed: pending or failed, never withdrawn) to
+   * the grant of each of `itemIds` through the library join rules (see
    * GrantStore.joinGrant: only an active grant with a request is joined, an administrator's removal of the household or
    * of the caller sticks, manual-only grants and items without a grant are left alone) and applies each join. Resolves
    * `joined` when a grant changed, `already` when the household was already on one, `ungranted` when none of the items
@@ -656,7 +875,7 @@ export class AccessService {
    * reported as `error`, and an aborted `signal` (shutdown) stops it before its next step (`cancelled`).
    */
   public async joinHousehold(
-    input: { itemIds: string[]; userId: string; householdId: string; householdEpoch?: number },
+    input: { itemIds: string[]; userId: string; householdId: string; householdEpoch?: number; recordId?: string },
     options: { signal?: AbortSignal } = {},
   ): Promise<HouseholdJoinResult> {
     const { signal } = options;
@@ -668,6 +887,12 @@ export class AccessService {
         throwIfAborted(signal);
         // A household deleted (or deleted and created again) since the call began joins nothing.
         if (input.householdEpoch !== undefined && this.#store.householdEpoch(input.householdId) !== input.householdEpoch) {
+          stored = 'refused';
+          return stored;
+        }
+        // The record the join is for (a refresh's) was withdrawn, or settled otherwise, since it was read.
+        const record = input.recordId === undefined ? undefined : this.#store.getAppRequest(input.recordId);
+        if (input.recordId !== undefined && (!record || record.withdrawn || record.detached || (record.status !== 'pending' && record.status !== 'failed'))) {
           stored = 'refused';
           return stored;
         }
@@ -740,7 +965,8 @@ export class AccessService {
   async #settleAppRequests(itemId: string, requestId: string, signal?: AbortSignal): Promise<void> {
     try {
       const records = this.#store.listAppRequests()
-        .filter(([, record]) => !record.detached && (record.status === 'pending' || record.status === 'failed'));
+        // A withdrawn record is never settled or joined, whatever its status says.
+        .filter(([, record]) => !record.detached && !record.withdrawn && (record.status === 'pending' || record.status === 'failed'));
       if (records.length === 0) return;
       let title: { mediaType: 'movie' | 'tv'; tmdbId: number } | undefined | null = null;
       let seasons: Set<number> | undefined;
@@ -753,6 +979,10 @@ export class AccessService {
       };
       const updates: Array<{ id: string; status: AppRequestStatus; itemIds?: string[]; readySeasons?: number[]; awaitingGrant?: boolean }> = [];
       const joined: GrantRecord[] = [];
+      // Its requester cancelled it: the grant gave their households nothing, so a record of theirs made since (asking
+      // again) joins like any follower's.
+      const requesterWithdrew = this.#store.getAppWithdrawal(requestId)?.requester === true || this.#store.listAppRequests()
+        .some(([, record]) => record.withdrawn && record.branch === 'request' && record.seerrRequestId === requestId);
       for (const [id, record] of records) {
         if (record.branch === 'join') continue;
         // A record that found no grant for the item joins the one created now.
@@ -763,7 +993,7 @@ export class AccessService {
           matches = title?.mediaType === record.mediaType && title.tmdbId === record.tmdbId;
         }
         if (!matches) continue;
-        if (record.branch === 'request' && !record.joinOnGrant) {
+        if (record.branch === 'request' && !record.joinOnGrant && !requesterWithdrew) {
           updates.push({ id, ...await ready(record) });
           continue;
         }
@@ -791,6 +1021,21 @@ export class AccessService {
         detail: error instanceof Error ? error.message : String(error),
       }));
     }
+  }
+
+  /**
+   * The households a new grant of `requestId` adds (docs/app-design.md, "Cancelling (step 2c)"): its requester's, less
+   * any that withdrew from the request; none at all when the requester withdrew it (see AppWithdrawal), so only the
+   * households still following it join (#settleAppRequests), and with none the title is held for no household.
+   * Checked in the write queue, so a cancel is either wholly before the grant or too late for it.
+   */
+  #grantGroups(requestId: string, userId: string): string[] {
+    const withdrawal = this.#store.getAppWithdrawal(requestId);
+    if (withdrawal?.requester) {
+      console.log(JSON.stringify({ level: 'info', message: 'household app request granted after its requester cancelled it', requestId }));
+      return [];
+    }
+    return this.#store.listGroupIdsForUser(userId).filter((groupId) => !withdrawal?.householdIds.includes(groupId));
   }
 
   /**
@@ -838,6 +1083,16 @@ export class AccessService {
     this.#metrics.increment('jfa_library_joins_total', { result: 'dropped' });
   }
 
+  /**
+   * Whether the request's requester withdrew it, or an administrator declined or cancelled it (AppWithdrawal
+   * `requester`): its grant gives them nothing (GrantStore.resolveOwners), so it needs no Jellyfin ID for them, and
+   * one Seerr has none for (a Seerr user no Jellyfin user is linked to) is granted all the same, recording
+   * UNKNOWN_REQUESTER: held for no household rather than left public.
+   */
+  #requesterWithdrew(requestId: string): boolean {
+    return this.#store.getAppWithdrawal(requestId)?.requester === true;
+  }
+
   async #resolveWebhook(event: SeerrWebhook): Promise<{ itemId: string; userId: string; mediaType?: string }> {
     let itemId = event.media?.jellyfinMediaId;
     let userId = event.request.requestedBy?.jellyfinUserId;
@@ -864,7 +1119,10 @@ export class AccessService {
     }
 
     if (!itemId) throw new Error(`Seerr request ${event.request.id} is missing a ${is4k ? '4K ' : ''}Jellyfin media ID`);
-    if (!userId) throw new Error(`Seerr request ${event.request.id} is missing a Jellyfin user ID`);
+    if (!userId) {
+      if (!this.#requesterWithdrew(event.request.id)) throw new Error(`Seerr request ${event.request.id} is missing a Jellyfin user ID`);
+      userId = UNKNOWN_REQUESTER;
+    }
     return { itemId, userId, ...(mediaType ? { mediaType } : {}) };
   }
 
@@ -901,20 +1159,21 @@ export class AccessService {
             result.skipped += 1;
             continue;
           }
-          const request = requestItemId(listed) && listed.requestedBy?.jellyfinUserId
+          const withdrew = this.#requesterWithdrew(requestId);
+          const request = requestItemId(listed) && (listed.requestedBy?.jellyfinUserId || withdrew)
             ? listed
             : await seerr.getRequest(requestId);
           throwIfAborted(signal);
           const itemId = requestItemId(request);
-          const userId = request.requestedBy?.jellyfinUserId;
+          const userId = request.requestedBy?.jellyfinUserId || (withdrew ? UNKNOWN_REQUESTER : undefined);
           const existing = itemId ? this.#store.get(itemId) : undefined;
-          if (!itemId || !userId || (existing && (Object.keys(existing.requests).length === 0 || requestId in existing.requests))) {
+          if (!itemId || userId === undefined || (existing && (Object.keys(existing.requests).length === 0 || requestId in existing.requests))) {
             result.skipped += 1;
             continue;
           }
           knownUserIds ??= new Set((await this.#jellyfin.getUsers()).map((user) => normalizeId(user.Id)));
           throwIfAborted(signal);
-          if (!knownUserIds.has(normalizeId(userId))) {
+          if (userId !== UNKNOWN_REQUESTER && !knownUserIds.has(normalizeId(userId))) {
             result.skipped += 1;
             continue;
           }
@@ -951,7 +1210,7 @@ export class AccessService {
             itemId,
             requestId,
             userId,
-            groupIds: this.#store.listGroupIdsForUser(userId),
+            groupIds: this.#grantGroups(requestId, userId),
             ...(mediaType ? { mediaType } : {}),
           });
           await this.#reconcileGrant(grant, signal);
@@ -973,6 +1232,8 @@ export class AccessService {
           }));
         }
       }
+      // A title whose request Seerr lost has no request to scan.
+      await this.#applyTitleHolds(signal);
       this.#metrics.gauge('jfa_request_backfill_last_run_timestamp_seconds', Math.floor(Date.now() / 1000));
       return result;
     });
@@ -988,6 +1249,7 @@ export class AccessService {
     return this.#exclusive(async () => {
       const plans: ChangePlan[] = [];
       const errors: Error[] = [];
+      if (!options.dryRun) await this.#applyTitleHolds(options.signal);
       for (const { itemId } of this.#store.list()) {
         throwIfAborted(options.signal);
         // Re-read: a grant moved earlier in this run may have been deleted, or merged into this one.
@@ -1642,6 +1904,8 @@ export class AccessService {
     for (const [kind, count] of Object.entries(outstanding.safetyMarkers.byKind)) this.#metrics.gauge(`jfa_app_safety_markers{kind="${kind}"}`, count);
     for (const [status, count] of Object.entries(outstanding.requestIntents.byKind)) this.#metrics.gauge(`jfa_app_request_intents{status="${status}"}`, count);
     this.#metrics.gauge('jfa_app_deferred_webhooks', outstanding.deferredWebhooks.total);
+    for (const [kind, count] of Object.entries(outstanding.withdrawals.byKind)) this.#metrics.gauge(`jfa_app_withdrawals{kind="${kind}"}`, count);
+    this.#metrics.gauge('jfa_app_held_titles', outstanding.withdrawals.held);
   }
 
   #exclusive<T>(operation: () => Promise<T>): Promise<T> {

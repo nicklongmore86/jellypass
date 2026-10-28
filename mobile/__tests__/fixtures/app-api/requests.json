@@ -15,7 +15,9 @@
           "status": "failed"
         }
       ],
-      "byYou": true
+      "byYou": true,
+      "cancellable": true,
+      "requestedOn": "2026-10-27"
     },
     {
       "id": "BBBBBBBBBBBBBBBBBBBB_-",
@@ -23,7 +25,9 @@
       "tmdbId": 900001,
       "status": "ready",
       "seasons": [],
-      "byYou": false
+      "byYou": false,
+      "cancellable": false,
+      "requestedOn": "2026-09-30"
     }
   ]
 }

@@ -15,7 +15,7 @@ export const DOC = JSON.parse(readFileSync(path.join(DOCS, 'v1.openapi.json'), '
   components: { schemas: Record<string, Json>; responses: Record<string, Json> };
 };
 export const BUDGET = JSON.parse(readFileSync(path.join(DOCS, 'fetch-budget.json'), 'utf8')) as {
-  screens: Record<string, { calls: number; atOnce: string[]; belowTheFold?: string[] }>;
+  screens: Record<string, { calls: number; atOnce: string[]; belowTheFold?: string[]; revisit?: string[]; cancel?: string[] }>;
 };
 
 export function fixture(name: string): Json {
@@ -91,6 +91,7 @@ export const OPERATIONS: Record<string, Operation> = {
   'POST /movie/{tmdbId}/get': { call: (api) => api.getThis('movie', 900001), sends: 'POST /movie/900001/get', status: 202, fixture: 'accepted' },
   'POST /tv/{tmdbId}/get': { call: (api) => api.getThis('tv', 900002, [1, 2]), sends: 'POST /tv/900002/get', status: 202, fixture: 'accepted' },
   'GET /requests': { call: (api) => api.requests(), sends: 'GET /requests', status: 200, fixture: 'requests' },
+  'POST /requests/{id}/cancel': { call: (api) => api.cancelRequest('AAAAAAAAAAAAAAAAAAAAAA'), sends: 'POST /requests/AAAAAAAAAAAAAAAAAAAAAA/cancel', status: 202, fixture: 'accepted' },
 };
 
 /** `METHOD path` of a recorded call, under /jellypass/app/v1. */

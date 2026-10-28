@@ -98,8 +98,8 @@ const tabSelected = () =>
     .map((node) => String(node.props.accessibilityLabel));
 
 const SERIES_NAME =
-  "Series 900002, 2023 · Series, Asked for by you, Season 1: Ready to watch, Season 2: We couldn't get this, Ask your JellyPass admin to try again.";
-const FILM_NAME = 'Film 900001, 2024 · Movie, Ready to watch, Asked for by someone in your household';
+  "Series 900002, 2023 · Series, Asked for by you, Requested on Oct 27, 2026, Season 1: Ready to watch, Season 2: We couldn't get this, Ask your JellyPass admin to try again.";
+const FILM_NAME = 'Film 900001, 2024 · Movie, Ready to watch, Asked for by someone in your household, Requested on Sep 30, 2026';
 
 describe('the list', () => {
   it('shows each request with its title, kind, coarse status, who asked and each season, named once', async () => {
@@ -170,7 +170,7 @@ describe('the list', () => {
       },
     });
     const { since } = await openRequests();
-    expect(entries()[0]!.startsWith('Title unavailable, Series, Asked for by you, Season 1: Ready to watch')).toBe(true);
+    expect(entries()[0]!.startsWith('Title unavailable, Series, Asked for by you, Requested on Oct 27, 2026, Season 1: Ready to watch')).toBe(true);
     expect(entries()[1]!.startsWith('Loading title…, Movie, Ready to watch')).toBe(true);
     await act(async () => releaseFilm());
     await settle();

@@ -1,4 +1,5 @@
 import { AccessService } from './access-service.js';
+import { AdminRequests } from './admin-requests.js';
 import { WebAuth } from './auth.js';
 import { loadConfig } from './config.js';
 import { JellyfinClient } from './jellyfin.js';
@@ -70,6 +71,10 @@ async function main(): Promise<void> {
     ...(config.householdAppEnabled && seerr && members && catalogue ? {
       householdApp: { catalogue, blocklist: seerr, members, ...(requests ? { requests } : {}) },
     } : {}),
+    ...(requests && seerr ? {
+      titleHolds: requests,
+      adminRequests: new AdminRequests({ store, seerr, jellyfin, service, requests }),
+    } : {}),
   });
   const backfillSince = config.requestBackfillEnabled ? config.requestBackfillSince : undefined;
   const backfillRequests = async (signal: AbortSignal) => {
@@ -115,6 +120,8 @@ async function main(): Promise<void> {
         detail: error instanceof Error ? error.message : String(error),
       }));
     });
+    // New items: a cancelled request Seerr lost since the last reconciliation is found now, and its title held.
+    if (!signal.aborted) await requests?.checkTitleHolds({ signal });
   });
   const catalogSyncTimer = config.catalogSyncIntervalSeconds > 0
     ? setInterval(syncCatalog, config.catalogSyncIntervalSeconds * 1000)

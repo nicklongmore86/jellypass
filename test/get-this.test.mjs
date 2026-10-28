@@ -241,8 +241,8 @@ describe('household app "Get this": branches', { timeout: 60_000 }, () => {
     assert.equal(series.state, 'in_library');
     assert.deepEqual(series.seasons.map((season) => [season.seasonNumber, season.state]), [[1, 'in_library'], [2, 'requested']]);
     const listed = (await app.get(`${APP}/requests`)).json().results;
-    assert.deepEqual(listed.map(({ id: _, ...entry }) => entry), [{
-      mediaType: 'tv', tmdbId: T_TV, status: 'requested', byYou: true,
+    assert.deepEqual(listed.map(({ id: _, requestedOn: __, ...entry }) => entry), [{
+      mediaType: 'tv', tmdbId: T_TV, status: 'requested', byYou: true, cancellable: false,
       seasons: [{ seasonNumber: 1, status: 'ready' }, { seasonNumber: 2, status: 'requested' }, { seasonNumber: 3, status: 'requested' }],
     }]);
   });
@@ -453,22 +453,23 @@ describe('household app "Get this": every outcome follows the request', { timeou
     assert.equal((await app.get(`${APP}/movie/${T_MOVIE}`)).json().state, 'requested');
   });
 
-  it('shows an interest as failed once someone deletes its request, and drops it once the title\'s media record goes', async (t) => {
-    for (const [what, change, status] of [
+  it('drops an interest, as its requester\'s record, once an administrator deletes its request, with or without the title\'s media record', async (t) => {
+    for (const [what, change] of [
       ['the request', (seerr) => {
         seerr.requests[SEERR_IDS[BOB]] = [];
         seerr.media[T_MOVIE] = { id: 7360001, mediaType: 'movie', tmdbId: T_MOVIE, status: 2, requests: [] };
-      }, 'failed'],
+      }],
       ['the media record', (seerr) => {
         seerr.requests[SEERR_IDS[BOB]] = [];
-      }, 'deleted'],
+      }],
     ]) {
       const app = await start(t, world({ tmdbMovies, requests: { [SEERR_IDS[BOB]]: [request({ id: 7300601, seerrUser: SEERR_IDS[BOB] })] } }));
       await getThis(app);
       await outcome(app, change);
-      assert.equal(app.store.listAppRequests()[0][1].status, status, what);
-      // A deleted request is no longer listed, as Seerr no longer lists it; a failed one shows "We couldn't get this".
-      assert.deepEqual((await app.get(`${APP}/requests`)).json().results.map((entry) => entry.status), status === 'deleted' ? [] : ['failed'], what);
+      assert.equal(app.store.listAppRequests()[0][1].status, 'deleted', what);
+      // No longer listed, as Seerr no longer lists the request, and the title can be asked for again.
+      assert.deepEqual((await app.get(`${APP}/requests`)).json().results, [], what);
+      assert.equal((await app.get(`${APP}/movie/${T_MOVIE}`)).json().state, 'get_this', what);
     }
   });
 
@@ -666,7 +667,7 @@ describe('household app "Get this": what the household sees afterwards', { timeo
       }
       const listed = (await app.get(`${APP}/requests`)).json();
       for (const entry of listed.results) {
-        assert.deepEqual(Object.keys(entry).sort(), ['byYou', 'id', 'mediaType', 'seasons', 'status', 'tmdbId']);
+        assert.deepEqual(Object.keys(entry).sort(), ['byYou', 'cancellable', 'id', 'mediaType', 'requestedOn', 'seasons', 'status', 'tmdbId']);
         assert.match(entry.id, /^[A-Za-z0-9_-]{22}$/);
       }
       assert.doesNotMatch(JSON.stringify(listed), /735000|736000|7300[56]0|seerr|request(ed)?By|mill|bob/i);

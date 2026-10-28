@@ -494,10 +494,17 @@ should use `ADMIN_TOKEN` as a bearer token instead of a session cookie; bearer
 requests are not origin-checked. Over HTTPS the session cookie is
 `__Host-jellypass_session`; on plain HTTP it is `jellypass_session`.
 
-The UI contains four views:
+The UI contains five views:
 
 - **Dashboard** — grant counts, synchronization health, and up to 12 recent
   Seerr requests linked to the synchronized catalog.
+- **Requests** — with the household app enabled, every household's requests
+  from the app, filtered by household, status, type, title or requester, with
+  **Approve**, **Decline** and **Cancel request** (for every household
+  following it; for a movie Jellyfin does not have, optionally **Also remove
+  from Radarr** through Seerr), and the **Held titles** a cancel left with
+  nobody, which **Release** gives to chosen households. See
+  [`docs/app-design.md`](docs/app-design.md), "Administrators' Requests tab".
 - **Library** — catalog search, filters, sorting, pagination, and bulk access
   assignment for up to 500 selected items.
 - **Grants** — active automated and manual grants, owners, groups, sync status,
@@ -722,7 +729,7 @@ and nowhere else (on the administrator host they do not exist). The
 
 | Method | Path | Answer |
 | --- | --- | --- |
-| `GET` | `/jellypass/app/v1/me` | `{"name", "household", "apiVersion"}`: the caller's Jellyfin display name and household name, and the revision of the `v1` API the server speaks (an integer, `1` today; it goes up by one with each release that adds a field or endpoint, and never down). `v1` only ever gains fields and endpoints: a breaking change would be `/jellypass/app/v2`. |
+| `GET` | `/jellypass/app/v1/me` | `{"name", "household", "apiVersion"}`: the caller's Jellyfin display name and household name, and the revision of the `v1` API the server speaks (an integer, `2` today; it goes up by one with each release that adds a field or endpoint, and never down). `v1` only ever gains fields and endpoints: a breaking change would be `/jellypass/app/v2`. |
 | `GET` | `/jellypass/app/v1/search?q=...&page=N` | A page of title cards. `q` is 1 to 100 characters; `page` 1 to 500, default 1. |
 | `GET` | `/jellypass/app/v1/discover/{list}?page=N` | A page of title cards; `list` is `trending`, `trending-movies`, `trending-tv`, `popular-movies`, `popular-tv`, `new-movies` (films that opened in US theatres in the last 60 days), `upcoming` (upcoming movies), `upcoming-tv` (upcoming series), `top-movies` or `top-tv` (TMDB's top rated). |
 | `GET` | `/jellypass/app/v1/discover/sources` | The streaming services (networks) and studios the app offers, with their TMDB logos; no TMDB call. |
@@ -735,7 +742,8 @@ and nowhere else (on the administrator host they do not exist). The
 | `GET` | `/jellypass/app/v1/tv/{tmdbId}/season/{n}` | One season, with its episodes. |
 | `POST` | `/jellypass/app/v1/movie/{tmdbId}/get` | ["Get this"](#get-this) for a movie (empty body or `{}`): always `202 {"status":"accepted"}`. |
 | `POST` | `/jellypass/app/v1/tv/{tmdbId}/get` | "Get this" for seasons of a series, `{"seasons": [1, 2]}` (1 to 100 seasons from 1 to 999): always `202 {"status":"accepted"}`. |
-| `GET` | `/jellypass/app/v1/requests` | The household's own titles from "Get this", with a coarse status: `{"results": [{"id", "mediaType", "tmdbId", "status", "seasons", "byYou"}]}`. |
+| `GET` | `/jellypass/app/v1/requests` | The household's own titles from "Get this", with a coarse status: `{"results": [{"id", "mediaType", "tmdbId", "status", "seasons", "byYou", "cancellable", "requestedOn"}]}` (`requestedOn` is a day, `YYYY-MM-DD`). |
+| `POST` | `/jellypass/app/v1/requests/{id}/cancel` | Cancels one of the caller's own requests (an `id` from `/requests`, empty body or `{}`): always `202 {"status":"accepted"}`, whatever becomes of it; see [Cancelling](docs/app-design.md#cancelling-step-2c). |
 
 The machine-readable contract is [docs/app-api/v1.openapi.json](docs/app-api/v1.openapi.json)
 (OpenAPI 3.1). Native clients follow
@@ -869,16 +877,35 @@ view has the title or season: anyone else in the household, kept from it by a
 library, a parental limit or a blocked tag, sees `requested`) or `failed` (We
 couldn't get this: declined or failed), with each season's status for a series; `byYou` says
 whether the caller asked (otherwise someone else in the household); `id` is
-opaque. No requester names, Seerr IDs, counts or dates. Statuses are brought
-up to date by each scheduled reconciliation (`RECONCILE_INTERVAL_SECONDS`) and
-when a grant is created. There are no notifications.
+opaque; `requestedOn` is the day (`YYYY-MM-DD`, never a time) the household
+last asked; `cancellable` says whether the caller may cancel it. No requester
+names, Seerr IDs or counts. Statuses are brought up to date by each scheduled
+reconciliation (`RECONCILE_INTERVAL_SECONDS`) and when a grant is created. A
+request an administrator deletes in Seerr leaves every household's list (the
+requester's and any following it alike), and the title can be asked for
+again. There are no notifications.
+
+**Cancelling** (`POST /jellypass/app/v1/requests/{id}/cancel`): only the member
+who asked may cancel, and only before anything of the title is ready for
+them. The answer is always the same `202`, and so is what the member sees
+afterwards: the entry leaves the list and the title shows Get this again. In
+the background, the request is deleted in Seerr as the member only while it is
+still pending and no other household follows it (nothing downloads then);
+otherwise it is kept, and when it arrives this household is not given it:
+households still following it are, and with none it is **held for no
+household** (private to everyone but Jellyfin administrators, never public)
+until an administrator gives it to someone with the grant tools. The admin-only
+`GET /v1/app/held` lists held titles. Access already given is never taken back.
+Cancels share the "Get this" limits. See
+[Cancelling](docs/app-design.md#cancelling-step-2c).
 
 `jfa_app_get_this_total{result="accepted"|"ineligible"|"error"}` and
 `jfa_app_get_this_branches_total{branch}` count calls and what their
 background work did; no label names a title. The gauges
 `jfa_app_safety_markers{kind}`, `jfa_app_request_intents{status}` and
 `jfa_app_deferred_webhooks` count what "Get this" still protects or has in
-flight, and the admin-only `GET /v1/app/outstanding` lists it (counts by kind,
+flight (`jfa_app_withdrawals{kind}` and `jfa_app_held_titles` what cancels
+still decide), and the admin-only `GET /v1/app/outstanding` lists it (counts by kind,
 oldest age, TMDB IDs and households, `clear` once all are 0); household hosts
 never serve it. The app's "Get this" button is
 described under [Household app (PWA)](#household-app-pwa). See
@@ -1185,7 +1212,15 @@ answers `"clear": true`. Requests an outstanding safety marker
 back, and a marker is not limited to 30 days: one naming a request not handled
 yet (pending, declined or never available) lasts until it is, up to 400 days;
 see
-[Store, bounds and rollback](docs/app-design.md#get-this-as-implemented-step-2a). Rolling back from
+[Store, bounds and rollback](docs/app-design.md#get-this-as-implemented-step-2a).
+Request cancelling keeps the state file at schema v7, adding `appWithdrawals`
+and a `withdrawn` mark on cancelled records. Before rolling back to 3.4.0 or
+earlier, `GET /v1/app/outstanding` must show no `withdrawals` either: those
+versions grant a cancelled request to its requester's households, and give a
+requester who cancelled access to a title they cancelled that has arrived
+(held or followed); see
+[Cancelling](docs/app-design.md#cancelling-step-2c) for how to clear them.
+Rolling back from
 2.2.0 to 2.1.1, 2.1.0 or 2.0.0 keeps the state file readable, but those
 versions retry grants marked `orphaned` (see
 [A re-imported title is public](#a-re-imported-title-is-public-or-a-grant-is-orphaned))
@@ -1370,7 +1405,13 @@ blocked-tag policy.
 | --- | --- | --- |
 | `GET` | `/health` | Public process liveness. |
 | `POST` | `/webhooks/seerr` | Authenticated Seerr availability webhook. |
-| `GET` | `/v1/app/outstanding` | What household app "Get this" still protects or has in flight: safety markers, request intents and deferred webhooks, with `"clear": true` once all are 0. Check it before rolling back. |
+| `GET` | `/v1/app/outstanding` | What household app "Get this" still protects or has in flight: safety markers, request intents, deferred webhooks and cancels that still decide a grant (`withdrawals`), with `"clear": true` once all are 0. Check it before rolling back. |
+| `GET` | `/v1/app/held` | Titles a household app cancel left held for no household (private to everyone but Jellyfin administrators) until an administrator gives them to someone. Read-only. |
+| `GET` | `/v1/app/requests` | Every household's app requests by Seerr request, with Seerr's status, followers and the actions offered, and the held titles (the admin UI's Requests tab). |
+| `POST` | `/v1/app/requests/{requestId}/approve` | Approve a pending request in Seerr. |
+| `POST` | `/v1/app/requests/{requestId}/decline` | Decline a pending request in Seerr; every household following it sees "We couldn't get this". |
+| `POST` | `/v1/app/requests/{requestId}/cancel` | Send every household following it back to "Get this", hold the title should it arrive, then delete the request in Seerr; `{"removeFromRadarr": true}` also removes a movie Jellyfin does not have from Radarr. |
+| `POST` | `/v1/app/held/{requestId}/release` | Give a held title to `{"householdIds": [...]}`. |
 | `GET` | `/v1/grants` | List grants and synchronization state. |
 | `GET` | `/v1/grants/{itemId}/plan` | Preview changes for one grant. |
 | `DELETE` | `/v1/grants/{itemId}/requests/{requestId}` | Revoke one request owner; supports `?dryRun=true`. |

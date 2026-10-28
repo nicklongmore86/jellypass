@@ -2,12 +2,14 @@ import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { ConflictError, UserProvisioningError, type AccessService } from './access-service.js';
 import { HouseholdApp, type HouseholdAppOptions } from './app-api.js';
+import { AdminActionLimitError, AdminSeerrError, type AdminRequests } from './admin-requests.js';
 import { ADMIN_APP_JS, ADMIN_FAVICON_SVG, ADMIN_HTML, ADMIN_STYLES } from './admin-ui.js';
 import { APP_PERMISSIONS_POLICY, AppAssets } from './app-assets.js';
 import { expiredSessionCookie, hasSessionCookie, isSameOriginRequest, isSecureRequest, sessionCookie, type WebAuth } from './auth.js';
 import { ClientIpResolver } from './client-ip.js';
 import type { LogLevel } from './config.js';
 import { HouseholdGateway } from './household-gateway.js';
+import type { HouseholdRequests } from './household-requests.js';
 import { RECENT_REQUESTS_LIMIT } from './seerr.js';
 import { BackgroundTasks } from './shutdown.js';
 import { TvAssets } from './tv-assets.js';
@@ -57,6 +59,17 @@ export interface ServerOptions {
    * answer a fixed 404 there; they are never served on the admin host.
    */
   householdApp?: Pick<HouseholdAppOptions, 'catalogue' | 'blocklist' | 'members' | 'requests' | 'libraryTtlMs' | 'titleTtlMs' | 'blocklistTtlMs' | 'catalogueLimits' | 'signOutLimits' | 'now'>;
+  /**
+   * The household app's title holds (HouseholdRequests.checkTitleHolds), checked in the background after each
+   * MEDIA_AVAILABLE webhook and library catalog sync, so a title whose cancelled request Seerr lost is held soon after it
+   * arrives rather than at the next scheduled reconciliation.
+   */
+  titleHolds?: Pick<HouseholdRequests, 'checkTitleHolds'>;
+  /**
+   * The administrators' Requests tab's API (`GET /v1/app/requests`, its actions and releasing held titles); without it
+   * those paths answer 404 `requests_not_configured`.
+   */
+  adminRequests?: Pick<AdminRequests, 'list' | 'approve' | 'decline' | 'cancel' | 'release'>;
 }
 
 export interface JellyPassServer extends Server {
@@ -107,6 +120,8 @@ export function makeServer(
         } : {}),
       })
     : undefined;
+  const titleHolds = options?.titleHolds;
+  const checkTitleHolds = () => { if (titleHolds) background.run((signal) => titleHolds.checkTitleHolds({ signal })); };
   const clientIp = new ClientIpResolver(options?.trustedProxies);
   const server = createServer(async (request, response) => {
     try {
@@ -191,6 +206,7 @@ export function makeServer(
           throw error;
         }
         const result = await service.processWebhook(event);
+        if (event.notificationType === 'MEDIA_AVAILABLE') checkTitleHolds();
         return json(response, result ? 200 : 202, result ? { status: 'granted', grant: result } : { status: 'ignored' });
       }
       if (!authorized(request, tokens.admin)) {
@@ -207,6 +223,33 @@ export function makeServer(
       }
       if (request.method === 'GET' && url.pathname === '/v1/app/outstanding') {
         return json(response, 200, service.appOutstanding());
+      }
+      if (request.method === 'GET' && url.pathname === '/v1/app/held') {
+        return json(response, 200, service.appHeld());
+      }
+      if (url.pathname === '/v1/app/requests' || url.pathname.startsWith('/v1/app/requests/') || url.pathname.startsWith('/v1/app/held/')) {
+        const adminRequests = options?.adminRequests;
+        if (request.method === 'GET' && url.pathname === '/v1/app/requests') {
+          if (!adminRequests) return json(response, 404, { error: 'requests_not_configured' });
+          return json(response, 200, await adminRequests.list());
+        }
+        const action = request.method === 'POST' && segments.length === 5 && segments[0] === 'v1' && segments[1] === 'app' ? segments[4] : undefined;
+        if (segments[2] === 'requests' && (action === 'approve' || action === 'decline' || action === 'cancel')) {
+          const body = action === 'cancel' ? await optionalBody(request) : (requireJsonIfBody(request), {});
+          if (!adminRequests) return json(response, 404, { error: 'requests_not_configured' });
+          const requestId = segments[3] ?? '';
+          if (action === 'approve') return json(response, 200, await adminRequests.approve(requestId));
+          if (action === 'decline') return json(response, 200, await adminRequests.decline(requestId));
+          if (Object.keys(body).some((key) => key !== 'removeFromRadarr')) throw new Error('body must contain only removeFromRadarr');
+          return json(response, 200, await adminRequests.cancel(requestId, { removeFromRadarr: optionalBoolean(body.removeFromRadarr, 'removeFromRadarr') }));
+        }
+        if (segments[2] === 'held' && action === 'release') {
+          const body = recordBody(await readJson(request));
+          if (!adminRequests) return json(response, 404, { error: 'requests_not_configured' });
+          const householdIds = stringArray(body.householdIds, 'householdIds').map((id) => validId(id, 'householdId'));
+          if (!/^[1-9][0-9]{0,15}$/.test(segments[3] ?? '')) throw new Error('requestId is invalid');
+          return json(response, 200, await adminRequests.release(segments[3] as string, householdIds));
+        }
       }
       if (request.method === 'GET' && url.pathname === '/v1/grants') {
         return json(response, 200, { grants: service.listGrants() });
@@ -260,6 +303,7 @@ export function makeServer(
       if (request.method === 'POST' && url.pathname === '/v1/library/sync') {
         requireJsonIfBody(request);
         const catalog = await service.syncLibraryCatalog();
+        checkTitleHolds();
         return json(response, 200, { status: 'synced', ...catalog });
       }
       if (request.method === 'PUT' && url.pathname === '/v1/library/access') {
@@ -336,6 +380,8 @@ export function makeServer(
         });
       }
       if (error instanceof UnsupportedMediaTypeError) return json(response, 415, { error: 'unsupported_media_type' });
+      if (error instanceof AdminActionLimitError) return json(response, 429, { error: 'too_many_requests' });
+      if (error instanceof AdminSeerrError) return json(response, 502, { error: error.message });
       if (error instanceof ConflictError) return json(response, 409, { error: error.message, code: error.code });
       const message = error instanceof Error ? error.message : 'unknown error';
       console.error(JSON.stringify({ level: 'error', message }));
@@ -401,6 +447,13 @@ async function readJson(request: IncomingMessage, { requireJsonType = true } = {
   } catch {
     throw new Error('body must be valid JSON');
   }
+}
+
+/** An optional JSON object body: none (or an empty one) is `{}`; one that is there must be declared as JSON. */
+async function optionalBody(request: IncomingMessage): Promise<Record<string, unknown>> {
+  requireJsonIfBody(request);
+  if (request.headers['transfer-encoding'] === undefined && Number(request.headers['content-length'] ?? 0) === 0) return {};
+  return recordBody(await readJson(request));
 }
 
 function recordBody(value: unknown): Record<string, unknown> {

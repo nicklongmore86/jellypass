@@ -104,6 +104,10 @@ export interface RequestEntry {
   seasons: Array<{ seasonNumber: number; status: CoarseStatus }>;
   /** Whether the caller made any of the household's records for the title. */
   byYou: boolean;
+  /** Whether the caller may cancel it now. Absent from a server before `apiVersion` 2, which has no cancel: no Cancel is offered. */
+  cancellable?: boolean;
+  /** The day (`YYYY-MM-DD`, UTC) the household last asked for it. Absent from a server before `apiVersion` 2. */
+  requestedOn?: string;
 }
 
 export interface RequestList {

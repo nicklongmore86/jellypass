@@ -58,7 +58,8 @@ function adminPage(answer) {
     Headers,
     URLSearchParams,
     confirm: () => true,
-    Date: { now: () => now, parse: Date.parse },
+    // A real Date (a grant card formats its time), with the manual clock's now.
+    Date: class extends Date { static now() { return now; } },
     setTimeout: (callback, ms) => { const id = nextTimer++; timers.set(id, { at: now + (ms ?? 0), callback }); return id; },
     clearTimeout: (id) => { timers.delete(id); },
   };
@@ -446,5 +447,194 @@ describe('admin UI sign-in', () => {
     assert.equal(JSON.stringify(page.view()), JSON.stringify({ login: false, app: true, notice: '', connection: 'Library sync required' }));
     assert.equal(loginError(page), '');
     assert.equal(page.toast(), '');
+  });
+});
+
+describe('admin UI Requests tab', () => {
+  const row = (overrides = {}) => ({
+    requestId: '7380001',
+    mediaType: 'movie',
+    tmdbId: 960001,
+    title: 'Synthetic Film',
+    year: 2020,
+    seasons: [],
+    status: 'requested',
+    seerrStatus: 'pending',
+    requester: { id: 'a11ce000a11ce000a11ce000a11ce000', name: 'Alice' },
+    householdId: 'grove',
+    householdName: 'Grove',
+    requestedOn: '2026-10-20',
+    followers: 1,
+    households: [{ id: 'grove', name: 'Grove', status: 'requested' }, { id: 'heath', name: 'Heath', status: 'requested' }],
+    withdrawn: false,
+    held: false,
+    actions: { approve: true, decline: true, cancel: true, removeFromRadarr: true },
+    ...overrides,
+  });
+  const LISTING = {
+    radarr: true,
+    requests: [
+      row(),
+      row({ requestId: '7380002', mediaType: 'tv', tmdbId: 960002, title: 'Synthetic Show', seasons: [1, 2], seerrStatus: 'approved', requester: { id: 'b0b00000b0b00000b0b00000b0b00000', name: 'Bob' }, householdId: 'heath', householdName: 'Heath', followers: 0, households: [{ id: 'heath', name: 'Heath', status: 'requested' }], actions: { approve: false, decline: false, cancel: true, removeFromRadarr: false } }),
+      row({ requestId: '7380003', tmdbId: 960003, title: 'Synthetic Declined', status: 'declined', seerrStatus: 'declined', followers: 0, households: [{ id: 'grove', name: 'Grove', status: 'declined' }], actions: { approve: false, decline: false, cancel: false, removeFromRadarr: false } }),
+    ],
+    held: [{ requestId: '7380009', itemId: '11110000111100001111000011110000', mediaType: 'movie', tmdbId: 960009, title: 'Synthetic Held', year: 2021, cancelledAt: '2026-10-01T10:00:00.000Z', grantedAt: '2026-10-05T10:00:00.000Z' }],
+  };
+  const GROUPS = { status: 200, body: { groups: [{ id: 'grove', name: 'Grove', userIds: [] }, { id: 'heath', name: 'Heath', userIds: [] }] } };
+
+  /** A signed-in page whose Requests tab answers LISTING; `posts` gets every action with its body. */
+  async function requestsPage(posts = [], answers = {}) {
+    const page = adminPage((path, init) => {
+      if (init?.method === 'POST') {
+        posts.push([path, init.body ? JSON.parse(init.body) : undefined]);
+        return answers[path] ?? { status: 200, body: { status: 'done', changed: true } };
+      }
+      if (path === '/v1/app/requests') return answers[path] ?? { status: 200, body: LISTING };
+      if (path === '/v1/groups') return GROUPS;
+      return DATA[path];
+    });
+    // linkedom has no <dialog> methods.
+    page.window.HTMLElement.prototype.showModal = function showModal() { this.setAttribute('open', ''); };
+    page.window.HTMLElement.prototype.close = function close() { this.removeAttribute('open'); };
+    await page.settle();
+    page.document.querySelector('.tabs button[data-tab="requests"]').dispatchEvent(new page.window.Event('click'));
+    await page.settle();
+    return page;
+  }
+  const titles = (page) => [...page.document.querySelectorAll('#household-requests-list .request-row h3')].map((heading) => heading.textContent);
+  const button = (page, label) => [...page.document.querySelectorAll('#requests-panel button, dialog button')].find((entry) => entry.getAttribute('aria-label') === label || entry.textContent === label);
+  const change = (page, id, value) => {
+    page.document.getElementById(id).value = value;
+    page.document.getElementById(id).dispatchEvent(new page.window.Event(id === 'requests-search' ? 'input' : 'change'));
+  };
+
+  it('loads the requests only when the tab is opened, and lists each with its requester, household and actions', async () => {
+    const page = await requestsPage();
+    assert.equal(page.requests.filter((request) => request === 'GET /v1/app/requests').length, 1);
+    assert.equal(page.document.getElementById('requests-panel').hidden, false);
+    assert.deepEqual(titles(page), ['Synthetic Film (2020)', 'Synthetic Show (2020)', 'Synthetic Declined (2020)']);
+    const first = page.document.querySelector('#household-requests-list .request-row');
+    assert.match(first.textContent, /Requested 2026-10-20 by Alice · Grove/);
+    assert.match(first.textContent, /Grove, Heath · 1 following/);
+    assert.deepEqual([...first.querySelectorAll('button')].map((entry) => entry.textContent), ['Approve', 'Decline', 'Cancel request']);
+    assert.deepEqual([...page.document.querySelectorAll('#household-requests-list .request-row')][2].querySelectorAll('button').length, 0);
+    assert.equal(page.document.getElementById('requests-count').textContent, '3');
+    assert.match(page.document.getElementById('held-list').textContent, /Synthetic Held \(2021\).*Cancelled 2026-10-01 · arrived 2026-10-05/);
+  });
+
+  it('filters by household, status, type and title or requester, on the page', async () => {
+    const page = await requestsPage();
+    const listed = page.requests.length;
+    change(page, 'requests-type', 'tv');
+    assert.deepEqual(titles(page), ['Synthetic Show (2020)']);
+    change(page, 'requests-type', '');
+    change(page, 'requests-household', 'heath');
+    assert.deepEqual(titles(page), ['Synthetic Film (2020)', 'Synthetic Show (2020)']);
+    change(page, 'requests-household', '');
+    change(page, 'requests-status', 'failed');
+    assert.deepEqual(titles(page), ['Synthetic Declined (2020)']);
+    change(page, 'requests-status', 'waiting');
+    assert.deepEqual(titles(page), ['Synthetic Film (2020)', 'Synthetic Show (2020)']);
+    change(page, 'requests-status', '');
+    change(page, 'requests-search', 'bob');
+    assert.deepEqual(titles(page), ['Synthetic Show (2020)']);
+    assert.equal(page.document.getElementById('requests-summary').textContent, '1 of 3 requests shown');
+    change(page, 'requests-search', 'nothing like it');
+    assert.match(page.document.getElementById('household-requests-list').textContent, /No requests match/);
+    assert.equal(page.requests.length, listed, 'filtering asks the server nothing');
+  });
+
+  it('confirms a cancel first, offers "Also remove from Radarr" only where the server does, and sends it only when ticked', async () => {
+    const posts = [];
+    const page = await requestsPage(posts);
+    button(page, 'Cancel request: Synthetic Show (2020)').dispatchEvent(new page.window.Event('click'));
+    const dialog = page.document.getElementById('request-action-dialog');
+    assert.ok(dialog.hasAttribute('open'));
+    assert.equal(page.document.getElementById('request-radarr-option').hidden, true, 'never for a series');
+    assert.match(page.document.getElementById('request-action-text').textContent, /back to “Get this”/);
+    assert.deepEqual(posts, [], 'nothing is sent before the confirmation');
+    page.document.getElementById('request-action-form').dispatchEvent(new page.window.Event('submit'));
+    await page.settle();
+    assert.deepEqual(posts, [['/v1/app/requests/7380002/cancel', undefined]]);
+
+    button(page, 'Cancel request: Synthetic Film (2020)').dispatchEvent(new page.window.Event('click'));
+    assert.equal(page.document.getElementById('request-radarr-option').hidden, false);
+    page.document.getElementById('request-radarr').checked = true;
+    page.document.getElementById('request-action-form').dispatchEvent(new page.window.Event('submit'));
+    await page.settle();
+    assert.deepEqual(posts.at(-1), ['/v1/app/requests/7380001/cancel', { removeFromRadarr: true }]);
+    assert.equal(page.requests.filter((request) => request === 'GET /v1/app/requests').length, 3, 'the list is read again after each action');
+  });
+
+  it('approves and declines after confirming, and shows a refusal as a sentence', async () => {
+    const posts = [];
+    const page = await requestsPage(posts, { '/v1/app/requests/7380001/decline': { status: 409, body: { error: 'only a pending request can be declined', code: 'request_not_pending' } } });
+    button(page, 'Approve: Synthetic Film (2020)').dispatchEvent(new page.window.Event('click'));
+    assert.equal(page.document.getElementById('request-radarr-option').hidden, true);
+    page.document.getElementById('request-action-form').dispatchEvent(new page.window.Event('submit'));
+    await page.settle();
+    assert.equal(page.toast(), 'Approved.');
+    button(page, 'Decline: Synthetic Film (2020)').dispatchEvent(new page.window.Event('click'));
+    page.document.getElementById('request-action-form').dispatchEvent(new page.window.Event('submit'));
+    await page.settle();
+    assert.deepEqual(posts.map(([path]) => path), ['/v1/app/requests/7380001/approve', '/v1/app/requests/7380001/decline']);
+    assert.equal(page.toast(), 'only a pending request can be declined');
+  });
+
+  it('releases a held title to the households chosen, and asks for one first', async () => {
+    const posts = [];
+    const page = await requestsPage(posts);
+    const release = [...page.document.querySelectorAll('#held-list button')].find((entry) => entry.textContent === 'Release');
+    release.dispatchEvent(new page.window.Event('click'));
+    assert.ok(page.document.getElementById('release-dialog').hasAttribute('open'));
+    page.document.getElementById('release-form').dispatchEvent(new page.window.Event('submit'));
+    await page.settle();
+    assert.equal(page.document.getElementById('release-error').textContent, 'Choose at least one household.');
+    assert.deepEqual(posts, []);
+    // linkedom matches :checked by the attribute.
+    page.document.querySelector('#release-options input[value="heath"]').setAttribute('checked', '');
+    page.document.getElementById('release-form').dispatchEvent(new page.window.Event('submit'));
+    await page.settle();
+    assert.deepEqual(posts, [['/v1/app/held/7380009/release', { householdIds: ['heath'] }]]);
+    assert.equal(page.toast(), 'Released to Heath.');
+  });
+
+  it('says so when the server has no requests to show, and puts no secret in the page', async () => {
+    const page = await requestsPage([], { '/v1/app/requests': { status: 404, body: { error: 'requests_not_configured' } } });
+    assert.match(page.document.getElementById('household-requests-list').textContent, /Requests unavailable.*Requests need the household app and Seerr\./);
+    assert.doesNotMatch(page.document.documentElement.outerHTML, /apiKey|admin-secret|X-Api-Key/i);
+  });
+
+  it('gives every element of the page its own ID', () => {
+    const { document } = parseHTML(ADMIN_HTML);
+    const ids = [...document.querySelectorAll('[id]')].map((element) => element.id);
+    assert.ok(ids.length > 50);
+    assert.deepEqual(ids.filter((id, index) => ids.indexOf(id) !== index), []);
+  });
+
+  it('still lists a grant\'s Seerr requests in the Grants dialog once the Requests tab was shown', async () => {
+    const grant = {
+      itemId: '22220000222200002222000022220000', mediaType: 'movie', requests: { 7380001: 'a11ce000a11ce000a11ce000a11ce000' },
+      manualUserIds: [], groupIds: [], owners: ['a11ce000a11ce000a11ce000a11ce000'], sync: { state: 'synced', attempts: 0 }, updatedAt: '2026-10-20T10:00:00.000Z', active: true,
+    };
+    const page = adminPage((path, init) => {
+      if (init?.method === 'POST') return { status: 200, body: {} };
+      if (path === '/v1/app/requests') return { status: 200, body: LISTING };
+      if (path === '/v1/groups') return GROUPS;
+      if (path === '/v1/grants') return { status: 200, body: { grants: [grant] } };
+      return DATA[path];
+    });
+    page.window.HTMLElement.prototype.showModal = function showModal() { this.setAttribute('open', ''); };
+    page.window.HTMLElement.prototype.close = function close() { this.removeAttribute('open'); };
+    await page.settle();
+    page.document.querySelector('.tabs button[data-tab="requests"]').dispatchEvent(new page.window.Event('click'));
+    await page.settle();
+    page.document.querySelector('.tabs button[data-tab="grants"]').dispatchEvent(new page.window.Event('click'));
+    await page.settle();
+    [...page.document.querySelectorAll('#grants-list button')].find((entry) => entry.textContent === 'Requests').dispatchEvent(new page.window.Event('click'));
+    assert.equal(page.document.getElementById('requests-dialog').hasAttribute('open'), true);
+    assert.match(page.document.getElementById('requests-list').textContent, /Request 7380001/);
+    assert.equal(page.document.querySelectorAll('#requests-dialog .request-row').length, 1);
+    assert.equal(page.document.querySelectorAll('#household-requests-list .request-row').length, 3);
   });
 });

@@ -79,7 +79,10 @@ const webhook = (app, type, requestId, user) => app.webhook({
 });
 
 const state = async (app, pathname, options) => (await app.get(pathname, options)).json().state;
-const listed = async (app, options) => (await app.get(`${APP}/requests`, options)).json().results.map(({ id: _, ...entry }) => entry);
+const listed = async (app, options) => (await app.get(`${APP}/requests`, options)).json().results.map(({ id: _, requestedOn, ...entry }) => {
+  assert.match(requestedOn, /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/);
+  return entry;
+});
 
 describe('"Get this": Jellyfin is read again right before a request', { timeout: 60_000 }, () => {
   it('joins a movie, or a season, that arrives after the branch\'s first read, and never requests it', async (t) => {
@@ -234,7 +237,7 @@ describe('"Get this": new seasons of a series Jellyfin has', { timeout: 60_000 }
     assert.equal((await webhook(app, 'tv', 7350001, ALICE)).status, 202);
     assert.equal(app.store.get(ITEMS.tSeries), undefined);
     assert.equal(await state(app, `${APP}/tv/${T_TV}`, { host: HOST_B, user: BOB }), 'in_library');
-    assert.deepEqual(await listed(app), [{ mediaType: 'tv', tmdbId: T_TV, status: 'ready', seasons: [{ seasonNumber: 2, status: 'ready' }], byYou: true }]);
+    assert.deepEqual(await listed(app), [{ mediaType: 'tv', tmdbId: T_TV, status: 'ready', seasons: [{ seasonNumber: 2, status: 'ready' }], byYou: true, cancellable: false }]);
   });
 
   it('joins the household to a private series\' grant when the season arrives, and an administrator\'s removal sticks', async (t) => {
@@ -274,7 +277,7 @@ describe('"Get this": series ready season by season', { timeout: 60_000 }, () =>
     app.jellyfin.state.episodes.push(episode(1));
     await webhook(app, 'tv', 7300602, BOB);
     assert.deepEqual(app.store.get(ITEMS.tSeries).groupIds, ['grove', 'mill']);
-    assert.deepEqual(await listed(app), [{ mediaType: 'tv', tmdbId: T_TV, status: 'requested', seasons: [{ seasonNumber: 1, status: 'ready' }, { seasonNumber: 2, status: 'requested' }], byYou: true }]);
+    assert.deepEqual(await listed(app), [{ mediaType: 'tv', tmdbId: T_TV, status: 'requested', seasons: [{ seasonNumber: 1, status: 'ready' }, { seasonNumber: 2, status: 'requested' }], byYou: true, cancellable: false }]);
     assert.equal(app.store.listAppRequests()[0][1].status, 'pending');
     assert.ok(app.requests.activeKeys('grove').has(`tv:${T_TV}:2`));
     assert.ok(!app.requests.activeKeys('grove').has(`tv:${T_TV}:1`));

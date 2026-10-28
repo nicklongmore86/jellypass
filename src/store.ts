@@ -8,6 +8,7 @@ import type {
   AppRequestRecord,
   AppRequestStatus,
   AppSafetyTombstone,
+  AppWithdrawal,
   GrantRecord,
   GrantState,
   LibraryCatalogItem,
@@ -28,6 +29,18 @@ export const MAX_HOUSEHOLDS = 100;
  * were made (see GrantStore.writeAppRequests); pending records are never pruned.
  */
 export const APP_REQUEST_RETENTION_MS = 400 * 24 * 60 * 60 * 1000;
+
+/**
+ * The requester a held grant records for a request whose requester's Jellyfin ID is not known (AppWithdrawal
+ * `titleHold`): never an owner, as the requester withdrew the request (see GrantStore.resolveOwners), and the
+ * withdrawal is kept for as long as a grant records it.
+ */
+export const UNKNOWN_REQUESTER = '';
+
+/** Whether a withdrawal becomes a title hold once Seerr no longer has its request (AppWithdrawal `seerrGoneAt`). */
+export function becomesTitleHold(withdrawal: AppWithdrawal): boolean {
+  return withdrawal.requester === true && (withdrawal.requesterId !== undefined || withdrawal.titleHold === true);
+}
 /** The most settled "Get this" records kept per household; its own oldest are pruned first. Pending ones are never. */
 export const MAX_APP_REQUESTS_PER_HOUSEHOLD = 2000;
 /** The most deferred webhooks remembered (see GrantStore.deferWebhook); beyond it the oldest are left to the backfill. */
@@ -155,9 +168,15 @@ export class GrantStore {
     return { lastSyncedAt, items: items.map(clone) };
   }
 
+  /**
+   * The users a grant gives access to: each request's requester (except a requester who withdrew the request, see
+   * AppWithdrawal), its manual users and the members of its groups.
+   */
   public resolveOwners(grant: Pick<GrantRecord, 'requests' | 'manualUserIds' | 'groupIds'>): string[] {
+    const withdrawals = this.#state.appWithdrawals ?? {};
+    const requesters = Object.entries(grant.requests).filter(([requestId]) => !withdrawals[requestId]?.requester).map(([, userId]) => userId);
     const groupUsers = grant.groupIds.flatMap((id) => this.#state.groups[id]?.userIds ?? []);
-    return [...new Set([...Object.values(grant.requests), ...grant.manualUserIds, ...groupUsers].map(normalizeId))].sort();
+    return [...new Set([...requesters, ...grant.manualUserIds, ...groupUsers].map(normalizeId))].sort();
   }
 
   public listGroupIdsForUser(userIdInput: string): string[] {
@@ -221,6 +240,9 @@ export class GrantStore {
     const next = this.#makeGrant(itemId, requests, manualUserIds, groupIds, previous, input.mediaType);
     this.#state.grants[itemId] = next;
     this.#state.handledRequestIds = [...new Set([...(this.#state.handledRequestIds ?? []), input.requestId])];
+    const withdrawal = this.#state.appWithdrawals?.[input.requestId];
+    if (withdrawal) withdrawal.grantedAt ??= new Date().toISOString();
+    this.#pruneWithdrawals();
     await this.#save();
     return clone(next);
   }
@@ -228,7 +250,9 @@ export class GrantStore {
   public async revokeRequest(itemIdInput: string, requestId: string): Promise<RevokeResult | undefined> {
     this.#assertOpen();
     const result = this.#revokeRequest(itemIdInput, requestId);
-    if (result) await this.#save();
+    if (!result) return result;
+    this.#pruneWithdrawals();
+    await this.#save();
     return result;
   }
 
@@ -502,6 +526,12 @@ export class GrantStore {
     return Object.entries(this.#state.appRequests ?? {}).map(([id, record]) => [id, clone(record)]);
   }
 
+  /** One household app "Get this" record, by ID, as it is now (see AppRequestRecord). */
+  public getAppRequest(id: string): AppRequestRecord | undefined {
+    const record = this.#state.appRequests?.[id];
+    return record ? clone(record) : undefined;
+  }
+
   /**
    * One household's "Get this" records (detached ones included), from an index: the work depends on that household's
    * own records only, never on how many other households have.
@@ -578,6 +608,38 @@ export class GrantStore {
     return Object.values(this.#state.appSafetyTombstones ?? {}).filter((tombstone) => outstandingTombstone(tombstone, handled, now)).map(clone);
   }
 
+  /** Every household app withdrawal, by the Seerr request ID it names (see AppWithdrawal). */
+  public listAppWithdrawals(): Array<[string, AppWithdrawal]> {
+    return Object.entries(this.#state.appWithdrawals ?? {}).map(([id, withdrawal]) => [id, clone(withdrawal)]);
+  }
+
+  /** The withdrawal that names this Seerr request, if any (see AppWithdrawal). */
+  public getAppWithdrawal(requestId: string): AppWithdrawal | undefined {
+    const withdrawal = this.#state.appWithdrawals?.[requestId];
+    return withdrawal ? clone(withdrawal) : undefined;
+  }
+
+  /**
+   * The withdrawals that still decide a grant, as of `now` (see AppWithdrawal): one naming a request not handled yet,
+   * and one whose requester withdrew a request a grant records. What a version that does not read them would decide
+   * differently, so a rollback waits until there are none (docs/app-design.md, "Cancelling (step 2c)").
+   */
+  public listOutstandingAppWithdrawals(now = Date.now()): Array<[string, AppWithdrawal]> {
+    const handled = new Set(this.#state.handledRequestIds ?? []);
+    return Object.entries(this.#state.appWithdrawals ?? {})
+      .filter(([id, withdrawal]) => this.#keepsWithdrawal(id, withdrawal, handled, now))
+      .map(([id, withdrawal]) => [id, clone(withdrawal)]);
+  }
+
+  /**
+   * The title holds (see AppWithdrawal `seerrGoneAt`): withdrawals whose requester withdrew a genuine request that Seerr
+   * no longer has, by request ID. A hold that granted some of its title's items is still one (its request is handled)
+   * until every item has an active grant (`dropTitleHolds` in writeAppRequests).
+   */
+  public listAppTitleHolds(now = Date.now()): Array<[string, AppWithdrawal]> {
+    return this.listOutstandingAppWithdrawals(now).filter(([, withdrawal]) => withdrawal.seerrGoneAt !== undefined && becomesTitleHold(withdrawal));
+  }
+
   /** Records requests as handled without granting them (a "Get this" request granted as a join); see hasHandledRequest. */
   public async markRequestsHandled(requestIds: string[]): Promise<void> {
     this.#assertOpen();
@@ -620,6 +682,8 @@ export class GrantStore {
       readySeasons?: number[];
       joinOnGrant?: AppRequestRecord['joinOnGrant'];
       awaitingGrant?: boolean;
+      /** Withdrawn by the member who made it (AppRequestRecord.withdrawn); give it `status: 'deleted'` too. */
+      withdrawn?: true;
     }>;
     /** Intents now `settling`: their request is recorded, Jellyfin could not be read yet. */
     settleIntents?: Array<{ id: string; seerrRequestId: string }>;
@@ -628,6 +692,22 @@ export class GrantStore {
     tombstones?: AppSafetyTombstone[];
     /** Requests "Get this" made and settled as genuine: no member-wide tombstone for the member and title covers them. */
     exempt?: Array<{ mediaType: 'movie' | 'tv'; tmdbId: number; jellyfinUserId: string; requestId: string }>;
+    /** Households withdrawing from Seerr requests (see AppWithdrawal), merged into any withdrawal already kept. */
+    withdraw?: Array<{
+      requestId: string; mediaType: 'movie' | 'tv'; tmdbId: number; householdId: string; requester: boolean; requesterId?: string; titleHold?: boolean; declined?: boolean;
+    }>;
+    /** Withdrawals no longer needed: the member deleted their pending request, or a title hold found its title granted. */
+    forgetWithdrawals?: string[];
+    /**
+     * Requests Seerr no longer has (an administrator deleted them), not handled: a withdrawal of one with `requesterId`
+     * or `titleHold` becomes a title hold (AppWithdrawal `seerrGoneAt`), any other is forgotten.
+     */
+    requestsGone?: string[];
+    /**
+     * Title holds applied to every item of their title: one whose request is handled stays a withdrawal (it keeps the
+     * requester out of the grants that record it) and is no longer a hold; any other is forgotten.
+     */
+    dropTitleHolds?: string[];
   }): Promise<string[]> {
     this.#assertOpen();
     const now = new Date().toISOString();
@@ -643,6 +723,9 @@ export class GrantStore {
     for (const change of input.update ?? []) {
       const record = records[change.id];
       if (!record) continue;
+      // A withdrawn record stays withdrawn: no later write (a refresh that read it before the cancel, say) makes it
+      // followed, listed or settled again.
+      if (record.withdrawn && !change.withdrawn) continue;
       const { awaitingGrant: _, ...rest } = record;
       const awaiting = change.awaitingGrant ?? record.awaitingGrant === true;
       records[change.id] = {
@@ -653,6 +736,7 @@ export class GrantStore {
         ...(change.readySeasons ? { readySeasons: [...new Set(change.readySeasons)].sort((left, right) => left - right) } : {}),
         ...(change.joinOnGrant ? { joinOnGrant: change.joinOnGrant } : {}),
         ...(awaiting ? { awaitingGrant: true as const } : {}),
+        ...(change.withdrawn ? { withdrawn: true as const } : {}),
       };
     }
     const tombstones = { ...this.#state.appSafetyTombstones };
@@ -676,6 +760,41 @@ export class GrantStore {
     if (Object.keys(intents).length > 0) this.#state.appRequestIntents = intents;
     else delete this.#state.appRequestIntents;
     this.#state.appRequests = pruneAppRequests(records, Date.now());
+    const withdrawals = { ...this.#state.appWithdrawals };
+    for (const entry of input.withdraw ?? []) {
+      const before = withdrawals[entry.requestId];
+      const requesterId = before?.requesterId ?? (entry.requester && entry.requesterId ? normalizeId(entry.requesterId) : undefined);
+      withdrawals[entry.requestId] = {
+        mediaType: entry.mediaType,
+        tmdbId: entry.tmdbId,
+        householdIds: [...new Set([...(before?.householdIds ?? []), normalizeId(entry.householdId)])].sort(),
+        ...(entry.requester || before?.requester ? { requester: true as const } : {}),
+        ...(requesterId ? { requesterId } : {}),
+        ...(before?.titleHold || (entry.requester && entry.titleHold) ? { titleHold: true as const } : {}),
+        createdAt: before?.createdAt ?? now,
+        ...(before?.grantedAt ? { grantedAt: before.grantedAt } : {}),
+        ...(before?.seerrGoneAt ? { seerrGoneAt: before.seerrGoneAt } : {}),
+        ...(before?.declinedAt || entry.declined ? { declinedAt: before?.declinedAt ?? now } : {}),
+      };
+    }
+    for (const id of input.forgetWithdrawals ?? []) delete withdrawals[id];
+    const handled = new Set(this.#state.handledRequestIds ?? []);
+    for (const id of input.requestsGone ?? []) {
+      const withdrawal = withdrawals[id];
+      if (!withdrawal || handled.has(id)) continue;
+      if (becomesTitleHold(withdrawal)) withdrawals[id] = { ...withdrawal, seerrGoneAt: withdrawal.seerrGoneAt ?? now };
+      else delete withdrawals[id];
+    }
+    for (const id of input.dropTitleHolds ?? []) {
+      const withdrawal = withdrawals[id];
+      if (!withdrawal) continue;
+      if (handled.has(id)) {
+        const { seerrGoneAt: _, ...kept } = withdrawal;
+        withdrawals[id] = kept;
+      } else delete withdrawals[id];
+    }
+    this.#state.appWithdrawals = withdrawals;
+    this.#pruneWithdrawals();
     this.#state.appIdKey ??= randomBytes(32).toString('hex');
     this.#appIndexCache = undefined;
     await this.#save();
@@ -720,6 +839,24 @@ export class GrantStore {
     if (deferred.length > 0) this.#state.deferredWebhooks = deferred;
     else delete this.#state.deferredWebhooks;
     await this.#save();
+  }
+
+  /** Drops the withdrawals that no longer decide a grant (see listOutstandingAppWithdrawals), and the field once empty. */
+  #pruneWithdrawals(): void {
+    const handled = new Set(this.#state.handledRequestIds ?? []);
+    const now = Date.now();
+    const kept = Object.entries(this.#state.appWithdrawals ?? {}).filter(([id, withdrawal]) => this.#keepsWithdrawal(id, withdrawal, handled, now));
+    if (kept.length > 0) this.#state.appWithdrawals = Object.fromEntries(kept);
+    else delete this.#state.appWithdrawals;
+  }
+
+  /**
+   * Whether a withdrawal still decides a grant: its request is not handled yet (for at most APP_REQUEST_RETENTION_MS),
+   * or its requester withdrew it and a grant records it (that requester is no owner of the grant through it).
+   */
+  #keepsWithdrawal(requestId: string, withdrawal: AppWithdrawal, handled: ReadonlySet<string>, now: number): boolean {
+    if (!handled.has(requestId)) return now - Date.parse(withdrawal.createdAt) <= APP_REQUEST_RETENTION_MS;
+    return withdrawal.requester === true && Object.values(this.#state.grants).some((grant) => requestId in grant.requests);
   }
 
   #appIndex(): Map<string, string[]> {

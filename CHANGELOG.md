@@ -18,6 +18,153 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Added
+
+- **Administrators' Requests tab** (`docs/app-design.md`, "Administrators'
+  Requests tab"). A new **Requests** tab in the admin site lists every
+  household's "Get this" requests (title, type, seasons, status, requester,
+  household, day requested, Seerr's status, how many other households follow
+  it, and whether it is held), filtered on the page by household, status, type,
+  and title or requester. Each row offers, after a confirmation:
+  - **Approve** and **Decline** a pending request in Seerr. A decline shows
+    every household following it **We couldn't get this** at once, and is
+    recorded: should the title still arrive through the declined request (a
+    late webhook, its replay, the backfill), none of those households is given
+    it, and it is held for no household. This holds even after the declined
+    request is deleted in Seerr (the decline then becomes a title hold), and
+    for a request made by a Seerr user no Jellyfin user is linked to.
+  - **Cancel request** for every household: each goes back to **Get this**,
+    and the request is deleted in Seerr. JellyPass records the cancel (so the
+    title is held for no household if it still arrives) **before** Seerr
+    forgets the request, closing the window a delete in Seerr's own website
+    leaves. A title that arrived in Jellyfin before the cancel but was not
+    granted yet is held too; only a request that follows the join rules (a
+    title Jellyfin already had) leaves a public title public. This holds
+    whoever made the request, a Seerr user no Jellyfin user is linked to
+    included. **Also remove from Radarr** is offered only for a movie Jellyfin
+    does not have, and only when Seerr has an HD Radarr server; it goes
+    through Seerr, with the credentials Seerr holds. It is never offered for a
+    series (Seerr would remove the whole series from Sonarr, files included).
+  - A **Held titles** section lists titles cancelled with nobody following
+    them that arrived anyway, and **Release** gives one to chosen households.
+    Of two releases of the same title at once, only the first takes effect;
+    the other is refused (`409 title_not_held`) unless it asked for the same
+    households.
+- Admin API (admin host only, with the admin token or a session, and the same
+  origin and JSON checks as every other admin change): `GET /v1/app/requests`;
+  `POST /v1/app/requests/{requestId}/approve`, `/decline` and `/cancel`
+  (optional `{"removeFromRadarr": true}`); `POST /v1/app/held/{requestId}/release`
+  (`{"householdIds": [...]}`). Every action is idempotent, logged by request ID
+  only, and limited to 60 a minute (`429 too_many_requests`). Refusals are
+  `409` with a `code`. Without the household app, these answer
+  `404 requests_not_configured`.
+
+- **Household web app: Cancel request on My requests.** An entry the server
+  lists as `cancellable` (apiVersion 2) has a **Cancel request** button that
+  asks first, in words ("This withdraws your household's request. If it has
+  already been approved, the download may still finish, but it won't be added
+  for your household."), and then sends `POST /requests/:id/cancel`. On the
+  fixed `202` the page always says **Request cancelled**, drops the entry,
+  reads the list again, and shows the title as **Get this** again on Home,
+  Search and its page while the server catches up. Each entry also shows the
+  day it was requested. Keyboard and screen reader: real buttons, focus moves
+  into the confirmation and back, Escape keeps the request. Nothing is shown
+  of what became of the cancel, or of other households; an older server (no
+  `cancellable`) shows no button. The call budget gains a `cancel` entry for
+  "requests" in `docs/app-api/fetch-budget.json`.
+- **TV add-on: a Discover row on Jellyfin web's Search page.** For households the
+  (experimental, off by default) TV add-on is on for, searching in Jellyfin web
+  now also shows a **Discover** row under Jellyfin's own results: the titles
+  from the household app's search that can be had ("Available to get"), in the
+  same cards as the Home row, never what is already in the library, Requested
+  or not available. It asks once the words have been still for 600 ms, never
+  while the search field is empty, at least a second apart, cancels a call the
+  words have outgrown and waits out a `429`; choosing a card opens the title
+  page and Back returns to the Search page with the query and the card
+  focused. No setting, state file, app API or gateway change; nothing changes
+  on a host the add-on is not on for. See
+  [docs/tv-addon.md](docs/tv-addon.md) ("The Search row").
+
+- **TV add-on: the Samsung app** (`docs/tv-addon.md`, "The Samsung app"). Still
+  experimental and off by default: **unless `TV_ADDON_ENABLED` is set, nothing
+  changes** on any host, and on a household the add-on is not on for nothing
+  changes either. No setting is added.
+  - `GET`/`HEAD /jellypass/tv/manifest.json` on a household host the add-on is
+    on for: `{"script":"jellypass-tv.<hash>.js"}`, the add-on's current script,
+    sent `no-store`, with no token needed. It is for the loader below.
+  - Cross-origin access for the JellyPass build of Jellyfin's Samsung app, on
+    a household host the add-on is on for and only from the app's own origin
+    (`Origin: file://` or `Origin: null`, what a packaged Tizen app's page
+    sends): the app API (`/jellypass/app/v1/*`, `GET` and `POST` with
+    `Authorization` and `Content-Type`) and the add-on's files and manifest
+    (`/jellypass/tv/*`, `GET` and `HEAD`). A preflight from that origin is
+    answered `204` before any token is checked; its other answers carry
+    `Access-Control-Allow-Origin` with that origin. Credentials are never
+    allowed. Every answer on those paths there, whatever its `Origin`, the
+    add-on's long-cached files included, now carries `Vary: Origin`. Apart
+    from that header, every other origin answers exactly as before, and every
+    other household, the household app's own pages and the administrator host
+    answer exactly as before.
+  - `tv/samsung/`: a script that builds that app (`Jellyfin.wgt`, the same app
+    id as Jellyfin's, `AprZAARz4r.Jellyfin`, so it replaces it) from Jellyfin
+    web 12.3 and jellyfin-tizen at pinned commits, adds a loader that loads the
+    add-on from the household host the app is signed in to (if the script
+    fails to load, it removes the tag and asks for the manifest again later,
+    less and less often), and signs it in the pinned
+    `ghcr.io/georift/install-jellyfin-tizen` image. The install procedure is
+    in `docs/tv-addon.md`.
+
+- **Members can cancel a request they made, before it arrives (server and
+  API; the app's Cancel buttons come in a later release).**
+  `POST /jellypass/app/v1/requests/{id}/cancel` always answers the same
+  `202 {"status":"accepted"}`, and the member always sees the same afterwards:
+  the entry leaves My requests and the title shows Get this again. Only the
+  member who asked may cancel, and not once anything of the title is ready for
+  them. In the background, the Seerr request is deleted as the member only
+  while it is still pending and no other household follows it; otherwise it is
+  kept, and when the title arrives the cancelling household is not given it.
+  Households still following it are; with none, the title is **held for no
+  household** (private to everyone but Jellyfin administrators, never public)
+  until an administrator gives it to someone, and the new admin-only
+  `GET /v1/app/held` lists such titles. Access already given is never taken
+  back, and another household following the request sees nothing change.
+  If an administrator then deletes a request its requester cancelled, every
+  household is back to Get this, but the title is still held for no household
+  when it arrives (the download may go on without the request): JellyPass keeps
+  a **title hold** and holds each HD item of the title as it appears, unless a
+  "Get this" safety marker says the request follows the join rules. This is
+  eventual protection, not a guarantee: the title can be public for up to about
+  one reconciliation interval (`RECONCILE_INTERVAL_SECONDS`, 5 minutes by
+  default) after it arrives, so administrators should cancel through JellyPass
+  rather than delete such a request in Seerr. Cancels share the "Get this"
+  limits.
+- **`GET /jellypass/app/v1/requests` entries gain `cancellable` and
+  `requestedOn`** (the day the household last asked, `YYYY-MM-DD`, never a
+  time). `apiVersion` in `GET /me` is now `2`.
+- **`GET /v1/app/outstanding` counts cancels that still decide a grant**
+  (`withdrawals`, with `waiting`, `titleHolds`, `granted` and `held`), and `clear` waits for
+  them; new gauges `jfa_app_withdrawals{kind}` and `jfa_app_held_titles`.
+
+  **Upgrading** keeps the state file at schema v7 and needs no migration: it
+  gains `appWithdrawals` with the first cancel, and cancelled records a
+  `withdrawn` mark on the existing `deleted` status. **Rolling back** to
+  3.4.0 or earlier keeps every household's lists as they are, but
+  grants a cancelled request to its requester's households and gives a
+  requester who cancelled access to such a title that has arrived: check that
+  `GET /v1/app/outstanding` shows no `withdrawals` first (see "Cancelling" in
+  `docs/app-design.md` for how to clear them).
+
+### Changed
+
+- The native-client contract (`docs/app-design.md`): "CORS stays off" now has
+  one exception, the Samsung app's origin on a household host the TV add-on is
+  on for (above).
+- **A request an administrator deletes in Seerr now sends every household
+  following it back to Get this.** The requester's entry already left My
+  requests; a household that followed the same request (its interest) showed
+  "We couldn't get this" instead. Both now leave the list, and the title can be
+  asked for again.
+
 ## [3.4.0] - 2026-10-27
 
 This is a minor release. It redesigns the TV add-on, which is still
