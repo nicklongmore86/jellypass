@@ -13,7 +13,9 @@ the same script from the household host, and the household host's cross-origin r
 has not been installed on a TV. **My requests** (step 6) is a JellyPass page of Jellyfin web's own at `#/jellypass/requests`
 ("My requests"), reached from a card at the end of the Discover row and from a title the household is following; it lists
 the household's requests with their statuses and can cancel the ones the server says the member may. Nothing has been run
-on a real TV yet (see "What must be checked on a real TV").
+on a real TV yet (see "What must be checked on a real TV"). The **Discover page** (PR B of the 2026-10-28 study) is a JellyPass
+page at `#/jellypass/discover`, mirroring the app's Home, reached only from a compass button in Jellyfin's header
+("The Discover page"); its service and studio pages are a later change.
 
 The architecture study behind this design is the 2026-10-27 TV study (route 1, "a JellyPass TV module in jellyfin-web").
 The owner's decisions for it:
@@ -145,7 +147,11 @@ flowchart LR
     value is the query as typed (Jellyfin web lists results 500 ms after it stops changing, in `.searchResults` or
     `.noItemsMessage`, as children of that page), and the `viewshow` the page dispatches as it is shown. If the page or
     the field is not as that, nothing is drawn and nothing is asked;
-  - the hash route of Jellyfin web's details page, `#/details?id=<item>` (the address the API's `play.url` names).
+  - the hash route of Jellyfin web's details page, `#/details?id=<item>` (the address the API's `play.url` names);
+  - for the Discover page's header button, the Search button of Jellyfin's header, in either of its two headers (see "The
+    Discover page", "Header button"): `.skinHeader .headerRight > button.headerSearchButton` (the TV layout, and the 10.11 the
+    Samsung app bundles), and in the desktop layout of 12.x `header.MuiAppBar-root a.MuiIconButton-root[aria-label=Search][href="#/search"]`
+    with its one-path `<svg>` icon. If neither is as that, no button is drawn.
 
   If any of it is missing or shaped otherwise, the add-on draws nothing. Every entry point is wrapped so a surprise is
   swallowed, never thrown into Jellyfin web. Nothing is logged, because a message could carry what the page holds.
@@ -412,6 +418,72 @@ sign-in, even the same member with a new token, is ignored whole, failures inclu
 token shows nothing and clears nothing of the new session): the page is read again for the new session, or ended if it is
 another member's. The title page, My requests (list, names, Cancel), the Home row and the Search row all use it.
 
+### The Discover page
+
+`tv/src/discover.ts` (the data and words in `tv/src/discover-model.ts` and `tv/src/discover-data.ts`, "Discover data layer"; the
+header button in `tv/src/discover-entry.ts`): the household app's Home as a page of Jellyfin web's on the page host at
+`#/jellypass/discover`, in the TV and the desktop layout, under Jellyfin's real header and Back. The add-on handles no key (Jellyfin
+web's focus manager moves between the hero's buttons, the chips and the cards; Back is its history) and adds no document listener.
+
+- **Reached from one place only: a compass button in Jellyfin's header**, immediately before Search, in the TV layout and the
+  desktop layout (see "Header button"). There is **no** "Discover ›" heading link, no Discover end card and no fallback. The address
+  works when typed or bookmarked, and the page is drawn for whoever is signed in to this origin. Home's Discover row is unchanged:
+  **Available to get** only, one call of its own (the page's `trending` is a second call; the two do not share an answer, because the
+  row's one-minute freshness and the page's ten-minute cache differ and the row is not worth changing for one call).
+- **Parts, top to bottom.** A **hero** of up to five slides (the first row's first cards that have a backdrop): the title, its
+  facts (type, year, TMDB rating, the state's words), the overview, and the buttons **‹**, **View** and **›** with the dots as
+  text. **No auto-advance and no swipe**; **View** opens the title page. The **chips** **All / Movies / TV** (a chip shows other
+  lists, it does not filter the loaded ones; not sticky) and a toggle **Hide what I have**. Then the rows of the chip's layout
+  (pinned to the app's `HOME_LAYOUT`): on All, Trending (posters), Popular movies, Popular series and New movie releases (wide
+  backdrop cards), Upcoming movies and series (posters) and the eight **Popular on …** (a service) rows (posters, the film and series
+  list the chip names); then a **foot** with the studios' logos (light tiles), the JustWatch line and the TMDB notice.
+- **Cards.** Jellyfin's own `overflowPortraitCard` or `overflowBackdropCard` with the shared `jellypass-tv-card` focus ring, at most
+  **14 per row**, each with a **badge in words**: *In your library*, *Requested*, *Available to get*, *Can't request* (the state
+  the API gave the caller's household, through the "Get this" overlay, so a title just asked for reads Requested with no call), in
+  a colour that goes with the words (never colour alone), and the same words in the card's accessible name. **Hide what I have** hides
+  *In your library* and *Requested* and fills the row from the rest of the answer; it asks nothing. Choosing a card opens the title
+  page; **Back returns to the same card** (the page is drawn from the kept answers before anything is asked, so the host's focus
+  key finds the card) and makes **no Discover call** (the title page makes its own two). After the cache's ten minutes the key may
+  be gone and focus falls back to the hero's **View**.
+- **Rows ask as the remote scrolls.** The first four rows (or the chip's eager ones) and the sources are asked for when the page
+  opens (**5 calls** on All); every other row asks once when it comes within 700 px of the screen (an `IntersectionObserver`,
+  Chromium 51+): **10 more**, 15 in all (`tv-discover` in the budget file). Switching to Movies or TV asks for that chip's own
+  eager rows (one or two) and, as they come near, its service rows; back to All asks nothing. Nothing polls. Where there is no
+  `IntersectionObserver` every row asks at once and every image is set.
+- **Images are windowed**, for a 2019 set's memory (about 1 GB, Chromium 63, no `loading="lazy"`; a decoded poster is about
+  0.7 MB): a row's, the hero's and the logos' images get their `src` only while that part is within about a screen and a half
+  (a second observer, margin 25 %) and lose it when it is far off; their boxes keep their size, so nothing moves. Images are
+  only the API's TMDB URLs, set with DOM APIs, `referrerpolicy="no-referrer"`.
+- **The foot is one focus stop** (a `tabindex=0` block, ring inside it): the remote's Down from the last row reaches it, which
+  scrolls the studios, the JustWatch line (All and Movies) and the **TMDB notice** (every chip; required wherever TMDB's data is
+  shown) into view. The studios' tiles are **not links** and the service rows have no "See all": service and studio pages are the
+  next change, and a stub would only be a dead end.
+- **Failures and the session.** A row that fails says why (the app's words) with **Try again**, which asks once more; nothing
+  retries by itself (the data layer remembers a failure for 30 seconds and a `429` until its `Retry-After`). A `401` says "Sign in
+  to continue". Every late answer goes through the data layer's session check (`SessionWatch`): an answer for a session since ended
+  (signed out, another member, a new token) is dropped whole; signed out or another member ends the page and forgets the chip and
+  the toggle; the same member with a new token has the page drawn again from the new session's own calls.
+- **The clocks.** The kept answers (ten minutes) are timed on the **monotonic clock** (`performance.now()`) and the wall clock catches a
+  long sleep, as the add-on's other caches (`main.ts` wires them).
+- **Privacy.** The page shows only the caller's household's own view: a test draws it, with the same calls, in every "other
+  household" world of the app tests and checks it is byte-for-byte the same as with no other household, and holds no canary.
+
+#### Header button
+
+One `<button>` before Search, in Jellyfin's own header-button classes (taken from Search's own, less `headerSearchButton`,
+`hide` and any `Mui-` state class), with a compass icon, `title` and `aria-label` "Discover". It is drawn only while someone is
+signed in to this origin and the header is as expected; it is removed on sign-out and drawn for another member who signs in;
+it is put back if Jellyfin draws its header again without it (a `MutationObserver`, changes gathered for 50 ms). **If Jellyfin's
+header does not match the markup below, nothing is drawn and there is then no way in** (the address still opens the page).
+
+| Layout | What Jellyfin draws (checked) | Where the button goes |
+|---|---|---|
+| **12.3, TV layout** (what LG's and the Samsung app's TV layouts run) | the legacy header, `.skinHeader .headerRight`: SyncPlay, player, cast, **Search** (`button.headerSearchButton.show-focus`), user, clock. There is no React toolbar. | immediately before Search; `show-focus` gives Jellyfin's own focus ring, and Left/Right from it reach SyncPlay and Search |
+| **12.3, desktop layout** | the same legacy header exists but is **0 by 0**; the visible chrome is a React/MUI toolbar, `header.MuiAppBar-root`, whose actions box (`.MuiBox-root`) holds SyncPlay, Cast and the **Search link** (`a[aria-label=Search][href="#/search"]`, an `svg` with one `path`) | immediately before that link, as a `<button>` with the link's emotion classes and a copy of its icon with the compass path. React does not know the node, so it leaves it while it re-renders around it, and it is put back if the toolbar is drawn again. Jellyfin's ripple focus is script-managed, so a `:focus` ring (inside the button, in the toolbar's text colour) is drawn by the stylesheet |
+| **10.11 (the Samsung app's Jellyfin web)** | read from the 10.11.3 bundle's `renderHeader`: the same legacy header, Search = `button.headerButton.headerButtonRight.headerSearchButton` (`hide` until signed in, then shown) in `.headerRight`; the Tizen app runs the TV layout, which uses it | as the 12.3 TV layout. **Not run signed in on a Samsung or a 10.11 TV layout here** (read from the bundle only): see the real-TV checks |
+
+Both layouts were run on a real `jellyfin/jellyfin:12.3` container (screenshots, not committed).
+
 ### API use
 
 - **Where.** Only `https://<the origin the add-on's script came from>/jellypass/app/v1/...`, and only while Jellyfin
@@ -471,19 +543,19 @@ two calls. It has no `/me` (the TV shows no member name).
 
 `test/tv-addon.test.mjs` pins all of this against the budget file.
 
-`tv-discover*`: the **Discover page's** calls, for a page that is **not drawn yet** (only its data layer exists; see "Discover
-data layer" below). They are the app's Home without `/me`: `tv-discover` (All) is **5 calls when the page opens**
+`tv-discover*`: the **Discover page's** calls (see "The Discover page" and "Discover data layer"). They are the app's Home without `/me`: `tv-discover` (All) is **5 calls when the page opens**
 (`trending`, `popular-movies`, `popular-tv`, `new-movies` and `sources`) and **10 more as the lazy rows come near the
 screen** (`upcoming`, `upcoming-tv` and one list per service), **15 in all**, and **none when the member comes back to it**
 (from a title, or from another chip to All): the answers are kept. `tv-discover-movies` and `tv-discover-tv` are the same for
 those chips opened directly; `tv-discover-network` and `tv-discover-studio` are a service's or a studio's page asked
-directly (first page; a service whose row was already loaded costs nothing). `test/tv-discover-data.test.mjs` pins them.
+directly (first page; a service whose row was already loaded costs nothing; those two pages are a later change).
+`test/tv-discover-data.test.mjs` pins the data layer against them and `test/tv-addon.test.mjs` the page's own calls (5 on opening, 10
+as the rows come near, none on Back, the chips as budgeted).
 
 ## Discover data layer
 
-Groundwork for a full Discover page on the TV (a mirror of the app's Home: hero, kind chips, rows, services, studios). **Nothing
-of it is drawn or user-visible yet**, and the server and the API are unchanged. It is three modules of the add-on, built
-into the bundle once the page uses them:
+The data of the Discover page ("The Discover page"; a mirror of the app's Home: hero, kind chips, rows, services, studios). The
+server and the API are unchanged. It is three modules of the add-on:
 
 - **Readers** (`tv/src/api.ts`): `discoverList` (the eight lists the page needs), `networkList` (a service's series, films
   or both), `studioList` and `discoverSources`, each **one call** on the household app API and read leniently like the
@@ -507,8 +579,8 @@ into the bundle once the page uses them:
   A `401` empties the cache. `peek` gives a kept answer without a call, so a page can draw its rows at once when the
   member comes back.
 
-It uses nothing newer than the rest of the add-on (ES2017 after the build; no `AbortController`, `IntersectionObserver` or
-`loading="lazy"`); `test/tv-discover-data.test.mjs` parses the built modules as ES2017.
+It uses nothing newer than the rest of the add-on (ES2017 after the build; no `AbortController` or `loading="lazy"`; the page itself
+uses `IntersectionObserver`, Chromium 51, where it exists); `test/tv-discover-data.test.mjs` parses the built modules as ES2017.
 
 ## The Samsung app
 
@@ -777,6 +849,16 @@ that household:
    and Home's Discover row has the title again. Check on the title page of a Requested title that **My requests** opens the
    page, and Back from My requests returns to Home with the card focused.
 14. **Caching.** After the setting is switched off and the app restarted, the row is gone (the page is `no-store`).
+15. **Discover page.** The compass button is in the header before Search (check it on the Samsung build's 10.11 header too: that is
+   read from the bundle, not yet seen), takes the remote's focus with a visible ring (Left reaches SyncPlay, Right Search) and OK
+   opens the page. The hero's **‹ View ›** move by Left and Right and OK on **View** opens the title; Down reaches the chips, then
+   each row in turn, and Left and Right stay in a row. Rows fill as they are scrolled to (a brief skeleton), not before; the last Down
+   reaches the foot with the studios and the TMDB notice in view. Back from a title returns to the same card with the page already drawn.
+16. **Memory (the 2019 Samsung especially).** Scroll the whole page down and up three times, switch All, Movies and TV, and open
+   and Back a title: no crash, no reload of the app, no blank rows that stay blank, no images that stay missing after a row comes
+   back into view.
+17. **Look.** Badges are legible from the sofa and not only by colour, the wide cards fit about five and a half to a screen, the
+   hero's text sits on its picture without being lost, and the page is not slow to scroll with every row loaded.
 
 On a **Samsung**, nothing appears with the stock Jellyfin app, because it bundles its own Jellyfin web. With the
 JellyPass build installed (see "The Samsung app"), the same checks apply, plus those listed there under "Check on each

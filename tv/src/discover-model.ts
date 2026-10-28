@@ -158,3 +158,27 @@ export function heroCards(cards: ReadonlyArray<DiscoverCard>): DiscoverCard[] {
 
 /** The notice the page ends with (the app's `TMDB_NOTICE`, required wherever TMDB's data is shown). */
 export const TMDB_NOTICE = 'This product uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB.';
+
+/** The line under the services' rows (the app's `SOURCE_TEXT.justWatch`): a service's films are TMDB's where-to-watch data, which is JustWatch's. */
+export const JUSTWATCH_NOTE = 'Where to watch: US streaming availability from JustWatch, via TMDB.';
+
+/** The page's fixed words (the app's where it has them). */
+export const DISCOVER_TEXT = {
+  title: 'Discover',
+  kicker: 'Trending now',
+  heroLabel: 'Trending now',
+  view: 'View',
+  previous: 'Previous title',
+  next: 'Next title',
+  chips: 'Show',
+  filters: { all: 'All', movies: 'Movies', tv: 'TV' } as Readonly<Record<DiscoverFilter, string>>,
+  hideHeld: 'Hide what I have',
+  studios: 'Studios',
+  nothing: 'Nothing to show here.',
+  nothingLeft: "You already have everything here.",
+  retry: 'Try again',
+  movie: 'Movie',
+  series: 'Series',
+  /** A service's row: the app's `SOURCE_TEXT.heading` for a network (its list under the chip is not named, as the app's heading for All and Series is not). */
+  networkHeading: (name: string): string => `Popular on ${name}`,
+} as const;
