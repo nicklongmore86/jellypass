@@ -15,22 +15,31 @@ build.
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-10-28
+
+A minor release: My requests can be filtered, and a member can cancel a request
+from it. It still works with **JellyPass server 3.2.0 or later** (app API
+`v1`), as 1.0.0 does, so it can be installed before the household's server is
+upgraded. **Cancel request and the day each title was requested need JellyPass
+server 3.5.0 or later** (`apiVersion` 2 in `GET /jellypass/app/v1/me`); on an
+older server the app shows neither, with no error, and everything else works as
+in 1.0.0. The filters work on any supported server. Members update by
+installing the new TestFlight build, or the new APK over the old one.
+
 ### Added
 
 - **My requests: Cancel request.** An entry the server lists as cancellable
-  (a JellyPass server with API version 2 or later) has a **Cancel request**
-  button, 44pt, named by its request for VoiceOver and TalkBack. It opens a
-  sheet that says what cancelling does ("This withdraws your household's
-  request. If it has already been approved, the download may still finish, but
-  it won't be added for your household.") with **Cancel request** and **Keep
-  request**; it scrolls at the largest text size and stops widening on iPad.
-  Confirming sends the cancel once; the screen always says **Request
-  cancelled**, drops the entry and reads the list again, and the title shows
-  **Get this** again on Home, Search and its page. A busy server (429), no
-  connection and any other failure each have one fixed message, and nothing is
-  retried by itself. Each entry also shows the day it was requested. On an
-  older server there is no button. Needs a JellyPass server with the cancel
-  endpoint (JellyPass server 3.5.0 or later).
+  has a **Cancel request** button, 44pt, named by its request for VoiceOver and
+  TalkBack. It opens a sheet that says what cancelling does ("This withdraws
+  your household's request. If it has already been approved, the download may
+  still finish, but it won't be added for your household.") with **Cancel
+  request** and **Keep request**; it scrolls at the largest text size and stops
+  widening on iPad. Confirming sends the cancel once; the screen always says
+  **Request cancelled**, drops the entry and reads the list again, and the
+  title shows **Get this** again on Home, Search and its page. A busy server
+  (429), no connection and any other failure each have one fixed message, and
+  nothing is retried by itself. Needs JellyPass server 3.5.0 or later: an
+  older server lists no request as cancellable, so there is no button.
 - **My requests can be filtered.** Chips above the list choose a status (All,
   Requested, Ready to watch, Couldn't get this), a type (All, Films, Series)
   and "Asked by me", and they combine, as in the household web app. A series
@@ -42,16 +51,15 @@ build.
   does not change which titles are reused; with more than ten requests it
   applies to the ones loaded so far, and Load more names the next ten. The
   choice is kept in memory while the app is open, never saved to the device,
-  and cleared on sign-out or when another member signs in. It needs no server
-  change.
+  and cleared on sign-out, a refused sign-in or any change of household or
+  member. It needs no server change.
 
 ### Changed
 
-- **The app's API client reads the request fields of `apiVersion` 2**
-  (`cancellable` and the day a title was asked for, `requestedOn`) and can
-  send a cancel, for the Cancel button a later release adds. Nothing on screen
-  changes. A server before `apiVersion` 2 sends neither field: the client then
-  reads every request as not cancellable, with no day, as before.
+- **Each entry on My requests shows the day it was requested**
+  ("Requested on …", in the device's date format), on screen and in its
+  screen-reader name. Needs JellyPass server 3.5.0 or later; an older server
+  sends no day, and the entry shows none, as before.
 
 ## [1.0.0] - 2026-10-27
 
@@ -107,5 +115,6 @@ is not supported.
 - **iPhone, iPad and Android.** Portrait on phones; iPad and Android tablets
   turn. iOS is distributed through TestFlight and Android as an APK.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/mobile-v1.0.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/mobile-v1.1.0...HEAD
+[1.1.0]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.1.0
 [1.0.0]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.0.0
