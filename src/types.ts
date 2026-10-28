@@ -198,6 +198,32 @@ export interface GrantState {
    */
   householdEpochs?: Record<string, number>;
   nextHouseholdEpoch?: number;
+  /**
+   * Household app cancels that still decide a grant, by the Seerr request ID the withdrawn records named (see
+   * AppWithdrawal). Additive like `appRequests`.
+   */
+  appWithdrawals?: Record<string, AppWithdrawal>;
+}
+
+/**
+ * Households withdrew their interest in a Seerr request (docs/app-design.md, "Cancelling (step 2c)"): when the request
+ * is granted (a webhook, its replay or the backfill), those households are never given it; the households still
+ * following it are. With `requester`, the request's own requester withdrew it: the grant records the request but gives
+ * neither the requester (see GrantStore.resolveOwners) nor their households access, so a title nobody follows any more
+ * is held for no household until an administrator decides (GET /v1/app/held).
+ *
+ * Kept while the request is not handled (at most APP_REQUEST_RETENTION_MS after it was made, or until Seerr no longer
+ * has the request), and with `requester` for as long as a grant records the request.
+ */
+export interface AppWithdrawal {
+  mediaType: 'movie' | 'tv';
+  tmdbId: number;
+  /** The households whose records following the request were withdrawn. */
+  householdIds: string[];
+  requester?: true;
+  createdAt: string;
+  /** When the request was granted under this withdrawal. */
+  grantedAt?: string;
 }
 
 /**
@@ -309,6 +335,11 @@ export interface AppRequestRecord {
    * stays `pending` (with `itemIds` and its ready seasons) and joins the grant once one is created for those items.
    */
   awaitingGrant?: true;
+  /**
+   * The member who made it cancelled it (docs/app-design.md, "Cancelling (step 2c)"): its status is `deleted`, so it is
+   * not listed, not refreshed and blocks no new "Get this"; its request's grant follows the withdrawal (AppWithdrawal).
+   */
+  withdrawn?: true;
 }
 
 export type AppRequestStatus = 'pending' | 'completed' | 'failed' | 'declined' | 'deleted';

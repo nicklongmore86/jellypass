@@ -1,6 +1,6 @@
 import { createHmac } from 'node:crypto';
 import type { HouseholdJoinResult } from './access-service.js';
-import { getThisEligibility, readBlocklist, type MediaType } from './app-api.js';
+import { getThisEligibility, managesSeerrRequests, readBlocklist, type MediaType } from './app-api.js';
 import type { JellyfinClient } from './jellyfin.js';
 import { SeerrError, SeerrUnmappedUserError, type SeerrClient, type SeerrMemberClient, type SeerrTitleRecord } from './seerr.js';
 import type { BackgroundTasks } from './shutdown.js';
@@ -62,6 +62,7 @@ export const APP_TOMBSTONE_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 const INTENT_CLOCK_SKEW_MS = 5 * 60 * 1000;
 /** Seerr request statuses: pending and approved requests are active. */
 const ACTIVE_REQUEST_STATUSES = new Set([1, 2]);
+const PENDING = 1;
 const DECLINED = 3;
 const FAILED = 4;
 const COMPLETED = 5;
@@ -98,7 +99,21 @@ export interface RequestsDto {
     seasons: Array<{ seasonNumber: number; status: CoarseStatus }>;
     /** Whether the caller made any of this household's records for the title (otherwise someone in the household). */
     byYou: boolean;
+    /** Whether the caller may cancel it now (see HouseholdRequests.cancel), from the household's own records only. */
+    cancellable: boolean;
+    /** The day (UTC, `YYYY-MM-DD`) of the title's latest record: when the household last asked for it. */
+    requestedOn: string;
   }>;
+}
+
+export interface CancelInput {
+  householdId: string;
+  /** The caller's Jellyfin user, normalized. */
+  callerId: string;
+  /** The entry's opaque ID, as GET /requests lists it. */
+  id: string;
+  /** What the caller's own Jellyfin view holds of a title, read with their own credentials (as for GET /requests). */
+  ownView: (mediaType: MediaType, tmdbId: number) => Promise<OwnView>;
 }
 
 /** The background branch work was refused because shutdown has begun. */
@@ -112,13 +127,14 @@ export class GetThisRefusedError extends Error {
 export interface HouseholdRequestsOptions {
   store: Pick<GrantStore,
     | 'listAppRequests' | 'listAppRequestsForHousehold' | 'writeAppRequests' | 'getAppIdKey' | 'householdEpoch'
-    | 'hasHandledRequest' | 'listAppRequestIntents' | 'addAppRequestIntent' | 'isAppRequestIntentDurable' | 'getGroup'>;
+    | 'hasHandledRequest' | 'listAppRequestIntents' | 'addAppRequestIntent' | 'isAppRequestIntentDurable' | 'getGroup'
+    | 'hasAppRequestIntent' | 'listAppWithdrawals'>;
   /** Jellyfin with JellyPass's own key: the decision input for "Jellyfin already has it". */
   jellyfin: Pick<JellyfinClient, 'findItemsByTmdbId' | 'existingItems' | 'findItemsByName' | 'seasonsWithEpisodes'>;
   /** Seerr with the admin key: the blocklist, a title's requests, and the status of requests JellyPass recorded. */
   seerr: Pick<SeerrClient, 'blocklist' | 'titleRequests' | 'requestState'>;
   /** The caller's own Seerr user, confirmed before every call (a `SeerrUserMap`). */
-  members: { member(jellyfinUserId: string): Pick<SeerrMemberClient, 'ownUser' | 'quota' | 'confirmRequester'> | undefined };
+  members: { member(jellyfinUserId: string): Pick<SeerrMemberClient, 'ownUser' | 'quota' | 'confirmRequester' | 'cancelRequest'> | undefined };
   /** The library join rules (AccessService.joinHousehold), and the webhooks deferred for an intent (AccessService.retryDeferredRequests). */
   joins: {
     joinHousehold(
@@ -126,6 +142,8 @@ export interface HouseholdRequestsOptions {
       options: { signal?: AbortSignal },
     ): Promise<HouseholdJoinResult>;
     retryDeferredRequests(options: { signal?: AbortSignal }): Promise<void>;
+    /** Runs `work` in the queue grants are decided in (AccessService.serialized), for a cancel's withdrawal. */
+    serialized<T>(work: () => Promise<T>): Promise<T>;
   };
   /** Runs the branches after the answer; shutdown aborts its signal and waits for them. */
   background: Pick<BackgroundTasks, 'run'>;
@@ -164,6 +182,8 @@ interface ListedTitle {
   latest: string;
   byYou: boolean;
   seasons: Map<number, CoarseStatus>;
+  /** Whether the caller made one of its records that is waiting or ready (pending or completed): theirs to cancel. */
+  own: boolean;
 }
 
 /** What Jellyfin holds of a title (see #presence). */
@@ -222,6 +242,167 @@ export class HouseholdRequests {
     const epoch = this.#store.householdEpoch(input.householdId);
     const started = this.#background.run((signal) => this.#run(input, epoch, acceptedAt, signal));
     if (!started) throw new GetThisRefusedError();
+  }
+
+  /**
+   * Accepts a cancel of the caller's own request (docs/app-design.md, "Cancelling (step 2c)"): starts its work in the
+   * background and returns before anything about the entry is read, so the caller's answer is the same whatever happens
+   * next, an ID the household does not list included (see #cancel). Throws GetThisRefusedError during shutdown.
+   */
+  public async cancel(input: CancelInput): Promise<void> {
+    const epoch = this.#store.householdEpoch(input.householdId);
+    const started = this.#background.run((signal) => this.#cancel(input, epoch, signal));
+    if (!started) throw new GetThisRefusedError();
+  }
+
+  /**
+   * The background part of a cancel, in the title's turn (the same as "Get this"'s, so a cancel never races a call
+   * recording a follower). The caller's own view of the title is read first, as GET /requests reads it: if the entry
+   * is not one the caller is shown as cancellable (see list), nothing happens. Otherwise the caller's records for the
+   * title are withdrawn (see #withdraw), whatever else holds, so the caller sees the same in every case: the entry
+   * leaves the list and the title can be asked for again. Then each Seerr request the caller made among them that
+   * nobody follows any more is deleted in Seerr as the caller if it is still pending (see #deleteUnfollowed). Nothing
+   * else is ever undone: a request someone else made, or one that was approved, stays in Seerr, and a grant already
+   * made stays, so no access is ever taken back.
+   */
+  async #cancel(input: CancelInput, epoch: number | undefined, signal: AbortSignal): Promise<void> {
+    // The answer is written before anything is read.
+    await new Promise((resolve) => setImmediate(resolve));
+    if (epoch === undefined || signal.aborted) return void this.#recordBranch(signal.aborted ? 'cancelled' : 'cancel_none');
+    const key = this.#titleOfId(input.householdId, input.id);
+    const title = key ? this.#titles(input.householdId).get(key) : undefined;
+    if (!key || !title) return void this.#recordBranch('cancel_none');
+    try {
+      await this.#withLock(this.#titleLocks, key, async () => {
+        checkSignal(signal);
+        const entry = this.#titles(input.householdId, input.callerId).get(key);
+        if (!entry) return void this.#recordBranch('cancel_none');
+        this.#shown(entry, await this.#readView(input.ownView, entry));
+        checkSignal(signal);
+        if (!cancellable(entry)) return void this.#recordBranch('cancel_none');
+        const withdrawn = await this.#joins.serialized(() => this.#withdraw(input, epoch, title));
+        for (const requestId of withdrawn) {
+          checkSignal(signal);
+          await this.#deleteUnfollowed(input.callerId, title, requestId, signal);
+        }
+      });
+    } catch (error) {
+      if (error instanceof CancelledError || signal.aborted) return void this.#recordBranch('cancelled');
+      this.#recordBranch('cancel_error');
+      console.error(JSON.stringify({
+        level: 'error',
+        message: 'household app cancel failed',
+        detail: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }
+
+  /**
+   * Withdraws the caller's records for the title that are waiting or ready (pending or completed: what the caller may
+   * be shown as Requested), in one write with a withdrawal (see AppWithdrawal) for each Seerr request among them whose
+   * grant is still to come: a pending request or interest whose request is not handled, its grant not settled. Runs in
+   * the queue grants are decided in, so a webhook or the backfill grants such a request either before (then it is
+   * handled, the household keeps what it was given and no withdrawal is written) or after, by the withdrawal. Resolves
+   * with the Seerr requests the caller made among those withdrawn, for #deleteUnfollowed.
+   */
+  async #withdraw(input: CancelInput, epoch: number, title: { mediaType: MediaType; tmdbId: number }): Promise<string[]> {
+    const records = this.#store.householdEpoch(input.householdId) !== epoch ? [] : this.#store.listAppRequestsForHousehold(input.householdId)
+      .filter(([, record]) => !record.detached && record.mediaType === title.mediaType && record.tmdbId === title.tmdbId
+        && record.jellyfinUserId === input.callerId && (record.status === 'pending' || record.status === 'completed'));
+    if (records.length === 0) {
+      this.#recordBranch('cancel_none');
+      return [];
+    }
+    const waiting = records.filter(([, record]) => record.status === 'pending' && record.branch !== 'join' && record.seerrRequestId !== undefined
+      && !this.#store.hasHandledRequest(record.seerrRequestId) && !record.itemIds?.length && !record.readySeasons?.length && !record.awaitingGrant)
+      .map(([, record]) => record);
+    await this.#store.writeAppRequests({
+      update: records.map(([id]) => ({ id, status: 'deleted', withdrawn: true })),
+      withdraw: waiting.map((record) => ({
+        requestId: record.seerrRequestId as string,
+        mediaType: record.mediaType,
+        tmdbId: record.tmdbId,
+        householdId: record.householdId,
+        requester: record.branch === 'request',
+      })),
+    });
+    // Too late for the grant: a request of theirs was granted already, and the household keeps what it was given.
+    const late = records.some(([, record]) => (record.seerrRequestId !== undefined && this.#store.hasHandledRequest(record.seerrRequestId))
+      || record.status === 'completed' || (record.itemIds?.length ?? 0) > 0 || record.awaitingGrant);
+    this.#recordBranch(waiting.length === 0 && late ? 'cancel_too_late' : 'cancel_withdrawn');
+    return [...new Set(waiting.flatMap((record) => record.branch === 'request' ? [record.seerrRequestId as string] : []))];
+  }
+
+  /**
+   * Deletes `requestId` in Seerr as the caller, only when nothing else depends on it: no record in any household still
+   * follows the title and no "Get this" intent names it (read under the title's lock, so none is being recorded; an
+   * intent still settling also keeps its grant deferred), the caller's Seerr user does not manage requests (so Seerr
+   * itself refuses anything but the caller's own pending request), and Seerr reads it as pending. Nothing has been sent
+   * to Radarr or Sonarr for a pending request, so nothing downloads. Otherwise, or if the delete fails, the request
+   * stays and its withdrawal decides its grant.
+   */
+  async #deleteUnfollowed(callerId: string, title: { mediaType: MediaType; tmdbId: number }, requestId: string, signal: AbortSignal): Promise<void> {
+    const followed = this.#store.hasAppRequestIntent(title.mediaType, title.tmdbId) || this.#store.listAppRequests().some(([, record]) =>
+      !record.detached && record.status === 'pending' && record.mediaType === title.mediaType && record.tmdbId === title.tmdbId);
+    const member = this.#members.member(callerId);
+    if (followed || !member) return void this.#recordBranch('cancel_kept');
+    try {
+      if (managesSeerrRequests(await member.ownUser())) return void this.#recordBranch('cancel_kept');
+      checkSignal(signal);
+      const state = await this.#seerr.requestState(requestId);
+      checkSignal(signal);
+      if (state?.status !== PENDING) return void this.#recordBranch('cancel_kept');
+      await member.cancelRequest(requestId);
+    } catch (error) {
+      if (error instanceof CancelledError) throw error;
+      if (error instanceof SeerrUnmappedUserError || (error instanceof SeerrError && error.status === 401)) return void this.#recordBranch('cancel_kept');
+      this.#recordBranch('cancel_delete_failed');
+      console.error(JSON.stringify({
+        level: 'error',
+        message: 'household app could not delete a cancelled request in Seerr',
+        detail: error instanceof Error ? error.message : String(error),
+      }));
+      return;
+    }
+    this.#recordBranch('cancel_deleted');
+    // Seerr no longer has the request, so nothing can grant it: its withdrawal is not needed.
+    await this.#joins.serialized(() => this.#store.writeAppRequests({ forgetWithdrawals: [requestId] }));
+  }
+
+  /** The caller's own view of a listed title; one that fails to read is taken as holding nothing (as in list). */
+  async #readView(ownView: CancelInput['ownView'], entry: ListedTitle): Promise<OwnView> {
+    try {
+      return await ownView(entry.mediaType, entry.tmdbId);
+    } catch (error) {
+      console.error(JSON.stringify({
+        level: 'error',
+        message: 'household app own view read failed; its ready seasons are listed as requested',
+        detail: error instanceof Error ? error.message : String(error),
+      }));
+      return { visible: false, seasons: new Set() };
+    }
+  }
+
+  /** Shows `entry` as the caller sees it: a ready season (the movie) their own view does not have is `requested`. */
+  #shown(entry: ListedTitle, view: OwnView): void {
+    for (const [season, status] of entry.seasons) {
+      const visible = entry.mediaType === 'movie' ? view.visible : view.seasons.has(season);
+      if (status === 'ready' && !visible) entry.seasons.set(season, 'requested');
+    }
+  }
+
+  /** The title (`movie:<id>`, `tv:<id>`) of one of the household's listed records whose opaque ID is `id`, if any. */
+  #titleOfId(householdId: string, id: string): string | undefined {
+    for (const entry of this.#titles(householdId).values()) {
+      if (this.#listId(householdId, entry.mediaType, entry.tmdbId) === id) return `${entry.mediaType}:${entry.tmdbId}`;
+    }
+    return undefined;
+  }
+
+  /** An entry's opaque ID: an HMAC of the household and the title (see list). */
+  #listId(householdId: string, mediaType: MediaType, tmdbId: number): string {
+    const key = this.#store.getAppIdKey() ?? '';
+    return createHmac('sha256', key).update(`${householdId}\n${mediaType}\n${tmdbId}`).digest('base64url').slice(0, 22);
   }
 
   /**
@@ -714,41 +895,26 @@ export class HouseholdRequests {
    * one episode read, only when the caller's own view has the series).
    */
   public async list(householdId: string, callerId: string, ownView: (mediaType: MediaType, tmdbId: number) => Promise<OwnView>): Promise<RequestsDto> {
-    const key = this.#store.getAppIdKey() ?? '';
     const listed = [...this.#titles(householdId, callerId).values()]
       .sort((left, right) => right.latest.localeCompare(left.latest) || left.tmdbId - right.tmdbId)
       .slice(0, MAX_LISTED_TITLES);
     for (let index = 0; index < listed.length; index += OWN_VIEW_READS) {
-      await Promise.all(listed.slice(index, index + OWN_VIEW_READS).map(async (entry) => {
-        let view: OwnView;
-        try {
-          view = await ownView(entry.mediaType, entry.tmdbId);
-        } catch (error) {
-          console.error(JSON.stringify({
-            level: 'error',
-            message: 'household app own view read failed; its ready seasons are listed as requested',
-            detail: error instanceof Error ? error.message : String(error),
-          }));
-          view = { visible: false, seasons: new Set() };
-        }
-        for (const [season, status] of entry.seasons) {
-          const visible = entry.mediaType === 'movie' ? view.visible : view.seasons.has(season);
-          if (status === 'ready' && !visible) entry.seasons.set(season, 'requested');
-        }
-      }));
+      await Promise.all(listed.slice(index, index + OWN_VIEW_READS).map(async (entry) => this.#shown(entry, await this.#readView(ownView, entry))));
     }
     return {
       results: listed.map((entry) => {
         const statuses = [...entry.seasons.values()];
         const status: CoarseStatus = statuses.includes('requested') ? 'requested' : statuses.includes('ready') ? 'ready' : 'failed';
         return {
-          id: createHmac('sha256', key).update(`${householdId}\n${entry.mediaType}\n${entry.tmdbId}`).digest('base64url').slice(0, 22),
+          id: this.#listId(householdId, entry.mediaType, entry.tmdbId),
           mediaType: entry.mediaType,
           tmdbId: entry.tmdbId,
           status,
           seasons: entry.mediaType === 'movie' ? [] : [...entry.seasons].sort(([left], [right]) => left - right)
             .map(([seasonNumber, seasonStatus]) => ({ seasonNumber, status: seasonStatus })),
           byYou: entry.byYou,
+          cancellable: cancellable(entry),
+          requestedOn: entry.latest.slice(0, 10),
         };
       }),
     };
@@ -765,9 +931,10 @@ export class HouseholdRequests {
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
     for (const record of records) {
       const key = `${record.mediaType}:${record.tmdbId}`;
-      const entry = titles.get(key) ?? { mediaType: record.mediaType, tmdbId: record.tmdbId, latest: record.createdAt, byYou: false, seasons: new Map() };
+      const entry = titles.get(key) ?? { mediaType: record.mediaType, tmdbId: record.tmdbId, latest: record.createdAt, byYou: false, seasons: new Map(), own: false };
       entry.latest = record.createdAt;
       entry.byYou ||= record.jellyfinUserId === callerId;
+      entry.own ||= record.jellyfinUserId === callerId && (record.status === 'pending' || record.status === 'completed');
       const ready = new Set(record.readySeasons ?? []);
       for (const season of record.mediaType === 'movie' ? [0] : record.seasons) {
         entry.seasons.set(season, record.status === 'pending' && ready.has(season) ? 'ready' : coarse(record.status));
@@ -780,13 +947,14 @@ export class HouseholdRequests {
   /**
    * Reconciles request intents (see #reconcileIntents), then brings records up to date with Seerr and Jellyfin: a
    * request or interest follows its Seerr request (pending or approved, declined, failed, or completed for a request
-   * made as the caller); a request Seerr deleted is `deleted` if the title's media record went with it, and otherwise
-   * `failed` for an interest; an interest whose request completed, or that follows none, joins the title's grant once
+   * made as the caller); a request Seerr deleted is `deleted`, for its requester's record and every interest in it
+   * alike, so each household can ask again; an interest whose request completed, or that follows none, joins the title's grant once
    * Jellyfin has it; a record is `completed` only once every season it covers has episodes in Jellyfin (until then its
    * ready seasons are noted and it is read again); and a completed record of any branch is `deleted` once the title's
    * Seerr media record is. Reads at most {@link MAX_REFRESH_READS} records a run, those read longest ago first, each at
-   * most every {@link REFRESH_REQUEST_EVERY_MS} (a completed record's media every {@link REFRESH_MEDIA_EVERY_MS}). Last,
-   * grants the webhooks deferred for intents that are resolved now. Run at startup and by the scheduled reconciliation;
+   * most every {@link REFRESH_REQUEST_EVERY_MS} (a completed record's media every {@link REFRESH_MEDIA_EVERY_MS}). Then
+   * forgets the withdrawals whose request Seerr no longer has (see #refreshWithdrawals). Last, grants the webhooks
+   * deferred for intents that are resolved now. Run at startup and by the scheduled reconciliation;
    * an aborted `signal` stops it before its next read.
    */
   public async refresh(options: { signal?: AbortSignal } = {}): Promise<void> {
@@ -795,7 +963,39 @@ export class HouseholdRequests {
     if (signal?.aborted) return;
     await this.#refreshRecords(signal);
     if (signal?.aborted) return;
+    await this.#refreshWithdrawals(signal);
+    if (signal?.aborted) return;
     await this.#retryDeferred(signal);
+  }
+
+  /**
+   * Forgets the withdrawals (see AppWithdrawal) whose request Seerr no longer has (deleted by an administrator, or by
+   * the member's own cancel), so they no longer hold up a rollback: nothing can grant such a request. Each is read at
+   * most every {@link REFRESH_REQUEST_EVERY_MS}, at most {@link MAX_REFRESH_READS} a run.
+   */
+  async #refreshWithdrawals(signal: AbortSignal | undefined): Promise<void> {
+    const now = this.#now();
+    const due = this.#store.listAppWithdrawals()
+      .filter(([requestId]) => !this.#store.hasHandledRequest(requestId) && now - (this.#checkedAt.get(`withdrawal:${requestId}`) ?? 0) >= REFRESH_REQUEST_EVERY_MS)
+      .slice(0, MAX_REFRESH_READS);
+    const gone: string[] = [];
+    for (const [requestId] of due) {
+      if (signal?.aborted) break;
+      this.#checkedAt.set(`withdrawal:${requestId}`, this.#now());
+      try {
+        if (!await this.#seerr.requestState(requestId)) gone.push(requestId);
+      } catch (error) {
+        if (signal?.aborted) break;
+        console.error(JSON.stringify({
+          level: 'error',
+          message: 'household app withdrawal refresh failed',
+          detail: error instanceof Error ? error.message : String(error),
+        }));
+      }
+    }
+    if (gone.length === 0) return;
+    for (const requestId of gone) this.#checkedAt.delete(`withdrawal:${requestId}`);
+    await this.#joins.serialized(() => this.#store.writeAppRequests({ forgetWithdrawals: gone }));
   }
 
   async #refreshRecords(signal: AbortSignal | undefined): Promise<void> {
@@ -807,7 +1007,7 @@ export class HouseholdRequests {
       if (record.status === 'failed' && !record.seerrRequestId) return false;
       return now - (this.#checkedAt.get(id) ?? 0) >= (record.status === 'completed' ? REFRESH_MEDIA_EVERY_MS : REFRESH_REQUEST_EVERY_MS);
     }).sort(([left], [right]) => (this.#checkedAt.get(left) ?? 0) - (this.#checkedAt.get(right) ?? 0)).slice(0, MAX_REFRESH_READS);
-    const known = new Set(records.map(([id]) => id));
+    const known = new Set([...records.map(([id]) => id), ...this.#store.listAppWithdrawals().map(([requestId]) => `withdrawal:${requestId}`)]);
     for (const id of [...this.#checkedAt.keys()]) if (!known.has(id)) this.#checkedAt.delete(id);
     for (const [id, record] of due) {
       if (signal?.aborted) return;
@@ -1019,10 +1219,9 @@ export class HouseholdRequests {
     }
     if (!record.seerrRequestId) return record.branch === 'interest' ? this.#joinInterest(record, signal) : undefined;
     const state = await this.#seerr.requestState(record.seerrRequestId);
-    if (!state) {
-      if (await this.#mediaGone(record)) return { status: 'deleted' };
-      return { status: record.branch === 'interest' ? 'failed' : 'deleted' };
-    }
+    // Deleted in Seerr (by an administrator): the same for the request and every household following it, which can ask
+    // again ("Get this").
+    if (!state) return { status: 'deleted' };
     if (ACTIVE_REQUEST_STATUSES.has(state.status)) return { status: 'pending' };
     if (state.status === DECLINED) return { status: 'declined' };
     if (state.status === FAILED) return { status: 'failed' };
@@ -1140,6 +1339,17 @@ function activeRequest(title: SeerrTitleRecord, mediaType: MediaType, season: nu
     && (blocking ? request.status !== DECLINED : ACTIVE_REQUEST_STATUSES.has(request.status))
     && (mediaType === 'movie' || request.seasons.includes(season)));
   return candidates.find((request) => ACTIVE_REQUEST_STATUSES.has(request.status)) ?? candidates[0];
+}
+
+/**
+ * Whether the caller may cancel a listed title, as they are shown it (see HouseholdRequests.list): Requested with
+ * nothing of it shown ready to them, and with a record of theirs that is waiting or ready. Decided from the household's
+ * own records and the caller's own view only: never from Seerr, other households, intents or arrivals the caller cannot
+ * see, so it is the same whichever branch "Get this" took.
+ */
+function cancellable(entry: ListedTitle): boolean {
+  const statuses = [...entry.seasons.values()];
+  return entry.own && statuses.includes('requested') && !statuses.includes('ready');
 }
 
 function isActive(record: AppRequestRecord): boolean {

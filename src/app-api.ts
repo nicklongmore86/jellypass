@@ -52,7 +52,7 @@ export const APP_API_PREFIX = '/jellypass/app/v1';
  * an endpoint to v1, never lowered. v1 only ever gains (see docs/app-design.md, "Native clients (contract)"); anything
  * else is a new path, `/jellypass/app/v2`.
  */
-export const APP_API_VERSION = 1;
+export const APP_API_VERSION = 2;
 /** How long a verified Jellyfin token is trusted without asking Jellyfin again (at most 5 minutes). */
 export const APP_SESSION_TTL_MS = 5 * 60 * 1000;
 /** How long after a sign-out through the household host its tokens are still never kept as verified. */
@@ -130,13 +130,14 @@ const TMDB_BACKDROP_BASE = 'https://image.tmdb.org/t/p/w780';
 /** Network and studio logos, at one fixed width. */
 const TMDB_LOGO_BASE = 'https://image.tmdb.org/t/p/w300';
 
-/** Seerr permission bits (Seerr 3.5.1 `server/lib/permissions.ts`) that allow an HD request. */
+/** Seerr permission bits (Seerr 3.5.1 `server/lib/permissions.ts`): those that allow an HD request, and managing requests. */
 const SEERR_ADMIN = 2;
+const SEERR_MANAGE_REQUESTS = 16;
 const SEERR_REQUEST = 32;
 const SEERR_REQUEST_MOVIE = 262_144;
 const SEERR_REQUEST_TV = 524_288;
 
-export type AppEndpoint = 'me' | 'search' | 'discover' | 'movie' | 'tv' | 'season' | 'get' | 'requests' | 'unknown';
+export type AppEndpoint = 'me' | 'search' | 'discover' | 'movie' | 'tv' | 'season' | 'get' | 'requests' | 'cancel' | 'unknown';
 export type AppOutcome = 'ok' | 'unauthorized' | 'rate_limited' | 'invalid' | 'not_found' | 'unavailable';
 
 /**
@@ -232,7 +233,7 @@ export interface HouseholdAppOptions {
   /** The caller's own Seerr user, confirmed before every call (a `SeerrUserMap`). */
   members: { member(jellyfinUserId: string): Pick<SeerrMemberClient, 'ownUser' | 'quota'> | undefined };
   /** "Get this" and the household's own records. Without it, those endpoints answer `404` and nothing is `requested`. */
-  requests?: Pick<HouseholdRequests, 'submit' | 'activeKeys' | 'readyKeys' | 'list'>;
+  requests?: Pick<HouseholdRequests, 'submit' | 'cancel' | 'activeKeys' | 'readyKeys' | 'list'>;
   /** A household's name, or undefined once it no longer exists. */
   householdName: (householdId: string) => string | undefined;
   /** How many households there are. */
@@ -326,6 +327,17 @@ export function seerrPermissions(user: unknown): Record<MediaType, boolean> {
   const has = (bit: number) => (permissions & bit) !== 0;
   const any = has(SEERR_ADMIN) || has(SEERR_REQUEST);
   return { movie: any || has(SEERR_REQUEST_MOVIE), tv: any || has(SEERR_REQUEST_TV) };
+}
+
+/**
+ * Whether a Seerr user (GET /api/v1/auth/me, read as them) may manage every request (`ADMIN` or `MANAGE_REQUESTS`):
+ * Seerr then lets them delete any request, so a cancel never deletes one as them (see HouseholdRequests.cancel). An
+ * answer without readable permissions counts as managing.
+ */
+export function managesSeerrRequests(user: unknown): boolean {
+  const permissions = field(user, 'permissions');
+  if (typeof permissions !== 'number' || !Number.isSafeInteger(permissions) || permissions < 0) return true;
+  return (permissions & (SEERR_ADMIN | SEERR_MANAGE_REQUESTS)) !== 0;
 }
 
 /**
@@ -655,6 +667,10 @@ export class HouseholdApp implements HouseholdAppHandler {
     if (!pathname.startsWith(`${APP_API_PREFIX}/`)) return undefined;
     const path = pathname.slice(APP_API_PREFIX.length);
     if (method === 'POST') {
+      const cancel = /^\/requests\/([^/]+)\/cancel$/.exec(path);
+      if (cancel && this.#requests) {
+        return { endpoint: 'cancel', status: 202, run: (caller, context, _url, request) => this.#cancel(caller, context, request, cancel[1] as string) };
+      }
       const get = /^\/(movie|tv)\/([^/]+)\/get$/.exec(path);
       if (!get || !this.#requests) return undefined;
       const mediaType = get[1] as MediaType;
@@ -889,6 +905,32 @@ export class HouseholdApp implements HouseholdAppHandler {
       tmdbId,
       seasons,
       ownView: () => this.#ownView(caller, context, mediaType, tmdbId),
+    });
+    return GET_THIS_ACCEPTED;
+  }
+
+  /**
+   * Cancelling one of the caller's requests (see HouseholdRequests.cancel). As for "Get this", only the call decides
+   * what happens before the answer: the entry ID's form (22 base64url characters, never looked up), an empty body (or
+   * `{}`) and the caller's submission budgets, which cancels share with "Get this". Then the same `202` always follows,
+   * before anything about the entry is read: whether the household lists it, whether it can still be cancelled and what
+   * becomes of its Seerr request are decided in the background.
+   */
+  async #cancel(caller: JellyfinCaller, context: HouseholdAppRequest, request: IncomingMessage, id: string): Promise<unknown> {
+    const requests = this.#requests as NonNullable<HouseholdAppOptions['requests']>;
+    if (!/^[A-Za-z0-9_-]{22}$/.test(id)) throw new AppAnswer('invalid');
+    getThisSeasons('movie', await readBody(request));
+    const callerId = normalizedUserId(caller.id);
+    if (this.#getThisByUser.increment(callerId) > MAX_GET_THIS_PER_USER
+      || this.#getThisByClient.increment(context.clientId) > MAX_GET_THIS_PER_CLIENT
+      || this.#getThisByHousehold.increment(context.householdId) > MAX_GET_THIS_PER_HOUSEHOLD) {
+      throw new AppAnswer('rate_limited');
+    }
+    await requests.cancel({
+      householdId: context.householdId,
+      callerId,
+      id,
+      ownView: (mediaType, tmdbId) => this.#ownView(caller, context, mediaType, tmdbId),
     });
     return GET_THIS_ACCEPTED;
   }

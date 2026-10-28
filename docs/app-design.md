@@ -14,7 +14,9 @@ catalogue client and its `SEERR_CATALOGUE_USER_ID` before either was released. T
 1b)"), read-only in that step. Step 2a serves "Get this" itself, `POST /jellypass/app/v1/{movie|tv}/:tmdbId/get`,
 the household's attribution records that are the only source of `requested`, and `GET /jellypass/app/v1/requests` (see
 '"Get this" as implemented (step 2a)'). Step 2b adds the PWA's **Get this** button, with a season picker for a series,
-and its **My requests** screen (see "The PWA's button (step 2b)" and "App page (step 1b)"). Not yet: notifications, and
+and its **My requests** screen (see "The PWA's button (step 2b)" and "App page (step 1b)"). Step 2c's server side adds
+cancelling a request, `POST /jellypass/app/v1/requests/:id/cancel` (see "Cancelling (step 2c)"); the app's Cancel
+buttons come later. Not yet: notifications, and
 the Seerr website restricted to administrators (step 4). This document is the contract the later steps are built and
 reviewed against.
 
@@ -1166,10 +1168,11 @@ it reconciles the intents no running call holds (above), then brings records up 
 `failed` request or interest record's Seerr request at most every 10 minutes (a record whose grant was settled and
 that waits for seasons reads Jellyfin's episodes instead), and each `completed` record's media record, **in every
 branch**, at most every 6 hours, at most 50 reads a run, those read longest ago first. A request or interest follows
-its Seerr request (pending or approved, declined, failed, completed); one whose request was deleted is `deleted` if
-the title's media record went with it (not listed, as Seerr no longer lists it), and an interest whose request alone
-was deleted is `failed` and waits for any grant of the title; a completed record of any branch is `deleted` once the
-title's media record is. Last, it grants the webhooks deferred for intents that are resolved now.
+its Seerr request (pending or approved, declined, failed, completed); one whose request was deleted (by an
+administrator, in Seerr) is `deleted`, the request's own record and every household's interest in it alike (not
+listed, as Seerr no longer lists it, and the title can be asked for again: before step 2c an interest became `failed`
+instead, "We couldn't get this", while the requester's record went); a completed record of any branch is `deleted`
+once the title's media record is. A cancelled record (`withdrawn`, see "Cancelling (step 2c)") is never refreshed. Last, it grants the webhooks deferred for intents that are resolved now.
 
 **Readiness, season by season.** A series record is `completed` only once Jellyfin (read with JellyPass's key) has
 episodes of every season it covers; until then it stays `pending` with `readySeasons`, those seasons show `ready` in
@@ -1199,7 +1202,8 @@ tombstones", "Replay order"). A request a tombstone covers is granted the same w
 `jfa_request_backfill_total{result="joined"|"deferred"}`.
 
 **`GET /requests`** answers the household's own titles from its own records only, newest first, at most 200:
-`{id, mediaType, tmdbId, status, seasons, byYou}`. `status` is coarse: `requested` (Requested: pending or approved),
+`{id, mediaType, tmdbId, status, seasons, byYou, cancellable, requestedOn}` (the last two since `apiVersion` 2, see
+"Cancelling (step 2c)"). `status` is coarse: `requested` (Requested: pending or approved),
 `ready` (Ready to watch: completed, and in the caller's own view; otherwise `requested`, see "Readiness") or `failed`
 (We couldn't get this: declined or failed); `deleted` records are not
 listed. The caller's view is read for **every** listed title, ready or not (at most 8 at a time): a movie from their
@@ -1227,6 +1231,7 @@ stays unchanged until the first "Get this".
 | `deferredWebhooks` | Keeps it as it is | Unused: the backfill (if enabled) grants those requests; upgrading again grants what is left. |
 | `appSafetyTombstones` | Keeps it as it is | Unused: a request a tombstone covers is granted as an ordinary (private) request by a webhook or the backfill (see the drain below: a tombstone naming a request not handled yet lasts up to 400 days); upgrading again applies them to what is not handled yet. |
 | `householdEpochs`, `nextHouseholdEpoch` | Keeps them as they are | Unused; a household deleted while rolled back keeps its entry, so one created again under its ID then shares its epoch after upgrading again. |
+| `appWithdrawals` (step 2c), and `withdrawn` on a record | Keep them as they are (a withdrawn record is `deleted` to them) | See "Cancelling (step 2c)", "Rolling back": a cancelled request is granted as an ordinary request, and a request its requester cancelled gives that requester access again. |
 
 **Drain before rolling back.** Intents, deferred webhooks and tombstones are what makes a late request a join; 2.3.x
 and 2.2.1 do not read them. Before rolling back to 2.3.x or 2.2.1:
@@ -1268,18 +1273,21 @@ running when it is deleted are added detached (see 5 above).
 `join_ungranted`, `join_error`, `join_cancelled`, `interest`, `own_request`, `request`, `request_late`,
 `request_refused`, `request_uncertain`, `request_unsaved` (its intent was not on disk: nothing sent),
 `intent_recovered`, `intent_cancelled` (none found in time), `intent_ambiguous`, `intent_detached` (household replaced), `intent_abandoned` (unreadable past the deadline),
-`settled`, `settle_unverified`, `error`, `cancelled`).
+`settled`, `settle_unverified`, `error`, `cancelled`, and a cancel's (step 2c) `cancel_none`, `cancel_withdrawn`,
+`cancel_too_late`, `cancel_deleted`, `cancel_kept`, `cancel_delete_failed`, `cancel_error`); `endpoint="cancel"` counts
+cancel calls.
 
 **What is outstanding (administrators).** `GET /v1/app/outstanding`, on the admin host only and with the admin token
 or session (household hosts never route it: every path there goes to the household gateway), answers what "Get this"
-still has in flight or still protects: `{clear, safetyMarkers, requestIntents, deferredWebhooks}`. `safetyMarkers` are
+still has in flight or still protects: `{clear, safetyMarkers, requestIntents, deferredWebhooks, withdrawals}`
+(`withdrawals` since step 2c: see "Cancelling (step 2c)"). `safetyMarkers` are
 the tombstones that **still decide a grant**: one naming a request not handled yet (until it is pruned, at most 400
 days after it was made), or a member-wide one before its `expiresAt` (30 days); a tombstone that does neither is only
 waiting for the next write to prune it and is not counted. `requestIntents` are the intents not settled yet. Each has
 `total`, `byKind` (`request`/`member`; `submitting`/`settling`), `oldestAgeSeconds` (`null` when there are none) and
 up to 200 `entries`, oldest first, naming the title (`mediaType`, `tmdbId`), the times and, for an intent, the
 household: never a member or a Seerr ID. `deferredWebhooks` has only `total` (they are kept without a time). `clear` is
-true when all three are 0: what a rollback waits for (see "Drain before rolling back"). The metrics carry the counts
+true when all of them are 0: what a rollback waits for (see "Drain before rolling back"). The metrics carry the counts
 only: `jfa_app_safety_markers{kind}`, `jfa_app_request_intents{status}` and `jfa_app_deferred_webhooks` (gauges).
 
 #### Leak channels in step 2a
@@ -1362,6 +1370,146 @@ screen shows its fixed "Something went wrong" line with a **Try again** that onl
 stands the API does not ask again, so the app says so in one fixed line, "Ask your JellyPass admin to try again." (a
 failed season of a series is left out of the picker the same way). `unavailable` still shows as "Can't request".
 
+### Cancelling (step 2c)
+
+A member cancels a request they made, before it has arrived. **Cancel withdraws this household's interest in the
+title**: the entry leaves My requests and the title shows **Get this** again; if the title arrives later anyway, this
+household is not given it (asking again joins it, as any "Get this" does); and the Seerr request is deleted only when
+nothing else depends on it. The canceller sees the same in every case: what really happens is settled in the
+background, as for "Get this". Decided with the user (2026-10-27): only the member who asked may cancel (household-mates
+may not); a cancelled title that arrives with no household following it is held for no household (private to everyone
+but Jellyfin's administrators, never public) until an administrator decides, and is listed for them; and an
+administrator deleting a request in Seerr sends every household following it back to **Get this** (see the refresh,
+above).
+
+| Endpoint | Answer |
+|---|---|
+| `POST /jellypass/app/v1/requests/:id/cancel` (empty body or `{}`) | Always `202 {"status":"accepted"}` once the caller and input are valid, whatever becomes of it |
+| `GET /jellypass/app/v1/requests` | Each entry gains `cancellable` and `requestedOn` (below) |
+| `GET /v1/app/held` (admin host only, admin token or session) | `{total, titles: [{itemId, requestId, mediaType, tmdbId, cancelledAt, grantedAt?}]}`, read-only |
+
+`apiVersion` is 2 from this release: a client that needs cancel checks `apiVersion >= 2`, or the presence of
+`cancellable`.
+
+**The answer depends only on the call.** `:id` is an entry's opaque ID from `GET /requests`, checked only for its form
+(22 base64url characters; anything else is the fixed `400`), never looked up before the answer; the body must be empty
+or `{}`. Cancels count against the "Get this" submission budgets (10 per member, 30 per address and 30 per household in
+10 minutes, shared with "Get this"; fixed `429`). Then the work starts in the background and the fixed `202` is sent:
+an ID the household does not list, an entry the caller may not cancel, and one cancelled all answer the same.
+
+**`cancellable` and `requestedOn`.** `cancellable` is true when the entry, **as the caller is shown it**, is
+`requested` with no season (or the movie) shown `ready`, and the caller made one of its records that is waiting or ready
+(`pending` or `completed`). It is decided from the household's own records and the caller's own Jellyfin view only,
+never from Seerr, other households, intents, the branch "Get this" took, or an arrival in a library the caller cannot
+see (a title ready only there is shown `requested`, and is cancellable as if it had not arrived; see below).
+`requestedOn` is the UTC day (`YYYY-MM-DD`) of the title's latest record, never a time: it is household-internal, but it
+does show when another member of the household asked (the user accepted that).
+
+**In the background, in the title's turn** (the same per-title queue as "Get this", so a cancel never races a call
+recording a follower of the same title):
+
+1. The entry is found by its ID among the household's listed titles; none, nothing happens.
+2. The caller's own view of the title is read (as `GET /requests` reads it); if the entry is not one the caller is
+   shown as `cancellable`, nothing happens (a series is not cancelled once any season it covers is shown ready, and a
+   ready title keeps everything).
+3. **In AccessService's write queue** (`AccessService.serialized`, where every webhook, replay, backfill and join is
+   decided), so a grant of the request is decided either wholly before or wholly after it: the caller's records for
+   the title that are `pending` or `completed` are **withdrawn** (status `deleted`, with `withdrawn: true`: not listed,
+   never refreshed, blocking no new "Get this"); and, in the same write, a **withdrawal** (`GrantState.appWithdrawals`,
+   `AppWithdrawal`, keyed by the Seerr request ID) is added for each of them whose grant is still to come (a pending
+   request or interest record whose request is not handled and whose grant is not settled), with `requester` when the
+   record is the request's own (`request` branch). A record whose request was granted already gets no withdrawal: **no
+   access is ever taken back** (the household stays on the grant; the entry still leaves the list, so a title that
+   arrived where the caller cannot see it is cancelled exactly as one that did not arrive).
+4. For each request the caller made among those withdrawn, **delete it in Seerr as the member**
+   (`SeerrMemberClient.cancelRequest`, `DELETE /request/:id` with the confirmed acting user) only when nothing else
+   depends on it: no record in any household still follows the title (`pending`) and no "Get this" intent names it
+   (both read under the title's lock), the member's Seerr user does not manage requests (Seerr lets a manager delete
+   any request at any status; the member's own permission is read as them), and Seerr (admin key) reads the request as
+   pending. Seerr itself allows the member's delete only for their own request while it is pending (`401` otherwise),
+   and a pending request has not been sent to Radarr or Sonarr, so nothing downloads. Once Seerr has deleted it, its
+   withdrawal is dropped. **Anything else keeps the request** (approved or processing, followed, an interest, a member
+   who manages requests, an unmapped or relinked member, or a failed delete), and its withdrawal decides its grant.
+
+**The grant rule** (webhook, its replay, a deferred webhook granted, or the backfill), in this order:
+
+1. **defer**: an intent names the title (see "Safety tombstones");
+2. **join**: a record's `joinOnGrant` or a safety tombstone says so: never a new grant, and withdrawn records are never
+   joined (safety markers stay stronger than a withdrawal);
+3. **withdrawn**: a withdrawal names the request. With `requester`, the grant records the request (handled, so neither
+   a replay nor the backfill grants it again) but **neither the requester nor any of their households is given access**
+   through it: `GrantStore.resolveOwners` leaves out the requester of a request whose requester withdrew it, and no
+   group is added. Without `requester`, the requester's households less those that withdrew. Then the households
+   still following the request (their `pending` records naming it, a request record of the requester's made by asking
+   again included) join through the library join rules, as for any grant; if none does, the title is **held for no
+   household**: an active grant with no owner, so every user but Jellyfin's administrators is blocked;
+4. **grant**: an ordinary grant.
+
+The withdrawal is read inside the write queue, so a webhook arriving during a cancel is granted wholly before the
+withdrawal (and the household keeps it) or wholly after (and it follows the withdrawal); delayed (deferred) webhooks
+and the backfill go through the same rule. Re-asking after a cancel follows the same request (the household's record
+names it again) and its household joins on arrival.
+
+**Held titles.** `GET /v1/app/held` lists every grant whose request's requester withdrew it and that gives nobody
+access: by item, Seerr request, title, and when it was cancelled and granted. An administrator decides with the
+existing grant tools: give it to households (`PUT /v1/grants/:itemId/groups`) or users (`PUT .../manual`); it leaves
+the list once anyone has access. Revoking the request (`DELETE /v1/grants/:itemId/requests/:requestId`) on a grant
+with no other audience makes the title public. The admin UI's Requests tab is a later step; until then the API and the
+outstanding readout (`withdrawals.held`, `jfa_app_held_titles`) show them.
+
+**What is kept, and for how long.** A withdrawal is kept while its request is not handled (at most 400 days, like a
+tombstone; dropped earlier once Seerr no longer has the request: after the member's delete, or found by the scheduled
+refresh, which reads each such request at most every 10 minutes, at most 50 a run); and, with `requester`, for as long
+as a grant records the request (it is what keeps the requester out). A withdrawn record is a settled (`deleted`) record
+and is pruned like one (400 days, per-household cap); the grant decision never depends on it, only on the withdrawal.
+Grant moves (remap, recovery) carry the request ID, so the exclusion follows the request to the new item.
+
+**Store and versioning.** The schema stays v7: `appWithdrawals` is a new optional field (absent until the first
+cancel, and removed again when empty), and `withdrawn` a new optional record field on a record whose status is the
+existing `deleted`. No migration is needed; a state file without them loads unchanged. Older versions keep both as they
+are (the store writes unknown fields back) and read a withdrawn record as `deleted`: not listed, not refreshed, not
+blocking "Get this", so the household's view survives a rollback. What they do not do is apply the grant rule.
+
+**Rolling back** to a version before step 2c: a request a withdrawal names is granted there as an ordinary request
+(to the requester's households), and a request its requester withdrew that is already on a grant gives that requester
+access again (their user, not their households). So `GET /v1/app/outstanding` counts `withdrawals` (`waiting`: not
+handled yet; `granted`: on a grant, requester excluded; `held`: of those, held for no household) and `clear` waits for
+all of them. Before rolling back: stop cancels and "Get this" at the proxy (block `POST /jellypass/app/v1/requests/*/cancel`
+too); for each `waiting` withdrawal, wait until its request is handled or gone, or decline or delete it in Seerr (the
+refresh then drops it); for each `granted` one, decide the title if it is held (give it to someone), then revoke the
+request from its grant (it is pruned at once). Or accept that those requesters get those titles while rolled back.
+
+**Privacy.**
+
+| Party | What they experience |
+|---|---|
+| Canceller | In every branch the same: the fixed `202`, the entry gone, the title back to Get this; if it arrives they are not given it (it goes to followers, or to nobody); a later Get this joins it. Tested across worlds where nobody else asked (pending: deleted), where the request was approved (kept), where another household follows it, and where another household asked first. |
+| A follower in another household | Unaffected: their record still follows the same request (a followed request is never deleted) and they get the grant; their list and title state are the same before and after the cancel (tested). |
+| The canceller's household-mates | The entry leaves their list too (it was the household's), unless a record of theirs is still listed. They cannot cancel the member's request (`cancellable` is false for them; their call changes nothing). |
+| Seerr / administrators | See an approved request still there (or a pending one deleted by the member), and held titles in `GET /v1/app/held`. |
+
+**Leak channels in step 2c.**
+
+| Channel | How step 2c handles it |
+|---|---|
+| Status codes and bodies | One fixed `202` for every valid call, listed ID or not, cancellable or not; `400` and `429` depend only on the input and the caller's own budgets. |
+| Fields | `cancellable` from the household's own records and the caller's own view only; `requestedOn` a day of the household's own record. |
+| Timing | The answer comes before the entry is read. The withdrawal is written right after the caller's own view is read, before any Seerr call, so when the entry leaves the list does not depend on whether the request is deleted or kept; it does wait for the title's turn and AccessService's write queue (both shared, as for "Get this"). |
+| Branch | `cancellable` never depends on the branch "Get this" took (a request, an interest, a join) or on an intent, which only the request branch has; a cancel withdraws a record whose request is still settling as any other (its grant stays deferred, then follows the rule order). |
+| Hidden arrival | A title ready only in a library the caller cannot see is shown `requested` and cancelled as if it had not arrived (the household keeps the grant); tested. |
+
+**Residuals.**
+
+- A request whose "Get this" call failed in a way Seerr may have made it (an intent left for reconciliation) has no
+  record yet, so it cannot be cancelled; if reconciliation records it after a cancel of the title's other records, it
+  is listed again.
+- A cancel waits for AccessService's write queue, which a full reconciliation can hold for a while: the entry stays
+  listed until then (the same for every branch).
+- An approved request keeps downloading; with no follower it arrives held for no household, and an administrator must
+  decide it. A cancel with followers wastes nothing (they get it).
+- A webhook for a request Seerr deleted that arrives after its withdrawal was dropped (Seerr does not send one for a
+  deleted request) would be granted as an ordinary request.
+
 ## Coarse statuses
 
 The app shows only three request statuses: `Requested`, `Ready to watch`, `We couldn't get this`. Seerr's pending,
@@ -1399,11 +1547,11 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
 
 | Group | Endpoints | Where |
 |---|---|---|
-| v1, as the member (confirmed per call) | `POST /request` ("Get this" request branch); `GET /user/:self/requests` (not called by the app); `GET /user/:self/quota` ("Get this" eligibility); `GET /auth/me` (own permissions); `GET /discover/watchlist` | `SeerrMemberClient` |
+| v1, as the member (confirmed per call) | `POST /request` ("Get this" request branch); `DELETE /request/:id` (a cancel, only the member's own pending request; see "Cancelling (step 2c)"); `GET /user/:self/requests` (not called by the app); `GET /user/:self/quota` ("Get this" eligibility); `GET /auth/me` (own permissions); `GET /discover/watchlist` | `SeerrMemberClient` |
 | v1, admin key | `GET /user/jellyfin/:jellyfinUserId` (user lookup); `GET /user/:id` (link check, its `id` and `jellyfinUserId`); `GET /blocklist` (each entry's `mediaType` and `tmdbId`) | `SeerrClient.findUserByJellyfinId`, `SeerrClient.jellyfinUserIdOf`, `SeerrClient.blocklist` |
 | v1, admin key, "Get this" background work only (never part of an answer) | `GET /movie/:id` and `GET /tv/:id` (the media record's ID and Jellyfin items, and each request's ID, status, quality, seasons and requester); `GET /request/:id` (the status and media record of a request JellyPass's records name) | `SeerrClient.titleRequests`, `SeerrClient.requestState` |
 | TMDB v3 (not Seerr) | `GET /search/multi`; `GET /trending/all/day`; `GET /discover/{movie,tv}`; `GET /movie/:id`; `GET /tv/:id`; `GET /tv/:id/season/:n`; `GET /authentication` (startup) | `TmdbClient` |
-| Later | Request cancellation by its owner, recommendations and similar titles, genre and keyword discovery, watchlist writes | Not yet |
+| Later | Recommendations and similar titles, genre and keyword discovery, watchlist writes | Not yet |
 | Admin-only | Approving, declining and deleting requests, issues, users, settings, blocklist management | Seerr website, administrators |
 | Never for a member | `GET /user`, `GET /user/:id` (as the member), `GET /request/count`, `GET /media`, `GET /request` (all requests), and every Seerr title endpoint (`/search`, `/discover/*`, `/movie/:id`, `/tv/:id`), whose answers carry other households' records (read only with the admin key, in the background, above) | Not exposed |
 
@@ -1416,7 +1564,8 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
 2. **"Get this"**: the uniform background action above, with the household attribution record (see "Requested and
    households"): (2a, done) the API, records, `requested` and the household's requests (see '"Get this" as
    implemented (step 2a)'); (2b, done) the PWA's **Get this** button with its season picker and **My requests** (see
-   "The PWA's button (step 2b)").
+   "The PWA's button (step 2b)"); (2c) cancelling a request: the server (see "Cancelling (step 2c)"), then the PWA's
+   and the native app's Cancel, then an administrators' Requests tab for titles held for no household.
 3. **PWA**: (done) the household app itself, served on household hosts. It was delivered by steps 1b (screens, install,
    sign-in) and 2b (**Get this**, **My requests**); what remains is testing the installed app on real phones.
 4. **Cut-over**: the Seerr website restricted to administrators. Required: it closes late requests made directly to

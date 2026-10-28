@@ -60,6 +60,29 @@ export interface AppOutstanding {
   };
   /** Kept without a time, so no age. */
   deferredWebhooks: { total: number };
+  /**
+   * Household app cancels that still decide a grant (see AppWithdrawal): `waiting`, the request is not handled yet;
+   * `granted`, a grant records a request its requester withdrew, and gives that requester no access through it.
+   */
+  withdrawals: {
+    total: number;
+    byKind: { waiting: number; granted: number };
+    /** Of `granted`, the titles held for no household (see AccessService.appHeld). */
+    held: number;
+    oldestAgeSeconds: number | null;
+    entries: Array<{ kind: 'waiting' | 'granted'; mediaType: string; tmdbId: number; createdAt: string }>;
+  };
+}
+
+/**
+ * Titles a household app cancel left held for no household (admin host only): the request's requester withdrew it, no
+ * household still followed it when it was granted (or none has joined since), and no administrator has given it to
+ * anyone yet. The item is private to every user but Jellyfin's administrators until an administrator decides
+ * (households or users through the grant tools, or revoking the request to make it public).
+ */
+export interface AppHeldTitles {
+  total: number;
+  titles: Array<{ itemId: string; requestId: string; mediaType: string; tmdbId: number; cancelledAt: string; grantedAt?: string }>;
 }
 
 interface PlanContext {
@@ -199,8 +222,14 @@ export class AccessService {
       createdAt: intent.createdAt,
     }));
     const deferred = this.#store.listDeferredWebhooks().length;
+    const withdrawals = this.#store.listOutstandingAppWithdrawals(now).map(([requestId, withdrawal]) => ({
+      kind: this.#store.hasHandledRequest(requestId) ? 'granted' as const : 'waiting' as const,
+      mediaType: withdrawal.mediaType,
+      tmdbId: withdrawal.tmdbId,
+      createdAt: withdrawal.createdAt,
+    }));
     return {
-      clear: markers.length === 0 && intents.length === 0 && deferred === 0,
+      clear: markers.length === 0 && intents.length === 0 && deferred === 0 && withdrawals.length === 0,
       safetyMarkers: {
         total: markers.length,
         byKind: { request: markers.filter((marker) => marker.kind === 'request').length, member: markers.filter((marker) => marker.kind === 'member').length },
@@ -214,7 +243,41 @@ export class AccessService {
         entries: oldestFirst(intents),
       },
       deferredWebhooks: { total: deferred },
+      withdrawals: {
+        total: withdrawals.length,
+        byKind: { waiting: withdrawals.filter((entry) => entry.kind === 'waiting').length, granted: withdrawals.filter((entry) => entry.kind === 'granted').length },
+        held: this.appHeld().total,
+        oldestAgeSeconds: age(withdrawals.map((entry) => entry.createdAt)),
+        entries: oldestFirst(withdrawals),
+      },
     };
+  }
+
+  /** See {@link AppHeldTitles}. */
+  public appHeld(): AppHeldTitles {
+    const titles = this.#store.listOutstandingAppWithdrawals().flatMap(([requestId, withdrawal]) => {
+      if (!withdrawal.requester || !this.#store.hasHandledRequest(requestId)) return [];
+      const grant = this.#store.findGrantForRequest(requestId);
+      if (!grant?.active || this.#store.resolveOwners(grant).length > 0) return [];
+      return [{
+        itemId: grant.itemId,
+        requestId,
+        mediaType: withdrawal.mediaType,
+        tmdbId: withdrawal.tmdbId,
+        cancelledAt: withdrawal.createdAt,
+        ...(withdrawal.grantedAt ? { grantedAt: withdrawal.grantedAt } : {}),
+      }];
+    }).sort((left, right) => left.cancelledAt.localeCompare(right.cancelledAt));
+    return { total: titles.length, titles: titles.slice(0, MAX_OUTSTANDING_ENTRIES) };
+  }
+
+  /**
+   * Runs `work` in the write queue grants are decided in, so no webhook, replay, backfill or join runs meanwhile: for
+   * the household app's cancel, whose withdrawal must be written either wholly before or wholly after a grant of the
+   * request is decided (see AppWithdrawal). `work` must not call back into this service.
+   */
+  public serialized<T>(work: () => Promise<T>): Promise<T> {
+    return this.#exclusive(work);
   }
 
   /** Counts a household app "Get this" call by what its eligibility check decided; never by title. */
@@ -429,7 +492,7 @@ export class AccessService {
         itemId: resolved.itemId,
         requestId: event.request.id,
         userId: resolved.userId,
-        groupIds: this.#store.listGroupIdsForUser(resolved.userId),
+        groupIds: this.#grantGroups(event.request.id, resolved.userId),
         ...(resolved.mediaType ? { mediaType: resolved.mediaType } : {}),
       });
       await this.#reconcileGrant(grant);
@@ -753,6 +816,10 @@ export class AccessService {
       };
       const updates: Array<{ id: string; status: AppRequestStatus; itemIds?: string[]; readySeasons?: number[]; awaitingGrant?: boolean }> = [];
       const joined: GrantRecord[] = [];
+      // Its requester cancelled it: the grant gave their households nothing, so a record of theirs made since (asking
+      // again) joins like any follower's.
+      const requesterWithdrew = this.#store.getAppWithdrawal(requestId)?.requester === true || this.#store.listAppRequests()
+        .some(([, record]) => record.withdrawn && record.branch === 'request' && record.seerrRequestId === requestId);
       for (const [id, record] of records) {
         if (record.branch === 'join') continue;
         // A record that found no grant for the item joins the one created now.
@@ -763,7 +830,7 @@ export class AccessService {
           matches = title?.mediaType === record.mediaType && title.tmdbId === record.tmdbId;
         }
         if (!matches) continue;
-        if (record.branch === 'request' && !record.joinOnGrant) {
+        if (record.branch === 'request' && !record.joinOnGrant && !requesterWithdrew) {
           updates.push({ id, ...await ready(record) });
           continue;
         }
@@ -791,6 +858,21 @@ export class AccessService {
         detail: error instanceof Error ? error.message : String(error),
       }));
     }
+  }
+
+  /**
+   * The households a new grant of `requestId` adds (docs/app-design.md, "Cancelling (step 2c)"): its requester's, less
+   * any that withdrew from the request; none at all when the requester withdrew it (see AppWithdrawal), so only the
+   * households still following it join (#settleAppRequests), and with none the title is held for no household.
+   * Checked in the write queue, so a cancel is either wholly before the grant or too late for it.
+   */
+  #grantGroups(requestId: string, userId: string): string[] {
+    const withdrawal = this.#store.getAppWithdrawal(requestId);
+    if (withdrawal?.requester) {
+      console.log(JSON.stringify({ level: 'info', message: 'household app request granted after its requester cancelled it', requestId }));
+      return [];
+    }
+    return this.#store.listGroupIdsForUser(userId).filter((groupId) => !withdrawal?.householdIds.includes(groupId));
   }
 
   /**
@@ -951,7 +1033,7 @@ export class AccessService {
             itemId,
             requestId,
             userId,
-            groupIds: this.#store.listGroupIdsForUser(userId),
+            groupIds: this.#grantGroups(requestId, userId),
             ...(mediaType ? { mediaType } : {}),
           });
           await this.#reconcileGrant(grant, signal);
@@ -1642,6 +1724,8 @@ export class AccessService {
     for (const [kind, count] of Object.entries(outstanding.safetyMarkers.byKind)) this.#metrics.gauge(`jfa_app_safety_markers{kind="${kind}"}`, count);
     for (const [status, count] of Object.entries(outstanding.requestIntents.byKind)) this.#metrics.gauge(`jfa_app_request_intents{status="${status}"}`, count);
     this.#metrics.gauge('jfa_app_deferred_webhooks', outstanding.deferredWebhooks.total);
+    for (const [kind, count] of Object.entries(outstanding.withdrawals.byKind)) this.#metrics.gauge(`jfa_app_withdrawals{kind="${kind}"}`, count);
+    this.#metrics.gauge('jfa_app_held_titles', outstanding.withdrawals.held);
   }
 
   #exclusive<T>(operation: () => Promise<T>): Promise<T> {

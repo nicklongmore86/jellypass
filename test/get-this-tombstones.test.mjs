@@ -432,8 +432,11 @@ describe('"Get this": the administrator\'s readout of what is outstanding', { ti
       safetyMarkers: { total: 0, byKind: { request: 0, member: 0 }, oldestAgeSeconds: null, entries: [] },
       requestIntents: { total: 0, byKind: { submitting: 0, settling: 0 }, oldestAgeSeconds: null, entries: [] },
       deferredWebhooks: { total: 0 },
+      withdrawals: { total: 0, byKind: { waiting: 0, granted: 0 }, held: 0, oldestAgeSeconds: null, entries: [] },
     });
     assert.match(app.service.renderMetrics(), /^jfa_app_safety_markers\{kind="member"\} 0$/m);
+    assert.match(app.service.renderMetrics(), /^jfa_app_withdrawals\{kind="waiting"\} 0$/m);
+    assert.match(app.service.renderMetrics(), /^jfa_app_held_titles 0$/m);
   });
 
   it('answers only the administrator, and only on the admin host', async (t) => {

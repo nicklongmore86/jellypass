@@ -20,6 +20,37 @@ changes are always listed at the top of the release notes.
 
 ### Added
 
+- **Members can cancel a request they made, before it arrives (server and
+  API; the app's Cancel buttons come in a later release).**
+  `POST /jellypass/app/v1/requests/{id}/cancel` always answers the same
+  `202 {"status":"accepted"}`, and the member always sees the same afterwards:
+  the entry leaves My requests and the title shows Get this again. Only the
+  member who asked may cancel, and not once anything of the title is ready for
+  them. In the background, the Seerr request is deleted as the member only
+  while it is still pending and no other household follows it; otherwise it is
+  kept, and when the title arrives the cancelling household is not given it.
+  Households still following it are; with none, the title is **held for no
+  household** (private to everyone but Jellyfin administrators, never public)
+  until an administrator gives it to someone, and the new admin-only
+  `GET /v1/app/held` lists such titles. Access already given is never taken
+  back, and another household following the request sees nothing change.
+  Cancels share the "Get this" limits.
+- **`GET /jellypass/app/v1/requests` entries gain `cancellable` and
+  `requestedOn`** (the day the household last asked, `YYYY-MM-DD`, never a
+  time). `apiVersion` in `GET /me` is now `2`.
+- **`GET /v1/app/outstanding` counts cancels that still decide a grant**
+  (`withdrawals`, with `waiting`, `granted` and `held`), and `clear` waits for
+  them; new gauges `jfa_app_withdrawals{kind}` and `jfa_app_held_titles`.
+
+  **Upgrading** keeps the state file at schema v7 and needs no migration: it
+  gains `appWithdrawals` with the first cancel, and cancelled records a
+  `withdrawn` mark on the existing `deleted` status. **Rolling back** to a
+  version without cancelling keeps every household's lists as they are, but
+  grants a cancelled request to its requester's households and gives a
+  requester who cancelled access to such a title that has arrived: check that
+  `GET /v1/app/outstanding` shows no `withdrawals` first (see "Cancelling" in
+  `docs/app-design.md` for how to clear them).
+
 - **The TV add-on can now show JellyPass pages inside Jellyfin web, at
   `#/jellypass/...`.** A page is drawn into Jellyfin's own "page not found"
   page, so Jellyfin's real header, its Back and Home buttons, its history and
@@ -33,6 +64,11 @@ changes are always listed at the top of the release notes.
 
 ### Changed
 
+- **A request an administrator deletes in Seerr now sends every household
+  following it back to Get this.** The requester's entry already left My
+  requests; a household that followed the same request (its interest) showed
+  "We couldn't get this" instead. Both now leave the list, and the title can be
+  asked for again.
 - **The TV add-on's title view is now a page of Jellyfin web's, not an
   overlay.** Choosing a Discover card opens `#/jellypass/title/<movie|tv>/<id>`
   as a history entry, laid out as Jellyfin's own item details page (poster,

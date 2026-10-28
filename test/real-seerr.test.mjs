@@ -17,6 +17,8 @@ const NEIGHBOUR_JELLYFIN_ID = '0000000000000000000000000000000d';
 const SHARED_JELLYFIN_ID = '0000000000000000000000000000000e';
 const LIFETIME_JELLYFIN_ID = '0000000000000000000000000000000f';
 const SERIES_QUOTA_JELLYFIN_ID = '00000000000000000000000000000010';
+// A member who may request, with an approved request (5) for The Shawshank Redemption (278).
+const CANCELLER_JELLYFIN_ID = '00000000000000000000000000000011';
 
 describe('real Seerr', { timeout: 60_000, skip: !baseUrl || !apiKey }, () => {
   let calls = [];
@@ -268,6 +270,52 @@ describe('real Seerr', { timeout: 60_000, skip: !baseUrl || !apiKey }, () => {
     // The other household, whose member made the request followed, sees nothing of it.
     const mill = await app.get('/jellypass/app/v1/requests', { host: 'jelly-mill.example.test', user: null, headers: { Authorization: 'MediaBrowser Token="token-shared"' } });
     assert.deepEqual(mill.json(), { results: [] });
+  });
+
+  it('lets a member delete only their own pending request, as themselves, which is what a household app cancel does', async (t) => {
+    const admin = (pathname, init = {}) => originalFetch(`${baseUrl}${pathname}`, { ...init, headers: { Accept: 'application/json', 'X-Api-Key': apiKey } });
+    const member = new SeerrUserMap(new SeerrClient(baseUrl, apiKey)).member(CANCELLER_JELLYFIN_ID);
+    calls = [];
+    // Their own approved request, and another member's pending one (Fight Club, user 5's): Seerr refuses both.
+    for (const requestId of ['5', '2']) {
+      const refused = await member.cancelRequest(requestId).catch((error) => error);
+      assert.ok(refused instanceof SeerrError, requestId);
+      assert.equal(refused.status, 401, requestId);
+      assert.equal(refused.message, 'Seerr DELETE /api/v1/request/:id returned 401');
+      assert.equal((await admin(`/api/v1/request/${requestId}`)).status, 200, requestId);
+    }
+    const deletes = calls.filter((call) => call.method === 'DELETE');
+    assert.equal(deletes.length, 2);
+    for (const call of deletes) assert.equal(call.headers.get('x-api-user'), '9');
+
+    // "Get this", then cancel it in the app: the pending request is deleted in Seerr, as the member.
+    const app = await startApp(t, world({
+      tokens: { [CANCELLER_JELLYFIN_ID]: 'token-canceller' },
+      jellyfinUsers: { [CANCELLER_JELLYFIN_ID]: { Name: 'Canceller', Policy: { BlockedTags: [], EnableAllFolders: true } } },
+    }), {
+      seerr: { url: baseUrl, apiKey },
+      households: [{ id: 'farmhouse', name: 'Farmhouse', userIds: [CANCELLER_JELLYFIN_ID] }],
+    });
+    const asCanceller = { user: null, headers: { Authorization: 'MediaBrowser Token="token-canceller"' } };
+    // Schindler's List: nobody holds or asked for it.
+    assert.equal((await app.post('/jellypass/app/v1/movie/424/get', undefined, asCanceller)).status, 202);
+    await app.background.settled();
+    const [[, made]] = app.store.listAppRequests();
+    assert.deepEqual([made.branch, made.status], ['request', 'pending']);
+    assert.equal((await (await admin(`/api/v1/request/${made.seerrRequestId}`)).json()).status, 1);
+    const [entry] = (await app.get('/jellypass/app/v1/requests', asCanceller)).json().results;
+    assert.deepEqual([entry.tmdbId, entry.status, entry.cancellable], [424, 'requested', true]);
+    calls = [];
+    const answer = await app.post(`/jellypass/app/v1/requests/${entry.id}/cancel`, undefined, asCanceller);
+    assert.deepEqual([answer.status, answer.text], [202, '{"status":"accepted"}']);
+    await app.background.settled();
+    const deleted = calls.filter((call) => call.method === 'DELETE');
+    assert.deepEqual(deleted.map((call) => [call.url.pathname, call.headers.get('x-api-user')]), [[`/api/v1/request/${made.seerrRequestId}`, '9']]);
+    assert.equal((await admin(`/api/v1/request/${made.seerrRequestId}`)).status, 404);
+    assert.deepEqual((await app.get('/jellypass/app/v1/requests', asCanceller)).json(), { results: [] });
+    assert.deepEqual(app.store.listAppWithdrawals(), []);
+    // Every member call acted as the member, never the owner.
+    for (const call of calls.filter((entry) => entry.url.origin === baseUrl && entry.headers.has('x-api-user'))) assert.equal(call.headers.get('x-api-user'), '9');
   });
 
   it('offers "Get this" to no caller Seerr gives a quota: every title they cannot play is unavailable, and it runs nothing', async (t) => {
