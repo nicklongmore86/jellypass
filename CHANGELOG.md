@@ -70,8 +70,9 @@ Read these before upgrading:
   2. Read `GET /v1/app/outstanding` and look at `withdrawals`.
   3. For each `waiting` withdrawal that is not a title hold, wait until its
      title arrives (it is then `granted`), or delete its request in Seerr and
-     wait for the next refresh (a requester's own withdrawal then becomes a
-     title hold, step 4). Declining it in Seerr does not drain it: the request
+     wait for the next refresh (a requester's own withdrawal of a genuine
+     request then becomes a title hold, step 4; one following the join rules,
+     or a follower's, is dropped). Declining it in Seerr does not drain it: the request
      still exists, so the withdrawal keeps waiting.
   4. For each title hold (`titleHolds`), wait until its title arrives (it is
      then `granted`), or accept that it arrives public while rolled back.
