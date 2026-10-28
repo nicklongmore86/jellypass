@@ -30,7 +30,7 @@ build.
   connection and any other failure each have one fixed message, and nothing is
   retried by itself. Each entry also shows the day it was requested. On an
   older server there is no button. Needs a JellyPass server with the cancel
-  endpoint (the next server release after 3.4.0).
+  endpoint (JellyPass server 3.5.0 or later).
 - **My requests can be filtered.** Chips above the list choose a status (All,
   Requested, Ready to watch, Couldn't get this), a type (All, Films, Series)
   and "Asked by me", and they combine, as in the household web app. A series
