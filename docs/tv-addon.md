@@ -10,8 +10,10 @@ JellyPass title page, a page of Jellyfin web's own at `#/jellypass/title/<movie|
 this**. On Jellyfin web's own **Search** page the same script adds a **Discover** row of what was searched for and can be
 had ("The Search row"). The **Samsung app** (step 5) is built: a JellyPass build of Jellyfin's Tizen app whose loader adds
 the same script from the household host, and the household host's cross-origin rules for it (see "The Samsung app"); it
-has not been installed on a TV. **My requests** comes in a later step (see "Rollout"). Nothing has been run on a real TV
-yet (see "What must be checked on a real TV").
+has not been installed on a TV. **My requests** (step 6) is a JellyPass page of Jellyfin web's own at `#/jellypass/requests`
+("My requests"), reached from a card at the end of the Discover row and from a title the household is following; it lists
+the household's requests with their statuses and can cancel the ones the server says the member may. Nothing has been run
+on a real TV yet (see "What must be checked on a real TV").
 
 The architecture study behind this design is the 2026-10-27 TV study (route 1, "a JellyPass TV module in jellyfin-web").
 The owner's decisions for it:
@@ -88,6 +90,13 @@ flowchart LR
   choosing a card, the title page of a movie and of a series, Get this, and Back. That check found and fixed the row's
   `itemsContainer` class (see "The row"). The scripts and screenshots are kept with the redesign study
   (`/opt/dev/design-ref/jellypass-tv-redesign/step3/`), not in this repository.
+- **Jellyfin web 12.3, My requests:** a real `jellyfin/jellyfin:12.3.0` container again, in the TV and the desktop layout, with a
+  browser (the household API and TMDB's images answered by the script): the **My requests** card on Home, the page
+  under Jellyfin's header, Jellyfin's own focus manager moving down through the chips, requests and Cancel buttons (the TV
+  layout's arrow keys; Tab in the desktop layout), the filters, the cancel confirmation and a cancel, a title page of a
+  followed title with its **My requests** button, Back to the same request, and Back to Home with the card focused. The
+  script and screenshots are kept with the redesign study (`/opt/dev/design-ref/jellypass-tv-redesign/step6/`), not in this
+  repository.
 - **Not yet checked:** any real TV (see below), and Jellyfin web 10.11 (the Tizen builds) beyond the row. Where Jellyfin
   web's structure differs the add-on draws nothing (safe), but a changed focus model could leave a row or a page that
   can't be navigated: check the row, the title page and D-pad navigation (Back included) on each Jellyfin web version in
@@ -146,11 +155,17 @@ flowchart LR
   - the heading **Discover**;
   - the cards of the first page of `GET /discover/trending` (up to 20) that are **Available to get**, and no others.
     A title whose state is `in_library` ("Ready to watch") is left out, because Jellyfin web's own rows show it; a
-    **Requested** title is left out too (it will live in My requests, a later step); "Can't request" is not offered. So
+    **Requested** title is left out too (it is in My requests); "Can't request" is not offered. So
     the row has **no badge**: every card in it can be asked for. Each card is a `<button type="button">` in Jellyfin
     web's card markup (see "Jellyfin web coupling") with the poster (only a URL on the API's `w342` TMDB pattern), the
     title and the year. Its accessible name says the status in the app's words ("Available to get"). An unknown state is
     "Can't request", as the contract says, and so is not in the row.
+  - **The last card is a link.** After the titles the strip ends with a **My requests** card (Jellyfin's own card with a
+    plain face, `data-jellypass-tv-link`, a `<button>` with that accessible name) that opens `#/jellypass/requests`, a history
+    entry, only while Jellyfin web is signed in to this origin. It is not a title: it has no status and is not one of the
+    row's cards for focus or the overlay. Back from My requests returns to Home with focus on it (the same four-second
+    rule as for a title's card). It is drawn only with the row: a row with no title left to get is not drawn (above), so
+    there is no card then (the title page's button, below, and a title's own page are the other ways in). The Search row has no such card.
   - **A title the member asks for** (the title page's **Get this**, shown as Requested for up to two minutes, see "The
     title page") leaves the row at once, in place, with no call; when the two minutes run out and the server still says
     Available to get, it is back. **Back from the title page** returns to Home with focus on the title's card, or on the
@@ -249,8 +264,9 @@ bookmark). It replaces the overlay of step 2: nothing is fixed over Home, no key
     toggle buttons (`aria-pressed`) with **Select all** when there is more than one; **Get this** stays disabled with
     "Choose the seasons you want below." until one is chosen, and sends exactly the seasons chosen (HD only: the API
     asks for nothing else). A series partly in the library keeps **Play** as its primary, with **Get this** beside it.
-  - "Requested", "Can't request" and "We couldn't get this" have no button, only their note. The TV has no My requests
-    yet, so "Requested" says "Check My requests in the JellyPass app to follow it."
+  - "Requested", "Can't request" and "We couldn't get this" have no button, only their note. "Requested" says "Follow it
+    in My requests." and, like a title just asked for with **Get this**, a title with a failed request, or a series with
+    a requested season, has a **My requests** button after the others (it only opens the page; see "My requests").
 - **Focus.** Jellyfin's focus manager moves the d-pad within the page and the header. Once the title is read, focus goes
   to Play, else Get this, else the first season to choose, else Try again; what had focus when the page was last left
   (coming back from Play) wins, and nothing is taken from a member who has already pressed a key on the page. A change the
@@ -277,7 +293,7 @@ bookmark). It replaces the overlay of step 2: nothing is fixed over Home, no key
   at the clocks) that draws the statuses again from what is held, with no call; a page whose read after an accepted
   "Get this" failed is drawn again from the answer it showed before that call, keeping the confirmation and its
   **Try again**, and offering nothing that sends. It is kept in memory for the member
-  signed in: another member signing in, signing out, or a refused token (`401`, on the title read or the requests
+  signed in (and a cancel in My requests is the other way round: see "My requests"): another member signing in, signing out, or a refused token (`401`, on the title read or the requests
   read, each judged on its own) forgets all of it, and the page is emptied (Jellyfin web takes the member to its own
   sign-in or Home) or says sign in.
 - **Same origin only.** Every call is made as the row's are (below), with the token read from `ApiClient` for that one
@@ -324,6 +340,66 @@ left out. It is the same component as Home's row (`tv/src/cards.ts`: same headin
   and its `state`; the other-household worlds of the app tests give byte-for-byte the same calls and the same row. Text is
   set with `textContent`, images are only the API's `w342` TMDB URLs, and nothing is stored (the words are kept in memory
   for a minute and not sent anywhere but this API).
+
+### My requests
+
+`tv/src/requests.ts` (the words and rules in `tv/src/requests-model.ts`, the names kept by `tv/src/titles.ts`): the household
+app's My requests as a page of Jellyfin web's on the page host at `#/jellypass/requests` (it is a route, so a reload or a
+bookmark works, and it is drawn under Jellyfin web's real header and its Back button in the TV layout, and in the
+desktop layout under its toolbar), in Jellyfin's near-black look and its own `emby-button` and focus ring. The add-on
+handles no key (Jellyfin web's focus manager moves between its chips, entries and buttons by their place on the
+screen, and Back is its history), and it adds no document listener.
+
+- **Reached from** a **My requests** card at the end of Discover's strip on Home ("The row") and a **My requests** button on
+  the title page of a title the household is following (the title was just asked for, is Requested, or has a failed
+  request or a requested season). Jellyfin's own menu is not changed. If Jellyfin web's fallback page is not as
+  expected, or Jellyfin web is signed in to another server, nothing is drawn and nothing is asked.
+- **What it lists** is `GET /requests`, the household's own view, with the app's words: for each request the title's name,
+  year and poster (from its title, below), `Movie` or `Series` with its seasons on the same details line (`Season 2`,
+  `Seasons 1–3, 5`), the **status once** (the app's rule of #87: one pill for a movie, a series of one season or seasons
+  that all share a status, listed as text, else one pill per season and none for the request; the pill's words are
+  **Requested**, **Ready to watch** and **We couldn't get this**, the last with "Ask your JellyPass admin to try again."),
+  **Asked for by you** or **Asked for by someone in your household**, and **Requested on** the day the server sent
+  (`requestedOn`, the UTC day, written as the member's locale writes it, no time, with explicit date fields because
+  Chromium 63 has no `dateStyle`). An unknown status reads as the failed one. An empty list says "Nothing requested yet.
+  Choose Get this on a title to ask for it."
+- **Names, ten at a time.** The list names only what is shown: the first ten requests get one title call each
+  (`GET /movie/{id}` or `GET /tv/{id}`), at most four at once, and **Load more** names the next ten (and moves focus to the
+  first of them). A title that can't be read leaves the request with its status and "Title unavailable". A title named in
+  the last ten minutes of this sign-in is reused (#89: in memory, on both clocks, at most 300, forgotten with the sign-in),
+  so showing the page again reads only the list, and the requests that were showing (at least ten) are drawn at once.
+- **Filters** (#104): **Status** (All, Requested, Ready to watch, Couldn't get this), **Type** (All, Films, Series) and
+  **Asked by me**, as toggle buttons (`aria-pressed`), applied to the loaded requests with **no call**: a series matches a
+  status if any status it shows is that one. When a filter leaves nothing the page says so for that combination and offers
+  **Show all requests**; with some requests still unloaded it adds "More may match — Load more to look further." The
+  choice is in memory only: it stays while the member opens a title and comes Back, and is reset by a sign-out or another
+  member signing in.
+- **Cancel request** (#110), on the requests the server marks `cancellable` (a server without the field offers none): the
+  button opens a confirmation under the request (a group a remote can answer: **Keep request**, focused first as the safe
+  answer, and **Cancel request**) that says what cancelling does, in the app's words. Confirming sends one
+  `POST /requests/{id}/cancel` with `{}` and disables both buttons while it is out. On any `2xx` the page shows the one
+  fixed **Request cancelled**, takes the request off at once, marks the title **Get this** again in the overlay and reads
+  the list again (the server's word; its names are kept). A failure says its fixed words, `429` "Too many tries, try again
+  in a few minutes.", no network "You're offline. Check your connection, then try again.", anything else "We couldn't cancel
+  that just now. Try again in a moment.", and the button is offered again; a `401` shows "Sign in to continue" and forgets
+  the overlay and the names. If the list can't be read after an accepted cancel the confirmation stays with "Something went
+  wrong. Try again in a moment." and a **Try again** that only reads. Nothing is ever retried by itself, and no answer's text
+  is ever shown.
+- **The overlay's withdrawal** (`tv/src/asked.ts`, the app's `withdraw`): an accepted cancel shows the title, and each of its
+  seasons, as **Available to get** for two minutes while the server still says requested, so Home's Discover row (the card
+  is back, from the answer it already holds), the Search row and the title page need no call. Each key (the title's, a
+  season's) stops being covered as soon as the server says anything but requested for it, all of them when the member asks
+  for the title again, and the whole of it when the sign-in changes or is refused.
+- **Choosing a request** opens its title page (`#/jellypass/title/<movie|tv>/<tmdbId>`, a history entry) and **Back**
+  returns to My requests with the same request focused (the page host's focus memory, keyed by the title).
+- **Privacy.** Only the household's own view of the household's own requests: nothing here reads another household. The
+  page and its calls are byte-for-byte the same in every "other household" world of the app tests (and hold no canary).
+  Text is set with `textContent`; images are only the API's `w342` TMDB poster URLs with no referrer; nothing is stored.
+- **Call budget** (`tv-requests` in `docs/app-api/fetch-budget.json`, pinned by `test/tv-addon.test.mjs`): opening the page is
+  the app's My requests calls without `/me`: `GET /requests` and one title call for each request shown (at most ten).
+  **Load more** is one title call for each of the next ten. Shown again within ten minutes it reads only the list
+  (`revisit`). **Cancel** is the `POST` and the list read again (`cancel`; a failed one is the `POST` alone). Choosing a
+  filter, a chip, Keep request, a title or Back calls nothing (the title page makes its own two calls).
 
 ### API use
 
@@ -374,6 +450,9 @@ Jellyfin's own details page after Play; the address is the same, so the budget f
 `/me` (the TV shows no member name). Nothing is kept between openings, as in the app. `getThis` is what one accepted
 "Get this" makes: the `POST`, then the page read again (those two calls). A failed one is the `POST` alone. Choosing
 seasons, Select all, Back and Play call nothing.
+
+`tv-requests`: the page's calls are those in "My requests" (the app's `requests` entry without `/me`): `GET /requests` and one
+title call per request shown, ten at a time; `revisit` is the list alone; `cancel` is the `POST` and the list.
 
 `tv-search-row`: **one call**, `GET /search?q={query}&page=1`, per settled query (above): none while the field is empty,
 none for words typed within 600 ms of the next, none for the same words within a minute, and at least a second between
@@ -582,7 +661,9 @@ Each step is its own pull request, behind the same settings:
 3. **Search (done, redesign step 5).** A **Discover** row on Jellyfin web's own Search page, under its results, from the app's
    search (Available to get only), one call per settled query. No screen or keyboard of our own: it reuses Jellyfin
    web's search field, so on a TV it is the TV's own keyboard, voice or letter picker. See "The Search row".
-4. **My requests.** The household's requests with their coarse statuses, named ten at a time, as the PWA does.
+4. **My requests (done, redesign step 6).** The household's requests with their coarse statuses, named ten at a time, with
+   the filters and **Cancel request**, as the PWA does: a page of Jellyfin web's at `#/jellypass/requests`, reached from a
+   card at the end of the Discover row and a button on a followed title's page. See "My requests".
 5. **Samsung loader app (Tizen) (built; not installed).** See "The Samsung app".
    - CORS on `/jellypass/app/v1/*` and `/jellypass/tv/*` for the app's origin only (`file://` or `null`, not `*`), no
      credentials; preflight `204` before any token check; the native-client contract updated, since it makes the one
@@ -638,7 +719,14 @@ that household:
    quickly asks once; clearing the field takes the row away; the remote moves down from Jellyfin's last row into the row
    and Left/Right between its cards; OK opens the title page and Back returns to the Search page with the query still in
    the field and the card focused. Check it with the TV's voice search and its keyboard.
-13. **Caching.** After the setting is switched off and the app restarted, the row is gone (the page is `no-store`).
+13. **My requests.** From Home's Discover row, Right to the last card **My requests** and OK opens the page: Jellyfin's header
+   with Back and Home, the filter chips, then the requests with their pills, who asked and the day. The d-pad moves
+   between chips, requests and **Cancel request**, and the page scrolls to the focused one. **Load more** names ten more.
+   OK on a request opens its title page and Back returns to the same request. **Cancel request** on one of your own
+   requests asks first (focus is on **Keep request**), and **Cancel request** there shows "Request cancelled", takes it off,
+   and Home's Discover row has the title again. Check on the title page of a Requested title that **My requests** opens the
+   page, and Back from My requests returns to Home with the card focused.
+14. **Caching.** After the setting is switched off and the app restarted, the row is gone (the page is `no-store`).
 
 On a **Samsung**, nothing appears with the stock Jellyfin app, because it bundles its own Jellyfin web. With the
 JellyPass build installed (see "The Samsung app"), the same checks apply, plus those listed there under "Check on each
