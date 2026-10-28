@@ -295,8 +295,9 @@ magnifier hidden from screen readers, at most 100 characters) in a band that sti
 
 **My requests** is the PWA's `requestsScreen()`: the household's requests from `GET /requests`, each an entry with its
 title's thumbnail (46 × 68 pt, TMDB's poster only), its title and "year · Movie/Series", the coarse status (Requested,
-Ready to watch, We couldn't get this), who asked ("Asked for by you" or "… by someone in your household"), each season of
-a series with its own status, and, where anything failed, "Ask your JellyPass admin to try again." with no button.
+Ready to watch, We couldn't get this), who asked ("Asked for by you" or "… by someone in your household"), the day it was
+requested, each season of a series with its own status, and, where anything failed, "Ask your JellyPass admin to try
+again." with no button. Since 1.1.0 the list can be filtered, and a member can cancel a request from it.
 
 - **Calls** (`useRequests.ts`). The list is read each time the screen is shown (as the PWA reads it on each visit) and
   on pull to refresh. The list carries only TMDB IDs, so the first ten requests are named from their title's own answer
@@ -308,16 +309,51 @@ a series with its own status, and, where anything failed, "Ask your JellyPass ad
   retried by itself, and a 401 (the list or a title) signs the member out.
 - **An entry** is one link (named once with everything it shows, at least 44 pt) to its title on the My requests tab's
   own stack. The list stops widening at 46rem (736 pt) on iPad.
+- **The request day** ("Requested on …", in the device's date format, no time) is on screen and in the entry's
+  screen-reader name. It needs JellyPass server 3.5.0 or later (`requestedOn`, `apiVersion` 2); an older server sends no
+  day, and the entry shows none.
+- **Filters** (`filters.ts`, `text.ts`, the PWA's). Chips above the list choose a **Status** (All, Requested, Ready to
+  watch, Couldn't get this), a **Type** (All, Films, Series) and **Asked by me**, and they combine, as in the household
+  web app. A series matches a status if any status it shows has it, so a series with one season ready and another
+  requested appears under both. When nothing matches, the screen says what is missing ("No series still requested, asked
+  for by you.") and offers **Show all requests**. The chips are labelled for screen readers, ticked when chosen, at least
+  44 pt high, and wrap onto more lines at large text.
+  - Choosing a filter makes no call and does not change which titles are reused: it only picks among the entries
+    already listed. With more than ten requests it applies to the ones loaded so far ("More may match — Load more to
+    look further."), and **Load more** names the next ten.
+  - The choice is kept in memory while the app is open (one store per sign-in, in `SessionProvider`), never saved to the
+    device, and cleared on sign-out, a refused sign-in (a 401) or any change of household or member. It needs no server
+    change.
+- **Cancel request** (`useRequests.ts`, `components.tsx`). Only an entry the server lists as `cancellable` has the
+  button, under its link: 44 pt, named by its request for VoiceOver and TalkBack ("Cancel request: …"). It opens a sheet,
+  "Cancel this request?", that says what cancelling does ("This withdraws your household's request. If it has already
+  been approved, the download may still finish, but it won't be added for your household.") with **Cancel request** and
+  **Keep request** (which sends nothing); the sheet scrolls at the largest text size and stops widening on iPad.
+  - Confirming sends `POST /requests/{id}/cancel` once ("Cancelling…", both buttons disabled while it is out). On the
+    server's fixed 202 the screen always says **Request cancelled** (announced to screen readers, whatever the server then
+    does with it), the entry leaves the list at once, the list is read again, and the title shows **Get this** again on
+    Home, Search and its page (the session's overlay, `asked.ts`).
+  - A busy server (429: "Too many tries, try again in a few minutes."), no connection ("You're offline. Check your
+    connection, then try again.") and any other failure ("We couldn't cancel that just now. Try again in a moment.") each
+    have one fixed message in the sheet, nothing from the response; nothing is retried by itself, and a 401 signs the
+    member out.
+  - Needs JellyPass server 3.5.0 or later (`apiVersion` 2 in `GET /me`): an older server lists no request as
+    cancellable, so there is no button and no error, and everything else works as in 1.0.0.
 
 **Calls against the budget.** `docs/app-api/fetch-budget.json` pins the PWA's `search` (`/me` and the first page of one
-query) and `requests` (`/me`, `/requests` and one title call per request shown, at most `titlesAtOnce`, ten) screens,
+query) and `requests` (`/me`, `/requests` and one title call per request shown, at most `titlesAtOnce`, ten; `cancel`, one
+accepted Cancel: the POST, then `/requests` again, its titles already named) screens,
 checked against the PWA by `test/app-pwa.test.mjs` and against the app by `__tests__/search-requests-budget.test.tsx`.
 
 **Tests.** `search.test.tsx` (the pause, the Search key, stale answers, Load more, every failure with Try again and
 never by itself, 401, the overlay after Get this, the title on Search's stack, the columns on a phone, a narrow phone and
 an iPad, names and targets), `requests.test.tsx` (the entries' names, statuses, seasons, thumbnails and admin note,
 "Loading title…" and "Title unavailable", ten at a time with four calls at once, empty, failures and 401, reading
-again on return and on pull to refresh, the overlay, names, targets and the iPad width),
+again on return and on pull to refresh, the overlay, names, targets and the iPad width), `requests-filters.test.tsx`
+(the series rule, the combinations, the empty words, no calls on choosing, kept while open and reset on sign-out, a 401
+and another sign-in, the chips' names, ticks, targets and wrapping), `requests-cancel.test.tsx` (the button only where
+cancellable and never from an older server, the sheet and Keep, one POST, "Request cancelled", the entry gone and the list
+read again, Get this in the overlay, each failure's words, no retry, 401),
 `search-requests-budget.test.tsx` (above) and `search-requests-text.test.ts` (the words and sizes against the PWA's
 files).
 
