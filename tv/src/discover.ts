@@ -17,7 +17,7 @@ import {
 } from './discover-model.js';
 import { JELLYFIN_CLASSES } from './jellyfin-web.js';
 import { FOCUS_ATTR, type PageContext, type PageView } from './page-host.js';
-import type { SessionWatch } from './session-watch.js';
+import type { SessionWatch, Stamp } from './session-watch.js';
 import { ERROR_TEXT, kindOf, titleHash } from './title.js';
 
 /**
@@ -95,6 +95,8 @@ interface Hero {
 
 interface Open {
   userId: string;
+  /** The session the page was drawn under (member, token and sign-in generation): every callback checks it still holds. */
+  stamp: Stamp;
   context: PageContext;
   view: HTMLElement;
   heroSlot: HTMLElement;
@@ -160,13 +162,27 @@ export class DiscoverPage {
     if (session.userId !== open.userId || !open.view.parentNode) {
       this.#asked.sync(session.userId);
       this.#end(open);
+    } else if (!this.#watch.holds(open.stamp)) {
+      // The same member under a new token (or a new sign-in): what the old session fetched is not shown, the page is drawn afresh.
+      this.#asked.sync(session.userId);
+      open.stamp = this.#watch.stamp(session);
+      this.#paint(open);
     }
+  }
+
+  /**
+   * Whether `open` is still the page shown, under the very session it was drawn for. Every callback that can arrive later than the
+   * thing that started it (an observer, a click, an answer) asks this first and does nothing if not: sign-out, another member or a
+   * new token are seen here at once, before `update` has had its turn to end the page.
+   */
+  #live(open: Open): boolean {
+    return this.#open === open && this.#watch.holds(open.stamp) !== undefined;
   }
 
   /** The "Get this" overlay changed (an accepted request, a cancel, or an expiry): the statuses are drawn again, no call. */
   public overlayChanged(): void {
     const open = this.#open;
-    if (!open) return;
+    if (!open || !this.#live(open)) return;
     for (const row of open.rows) {
       if (!row.answered) continue;
       if (this.#hideHeld && this.#visibleKeys(row) !== row.drawn.map((one) => this.#cardKey(one.card)).join(' ')) this.#fill(row);
@@ -197,7 +213,7 @@ export class DiscoverPage {
     view.appendChild(heroSlot);
     view.appendChild(chips);
     view.appendChild(body);
-    const open: Open = { userId: session.userId, context, view, heroSlot, chips: {}, body, paint: 0, rows: [], units: [], hero: undefined, networks: undefined, foot: undefined, dataWatch: undefined, imageWatch: undefined, byElement: [] };
+    const open: Open = { userId: session.userId, stamp: this.#watch.stamp(session), context, view, heroSlot, chips: {}, body, paint: 0, rows: [], units: [], hero: undefined, networks: undefined, foot: undefined, dataWatch: undefined, imageWatch: undefined, byElement: [] };
     for (const filter of DISCOVER_FILTERS) {
       const chip = this.#chip(DISCOVER_TEXT.filters[filter], `chip:${filter}`, this.#filter === filter);
       chip.addEventListener('click', () => this.#choose(open, filter));
@@ -270,7 +286,7 @@ export class DiscoverPage {
   }
 
   #choose(open: Open, filter: DiscoverFilter): void {
-    if (this.#open !== open || filter === this.#filter) return;
+    if (!this.#live(open) || filter === this.#filter) return;
     this.#filter = filter;
     this.#slide = 0;
     for (const one of DISCOVER_FILTERS) (open.chips[one] as HTMLElement).setAttribute('aria-pressed', String(one === filter));
@@ -278,7 +294,7 @@ export class DiscoverPage {
   }
 
   #toggleHide(open: Open): void {
-    if (this.#open !== open) return;
+    if (!this.#live(open)) return;
     this.#hideHeld = !this.#hideHeld;
     open.chips.hide?.setAttribute('aria-pressed', String(this.#hideHeld));
     for (const row of open.rows) if (row.answered) this.#fill(row);
@@ -399,7 +415,7 @@ export class DiscoverPage {
   }
 
   #onData(open: Open, paint: number, entries: IntersectionObserverEntry[]): void {
-    if (open.paint !== paint || this.#open !== open) return;
+    if (open.paint !== paint || !this.#live(open)) return;
     for (const entry of entries) {
       if (!entry.isIntersecting) continue;
       const found = open.byElement.filter((one) => one.element === entry.target && one.row)[0];
@@ -410,7 +426,7 @@ export class DiscoverPage {
   }
 
   #onImages(open: Open, paint: number, entries: IntersectionObserverEntry[]): void {
-    if (open.paint !== paint || this.#open !== open) return;
+    if (open.paint !== paint || !this.#live(open)) return;
     for (const entry of entries) {
       const found = open.byElement.filter((one) => one.element === entry.target && one.unit)[0];
       if (found && found.unit) this.#near(found.unit, entry.isIntersecting);
@@ -443,23 +459,12 @@ export class DiscoverPage {
   async #load(open: Open, paint: number, row: RowView, retry: boolean): Promise<void> {
     row.asked = true;
     const result = await this.#data.get(row.request, { retry });
-    if (open.paint !== paint || this.#open !== open) return;
-    if ('stale' in result) {
-      this.#restale(open);
-      return;
-    }
+    if (open.paint !== paint || !this.#live(open) || 'stale' in result) return;
     if (result.ok) this.#settle(open, row, (result.value as { cards: DiscoverCard[] }).cards);
     else {
       if (row.feeds) open.heroSlot.className = 'jellypass-tv-discover-hero-slot';
       this.#failed(open, paint, result, row.body, () => { this.#skeleton(row); this.#load(open, paint, row, true); }, row.id);
     }
-  }
-
-  /** An answer that belongs to a session that is gone: another member (or no one) ends the page, the same member signed in again draws it afresh. */
-  #restale(open: Open): void {
-    const session = this.#watch.current();
-    if (!session || session.userId !== open.userId) this.#end(open);
-    else this.#paint(open);
   }
 
   /** A failure in `into`: its words, and Try again (never by itself) unless the sign-in is refused, which ends the page's rows. */
@@ -475,7 +480,7 @@ export class DiscoverPage {
     note.appendChild(this.#el('p', 'jellypass-tv-discover-row-note-text', `${kind.title}. ${kind.body}`));
     const retry = this.#button('raised jellypass-tv-discover-button', DISCOVER_TEXT.retry, `retry:${key}`);
     retry.addEventListener('click', () => {
-      if (open.paint === paint) again();
+      if (open.paint === paint && this.#live(open)) again();
     });
     note.appendChild(retry);
     into.appendChild(note);
@@ -553,8 +558,7 @@ export class DiscoverPage {
   /** A card was chosen: the title page opens, for the member who is signed in (a card of a session since ended opens nothing). */
   #openTitle(card: DiscoverCard): void {
     const open = this.#open;
-    const session = this.#watch.current();
-    if (!open || !session || session.userId !== open.userId) return;
+    if (!open || !this.#live(open)) return;
     this.#host.navigate(titleHash(card.mediaType, card.tmdbId));
   }
 
@@ -595,8 +599,8 @@ export class DiscoverPage {
     open.heroSlot.appendChild(section);
     const hero: Hero = { slides, unit, title, facts, overview, dots, view, image };
     open.hero = hero;
-    previous.addEventListener('click', () => this.#step(hero, -1));
-    next.addEventListener('click', () => this.#step(hero, 1));
+    previous.addEventListener('click', () => this.#step(open, hero, -1));
+    next.addEventListener('click', () => this.#step(open, hero, 1));
     view.addEventListener('click', () => this.#openTitle(hero.slides[this.#slide] as DiscoverCard));
     this.#slide = Math.min(this.#slide, slides.length - 1);
     this.#showSlide(hero);
@@ -604,7 +608,8 @@ export class DiscoverPage {
     open.context.focus(view);
   }
 
-  #step(hero: Hero, by: number): void {
+  #step(open: Open, hero: Hero, by: number): void {
+    if (!this.#live(open)) return;
     this.#slide = (this.#slide + by + hero.slides.length) % hero.slides.length;
     this.#showSlide(hero);
   }
@@ -636,9 +641,8 @@ export class DiscoverPage {
       return;
     }
     this.#data.get(request, { retry }).then((result) => {
-      if (open.paint !== paint || this.#open !== open) return;
-      if ('stale' in result) this.#restale(open);
-      else if (result.ok) this.#drawSources(open, paint, result.value as DiscoverSources);
+      if (open.paint !== paint || !this.#live(open) || 'stale' in result) return;
+      if (result.ok) this.#drawSources(open, paint, result.value as DiscoverSources);
       else if (open.networks) this.#failed(open, paint, result, open.networks, () => this.#sources(open, paint, true), 'sources');
     });
   }

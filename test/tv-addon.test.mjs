@@ -4381,6 +4381,87 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
       assert.equal(state.seen.filter((rel) => rel === '/discover/popular-movies').length, 2, 'asked again for the new session');
     });
 
+    /** What changes under the page with no page change in between: `update` (the cleanup) has not run when the callback is delivered. */
+    const SESSION_CHANGES = {
+      'a sign-out': (page) => { page.session.user = null; page.session.token = null; },
+      'another member': (page) => { page.session.user = ANN; page.session.token = TOKENS[ANN]; },
+      'a new token for the same member': (page) => { page.session.token = 'token-after-a-new-sign-in'; },
+    };
+    const imagesWithSrc = (page) => root(page).querySelectorAll('img[src]').length;
+
+    for (const [name, change] of Object.entries(SESSION_CHANGES)) {
+      describe(`a callback delivered right after ${name}, before the page has been cleaned up`, () => {
+        it('sets no image: the image window moving does nothing (no src, no call)', async (t) => {
+          const state = {};
+          const page = await openScripted(t, state);
+          await goTo(page);
+          const row = rowNamed(page, 'Popular movies');
+          assert.ok(cardsOf(row).length > 0);
+          assert.equal(imagesWithSrc(page), 0, 'nothing is near the screen yet');
+          const html = root(page).innerHTML;
+          const calls = page.requests.length;
+          change(page);
+          page.watchers.cross(row, true, IMAGE_MARGIN);
+          page.watchers.cross(page.document.querySelector('.jellypass-tv-discover-hero'), true, IMAGE_MARGIN);
+          assert.equal(imagesWithSrc(page), 0, 'no image got a src');
+          assert.ok(root(page).innerHTML === html, 'the page is as it was');
+          assert.equal(page.requests.length, calls, 'no call');
+        });
+
+        it('asks for no row: the data window moving does nothing', async (t) => {
+          const state = {};
+          const page = await openScripted(t, state);
+          await goTo(page);
+          const waiting = rows(page).filter((row) => cardsOf(row).length === 0 && row.querySelector('.jellypass-tv-discover-skeleton'));
+          assert.ok(waiting.length > 3);
+          const html = root(page).innerHTML;
+          const seen = state.seen.length;
+          const calls = page.requests.length;
+          change(page);
+          for (const row of waiting) page.watchers.cross(row, true, DATA_MARGIN);
+          await page.settled();
+          assert.equal(state.seen.length, seen, 'nothing asked');
+          assert.equal(page.requests.length, calls, 'no call');
+          assert.ok(root(page).innerHTML === html, 'the page is as it was');
+        });
+
+        it('does nothing for the chips, the hide toggle, the hero\'s buttons or a card', async (t) => {
+          const state = {};
+          const page = await openScripted(t, state);
+          await goTo(page);
+          const html = root(page).innerHTML;
+          const hash = page.location.hash;
+          const calls = page.requests.length;
+          change(page);
+          page.click(chip(page, 'movies'));
+          page.click(chip(page, 'hide'));
+          page.click(page.document.querySelector('[data-jellypass-tv-focus="hero:next"]'));
+          page.click(page.document.querySelector('[data-jellypass-tv-focus="hero"]'));
+          page.click(cardsOf(rowNamed(page, 'Trending'))[0]);
+          await page.settled();
+          assert.ok(root(page).innerHTML === html, 'the page is as it was');
+          assert.equal(page.location.hash, hash, 'no title opened');
+          assert.equal(page.requests.length, calls, 'no call');
+        });
+
+        it('draws no answer: a held row\'s answer delivered after the change adds nothing and asks nothing', async (t) => {
+          let release;
+          const state = { gates: { '/discover/popular-movies': new Promise((resolve) => { release = resolve; }) } };
+          const page = await openScripted(t, state);
+          page.route(HASH);
+          await pause(200);
+          assert.equal(cardsOf(rowNamed(page, 'Popular movies')).length, 0, 'the row is waiting');
+          const html = root(page).innerHTML;
+          change(page);
+          const calls = page.requests.length;
+          release();
+          await pause(200);
+          assert.ok(root(page).innerHTML === html, 'the page is as it was');
+          assert.equal(page.requests.length, calls, 'no call');
+        });
+      });
+    }
+
     it('calls only the origin it came from: signed in elsewhere nothing is sent, and a card chosen then opens nothing', async (t) => {
       const state = {};
       const page = await openScripted(t, state);
@@ -4508,6 +4589,38 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
       assert.equal(page.location.hash, hash);
     });
 
+    it('survives the desktop toolbar being drawn again, as React does: replaced by a copy that carries the button, by a pristine one, or removed and restored, never twice', async (t) => {
+      const page = await open(t, await startApp(t, webWorld(), tvOn()), { header: LEGACY_HEADER + TOOLBAR, tv: false });
+      const bar = () => page.document.querySelector('header.MuiAppBar-root');
+      const here = () => entries(page).filter((button) => button.closest('header.MuiAppBar-root')).length;
+      assert.equal(entries(page).length, 1);
+      // Focus on the button, then the whole toolbar is replaced by a deep copy (which carries a second button with it).
+      entries(page)[0].focus();
+      bar().replaceWith(bar().cloneNode(true));
+      await mutate(page);
+      assert.deepEqual([entries(page).length, here()], [1, 1], 'a copy that carried the button: still one');
+      const link = () => bar().querySelector('a[aria-label="Search"]');
+      assert.equal(entries(page)[0].nextElementSibling, link(), 'before Search');
+      // A pristine toolbar (React drew it afresh): the button is put back.
+      const pristine = bar().cloneNode(true);
+      for (const button of pristine.querySelectorAll('[data-jellypass-tv-discover-entry]')) button.remove();
+      bar().replaceWith(pristine);
+      await mutate(page);
+      assert.deepEqual([entries(page).length, here()], [1, 1], 'a pristine copy: put back once');
+      assert.equal(entries(page)[0].nextElementSibling, link());
+      // Removed: nothing is drawn anywhere (the hidden legacy header is not a place for it); restored: back.
+      const saved = pristine.cloneNode(true);
+      for (const button of saved.querySelectorAll('[data-jellypass-tv-discover-entry]')) button.remove();
+      bar().remove();
+      await mutate(page);
+      assert.equal(entries(page).length, 0, 'no toolbar, no button, not in the legacy header either');
+      page.document.body.insertBefore(saved, page.document.body.firstChild);
+      await mutate(page);
+      assert.deepEqual([entries(page).length, here()], [1, 1], 'restored: back once');
+      // Jellyfin's own Search link is untouched by all of it, and a click still reaches it.
+      assert.equal(link().getAttribute('href'), '#/search');
+    });
+
     it('draws nothing, and nothing breaks, when the header is not as expected: no actions box, no Search, Search hidden, a toolbar without its Search link or with a different icon', async (t) => {
       const cases = {
         'no actions box': LEGACY_HEADER.replace('class="headerRight"', 'class="somethingElse"'),
@@ -4528,6 +4641,11 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
         'no icon': TOOLBAR.replace(/<svg class="MuiSvgIcon-root MuiSvgIcon-fontSizeMedium[\s\S]*?<\/svg>/, ''),
         'no toolbar class': TOOLBAR.replace('MuiAppBar-root', 'SomethingElse'),
       };
+      // The desktop layout keeps the legacy header in the page, hidden and intact: a toolbar whose Search is gone is not a reason to use it.
+      for (const [name, toolbar] of Object.entries({ 'Search renamed': TOOLBAR.replace('aria-label="Search"', 'aria-label="Find"'), ...toolbars})) {
+        const page = await open(t, await startApp(t, webWorld(), tvOn()), { header: LEGACY_HEADER + toolbar, tv: false });
+        assert.equal(entries(page).length, 0, `${name}, with the legacy header intact`);
+      }
       for (const [name, toolbar] of Object.entries(toolbars)) {
         const page = await open(t, await startApp(t, webWorld(), tvOn()), { header: LEGACY_HEADER.replace('headerSearchButton', 'headerFindButton') + toolbar, tv: false });
         assert.equal(entries(page).length, 0, name);

@@ -454,6 +454,9 @@ web's focus manager moves between the hero's buttons, the chips and the cards; B
   0.7 MB): a row's, the hero's and the logos' images get their `src` only while that part is within about a screen and a half
   (a second observer, margin 25 %) and lose it when it is far off; their boxes keep their size, so nothing moves. Images are
   only the API's TMDB URLs, set with DOM APIs, `referrerpolicy="no-referrer"`.
+  **The decoded-image memory bound on Chrome 63 is a real-TV check, not a measured one:** windowing keeps the number of images
+  that have a `src` to about a screen and a half, and the tests assert exactly that, but how much memory a 2019 set holds for
+  them (and whether it gives it back when `src` is removed) has not been measured on a TV.
 - **The foot is one focus stop** (a `tabindex=0` block, ring inside it): the remote's Down from the last row reaches it, which
   scrolls the studios, the JustWatch line (All and Movies) and the **TMDB notice** (every chip; required wherever TMDB's data is
   shown) into view. The studios' tiles are **not links** and the service rows have no "See all": service and studio pages are the
@@ -483,6 +486,32 @@ header does not match the markup below, nothing is drawn and there is then no wa
 | **10.11 (the Samsung app's Jellyfin web)** | read from the 10.11.3 bundle's `renderHeader`: the same legacy header, Search = `button.headerButton.headerButtonRight.headerSearchButton` (`hide` until signed in, then shown) in `.headerRight`; the Tizen app runs the TV layout, which uses it | as the 12.3 TV layout. **Not run signed in on a Samsung or a 10.11 TV layout here** (read from the bundle only): see the real-TV checks |
 
 Both layouts were run on a real `jellyfin/jellyfin:12.3` container (screenshots, not committed).
+
+**The layout decides which header is read, with no fall back.** The TV layout (`html.layout-tv`) reads the legacy header only;
+any other layout reads the toolbar only. If the layout's own Search cannot be matched (renamed, no `href`, a different icon, no
+toolbar) nothing is drawn, even when the other header is intact in the page: on the desktop layout the legacy header is hidden,
+and a button in it would be a button no one sees. (A Jellyfin web 10.11 in a desktop browser, which shows the legacy header
+without `layout-tv`, therefore gets no button; the Tizen app runs the TV layout.)
+
+**Session isolation.** The page takes the shared session stamp (member, token and sign-in generation: `SessionWatch.stamp`) when
+it is drawn, and every callback that can arrive later than what started it checks it still holds before it does anything: the
+image windows, the row (data) observers, the chips and "Hide what I have", the hero's buttons, a chosen card, Try again, and
+every answer. After a sign-out, another member or a new token (with or without a sign-out) they do nothing: no `src`, no call,
+no change to the page. The cleanup that follows a page change (`update`) then ends the page, or, for the same member under a
+new token, draws it afresh.
+
+#### Live header check
+
+`scripts/live-header-check.mjs` runs the built add-on (`dist/tv`) in headless Chromium against a **real
+`jellyfin/jellyfin:12.3` container**, signed in, with a stubbed household API, and checks after each step that there is exactly one
+compass button, in the toolbar, immediately before Search. Result of the last run (Jellyfin 12.3.0, Chromium 1223, desktop layout
+1280 by 800): **ALL PASS**, 26 checks: moving between Home, Search, Preferences and Discover and back (one button each time, Search
+still opens the Search page); resizing to 700, 1920 and 1280 wide; focus on the compass button and on Search kept across a resize;
+the compass opens Discover and Search works from there; the TV layout class puts the button in the legacy header once and the
+desktop layout puts it back in the toolbar; and, last, the toolbar replaced by a copy that carries the button (no duplicate), by a
+pristine copy (put back once), removed (no button anywhere) and restored (back). The toolbar copies are no longer React's, so
+that step is run last. Run it with `PLAYWRIGHT_CORE=<an installed playwright-core> CHROME=<chrome> JELLYFIN=<url>`; the same
+replacement is in the test suite on a reconciliation-like fixture.
 
 ### API use
 

@@ -99,17 +99,18 @@ export interface HeaderSearch {
  *   right-hand actions are a box holding the SyncPlay and Cast buttons and the Search link, `a[aria-label=Search][href="#/search"]`.
  *   A button put there is not React's, so React leaves it alone while it re-renders around it; it is put back if the toolbar is
  *   drawn again.
- * Undefined if the header of the layout is not as that, so a Jellyfin web that has changed it gets no button.
+ * Undefined if the header of the layout is not as that (no fall back to the other one), so a Jellyfin web that has changed it gets no button.
  */
 export function headerSearch(document: Document): HeaderSearch | undefined {
+  // The layout decides which header is the visible one, and only that one is read: if its Search cannot be matched there is
+  // no button, never a fall back to the other header (the desktop layout's legacy header is in the page but hidden).
   if (!document.documentElement.classList.contains('layout-tv')) {
     const link = document.querySelector('header.MuiAppBar-root a.MuiIconButton-root[aria-label="Search"][href="#/search"]');
-    if (link) {
-      const parent = link.parentNode;
-      const icons = link.querySelectorAll('svg');
-      const paths = icons.length === 1 ? (icons[0] as Element).querySelectorAll('path') : [];
-      return parent && parent.nodeType === 1 && paths.length === 1 ? { kind: 'toolbar', right: parent as Element, search: link, icon: icons[0] as Element } : undefined;
-    }
+    if (!link) return undefined;
+    const parent = link.parentNode;
+    const icons = link.querySelectorAll('svg');
+    const paths = icons.length === 1 ? (icons[0] as Element).querySelectorAll('path') : [];
+    return parent && parent.nodeType === 1 && paths.length === 1 ? { kind: 'toolbar', right: parent as Element, search: link, icon: icons[0] as Element } : undefined;
   }
   const search = document.querySelector('.skinHeader .headerRight > button.headerSearchButton');
   const right = search ? search.parentNode : null;
