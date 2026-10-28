@@ -71,6 +71,7 @@ const BACKDROP_URL = /^https:\/\/image\.tmdb\.org\/t\/p\/w780\/[A-Za-z0-9_-]{1,1
 const LOGO_URL = /^https:\/\/image\.tmdb\.org\/t\/p\/w300\/[A-Za-z0-9_-]{1,100}\.(?:jpg|jpeg|png|webp)$/;
 const PLAY_ITEM_ID = /^[0-9a-f]{32}$/;
 const REQUEST_ID = /^[A-Za-z0-9_-]{22}$/;
+const REQUESTED_ON = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/;
 
 function object(value: unknown, path: string): Fields {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new DecodeError(path);
@@ -306,6 +307,9 @@ function decodeRequest(value: unknown, path: string): Request {
     status: coarseStatus(record, path),
     seasons: array(record, 'seasons', path, decodeRequestSeason),
     byYou: boolean(record, 'byYou', path),
+    // Added in apiVersion 2: a server before it sends neither, and has no cancel.
+    cancellable: field(record, 'cancellable') === undefined ? false : boolean(record, 'cancellable', path),
+    requestedOn: field(record, 'requestedOn') === undefined ? null : string(record, 'requestedOn', path, { pattern: REQUESTED_ON }),
   };
 }
 

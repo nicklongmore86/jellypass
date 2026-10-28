@@ -148,8 +148,10 @@ describe("a request's text", () => {
       { seasonNumber: 2, status: 'failed' },
     ],
     byYou: true,
+    cancellable: false,
+    requestedOn: '2026-10-27',
   };
-  const film: Request = { id: 'b', mediaType: 'movie', tmdbId: 7, status: 'ready', seasons: [], byYou: false };
+  const film: Request = { id: 'b', mediaType: 'movie', tmdbId: 7, status: 'ready', seasons: [], byYou: false, cancellable: false, requestedOn: null };
   const named = { status: 'loaded', title: { title: 'Dune', year: 2021, posterUrl: null } } as const;
 
   it('says the title once it is read, "Loading title…" until then and "Title unavailable" if it cannot be', () => {

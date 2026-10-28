@@ -102,6 +102,11 @@ export interface ApiClient {
    */
   getThis(mediaType: MediaType, tmdbId: number, seasons?: readonly number[], options?: CallOptions): Promise<void>;
   requests(options?: CallOptions): Promise<Requests>;
+  /**
+   * Cancels one of the caller's own requests, by its `requests()` ID: resolves once the API accepted the call. It always
+   * answers the same, so this says nothing about what follows; only `requests()` tells, later. Needs `apiVersion` 2.
+   */
+  cancelRequest(id: string, options?: CallOptions): Promise<void>;
 }
 
 function isWhole(value: number, min: number, max: number): boolean {
@@ -261,5 +266,9 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       await call('POST', `/${mediaType}/${id}/get`, mediaType === 'tv' ? { seasons: [...seasons] } : {}, false, callOptions);
     },
     requests: (callOptions) => get('/requests', decodeRequests, callOptions),
+    cancelRequest: async (id, callOptions) => {
+      check(typeof id === 'string' && /^[A-Za-z0-9_-]{22}$/.test(id));
+      await call('POST', `/requests/${id}/cancel`, {}, false, callOptions);
+    },
   };
 }

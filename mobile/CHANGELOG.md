@@ -31,6 +31,14 @@ build.
   and cleared on sign-out or when another member signs in. It needs no server
   change.
 
+### Changed
+
+- **The app's API client reads the request fields of `apiVersion` 2**
+  (`cancellable` and the day a title was asked for, `requestedOn`) and can
+  send a cancel, for the Cancel button a later release adds. Nothing on screen
+  changes. A server before `apiVersion` 2 sends neither field: the client then
+  reads every request as not cancellable, with no day, as before.
+
 ## [1.0.0] - 2026-10-27
 
 The first release of the household app. It needs a household on **JellyPass
