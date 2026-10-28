@@ -212,8 +212,11 @@ export interface GrantState {
  * neither the requester (see GrantStore.resolveOwners) nor their households access, so a title nobody follows any more
  * is held for no household until an administrator decides (GET /v1/app/held).
  *
- * Kept while the request is not handled (at most APP_REQUEST_RETENTION_MS after it was made, or until Seerr no longer
- * has the request), and with `requester` for as long as a grant records the request.
+ * Kept while the request is not handled (at most APP_REQUEST_RETENTION_MS after the cancel), and with `requester` for as
+ * long as a grant records the request. Once Seerr no longer has the request (an administrator deleted it), one with
+ * `requesterId` is kept as a **title hold** (`seerrGoneAt`): the download may go on without it, so the first HD item of
+ * the title Jellyfin has with no grant is granted to that request, held for no household (AccessService
+ * applyTitleHolds); every other withdrawal is forgotten then.
  */
 export interface AppWithdrawal {
   mediaType: 'movie' | 'tv';
@@ -221,6 +224,14 @@ export interface AppWithdrawal {
   /** The households whose records following the request were withdrawn. */
   householdIds: string[];
   requester?: true;
+  /**
+   * With `requester`, when the request was a genuine one (no join rule, AppRequestRecord.joinOnGrant): its requester,
+   * whom a held grant records should Seerr lose the request before the title arrives. Jellyfin had no item of the title
+   * when such a request was made, so any HD item of it that appears later is its arrival.
+   */
+  requesterId?: string;
+  /** When the refresh found that Seerr no longer has the request, for a withdrawal with `requesterId`: a title hold. */
+  seerrGoneAt?: string;
   createdAt: string;
   /** When the request was granted under this withdrawal. */
   grantedAt?: string;

@@ -128,7 +128,7 @@ export interface HouseholdRequestsOptions {
   store: Pick<GrantStore,
     | 'listAppRequests' | 'listAppRequestsForHousehold' | 'writeAppRequests' | 'getAppIdKey' | 'householdEpoch'
     | 'hasHandledRequest' | 'listAppRequestIntents' | 'addAppRequestIntent' | 'isAppRequestIntentDurable' | 'getGroup'
-    | 'hasAppRequestIntent' | 'listAppWithdrawals'>;
+    | 'hasAppRequestIntent' | 'listAppWithdrawals' | 'getAppRequest' | 'listAppTitleHolds'>;
   /** Jellyfin with JellyPass's own key: the decision input for "Jellyfin already has it". */
   jellyfin: Pick<JellyfinClient, 'findItemsByTmdbId' | 'existingItems' | 'findItemsByName' | 'seasonsWithEpisodes'>;
   /** Seerr with the admin key: the blocklist, a title's requests, and the status of requests JellyPass recorded. */
@@ -138,10 +138,12 @@ export interface HouseholdRequestsOptions {
   /** The library join rules (AccessService.joinHousehold), and the webhooks deferred for an intent (AccessService.retryDeferredRequests). */
   joins: {
     joinHousehold(
-      input: { itemIds: string[]; userId: string; householdId: string; householdEpoch?: number },
+      input: { itemIds: string[]; userId: string; householdId: string; householdEpoch?: number; recordId?: string },
       options: { signal?: AbortSignal },
     ): Promise<HouseholdJoinResult>;
     retryDeferredRequests(options: { signal?: AbortSignal }): Promise<void>;
+    /** Grants the arrivals of titles whose withdrawn request Seerr lost, held for no household (AccessService.applyTitleHolds). */
+    applyTitleHolds(options: { signal?: AbortSignal }): Promise<void>;
     /** Runs `work` in the queue grants are decided in (AccessService.serialized), for a cancel's withdrawal. */
     serialized<T>(work: () => Promise<T>): Promise<T>;
   };
@@ -324,6 +326,8 @@ export class HouseholdRequests {
         tmdbId: record.tmdbId,
         householdId: record.householdId,
         requester: record.branch === 'request',
+        // A genuine request: should Seerr lose it, its title is held when it arrives (AppWithdrawal `requesterId`).
+        ...(record.branch === 'request' && !record.joinOnGrant ? { requesterId: record.jellyfinUserId } : {}),
       })),
     });
     // Too late for the grant: a request of theirs was granted already, and the household keeps what it was given.
@@ -927,7 +931,7 @@ export class HouseholdRequests {
   #titles(householdId: string, callerId?: string): Map<string, ListedTitle> {
     const titles = new Map<string, ListedTitle>();
     const records = this.#store.listAppRequestsForHousehold(householdId).map(([, record]) => record)
-      .filter((record) => !record.detached && record.status !== 'deleted')
+      .filter((record) => !record.detached && !record.withdrawn && record.status !== 'deleted')
       .sort((left, right) => left.createdAt.localeCompare(right.createdAt));
     for (const record of records) {
       const key = `${record.mediaType}:${record.tmdbId}`;
@@ -969,14 +973,34 @@ export class HouseholdRequests {
   }
 
   /**
-   * Forgets the withdrawals (see AppWithdrawal) whose request Seerr no longer has (deleted by an administrator, or by
-   * the member's own cancel), so they no longer hold up a rollback: nothing can grant such a request. Each is read at
-   * most every {@link REFRESH_REQUEST_EVERY_MS}, at most {@link MAX_REFRESH_READS} a run.
+   * Finds the withdrawals (see AppWithdrawal) whose request Seerr no longer has (deleted by an administrator): nothing
+   * can grant such a request any more, but its download may go on. A requester's withdrawal of a genuine request
+   * becomes a title hold, so its title is held for no household when it arrives rather than public; any other is
+   * forgotten, so it no longer holds up a rollback (an administrator's delete sends every household following the
+   * request back to Get this, and its arrival follows the ordinary rules). Each is read at most every
+   * {@link REFRESH_REQUEST_EVERY_MS}, at most {@link MAX_REFRESH_READS} a run. Then the title holds are applied to what
+   * Jellyfin has now (AccessService.applyTitleHolds).
    */
   async #refreshWithdrawals(signal: AbortSignal | undefined): Promise<void> {
+    await this.#findGoneWithdrawals(signal);
+    if (signal?.aborted || this.#store.listAppTitleHolds().length === 0) return;
+    try {
+      await this.#joins.applyTitleHolds(signal ? { signal } : {});
+    } catch (error) {
+      if (signal?.aborted) return;
+      console.error(JSON.stringify({
+        level: 'error',
+        message: 'household app title holds could not be applied',
+        detail: error instanceof Error ? error.message : String(error),
+      }));
+    }
+  }
+
+  async #findGoneWithdrawals(signal: AbortSignal | undefined): Promise<void> {
     const now = this.#now();
     const due = this.#store.listAppWithdrawals()
-      .filter(([requestId]) => !this.#store.hasHandledRequest(requestId) && now - (this.#checkedAt.get(`withdrawal:${requestId}`) ?? 0) >= REFRESH_REQUEST_EVERY_MS)
+      .filter(([requestId, withdrawal]) => !withdrawal.seerrGoneAt && !this.#store.hasHandledRequest(requestId)
+        && now - (this.#checkedAt.get(`withdrawal:${requestId}`) ?? 0) >= REFRESH_REQUEST_EVERY_MS)
       .slice(0, MAX_REFRESH_READS);
     const gone: string[] = [];
     for (const [requestId] of due) {
@@ -995,7 +1019,7 @@ export class HouseholdRequests {
     }
     if (gone.length === 0) return;
     for (const requestId of gone) this.#checkedAt.delete(`withdrawal:${requestId}`);
-    await this.#joins.serialized(() => this.#store.writeAppRequests({ forgetWithdrawals: gone }));
+    await this.#joins.serialized(() => this.#store.writeAppRequests({ requestsGone: gone }));
   }
 
   async #refreshRecords(signal: AbortSignal | undefined): Promise<void> {
@@ -1013,11 +1037,18 @@ export class HouseholdRequests {
       if (signal?.aborted) return;
       this.#checkedAt.set(id, this.#now());
       try {
-        const status = await this.#current(record, signal);
+        const status = await this.#current(id, record, signal);
         if (signal?.aborted) return;
         if (status && (status.status !== record.status || !sameSeasons(status.readySeasons, record.readySeasons)
           || (status.awaitingGrant !== undefined && status.awaitingGrant !== (record.awaitingGrant === true)))) {
-          await this.#store.writeAppRequests({ update: [{ id, ...status }] });
+          // Written only if the record is still as it was read, in the queue a cancel's withdrawal (and every grant)
+          // is written in: a record a cancel withdrew, or a grant settled, while Seerr was read is read again next run,
+          // never overwritten by what was decided from the old one.
+          await this.#joins.serialized(async () => {
+            const current = this.#store.getAppRequest(id);
+            if (!current || current.withdrawn || current.updatedAt !== record.updatedAt || current.status !== record.status) return;
+            await this.#store.writeAppRequests({ update: [{ id, ...status }] });
+          });
         }
       } catch (error) {
         if (signal?.aborted) return;
@@ -1205,19 +1236,19 @@ export class HouseholdRequests {
   }
 
   /** What a record's status is now (see refresh), or undefined to leave it as it is. */
-  async #current(record: AppRequestRecord, signal?: AbortSignal): Promise<RecordChange | undefined> {
+  async #current(id: string, record: AppRequestRecord, signal?: AbortSignal): Promise<RecordChange | undefined> {
     if (record.status === 'completed') return await this.#mediaGone(record) ? { status: 'deleted' } : undefined;
     // There was no grant to join (the title was public): joined once there is one, for so long.
     if (record.status === 'pending' && record.awaitingGrant) {
       if (this.#now() - Date.parse(record.createdAt) > APP_TOMBSTONE_TTL_MS) return { status: 'completed', awaitingGrant: false };
-      return this.#joinInterest(record, signal);
+      return this.#joinInterest(id, record, signal);
     }
     // Its grant was settled already: it waits for its seasons (and for its media, should Seerr delete it meanwhile).
     if (record.status === 'pending' && record.itemIds?.length) {
       if (await this.#mediaGone(record)) return { status: 'deleted' };
       return this.#readiness(record, record.itemIds);
     }
-    if (!record.seerrRequestId) return record.branch === 'interest' ? this.#joinInterest(record, signal) : undefined;
+    if (!record.seerrRequestId) return record.branch === 'interest' ? this.#joinInterest(id, record, signal) : undefined;
     const state = await this.#seerr.requestState(record.seerrRequestId);
     // Deleted in Seerr (by an administrator): the same for the request and every household following it, which can ask
     // again ("Get this").
@@ -1226,7 +1257,7 @@ export class HouseholdRequests {
     if (state.status === DECLINED) return { status: 'declined' };
     if (state.status === FAILED) return { status: 'failed' };
     if (state.status !== COMPLETED) return undefined;
-    if (record.branch === 'interest' || record.joinOnGrant) return this.#joinInterest(record, signal);
+    if (record.branch === 'interest' || record.joinOnGrant) return this.#joinInterest(id, record, signal);
     // The caller's own request completed: ready once Jellyfin has every season it covers.
     const title = await this.#seerr.titleRequests(record.mediaType, record.tmdbId);
     if (!title) return undefined;
@@ -1241,12 +1272,13 @@ export class HouseholdRequests {
    * are ready but it stays `pending`, awaiting a grant (see AppRequestRecord.awaitingGrant), never `completed` against
    * a public title.
    */
-  async #joinInterest(record: AppRequestRecord, signal?: AbortSignal): Promise<RecordChange | undefined> {
+  async #joinInterest(id: string, record: AppRequestRecord, signal?: AbortSignal): Promise<RecordChange | undefined> {
     if (record.detached) return undefined;
     const title = await this.#seerr.titleRequests(record.mediaType, record.tmdbId);
     const itemIds = title ? (await this.#presence(record.mediaType, record.tmdbId, title)).itemIds : await this.#jellyfin.findItemsByTmdbId(record.mediaType, record.tmdbId);
     if (itemIds.length === 0) return undefined;
-    const joined = await this.#joins.joinHousehold({ itemIds, userId: record.jellyfinUserId, householdId: record.householdId }, signal ? { signal } : {});
+    // `recordId`: the join is refused if a cancel withdrew the record since it was read (checked in the write queue).
+    const joined = await this.#joins.joinHousehold({ itemIds, userId: record.jellyfinUserId, householdId: record.householdId, recordId: id }, signal ? { signal } : {});
     if (joined === 'joined' || joined === 'already') return { ...await this.#readiness(record, itemIds), awaitingGrant: false };
     if (joined === 'ungranted') {
       if (record.awaitingGrant || (record.seerrRequestId && this.#store.hasHandledRequest(record.seerrRequestId))) {

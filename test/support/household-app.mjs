@@ -145,6 +145,9 @@ export function world(options = {}) {
     holdQuota: undefined,
     // A promise each admin title read (GET /api/v1/movie|tv/:id) waits for before Seerr answers, if set.
     holdTitles: undefined,
+    // A promise each admin request read (GET /api/v1/request/:id) waits for before Seerr answers, if set: the request is
+    // read as it was when the call arrived.
+    holdRequestStates: undefined,
   };
 }
 
@@ -392,8 +395,10 @@ export async function createFakeSeerr(state) {
     }
     const byRequest = /^\/api\/v1\/request\/([0-9]+)$/.exec(url.pathname);
     if (byRequest) {
+      // Read as it is now, answered once `holdRequestStates` (if set when it arrived) resolves.
       const found = [...allRequests(), ...Object.values(state.media).flatMap((info) => info?.requests ?? [])].find((entry) => entry.id === Number(byRequest[1]));
-      return found ? send(response, 200, found) : send(response, 404, { message: 'canary' });
+      const answer = () => found ? send(response, 200, found) : send(response, 404, { message: 'canary' });
+      return state.holdRequestStates ? state.holdRequestStates.then(answer) : answer();
     }
     const byJellyfin = /^\/api\/v1\/user\/jellyfin\/([0-9a-f]{32})$/.exec(url.pathname);
     if (byJellyfin) {

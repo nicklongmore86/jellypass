@@ -34,6 +34,9 @@ const GRANTABLE_REQUEST_STATUSES = new Set([2, 5]);
 /** What a household app join did: see AccessService.joinHousehold. */
 export type HouseholdJoinResult = 'joined' | 'already' | 'refused' | 'ungranted' | 'error' | 'cancelled';
 
+/** Most title holds (see AccessService.applyTitleHolds) read in one run, oldest first; the rest wait for the next. */
+const MAX_TITLE_HOLD_READS = 50;
+
 /** Most entries {@link AccessService.appOutstanding} lists of each kind, oldest first; the counts are always complete. */
 export const MAX_OUTSTANDING_ENTRIES = 200;
 
@@ -67,6 +70,8 @@ export interface AppOutstanding {
   withdrawals: {
     total: number;
     byKind: { waiting: number; granted: number };
+    /** Of `waiting`, the title holds: Seerr no longer has the request, and its title is held when it arrives (see AppWithdrawal). */
+    titleHolds: number;
     /** Of `granted`, the titles held for no household (see AccessService.appHeld). */
     held: number;
     oldestAgeSeconds: number | null;
@@ -246,6 +251,7 @@ export class AccessService {
       withdrawals: {
         total: withdrawals.length,
         byKind: { waiting: withdrawals.filter((entry) => entry.kind === 'waiting').length, granted: withdrawals.filter((entry) => entry.kind === 'granted').length },
+        titleHolds: this.#store.listAppTitleHolds(now).length,
         held: this.appHeld().total,
         oldestAgeSeconds: age(withdrawals.map((entry) => entry.createdAt)),
         entries: oldestFirst(withdrawals),
@@ -269,6 +275,73 @@ export class AccessService {
       }];
     }).sort((left, right) => left.cancelledAt.localeCompare(right.cancelledAt));
     return { total: titles.length, titles: titles.slice(0, MAX_OUTSTANDING_ENTRIES) };
+  }
+
+  /**
+   * Applies the title holds (docs/app-design.md, "Cancelling (step 2c)"; AppWithdrawal `seerrGoneAt`): a request its
+   * requester withdrew and an administrator then deleted in Seerr may still download, and with no request nothing would
+   * grant its title, which would arrive public. For each hold, the title's HD items Jellyfin has now (see #heldItems)
+   * that no active grant holds are granted to the deleted request with no household and its requester left out (as
+   * #grantGroups and GrantStore.resolveOwners do for any request its requester withdrew): held for no household, and
+   * listed by appHeld; the households following the title then (an awaiting interest) join as for any grant. A hold
+   * whose items all have an active grant already is forgotten: the title is private anyway. At most
+   * {@link MAX_TITLE_HOLD_READS} holds a run; a failure is logged and tried again on the next. Run while there are holds
+   * by the household app's refresh, after each MEDIA_AVAILABLE webhook, and by the backfill, reconcileAll and the library
+   * catalog sync, so a title that arrives with no request to scan is held by whichever runs first.
+   */
+  public applyTitleHolds(options: { signal?: AbortSignal } = {}): Promise<void> {
+    if (this.#store.listAppTitleHolds().length === 0) return Promise.resolve();
+    return this.#exclusive(() => this.#applyTitleHolds(options.signal));
+  }
+
+  /** applyTitleHolds, in the write queue; nothing to do (and no Jellyfin read) while there are no holds. */
+  async #applyTitleHolds(signal?: AbortSignal): Promise<void> {
+    for (const [requestId, hold] of this.#store.listAppTitleHolds().slice(0, MAX_TITLE_HOLD_READS)) {
+      throwIfAborted(signal);
+      try {
+        const itemIds = await this.#heldItems(hold.mediaType, hold.tmdbId);
+        throwIfAborted(signal);
+        if (itemIds.length === 0) continue;
+        const free = itemIds.filter((itemId) => !this.#store.get(itemId)?.active);
+        if (free.length === 0) {
+          await this.#store.writeAppRequests({ forgetWithdrawals: [requestId] });
+          console.log(JSON.stringify({ level: 'info', message: 'household app title hold dropped: the title arrived on a grant', requestId }));
+          continue;
+        }
+        for (const itemId of free) {
+          throwIfAborted(signal);
+          const grant = await this.#store.grant({ itemId, requestId, userId: hold.requesterId, groupIds: [], mediaType: hold.mediaType });
+          console.log(JSON.stringify({ level: 'info', message: 'household app title held: its cancelled request was deleted in Seerr', requestId, itemId: grant.itemId }));
+          await this.#reconcileGrant(grant, signal);
+          throwIfAborted(signal);
+          await this.#settleAppRequests(grant.itemId, requestId, signal);
+        }
+      } catch (error) {
+        rethrowIfCancelled(error, signal);
+        console.error(JSON.stringify({
+          level: 'error',
+          message: 'household app title hold could not be applied',
+          requestId,
+          detail: error instanceof Error ? error.message : String(error),
+        }));
+      }
+    }
+  }
+
+  /**
+   * The HD movie or series items Jellyfin holds of a title, read with JellyPass's key: every item with its TMDB ID and
+   * Seerr's HD item for it, never the item Seerr links as the 4K one only, and never an item matched by name only.
+   * Throws when Jellyfin, or Seerr (with the admin key), cannot be read: a hold is applied only once both are.
+   */
+  async #heldItems(mediaType: 'movie' | 'tv', tmdbId: number): Promise<string[]> {
+    const title = this.#seerr ? await this.#seerr.titleRequests(mediaType, tmdbId) : undefined;
+    const hd = title?.jellyfinMediaId ? normalizeId(title.jellyfinMediaId) : undefined;
+    const fourK = title?.jellyfinMediaId4k ? normalizeId(title.jellyfinMediaId4k) : undefined;
+    const [byTmdb, linked] = await Promise.all([
+      this.#jellyfin.findItemsByTmdbId(mediaType, tmdbId),
+      hd ? this.#jellyfin.existingItems(mediaType, [hd]) : Promise.resolve([]),
+    ]);
+    return [...new Set([...byTmdb, ...linked].map(normalizeId))].filter((itemId) => itemId !== fourK || itemId === hd).sort();
   }
 
   /**
@@ -419,6 +492,8 @@ export class AccessService {
       const items = await this.#jellyfin.fetchLibraryCatalog();
       throwIfAborted(options.signal);
       const catalog = await this.#store.replaceCatalog(items);
+      // New items: a title whose request Seerr lost is held as it appears.
+      await this.#applyTitleHolds(options.signal);
       const grants = new Map(this.#store.list().filter((grant) => grant.active).map((grant) => [normalizeId(grant.itemId), grant]));
       return { ...catalog, items: catalog.items.map((item) => {
         const grant = grants.get(normalizeId(item.id));
@@ -447,7 +522,10 @@ export class AccessService {
         this.#metrics.increment('jfa_webhooks_total', { result: 'ignored' });
         return null;
       }
-      return this.#grantWebhook(event);
+      const granted = await this.#grantWebhook(event);
+      // Something arrived: a title whose request Seerr lost has no webhook of its own.
+      await this.#applyTitleHolds();
+      return granted;
     });
   }
 
@@ -710,7 +788,8 @@ export class AccessService {
   /**
    * The household app's join branch of "Get this": adds `householdId` (only the household whose host the call was made
    * on, never the caller's other households, and only while it is the household the call was made for: the same
-   * `householdEpoch`) to the grant of each of `itemIds` through the library join rules (see
+   * `householdEpoch`; with `recordId`, only while that record is still followed: pending or failed, never withdrawn) to
+   * the grant of each of `itemIds` through the library join rules (see
    * GrantStore.joinGrant: only an active grant with a request is joined, an administrator's removal of the household or
    * of the caller sticks, manual-only grants and items without a grant are left alone) and applies each join. Resolves
    * `joined` when a grant changed, `already` when the household was already on one, `ungranted` when none of the items
@@ -719,7 +798,7 @@ export class AccessService {
    * reported as `error`, and an aborted `signal` (shutdown) stops it before its next step (`cancelled`).
    */
   public async joinHousehold(
-    input: { itemIds: string[]; userId: string; householdId: string; householdEpoch?: number },
+    input: { itemIds: string[]; userId: string; householdId: string; householdEpoch?: number; recordId?: string },
     options: { signal?: AbortSignal } = {},
   ): Promise<HouseholdJoinResult> {
     const { signal } = options;
@@ -731,6 +810,12 @@ export class AccessService {
         throwIfAborted(signal);
         // A household deleted (or deleted and created again) since the call began joins nothing.
         if (input.householdEpoch !== undefined && this.#store.householdEpoch(input.householdId) !== input.householdEpoch) {
+          stored = 'refused';
+          return stored;
+        }
+        // The record the join is for (a refresh's) was withdrawn, or settled otherwise, since it was read.
+        const record = input.recordId === undefined ? undefined : this.#store.getAppRequest(input.recordId);
+        if (input.recordId !== undefined && (!record || record.withdrawn || record.detached || (record.status !== 'pending' && record.status !== 'failed'))) {
           stored = 'refused';
           return stored;
         }
@@ -803,7 +888,8 @@ export class AccessService {
   async #settleAppRequests(itemId: string, requestId: string, signal?: AbortSignal): Promise<void> {
     try {
       const records = this.#store.listAppRequests()
-        .filter(([, record]) => !record.detached && (record.status === 'pending' || record.status === 'failed'));
+        // A withdrawn record is never settled or joined, whatever its status says.
+        .filter(([, record]) => !record.detached && !record.withdrawn && (record.status === 'pending' || record.status === 'failed'));
       if (records.length === 0) return;
       let title: { mediaType: 'movie' | 'tv'; tmdbId: number } | undefined | null = null;
       let seasons: Set<number> | undefined;
@@ -1055,6 +1141,8 @@ export class AccessService {
           }));
         }
       }
+      // A title whose request Seerr lost has no request to scan.
+      await this.#applyTitleHolds(signal);
       this.#metrics.gauge('jfa_request_backfill_last_run_timestamp_seconds', Math.floor(Date.now() / 1000));
       return result;
     });
@@ -1070,6 +1158,7 @@ export class AccessService {
     return this.#exclusive(async () => {
       const plans: ChangePlan[] = [];
       const errors: Error[] = [];
+      if (!options.dryRun) await this.#applyTitleHolds(options.signal);
       for (const { itemId } of this.#store.list()) {
         throwIfAborted(options.signal);
         // Re-read: a grant moved earlier in this run may have been deleted, or merged into this one.

@@ -585,20 +585,21 @@ describe('cancelling: the administrator\'s readouts', { timeout: 60_000 }, () =>
 });
 
 describe('cancelling: what the state file keeps', { timeout: 60_000 }, () => {
-  it('forgets a withdrawal once Seerr no longer has its request, so it no longer holds up a rollback', async (t) => {
-    const app = await start(t, world({ autoApprove: true }));
+  it('forgets a withdrawal that only followed a request once Seerr no longer has it, so it no longer holds up a rollback', async (t) => {
+    const app = await start(t, world());
     await getThis(app);
-    await cancel(app);
+    await getThis(app, AS_BOB);
+    await cancel(app, AS_BOB);
     assert.equal((await admin(app, '/v1/app/outstanding')).json().withdrawals.total, 1);
     await app.requests.refresh();
     assert.equal((await admin(app, '/v1/app/outstanding')).json().withdrawals.total, 1);
     // An administrator deletes it in Seerr; after a restart (each request is read at most every 10 minutes) the refresh
-    // finds it gone.
+    // finds it gone. Nobody who asked for it withdrew it as its requester, so no title hold is kept (decision 3).
     app.seerr.state.requests[SEERR_IDS[ALICE]] = [];
     const later = await start(t, app.seerr.state, { stateFile: JSON.parse(await readFile(app.stateFile, 'utf8')) });
     await later.requests.refresh();
     const outstanding = (await admin(later, '/v1/app/outstanding')).json();
-    assert.deepEqual([outstanding.clear, outstanding.withdrawals.total], [true, 0]);
+    assert.deepEqual([outstanding.clear, outstanding.withdrawals.total, outstanding.withdrawals.titleHolds], [true, 0, 0]);
     assert.equal(JSON.parse(await readFile(later.stateFile, 'utf8')).appWithdrawals, undefined);
   });
 
@@ -616,5 +617,177 @@ describe('cancelling: what the state file keeps', { timeout: 60_000 }, () => {
     assert.equal((await admin(app, '/v1/app/held')).json().titles[0].itemId, moved);
     await app.store.revokeRequest(moved, String(FIRST));
     assert.deepEqual(app.store.listAppWithdrawals(), []);
+  });
+});
+
+describe('an administrator deletes a request its requester cancelled', { timeout: 60_000 }, () => {
+  /** Alice asks (approved at once) and cancels; an administrator then deletes the request, keeping the media record. */
+  async function cancelledThenDeleted(t) {
+    const app = await start(t, world({ autoApprove: true }));
+    await getThis(app);
+    await cancel(app);
+    app.seerr.state.requests[SEERR_IDS[ALICE]] = [];
+    app.seerr.state.media[T_MOVIE] = { id: 7360001, mediaType: 'movie', tmdbId: T_MOVIE, status: 3, requests: [] };
+    return app;
+  }
+
+  /** The movie's grant holds it for no household: the deleted request recorded, nobody an owner, everyone blocked. */
+  async function assertHeld(app) {
+    const grant = app.store.get(ITEMS.tMovie);
+    assert.ok(grant?.active, 'the title is held');
+    assert.deepEqual([Object.keys(grant.requests), grant.groupIds, grant.manualUserIds, grant.owners], [[String(FIRST)], [], [], []]);
+    for (const user of [ALICE, ANN, BOB]) assert.ok(blocked(app, user), user);
+    for (const options of [{}, AS_BOB]) assert.equal(await movieState(app, options), 'get_this');
+    const held = (await admin(app, '/v1/app/held')).json();
+    assert.deepEqual(held.titles.map(({ itemId, requestId }) => [itemId, requestId]), [[ITEMS.tMovie, String(FIRST)]]);
+  }
+
+  it('keeps the withdrawal as a title hold, so the title is held for no household when it arrives with no request to scan', async (t) => {
+    const app = await cancelledThenDeleted(t);
+    await app.requests.refresh();
+    // Every household is back to Get this (decision 3), but the hold keeps a rollback waiting.
+    assert.deepEqual(await entries(app), []);
+    assert.equal(await movieState(app), 'get_this');
+    let outstanding = (await admin(app, '/v1/app/outstanding')).json();
+    assert.deepEqual([outstanding.clear, outstanding.withdrawals.byKind, outstanding.withdrawals.titleHolds], [false, { waiting: 1, granted: 0 }, 1]);
+    assert.deepEqual(app.store.listAppWithdrawals().map(([requestId, withdrawal]) => [requestId, withdrawal.requesterId, typeof withdrawal.seerrGoneAt]),
+      [[String(FIRST), ALICE, 'string']]);
+
+    // The download went on: the movie arrives, and Seerr has no request for the backfill to find.
+    app.jellyfin.state.items.push(movieItem());
+    assert.equal((await app.service.backfillRequests(new Date(0))).scanned, 0);
+    await assertHeld(app);
+    outstanding = (await admin(app, '/v1/app/outstanding')).json();
+    assert.deepEqual([outstanding.clear, outstanding.withdrawals.byKind, outstanding.withdrawals.titleHolds, outstanding.withdrawals.held],
+      [false, { waiting: 0, granted: 1 }, 0, 1]);
+
+    // Asking again joins the held title, as after any cancel.
+    await getThis(app);
+    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['farmhouse']);
+    assert.ok(!blocked(app, ALICE));
+    assert.ok(blocked(app, BOB));
+    assert.equal(await movieState(app), 'in_library');
+  });
+
+  for (const [path, run] of [
+    ['the scheduled reconciliation', (app) => app.service.reconcileAll()],
+    ['the refresh, when the title arrived before it found the request gone', (app) => app.requests.refresh()],
+  ]) {
+    it(`holds the title through ${path}`, async (t) => {
+      const app = await cancelledThenDeleted(t);
+      if (!path.startsWith('the refresh')) await app.requests.refresh();
+      app.jellyfin.state.items.push(movieItem());
+      await run(app);
+      await assertHeld(app);
+    });
+  }
+
+  it('drops the hold once the title arrives on another grant, and the household that asked again gets it', async (t) => {
+    const app = await cancelledThenDeleted(t);
+    await app.requests.refresh();
+    await getThis(app, AS_BOB);
+    await arrive(app, SECOND, BOB);
+    const grant = app.store.get(ITEMS.tMovie);
+    assert.deepEqual([Object.keys(grant.requests), grant.groupIds], [[String(SECOND)], ['mill']]);
+    assert.ok(!blocked(app, BOB));
+    assert.ok(blocked(app, ALICE));
+    const outstanding = (await admin(app, '/v1/app/outstanding')).json();
+    assert.deepEqual([outstanding.clear, outstanding.withdrawals.total], [true, 0]);
+  });
+
+  it('lets a deleted request nobody cancelled arrive by the ordinary rules: public, with nothing outstanding', async (t) => {
+    const app = await start(t, world({ autoApprove: true }));
+    await getThis(app);
+    app.seerr.state.requests[SEERR_IDS[ALICE]] = [];
+    await app.requests.refresh();
+    assert.deepEqual(await entries(app), []);
+    app.jellyfin.state.items.push(movieItem());
+    await app.service.reconcileAll();
+    assert.equal(app.store.get(ITEMS.tMovie), undefined);
+    assert.equal(await movieState(app), 'in_library');
+    assert.equal((await admin(app, '/v1/app/outstanding')).json().clear, true);
+  });
+
+  it('keeps a title hold no longer than a withdrawal: 400 days after the cancel', async (t) => {
+    const app = await cancelledThenDeleted(t);
+    await app.requests.refresh();
+    const state = JSON.parse(await readFile(app.stateFile, 'utf8'));
+    const withdrawal = state.appWithdrawals[String(FIRST)];
+    withdrawal.createdAt = new Date(Date.now() - 401 * 24 * 60 * 60 * 1000).toISOString();
+    const later = await start(t, app.seerr.state, { stateFile: state });
+    assert.equal((await admin(later, '/v1/app/outstanding')).json().clear, true);
+    later.jellyfin.state.items.push(movieItem());
+    await later.service.reconcileAll();
+    assert.equal(later.store.get(ITEMS.tMovie), undefined);
+  });
+});
+
+describe('cancelling: the refresh never undoes a cancel', { timeout: 60_000 }, () => {
+  /** Holds Seerr's next admin request read until `release()`; resolves `read` once it has arrived. */
+  function holdRequestRead(app) {
+    let release;
+    app.seerr.state.holdRequestStates = new Promise((resolve) => { release = resolve; });
+    const read = until(() => app.seerr.calls.some((call) => /^\/api\/v1\/request\/[0-9]+$/.test(call.pathname) && call.actingUser === undefined), 'the request read');
+    return { read: read.then(() => { app.seerr.state.holdRequestStates = undefined; }), release: () => release() };
+  }
+
+  it('leaves a record a cancel withdrew while the refresh read Seerr withdrawn, and its requester is never given the title', async (t) => {
+    const app = await start(t, world({ autoApprove: true }));
+    await getThis(app);
+    const [entry] = await entries(app);
+    seerrRequestOf(app, FIRST).status = 4;
+    const gate = holdRequestRead(app);
+    const refreshed = app.requests.refresh();
+    await gate.read;
+    await cancelId(app, entry.id);
+    assert.deepEqual(app.store.listAppRequests().map(([, record]) => [record.status, record.withdrawn]), [['deleted', true]]);
+    gate.release();
+    await refreshed;
+    // Read failed before the cancel: never written over it.
+    assert.deepEqual(app.store.listAppRequests().map(([, record]) => [record.status, record.withdrawn]), [['deleted', true]]);
+    assert.deepEqual(await entries(app), []);
+    await arrive(app);
+    const grant = app.store.get(ITEMS.tMovie);
+    assert.deepEqual([grant.groupIds, grant.owners], [[], []]);
+    assert.ok(blocked(app, ALICE));
+    assert.equal(await movieState(app), 'get_this');
+  });
+
+  it('never joins a household whose interest a cancel withdrew while the refresh read Seerr', async (t) => {
+    const app = await start(t, world());
+    await getThis(app);
+    await getThis(app, AS_BOB);
+    // The request is granted, but the interest's join was not settled then (the refresh joins it).
+    app.jellyfin.state.items.push(movieItem());
+    seerrRequestOf(app, FIRST).status = 5;
+    await app.store.grant({ itemId: ITEMS.tMovie, requestId: String(FIRST), userId: ALICE, groupIds: ['farmhouse'] });
+    const [entry] = await entries(app, AS_BOB);
+    const gate = holdRequestRead(app);
+    const refreshed = app.requests.refresh();
+    await gate.read;
+    await cancelId(app, entry.id, AS_BOB);
+    gate.release();
+    await refreshed;
+    await app.background.settled();
+    const grant = app.store.get(ITEMS.tMovie);
+    assert.deepEqual(grant.groupIds, ['farmhouse']);
+    assert.ok(!grant.owners.includes(BOB));
+    const bob = app.store.listAppRequests().find(([, record]) => record.householdId === 'mill')[1];
+    assert.deepEqual([bob.status, bob.withdrawn], ['deleted', true]);
+  });
+
+  it('never settles a withdrawn record, whatever status an older write left it with', async (t) => {
+    const app = await start(t, world({ autoApprove: true }));
+    await getThis(app);
+    await cancel(app);
+    // As the stale refresh of 67767a6 left it: withdrawn, but `failed`.
+    const state = JSON.parse(await readFile(app.stateFile, 'utf8'));
+    for (const record of Object.values(state.appRequests)) record.status = 'failed';
+    const later = await start(t, app.seerr.state, { stateFile: state });
+    await arrive(later);
+    const grant = later.store.get(ITEMS.tMovie);
+    assert.deepEqual([grant.groupIds, grant.owners], [[], []]);
+    assert.ok(blocked(later, ALICE));
+    assert.deepEqual(await entries(later), []);
   });
 });

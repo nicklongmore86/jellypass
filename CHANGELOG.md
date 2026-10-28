@@ -34,12 +34,16 @@ changes are always listed at the top of the release notes.
   until an administrator gives it to someone, and the new admin-only
   `GET /v1/app/held` lists such titles. Access already given is never taken
   back, and another household following the request sees nothing change.
-  Cancels share the "Get this" limits.
+  If an administrator then deletes a request its requester cancelled, every
+  household is back to Get this, but the title is still held for no household
+  when it arrives (the download may go on without the request): JellyPass keeps
+  a **title hold** and holds the title's first HD item that appears. Cancels
+  share the "Get this" limits.
 - **`GET /jellypass/app/v1/requests` entries gain `cancellable` and
   `requestedOn`** (the day the household last asked, `YYYY-MM-DD`, never a
   time). `apiVersion` in `GET /me` is now `2`.
 - **`GET /v1/app/outstanding` counts cancels that still decide a grant**
-  (`withdrawals`, with `waiting`, `granted` and `held`), and `clear` waits for
+  (`withdrawals`, with `waiting`, `titleHolds`, `granted` and `held`), and `clear` waits for
   them; new gauges `jfa_app_withdrawals{kind}` and `jfa_app_held_titles`.
 
   **Upgrading** keeps the state file at schema v7 and needs no migration: it
