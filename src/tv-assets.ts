@@ -3,12 +3,14 @@ import { readdirSync, readFileSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { NEVER_STORE } from './app-assets.js';
 
 /**
  * The TV add-on's files (one script and its stylesheet; see docs/tv-addon.md), served on household hosts the add-on is
  * on for, under /jellypass/tv/. They are built into dist/tv by `pnpm build` (scripts/build-tv.mjs) and read once at
  * startup. Both are named for a hash of their content, so they are kept for good; neither carries anything
- * user-specific.
+ * user-specific. A small manifest names the current script, for the Samsung app's loader, which can't read it from
+ * Jellyfin web's page (the app bundles its own).
  */
 
 export const TV_PATH = '/jellypass/tv/';
@@ -19,6 +21,11 @@ const CONTENT_TYPES: Record<string, string> = {
   css: 'text/css; charset=utf-8',
 };
 const IMMUTABLE = 'public, max-age=31536000, immutable';
+/**
+ * The manifest: `{"script":"jellypass-tv.<hash>.js"}`, the script's name next to it. Never stored, so a loader always
+ * learns the current release's name.
+ */
+export const TV_MANIFEST_PATH = `${TV_PATH}manifest.json`;
 /** Marks the tag the gateway adds to Jellyfin web's page, so a page that already has one never gets a second. */
 export const TV_SCRIPT_MARKER = 'data-jellypass-tv';
 
@@ -74,11 +81,22 @@ export class TvAssets {
   }
 
   /**
-   * Answers a GET or HEAD for one of the files at its exact path and returns true; false for anything else (another
-   * method, another spelling, an old fingerprint), which the caller answers itself.
+   * Answers a GET or HEAD for one of the files, or the manifest, at its exact path and returns true; false for anything
+   * else (another method, another spelling, an old fingerprint), which the caller answers itself.
    */
   public serve(request: IncomingMessage, response: ServerResponse, pathname: string): boolean {
     if (request.method !== 'GET' && request.method !== 'HEAD') return false;
+    if (pathname === TV_MANIFEST_PATH) {
+      const body = Buffer.from(JSON.stringify({ script: this.scriptPath.slice(TV_PATH.length) }));
+      response.writeHead(200, {
+        'Content-Type': 'application/json; charset=utf-8',
+        'Content-Length': body.length,
+        ...NEVER_STORE,
+        'X-Content-Type-Options': 'nosniff',
+      });
+      response.end(request.method === 'HEAD' ? undefined : body);
+      return true;
+    }
     const asset = this.#assets.get(pathname);
     if (!asset) return false;
     const headers = {

@@ -8,7 +8,10 @@ Discover **row** (below, "The row"), the **page host** ("The page host") and the
 in `TV_ADDON_HOUSEHOLDS`, and that script adds one **Discover** row to Jellyfin web's Home. Choosing a card opens a
 JellyPass title page, a page of Jellyfin web's own at `#/jellypass/title/<movie|tv>/<tmdbId>`, with **Play** or **Get
 this**. On Jellyfin web's own **Search** page the same script adds a **Discover** row of what was searched for and can be
-had ("The Search row"). **My requests** and the Samsung loader app come in later steps (see "Rollout"). Nothing has been run on a real TV yet (see "What must be checked on a real TV").
+had ("The Search row"). The **Samsung app** (step 5) is built: a JellyPass build of Jellyfin's Tizen app whose loader adds
+the same script from the household host, and the household host's cross-origin rules for it (see "The Samsung app"); it
+has not been installed on a TV. **My requests** comes in a later step (see "Rollout"). Nothing has been run on a real TV
+yet (see "What must be checked on a real TV").
 
 The architecture study behind this design is the 2026-10-27 TV study (route 1, "a JellyPass TV module in jellyfin-web").
 The owner's decisions for it:
@@ -61,7 +64,7 @@ flowchart LR
 - **Its files.** `/jellypass/tv/jellypass-tv.<hash>.js` and `.css`, at their exact paths, sent `public,
   max-age=31536000, immutable` with an `ETag` (and a `304` to a matching `If-None-Match`) and `nosniff`. Any other
   `/jellypass/tv` path or method on a listed household's host is a fixed `404 {"error":"not_found"}` that never
-  reaches Jellyfin. Unlisted households still relay `/jellypass/tv` to Jellyfin, as before. The script adds the
+  reaches Jellyfin, apart from the Samsung app's manifest, `/jellypass/tv/manifest.json` (see "The Samsung app"). Unlisted households still relay `/jellypass/tv` to Jellyfin, as before. The script adds the
   stylesheet itself, by its address next to the script's, so the page needs one tag and a later loader needs to add
   only the script.
 - **Not on the admin host.** The administrator host never relays to Jellyfin and never serves the add-on. The LAN
@@ -330,8 +333,8 @@ left out. It is the same component as Home's row (`tv/src/cards.ts`: same headin
   it is the household host the loader fetched the script from, the same one the member signed in to.
 - **How.** `Authorization: MediaBrowser Token="<token>"` and `Accept: application/json`, `credentials: 'omit'`, no
   cookie, no token in a URL, no other header. That is the native-client contract, and it is what a CORS request from
-  another origin needs: a later `Access-Control-Allow-Origin: *` plus `Allow-Headers: Authorization` is enough, with no
-  credentials mode.
+  another origin needs: the Samsung app's page is another origin (`file://`), and the household host allows exactly
+  that origin, `Authorization` and `Content-Type`, with no credentials (see "The Samsung app").
 - **The token** is read from `ApiClient.accessToken()` for each request and passed only to that request's header. It is
   never kept in a variable past the call, written to storage, logged or put in the page (tested: no storage use, no
   console call, and the token isn't in the page).
@@ -378,6 +381,191 @@ two calls. It has no `/me` (the TV shows no member name).
 
 `test/tv-addon.test.mjs` pins all of this against the budget file.
 
+## The Samsung app
+
+The compatibility targets are Samsung sets on Tizen 5.0 (Chromium 63, e.g. 2019 models) and Tizen 5.5 (Chromium 69,
+e.g. 2020 models) running Jellyfin's Tizen app sideloaded, which
+**bundles its own Jellyfin web**: the gateway's tag never reaches it. The JellyPass build of that app (`tv/samsung/`) is the stock app plus one small loader, which adds the same add-on script from the
+household host the member signed in to. It keeps the app id `AprZAARz4r.Jellyfin`, so it **replaces** the Jellyfin app
+rather than sitting beside it.
+
+```mermaid
+flowchart LR
+  T["Jellyfin app (Tizen)<br/>file:///www/index.html<br/>+ jellypass-loader.js"] -->|"GET /jellypass/tv/manifest.json<br/>Origin: file:// or null"| G["household gateway<br/>(jelly-&lt;id&gt; host)"]
+  T -->|"&lt;script src=https://jelly-&lt;id&gt;/jellypass/tv/jellypass-tv.&lt;hash&gt;.js&gt;"| G
+  T -->|"/jellypass/app/v1/... (CORS)<br/>Authorization: MediaBrowser Token"| G
+```
+
+### The app's origin and the household host's rules
+
+- **The origin.** The app is a packaged web app: its page is `file:///www/index.html` (read with the inspector on both
+  sets). Chromium M63/M69 sends a `file:` page's origin as **`file://`** when the
+  runtime lets the page read local files, as Tizen does for a packaged app (a packaged app's `fetch` of its own
+  files works), and as **`null`** when it does not. Samsung documents neither, and reports disagree (some see `null`,
+  some no `Origin` at all), so the rules accept exactly those two values. A request with no `Origin` needs no CORS and
+  is answered as always. If a set sends something else, the manifest can't be read and the add-on simply doesn't
+  appear (see "Check on each Samsung").
+- **Where.** Only on a household host the add-on is on for (`TV_ADDON_ENABLED` and `TV_ADDON_HOUSEHOLDS`), and only for
+  `/jellypass/app/v1/*` (the app API) and `/jellypass/tv/*` (the add-on's files and manifest). The household app's own
+  pages (`/jellypass/app/` and its files), every other path, every other household and the administrator host answer
+  exactly as before, and so does any other origin (every web page has an `https://` origin) apart from `Vary: Origin`
+  on those two paths (see "Caches"; `src/tv-cors.ts`, tested).
+- **Preflight.** An `OPTIONS` from that origin asking for an allowed method and allowed headers is answered `204` at
+  once, before any token is looked at, with `Access-Control-Allow-Origin: <that origin>`, `-Allow-Methods` (`GET, POST`
+  for the API; `GET, HEAD` for the files), `-Allow-Headers: Authorization, Content-Type` (the API only; the files need
+  none), `-Max-Age: 600`, `Vary: Origin` and `no-store`. A preflight asking for anything else (another method, another
+  header, a cookie) gets the old answer (`401` for the API, `404` for the files), with no CORS header.
+- **Answers.** Every other answer to that origin, a refusal (`401`, `404`, `429`) included, carries
+  `Access-Control-Allow-Origin: <that origin>`, so the add-on can tell a refused token from no network.
+- **Caches.** Every answer on those paths there carries `Vary: Origin`, whatever `Origin` (or none) was sent, the add-on's
+  fingerprinted files (kept for good by browsers and the CDN) included, so a cache that honours it never gives a copy
+  made for one origin to another. No cache can be poisoned either way: only `Access-Control-Allow-Origin` depends on
+  `Origin`, and its value is one of the two fixed ones, never copied from a request; the body never depends on it. The
+  manifest, the API and preflights are never stored. So a cache that ignores `Vary` can at worst give a file's copy that
+  allows the app's origin to a web page (which reads nothing it couldn't: the files are public and the same for
+  everyone) or a copy without the header to the app (which loads the files with `<script>` and `<link>`, needing no
+  CORS).
+- **Never credentials.** `Access-Control-Allow-Credentials` is never sent. The API reads only the `Authorization`
+  header and sets and reads no cookie, so a page with the app's origin can do only what a token it already holds lets it
+  do. A sandboxed frame on any site also has the origin `null`: it gains nothing for the same reason.
+
+### The manifest
+
+`GET` or `HEAD /jellypass/tv/manifest.json`, on a household host the add-on is on for: `200 {"script":"jellypass-tv.<12
+hex>.js"}`, the current script's name, `no-store` (browser and CDN), `nosniff`, no token needed (the name is in Jellyfin
+web's page for anyone anyway). Only at that exact path; another spelling or method is the fixed `404`.
+
+### The loader
+
+`tv/samsung/loader.ts`, built by `tv/samsung/build-loader.mjs` to ES2017 (as the add-on) into
+`www/jellypass-loader.js`, added to Jellyfin web's page as one `<script defer>` before `</head>`.
+
+- **Which host.** Once a second it reads `ApiClient.serverAddress()` (no call is made). It acts only when that is
+  **HTTPS on the default port, with no user name, on a host the build lists** (`JELLYPASS_TV_HOSTS`, exact names or one
+  `*` for letters, digits and hyphens in the first label; for example `jelly-*.example.org`). So a server
+  named by its LAN address, the main host or any other server is left alone, and the loader never runs code from a host
+  the build doesn't trust.
+- **What it asks.** `GET https://<host>/jellypass/tv/manifest.json` with `Accept` only: no token, no cookie
+  (`credentials: 'omit'`), no referrer, a redirect is a failure. Ten seconds at most.
+- **What it adds.** If the answer is a script name of the add-on's shape, and Jellyfin web is still connected to that
+  host, `<script src="https://<host>/jellypass/tv/<name>" data-jellypass-tv>` in the head, one at a time. The add-on is
+  loaded only when that script's `load` fires. If it fires `error` instead (a release deployed between the manifest and
+  the script, so the name is gone; no network), the tag is removed and the manifest is asked again later, as after any
+  failure below; while the tag is loading nothing else is asked. The add-on then runs as
+  it does on LG and in browsers: it finds its own origin from that script, and calls the API only while
+  `ApiClient.serverAddress()` is that origin.
+- **Fails safe.** Anything else (a `404` where the add-on is off, no network, a timeout, a body it can't read, another
+  name, a script that fails to load) leaves no tag, and Jellyfin web runs as the stock app. It asks that host again
+  after 30 seconds, then 60, 120…, at most every 30 minutes; a different host is asked at once. Once the add-on's
+  script has loaded it stops. It logs, stores
+  and shows nothing. Switching to another server after the add-on has loaded leaves the add-on idle (it is the first
+  host's); restarting the app loads the new host's. A script download that never finishes (neither `load` nor `error`)
+  leaves the add-on waiting until the app restarts: there is deliberately no timeout, because a script removed while still
+  downloading can still run, and a retry could then load the add-on twice.
+- **Tests** (`test/tv-samsung.test.mjs`): the built loader parses as ES2017, uses no API Chromium 63 lacks and no
+  console, storage, HTML parsing or token; it is run with a fake clock and page for each host case, each failure, a
+  script that fails to load (a deploy race), the backoff and a server change; and against the gateway with a browser-like `fetch` that refuses an answer without the
+  right `Access-Control-Allow-Origin`.
+
+### The build
+
+`tv/samsung/build-wgt.sh`, with every input pinned in `tv/samsung/pins.env`:
+
+- **Jellyfin web `v12.3`** (`c06cb17`), the server's version (Jellyfin 12.3.0). Its `browserslist` includes Chrome 63, it
+  needs Node 24 and npm 11. Built `USE_SYSTEM_FONTS=1 npm run build:production`, as jellyfin-tizen's README says.
+- **jellyfin-tizen** (`31408c1`, master): `config.xml` (app id `AprZAARz4r.Jellyfin`, `<access origin="*">`), `tizen.js`
+  and its gulp step, which copies Jellyfin web into `www/` and adds its CSP meta (`default-src *`, so a script and a
+  `fetch` from the household host are allowed) and `tizen.js`. jeppevinkel/jellyfin-tizen-builds packages the same
+  wrapper (its `Jellyfin-12.z.wgt`).
+- Both npm builds run in **`node:24-bookworm`** pinned by digest; the loader is built with the repository's esbuild.
+- Packaged with `tizen build-web` (jellyfin-tizen's README excludes) and `tizen package -t wgt -s dev`, offline, in
+  **`ghcr.io/georift/install-jellyfin-tizen@sha256:d872a8b7…`** (never `:latest`), signed with that image's built-in
+  `dev` profile: author certificate `CN=developer` (sha256 `57a48d46…72cd`), Tizen's developer distributor.
+- The script checks the app id, that the package has the loader and exactly one tag for it, and writes
+  `dist/samsung/Jellyfin.wgt` and `dist/samsung/build-info.txt` (the package's and the loader's sha256, the author
+  certificate, every pin, the hosts and the JellyPass commit). `dist/` is not committed. The inputs are pinned; the
+  `.wgt` itself is not byte-for-byte reproducible (the zip and signature carry build times).
+
+```sh
+pnpm install --frozen-lockfile
+JELLYPASS_TV_HOSTS='jelly-*.example.org' tv/samsung/build-wgt.sh   # a few minutes; needs docker and network
+```
+
+A **new Jellyfin web** (a server upgrade) means changing the pin, checking the add-on's coupling on it (see "Jellyfin
+web coupling"), rebuilding and reinstalling. A **JellyPass release** needs nothing on the TV.
+
+### Install runbook
+
+The procedure, with example values: a deployment keeps its own (its household domain, the TVs' and the build machine's
+LAN addresses) in its operations notes, not in this repository. Here the household hosts are
+`jelly-<household>.example.org`, the machine running sdb is `192.0.2.10` and the TV is `192.0.2.20`. sdb talks to the
+TV over TCP 26101, unencrypted: LAN only.
+
+**Before.** On the TV: Apps, enter `12345`, Developer Mode on, host IP the sdb machine's address, restart the TV. Make
+sure the add-on is on for the household whose host the TV will use (`TV_ADDON_HOUSEHOLDS`), and that
+`https://jelly-<household>.example.org/jellypass/tv/manifest.json` answers `200`.
+
+**Sign-in is lost.** The image's default run (how the stock app is usually put on) downloads
+jeppevinkel/jellyfin-tizen-builds' `.wgt` and installs it **as published**: it re-signs only with a certificate passed
+to it, never with its `dev` profile. That `.wgt` is **signed by another author** (`CN=Jellyfin`, sha256
+`6ea90a25…9a83`, checked on release `2026-10-27-2002`) than this build (`CN=developer`). Tizen refuses to replace an app
+with one signed by a different author, so the stock app must be uninstalled first, and uninstalling clears its data:
+the server list and every sign-in. (The runbook tries the install first, so a set whose app happens to have the same
+author keeps its data.) Afterwards add the server as `https://jelly-<household>.example.org` (not the LAN address or the
+main host, or the add-on won't load) and sign in again.
+
+```sh
+IMAGE=ghcr.io/georift/install-jellyfin-tizen@sha256:d872a8b7fdb8f9c52e8181a76d3f320fda585c0e059d65d800d2aadad27f0a66
+TV=192.0.2.20   # the TV's LAN address; repeat for each set
+# The stock app, kept for the rollback (same release as checked above).
+mkdir -p dist/samsung/stock
+gh release download 2026-10-27-2002 -R jeppevinkel/jellyfin-tizen-builds -p Jellyfin.wgt -D dist/samsung/stock --clobber
+sha256sum dist/samsung/Jellyfin.wgt dist/samsung/stock/Jellyfin.wgt
+docker run --rm -it --network host -e TV="$TV" -v "$PWD/dist/samsung:/wgt:ro" --entrypoint /bin/bash "$IMAGE"
+```
+
+Inside the container:
+
+```sh
+S="$TV:26101"; APP=AprZAARz4r.Jellyfin; TMP=/home/owner/share/tmp/sdk_tools/tmp/Jellyfin.wgt
+sdb connect "$TV" && sdb devices                      # "$S  device  <model>"
+sdb -s "$S" shell 0 vd_applist | grep -B2 -A8 "$APP"  # note what is installed
+sdb -s "$S" push /wgt/Jellyfin.wgt "$TMP"
+sdb -s "$S" shell 0 vd_appinstall "$APP" "$TMP"       # expected to fail on the certificate (above); if it says
+                                                      # "app_id[AprZAARz4r.Jellyfin] install completed", skip the next two
+sdb -s "$S" shell 0 vd_appuninstall "$APP"            # "uninstall completed": the sign-ins are gone from here
+sdb -s "$S" shell 0 vd_appinstall "$APP" "$TMP"       # "app_id[AprZAARz4r.Jellyfin] install completed"
+sdb -s "$S" shell 0 vd_applist | grep -A8 "$APP"
+sdb -s "$S" shell 0 execute "$APP"
+```
+
+**Rollback** (the stock Jellyfin app): the same, with the stock file, uninstalling first (the authors differ again):
+
+```sh
+sdb -s "$S" shell 0 vd_appuninstall "$APP"
+sdb -s "$S" push /wgt/stock/Jellyfin.wgt "$TMP"
+sdb -s "$S" shell 0 vd_appinstall "$APP" "$TMP"
+```
+
+or the image's own default run, which downloads and installs a release's stock `.wgt`:
+`docker run --rm --network host "$IMAGE" "$TV" Jellyfin https://github.com/jeppevinkel/jellyfin-tizen-builds/releases/tag/2026-10-27-2002`
+(after the uninstall). Switching the add-on off for the household (`TV_ADDON_ENABLED=false`) is a lighter rollback: the
+manifest is gone, so the JellyPass build runs as the stock app.
+
+### Check on each Samsung
+
+With the add-on on for the household and the app signed in to its host:
+
+1. **It loads**: the Discover row appears on Home (within a few seconds of Home showing). If not, look at the manifest
+   request in the Web Inspector: the `Origin` it sent (record it here) and whether the answer has
+   `Access-Control-Allow-Origin`. The inspector needs the app launched in debug mode from Tizen Studio or Samsung's
+   Tizen TV VS Code extension; a plain `sdb` launch has no inspector target.
+2. **The API works cross-origin**: the row's `GET /discover/trending` and a title page's reads are `200`; **Get this**
+   (a `POST` with `Content-Type`, so it is preflighted) is accepted.
+3. Then "What must be checked on a real TV" above, items 3 to 12, with Tizen's Back (`10009`).
+4. **Playback and Jellyfin's own features** are as with the stock app (the build changes nothing else).
+5. **Chromium 63** (the 2019 set): as below.
+
 ## Rollout
 
 Each step is its own pull request, behind the same settings:
@@ -395,16 +583,17 @@ Each step is its own pull request, behind the same settings:
    search (Available to get only), one call per settled query. No screen or keyboard of our own: it reuses Jellyfin
    web's search field, so on a TV it is the TV's own keyboard, voice or letter picker. See "The Search row".
 4. **My requests.** The household's requests with their coarse statuses, named ten at a time, as the PWA does.
-5. **Samsung loader app (Tizen).**
-   - CORS on `/jellypass/app/v1/*` (`*`, no credentials, `Allow-Headers: Authorization`; preflight `204` before any
-     token check), with the native-client contract updated, since it reverses "CORS stays off".
-   - The add-on's files sent `Cross-Origin-Resource-Policy: cross-origin`, which they may be: they carry nothing
-     user-specific.
-   - A `jellypass-tizen` build (from `jellyquest-tizen`'s packaging, the overlay dropped) whose only change to
-     jellyfin-web is a loader. Once Jellyfin web has its server address, the loader adds
-     `<script src="https://<that host>/jellypass/tv/<current name>">`; the current name comes from the household
-     host's page, so a JellyPass change needs no resideload.
-   - It replaces the Jellyfin app on the households' Samsungs, and JellyQuest is removed from the TVs (operations).
+5. **Samsung loader app (Tizen) (built; not installed).** See "The Samsung app".
+   - CORS on `/jellypass/app/v1/*` and `/jellypass/tv/*` for the app's origin only (`file://` or `null`, not `*`), no
+     credentials; preflight `204` before any token check; the native-client contract updated, since it makes the one
+     exception to "CORS stays off". (`Cross-Origin-Resource-Policy` is not needed: the add-on's files are sent without
+     one, which a `<script>` from any page may load.)
+   - `tv/samsung/`: the build of Jellyfin's Tizen app (jellyfin-tizen)
+     whose only change to Jellyfin web is the loader. Once Jellyfin web has its server address, the loader asks that
+     household host's `/jellypass/tv/manifest.json` for the current name and adds
+     `<script src="https://<that host>/jellypass/tv/<current name>">`, so a JellyPass change needs no resideload.
+   - It replaces the stock Jellyfin app on the TVs (operations: the deployment's own runbook, following "Install
+     runbook" in "The Samsung app").
 
 Before switching it on for a household, the owner checks steps 1 and 2 on a real LG TV (below) with one household
 listed.
@@ -451,10 +640,11 @@ that household:
    the field and the card focused. Check it with the TV's voice search and its keyboard.
 13. **Caching.** After the setting is switched off and the app restarted, the row is gone (the page is `no-store`).
 
-On a **Samsung**, nothing appears until step 5, because the sideloaded app bundles its own Jellyfin web. Checking that
-nothing changed there is enough for now. In a desktop browser on the household host, the same row appears in Jellyfin
-web, which is the easiest first check.
+On a **Samsung**, nothing appears with the stock Jellyfin app, because it bundles its own Jellyfin web. With the
+JellyPass build installed (see "The Samsung app"), the same checks apply, plus those listed there under "Check on each
+Samsung". In a desktop browser on the household host, the same row appears in Jellyfin web, which is the easiest first
+check.
 
-For Chromium 63 itself (Samsung 2019): once step 5 exists, check that the bundle runs (the ES2017 gate covers syntax,
-not behaviour), focus is visible, the cards' and the title page's layout measures right by geometry (as JellyQuest
-measured its own), and Tizen's Back (`10009`) returns from the title page to Home.
+For Chromium 63 itself (Samsung 2019): check that the bundle runs (the ES2017 gate covers syntax, not behaviour), focus
+is visible, the cards' and the title page's layout measures right by geometry (as JellyQuest measured its own), and
+Tizen's Back (`10009`) returns from the title page to Home.
