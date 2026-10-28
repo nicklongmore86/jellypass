@@ -57,6 +57,48 @@ let LIVE_FOCUS;
 const onRow = (page, tmdbId) => (page.card(tmdbId) ? 'Available to get' : 'not in the row');
 const webCalls = (app) => app.jellyfin.requests.filter((request) => /^\/(?:emby\/)?(?:web|jellypass\/tv)\b/i.test(request.pathname)).map((request) => `${request.method} ${request.path}`);
 
+/** Every reference to AbortController in `source` that is not a `typeof` operand or inside the branch a `typeof AbortController` test guards. */
+function unguardedAbortControllers(source) {
+  const found = [];
+  const mentions = (node) => {
+    let hit = false;
+    visit(node, (one) => { if (one.type === 'UnaryExpression' && one.operator === 'typeof' && one.argument.type === 'Identifier' && one.argument.name === 'AbortController') hit = true; });
+    return hit;
+  };
+  const walk = (node, guarded) => {
+    if (!node || typeof node.type !== 'string') return;
+    if (node.type === 'Identifier' && node.name === 'AbortController' && !guarded) found.push(node.start);
+    if (node.type === 'UnaryExpression' && node.operator === 'typeof' && node.argument.type === 'Identifier' && node.argument.name === 'AbortController') return;
+    if ((node.type === 'ConditionalExpression' || node.type === 'IfStatement') && mentions(node.test)) {
+      walk(node.test, guarded);
+      walk(node.consequent, true);
+      walk(node.alternate, guarded);
+      return;
+    }
+    if (node.type === 'LogicalExpression' && node.operator === '&&' && mentions(node.left)) {
+      walk(node.left, guarded);
+      walk(node.right, true);
+      return;
+    }
+    for (const key of Object.keys(node)) {
+      const child = node[key];
+      if (Array.isArray(child)) for (const one of child) walk(one, guarded);
+      else if (child && typeof child === 'object') walk(child, guarded);
+    }
+  };
+  const visit = (node, fn) => {
+    if (!node || typeof node.type !== 'string') return;
+    fn(node);
+    for (const key of Object.keys(node)) {
+      const child = node[key];
+      if (Array.isArray(child)) for (const one of child) visit(one, fn);
+      else if (child && typeof child === 'object') visit(child, fn);
+    }
+  };
+  walk(parse(source, { ecmaVersion: 2017, sourceType: 'script' }), false);
+  return found;
+}
+
 describe('TV add-on: the build', () => {
   it('is one script and one stylesheet, each named for a hash of its content, and the script names the stylesheet', () => {
     assert.equal(FILES.length, 2);
@@ -83,7 +125,15 @@ describe('TV add-on: the build', () => {
       lacks(source, api, `the bundle uses ${api}`);
     }
     // AbortController (Chromium 66) is only ever used where the browser has it: every use sits behind a `typeof` check.
-    assert.equal(count(source, 'new AbortController'), count(source, 'typeof AbortController'), 'AbortController is feature-detected');
+    assert.deepEqual(unguardedAbortControllers(source), [], 'AbortController is feature-detected');
+    // The gate itself: a use that moved out of its `typeof` branch is found, guarded ones are not.
+    assert.deepEqual(unguardedAbortControllers("var c = typeof AbortController === 'function' ? new AbortController() : void 0;"), []);
+    assert.deepEqual(unguardedAbortControllers("if (typeof AbortController === 'function') { var c = new AbortController(); }"), []);
+    assert.deepEqual(unguardedAbortControllers("var c = typeof AbortController === 'function' && new AbortController();"), []);
+    assert.equal(unguardedAbortControllers("var ok = typeof AbortController === 'function' ? 1 : 0; var c = new AbortController();").length, 1, 'unguarded constructor, with a typeof elsewhere');
+    assert.equal(unguardedAbortControllers("var c = typeof AbortController === 'function' ? 0 : new AbortController();").length, 1, 'constructor in the else branch');
+    assert.equal(unguardedAbortControllers("if (typeof AbortController === 'function') { } var c = new AbortController();").length, 1, 'constructor after the guarded block');
+    assert.equal(unguardedAbortControllers('var s = AbortController.prototype;').length, 1, 'any other reference');
     // Nothing is logged, and nothing is kept in storage.
     lacks(source, /\bconsole\./);
     lacks(source, /\b(?:localStorage|sessionStorage|indexedDB|document\.cookie)\b/);
@@ -885,6 +935,68 @@ describe('TV add-on: the Search row', { timeout: 120_000 }, () => {
     await page.settled();
     assert.deepEqual(searches(page), ['?q=busy&page=1', '?q=busier&page=1']);
     assert.ok(titles(page).length > 0);
+  });
+
+  it('keeps several answers: alpha, beta, alpha asks twice', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const page = await open(t, app);
+    mount(page, 'alpha');
+    await settle(page);
+    type(page, 'beta');
+    page.advance(1000);
+    await settle(page);
+    type(page, 'alpha');
+    await settle(page);
+    assert.deepEqual(searches(page), ['?q=alpha&page=1', '?q=beta&page=1'], 'alpha is answered from memory');
+    assert.ok(titles(page).length > 0, 'and drawn');
+  });
+
+  it('keeps no more than 20 answers: the least recently used is asked for again', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const page = await open(t, app);
+    mount(page, 'w0');
+    await settle(page);
+    for (let i = 1; i <= 20; i += 1) {
+      type(page, `w${i}`);
+      page.advance(1000);
+      await settle(page);
+    }
+    type(page, 'w0');
+    page.advance(1000);
+    await settle(page);
+    assert.equal(searches(page).length, 22, 'w0 was the 21st answer back: dropped');
+    type(page, 'w20');
+    page.advance(1000);
+    await settle(page);
+    assert.equal(searches(page).length, 22, 'a recent one is still kept');
+  });
+
+  it('honours a 429 that comes back for words already left: the next search waits for what the server asked', async (t) => {
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    const app = await startApp(t, webWorld(), tvOn());
+    const page = await open(t, app, {
+      override: async (pathname) => {
+        if (!pathname.endsWith('/search')) return undefined;
+        if (new URL(page.requests.at(-1).url).searchParams.get('q') === 'slow') {
+          await held;
+          return { status: 429, body: '{}', headers: { 'retry-after': '45' } };
+        }
+        return undefined;
+      },
+    });
+    mount(page, 'slow');
+    await pause(600 + 120);
+    type(page, 'fresh');
+    release();
+    await page.settled();
+    assert.equal(page.document.body.textContent.includes('STALE'), false);
+    page.advance(30_000);
+    await page.settled();
+    assert.deepEqual(searches(page), ['?q=slow&page=1'], 'still within the 45 seconds');
+    page.advance(15_000);
+    await page.settled();
+    assert.deepEqual(searches(page), ['?q=slow&page=1', '?q=fresh&page=1']);
   });
 
   it('opens the title page from a card and returns on Back to the query and the card, with no new call', async (t) => {

@@ -12,7 +12,7 @@ import { currentSession, searchPage } from './jellyfin-web.js';
  *
  * The query is read from Jellyfin web's search field. It is asked for once it has been still for SEARCH_DEBOUNCE_MS
  * (a little longer than Jellyfin web's own 500 ms, so Jellyfin's results are up first), never while it is empty, and
- * never twice for the same words within SEARCH_REUSE_MS. A query that changes while a call is out cancels it (where the
+ * never twice for the same words (up to SEARCH_CACHE_SIZE of them are kept) within SEARCH_REUSE_MS. A query that changes while a call is out cancels it (where the
  * browser can) and drops whatever comes back for it; calls are at least SEARCH_MIN_GAP_MS apart, and a `429` stops them
  * for as long as the server asked. The row is only ever drawn from the answer for the words now in the field.
  *
@@ -31,6 +31,8 @@ export const SEARCH_DEBOUNCE_MS = 600;
 export const SEARCH_MIN_GAP_MS = 1_000;
 /** How long an answer is kept, in memory, for the same words (coming Back from a title, typing the words again). */
 export const SEARCH_REUSE_MS = 60_000;
+/** How many answers are kept at once (least recently used goes first): alpha, beta, alpha is two calls, not three. */
+export const SEARCH_CACHE_SIZE = 20;
 /** How long to wait after a `429` that did not say. */
 export const SEARCH_BACKOFF_MS = 30_000;
 /** How long after the Search page is shown again, from a title's page, the title's card is given focus whenever the row is drawn. */
@@ -63,7 +65,9 @@ export class SearchRow {
   readonly #now: () => number;
   /** The words and member the field and session hold now (empty: nothing to ask or draw). */
   #wanted: { userId: string; query: string } | undefined;
-  #kept: Kept | undefined;
+  /** Answers by member and words, least recently used first; emptied when the member changes or signs out. */
+  readonly #cache = new Map<string, Kept>();
+  #cacheUser: string | undefined;
   #timer: ReturnType<typeof setTimeout> | undefined;
   #flight: Flight | undefined;
   #lastCall: number | undefined;
@@ -103,23 +107,25 @@ export class SearchRow {
     }
     const session = currentSession(this.#scope);
     if (!session || session.origin !== this.#origin) {
-      this.#kept = undefined;
+      this.#cache.clear();
+      this.#cacheUser = undefined;
       this.#returning = undefined;
       this.#asked.sync(undefined);
       this.#stop();
       return;
     }
     this.#asked.sync(session.userId);
+    if (this.#cacheUser !== session.userId) this.#cache.clear();
+    this.#cacheUser = session.userId;
     const query = found.input.value.trim();
     const wanted = this.#wanted;
     if (!wanted || wanted.userId !== session.userId || wanted.query !== query) {
       this.#cancel();
       this.#removeRow();
       this.#wanted = { userId: session.userId, query };
-      if (this.#kept && this.#kept.userId !== session.userId) this.#kept = undefined;
     }
     if (!query || query.length > MAX_QUERY) return;
-    const kept = this.#kept && this.#kept.userId === session.userId && this.#kept.query === query && this.#now() - this.#kept.at < SEARCH_REUSE_MS ? this.#kept : undefined;
+    const kept = this.#recall(session.userId, query);
     if (!kept) {
       if (this.#timer === undefined && !this.#flight) this.#schedule(session.userId, query);
       return;
@@ -171,14 +177,40 @@ export class SearchRow {
     this.#flight = flight;
     this.#lastCall = this.#now();
     void search(this.#scope.fetch, this.#origin, session.token, query, controller?.signal).then((answer) => {
-      if (this.#flight !== flight) return;
-      this.#flight = undefined;
+      const current = this.#flight === flight;
+      if (current) this.#flight = undefined;
+      // What the server said about the caller holds whether or not the words have moved on; only the content is stale.
       if (!answer.ok && answer.status === 401) this.#asked.forget();
-      if (!answer.ok && answer.status === 429) this.#blockedUntil = this.#now() + (answer.retryAfterMs ?? SEARCH_BACKOFF_MS);
+      if (!answer.ok && answer.status === 429) this.#blockedUntil = Math.max(this.#blockedUntil, this.#now() + (answer.retryAfterMs ?? SEARCH_BACKOFF_MS));
+      if (!current) return;
       // A failure is kept like an answer: the same words are not asked again at once.
-      this.#kept = { userId, query, at: this.#now(), answer };
+      this.#remember({ userId, query, at: this.#now(), answer });
       this.update();
     }).catch(() => undefined);
+  }
+
+  #recall(userId: string, query: string): Kept | undefined {
+    const id = cacheKey(userId, query);
+    const kept = this.#cache.get(id);
+    if (!kept) return undefined;
+    if (this.#now() - kept.at >= SEARCH_REUSE_MS) {
+      this.#cache.delete(id);
+      return undefined;
+    }
+    this.#cache.delete(id);
+    this.#cache.set(id, kept);
+    return kept;
+  }
+
+  #remember(kept: Kept): void {
+    const id = cacheKey(kept.userId, kept.query);
+    this.#cache.delete(id);
+    this.#cache.set(id, kept);
+    while (this.#cache.size > SEARCH_CACHE_SIZE) {
+      const oldest = this.#cache.keys().next();
+      if (oldest.done) break;
+      this.#cache.delete(oldest.value);
+    }
   }
 
   /** Draws the row for `kept` after Jellyfin web's results, or leaves it be if it is already there as it should be. */
@@ -275,6 +307,10 @@ export class SearchRow {
     this.#drawn = undefined;
     this.#cards = [];
   }
+}
+
+function cacheKey(userId: string, query: string): string {
+  return `${userId}\u0000${query}`;
 }
 
 function key(cards: Card[]): string {
