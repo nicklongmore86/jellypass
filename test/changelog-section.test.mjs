@@ -53,6 +53,44 @@ function assertSection(notes, { version, nextVersion, subheadings }) {
 }
 
 describe('changelogSection with the real CHANGELOG.md', () => {
+  it('extracts 3.6.1 without its heading, up to the 3.6.0 section', () => {
+    const notes = changelogSection(CHANGELOG, '3.6.1');
+    assertSection(notes, {
+      version: '3.6.1',
+      nextVersion: '3.6.0',
+      subheadings: ['Fixed'],
+    });
+    assert.match(notes, /^This is a patch release for the TV add-on/);
+    const flat = notes.replace(/\s+/g, ' ');
+    assert.match(flat, /\*\*unless `TV_ADDON_ENABLED` is set, nothing changes\*\* on any host/);
+    assert.match(flat, /\*\*Nothing to configure\.\*\* No setting is new/);
+    assert.match(flat, /\*\*The state file is unchanged\*\* \(schema v7, with the same fields as 3\.6\.0\), so 3\.6\.0 reads a state file written by 3\.6\.1/);
+    assert.match(flat, /both names change in this release/);
+    assert.match(flat, /\*\*It has been tested in a real Jellyfin 12\.3 container,\*\* .* \*\*not on a real TV\*\*/);
+    assert.match(flat, /gets the new add-on at its next start\. Nothing is reinstalled on the TV/);
+    assert.match(flat, /`ghcr\.io\/nicklongmore86\/jellypass:3\.6\.0`/);
+    assert.match(flat, /No state-file or setting change is needed/);
+    assert.match(flat, /\*\*TV add-on: the add-on's cards show a focus ring\.\*\*/);
+    assert.match(flat, /uses `:focus` \(so it works on the older TVs' browsers\) and adds no key handling/);
+    const fixed = notes.indexOf('### Fixed');
+    for (const note of [
+      '**Nothing to configure.**',
+      '**The state file is unchanged**',
+      '**No CDN purge is needed.**',
+      '**It has been tested in a real Jellyfin 12.3 container,**',
+      '**The Samsung app picks it up by itself.**',
+      '**To roll back,**',
+    ]) {
+      assert.ok(notes.indexOf(note) >= 0 && notes.indexOf(note) < fixed, `upgrade note ${note} comes first`);
+    }
+    assert.doesNotMatch(notes, /### (?:Security|Added|Changed)/);
+    assert.doesNotMatch(notes, /### Upgrading from/);
+    assert.doesNotMatch(notes, /Mobile app|mobile\/CHANGELOG/, 'mobile/ is unchanged since 3.6.0');
+    assert.doesNotMatch(notes, /eas-cli|workflow|\btests?\b/i, 'no tests or CI');
+    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref|farmhouse/i, 'no server-specific details');
+    assert.deepEqual(split(notes).definitions, []);
+  });
+
   it('extracts 3.6.0 without its heading, up to the 3.5.0 section', () => {
     const notes = changelogSection(CHANGELOG, '3.6.0');
     assertSection(notes, {

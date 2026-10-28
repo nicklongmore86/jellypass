@@ -18,15 +18,52 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+## [3.6.1] - 2026-10-28
+
+This is a patch release for the TV add-on, which is still experimental and off
+by default: **unless `TV_ADDON_ENABLED` is set, nothing changes** on any host.
+It fixes one thing, the add-on's cards showing no focus ring, and adds nothing.
+No setting is added, removed or renamed, and the server itself is unchanged:
+the state file (schema v7), the app API (`v1`, `apiVersion` 2), webhook
+payloads, the administrator API, the admin UI, the household app and the
+gateway are as in 3.6.0. Only the add-on's stylesheet changes. Read these
+before upgrading:
+
+- **Nothing to configure.** No setting is new, and nothing in `.env` needs to
+  change. Only households the TV add-on is on for (`TV_ADDON_ENABLED` and
+  `TV_ADDON_HOUSEHOLDS`) see anything new.
+- **The state file is unchanged** (schema v7, with the same fields as 3.6.0),
+  so 3.6.0 reads a state file written by 3.6.1.
+- **No CDN purge is needed.** The add-on's script and stylesheet are named for
+  a hash of their content, and both names change in this release (the script
+  names the stylesheet). The household address's `/web/` page that carries the
+  add-on's tag and the Samsung app's manifest are sent `no-store`, so they name
+  the new files at once.
+- **It has been tested in a real Jellyfin 12.3 container,** in the TV layout
+  and the desktop layout, in a desktop browser, but **not on a real TV**.
+  Move through Home's and Search's Discover rows with the arrow keys in a
+  desktop browser on that household's address, then on a TV, and check that
+  each card shows the ring.
+- **The Samsung app picks it up by itself.** Its loader reads the manifest
+  each time it starts, so a Samsung TV with the JellyPass build of the app
+  gets the new add-on at its next start. Nothing is reinstalled on the TV.
+- **To roll back,** set `JELLYPASS_IMAGE` back to
+  `ghcr.io/nicklongmore86/jellypass:3.6.0` and recreate the container. No
+  state-file or setting change is needed. The add-on's cards lose the ring and
+  are otherwise as in 3.6.1.
+
 ### Fixed
 
-- TV add-on: the add-on's own cards (the **Discover** title cards on Home and on Search, and the **My requests** card at
-  the end of Home's Discover row) now show a clear white ring when they have focus, in both of Jellyfin web 12.3's
-  layouts. They showed none on a remote or keyboard (only a slight zoom in the TV layout, nothing at all in the desktop
-  layout). The ring is drawn inside the card, uses `:focus` (so it works on the older TVs' browsers) and adds no key
-  handling. Jellyfin's own cards are unchanged, as are the title page's My requests button and the My requests page's
-  filters, entries and Cancel/Keep buttons, which already showed focus. The add-on is still experimental and off by
-  default.
+- **TV add-on: the add-on's cards show a focus ring.** The **Discover** title
+  cards on Home and on Search, and the **My requests** card at the end of
+  Home's Discover row, now show a white ring (the page's text colour) when
+  they have focus, in both of Jellyfin web 12.3's layouts. In 3.6.0 a remote
+  or keyboard could not see which of them had focus: the TV layout only zoomed
+  the card slightly, and the desktop layout showed nothing. The ring is drawn
+  inside the card, uses `:focus` (so it works on the older TVs' browsers) and
+  adds no key handling. Jellyfin's own cards are unchanged, as are the title
+  page's My requests button and the My requests page's filters, entries and
+  Cancel/Keep buttons, which already showed focus.
 
 ## [3.6.0] - 2026-10-28
 
@@ -2838,7 +2875,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.6.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.6.1...HEAD
+[3.6.1]: https://github.com/nicklongmore86/jellypass/compare/v3.6.0...v3.6.1
 [3.6.0]: https://github.com/nicklongmore86/jellypass/compare/v3.5.0...v3.6.0
 [3.5.0]: https://github.com/nicklongmore86/jellypass/compare/v3.4.0...v3.5.0
 [3.4.0]: https://github.com/nicklongmore86/jellypass/compare/v3.3.1...v3.4.0
