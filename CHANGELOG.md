@@ -65,18 +65,23 @@ Read these before upgrading:
   effects:
   1. Stop cancels and "Get this" at the reverse proxy (block
      `POST /jellypass/app/v1/requests/*/cancel` as well as
-     `/jellypass/app/v1/movie/*/get` and `/tv/*/get`), and use neither Decline
-     nor Cancel request in the Requests tab.
+     `/jellypass/app/v1/movie/*/get` and `/jellypass/app/v1/tv/*/get`), and use
+     neither Decline nor Cancel request in the Requests tab.
   2. Read `GET /v1/app/outstanding` and look at `withdrawals`.
   3. For each `waiting` withdrawal that is not a title hold, wait until its
-     request is handled or gone, or decline or delete it in Seerr.
+     title arrives (it is then `granted`), or delete its request in Seerr and
+     wait for the next refresh (a requester's own withdrawal then becomes a
+     title hold, step 4). Declining it in Seerr does not drain it: the request
+     still exists, so the withdrawal keeps waiting.
   4. For each title hold (`titleHolds`), wait until its title arrives (it is
      then `granted`), or accept that it arrives public while rolled back.
   5. For each `granted` one, first give a held title (`GET /v1/app/held`) to
      the households that should have it with **Release**. Then revoke the
-     request from its grant
-     (`DELETE /v1/grants/{itemId}/requests/{requestId}`), which drops the
-     withdrawal at once.
+     request from **every** grant that records it
+     (`DELETE /v1/grants/{itemId}/requests/{requestId}` for each item, including
+     a title's other HD items and any copies left by a remap). The withdrawal
+     stays while any grant still records the request, so repeat until
+     `outstanding` no longer counts it.
   6. Roll back once `GET /v1/app/outstanding` answers `"clear": true`: set
      `JELLYPASS_IMAGE` to `ghcr.io/nicklongmore86/jellypass:3.4.0` and
      recreate the container. No state-file or setting change is needed.
