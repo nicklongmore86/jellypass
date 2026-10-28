@@ -4,7 +4,7 @@ import { connect as connectSocket, Socket } from 'node:net';
 import { after, before, describe, it, mock } from 'node:test';
 import { makeServer } from '../dist/server.js';
 
-const HOUSEHOLD_HOST = 'jelly-farmhouse.example.test';
+const HOUSEHOLD_HOST = 'jelly-grove.example.test';
 const IDLE_TIMEOUT_MS = 150;
 const uncaughtErrors = [];
 process.on('uncaughtException', (error) => uncaughtErrors.push(error));
@@ -234,7 +234,7 @@ function textFrame(text) {
 
 function stubService() {
   return {
-    getHouseholdMemberIds: (householdId) => (householdId === 'farmhouse' ? ['alice-id'] : undefined),
+    getHouseholdMemberIds: (householdId) => (householdId === 'grove' ? ['alice-id'] : undefined),
     isPasswordless: () => false,
     canJoinLibrary: () => false,
   };

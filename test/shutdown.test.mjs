@@ -14,7 +14,7 @@ import { GrantStore } from '../dist/store.js';
 import { createFakeJellyfin } from './support/fake-jellyfin.mjs';
 import { makeTempDir } from './support/temp-dir.mjs';
 
-const HOUSEHOLD_HOST = 'jelly-farmhouse.example.test';
+const HOUSEHOLD_HOST = 'jelly-grove.example.test';
 const ENTRYPOINT = fileURLToPath(new URL('../dist/index.js', import.meta.url));
 // Docker's default stop timeout is 10 s; shutdown should be done well inside it.
 const SHUTDOWN_BUDGET_MS = 3_000;
@@ -325,15 +325,15 @@ describe('graceful shutdown', { timeout: 15_000 }, () => {
 
   it('GrantStore leaves memory untouched when it refuses a change after close()', async (t) => {
     const { store } = await newStore(t);
-    await store.upsertGroup({ id: 'farmhouse', name: 'Farmhouse', userIds: ['alice-id'] });
+    await store.upsertGroup({ id: 'grove', name: 'Grove', userIds: ['alice-id'] });
     await store.close();
-    await assert.rejects(store.grant({ itemId: 'item-1', requestId: '42', userId: 'alice-id', groupIds: ['farmhouse'] }), /state store is closed/);
+    await assert.rejects(store.grant({ itemId: 'item-1', requestId: '42', userId: 'alice-id', groupIds: ['grove'] }), /state store is closed/);
     assert.equal(store.get('item-1'), undefined);
     assert.equal(store.hasHandledRequest('42'), false);
-    await assert.rejects(store.deleteGroup('farmhouse'), /state store is closed/);
+    await assert.rejects(store.deleteGroup('grove'), /state store is closed/);
     await assert.rejects(store.setUserPasswordless('alice-id', true), /state store is closed/);
     await assert.rejects(store.replaceCatalog([{ id: 'item-9', name: 'Nine', type: 'Movie' }]), /state store is closed/);
-    assert.ok(store.getGroup('farmhouse'));
+    assert.ok(store.getGroup('grove'));
     assert.deepEqual(store.listPasswordlessUserIds(), []);
     assert.deepEqual(store.getCatalog().items, []);
   });
@@ -355,7 +355,7 @@ describe('SIGTERM to the JellyPass process', { timeout: STARTUP_TIMEOUT_MS + 15_
     const stateFile = path.join(directory, 'grants.json');
     const seed = new GrantStore(stateFile);
     await seed.load();
-    await seed.upsertGroup({ id: 'farmhouse', name: 'Farmhouse', userIds: ['alice-id'] });
+    await seed.upsertGroup({ id: 'grove', name: 'Grove', userIds: ['alice-id'] });
     await seed.close();
     const { child, port, output, exited } = await startJellyPass({
       WEBHOOK_TOKEN: 'webhook-secret',
@@ -560,7 +560,7 @@ function get(options) {
 
 function stubService() {
   return {
-    getHouseholdMemberIds: (householdId) => (householdId === 'farmhouse' ? ['alice-id'] : undefined),
+    getHouseholdMemberIds: (householdId) => (householdId === 'grove' ? ['alice-id'] : undefined),
     isPasswordless: () => false,
     canJoinLibrary: () => false,
   };

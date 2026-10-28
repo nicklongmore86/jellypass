@@ -29,7 +29,7 @@ const GET_MOVIE = `${APP}/movie/${T_MOVIE}/get`;
 const GET_TV = `${APP}/tv/${T_TV}/get`;
 const SEED = {
   version: 7, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], appIdKey: 'ab'.repeat(32),
-  householdEpochs: { farmhouse: 1, mill: 2 }, nextHouseholdEpoch: 3,
+  householdEpochs: { grove: 1, mill: 2 }, nextHouseholdEpoch: 3,
 };
 
 function request({ id, seerrUser, type = 'movie', status = 1, seasons, createdAt = Date.now() }) {
@@ -47,7 +47,7 @@ const episode = (season) => ({ Id: `4444000044440000444400004444000${season}`, S
 /** Alice's "Get this" for the movie as JellyPass left it when it stopped before Seerr answered: a `submitting` intent. */
 function lostIntent(createdAt, extra = {}) {
   return {
-    householdId: 'farmhouse', jellyfinUserId: ALICE, mediaType: 'movie', tmdbId: T_MOVIE, seasons: [],
+    householdId: 'grove', jellyfinUserId: ALICE, mediaType: 'movie', tmdbId: T_MOVIE, seasons: [],
     observedAbsentAt: new Date(createdAt).toISOString(), createdAt: new Date(createdAt).toISOString(), status: 'submitting',
     householdEpoch: 1, ...extra,
   };
@@ -143,7 +143,7 @@ describe('"Get this": a recovery that cannot tell which request its intent made 
     assert.equal(app.store.get(ITEMS.tMovie), undefined);
     assert.equal((await webhook(app, 'movie', 7300111, ALICE)).status, 200);
     assert.deepEqual(Object.keys(app.store.get(ITEMS.tMovie).requests), ['7300111']);
-    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['farmhouse']);
+    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['grove']);
   });
 });
 
@@ -179,7 +179,7 @@ describe('"Get this": an intent whose request Seerr made only after it timed out
     app.jellyfin.state.items.push(movieItem());
     app.seerr.state.requests[SEERR_IDS[ALICE]][0].status = 5;
     assert.equal((await webhook(app, 'movie', 7350001, ALICE)).status, 200);
-    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['farmhouse']);
+    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['grove']);
   });
 });
 
@@ -216,10 +216,10 @@ describe('"Get this": a household replaced before its intent is recovered (Codex
     const now = Date.now();
     const state = world({ requests: { [SEERR_IDS[ALICE]]: [request({ id: 7300444, seerrUser: SEERR_IDS[ALICE], status: 1 })] } });
     const app = await start(t, state, { stateFile: { ...SEED, appRequestIntents: { lost: lostIntent(now) } } });
-    const household = app.store.getGroup('farmhouse');
-    await app.store.deleteGroup('farmhouse');
+    const household = app.store.getGroup('grove');
+    await app.store.deleteGroup('grove');
     await app.store.upsertGroup({ id: household.id, name: household.name, userIds: household.userIds });
-    assert.notEqual(app.store.householdEpoch('farmhouse'), 1);
+    assert.notEqual(app.store.householdEpoch('grove'), 1);
     await app.requests.refresh();
     assert.deepEqual(app.store.listAppRequestIntents(), []);
     assert.deepEqual(app.store.listAppRequests(), []);
@@ -230,15 +230,15 @@ describe('"Get this": a household replaced before its intent is recovered (Codex
 
   it('keeps each household\'s epoch in the state file, and gives a household created again another', async (t) => {
     const app = await start(t, world({}), { stateFile: { version: 7, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [] } });
-    const first = app.store.householdEpoch('farmhouse');
+    const first = app.store.householdEpoch('grove');
     await getThis(app);
     const again = await start(t, world({}), { stateFile: JSON.parse(await readFile(app.stateFile, 'utf8')) });
     // Asked for in another order after the restart, each household keeps its own.
     const before = [first, again.store.householdEpoch('mill')];
-    assert.equal(again.store.householdEpoch('farmhouse'), first);
-    await again.store.deleteGroup('farmhouse');
-    await again.store.upsertGroup({ id: 'farmhouse', name: 'Farmhouse', userIds: [ALICE] });
-    assert.ok(!before.includes(again.store.householdEpoch('farmhouse')));
+    assert.equal(again.store.householdEpoch('grove'), first);
+    await again.store.deleteGroup('grove');
+    await again.store.upsertGroup({ id: 'grove', name: 'Grove', userIds: [ALICE] });
+    assert.ok(!before.includes(again.store.householdEpoch('grove')));
   });
 });
 
@@ -289,7 +289,7 @@ describe('"Get this": a household\'s join and another household\'s genuine grant
       const app = await bothGranted(t, order);
       const grant = app.store.get(ITEMS.tSeries);
       assert.deepEqual(Object.keys(grant.requests), ['7300502'], order);
-      assert.deepEqual(grant.groupIds, ['farmhouse', 'mill'], order);
+      assert.deepEqual(grant.groupIds, ['grove', 'mill'], order);
       assert.equal(requestRecord(app).awaitingGrant, undefined, order);
     });
   }
@@ -326,7 +326,7 @@ describe('"Get this": a safety decision whose record is pruned (Codex 6)', { tim
     const later = Date.now() + 60_000;
     await app.store.writeAppRequests({
       add: Array.from({ length: MAX_APP_REQUESTS_PER_HOUSEHOLD }, (_, index) => ({
-        householdId: 'farmhouse', jellyfinUserId: ALICE, mediaType: 'movie', tmdbId: 810000 + index, seasons: [],
+        householdId: 'grove', jellyfinUserId: ALICE, mediaType: 'movie', tmdbId: 810000 + index, seasons: [],
         createdAt: new Date(later + index).toISOString(), updatedAt: new Date(later + index).toISOString(), branch: 'join', status: 'completed',
       })),
     });
@@ -410,7 +410,7 @@ describe('"Get this": the administrator\'s readout of what is outstanding', { ti
     assert.deepEqual(readout.requestIntents.byKind, { submitting: 1, settling: 1 });
     assert.ok(Math.abs(readout.requestIntents.oldestAgeSeconds - 3600) < 60);
     assert.deepEqual(readout.requestIntents.entries.map((entry) => [entry.kind, entry.mediaType, entry.tmdbId, entry.householdId]), [
-      ['submitting', 'movie', T_MOVIE, 'farmhouse'], ['settling', 'tv', T_TV, 'mill'],
+      ['submitting', 'movie', T_MOVIE, 'grove'], ['settling', 'tv', T_TV, 'mill'],
     ]);
     assert.deepEqual(readout.deferredWebhooks, { total: 1 });
     // Titles and households, never a member or a Seerr request.
@@ -421,7 +421,7 @@ describe('"Get this": the administrator\'s readout of what is outstanding', { ti
       'jfa_app_request_intents{status="submitting"} 1', 'jfa_app_request_intents{status="settling"} 1', 'jfa_app_deferred_webhooks 1']) {
       assert.ok(metrics.split('\n').includes(line), line);
     }
-    assert.doesNotMatch(metrics.split('\n').filter((line) => line.startsWith('jfa_app_')).join('\n'), new RegExp(`${T_MOVIE}|${T_TV}|farmhouse|mill`));
+    assert.doesNotMatch(metrics.split('\n').filter((line) => line.startsWith('jfa_app_')).join('\n'), new RegExp(`${T_MOVIE}|${T_TV}|grove|mill`));
   });
 
   it('is clear, with every count 0, once nothing is outstanding', async (t) => {

@@ -111,7 +111,7 @@ describe('"Get this": a webhook that arrives before Seerr answers the request (C
       // Granted once settled: never a new private grant, and never Alice's own request on Bob's grant.
       assert.deepEqual(deferred(app), []);
       assert.equal(app.store.hasHandledRequest('7350001'), true, String(held));
-      assert.deepEqual(app.store.get(ITEMS.tMovie)?.groupIds, held ? ['farmhouse', 'mill'] : undefined, String(held));
+      assert.deepEqual(app.store.get(ITEMS.tMovie)?.groupIds, held ? ['grove', 'mill'] : undefined, String(held));
       assert.ok(!Object.keys(app.store.get(ITEMS.tMovie)?.requests ?? {}).includes('7350001'));
     }
   });
@@ -133,7 +133,7 @@ describe('"Get this": a webhook that arrives before Seerr answers the request (C
     // joins it through her interest.
     assert.deepEqual(app.store.listAppRequestIntents(), []);
     assert.deepEqual(Object.keys(app.store.get(ITEMS.tMovie).requests), ['7300603']);
-    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['farmhouse', 'mill']);
+    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['grove', 'mill']);
   });
 
   it('skips the request in the backfill until it is settled, then grants it by the join rules', async (t) => {
@@ -183,7 +183,7 @@ describe('"Get this": a restart while a request is being made (Codex 2)', { time
     await app.requests.refresh();
     // The request Seerr made is recorded for the household, and the title is there now: its grant follows the join rules.
     const record = requestRecord(app);
-    assert.deepEqual([record.householdId, record.seerrRequestId, record.joinOnGrant], ['farmhouse', '7350001', 'present-at-settle']);
+    assert.deepEqual([record.householdId, record.seerrRequestId, record.joinOnGrant], ['grove', '7350001', 'present-at-settle']);
     assert.deepEqual(app.store.listAppRequestIntents(), []);
     assert.equal(app.store.hasHandledRequest('7350001'), true);
     assert.equal(app.store.get(ITEMS.tMovie), undefined);
@@ -199,13 +199,13 @@ describe('"Get this": a restart while a request is being made (Codex 2)', { time
     state.items.push(movieItem());
     state.requests[SEERR_IDS[ALICE]][0].status = 5;
     assert.equal((await webhook(app, 'movie', 7350001, ALICE)).status, 200);
-    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['farmhouse']);
+    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['grove']);
   });
 
   it('removes an intent whose request Seerr never made, once the request could no longer arrive', async (t) => {
     let now = Date.now();
     const intent = {
-      householdId: 'farmhouse', jellyfinUserId: ALICE, mediaType: 'movie', tmdbId: T_MOVIE, seasons: [],
+      householdId: 'grove', jellyfinUserId: ALICE, mediaType: 'movie', tmdbId: T_MOVIE, seasons: [],
       observedAbsentAt: new Date(now).toISOString(), createdAt: new Date(now).toISOString(), status: 'submitting',
     };
     const app = await start(t, world({ tmdbMovies }), { stateFile: { ...SEED, appRequestIntents: { lost: intent } }, now: () => now });
@@ -225,7 +225,7 @@ describe('"Get this": a restart while a request is being made (Codex 2)', { time
   it('leaves an intent for the next run when Seerr cannot be read', async (t) => {
     const now = Date.now() + APP_INTENT_TIMEOUT_MS * 10;
     const intent = {
-      householdId: 'farmhouse', jellyfinUserId: ALICE, mediaType: 'movie', tmdbId: T_MOVIE, seasons: [],
+      householdId: 'grove', jellyfinUserId: ALICE, mediaType: 'movie', tmdbId: T_MOVIE, seasons: [],
       observedAbsentAt: new Date().toISOString(), createdAt: new Date().toISOString(), status: 'submitting',
     };
     const app = await start(t, world({ tmdbMovies }), { stateFile: { ...SEED, appRequestIntents: { lost: intent } }, now: () => now });
@@ -289,7 +289,7 @@ describe('"Get this": a settle-time read that fails (Codex 3)', { timeout: 60_00
     app.jellyfin.state.items.push(movieItem());
     app.seerr.state.requests[SEERR_IDS[ALICE]][0].status = 5;
     assert.equal((await webhook(app, 'movie', 7350001, ALICE)).status, 200);
-    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['farmhouse']);
+    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['grove']);
   });
 
   it('leaves an intent to be reconciled when Seerr may have made the request without answering', async (t) => {
@@ -325,7 +325,7 @@ describe('"Get this": titles without TMDB metadata or a Seerr link (Codex 4)', {
       assert.deepEqual(app.store.listAppRequestIntents(), []);
       if (held) {
         assert.deepEqual(app.store.listAppRequests().map(([, record]) => [record.mediaType, record.branch]).sort(), [['movie', 'join'], ['tv', 'join']]);
-        assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['farmhouse', 'mill']);
+        assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['grove', 'mill']);
       } else {
         // Public: there is no grant to join, and nothing to request either.
         assert.equal(metric(app, 'jfa_app_get_this_branches_total', 'branch="join_ungranted"'), 2);
@@ -400,7 +400,7 @@ describe('"Get this": the request branch\'s last steps (Codex 5)', { timeout: 60
 
 describe('"Get this": the intent is on disk before its request is sent', { timeout: 60_000 }, () => {
   const intent = () => ({
-    householdId: 'farmhouse', jellyfinUserId: ALICE, mediaType: 'movie', tmdbId: T_MOVIE, seasons: [],
+    householdId: 'grove', jellyfinUserId: ALICE, mediaType: 'movie', tmdbId: T_MOVIE, seasons: [],
     observedAbsentAt: new Date().toISOString(), createdAt: new Date().toISOString(), status: 'submitting',
   });
 
@@ -523,8 +523,8 @@ describe('"Get this": a reconciliation that runs while a call\'s intent is being
       const intentId = await hold.written;
       assert.deepEqual(app.store.listAppRequestIntents().map(([id]) => id), [intentId]);
       if (variant.replace) {
-        const household = app.store.getGroup('farmhouse');
-        await app.store.deleteGroup('farmhouse');
+        const household = app.store.getGroup('grove');
+        await app.store.deleteGroup('grove');
         await app.store.upsertGroup({ id: household.id, name: household.name, userIds: household.userIds });
       }
       // The scheduled reconciliation (or startup's) runs to the end before the call's write completes.
@@ -541,7 +541,7 @@ describe('"Get this": a reconciliation that runs while a call\'s intent is being
         assert.equal(metric(app, 'jfa_app_get_this_branches_total', `branch="${branch}"`), 0, `${kind}: ${branch}`);
       }
       const record = requestRecord(app);
-      assert.deepEqual([record.status, record.seerrRequestId, record.householdId], ['pending', '7350001', 'farmhouse'], kind);
+      assert.deepEqual([record.status, record.seerrRequestId, record.householdId], ['pending', '7350001', 'grove'], kind);
       assert.equal(record.detached, variant.replace ? true : undefined, kind);
       if (!variant.replace) assert.equal((await app.get(`${APP}/movie/${T_MOVIE}`)).json().state, 'requested', kind);
       assert.deepEqual(app.store.listAppRequestIntents(), [], kind);

@@ -4,7 +4,7 @@ import { connect as connectSocket, createServer as createNetServer, Socket } fro
 import { after, before, beforeEach, describe, it, mock } from 'node:test';
 import { makeServer } from '../dist/server.js';
 
-const HOUSEHOLD_HOST = 'jelly-farmhouse.example.test';
+const HOUSEHOLD_HOST = 'jelly-grove.example.test';
 const uncaughtErrors = [];
 process.on('uncaughtException', (error) => uncaughtErrors.push(error));
 
@@ -260,7 +260,7 @@ describe('socket error handling', { timeout: 10_000 }, () => {
 
 function stubService() {
   return {
-    getHouseholdMemberIds: (householdId) => (householdId === 'farmhouse' ? ['alice-id'] : undefined),
+    getHouseholdMemberIds: (householdId) => (householdId === 'grove' ? ['alice-id'] : undefined),
     isPasswordless: () => false,
     canJoinLibrary: () => false,
   };

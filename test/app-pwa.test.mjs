@@ -167,7 +167,7 @@ describe('household app page: serving', { timeout: 30_000 }, () => {
     assert.equal(anonymous.text, otherHousehold.text);
     for (const file of FILES.filter((name) => !/\.(png)$/.test(name))) {
       assertNoCanaries(read(file), `${file} carries a canary`);
-      assert.doesNotMatch(read(file), /farmhouse|mill|alice|token-/i, `${file} carries household or user data`);
+      assert.doesNotMatch(read(file), /grove|mill|alice|token-/i, `${file} carries household or user data`);
     }
   });
 
@@ -767,7 +767,7 @@ describe('household app page: files', () => {
 
 describe('household app page: service worker', () => {
   const SOURCE = read('sw.js');
-  const ORIGIN = 'https://jelly-farmhouse.example.test';
+  const ORIGIN = 'https://jelly-grove.example.test';
 
   /** Runs sw.js against fake service-worker globals, returning its listeners and everything it cached or fetched. */
   function runWorker({ network = async () => new Response('fresh', { status: 200 }), failAdd = false, stores = new Map(), source = SOURCE } = {}) {
@@ -1068,7 +1068,7 @@ describe('household app page: service worker', () => {
 });
 
 describe('household app page: rendering', () => {
-  const origin = 'https://jelly-farmhouse.example.test';
+  const origin = 'https://jelly-grove.example.test';
   const itemId = '33330000333300003333000033330000';
   const poster = 'https://image.tmdb.org/t/p/w342/synthetic-poster.jpg';
   const card = (overrides = {}) => ({
@@ -1185,7 +1185,7 @@ describe('household app page: rendering', () => {
       { itemId, url: `${origin}/web/#/details?id=other` },
       { itemId, url: `javascript:alert(1)` },
       { itemId: '../x', url: `${origin}/web/#/details?id=../x` },
-      { itemId: itemId, url: `http://jelly-farmhouse.example.test/web/#/details?id=${itemId}` },
+      { itemId: itemId, url: `http://jelly-grove.example.test/web/#/details?id=${itemId}` },
       { itemId: 7, url: 'x' },
     ]) {
       assert.equal(safePlayUrl(bad, origin), undefined, JSON.stringify(bad));
@@ -2013,11 +2013,11 @@ describe('household app page: rendering', () => {
   it('puts the member card with Sign out first, then About & credits, only while signed in, and keeps the TMDB credit', async () => {
     const { document, accountView, accountText, TMDB_NOTICE } = await renderer();
     let signedOutBy = 0;
-    const view = accountView(document, { me: { name: 'Alice', household: 'Farmhouse' }, onSignOut: (button) => { if (button.id === 'signout') signedOutBy += 1; } });
+    const view = accountView(document, { me: { name: 'Alice', household: 'Grove' }, onSignOut: (button) => { if (button.id === 'signout') signedOutBy += 1; } });
     assert.deepEqual([...view.querySelectorAll('h2')].map((heading) => heading.textContent), ['Account', 'About & credits']);
     assert.equal(view.querySelector('h1').textContent, 'Account');
     assert.ok(view.querySelector('h1').classList.contains('visually-hidden'), 'the header shows the title');
-    assert.equal(view.querySelector('.account .account-name').textContent, 'Alice · Farmhouse');
+    assert.equal(view.querySelector('.account .account-name').textContent, 'Alice · Grove');
     const signOut = view.querySelector('.account button#signout');
     assert.equal(signOut.textContent, 'Sign out');
     assert.equal(signOut.getAttribute('type'), 'button');
@@ -2320,7 +2320,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.equal(init.headers.Authorization, 'MediaBrowser Token="token-alice"');
     }
     assertNoCanaries(page.serialize(), 'the page shows data that is not in a DTO');
-    assert.equal(await accountName(page), 'Alice · Farmhouse', 'the household and name are on About, not in the header');
+    assert.equal(await accountName(page), 'Alice · Grove', 'the household and name are on About, not in the header');
   });
 
   it('draws Popular movies, Popular series and New movie releases as backdrop cards and every other row as posters, with no extra call', async (t) => {
@@ -3285,7 +3285,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
   it('shows the member card with Sign out first, then About & credits, and signed out offers the way back', async (t) => {
     const app = await startApp(t);
     const page = await openApp(t, app, { hash: '#/account' });
-    await page.until(() => page.main().querySelector('.account-name')?.textContent === 'Alice · Farmhouse', 'the account card');
+    await page.until(() => page.main().querySelector('.account-name')?.textContent === 'Alice · Grove', 'the account card');
     assert.deepEqual([...page.main().querySelectorAll('h2')].map((heading) => heading.textContent), ['Account', 'About & credits']);
     assert.equal(page.main().querySelectorAll('button#signout').length, 1);
     assert.equal(page.document.querySelector('header #signout'), null);
@@ -3293,7 +3293,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     assert.equal(page.document.querySelector('.tmdb-logo') !== null, true);
     assert.match(page.main().querySelector('.app-version').textContent, /^JellyPass \d+\.\d+\.\d+/);
     const legacy = await openApp(t, app, { hash: '#/about' });
-    await legacy.until(() => legacy.main().querySelector('.account-name')?.textContent === 'Alice · Farmhouse', 'the old About address');
+    await legacy.until(() => legacy.main().querySelector('.account-name')?.textContent === 'Alice · Grove', 'the old About address');
     assert.equal(legacy.location.hash, '#/account', '#/about is the Account tab');
     const signedOut = await openApp(t, app, { hash: '#/account', signedIn: false });
     await signedOut.until(() => signedOut.main().querySelector('.tmdb-logo'), 'account, signed out');
@@ -3961,7 +3961,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       // The only thing kept in history.state is the entry's number.
       for (const entry of page.entries) assert.match(JSON.stringify(entry.state), /^(null|\{"jp":\d+\})$/);
       for (const text of [JSON.stringify([...page.store.values()].filter((value) => !value.includes('AccessToken'))), JSON.stringify(page.sessionWrites)]) {
-        assert.doesNotMatch(text, /Synthetic|farmhouse|tmdb/i);
+        assert.doesNotMatch(text, /Synthetic|grove|tmdb/i);
       }
     });
   });
@@ -4147,7 +4147,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     enterPassword(page, 'alice-pass');
     await homeLoaded(page);
     assert.equal(page.document.getElementById('signout'), null, 'Sign out is not in the header');
-    assert.equal(await accountName(page), 'Alice · Farmhouse');
+    assert.equal(await accountName(page), 'Alice · Grove');
 
     // One call signed in, with the headers Jellyfin web sends; the password is only in that body.
     const login = page.requests[requests];
@@ -4221,7 +4221,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     click(page, profileButton(page, 'Ann'));
     await homeLoaded(page);
     assert.ok(page.main().querySelector('input[type="password"]') === null, 'no password step');
-    assert.equal(await accountName(page), 'Ann · Farmhouse');
+    assert.equal(await accountName(page), 'Ann · Grove');
     const login = page.requests.find((request) => request.url === '/Users/AuthenticateByName');
     assert.deepEqual(JSON.parse(login.init.body), { Username: 'Ann', Pw: '' });
     assert.equal(credentials(page).Servers[0].UserId, ANN);
@@ -4268,7 +4268,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     const requests = page.requests.length;
     enterName(page, ' ann ', 'ann-pass');
     await homeLoaded(page);
-    assert.equal(await accountName(page), 'Ann · Farmhouse');
+    assert.equal(await accountName(page), 'Ann · Grove');
     const login = page.requests[requests];
     assert.equal(login.url, '/Users/AuthenticateByName');
     assert.deepEqual(JSON.parse(login.init.body), { Username: 'ann', Pw: 'ann-pass' });
@@ -4741,7 +4741,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         const origin = page.location.origin;
         page.go('#/account');
         await page.until(
-          () => page.main().querySelector('.account-name')?.textContent === 'Alice · Farmhouse'
+          () => page.main().querySelector('.account-name')?.textContent === 'Alice · Grove'
             && page.pending() === 0,
           'Alice’s Account fully loaded',
         );
@@ -4753,7 +4753,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         page.store.set('jellyfin_credentials', JSON.stringify({ Servers: [{ ManualAddress: origin, AccessToken: TOKENS[ANN], UserId: ANN }] }));
         storage();
         await page.until(
-          () => page.main().querySelector('.account-name')?.textContent === 'Ann · Farmhouse'
+          () => page.main().querySelector('.account-name')?.textContent === 'Ann · Grove'
             && page.pending() === 0,
           'Ann’s Account fully loaded',
         );
@@ -4782,11 +4782,11 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       it('redraws Account with the new member\'s name when the token is replaced, without any navigation', async (t) => {
         const app = await startHeld(t);
         const page = await openApp(t, app, { hash: '#/account' });
-        await page.until(() => page.main().querySelector('.account-name')?.textContent === 'Alice · Farmhouse', 'Alice\'s card');
+        await page.until(() => page.main().querySelector('.account-name')?.textContent === 'Alice · Grove', 'Alice\'s card');
         page.store.set('jellyfin_credentials', JSON.stringify({ Servers: [{ ManualAddress: page.location.origin, AccessToken: TOKENS[ANN], UserId: ANN }] }));
         for (const listener of page.listeners.storage ?? []) listener({ key: 'jellyfin_credentials' });
         await page.until(
-          () => page.main().querySelector('.account-name')?.textContent === 'Ann · Farmhouse'
+          () => page.main().querySelector('.account-name')?.textContent === 'Ann · Grove'
             && page.pending() === 0,
           'Ann’s Account fully loaded',
         );

@@ -22,7 +22,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     const file = path.join(await makeTempDir(null, 'jfa-http-test-'), 'grants.json');
     const store = new GrantStore(file);
     await store.load();
-    await store.upsertGroup({ id: 'farmhouse', name: 'Farmhouse', userIds: ['alice-id', 'bob-id'] });
+    await store.upsertGroup({ id: 'grove', name: 'Grove', userIds: ['alice-id', 'bob-id'] });
     const jellyfinClient = new JellyfinClient(jellyfin.url, 'test-key');
     importedUserIds = [];
     const seerr = {
@@ -64,15 +64,15 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.equal(root.status, 302);
     assert.equal(root.headers.get('location'), '/admin/');
 
-    const householdUsers = await fetchWithHost(bridgeUrl, '/Users/Public', 'jelly-farmhouse.example.test');
+    const householdUsers = await fetchWithHost(bridgeUrl, '/Users/Public', 'jelly-grove.example.test');
     assert.equal(householdUsers.status, 200);
     const householdUsersBody = await householdUsers.json();
     assert.deepEqual(householdUsersBody.map((user) => user.Name), ['Alice', 'Bob']);
     assert.deepEqual(householdUsersBody.map((user) => user.HasPassword), [true, true]);
-    const householdInfo = await fetchWithHost(bridgeUrl, '/System/Info/Public', 'jelly-farmhouse.example.test');
+    const householdInfo = await fetchWithHost(bridgeUrl, '/System/Info/Public', 'jelly-grove.example.test');
     assert.equal(householdInfo.status, 200);
     assert.equal((await householdInfo.json()).ServerName, 'Test Jellyfin');
-    const householdBranding = await fetchWithHost(bridgeUrl, '/Branding/Configuration', 'jelly-farmhouse.example.test');
+    const householdBranding = await fetchWithHost(bridgeUrl, '/Branding/Configuration', 'jelly-grove.example.test');
     assert.equal(householdBranding.status, 200);
     const householdBrandingBody = await householdBranding.json();
     assert.match(householdBrandingBody.CustomCss, /existing-branding/);
@@ -85,11 +85,11 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.match(householdBrandingBody.LoginDisclaimer, /<style id="jellypass-household-profile-picker">/);
     assert.doesNotMatch(householdBrandingBody.LoginDisclaimer, /#loginPage \.manualLoginForm|\.btnManual|\.readOnlyContent/);
     assert.match(householdBrandingBody.LoginDisclaimer, /#loginPage \.btnQuick/);
-    const householdQuickConnect = await fetchWithHost(bridgeUrl, '/QuickConnect/Enabled', 'jelly-farmhouse.example.test');
+    const householdQuickConnect = await fetchWithHost(bridgeUrl, '/QuickConnect/Enabled', 'jelly-grove.example.test');
     assert.equal(householdQuickConnect.status, 200);
     assert.equal(await householdQuickConnect.json(), false);
     assert.equal(householdQuickConnect.headers.get('cache-control'), 'no-store');
-    const householdLogin = await fetchWithHost(bridgeUrl, '/Users/AuthenticateByName', 'jelly-farmhouse.example.test', {
+    const householdLogin = await fetchWithHost(bridgeUrl, '/Users/AuthenticateByName', 'jelly-grove.example.test', {
       method: 'POST',
       headers: { Authorization: jellyfinAuthorization(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ Username: 'Alice', Pw: 'user-password' }),
@@ -97,27 +97,27 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.equal(householdLogin.status, 200);
     const householdAuthentication = await householdLogin.json();
     assert.equal(householdAuthentication.User.Name, 'Alice');
-    const forgotPassword = await fetchWithHost(bridgeUrl, '/Users/ForgotPassword', 'jelly-farmhouse.example.test', {
+    const forgotPassword = await fetchWithHost(bridgeUrl, '/Users/ForgotPassword', 'jelly-grove.example.test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ EnteredUsername: 'Alice' }),
     });
     assert.equal(forgotPassword.status, 403);
     assert.equal((await forgotPassword.json()).error, 'household_password_recovery_disabled');
-    const forgotPasswordPin = await fetchWithHost(bridgeUrl, '/Users/ForgotPassword/Pin', 'jelly-farmhouse.example.test', {
+    const forgotPasswordPin = await fetchWithHost(bridgeUrl, '/Users/ForgotPassword/Pin', 'jelly-grove.example.test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ Pin: '000000' }),
     });
     assert.equal(forgotPasswordPin.status, 403);
-    const nonHouseholdLogin = await fetchWithHost(bridgeUrl, '/Users/AuthenticateByName', 'jelly-farmhouse.example.test', {
+    const nonHouseholdLogin = await fetchWithHost(bridgeUrl, '/Users/AuthenticateByName', 'jelly-grove.example.test', {
       method: 'POST',
       headers: { Authorization: jellyfinAuthorization(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ Username: 'Admin', Pw: 'admin-password' }),
     });
     assert.equal(nonHouseholdLogin.status, 401, 'a household hostname must not proxy logins for users outside that household');
     assert.equal((await nonHouseholdLogin.json()).error, 'invalid_credentials');
-    assert.match(await upgradeWithHost(bridgeUrl, '/socket', 'jelly-farmhouse.example.test'), /^HTTP\/1\.1 101/);
+    assert.match(await upgradeWithHost(bridgeUrl, '/socket', 'jelly-grove.example.test'), /^HTTP\/1\.1 101/);
     const missingHousehold = await fetchWithHost(bridgeUrl, '/Users/Public', 'jelly-missing.example.test');
     assert.equal(missingHousehold.status, 404);
     assert.equal((await missingHousehold.json()).error, 'household_not_found');
@@ -241,12 +241,12 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.equal(sessionUsersBody.jellyseerrImportAvailable, true);
     const groups = await fetch(`${bridgeUrl}/v1/groups`, { headers: { ...sessionHeaders } });
     assert.equal(groups.status, 200);
-    assert.equal((await groups.json()).groups[0].householdUrl, 'https://jelly-farmhouse.example.test');
+    assert.equal((await groups.json()).groups[0].householdUrl, 'https://jelly-grove.example.test');
 
     const shortPassword = await fetch(`${bridgeUrl}/v1/users`, {
       method: 'POST',
       headers: { ...sessionHeaders, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: 'Charlie', password: 'short', groupId: 'farmhouse' }),
+      body: JSON.stringify({ username: 'Charlie', password: 'short', groupId: 'grove' }),
     });
     assert.equal(shortPassword.status, 400);
     assert.match((await shortPassword.json()).error, /empty or contain between 8 and 256/);
@@ -262,7 +262,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     const createdUser = await fetch(`${bridgeUrl}/v1/users`, {
       method: 'POST',
       headers: { ...sessionHeaders, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: 'Charlie', password: '', groupId: 'farmhouse' }),
+      body: JSON.stringify({ username: 'Charlie', password: '', groupId: 'grove' }),
     });
     assert.equal(createdUser.status, 201);
     const createdBody = await createdUser.json();
@@ -275,7 +275,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     const duplicateUser = await fetch(`${bridgeUrl}/v1/users`, {
       method: 'POST',
       headers: { ...sessionHeaders, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: 'charlie', password: 'another-password', groupId: 'farmhouse' }),
+      body: JSON.stringify({ username: 'charlie', password: 'another-password', groupId: 'grove' }),
     });
     assert.equal(duplicateUser.status, 400);
     assert.equal((await duplicateUser.json()).error, 'username is already in use');
@@ -283,13 +283,13 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     const importedUser = await fetch(`${bridgeUrl}/v1/users`, {
       method: 'POST',
       headers: { ...sessionHeaders, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: 'Dana', password: 'dana-password', groupId: 'farmhouse', importToJellyseerr: true }),
+      body: JSON.stringify({ username: 'Dana', password: 'dana-password', groupId: 'grove', importToJellyseerr: true }),
     });
     assert.equal(importedUser.status, 201);
     const importedBody = await importedUser.json();
     assert.deepEqual(importedBody.jellyseerr, { status: 'imported', userId: 44 });
     assert.deepEqual(importedUserIds, ['dana-id']);
-    const protectedUserLogin = await fetchWithHost(bridgeUrl, '/Users/AuthenticateByName', 'jelly-farmhouse.example.test', {
+    const protectedUserLogin = await fetchWithHost(bridgeUrl, '/Users/AuthenticateByName', 'jelly-grove.example.test', {
       method: 'POST',
       headers: { Authorization: jellyfinAuthorization(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ Username: 'Dana', Pw: 'dana-password' }),
@@ -300,16 +300,16 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     const failedImport = await fetch(`${bridgeUrl}/v1/users`, {
       method: 'POST',
       headers: { ...sessionHeaders, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ username: 'Import Failure', password: 'failure-password', groupId: 'farmhouse', importToJellyseerr: true }),
+      body: JSON.stringify({ username: 'Import Failure', password: 'failure-password', groupId: 'grove', importToJellyseerr: true }),
     });
     assert.equal(failedImport.status, 502);
     const failedImportBody = await failedImport.json();
     assert.equal(failedImportBody.code, 'user_created_jellyseerr_import_failed');
     assert.deepEqual(failedImportBody.user, { id: 'import-failure-id', name: 'Import Failure', isAdministrator: false });
-    assert.equal(failedImportBody.group.id, 'farmhouse');
+    assert.equal(failedImportBody.group.id, 'grove');
     assert.match(failedImportBody.error, /created and assigned.*Seerr import failed/);
     assert.doesNotMatch(failedImportBody.error, /Jellyseerr/i);
-    const updatedHouseholdUsers = await fetchWithHost(bridgeUrl, '/Users/Public', 'jelly-farmhouse.example.test');
+    const updatedHouseholdUsers = await fetchWithHost(bridgeUrl, '/Users/Public', 'jelly-grove.example.test');
     const updatedHouseholdUsersBody = await updatedHouseholdUsers.json();
     assert.deepEqual(updatedHouseholdUsersBody.map((user) => user.Name), ['Alice', 'Bob', 'Charlie', 'Dana', 'Import Failure']);
     assert.deepEqual(updatedHouseholdUsersBody.map((user) => user.HasPassword), [true, true, false, true, true]);
@@ -327,7 +327,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
       (await markedUsers.json()).users.filter((user) => user.passwordless).map((user) => user.name),
       ['Alice', 'Charlie'],
     );
-    const markedHouseholdUsers = await fetchWithHost(bridgeUrl, '/Users/Public', 'jelly-farmhouse.example.test');
+    const markedHouseholdUsers = await fetchWithHost(bridgeUrl, '/Users/Public', 'jelly-grove.example.test');
     assert.deepEqual((await markedHouseholdUsers.json()).map((user) => user.HasPassword), [false, true, false, true, true]);
     const directPublicUsers = await fetch(`${jellyfin.url}/Users/Public`);
     assert.ok((await directPublicUsers.json()).every((user) => user.HasPassword === true));
@@ -337,7 +337,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
       body: JSON.stringify({ passwordless: false }),
     });
     assert.equal(unmarkAlice.status, 200);
-    const unmarkedHouseholdUsers = await fetchWithHost(bridgeUrl, '/Users/Public', 'jelly-farmhouse.example.test');
+    const unmarkedHouseholdUsers = await fetchWithHost(bridgeUrl, '/Users/Public', 'jelly-grove.example.test');
     assert.deepEqual((await unmarkedHouseholdUsers.json()).map((user) => user.HasPassword), [true, true, false, true, true]);
     const markAdmin = await fetch(`${bridgeUrl}/v1/users/admin-id/sign-in`, {
       method: 'PUT',
@@ -357,7 +357,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
       body: JSON.stringify({ passwordless: 'yes' }),
     });
     assert.equal(invalidMark.status, 400);
-    const newUserLogin = await fetchWithHost(bridgeUrl, '/Users/AuthenticateByName', 'jelly-farmhouse.example.test', {
+    const newUserLogin = await fetchWithHost(bridgeUrl, '/Users/AuthenticateByName', 'jelly-grove.example.test', {
       method: 'POST',
       headers: { Authorization: jellyfinAuthorization(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ Username: 'Charlie', Pw: '' }),
@@ -485,23 +485,23 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     // Bob shares Alice's household, so Alice's request is visible to him too.
     assert.deepEqual(jellyfin.user('bob-id').Policy.BlockedTags, []);
 
-    const ownerStream = await fetchWithHost(bridgeUrl, '/Videos/trailer-1/stream?Static=true', 'jelly-farmhouse.example.test', {
+    const ownerStream = await fetchWithHost(bridgeUrl, '/Videos/trailer-1/stream?Static=true', 'jelly-grove.example.test', {
       headers: { Authorization: jellyfinAuthorization(householdAuthentication.AccessToken), Range: 'bytes=0-0' },
     });
     assert.equal(ownerStream.status, 206, await ownerStream.text());
     const ownerPlaylist = await fetchWithHost(
       bridgeUrl,
       `/Videos/trailer-1/master.m3u8?ApiKey=${encodeURIComponent(householdAuthentication.AccessToken)}`,
-      'jelly-farmhouse.example.test',
+      'jelly-grove.example.test',
     );
     assert.equal(ownerPlaylist.status, 200, await ownerPlaylist.text());
-    const memberLogin = await fetchWithHost(bridgeUrl, '/Users/AuthenticateByName', 'jelly-farmhouse.example.test', {
+    const memberLogin = await fetchWithHost(bridgeUrl, '/Users/AuthenticateByName', 'jelly-grove.example.test', {
       method: 'POST',
       headers: { Authorization: jellyfinAuthorization(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ Username: 'Bob', Pw: 'user-password' }),
     });
     const memberAuthentication = await memberLogin.json();
-    const memberStream = await fetchWithHost(bridgeUrl, '/Videos/trailer-1/stream?Static=true', 'jelly-farmhouse.example.test', {
+    const memberStream = await fetchWithHost(bridgeUrl, '/Videos/trailer-1/stream?Static=true', 'jelly-grove.example.test', {
       headers: { Authorization: jellyfinAuthorization(memberAuthentication.AccessToken), Range: 'bytes=0-0' },
     });
     assert.equal(memberStream.status, 206, await memberStream.text());
@@ -572,7 +572,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
   });
 
   it('passes removed bridge paths on household hostnames through to Jellyfin', async () => {
-    const response = await fetchWithHost(bridgeUrl, '/jellyquest-bridge/health', 'jelly-farmhouse.example.test');
+    const response = await fetchWithHost(bridgeUrl, '/jellyquest-bridge/health', 'jelly-grove.example.test');
     // The fake Jellyfin rejects unauthenticated requests with an empty 401; JellyPass never answers this path.
     assert.equal(response.status, 401);
     assert.deepEqual(await response.json(), {});

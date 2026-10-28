@@ -20,7 +20,7 @@ import { seerrFixture } from './seerr-fixtures.mjs';
 import { tmdbFixture } from './tmdb-fixtures.mjs';
 import { makeTempDir } from './temp-dir.mjs';
 
-// Jellyfin users (32 hex digits, none a canary). Alice and Ann are household A ("farmhouse"); Bob is household B
+// Jellyfin users (32 hex digits, none a canary). Alice and Ann are household A ("grove"); Bob is household B
 // ("mill"); Carol is in no household unless a test puts her in some (see SHARED_HOUSEHOLDS); the outsider is in none.
 export const ALICE = 'a11ce000a11ce000a11ce000a11ce000';
 export const ANN = 'a2200000a2200000a2200000a2200000';
@@ -30,15 +30,15 @@ export const OUTSIDER = 'e0e00000e0e00000e0e00000e0e00000';
 /** A Jellyfin administrator, who signs in to nothing here: reconciliation needs one to read items. */
 export const JELLYFIN_ADMIN = 'ad000000ad000000ad000000ad000000';
 export const TOKENS = { [ALICE]: 'token-alice', [ANN]: 'token-ann', [BOB]: 'token-bob', [CAROL]: 'token-carol', [OUTSIDER]: 'token-outsider' };
-export const HOST_A = 'jelly-farmhouse.example.test';
+export const HOST_A = 'jelly-grove.example.test';
 export const HOST_B = 'jelly-mill.example.test';
 /** The default households, and the same with Carol in both. */
 export const HOUSEHOLDS = [
-  { id: 'farmhouse', name: 'Farmhouse', userIds: [ALICE, ANN] },
+  { id: 'grove', name: 'Grove', userIds: [ALICE, ANN] },
   { id: 'mill', name: 'Mill', userIds: [BOB] },
 ];
 export const SHARED_HOUSEHOLDS = [
-  { id: 'farmhouse', name: 'Farmhouse', userIds: [ALICE, ANN, CAROL] },
+  { id: 'grove', name: 'Grove', userIds: [ALICE, ANN, CAROL] },
   { id: 'mill', name: 'Mill', userIds: [BOB, CAROL] },
 ];
 // Seerr users, one per Jellyfin user.

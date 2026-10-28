@@ -120,7 +120,7 @@ describe('"Get this": Jellyfin is read again right before a request', { timeout:
       // Granted as a join: Bob's grant when there is one, otherwise nothing to grant (202).
       assert.equal((await webhook(app, 'movie', 7350001, ALICE)).status, held ? 200 : 202);
       // Never a new private grant: no grant for a public title, and only the household joined to Bob's.
-      assert.deepEqual(app.store.get(ITEMS.tMovie)?.groupIds, held ? ['farmhouse', 'mill'] : undefined, String(held));
+      assert.deepEqual(app.store.get(ITEMS.tMovie)?.groupIds, held ? ['grove', 'mill'] : undefined, String(held));
       assert.equal(app.store.hasHandledRequest('7350001'), true);
       assert.equal(await state(app, `${APP}/movie/${T_MOVIE}`, { host: HOST_B, user: BOB }), 'in_library');
       assert.deepEqual((await listed(app)).map((entry) => entry.status), ['ready']);
@@ -161,8 +161,8 @@ describe('"Get this": items without TMDB metadata', { timeout: 60_000 }, () => {
     await getThis(app, GET_TV, { seasons: [1] });
     assert.deepEqual(app.seerr.posts, []);
     assert.deepEqual(app.store.listAppRequests().map(([, record]) => [record.mediaType, record.branch]).sort(), [['movie', 'join'], ['tv', 'join']]);
-    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['farmhouse', 'mill']);
-    assert.deepEqual(app.store.get(ITEMS.tSeries).groupIds, ['farmhouse', 'mill']);
+    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, ['grove', 'mill']);
+    assert.deepEqual(app.store.get(ITEMS.tSeries).groupIds, ['grove', 'mill']);
   });
 });
 
@@ -204,8 +204,8 @@ describe('"Get this": households deleted while a call runs', { timeout: 60_000 }
       app.seerr.state.holdTitles = new Promise((resolve) => { release = resolve; });
       await app.post(GET_MOVIE);
       await until(() => app.seerr.calls.some((call) => call.pathname === `/api/v1/movie/${T_MOVIE}`), 'the branch');
-      await app.service.deleteGroup('farmhouse');
-      await app.store.upsertGroup({ id: 'farmhouse', name: 'Farmhouse again', userIds: [ALICE, ANN] });
+      await app.service.deleteGroup('grove');
+      await app.store.upsertGroup({ id: 'grove', name: 'Grove again', userIds: [ALICE, ANN] });
       release();
       await app.background.settled();
       assert.ok(app.store.listAppRequests().every(([, record]) => record.detached), branch);
@@ -217,7 +217,7 @@ describe('"Get this": households deleted while a call runs', { timeout: 60_000 }
         await webhook(app, 'movie', 7300601, BOB);
         await app.requests.refresh();
       }
-      assert.ok(!(app.store.get(ITEMS.tMovie)?.groupIds ?? []).includes('farmhouse'), branch);
+      assert.ok(!(app.store.get(ITEMS.tMovie)?.groupIds ?? []).includes('grove'), branch);
     });
   }
 });
@@ -246,7 +246,7 @@ describe('"Get this": new seasons of a series Jellyfin has', { timeout: 60_000 }
         requests: { [SEERR_IDS[BOB]]: [request({ id: 7300502, seerrUser: SEERR_IDS[BOB], type: 'tv', status: 5, seasons: [1] })] },
       }));
       if (removed) {
-        await app.service.setGrantGroups(ITEMS.tSeries, ['farmhouse', 'mill']);
+        await app.service.setGrantGroups(ITEMS.tSeries, ['grove', 'mill']);
         await app.service.setGrantGroups(ITEMS.tSeries, ['mill']);
       }
       await getThis(app, GET_TV, { seasons: [2] });
@@ -255,7 +255,7 @@ describe('"Get this": new seasons of a series Jellyfin has', { timeout: 60_000 }
       app.seerr.state.requests[SEERR_IDS[ALICE]][0].status = 5;
       await webhook(app, 'tv', 7350001, ALICE);
       const grant = app.store.get(ITEMS.tSeries);
-      assert.deepEqual(grant.groupIds, removed ? ['mill'] : ['farmhouse', 'mill'], String(removed));
+      assert.deepEqual(grant.groupIds, removed ? ['mill'] : ['grove', 'mill'], String(removed));
       // Never Alice's own request on the grant, which would make her its owner whatever the removal.
       assert.ok(!Object.keys(grant.requests).includes('7350001'));
       assert.equal(await state(app, `${APP}/tv/${T_TV}`), removed ? 'get_this' : 'in_library', String(removed));
@@ -273,11 +273,11 @@ describe('"Get this": series ready season by season', { timeout: 60_000 }, () =>
     app.jellyfin.state.items.push(seriesItem());
     app.jellyfin.state.episodes.push(episode(1));
     await webhook(app, 'tv', 7300602, BOB);
-    assert.deepEqual(app.store.get(ITEMS.tSeries).groupIds, ['farmhouse', 'mill']);
+    assert.deepEqual(app.store.get(ITEMS.tSeries).groupIds, ['grove', 'mill']);
     assert.deepEqual(await listed(app), [{ mediaType: 'tv', tmdbId: T_TV, status: 'requested', seasons: [{ seasonNumber: 1, status: 'ready' }, { seasonNumber: 2, status: 'requested' }], byYou: true }]);
     assert.equal(app.store.listAppRequests()[0][1].status, 'pending');
-    assert.ok(app.requests.activeKeys('farmhouse').has(`tv:${T_TV}:2`));
-    assert.ok(!app.requests.activeKeys('farmhouse').has(`tv:${T_TV}:1`));
+    assert.ok(app.requests.activeKeys('grove').has(`tv:${T_TV}:2`));
+    assert.ok(!app.requests.activeKeys('grove').has(`tv:${T_TV}:1`));
     // Refreshed meanwhile, it still waits for season 2.
     now += 10 * 60 * 1000;
     await app.requests.refresh();
@@ -293,7 +293,7 @@ describe('"Get this": series ready season by season', { timeout: 60_000 }, () =>
 
 describe('"Get this" records in the store: pruning never changes a count', () => {
   const record = (overrides = {}) => ({
-    householdId: 'farmhouse', jellyfinUserId: ALICE, mediaType: 'movie', tmdbId: T_MOVIE, seasons: [], branch: 'interest', status: 'pending',
+    householdId: 'grove', jellyfinUserId: ALICE, mediaType: 'movie', tmdbId: T_MOVIE, seasons: [], branch: 'interest', status: 'pending',
     createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), ...overrides,
   });
 
@@ -314,7 +314,7 @@ describe('"Get this" records in the store: pruning never changes a count', () =>
       record({ status: 'pending', createdAt: at(401) }),
       record({ householdId: 'mill', status: 'completed', createdAt: at(1) }),
     ] });
-    assert.deepEqual(store.listAppRequests().map(([, entry]) => [entry.householdId, entry.status]).sort(), [['farmhouse', 'pending'], ['mill', 'completed']]);
+    assert.deepEqual(store.listAppRequests().map(([, entry]) => [entry.householdId, entry.status]).sort(), [['grove', 'pending'], ['mill', 'completed']]);
   });
 
   it('loads a state file an earlier build of "Get this" wrote with a quota ledger, and drops the ledger', async (t) => {
