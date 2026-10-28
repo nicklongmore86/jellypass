@@ -18,6 +18,38 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Added
+
+- **TV add-on: the Samsung app** (`docs/tv-addon.md`, "The Samsung app"). Still
+  experimental and off by default: **unless `TV_ADDON_ENABLED` is set, nothing
+  changes** on any host, and on a household the add-on is not on for nothing
+  changes either. No setting is added.
+  - `GET`/`HEAD /jellypass/tv/manifest.json` on a household host the add-on is
+    on for: `{"script":"jellypass-tv.<hash>.js"}`, the add-on's current script,
+    sent `no-store`, with no token needed. It is for the loader below.
+  - Cross-origin access for the JellyPass build of Jellyfin's Samsung app, on
+    a household host the add-on is on for and only from the app's own origin
+    (`Origin: file://` or `Origin: null`, what a packaged Tizen app's page
+    sends): the app API (`/jellypass/app/v1/*`, `GET` and `POST` with
+    `Authorization` and `Content-Type`) and the add-on's files and manifest
+    (`/jellypass/tv/*`, `GET` and `HEAD`). A preflight from that origin is
+    answered `204` before any token is checked; its other answers carry
+    `Access-Control-Allow-Origin` with that origin. Credentials are never
+    allowed. Every other origin, every other household, the household app's
+    own pages and the administrator host answer exactly as before.
+  - `tv/samsung/`: a script that builds that app (`Jellyfin.wgt`, the same app
+    id as Jellyfin's, `AprZAARz4r.Jellyfin`, so it replaces it) from Jellyfin
+    web 12.3 and jellyfin-tizen at pinned commits, adds a loader that loads the
+    add-on from the household host the app is signed in to, and signs it in the
+    pinned `ghcr.io/georift/install-jellyfin-tizen` image. The install runbook
+    is in `docs/tv-addon.md`.
+
+### Changed
+
+- The native-client contract (`docs/app-design.md`): "CORS stays off" now has
+  one exception, the Samsung app's origin on a household host the TV add-on is
+  on for (above).
+
 ## [3.4.0] - 2026-10-27
 
 This is a minor release. It redesigns the TV add-on, which is still

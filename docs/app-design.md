@@ -549,7 +549,10 @@ server by months still works.
   Jellyfin web's sake, but a URL ends up in logs), and no reliance on `Origin`, `Referer` or `Sec-Fetch-*` (the API
   checks none). `Accept: application/json`; a `POST` sends `Content-Type: application/json`. **CORS stays off**: the API
   sends no `Access-Control-*` headers, and a preflight gets the same `401` as any call without a token (a native HTTP
-  client never sends one).
+  client never sends one). The one exception is the JellyPass build of Jellyfin's Samsung app, a packaged web page
+  whose origin is `file://` or `null`: on a household host the TV add-on is on for, that origin (and no other) gets a
+  `204` preflight and `Access-Control-Allow-Origin` on every answer, never credentials (see `docs/tv-addon.md`, "The
+  Samsung app").
 - **Storage.** The token is kept only in the platform's credential store, readable only on that device (on iOS the
   Keychain with `kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly`), keyed by the address, never in plain files,
   backups, logs or analytics. API answers are `Cache-Control: no-store` and are not cached on disk (an ephemeral URL
