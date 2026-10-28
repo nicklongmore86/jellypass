@@ -409,7 +409,9 @@ web's page for anyone anyway). Only at that exact path; another spelling or meth
   after 30 seconds, then 60, 120…, at most every 30 minutes; a different host is asked at once. Once the add-on's
   script has loaded it stops. It logs, stores
   and shows nothing. Switching to another server after the add-on has loaded leaves the add-on idle (it is the first
-  host's); restarting the app loads the new host's.
+  host's); restarting the app loads the new host's. A script download that never finishes (neither `load` nor `error`)
+  leaves the add-on waiting until the app restarts: there is deliberately no timeout, because a script removed while still
+  downloading can still run, and a retry could then load the add-on twice.
 - **Tests** (`test/tv-samsung.test.mjs`): the built loader parses as ES2017, uses no API Chromium 63 lacks and no
   console, storage, HTML parsing or token; it is run with a fake clock and page for each host case, each failure, a
   script that fails to load (a deploy race), the backoff and a server change; and against the gateway with a browser-like `fetch` that refuses an answer without the
