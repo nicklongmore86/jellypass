@@ -1,14 +1,16 @@
 import { trending, type Answer, type Card, type MediaType } from './api.js';
 import type { Asked } from './asked.js';
-import { drawCards, ROW_TEXT, STATE_LABELS, type Drawn } from './cards.js';
-import { currentSession, homeSections } from './jellyfin-web.js';
+import { drawCards, LINK_ATTRIBUTE, ROW_TEXT, STATE_LABELS, type Drawn } from './cards.js';
+import { homeSections, type Session } from './jellyfin-web.js';
+import { SessionWatch } from './session-watch.js';
 
 /**
  * The JellyPass row on Jellyfin web's Home: what is trending and can be had, from the app API's Trending answer, drawn as
  * one Home section after Home's first, in Jellyfin web's own card markup (see JELLYFIN_CLASSES). Only titles that are
  * Available to get are drawn: one in the caller's library (`in_library`) is in Jellyfin's own rows already, and one
  * Requested belongs to My requests; neither is in the row, so the row has no badge. A title the member asks for while
- * the row is up leaves it at once. If nothing is left the row is not drawn (a second page is never asked for, so the
+ * the row is up leaves it at once. If nothing is left (or the answer failed, or was empty) the row is only its "My
+ * requests" card; a refused token (401, signed out) draws no row at all (a second page is never asked for, so the
  * row's one call stays one). It depends only on the caller's own answer. Everything shown is a fixed string or a DTO
  * field set with `textContent`; no HTML is parsed. It runs no navigation of its own: Jellyfin web's focus manager moves
  * between its cards. Choosing a card opens the title page (title.ts), a page of Jellyfin web's; Back returns to Home and
@@ -45,10 +47,13 @@ interface Scope {
 export class HomeRow {
   readonly #document: Document;
   readonly #scope: Scope;
+  readonly #watch: SessionWatch;
   /** The origin the add-on's script came from: the only one it calls, and only while Jellyfin web is signed in there. */
   readonly #origin: string;
   readonly #asked: Asked;
   readonly #choose: (card: Card) => void;
+  /** The strip's last card, "My requests": opens the page at `#/jellypass/requests` (main.ts). */
+  readonly #openRequests: () => void;
   readonly #now: () => number;
   #kept: Kept | undefined;
   #loading: { userId: string } | undefined;
@@ -59,14 +64,16 @@ export class HomeRow {
    * The title whose page was opened from a card: when Home is shown again, its card is focused each time the row is drawn,
    * for RETURN_MS (Jellyfin web redraws Home's sections, and auto-focuses, after it is shown), until the member moves focus.
    */
-  #returning: { mediaType: MediaType; tmdbId: number; shownAt: number | undefined } | undefined;
+  #returning: { mediaType: MediaType; tmdbId: number; shownAt: number | undefined; link?: boolean } | undefined;
 
-  public constructor(document: Document, scope: Scope, origin: string, asked: Asked, choose: (card: Card) => void, now: () => number = Date.now) {
+  public constructor(document: Document, scope: Scope, origin: string, asked: Asked, choose: (card: Card) => void, openRequests: () => void = () => undefined, now: () => number = Date.now) {
     this.#document = document;
     this.#scope = scope;
+    this.#watch = new SessionWatch(scope, origin);
     this.#origin = origin;
     this.#asked = asked;
     this.#choose = choose;
+    this.#openRequests = openRequests;
     this.#now = now;
   }
 
@@ -78,8 +85,8 @@ export class HomeRow {
   public update(): void {
     const home = homeSections(this.#document);
     if (!home) return;
-    const session = currentSession(this.#scope);
-    if (!session || session.origin !== this.#origin) {
+    const session = this.#watch.current();
+    if (!session) {
       this.#kept = undefined;
       this.#asked.sync(undefined);
       this.#removeRows();
@@ -90,7 +97,7 @@ export class HomeRow {
     if (!kept) {
       // Another member's row goes at once; this member's stays until the new answer replaces it.
       if (!this.#drawn || this.#drawn.userId !== session.userId) this.#removeRows();
-      this.#load(session.userId, session.token);
+      this.#load(session);
       return;
     }
     if (this.#row && this.#row.parentNode === home.container && this.#drawn === kept && this.#rows().length === 1) {
@@ -100,10 +107,15 @@ export class HomeRow {
     }
     const focus = this.#focusedCard();
     this.#removeRows();
-    // A failed or empty answer draws nothing (and is not asked again until Home is next shown, after REUSE_MS).
-    // Only what can be had: not what is in this member's library (Jellyfin web's rows show it) nor what is Requested.
+    // A refused token is nobody's: there is nothing to link to, so no row (not even the My requests card).
+    if (!kept.answer.ok && kept.answer.status === 401) {
+      this.#drawn = undefined;
+      return;
+    }
+    // A failed or empty answer is not asked again until Home is next shown, after REUSE_MS. Only what can be had is
+    // drawn: not what is in this member's library (Jellyfin web's rows show it) nor what is Requested. With nothing to
+    // draw, the row is only the "My requests" card, so the page stays reachable from Home (decided from this answer: no call).
     const cards = kept.answer.ok ? this.#belongs(kept.answer.cards) : [];
-    if (!cards.length) return;
     const row = this.#draw(cards);
     home.container.insertBefore(row, home.first.nextSibling);
     this.#row = row;
@@ -124,8 +136,10 @@ export class HomeRow {
       this.#returning = undefined;
       return;
     }
-    const wanted = this.#cards.find((drawn) => drawn.card.mediaType === back.mediaType && drawn.card.tmdbId === back.tmdbId) ?? this.#cards[0];
-    if (wanted && this.#document.activeElement !== wanted.button) wanted.button.focus();
+    // Back from My requests returns to its link; from a title, to the title's card.
+    const link = back.link ? this.#row?.querySelector(`[${LINK_ATTRIBUTE}]`) as HTMLElement | null | undefined : undefined;
+    const wanted = link ?? (this.#cards.find((drawn) => drawn.card.mediaType === back.mediaType && drawn.card.tmdbId === back.tmdbId) ?? this.#cards[0])?.button ?? this.#link();
+    if (wanted && this.#document.activeElement !== wanted) wanted.focus();
   }
 
   /** A key or pointer press by the member: once Home is back, focus is theirs, not the card's to be given. */
@@ -133,10 +147,17 @@ export class HomeRow {
     if (this.#returning && this.#returning.shownAt !== undefined) this.#returning = undefined;
   }
 
-  /** Which drawn card has focus, if the row has it: its place in the row and its title. */
-  #focusedCard(): { index: number; mediaType: MediaType; tmdbId: number } | undefined {
+  /** The row's "My requests" card, if it is drawn. */
+  #link(): HTMLElement | undefined {
+    return (this.#row?.querySelector(`[${LINK_ATTRIBUTE}]`) as HTMLElement | null) ?? undefined;
+  }
+
+  /** Which drawn card has focus, if the row has it: its place in the row and its title, or that it is the My requests card. */
+  #focusedCard(): { link: true } | { link?: false; index: number; mediaType: MediaType; tmdbId: number } | undefined {
     const active = this.#document.activeElement;
     if (!active || !this.#row || !this.#row.contains(active)) return undefined;
+    const link = this.#link();
+    if (link && (link === active || link.contains(active))) return { link: true };
     const index = this.#cards.findIndex((drawn) => drawn.button === active || drawn.button.contains(active));
     if (index < 0) return undefined;
     const { mediaType, tmdbId } = this.#cards[index]!.card;
@@ -144,9 +165,16 @@ export class HomeRow {
   }
 
   /** The row was drawn again while it had focus: focus goes to the same title, else the card now in its place, never to the page. */
-  #restoreFocus(focus: { index: number; mediaType: MediaType; tmdbId: number }): void {
+  #restoreFocus(focus: { link: true } | { link?: false; index: number; mediaType: MediaType; tmdbId: number }): void {
+    if (focus.link) {
+      this.#link()?.focus();
+      return;
+    }
     const same = this.#cards.find((drawn) => drawn.card.mediaType === focus.mediaType && drawn.card.tmdbId === focus.tmdbId);
-    (same ?? this.#cards[Math.min(focus.index, this.#cards.length - 1)])?.button.focus();
+    // No title survives: the My requests card takes the focus.
+    const target = same ?? this.#cards[Math.min(focus.index, this.#cards.length - 1)];
+    if (target) target.button.focus();
+    else this.#link()?.focus();
   }
 
   /** Focuses the drawn card for a title (Back from its title page), if it is still there. */
@@ -158,7 +186,7 @@ export class HomeRow {
       }
     }
     // The title left the row (it was just asked for): focus goes to the row's first card, if any.
-    this.#cards[0]?.button.focus();
+    (this.#cards[0]?.button ?? this.#link())?.focus();
   }
 
   /** A Requested ran out (asked.ts): the row is drawn again from the answer it holds, the title back in it (no call). */
@@ -191,13 +219,21 @@ export class HomeRow {
     this.update();
   }
 
-  #load(userId: string, token: string): void {
+  #load(session: Session): void {
+    const { userId } = session;
     if (this.#loading && this.#loading.userId === userId) return;
     const loading = { userId };
     this.#loading = loading;
-    void trending(this.#scope.fetch, this.#origin, token).then((answer) => {
+    const stamp = this.#watch.stamp(session);
+    void trending(this.#scope.fetch, this.#origin, session.token).then((answer) => {
       if (this.#loading !== loading) return;
       this.#loading = undefined;
+      // An answer to another sign-in's call (signed out, or in again with a new token) is dropped whole, a refused token
+      // included; `update` reads again for the session that is there now.
+      if (!this.#watch.holds(stamp)) {
+        this.update();
+        return;
+      }
       // A refused token is nobody's: whatever was shown as requested for it is dropped.
       if (!answer.ok && answer.status === 401) this.#asked.forget();
       this.#kept = { userId, at: this.#now(), answer };
@@ -207,10 +243,16 @@ export class HomeRow {
 
   /** A card chosen: its page is opened, if Jellyfin web is still signed in to this origin, and Back will return to the card. */
   #open(card: Card): void {
-    const session = currentSession(this.#scope);
-    if (!session || session.origin !== this.#origin) return;
+    if (!this.#watch.current()) return;
     this.#returning = { mediaType: card.mediaType, tmdbId: card.tmdbId, shownAt: undefined };
     this.#choose(card);
+  }
+
+  /** The "My requests" card chosen: its page is opened, if Jellyfin web is still signed in to this origin, and Back will return to the card. */
+  #requests(): void {
+    if (!this.#watch.current()) return;
+    this.#returning = { mediaType: 'movie', tmdbId: 0, shownAt: undefined, link: true };
+    this.#openRequests();
   }
 
   #rows(): Element[] {
@@ -229,6 +271,7 @@ export class HomeRow {
       attribute: ROW_ATTRIBUTE,
       state: (card) => this.#asked.state(card.mediaType, card.tmdbId, card.state),
       choose: (card) => this.#open(card),
+      link: { label: ROW_TEXT.requests, open: () => this.#requests() },
     });
     this.#cards = drawn;
     return section;

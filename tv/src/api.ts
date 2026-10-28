@@ -49,6 +49,26 @@ export type TitleAnswer = { ok: true; title: Title } | Failure;
 /** The seasons (0 for a movie) of one title the household asked for that did not work out (`failed` in `GET /requests`). */
 export type FailedAnswer = { ok: true; failed: number[] } | Failure;
 
+/** A request's coarse status in `GET /requests`: nothing finer is ever sent. */
+export type CoarseStatus = 'requested' | 'ready' | 'failed';
+
+/** One of the household's requests (an entry of `GET /requests`), the fields My requests shows. */
+export interface RequestEntry {
+  /** Opaque; the cancel call's address. Empty for an entry whose id is not of the API's shape (it has no Cancel). */
+  id: string;
+  mediaType: MediaType;
+  tmdbId: number;
+  status: CoarseStatus;
+  seasons: Array<{ seasonNumber: number; status: CoarseStatus }>;
+  /** Whether the caller made any of the household's records for the title. */
+  byYou: boolean;
+  /** Whether the caller may cancel it now (`apiVersion` 2; a server before has none, so no Cancel is offered). */
+  cancellable: boolean;
+  /** The day (`YYYY-MM-DD`, UTC) the household last asked for it, when the server says. */
+  requestedOn: string | undefined;
+}
+export type RequestsAnswer = { ok: true; entries: RequestEntry[] } | Failure;
+
 const STATES: HouseholdState[] = ['in_library', 'get_this', 'requested', 'unavailable'];
 /** The API's image URL patterns (Card.posterUrl, Card.backdropUrl); any other value is no image. */
 const POSTER_URL = /^https:\/\/image\.tmdb\.org\/t\/p\/w342\/[A-Za-z0-9_-]{1,100}\.(?:jpg|jpeg|png|webp)$/;
@@ -57,6 +77,10 @@ const BACKDROP_URL = /^https:\/\/image\.tmdb\.org\/t\/p\/w780\/[A-Za-z0-9_-]{1,1
 const ITEM_ID = /^[0-9a-f]{32}$/;
 /** The most cards the row shows, from the list's first page. */
 export const MAX_CARDS = 20;
+/** The most requests My requests keeps from a list answer. */
+export const MAX_REQUESTS = 500;
+/** A request id's shape (the API's are 22 URL-safe characters; any of this shape is passed on, nothing else is). */
+const REQUEST_ID = /^[A-Za-z0-9_-]{1,64}$/;
 
 type Fetch = (url: string, init: RequestInit) => Promise<Response>;
 
@@ -155,6 +179,31 @@ export async function failedSeasons(fetcher: Fetch, origin: string, token: strin
   return { ok: true, failed: [] };
 }
 
+/** `GET /requests`: one call. */
+export async function requests(fetcher: Fetch, origin: string, token: string): Promise<RequestsAnswer> {
+  const answer = await read(fetcher, origin, token, '/requests');
+  if (!answer.ok) return answer;
+  const results = answer.body.results;
+  if (!Array.isArray(results)) return { ok: false, status: 502 };
+  const entries: RequestEntry[] = [];
+  for (const value of results) {
+    const entry = requestOf(value);
+    if (entry) entries.push(entry);
+    if (entries.length === MAX_REQUESTS) break;
+  }
+  return { ok: true, entries };
+}
+
+/**
+ * `POST /requests/{id}/cancel`: one call, which the add-on never repeats by itself. Any `2xx` is accepted and its body is
+ * not read: the API answers the same whatever it does. An id that is not of the API's shape is not sent.
+ */
+export async function cancelRequest(fetcher: Fetch, origin: string, token: string, id: string): Promise<{ ok: true } | Failure> {
+  if (!REQUEST_ID.test(id)) return { ok: false, status: 400 };
+  const answer = await call(fetcher, origin, token, `/requests/${encodeURIComponent(id)}/cancel`, {});
+  return answer.ok ? { ok: true } : answer;
+}
+
 /**
  * `POST /movie/{id}/get` or `POST /tv/{id}/get` with the seasons asked for: one call, which the add-on never repeats by
  * itself. Any `2xx` is accepted and its body is not read: the API answers the same whatever it does.
@@ -162,6 +211,37 @@ export async function failedSeasons(fetcher: Fetch, origin: string, token: strin
 export async function getThis(fetcher: Fetch, origin: string, token: string, mediaType: MediaType, tmdbId: number, seasons: number[]): Promise<{ ok: true } | Failure> {
   const answer = await call(fetcher, origin, token, `/${mediaType}/${tmdbId}/get`, mediaType === 'tv' ? { seasons } : {});
   return answer.ok ? { ok: true } : answer;
+}
+
+/** An unknown status reads as the one that says it did not work out, as the app's pills do. */
+function coarseOf(value: unknown): CoarseStatus {
+  return value === 'requested' || value === 'ready' ? value : 'failed';
+}
+
+/** A `GET /requests` entry's shown fields, or undefined for one without a title to name. */
+function requestOf(value: unknown): RequestEntry | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const entry = value as Record<string, unknown>;
+  const { id, mediaType, tmdbId, status, seasons, byYou, cancellable, requestedOn } = entry;
+  if ((mediaType !== 'movie' && mediaType !== 'tv') || typeof tmdbId !== 'number' || !Number.isInteger(tmdbId) || tmdbId < 1) return undefined;
+  const shown: Array<{ seasonNumber: number; status: CoarseStatus }> = [];
+  if (mediaType === 'tv' && Array.isArray(seasons)) {
+    for (const season of seasons.slice(0, 100)) {
+      const { seasonNumber, status: seasonStatus } = (season && typeof season === 'object' ? season : {}) as Record<string, unknown>;
+      if (typeof seasonNumber === 'number' && Number.isInteger(seasonNumber) && seasonNumber >= 0) shown.push({ seasonNumber, status: coarseOf(seasonStatus) });
+    }
+  }
+  const known = typeof id === 'string' && REQUEST_ID.test(id);
+  return {
+    id: known ? id : '',
+    mediaType,
+    tmdbId,
+    status: coarseOf(status),
+    seasons: shown,
+    byYou: byYou === true,
+    cancellable: known && cancellable === true,
+    requestedOn: typeof requestedOn === 'string' && requestedOn.length <= 10 ? requestedOn : undefined,
+  };
 }
 
 function stateOf(value: unknown): HouseholdState {

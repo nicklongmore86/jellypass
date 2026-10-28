@@ -18,6 +18,34 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Added
+
+- **TV add-on: My requests.** On the households the TV add-on is on for,
+  Jellyfin web gains a **My requests** page (`#/jellypass/requests`, a page
+  of Jellyfin web's own under its real header and Back, in the TV and the
+  desktop layout, with no key handling of its own). It lists the household's
+  requests as the web and mobile apps do: the status once (one pill, the
+  seasons as text when they share it, a pill per season when they differ),
+  **Asked for by you**, the day it was asked, the status, type and **Asked by
+  me** filters (in memory only, applied to what is loaded, with no extra
+  call), and **Load more**, which names ten requests at a time and reuses the
+  titles it has named in the last ten minutes. **Cancel request** (on the
+  requests the server says the member may cancel) asks first, with **Keep
+  request** focused, and has the same fixed **Request cancelled** outcome and
+  fixed failure messages; the title is **Get this** again on Home's Discover
+  row, the Search row and its title page with no extra call. Choosing a
+  request opens its title page, and Back returns to the same request. It is
+  reached from a **My requests** card at the end of Home's Discover row and a
+  **My requests** button on the title page of a title the household is
+  following; Jellyfin's own menu is unchanged. When Home's Discover row has
+  nothing to show (nothing left to get, or its load failed), a small row with
+  only the **My requests** card is drawn instead, with no extra call, so the
+  page is always reachable from Home (but not when Jellyfin web's sign-in was
+  refused, where no row is drawn). The page's calls are pinned in
+  `docs/app-api/fetch-budget.json` (`tv-requests`). The title page's note for a
+  Requested title no longer points to the phone app. No setting is added or
+  changed, and the app API is unchanged. See `docs/tv-addon.md`, "My requests".
+
 ## [3.5.0] - 2026-10-28
 
 This is a minor release. Members can cancel their own requests, administrators

@@ -28,6 +28,11 @@ interface At {
  * most {@link ASKED_CHECK_MS} away, to look at the wall clock again), drops what has ended and calls `expired` so the
  * row and an open view draw their statuses again from what they hold (no call). Forgetting the overlay, or its last key
  * ending, clears the timer.
+ *
+ * A request the member cancelled (`withdraw`, from My requests) is the other way round, as in the app: the server
+ * withdraws it a moment after it accepts the call, so for the same two minutes the title and each of its seasons read as
+ * `get_this` while the server still says `requested`. Each key (the title's, a season's) stops being covered on its own
+ * as soon as the server says anything but `requested` for it, and all of them when the member asks for the title again.
  */
 export class Asked {
   readonly #now: () => number;
@@ -35,6 +40,10 @@ export class Asked {
   readonly #expired: () => void;
   #owner: string | undefined;
   #at: { [key: string]: At } = {};
+  /** Titles (`movie:<id>`, `tv:<id>`) whose cancel was accepted: covers the title's own key and its seasons'. */
+  #withdrawn: { [title: string]: At } = {};
+  /** Keys (the title's or a season's) whose withdrawal ended: the server said something but `requested` for them. */
+  #ended: { [key: string]: true } = {};
   #timer: ReturnType<typeof setTimeout> | undefined;
 
   public constructor(now: () => number, wall: () => number, expired: () => void = () => undefined) {
@@ -52,6 +61,8 @@ export class Asked {
 
   public forget(): void {
     this.#at = {};
+    this.#withdrawn = {};
+    this.#ended = {};
     this.#owner = undefined;
     this.#schedule();
   }
@@ -61,14 +72,40 @@ export class Asked {
     if (userId !== this.#owner) return;
     const at = { mono: this.#now(), wall: this.#wall() };
     const key = `${mediaType}:${tmdbId}`;
+    delete this.#withdrawn[key];
+    this.#endTitle(key);
     this.#at[key] = at;
     if (mediaType === 'tv') for (const season of seasons) this.#at[`${key}:${season}`] = at;
     this.#schedule();
   }
 
+  /**
+   * The member's accepted cancel of a request, if they are still the one signed in: the title and every season of it read
+   * as available to get while the server withdraws it (see above). Any "Get this" for it that was still showing ends.
+   */
+  public withdraw(userId: string, mediaType: MediaType, tmdbId: number): void {
+    if (userId !== this.#owner) return;
+    const title = `${mediaType}:${tmdbId}`;
+    for (const key of Object.keys(this.#at)) if (key === title || key.indexOf(`${title}:`) === 0) delete this.#at[key];
+    this.#endTitle(title);
+    this.#withdrawn[title] = { mono: this.#now(), wall: this.#wall() };
+    this.#schedule();
+  }
+
   /** The state to show for a title (`season` undefined) or one of a series' seasons, given the server's. */
   public state(mediaType: MediaType, tmdbId: number, server: HouseholdState, season?: number): HouseholdState {
-    const key = season === undefined ? `${mediaType}:${tmdbId}` : `${mediaType}:${tmdbId}:${season}`;
+    const title = `${mediaType}:${tmdbId}`;
+    const key = season === undefined ? title : `${title}:${season}`;
+    const since = this.#withdrawn[title];
+    if (since !== undefined) {
+      if (this.#left(since) <= 0) {
+        delete this.#withdrawn[title];
+        this.#endTitle(title);
+      } else if (!this.#ended[key]) {
+        if (server === 'requested') return 'get_this';
+        this.#ended[key] = true;
+      }
+    }
     const at = this.#at[key];
     if (at === undefined) return server;
     if (server !== 'get_this' || this.#left(at) <= 0) {
@@ -76,6 +113,10 @@ export class Asked {
       return server;
     }
     return 'requested';
+  }
+
+  #endTitle(title: string): void {
+    for (const key of Object.keys(this.#ended)) if (key === title || key.indexOf(`${title}:`) === 0) delete this.#ended[key];
   }
 
   /** How long a key has left: the less of what each clock gives it (a wall clock set back gives it no more). */
@@ -89,9 +130,11 @@ export class Asked {
     if (this.#timer !== undefined) clearTimeout(this.#timer);
     this.#timer = undefined;
     let soonest: number | undefined;
-    for (const key of Object.keys(this.#at)) {
-      const left = this.#left(this.#at[key] as At);
-      if (soonest === undefined || left < soonest) soonest = left;
+    for (const set of [this.#at, this.#withdrawn]) {
+      for (const key of Object.keys(set)) {
+        const left = this.#left(set[key] as At);
+        if (soonest === undefined || left < soonest) soonest = left;
+      }
     }
     if (soonest === undefined) return;
     this.#timer = setTimeout(() => {
@@ -100,6 +143,12 @@ export class Asked {
       for (const key of Object.keys(this.#at)) {
         if (this.#left(this.#at[key] as At) > 0) continue;
         delete this.#at[key];
+        ended = true;
+      }
+      for (const title of Object.keys(this.#withdrawn)) {
+        if (this.#left(this.#withdrawn[title] as At) > 0) continue;
+        delete this.#withdrawn[title];
+        this.#endTitle(title);
         ended = true;
       }
       this.#schedule();

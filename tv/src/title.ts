@@ -1,8 +1,10 @@
 import { failedSeasons, getThis, title as readTitle, type Failure, type HouseholdState, type MediaType, type SeasonSummary, type Title } from './api.js';
 import type { Asked } from './asked.js';
-import { currentSession, detailsHash, type Session } from './jellyfin-web.js';
+import { detailsHash, type Session } from './jellyfin-web.js';
 import { FOCUS_ATTR, type PageContext, type PageView } from './page-host.js';
+import { REQUESTS_HASH, REQUESTS_TEXT } from './requests-model.js';
 import { STATE_LABELS } from './row.js';
+import { SessionWatch } from './session-watch.js';
 
 /**
  * The JellyPass title page (docs/tv-addon.md, "The title page"): the household app's title page as a page of Jellyfin web
@@ -40,13 +42,13 @@ export const TITLE_TEXT = {
   tryAgain: 'Try again',
 } as const;
 
-/** What a title says besides its status when it has no button. The TV has no My requests yet, so it points to the app. */
+/** What a title says besides its status when it has no button; a requested title's note points to My requests, beside it. */
 export const STATE_NOTES = {
   unavailable: "This title can't be requested.",
-  requested: 'Check My requests in the JellyPass app to follow it.',
+  requested: 'Follow it in My requests.',
 } as const;
 
-type ErrorKind = 'unauthorized' | 'rate_limited' | 'unavailable' | 'not_found' | 'offline';
+export type ErrorKind = 'unauthorized' | 'rate_limited' | 'unavailable' | 'not_found' | 'offline';
 
 /** The page's fixed error states, the household app's words (app/src/render.ts, ERROR_TEXT). */
 export const ERROR_TEXT: Record<ErrorKind, { title: string; body: string }> = {
@@ -68,7 +70,7 @@ export const VIEW_ATTRIBUTE = 'data-jellypass-tv-title';
 /** The header's title until the title is known. */
 const PAGE_TITLE = 'JellyPass';
 
-function kindOf(failure: Failure): ErrorKind {
+export function kindOf(failure: Failure): ErrorKind {
   if (failure.status === 0) return 'offline';
   if (failure.status === 401) return 'unauthorized';
   if (failure.status === 404) return 'not_found';
@@ -140,11 +142,12 @@ interface Kept {
 }
 
 /** The classes that name a button (or the message) on the page, for finding its new self after a redraw. */
-const FOCUS_CLASSES = ['jellypass-tv-title-play', 'jellypass-tv-title-get', 'jellypass-tv-title-select-all', 'jellypass-tv-title-retry', 'jellypass-tv-title-message'];
+const FOCUS_CLASSES = ['jellypass-tv-title-play', 'jellypass-tv-title-get', 'jellypass-tv-title-requests', 'jellypass-tv-title-select-all', 'jellypass-tv-title-retry', 'jellypass-tv-title-message'];
 
 export class TitlePage {
   readonly #document: Document;
   readonly #scope: Scope;
+  readonly #watch: SessionWatch;
   readonly #origin: string;
   readonly #asked: Asked;
   readonly #host: TitleHost;
@@ -154,6 +157,7 @@ export class TitlePage {
   public constructor(document: Document, scope: Scope, origin: string, asked: Asked, host: TitleHost) {
     this.#document = document;
     this.#scope = scope;
+    this.#watch = new SessionWatch(scope, origin);
     this.#origin = origin;
     this.#asked = asked;
     this.#host = host;
@@ -234,8 +238,19 @@ export class TitlePage {
   }
 
   #session(): Session | undefined {
-    const session = currentSession(this.#scope);
-    return session && session.origin === this.#origin ? session : undefined;
+    return this.#watch.current();
+  }
+
+  /**
+   * An answer that no longer belongs to the session that sent it (signed out, or signed in again, even as the same
+   * member with a new token) is ignored entirely: it touches no overlay and tells the host nothing. The page is only
+   * ended if it is another member's, or drawn again for the new session if it is the same member's.
+   */
+  #stale(open: Open, reload: (session: Session) => void): void {
+    if (this.#open !== open) return;
+    const now = this.#session();
+    if (!now || now.userId !== open.userId) this.#end(open);
+    else reload(now);
   }
 
   #el(tag: string, className: string, text?: string): HTMLElement {
@@ -281,14 +296,15 @@ export class TitlePage {
     const { mediaType, tmdbId } = open.chosen;
     if (!confirmed) this.#fill(open, [this.#state(this.#el('p', 'jellypass-tv-title-loading', TITLE_TEXT.loading))]);
     const fetcher = this.#scope.fetch;
+    const stamp = this.#watch.stamp(session);
     void Promise.all([
       readTitle(fetcher, this.#origin, session.token, mediaType, tmdbId),
       failedSeasons(fetcher, this.#origin, session.token, mediaType, tmdbId),
     ]).then(([answer, failed]) => {
       if (open.load !== load || this.#open !== open) return;
-      const now = this.#session();
+      const now = this.#watch.holds(stamp);
       if (!now || now.userId !== open.userId) {
-        this.#end(open);
+        this.#stale(open, (current) => this.#load(open, current, confirmed, before));
         return;
       }
       // A refused token is nobody's: whatever was shown as requested for it is dropped, whichever of the two reads was
@@ -450,6 +466,16 @@ export class TitlePage {
       get.setAttribute('aria-label', `${TITLE_TEXT.getThis}: ${found.title}`);
       actions.appendChild(get);
     }
+    // A title the household is following (asked for now, requested, or one that did not work out) links to My requests.
+    const following = confirmed || state === 'requested' || failedAny || seasons.some((season) => season.state === 'requested');
+    if (following) {
+      const requests = this.#button('jellypass-tv-title-requests jellypass-tv-title-secondary', REQUESTS_TEXT.link, 'requests');
+      requests.addEventListener('click', () => {
+        if (this.#open !== open) return;
+        this.#host.navigate(REQUESTS_HASH);
+      });
+      actions.appendChild(requests);
+    }
     const actionBox = this.#el('div', 'jellypass-tv-title-action');
     if (actions.firstChild) actionBox.appendChild(actions);
     if (hint) actionBox.appendChild(hint);
@@ -583,14 +609,21 @@ export class TitlePage {
       message.className = 'jellypass-tv-title-message';
       message.textContent = '';
       const { mediaType, tmdbId } = found;
+      const stamp = this.#watch.stamp(session);
+      const load = open.load;
       void getThis(this.#scope.fetch, this.#origin, session.token, mediaType, tmdbId, seasons).then((answer) => {
+        // Whatever the answer, it belongs to the session that sent it: after a sign-out or a new sign-in (even as the
+        // same member, with a new token) it is ignored entirely, so it can't touch the new session's overlay or page.
+        const now = this.#watch.holds(stamp);
+        if (!now) {
+          // Drawn again for the new session once, whichever of the old answers comes back first.
+          if (open.load === load) this.#stale(open, (current) => this.#load(open, current, false));
+          return;
+        }
         if (answer.ok) {
-          // Shown as requested while the server records it, only for the member who asked (not if the sign-in changed).
-          const now = this.#session();
-          if (now && now.userId === session.userId) {
-            this.#asked.sync(now.userId);
-            this.#asked.add(now.userId, mediaType, tmdbId, seasons);
-          }
+          // Shown as requested while the server records it.
+          this.#asked.sync(now.userId);
+          this.#asked.add(now.userId, mediaType, tmdbId, seasons);
           this.#host.changed();
           if (this.#open !== open) return;
           for (const season of seasons.length ? seasons : [0]) open.askedHere.push(season);
@@ -599,7 +632,7 @@ export class TitlePage {
           for (const node of [get, hint, selectAll]) if (node && node.parentNode) node.parentNode.removeChild(node);
           for (const toggle of toggles) toggle.setAttribute('aria-pressed', 'false');
           this.#focus(open, message);
-          if (now && now.userId === open.userId) this.#load(open, now, true, drawn);
+          if (now.userId === open.userId) this.#load(open, now, true, drawn);
           else this.#end(open);
           return;
         }
