@@ -30,7 +30,8 @@ changes are always listed at the top of the release notes.
     every household following it **We couldn't get this** at once, and is
     recorded: should the title still arrive through the declined request (a
     late webhook, its replay, the backfill), none of those households is given
-    it, and it is held for no household.
+    it, and it is held for no household. This holds even after the declined
+    request is deleted in Seerr (the decline then becomes a title hold).
   - **Cancel request** for every household: each goes back to **Get this**,
     and the request is deleted in Seerr. JellyPass records the cancel (so the
     title is held for no household if it still arrives) **before** Seerr
@@ -55,6 +56,19 @@ changes are always listed at the top of the release notes.
   `409` with a `code`. Without the household app, these answer
   `404 requests_not_configured`.
 
+- **Household web app: Cancel request on My requests.** An entry the server
+  lists as `cancellable` (apiVersion 2) has a **Cancel request** button that
+  asks first, in words ("This withdraws your household's request. If it has
+  already been approved, the download may still finish, but it won't be added
+  for your household."), and then sends `POST /requests/:id/cancel`. On the
+  fixed `202` the page always says **Request cancelled**, drops the entry,
+  reads the list again, and shows the title as **Get this** again on Home,
+  Search and its page while the server catches up. Each entry also shows the
+  day it was requested. Keyboard and screen reader: real buttons, focus moves
+  into the confirmation and back, Escape keeps the request. Nothing is shown
+  of what became of the cancel, or of other households; an older server (no
+  `cancellable`) shows no button. The call budget gains a `cancel` entry for
+  "requests" in `docs/app-api/fetch-budget.json`.
 - **TV add-on: a Discover row on Jellyfin web's Search page.** For households the
   (experimental, off by default) TV add-on is on for, searching in Jellyfin web
   now also shows a **Discover** row under Jellyfin's own results: the titles

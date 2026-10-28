@@ -42,6 +42,27 @@ export const GET_THIS_TEXT = {
   unavailable: "We couldn't send that just now. Try again in a moment.",
 } as const;
 
+/**
+ * Cancelling a request. The confirmation is one fixed sentence, shown whatever became of the cancel (the server settles
+ * that in the background); each failure has its own fixed words, and nothing from a response is ever shown.
+ */
+export const CANCEL_TEXT = {
+  button: 'Cancel request',
+  heading: 'Cancel this request?',
+  body: "This withdraws your household's request. If it has already been approved, the download may still finish, but it won't be added for your household.",
+  confirm: 'Cancel request',
+  keep: 'Keep request',
+  sending: 'Cancelling…',
+  confirmation: 'Request cancelled',
+  rate_limited: 'Too many tries, try again in a few minutes.',
+  offline: "You're offline. Check your connection, then try again.",
+  unavailable: "We couldn't cancel that just now. Try again in a moment.",
+  requestedOn: (day: string) => `Requested on ${day}`,
+} as const;
+
+/** Cancels an entry: resolves to `accepted` (after `onAccepted`, the moment the call was), `refresh_failed`, or the kind of failure. Never rejects. */
+export type CancelHandler = (entry: RequestEntry, onAccepted: () => void) => Promise<'accepted' | 'refresh_failed' | ApiErrorKind>;
+
 export const ERROR_TEXT: Record<ApiErrorKind, { title: string; body: string }> = {
   unauthorized: { title: 'Sign in to continue', body: 'Your Jellyfin sign-in is missing or has expired.' },
   rate_limited: { title: 'Too many requests', body: 'Wait a minute, then try again.' },
@@ -997,7 +1018,7 @@ export function requestFilterBar(doc: Document, filter: RequestFilter): HTMLElem
  * {@link setRequestTitle}; until then, and if it cannot be loaded, the entry still shows its status. A status is shown
  * once (see {@link requestPills}), with the admin note under it where it did not work out.
  */
-export function requestItem(doc: Document, entry: RequestEntry): HTMLElement {
+export function requestItem(doc: Document, entry: RequestEntry, onCancel?: CancelHandler): HTMLElement {
   const pills = requestPills(entry);
   const seasons = pills.perSeason
     ? entry.seasons.map((season) =>
@@ -1022,9 +1043,90 @@ export function requestItem(doc: Document, entry: RequestEntry): HTMLElement {
     ]),
     pills.status ? requestBadge(doc, pills.status) : undefined,
     el(doc, 'p', { class: 'muted request-who', text: entry.byYou ? REQUESTS_TEXT.byYou : REQUESTS_TEXT.byOther }),
+    requestedOnLine(doc, entry.requestedOn),
     seasons.length ? el(doc, 'ul', { class: 'request-seasons', attrs: { 'aria-label': 'Seasons' } }, seasons) : undefined,
     noteHere ? failedNote(doc) : undefined,
+    entry.cancellable === true && onCancel ? cancelControl(doc, entry, onCancel) : undefined,
   ]);
+}
+
+/** A request's day as the member's locale writes it, no time: the API sends a UTC day, so it is read and written as one. */
+export function requestedOnText(day: string | undefined): string | undefined {
+  if (typeof day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return undefined;
+  const date = new Date(`${day}T00:00:00Z`);
+  if (Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== day) return undefined;
+  return date.toLocaleDateString(undefined, { dateStyle: 'medium', timeZone: 'UTC' });
+}
+
+function requestedOnLine(doc: Document, day: string | undefined): HTMLElement | undefined {
+  const text = requestedOnText(day);
+  return text === undefined ? undefined : el(doc, 'p', { class: 'muted request-on', text: CANCEL_TEXT.requestedOn(text) });
+}
+
+/**
+ * "Cancel request" and its confirmation, inline under the entry: a group that takes focus when opened, with the
+ * request's consequences in words, the two real buttons, and the status line for a failure. Escape closes it, and
+ * closing returns focus to the button that opened it. The call is sent once (both buttons are disabled while it is out).
+ */
+function cancelControl(doc: Document, entry: RequestEntry, onCancel: CancelHandler): HTMLElement {
+  const open = el(doc, 'button', { class: 'button button-small button-secondary request-cancel', text: CANCEL_TEXT.button, attrs: { type: 'button', 'aria-label': CANCEL_TEXT.button, 'aria-expanded': 'false' } });
+  const heading = el(doc, 'p', { class: 'request-cancel-heading', text: CANCEL_TEXT.heading, attrs: { tabindex: '-1' } });
+  const body = el(doc, 'p', { class: 'muted request-cancel-body', text: CANCEL_TEXT.body });
+  const confirm = el(doc, 'button', { class: 'button button-small', text: CANCEL_TEXT.confirm, attrs: { type: 'button' } });
+  const keep = el(doc, 'button', { class: 'button button-small button-secondary', text: CANCEL_TEXT.keep, attrs: { type: 'button' } });
+  const message = el(doc, 'p', { class: 'get-message', attrs: { role: 'status' } });
+  const panel = el(doc, 'div', { class: 'request-cancel-panel', attrs: { role: 'group', 'aria-label': CANCEL_TEXT.heading, hidden: '' } }, [
+    heading,
+    body,
+    el(doc, 'div', { class: 'request-cancel-actions' }, [confirm, keep]),
+    message,
+  ]);
+  const close = () => {
+    panel.hidden = true;
+    open.hidden = false;
+    open.setAttribute('aria-expanded', 'false');
+    message.textContent = '';
+    open.focus({ preventScroll: true });
+  };
+  open.addEventListener('click', () => {
+    open.hidden = true;
+    open.setAttribute('aria-expanded', 'true');
+    panel.hidden = false;
+    heading.focus({ preventScroll: true });
+  });
+  keep.addEventListener('click', () => {
+    if (!keep.disabled) close();
+  });
+  panel.addEventListener('keydown', (event) => {
+    if ((event as KeyboardEvent).key === 'Escape' && !keep.disabled) {
+      event.stopPropagation();
+      close();
+    }
+  });
+  confirm.addEventListener('click', () => {
+    if (confirm.disabled) return;
+    confirm.disabled = true;
+    keep.disabled = true;
+    confirm.textContent = CANCEL_TEXT.sending;
+    confirm.setAttribute('aria-busy', 'true');
+    message.className = 'get-message';
+    message.textContent = '';
+    let accepted = false;
+    void onCancel(entry, () => {
+      // Accepted: the entry leaves the list at once, whatever reading the list again does. Nothing here can send again.
+      accepted = true;
+      confirm.closest('li')?.remove();
+    }).then((outcome) => {
+      if (outcome === 'accepted' || outcome === 'refresh_failed' || outcome === 'unauthorized' || accepted) return;
+      message.className = 'get-message get-error';
+      message.textContent = outcome === 'rate_limited' ? CANCEL_TEXT.rate_limited : outcome === 'offline' ? CANCEL_TEXT.offline : CANCEL_TEXT.unavailable;
+      confirm.textContent = CANCEL_TEXT.confirm;
+      confirm.removeAttribute('aria-busy');
+      confirm.disabled = false;
+      keep.disabled = false;
+    });
+  });
+  return el(doc, 'div', { class: 'request-cancel-box' }, [open, panel]);
 }
 
 export function setRequestTitle(
@@ -1035,6 +1137,8 @@ export function setRequestTitle(
   const meta = item.querySelector('.card-meta');
   if (!name || !meta) return;
   name.textContent = title?.title || REQUESTS_TEXT.titleMissing;
+  // The Cancel button names its request for a screen reader once the request is named.
+  if (title?.title) item.querySelector('.request-cancel')?.setAttribute('aria-label', `${CANCEL_TEXT.button}: ${title.title}`);
   // "2024 · Movie", or "2027 · Series · Season 1" with the seasons the entry put there.
   if (title) meta.textContent = [title.year ?? '', meta.getAttribute('data-kind') || (title.mediaType === 'tv' ? 'Series' : 'Movie')].filter(Boolean).join(' · ');
   // The thumbnail is the same TMDB poster (w342) the title page uses, only if it is an allowlisted URL.

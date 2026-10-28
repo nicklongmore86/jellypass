@@ -422,8 +422,9 @@ describe('accessibility', () => {
   it.each([
     ['Home', 'Home', 4 + HOME],
     ['Search', 'Search', 4 + HOME],
-    // Its two requests, each one link, and the eight filter chips (Status 4, Type 3, Asked by me).
-    ['My requests', 'My requests', 6 + 8 + HOME],
+    // Its two requests, each one link, the eight filter chips (Status 4, Type 3, Asked by me) and the one cancellable
+    // request's Cancel request button.
+    ['My requests', 'My requests', 6 + 8 + 1 + HOME],
     ['Account', 'Account', 9 + HOME],
     // Back, and the Account screen still mounted underneath it.
     ['a pushed screen', '/account/pushed', 10 + HOME],
