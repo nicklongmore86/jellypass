@@ -51,17 +51,6 @@ changes are always listed at the top of the release notes.
   `GET /v1/app/outstanding` shows no `withdrawals` first (see "Cancelling" in
   `docs/app-design.md` for how to clear them).
 
-- **The TV add-on can now show JellyPass pages inside Jellyfin web, at
-  `#/jellypass/...`.** A page is drawn into Jellyfin's own "page not found"
-  page, so Jellyfin's real header, its Back and Home buttons, its history and
-  its focus handling apply, in the TV layout and the desktop layout, and the
-  add-on handles no key. Jellyfin's "page not found" text is hidden before it
-  is drawn, so it never flashes. If Jellyfin web's page is not what the add-on
-  expects, nothing is drawn and Jellyfin's page is left alone. The only page so
-  far is a small placeholder at `#/jellypass/about`, which nothing links to and
-  which makes no call. Nothing changes on the
-  admin host or on households the add-on is off for.
-
 ### Changed
 
 - **A request an administrator deletes in Seerr now sends every household
@@ -69,6 +58,77 @@ changes are always listed at the top of the release notes.
   requests; a household that followed the same request (its interest) showed
   "We couldn't get this" instead. Both now leave the list, and the title can be
   asked for again.
+
+## [3.4.0] - 2026-10-27
+
+This is a minor release. It redesigns the TV add-on, which is still
+experimental and off by default: **unless `TV_ADDON_ENABLED` is set, nothing
+changes** on any host. No setting is added, removed or renamed, and the state
+file is unchanged (schema v7, with the same fields as 3.3.1), so 3.3.1 reads a
+state file written by 3.4.0. The app API (`docs/app-api/v1.openapi.json`),
+webhook payloads, the administrator API, the admin UI, the household app and
+the gateway are unchanged. The add-on's row and title view are not part of the
+public interface described at the top of this file, so redesigning them is not
+a breaking change; it is a minor release because the add-on gains new
+behaviour (a page host and a new title page). Read these before upgrading a
+household the add-on is on for:
+
+- **What changes for households the add-on is on for:**
+  - The Home row is now headed **Discover** and shows only titles that can be
+    had ("Available to get"): titles already in the member's library,
+    Requested titles and titles that can't be requested are left out, and the
+    cards look like Jellyfin web's own.
+  - Choosing a card opens the title as a page of Jellyfin web's own, at
+    `#/jellypass/title/<movie|tv>/<id>`, under Jellyfin's header, instead of
+    an overlay on Home. **Back is Jellyfin's** (its header button, the remote's
+    Back key, or the browser's history) and returns to Home with the card
+    focused; the add-on handles no key.
+- **It has been tested in a real Jellyfin 12.3 container,** in the TV layout
+  and the desktop layout, in a desktop browser, but **not on a real TV**, and
+  the page host has been checked only against Jellyfin web 12.3. Where
+  Jellyfin web's page is not as the add-on expects, the title page is not
+  drawn and Jellyfin's own page shows. Check the row, the title page and Back
+  in a desktop browser on that household's address, then on an LG TV, before
+  relying on it; [docs/tv-addon.md](docs/tv-addon.md) lists what to check.
+- **Samsung TVs still show nothing:** the sideloaded Samsung app bundles its
+  own Jellyfin web and needs the JellyPass loader app planned for a later
+  step.
+- **No CDN purge is needed:** the household address's `/web/` page that
+  carries the add-on's tag is already sent `no-store` (since 3.3.0), and the
+  add-on's script and stylesheet are named for a hash of their content, so the
+  page names the new files at once.
+- **To roll back,** set `JELLYPASS_IMAGE` back to
+  `ghcr.io/nicklongmore86/jellypass:3.3.1` and recreate the container. No
+  state-file or setting change is needed; the 3.3.1 row and overlay come back.
+
+### Added
+
+- **My requests in the household web app can be filtered.** Chips above the
+  list choose a status (All, Requested, Ready to watch, Couldn't get this), a
+  type (All, Films, Series) and an "Asked by me" toggle, and they combine. A
+  series matches a status if any status it shows has it: a series with
+  Season 1 ready and Season 2 requested appears under both Ready to watch and
+  Requested. When nothing matches, the screen says what is missing for that
+  combination and offers "Show all requests". Choosing a filter makes no call
+  to the app API or TMDB and does not change which titles are reused; it only
+  hides entries already on the page, so with more than ten requests the filter
+  applies to the ones loaded so far and Load more names the next ten. The
+  choice is kept while the app is open and cleared on sign-out or when another
+  member signs in. Nothing changes on the server, its API or its call budget.
+
+- **The TV add-on can now show JellyPass pages inside Jellyfin web, at
+  `#/jellypass/...`.** A page is drawn into Jellyfin's own "page not found"
+  page, so Jellyfin's real header, its Back and Home buttons, its history and
+  its focus handling apply, in the TV layout and the desktop layout, and the
+  add-on handles no key. Jellyfin's "page not found" text is hidden before it
+  is drawn, so it never flashes. If Jellyfin web's page is not what the add-on
+  expects, nothing is drawn and Jellyfin's page is left alone. Besides the
+  title page (below), the only page is a small placeholder at
+  `#/jellypass/about`, which nothing links to and which makes no call. Nothing
+  changes on the admin host or on households the add-on is off for.
+
+### Changed
+
 - **The TV add-on's title view is now a page of Jellyfin web's, not an
   overlay.** Choosing a Discover card opens `#/jellypass/title/<movie|tv>/<id>`
   as a history entry, laid out as Jellyfin's own item details page (poster,
@@ -77,28 +137,27 @@ changes are always listed at the top of the release notes.
   Back and Home buttons are never covered, in the TV layout and the desktop
   layout. Back returns to Home with the card focused. The title's backdrop is
   now drawn across the whole screen whatever Jellyfin's Backdrops setting says.
-  The overlay, its key listener and its stacking rules are gone: the add-on
-  handles no key, and every listener it adds on the page only watches (capturing
-  and passive). Play, Get this (same confirmation, words and errors, no
-  automatic retry, season choice with Select all, HD only), the two-minute
-  Requested state, sign-out and member changes, and the call budget
-  (`tv-movie`, `tv-series`) are unchanged. Nothing changes on the admin host or
-  on households the add-on is off for.
-- **The TV add-on no longer breaks Jellyfin's Home when it is left.** The
-  Discover row's list carried a Jellyfin class whose elements Jellyfin calls
-  `.pause()` on when Home is left, which failed with a `TypeError` and an error
-  page in the desktop layout. The row now uses a class of its own.
-
+  An address whose ID is not one the app API takes (digits with no leading
+  zero, at most 2147483647) shows "Not found" and makes no call. The overlay,
+  its key listener and its stacking rules are gone: the add-on handles no key,
+  and every listener it adds to the document only watches (capturing and
+  passive). Play, Get this (same confirmation, words and errors, no automatic
+  retry, season choice with Select all, HD only), the two-minute Requested
+  state, sign-out and member changes, and the call budget (`tv-movie`,
+  `tv-series`) are unchanged. Nothing changes on the admin host or on
+  households the add-on is off for.
 - **The TV add-on's Home row is now "Discover", in Jellyfin web's own card
   style, and shows only what can be had.** It no longer repeats what Jellyfin's
   own rows show: titles already in the member's library ("Ready to watch") are
-  left out, and so are "Requested" titles (they will be in My requests), so the
-  row has no badge. A title the member asks for leaves the row. The cards use
-  Jellyfin web's card markup, so their size, type, near-black look and focus
-  ring match Jellyfin's own rows in both the TV and the desktop layout, and the
-  add-on's own navy colours are gone from the row. If nothing is left the row
-  is not drawn. The row still makes one call (`tv-home-row`, unchanged) and
-  depends only on the caller's own answer.
+  left out, and so are "Requested" titles (they will be in My requests) and
+  titles that can't be requested, so the row has no badge. A title the member
+  asks for leaves the row. The cards use Jellyfin web's card markup, so their
+  size, type, near-black look and focus ring match Jellyfin's own rows in both
+  the TV and the desktop layout, and the add-on's own navy colours are gone
+  from the row. If nothing is left the row is not drawn. When the row is drawn
+  again while one of its cards has focus, focus stays on the same title. The
+  row still makes one call (`tv-home-row`, unchanged) and depends only on the
+  caller's own answer.
 
 ## [3.3.1] - 2026-10-27
 
@@ -2470,7 +2529,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.3.1...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.4.0...HEAD
+[3.4.0]: https://github.com/nicklongmore86/jellypass/compare/v3.3.1...v3.4.0
 [3.3.1]: https://github.com/nicklongmore86/jellypass/compare/v3.3.0...v3.3.1
 [3.3.0]: https://github.com/nicklongmore86/jellypass/compare/v3.2.4...v3.3.0
 [3.2.4]: https://github.com/nicklongmore86/jellypass/compare/v3.2.3...v3.2.4

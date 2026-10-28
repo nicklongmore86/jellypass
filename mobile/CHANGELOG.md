@@ -15,6 +15,22 @@ build.
 
 ## [Unreleased]
 
+### Added
+
+- **My requests can be filtered.** Chips above the list choose a status (All,
+  Requested, Ready to watch, Couldn't get this), a type (All, Films, Series)
+  and "Asked by me", and they combine, as in the household web app. A series
+  matches a status if any status it shows has it, so a series with one season
+  ready and another requested appears under both. When nothing matches, the
+  screen says what is missing and offers "Show all requests". The chips are
+  labelled for screen readers, ticked when chosen, at least 44 points high,
+  and wrap onto more lines at large text. Choosing a filter makes no call and
+  does not change which titles are reused; with more than ten requests it
+  applies to the ones loaded so far, and Load more names the next ten. The
+  choice is kept in memory while the app is open, never saved to the device,
+  and cleared on sign-out or when another member signs in. It needs no server
+  change.
+
 ## [1.0.0] - 2026-10-27
 
 The first release of the household app. It needs a household on **JellyPass

@@ -53,6 +53,47 @@ function assertSection(notes, { version, nextVersion, subheadings }) {
 }
 
 describe('changelogSection with the real CHANGELOG.md', () => {
+  it('extracts 3.4.0 without its heading, up to the 3.3.1 section', () => {
+    const notes = changelogSection(CHANGELOG, '3.4.0');
+    assertSection(notes, {
+      version: '3.4.0',
+      nextVersion: '3.3.1',
+      subheadings: ['Added', 'Changed'],
+    });
+    assert.match(notes, /^This is a minor release\. It redesigns the TV add-on/);
+    const flat = notes.replace(/\s+/g, ' ');
+    assert.match(flat, /\*\*unless `TV_ADDON_ENABLED` is set, nothing changes\*\* on any host/);
+    assert.match(flat, /3\.3\.1 reads a state file written by 3\.4\.0/);
+    assert.match(flat, /not part of the public interface described at the top of this file, so redesigning them is not a breaking change/);
+    assert.match(flat, /The Home row is now headed \*\*Discover\*\* and shows only titles that can be had/);
+    assert.match(flat, /at `#\/jellypass\/title\/<movie\|tv>\/<id>`, under Jellyfin's header/);
+    assert.match(flat, /\*\*Back is Jellyfin's\*\*/);
+    assert.match(flat, /tested in a real Jellyfin 12\.3 container,\*\* in the TV layout and the desktop layout/);
+    assert.match(flat, /\*\*not on a real TV\*\*/);
+    assert.match(flat, /then on an LG TV/);
+    assert.match(flat, /\*\*Samsung TVs still show nothing:\*\* .* loader app/);
+    assert.match(flat, /\*\*No CDN purge is needed:\*\* .* sent `no-store` .* named for a hash of their content/);
+    assert.match(flat, /`ghcr\.io\/nicklongmore86\/jellypass:3\.3\.1`/);
+    assert.match(flat, /at most 2147483647\) shows "Not found" and makes no call/);
+    assert.doesNotMatch(flat, /itemsContainer|\.pause\(\)/, 'a fix to an unreleased change is not listed');
+    const added = notes.indexOf('### Added');
+    for (const note of [
+      '**What changes for households the add-on is on for:**',
+      '**It has been tested in a real Jellyfin 12.3 container,**',
+      '**Samsung TVs still show nothing:**',
+      '**No CDN purge is needed:**',
+      '**To roll back,**',
+    ]) {
+      assert.ok(notes.indexOf(note) >= 0 && notes.indexOf(note) < added, `upgrade note ${note} comes first`);
+    }
+    assert.doesNotMatch(notes, /### (?:Security|Fixed)/);
+    assert.doesNotMatch(notes, /Mobile app/, 'mobile/ is unchanged since 3.3.1');
+    assert.doesNotMatch(notes, /### Upgrading from/);
+    assert.doesNotMatch(notes, /eas-cli|workflow|\btests?\b/i, 'no tests or CI');
+    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|starrgroup|farmhouse|design-ref/, 'no server-specific details');
+    assert.deepEqual(split(notes).definitions, []);
+  });
+
   it('extracts 3.3.1 without its heading, up to the 3.3.0 section', () => {
     const notes = changelogSection(CHANGELOG, '3.3.1');
     assertSection(notes, {

@@ -348,7 +348,7 @@ function authorizationHeader(device: string, deviceId: string, token?: string): 
     ['Client', 'JellyPass'],
     ['Device', device],
     ['DeviceId', deviceId],
-    ['Version', '3.3.1'],
+    ['Version', '3.4.0'],
   ];
   if (token) parameters.push(['Token', token]);
   return mediaBrowserAuthorization(parameters);

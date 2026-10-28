@@ -12,18 +12,21 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { Request } from '../api/types';
 import { ErrorNotice } from '../home/components';
 import { titlePath } from '../navigation/titles';
-import { RequestItem, SkeletonRequests } from '../requests/components';
-import { REQUESTS_TEXT } from '../requests/text';
+import { useRequestFilter } from '../requests/filters';
+import { RequestFilters, RequestItem, SkeletonRequests } from '../requests/components';
+import { matchesRequestFilter, REQUEST_FILTER_TEXT, requestFilterActive, requestFilterEmptyText, REQUESTS_TEXT } from '../requests/text';
 import { useRequests } from '../requests/useRequests';
 import { LoadMore } from '../search/components';
 import { useAsked, useSession } from '../session/SessionProvider';
 import { colors, spacing, typography } from '../theme';
+import { Button } from '../ui';
 
 /** The list stops widening here on iPad (the stylesheet's 46rem). */
 export const REQUESTS_MAX_WIDTH = 736;
 
 export function RequestsScreen() {
-  const { api, expire, titles } = useSession();
+  const { api, expire, titles, requestFilters } = useSession();
+  const filter = useRequestFilter(requestFilters);
   const overlay = useAsked();
   const data = useRequests(api, expire, overlay, titles);
   const { reload, stop } = data;
@@ -48,6 +51,8 @@ export function RequestsScreen() {
 
   const open = (request: Request) => router.push(titlePath('requests', request));
   const { load } = data;
+  // Only entries already listed and named are filtered: choosing a filter reads nothing (Load more names ten more).
+  const visible = load.status === 'loaded' ? load.requests.slice(0, data.shown).filter((request) => matchesRequestFilter(request, filter)) : [];
 
   return (
     <ScrollView
@@ -62,11 +67,21 @@ export function RequestsScreen() {
         {load.status === 'loading' ? <SkeletonRequests /> : null}
         {load.status === 'failed' ? <ErrorNotice error={load.error} onRetry={() => void reload()} secondary={false} /> : null}
         {load.status === 'loaded' && load.requests.length === 0 ? <Text style={styles.muted}>{REQUESTS_TEXT.empty}</Text> : null}
+        {load.status === 'loaded' && load.requests.length ? <RequestFilters filter={filter} onChange={requestFilters.set} /> : null}
         {load.status === 'loaded' && load.requests.length ? (
           <View testID="request-list" style={styles.list}>
-            {load.requests.slice(0, data.shown).map((request) => (
+            {visible.map((request) => (
               <RequestItem key={request.id} request={request} title={data.titles[request.id]} onOpen={open} />
             ))}
+          </View>
+        ) : null}
+        {load.status === 'loaded' && visible.length > 0 && requestFilterActive(filter) && data.shown < load.requests.length ? (
+          <Text testID="request-filter-more" style={styles.muted}>{REQUEST_FILTER_TEXT.more}</Text>
+        ) : null}
+        {load.status === 'loaded' && load.requests.length && data.shown > 0 && visible.length === 0 ? (
+          <View testID="request-filter-empty" style={styles.none}>
+            <Text style={styles.muted}>{requestFilterEmptyText(filter, data.shown < load.requests.length)}</Text>
+            {requestFilterActive(filter) ? <Button label={REQUEST_FILTER_TEXT.showAll} onPress={requestFilters.reset} secondary /> : null}
           </View>
         ) : null}
         {load.status === 'loaded' && data.shown < load.requests.length ? <LoadMore loading={data.naming} onPress={data.loadMore} /> : null}
@@ -80,4 +95,5 @@ const styles = StyleSheet.create({
   column: { width: '100%', maxWidth: REQUESTS_MAX_WIDTH, alignSelf: 'center', paddingTop: spacing.md, paddingBottom: spacing.xxl, gap: spacing.lg },
   list: { gap: 9.6 },
   muted: { ...typography.body, color: colors.muted },
+  none: { gap: spacing.md, alignItems: 'flex-start' },
 });
