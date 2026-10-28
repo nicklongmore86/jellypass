@@ -18,6 +18,46 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+## [3.6.0] - 2026-10-28
+
+This is a minor release for the TV add-on, which is still experimental and off
+by default: **unless `TV_ADDON_ENABLED` is set, nothing changes** on any host.
+The add-on gains a **My requests** page, the links that reach it, and one rule
+for late answers across the add-on. Everything is additive. No setting is
+added, removed or renamed, and the server itself is unchanged: the state file
+(schema v7), the app API (`v1`, `apiVersion` 2), webhook payloads, the
+administrator API, the admin UI, the household app and the gateway are as in
+3.5.0. The add-on's pages are not part of the public interface described at the
+top of this file. This is a minor release because the add-on gains a page.
+Read these before upgrading:
+
+- **Nothing to configure.** No setting is new, and nothing in `.env` needs to
+  change. Only households the TV add-on is on for (`TV_ADDON_ENABLED` and
+  `TV_ADDON_HOUSEHOLDS`) see anything new.
+- **The state file is unchanged** (schema v7, with the same fields as 3.5.0),
+  so 3.5.0 reads a state file written by 3.6.0.
+- **No CDN purge is needed.** The add-on's script and stylesheet are named for
+  a hash of their content, and both names change in this release. The
+  household address's `/web/` page that carries the add-on's tag and the
+  Samsung app's manifest are sent `no-store`, so they name the new files at
+  once.
+- **It has been tested in a real Jellyfin 12.3 container,** in the TV layout
+  and the desktop layout, in a desktop browser, but **not on a real TV**.
+  Check My requests, its links and Back in a desktop browser on that
+  household's address, then on a TV, before relying on it;
+  [docs/tv-addon.md](docs/tv-addon.md) lists what to check.
+- **The Samsung app picks it up by itself.** Its loader reads the manifest
+  each time it starts, so a Samsung TV with the JellyPass build of the app
+  gets the new add-on at its next start. Nothing is reinstalled on the TV.
+- **To roll back,** set `JELLYPASS_IMAGE` back to
+  `ghcr.io/nicklongmore86/jellypass:3.5.0` and recreate the container. No
+  state-file or setting change is needed. The add-on loses My requests and its
+  links, and is otherwise as in 3.5.0.
+- **The iPhone, iPad and Android app ships separately.** Its 1.1.0 release
+  (Cancel request, the day each title was requested, and My requests filters)
+  is out, and its notes are in `mobile/CHANGELOG.md`. Neither 1.0.0 nor 1.1.0
+  needs anything from 3.6.0, and both work with it as with 3.5.0.
+
 ### Added
 
 - **TV add-on: My requests.** On the households the TV add-on is on for,
@@ -45,6 +85,18 @@ changes are always listed at the top of the release notes.
   `docs/app-api/fetch-budget.json` (`tv-requests`). The title page's note for a
   Requested title no longer points to the phone app. No setting is added or
   changed, and the app API is unchanged. See `docs/tv-addon.md`, "My requests".
+
+### Fixed
+
+- **TV add-on: an answer that comes back after a sign-out or a new sign-in is
+  dropped.** Jellyfin web's sign-out does not reload the add-on, so a call
+  could come back after it. That includes the same member signing in again
+  with a new token. In 3.5.0 such an answer could still be applied if it was
+  for the same member. Now one check, by member, token and sign-in, covers the
+  whole add-on, for successes and failures alike. A late **Get this** or
+  **Cancel request** answer changes nothing. A late title page, My requests,
+  Home row or Search row answer is not drawn, and the add-on reads again once
+  for the new sign-in.
 
 ## [3.5.0] - 2026-10-28
 
@@ -2776,7 +2828,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.5.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.6.0...HEAD
+[3.6.0]: https://github.com/nicklongmore86/jellypass/compare/v3.5.0...v3.6.0
 [3.5.0]: https://github.com/nicklongmore86/jellypass/compare/v3.4.0...v3.5.0
 [3.4.0]: https://github.com/nicklongmore86/jellypass/compare/v3.3.1...v3.4.0
 [3.3.1]: https://github.com/nicklongmore86/jellypass/compare/v3.3.0...v3.3.1
