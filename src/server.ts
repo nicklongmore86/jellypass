@@ -8,6 +8,7 @@ import { expiredSessionCookie, hasSessionCookie, isSameOriginRequest, isSecureRe
 import { ClientIpResolver } from './client-ip.js';
 import type { LogLevel } from './config.js';
 import { HouseholdGateway } from './household-gateway.js';
+import type { HouseholdRequests } from './household-requests.js';
 import { RECENT_REQUESTS_LIMIT } from './seerr.js';
 import { BackgroundTasks } from './shutdown.js';
 import { TvAssets } from './tv-assets.js';
@@ -57,6 +58,12 @@ export interface ServerOptions {
    * answer a fixed 404 there; they are never served on the admin host.
    */
   householdApp?: Pick<HouseholdAppOptions, 'catalogue' | 'blocklist' | 'members' | 'requests' | 'libraryTtlMs' | 'titleTtlMs' | 'blocklistTtlMs' | 'catalogueLimits' | 'signOutLimits' | 'now'>;
+  /**
+   * The household app's title holds (HouseholdRequests.checkTitleHolds), checked in the background after each
+   * MEDIA_AVAILABLE webhook and library catalog sync, so a title whose cancelled request Seerr lost is held soon after it
+   * arrives rather than at the next scheduled reconciliation.
+   */
+  titleHolds?: Pick<HouseholdRequests, 'checkTitleHolds'>;
 }
 
 export interface JellyPassServer extends Server {
@@ -107,6 +114,8 @@ export function makeServer(
         } : {}),
       })
     : undefined;
+  const titleHolds = options?.titleHolds;
+  const checkTitleHolds = () => { if (titleHolds) background.run((signal) => titleHolds.checkTitleHolds({ signal })); };
   const clientIp = new ClientIpResolver(options?.trustedProxies);
   const server = createServer(async (request, response) => {
     try {
@@ -191,6 +200,7 @@ export function makeServer(
           throw error;
         }
         const result = await service.processWebhook(event);
+        if (event.notificationType === 'MEDIA_AVAILABLE') checkTitleHolds();
         return json(response, result ? 200 : 202, result ? { status: 'granted', grant: result } : { status: 'ignored' });
       }
       if (!authorized(request, tokens.admin)) {
@@ -263,6 +273,7 @@ export function makeServer(
       if (request.method === 'POST' && url.pathname === '/v1/library/sync') {
         requireJsonIfBody(request);
         const catalog = await service.syncLibraryCatalog();
+        checkTitleHolds();
         return json(response, 200, { status: 'synced', ...catalog });
       }
       if (request.method === 'PUT' && url.pathname === '/v1/library/access') {

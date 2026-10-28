@@ -722,6 +722,146 @@ describe('an administrator deletes a request its requester cancelled', { timeout
   });
 });
 
+describe('title holds: every hold, every item, and the safety markers as they are now', { timeout: 60_000 }, () => {
+  /** `count` title holds, as the refresh leaves them: Alice cancelled each genuine request, and Seerr then lost it. */
+  async function holds(app, count, { first = FIRST, tmdbId = (index) => T_MOVIE + index } = {}) {
+    const withdrawn = Array.from({ length: count }, (_, index) => ({
+      requestId: String(first + index), mediaType: 'movie', tmdbId: tmdbId(index), householdId: 'farmhouse', requester: true, requesterId: ALICE,
+    }));
+    await app.store.writeAppRequests({ withdraw: withdrawn });
+    await app.store.writeAppRequests({ requestsGone: withdrawn.map((entry) => entry.requestId) });
+    assert.equal(app.store.listAppTitleHolds().length, count);
+  }
+  const OTHER = ITEMS.tSeries;
+
+  // Codex's probe: each run read the same first 50 holds, so the 51st never had a turn.
+  it('gives every hold a turn however many there are: the 51st hold\'s title is held within two runs', async (t) => {
+    const app = await start(t, world());
+    // Requests and titles the world knows nothing of, but the 51st title, which arrives.
+    await holds(app, 51, { first: 7380001, tmdbId: (index) => 960000 + index });
+    app.jellyfin.state.items.push(movieItem({ ProviderIds: { Tmdb: String(960050) } }));
+    for (let run = 0; run < 2; run += 1) await app.service.applyTitleHolds();
+    const grant = app.store.get(ITEMS.tMovie);
+    assert.ok(grant?.active, 'the 51st title is held');
+    assert.deepEqual([Object.keys(grant.requests), grant.groupIds, grant.owners], [['7380051'], [], []]);
+    assert.deepEqual(app.store.listAppTitleHolds().length, 50, 'its hold is dropped, the others wait');
+  });
+
+  // Codex's probe: the first item granted marked the request handled, and the hold was no longer listed.
+  it('keeps a hold until every item of its title is on a grant: an item whose grant failed is held on the next run', async (t) => {
+    const app = await start(t, world());
+    await holds(app, 1);
+    app.jellyfin.state.items.push(movieItem(), movieItem({ Id: OTHER }));
+    const grant = app.store.grant.bind(app.store);
+    let calls = 0;
+    app.store.grant = async (input) => {
+      calls += 1;
+      if (calls === 2) throw new Error('transient failure on the second item');
+      return grant(input);
+    };
+    await app.service.applyTitleHolds();
+    app.store.grant = grant;
+    assert.ok(app.store.get(ITEMS.tMovie)?.active);
+    assert.equal(app.store.get(OTHER), undefined);
+    assert.equal(app.store.listAppTitleHolds().length, 1, 'still a hold: its second item is not held yet');
+    await app.service.applyTitleHolds();
+    for (const itemId of [ITEMS.tMovie, OTHER]) {
+      const held = app.store.get(itemId);
+      assert.ok(held?.active, itemId);
+      assert.deepEqual([Object.keys(held.requests), held.groupIds, held.owners], [[String(FIRST)], [], []]);
+    }
+    assert.equal(app.store.listAppTitleHolds().length, 0);
+    // The withdrawal stays: it is what keeps Alice out of the grants that record the request.
+    assert.deepEqual(app.store.listAppWithdrawals().map(([requestId, withdrawal]) => [requestId, withdrawal.seerrGoneAt]), [[String(FIRST), undefined]]);
+    assert.deepEqual((await admin(app, '/v1/app/held')).json().total, 1);
+  });
+
+  // Codex's probe: a safety tombstone written after the cancel (a later settle of the request's intent, whose join rule
+  // the withdrawn record no longer takes) lost to the requesterId the cancel captured.
+  it('lets a safety tombstone naming the request win: the title follows the join rules, never a private grant', async (t) => {
+    const app = await start(t, world());
+    await holds(app, 1);
+    const now = Date.now();
+    await app.store.writeAppRequests({ tombstones: [{
+      mediaType: 'movie', tmdbId: T_MOVIE, requestIds: [String(FIRST)], createdAt: new Date(now).toISOString(), expiresAt: new Date(now + 86_400_000).toISOString(),
+    }] });
+    app.jellyfin.state.items.push(movieItem());
+    await app.service.applyTitleHolds();
+    assert.equal(app.store.get(ITEMS.tMovie), undefined, 'no private grant');
+    assert.ok(app.store.hasHandledRequest(String(FIRST)), 'granted as a join');
+    assert.equal(app.store.listAppTitleHolds().length, 0);
+    assert.equal(app.store.listAppSafetyTombstones().length, 1);
+  });
+
+  it('lets a member-wide tombstone for the requester win when it may cover the request, and not when it began after the cancel', async (t) => {
+    for (const [since, joined] of [[-60_000, true], [60_000, false]]) {
+      const app = await start(t, world());
+      await holds(app, 1);
+      const createdAt = Date.parse(app.store.getAppWithdrawal(String(FIRST)).createdAt);
+      await app.store.writeAppRequests({ tombstones: [{
+        mediaType: 'movie', tmdbId: T_MOVIE, requestIds: [], jellyfinUserId: ALICE, since: new Date(createdAt + since).toISOString(),
+        createdAt: new Date(createdAt).toISOString(), expiresAt: new Date(createdAt + 86_400_000).toISOString(),
+      }] });
+      app.jellyfin.state.items.push(movieItem());
+      await app.service.applyTitleHolds();
+      assert.equal(app.store.get(ITEMS.tMovie)?.active === true, !joined, `since ${since}`);
+      assert.equal(app.store.listAppTitleHolds().length, 0);
+    }
+  });
+
+  it('waits while a "Get this" intent names the title, then holds it', async (t) => {
+    const app = await start(t, world());
+    await holds(app, 1);
+    const intent = await app.store.addAppRequestIntent({
+      status: 'submitting', mediaType: 'movie', tmdbId: T_MOVIE, seasons: [], householdId: 'mill', jellyfinUserId: BOB,
+      observedAbsentAt: new Date().toISOString(), createdAt: new Date().toISOString(),
+    });
+    app.jellyfin.state.items.push(movieItem());
+    await app.service.applyTitleHolds();
+    assert.equal(app.store.get(ITEMS.tMovie), undefined);
+    assert.equal(app.store.listAppTitleHolds().length, 1);
+    await app.store.writeAppRequests({ removeIntents: [intent] });
+    await app.service.applyTitleHolds();
+    assert.ok(app.store.get(ITEMS.tMovie)?.active);
+    assert.equal(app.store.listAppTitleHolds().length, 0);
+  });
+
+  it('finds a cancelled request Seerr lost on the next refresh, not ten minutes after it last read it', async (t) => {
+    const app = await start(t, world({ autoApprove: true }));
+    await getThis(app);
+    await cancel(app);
+    await app.requests.refresh();
+    assert.equal(app.store.listAppTitleHolds().length, 0, 'Seerr still has it');
+    app.seerr.state.requests[SEERR_IDS[ALICE]] = [];
+    app.jellyfin.state.items.push(movieItem());
+    await app.requests.refresh();
+    assert.ok(app.store.get(ITEMS.tMovie)?.active, 'held at once');
+    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, []);
+  });
+
+  it('checks the title holds after any MEDIA_AVAILABLE webhook, between scheduled reconciliations', async (t) => {
+    const app = await start(t, world({ autoApprove: true }));
+    await getThis(app);
+    await cancel(app);
+    app.seerr.state.requests[SEERR_IDS[ALICE]] = [];
+    app.jellyfin.state.items.push(movieItem());
+    // Another title arrives for another request.
+    if (!app.jellyfin.state.items.some((item) => item.Id === ITEMS.ownMovie)) {
+      app.jellyfin.state.items.push({ Id: ITEMS.ownMovie, Name: 'Synthetic Movie Three', Type: 'Movie', ProviderIds: { Tmdb: '424242' }, Tags: [], library: 'shared' });
+    }
+    const answer = await app.webhook({
+      notificationType: 'MEDIA_AVAILABLE',
+      event: 'Movie Request Now Available',
+      media: { mediaType: 'movie', jellyfinMediaId: ITEMS.ownMovie },
+      request: { id: '7399999', requestedBy: { jellyfinUserId: BOB } },
+    });
+    assert.equal(answer.status, 200, answer.text);
+    await app.background.settled();
+    assert.ok(app.store.get(ITEMS.tMovie)?.active, 'held after the sync');
+    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, []);
+  });
+});
+
 describe('cancelling: the refresh never undoes a cancel', { timeout: 60_000 }, () => {
   /** Holds Seerr's next admin request read until `release()`; resolves `read` once it has arrived. */
   function holdRequestRead(app) {

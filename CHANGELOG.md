@@ -37,8 +37,13 @@ changes are always listed at the top of the release notes.
   If an administrator then deletes a request its requester cancelled, every
   household is back to Get this, but the title is still held for no household
   when it arrives (the download may go on without the request): JellyPass keeps
-  a **title hold** and holds the title's first HD item that appears. Cancels
-  share the "Get this" limits.
+  a **title hold** and holds each HD item of the title as it appears, unless a
+  "Get this" safety marker says the request follows the join rules. This is
+  eventual protection, not a guarantee: the title can be public for up to about
+  one reconciliation interval (`RECONCILE_INTERVAL_SECONDS`, 5 minutes by
+  default) after it arrives, so administrators should cancel through JellyPass
+  rather than delete such a request in Seerr. Cancels share the "Get this"
+  limits.
 - **`GET /jellypass/app/v1/requests` entries gain `cancellable` and
   `requestedOn`** (the day the household last asked, `YYYY-MM-DD`, never a
   time). `apiVersion` in `GET /me` is now `2`.

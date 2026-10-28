@@ -9,6 +9,7 @@ import type {
   AppRequestRecord,
   AppRequestStatus,
   AppSafetyTombstone,
+  AppWithdrawal,
   ChangePlan,
   GrantRecord,
   IgnoredWebhook,
@@ -34,7 +35,7 @@ const GRANTABLE_REQUEST_STATUSES = new Set([2, 5]);
 /** What a household app join did: see AccessService.joinHousehold. */
 export type HouseholdJoinResult = 'joined' | 'already' | 'refused' | 'ungranted' | 'error' | 'cancelled';
 
-/** Most title holds (see AccessService.applyTitleHolds) read in one run, oldest first; the rest wait for the next. */
+/** Most title holds (see AccessService.applyTitleHolds) read in one run, least recently checked first; the rest wait for the next. */
 const MAX_TITLE_HOLD_READS = 50;
 
 /** Most entries {@link AccessService.appOutstanding} lists of each kind, oldest first; the counts are always complete. */
@@ -70,7 +71,10 @@ export interface AppOutstanding {
   withdrawals: {
     total: number;
     byKind: { waiting: number; granted: number };
-    /** Of `waiting`, the title holds: Seerr no longer has the request, and its title is held when it arrives (see AppWithdrawal). */
+    /**
+     * The title holds: Seerr no longer has the request, and its title's items are held as they arrive until every one is
+     * on a grant (see AccessService.applyTitleHolds); `waiting` until the first is held, `granted` after.
+     */
     titleHolds: number;
     /** Of `granted`, the titles held for no household (see AccessService.appHeld). */
     held: number;
@@ -160,6 +164,9 @@ export class AccessService {
   readonly #seerr: SeerrClient | undefined;
   #queue: Promise<void> = Promise.resolve();
   readonly #backfillMissingItems = new Set<string>();
+  /** Each title hold's last turn in #applyTitleHolds (see #holdTurn), so the least recently checked go first. */
+  readonly #holdTurns = new Map<string, number>();
+  #holdTurn = 0;
   readonly #debug: boolean;
 
   public constructor(
@@ -281,13 +288,18 @@ export class AccessService {
    * Applies the title holds (docs/app-design.md, "Cancelling (step 2c)"; AppWithdrawal `seerrGoneAt`): a request its
    * requester withdrew and an administrator then deleted in Seerr may still download, and with no request nothing would
    * grant its title, which would arrive public. For each hold, the title's HD items Jellyfin has now (see #heldItems)
-   * that no active grant holds are granted to the deleted request with no household and its requester left out (as
+   * are decided by the safety markers as they are now, in #grantRule's order (see #holdRule), never by what the cancel
+   * captured: while a "Get this" intent names the title, the hold waits; if the request follows the join rules (a
+   * record or safety tombstone says so now), it is granted as a join (#grantAsJoin), never privately; otherwise each
+   * item no active grant holds is granted to the deleted request with no household and its requester left out (as
    * #grantGroups and GrantStore.resolveOwners do for any request its requester withdrew): held for no household, and
-   * listed by appHeld; the households following the title then (an awaiting interest) join as for any grant. A hold
-   * whose items all have an active grant already is forgotten: the title is private anyway. At most
-   * {@link MAX_TITLE_HOLD_READS} holds a run; a failure is logged and tried again on the next. Run while there are holds
-   * by the household app's refresh, after each MEDIA_AVAILABLE webhook, and by the backfill, reconcileAll and the library
-   * catalog sync, so a title that arrives with no request to scan is held by whichever runs first.
+   * listed by appHeld; the households following the title then (an awaiting interest) join as for any grant. A hold is
+   * kept until every item has an active grant (or the request was revoked from it), so an item whose grant failed is
+   * tried again on the next run, and is then dropped: the title is private. At most {@link MAX_TITLE_HOLD_READS} holds a
+   * run, those checked longest ago first, so every hold gets its turn however many there are; a failure is logged and
+   * tried again on the next. Run while there are holds by the household app's refresh (each scheduled reconciliation),
+   * after each MEDIA_AVAILABLE webhook, and by the backfill, reconcileAll and the library catalog sync, so a title that
+   * arrives with no request to scan is held by whichever runs first.
    */
   public applyTitleHolds(options: { signal?: AbortSignal } = {}): Promise<void> {
     if (this.#store.listAppTitleHolds().length === 0) return Promise.resolve();
@@ -296,25 +308,48 @@ export class AccessService {
 
   /** applyTitleHolds, in the write queue; nothing to do (and no Jellyfin read) while there are no holds. */
   async #applyTitleHolds(signal?: AbortSignal): Promise<void> {
-    for (const [requestId, hold] of this.#store.listAppTitleHolds().slice(0, MAX_TITLE_HOLD_READS)) {
+    const holds = this.#store.listAppTitleHolds();
+    const known = new Set(holds.map(([requestId]) => requestId));
+    for (const requestId of [...this.#holdTurns.keys()]) if (!known.has(requestId)) this.#holdTurns.delete(requestId);
+    const due = holds
+      .sort(([left], [right]) => (this.#holdTurns.get(left) ?? 0) - (this.#holdTurns.get(right) ?? 0))
+      .slice(0, MAX_TITLE_HOLD_READS);
+    for (const [requestId, hold] of due) {
       throwIfAborted(signal);
+      this.#holdTurns.set(requestId, ++this.#holdTurn);
       try {
         const itemIds = await this.#heldItems(hold.mediaType, hold.tmdbId);
         throwIfAborted(signal);
         if (itemIds.length === 0) continue;
-        const free = itemIds.filter((itemId) => !this.#store.get(itemId)?.active);
-        if (free.length === 0) {
-          await this.#store.writeAppRequests({ forgetWithdrawals: [requestId] });
-          console.log(JSON.stringify({ level: 'info', message: 'household app title hold dropped: the title arrived on a grant', requestId }));
+        const rule = this.#holdRule(requestId, hold);
+        if (rule === 'defer') continue;
+        if (rule === 'join') {
+          // Handled once joined, and no grant records it: no longer a hold (GrantStore.listAppTitleHolds).
+          for (const itemId of itemIds) {
+            throwIfAborted(signal);
+            await this.#grantAsJoin(itemId, requestId, signal);
+          }
+          console.log(JSON.stringify({ level: 'info', message: 'household app title hold granted as a join: a safety marker covers its request', requestId }));
           continue;
         }
-        for (const itemId of free) {
+        const decided = (itemId: string) => this.#store.get(itemId)?.active === true || this.#store.isRequestRevoked(requestId, itemId);
+        for (const itemId of itemIds.filter((entry) => !decided(entry))) {
           throwIfAborted(signal);
-          const grant = await this.#store.grant({ itemId, requestId, userId: hold.requesterId, groupIds: [], mediaType: hold.mediaType });
+          const grant = await this.#store.grant({
+            itemId,
+            requestId,
+            userId: hold.requesterId,
+            groupIds: this.#grantGroups(requestId, hold.requesterId),
+            mediaType: hold.mediaType,
+          });
           console.log(JSON.stringify({ level: 'info', message: 'household app title held: its cancelled request was deleted in Seerr', requestId, itemId: grant.itemId }));
           await this.#reconcileGrant(grant, signal);
           throwIfAborted(signal);
           await this.#settleAppRequests(grant.itemId, requestId, signal);
+        }
+        if (itemIds.every(decided)) {
+          await this.#store.writeAppRequests({ dropTitleHolds: [requestId] });
+          console.log(JSON.stringify({ level: 'info', message: 'household app title hold dropped: every item of its title is on a grant', requestId }));
         }
       } catch (error) {
         rethrowIfCancelled(error, signal);
@@ -326,6 +361,24 @@ export class AccessService {
         }));
       }
     }
+  }
+
+  /**
+   * How a title hold is applied now: #grantRule for a request Seerr no longer has, read from the markers as they are at
+   * apply time (a tombstone written after the cancel captured `requesterId`, say by a later settle of the request's
+   * intent, whose join rule a withdrawn record no longer takes, still wins). `join` when a record or a tombstone names
+   * the request, `defer` while a "Get this" intent names the title, `join` when a member-wide tombstone covers the
+   * requester's request (it was made no later than the cancel, the most Seerr's lost request still tells), else
+   * `grant` (held for no household).
+   */
+  #holdRule(requestId: string, hold: AppWithdrawal & { requesterId: string }): GrantRule {
+    const tombstones = this.#store.listAppSafetyTombstones();
+    if (this.#grantsAsJoin(requestId) || tombstones.some((tombstone) => tombstone.requestIds.includes(requestId))) return 'join';
+    if (this.#store.hasAppRequestIntent(hold.mediaType, hold.tmdbId)) return 'defer';
+    const now = Date.now();
+    const request: RequestFacts = { mediaType: hold.mediaType, tmdbId: hold.tmdbId, requester: hold.requesterId, createdAt: Date.parse(hold.createdAt) };
+    return tombstones.some((tombstone) => tombstone.jellyfinUserId !== undefined && now < Date.parse(tombstone.expiresAt)
+      && covers(tombstone, requestId, request)) ? 'join' : 'grant';
   }
 
   /**

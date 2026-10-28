@@ -220,6 +220,8 @@ export class HouseholdRequests {
   readonly #live = new Set<string>();
   /** When each record was last read from Seerr by refresh(), by record ID; memory only. */
   readonly #checkedAt = new Map<string, number>();
+  /** The checkTitleHolds run under way, if any. */
+  #holdCheck: Promise<void> | undefined;
 
   public constructor(options: HouseholdRequestsOptions) {
     this.#store = options.store;
@@ -977,10 +979,31 @@ export class HouseholdRequests {
    * can grant such a request any more, but its download may go on. A requester's withdrawal of a genuine request
    * becomes a title hold, so its title is held for no household when it arrives rather than public; any other is
    * forgotten, so it no longer holds up a rollback (an administrator's delete sends every household following the
-   * request back to Get this, and its arrival follows the ordinary rules). Each is read at most every
-   * {@link REFRESH_REQUEST_EVERY_MS}, at most {@link MAX_REFRESH_READS} a run. Then the title holds are applied to what
-   * Jellyfin has now (AccessService.applyTitleHolds).
+   * request back to Get this, and its arrival follows the ordinary rules). A requester's withdrawal of a genuine request
+   * (one that would become a hold) is read every run, since its title would arrive public until it is found gone; any
+   * other at most every {@link REFRESH_REQUEST_EVERY_MS}; at most {@link MAX_REFRESH_READS} a run, those read longest
+   * ago first. Then the title holds are applied to what Jellyfin has now (AccessService.applyTitleHolds).
    */
+  /**
+   * #refreshWithdrawals on its own, for the arrival signals between scheduled reconciliations (each MEDIA_AVAILABLE
+   * webhook and the library catalog sync): nothing to do, and no Seerr read, while no withdrawal is or could become a
+   * title hold; a check already under way is joined rather than repeated. Never rejects.
+   */
+  public checkTitleHolds(options: { signal?: AbortSignal } = {}): Promise<void> {
+    const possible = this.#store.listAppWithdrawals().some(([requestId, withdrawal]) => withdrawal.requesterId !== undefined
+      && (withdrawal.seerrGoneAt !== undefined || !this.#store.hasHandledRequest(requestId)));
+    if (!possible || options.signal?.aborted) return Promise.resolve();
+    this.#holdCheck ??= this.#refreshWithdrawals(options.signal).catch((error: unknown) => {
+      if (options.signal?.aborted) return;
+      console.error(JSON.stringify({
+        level: 'error',
+        message: 'household app title holds could not be checked',
+        detail: error instanceof Error ? error.message : String(error),
+      }));
+    }).finally(() => { this.#holdCheck = undefined; });
+    return this.#holdCheck;
+  }
+
   async #refreshWithdrawals(signal: AbortSignal | undefined): Promise<void> {
     await this.#findGoneWithdrawals(signal);
     if (signal?.aborted || this.#store.listAppTitleHolds().length === 0) return;
@@ -1000,7 +1023,8 @@ export class HouseholdRequests {
     const now = this.#now();
     const due = this.#store.listAppWithdrawals()
       .filter(([requestId, withdrawal]) => !withdrawal.seerrGoneAt && !this.#store.hasHandledRequest(requestId)
-        && now - (this.#checkedAt.get(`withdrawal:${requestId}`) ?? 0) >= REFRESH_REQUEST_EVERY_MS)
+        && (withdrawal.requesterId !== undefined || now - (this.#checkedAt.get(`withdrawal:${requestId}`) ?? 0) >= REFRESH_REQUEST_EVERY_MS))
+      .sort(([left], [right]) => (this.#checkedAt.get(`withdrawal:${left}`) ?? 0) - (this.#checkedAt.get(`withdrawal:${right}`) ?? 0))
       .slice(0, MAX_REFRESH_READS);
     const gone: string[] = [];
     for (const [requestId] of due) {

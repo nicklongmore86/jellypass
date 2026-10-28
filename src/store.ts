@@ -621,11 +621,12 @@ export class GrantStore {
 
   /**
    * The title holds (see AppWithdrawal `seerrGoneAt`): withdrawals whose requester withdrew a genuine request that Seerr
-   * no longer has and that is not handled yet, by request ID.
+   * no longer has, by request ID. A hold that granted some of its title's items is still one (its request is handled)
+   * until every item has an active grant (`dropTitleHolds` in writeAppRequests).
    */
   public listAppTitleHolds(now = Date.now()): Array<[string, AppWithdrawal & { requesterId: string }]> {
     return this.listOutstandingAppWithdrawals(now).filter((entry): entry is [string, AppWithdrawal & { requesterId: string }] =>
-      entry[1].seerrGoneAt !== undefined && entry[1].requesterId !== undefined && !this.hasHandledRequest(entry[0]));
+      entry[1].seerrGoneAt !== undefined && entry[1].requesterId !== undefined);
   }
 
   /** Records requests as handled without granting them (a "Get this" request granted as a join); see hasHandledRequest. */
@@ -689,6 +690,11 @@ export class GrantStore {
      * becomes a title hold (AppWithdrawal `seerrGoneAt`), any other is forgotten.
      */
     requestsGone?: string[];
+    /**
+     * Title holds applied to every item of their title: one whose request is handled stays a withdrawal (it keeps the
+     * requester out of the grants that record it) and is no longer a hold; any other is forgotten.
+     */
+    dropTitleHolds?: string[];
   }): Promise<string[]> {
     this.#assertOpen();
     const now = new Date().toISOString();
@@ -763,6 +769,14 @@ export class GrantStore {
       if (!withdrawal || handled.has(id)) continue;
       if (withdrawal.requesterId) withdrawals[id] = { ...withdrawal, seerrGoneAt: withdrawal.seerrGoneAt ?? now };
       else delete withdrawals[id];
+    }
+    for (const id of input.dropTitleHolds ?? []) {
+      const withdrawal = withdrawals[id];
+      if (!withdrawal) continue;
+      if (handled.has(id)) {
+        const { seerrGoneAt: _, ...kept } = withdrawal;
+        withdrawals[id] = kept;
+      } else delete withdrawals[id];
     }
     this.#state.appWithdrawals = withdrawals;
     this.#pruneWithdrawals();

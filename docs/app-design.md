@@ -1475,14 +1475,22 @@ Seerr sends every household following it back to **Get this**, whether or not an
   `requesterId`) instead of being dropped. While a hold exists, every arrival path checks Jellyfin (JellyPass's key)
   for the title's HD items: by TMDB ID and Seerr's HD item for it, never Seerr's 4K-only item and never by name
   (AccessService.applyTitleHolds). Jellyfin had no item of the title when a genuine request was made, so any such
-  item is its arrival. One that no active grant holds is granted to the deleted request with no household and the
-  requester left out, exactly as a webhook for a request its requester withdrew is: **held for no household** (listed
-  by `GET /v1/app/held`), and a household that asks again joins it. If every such item is on an active grant already
-  (someone asked again and their request arrived first), the title is private anyway and the hold is dropped. The
-  arrival paths that check: the refresh (each scheduled reconciliation and startup), every `MEDIA_AVAILABLE` webhook,
-  the request backfill, `reconcileAll` (scheduled and admin) and the library catalog sync, in AccessService's write
-  queue, at most 50 holds a run. So a title is public only from when Jellyfin adds it until the first of those runs
-  (at most one reconciliation interval), and only to members whose libraries include it.
+  item is its arrival. What a hold does with them is decided when it is applied, by the safety markers as they are
+  then (never by what the cancel captured), in the webhook's rule order: if a record or a safety tombstone names the
+  request, or a member-wide tombstone may cover it (the request was made no later than the cancel, which is all
+  Seerr's lost request still tells), it follows the **join rules** (granted as a join: never a private grant, a public
+  title stays public); while a "Get this" intent names the title, it waits; otherwise each item that no active grant
+  holds is granted to the deleted request with no household and the requester left out, exactly as a webhook for a
+  request its requester withdrew is: **held for no household** (listed by `GET /v1/app/held`), and a household that
+  asks again joins it. A hold is kept until **every** such item is on an active grant (an item whose grant failed is
+  tried again on the next run), then dropped: the title is private (if someone asked again and their request arrived
+  first, it is theirs). The arrival paths that apply holds: the refresh (each scheduled reconciliation and startup),
+  every `MEDIA_AVAILABLE` webhook, the request backfill, `reconcileAll` (scheduled and admin) and the library catalog
+  sync, in AccessService's write queue, at most 50 holds a run, those checked longest ago first (so every hold has its
+  turn, however many there are). How soon a deleted request is found: the refresh reads a requester's withdrawal of a
+  genuine request in Seerr on **every** run (any other withdrawal at most every 10 minutes), at most 50 a run, longest
+  ago first; and every `MEDIA_AVAILABLE` webhook and library catalog sync also checks (in the background, coalesced).
+  See "Residuals" for the window this leaves: the protection is eventual, not a guarantee.
 - **Otherwise** (nobody cancelled it, only a follower withdrew, or its requester withdrew a request whose grant followed
   the join rules): the withdrawal is dropped and the arrival follows the existing rules. A deleted request has nothing
   to grant, so the title arrives as Jellyfin has it (public, unless a grant already holds the item), as before step 2c.
@@ -1493,8 +1501,9 @@ at once and no hold is kept.
 **What is kept, and for how long.** A withdrawal is kept while its request is not handled (at most 400 days after the
 cancel, like a tombstone; dropped earlier after the member's own delete, or once the scheduled refresh, which reads
 each such request at most every 10 minutes, at most 50 a run, finds that Seerr no longer has the request, unless it
-becomes a title hold); a title hold is kept until its title arrives (then it is a `granted` withdrawal, as any held
-title) or for those same 400 days after the cancel, whichever comes first; and, with `requester`, for as long as a
+becomes a title hold; a requester's withdrawal of a genuine request is read on every run); a title hold is kept until
+every HD item of its title is on an active grant (then it is a `granted` withdrawal, as any held title, once one item
+is held through it) or for those same 400 days after the cancel, whichever comes first; and, with `requester`, for as long as a
 grant records the request (it is what keeps the requester out). A withdrawn record is a settled (`deleted`) record
 and is pruned like one (400 days, per-household cap); the grant decision never depends on it, only on the withdrawal.
 Grant moves (remap, recovery) carry the request ID, so the exclusion follows the request to the new item.
@@ -1508,7 +1517,8 @@ blocking "Get this", so the household's view survives a rollback. What they do n
 **Rolling back** to a version before step 2c (3.4.0 or earlier): a request a withdrawal names is granted there as an ordinary request
 (to the requester's households), and a request its requester withdrew that is already on a grant gives that requester
 access again (their user, not their households); a title hold is not read at all, so its title arrives public. So
-`GET /v1/app/outstanding` counts `withdrawals` (`waiting`: not handled yet; `titleHolds`: of those, title holds;
+`GET /v1/app/outstanding` counts `withdrawals` (`waiting`: not handled yet; `titleHolds`: title holds, `waiting` until
+an item is held through one and `granted` after, until every item is;
 `granted`: on a grant, requester excluded; `held`: of those, held for no household) and `clear` waits for all of them.
 Before rolling back: stop cancels and "Get this" at the proxy (block `POST /jellypass/app/v1/requests/*/cancel`
 too); for each `waiting` withdrawal that is not a title hold, wait until its request is handled or gone, or decline or
@@ -1547,10 +1557,20 @@ request from its grant (it is pruned at once). Or accept that those requesters g
   decide it. A cancel with followers wastes nothing (they get it).
 - A webhook for a request Seerr deleted that arrives after its withdrawal was dropped (Seerr does not send one for a
   deleted request) would be granted as an ordinary request.
-- A title hold (an administrator deleted a request its requester cancelled) is applied by the next arrival path that
-  runs, not by a webhook of its own (Seerr sends none without a request): the title is public from when Jellyfin adds
-  it until then (at most one reconciliation interval). It holds only HD items found by TMDB ID or Seerr's HD link, so an
-  item with neither stays public; and it lasts 400 days after the cancel.
+- A title hold (an administrator deleted a request its requester cancelled) is **eventual protection, not a strict
+  guarantee**. Seerr sends nothing when an administrator deletes a request, and no webhook for a title that arrives
+  without one, so JellyPass finds both by reading: an item Jellyfin adds is public, to members whose libraries include
+  it, until JellyPass has both found the request gone and applied the hold. The deletion is found by the next refresh
+  (every scheduled reconciliation, `RECONCILE_INTERVAL_SECONDS`, 300 by default), or sooner by any `MEDIA_AVAILABLE`
+  webhook or library catalog sync; the hold is applied in that same run, and by every arrival path after it. So the
+  worst-case window is about one reconciliation interval from the later of the delete and the arrival, plus the run
+  itself: longer while Seerr or Jellyfin cannot be read (a failed read is tried on the next run), while more than 50
+  withdrawals or holds wait their turn (one more interval per 50), and with no bound at all if scheduled
+  reconciliation is turned off (`RECONCILE_INTERVAL_SECONDS=0`: only webhooks and catalog syncs then check). It holds
+  only HD items found by TMDB ID or Seerr's HD link, so an item with neither stays public; and it lasts 400 days after
+  the cancel. **Administrators should cancel through JellyPass** (the upcoming administrators' Requests tab) rather than
+  deleting a request in Seerr: a cancel there can write the hold, atomically, before Seerr forgets the request, which
+  leaves no public window at all; a delete in Seerr leaves the one above.
 
 ## Coarse statuses
 
