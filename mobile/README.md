@@ -325,7 +325,7 @@ again." with no button. Since 1.1.0 the list can be filtered, and a member can c
     device, and cleared on sign-out, a refused sign-in (a 401) or any change of household or member. It needs no server
     change.
 - **Cancel request** (`useRequests.ts`, `components.tsx`). Only an entry the server lists as `cancellable` has the
-  button, under its link: 44 pt, named by its request for VoiceOver and TalkBack ("Cancel request: …"). It opens a sheet,
+  button, under its link: 44 pt, named by its request for VoiceOver and TalkBack once its title has loaded ("Cancel request: …"; plain "Cancel request" until then). It opens a sheet,
   "Cancel this request?", that says what cancelling does ("This withdraws your household's request. If it has already
   been approved, the download may still finish, but it won't be added for your household.") with **Cancel request** and
   **Keep request** (which sends nothing); the sheet scrolls at the largest text size and stops widening on iPad.
