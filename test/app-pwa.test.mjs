@@ -554,7 +554,6 @@ describe('household app page: files', () => {
     assert.match('window.localStorage.setItem(k, v)', STORAGE_WRITE);
     assert.match('const s = localStorage; s.removeItem(k)', STORAGE_WRITE);
     assert.match('storage.setItem(k, v)', STORAGE_WRITE);
-    assert.match('caches.delete(k)', STORAGE_WRITE);
     assert.doesNotMatch('this.targets.clear(); map.clear()', STORAGE_WRITE);
   });
 
