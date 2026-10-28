@@ -445,7 +445,8 @@ async function openJellyfinWeb(t, app, { user = ALICE, host = HOST_A, serverAddr
       if (!held.delete(id)) clearTimeout(id);
     },
     URL,
-    Date: { now: () => clock.now },
+    // A `Date` whose `now` is the test's clock (the add-on also builds dates, for the day a request was made).
+    Date: class extends Date { static now() { return clock.now; } },
     performance: { now: () => clock.mono },
     console: new Proxy({}, { get: () => (...args) => logged.push(args) }),
     localStorage: storage,
@@ -565,7 +566,9 @@ async function openJellyfinWeb(t, app, { user = ALICE, host = HOST_A, serverAddr
       document.getElementById('indexPage').dispatchEvent(new CustomEvent('viewshow', { bubbles: true, detail: { params: {} } }));
     },
     rows: () => [...document.querySelectorAll('[data-jellypass-tv-row]')],
-    cards: () => [...document.querySelectorAll('[data-jellypass-tv-row] button')],
+    cards: () => [...document.querySelectorAll('[data-jellypass-tv-row] button[data-tmdb-id]')],
+    /** The Discover row's last card, "My requests" (not a title). */
+    requestsLink: () => document.querySelector('[data-jellypass-tv-row] [data-jellypass-tv-link]'),
     /** Every call answered and every page change seen (the add-on gathers changes for 50 ms). */
     async settled() {
       for (let round = 0; round < 3; round += 1) {
@@ -1378,6 +1381,8 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     const ours = (names) => names.filter((name) => name.startsWith('jellypass-tv'));
     const isRow = (name) => /^jellypass-tv-(?:row|card)(?:-|$)/.test(name);
     const isView = (name) => name.startsWith('jellypass-tv-title-');
+    // The My requests page's own (tv/src/requests.ts): it is neither the title page nor the row.
+    const isRequests = (name) => /^jellypass-tv-requests?(?:-|$)/.test(name);
     assert.ok(rowClasses.includes('jellypass-tv-card-title'));
     assert.deepEqual(ours(rowClasses).filter((name) => !isRow(name)), [], 'the row\'s classes outside jellypass-tv-row-* and jellypass-tv-card-*');
     // A movie's page, and a series' with its seasons, toggles and Select all.
@@ -1409,7 +1414,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     const mixed = rules.map(({ selector }) => selector).filter((selector) => {
       const names = (selector.match(/\.jellypass-tv[a-z0-9_-]*/g) ?? []).map((name) => name.slice(1));
       assert.ok(names.length > 0, selector);
-      return !(names.every(isRow) || names.every(isView) || names.every(isHost));
+      return !(names.every(isRow) || names.every(isView) || names.every(isRequests) || names.every(isHost));
     });
     assert.deepEqual(mixed, [], 'selectors outside, or across, the row, the page and the page host');
     // The old overlay is gone: no stacking rules, no overlay box, and nothing keyed on Jellyfin's backdrop setting.
@@ -1726,8 +1731,8 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     assert.equal(text(page, '.jellypass-tv-title-message'), CONFIRMATION);
     assert.ok(page.focused() === page.view().querySelector('.jellypass-tv-title-message'), 'focus');
     assert.equal(text(page, '.jellypass-tv-title-status'), 'Requested');
-    assert.equal(text(page, '.jellypass-tv-title-note'), 'Check My requests in the JellyPass app to follow it.');
-    assert.deepEqual(buttons(page), [], 'nothing left that could send again');
+    assert.equal(text(page, '.jellypass-tv-title-note'), 'Follow it in My requests.');
+    assert.deepEqual(buttons(page), ['My requests'], 'nothing left that could send again');
     // The Home row says so too, when Home is shown again.
     await home(page);
     assert.equal(onRow(page, T_MOVIE), 'not in the row');
@@ -1786,7 +1791,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     // The read after the accepted call still said get_this; the page shows Requested all the same.
     assert.equal((await app.get(`/jellypass/app/v1/movie/${T_MOVIE}`)).json().state, 'get_this');
     assert.equal(text(page, '.jellypass-tv-title-status'), 'Requested');
-    assert.deepEqual(buttons(page), []);
+    assert.deepEqual(buttons(page), ['My requests']);
     await home(page);
     assert.equal(onRow(page, T_MOVIE), 'not in the row', 'Requested leaves the row');
     // Within the two minutes, and Home redrawn: still Requested, so still not in the row.
@@ -1846,7 +1851,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     // Drawn again in place: the confirmation and focus stay, and what was asked for here is not offered again.
     assert.equal(text(page, '.jellypass-tv-title-message'), CONFIRMATION);
     assert.ok(page.focused() === page.view().querySelector('.jellypass-tv-title-message'), 'focus');
-    assert.deepEqual(buttons(page), []);
+    assert.deepEqual(buttons(page), ['My requests']);
     assert.equal(page.requests.length, before, 'no call');
     assert.equal(page.timers(), 0);
     await page.settled();
@@ -2062,7 +2067,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     assert.deepEqual(seasonStatuses(), ['Available to get', 'Available to get']);
     assert.equal(text(page, '.jellypass-tv-title-message'), CONFIRMATION);
     assert.equal(text(page, '.jellypass-tv-title-refresh'), 'Something went wrong. Try again in a moment.');
-    assert.deepEqual(buttons(page), ['Try again'], 'nothing that sends');
+    assert.deepEqual(buttons(page), ['My requests', 'Try again'], 'nothing that sends');
     lacks(page.view().outerHTML, /canary|upstream/i);
     assert.equal(page.requests.length, before, 'no call');
     broken = false;
@@ -2615,5 +2620,851 @@ describe('TV add-on: the page host\'s router', { timeout: 60_000 }, () => {
     assert.ok(box.document.querySelector('[data-jellypass-tv-page]'));
     box.sync('#/jellypass/item/movie/3');
     assert.deepEqual(box.log, ['render movie/3']);
+  });
+});
+
+describe('TV add-on: My requests', { timeout: 180_000 }, () => {
+  const A = 'AAAAAAAAAAAAAAAAAAAAAA';
+  const B = 'BBBBBBBBBBBBBBBBBBBBBB';
+  const json = (body, status = 200) => ({ status, body: JSON.stringify(body) });
+  const entry = (id, tmdbId, extras = {}) => ({ id, mediaType: tmdbId === T_TV ? 'tv' : 'movie', tmdbId, status: 'requested', seasons: [], byYou: true, ...extras });
+  const tvEntry = (id, tmdbId, seasons, extras = {}) => ({ id, mediaType: 'tv', tmdbId, status: 'requested', seasons: seasons.map(([seasonNumber, status]) => ({ seasonNumber, status })), byYou: true, ...extras });
+  const tmdbOf = (n) => 910_000 + n;
+  /** A server whose list is `state.list` and whose cancel answers `state.cancel` (and takes the entry off the list when it is 202). */
+  const server = (state) => async (pathname, init) => {
+    if (pathname === '/jellypass/app/v1/requests' && (init.method ?? 'GET') === 'GET') {
+      state.reads = (state.reads ?? 0) + 1;
+      const failure = state.listFails?.(state.reads);
+      if (failure) return failure;
+      return json({ results: state.list });
+    }
+    if (init.method === 'POST' && /\/requests\/[A-Za-z0-9_-]{22}\/cancel$/.test(pathname)) {
+      state.posts.push({ pathname, body: init.body, headers: { ...init.headers } });
+      if (state.hold) await state.hold;
+      if (state.cancel === 'offline') throw new TypeError('Failed to fetch');
+      if (state.cancel === 202) {
+        state.list = state.list.filter((item) => !pathname.includes(item.id));
+        return json({ status: 'accepted' }, 202);
+      }
+      return { status: state.cancel, body: '{"error":"upstream said something private"}' };
+    }
+    if (state.titles && /^\/jellypass\/app\/v1\/(?:movie|tv)\/[0-9]+$/.test(pathname)) return state.titles(pathname);
+    return state.other?.(pathname, init);
+  };
+  const open = async (t, app, state, options) => {
+    state.posts ??= [];
+    const page = await openJellyfinWeb(t, app, { override: server(state), ...options });
+    page.document.body.insertAdjacentHTML('afterbegin', HEADER);
+    page.home();
+    await page.settled();
+    return page;
+  };
+  /** Jellyfin web's router showing My requests (as a card or link opens it). */
+  const goToRequests = async (page) => {
+    page.route('#/jellypass/requests');
+    await page.settled();
+  };
+  const root = (page) => page.document.querySelector('[data-jellypass-tv-requests]');
+  const items = (page) => [...page.document.querySelectorAll('.jellypass-tv-request')];
+  const shown = (page) => items(page).filter((item) => !item.hidden);
+  const part = (item, selector) => item.querySelector(selector)?.textContent ?? null;
+  const pills = (item) => [...item.querySelectorAll('.jellypass-tv-request-pill')].map((pill) => pill.textContent);
+  const names = (page) => shown(page).map((item) => part(item, '.jellypass-tv-request-name'));
+  const openButton = (item) => item.querySelector('.jellypass-tv-request-open');
+  const chip = (page, group, value) => page.document.querySelector(`.jellypass-tv-requests-chip[data-filter-group="${group}"][data-filter="${value}"]`);
+  const pressed = (page) => [...page.document.querySelectorAll('.jellypass-tv-requests-chip[aria-pressed="true"]')].map((button) => `${button.getAttribute('data-filter-group')}:${button.getAttribute('data-filter')}`);
+  const cancelOpen = (item) => item.querySelector('.jellypass-tv-requests-cancel-open');
+  const panel = (item) => item.querySelector('.jellypass-tv-requests-cancel-panel');
+  const panelButtons = (item) => [...panel(item).querySelectorAll('button')];
+  const confirmOf = (item) => item.querySelector('.jellypass-tv-requests-cancel-confirm');
+  const message = (page) => page.document.querySelector('.jellypass-tv-requests-message');
+
+  it('is written in the budget file: the app\'s My requests calls without /me, with Load more, a revisit and a cancel', () => {
+    const screen = BUDGET.screens['tv-requests'];
+    assert.equal(screen.calls, screen.atOnce.length);
+    assert.deepEqual(screen.atOnce, BUDGET.screens.requests.atOnce.filter((call) => call !== 'GET /me'));
+    assert.deepEqual(screen.revisit, BUDGET.screens.requests.revisit);
+    assert.deepEqual(screen.cancel, BUDGET.screens.requests.cancel);
+    assert.equal(screen.titlesAtOnce, BUDGET.screens.requests.titlesAtOnce);
+    assert.deepEqual(screen.loadMore, screen.atOnce.filter((call) => call !== 'GET /requests'));
+  });
+
+  it('draws the household\'s requests in Jellyfin web\'s fallback page under its own header: the coarse statuses, who asked, the day, the poster, and the calls the budget names', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const state = { cancel: 202, list: [
+      entry(A, T_MOVIE, { cancellable: true, requestedOn: '2026-10-27' }),
+      tvEntry(B, T_TV, [[1, 'ready']], { status: 'ready', byYou: false, requestedOn: '2026-10-26' }),
+      entry('CCCCCCCCCCCCCCCCCCCCCC', OWN_MOVIE),
+    ] };
+    const page = await open(t, app, state);
+    const before = page.requests.length;
+    await goToRequests(page);
+    assert.ok(hosting(page));
+    assert.equal(root(page).closest('#fallbackPage').id, 'fallbackPage', 'in Jellyfin\'s own page');
+    assert.equal(headerTitle(page), 'My requests');
+    assert.equal(page.document.getElementById('fallbackPage').getAttribute('data-title'), 'My requests');
+    assert.deepEqual(page.calls(before), BUDGET.screens['tv-requests'].atOnce.concat(['GET /movie/{tmdbId}']).sort(), 'the list, then one title call for each request shown');
+    assert.equal(page.requests.slice(before).filter((request) => new URL(request.url).pathname.endsWith('/requests')).length, 1);
+    assert.equal(part(root(page), 'h1'), 'My requests');
+    assert.deepEqual(names(page), ['Synthetic Movie One', 'Synthetic Series Two', 'Synthetic Movie Three']);
+    assert.deepEqual(items(page).map(pills), [['Requested'], ['Ready to watch'], ['Requested']]);
+    assert.deepEqual(items(page).map((item) => part(item, '.jellypass-tv-request-who')), ['Asked for by you', 'Asked for by someone in your household', 'Asked for by you']);
+    assert.deepEqual(items(page).map((item) => part(item, '.jellypass-tv-request-on')), ['Requested on Oct 27, 2026', 'Requested on Oct 26, 2026', null], 'the day, no time; none when the server sent none');
+    assert.match(part(items(page)[0], '.jellypass-tv-request-meta'), /Movie$/);
+    assert.match(part(items(page)[1], '.jellypass-tv-request-meta'), /Series · Season 1$/);
+    // Posters are the API's TMDB URLs only.
+    const images = [...root(page).querySelectorAll('img')].map((image) => image.getAttribute('src'));
+    assert.ok(images.length > 0);
+    for (const src of images) assert.match(src, /^https:\/\/image\.tmdb\.org\/t\/p\/w342\/[A-Za-z0-9_-]+\.(?:jpg|jpeg|png|webp)$/);
+    // Cancel is offered only where the server says the caller may.
+    assert.deepEqual(items(page).map((item) => cancelOpen(item) !== null), [true, false, false]);
+    assert.equal(cancelOpen(items(page)[0]).getAttribute('aria-label'), 'Cancel request: Synthetic Movie One');
+    // Focus: the first entry, a plain button in Jellyfin web's focus manager's reach; no key is handled by the add-on.
+    assert.ok(page.focused() === openButton(items(page)[0]));
+    for (const entryButton of items(page).map(openButton)) {
+      assert.equal(entryButton.tagName, 'BUTTON');
+      assert.equal(entryButton.getAttribute('type'), 'button');
+    }
+    assert.equal(page.posts().length, 0, 'nothing is sent by opening it');
+    lacks(root(page).outerHTML, /canary|upstream|MediaBrowser|token-/i);
+  });
+
+  it('shows each request\'s status once: the one season on the details line, shared-status seasons as text, a pill per season when they differ, and a failed note', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const state = { cancel: 202, list: [
+      tvEntry(A, tmdbOf(1), [[2, 'requested']]),
+      tvEntry(B, tmdbOf(2), [[1, 'ready'], [2, 'ready'], [3, 'ready']], { status: 'requested' }),
+      tvEntry('CCCCCCCCCCCCCCCCCCCCCC', tmdbOf(3), [[1, 'ready'], [2, 'requested']]),
+      tvEntry('DDDDDDDDDDDDDDDDDDDDDD', tmdbOf(4), [[1, 'failed'], [2, 'requested']]),
+      entry('EEEEEEEEEEEEEEEEEEEEEE', tmdbOf(5), { status: 'failed' }),
+      entry('FFFFFFFFFFFFFFFFFFFFFF', tmdbOf(6), { status: 'something-new' }),
+      tvEntry('GGGGGGGGGGGGGGGGGGGGGG', tmdbOf(7), [[1, 'ready'], [2, 'ready'], [4, 'ready'], [5, 'ready']], { status: 'ready' }),
+    ] };
+    const page = await open(t, app, state);
+    await goToRequests(page);
+    const all = items(page);
+    assert.deepEqual(all.map(pills), [
+      ['Requested'],
+      ['Ready to watch'],
+      ['Ready to watch', 'Requested'],
+      ["We couldn't get this", 'Requested'],
+      ["We couldn't get this"],
+      ["We couldn't get this"],
+      ['Ready to watch'],
+    ]);
+    assert.deepEqual(all.map((item) => part(item, '.jellypass-tv-request-meta')), ['Series · Season 2', 'Series · Seasons 1–3', 'Series', 'Series', 'Movie', 'Movie', 'Series · Seasons 1, 2, 4, 5']);
+    assert.deepEqual([...all[2].querySelectorAll('.jellypass-tv-request-season')].map((line) => line.textContent), ['Season 1Ready to watch', 'Season 2Requested']);
+    assert.deepEqual([...all[3].querySelectorAll('.jellypass-tv-request-season')].map((line) => line.textContent), ["Season 1We couldn't get thisAsk your JellyPass admin to try again.", 'Season 2Requested']);
+    assert.deepEqual(all.map((item) => item.querySelectorAll('.jellypass-tv-request-note').length), [0, 0, 0, 1, 1, 1, 0], 'the admin note sits under the failed status, once');
+    assert.equal(all[0].querySelectorAll('.jellypass-tv-request-seasons').length, 0);
+    assert.equal(all[2].querySelectorAll('.jellypass-tv-request-seasons').length, 1);
+  });
+
+  it('filters by status, type and "Asked by me" with no call, keeps the choice across a title and Back, and says what is missing', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const state = { cancel: 202, list: [
+      entry(A, T_MOVIE),
+      entry(B, OWN_MOVIE, { status: 'ready', byYou: false }),
+      tvEntry('CCCCCCCCCCCCCCCCCCCCCC', T_TV, [[1, 'requested']]),
+      tvEntry('DDDDDDDDDDDDDDDDDDDDDD', tmdbOf(1), [[1, 'ready'], [2, 'requested']], { byYou: false }),
+    ] };
+    const page = await open(t, app, state);
+    await goToRequests(page);
+    await page.settled();
+    const calls = page.requests.length;
+    assert.equal(shown(page).length, 4);
+    assert.deepEqual(pressed(page), ['status:all', 'kind:all']);
+    page.click(chip(page, 'status', 'ready'));
+    assert.deepEqual(shown(page).map((item) => part(item, '.jellypass-tv-request-who')), ['Asked for by someone in your household', 'Asked for by someone in your household'], 'a series with a ready season is in Ready to watch');
+    assert.equal(shown(page).length, 2);
+    page.click(chip(page, 'status', 'requested'));
+    assert.equal(shown(page).length, 3, 'the mixed series is in Requested too');
+    page.click(chip(page, 'kind', 'tv'));
+    assert.equal(shown(page).length, 2);
+    page.click(chip(page, 'byYou', 'byYou'));
+    assert.equal(shown(page).length, 1);
+    assert.deepEqual(pressed(page), ['status:requested', 'kind:tv', 'byYou:byYou']);
+    assert.equal(part(page.document.querySelector('.jellypass-tv-requests-announce'), ''), null);
+    assert.equal(page.document.querySelector('.jellypass-tv-requests-announce').textContent, '1 shown.');
+    // A combination with nothing: the empty text for it, and a way back.
+    page.click(chip(page, 'status', 'failed'));
+    assert.equal(shown(page).length, 0);
+    const none = page.document.querySelector('.jellypass-tv-requests-none');
+    assert.equal(none.hidden, false);
+    assert.equal(none.querySelector('p').textContent, "No series we couldn't get, asked for by you.");
+    // The choice stays across a title and Back.
+    page.click(chip(page, 'status', 'requested'));
+    assert.equal(shown(page).length, 1);
+    page.press('pointerdown');
+    page.click(openButton(shown(page)[0]));
+    page.follow('#/jellypass/requests');
+    await page.settled();
+    assert.ok(page.view(), 'the title page');
+    page.back();
+    await page.settled();
+    assert.deepEqual(pressed(page), ['status:requested', 'kind:tv', 'byYou:byYou']);
+    assert.equal(shown(page).length, 1);
+    // Show all requests.
+    page.click(chip(page, 'status', 'failed'));
+    page.click(page.document.querySelector('.jellypass-tv-requests-show-all'));
+    assert.equal(shown(page).length, 4);
+    assert.deepEqual(pressed(page), ['status:all', 'kind:all']);
+    assert.ok(page.focused() === chip(page, 'status', 'all'), 'focus goes to the first chip');
+    // Choosing a filter read nothing (opening a title and Back are their own calls, counted apart).
+    page.click(chip(page, 'kind', 'movie'));
+    const before = page.requests.length;
+    page.click(chip(page, 'kind', 'all'));
+    page.click(chip(page, 'byYou', 'byYou'));
+    assert.equal(page.requests.length, before);
+    assert.ok(page.requests.length >= calls);
+  });
+
+  it('forgets the filters and the names on sign-out and when another member signs in, and ends the page without a call', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const state = { cancel: 202, list: [entry(A, T_MOVIE), entry(B, OWN_MOVIE, { byYou: false })] };
+    const page = await open(t, app, state);
+    await goToRequests(page);
+    page.click(chip(page, 'byYou', 'byYou'));
+    assert.equal(shown(page).length, 1);
+    const calls = page.requests.length;
+    // Another member signs in: the page goes, nothing more is read for it.
+    page.session.user = ANN;
+    page.session.token = TOKENS[ANN];
+    page.goTo(page.location.hash);
+    page.document.body.insertAdjacentHTML('beforeend', '<i></i>');
+    await page.settled();
+    assert.equal(root(page), null, 'emptied');
+    assert.equal(page.requests.length, calls, 'no call for the new member by the old page');
+    // Back on the page as that member: unfiltered, and the titles are read again with their token.
+    page.route('#/details?id=someitem');
+    await page.settled();
+    page.route('#/jellypass/requests');
+    await page.settled();
+    assert.deepEqual(pressed(page), ['status:all', 'kind:all']);
+    assert.equal(shown(page).length, 2);
+    const reads = page.requests.slice(calls).filter((request) => /\/(?:movie|tv)\//.test(request.url));
+    assert.ok(reads.length >= 2, 'the titles named for the other member are not reused');
+    for (const request of page.requests.slice(calls)) assert.equal(request.init.headers.Authorization, `MediaBrowser Token="${TOKENS[ANN]}"`);
+    // Signed out.
+    page.click(chip(page, 'byYou', 'byYou'));
+    page.session.token = null;
+    page.session.user = null;
+    page.document.body.insertAdjacentHTML('beforeend', '<i></i>');
+    await page.settled();
+    assert.equal(root(page), null);
+    page.session.user = ANN;
+    page.session.token = TOKENS[ANN];
+    page.route('#/details?id=someitem');
+    await page.settled();
+    page.route('#/jellypass/requests');
+    await page.settled();
+    assert.deepEqual(pressed(page), ['status:all', 'kind:all'], 'a sign-out starts the filters afresh');
+  });
+
+  it('names the requests ten at a time with a few calls at once, and Load more names the next ten', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    let inFlight = 0;
+    let most = 0;
+    const state = {
+      cancel: 202,
+      list: Array.from({ length: 25 }, (_, n) => entry(`${'R'.repeat(20)}${String(n).padStart(2, '0')}`, tmdbOf(n + 1))),
+      titles: async () => {
+        inFlight += 1;
+        most = Math.max(most, inFlight);
+        await pause(15);
+        inFlight -= 1;
+        return undefined;
+      },
+    };
+    const page = await open(t, app, state);
+    const before = page.requests.length;
+    await goToRequests(page);
+    const titleCalls = (from = 0) => page.requests.slice(from).filter((request) => /\/jellypass\/app\/v1\/movie\//.test(request.url)).map((request) => Number(new URL(request.url).pathname.split('/').pop()));
+    assert.deepEqual(titleCalls(before), Array.from({ length: 10 }, (_, n) => tmdbOf(n + 1)), 'the first ten, each once');
+    assert.ok(most <= 4 && most >= 2, `at most four at once (${most})`);
+    assert.equal(items(page).length, 10);
+    assert.deepEqual(names(page), Array(10).fill('Title unavailable'), 'a title that can\'t be read leaves the request with its status');
+    assert.deepEqual(items(page).map(pills), Array(10).fill(['Requested']));
+    const more = page.document.querySelector('.jellypass-tv-requests-more');
+    assert.equal(more.hidden, false);
+    assert.equal(more.textContent, 'Load more');
+    const second = page.requests.length;
+    page.click(more);
+    await page.settled();
+    assert.deepEqual(titleCalls(second), Array.from({ length: 10 }, (_, n) => tmdbOf(n + 11)), 'the next ten, each once');
+    assert.deepEqual(page.calls(second).filter((call) => call !== 'GET /movie/{tmdbId}'), []);
+    assert.equal(items(page).length, 20);
+    assert.ok(page.focused() === openButton(items(page)[10]), 'focus goes to the first new request');
+    page.click(more);
+    await page.settled();
+    assert.equal(items(page).length, 25);
+    assert.equal(more.hidden, true);
+    assert.equal(titleCalls().filter((id) => id === tmdbOf(1)).length, 1, 'no title is read twice');
+    // With a filter on and more to load, the page says more may match.
+    const hint = page.document.querySelector('.jellypass-tv-requests-hint');
+    assert.equal(hint.hidden, true, 'everything is loaded');
+  });
+
+  it('says more may match while requests are still to load, and a filter applies to what Load more adds', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const list = Array.from({ length: 12 }, (_, n) => entry(`${'S'.repeat(20)}${String(n).padStart(2, '0')}`, tmdbOf(n + 1), n === 11 ? { status: 'ready' } : {}));
+    const state = { cancel: 202, list, titles: () => json({}, 404) };
+    const page = await open(t, app, state);
+    await goToRequests(page);
+    page.click(chip(page, 'status', 'ready'));
+    const none = page.document.querySelector('.jellypass-tv-requests-none');
+    assert.equal(none.hidden, false);
+    assert.equal(none.querySelector('p').textContent, 'No requests ready to watch. More may match — Load more to look further.');
+    page.click(page.document.querySelector('.jellypass-tv-requests-more'));
+    await page.settled();
+    assert.equal(shown(page).length, 1);
+    assert.equal(none.hidden, true);
+  });
+
+  it('reads only the list when shown again within ten minutes, with the names kept; reads the titles again after that and for another sign-in', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const state = { cancel: 202, list: [entry(A, T_MOVIE), tvEntry(B, T_TV, [[1, 'requested']])] };
+    const page = await open(t, app, state);
+    await goToRequests(page);
+    assert.deepEqual(names(page), ['Synthetic Movie One', 'Synthetic Series Two']);
+    page.route('#/details?id=someitem');
+    await page.settled();
+    let before = page.requests.length;
+    page.back();
+    await page.settled();
+    assert.deepEqual(page.calls(before), BUDGET.screens['tv-requests'].revisit);
+    assert.deepEqual(names(page), ['Synthetic Movie One', 'Synthetic Series Two'], 'named at once from the kept titles');
+    page.advance(10 * 60 * 1000 + 1);
+    page.route('#/details?id=someitem');
+    await page.settled();
+    before = page.requests.length;
+    page.back();
+    await page.settled();
+    assert.deepEqual(page.calls(before), BUDGET.screens['tv-requests'].atOnce, 'ten minutes on: the titles are read again');
+  });
+
+  it('opens the title page for an entry and Back returns with the same entry focused, with the entries that were showing drawn at once', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const state = { cancel: 202, list: [entry(A, T_MOVIE), tvEntry(B, T_TV, [[1, 'requested']]), entry('CCCCCCCCCCCCCCCCCCCCCC', OWN_MOVIE)] };
+    const page = await open(t, app, state);
+    await goToRequests(page);
+    const from = page.location.hash;
+    // The member moves focus down to the second entry (a key press), then chooses it.
+    page.key(40);
+    openButton(items(page)[1]).focus();
+    page.click(openButton(items(page)[1]));
+    assert.equal(page.location.hash, `#/jellypass/title/tv/${T_TV}`);
+    page.follow(from);
+    await page.settled();
+    assert.ok(page.view(), 'the JellyPass title page');
+    assert.equal(root(page), null, 'the requests page is left');
+    assert.equal(headerTitle(page), 'Synthetic Series Two');
+    page.back();
+    await page.settled();
+    assert.equal(page.location.hash, '#/jellypass/requests');
+    assert.ok(page.focused() === openButton(items(page)[1]), 'the same entry has focus');
+    assert.deepEqual(names(page), ['Synthetic Movie One', 'Synthetic Series Two', 'Synthetic Movie Three']);
+  });
+
+  it('draws nothing and calls nothing when no one is signed in to this origin or Jellyfin\'s page is not as expected', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const state = { cancel: 202, list: [entry(A, T_MOVIE)] };
+    const elsewhere = await open(t, app, state, { serverAddress: 'https://other.example.test' });
+    const before = elsewhere.requests.length;
+    await goToRequests(elsewhere);
+    assert.equal(root(elsewhere), null);
+    assert.equal(elsewhere.requests.length, before);
+    // No fallback page: nothing to host.
+    const page = await open(t, app, state);
+    const calls = page.requests.length;
+    page.location.hash = '#/jellypass/requests';
+    page.goTo('#/jellypass/requests');
+    await page.settled();
+    assert.equal(root(page), null);
+    assert.equal(page.requests.length, calls);
+  });
+
+  it('shows an empty list, and fixed words for every failure, never the answer\'s text, with a retry that only reads', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const state = { cancel: 202, list: [] };
+    const page = await open(t, app, state);
+    await goToRequests(page);
+    assert.equal(part(root(page), '.jellypass-tv-requests-note'), 'Nothing requested yet. Choose Get this on a title to ask for it.');
+    for (const [status, title, body, retry] of [
+      [429, 'Too many requests', 'Wait a minute, then try again.', true],
+      [502, "Can't load this right now", 'Something went wrong. Try again in a moment.', true],
+      [401, 'Sign in to continue', 'Your Jellyfin sign-in is missing or has expired.', false],
+      ['offline', "You're offline", 'Check your connection, then try again.', true],
+    ]) {
+      state.listFails = () => {
+        if (status === 'offline') throw new TypeError('Failed to fetch');
+        return { status, body: '{"error":"canary upstream text"}' };
+      };
+      page.route('#/details?id=someitem');
+      await page.settled();
+      page.back();
+      await page.settled();
+      assert.equal(part(root(page), '.jellypass-tv-requests-error'), title, String(status));
+      assert.equal(part(root(page), '.jellypass-tv-requests-note'), body, String(status));
+      assert.equal(root(page).querySelectorAll('.jellypass-tv-requests-retry').length, retry ? 1 : 0, String(status));
+      lacks(root(page).outerHTML, /canary|upstream/i);
+    }
+    // The retry only reads the list.
+    state.listFails = undefined;
+    state.list = [entry(A, T_MOVIE)];
+    page.route('#/details?id=someitem');
+    await page.settled();
+    state.listFails = () => ({ status: 502, body: '{}' });
+    page.back();
+    await page.settled();
+    state.listFails = undefined;
+    const before = page.requests.length;
+    page.click(root(page).querySelector('.jellypass-tv-requests-retry'));
+    await page.settled();
+    assert.equal(page.posts().length, 0);
+    assert.deepEqual(page.calls(before), BUDGET.screens['tv-requests'].atOnce.slice().filter((call) => call !== 'GET /tv/{tmdbId}'));
+    assert.deepEqual(names(page), ['Synthetic Movie One']);
+  });
+
+  describe('Cancel request', () => {
+    it('asks first: the group says what cancelling does, Keep sends nothing and puts focus back, and the add-on handles no key', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const state = { cancel: 202, list: [entry(A, T_MOVIE, { cancellable: true, requestedOn: '2026-10-27' })] };
+      const page = await open(t, app, state);
+      await goToRequests(page);
+      const item = items(page)[0];
+      assert.equal(panel(item).hidden, true);
+      page.click(cancelOpen(item));
+      assert.equal(panel(item).hidden, false);
+      assert.equal(cancelOpen(item).hidden, true);
+      assert.equal(panel(item).getAttribute('role'), 'group');
+      assert.equal(part(panel(item), '.jellypass-tv-requests-cancel-heading'), 'Cancel this request?');
+      assert.equal(part(panel(item), '.jellypass-tv-requests-note'), "This withdraws your household's request. If it has already been approved, the download may still finish, but it won't be added for your household.");
+      assert.deepEqual(panelButtons(item).map((button) => button.textContent), ['Keep request', 'Cancel request']);
+      assert.ok(page.focused() === panelButtons(item)[0], 'the safe answer has focus');
+      page.click(panelButtons(item)[0]);
+      assert.equal(panel(item).hidden, true);
+      assert.ok(page.focused() === cancelOpen(item));
+      assert.equal(state.posts.length, 0, 'nothing sent until confirmed');
+      // Not one key listener of the add-on's can stop or prevent an event, and none is added for this page.
+      for (const entryOf of page.listeners.filter((listener) => /^(?:keydown|keyup|keypress) /.test(listener))) assert.equal(entryOf, 'keydown {"capture":true,"passive":true}');
+    });
+
+    it('confirming sends one POST with an empty object, drops the entry, says Request cancelled, reads the list again, and puts the title back to Get this on Home with no call', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      // The server still lists the movie as requested everywhere: the cancel is settled in the background.
+      const asRequested = async (pathname) => {
+        const real = (await app.get(pathname)).json();
+        return json(Array.isArray(real.results) ? { ...real, results: real.results.map((card) => (card.tmdbId === T_MOVIE ? { ...card, state: 'requested' } : card)) } : { ...real, state: 'requested' });
+      };
+      const state = {
+        cancel: 202,
+        list: [entry(A, T_MOVIE, { cancellable: true, requestedOn: '2026-10-27' }), tvEntry(B, T_TV, [[1, 'requested']], { cancellable: true, requestedOn: '2026-10-26' })],
+        other: (pathname) => (pathname === '/jellypass/app/v1/discover/trending' ? asRequested(pathname) : undefined),
+        titles: (pathname) => (pathname === `/jellypass/app/v1/movie/${T_MOVIE}` ? asRequested(pathname) : undefined),
+      };
+      const page = await open(t, app, state);
+      assert.equal(onRow(page, T_MOVIE), 'not in the row', 'Requested is not in the Discover row');
+      await goToRequests(page);
+      const [item, other] = items(page);
+      let release;
+      state.hold = new Promise((resolve) => { release = resolve; });
+      const before = page.requests.length;
+      page.click(cancelOpen(item));
+      page.click(confirmOf(item));
+      assert.equal(confirmOf(item).textContent, 'Cancelling…');
+      assert.equal(confirmOf(item).disabled, true);
+      assert.equal(panelButtons(item)[0].disabled, true, 'Keep is disabled while the call is out');
+      page.click(confirmOf(item));
+      await pause(40);
+      assert.equal(state.posts.length, 1, 'a second press sends nothing');
+      release();
+      await page.settled();
+      assert.equal(state.posts.length, 1);
+      assert.equal(state.posts[0].pathname, `/jellypass/app/v1/requests/${A}/cancel`);
+      assert.equal(state.posts[0].body, '{}');
+      assert.deepEqual(state.posts[0].headers, { Accept: 'application/json', Authorization: `MediaBrowser Token="${TOKENS[ALICE]}"`, 'Content-Type': 'application/json' });
+      assert.deepEqual(page.calls(before), BUDGET.screens['tv-requests'].cancel.map((call) => call.replace('{id}', 'ID')).map((call) => (call === 'POST /requests/ID/cancel' ? 'POST /requests/' + A + '/cancel' : call)).sort());
+      assert.equal(items(page).length, 1);
+      assert.equal(items(page)[0].querySelector('.jellypass-tv-request-open').getAttribute('data-jellypass-tv-focus'), `entry-tv-${T_TV}`);
+      assert.equal(message(page).textContent, 'Request cancelled');
+      assert.equal(message(page).getAttribute('role'), 'status');
+      assert.ok(page.focused() === message(page), 'the confirmation has focus');
+      assert.equal(part(items(page)[0], '.jellypass-tv-request-name'), 'Synthetic Series Two', 'the other request stays named, with no title call');
+      assert.ok(other.isConnected === false || items(page)[0] !== other, 'drawn again from the list read');
+      // Home: the title is Available to get again, with no call (the trending answer is kept).
+      const home = page.requests.length;
+      page.back();
+      await page.settled();
+      assert.equal(onRow(page, T_MOVIE), 'Available to get');
+      assert.deepEqual(page.calls(home), [], 'Home\'s row, from the overlay, made no call');
+    });
+
+    it('shows the title as Get this on its page after a cancel, while the server still says requested', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const asRequested = async (pathname) => json({ ...(await app.get(pathname)).json(), state: 'requested' });
+      const state = { cancel: 202, list: [entry(A, T_MOVIE, { cancellable: true })], titles: (pathname) => (pathname === `/jellypass/app/v1/movie/${T_MOVIE}` ? asRequested(pathname) : undefined) };
+      const page = await open(t, app, state);
+      page.route(`#/jellypass/title/movie/${T_MOVIE}`);
+      await page.settled();
+      assert.equal(part(page.view(), '.jellypass-tv-title-status'), 'Requested');
+      page.back();
+      await goToRequests(page);
+      page.click(cancelOpen(items(page)[0]));
+      page.click(confirmOf(items(page)[0]));
+      await page.settled();
+      assert.equal(message(page).textContent, 'Request cancelled');
+      page.route(`#/jellypass/title/movie/${T_MOVIE}`);
+      await page.settled();
+      assert.equal(part(page.view(), '.jellypass-tv-title-status'), 'Available to get');
+      assert.deepEqual([...page.view().querySelectorAll('button')].map((button) => button.textContent), ['Get this']);
+      // After two minutes the server's word stands again.
+      page.advance(120_000);
+      assert.equal(part(page.view(), '.jellypass-tv-title-status'), 'Requested');
+    });
+
+    for (const [answer, words] of [
+      [429, 'Too many tries, try again in a few minutes.'],
+      [502, "We couldn't cancel that just now. Try again in a moment."],
+      [404, "We couldn't cancel that just now. Try again in a moment."],
+      ['offline', "You're offline. Check your connection, then try again."],
+    ]) {
+      it(`says ${JSON.stringify(words)} when the cancel fails with ${answer}, never shows the answer's text, and never asks again by itself`, async (t) => {
+        const app = await startApp(t, webWorld(), tvOn());
+        const state = { cancel: answer, list: [entry(A, T_MOVIE, { cancellable: true }), entry(B, OWN_MOVIE, { cancellable: true })] };
+        const page = await open(t, app, state);
+        await goToRequests(page);
+        const item = items(page)[0];
+        page.click(cancelOpen(item));
+        page.click(confirmOf(item));
+        await page.settled();
+        assert.equal(part(panel(item), '.jellypass-tv-requests-cancel-message'), words);
+        assert.equal(confirmOf(item).textContent, 'Cancel request');
+        assert.equal(confirmOf(item).disabled, false);
+        assert.equal(panelButtons(item)[0].disabled, false);
+        assert.ok(page.focused() === confirmOf(item));
+        assert.equal(items(page).length, 2, 'the request stays');
+        assert.equal(message(page), null, 'no confirmation');
+        lacks(page.document.documentElement.outerHTML, /upstream said something private|canary/i);
+        page.advance(120_000);
+        await page.settled();
+        assert.equal(state.posts.length, 1, 'never repeated by itself');
+        // The member may try again, and that is one more call.
+        page.click(confirmOf(item));
+        await page.settled();
+        assert.equal(state.posts.length, 2);
+      });
+    }
+
+    it('ends the session on a 401: sign in to continue, and what was shown as requested or named is forgotten', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const state = { cancel: 401, list: [entry(A, T_MOVIE, { cancellable: true })] };
+      const page = await open(t, app, state);
+      await goToRequests(page);
+      page.click(cancelOpen(items(page)[0]));
+      page.click(confirmOf(items(page)[0]));
+      await page.settled();
+      assert.equal(part(root(page), '.jellypass-tv-requests-error'), 'Sign in to continue');
+      assert.equal(root(page).querySelectorAll('.jellypass-tv-requests-retry').length, 0);
+      assert.equal(state.posts.length, 1);
+      lacks(root(page).outerHTML, /upstream said something private/);
+      // The names are forgotten: the page, opened again, reads the titles.
+      state.cancel = 202;
+      page.route('#/details?id=someitem');
+      await page.settled();
+      const before = page.requests.length;
+      page.back();
+      await page.settled();
+      assert.deepEqual(page.calls(before), BUDGET.screens['tv-requests'].atOnce.filter((call) => call !== 'GET /tv/{tmdbId}'));
+    });
+
+    it('keeps the confirmation, with the fixed refresh note and a retry that only reads, when the list can\'t be read again after an accepted cancel', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const state = { cancel: 202, list: [entry(A, T_MOVIE, { cancellable: true }), entry(B, OWN_MOVIE)], listFails: (read) => (read === 2 ? { status: 502, body: '{"error":"canary upstream text"}' } : undefined) };
+      const page = await open(t, app, state);
+      await goToRequests(page);
+      page.click(cancelOpen(items(page)[0]));
+      page.click(confirmOf(items(page)[0]));
+      await page.settled();
+      assert.equal(message(page).textContent, 'Request cancelled');
+      assert.equal(part(root(page), '.jellypass-tv-requests-note'), 'Something went wrong. Try again in a moment.');
+      lacks(root(page).outerHTML, /canary|upstream/);
+      assert.equal(state.posts.length, 1);
+      const before = page.requests.length;
+      page.click(root(page).querySelector('.jellypass-tv-requests-retry'));
+      await page.settled();
+      assert.equal(state.posts.length, 1, 'the retry only reads');
+      assert.deepEqual(page.calls(before).filter((call) => !call.startsWith('GET /movie/')), ['GET /requests']);
+      assert.equal(items(page).length, 1);
+      assert.equal(message(page).textContent, 'Request cancelled', 'the confirmation stays');
+    });
+  });
+
+  describe('how it is reached', () => {
+    it('adds a "My requests" card at the end of the Discover row that opens the page, and Back returns focus to it', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const state = { cancel: 202, list: [entry(A, T_MOVIE)] };
+      const page = await open(t, app, state);
+      page.document.documentElement.classList.add('layout-tv');
+      const link = page.requestsLink();
+      assert.ok(link, 'the link card');
+      assert.equal(link.tagName, 'BUTTON');
+      assert.equal(link.getAttribute('type'), 'button');
+      assert.equal(link.getAttribute('aria-label'), 'My requests');
+      assert.equal(link.textContent, 'My requests');
+      const list = page.rows()[0].querySelector('.jellypass-tv-row-list');
+      assert.ok(list.lastElementChild === link, 'the last card of the strip');
+      assert.ok(list.classList.contains('focuscontainer-x'));
+      assert.equal(page.cards().includes(link), false, 'not a title\'s card');
+      assert.equal(page.rows()[0].querySelectorAll('.jellypass-tv-card-link').length, 1);
+      const calls = page.requests.length;
+      const from = page.location.hash;
+      page.click(link);
+      assert.equal(page.location.hash, '#/jellypass/requests');
+      page.follow(from);
+      await page.settled();
+      assert.ok(root(page));
+      assert.equal(page.requests.length > calls, true);
+      page.back();
+      await page.settled();
+      assert.ok(page.focused() === page.requestsLink(), 'Back to Home focuses the link');
+      assert.equal(page.rows().length, 1);
+    });
+
+    it('opens nothing from the link while Jellyfin web is signed in elsewhere', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const page = await open(t, app, { cancel: 202, list: [] });
+      const from = page.location.hash;
+      page.session.serverAddress = 'https://other.example.test';
+      page.click(page.requestsLink());
+      assert.equal(page.location.hash, from);
+    });
+
+    it('links the title page to My requests where the household is following the title, and nowhere else', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const asState = (state) => async (pathname) => json({ ...(await app.get(pathname)).json(), state });
+      const of = async (state, tmdbId) => {
+        const page = await open(t, app, { cancel: 202, list: [], titles: (pathname) => (pathname === `/jellypass/app/v1/movie/${tmdbId}` ? asState(state)(pathname) : undefined) });
+        page.route(`#/jellypass/title/movie/${tmdbId}`);
+        await page.settled();
+        return page;
+      };
+      for (const [state, linked] of [['requested', true], ['get_this', false], ['in_library', false], ['unavailable', false]]) {
+        const page = await of(state, T_MOVIE);
+        const texts = [...page.view().querySelectorAll('button')].map((button) => button.textContent);
+        assert.equal(texts.includes('My requests'), linked, state);
+        if (state === 'requested') {
+          assert.equal(part(page.view(), '.jellypass-tv-title-note'), 'Follow it in My requests.');
+          const from = page.location.hash;
+          page.click(page.view().querySelector('.jellypass-tv-title-requests'));
+          assert.equal(page.location.hash, '#/jellypass/requests');
+          page.follow(from);
+          await page.settled();
+          assert.ok(root(page), 'the page opens from the title page');
+          assert.equal(page.view(), null);
+        }
+      }
+    });
+
+    it('links to My requests after an accepted Get this, beside nothing that sends', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      let release;
+      app.seerr.state.holdRequests = new Promise((resolve) => { release = resolve; });
+      t.after(async () => { release(); await app.background.settled(); });
+      const page = await openJellyfinWeb(t, app);
+      page.document.body.insertAdjacentHTML('afterbegin', HEADER);
+      page.home();
+      await page.settled();
+      page.route(`#/jellypass/title/movie/${T_MOVIE}`);
+      await page.settled();
+      assert.deepEqual([...page.view().querySelectorAll('button')].map((button) => button.textContent), ['Get this']);
+      page.click(page.view().querySelector('.jellypass-tv-title-get'));
+      await page.settled();
+      assert.deepEqual([...page.view().querySelectorAll('button')].map((button) => button.textContent), ['My requests']);
+    });
+  });
+
+  it('keeps the privacy of the app: the page and its calls are byte-for-byte the same whatever other households hold or asked for', async (t) => {
+    const seen = {};
+    for (const [name, state] of Object.entries({ baseline: world(), ...otherHouseholdWorlds() })) {
+      const app = await startApp(t, Object.assign(state, { webPage: {} }), { ...tvOn(), reconcile: true });
+      const list = { cancel: 202, list: [entry(A, T_MOVIE, { cancellable: true, requestedOn: '2026-10-27' }), tvEntry(B, T_TV, [[1, 'ready'], [2, 'requested']], { byYou: false })] };
+      const page = await open(t, app, list);
+      await goToRequests(page);
+      const view = root(page).outerHTML;
+      assertNoCanaries(view, `${name}: the page shows Seerr data planted as a canary`);
+      seen[name] = { calls: page.trace(), view };
+    }
+    const { baseline, ...others } = seen;
+    assert.ok(Object.keys(others).length >= 5);
+    for (const [name, outcome] of Object.entries(others)) {
+      assert.deepEqual(outcome.calls, baseline.calls, `${name}: the calls the add-on made`);
+      assert.ok(outcome.view === baseline.view, `${name}: the page differs`);
+    }
+  });
+
+  it('works end to end against the real API: a title asked for with Get this is listed, cancellable, and a cancel takes it off', async (t) => {
+    const app = await startApp(t, webWorld(), { ...tvOn(), reconcile: true });
+    const page = await openJellyfinWeb(t, app);
+    page.document.body.insertAdjacentHTML('afterbegin', HEADER);
+    page.home();
+    await page.settled();
+    page.route(`#/jellypass/title/movie/${T_MOVIE}`);
+    await page.settled();
+    page.click(page.view().querySelector('.jellypass-tv-title-get'));
+    await page.settled();
+    await app.background.settled();
+    page.back();
+    await goToRequests(page);
+    assert.deepEqual(names(page), ['Synthetic Movie One']);
+    assert.deepEqual(pills(items(page)[0]), ['Requested']);
+    assert.equal(part(items(page)[0], '.jellypass-tv-request-who'), 'Asked for by you');
+    assert.match(part(items(page)[0], '.jellypass-tv-request-on'), /^Requested on [A-Z][a-z]{2} \d{1,2}, \d{4}$/);
+    assert.ok(cancelOpen(items(page)[0]), 'the real server offers Cancel for the caller\'s own pending request');
+    page.click(cancelOpen(items(page)[0]));
+    page.click(confirmOf(items(page)[0]));
+    // The real cancel settles with Seerr before it answers, which takes longer than the simulated ones.
+    for (let round = 0; round < 100 && !message(page); round += 1) await pause(50);
+    await page.settled();
+    await app.background.settled();
+    assert.equal(message(page).textContent, 'Request cancelled');
+    assert.equal(page.posts().filter((post) => /\/cancel$/.test(post.url)).length, 1);
+    // The server withdraws it in the background; once it has, the list no longer has the request.
+    page.route('#/details?id=someitem');
+    await page.settled();
+    page.back();
+    await page.settled();
+    assert.equal(items(page).length, 0);
+    assert.equal(part(root(page), '.jellypass-tv-requests-note'), 'Nothing requested yet. Choose Get this on a title to ask for it.');
+  });
+});
+
+describe('TV add-on: My requests, the parts', { timeout: 60_000 }, () => {
+  const TV_SRC = path.join(import.meta.dirname, '..', 'tv', 'src');
+  const ENTRY = `
+    import { Asked } from './asked.ts';
+    import { TitleCache } from './titles.ts';
+    import { requestPills, requestStatuses, matchesRequestFilter, requestFilterEmptyText, requestSeasonsText, requestedOnText } from './requests-model.ts';
+    window.parts = { Asked, TitleCache, requestPills, requestStatuses, matchesRequestFilter, requestFilterEmptyText, requestSeasonsText, requestedOnText };
+  `;
+  let code;
+  const load = async () => {
+    if (!code) {
+      const { build } = await import('esbuild');
+      code = (await build({ stdin: { contents: ENTRY, resolveDir: TV_SRC, loader: 'ts' }, bundle: true, format: 'iife', target: 'es2017', write: false, logLevel: 'silent' })).outputFiles[0].text;
+    }
+    const timers = [];
+    const scope = { setTimeout: (run, ms) => { timers.push({ run, ms }); return timers.length; }, clearTimeout: () => undefined, Date };
+    scope.window = scope;
+    vm.runInContext(code, vm.createContext(scope));
+    return { parts: scope.parts, timers };
+  };
+  const clock = () => { const c = { mono: 0, wall: 1_000_000 }; return { c, now: () => c.mono, wall: () => c.wall, advance: (ms) => { c.mono += ms; c.wall += ms; } }; };
+
+  it('withdraws a title: it reads as Get this while the server still says requested, each key ending on its own, and for two minutes at most', async () => {
+    const { parts } = await load();
+    const time = clock();
+    let expired = 0;
+    const asked = new parts.Asked(time.now, time.wall, () => { expired += 1; });
+    asked.sync('alice');
+    asked.add('alice', 'tv', 7, [1, 2]);
+    assert.equal(asked.state('tv', 7, 'get_this'), 'requested');
+    asked.withdraw('alice', 'tv', 7);
+    assert.equal(asked.state('tv', 7, 'requested'), 'get_this', 'the title');
+    assert.equal(asked.state('tv', 7, 'requested', 1), 'get_this', 'a season');
+    assert.equal(asked.state('tv', 7, 'get_this'), 'get_this', 'an earlier Get this no longer shows Requested');
+    // The server says something but requested for the title: that key ends for good, the season's own goes on.
+    assert.equal(asked.state('tv', 7, 'requested'), 'requested', 'the title key ended when the server said get_this');
+    assert.equal(asked.state('tv', 7, 'requested', 2), 'get_this');
+    assert.equal(asked.state('tv', 8, 'requested'), 'requested', 'another title is untouched');
+    time.advance(119_999);
+    assert.equal(asked.state('tv', 7, 'requested', 2), 'get_this');
+    time.advance(1);
+    assert.equal(asked.state('tv', 7, 'requested', 2), 'requested', 'two minutes on, the server\'s word stands');
+    asked.forget();
+    assert.equal(expired, 0);
+  });
+
+  it('ends a withdrawal when the title is asked for again, on the wall clock too, and ignores another member\'s', async () => {
+    const { parts, timers } = await load();
+    const time = clock();
+    let expired = 0;
+    const asked = new parts.Asked(time.now, time.wall, () => { expired += 1; });
+    asked.sync('alice');
+    asked.withdraw('bob', 'movie', 1);
+    assert.equal(asked.state('movie', 1, 'requested'), 'requested', 'not the member signed in');
+    asked.withdraw('alice', 'movie', 1);
+    assert.equal(asked.state('movie', 1, 'requested'), 'get_this');
+    asked.add('alice', 'movie', 1, []);
+    assert.equal(asked.state('movie', 1, 'get_this'), 'requested', 'asked for again');
+    assert.equal(asked.state('movie', 1, 'requested'), 'requested');
+    asked.withdraw('alice', 'movie', 2);
+    time.c.wall += 120_000; // the TV asleep: only the wall clock moved
+    assert.equal(asked.state('movie', 2, 'requested'), 'requested');
+    // A timer ends it with nothing pressed, and says so.
+    asked.withdraw('alice', 'movie', 3);
+    const last = timers[timers.length - 1];
+    time.advance(120_000);
+    last.run();
+    assert.equal(expired >= 1, true);
+    assert.equal(asked.state('movie', 3, 'requested'), 'requested');
+    // Another member signing in forgets everything.
+    asked.withdraw('alice', 'movie', 4);
+    asked.sync('ann');
+    assert.equal(asked.state('movie', 4, 'requested'), 'requested');
+  });
+
+  it('keeps titles for ten minutes on both clocks, least recently used first, and forgets them', async () => {
+    const { parts } = await load();
+    const time = clock();
+    const cache = new parts.TitleCache(time.now, time.wall);
+    cache.set('movie', 1, { title: 'One', year: 2000, posterUrl: null });
+    assert.equal(cache.get('movie', 1).title, 'One');
+    assert.equal(cache.get('tv', 1), undefined, 'the kind is part of the key');
+    time.advance(599_999);
+    assert.equal(cache.get('movie', 1).title, 'One');
+    time.advance(1);
+    assert.equal(cache.get('movie', 1), undefined);
+    cache.set('movie', 2, { title: 'Two', year: null, posterUrl: null });
+    time.c.wall += 600_000; // asleep
+    assert.equal(cache.get('movie', 2), undefined, 'the wall clock ends it too');
+    cache.set('movie', 3, { title: 'Three', year: null, posterUrl: null });
+    time.c.wall -= 5_000; // set back
+    assert.equal(cache.get('movie', 3), undefined, 'a wall clock set back ends it');
+    for (let n = 0; n < 305; n += 1) cache.set('movie', 100 + n, { title: String(n), year: null, posterUrl: null });
+    assert.equal(cache.get('movie', 100), undefined, 'the oldest went at 300');
+    assert.equal(cache.get('movie', 404).title, '304');
+    cache.forget();
+    assert.equal(cache.get('movie', 404), undefined);
+  });
+
+  it('words a request\'s statuses as the app does: one pill, seasons as text, a pill per season when they differ', async () => {
+    const { parts } = await load();
+    const seasons = (...pairs) => pairs.map(([seasonNumber, status]) => ({ seasonNumber, status }));
+    const plain = (value) => JSON.parse(JSON.stringify(value));
+    assert.deepEqual(plain(parts.requestPills({ status: 'failed', seasons: [] })), { status: 'failed', seasonsText: '', perSeason: false });
+    assert.deepEqual(plain(parts.requestPills({ status: 'requested', seasons: seasons([1, 'ready'], [2, 'ready']) })), { status: 'ready', seasonsText: 'Seasons 1, 2', perSeason: false });
+    assert.deepEqual(plain(parts.requestPills({ status: 'ready', seasons: seasons([1, 'ready'], [2, 'failed']) })), { perSeason: true, seasonsText: '' });
+    assert.equal(parts.requestSeasonsText([3, 1, 2, 5]), 'Seasons 1–3, 5');
+    assert.equal(parts.requestSeasonsText([2]), 'Season 2');
+    assert.deepEqual(plain(parts.requestStatuses({ status: 'failed', seasons: seasons([1, 'ready'], [2, 'requested']) })), ['ready', 'requested', 'failed']);
+    const filter = (status, kind = 'all', byYou = false) => ({ status, kind, byYou });
+    const mixed = { mediaType: 'tv', byYou: false, status: 'requested', seasons: seasons([1, 'ready'], [2, 'requested']) };
+    assert.equal(parts.matchesRequestFilter(mixed, filter('ready')), true);
+    assert.equal(parts.matchesRequestFilter(mixed, filter('requested')), true);
+    assert.equal(parts.matchesRequestFilter(mixed, filter('failed')), false);
+    assert.equal(parts.matchesRequestFilter(mixed, filter('all', 'movie')), false);
+    assert.equal(parts.matchesRequestFilter(mixed, filter('all', 'all', true)), false);
+    assert.equal(parts.requestFilterEmptyText(filter('ready', 'movie', true)), 'No films ready to watch, asked for by you.');
+    assert.equal(parts.requestFilterEmptyText(filter('all'), true), 'No requests. More may match — Load more to look further.');
+  });
+
+  it('writes the day the server sent, as a UTC day with no time, and nothing for a malformed or impossible one', async () => {
+    const { parts } = await load();
+    assert.equal(parts.requestedOnText('2026-10-27'), 'Oct 27, 2026');
+    assert.equal(parts.requestedOnText('2026-12-31'), 'Dec 31, 2026');
+    for (const bad of [undefined, '', '2026-02-30', '2026-13-01', '27/10/2026', '2026-10-27T00:00:00Z', 'canary']) assert.equal(parts.requestedOnText(bad), undefined, String(bad));
+    // Chromium 63 has no `dateStyle`; the fields are named instead.
+    lacks(readFileSync(path.join(TV_SRC, 'requests-model.ts'), 'utf8').replace(/\/\/.*$/gm, ''), /dateStyle/);
   });
 });
