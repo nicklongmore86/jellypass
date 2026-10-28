@@ -232,6 +232,12 @@ export interface AppWithdrawal {
   requesterId?: string;
   /** When the refresh found that Seerr no longer has the request, for a withdrawal with `requesterId`: a title hold. */
   seerrGoneAt?: string;
+  /**
+   * When an administrator declined the request (the admin Requests tab), with `requester` and every household that
+   * named it: should it still be granted (a late MEDIA_AVAILABLE, its replay, the backfill), none of them is given it,
+   * so the title is held for no household. Kept and forgotten like any other withdrawal.
+   */
+  declinedAt?: string;
   createdAt: string;
   /** When the request was granted under this withdrawal. */
   grantedAt?: string;

@@ -195,6 +195,45 @@ describe('admin requests: approve and decline', { timeout: 60_000 }, () => {
     assert.deepEqual([(await act(app, FIRST, 'approve')).json().code, (await act(app, FIRST, 'cancel')).json().code], ['request_declined', 'request_not_cancellable']);
   });
 
+  it('keeps a declined request\'s households from a title that still arrives through it: held for no household, by every arrival path', async (t) => {
+    const app = await followed(t);
+    assert.deepEqual((await act(app, FIRST, 'decline')).json(), { status: 'declined', changed: true });
+    const [[requestId, withdrawal]] = app.store.listAppWithdrawals();
+    assert.deepEqual([requestId, withdrawal.requester, withdrawal.householdIds, withdrawal.requesterId, typeof withdrawal.declinedAt],
+      [String(FIRST), true, [HOME, OTHER], undefined, 'string']);
+    // The row is declined, not withdrawn.
+    assert.deepEqual((({ status, withdrawn, held: isHeld }) => ({ status, withdrawn, held: isHeld }))((await listing(app)).requests[0]),
+      { status: 'declined', withdrawn: false, held: false });
+    // A late MEDIA_AVAILABLE (and its replay) for the declined request gives neither household the title.
+    app.jellyfin.state.items.push(movieItem());
+    await app.requests.refresh();
+    assert.ok([200, 202].includes((await webhook(app, FIRST, ALICE)).status));
+    assert.ok([200, 202].includes((await webhook(app, FIRST, ALICE)).status));
+    const grant = app.store.get(ITEMS.tMovie);
+    assert.deepEqual([grant.active, Object.keys(grant.requests), grant.groupIds, grant.owners], [true, [String(FIRST)], [], []]);
+    for (const user of [ALICE, BOB]) assert.ok(blocked(app, user), user);
+    assert.deepEqual(statuses(app), [[HOME, 'request', 'declined'], [OTHER, 'interest', 'declined']]);
+    for (const options of [{}, AS_BOB]) assert.deepEqual((await entries(app, options)).map((entry) => entry.status), ['failed']);
+    assert.deepEqual((await listing(app)).held.map((title) => [title.requestId, title.itemId]), [[String(FIRST), ITEMS.tMovie]]);
+    await app.requests.refresh();
+    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, []);
+  });
+
+  it('writes the declined marker in the same turn of the write queue as Seerr\'s decline, so no webhook grants in between', async (t) => {
+    const app = await followed(t);
+    app.jellyfin.state.items.push(movieItem());
+    // A MEDIA_AVAILABLE arrives while Seerr is declining the request: it waits for the decline's turn to end.
+    let delivered;
+    app.seerr.state.onAdminWrite = (method, pathname) => {
+      if (method === 'POST' && pathname.endsWith('/decline')) delivered = webhook(app, FIRST, ALICE);
+    };
+    assert.deepEqual((await act(app, FIRST, 'decline')).json(), { status: 'declined', changed: true });
+    assert.ok(delivered);
+    assert.ok([200, 202].includes((await delivered).status));
+    assert.deepEqual([app.store.get(ITEMS.tMovie).groupIds, app.store.get(ITEMS.tMovie).owners], [[], []]);
+    for (const user of [ALICE, BOB]) assert.ok(blocked(app, user), user);
+  });
+
   it('declines only a pending request', async (t) => {
     const app = await followed(t, { autoApprove: true });
     const answer = await act(app, FIRST, 'decline');
@@ -308,12 +347,33 @@ describe('admin requests: cancel', { timeout: 60_000 }, () => {
     }
   });
 
-  it('keeps no title hold for a title Jellyfin already has, whose arrival could not be told from what was there', async (t) => {
+  it('holds a title that arrived before the cancel but was not granted yet: never public once Seerr forgets the request', async (t) => {
+    const app = await followed(t, { autoApprove: true });
+    // The movie is in Jellyfin, but no MEDIA_AVAILABLE webhook granted it yet.
+    app.jellyfin.state.items.push(movieItem());
+    assert.equal(app.store.get(ITEMS.tMovie), undefined);
+    const answer = await act(app, FIRST, 'cancel');
+    assert.deepEqual(answer.json(), { status: 'cancelled', changed: true, titleHold: true, removedFromRadarr: false });
+    assert.deepEqual(app.store.listAppWithdrawals().map(([requestId, withdrawal]) => [requestId, withdrawal.requesterId, withdrawal.seerrGoneAt !== undefined]),
+      [[String(FIRST), ALICE, true]]);
+    await app.requests.refresh();
+    const grant = app.store.get(ITEMS.tMovie);
+    assert.deepEqual([grant.active, Object.keys(grant.requests), grant.groupIds, grant.owners], [true, [String(FIRST)], [], []]);
+    for (const user of [ALICE, BOB]) assert.ok(blocked(app, user), user);
+    assert.deepEqual((await listing(app)).held.map((title) => [title.requestId, title.itemId]), [[String(FIRST), ITEMS.tMovie]]);
+    assert.deepEqual(statuses(app), [[HOME, 'request', 'deleted'], [OTHER, 'interest', 'deleted']]);
+  });
+
+  it('keeps no title hold when every item Jellyfin has of the title is on an active grant already', async (t) => {
     const app = await followed(t, { autoApprove: true });
     app.jellyfin.state.items.push(movieItem());
+    // Another request granted the movie (to Bob's household) before this one was cancelled.
+    await app.store.grant({ itemId: ITEMS.tMovie, requestId: '7389001', userId: BOB, groupIds: [OTHER] });
     const answer = await act(app, FIRST, 'cancel');
     assert.deepEqual(answer.json(), { status: 'cancelled', changed: true, titleHold: false, removedFromRadarr: false });
     assert.deepEqual(app.store.listAppWithdrawals(), []);
+    await app.requests.refresh();
+    assert.deepEqual(Object.keys(app.store.get(ITEMS.tMovie).requests), ['7389001']);
     assert.deepEqual(statuses(app), [[HOME, 'request', 'deleted'], [OTHER, 'interest', 'deleted']]);
   });
 });
@@ -346,6 +406,41 @@ describe('admin requests: releasing a held title', { timeout: 60_000 }, () => {
     assert.deepEqual((await admin(app, `/v1/app/held/${FIRST}/release`, { method: 'POST', body: { householdIds: [OTHER] } })).json(),
       { status: 'released', changed: false, itemId: ITEMS.tMovie });
     assert.equal((await admin(app, `/v1/app/held/${FIRST}/release`, { method: 'POST', body: { householdIds: [HOME] } })).status, 409);
+    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, [OTHER]);
+  });
+
+  it('lets only the first of two concurrent releases to different households take effect, and refuses the other', async (t) => {
+    const app = await held(t);
+    const release = (householdIds) => admin(app, `/v1/app/held/${FIRST}/release`, { method: 'POST', body: { householdIds } });
+    // The write queue is busy (a webhook, say) while both arrive: both are decided only once it is free.
+    let free;
+    const busy = app.service.serialized(() => new Promise((resolve) => { free = resolve; }));
+    const pending = Promise.all([release([OTHER]), release([HOME])]);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    free();
+    await busy;
+    const answers = await pending;
+    const won = answers.findIndex((answer) => answer.status === 200);
+    assert.deepEqual(answers.map((answer) => answer.status).sort(), [200, 409]);
+    assert.deepEqual(answers[won].json(), { status: 'released', changed: true, itemId: ITEMS.tMovie });
+    assert.equal(answers[1 - won].json().code, 'title_not_held');
+    assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, [[OTHER], [HOME]][won]);
+    // Two concurrent releases to the same household: one changed, the other the same outcome unchanged.
+    const again = await Promise.all([release([[OTHER], [HOME]][won]), release([[OTHER], [HOME]][won])]);
+    assert.deepEqual(again.map((answer) => [answer.status, answer.json().changed]), [[200, false], [200, false]]);
+  });
+
+  it('answers two concurrent releases to the same household with one change', async (t) => {
+    const app = await held(t);
+    const release = () => admin(app, `/v1/app/held/${FIRST}/release`, { method: 'POST', body: { householdIds: [OTHER] } });
+    let free;
+    const busy = app.service.serialized(() => new Promise((resolve) => { free = resolve; }));
+    const pending = Promise.all([release(), release()]);
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    free();
+    await busy;
+    const answers = await pending;
+    assert.deepEqual(answers.map((answer) => [answer.status, answer.json().changed]).sort(), [[200, false], [200, true]]);
     assert.deepEqual(app.store.get(ITEMS.tMovie).groupIds, [OTHER]);
   });
 

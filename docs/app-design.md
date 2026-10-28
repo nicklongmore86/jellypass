@@ -1627,9 +1627,18 @@ repeated after it took effect, it answers the same outcome with `changed: false`
 
 - **Approve** (Seerr `POST /request/:id/approve`, a pending request only): Seerr sends it to Radarr or Sonarr; the
   households keep following it. Approved or further already: unchanged.
-- **Decline** (Seerr `POST /request/:id/decline`, a pending request only): then every record still following it
-  (`pending`) is `declined` at once, so each household sees **We couldn't get this** without waiting for the refresh.
-  Declined already: the records are brought up to date.
+- **Decline** (Seerr `POST /request/:id/decline`, a pending request only), in one turn of the write queue with what
+  it records, so no webhook, replay, backfill or title hold decides the request's grant in between: every record still
+  following it (`pending` or `failed`) is `declined` at once, so each household sees **We couldn't get this** without
+  waiting for the refresh, and a **declined withdrawal** (`AppWithdrawal` with `requester`, every household that named
+  it, and `declinedAt`) is added. The decline applies to every follower, not only the requester's household. Should
+  the title still arrive through the declined request (a late `MEDIA_AVAILABLE`, its replay, the backfill or
+  reconcileAll, which all decide a grant by the same rule), the grant records the request but gives none of those
+  households, nor the requester, access: with nobody left, it is **held for no household** (listed under Held
+  titles), never public. It has no `requesterId`, so it never becomes a title hold: once Seerr forgets the declined
+  request it is forgotten like any withdrawal without one (nothing can then grant the request), and it lapses like
+  any other after 400 days. Declined already (in Seerr, say): the records and the withdrawal are brought up to date.
+  A request granted already is refused (`409 request_granted`).
 - **Cancel** (a pending, approved or failed request whose grant is not decided yet):
   1. If `removeFromRadarr` is asked, it is checked first, before anything changes: a movie, Jellyfin has no HD item of
      it (by TMDB ID or Seerr's HD link), and Seerr has an HD Radarr server; otherwise `409
@@ -1638,8 +1647,11 @@ repeated after it took effect, it answers the same outcome with `changed: false`
      household is back to **Get this**, as decision 3 has it), and a withdrawal for the request (`AppWithdrawal`, with
      `requester` and every household that named it) is added. With `requesterId` (the request record's member, or
      Seerr's requester for a request JellyPass only followed) when the request is a genuine one (no record's
-     `joinOnGrant`) and Jellyfin has no HD item of the title now, so that anything of it that appears later is its
-     arrival; otherwise none. A grant decided after this write gives nobody access through the request (the grant
+     `joinOnGrant`: Jellyfin had no item of the title when it was made, so any item of it is its arrival), unless every
+     HD item Jellyfin has of the title now is on an active grant already (decided: nothing to hold). An item that
+     arrived but that no grant holds yet (its webhook has not come, or failed) is held like a later arrival, never
+     left public once Seerr forgets the request. A request that follows the join rules gets none: a public title
+     stays public. A grant decided after this write gives nobody access through the request (the grant
      rule's **withdrawn** step), whether or not the rest succeeds; one decided before it makes the cancel `409
      request_granted`.
   3. With `removeFromRadarr`: Seerr `DELETE /media/:mediaId/file` (HD), which has Radarr remove the movie and delete
@@ -1656,8 +1668,11 @@ repeated after it took effect, it answers the same outcome with `changed: false`
   has is answered `cancelled` (`changed: false` when nothing was left to do), its households sent back to Get this.
 - **Release** a held title (`GET /v1/app/held`) to chosen households: they are added to its grant
   (`PUT /v1/grants/:itemId/groups` with the grant's groups and them), so only they (and anyone the grant already had)
-  can watch it; the requester stays excluded. A title no longer held whose grant has every one of them already is
-  answered `changed: false`; any other is `409 title_not_held` (change it in Grants).
+  can watch it; the requester stays excluded. Whether it is still held and the change are decided in one turn of the
+  write queue (`AccessService.releaseHeld`), so the first of two concurrent releases wins and the second is decided
+  after it: a title no longer held whose grant has every one of them already is answered `changed: false`; any other
+  is `409 title_not_held` (change it in Grants). Audiences are never merged by a second release, nor silently
+  dropped.
 
 The households' own answers never change shape: an approve, decline or cancel reaches them as the same coarse
 statuses the refresh writes, uniform for every household following the request.

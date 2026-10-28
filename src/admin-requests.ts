@@ -78,10 +78,10 @@ export interface AdminRequestsListing {
 
 export interface AdminRequestsOptions {
   store: Pick<GrantStore,
-    | 'listAppRequests' | 'getGroup' | 'hasHandledRequest' | 'listAppWithdrawals' | 'writeAppRequests' | 'findGrantForRequest'>;
+    | 'listAppRequests' | 'getGroup' | 'hasHandledRequest' | 'listAppWithdrawals' | 'writeAppRequests' | 'get'>;
   seerr: Pick<SeerrClient, 'titleRequests' | 'requestState' | 'approveRequest' | 'declineRequest' | 'deleteRequest' | 'removeMovieFromRadarr' | 'radarrConfigured'>;
   jellyfin: Pick<JellyfinClient, 'findItemsByTmdbId' | 'existingItems' | 'getUsers'>;
-  service: Pick<AccessService, 'serialized' | 'appHeld' | 'setGrantGroups'>;
+  service: Pick<AccessService, 'serialized' | 'appHeld' | 'releaseHeld'>;
   /** The per-title turn "Get this" and cancels take (HouseholdRequests.inTitleTurn). */
   requests: Pick<HouseholdRequests, 'inTitleTurn'>;
   now?: () => number;
@@ -119,14 +119,15 @@ export class AdminSeerrError extends Error {
  * outcome and changes nothing more.
  *
  * - approve: a pending request is approved in Seerr. The households keep following it.
- * - decline: a pending request is declined in Seerr, and every record following it is `declined` at once: each
- *   household sees "We couldn't get this".
+ * - decline: a pending request is declined in Seerr, and in the same turn of the write queue every record following it
+ *   is `declined` (each household sees "We couldn't get this") and a declined withdrawal names every household: should
+ *   the title arrive through the request after all, none of them is given it, and it is held for no household.
  * - cancel: every household following the request is sent back to Get this (its records `deleted`), and, in the same
- *   write and before Seerr is asked to forget it, a withdrawal for the request with `requester` (and, for a request
- *   whose title Jellyfin does not have, `requesterId`) is written; then, optionally, the movie is removed from Radarr;
- *   then the request is deleted in Seerr and its withdrawal becomes a title hold. Whatever then arrives is held for no
- *   household, never public.
- * - release: a held title is given to chosen households.
+ *   write and before Seerr is asked to forget it, a withdrawal for the request with `requester` (and, for a genuine
+ *   request whose arrived items, if any, no active grant holds yet, `requesterId`) is written; then, optionally, the
+ *   movie is removed from Radarr; then the request is deleted in Seerr and its withdrawal becomes a title hold.
+ *   Whatever then arrives (or arrived without being granted) is held for no household, never public.
+ * - release: a held title is given to chosen households, checked and written in one turn of the write queue.
  */
 export class AdminRequests {
   readonly #store: AdminRequestsOptions['store'];
@@ -189,7 +190,8 @@ export class AdminRequests {
       this.#jellyfin.getUsers().then((list) => new Map(list.map((user) => [normalizeId(user.Id), user.Name]))).catch(() => new Map<string, string>()),
     ]);
     const handledHeld = new Set(held.map((entry) => entry.requestId));
-    const withdrawals = new Set(this.#store.listAppWithdrawals().map(([requestId]) => requestId));
+    // A declined withdrawal is the decline's (the row is `declined`), not a cancel's.
+    const withdrawals = new Set(this.#store.listAppWithdrawals().filter(([, withdrawal]) => withdrawal.declinedAt === undefined).map(([requestId]) => requestId));
     const rows: Array<AdminRequestRow & { latest: string }> = [];
     for (const group of groups.values()) {
       const sorted = [...group].sort((left, right) => left.createdAt.localeCompare(right.createdAt));
@@ -270,26 +272,40 @@ export class AdminRequests {
   }
 
   /**
-   * Declines a pending request in Seerr, then marks every record following it `declined` at once (the refresh would in
-   * time): each household sees "We couldn't get this". Declined already: the records are brought up to date.
+   * Declines a pending request in Seerr and, in the same turn of the write queue (so no webhook, replay, backfill or
+   * title hold decides its grant in between), marks every record following it `declined` at once (each household sees
+   * "We couldn't get this") and writes a declined withdrawal (AppWithdrawal `declinedAt`, with `requester` and every
+   * household that named it): should the title still arrive through the request, its grant gives none of them (nor
+   * the requester) access, so it is held for no household, never public. Declined already: brought up to date. A
+   * request granted already is left as it is (`409 request_granted`).
    */
   public async decline(requestId: string): Promise<{ status: 'declined'; changed: boolean }> {
     const title = this.#titleOf(requestId);
     this.#count();
     return this.#requests.inTitleTurn(title.mediaType, title.tmdbId, async () => {
       const state = await this.#state(requestId);
-      let changed = false;
-      if (state.status === PENDING) {
-        try {
-          await this.#seerr.declineRequest(requestId);
-          changed = true;
-        } catch (error) {
-          if ((await this.#state(requestId)).status !== DECLINED) throw seerrFailure('Seerr could not decline the request', error);
+      if (state.status !== PENDING && state.status !== DECLINED) throw new ConflictError('only a pending request can be declined', 'request_not_pending');
+      const changed = await this.#service.serialized(async () => {
+        if (this.#store.hasHandledRequest(requestId)) throw new ConflictError('the request was granted already; revoke its access instead', 'request_granted');
+        let declined = false;
+        if (state.status === PENDING) {
+          try {
+            await this.#seerr.declineRequest(requestId);
+            declined = true;
+          } catch (error) {
+            if ((await this.#state(requestId)).status !== DECLINED) throw seerrFailure('Seerr could not decline the request', error);
+          }
         }
-      } else if (state.status !== DECLINED) throw new ConflictError('only a pending request can be declined', 'request_not_pending');
-      await this.#service.serialized(async () => {
-        const update = this.#following(requestId).map(([id]) => ({ id, status: 'declined' as const }));
-        if (update.length > 0) await this.#store.writeAppRequests({ update });
+        const update = this.#naming(requestId).filter(([, record]) => !record.withdrawn && (record.status === 'pending' || record.status === 'failed'))
+          .map(([id]) => ({ id, status: 'declined' as const }));
+        const known = this.#store.listAppWithdrawals().find(([id]) => id === requestId)?.[1];
+        const households = [...new Set(this.#naming(requestId).map(([, record]) => record.householdId))];
+        if (update.length === 0 && known?.declinedAt && households.every((id) => known.householdIds.includes(id))) return declined;
+        await this.#store.writeAppRequests({
+          update,
+          withdraw: households.map((householdId) => ({ requestId, mediaType: title.mediaType, tmdbId: title.tmdbId, householdId, requester: true, declined: true })),
+        });
+        return declined || update.length > 0;
       });
       if (changed) log('admin declined a request', requestId);
       return { status: 'declined', changed };
@@ -319,18 +335,22 @@ export class AdminRequests {
       }
       const seerrTitle = await this.#seerr.titleRequests(title.mediaType, title.tmdbId).catch((error: unknown) => { throw seerrFailure('Seerr could not be read', error); });
       if (!seerrTitle) throw new AdminSeerrError('Seerr could not be read');
-      const present = (await this.#heldItems(title.mediaType, title.tmdbId, seerrTitle)).length > 0;
+      const items = await this.#heldItems(title.mediaType, title.tmdbId, seerrTitle);
+      const present = items.length > 0;
       if (options.removeFromRadarr) {
         if (title.mediaType !== 'movie' || present || state.mediaId === undefined || !await this.#seerr.radarrConfigured().catch(() => false)) {
           throw new ConflictError('removing from Radarr is offered only for a movie Jellyfin does not have, with Radarr set up in Seerr', 'radarr_removal_not_offered');
         }
       }
-      // The requester whom a title hold records: only for a genuine request (no join rule) whose title Jellyfin does
-      // not have now, so that anything of it that appears later is its arrival.
+      // The requester whom a title hold records: only for a genuine request (no join rule; Jellyfin had no item of the
+      // title when it was made, so any item of it is its arrival), unless every item Jellyfin has now is on an active
+      // grant already (decided: nothing to hold). An item that arrived but whose grant is not decided yet (no webhook
+      // granted it so far) is held, never left public once Seerr forgets the request.
       const records = this.#naming(requestId);
       const asked = records.find(([, record]) => record.branch === 'request')?.[1].jellyfinUserId
         ?? seerrTitle.requests.find((request) => request.id === requestId)?.requesterJellyfinId;
-      const genuine = !present && !records.some(([, record]) => record.joinOnGrant !== undefined);
+      const undecided = !present || items.some((itemId) => this.#store.get(itemId)?.active !== true);
+      const genuine = undecided && !records.some(([, record]) => record.joinOnGrant !== undefined);
       const requesterId = genuine && asked ? normalizeId(asked) : undefined;
       await this.#withdrawAll(requestId, title, requesterId, false);
       let removedFromRadarr = false;
@@ -355,24 +375,22 @@ export class AdminRequests {
   }
 
   /**
-   * Gives a held title (see AccessService.appHeld) to `householdIds`, added to any household its grant already has. A
-   * title no longer held whose grant already has every one of them answers as released (unchanged).
+   * Gives a held title (see AccessService.appHeld) to `householdIds`, added to any household its grant already has,
+   * checked and written in one turn of the write queue (AccessService.releaseHeld). The first release of a held title
+   * wins: a later one (concurrent or not) whose households its grant has already answers as released (unchanged), any
+   * other `409 title_not_held`, never a second audience merged in or silently dropped.
    */
   public async release(requestId: string, householdIds: string[]): Promise<{ status: 'released'; changed: boolean; itemId: string }> {
     const wanted = [...new Set(householdIds.map(normalizeId))];
     if (wanted.length === 0) throw new Error('householdIds must contain at least one household');
     for (const id of wanted) if (!this.#store.getGroup(id)) throw new AdminRequestNotFoundError('household');
     this.#count();
-    const grant = this.#store.findGrantForRequest(requestId);
-    if (!grant?.active) throw new AdminRequestNotFoundError('held title');
-    const held = this.#service.appHeld().titles.some((entry) => entry.requestId === requestId);
-    if (!held) {
-      if (wanted.every((id) => grant.groupIds.includes(id))) return { status: 'released', changed: false, itemId: grant.itemId };
-      throw new ConflictError('the title is no longer held; change its access in Grants', 'title_not_held');
-    }
-    await this.#service.setGrantGroups(grant.itemId, [...new Set([...grant.groupIds, ...wanted])]);
-    console.log(JSON.stringify({ level: 'info', message: 'admin released a held title', requestId, itemId: grant.itemId, households: wanted.length }));
-    return { status: 'released', changed: true, itemId: grant.itemId };
+    const outcome = await this.#service.releaseHeld(requestId, wanted);
+    if (outcome.result === 'not_found') throw new AdminRequestNotFoundError('held title');
+    if (outcome.result === 'not_held') throw new ConflictError('the title is no longer held; change its access in Grants', 'title_not_held');
+    if (outcome.result === 'unchanged') return { status: 'released', changed: false, itemId: outcome.itemId };
+    console.log(JSON.stringify({ level: 'info', message: 'admin released a held title', requestId, itemId: outcome.itemId, households: wanted.length }));
+    return { status: 'released', changed: true, itemId: outcome.itemId };
   }
 
   /**

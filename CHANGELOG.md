@@ -27,17 +27,25 @@ changes are always listed at the top of the release notes.
   it, and whether it is held), filtered on the page by household, status, type,
   and title or requester. Each row offers, after a confirmation:
   - **Approve** and **Decline** a pending request in Seerr. A decline shows
-    every household following it **We couldn't get this** at once.
+    every household following it **We couldn't get this** at once, and is
+    recorded: should the title still arrive through the declined request (a
+    late webhook, its replay, the backfill), none of those households is given
+    it, and it is held for no household.
   - **Cancel request** for every household: each goes back to **Get this**,
     and the request is deleted in Seerr. JellyPass records the cancel (so the
     title is held for no household if it still arrives) **before** Seerr
     forgets the request, closing the window a delete in Seerr's own website
-    leaves. **Also remove from Radarr** is offered only for a movie Jellyfin
+    leaves. A title that arrived in Jellyfin before the cancel but was not
+    granted yet is held too; only a request that follows the join rules (a
+    title Jellyfin already had) leaves a public title public. **Also remove from Radarr** is offered only for a movie Jellyfin
     does not have, and only when Seerr has an HD Radarr server; it goes
     through Seerr, with the credentials Seerr holds. It is never offered for a
     series (Seerr would remove the whole series from Sonarr, files included).
   - A **Held titles** section lists titles cancelled with nobody following
     them that arrived anyway, and **Release** gives one to chosen households.
+    Of two releases of the same title at once, only the first takes effect;
+    the other is refused (`409 title_not_held`) unless it asked for the same
+    households.
 - Admin API (admin host only, with the admin token or a session, and the same
   origin and JSON checks as every other admin change): `GET /v1/app/requests`;
   `POST /v1/app/requests/{requestId}/approve`, `/decline` and `/cancel`

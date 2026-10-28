@@ -56,7 +56,7 @@ export const ADMIN_HTML = `<!doctype html>
         <div class="section-tools"><div><h2>Household requests</h2><p>What households asked for in the app. Approve, decline or cancel a request for every household following it.</p></div><button id="refresh-requests" class="button quiet" type="button">Refresh</button></div>
         <div class="requests-toolbar"><label class="search"><span aria-hidden="true">⌕</span><input id="requests-search" type="search" placeholder="Search title or requester" aria-label="Search by title or requester"></label><select id="requests-household" aria-label="Filter by household"><option value="">All households</option></select><select id="requests-status" aria-label="Filter by status"><option value="">All statuses</option><option value="waiting">Waiting (pending or approved)</option><option value="pending">Pending in Seerr</option><option value="approved">Approved in Seerr</option><option value="ready">Ready</option><option value="failed">Declined or failed</option><option value="cancelled">Cancelled or deleted</option><option value="held">Held for no household</option></select><select id="requests-type" aria-label="Filter by type"><option value="">Films and series</option><option value="movie">Films</option><option value="tv">Series</option></select></div>
         <p id="requests-summary" class="requests-summary" role="status" aria-live="polite"></p>
-        <div id="requests-list" class="request-rows"></div>
+        <div id="household-requests-list" class="request-rows"></div>
         <div class="recent-head"><div><div class="eyebrow">Cancelled, then arrived</div><h2>Held titles</h2></div><p>Titles nobody follows any more. They are hidden from every household until you release them.</p></div>
         <div id="held-list" class="request-rows"></div>
       </section>
@@ -1098,7 +1098,7 @@ export const ADMIN_APP_JS = `
     select.replaceChildren(node('option', { value: '', text: 'All households' }), ...[...households].sort((left, right) => left[1].localeCompare(right[1]))
       .map(([id, name]) => node('option', { value: id, text: name })));
     select.value = households.has(chosen) ? chosen : '';
-    const list = byId('requests-list');
+    const list = byId('household-requests-list');
     if (state.requestsUnavailable) {
       byId('requests-summary').textContent = '';
       list.replaceChildren(node('div', { class: 'empty' }, [node('strong', { text: 'Requests unavailable' }), node('span', { text: state.requestsUnavailable })]));
@@ -1156,8 +1156,8 @@ export const ADMIN_APP_JS = `
       approve: ['Approve request', 'Approve ' + title + ' in Seerr? It is sent to ' + (row.mediaType === 'movie' ? 'Radarr' : 'Sonarr') + ' to download.', ''],
       decline: ['Decline request', 'Decline ' + title + ' in Seerr? ' + (others === 1 ? 'The household that asked sees' : 'All ' + others + ' households following it see') + ' “We couldn’t get this”.', ''],
       cancel: ['Cancel request', 'Cancel ' + title + ' for every household? ' + (others === 1 ? 'The household that asked goes' : 'All ' + others + ' households go') + ' back to “Get this”, and the request is deleted in Seerr.',
-        row.mediaType === 'movie' && row.actions.removeFromRadarr ? 'Without removing it from Radarr, it may still download. It is then held for no household until you release it.'
-          : 'It may still download. It is then held for no household until you release it.'],
+        (row.mediaType === 'movie' && row.actions.removeFromRadarr ? 'Without removing it from Radarr, it may still download. It is then held for no household until you release it'
+          : 'It may still download. It is then held for no household until you release it') + '. A request that follows the join rules (a title or series Jellyfin already had) is the exception: a public title stays public.'],
     }[action];
     state.pendingAction = { row, action };
     byId('request-action-title').textContent = copy[0];

@@ -682,7 +682,7 @@ export class GrantStore {
     /** Requests "Get this" made and settled as genuine: no member-wide tombstone for the member and title covers them. */
     exempt?: Array<{ mediaType: 'movie' | 'tv'; tmdbId: number; jellyfinUserId: string; requestId: string }>;
     /** Households withdrawing from Seerr requests (see AppWithdrawal), merged into any withdrawal already kept. */
-    withdraw?: Array<{ requestId: string; mediaType: 'movie' | 'tv'; tmdbId: number; householdId: string; requester: boolean; requesterId?: string }>;
+    withdraw?: Array<{ requestId: string; mediaType: 'movie' | 'tv'; tmdbId: number; householdId: string; requester: boolean; requesterId?: string; declined?: boolean }>;
     /** Withdrawals no longer needed: the member deleted their pending request, or a title hold found its title granted. */
     forgetWithdrawals?: string[];
     /**
@@ -760,6 +760,7 @@ export class GrantStore {
         createdAt: before?.createdAt ?? now,
         ...(before?.grantedAt ? { grantedAt: before.grantedAt } : {}),
         ...(before?.seerrGoneAt ? { seerrGoneAt: before.seerrGoneAt } : {}),
+        ...(before?.declinedAt || entry.declined ? { declinedAt: before?.declinedAt ?? now } : {}),
       };
     }
     for (const id of input.forgetWithdrawals ?? []) delete withdrawals[id];

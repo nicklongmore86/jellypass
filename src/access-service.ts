@@ -285,6 +285,25 @@ export class AccessService {
   }
 
   /**
+   * Gives a title held for no household (see appHeld) to `groupIds`, added to the households its grant has, and applies
+   * it. The check and the write are one turn of the write queue, so of two releases of the same title only the first
+   * finds it held: a later one whose households the grant has already is `unchanged`, any other `not_held`.
+   */
+  public releaseHeld(requestId: string, groupIds: string[]): Promise<{ result: 'released' | 'unchanged'; itemId: string } | { result: 'not_found' } | { result: 'not_held' }> {
+    return this.#exclusive(async () => {
+      const grant = this.#store.findGrantForRequest(requestId);
+      if (!grant?.active) return { result: 'not_found' as const };
+      const wanted = groupIds.map(normalizeId);
+      const withdrawal = this.#store.getAppWithdrawal(requestId);
+      const held = withdrawal?.requester === true && this.#store.hasHandledRequest(requestId) && this.#store.resolveOwners(grant).length === 0;
+      if (!held) return wanted.every((id) => grant.groupIds.includes(id)) ? { result: 'unchanged' as const, itemId: grant.itemId } : { result: 'not_held' as const };
+      const result = await this.#store.setGrantGroups(grant.itemId, [...new Set([...grant.groupIds, ...wanted])]);
+      await this.#reconcileGrant(result.current);
+      return { result: 'released' as const, itemId: grant.itemId };
+    });
+  }
+
+  /**
    * Applies the title holds (docs/app-design.md, "Cancelling (step 2c)"; AppWithdrawal `seerrGoneAt`): a request its
    * requester withdrew and an administrator then deleted in Seerr may still download, and with no request nothing would
    * grant its title, which would arrive public. For each hold, the title's HD items Jellyfin has now (see #heldItems)

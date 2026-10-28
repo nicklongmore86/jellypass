@@ -58,7 +58,8 @@ function adminPage(answer) {
     Headers,
     URLSearchParams,
     confirm: () => true,
-    Date: { now: () => now, parse: Date.parse },
+    // A real Date (a grant card formats its time), with the manual clock's now.
+    Date: class extends Date { static now() { return now; } },
     setTimeout: (callback, ms) => { const id = nextTimer++; timers.set(id, { at: now + (ms ?? 0), callback }); return id; },
     clearTimeout: (id) => { timers.delete(id); },
   };
@@ -500,7 +501,7 @@ describe('admin UI Requests tab', () => {
     await page.settle();
     return page;
   }
-  const titles = (page) => [...page.document.querySelectorAll('#requests-list .request-row h3')].map((heading) => heading.textContent);
+  const titles = (page) => [...page.document.querySelectorAll('#household-requests-list .request-row h3')].map((heading) => heading.textContent);
   const button = (page, label) => [...page.document.querySelectorAll('#requests-panel button, dialog button')].find((entry) => entry.getAttribute('aria-label') === label || entry.textContent === label);
   const change = (page, id, value) => {
     page.document.getElementById(id).value = value;
@@ -512,11 +513,11 @@ describe('admin UI Requests tab', () => {
     assert.equal(page.requests.filter((request) => request === 'GET /v1/app/requests').length, 1);
     assert.equal(page.document.getElementById('requests-panel').hidden, false);
     assert.deepEqual(titles(page), ['Synthetic Film (2020)', 'Synthetic Show (2020)', 'Synthetic Declined (2020)']);
-    const first = page.document.querySelector('#requests-list .request-row');
+    const first = page.document.querySelector('#household-requests-list .request-row');
     assert.match(first.textContent, /Requested 2026-10-20 by Alice · Grove/);
     assert.match(first.textContent, /Grove, Heath · 1 following/);
     assert.deepEqual([...first.querySelectorAll('button')].map((entry) => entry.textContent), ['Approve', 'Decline', 'Cancel request']);
-    assert.deepEqual([...page.document.querySelectorAll('#requests-list .request-row')][2].querySelectorAll('button').length, 0);
+    assert.deepEqual([...page.document.querySelectorAll('#household-requests-list .request-row')][2].querySelectorAll('button').length, 0);
     assert.equal(page.document.getElementById('requests-count').textContent, '3');
     assert.match(page.document.getElementById('held-list').textContent, /Synthetic Held \(2021\).*Cancelled 2026-10-01 · arrived 2026-10-05/);
   });
@@ -539,7 +540,7 @@ describe('admin UI Requests tab', () => {
     assert.deepEqual(titles(page), ['Synthetic Show (2020)']);
     assert.equal(page.document.getElementById('requests-summary').textContent, '1 of 3 requests shown');
     change(page, 'requests-search', 'nothing like it');
-    assert.match(page.document.getElementById('requests-list').textContent, /No requests match/);
+    assert.match(page.document.getElementById('household-requests-list').textContent, /No requests match/);
     assert.equal(page.requests.length, listed, 'filtering asks the server nothing');
   });
 
@@ -600,7 +601,40 @@ describe('admin UI Requests tab', () => {
 
   it('says so when the server has no requests to show, and puts no secret in the page', async () => {
     const page = await requestsPage([], { '/v1/app/requests': { status: 404, body: { error: 'requests_not_configured' } } });
-    assert.match(page.document.getElementById('requests-list').textContent, /Requests unavailable.*Requests need the household app and Seerr\./);
+    assert.match(page.document.getElementById('household-requests-list').textContent, /Requests unavailable.*Requests need the household app and Seerr\./);
     assert.doesNotMatch(page.document.documentElement.outerHTML, /apiKey|admin-secret|X-Api-Key/i);
+  });
+
+  it('gives every element of the page its own ID', () => {
+    const { document } = parseHTML(ADMIN_HTML);
+    const ids = [...document.querySelectorAll('[id]')].map((element) => element.id);
+    assert.ok(ids.length > 50);
+    assert.deepEqual(ids.filter((id, index) => ids.indexOf(id) !== index), []);
+  });
+
+  it('still lists a grant\'s Seerr requests in the Grants dialog once the Requests tab was shown', async () => {
+    const grant = {
+      itemId: '22220000222200002222000022220000', mediaType: 'movie', requests: { 7380001: 'a11ce000a11ce000a11ce000a11ce000' },
+      manualUserIds: [], groupIds: [], owners: ['a11ce000a11ce000a11ce000a11ce000'], sync: { state: 'synced', attempts: 0 }, updatedAt: '2026-10-20T10:00:00.000Z', active: true,
+    };
+    const page = adminPage((path, init) => {
+      if (init?.method === 'POST') return { status: 200, body: {} };
+      if (path === '/v1/app/requests') return { status: 200, body: LISTING };
+      if (path === '/v1/groups') return GROUPS;
+      if (path === '/v1/grants') return { status: 200, body: { grants: [grant] } };
+      return DATA[path];
+    });
+    page.window.HTMLElement.prototype.showModal = function showModal() { this.setAttribute('open', ''); };
+    page.window.HTMLElement.prototype.close = function close() { this.removeAttribute('open'); };
+    await page.settle();
+    page.document.querySelector('.tabs button[data-tab="requests"]').dispatchEvent(new page.window.Event('click'));
+    await page.settle();
+    page.document.querySelector('.tabs button[data-tab="grants"]').dispatchEvent(new page.window.Event('click'));
+    await page.settle();
+    [...page.document.querySelectorAll('#grants-list button')].find((entry) => entry.textContent === 'Requests').dispatchEvent(new page.window.Event('click'));
+    assert.equal(page.document.getElementById('requests-dialog').hasAttribute('open'), true);
+    assert.match(page.document.getElementById('requests-list').textContent, /Request 7380001/);
+    assert.equal(page.document.querySelectorAll('#requests-dialog .request-row').length, 1);
+    assert.equal(page.document.querySelectorAll('#household-requests-list .request-row').length, 3);
   });
 });
