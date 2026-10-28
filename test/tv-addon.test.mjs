@@ -4381,6 +4381,41 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
       assert.equal(state.seen.filter((rel) => rel === '/discover/popular-movies').length, 2, 'asked again for the new session');
     });
 
+    it('drawn afresh under a new token, what the earlier drawing left is dead: a kept card, hero button, chip, hide toggle or Try again does nothing, and the new ones work', async (t) => {
+      const state = { failures: { '/discover/popular-tv': 500 } };
+      const page = await openScripted(t, state);
+      await goTo(page);
+      const keep = () => ({
+        card: cardsOf(rowNamed(page, 'Trending'))[0],
+        hero: page.document.querySelector('[data-jellypass-tv-focus="hero"]'),
+        next: page.document.querySelector('[data-jellypass-tv-focus="hero:next"]'),
+        movies: chip(page, 'movies'),
+        hide: chip(page, 'hide'),
+        retry: rowNamed(page, 'Popular series').querySelector('button'),
+      });
+      const old = keep();
+      assert.ok(Object.values(old).every((one) => one), 'every kind of element was found');
+      page.session.token = 'token-after-a-new-sign-in';
+      page.document.body.appendChild(page.document.createElement('div'));
+      await page.settled();
+      const fresh = keep();
+      for (const name of Object.keys(old)) assert.ok(old[name] !== fresh[name], `${name} was drawn again`);
+      const html = root(page).innerHTML;
+      const hash = page.location.hash;
+      const calls = page.requests.length;
+      for (const one of Object.values(old)) page.click(one);
+      await page.settled();
+      assert.ok(root(page).innerHTML === html, 'the page is as it was');
+      assert.equal(page.location.hash, hash, 'no title opened');
+      assert.equal(page.requests.length, calls, 'no call');
+      // The new elements work.
+      page.click(fresh.movies);
+      await page.settled();
+      assert.equal(fresh.movies.getAttribute('aria-pressed'), 'true');
+      page.click(cardsOf(rowNamed(page, 'Popular movies'))[0]);
+      assert.notEqual(page.location.hash, hash, 'a new card opens its title');
+    });
+
     /** What changes under the page with no page change in between: `update` (the cleanup) has not run when the callback is delivered. */
     const SESSION_CHANGES = {
       'a sign-out': (page) => { page.session.user = null; page.session.token = null; },
@@ -4601,6 +4636,17 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
       assert.deepEqual([entries(page).length, here()], [1, 1], 'a copy that carried the button: still one');
       const link = () => bar().querySelector('a[aria-label="Search"]');
       assert.equal(entries(page)[0].nextElementSibling, link(), 'before Search');
+      // The copy's button still opens Discover, once (a cloned button has lost its listener, so it was drawn again).
+      const opened = [];
+      const first = page.location.hash;
+      page.click(entries(page)[0]);
+      assert.equal(page.location.hash, HASH, 'the compass of a cloned toolbar opens Discover');
+      page.route(HASH);
+      await page.settled();
+      opened.push(page.document.querySelectorAll('[data-jellypass-tv-discover]').length);
+      assert.deepEqual(opened, [1], 'one page');
+      page.location.hash = first;
+      await page.settled();
       // A pristine toolbar (React drew it afresh): the button is put back.
       const pristine = bar().cloneNode(true);
       for (const button of pristine.querySelectorAll('[data-jellypass-tv-discover-entry]')) button.remove();

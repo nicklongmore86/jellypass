@@ -165,6 +165,12 @@ await settle(800);
 await page.evaluate(({ bar }) => { const header = document.querySelector(bar); header.replaceWith(header.cloneNode(true)); }, { bar: BAR });
 await settle();
 await one('toolbar replaced by a copy that carried the button (no duplicate)');
+await page.click(ENTRY);
+await settle(800);
+check('the compass of the replaced toolbar opens Discover, once', (await state()).hash === '#/jellypass/discover' && (await page.$$eval('[data-jellypass-tv-discover]', (nodes) => nodes.length)) === 1, JSON.stringify(await state()));
+await page.evaluate(() => { location.hash = '#/home'; });
+await settle(800);
+await one('back home: still one compass');
 await page.evaluate(({ bar, entry }) => {
   const header = document.querySelector(bar);
   const copy = header.cloneNode(true);

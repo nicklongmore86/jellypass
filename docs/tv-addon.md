@@ -494,11 +494,13 @@ and a button in it would be a button no one sees. (A Jellyfin web 10.11 in a des
 without `layout-tv`, therefore gets no button; the Tizen app runs the TV layout.)
 
 **Session isolation.** The page takes the shared session stamp (member, token and sign-in generation: `SessionWatch.stamp`) when
-it is drawn, and every callback that can arrive later than what started it checks it still holds before it does anything: the
-image windows, the row (data) observers, the chips and "Hide what I have", the hero's buttons, a chosen card, Try again, and
-every answer. After a sign-out, another member or a new token (with or without a sign-out) they do nothing: no `src`, no call,
-no change to the page. The cleanup that follows a page change (`update`) then ends the page, or, for the same member under a
-new token, draws it afresh.
+it is drawn. Each drawing (the first, and the one a new token makes) holds its own stamp, never changed afterwards, and the cards,
+hero buttons, chips, "Hide what I have", Try again, the observers and the answers each remember the drawing and painting they
+came from; they check both still hold, and the session still holds the stamp, before they do anything. After a sign-out, another
+member or a new token they do nothing (no `src`, no call, no navigation, no change to the page), and that includes an element
+kept from an earlier drawing and activated later. What is tested is these callbacks; it is not a claim about any other code
+path of the add-on. The cleanup that follows a page change (`update`) ends the page, or, for the same member under a new token,
+draws it afresh.
 
 #### Live header check
 

@@ -22,6 +22,8 @@ export class DiscoverEntry {
   readonly #document: Document;
   readonly #watch: SessionWatch;
   readonly #open: () => void;
+  /** The buttons this drew and bound: a copy of one (a toolbar cloned or rebuilt by Jellyfin) has the attribute but no listener, so it is replaced. */
+  readonly #bound = new WeakSet<Element>();
 
   public constructor(document: Document, watch: SessionWatch, open: () => void) {
     this.#document = document;
@@ -36,7 +38,7 @@ export class DiscoverEntry {
     const header = session ? headerSearch(this.#document) : undefined;
     if (header && found.length === 1) {
       const [button] = Array.prototype.slice.call(found) as Element[];
-      if (button && button.parentNode === header.right && button.nextElementSibling === header.search && button.getAttribute(ENTRY_ATTRIBUTE) === session?.userId) return;
+      if (button && button.parentNode === header.right && button.nextElementSibling === header.search && button.getAttribute(ENTRY_ATTRIBUTE) === session?.userId && this.#bound.has(button)) return;
     }
     for (let i = 0; i < found.length; i += 1) {
       const old = found[i] as Element;
@@ -69,6 +71,7 @@ export class DiscoverEntry {
       const now = this.#watch.current();
       if (now && now.userId === session.userId) this.#open();
     });
+    this.#bound.add(button);
     header.right.insertBefore(button, header.search);
   }
 }

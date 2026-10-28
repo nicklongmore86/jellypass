@@ -65,7 +65,23 @@ interface Drawn {
   badge: HTMLElement;
 }
 
+/**
+ * One drawing of the page under one session. It is never changed: a new token (or sign-in) makes a new one, so what an earlier one
+ * drew (a card, a chip, a button) keeps pointing at the earlier one and is refused, however long the element is kept.
+ */
+interface Render {
+  readonly stamp: Stamp;
+}
+
+/** What a callback drawn into the body remembers: the page, the drawing, and which painting of the body it came from. */
+interface Scope {
+  readonly open: Open;
+  readonly render: Render;
+  readonly paint: number;
+}
+
 interface RowView {
+  scope: Scope;
   id: string;
   heading: string;
   variant: 'poster' | 'backdrop';
@@ -95,11 +111,12 @@ interface Hero {
 
 interface Open {
   userId: string;
-  /** The session the page was drawn under (member, token and sign-in generation): every callback checks it still holds. */
-  stamp: Stamp;
+  /** The drawing under the session the page is shown for (member, token and sign-in generation): every callback checks it still holds. */
+  render: Render;
   context: PageContext;
   view: HTMLElement;
   heroSlot: HTMLElement;
+  chipBox: HTMLElement;
   chips: { [key: string]: HTMLElement };
   body: HTMLElement;
   /** Bumped by every drawing of the body and by leaving: an answer that comes for an earlier one is dropped. */
@@ -162,10 +179,11 @@ export class DiscoverPage {
     if (session.userId !== open.userId || !open.view.parentNode) {
       this.#asked.sync(session.userId);
       this.#end(open);
-    } else if (!this.#watch.holds(open.stamp)) {
+    } else if (!this.#watch.holds(open.render.stamp)) {
       // The same member under a new token (or a new sign-in): what the old session fetched is not shown, the page is drawn afresh.
       this.#asked.sync(session.userId);
-      open.stamp = this.#watch.stamp(session);
+      open.render = { stamp: this.#watch.stamp(session) };
+      this.#drawChips(open);
       this.#paint(open);
     }
   }
@@ -175,20 +193,43 @@ export class DiscoverPage {
    * thing that started it (an observer, a click, an answer) asks this first and does nothing if not: sign-out, another member or a
    * new token are seen here at once, before `update` has had its turn to end the page.
    */
-  #live(open: Open): boolean {
-    return this.#open === open && this.#watch.holds(open.stamp) !== undefined;
+  #live(open: Open, render: Render, paint?: number): boolean {
+    return this.#open === open && open.render === render && (paint === undefined || open.paint === paint) && this.#watch.holds(render.stamp) !== undefined;
+  }
+
+  /** For a callback that asks at the moment it runs, not for something drawn earlier (the overlay, an observer of the current painting). */
+  #current(open: Open): boolean {
+    return this.#live(open, open.render);
   }
 
   /** The "Get this" overlay changed (an accepted request, a cancel, or an expiry): the statuses are drawn again, no call. */
   public overlayChanged(): void {
     const open = this.#open;
-    if (!open || !this.#live(open)) return;
+    if (!open || !this.#current(open)) return;
     for (const row of open.rows) {
       if (!row.answered) continue;
       if (this.#hideHeld && this.#visibleKeys(row) !== row.drawn.map((one) => this.#cardKey(one.card)).join(' ')) this.#fill(row);
       else for (const one of row.drawn) this.#mark(one);
     }
     if (open.hero) this.#showSlide(open.hero);
+  }
+
+  /** The chips, new for each drawing: one kept from an earlier drawing (an earlier token) does nothing. */
+  #drawChips(open: Open): void {
+    const render = open.render;
+    open.chipBox.textContent = '';
+    open.chips = {};
+    for (const filter of DISCOVER_FILTERS) {
+      const chip = this.#chip(DISCOVER_TEXT.filters[filter], `chip:${filter}`, this.#filter === filter);
+      chip.addEventListener('click', () => this.#choose(open, render, filter));
+      open.chips[filter] = chip;
+      open.chipBox.appendChild(chip);
+    }
+    const hide = this.#chip(DISCOVER_TEXT.hideHeld, 'chip:hide', this.#hideHeld);
+    hide.className += ' jellypass-tv-discover-chip-toggle';
+    hide.addEventListener('click', () => this.#toggleHide(open, render));
+    open.chips.hide = hide;
+    open.chipBox.appendChild(hide);
   }
 
   /** The page host's render for the route. */
@@ -213,18 +254,8 @@ export class DiscoverPage {
     view.appendChild(heroSlot);
     view.appendChild(chips);
     view.appendChild(body);
-    const open: Open = { userId: session.userId, stamp: this.#watch.stamp(session), context, view, heroSlot, chips: {}, body, paint: 0, rows: [], units: [], hero: undefined, networks: undefined, foot: undefined, dataWatch: undefined, imageWatch: undefined, byElement: [] };
-    for (const filter of DISCOVER_FILTERS) {
-      const chip = this.#chip(DISCOVER_TEXT.filters[filter], `chip:${filter}`, this.#filter === filter);
-      chip.addEventListener('click', () => this.#choose(open, filter));
-      open.chips[filter] = chip;
-      chips.appendChild(chip);
-    }
-    const hide = this.#chip(DISCOVER_TEXT.hideHeld, 'chip:hide', this.#hideHeld);
-    hide.className += ' jellypass-tv-discover-chip-toggle';
-    hide.addEventListener('click', () => this.#toggleHide(open));
-    open.chips.hide = hide;
-    chips.appendChild(hide);
+    const open: Open = { userId: session.userId, render: { stamp: this.#watch.stamp(session) }, context, view, heroSlot, chipBox: chips, chips: {}, body, paint: 0, rows: [], units: [], hero: undefined, networks: undefined, foot: undefined, dataWatch: undefined, imageWatch: undefined, byElement: [] };
+    this.#drawChips(open);
     this.#open = open;
     this.#paint(open);
     return { title: DISCOVER_TEXT.title, cleanup, focus: open.hero ? open.hero.view : (open.chips[this.#filter] as HTMLElement) };
@@ -285,16 +316,16 @@ export class DiscoverPage {
     return chip;
   }
 
-  #choose(open: Open, filter: DiscoverFilter): void {
-    if (!this.#live(open) || filter === this.#filter) return;
+  #choose(open: Open, render: Render, filter: DiscoverFilter): void {
+    if (!this.#live(open, render) || filter === this.#filter) return;
     this.#filter = filter;
     this.#slide = 0;
     for (const one of DISCOVER_FILTERS) (open.chips[one] as HTMLElement).setAttribute('aria-pressed', String(one === filter));
     this.#paint(open);
   }
 
-  #toggleHide(open: Open): void {
-    if (!this.#live(open)) return;
+  #toggleHide(open: Open, render: Render): void {
+    if (!this.#live(open, render)) return;
     this.#hideHeld = !this.#hideHeld;
     open.chips.hide?.setAttribute('aria-pressed', String(this.#hideHeld));
     for (const row of open.rows) if (row.answered) this.#fill(row);
@@ -382,7 +413,7 @@ export class DiscoverPage {
     section.appendChild(headingContainer);
     const body = this.#el('div', 'jellypass-tv-discover-row-body');
     section.appendChild(body);
-    const row: RowView = { id: key, heading, variant, request, eager, feeds, section, body, unit: this.#unit(open, section), asked: false, answered: undefined, drawn: [] };
+    const row: RowView = { scope: { open, render: open.render, paint: open.paint }, id: key, heading, variant, request, eager, feeds, section, body, unit: this.#unit(open, section), asked: false, answered: undefined, drawn: [] };
     this.#skeleton(row);
     open.rows.push(row);
     return row;
@@ -415,7 +446,7 @@ export class DiscoverPage {
   }
 
   #onData(open: Open, paint: number, entries: IntersectionObserverEntry[]): void {
-    if (open.paint !== paint || !this.#live(open)) return;
+    if (open.paint !== paint || !this.#current(open)) return;
     for (const entry of entries) {
       if (!entry.isIntersecting) continue;
       const found = open.byElement.filter((one) => one.element === entry.target && one.row)[0];
@@ -426,7 +457,7 @@ export class DiscoverPage {
   }
 
   #onImages(open: Open, paint: number, entries: IntersectionObserverEntry[]): void {
-    if (open.paint !== paint || !this.#live(open)) return;
+    if (open.paint !== paint || !this.#current(open)) return;
     for (const entry of entries) {
       const found = open.byElement.filter((one) => one.element === entry.target && one.unit)[0];
       if (found && found.unit) this.#near(found.unit, entry.isIntersecting);
@@ -459,7 +490,7 @@ export class DiscoverPage {
   async #load(open: Open, paint: number, row: RowView, retry: boolean): Promise<void> {
     row.asked = true;
     const result = await this.#data.get(row.request, { retry });
-    if (open.paint !== paint || !this.#live(open) || 'stale' in result) return;
+    if (open.paint !== paint || !this.#current(open) || 'stale' in result) return;
     if (result.ok) this.#settle(open, row, (result.value as { cards: DiscoverCard[] }).cards);
     else {
       if (row.feeds) open.heroSlot.className = 'jellypass-tv-discover-hero-slot';
@@ -480,7 +511,7 @@ export class DiscoverPage {
     note.appendChild(this.#el('p', 'jellypass-tv-discover-row-note-text', `${kind.title}. ${kind.body}`));
     const retry = this.#button('raised jellypass-tv-discover-button', DISCOVER_TEXT.retry, `retry:${key}`);
     retry.addEventListener('click', () => {
-      if (open.paint === paint && this.#live(open)) again();
+      if (open.paint === paint && this.#current(open)) again();
     });
     note.appendChild(retry);
     into.appendChild(note);
@@ -536,7 +567,7 @@ export class DiscoverPage {
     box.appendChild(this.#el('div', 'cardText cardTextCentered cardText-first jellypass-tv-card-title', card.title));
     if (card.year !== null) box.appendChild(this.#el('div', 'cardText cardText-secondary cardTextCentered jellypass-tv-card-year', String(card.year)));
     button.appendChild(box);
-    button.addEventListener('click', () => this.#openTitle(card));
+    button.addEventListener('click', () => this.#openTitle(row.scope, card));
     const one = { card, button, badge };
     this.#mark(one);
     return one;
@@ -556,9 +587,8 @@ export class DiscoverPage {
   }
 
   /** A card was chosen: the title page opens, for the member who is signed in (a card of a session since ended opens nothing). */
-  #openTitle(card: DiscoverCard): void {
-    const open = this.#open;
-    if (!open || !this.#live(open)) return;
+  #openTitle(scope: Scope, card: DiscoverCard): void {
+    if (!this.#live(scope.open, scope.render, scope.paint)) return;
     this.#host.navigate(titleHash(card.mediaType, card.tmdbId));
   }
 
@@ -597,19 +627,20 @@ export class DiscoverPage {
     section.appendChild(shade);
     section.appendChild(text);
     open.heroSlot.appendChild(section);
+    const scope: Scope = { open, render: open.render, paint: open.paint };
     const hero: Hero = { slides, unit, title, facts, overview, dots, view, image };
     open.hero = hero;
-    previous.addEventListener('click', () => this.#step(open, hero, -1));
-    next.addEventListener('click', () => this.#step(open, hero, 1));
-    view.addEventListener('click', () => this.#openTitle(hero.slides[this.#slide] as DiscoverCard));
+    previous.addEventListener('click', () => this.#step(scope, hero, -1));
+    next.addEventListener('click', () => this.#step(scope, hero, 1));
+    view.addEventListener('click', () => this.#openTitle(scope, hero.slides[this.#slide] as DiscoverCard));
     this.#slide = Math.min(this.#slide, slides.length - 1);
     this.#showSlide(hero);
     // The hero is what the page opens on (or what Back finds again): the host leaves focus alone once the member has moved it.
     open.context.focus(view);
   }
 
-  #step(open: Open, hero: Hero, by: number): void {
-    if (!this.#live(open)) return;
+  #step(scope: Scope, hero: Hero, by: number): void {
+    if (!this.#live(scope.open, scope.render, scope.paint)) return;
     this.#slide = (this.#slide + by + hero.slides.length) % hero.slides.length;
     this.#showSlide(hero);
   }
@@ -641,7 +672,7 @@ export class DiscoverPage {
       return;
     }
     this.#data.get(request, { retry }).then((result) => {
-      if (open.paint !== paint || !this.#live(open) || 'stale' in result) return;
+      if (open.paint !== paint || !this.#current(open) || 'stale' in result) return;
       if (result.ok) this.#drawSources(open, paint, result.value as DiscoverSources);
       else if (open.networks) this.#failed(open, paint, result, open.networks, () => this.#sources(open, paint, true), 'sources');
     });
