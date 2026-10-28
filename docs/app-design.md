@@ -1569,8 +1569,10 @@ request from its grant (it is pruned at once). Or accept that those requesters g
   reconciliation is turned off (`RECONCILE_INTERVAL_SECONDS=0`: only webhooks and catalog syncs then check). It holds
   only HD items found by TMDB ID or Seerr's HD link, so an item with neither stays public; and it lasts 400 days after
   the cancel. **Administrators should cancel through JellyPass** (the upcoming administrators' Requests tab) rather than
-  deleting a request in Seerr: a cancel there can write the hold, atomically, before Seerr forgets the request, which
-  leaves no public window at all; a delete in Seerr leaves the one above.
+  deleting a request in Seerr: a cancel there can write the hold before Seerr forgets the request, so the request is
+  never lost and the gap above (waiting to notice the delete) disappears. Applying a hold is still asynchronous, though:
+  a title that arrives can be public until the next webhook, catalog sync or reconciliation applies the hold, so even
+  that path gives prompt protection, not a strict guarantee.
 
 ## Coarse statuses
 
