@@ -1286,7 +1286,14 @@ async function requestsScreen(signal: AbortSignal, current: () => boolean, again
   if (!again) busy(el(doc, 'h1', { class: 'screen-title visually-hidden', text: REQUESTS_TEXT.title, attrs: { tabindex: '-1', [HEADER_TITLE]: '' } }), skeletonRequests(doc));
   await loadMe(signal);
   const read = ++listReads;
-  const listed = (await api.requests(signal)).results;
+  let listed: RequestEntry[];
+  try {
+    listed = (await api.requests(signal)).results;
+  } catch (error) {
+    // An older reading failing after a newer one was issued is dropped too; only the latest may show the error.
+    if (read !== listReads) return;
+    throw error;
+  }
   // An older reading answering after a newer one was issued is dropped; the newer one draws.
   if (!current() || read !== listReads) return;
   // A cancelled entry stays off a reading issued before its cancel was accepted; one issued after it is the server's word.

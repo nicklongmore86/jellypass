@@ -46,6 +46,8 @@ function BUILT(logical) {
 /** What a request answered, minus anything that differs by design between two fixed 404s. */
 const shape = (answer) => ({ status: answer.status, text: answer.text, headers: { ...answer.headers, date: undefined } });
 
+const STORAGE_WRITE = /\b(?:localStorage|sessionStorage|storage|store|caches|indexedDB)\b[^;\n]*\.(?:clear|removeItem|setItem)\(|\.(?:setItem|removeItem)\(/;
+
 describe('household app page: serving', { timeout: 30_000 }, () => {
   it('styles Home\'s filter chips and the rows\' waterlines from tokens, with contrast, and no inline style', async () => {
     const css = read(BUILT('app.css'));
@@ -547,12 +549,21 @@ describe('household app page: files', () => {
     assert.doesNotMatch(read(BUILT('app.css')), /@import|url\(/);
   });
 
+  it('the storage-write check matches storage APIs only, not other .clear( calls', () => {
+    assert.match('localStorage.clear()', STORAGE_WRITE);
+    assert.match('window.localStorage.setItem(k, v)', STORAGE_WRITE);
+    assert.match('const s = localStorage; s.removeItem(k)', STORAGE_WRITE);
+    assert.match('storage.setItem(k, v)', STORAGE_WRITE);
+    assert.match('caches.delete(k)', STORAGE_WRITE);
+    assert.doesNotMatch('this.targets.clear(); map.clear()', STORAGE_WRITE);
+  });
+
   it('writes nothing it should not: no HTML parsing of text, no eval, no cookies, and storage only in session.js, for two keys', () => {
     for (const file of FILES.filter((name) => name.startsWith('js/'))) {
       const source = read(file);
       assert.doesNotMatch(source, /innerHTML|outerHTML|insertAdjacentHTML|document\.write|\beval\(|new Function|srcdoc/, file);
       assert.doesNotMatch(source, /sessionStorage|indexedDB|document\.cookie|caches\./, file);
-      if (!file.startsWith('js/session.')) assert.doesNotMatch(source, /setItem|removeItem|\.clear\(/, `${file} writes browser storage outside session.js`);
+      if (!file.startsWith('js/session.')) assert.doesNotMatch(source, STORAGE_WRITE, `${file} writes browser storage outside session.js`);
     }
     // The only storage the app writes is Jellyfin web's own credentials (its sign-in) and its own random device ID.
     const session = read(BUILT('js/session.js'));
@@ -2715,6 +2726,39 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         await settled(page);
         assert.equal(page.main().querySelectorAll('.request').length, 1, 'only the third entry is left');
         assert.equal(state.posts.length, 2);
+      });
+
+      it('overlapping cancel refreshes: an older list failing last never replaces the newer list with an error', async (t) => {
+        const app = await startApp(t);
+        const ID3 = 'CCCCCCCCCCCCCCCCCCCCCC';
+        const all = [entry(ID, T_MOVIE, { cancellable: true }), entry(ID2, T_TV, { cancellable: true }), entry(ID3, T_MOVIE, { cancellable: true })];
+        const state = { posts: [], cancel: 202, list: all };
+        const reads = [];
+        const inner = server(state);
+        const override = (url, init) => {
+          if (url === '/jellypass/app/v1/requests') {
+            reads.push(reads.length);
+            // A's refresh is held and then fails; B's refresh answers first with the list that has one entry left.
+            if (reads.length === 2) return new Promise((resolve) => { state.release = () => resolve(json({ error: 'x' }, 500)); });
+          }
+          return inner(url, init);
+        };
+        const page = await openApp(t, app, { hash: '#/requests', override });
+        await named(page, 3);
+        await settled(page);
+        const items = [...page.main().querySelectorAll('.request')];
+        click(page, items[0].querySelector('.request-cancel'));
+        click(page, items[0].querySelector('.request-cancel-actions button'));
+        await page.until(() => reads.length === 2, 'A refresh in flight');
+        click(page, items[1].querySelector('.request-cancel'));
+        click(page, items[1].querySelector('.request-cancel-actions button'));
+        await page.until(() => reads.length === 3 && page.main().querySelectorAll('.request').length === 1, 'B refresh answered first');
+        state.release();
+        await settled(page);
+        await settled(page);
+        assert.equal(page.main().querySelectorAll('.request').length, 1, 'the list with one entry stays');
+        assert.equal(page.main().querySelector('.get-refresh'), null, 'no error screen');
+        assert.equal(page.main().querySelector('.get-message')?.textContent, 'Request cancelled');
       });
 
       it('cancelling the last request leaves the confirmation and the empty message', async (t) => {
