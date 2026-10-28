@@ -2512,7 +2512,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         perMember: { calls: MAX_APP_REQUESTS_PER_USER, windowSeconds: APP_BUDGET_WINDOW_MS / 1000 },
         perHousehold: { calls: MAX_APP_REQUESTS_PER_HOUSEHOLD_BURST, windowSeconds: APP_BURST_WINDOW_MS / 1000 },
       });
-      assert.deepEqual(Object.keys(BUDGET.screens).sort(), ['home-all', 'home-movies', 'home-tv', 'movie', 'network', 'network-films', 'network-series', 'requests', 'search', 'season', 'series', 'studio', 'tv-home-row', 'tv-movie', 'tv-series']);
+      assert.deepEqual(Object.keys(BUDGET.screens).sort(), ['home-all', 'home-movies', 'home-tv', 'movie', 'network', 'network-films', 'network-series', 'requests', 'search', 'season', 'series', 'studio', 'tv-home-row', 'tv-movie', 'tv-search-row', 'tv-series']);
       for (const [name, screen] of Object.entries(BUDGET.screens)) {
         assert.equal(screen.calls, screen.atOnce.length + (screen.belowTheFold?.length ?? 0), name);
       }
