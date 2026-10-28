@@ -173,11 +173,12 @@ flowchart LR
     auto-focuses), so the row gives the card focus each time it is drawn for four seconds after Home is shown again,
     and stops at the member's first key or press.
   - **When nothing is left** (every trending title is in the library, Requested or not offered, or the answer failed or
-    was empty) no title cards are drawn, and the row is only the **My requests** card (the *fallback row*): the same
+    was empty; but not a refused token, `401`, where the member is signed out and no row is drawn at all) no title cards are drawn, and the row is only the **My requests** card (the *fallback row*): the same
     section, heading, card styling and place as the Discover row, never both at once (when the Discover row draws, its own
     end card stays), decided from the Discover row's own answer with **no extra call** and drawn only while signed in
     to this origin (it goes on sign-out or another member, as the row does, and nothing is drawn where Home is not laid
-    out as above). Jellyfin web's focus manager and remote drive it like the row. A second page is deliberately not fetched when few titles
+    out as above). Focus on the **My requests** card (in either row) is kept when the row is drawn again, and it takes
+    focus when no title card survives a redraw or Back. Jellyfin web's focus manager and remote drive it like the row. A second page is deliberately not fetched when few titles
     survive the filter: the row stays one call (below), the same for every device on a household's one per-address
     budget, and a short row is still right. The filter reads only the caller's own `state` in their own answer, never
     anything of another household.
@@ -425,7 +426,7 @@ another member's. The title page, My requests (list, names, Cancel), the Home ro
   never kept in a variable past the call, written to storage, logged or put in the page (tested: no storage use, no
   console call, and the token isn't in the page).
 - **Answers.** Read leniently (unknown fields ignored, unknown state as `unavailable`, bad image URLs as no image). Any
-  failure (`401`, `404`, `429`, `502`, no network, a body it can't read) or an empty list draws no title cards (only the fallback row above). The failure is
+  failure (`404`, `429`, `502`, no network, a body it can't read) or an empty list draws no title cards (only the fallback row above); a `401` draws no row at all. The failure is
   kept like an answer (below), so it is not asked again at once.
 
 ### Privacy

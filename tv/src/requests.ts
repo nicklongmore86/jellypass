@@ -608,12 +608,14 @@ export class RequestsPage {
       message.textContent = '';
       const { mediaType, tmdbId, id } = row.entry;
       const stamp = this.#watch.stamp(session);
+      const load = open.load;
       void cancelRequest(this.#scope.fetch, this.#origin, session.token, id).then((answer) => {
         // Whatever the answer (accepted, refused token, rate limit, offline), it belongs to the session that sent it: after a
         // sign-out or a new sign-in (even as the same member, with a new token) it is ignored entirely.
         const now = this.#watch.holds(stamp);
         if (!now) {
-          this.#stale(open);
+          // Read again for the new session once, whichever of the old answers comes back first.
+          if (open.load === load) this.#stale(open);
           return;
         }
         if (answer.ok) {

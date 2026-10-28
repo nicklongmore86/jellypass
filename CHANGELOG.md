@@ -40,7 +40,8 @@ changes are always listed at the top of the release notes.
   following; Jellyfin's own menu is unchanged. When Home's Discover row has
   nothing to show (nothing left to get, or its load failed), a small row with
   only the **My requests** card is drawn instead, with no extra call, so the
-  page is always reachable from Home. The page's calls are pinned in
+  page is always reachable from Home (but not when Jellyfin web's sign-in was
+  refused, where no row is drawn). The page's calls are pinned in
   `docs/app-api/fetch-budget.json` (`tv-requests`). The title page's note for a
   Requested title no longer points to the phone app. No setting is added or
   changed, and the app API is unchanged. See `docs/tv-addon.md`, "My requests".

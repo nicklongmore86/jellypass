@@ -846,18 +846,18 @@ describe('TV add-on: the Home row', { timeout: 60_000 }, () => {
     assert.deepEqual([hidden.requests.length, hidden.rows().length], [1, 1]);
   });
 
-  it('fails closed: an answer it cannot use draws only the My requests row, and is not asked again until Home is next shown after a minute', async (t) => {
+  it('fails closed: a refused token draws no row, and is not asked again until Home is next shown after a minute', async (t) => {
     const app = await startApp(t, webWorld(), tvOn());
     const page = await openJellyfinWeb(t, app);
     page.session.token = 'not-a-token';
     page.home();
     await page.settled();
-    assert.deepEqual([page.requests.length, page.rows().length, page.cards().length], [1, 1, 0]);
+    assert.deepEqual([page.requests.length, page.rows().length, page.cards().length], [1, 0, 0], 'a refused token draws no row at all');
     page.home();
     page.shown();
     await page.settled();
     assert.equal(page.requests.length, 1);
-    assert.deepEqual(page.document.querySelectorAll('.verticalSection').length, 4, 'Home itself is untouched, with the one row added');
+    assert.deepEqual(page.document.querySelectorAll('.verticalSection').length, 3, 'Home itself is untouched, with no row added');
   });
 
   it('follows the member signed in: another member\'s row goes at once and is read again with their token', async (t) => {
@@ -2304,6 +2304,44 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     assert.ok(page.document.documentElement.contains(page.focused()), 'and in the page');
   });
 
+  /** Trending answering one title only, Available to get. */
+  const soleTitle = (app) => async (pathname) => {
+    if (pathname !== '/jellypass/app/v1/discover/trending') return undefined;
+    const real = (await app.get(pathname)).json();
+    const only = real.results.find((card) => card.tmdbId === T_MOVIE);
+    return { status: 200, body: JSON.stringify({ ...real, results: [{ ...only, state: 'get_this' }] }) };
+  };
+
+  it('gives focus to the My requests card on returning Home when the title opened has left the row', async (t) => {
+    const app = await startHeld(t);
+    const trending = await soleTitle(app)('/jellypass/app/v1/discover/trending');
+    const page = await atHome(t, app, { override: (pathname) => (pathname === '/jellypass/app/v1/discover/trending' ? trending : undefined) });
+    assert.equal(page.cards().length, 1);
+    await choose(page, T_MOVIE);
+    page.click(page.view().querySelector('.jellypass-tv-title-get'));
+    await page.settled();
+    await home(page);
+    assert.equal(page.cards().length, 0, 'only the My requests card is left');
+    assert.equal(page.requestsLink() !== null, true);
+    assert.equal(page.focused() === page.requestsLink(), true, 'the link has focus');
+  });
+
+  it('keeps focus on the My requests card when the row is drawn again under it', async (t) => {
+    const app = await startHeld(t);
+    const page = await atHome(t, app);
+    await choose(page, T_MOVIE);
+    page.click(page.view().querySelector('.jellypass-tv-title-get'));
+    await page.settled();
+    await home(page);
+    assert.equal(onRow(page, T_MOVIE), 'not in the row');
+    page.requestsLink().focus();
+    assert.equal(page.focused() === page.requestsLink(), true);
+    page.advance(120_000); // the Requested runs out: the title is back in the row, which is drawn again
+    assert.equal(onRow(page, T_MOVIE), 'Available to get');
+    assert.equal(page.focused() === page.requestsLink(), true, 'the link still has focus');
+    assert.equal(page.document.documentElement.contains(page.focused()), true, 'and is in the page');
+  });
+
   it('calls only the origin it came from: signed in elsewhere, the page is emptied and nothing is sent there; a card chosen then opens nothing', async (t) => {
     const app = await startApp(t, webWorld(), tvOn());
     const page = await atHome(t, app);
@@ -3350,6 +3388,30 @@ describe('TV add-on: My requests', { timeout: 180_000 }, () => {
       page.route(`#/jellypass/title/movie/${T_MOVIE}`);
       await page.settled();
       assert.equal(part(page.view(), '.jellypass-tv-title-status'), 'Requested');
+    });
+
+    it('reads the list once for the new session when two old cancels both come back refused after a new token', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const state = { cancel: 401, list: [entry(A, T_MOVIE, { cancellable: true }), entry(B, OWN_MOVIE, { cancellable: true })] };
+      const page = await open(t, app, state);
+      await goToRequests(page);
+      let release;
+      state.hold = new Promise((resolve) => { release = resolve; });
+      for (const item of items(page)) {
+        page.click(cancelOpen(item));
+        page.click(confirmOf(item));
+      }
+      await pause(40);
+      assert.equal(state.posts.length, 2);
+      page.session.token = 'a-new-token-for-alice';
+      page.document.body.insertAdjacentHTML('beforeend', '<i></i>');
+      await pause(40);
+      release();
+      await page.settled();
+      await pause(40);
+      const reads = page.requests.filter((request) => request.url.endsWith('/jellypass/app/v1/requests') && String(request.init?.headers?.Authorization).includes('a-new-token-for-alice'));
+      assert.equal(reads.length, 1, 'one list read for the new session');
+      assert.equal(items(page).length, 2);
     });
 
     for (const [answer, label] of [[401, 'a refused token'], [429, 'a rate limit'], [502, 'a server error'], ['offline', 'no network']]) {

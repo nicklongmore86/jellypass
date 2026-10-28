@@ -9,7 +9,8 @@ import { SessionWatch } from './session-watch.js';
  * one Home section after Home's first, in Jellyfin web's own card markup (see JELLYFIN_CLASSES). Only titles that are
  * Available to get are drawn: one in the caller's library (`in_library`) is in Jellyfin's own rows already, and one
  * Requested belongs to My requests; neither is in the row, so the row has no badge. A title the member asks for while
- * the row is up leaves it at once. If nothing is left the row is not drawn (a second page is never asked for, so the
+ * the row is up leaves it at once. If nothing is left (or the answer failed, or was empty) the row is only its "My
+ * requests" card; a refused token (401, signed out) draws no row at all (a second page is never asked for, so the
  * row's one call stays one). It depends only on the caller's own answer. Everything shown is a fixed string or a DTO
  * field set with `textContent`; no HTML is parsed. It runs no navigation of its own: Jellyfin web's focus manager moves
  * between its cards. Choosing a card opens the title page (title.ts), a page of Jellyfin web's; Back returns to Home and
@@ -106,6 +107,11 @@ export class HomeRow {
     }
     const focus = this.#focusedCard();
     this.#removeRows();
+    // A refused token is nobody's: there is nothing to link to, so no row (not even the My requests card).
+    if (!kept.answer.ok && kept.answer.status === 401) {
+      this.#drawn = undefined;
+      return;
+    }
     // A failed or empty answer is not asked again until Home is next shown, after REUSE_MS. Only what can be had is
     // drawn: not what is in this member's library (Jellyfin web's rows show it) nor what is Requested. With nothing to
     // draw, the row is only the "My requests" card, so the page stays reachable from Home (decided from this answer: no call).
@@ -132,7 +138,7 @@ export class HomeRow {
     }
     // Back from My requests returns to its link; from a title, to the title's card.
     const link = back.link ? this.#row?.querySelector(`[${LINK_ATTRIBUTE}]`) as HTMLElement | null | undefined : undefined;
-    const wanted = link ?? (this.#cards.find((drawn) => drawn.card.mediaType === back.mediaType && drawn.card.tmdbId === back.tmdbId) ?? this.#cards[0])?.button;
+    const wanted = link ?? (this.#cards.find((drawn) => drawn.card.mediaType === back.mediaType && drawn.card.tmdbId === back.tmdbId) ?? this.#cards[0])?.button ?? this.#link();
     if (wanted && this.#document.activeElement !== wanted) wanted.focus();
   }
 
@@ -141,10 +147,17 @@ export class HomeRow {
     if (this.#returning && this.#returning.shownAt !== undefined) this.#returning = undefined;
   }
 
-  /** Which drawn card has focus, if the row has it: its place in the row and its title. */
-  #focusedCard(): { index: number; mediaType: MediaType; tmdbId: number } | undefined {
+  /** The row's "My requests" card, if it is drawn. */
+  #link(): HTMLElement | undefined {
+    return (this.#row?.querySelector(`[${LINK_ATTRIBUTE}]`) as HTMLElement | null) ?? undefined;
+  }
+
+  /** Which drawn card has focus, if the row has it: its place in the row and its title, or that it is the My requests card. */
+  #focusedCard(): { link: true } | { link?: false; index: number; mediaType: MediaType; tmdbId: number } | undefined {
     const active = this.#document.activeElement;
     if (!active || !this.#row || !this.#row.contains(active)) return undefined;
+    const link = this.#link();
+    if (link && (link === active || link.contains(active))) return { link: true };
     const index = this.#cards.findIndex((drawn) => drawn.button === active || drawn.button.contains(active));
     if (index < 0) return undefined;
     const { mediaType, tmdbId } = this.#cards[index]!.card;
@@ -152,9 +165,16 @@ export class HomeRow {
   }
 
   /** The row was drawn again while it had focus: focus goes to the same title, else the card now in its place, never to the page. */
-  #restoreFocus(focus: { index: number; mediaType: MediaType; tmdbId: number }): void {
+  #restoreFocus(focus: { link: true } | { link?: false; index: number; mediaType: MediaType; tmdbId: number }): void {
+    if (focus.link) {
+      this.#link()?.focus();
+      return;
+    }
     const same = this.#cards.find((drawn) => drawn.card.mediaType === focus.mediaType && drawn.card.tmdbId === focus.tmdbId);
-    (same ?? this.#cards[Math.min(focus.index, this.#cards.length - 1)])?.button.focus();
+    // No title survives: the My requests card takes the focus.
+    const target = same ?? this.#cards[Math.min(focus.index, this.#cards.length - 1)];
+    if (target) target.button.focus();
+    else this.#link()?.focus();
   }
 
   /** Focuses the drawn card for a title (Back from its title page), if it is still there. */
@@ -166,7 +186,7 @@ export class HomeRow {
       }
     }
     // The title left the row (it was just asked for): focus goes to the row's first card, if any.
-    this.#cards[0]?.button.focus();
+    (this.#cards[0]?.button ?? this.#link())?.focus();
   }
 
   /** A Requested ran out (asked.ts): the row is drawn again from the answer it holds, the title back in it (no call). */

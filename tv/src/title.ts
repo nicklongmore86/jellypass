@@ -610,12 +610,14 @@ export class TitlePage {
       message.textContent = '';
       const { mediaType, tmdbId } = found;
       const stamp = this.#watch.stamp(session);
+      const load = open.load;
       void getThis(this.#scope.fetch, this.#origin, session.token, mediaType, tmdbId, seasons).then((answer) => {
         // Whatever the answer, it belongs to the session that sent it: after a sign-out or a new sign-in (even as the
         // same member, with a new token) it is ignored entirely, so it can't touch the new session's overlay or page.
         const now = this.#watch.holds(stamp);
         if (!now) {
-          this.#stale(open, (current) => this.#load(open, current, false));
+          // Drawn again for the new session once, whichever of the old answers comes back first.
+          if (open.load === load) this.#stale(open, (current) => this.#load(open, current, false));
           return;
         }
         if (answer.ok) {
