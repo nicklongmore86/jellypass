@@ -702,10 +702,87 @@ describe('TV add-on: the Home row', { timeout: 60_000 }, () => {
     tv.home();
     await tv.settled();
     assert.ok(tv.cards().length > 0 && tv.cards().every((card) => card.classList.contains('show-focus') && card.classList.contains('show-animation')));
-    // Nothing left to show: no row, no empty heading, and no second call.
+    // Nothing left to show: no title cards, no second call, and only the "My requests" card in a small row of the same look.
     const empty = await withTrending(t, app, (results) => results.map((card, index) => ({ ...card, state: index % 2 ? 'requested' : 'in_library' })));
-    assert.deepEqual([empty.rows().length, empty.requests.length], [0, 1]);
-    assert.equal(empty.document.querySelectorAll('.verticalSection').length, 3, 'Home itself is untouched');
+    assert.deepEqual([empty.rows().length, empty.requests.length, empty.cards().length], [1, 1, 0]);
+    assert.equal(empty.document.querySelectorAll('.verticalSection').length, 4, 'Home itself is untouched, with the one row added');
+  });
+
+  describe('the fallback row (only the My requests card)', () => {
+    const links = (page) => [...page.document.querySelectorAll('[data-jellypass-tv-link]')];
+    const sameLook = (page) => page.rows()[0].className;
+
+    it('is drawn, with the same look and place, when nothing is left to get, and nothing is asked for it', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const full = await withTrending(t, app, (results) => results);
+      const empty = await withTrending(t, app, () => []);
+      assert.equal(empty.rows().length, 1);
+      assert.equal(sameLook(empty), sameLook(full));
+      assert.equal(links(empty).length, 1);
+      assert.equal(empty.cards().length, 0);
+      assert.equal(empty.rows()[0].previousElementSibling === empty.document.querySelector('.verticalSection.section0'), true, 'after Home\'s first section, as the Discover row is');
+      assert.equal(links(empty)[0].tagName, 'BUTTON');
+      assert.equal(links(empty)[0].getAttribute('aria-label'), 'My requests');
+      assert.equal(empty.requests.length, BUDGET.screens['tv-home-row'].calls, 'the budget is unchanged: one call, the Discover row\'s');
+      // Choosing it opens the page, as the Discover row's end card does.
+      const from = empty.location.hash;
+      empty.click(links(empty)[0]);
+      assert.equal(empty.location.hash, '#/jellypass/requests');
+      assert.notEqual(empty.location.hash, from);
+    });
+
+    it('is drawn when the Discover row\'s load failed, and the next Home visit within a minute asks nothing', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const page = await openJellyfinWeb(t, app, { override: (pathname) => (pathname === '/jellypass/app/v1/discover/trending' ? { status: 500, body: '{}' } : undefined) });
+      page.home();
+      await page.settled();
+      assert.deepEqual([page.rows().length, links(page).length, page.cards().length, page.requests.length], [1, 1, 0, 1]);
+      page.home();
+      await page.settled();
+      assert.deepEqual([page.rows().length, page.requests.length], [1, 1]);
+    });
+
+    it('is never drawn with the Discover row: its own end card stays, and there is one row and one link', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const page = await withTrending(t, app, (results) => results);
+      assert.deepEqual([page.rows().length, links(page).length], [1, 1]);
+      assert.ok(page.cards().length > 0);
+    });
+
+    it('becomes the Discover row\'s end card and back as titles are asked for or run out, without a call', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const page = await withTrending(t, app, (results) => results.slice(0, 1).map((card) => ({ ...card, state: 'get_this' })));
+      assert.deepEqual([page.cards().length, links(page).length], [1, 1]);
+      const calls = page.requests.length;
+      page.session.token = null;
+      page.home();
+      await page.settled();
+      assert.deepEqual([page.rows().length, links(page).length], [0, 0], 'signed out: nothing left behind');
+      assert.equal(page.requests.length, calls);
+    });
+
+    it('is drawn for no one signed out, nor on another member, and nothing is left behind', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const page = await withTrending(t, app, () => []);
+      assert.equal(page.rows().length, 1);
+      page.session.user = ANN;
+      page.session.token = TOKENS[ANN];
+      page.home();
+      await page.settled();
+      assert.equal(page.rows().length <= 1, true, 'never two rows');
+      page.session.token = null;
+      page.session.user = null;
+      page.home();
+      await page.settled();
+      assert.deepEqual([page.rows().length, links(page).length], [0, 0]);
+    });
+
+    it('is not drawn, and asks nothing, until Jellyfin web\'s Home is laid out as expected', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const page = await openJellyfinWeb(t, app, { override: (pathname) => (pathname === '/jellypass/app/v1/discover/trending' ? { status: 200, body: JSON.stringify({ results: [] }) } : undefined) });
+      await page.settled();
+      assert.deepEqual([page.rows().length, links(page).length, page.requests.length], [0, 0, 0]);
+    });
   });
 
   it('keeps within its budget: Home redrawn or shown again within a minute asks nothing; shown again after one, it asks once', async (t) => {
@@ -769,18 +846,18 @@ describe('TV add-on: the Home row', { timeout: 60_000 }, () => {
     assert.deepEqual([hidden.requests.length, hidden.rows().length], [1, 1]);
   });
 
-  it('fails closed: an answer it cannot use draws no row, and is not asked again until Home is next shown after a minute', async (t) => {
+  it('fails closed: an answer it cannot use draws only the My requests row, and is not asked again until Home is next shown after a minute', async (t) => {
     const app = await startApp(t, webWorld(), tvOn());
     const page = await openJellyfinWeb(t, app);
     page.session.token = 'not-a-token';
     page.home();
     await page.settled();
-    assert.deepEqual([page.requests.length, page.rows().length], [1, 0]);
+    assert.deepEqual([page.requests.length, page.rows().length, page.cards().length], [1, 1, 0]);
     page.home();
     page.shown();
     await page.settled();
     assert.equal(page.requests.length, 1);
-    assert.deepEqual(page.document.querySelectorAll('.verticalSection').length, 3, 'Home itself is untouched');
+    assert.deepEqual(page.document.querySelectorAll('.verticalSection').length, 4, 'Home itself is untouched, with the one row added');
   });
 
   it('follows the member signed in: another member\'s row goes at once and is read again with their token', async (t) => {

@@ -106,10 +106,10 @@ export class HomeRow {
     }
     const focus = this.#focusedCard();
     this.#removeRows();
-    // A failed or empty answer draws nothing (and is not asked again until Home is next shown, after REUSE_MS).
-    // Only what can be had: not what is in this member's library (Jellyfin web's rows show it) nor what is Requested.
+    // A failed or empty answer is not asked again until Home is next shown, after REUSE_MS. Only what can be had is
+    // drawn: not what is in this member's library (Jellyfin web's rows show it) nor what is Requested. With nothing to
+    // draw, the row is only the "My requests" card, so the page stays reachable from Home (decided from this answer: no call).
     const cards = kept.answer.ok ? this.#belongs(kept.answer.cards) : [];
-    if (!cards.length) return;
     const row = this.#draw(cards);
     home.container.insertBefore(row, home.first.nextSibling);
     this.#row = row;

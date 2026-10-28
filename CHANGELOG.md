@@ -37,7 +37,10 @@ changes are always listed at the top of the release notes.
   request opens its title page, and Back returns to the same request. It is
   reached from a **My requests** card at the end of Home's Discover row and a
   **My requests** button on the title page of a title the household is
-  following; Jellyfin's own menu is unchanged. The page's calls are pinned in
+  following; Jellyfin's own menu is unchanged. When Home's Discover row has
+  nothing to show (nothing left to get, or its load failed), a small row with
+  only the **My requests** card is drawn instead, with no extra call, so the
+  page is always reachable from Home. The page's calls are pinned in
   `docs/app-api/fetch-budget.json` (`tv-requests`). The title page's note for a
   Requested title no longer points to the phone app. No setting is added or
   changed, and the app API is unchanged. See `docs/tv-addon.md`, "My requests".
