@@ -57,35 +57,47 @@ let LIVE_FOCUS;
 const onRow = (page, tmdbId) => (page.card(tmdbId) ? 'Available to get' : 'not in the row');
 const webCalls = (app) => app.jellyfin.requests.filter((request) => /^\/(?:emby\/)?(?:web|jellypass\/tv)\b/i.test(request.pathname)).map((request) => `${request.method} ${request.path}`);
 
-/** Every reference to AbortController in `source` that is not a `typeof` operand or inside the branch a `typeof AbortController` test guards. */
+/** The objects the page's globals hang off (a reference through one, or through a name bound to one, is a reference to the global). */
+const GLOBAL_OBJECTS = new Set(['window', 'self', 'globalThis', 'top', 'parent', 'frames']);
+const typeofAbortController = (node) => node.type === 'UnaryExpression' && node.operator === 'typeof' && node.argument.type === 'Identifier' && node.argument.name === 'AbortController';
+const isString = (node, text) => (node.type === 'Literal' && node.value === text) || (node.type === 'TemplateLiteral' && node.expressions.length === 0 && node.quasis[0].value.cooked === text);
+const namesAbortController = (node) => node.type === 'Identifier' ? node.name === 'AbortController' : node.type === 'Literal' || node.type === 'TemplateLiteral' ? isString(node, 'AbortController') : false;
+/**
+ * Whether `test` being true (`then`) or false (`otherwise`) proves AbortController exists: only a positive availability
+ * check does (`typeof AbortController !== 'undefined'` or `=== 'function'`, `!` of the opposite, `&&` of one, `||` of one
+ * the other way). An inverted check proves it in the other branch only, and anything unrecognised proves nothing.
+ */
+function availability(test) {
+  const none = { then: false, otherwise: false };
+  if (test.type === 'UnaryExpression' && test.operator === '!') {
+    const inner = availability(test.argument);
+    return { then: inner.otherwise, otherwise: inner.then };
+  }
+  if (test.type === 'LogicalExpression') {
+    const left = availability(test.left);
+    const right = availability(test.right);
+    return test.operator === '&&' ? { then: left.then || right.then, otherwise: false } : test.operator === '||' ? { then: false, otherwise: left.otherwise || right.otherwise } : none;
+  }
+  if (test.type === 'BinaryExpression' && ['===', '!==', '==', '!='].includes(test.operator)) {
+    const [operand, text] = typeofAbortController(test.left) ? [test.left, test.right] : typeofAbortController(test.right) ? [test.right, test.left] : [];
+    if (!operand) return none;
+    const equal = test.operator === '===' || test.operator === '==';
+    const present = isString(text, 'function') ? equal : isString(text, 'undefined') ? !equal : undefined;
+    if (present === undefined) return none;
+    return present ? { then: true, otherwise: false } : { then: false, otherwise: true };
+  }
+  return none;
+}
+
+/**
+ * Every use of AbortController in `source` that is not (a) the operand of a `typeof`, or (b) reachable only where a
+ * positive `typeof AbortController` check holds (an `if`/`?:` branch, or the right of `&&`/`||`); plus every way round
+ * the name: a member named AbortController on anything (`window['AbortController']`, `self.AbortController`), a
+ * destructured one (`const { AbortController } = window`), computed access to a global object, and names bound to one.
+ */
 function unguardedAbortControllers(source) {
   const found = [];
-  const mentions = (node) => {
-    let hit = false;
-    visit(node, (one) => { if (one.type === 'UnaryExpression' && one.operator === 'typeof' && one.argument.type === 'Identifier' && one.argument.name === 'AbortController') hit = true; });
-    return hit;
-  };
-  const walk = (node, guarded) => {
-    if (!node || typeof node.type !== 'string') return;
-    if (node.type === 'Identifier' && node.name === 'AbortController' && !guarded) found.push(node.start);
-    if (node.type === 'UnaryExpression' && node.operator === 'typeof' && node.argument.type === 'Identifier' && node.argument.name === 'AbortController') return;
-    if ((node.type === 'ConditionalExpression' || node.type === 'IfStatement') && mentions(node.test)) {
-      walk(node.test, guarded);
-      walk(node.consequent, true);
-      walk(node.alternate, guarded);
-      return;
-    }
-    if (node.type === 'LogicalExpression' && node.operator === '&&' && mentions(node.left)) {
-      walk(node.left, guarded);
-      walk(node.right, true);
-      return;
-    }
-    for (const key of Object.keys(node)) {
-      const child = node[key];
-      if (Array.isArray(child)) for (const one of child) walk(one, guarded);
-      else if (child && typeof child === 'object') walk(child, guarded);
-    }
-  };
+  const tree = parse(source, { ecmaVersion: 2017, sourceType: 'script' });
   const visit = (node, fn) => {
     if (!node || typeof node.type !== 'string') return;
     fn(node);
@@ -95,7 +107,47 @@ function unguardedAbortControllers(source) {
       else if (child && typeof child === 'object') visit(child, fn);
     }
   };
-  walk(parse(source, { ecmaVersion: 2017, sourceType: 'script' }), false);
+  // Names bound to a global object (`var w = window`), followed through further bindings in source order.
+  const globals = new Set(GLOBAL_OBJECTS);
+  const isGlobal = (node) => node && ((node.type === 'Identifier' && globals.has(node.name)) || (node.type === 'ThisExpression') || (node.type === 'SequenceExpression' && isGlobal(node.expressions[node.expressions.length - 1])) || (node.type === 'LogicalExpression' && (isGlobal(node.left) || isGlobal(node.right))) || (node.type === 'ConditionalExpression' && (isGlobal(node.consequent) || isGlobal(node.alternate))));
+  visit(tree, (node) => {
+    if (node.type === 'VariableDeclarator' && node.id.type === 'Identifier' && isGlobal(node.init)) globals.add(node.id.name);
+    if (node.type === 'AssignmentExpression' && node.left.type === 'Identifier' && isGlobal(node.right)) globals.add(node.left.name);
+  });
+  const walk = (node, guarded) => {
+    if (!node || typeof node.type !== 'string') return;
+    if (node.type === 'Identifier' && node.name === 'AbortController' && !guarded) found.push(node.start);
+    if (typeofAbortController(node)) return;
+    if (node.type === 'MemberExpression') {
+      const named = node.computed ? namesAbortController(node.property) : node.property.name === 'AbortController';
+      // Computed access to a global object is not followed (what is looked up cannot be known); `this` is only a global outside functions, but is refused everywhere.
+      if (named || (node.computed && isGlobal(node.object) && node.property.type !== 'Literal')) found.push(node.start);
+    }
+    if (node.type === 'ObjectPattern') {
+      for (const one of node.properties) {
+        if (one.type === 'RestElement' || (one.type === 'Property' && (namesAbortController(one.key) || one.computed))) found.push(one.start);
+      }
+    }
+    if (node.type === 'IfStatement' || node.type === 'ConditionalExpression') {
+      const proves = availability(node.test);
+      walk(node.test, guarded);
+      walk(node.consequent, guarded || proves.then);
+      walk(node.alternate, guarded || proves.otherwise);
+      return;
+    }
+    if (node.type === 'LogicalExpression' && (node.operator === '&&' || node.operator === '||')) {
+      const proves = availability(node.left);
+      walk(node.left, guarded);
+      walk(node.right, guarded || (node.operator === '&&' ? proves.then : proves.otherwise));
+      return;
+    }
+    for (const key of Object.keys(node)) {
+      const child = node[key];
+      if (Array.isArray(child)) for (const one of child) walk(one, guarded);
+      else if (child && typeof child === 'object') walk(child, guarded);
+    }
+  };
+  walk(tree, false);
   return found;
 }
 
@@ -126,14 +178,53 @@ describe('TV add-on: the build', () => {
     }
     // AbortController (Chromium 66) is only ever used where the browser has it: every use sits behind a `typeof` check.
     assert.deepEqual(unguardedAbortControllers(source), [], 'AbortController is feature-detected');
-    // The gate itself: a use that moved out of its `typeof` branch is found, guarded ones are not.
-    assert.deepEqual(unguardedAbortControllers("var c = typeof AbortController === 'function' ? new AbortController() : void 0;"), []);
-    assert.deepEqual(unguardedAbortControllers("if (typeof AbortController === 'function') { var c = new AbortController(); }"), []);
-    assert.deepEqual(unguardedAbortControllers("var c = typeof AbortController === 'function' && new AbortController();"), []);
-    assert.equal(unguardedAbortControllers("var ok = typeof AbortController === 'function' ? 1 : 0; var c = new AbortController();").length, 1, 'unguarded constructor, with a typeof elsewhere');
-    assert.equal(unguardedAbortControllers("var c = typeof AbortController === 'function' ? 0 : new AbortController();").length, 1, 'constructor in the else branch');
-    assert.equal(unguardedAbortControllers("if (typeof AbortController === 'function') { } var c = new AbortController();").length, 1, 'constructor after the guarded block');
-    assert.equal(unguardedAbortControllers('var s = AbortController.prototype;').length, 1, 'any other reference');
+    // The gate itself: positive availability checks guard, in every form the product may take them.
+    for (const accepted of [
+      "var c = typeof AbortController === 'function' ? new AbortController() : void 0;",
+      "var c = typeof AbortController !== 'undefined' ? new AbortController() : void 0;",
+      "var c = typeof AbortController == 'function' ? new AbortController() : void 0;",
+      "var c = 'function' === typeof AbortController ? new AbortController() : void 0;",
+      "var c = typeof AbortController === 'undefined' ? void 0 : new AbortController();",
+      "var c = typeof AbortController !== 'function' ? void 0 : new AbortController();",
+      "var c = !(typeof AbortController === 'undefined') ? new AbortController() : void 0;",
+      "if (typeof AbortController === 'function') { var c = new AbortController(); }",
+      "if (typeof AbortController !== 'undefined') { var c = new AbortController(); } else { var d = 1; }",
+      "if (typeof AbortController === 'undefined') { var d = 1; } else { var c = new AbortController(); }",
+      "var c = typeof AbortController === 'function' && new AbortController();",
+      "var c = typeof AbortController !== 'undefined' && ready && new AbortController();",
+      "var c = typeof AbortController === 'undefined' || new AbortController();",
+      "var c = typeof AbortController === 'function' && typeof x === 'function' ? new AbortController() : 0;",
+    ]) assert.deepEqual(unguardedAbortControllers(accepted), [], accepted);
+    // Inverted, partial or unrelated checks, and uses outside the branch, are found.
+    for (const [rejected, why] of [
+      ["var c = typeof AbortController === 'undefined' ? new AbortController() : void 0;", 'then-branch of an `=== undefined` check'],
+      ["var c = typeof AbortController !== 'function' ? new AbortController() : void 0;", 'then-branch of a `!== function` check'],
+      ["var c = typeof AbortController !== 'undefined' ? void 0 : new AbortController();", 'else-branch of a `!== undefined` check'],
+      ["var c = typeof AbortController === 'function' ? 0 : new AbortController();", 'else-branch'],
+      ["if (typeof AbortController === 'undefined') { var c = new AbortController(); }", 'if-branch of an `=== undefined` check'],
+      ["if (typeof AbortController !== 'undefined') { } else { var c = new AbortController(); }", 'else-branch of an `if`'],
+      ["var c = typeof AbortController === 'undefined' && new AbortController();", '`&&` after an `=== undefined` check'],
+      ["var c = typeof AbortController !== 'undefined' || new AbortController();", '`||` after a `!== undefined` check'],
+      ["var c = typeof AbortController === 'function' || ready ? new AbortController() : 0;", '`||` proves nothing in the then-branch'],
+      ["var c = typeof AbortController ? new AbortController() : 0;", 'a bare typeof is not an availability check'],
+      ["var c = typeof AbortController === 'object' ? new AbortController() : 0;", 'a typeof compared with something else'],
+      ["var ok = typeof AbortController === 'function' ? 1 : 0; var c = new AbortController();", 'unguarded constructor, with a typeof elsewhere'],
+      ["if (typeof AbortController === 'function') { } var c = new AbortController();", 'constructor after the guarded block'],
+      ['var s = AbortController.prototype;', 'any other reference'],
+      ["var c = typeof AbortController === 'function' ? window['AbortController'] : 0;", 'computed access, even guarded'],
+      ["var c = window['AbortController'];", 'computed access'],
+      ['var c = window.AbortController;', 'window.AbortController'],
+      ['var c = self.AbortController;', 'self.AbortController'],
+      ['var c = globalThis.AbortController;', 'globalThis.AbortController'],
+      ['var c = new window.AbortController();', 'new window.AbortController'],
+      ['const { AbortController } = window; var c = new AbortController();', 'destructured from window'],
+      ["const { AbortController: AC } = self; var c = new AC();", 'renamed destructuring'],
+      ["const { ['AbortController']: AC } = window; var c = new AC();", 'computed destructuring'],
+      ['var w = window; var c = new w.AbortController();', 'an alias of window'],
+      ["var w = window; var k = 'Abort' + 'Controller'; var c = new w[k]();", 'computed access through an alias'],
+      ['var AC = window.AbortController; var c = new AC();', 'a name bound from window'],
+      ["var c = typeof window.AbortController === 'function' ? new window.AbortController() : 0;", 'a member check is not a bare-name check'],
+    ]) assert.ok(unguardedAbortControllers(rejected).length > 0, `${why}: ${rejected}`);
     // Nothing is logged, and nothing is kept in storage.
     lacks(source, /\bconsole\./);
     lacks(source, /\b(?:localStorage|sessionStorage|indexedDB|document\.cookie)\b/);
@@ -1119,6 +1210,42 @@ describe('TV add-on: the Search row', { timeout: 120_000 }, () => {
     await settle(page);
     assert.deepEqual([row(page), searches(page).length], [null, 2]);
     assert.ok(page.requests.every((request) => request.url.startsWith('https://jelly-farmhouse.example.test/')), 'never sent elsewhere');
+  });
+
+  /** Caches `synthetic`, leaves Search, and applies `away` while the page is absent; then back on Search, the calls made. */
+  const awayAndBack = async (t, away, back) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const page = await open(t, app);
+    mount(page, 'synthetic');
+    await settle(page);
+    assert.deepEqual(searches(page), ['?q=synthetic&page=1']);
+    page.document.getElementById('searchPage').remove();
+    page.home();
+    await page.settled();
+    away(page);
+    // Something happens on the page (as it does all the time): update() runs with Search absent.
+    page.document.body.insertAdjacentHTML('beforeend', '<div></div>');
+    await page.settled();
+    back(page);
+    page.advance(1000);
+    mount(page, 'synthetic');
+    await settle(page);
+    return searches(page);
+  };
+
+  it('forgets the answers when the member signs out while Search is absent: the same member signing back in asks again', async (t) => {
+    const calls = await awayAndBack(t, (page) => { page.session.token = null; }, (page) => { page.session.token = TOKENS[ALICE]; });
+    assert.deepEqual(calls, ['?q=synthetic&page=1', '?q=synthetic&page=1']);
+  });
+
+  it('forgets the answers when another member is signed in while Search is absent, even if the first member returns', async (t) => {
+    const calls = await awayAndBack(t, (page) => { page.session.user = ANN; page.session.token = TOKENS[ANN]; }, (page) => { page.session.user = ALICE; page.session.token = TOKENS[ALICE]; });
+    assert.deepEqual(calls, ['?q=synthetic&page=1', '?q=synthetic&page=1']);
+  });
+
+  it('keeps the answers while the same member stays signed in and Search is absent', async (t) => {
+    const calls = await awayAndBack(t, () => {}, () => {});
+    assert.deepEqual(calls, ['?q=synthetic&page=1']);
   });
 
   it('draws a title the member asked for as gone, and a Requested that ran out as back, with no call', async (t) => {

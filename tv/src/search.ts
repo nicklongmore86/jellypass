@@ -100,11 +100,7 @@ export class SearchRow {
    * row away at once, and the new words are asked for when they have been still. Anywhere else nothing is drawn or asked.
    */
   public update(): void {
-    const found = searchPage(this.#document);
-    if (!found) {
-      this.#stop();
-      return;
-    }
+    // The member and the cache follow the session wherever the page is: Jellyfin web's sign-out does not reload this script.
     const session = currentSession(this.#scope);
     if (!session || session.origin !== this.#origin) {
       this.#cache.clear();
@@ -117,6 +113,11 @@ export class SearchRow {
     this.#asked.sync(session.userId);
     if (this.#cacheUser !== session.userId) this.#cache.clear();
     this.#cacheUser = session.userId;
+    const found = searchPage(this.#document);
+    if (!found) {
+      this.#stop();
+      return;
+    }
     const query = found.input.value.trim();
     const wanted = this.#wanted;
     if (!wanted || wanted.userId !== session.userId || wanted.query !== query) {
