@@ -15,5 +15,5 @@
     "noUnusedParameters": true,
     "skipLibCheck": true
   },
-  "include": ["tv/src/**/*.ts"]
+  "include": ["tv/src/**/*.ts", "tv/samsung/**/*.ts"]
 }

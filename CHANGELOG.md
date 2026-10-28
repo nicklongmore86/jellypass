@@ -20,6 +20,35 @@ changes are always listed at the top of the release notes.
 
 ### Added
 
+- **TV add-on: the Samsung app** (`docs/tv-addon.md`, "The Samsung app"). Still
+  experimental and off by default: **unless `TV_ADDON_ENABLED` is set, nothing
+  changes** on any host, and on a household the add-on is not on for nothing
+  changes either. No setting is added.
+  - `GET`/`HEAD /jellypass/tv/manifest.json` on a household host the add-on is
+    on for: `{"script":"jellypass-tv.<hash>.js"}`, the add-on's current script,
+    sent `no-store`, with no token needed. It is for the loader below.
+  - Cross-origin access for the JellyPass build of Jellyfin's Samsung app, on
+    a household host the add-on is on for and only from the app's own origin
+    (`Origin: file://` or `Origin: null`, what a packaged Tizen app's page
+    sends): the app API (`/jellypass/app/v1/*`, `GET` and `POST` with
+    `Authorization` and `Content-Type`) and the add-on's files and manifest
+    (`/jellypass/tv/*`, `GET` and `HEAD`). A preflight from that origin is
+    answered `204` before any token is checked; its other answers carry
+    `Access-Control-Allow-Origin` with that origin. Credentials are never
+    allowed. Every answer on those paths there, whatever its `Origin`, the
+    add-on's long-cached files included, now carries `Vary: Origin`. Apart
+    from that header, every other origin answers exactly as before, and every
+    other household, the household app's own pages and the administrator host
+    answer exactly as before.
+  - `tv/samsung/`: a script that builds that app (`Jellyfin.wgt`, the same app
+    id as Jellyfin's, `AprZAARz4r.Jellyfin`, so it replaces it) from Jellyfin
+    web 12.3 and jellyfin-tizen at pinned commits, adds a loader that loads the
+    add-on from the household host the app is signed in to (if the script
+    fails to load, it removes the tag and asks for the manifest again later,
+    less and less often), and signs it in the pinned
+    `ghcr.io/georift/install-jellyfin-tizen` image. The install procedure is
+    in `docs/tv-addon.md`.
+
 - **Members can cancel a request they made, before it arrives (server and
   API; the app's Cancel buttons come in a later release).**
   `POST /jellypass/app/v1/requests/{id}/cancel` always answers the same
@@ -62,6 +91,9 @@ changes are always listed at the top of the release notes.
 
 ### Changed
 
+- The native-client contract (`docs/app-design.md`): "CORS stays off" now has
+  one exception, the Samsung app's origin on a household host the TV add-on is
+  on for (above).
 - **A request an administrator deletes in Seerr now sends every household
   following it back to Get this.** The requester's entry already left My
   requests; a household that followed the same request (its interest) showed
