@@ -288,10 +288,20 @@
   text-align: center;
 }
 /* Jellyfin web 12.3 draws no ring on a card in either layout (the TV layout only zooms it) and the card's button has no
-   outline, so the face carries one: the page's text colour, as the add-on's buttons use, far above 3:1 on Jellyfin's
-   near-black. It is drawn inside the face: Jellyfin's `.card` contains its paint, so a ring outside the card would be cut
-   off at its edge in the desktop layout. `:focus` is what a remote's focus always is (Chromium 63 has no :focus-visible). */
-.jellypass-tv-card-link:focus .jellypass-tv-card-link-face {
+   outline, so each of the add-on's cards carries one, on its image container (a title card's poster, the My requests
+   card's face): the page's text colour, as the add-on's buttons use, far above 3:1 on Jellyfin's near-black. It is drawn
+   inside the card: Jellyfin's `.card` contains its paint, so a ring outside it would be cut off at its edge in the desktop
+   layout. A pseudo-element paints it, over a poster (an image child would hide a shadow on the container itself). One
+   rule for every card of the add-on's (all have `jellypass-tv-card`; Jellyfin's own do not), so the two can't drift.
+   `:focus` is what a remote's focus always is (Chromium 63 has no :focus-visible). */
+.jellypass-tv-card:focus .cardImageContainer::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  pointer-events: none;
   box-shadow: inset 0 0 0 0.25em #fff;
   box-shadow: inset 0 0 0 0.25em var(--jf-palette-text-primary, #fff);
 }

@@ -20,11 +20,13 @@ changes are always listed at the top of the release notes.
 
 ### Fixed
 
-- TV add-on: the **My requests** card at the end of Home's Discover row now shows a clear white ring when it has focus, in
-  both of Jellyfin web 12.3's layouts. It showed none on a remote or keyboard (only a slight zoom in the TV layout, nothing
-  at all in the desktop layout). The ring is drawn inside the card, uses `:focus` (so it works on the older TVs' browsers)
-  and adds no key handling. The title page's My requests button and the My requests page's filters, entries and
-  Cancel/Keep buttons already showed focus and are unchanged. The add-on is still experimental and off by default.
+- TV add-on: the add-on's own cards (the **Discover** title cards on Home and on Search, and the **My requests** card at
+  the end of Home's Discover row) now show a clear white ring when they have focus, in both of Jellyfin web 12.3's
+  layouts. They showed none on a remote or keyboard (only a slight zoom in the TV layout, nothing at all in the desktop
+  layout). The ring is drawn inside the card, uses `:focus` (so it works on the older TVs' browsers) and adds no key
+  handling. Jellyfin's own cards are unchanged, as are the title page's My requests button and the My requests page's
+  filters, entries and Cancel/Keep buttons, which already showed focus. The add-on is still experimental and off by
+  default.
 
 ## [3.6.0] - 2026-10-28
 
