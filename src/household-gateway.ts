@@ -11,6 +11,7 @@ import { DEFAULT_WS_IDLE_TIMEOUT_MS, DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS, type L
 import { LIBRARY_JOIN_HTML, LIBRARY_JOIN_JS, LIBRARY_JOIN_STYLES } from './household-ui.js';
 import { AttemptCounter } from './rate-limit.js';
 import type { TvAssets } from './tv-assets.js';
+import { applyTvCors, corsFamily } from './tv-cors.js';
 
 const PUBLIC_USERS_PATH = '/users/public';
 const BRANDING_CONFIGURATION_PATH = '/branding/configuration';
@@ -298,6 +299,12 @@ export class HouseholdGateway {
       // Jellyfin might route it otherwise than the gateway reads it, so no check here can be trusted to apply.
       writeJson(response, 400, { error: 'invalid_request' }, NEVER_STORE);
       return;
+    }
+    // The Samsung app (another origin) reads the app API and the add-on's files on a household host the add-on is on for;
+    // its preflight is answered here, before any token is looked at (see tv-cors.ts).
+    if (tv && (decision.kind === 'app' || decision.kind === 'tvAsset')) {
+      const family = corsFamily((request.url ?? '/').split('?', 1)[0] as string);
+      if (family === (decision.kind === 'app' ? 'api' : 'tv') && applyTvCors(request, response, family)) return;
     }
     if (TOKEN_CHECKED_KINDS.has(decision.kind)) {
       // A token works on a household host only for that household's members: anyone else's, and one Jellyfin does not
