@@ -1,7 +1,8 @@
 import { trending, type Answer, type Card, type MediaType } from './api.js';
 import type { Asked } from './asked.js';
 import { drawCards, LINK_ATTRIBUTE, ROW_TEXT, STATE_LABELS, type Drawn } from './cards.js';
-import { currentSession, homeSections } from './jellyfin-web.js';
+import { homeSections, type Session } from './jellyfin-web.js';
+import { SessionWatch } from './session-watch.js';
 
 /**
  * The JellyPass row on Jellyfin web's Home: what is trending and can be had, from the app API's Trending answer, drawn as
@@ -45,6 +46,7 @@ interface Scope {
 export class HomeRow {
   readonly #document: Document;
   readonly #scope: Scope;
+  readonly #watch: SessionWatch;
   /** The origin the add-on's script came from: the only one it calls, and only while Jellyfin web is signed in there. */
   readonly #origin: string;
   readonly #asked: Asked;
@@ -66,6 +68,7 @@ export class HomeRow {
   public constructor(document: Document, scope: Scope, origin: string, asked: Asked, choose: (card: Card) => void, openRequests: () => void = () => undefined, now: () => number = Date.now) {
     this.#document = document;
     this.#scope = scope;
+    this.#watch = new SessionWatch(scope, origin);
     this.#origin = origin;
     this.#asked = asked;
     this.#choose = choose;
@@ -81,8 +84,8 @@ export class HomeRow {
   public update(): void {
     const home = homeSections(this.#document);
     if (!home) return;
-    const session = currentSession(this.#scope);
-    if (!session || session.origin !== this.#origin) {
+    const session = this.#watch.current();
+    if (!session) {
       this.#kept = undefined;
       this.#asked.sync(undefined);
       this.#removeRows();
@@ -93,7 +96,7 @@ export class HomeRow {
     if (!kept) {
       // Another member's row goes at once; this member's stays until the new answer replaces it.
       if (!this.#drawn || this.#drawn.userId !== session.userId) this.#removeRows();
-      this.#load(session.userId, session.token);
+      this.#load(session);
       return;
     }
     if (this.#row && this.#row.parentNode === home.container && this.#drawn === kept && this.#rows().length === 1) {
@@ -196,13 +199,21 @@ export class HomeRow {
     this.update();
   }
 
-  #load(userId: string, token: string): void {
+  #load(session: Session): void {
+    const { userId } = session;
     if (this.#loading && this.#loading.userId === userId) return;
     const loading = { userId };
     this.#loading = loading;
-    void trending(this.#scope.fetch, this.#origin, token).then((answer) => {
+    const stamp = this.#watch.stamp(session);
+    void trending(this.#scope.fetch, this.#origin, session.token).then((answer) => {
       if (this.#loading !== loading) return;
       this.#loading = undefined;
+      // An answer to another sign-in's call (signed out, or in again with a new token) is dropped whole, a refused token
+      // included; `update` reads again for the session that is there now.
+      if (!this.#watch.holds(stamp)) {
+        this.update();
+        return;
+      }
       // A refused token is nobody's: whatever was shown as requested for it is dropped.
       if (!answer.ok && answer.status === 401) this.#asked.forget();
       this.#kept = { userId, at: this.#now(), answer };
@@ -212,16 +223,14 @@ export class HomeRow {
 
   /** A card chosen: its page is opened, if Jellyfin web is still signed in to this origin, and Back will return to the card. */
   #open(card: Card): void {
-    const session = currentSession(this.#scope);
-    if (!session || session.origin !== this.#origin) return;
+    if (!this.#watch.current()) return;
     this.#returning = { mediaType: card.mediaType, tmdbId: card.tmdbId, shownAt: undefined };
     this.#choose(card);
   }
 
   /** The "My requests" card chosen: its page is opened, if Jellyfin web is still signed in to this origin, and Back will return to the card. */
   #requests(): void {
-    const session = currentSession(this.#scope);
-    if (!session || session.origin !== this.#origin) return;
+    if (!this.#watch.current()) return;
     this.#returning = { mediaType: 'movie', tmdbId: 0, shownAt: undefined, link: true };
     this.#openRequests();
   }

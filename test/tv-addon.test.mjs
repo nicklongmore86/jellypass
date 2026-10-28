@@ -1834,6 +1834,80 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     assert.deepEqual([page.view() === null, page.rows().length], [true, 0]);
   });
 
+  /** A title page open as Alice with her Get this call held (the server's Seerr record is held too, so every read says get_this). */
+  const holdingGet = async (t, status = undefined) => {
+    const app = await startHeld(t);
+    let release;
+    const held = new Promise((resolve) => { release = resolve; });
+    t.after(() => release());
+    const override = async (pathname, init) => {
+      // The server knows one token per member: the new session's calls are let through as Alice's.
+      if (init.headers?.Authorization?.includes('a-new-token-for-alice')) init.headers = { ...init.headers, Authorization: init.headers.Authorization.replace('a-new-token-for-alice', TOKENS[ALICE]) };
+      if (init.method !== 'POST' || !pathname.endsWith('/get')) return undefined;
+      await held;
+      return status ? { status, body: '{"error":"private"}' } : undefined;
+    };
+    const page = await atHome(t, app, { override });
+    await choose(page, T_MOVIE);
+    page.click(page.view().querySelector('.jellypass-tv-title-get'));
+    await pause(40);
+    return { app, page, release };
+  };
+  /** Leaves the page, signs out, signs back in as the same member with a new token (the page has seen each step). */
+  const signInAgain = async (page) => {
+    page.route('#/details?id=someitem');
+    await pause(40);
+    page.session.token = null;
+    page.session.user = null;
+    page.document.body.insertAdjacentHTML('beforeend', '<i></i>');
+    await pause(40);
+    page.session.user = ALICE;
+    page.session.token = 'a-new-token-for-alice';
+    page.document.body.insertAdjacentHTML('beforeend', '<i></i>');
+    await pause(40);
+  };
+
+  it('drops a Get this accepted after a sign-out and a new sign-in as the same member: the new session shows the server\'s word', async (t) => {
+    const { app, page, release } = await holdingGet(t);
+    await signInAgain(page);
+    release();
+    await page.settled();
+    await pause(40);
+    // Back to the title's page, which is read afresh for the new session; then Home.
+    page.back();
+    await page.settled();
+    assert.equal(text(page, '.jellypass-tv-title-status'), 'Available to get', 'the old session\'s Get this does not mark the new session as Requested');
+    assert.deepEqual(buttons(page), ['Get this']);
+    await home(page);
+    assert.equal(onRow(page, T_MOVIE), 'Available to get');
+    await app.background.settled();
+  });
+
+  it('drops a Get this accepted after a new token with no sign-out between', async (t) => {
+    const { page, release } = await holdingGet(t);
+    page.session.token = 'a-new-token-for-alice';
+    release();
+    await page.settled();
+    await pause(40);
+    page.back();
+    await page.settled();
+    assert.equal(onRow(page, T_MOVIE), 'Available to get');
+  });
+
+  for (const status of [401, 429, 502]) {
+    it(`ignores a Get this that fails with ${status} after a new token: the new session's overlay, page and host are untouched`, async (t) => {
+      const { page, release } = await holdingGet(t, status);
+      page.session.token = 'a-new-token-for-alice';
+      release();
+      await page.settled();
+      await pause(40);
+      assert.equal(text(page, '.jellypass-tv-title-error'), null, 'no error for a call the new session did not make');
+      assert.notEqual(text(page, '.jellypass-tv-title-note'), 'Sign in to continue');
+      assert.equal(text(page, '.jellypass-tv-title-status'), 'Available to get');
+      assert.deepEqual(buttons(page), ['Get this'], 'the page is read again for the new session');
+    });
+  }
+
   it('lets Requested run out on a page and a row left alone after two minutes, with no call, and clears its timer on sign-out', async (t) => {
     const app = await startHeld(t);
     const page = await atHome(t, app);
@@ -3200,6 +3274,34 @@ describe('TV add-on: My requests', { timeout: 180_000 }, () => {
       await page.settled();
       assert.equal(part(page.view(), '.jellypass-tv-title-status'), 'Requested');
     });
+
+    for (const [answer, label] of [[401, 'a refused token'], [429, 'a rate limit'], [502, 'a server error'], ['offline', 'no network']]) {
+      it(`ignores a cancel that fails with ${label} after a new token with the page open: the new session's overlay, host and page are untouched`, async (t) => {
+        const app = await startApp(t, webWorld(), tvOn());
+        const state = { cancel: answer, list: [entry(A, T_MOVIE, { cancellable: true })] };
+        const page = await open(t, app, state);
+        await goToRequests(page);
+        let release;
+        state.hold = new Promise((resolve) => { release = resolve; });
+        page.click(cancelOpen(items(page)[0]));
+        page.click(confirmOf(items(page)[0]));
+        await pause(40);
+        assert.equal(state.posts.length, 1);
+        // Same member, a new token, the page still open and told so by a page change.
+        page.session.token = 'a-new-token-for-alice';
+        page.document.body.insertAdjacentHTML('beforeend', '<i></i>');
+        await pause(40);
+        release();
+        await page.settled();
+        await pause(40);
+        assert.ok(root(page), 'the page stays open for the new session');
+        assert.equal(page.document.querySelector('.jellypass-tv-requests-error') === null, true, 'no error for a call the new session did not make');
+        assert.ok(!page.document.body.textContent.includes('Sign in to continue'));
+        assert.equal(page.document.querySelector('.jellypass-tv-requests-error-text') === null, true, 'no failure words for a call the new session did not make');
+        assert.equal(items(page).length, 1, 'the entry is still listed: nothing was cancelled for the new session');
+        assert.equal(page.requests.some((request) => String(request.init?.headers?.Authorization).includes('a-new-token-for-alice')), true, 'the list is read with the new token');
+      });
+    }
 
     for (const [answer, words] of [
       [429, 'Too many tries, try again in a few minutes.'],

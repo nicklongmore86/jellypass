@@ -1,7 +1,8 @@
 import { MAX_QUERY, search, type Answer, type Card, type MediaType } from './api.js';
 import type { Asked } from './asked.js';
 import { drawCards, type Drawn } from './cards.js';
-import { currentSession, searchPage } from './jellyfin-web.js';
+import { searchPage } from './jellyfin-web.js';
+import { SessionWatch } from './session-watch.js';
 
 /**
  * The JellyPass row on Jellyfin web's Search page: what the member searched for that can be had, from the app API's
@@ -59,6 +60,7 @@ interface Flight {
 export class SearchRow {
   readonly #document: Document;
   readonly #scope: Scope;
+  readonly #watch: SessionWatch;
   readonly #origin: string;
   readonly #asked: Asked;
   readonly #choose: (card: Card) => void;
@@ -88,6 +90,7 @@ export class SearchRow {
   ) {
     this.#document = document;
     this.#scope = scope;
+    this.#watch = new SessionWatch(scope, origin);
     this.#origin = origin;
     this.#asked = asked;
     this.#choose = choose;
@@ -101,8 +104,8 @@ export class SearchRow {
    */
   public update(): void {
     // The member and the cache follow the session wherever the page is: Jellyfin web's sign-out does not reload this script.
-    const session = currentSession(this.#scope);
-    if (!session || session.origin !== this.#origin) {
+    const session = this.#watch.current();
+    if (!session) {
       this.#cache.clear();
       this.#cacheUser = undefined;
       this.#returning = undefined;
@@ -162,9 +165,9 @@ export class SearchRow {
 
   #ask(userId: string, query: string): void {
     const found = searchPage(this.#document);
-    const session = currentSession(this.#scope);
+    const session = this.#watch.current();
     // Whatever changed while the words were still (the page left, the field typed in, another member) is `update`'s to see.
-    if (!found || !session || session.origin !== this.#origin || session.userId !== userId || found.input.value.trim() !== query) {
+    if (!found || !session || session.userId !== userId || found.input.value.trim() !== query) {
       this.update();
       return;
     }
@@ -177,9 +180,16 @@ export class SearchRow {
     const flight: Flight = { userId, query, cancel: controller ? () => controller.abort() : undefined };
     this.#flight = flight;
     this.#lastCall = this.#now();
+    const stamp = this.#watch.stamp(session);
     void search(this.#scope.fetch, this.#origin, session.token, query, controller?.signal).then((answer) => {
       const current = this.#flight === flight;
       if (current) this.#flight = undefined;
+      // An answer to another sign-in's call (signed out, or in again with a new token) is dropped whole, a refused token
+      // and a rate limit included; `update` asks again for the session that is there now.
+      if (!this.#watch.holds(stamp)) {
+        if (current) this.update();
+        return;
+      }
       // What the server said about the caller holds whether or not the words have moved on; only the content is stale.
       if (!answer.ok && answer.status === 401) this.#asked.forget();
       if (!answer.ok && answer.status === 429) this.#blockedUntil = Math.max(this.#blockedUntil, this.#now() + (answer.retryAfterMs ?? SEARCH_BACKOFF_MS));
@@ -276,8 +286,7 @@ export class SearchRow {
 
   /** A card chosen: its page is opened, if Jellyfin web is still signed in to this origin, and Back will return to the card. */
   #open(card: Card, query: string): void {
-    const session = currentSession(this.#scope);
-    if (!session || session.origin !== this.#origin) return;
+    if (!this.#watch.current()) return;
     this.#returning = { query, mediaType: card.mediaType, tmdbId: card.tmdbId, shownAt: undefined };
     this.#choose(card);
   }

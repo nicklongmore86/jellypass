@@ -1,6 +1,6 @@
 import { cancelRequest, requests as readRequests, title as readTitle, type Failure, type RequestEntry } from './api.js';
 import type { Asked } from './asked.js';
-import { currentSession, type Session } from './jellyfin-web.js';
+import type { Session } from './jellyfin-web.js';
 import { FOCUS_ATTR, type PageContext, type PageView } from './page-host.js';
 import {
   CANCEL_TEXT,
@@ -17,6 +17,7 @@ import {
   REQUESTS_TEXT,
   type RequestFilter,
 } from './requests-model.js';
+import { SessionWatch } from './session-watch.js';
 import { ERROR_TEXT, kindOf, titleHash, type ErrorKind } from './title.js';
 import { TitleCache } from './titles.js';
 
@@ -98,13 +99,13 @@ export class RequestsPage {
   #drawnCount = 0;
   #open: Open | undefined;
   #loads = 0;
-  /** The session last seen by `update` (member and token), and a count bumped whenever it changes: a cancel answers only to its own. */
-  #sessionKey: string | undefined;
-  #generation = 0;
+  /** Who is signed in, by member, token and generation: a late answer (a cancel's, a read's) is acted on only by the session that sent it. */
+  readonly #watch: SessionWatch;
 
   public constructor(document: Document, scope: Scope, origin: string, asked: Asked, host: RequestsHost, now: () => number, wall: () => number) {
     this.#document = document;
     this.#scope = scope;
+    this.#watch = new SessionWatch(scope, origin);
     this.#origin = origin;
     this.#asked = asked;
     this.#host = host;
@@ -130,12 +131,6 @@ export class RequestsPage {
    */
   public update(): void {
     const session = this.#session();
-    const key = session ? `${session.userId}\n${session.token}` : undefined;
-    if (key !== this.#sessionKey) {
-      // Any sign-out, new sign-in or token change ends the cancels still in flight: they belong to the session that sent them.
-      this.#sessionKey = key;
-      this.#generation += 1;
-    }
     // Whether or not the page is open, another member (or no one) forgets the filters, the names and how much was shown.
     this.#member(session ? session.userId : undefined);
     const open = this.#open;
@@ -151,8 +146,19 @@ export class RequestsPage {
   }
 
   #session(): Session | undefined {
-    const session = currentSession(this.#scope);
-    return session && session.origin === this.#origin ? session : undefined;
+    return this.#watch.current();
+  }
+
+  /**
+   * An answer that no longer belongs to the session that sent it (signed out, or signed in again, even as the same
+   * member with a new token) is ignored entirely, failures included: it touches no overlay, tells the host nothing and
+   * shows no error. The page is only ended if it is another member's, or read again for the new session if it is the same's.
+   */
+  #stale(open: Open, notice?: string): void {
+    if (this.#open !== open) return;
+    const now = this.#session();
+    if (!now || now.userId !== open.userId) this.#end(open);
+    else this.#load(open, now, notice);
   }
 
   /** The page host's render for the route: draws into the container and reads the list (signed in to this origin only). */
@@ -237,11 +243,12 @@ export class RequestsPage {
     const load = ++this.#loads;
     open.load = load;
     if (notice === undefined) this.#fill(open, [this.#heading(), this.#el('p', 'jellypass-tv-requests-loading', REQUESTS_TEXT.loadingList)]);
+    const stamp = this.#watch.stamp(session);
     void readRequests(this.#scope.fetch, this.#origin, session.token).then((answer) => {
       if (open.load !== load || this.#open !== open) return;
-      const now = this.#session();
+      const now = this.#watch.holds(stamp);
       if (!now || now.userId !== open.userId) {
-        this.#end(open);
+        this.#stale(open, notice);
         return;
       }
       if (!answer.ok) {
@@ -485,6 +492,7 @@ export class RequestsPage {
    */
   #name(open: Open, rows: Row[]): void {
     let next = 0;
+    const load = open.load;
     const worker = (): void => {
       while (next < rows.length) {
         const row = rows[next];
@@ -498,11 +506,13 @@ export class RequestsPage {
         }
         const session = this.#session();
         if (!session || session.userId !== open.userId) return;
+        const stamp = this.#watch.stamp(session);
         void readTitle(this.#scope.fetch, this.#origin, session.token, mediaType, tmdbId).then((answer) => {
           if (this.#open !== open) return;
-          const now = this.#session();
+          const now = this.#watch.holds(stamp);
           if (!now || now.userId !== open.userId) {
-            this.#end(open);
+            // Read again for the new session (once, whichever of the calls comes back first), or ended if it is another member's.
+            if (open.load === load) this.#stale(open);
             return;
           }
           if (answer.ok) {
@@ -597,17 +607,17 @@ export class RequestsPage {
       message.className = 'jellypass-tv-requests-cancel-message';
       message.textContent = '';
       const { mediaType, tmdbId, id } = row.entry;
-      const generation = this.#generation;
+      const stamp = this.#watch.stamp(session);
       void cancelRequest(this.#scope.fetch, this.#origin, session.token, id).then((answer) => {
+        // Whatever the answer (accepted, refused token, rate limit, offline), it belongs to the session that sent it: after a
+        // sign-out or a new sign-in (even as the same member, with a new token) it is ignored entirely.
+        const now = this.#watch.holds(stamp);
+        if (!now) {
+          this.#stale(open);
+          return;
+        }
         if (answer.ok) {
-          // Shown as available to get while the server withdraws it, only in the session that cancelled: a sign-out or a
-          // new sign-in since (even as the same member, with a new token) drops the answer before it touches anything.
-          const now = this.#session();
-          const same = now !== undefined && now.userId === session.userId && now.token === session.token && this.#generation === generation;
-          if (!same) {
-            if (this.#open === open) this.#end(open);
-            return;
-          }
+          // Shown as available to get while the server withdraws it.
           this.#asked.sync(now.userId);
           this.#asked.withdraw(now.userId, mediaType, tmdbId);
           this.#host.changed();

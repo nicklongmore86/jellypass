@@ -400,6 +400,12 @@ screen, and Back is its history), and it adds no document listener.
   (`revisit`). **Cancel** is the `POST` and the list read again (`cancel`; a failed one is the `POST` alone). Choosing a
   filter, a chip, Keep request, a title or Back calls nothing (the title page makes its own two calls).
 
+Late answers: Jellyfin web's sign-out does not reload the add-on, so every call's answer is checked against the session
+that sent it (`tv/src/session-watch.ts`: member, token and a generation that changes with either). An answer from another
+sign-in, even the same member with a new token, is ignored whole, failures included (a 401, 429 or offline from the old
+token shows nothing and clears nothing of the new session): the page is read again for the new session, or ended if it is
+another member's. The title page, My requests (list, names, Cancel), the Home row and the Search row all use it.
+
 ### API use
 
 - **Where.** Only `https://<the origin the add-on's script came from>/jellypass/app/v1/...`, and only while Jellyfin
