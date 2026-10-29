@@ -1,4 +1,4 @@
-// "Hide what I have" on Home and the network and studio pages (the TV add-on's chip, the same choices): on by default
+// "New only" on Home and the network and studio pages (the TV add-on's chip, the same choices): on by default
 // at every sign-in, kept only for the session. One store per signed-in session (SessionProvider), so a sign-out, a 401
 // or any other sign-in (household, member or token) starts it on again. In memory only: never written to the device.
 // Choosing it reads nothing; it only changes which of the cards already loaded are drawn.

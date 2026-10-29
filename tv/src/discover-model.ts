@@ -144,7 +144,7 @@ export const BADGE_WORDS: Readonly<Record<HouseholdState, string>> = {
 };
 
 /**
- * Whether "Hide what I have" hides a card: the titles already in the library and those the household has asked for.
+ * Whether "New only" hides a card: the titles already in the library and those the household has asked for.
  * What is left is what can still be got (and what cannot be requested, which the chip does not touch).
  */
 export function isHeld(card: Pick<DiscoverCard, 'state'>): boolean {
@@ -164,7 +164,7 @@ export function rowCards<T extends Pick<DiscoverCard, 'state'>>(cards: ReadonlyA
 
 /**
  * The hero's slides: the first row's first cards with a backdrop to draw, at most {@link HERO_SLIDES}. `skip` leaves a card out
- * ("Hide what I have": the next ones with a backdrop fill its place, from the same answer).
+ * ("New only": the next ones with a backdrop fill its place, from the same answer).
  */
 export function heroCards(cards: ReadonlyArray<DiscoverCard>, skip?: (card: DiscoverCard) => boolean): DiscoverCard[] {
   const slides: DiscoverCard[] = [];
@@ -192,7 +192,8 @@ export const DISCOVER_TEXT = {
   next: 'Next title',
   chips: 'Show',
   filters: { all: 'All', movies: 'Movies', tv: 'TV' } as Readonly<Record<DiscoverFilter, string>>,
-  hideHeld: 'Hide what I have',
+  hideHeld: 'New only',
+  hideHeldName: "New only: show only titles you don't have or haven't requested",
   studios: 'Studios',
   nothing: 'Nothing to show here.',
   nothingLeft: "You already have everything here.",

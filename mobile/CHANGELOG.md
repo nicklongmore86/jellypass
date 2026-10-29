@@ -15,6 +15,26 @@ build.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Home: the last filter chip is no longer cut off.** The chip row scrolls
+  sideways with the screen's side padding inside it, so the last chip can be
+  scrolled fully into view at any screen width and text size.
+- **Poster badges are short and never cut off.** A badge on a poster says "In
+  library", "Requested", "Get this" or "Can't get" (the words the TV add-on
+  uses) in a small corner pill, at least 11 pt, instead of wrapping over the
+  poster. The badge text follows the system text size like all other text. When
+  the app estimates that the pill would not fit on one line inside a poster at
+  your text size, it shows the same badge under the picture instead, where it
+  can wrap. The full wording stays in each card's accessible name and on title
+  pages.
+
+### Changed
+
+- **"Hide what I have" is now "New only"** on Home and on the service and
+  studio pages. A screen reader hears the visible words first: "New only: show only
+  titles you don't have or haven't requested". It still works the same way and is on at every sign-in.
+
 ## [1.2.0] - 2026-10-29
 
 A minor release: Home can hide what the household already has, and signing in

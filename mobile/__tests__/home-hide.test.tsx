@@ -1,10 +1,11 @@
-// "Hide what I have" on Home: on at every sign-in, it leaves what the member has (in the library, or asked for, the
+// "New only" on Home: on at every sign-in, it leaves what the member has (in the library, or asked for, the
 // overlay's Requested too) out of the rows and the hero; the hero fills from the next titles of the same answer and is
 // not drawn when none is left; choosing it reads nothing; and it is kept in memory for the session only (reset by a
 // sign-out, a 401, a change of household and another sign-in). Queries are queryAll* and assertions read single fields,
 // so a failure never prints the component tree.
 import { act, fireEvent, render, screen, within } from '@testing-library/react-native';
 import { renderRouter } from 'expo-router/testing-library';
+import { useEffect } from 'react';
 import { ScrollView, StyleSheet } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
@@ -78,11 +79,16 @@ const heroTitles = (): string[] => {
 };
 const callsMade = () => gateway.routes().length;
 
-describe('Hide what I have: the chip', () => {
-  it('is on by default, ticked, and a checkbox named Hide what I have', async () => {
+describe('New only: the chip', () => {
+  it('is on by default, ticked, and a checkbox that reads as "New only: show only titles you don\'t have or haven\'t requested"', async () => {
     await start();
-    expect([chip().props.accessibilityRole, chip().props.accessibilityLabel, chip().props.accessibilityState]).toEqual(['checkbox', 'Hide what I have', { checked: true }]);
-    expect(within(chip()).queryAllByText('Hide what I have').length).toBe(1);
+    expect([chip().props.accessibilityRole, chip().props.accessibilityLabel, chip().props.accessibilityState]).toEqual([
+      'checkbox',
+      "New only: show only titles you don't have or haven't requested",
+      { checked: true },
+    ]);
+    expect(within(chip()).queryAllByText('New only').length).toBe(1);
+    expect(within(chip()).queryAllByText('Hide what I have').length).toBe(0);
   });
 
   it('is a thumb tall, styled as the other chips, and is not one of the filters\' radios', async () => {
@@ -105,7 +111,7 @@ describe('Hide what I have: the chip', () => {
   });
 });
 
-describe('Hide what I have: the rows and the hero', () => {
+describe('New only: the rows and the hero', () => {
   it('hides the library\'s and the requested titles from the rows, filling from the cards already loaded', async () => {
     await start();
     // The fixture cycles in_library, get_this, unavailable, requested: 1, 4, 5, 8, … are held.
@@ -193,7 +199,7 @@ describe('Hide what I have: the rows and the hero', () => {
   });
 });
 
-describe('Hide what I have: the hero keeps its place', () => {
+describe('New only: the hero keeps its place', () => {
   let scrolls: jest.SpyInstance;
   beforeEach(() => {
     scrolls = jest.spyOn(ScrollView.prototype, 'scrollTo').mockImplementation(() => undefined);
@@ -260,7 +266,7 @@ describe('Hide what I have: the hero keeps its place', () => {
   });
 });
 
-describe('Hide what I have: a request just made', () => {
+describe('New only: a request just made', () => {
   it('removes the title from the rows and the hero, and a page of the same title elsewhere is left alone', async () => {
     gateway = useTrending(['get_this', 'get_this', 'get_this']);
     await start();
@@ -276,7 +282,7 @@ describe('Hide what I have: a request just made', () => {
   });
 });
 
-describe('Hide what I have: the helpers', () => {
+describe('New only: the helpers', () => {
   const card = (state: State, backdropUrl: string | null = 'https://image.tmdb.org/t/p/w780/b.jpg') => ({ state, backdropUrl });
   it('keeps every card when off, and leaves the held ones out when on', () => {
     const cards = [card('in_library'), card('get_this'), card('requested'), card('unavailable')];
@@ -305,10 +311,14 @@ describe('Hide what I have: the helpers', () => {
   });
 });
 
-describe('Hide what I have: in the session', () => {
+describe('New only: in the session', () => {
   let session: Session | undefined;
   function Probe() {
-    session = useSession();
+    const current = useSession();
+    // Kept for the test body after the render, not during it.
+    useEffect(() => {
+      session = current;
+    });
     return null;
   }
 
@@ -376,7 +386,7 @@ describe('Hide what I have: in the session', () => {
   });
 });
 
-describe('Hide what I have: a late answer', () => {
+describe('New only: a late answer', () => {
   it('is drawn with the choice as it stands when it arrives, not as it was when it was asked for', async () => {
     let release: (() => void) | undefined;
     const held = new Promise<void>((resolve) => {

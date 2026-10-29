@@ -77,7 +77,7 @@ function Results({
   onMore,
   onRetry,
 }: {
-  /** Hide what I have: the cards the member has are left out. */
+  /** New only: the cards the member has are left out. */
   hide: boolean;
   shown: ListState;
   columns: number;

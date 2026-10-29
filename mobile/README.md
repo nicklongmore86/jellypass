@@ -150,9 +150,10 @@ The PWA's Home (`home()` in `app/src/main.ts`, its pieces in `app/src/render.ts`
   group named Show; at large text the chips scroll sideways rather than wrap. The choice stays while the app is open
   (Home stays mounted under its tab, so coming back from a title or another tab finds it as left); choosing announces
   "Loading…" then "Movies shown." as the PWA does.
-- **Hide what I have** (`hide.ts`). A chip after All | Movies | TV, styled as they are (44 pt, the cyan tint, outline and
+- **New only** (`hide.ts`). A chip after All | Movies | TV, styled as they are (44 pt, the cyan tint, outline and
   tick when on, the plain outline and no tick when off) and a checkbox to a screen reader (`accessibilityRole`
-  checkbox, state `checked`), not one of the radios. **On at every sign-in**; the choice is kept in memory for the
+  checkbox, state `checked`), not one of the radios; its accessible name starts with the visible words (WCAG 2.5.3, label in
+  name): "New only: show only titles you don't have or haven't requested". **On at every sign-in**; the choice is kept in memory for the
   session only (`SessionProvider`'s `hideHeld`, one store per sign-in), reset by a sign-out, a 401, a change of household
   and any other sign-in, never written to the device. On, the rows and the hero leave out the titles in your library
   (Ready to watch) and the Requested ones (the household's, and any just asked for through the Requested overlay); what
@@ -222,7 +223,7 @@ files). `tabs.test.tsx` counts Home's pressables (its chips are radios) and chec
 The PWA's `#/network/:id` and `#/studio/:id` (`sourceScreen()` in `app/src/main.ts`), on Home's stack at
 `/home/network/<id>` and `/home/studio/<id>`, opened from a service row's heading and a studio's logo.
 
-- **Hide what I have.** The same chip above the grid (`source-hide`), the same choice as Home's.
+- **New only.** The same chip above the grid (`source-hide`), the same choice as Home's.
 - **Page.** The header says "Popular on Netflix" ("Series on" or "Films on" on those tabs) or "Pixar movies", over the
   logo (decorative: the header names it), then the same poster grid as Search (three columns on a phone, two on a very
   narrow one, as many as fit on an iPad) with **Load more** by the API's `nextPage`. A card opens its title on Home's

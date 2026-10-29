@@ -12,8 +12,8 @@ import { ScrollView, StyleSheet } from 'react-native';
 
 import type { FetchLike } from '../src/api/client';
 import { CARD_GAP, STUDIO_TILE_WIDTH } from '../src/home/components';
-import { snapOffsets } from '../src/home/layout';
-import { STATE_LABELS } from '../src/home/text';
+import { POSTER_BADGE, snapOffsets } from '../src/home/layout';
+import { BADGE_WORDS, STATE_LABELS } from '../src/home/text';
 import { cardWidths } from '../src/screens/HomeScreen';
 import { layout } from '../src/theme';
 import {
@@ -65,7 +65,7 @@ beforeEach(() => {
   useHousehold();
 });
 
-// Whether "Hide what I have" stays on (as at every sign-in); the tests that read what a row shows leave it off.
+// Whether "New only" stays on (as at every sign-in); the tests that read what a row shows leave it off.
 let hideHeld = false;
 afterEach(() => {
   hideHeld = false;
@@ -215,7 +215,7 @@ describe('the cards', () => {
     const chips = screen.queryAllByTestId('status-chip', { includeHiddenElements: true });
     const overlays = chips.filter((node) => flat(node).position === 'absolute');
     expect(overlays.length).toBeGreaterThan(0);
-    expect(overlays.every((node) => flat(node).top === 8 && flat(node).left === 8)).toBe(true);
+    expect(overlays.every((node) => flat(node).top === POSTER_BADGE.inset && flat(node).left === POSTER_BADGE.inset)).toBe(true);
   });
 
   it('open the title\'s page on the Home tab, with Back', async () => {
@@ -497,7 +497,7 @@ function wideEnough(node: Node): boolean {
   return false;
 }
 
-describe.each([['on', true], ['off', false]] as const)('accessibility, Hide what I have %s', (_what, held) => {
+describe.each([['on', true], ['off', false]] as const)('accessibility, New only %s', (_what, held) => {
   beforeEach(() => {
     hideHeld = held;
   });
@@ -554,14 +554,113 @@ describe.each([['on', true], ['off', false]] as const)('accessibility, Hide what
     const group = only(screen.queryAllByTestId('home-filters'), 'filter group');
     expect(group.props.horizontal).toBe(true);
   });
+
+  // The chips cannot be measured in a test renderer, so what keeps the last chip reachable is checked in the styles:
+  // one horizontal scroller, chips that never shrink or wrap, a thumb's height, and the gutter inside the scroller.
+  it.each([
+    ['320 wide', { ...NARROW }],
+    ['390 wide', { ...PHONE }],
+    ['390 wide at large text', { ...PHONE, fontScale: 2 }],
+    ['320 wide at the largest text', { ...NARROW, fontScale: 3 }],
+  ])('keeps the last chip fully reachable, %s', async (_name, window) => {
+    mockWindow = window;
+    await start();
+    const scroller = only(screen.queryAllByTestId('home-filters'), 'filter scroller');
+    expect(scroller.props.horizontal).toBe(true);
+    // The gutter is inside the scroller: the last chip scrolls clear of the edge instead of being cut by the band's padding.
+    const content = flat({ props: { style: scroller.props.contentContainerStyle } } as never);
+    expect(content.paddingRight).toBeGreaterThanOrEqual(16);
+    expect(content.paddingLeft).toBeGreaterThanOrEqual(16);
+    // All | Movies | TV, then New only last, every one a thumb tall that keeps its width.
+    const chips = [
+      only(screen.queryAllByTestId('home-filter-all'), 'All'),
+      only(screen.queryAllByTestId('home-filter-movies'), 'Movies'),
+      only(screen.queryAllByTestId('home-filter-tv'), 'TV'),
+      only(screen.queryAllByTestId('home-hide'), 'New only'),
+    ];
+    for (const chip of chips) {
+      expect([chip.props.accessibilityLabel, Number(flat(chip).minHeight) >= layout.touchTarget, flat(chip).flexShrink]).toEqual([chip.props.accessibilityLabel, true, 0]);
+      for (const text of within(chip).queryAllByText(/./)) expect(text.props.numberOfLines).toBeUndefined();
+    }
+    expect(within(scroller).queryAllByRole('checkbox').map((node) => node.props.accessibilityLabel)).toEqual(["New only: show only titles you don't have or haven't requested"]);
+    expect(within(chips[3]!).queryAllByText('New only')).toHaveLength(1);
+  });
 });
 
-describe.each([['on', true], ['off', false]] as const)('on iPad, Hide what I have %s', (_what, held) => {
+describe('the status badge on a poster', () => {
+  const chips = () => screen.queryAllByTestId('status-chip', { includeHiddenElements: true });
+  const wordOf = (chip: ReturnType<typeof chips>[number]) => String(within(chip).queryAllByText(/./, { includeHiddenElements: true })[0]!.props.children);
+
+  it('says the short word on one line, in a compact corner pill at ordinary text size, with the full wording kept in the card\'s name', async () => {
+    await start();
+    const overlays = chips().filter((node) => flat(node).position === 'absolute');
+    expect(overlays.length).toBeGreaterThan(0);
+    expect(chips().filter((chip) => flat(chip).maxWidth === '100%')).toHaveLength(0);
+    const words = new Set<string>();
+    for (const chip of overlays) {
+      const [text] = within(chip).queryAllByText(/./, { includeHiddenElements: true });
+      const word = String(text!.props.children);
+      words.add(word.replace(/\u00a0/g, ' '));
+      // No break can fall inside it, and the pill is a small one (not the wide chip of the title page).
+      expect(word).not.toMatch(/ /);
+      expect(Object.values(BADGE_WORDS)).toContain(word.replace(/\u00a0/g, ' '));
+      expect(flat(chip)).toMatchObject({ top: POSTER_BADGE.inset, left: POSTER_BADGE.inset, alignSelf: 'flex-start' });
+      // At least 11 pt, and the text size is never capped.
+      expect(text!.props.maxFontSizeMultiplier).toBeUndefined();
+      expect(text!.props.allowFontScaling).not.toBe(false);
+      expect(flat(text!).fontSize).toBeGreaterThanOrEqual(11);
+      expect(Number(flat(chip).paddingVertical)).toBeLessThanOrEqual(2.4);
+    }
+    expect([...words].sort()).toEqual(["Can't get", 'Get this', 'In library', 'Requested']);
+    for (const full of ['Available to get', "Can't request", 'Ready to watch']) {
+      expect(links().some((name) => name.endsWith(`, ${full}`))).toBe(true);
+    }
+  });
+
+  // Large text: the same words below the image, in the card's flow, free to wrap, uncapped, never dropped, and still
+  // hidden from screen readers (the card's name says it).
+  it.each([
+    ['390 wide at 2x text', { ...PHONE, fontScale: 2 }],
+    ['390 wide at 3x text', { ...PHONE, fontScale: 3 }],
+    ['320 wide at 3x text', { ...NARROW, fontScale: 3 }],
+  ])('puts the status below the image as ordinary text, %s', async (_name, window) => {
+    mockWindow = window;
+    await start();
+    // The hero's chip is a full-wording one, not a card's; a card's, when below, is the one in the flow at the card's width.
+    const all = chips().filter((chip) => flat(chip).maxWidth === '100%');
+    expect(all.length).toBeGreaterThan(0);
+    // Every 132 pt poster card has its chip below the image; the wide backdrop cards still fit the corner pill.
+    for (const card of screen.queryAllByRole('link', { name: /^trending \d+, \d+, (Movie|Series), / })) {
+      const inside = within(card).queryAllByTestId('status-chip', { includeHiddenElements: true });
+      expect(inside.map((chip) => flat(chip).position)).toEqual([undefined]);
+    }
+    for (const chip of all) {
+      const [text] = within(chip).queryAllByText(/./, { includeHiddenElements: true });
+      expect(Object.values(BADGE_WORDS)).toContain(wordOf(chip));
+      expect(chip.props.accessibilityElementsHidden).toBe(true);
+      expect(text!.props.maxFontSizeMultiplier).toBeUndefined();
+      expect(text!.props.numberOfLines).toBeUndefined();
+      expect(text!.props.allowFontScaling).not.toBe(false);
+    }
+    // Each card's accessible name still says it.
+    expect(links().some((name) => name.endsWith(', Available to get'))).toBe(true);
+  });
+
+  it('draws the status in the card\'s flow, between the image and the title, when it is below', async () => {
+    mockWindow = { ...PHONE, fontScale: 3 };
+    await start();
+    const card = only(screen.queryAllByRole('link', { name: /^trending 3, \d+, Movie, / }), 'poster card');
+    const [first, second] = card.children as { props: { testID?: string } }[];
+    expect([first!.props.testID, second!.props.testID]).toEqual([undefined, 'status-chip']);
+  });
+});
+
+describe.each([['on', true], ['off', false]] as const)('on iPad, New only %s', (_what, held) => {
   beforeEach(() => {
     hideHeld = held;
   });
 
-  // The first poster card and the first big card Hide what I have leaves in (titles 1 are in the library).
+  // The first poster card and the first big card New only leaves in (titles 1 are in the library).
   const widthOf = (name: RegExp) => flat(only(screen.queryAllByRole('link', { name }), `link ${name}`)).width;
   const POSTER = /^trending 3, \d+, Movie, /;
   const BIG = /^popular-movies 2, \d+, /;
