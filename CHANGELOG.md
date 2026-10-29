@@ -28,8 +28,17 @@ changes are always listed at the top of the release notes.
   update changes its header so the button cannot be placed, nothing is drawn (the page's address still works). Choosing a title
   opens the JellyPass title page, and Back returns to the same title without asking again. It asks for 5 things when it opens
   and 10 more as the remote scrolls down to them (rows near the screen only, 14 titles each), and a row's pictures are loaded only
-  while it is near the screen, to spare a 2019 Samsung's memory. Home's Discover row is unchanged. The studios and services are
-  not links yet (their own pages come next). No server, API or setting change.
+  while it is near the screen, to spare a 2019 Samsung's memory. Home's Discover row is unchanged. No server, API or setting
+  change.
+- TV add-on: **service and studio pages** on the Discover page. A service row's heading ("Popular on Netflix ›") is now a
+  link, and each studio's logo is a tile you can choose; either opens that service's or studio's own page in Jellyfin
+  (`#/jellypass/service/<id>`, `#/jellypass/studio/<id>`), as in the household app: the logo and name, **All / Series /
+  Films** tabs (Films only for a service whose films are listed; a service without them has its series only), **Hide what I
+  have** (the same choice as on Discover), a grid of 20 titles with a **Load more** button, the JustWatch credit under All and
+  Films, and the TMDB notice. Back from a title returns to the same title on the same tab with the pages that were showing,
+  without asking again; a service opened from a row costs no new call. Only the services and studios the app lists have a page:
+  any other address says "Not found". Headings stay headings for a screen reader (the control inside is named "Popular on
+  Netflix, see all"). No server, API or setting change.
 - TV add-on: internal groundwork for a full **Discover** page (nothing of it is visible yet, and nothing changes on any
   household's TV). The add-on can now read the Discover lists, the services' and studios' pages and the sources list from
   the existing household API, keeps the answers in memory for ten minutes (forgotten on a sign-out, another member or a new

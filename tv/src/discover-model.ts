@@ -9,6 +9,11 @@ import type { DiscoverCard, DiscoverList, DiscoverNetwork, HouseholdState, Netwo
 /** The page's route on the page host, and the address a link opens it at; a service's and a studio's page hang off it. */
 export const DISCOVER_PATH = '/jellypass/discover';
 export const DISCOVER_HASH = '#/jellypass/discover';
+/** A service's and a studio's page, on the page host (`:id` is the API's number), and the addresses a link opens them at. */
+export const SERVICE_PATH = '/jellypass/service/:id';
+export const STUDIO_PATH = '/jellypass/studio/:id';
+export const serviceHash = (id: number): string => `#/jellypass/service/${id}`;
+export const studioHash = (id: number): string => `#/jellypass/studio/${id}`;
 
 /** The kind chips: the app's All / Movies / TV (a chip shows other lists, it does not filter the loaded ones). */
 export type DiscoverFilter = 'all' | 'movies' | 'tv';
@@ -179,6 +184,33 @@ export const DISCOVER_TEXT = {
   retry: 'Try again',
   movie: 'Movie',
   series: 'Series',
+  /** The link in a service's heading says where it goes; a studio's tile is named as the app names it. */
+  seeAll: (heading: string): string => `${heading}, see all`,
+  studioMovies: (name: string): string => `${name} movies`,
   /** A service's row: the app's `SOURCE_TEXT.heading` for a network (its list under the chip is not named, as the app's heading for All and Series is not). */
   networkHeading: (name: string): string => `Popular on ${name}`,
 } as const;
+
+/** A service's list as its tab is named, and the words of a service's and a studio's page (the app's `SOURCE_TEXT`). */
+export const SOURCE_TEXT = {
+  lists: { all: 'All', series: 'Series', films: 'Films' } as Readonly<Record<NetworkList, string>>,
+  listsLabel: 'Show',
+  loadMore: 'Load more',
+  loading: 'Loading…',
+  moreLoaded: 'More results loaded.',
+  /** The page's heading: a service's by the list it shows, or "<studio> movies". */
+  heading: (kind: 'service' | 'studio', name: string, list: NetworkList = 'all'): string => {
+    if (kind === 'studio') return `${name} movies`;
+    return `${list === 'films' ? 'Films on' : list === 'series' ? 'Series on' : 'Popular on'} ${name}`;
+  },
+} as const;
+
+/** The lists a service's page offers: all three when the API lists its films, else its series only (the app's rule). */
+export function listsOf(network: Pick<DiscoverNetwork, 'hasFilms'>): ReadonlyArray<NetworkList> {
+  return network.hasFilms ? ['all', 'series', 'films'] : ['series'];
+}
+
+/** A service's or studio's number as the page takes it from an address: digits without a leading zero, up to ten of them; anything else has no page. */
+export function sourceId(text: string): number | undefined {
+  return /^[1-9]\d{0,9}$/.test(text) ? Number(text) : undefined;
+}

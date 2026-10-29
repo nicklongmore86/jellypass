@@ -1,8 +1,8 @@
-import type { DiscoverCard, DiscoverNetwork, DiscoverSources, Failure, HouseholdState } from './api.js';
+import type { DiscoverCard, DiscoverNetwork, DiscoverSources, Failure, HouseholdState, NetworkList } from './api.js';
 import type { Asked } from './asked.js';
+import { drawCard, imageIn, markCard, setNear, type Drawn, type Unit } from './discover-card.js';
 import type { DiscoverData, DiscoverRequest } from './discover-data.js';
 import {
-  badgeOf,
   DISCOVER_FILTERS,
   DISCOVER_LAYOUT,
   DISCOVER_TEXT,
@@ -11,10 +11,13 @@ import {
   networkListFor,
   networksFor,
   rowCards,
+  serviceHash,
   STATE_LABELS,
+  studioHash,
   TMDB_NOTICE,
   type DiscoverFilter,
 } from './discover-model.js';
+import type { HidePreference } from './discover-preference.js';
 import { JELLYFIN_CLASSES } from './jellyfin-web.js';
 import { FOCUS_ATTR, type PageContext, type PageView } from './page-host.js';
 import type { SessionWatch, Stamp } from './session-watch.js';
@@ -48,21 +51,10 @@ const SKELETON_CARDS = 7;
 
 /** What the page asks of the page around it. */
 export interface DiscoverHost {
-  /** Opens Jellyfin web's page at `hash` (a title). */
+  /** Opens Jellyfin web's page at `hash` (a title, a service or a studio). */
   navigate(hash: string): void;
-}
-
-/** Images that are set only while the element holding them is near the screen. */
-interface Unit {
-  element: Element;
-  images: Array<{ image: HTMLImageElement; url: string }>;
-  near: boolean;
-}
-
-interface Drawn {
-  card: DiscoverCard;
-  button: HTMLElement;
-  badge: HTMLElement;
+  /** A service's page is about to be opened from a row that shows `list`: it opens on that list. */
+  openService(id: number, list: NetworkList): void;
 }
 
 /**
@@ -126,6 +118,8 @@ interface Open {
   hero: Hero | undefined;
   /** Where the services' rows, and the foot, go in the body once the sources are known. */
   networks: HTMLElement | undefined;
+  /** The studios' tiles, above the foot. */
+  studios: HTMLElement | undefined;
   foot: HTMLElement | undefined;
   dataWatch: IntersectionObserver | undefined;
   imageWatch: IntersectionObserver | undefined;
@@ -141,13 +135,14 @@ export class DiscoverPage {
   readonly #host: DiscoverHost;
   /** The member everything below belongs to: another member, or no one, forgets it (in memory only). */
   #owner: string | undefined;
+  readonly #hide: HidePreference;
   #filter: DiscoverFilter = 'all';
-  #hideHeld = false;
   #slide = 0;
   #open: Open | undefined;
 
-  public constructor(document: Document, watch: SessionWatch, data: DiscoverData, asked: Asked, host: DiscoverHost) {
+  public constructor(document: Document, watch: SessionWatch, data: DiscoverData, asked: Asked, host: DiscoverHost, hide: HidePreference) {
     this.#document = document;
+    this.#hide = hide;
     this.#watch = watch;
     this.#data = data;
     this.#asked = asked;
@@ -162,7 +157,7 @@ export class DiscoverPage {
     if (userId === this.#owner) return;
     this.#owner = userId;
     this.#filter = 'all';
-    this.#hideHeld = false;
+    this.#hide.forMember(userId);
     this.#slide = 0;
   }
 
@@ -208,7 +203,7 @@ export class DiscoverPage {
     if (!open || !this.#current(open)) return;
     for (const row of open.rows) {
       if (!row.answered) continue;
-      if (this.#hideHeld && this.#visibleKeys(row) !== row.drawn.map((one) => this.#cardKey(one.card)).join(' ')) this.#fill(row);
+      if (this.#hide.held && this.#visibleKeys(row) !== row.drawn.map((one) => this.#cardKey(one.card)).join(' ')) this.#fill(row);
       else for (const one of row.drawn) this.#mark(one);
     }
     if (open.hero) this.#showSlide(open.hero);
@@ -225,7 +220,7 @@ export class DiscoverPage {
       open.chips[filter] = chip;
       open.chipBox.appendChild(chip);
     }
-    const hide = this.#chip(DISCOVER_TEXT.hideHeld, 'chip:hide', this.#hideHeld);
+    const hide = this.#chip(DISCOVER_TEXT.hideHeld, 'chip:hide', this.#hide.held);
     hide.className += ' jellypass-tv-discover-chip-toggle';
     hide.addEventListener('click', () => this.#toggleHide(open, render));
     open.chips.hide = hide;
@@ -254,7 +249,7 @@ export class DiscoverPage {
     view.appendChild(heroSlot);
     view.appendChild(chips);
     view.appendChild(body);
-    const open: Open = { userId: session.userId, render: { stamp: this.#watch.stamp(session) }, context, view, heroSlot, chipBox: chips, chips: {}, body, paint: 0, rows: [], units: [], hero: undefined, networks: undefined, foot: undefined, dataWatch: undefined, imageWatch: undefined, byElement: [] };
+    const open: Open = { userId: session.userId, render: { stamp: this.#watch.stamp(session) }, context, view, heroSlot, chipBox: chips, chips: {}, body, paint: 0, rows: [], units: [], hero: undefined, networks: undefined, studios: undefined, foot: undefined, dataWatch: undefined, imageWatch: undefined, byElement: [] };
     this.#drawChips(open);
     this.#open = open;
     this.#paint(open);
@@ -326,8 +321,8 @@ export class DiscoverPage {
 
   #toggleHide(open: Open, render: Render): void {
     if (!this.#live(open, render)) return;
-    this.#hideHeld = !this.#hideHeld;
-    open.chips.hide?.setAttribute('aria-pressed', String(this.#hideHeld));
+    this.#hide.held = !this.#hide.held;
+    open.chips.hide?.setAttribute('aria-pressed', String(this.#hide.held));
     for (const row of open.rows) if (row.answered) this.#fill(row);
   }
 
@@ -343,7 +338,7 @@ export class DiscoverPage {
   /** The cards a row shows now, as keys: what "Hide what I have" leaves, at most the row's 14. */
   #visible(row: RowView): DiscoverCard[] {
     const states = (row.answered as DiscoverCard[]).map((card) => ({ card, state: this.#stateOf(card) }));
-    return rowCards(states, this.#hideHeld).map((one) => one.card);
+    return rowCards(states, this.#hide.held).map((one) => one.card);
   }
 
   #visibleKeys(row: RowView): string {
@@ -370,6 +365,7 @@ export class DiscoverPage {
     open.byElement = [];
     open.hero = undefined;
     open.networks = undefined;
+    open.studios = undefined;
     open.foot = undefined;
     const layout = DISCOVER_LAYOUT[this.#filter];
     let feeds = true;
@@ -383,6 +379,8 @@ export class DiscoverPage {
         open.body.appendChild(open.networks);
       }
     }
+    open.studios = this.#el('div', 'jellypass-tv-discover-studios padded-left padded-right');
+    open.body.appendChild(open.studios);
     open.foot = this.#el('div', 'jellypass-tv-discover-foot padded-left padded-right focusable');
     open.foot.setAttribute('tabindex', '0');
     open.foot.setAttribute(FOCUS_ATTR, 'foot');
@@ -406,10 +404,13 @@ export class DiscoverPage {
     return unit;
   }
 
-  #addRow(open: Open, variant: RowView['variant'], request: DiscoverRequest, key: string, heading: string, eager: boolean, feeds: boolean): RowView {
+  #addRow(open: Open, variant: RowView['variant'], request: DiscoverRequest, key: string, heading: string, eager: boolean, feeds: boolean, network?: DiscoverNetwork): RowView {
     const section = this.#el('div', `${JELLYFIN_CLASSES.section} jellypass-tv-discover-row`);
     const headingContainer = this.#el('div', JELLYFIN_CLASSES.headingContainer);
-    headingContainer.appendChild(this.#el('h2', JELLYFIN_CLASSES.heading, heading));
+    const title = this.#el('h2', JELLYFIN_CLASSES.heading);
+    if (network) title.appendChild(this.#serviceLink(open, network, heading, request));
+    else title.textContent = heading;
+    headingContainer.appendChild(title);
     section.appendChild(headingContainer);
     const body = this.#el('div', 'jellypass-tv-discover-row-body');
     section.appendChild(body);
@@ -417,6 +418,29 @@ export class DiscoverPage {
     this.#skeleton(row);
     open.rows.push(row);
     return row;
+  }
+
+  /**
+   * A service row's heading is the link to the service's page: the `h2` stays a heading (a screen reader lists it as one, and the
+   * link inside (a button with role=link: the add-on prevents no event, so there is no `href` to cancel) is named "<heading>, see all"), and the link is the one focus stop above the row (Up from its first card), where
+   * Back returns to. A chevron after the words is drawn by the stylesheet. The page opens on the list the row shows.
+   */
+  #serviceLink(open: Open, network: DiscoverNetwork, heading: string, request: DiscoverRequest): HTMLElement {
+    const render = open.render;
+    const paint = open.paint;
+    const link = this.#el('button', 'jellypass-tv-discover-link', heading) as HTMLButtonElement;
+    link.type = 'button';
+    link.setAttribute('role', 'link');
+    link.setAttribute('aria-label', DISCOVER_TEXT.seeAll(heading));
+    link.setAttribute(FOCUS_ATTR, `link:net${network.id}`);
+    if (this.#tv()) link.className += ' show-focus';
+    const list = request.kind === 'network' ? request.list : 'all';
+    link.addEventListener('click', () => {
+      if (!this.#live(open, render, paint)) return;
+      this.#host.openService(network.id, list);
+      this.#host.navigate(serviceHash(network.id));
+    });
+    return link;
   }
 
   #skeleton(row: RowView): void {
@@ -460,31 +484,8 @@ export class DiscoverPage {
     if (open.paint !== paint || !this.#current(open)) return;
     for (const entry of entries) {
       const found = open.byElement.filter((one) => one.element === entry.target && one.unit)[0];
-      if (found && found.unit) this.#near(found.unit, entry.isIntersecting);
+      if (found && found.unit) setNear(found.unit, entry.isIntersecting);
     }
-  }
-
-  /** Sets the images of what is near the screen, and takes them from what is not (their boxes keep their size). */
-  #near(unit: Unit, on: boolean): void {
-    unit.near = on;
-    for (const one of unit.images) {
-      if (on) {
-        if (one.image.getAttribute('src') !== one.url) one.image.setAttribute('src', one.url);
-      } else if (one.image.hasAttribute('src')) {
-        one.image.removeAttribute('src');
-      }
-    }
-  }
-
-  /** An image for `unit`: set now only if the unit is near the screen. */
-  #image(unit: Unit, className: string, url: string): HTMLImageElement {
-    const image = this.#document.createElement('img');
-    image.className = className;
-    image.setAttribute('alt', '');
-    image.setAttribute('referrerpolicy', 'no-referrer');
-    unit.images.push({ image, url });
-    if (unit.near) image.setAttribute('src', url);
-    return image;
   }
 
   async #load(open: Open, paint: number, row: RowView, retry: boolean): Promise<void> {
@@ -533,7 +534,7 @@ export class DiscoverPage {
     row.unit.images = [];
     const cards = this.#visible(row);
     if (cards.length === 0) {
-      row.body.appendChild(this.#el('p', 'jellypass-tv-discover-row-note-text padded-left padded-right', this.#hideHeld && (row.answered as DiscoverCard[]).length > 0 ? DISCOVER_TEXT.nothingLeft : DISCOVER_TEXT.nothing));
+      row.body.appendChild(this.#el('p', 'jellypass-tv-discover-row-note-text padded-left padded-right', this.#hide.held && (row.answered as DiscoverCard[]).length > 0 ? DISCOVER_TEXT.nothingLeft : DISCOVER_TEXT.nothing));
       return;
     }
     const scroller = this.#el('div', 'jellypass-tv-row-scroller padded-left padded-right');
@@ -548,42 +549,15 @@ export class DiscoverPage {
   }
 
   #card(row: RowView, card: DiscoverCard): Drawn {
-    const backdrop = row.variant === 'backdrop';
-    const button = this.#el('button', `${backdrop ? JELLYFIN_CLASSES.cardBackdrop : JELLYFIN_CLASSES.card} jellypass-tv-card${this.#tv() ? ` ${JELLYFIN_CLASSES.cardTv}` : ''}`) as HTMLButtonElement;
-    button.type = 'button';
-    button.setAttribute('data-media-type', card.mediaType);
-    button.setAttribute('data-tmdb-id', String(card.tmdbId));
-    button.setAttribute(FOCUS_ATTR, `${row.id}:${card.mediaType}:${card.tmdbId}`);
-    const box = this.#el('div', 'cardBox cardBox-bottompadded');
-    const frame = this.#el('div', 'cardScalable');
-    frame.appendChild(this.#el('div', `cardPadder cardPadder-${backdrop ? 'overflowBackdrop' : 'overflowPortrait'}`));
-    const picture = this.#el('div', 'cardImageContainer coveredImage cardContent');
-    const url = backdrop ? card.backdropUrl || card.posterUrl : card.posterUrl;
-    if (url) picture.appendChild(this.#image(row.unit, 'jellypass-tv-card-image', url));
-    frame.appendChild(picture);
-    const badge = this.#el('div', 'jellypass-tv-discover-badge');
-    frame.appendChild(badge);
-    box.appendChild(frame);
-    box.appendChild(this.#el('div', 'cardText cardTextCentered cardText-first jellypass-tv-card-title', card.title));
-    if (card.year !== null) box.appendChild(this.#el('div', 'cardText cardText-secondary cardTextCentered jellypass-tv-card-year', String(card.year)));
-    button.appendChild(box);
-    button.addEventListener('click', () => this.#openTitle(row.scope, card));
-    const one = { card, button, badge };
+    const one = drawCard(this.#document, row.unit, { card, backdrop: row.variant === 'backdrop', tv: this.#tv(), key: `${row.id}:${card.mediaType}:${card.tmdbId}` });
+    one.button.addEventListener('click', () => this.#openTitle(row.scope, card));
     this.#mark(one);
     return one;
   }
 
   /** A card's badge and name, from its state now: the words are always there, and the colour goes with them. */
   #mark(one: Drawn): void {
-    const state = this.#stateOf(one.card);
-    const badge = badgeOf(state);
-    one.badge.textContent = badge.label;
-    one.badge.className = `jellypass-tv-discover-badge jellypass-tv-discover-badge-${badge.tone}`;
-    one.button.setAttribute('aria-label', this.#label(one.card, state));
-  }
-
-  #label(card: DiscoverCard, state: HouseholdState): string {
-    return card.year === null ? `${card.title}, ${STATE_LABELS[state]}` : `${card.title}, ${card.year}, ${STATE_LABELS[state]}`;
+    markCard(one, this.#stateOf(one.card));
   }
 
   /** A card was chosen: the title page opens, for the member who is signed in (a card of a session since ended opens nothing). */
@@ -621,7 +595,7 @@ export class DiscoverPage {
     dots.setAttribute('aria-hidden', 'true');
     for (const node of [previous, view, next, dots]) buttons.appendChild(node);
     for (const node of [title, facts, overview, buttons]) text.appendChild(node);
-    const image = this.#image(unit, 'jellypass-tv-discover-hero-image', slides[0]?.backdropUrl as string);
+    const image = imageIn(this.#document, unit, 'jellypass-tv-discover-hero-image', slides[0]?.backdropUrl as string);
     picture.appendChild(image);
     section.appendChild(picture);
     section.appendChild(shade);
@@ -684,36 +658,42 @@ export class DiscoverPage {
       slot.textContent = '';
       slot.removeAttribute('aria-busy');
       for (const network of networksFor(this.#filter, sources.networks)) {
-        const row = this.#addRow(open, 'poster', { kind: 'network', id: network.id, list: networkListFor(this.#filter, network) }, `net${network.id}`, DISCOVER_TEXT.networkHeading(network.name), false, false);
+        const row = this.#addRow(open, 'poster', { kind: 'network', id: network.id, list: networkListFor(this.#filter, network) }, `net${network.id}`, DISCOVER_TEXT.networkHeading(network.name), false, false, network);
         slot.appendChild(row.section);
         this.#start(open, paint, row);
       }
     }
     const foot = open.foot;
-    if (!foot) return;
+    const studiosSlot = open.studios;
+    if (!foot || !studiosSlot) return;
     const parts = DISCOVER_LAYOUT[this.#filter];
     const studios = parts.some((part) => part.part === 'studios') && sources.studios.length > 0;
     const credit = parts.some((part) => part.part === 'credit') && sources.networks.some((network: DiscoverNetwork) => network.hasFilms);
-    const lead = foot.firstChild;
     if (studios) {
-      const heading = this.#el('h2', `${JELLYFIN_CLASSES.heading} jellypass-tv-discover-foot-heading`, DISCOVER_TEXT.studios);
+      studiosSlot.appendChild(this.#el('h2', `${JELLYFIN_CLASSES.heading} jellypass-tv-discover-foot-heading`, DISCOVER_TEXT.studios));
       const strip = this.#el('ul', 'jellypass-tv-discover-logos');
       const unit = this.#unit(open, strip);
+      const render = open.render;
       for (const studio of sources.studios) {
-        const tile = this.#el('li', 'jellypass-tv-discover-logo');
-        if (studio.logoUrl) {
-          const image = this.#image(unit, 'jellypass-tv-discover-logo-image', studio.logoUrl);
-          image.setAttribute('alt', studio.name);
-          tile.appendChild(image);
-        } else {
-          tile.textContent = studio.name;
-        }
-        strip.appendChild(tile);
+        const item = this.#el('li', 'jellypass-tv-discover-logo-item');
+        // The tile is the link to the studio's page, named as the app names it ("Pixar movies"); the logo inside says nothing more.
+        const tile = this.#el('button', 'jellypass-tv-discover-logo') as HTMLButtonElement;
+        tile.type = 'button';
+        tile.setAttribute('role', 'link');
+        tile.setAttribute('aria-label', DISCOVER_TEXT.studioMovies(studio.name));
+        tile.setAttribute(FOCUS_ATTR, `studio:${studio.id}`);
+        if (this.#tv()) tile.className += ' show-focus';
+        if (studio.logoUrl) tile.appendChild(imageIn(this.#document, unit, 'jellypass-tv-discover-logo-image', studio.logoUrl));
+        else tile.textContent = studio.name;
+        tile.addEventListener('click', () => {
+          if (!this.#live(open, render, paint)) return;
+          this.#host.navigate(studioHash(studio.id));
+        });
+        item.appendChild(tile);
+        strip.appendChild(item);
       }
-      foot.insertBefore(heading, lead);
-      foot.insertBefore(strip, lead);
+      studiosSlot.appendChild(strip);
     }
-    if (credit) foot.insertBefore(this.#el('p', 'jellypass-tv-discover-credit', JUSTWATCH_NOTE), lead);
+    if (credit) foot.insertBefore(this.#el('p', 'jellypass-tv-discover-credit', JUSTWATCH_NOTE), foot.firstChild);
   }
 }
-

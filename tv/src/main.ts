@@ -2,7 +2,9 @@ import { ABOUT_PATH, renderAbout } from './about.js';
 import { Asked } from './asked.js';
 import { DiscoverData } from './discover-data.js';
 import { DiscoverEntry } from './discover-entry.js';
-import { DISCOVER_HASH, DISCOVER_PATH } from './discover-model.js';
+import { DISCOVER_HASH, DISCOVER_PATH, SERVICE_PATH, STUDIO_PATH } from './discover-model.js';
+import { HidePreference } from './discover-preference.js';
+import { SourcePage } from './discover-source.js';
 import { DiscoverPage } from './discover.js';
 import { isHomeShown, isSearchShown } from './jellyfin-web.js';
 import { PageHost } from './page-host.js';
@@ -54,18 +56,22 @@ function start(): void {
     safely(() => search.overlayChanged());
     safely(() => title.overlayExpired());
     safely(() => discover.overlayChanged());
+    safely(() => sources.overlayChanged());
   });
   const navigate = (hash: string) => {
     location.hash = hash;
   };
-  const title = new TitlePage(document, api, base.origin, asked, { changed: () => { safely(() => row.update()); safely(() => discover.overlayChanged()); }, navigate });
+  const title = new TitlePage(document, api, base.origin, asked, { changed: () => { safely(() => row.update()); safely(() => discover.overlayChanged()); safely(() => sources.overlayChanged()); }, navigate });
   const row: HomeRow = new HomeRow(document, api, base.origin, asked, (card) => navigate(titleHash(card.mediaType, card.tmdbId)), () => navigate(REQUESTS_HASH));
   // A cancel in My requests puts the title back to Get this: Home's row and the Search row draw from the same overlay.
-  const requests = new RequestsPage(document, api, base.origin, asked, { changed: () => { safely(() => row.update()); safely(() => search.overlayChanged()); safely(() => discover.overlayChanged()); }, navigate }, () => performance.now(), () => Date.now());
+  const requests = new RequestsPage(document, api, base.origin, asked, { changed: () => { safely(() => row.update()); safely(() => search.overlayChanged()); safely(() => discover.overlayChanged()); safely(() => sources.overlayChanged()); }, navigate }, () => performance.now(), () => Date.now());
   // The Discover page's answers (kept ten minutes, in memory) are timed on the monotonic clock, and the wall clock catches a long sleep.
   const discoverWatch = new SessionWatch(api, base.origin);
   const discoverData = new DiscoverData(api.fetch, base.origin, discoverWatch, () => performance.now(), () => Date.now());
-  const discover = new DiscoverPage(document, discoverWatch, discoverData, asked, { navigate });
+  // "Hide what I have" is one choice for the Discover page and the service and studio pages.
+  const hide = new HidePreference();
+  const sources: SourcePage = new SourcePage(document, discoverWatch, discoverData, asked, { navigate }, hide);
+  const discover = new DiscoverPage(document, discoverWatch, discoverData, asked, { navigate, openService: (id, list) => sources.prefer(id, list) }, hide);
   const discoverEntry = new DiscoverEntry(document, discoverWatch, () => navigate(DISCOVER_HASH));
   const search: SearchRow = new SearchRow(document, api, base.origin, asked, (card) => navigate(titleHash(card.mediaType, card.tmdbId)));
   // JellyPass pages at #/jellypass/..., in Jellyfin web's own "page not found" page (tv/src/page-host.ts).
@@ -74,6 +80,8 @@ function start(): void {
   host.register(TITLE_PATH, (context) => title.render(context));
   host.register(REQUESTS_PATH, (context) => requests.render(context));
   host.register(DISCOVER_PATH, (context) => discover.render(context));
+  host.register(SERVICE_PATH, (context) => sources.renderService(context));
+  host.register(STUDIO_PATH, (context) => sources.renderStudio(context));
   let timer: ReturnType<typeof setTimeout> | undefined;
   const settle = () => {
     if (timer !== undefined) return;
@@ -83,6 +91,7 @@ function start(): void {
       safely(() => title.update());
       safely(() => requests.update());
       safely(() => discover.update());
+      safely(() => sources.update());
       safely(() => discoverEntry.update());
       safely(() => row.update());
       safely(() => search.update());
