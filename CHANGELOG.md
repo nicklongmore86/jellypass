@@ -18,33 +18,100 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
-### Changed
+## [3.8.0] - 2026-10-29
 
-- TV add-on: **the add-on's cards are now the size of Jellyfin web's own** in both layouts. Every row (Home, Search, the Discover
-  page) and the service and studio grids use Jellyfin's card classes and the class its TV sizes depend on (`itemsContainer-tv`)
-  instead of widths of the add-on's own, so on a TV a poster is the width of Jellyfin's Latest row (15.6vw, up from about 10vw),
-  the Discover page's wide cards 23.5vw, and the grids are Jellyfin's `portraitCard` grid; loading cards are the same markup, and the
-  sizes follow Jellyfin web when it changes them. The status **badge** on the Discover page's cards is now a small pill in the
-  poster's top right corner in the style of Jellyfin's own indicators, with short words (*In library*, *Requested*, *Get this*,
-  *Can't get*; the card's accessible name still says the whole sentence) and white-on-colour contrast above 5:1.
+This is a minor release for the TV add-on, which is still experimental and off
+by default: **unless `TV_ADDON_ENABLED` is set, nothing changes** on any host.
+The Discover page's service headings and studio tiles now open **a page for
+each service and studio**, **Hide what I have** is on when the page opens and
+also applies to the hero, and the add-on's cards are **the size of Jellyfin
+web's own**, with a smaller status badge. No setting is added, removed or
+renamed, and the server itself is unchanged: the state file (schema v7), the
+app API (`v1`, `apiVersion` 2), webhook payloads, the administrator API, the
+admin UI, the household app and the gateway are as in 3.7.0. The pages use
+only app API calls that already exist. The add-on's pages are not part of the
+public interface described at the top of this file. This is a minor release
+because the add-on gains pages. Read these before upgrading:
 
-- TV add-on: **Hide what I have** on the Discover page is now **on when the page opens** (and on the service and studio
-  pages), and it also applies to the **hero**: with it on, the hero's slides skip titles in the library or already requested
-  (a title just asked for too) and are filled from the next titles of the same answer that have a wide picture; if none is
-  left, the hero is not shown. Switch it off and the hero is as before. The choice is kept for the session in memory only and is
-  back on for the next member. It makes no extra call. No server, API or setting change.
+- **Nothing to configure.** No setting is new, and nothing in `.env` needs to
+  change. Only households the TV add-on is on for (`TV_ADDON_ENABLED` and
+  `TV_ADDON_HOUSEHOLDS`) see anything new.
+- **The state file is unchanged** (schema v7, with the same fields as 3.7.0),
+  so 3.7.0 reads a state file written by 3.8.0.
+- **Hide what I have is now on when the Discover page opens.** A member who
+  wants to see the titles the household already has or has asked for switches
+  it off; the choice lasts until a sign-out or another member's sign-in.
+- **No CDN purge is needed.** The add-on's script and stylesheet are named for
+  a hash of their content, and both names change in this release. The
+  household address's `/web/` page that carries the add-on's tag and the
+  Samsung app's manifest are sent `no-store`, so they name the new files at
+  once.
+- **It has been tested in a real Jellyfin 12.3 container,** in the TV layout
+  and the desktop layout, in a desktop browser. **On real Samsung TVs only
+  what 3.7.0 added has been seen**: the service and studio pages, Hide what I
+  have on by default and **the new card sizes have not been seen on a physical
+  TV**. The card sizes change every add-on row, Home's and Search's included,
+  so check Home, Search, the Discover page and a service's and a studio's page
+  on a TV before relying on them; [docs/tv-addon.md](docs/tv-addon.md) lists
+  what to check.
+- **The Samsung app picks it up by itself.** Its loader reads the manifest
+  each time it starts, so a Samsung TV with the JellyPass build of the app
+  gets the new add-on at its next start. Nothing is reinstalled on the TV.
+- **To roll back,** set `JELLYPASS_IMAGE` back to
+  `ghcr.io/nicklongmore86/jellypass:3.7.0` and recreate the container. No
+  state-file or setting change is needed. The add-on loses the service and
+  studio pages, Hide what I have is off when the page opens, and the cards and
+  badges are as in 3.7.0.
+- **The iPhone, iPad and Android app ships separately.** Its 1.2.0 (Hide what
+  I have on Home) is described in `mobile/CHANGELOG.md`. The app is not in the
+  image, and 1.2.0 needs nothing from 3.8.0: it works with 3.8.0 as with 3.7.0.
 
 ### Added
 
-- TV add-on: **service and studio pages** on the Discover page. A service row's heading ("Popular on Netflix ›") is now a
-  link, and each studio's logo is a tile you can choose; either opens that service's or studio's own page in Jellyfin
-  (`#/jellypass/service/<id>`, `#/jellypass/studio/<id>`), as in the household app: the logo and name, **All / Series /
-  Films** tabs (Films only for a service whose films are listed; a service without them has its series only), **Hide what I
-  have** (the same choice as on Discover), a grid of 20 titles with a **Load more** button, the JustWatch credit under All and
-  Films, and the TMDB notice. Back from a title returns to the same title on the same tab with the pages that were showing,
-  without asking again; a service opened from a row costs no new call. Only the services and studios the app lists have a page:
-  any other address says "Not found". Headings stay headings for a screen reader (the control inside is named "Popular on
-  Netflix, see all"). No server, API or setting change.
+- **TV add-on: service and studio pages.** A service row's heading on the
+  Discover page ("Popular on Netflix ›") is now a link, and each studio's logo
+  in the foot is a tile you can choose; either opens that service's or
+  studio's own page in Jellyfin web (`#/jellypass/service/<id>`,
+  `#/jellypass/studio/<id>`), as in the household app. A service's page opens
+  on the list its row showed (All on All, Films on Movies, Series on TV). Each
+  page has the logo and name; for a service, the **All / Series / Films** tabs
+  (a service whose films the API does not list has its series only, with no
+  tabs; a studio's page lists its movies); **Hide what I have** (the same
+  choice as on Discover); a grid of 20 titles with a **Load more** button that
+  asks for the next 20; the JustWatch credit under a service's All and Films;
+  and the TMDB notice. Back from a title returns to the same title on the same
+  tab with the pages that were showing, without asking again, and a service
+  opened from a row it already loaded costs no new call. Only the services and
+  studios the app lists have a page: any other address says "Not found". A
+  heading stays a heading for a screen reader (the control inside is named
+  "Popular on Netflix, see all"). The calls are written in
+  `docs/app-api/fetch-budget.json` (`tv-discover-network`,
+  `tv-discover-studio`).
+
+### Changed
+
+- **TV add-on: Hide what I have is on when the Discover page opens,** and on
+  the service and studio pages, and it now also applies to the **hero**: with
+  it on, the hero's slides skip titles in the library or already requested (a
+  title just asked for too) and are filled from the next titles of the same
+  answer that have a wide picture; if none is left, the hero is not shown.
+  Switch it off and the hero is as in 3.7.0. The choice is kept in memory only,
+  for the member signed in, and is back on after a sign-out or for another
+  member. It makes no extra call.
+- **TV add-on: the add-on's cards are the size of Jellyfin web's own** in both
+  layouts. Every add-on row (Home, Search and the Discover page) and the
+  service and studio grids use Jellyfin's card classes and the class its TV
+  sizes depend on (`itemsContainer-tv`) instead of widths of the add-on's own,
+  so on a TV a poster is the width of Jellyfin's Latest row (15.6vw, up from
+  about 10vw), the Discover page's wide cards are 23.5vw, and the grids are
+  Jellyfin's portrait-card grid. Loading cards use the same markup, and the
+  sizes follow Jellyfin web if it changes them.
+- **TV add-on: the Discover page's status badge is a small pill** in the
+  poster's top right corner, in the style of Jellyfin's own indicators, with
+  short words: **In library**, **Requested**, **Get this** or **Can't get**
+  (in 3.7.0, *In your library*, *Requested*, *Available to get* and *Can't
+  request*). The card's accessible name still says the whole sentence, and
+  white on each badge colour is above 5:1.
 
 ## [3.7.0] - 2026-10-29
 
@@ -2994,7 +3061,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.7.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.8.0...HEAD
+[3.8.0]: https://github.com/nicklongmore86/jellypass/compare/v3.7.0...v3.8.0
 [3.7.0]: https://github.com/nicklongmore86/jellypass/compare/v3.6.1...v3.7.0
 [3.6.1]: https://github.com/nicklongmore86/jellypass/compare/v3.6.0...v3.6.1
 [3.6.0]: https://github.com/nicklongmore86/jellypass/compare/v3.5.0...v3.6.0
