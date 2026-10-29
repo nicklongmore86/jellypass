@@ -17,6 +17,7 @@ import {
   isSupportedJellyfinVersion,
 } from '../dist/jellyfin-version.js';
 import { makeServer } from '../dist/server.js';
+import { checkJellyfinMatrix, jellyfinMatrix } from '../scripts/jellyfin-matrix.mjs';
 import { GrantStore } from '../dist/store.js';
 import { get } from './support/household-app.mjs';
 import { makeTempDir } from './support/temp-dir.mjs';
@@ -46,13 +47,56 @@ describe('supported Jellyfin versions', () => {
     for (const release of SUPPORTED_JELLYFIN_RELEASES) {
       assert.ok(pinned.some(({ version }) => version === release || version.startsWith(`${release}.`)), `no CI image for ${release}`);
     }
-    for (const workflow of ['.github/workflows/ci.yaml', '.github/workflows/release.yaml']) {
-      const text = await readFile(workflow, 'utf8');
-      for (const { image, version } of pinned) {
-        assert.ok(text.includes(`image: ${image}`) && text.includes(`version: ${version}`), `${workflow} does not test ${image}`);
-      }
-      assert.match(text, /JELLYFIN_IMAGE: \$\{\{ matrix\.jellyfin\.image \}\}/, workflow);
-    }
+    checkJellyfinMatrix(await readFile('.github/workflows/ci.yaml', 'utf8'), pinned);
+    checkJellyfinMatrix(await readFile('.github/workflows/release.yaml', 'utf8'), pinned, { publishJobs: ['container'] });
+  });
+
+  it('refuses a workflow matrix that differs from the pinned images in any way', () => {
+    const pinned = [{ image: 'jellyfin/jellyfin:12.4.0', version: '12.4.0' }, { image: 'jellyfin/jellyfin:10.11.11', version: '10.11.11' }];
+    const workflow = ({ entries = pinned, needs = '[validate, jellyfin-integration]', extraJob = '' } = {}) => [
+      'jobs:',
+      extraJob,
+      '  jellyfin-integration:',
+      '    name: jellyfin-integration (${{ matrix.jellyfin.version }})',
+      '    strategy:',
+      '      fail-fast: false',
+      '      matrix:',
+      '        jellyfin:',
+      ...entries.map(({ image, version }) => `          - image: ${image}\n            version: ${version}`),
+      '    steps:',
+      '      - uses: actions/checkout@v7',
+      '      - run: pnpm test:real # against the matrix image',
+      '        env:',
+      '          JELLYFIN_IMAGE: ${{ matrix.jellyfin.image }}',
+      '          JELLYFIN_REAL_VERSION: ${{ matrix.jellyfin.version }}',
+      '  container:',
+      `    needs: ${needs}`,
+      '    steps:',
+      '      - run: |',
+      '          echo "# not a comment"',
+      '',
+    ].join('\n');
+    const options = { publishJobs: ['container'] };
+    checkJellyfinMatrix(workflow(), pinned, options);
+    checkJellyfinMatrix(workflow({ entries: [...pinned].reverse() }), pinned, options);
+    assert.deepEqual(jellyfinMatrix(workflow()), pinned);
+
+    const refused = (text, pattern) => assert.throws(() => checkJellyfinMatrix(text, pinned, options), pattern);
+    refused(workflow({ entries: [...pinned, { image: 'jellyfin/jellyfin:10.10.7', version: '10.10.7' }] }), /extra \[jellyfin\/jellyfin:10\.10\.7 @ 10\.10\.7\]/);
+    refused(workflow({ entries: pinned.slice(0, 1) }), /missing \[jellyfin\/jellyfin:10\.11\.11 @ 10\.11\.11\]/);
+    refused(workflow({ entries: [{ ...pinned[0], version: '10.11.11' }, { ...pinned[1], version: '12.4.0' }] }), /missing .*extra /);
+    refused(workflow({ entries: [pinned[0], pinned[1], pinned[1]] }), /lists jellyfin\/jellyfin:10\.11\.11 @ 10\.11\.11 twice/);
+    // The pinned pair written elsewhere in the workflow does not count: only the matrix does.
+    const outside = '  other:\n    env:\n      image: jellyfin/jellyfin:10.11.11\n      version: 10.11.11';
+    refused(workflow({ entries: pinned.slice(0, 1), extraJob: outside }), /missing \[jellyfin\/jellyfin:10\.11\.11 @ 10\.11\.11\]/);
+    refused(workflow({ needs: 'validate' }), /container does not need jellyfin-integration/);
+    refused(workflow({ needs: '[validate]' }), /container does not need jellyfin-integration/);
+    checkJellyfinMatrix(workflow({ needs: 'jellyfin-integration' }), pinned, options);
+    refused(workflow().replace('${{ matrix.jellyfin.image }}', 'jellyfin/jellyfin:10.11.11'), /no "pnpm test:real" step on the matrix image/);
+    refused(workflow().replace('        jellyfin:\n', '        include:\n'), /must have only a "jellyfin" list/);
+    refused(workflow().replace('            version: 12.4.0\n', ''), /entry 1 must be exactly \{ image, version \}/);
+    refused(workflow().replace('fail-fast: false', 'fail-fast: &x false'), /unsupported YAML/);
+    refused(workflow().replace('    steps:\n      - uses', '    strategy: {}\n    steps:\n      - uses'), /duplicate key "strategy"/);
   });
 });
 
@@ -136,9 +180,10 @@ describe('household hosts and the Jellyfin version', { timeout: 30_000 }, () => 
       assert.deepEqual([answer.status, answer.text], [503, UNTESTED_VERSION_MESSAGE], pathname);
       assert.equal(answer.headers['content-type'], 'text/plain; charset=utf-8');
       assert.equal(answer.headers['cache-control'], 'no-store');
+      assert.equal(answer.headers['retry-after'], '300');
     }
     assert.deepEqual(app.jellyfin.relayed, [], 'nothing reached Jellyfin from a household host');
-    assert.match(await rawUpgrade(app.port, '/socket', HOST), /^HTTP\/1\.1 503 /);
+    assert.equal(await rawUpgrade(app.port, '/socket', HOST), refusalResponse(UNTESTED_VERSION_MESSAGE, '300'));
 
     assert.equal((await get(app.port, '/health')).status, 200);
     const status = (await get(app.port, '/v1/jellyfin/version', ADMIN)).json();
@@ -183,6 +228,8 @@ describe('household hosts and the Jellyfin version', { timeout: 30_000 }, () => 
     const app = await startApp(t, { version: '12.4.0', down: true, now: () => now });
     const waiting = await get(app.port, '/web/index.html', { Host: HOST });
     assert.deepEqual([waiting.status, waiting.text], [503, UNKNOWN_VERSION_MESSAGE]);
+    assert.equal(waiting.headers['retry-after'], '5');
+    assert.equal(await rawUpgrade(app.port, '/socket', HOST), refusalResponse(UNKNOWN_VERSION_MESSAGE, '5'));
     assert.equal((await get(app.port, '/health')).status, 200);
     assert.equal((await get(app.port, '/v1/jellyfin/version', ADMIN)).json().householdHosts, 'waiting');
     app.jellyfin.down = false;
@@ -271,6 +318,23 @@ function request(port, pathname, { method = 'GET', headers = {}, body } = {}) {
 
 function put(port, pathname, body) {
   return request(port, pathname, { method: 'PUT', headers: { ...ADMIN, 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+}
+
+/** The whole refused WebSocket upgrade, byte for byte: the HTTP refusal's headers and body, then the connection closes. */
+function refusalResponse(message, retryAfter) {
+  return [
+    'HTTP/1.1 503 Service Unavailable',
+    'Content-Type: text/plain; charset=utf-8',
+    `Content-Length: ${Buffer.byteLength(message)}`,
+    'Cache-Control: no-store',
+    'CDN-Cache-Control: no-store',
+    'Cloudflare-CDN-Cache-Control: no-store',
+    'X-Content-Type-Options: nosniff',
+    `Retry-After: ${retryAfter}`,
+    'Connection: close',
+    '',
+    message,
+  ].join('\r\n');
 }
 
 function rawUpgrade(port, pathname, host) {

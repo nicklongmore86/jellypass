@@ -433,7 +433,11 @@ export function makeServer(
       socket.off('error', ignore);
       if (socket.destroyed) return;
       if (settled === 'serve') householdGateway.handleUpgrade(request, socket, head, householdId);
-      else socket.on('error', ignore).end(`HTTP/1.1 503 Service Unavailable\r\n${Object.entries(NEVER_STORE).map(([name, value]) => `${name}: ${value}\r\n`).join('')}Connection: close\r\n\r\n`);
+      else {
+        const { headers, body } = versionRefusal(settled);
+        const head = Object.entries(headers).map(([name, value]) => `${name}: ${value}\r\n`).join('');
+        socket.on('error', ignore).end(`HTTP/1.1 503 Service Unavailable\r\n${head}Connection: close\r\n\r\n${body}`);
+      }
     });
   });
   return Object.assign(server, {
@@ -589,19 +593,26 @@ function image(response: ServerResponse, body: Uint8Array, upstreamContentType: 
 }
 
 /**
- * A household host's fixed answer while the Jellyfin version is untested and not confirmed, or not known: never relayed
- * to Jellyfin, and the same for every path, so it tells a caller nothing but that.
+ * A household host's fixed 503 while the Jellyfin version is untested and not confirmed, or not known: never relayed
+ * to Jellyfin, and the same for every path and for a WebSocket upgrade, so it tells a caller nothing but that.
  */
-function versionRefused(response: ServerResponse, decision: Exclude<HouseholdDecision, 'serve'>): void {
+function versionRefusal(decision: Exclude<HouseholdDecision, 'serve'>): { headers: Record<string, string>; body: string } {
   const body = decision === 'refuse' ? UNTESTED_VERSION_MESSAGE : UNKNOWN_VERSION_MESSAGE;
-  response.writeHead(503, {
-    'Content-Type': 'text/plain; charset=utf-8',
-    'Content-Length': Buffer.byteLength(body),
-    ...NEVER_STORE,
-    'X-Content-Type-Options': 'nosniff',
-    'Retry-After': decision === 'refuse' ? '300' : '5',
-  });
-  response.end(body);
+  return {
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Content-Length': String(Buffer.byteLength(body)),
+      ...NEVER_STORE,
+      'X-Content-Type-Options': 'nosniff',
+      'Retry-After': decision === 'refuse' ? '300' : '5',
+    },
+    body,
+  };
+}
+
+function versionRefused(response: ServerResponse, decision: Exclude<HouseholdDecision, 'serve'>): void {
+  const { headers, body } = versionRefusal(decision);
+  response.writeHead(503, headers).end(body);
 }
 
 function redirect(response: ServerResponse, location: string): void {

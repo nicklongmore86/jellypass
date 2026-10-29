@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { request as httpRequest } from 'node:http';
+import { createServer, request as httpRequest } from 'node:http';
 import { connect } from 'node:net';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
@@ -513,8 +513,9 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     const householdStore = new GrantStore(path.join(await makeTempDir(t, 'jfa-real-paths-'), 'grants.json'));
     await householdStore.load();
     await householdStore.upsertGroup({ id: 'pathhouse', name: 'Path House', userIds: [fixture.bobId] });
+    const jellyfin = await recordedJellyfin(t);
     const gateway = makeServer(new AccessService(client, householdStore), { webhook: webhookToken, admin: 'real-admin-secret' }, undefined, {
-      householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: 0 },
+      householdGateway: { jellyfinUrl: jellyfin.url, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: 0 },
     });
     await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
     t.after(() => new Promise((resolve) => gateway.close(resolve)));
@@ -532,11 +533,21 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     const { date: _byIdDate, ...byIdHeaders } = byId.headers;
     const { date: _memberDate, ...memberHeaders } = memberById.headers;
     assert.deepEqual([memberById.status, memberById.text, memberHeaders], [byId.status, byId.text, byIdHeaders]);
-    // Bob is: signed in by Jellyfin, on the plain path and, on Jellyfin 10.11, through the legacy prefix. Jellyfin 12
-    // answers that prefix with a 404, which the household host answers as any failed sign-in of a member.
-    const legacyBob = await postWithHeaders(port, '/emby/Users/AuthenticateByName', host, { Username: 'Bob', Pw: '' });
-    if (fixture.major < 12) assert.equal(legacyBob.json().User.Id, fixture.bobId, legacyBob.text);
-    else assert.deepEqual([legacyBob.status, legacyBob.text], [401, '{"error":"invalid_credentials"}']);
+    // Bob is: the household host relays his sign-in in every spelling, once and as spelled, and Jellyfin signs him in by
+    // every spelling it routes; the plain ones on every Jellyfin.
+    for (const pathname of spellings) {
+      jellyfin.seen.length = 0;
+      const answer = await postWithHeaders(port, pathname, host, { Username: 'Bob', Pw: '' });
+      assert.deepEqual(jellyfin.seen, [`POST ${pathname}`], pathname);
+      if (fixture.major >= 12 && legacy.includes(pathname)) {
+        // Jellyfin 12 removed the /emby and /mediabrowser routes and answers this 404, which the household host answers
+        // as any failed sign-in of a member: no token, no user.
+        assert.deepEqual([answer.status, answer.text], [401, '{"error":"invalid_credentials"}'], pathname);
+      } else {
+        assert.equal(answer.status, 200, `${pathname}: ${answer.text}`);
+        assert.equal(answer.json().User.Id, fixture.bobId, pathname);
+      }
+    }
     const bob = await postWithHeaders(port, '/Users/AuthenticateByName', host, { Username: 'Bob', Pw: '' });
     assert.equal(bob.status, 200, bob.text);
     assert.equal(bob.json().User.Id, fixture.bobId);
@@ -547,10 +558,16 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     await client.updatePolicy(originalAdmin.Id, { ...originalAdmin.Policy, IsHidden: false });
     assert.ok((await request(baseUrl, '/Users/Public')).some((entry) => entry.Id === originalAdmin.Id), 'Jellyfin itself lists the administrator');
     for (const pathname of ['/Users/Public', '/emby/Users/Public', '/Users/Public/', '/%65mby/Users/%50ublic']) {
+      jellyfin.seen.length = 0;
       const answer = await getWithHeaders(port, pathname, host);
-      // Jellyfin 12 answers the legacy prefix with a 404, which gets the household host's fixed one, listing no one.
-      if (fixture.major >= 12 && /^\/%65mby|^\/emby/i.test(pathname)) assert.deepEqual([answer.status, answer.text], [404, '{"error":"item_not_found"}'], pathname);
-      else assert.deepEqual(answer.json().map((entry) => entry.Id), [fixture.bobId], pathname);
+      assert.deepEqual(jellyfin.seen, [`GET ${pathname}`], pathname);
+      if (fixture.major >= 12 && /^\/(?:%65|e)mby\//i.test(pathname)) {
+        // Jellyfin 12 removed the /emby and /mediabrowser routes and answers this 404, which gets the household host's
+        // fixed one, listing no one.
+        assert.deepEqual([answer.status, answer.text], [404, '{"error":"item_not_found"}'], pathname);
+      } else {
+        assert.deepEqual(answer.json().map((entry) => entry.Id), [fixture.bobId], pathname);
+      }
     }
     // A title Bob may not see: its media is refused in every spelling, as on the plain path.
     await client.updateItem({ ...original, Tags: [...original.Tags, 'jp-paths-hidden'] });
@@ -748,8 +765,9 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     const householdStore = new GrantStore(path.join(await makeTempDir(t, 'jfa-real-share-'), 'grants.json'));
     await householdStore.load();
     await householdStore.upsertGroup({ id: 'sharehouse', name: 'Share House', userIds: [fixture.aliceId, fixture.bobId] });
+    const jellyfin = await recordedJellyfin(t);
     const gateway = makeServer(new AccessService(client, householdStore), { webhook: webhookToken, admin: 'real-admin-secret' }, undefined, {
-      householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: 0 },
+      householdGateway: { jellyfinUrl: jellyfin.url, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: 0 },
     });
     await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
     t.after(() => new Promise((resolve) => gateway.close(resolve)));
@@ -789,12 +807,37 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     const read = await send('GET', items, tokens.bob);
     assert.equal(read.status, 200, read.text);
     assert.deepEqual(read.json().Items.map((item) => item.Id), [fixture.itemId]);
+    // A client that gives its token the legacy way is checked with exactly those credentials: the household host relays
+    // them as given and never rewrites them into a header Jellyfin 12 reads. Jellyfin 10.11 reads them, so Bob reads the
+    // playlist; Jellyfin 12 disabled legacy authorization, so its GET /Users/Me refuses them, the household host answers
+    // its fixed 401, and only that check reached Jellyfin.
+    const legacyCredentials = [
+      [items, { 'X-Emby-Token': tokens.bob }],
+      [items, { 'X-Emby-Authorization': `MediaBrowser Token="${tokens.bob}"` }],
+      [items, { 'X-MediaBrowser-Token': tokens.bob }],
+      [`${items}?api_key=${tokens.bob}`, {}],
+    ];
+    for (const [pathname, credentials] of legacyCredentials) {
+      jellyfin.seen.length = 0;
+      const answer = await getWithHeaders(port, pathname, { Host: host, ...credentials });
+      const label = `${pathname} ${Object.keys(credentials)}`;
+      if (fixture.major < 12) {
+        assert.equal(answer.status, 200, `${label}: ${answer.text}`);
+        assert.deepEqual(answer.json().Items.map((item) => item.Id), [fixture.itemId], label);
+      } else {
+        assert.deepEqual([answer.status, answer.text], [401, '{"error":"unauthorized"}'], label);
+        const check = pathname.includes('?') ? `GET /Users/Me?api_key=${tokens.bob}` : 'GET /Users/Me';
+        assert.deepEqual(jellyfin.seen, [check], label);
+      }
+    }
     const shareOf = async (token, id) => {
       const answer = await send('GET', `/playlists/${playlist}/users/${id}`, token);
       assert.equal(answer.status, 200, answer.text);
-      // The legacy prefix is let through to Jellyfin alike: Jellyfin 10.11 answers it as the plain path, Jellyfin 12
-      // (which no longer routes it) with its own 404.
+      // The legacy prefix is let through to Jellyfin alike, as spelled. Jellyfin 10.11 answers it as the plain path;
+      // Jellyfin 12 removed the /emby and /mediabrowser routes, and its own empty 404 is relayed, naming no one.
+      jellyfin.seen.length = 0;
       const legacy = await send('GET', `/emby/playlists/${playlist}/users/${id}`, token);
+      assert.deepEqual(jellyfin.relayed(), [`GET /emby/playlists/${playlist}/users/${id}`]);
       assert.deepEqual([legacy.status, legacy.text], fixture.major < 12 ? [answer.status, answer.text] : [404, '']);
       return answer.json().CanEdit;
     };
@@ -830,8 +873,9 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     const tmdb = await createFakeTmdb(world());
     t.after(() => Promise.all([seerr.close(), tmdb.close()]));
     const admin = new SeerrClient(seerr.url, 'seerr-key');
+    const jellyfin = await recordedJellyfin(t);
     const gateway = makeServer(new AccessService(client, householdStore), { webhook: webhookToken, admin: 'real-admin-secret' }, undefined, {
-      householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: 0 },
+      householdGateway: { jellyfinUrl: jellyfin.url, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: 0 },
       householdApp: { catalogue: new TmdbClient(TMDB_KEY, { baseUrl: tmdb.url }), blocklist: admin, members: new SeerrUserMap(admin) },
     });
     await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
@@ -856,9 +900,12 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     assert.ok(everyone.json().some((user) => user.Id === fixture.bobId), 'Jellyfin no longer lists every user to a member: revisit the gateway\'s /Users filter');
     // Each filter is still Jellyfin's own (a new user is hidden in 10.11, so `isHidden=false` leaves Alice off too).
     for (const pathname of ['/Users', '/users?isHidden=true', '/Users?isHidden=false', '/emby/Users/', '/Users?isDisabled=false']) {
+      jellyfin.seen.length = 0;
       const answer = await getWithHeaders(port, pathname, as(grove, alice));
+      assert.deepEqual(jellyfin.relayed(), [`GET ${pathname}`], pathname);
       if (fixture.major >= 12 && pathname.startsWith('/emby/')) {
-        // Jellyfin 12 no longer routes the legacy prefix: its 404 gets the household host's fixed one, listing no one.
+        // Jellyfin 12 removed the /emby and /mediabrowser routes: its 404 gets the household host's fixed one, listing
+        // no one.
         assert.equal((await atJellyfin(pathname, alice)).status, 404);
         assert.deepEqual([answer.status, answer.text], [404, '{"error":"item_not_found"}'], pathname);
         continue;
@@ -868,6 +915,20 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
       assert.deepEqual(answer.json().map((user) => user.Name), own, pathname);
     }
     assert.deepEqual((await getWithHeaders(port, '/Users', as(grove, alice))).json().map((user) => user.Name), ['Alice']);
+    // A client that gives its token the legacy way (relayed as given, see the share test): Jellyfin 10.11 reads it and
+    // grove's host lists only Alice; Jellyfin 12 disabled legacy authorization, so the household host answers its fixed
+    // 401 and nothing but the check reached Jellyfin.
+    for (const [pathname, credentials] of [['/Users', { 'X-Emby-Token': alice }], [`/Users?api_key=${alice}`, {}]]) {
+      jellyfin.seen.length = 0;
+      const answer = await getWithHeaders(port, pathname, { Host: grove, ...credentials });
+      if (fixture.major < 12) {
+        assert.equal(answer.status, 200, answer.text);
+        assert.deepEqual(answer.json().map((user) => user.Name), ['Alice'], pathname);
+      } else {
+        assert.deepEqual([answer.status, answer.text], [401, '{"error":"unauthorized"}'], pathname);
+        assert.deepEqual(jellyfin.seen, [`GET /Users/Me${pathname.includes('?') ? `?api_key=${alice}` : ''}`], pathname);
+      }
+    }
 
     // Bob's SyncPlay group, listed with his name to anyone at Jellyfin, is not grove's.
     const newGroup = await getWithHeaders(new URL(baseUrl).port, '/SyncPlay/New', { ...direct(bob), 'Content-Type': 'application/json' }, { method: 'POST', body: JSON.stringify({ GroupName: 'Bob group' }) });
@@ -926,6 +987,17 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
       }
     }
     assert.match(await rawUpgrade(port, `/socket?ApiKey=${alice}&deviceId=jellypass-real-scope`, grove), /^HTTP\/1\.1 101 /);
+    // Her token in the legacy `api_key`, relayed as given: Jellyfin 10.11 reads it, Jellyfin 12 does not, so the
+    // household host refuses the upgrade there before it reaches Jellyfin.
+    jellyfin.seen.length = 0;
+    const legacySocket = await rawUpgrade(port, `/socket?api_key=${alice}&deviceId=jellypass-real-scope`, grove);
+    if (fixture.major < 12) {
+      assert.match(legacySocket, /^HTTP\/1\.1 101 /);
+    } else {
+      assert.match(legacySocket, /^HTTP\/1\.1 401 /);
+      // Jellyfin's refusal of these credentials is remembered from the listing above, so not even the check is sent.
+      assert.deepEqual(jellyfin.relayed(), []);
+    }
 
     // Signing Bob out through grove's host gets the answer a token Jellyfin never issued gets, and revokes nothing.
     const signOut = (host, token) => postWithHeaders(port, '/Sessions/Logout', as(host, token), undefined);
@@ -1106,6 +1178,52 @@ function user(users, id) {
   const found = users.find((entry) => entry.Id === id);
   assert.ok(found, `user ${id} should exist`);
   return found;
+}
+
+/**
+ * A pass-through in front of the real Jellyfin for a gateway under test: `seen` lists every request that reached Jellyfin
+ * through it (method and target, as sent), WebSocket upgrades included, and `relayed()` the same without the household
+ * host's token checks (GET /Users/Me), which it may have answered from its cache.
+ */
+async function recordedJellyfin(t) {
+  const target = new URL(baseUrl);
+  const seen = [];
+  const sockets = new Set();
+  const proxy = createServer((incoming, outgoing) => {
+    seen.push(`${incoming.method} ${incoming.url}`);
+    const upstream = httpRequest({ hostname: target.hostname, port: target.port, method: incoming.method, path: incoming.url, headers: incoming.headers }, (answer) => {
+      outgoing.writeHead(answer.statusCode, answer.headers);
+      answer.pipe(outgoing);
+    });
+    upstream.on('error', () => outgoing.destroy());
+    incoming.pipe(upstream);
+  });
+  proxy.on('upgrade', (incoming, socket, head) => {
+    seen.push(`${incoming.method} ${incoming.url}`);
+    const upstream = connect(Number(target.port), target.hostname, () => {
+      const headers = [];
+      for (let index = 0; index < incoming.rawHeaders.length; index += 2) headers.push(`${incoming.rawHeaders[index]}: ${incoming.rawHeaders[index + 1]}\r\n`);
+      upstream.write(`${incoming.method} ${incoming.url} HTTP/1.1\r\n${headers.join('')}\r\n`);
+      upstream.write(head);
+      socket.pipe(upstream).pipe(socket);
+    });
+    for (const end of [socket, upstream]) {
+      sockets.add(end);
+      end.on('error', () => { socket.destroy(); upstream.destroy(); });
+      end.on('close', () => { socket.destroy(); upstream.destroy(); });
+    }
+  });
+  await new Promise((resolve) => proxy.listen(0, '127.0.0.1', resolve));
+  t.after(() => {
+    for (const socket of sockets) socket.destroy();
+    proxy.closeAllConnections();
+    return new Promise((resolve) => proxy.close(resolve));
+  });
+  return {
+    url: `http://127.0.0.1:${proxy.address().port}`,
+    seen,
+    relayed: () => seen.filter((line) => !/^GET \/Users\/Me(?:\?|$)/.test(line)),
+  };
 }
 
 /** A WebSocket upgrade's answer, up to the end of its headers. */

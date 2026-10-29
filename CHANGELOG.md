@@ -40,6 +40,12 @@ upgrading:
   household hostnames answer `503` until Jellyfin reports its version (read
   again every 30 seconds and on the next household request), instead of
   relaying unchecked. They serve as soon as Jellyfin answers.
+- **On Jellyfin 12, clients that give their token only the legacy way**
+  (`X-Emby-Token`, `X-Emby-Authorization`, `X-MediaBrowser-Token`, the `Emby`
+  scheme or `api_key`) get `401` on household hostnames, as Jellyfin 12 itself
+  refuses them. JellyPass checks a client's credentials exactly as given and
+  never translates them into a form Jellyfin 12 reads. On 10.11 they work as
+  before.
 - **The state file keeps schema v7.** A confirmation is stored in a new
   optional field, `jellyfinVersionConfirmed`, which 3.9.0 keeps as it is
   without reading it, so rolling back needs no state change (3.9.0 does not
