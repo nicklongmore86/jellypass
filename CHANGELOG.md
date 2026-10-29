@@ -18,6 +18,26 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Changed
+
+- TV add-on: **Hide what I have** on the Discover page is now **on when the page opens** (and on the service and studio
+  pages), and it also applies to the **hero**: with it on, the hero's slides skip titles in the library or already requested
+  (a title just asked for too) and are filled from the next titles of the same answer that have a wide picture; if none is
+  left, the hero is not shown. Switch it off and the hero is as before. The choice is kept for the session in memory only and is
+  back on for the next member. It makes no extra call. No server, API or setting change.
+
+### Added
+
+- TV add-on: **service and studio pages** on the Discover page. A service row's heading ("Popular on Netflix ›") is now a
+  link, and each studio's logo is a tile you can choose; either opens that service's or studio's own page in Jellyfin
+  (`#/jellypass/service/<id>`, `#/jellypass/studio/<id>`), as in the household app: the logo and name, **All / Series /
+  Films** tabs (Films only for a service whose films are listed; a service without them has its series only), **Hide what I
+  have** (the same choice as on Discover), a grid of 20 titles with a **Load more** button, the JustWatch credit under All and
+  Films, and the TMDB notice. Back from a title returns to the same title on the same tab with the pages that were showing,
+  without asking again; a service opened from a row costs no new call. Only the services and studios the app lists have a page:
+  any other address says "Not found". Headings stay headings for a screen reader (the control inside is named "Popular on
+  Netflix, see all"). No server, API or setting change.
+
 ## [3.7.0] - 2026-10-29
 
 This is a minor release for the TV add-on, which is still experimental and off

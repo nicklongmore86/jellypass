@@ -1,20 +1,24 @@
-import type { DiscoverCard, DiscoverNetwork, DiscoverSources, Failure, HouseholdState } from './api.js';
+import type { DiscoverCard, DiscoverNetwork, DiscoverSources, Failure, HouseholdState, NetworkList } from './api.js';
 import type { Asked } from './asked.js';
+import { drawCard, imageIn, markCard, setNear, type Drawn, type Unit } from './discover-card.js';
 import type { DiscoverData, DiscoverRequest } from './discover-data.js';
 import {
-  badgeOf,
   DISCOVER_FILTERS,
   DISCOVER_LAYOUT,
   DISCOVER_TEXT,
   heroCards,
+  isHeld,
   JUSTWATCH_NOTE,
   networkListFor,
   networksFor,
   rowCards,
+  serviceHash,
   STATE_LABELS,
+  studioHash,
   TMDB_NOTICE,
   type DiscoverFilter,
 } from './discover-model.js';
+import type { HidePreference } from './discover-preference.js';
 import { JELLYFIN_CLASSES } from './jellyfin-web.js';
 import { FOCUS_ATTR, type PageContext, type PageView } from './page-host.js';
 import type { SessionWatch, Stamp } from './session-watch.js';
@@ -48,21 +52,10 @@ const SKELETON_CARDS = 7;
 
 /** What the page asks of the page around it. */
 export interface DiscoverHost {
-  /** Opens Jellyfin web's page at `hash` (a title). */
+  /** Opens Jellyfin web's page at `hash` (a title, a service or a studio). */
   navigate(hash: string): void;
-}
-
-/** Images that are set only while the element holding them is near the screen. */
-interface Unit {
-  element: Element;
-  images: Array<{ image: HTMLImageElement; url: string }>;
-  near: boolean;
-}
-
-interface Drawn {
-  card: DiscoverCard;
-  button: HTMLElement;
-  badge: HTMLElement;
+  /** A service's page is about to be opened from a row that shows `list`: it opens on that list. */
+  openService(id: number, list: NetworkList): void;
 }
 
 /**
@@ -96,6 +89,10 @@ interface RowView {
   asked: boolean;
   answered: DiscoverCard[] | undefined;
   drawn: Drawn[];
+  /** Bumped each time the row's cards are drawn: a card of an earlier drawing does nothing. */
+  fill: number;
+  /** The Try again of the failure on show: only this one answers, once; a retained one does nothing. */
+  retry: HTMLElement | undefined;
 }
 
 interface Hero {
@@ -111,6 +108,8 @@ interface Hero {
 
 interface Open {
   userId: string;
+  /** The Try again of a failed sources call on show (see RowView.retry). */
+  retry: HTMLElement | undefined;
   /** The drawing under the session the page is shown for (member, token and sign-in generation): every callback checks it still holds. */
   render: Render;
   context: PageContext;
@@ -126,6 +125,8 @@ interface Open {
   hero: Hero | undefined;
   /** Where the services' rows, and the foot, go in the body once the sources are known. */
   networks: HTMLElement | undefined;
+  /** The studios' tiles, above the foot. */
+  studios: HTMLElement | undefined;
   foot: HTMLElement | undefined;
   dataWatch: IntersectionObserver | undefined;
   imageWatch: IntersectionObserver | undefined;
@@ -141,13 +142,14 @@ export class DiscoverPage {
   readonly #host: DiscoverHost;
   /** The member everything below belongs to: another member, or no one, forgets it (in memory only). */
   #owner: string | undefined;
+  readonly #hide: HidePreference;
   #filter: DiscoverFilter = 'all';
-  #hideHeld = false;
   #slide = 0;
   #open: Open | undefined;
 
-  public constructor(document: Document, watch: SessionWatch, data: DiscoverData, asked: Asked, host: DiscoverHost) {
+  public constructor(document: Document, watch: SessionWatch, data: DiscoverData, asked: Asked, host: DiscoverHost, hide: HidePreference) {
     this.#document = document;
+    this.#hide = hide;
     this.#watch = watch;
     this.#data = data;
     this.#asked = asked;
@@ -162,7 +164,7 @@ export class DiscoverPage {
     if (userId === this.#owner) return;
     this.#owner = userId;
     this.#filter = 'all';
-    this.#hideHeld = false;
+    this.#hide.forMember(userId);
     this.#slide = 0;
   }
 
@@ -208,10 +210,10 @@ export class DiscoverPage {
     if (!open || !this.#current(open)) return;
     for (const row of open.rows) {
       if (!row.answered) continue;
-      if (this.#hideHeld && this.#visibleKeys(row) !== row.drawn.map((one) => this.#cardKey(one.card)).join(' ')) this.#fill(row);
+      if (this.#hide.held && this.#visibleKeys(row) !== row.drawn.map((one) => this.#cardKey(one.card)).join(' ')) this.#fill(row);
       else for (const one of row.drawn) this.#mark(one);
     }
-    if (open.hero) this.#showSlide(open.hero);
+    this.#refreshHero(open);
   }
 
   /** The chips, new for each drawing: one kept from an earlier drawing (an earlier token) does nothing. */
@@ -225,7 +227,7 @@ export class DiscoverPage {
       open.chips[filter] = chip;
       open.chipBox.appendChild(chip);
     }
-    const hide = this.#chip(DISCOVER_TEXT.hideHeld, 'chip:hide', this.#hideHeld);
+    const hide = this.#chip(DISCOVER_TEXT.hideHeld, 'chip:hide', this.#hide.held);
     hide.className += ' jellypass-tv-discover-chip-toggle';
     hide.addEventListener('click', () => this.#toggleHide(open, render));
     open.chips.hide = hide;
@@ -254,7 +256,7 @@ export class DiscoverPage {
     view.appendChild(heroSlot);
     view.appendChild(chips);
     view.appendChild(body);
-    const open: Open = { userId: session.userId, render: { stamp: this.#watch.stamp(session) }, context, view, heroSlot, chipBox: chips, chips: {}, body, paint: 0, rows: [], units: [], hero: undefined, networks: undefined, foot: undefined, dataWatch: undefined, imageWatch: undefined, byElement: [] };
+    const open: Open = { retry: undefined, userId: session.userId, render: { stamp: this.#watch.stamp(session) }, context, view, heroSlot, chipBox: chips, chips: {}, body, paint: 0, rows: [], units: [], hero: undefined, networks: undefined, studios: undefined, foot: undefined, dataWatch: undefined, imageWatch: undefined, byElement: [] };
     this.#drawChips(open);
     this.#open = open;
     this.#paint(open);
@@ -278,10 +280,64 @@ export class DiscoverPage {
 
   #release(open: Open): void {
     open.paint = -1;
+    this.#teardown(open, 'body');
     if (open.dataWatch) open.dataWatch.disconnect();
     if (open.imageWatch) open.imageWatch.disconnect();
     open.dataWatch = undefined;
     open.imageWatch = undefined;
+  }
+
+  /**
+   * The ONE way anything the page drew goes (a redraw for another chip, the leaving of the page, a service row's or the whole
+   * list's sign-in prompt, an error state, a row or the hero drawn again): it bumps what the retained controls check (a row's
+   * `fill`; the hero and a row are also forgotten by identity, `open.hero` and `open.rows`), forgets the Try again pointers,
+   * and lets go of the pictures (unobserve, no `src`) before the DOM is emptied. `row` is one row's body; `hero` is the hero;
+   * `networks` is the services' rows; `body` is everything (the hero too).
+   */
+  #teardown(open: Open, scope: 'row' | 'hero' | 'networks' | 'body', row?: RowView): void {
+    if (scope === 'row' && row) {
+      row.retry = undefined;
+      row.fill += 1;
+      row.drawn = [];
+      this.#clearImages(row.unit);
+      row.unit.images = [];
+      row.body.textContent = '';
+      row.body.removeAttribute('aria-busy');
+      return;
+    }
+    if (scope === 'hero') {
+      if (open.hero) this.#dropUnit(open, open.hero.unit);
+      open.hero = undefined;
+      open.heroSlot.textContent = '';
+      return;
+    }
+    if (scope === 'networks') {
+      const slot = open.networks;
+      if (!slot) return;
+      const gone = open.rows.filter((one) => slot.contains(one.section));
+      for (const one of gone) {
+        this.#teardown(open, 'row', one);
+        if (open.dataWatch) open.dataWatch.unobserve(one.section);
+        this.#dropUnit(open, one.unit);
+      }
+      open.rows = open.rows.filter((one) => gone.indexOf(one) < 0);
+      open.byElement = open.byElement.filter((one) => !one.row || gone.indexOf(one.row) < 0);
+      open.retry = undefined;
+      slot.textContent = '';
+      slot.removeAttribute('aria-busy');
+      return;
+    }
+    for (const one of open.rows) this.#teardown(open, 'row', one);
+    for (const unit of open.units) this.#clearImages(unit);
+    this.#teardown(open, 'hero');
+    open.body.textContent = '';
+    open.rows = [];
+    open.units = [];
+    open.byElement = [];
+    open.retry = undefined;
+    open.networks = undefined;
+    open.studios = undefined;
+    open.foot = undefined;
   }
 
   #el(tag: string, className: string, text?: string): HTMLElement {
@@ -326,9 +382,10 @@ export class DiscoverPage {
 
   #toggleHide(open: Open, render: Render): void {
     if (!this.#live(open, render)) return;
-    this.#hideHeld = !this.#hideHeld;
-    open.chips.hide?.setAttribute('aria-pressed', String(this.#hideHeld));
+    this.#hide.held = !this.#hide.held;
+    open.chips.hide?.setAttribute('aria-pressed', String(this.#hide.held));
     for (const row of open.rows) if (row.answered) this.#fill(row);
+    this.#refreshHero(open);
   }
 
   /** A card's state as the member sees it: the household's own, with what they just asked for on this TV. */
@@ -343,7 +400,7 @@ export class DiscoverPage {
   /** The cards a row shows now, as keys: what "Hide what I have" leaves, at most the row's 14. */
   #visible(row: RowView): DiscoverCard[] {
     const states = (row.answered as DiscoverCard[]).map((card) => ({ card, state: this.#stateOf(card) }));
-    return rowCards(states, this.#hideHeld).map((one) => one.card);
+    return rowCards(states, this.#hide.held).map((one) => one.card);
   }
 
   #visibleKeys(row: RowView): string {
@@ -363,14 +420,7 @@ export class DiscoverPage {
     const Watcher = typeof IntersectionObserver === 'function' ? IntersectionObserver : undefined;
     open.dataWatch = Watcher ? new Watcher((entries) => this.#onData(open, paint, entries), { rootMargin: DATA_MARGIN }) : undefined;
     open.imageWatch = Watcher ? new Watcher((entries) => this.#onImages(open, paint, entries), { rootMargin: IMAGE_MARGIN }) : undefined;
-    open.body.textContent = '';
-    open.heroSlot.textContent = '';
-    open.rows = [];
-    open.units = [];
-    open.byElement = [];
-    open.hero = undefined;
-    open.networks = undefined;
-    open.foot = undefined;
+    this.#teardown(open, 'body');
     const layout = DISCOVER_LAYOUT[this.#filter];
     let feeds = true;
     for (const part of layout) {
@@ -383,6 +433,8 @@ export class DiscoverPage {
         open.body.appendChild(open.networks);
       }
     }
+    open.studios = this.#el('div', 'jellypass-tv-discover-studios padded-left padded-right');
+    open.body.appendChild(open.studios);
     open.foot = this.#el('div', 'jellypass-tv-discover-foot padded-left padded-right focusable');
     open.foot.setAttribute('tabindex', '0');
     open.foot.setAttribute(FOCUS_ATTR, 'foot');
@@ -406,21 +458,61 @@ export class DiscoverPage {
     return unit;
   }
 
-  #addRow(open: Open, variant: RowView['variant'], request: DiscoverRequest, key: string, heading: string, eager: boolean, feeds: boolean): RowView {
+  /** The images of a unit that is being drawn again or dropped lose their sources (they are detached: nothing should still hold a picture). */
+  #clearImages(unit: Unit): void {
+    for (const one of unit.images) one.image.removeAttribute('src');
+  }
+
+  /** A unit that goes (the hero before it is drawn again): no longer watched or kept, and its images let go. */
+  #dropUnit(open: Open, unit: Unit): void {
+    if (open.imageWatch) open.imageWatch.unobserve(unit.element);
+    open.units = open.units.filter((one) => one !== unit);
+    open.byElement = open.byElement.filter((one) => one.unit !== unit);
+    this.#clearImages(unit);
+    unit.images = [];
+  }
+
+  #addRow(open: Open, variant: RowView['variant'], request: DiscoverRequest, key: string, heading: string, eager: boolean, feeds: boolean, network?: DiscoverNetwork): RowView {
     const section = this.#el('div', `${JELLYFIN_CLASSES.section} jellypass-tv-discover-row`);
     const headingContainer = this.#el('div', JELLYFIN_CLASSES.headingContainer);
-    headingContainer.appendChild(this.#el('h2', JELLYFIN_CLASSES.heading, heading));
+    const title = this.#el('h2', JELLYFIN_CLASSES.heading);
+    if (network) title.appendChild(this.#serviceLink(open, network, heading, request));
+    else title.textContent = heading;
+    headingContainer.appendChild(title);
     section.appendChild(headingContainer);
     const body = this.#el('div', 'jellypass-tv-discover-row-body');
     section.appendChild(body);
-    const row: RowView = { scope: { open, render: open.render, paint: open.paint }, id: key, heading, variant, request, eager, feeds, section, body, unit: this.#unit(open, section), asked: false, answered: undefined, drawn: [] };
+    const row: RowView = { scope: { open, render: open.render, paint: open.paint }, id: key, heading, variant, request, eager, feeds, section, body, unit: this.#unit(open, section), asked: false, answered: undefined, drawn: [], fill: 0, retry: undefined };
     this.#skeleton(row);
     open.rows.push(row);
     return row;
   }
 
+  /**
+   * A service row's heading is the link to the service's page: the `h2` stays a heading (a screen reader lists it as one, and the
+   * link inside (a button with role=link: the add-on prevents no event, so there is no `href` to cancel) is named "<heading>, see all"), and the link is the one focus stop above the row (Up from its first card), where
+   * Back returns to. A chevron after the words is drawn by the stylesheet. The page opens on the list the row shows.
+   */
+  #serviceLink(open: Open, network: DiscoverNetwork, heading: string, request: DiscoverRequest): HTMLElement {
+    const render = open.render;
+    const paint = open.paint;
+    const link = this.#el('button', 'jellypass-tv-discover-link', heading) as HTMLButtonElement;
+    link.type = 'button';
+    link.setAttribute('role', 'link');
+    link.setAttribute('aria-label', DISCOVER_TEXT.seeAll(heading));
+    link.setAttribute(FOCUS_ATTR, `link:net${network.id}`);
+    if (this.#tv()) link.className += ' show-focus';
+    const list = request.kind === 'network' ? request.list : 'all';
+    link.addEventListener('click', () => {
+      if (!this.#live(open, render, paint)) return;
+      this.#host.openService(network.id, list);
+      this.#host.navigate(serviceHash(network.id));
+    });
+    return link;
+  }
+
   #skeleton(row: RowView): void {
-    row.body.textContent = '';
+    this.#teardown(row.scope.open, 'row', row);
     const scroller = this.#el('div', 'jellypass-tv-row-scroller padded-left padded-right jellypass-tv-discover-skeleton');
     scroller.setAttribute('aria-hidden', 'true');
     const list = this.#el('div', 'jellypass-tv-row-list');
@@ -460,31 +552,8 @@ export class DiscoverPage {
     if (open.paint !== paint || !this.#current(open)) return;
     for (const entry of entries) {
       const found = open.byElement.filter((one) => one.element === entry.target && one.unit)[0];
-      if (found && found.unit) this.#near(found.unit, entry.isIntersecting);
+      if (found && found.unit) setNear(found.unit, entry.isIntersecting);
     }
-  }
-
-  /** Sets the images of what is near the screen, and takes them from what is not (their boxes keep their size). */
-  #near(unit: Unit, on: boolean): void {
-    unit.near = on;
-    for (const one of unit.images) {
-      if (on) {
-        if (one.image.getAttribute('src') !== one.url) one.image.setAttribute('src', one.url);
-      } else if (one.image.hasAttribute('src')) {
-        one.image.removeAttribute('src');
-      }
-    }
-  }
-
-  /** An image for `unit`: set now only if the unit is near the screen. */
-  #image(unit: Unit, className: string, url: string): HTMLImageElement {
-    const image = this.#document.createElement('img');
-    image.className = className;
-    image.setAttribute('alt', '');
-    image.setAttribute('referrerpolicy', 'no-referrer');
-    unit.images.push({ image, url });
-    if (unit.near) image.setAttribute('src', url);
-    return image;
   }
 
   async #load(open: Open, paint: number, row: RowView, retry: boolean): Promise<void> {
@@ -494,14 +563,14 @@ export class DiscoverPage {
     if (result.ok) this.#settle(open, row, (result.value as { cards: DiscoverCard[] }).cards);
     else {
       if (row.feeds) open.heroSlot.className = 'jellypass-tv-discover-hero-slot';
-      this.#failed(open, paint, result, row.body, () => { this.#skeleton(row); this.#load(open, paint, row, true); }, row.id);
+      this.#failed(open, paint, result, row.body, row, () => { this.#skeleton(row); this.#load(open, paint, row, true); }, row.id);
     }
   }
 
   /** A failure in `into`: its words, and Try again (never by itself) unless the sign-in is refused, which ends the page's rows. */
-  #failed(open: Open, paint: number, failure: Failure, into: HTMLElement, again: () => void, key: string): void {
-    into.textContent = '';
-    into.removeAttribute('aria-busy');
+  #failed(open: Open, paint: number, failure: Failure, into: HTMLElement, owner: { retry: HTMLElement | undefined }, again: () => void, key: string): void {
+    if (into === open.networks) this.#teardown(open, 'networks');
+    else this.#teardown(open, 'row', owner as RowView);
     const kind = ERROR_TEXT[kindOf(failure)];
     if (failure.status === 401) {
       into.appendChild(this.#note(kind.title, kind.body));
@@ -510,8 +579,11 @@ export class DiscoverPage {
     const note = this.#el('div', 'jellypass-tv-discover-row-note padded-left padded-right');
     note.appendChild(this.#el('p', 'jellypass-tv-discover-row-note-text', `${kind.title}. ${kind.body}`));
     const retry = this.#button('raised jellypass-tv-discover-button', DISCOVER_TEXT.retry, `retry:${key}`);
+    owner.retry = retry;
     retry.addEventListener('click', () => {
-      if (open.paint === paint && this.#current(open)) again();
+      if (owner.retry !== retry || open.paint !== paint || !this.#current(open)) return;
+      owner.retry = undefined;
+      again();
     });
     note.appendChild(retry);
     into.appendChild(note);
@@ -522,18 +594,15 @@ export class DiscoverPage {
     row.asked = true;
     row.answered = cards;
     this.#fill(row);
-    if (row.feeds) this.#drawHero(open, cards);
+    if (row.feeds) this.#drawHero(open);
   }
 
   /** The row's cards, as "Hide what I have" and the overlay leave them, or why there are none. */
   #fill(row: RowView): void {
-    row.body.textContent = '';
-    row.body.removeAttribute('aria-busy');
-    row.drawn = [];
-    row.unit.images = [];
+    this.#teardown(row.scope.open, 'row', row);
     const cards = this.#visible(row);
     if (cards.length === 0) {
-      row.body.appendChild(this.#el('p', 'jellypass-tv-discover-row-note-text padded-left padded-right', this.#hideHeld && (row.answered as DiscoverCard[]).length > 0 ? DISCOVER_TEXT.nothingLeft : DISCOVER_TEXT.nothing));
+      row.body.appendChild(this.#el('p', 'jellypass-tv-discover-row-note-text padded-left padded-right', this.#hide.held && (row.answered as DiscoverCard[]).length > 0 ? DISCOVER_TEXT.nothingLeft : DISCOVER_TEXT.nothing));
       return;
     }
     const scroller = this.#el('div', 'jellypass-tv-row-scroller padded-left padded-right');
@@ -548,42 +617,18 @@ export class DiscoverPage {
   }
 
   #card(row: RowView, card: DiscoverCard): Drawn {
-    const backdrop = row.variant === 'backdrop';
-    const button = this.#el('button', `${backdrop ? JELLYFIN_CLASSES.cardBackdrop : JELLYFIN_CLASSES.card} jellypass-tv-card${this.#tv() ? ` ${JELLYFIN_CLASSES.cardTv}` : ''}`) as HTMLButtonElement;
-    button.type = 'button';
-    button.setAttribute('data-media-type', card.mediaType);
-    button.setAttribute('data-tmdb-id', String(card.tmdbId));
-    button.setAttribute(FOCUS_ATTR, `${row.id}:${card.mediaType}:${card.tmdbId}`);
-    const box = this.#el('div', 'cardBox cardBox-bottompadded');
-    const frame = this.#el('div', 'cardScalable');
-    frame.appendChild(this.#el('div', `cardPadder cardPadder-${backdrop ? 'overflowBackdrop' : 'overflowPortrait'}`));
-    const picture = this.#el('div', 'cardImageContainer coveredImage cardContent');
-    const url = backdrop ? card.backdropUrl || card.posterUrl : card.posterUrl;
-    if (url) picture.appendChild(this.#image(row.unit, 'jellypass-tv-card-image', url));
-    frame.appendChild(picture);
-    const badge = this.#el('div', 'jellypass-tv-discover-badge');
-    frame.appendChild(badge);
-    box.appendChild(frame);
-    box.appendChild(this.#el('div', 'cardText cardTextCentered cardText-first jellypass-tv-card-title', card.title));
-    if (card.year !== null) box.appendChild(this.#el('div', 'cardText cardText-secondary cardTextCentered jellypass-tv-card-year', String(card.year)));
-    button.appendChild(box);
-    button.addEventListener('click', () => this.#openTitle(row.scope, card));
-    const one = { card, button, badge };
+    const one = drawCard(this.#document, row.unit, { card, backdrop: row.variant === 'backdrop', tv: this.#tv(), key: `${row.id}:${card.mediaType}:${card.tmdbId}` });
+    const fill = row.fill;
+    one.button.addEventListener('click', () => {
+      if (row.fill === fill) this.#openTitle(row.scope, card);
+    });
     this.#mark(one);
     return one;
   }
 
   /** A card's badge and name, from its state now: the words are always there, and the colour goes with them. */
   #mark(one: Drawn): void {
-    const state = this.#stateOf(one.card);
-    const badge = badgeOf(state);
-    one.badge.textContent = badge.label;
-    one.badge.className = `jellypass-tv-discover-badge jellypass-tv-discover-badge-${badge.tone}`;
-    one.button.setAttribute('aria-label', this.#label(one.card, state));
-  }
-
-  #label(card: DiscoverCard, state: HouseholdState): string {
-    return card.year === null ? `${card.title}, ${STATE_LABELS[state]}` : `${card.title}, ${card.year}, ${STATE_LABELS[state]}`;
+    markCard(one, this.#stateOf(one.card));
   }
 
   /** A card was chosen: the title page opens, for the member who is signed in (a card of a session since ended opens nothing). */
@@ -595,11 +640,36 @@ export class DiscoverPage {
   // ---------------------------------------------------------------------------------------------------------------
   // The hero
 
-  #drawHero(open: Open, cards: DiscoverCard[]): void {
+  /** The slides the first row's answer gives now: with "Hide what I have" on, none that is in the library or asked for. */
+  #heroSlides(open: Open): DiscoverCard[] {
+    const feeding = open.rows.filter((row) => row.feeds && row.answered)[0];
+    if (!feeding) return [];
+    const held = this.#hide.held;
+    return heroCards(feeding.answered as DiscoverCard[], held ? (card) => isHeld({ state: this.#stateOf(card) }) : undefined);
+  }
+
+  /** The hero drawn again after "Hide what I have" or the overlay changed what it may show: no call, and focus never falls off the page. */
+  #refreshHero(open: Open): void {
+    const slides = this.#heroSlides(open);
+    const hero = open.hero;
+    if (hero && slides.length === hero.slides.length && slides.every((card, index) => this.#cardKey(card) === this.#cardKey(hero.slides[index] as DiscoverCard))) {
+      this.#showSlide(hero);
+      return;
+    }
+    if (!hero && slides.length === 0) return;
+    const inside = open.heroSlot.contains(this.#document.activeElement);
+    this.#drawHero(open);
+    // Focus was on a button of the hero that is gone: the new hero's View takes it, or the chip when there is no hero.
+    if (inside && this.#current(open) && !open.heroSlot.contains(this.#document.activeElement)) {
+      const target = open.hero ? open.hero.view : open.chips.hide;
+      if (target) target.focus();
+    }
+  }
+
+  #drawHero(open: Open): void {
     open.heroSlot.className = 'jellypass-tv-discover-hero-slot';
-    open.heroSlot.textContent = '';
-    open.hero = undefined;
-    const slides = heroCards(cards);
+    this.#teardown(open, 'hero');
+    const slides = this.#heroSlides(open);
     if (slides.length === 0) return;
     const section = this.#el('section', 'jellypass-tv-discover-hero');
     section.setAttribute('aria-roledescription', 'carousel');
@@ -621,7 +691,7 @@ export class DiscoverPage {
     dots.setAttribute('aria-hidden', 'true');
     for (const node of [previous, view, next, dots]) buttons.appendChild(node);
     for (const node of [title, facts, overview, buttons]) text.appendChild(node);
-    const image = this.#image(unit, 'jellypass-tv-discover-hero-image', slides[0]?.backdropUrl as string);
+    const image = imageIn(this.#document, unit, 'jellypass-tv-discover-hero-image', slides[0]?.backdropUrl as string);
     picture.appendChild(image);
     section.appendChild(picture);
     section.appendChild(shade);
@@ -630,9 +700,14 @@ export class DiscoverPage {
     const scope: Scope = { open, render: open.render, paint: open.paint };
     const hero: Hero = { slides, unit, title, facts, overview, dots, view, image };
     open.hero = hero;
+    // A button of a hero since drawn again does nothing: only the hero on the page is answered.
     previous.addEventListener('click', () => this.#step(scope, hero, -1));
     next.addEventListener('click', () => this.#step(scope, hero, 1));
-    view.addEventListener('click', () => this.#openTitle(scope, hero.slides[this.#slide] as DiscoverCard));
+    view.addEventListener('click', () => {
+      if (open.hero !== hero) return;
+      const card = hero.slides[this.#slide];
+      if (card) this.#openTitle(scope, card);
+    });
     this.#slide = Math.min(this.#slide, slides.length - 1);
     this.#showSlide(hero);
     // The hero is what the page opens on (or what Back finds again): the host leaves focus alone once the member has moved it.
@@ -640,12 +715,13 @@ export class DiscoverPage {
   }
 
   #step(scope: Scope, hero: Hero, by: number): void {
-    if (!this.#live(scope.open, scope.render, scope.paint)) return;
-    this.#slide = (this.#slide + by + hero.slides.length) % hero.slides.length;
+    if (scope.open.hero !== hero || !this.#live(scope.open, scope.render, scope.paint)) return;
+    this.#slide = (Math.min(this.#slide, hero.slides.length - 1) + by + hero.slides.length) % hero.slides.length;
     this.#showSlide(hero);
   }
 
   #showSlide(hero: Hero): void {
+    this.#slide = Math.max(0, Math.min(this.#slide, hero.slides.length - 1));
     const card = hero.slides[this.#slide] as DiscoverCard;
     const state = this.#stateOf(card);
     hero.title.textContent = card.title;
@@ -674,46 +750,51 @@ export class DiscoverPage {
     this.#data.get(request, { retry }).then((result) => {
       if (open.paint !== paint || !this.#current(open) || 'stale' in result) return;
       if (result.ok) this.#drawSources(open, paint, result.value as DiscoverSources);
-      else if (open.networks) this.#failed(open, paint, result, open.networks, () => this.#sources(open, paint, true), 'sources');
+      else if (open.networks) this.#failed(open, paint, result, open.networks, open, () => this.#sources(open, paint, true), 'sources');
     });
   }
 
   #drawSources(open: Open, paint: number, sources: DiscoverSources): void {
     const slot = open.networks;
     if (slot) {
-      slot.textContent = '';
-      slot.removeAttribute('aria-busy');
+      this.#teardown(open, 'networks');
       for (const network of networksFor(this.#filter, sources.networks)) {
-        const row = this.#addRow(open, 'poster', { kind: 'network', id: network.id, list: networkListFor(this.#filter, network) }, `net${network.id}`, DISCOVER_TEXT.networkHeading(network.name), false, false);
+        const row = this.#addRow(open, 'poster', { kind: 'network', id: network.id, list: networkListFor(this.#filter, network) }, `net${network.id}`, DISCOVER_TEXT.networkHeading(network.name), false, false, network);
         slot.appendChild(row.section);
         this.#start(open, paint, row);
       }
     }
     const foot = open.foot;
-    if (!foot) return;
+    const studiosSlot = open.studios;
+    if (!foot || !studiosSlot) return;
     const parts = DISCOVER_LAYOUT[this.#filter];
     const studios = parts.some((part) => part.part === 'studios') && sources.studios.length > 0;
     const credit = parts.some((part) => part.part === 'credit') && sources.networks.some((network: DiscoverNetwork) => network.hasFilms);
-    const lead = foot.firstChild;
     if (studios) {
-      const heading = this.#el('h2', `${JELLYFIN_CLASSES.heading} jellypass-tv-discover-foot-heading`, DISCOVER_TEXT.studios);
+      studiosSlot.appendChild(this.#el('h2', `${JELLYFIN_CLASSES.heading} jellypass-tv-discover-foot-heading`, DISCOVER_TEXT.studios));
       const strip = this.#el('ul', 'jellypass-tv-discover-logos');
       const unit = this.#unit(open, strip);
+      const render = open.render;
       for (const studio of sources.studios) {
-        const tile = this.#el('li', 'jellypass-tv-discover-logo');
-        if (studio.logoUrl) {
-          const image = this.#image(unit, 'jellypass-tv-discover-logo-image', studio.logoUrl);
-          image.setAttribute('alt', studio.name);
-          tile.appendChild(image);
-        } else {
-          tile.textContent = studio.name;
-        }
-        strip.appendChild(tile);
+        const item = this.#el('li', 'jellypass-tv-discover-logo-item');
+        // The tile is the link to the studio's page, named as the app names it ("Pixar movies"); the logo inside says nothing more.
+        const tile = this.#el('button', 'jellypass-tv-discover-logo') as HTMLButtonElement;
+        tile.type = 'button';
+        tile.setAttribute('role', 'link');
+        tile.setAttribute('aria-label', DISCOVER_TEXT.studioMovies(studio.name));
+        tile.setAttribute(FOCUS_ATTR, `studio:${studio.id}`);
+        if (this.#tv()) tile.className += ' show-focus';
+        if (studio.logoUrl) tile.appendChild(imageIn(this.#document, unit, 'jellypass-tv-discover-logo-image', studio.logoUrl));
+        else tile.textContent = studio.name;
+        tile.addEventListener('click', () => {
+          if (!this.#live(open, render, paint)) return;
+          this.#host.navigate(studioHash(studio.id));
+        });
+        item.appendChild(tile);
+        strip.appendChild(item);
       }
-      foot.insertBefore(heading, lead);
-      foot.insertBefore(strip, lead);
+      studiosSlot.appendChild(strip);
     }
-    if (credit) foot.insertBefore(this.#el('p', 'jellypass-tv-discover-credit', JUSTWATCH_NOTE), lead);
+    if (credit) foot.insertBefore(this.#el('p', 'jellypass-tv-discover-credit', JUSTWATCH_NOTE), foot.firstChild);
   }
 }
-

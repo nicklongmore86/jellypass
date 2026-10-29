@@ -15,7 +15,8 @@ has not been installed on a TV. **My requests** (step 6) is a JellyPass page of 
 the household's requests with their statuses and can cancel the ones the server says the member may. Nothing has been run
 on a real TV yet (see "What must be checked on a real TV"). The **Discover page** (PR B of the 2026-10-28 study) is a JellyPass
 page at `#/jellypass/discover`, mirroring the app's Home, reached only from a compass button in Jellyfin's header
-("The Discover page"); its service and studio pages are a later change.
+("The Discover page"); a service row's heading and a studio's logo there open the **service and studio pages**
+(`#/jellypass/service/<id>`, `#/jellypass/studio/<id>`, "Service and studio pages").
 
 The architecture study behind this design is the 2026-10-27 TV study (route 1, "a JellyPass TV module in jellyfin-web").
 The owner's decisions for it:
@@ -441,10 +442,19 @@ web's focus manager moves between the hero's buttons, the chips and the cards; B
   **14 per row**, each with a **badge in words**: *In your library*, *Requested*, *Available to get*, *Can't request* (the state
   the API gave the caller's household, through the "Get this" overlay, so a title just asked for reads Requested with no call), in
   a colour that goes with the words (never colour alone), and the same words in the card's accessible name. **Hide what I have** hides
-  *In your library* and *Requested* and fills the row from the rest of the answer; it asks nothing. Choosing a card opens the title
+  *In your library* and *Requested* and fills the row from the rest of the answer; it asks nothing. It is **on by default** (see below). Choosing a card opens the title
   page; **Back returns to the same card** (the page is drawn from the kept answers before anything is asked, so the host's focus
   key finds the card) and makes **no Discover call** (the title page makes its own two). After the cache's ten minutes the key may
   be gone and focus falls back to the hero's **View**.
+- **"Hide what I have" is on when the page opens, and the hero follows it.** Every sign-in starts with it on (the toggle's
+  `aria-pressed` says so); the member can switch it off, and the choice is kept **for the session in memory only** (Discover,
+  the service pages and the studio pages share it; it survives Back from a title) and is put back on when another member or no
+  one is signed in. It is never written to storage. With it on, the hero's slides skip the titles *In your library* or
+  *Requested* (a title just asked for through the "Get this" overlay too) and are filled from the next titles of the first row's
+  **same answer** that have a wide picture, so it costs no call and the page's budget is as it was (5 on opening, 10 more as the
+  rows come near, none on Back). If no slide is left the hero is not drawn at all (no empty hero). Switching it off, or the overlay
+  changing, redraws the hero from the answer with no call; the slide index is clamped to the new set, and focus that was on one of
+  the hero's buttons moves to the new **View** (or to the toggle when there is no hero), never nowhere.
 - **Rows ask as the remote scrolls.** The first four rows (or the chip's eager ones) and the sources are asked for when the page
   opens (**5 calls** on All); every other row asks once when it comes within 700 px of the screen (an `IntersectionObserver`,
   Chromium 51+): **10 more**, 15 in all (`tv-discover` in the budget file). Switching to Movies or TV asks for that chip's own
@@ -457,10 +467,22 @@ web's focus manager moves between the hero's buttons, the chips and the cards; B
   **The decoded-image memory bound on Chrome 63 is a real-TV check, not a measured one:** windowing keeps the number of images
   that have a `src` to about a screen and a half, and the tests assert exactly that, but how much memory a 2019 set holds for
   them (and whether it gives it back when `src` is removed) has not been measured on a TV.
-- **The foot is one focus stop** (a `tabindex=0` block, ring inside it): the remote's Down from the last row reaches it, which
-  scrolls the studios, the JustWatch line (All and Movies) and the **TMDB notice** (every chip; required wherever TMDB's data is
-  shown) into view. The studios' tiles are **not links** and the service rows have no "See all": service and studio pages are the
-  next change, and a stub would only be a dead end.
+- **The foot is one focus stop** (a `tabindex=0` block, ring inside it): the remote's Down from the last row (or from the studios)
+  reaches it, which scrolls the JustWatch line (All and Movies) and the **TMDB notice** (every chip; required wherever TMDB's data
+  is shown) into view. The **Studios** are above it, one focusable tile each (see below).
+- **Service headings and studio tiles are links.** Each "Popular on …" heading stays an `h2` (a screen reader still lists it as a
+  heading) and holds one focusable control with the heading's own words, a `<button role="link">` named **"Popular on Netflix,
+  see all"**, with a chevron drawn by the stylesheet, not in the text. This is the web app's pattern (the heading is the link)
+  and the accessible equivalent of a separate "See all" control: one focus stop above each row is Up from its first card, and a
+  second one beside the heading would be an extra Right press for nothing. It is a button with `role="link"` rather than an
+  `<a href>` because the add-on prevents no event (a test pins that the bundle never calls `preventDefault`), and an `<a href>`
+  can only be kept from navigating by cancelling its click; Enter on a button clicks it, which an `<a>` without `href` does not.
+  A studio's tile is the same, named "Pixar movies" (the app's name), its logo decorative. Both take Jellyfin's focus on a TV
+  (`show-focus`) and a ring of their own (`:focus`: round the heading's words, round the tile's light face), and have a focus key
+  (`link:net<id>`, `studio:<id>`) so **Back returns to the same link or tile with no Discover call**. Choosing one checks the
+  session, then navigates to `#/jellypass/service/<id>` or `#/jellypass/studio/<id>`; one kept from an earlier drawing (a new
+  token) does nothing. A service link opens its page **on the list the row shows** (All on All, Films on Movies, Series on TV).
+  No per-service accent colour.
 - **Failures and the session.** A row that fails says why (the app's words) with **Try again**, which asks once more; nothing
   retries by itself (the data layer remembers a failure for 30 seconds and a `429` until its `Retry-After`). A `401` says "Sign in
   to continue". Every late answer goes through the data layer's session check (`SessionWatch`): an answer for a session since ended
@@ -579,9 +601,51 @@ two calls. It has no `/me` (the TV shows no member name).
 screen** (`upcoming`, `upcoming-tv` and one list per service), **15 in all**, and **none when the member comes back to it**
 (from a title, or from another chip to All): the answers are kept. `tv-discover-movies` and `tv-discover-tv` are the same for
 those chips opened directly; `tv-discover-network` and `tv-discover-studio` are a service's or a studio's page asked
-directly (first page; a service whose row was already loaded costs nothing; those two pages are a later change).
+directly (first page; a service whose row was already loaded costs nothing; "Service and studio pages").
 `test/tv-discover-data.test.mjs` pins the data layer against them and `test/tv-addon.test.mjs` the page's own calls (5 on opening, 10
 as the rows come near, none on Back, the chips as budgeted).
+
+### Service and studio pages
+
+`tv/src/discover-source.ts` (the shared card in `tv/src/discover-card.ts`, "Hide what I have" in `tv/src/discover-preference.ts`):
+the household app's network and studio pages as pages of Jellyfin web's on the page host, in the TV and the desktop layout, under
+Jellyfin's real header and Back. Reached from the Discover page's service headings and studio tiles; the address works typed or
+bookmarked too. The add-on handles no key.
+
+- **Parts.** The service's or studio's **logo** (on a light tile, decorative) and an `h1`: "Popular on Netflix", "Series on …",
+  "Films on …" by the tab, or "Pixar movies". The header's title is the service's name or "<studio> movies". Then, for a service
+  whose films the API lists (`hasFilms`), the tabs **All / Series / Films**; a service without films has its series only (no tabs,
+  no JustWatch line); a studio has one list. The tabs and **Hide what I have** are buttons with `aria-pressed` in a labelled group
+  (the Discover page's chips: no arrow-key handling is needed, Jellyfin's focus manager moves between them). Then the **grid**:
+  Jellyfin's portrait cards, seven wide, each with the household's state **in words** as on Discover (and in its accessible name),
+  **20 cards a press** (one API page: a Discover row keeps 14 of its 20 for memory, but a grid that cut a page would need a call
+  for some presses and none for others, and its images are windowed), a **Load more** button
+  after the grid, the **JustWatch** line under All and Films of a service, and the **TMDB notice** (a focus stop, as on Discover).
+- **Load more** asks for the next API page (`?page=n`, one call per press). While it is asked the button says "Loading…" and a
+  second press does nothing; when the page arrives focus goes to the first new card (if it was on the button), a polite status says
+  "More results loaded.", and the button goes after the last page. A failed press keeps the cards, says why, and the same button
+  asks again (a press passes a failure remembered for 30 seconds; it never passes a rate limit, and nothing retries by itself).
+- **Only listed services and studios.** The address's number must be a plain integer (digits, no leading zero, ten at most) or the
+  page says **Not found** and asks **nothing**; any other number is looked up in the sources list (`GET /discover/sources`, kept
+  ten minutes, so usually no call): not there means Not found and no list is ever asked for. A studio's number is no service's.
+- **Remembers the tab and the pages across Back from a title**, in memory (forgotten with the member): the page is drawn at once
+  from the kept answers, the pages that were showing on the tab that was showing, before anything is asked, so the host's focus key
+  (`card:<movie|tv>:<tmdbId>`) finds the same card, with **0 list calls**. After the answers' ten minutes the first page is asked
+  again (and the sources, if gone) and focus falls back to the tab. Opening a service from a Discover row starts on the row's list
+  with one page.
+- **Calls** (`tv-discover-network`, `tv-discover-studio` in the budget file): a service opened directly is **2 calls** (the
+  sources and its All list, first page; a service without films asks for its series list instead), a studio **2** (the sources and
+  its movies); from Discover, whose row already holds page 1 and whose sources are kept, **0**. Each tab asks for its first page
+  once, each Load more press for one page; switching back to a tab asks nothing. Pinned by `test/tv-addon.test.mjs`.
+- **Images are windowed** as on Discover (a card's picture has a `src` only while the card is within about a screen and a half,
+  and loses it when far off; the logo too), because a grid of several pages is the longest thing the add-on draws. Where there is
+  no `IntersectionObserver` every image is set. Never `loading="lazy"`. The same real-TV memory check applies (see Discover).
+- **Session.** Every callback (a card, a tab, Hide, Load more, an observer, an answer) belongs to the drawing and the
+  list shown when it was made and checks that the session still holds its stamp: after a sign-out, another member or a new token it
+  does nothing, a first page or Load more answer for a session since ended is dropped whole, and the page is ended (another
+  member, sign-out) or drawn again from the new session's own calls (a new token).
+- **Privacy.** Household-only view: a test draws a service and a studio page, with the same calls, in every "other household"
+  world of the app tests and checks them byte-for-byte equal to the page with no other household, with no canary.
 
 ## Discover data layer
 
@@ -890,6 +954,11 @@ that household:
    back into view.
 17. **Look.** Badges are legible from the sofa and not only by colour, the wide cards fit about five and a half to a screen, the
    hero's text sits on its picture without being lost, and the page is not slow to scroll with every row loaded.
+18. **Service and studio pages.** On Discover, Up from the first card of a "Popular on …" row focuses the heading link (a visible
+   ring round the words) and OK opens the service's page; a studio's tile takes the ring and OK opens its page. On the page, Down
+   from the tabs reaches the grid (seven across), Load more is the last stop of the grid and OK loads 20 more with focus on the first
+   new card, and Back from a title returns to the same card on the same tab. Scroll a service's grid through three Load mores and
+   back up: no crash, no images that stay missing (the same memory check as 16).
 
 On a **Samsung**, nothing appears with the stock Jellyfin app, because it bundles its own Jellyfin web. With the
 JellyPass build installed (see "The Samsung app"), the same checks apply, plus those listed there under "Check on each

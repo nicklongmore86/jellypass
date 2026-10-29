@@ -675,6 +675,29 @@ html.jellypass-tv-hosting #fallbackPage[data-role="page"].page:not(.hide) > :not
   box-shadow: inset 0 0 0 0.15em #fff;
   box-shadow: inset 0 0 0 0.15em var(--jf-palette-text-primary, #fff);
 }
+/* A service row's heading is a link to the service's page: the words stay the heading's (same size and colour), with a chevron
+   after them that is drawn here, not in the text (the heading and the link's name stay the words). The ring is round the words. */
+.jellypass-tv-discover-link {
+  display: inline-block;
+  border: 0;
+  background: none;
+  font: inherit;
+  padding: 0.1em 0.4em;
+  margin-left: -0.4em;
+  border-radius: 0.3em;
+  color: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+.jellypass-tv-discover-link::after {
+  content: ' \203A';
+  opacity: 0.7;
+}
+.jellypass-tv-discover-link:focus {
+  outline: none;
+  box-shadow: 0 0 0 0.2em #fff;
+  box-shadow: 0 0 0 0.2em var(--jf-palette-text-primary, #fff);
+}
 /* The state's words on the card's corner, in the state's colour as well, so the colour is never the only sign. */
 .jellypass-tv-discover-badge {
   position: absolute;
@@ -722,21 +745,34 @@ html.jellypass-tv-hosting #fallbackPage[data-role="page"].page:not(.hide) > :not
   padding: 0;
   list-style: none;
 }
+.jellypass-tv-discover-logo-item {
+  flex: 0 0 auto;
+  margin: 0 1em 1em 0;
+}
 .jellypass-tv-discover-logo {
   display: flex;
-  flex: 0 0 auto;
   align-items: center;
   justify-content: center;
   box-sizing: border-box;
   width: 12em;
   height: 6em;
-  margin: 0 1em 1em 0;
   padding: 0.8em;
   border-radius: 0.6em;
+  border: 0;
   background: #f1f1f1;
   color: #222;
+  font: inherit;
   font-weight: 700;
   text-align: center;
+  text-decoration: none;
+  cursor: pointer;
+}
+/* A studio's tile is a link, on a light tile (TMDB's logos are drawn for a light background): the ring is outside it, in the page's
+   text colour, on the page's dark background (the tiles are a margin apart, so nothing cuts it off). */
+.jellypass-tv-discover-logo:focus {
+  outline: none;
+  box-shadow: 0 0 0 0.25em #fff;
+  box-shadow: 0 0 0 0.25em var(--jf-palette-text-primary, #fff);
 }
 .jellypass-tv-discover-logo-image {
   max-width: 100%;
@@ -747,4 +783,87 @@ html.jellypass-tv-hosting #fallbackPage[data-role="page"].page:not(.hide) > :not
   margin: 1.2em 0 0 0;
   font-size: 0.9em;
   opacity: 0.6;
+}
+
+/*
+ * The service and studio pages (tv/src/discover-source.ts): a header with the logo and the heading, the tabs and "Hide what I
+ * have" (the Discover page's chips), a grid of Jellyfin's portrait cards seven wide, Load more, the JustWatch line and the
+ * foot. Every class of its own is `jellypass-tv-source-*`. Spacing is margins (no `gap`), focus is `:focus`.
+ */
+.jellypass-tv-source-page {
+  position: relative;
+  padding-bottom: 4em;
+  color: inherit;
+}
+.jellypass-tv-source-head {
+  display: flex;
+  align-items: center;
+  padding-top: 1.6em;
+  padding-bottom: 0.4em;
+  min-height: 5em;
+}
+.jellypass-tv-source-logo {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 10em;
+  height: 4em;
+  margin: 0 1.2em 0 0;
+  padding: 0.5em;
+  border-radius: 0.5em;
+  border: 0;
+  background: #f1f1f1;
+  color: #222;
+  font: inherit;
+  font-weight: 700;
+  text-align: center;
+}
+.jellypass-tv-source-logo-image {
+  max-width: 100%;
+  max-height: 100%;
+}
+.jellypass-tv-source-heading {
+  margin: 0;
+  font-size: 2.2em;
+  line-height: 1.15;
+}
+.jellypass-tv-source-grid {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  padding-top: 1em;
+}
+/* Seven across at any width: Jellyfin sizes its card for a scrolling row, so the grid sets its own. */
+.jellypass-tv-source-grid > .card {
+  flex: 0 0 auto;
+  box-sizing: border-box;
+  width: 13.4%;
+  margin: 0 0.8% 1.2em 0;
+}
+.jellypass-tv-source-grid > .card > .cardBox {
+  margin-left: 0;
+  margin-right: 0;
+}
+.jellypass-tv-source-skeleton-card {
+  width: 13.4%;
+  height: 14em;
+  margin: 0 0.8% 1.2em 0;
+}
+.jellypass-tv-source-toggle-alone {
+  margin-left: 0;
+}
+.jellypass-tv-source-more {
+  padding-top: 0.6em;
+}
+.jellypass-tv-source-status {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  border: 0;
 }
