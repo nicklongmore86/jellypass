@@ -33,9 +33,19 @@ jobs:
         run: node scripts/changelog-section.mjs "${GITHUB_REF_NAME}" > /dev/null
 
   # Same check as CI's jellyfin-integration job: no image is published unless
-  # JellyPass grants and revokes access on a real Jellyfin.
+  # JellyPass grants and revokes access on a real Jellyfin, on every supported
+  # release (scripts/jellyfin-versions.json).
   jellyfin-integration:
+    name: jellyfin-integration (${{ matrix.jellyfin.version }})
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        jellyfin:
+          - image: jellyfin/jellyfin:12.4.20261026-211555
+            version: 12.4.0
+          - image: jellyfin/jellyfin:10.11.11
+            version: 10.11.11
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -45,6 +55,9 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm test:real
+        env:
+          JELLYFIN_IMAGE: ${{ matrix.jellyfin.image }}
+          JELLYFIN_REAL_VERSION: ${{ matrix.jellyfin.version }}
 
   container:
     needs: [validate, jellyfin-integration]

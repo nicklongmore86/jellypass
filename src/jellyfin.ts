@@ -30,6 +30,14 @@ export class JellyfinClient {
     this.#authorization = authorizationHeader('Server', 'jellypass-server', apiKey);
   }
 
+  /** The version Jellyfin reports at /System/Info/Public: `Version` before 12, `version` since, as Jellyfin spells it. */
+  public async getServerVersion(): Promise<string> {
+    const info = await this.#request<Record<string, unknown> | undefined>('/System/Info/Public');
+    const version = info?.Version ?? info?.version;
+    if (typeof version !== 'string' || !version.trim()) throw new JellyfinError('Jellyfin /System/Info/Public reported no version', 502);
+    return version.trim();
+  }
+
   public getUsers(): Promise<JellyfinUser[]> {
     return this.#request<JellyfinUser[]>('/Users');
   }

@@ -980,8 +980,16 @@ async function sendWebhook(server, body) {
 
 async function setupJellyfin(url) {
   // A slow runner can take most of a minute to start Jellyfin, and as long again to complete its startup.
-  await waitFor(async () => (await request(url, '/System/Info/Public')).Version === '10.11.3', 90);
-  await request(url, '/Startup/User');
+  // The version scripts/test-real-jellyfin.sh started, so a run never passes against another Jellyfin than it names.
+  const expected = process.env.JELLYFIN_REAL_VERSION;
+  await waitFor(async () => {
+    const info = await request(url, '/System/Info/Public');
+    const version = info.Version ?? info.version;
+    if (expected ? version !== expected : typeof version !== 'string') return false;
+    // Since 10.11.4 Jellyfin answers /System/Info/Public while it starts, and every other route with a 503 until it has.
+    await request(url, '/Startup/User');
+    return true;
+  }, 90);
   await request(url, '/Startup/Configuration', {
     method: 'POST',
     body: { UICulture: 'en-US', MetadataCountryCode: 'US', PreferredMetadataLanguage: 'en' },
