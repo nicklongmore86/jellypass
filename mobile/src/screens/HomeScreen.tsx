@@ -55,6 +55,7 @@ import {
   skeletonRowHeight,
   StudioStrip,
 } from '../home/components';
+import { heroSlides, useHideHeld, visibleCards } from '../home/hide';
 import { HERO_MAX, HOME_LAYOUT, LAZY_MARGIN, NETWORK_ACCENTS, networkKey, rowKey, TABLET_WIDTH, type HomeRow, type RowVariant } from '../home/layout';
 import { HOME_TEXT, SOURCE_TEXT, type HomeFilter } from '../home/text';
 import { listedNetworks, networkList, useHome, type RowState } from '../home/useHome';
@@ -76,7 +77,8 @@ interface Slot {
 }
 
 export function HomeScreen() {
-  const { api, expire } = useSession();
+  const { api, expire, hideHeld } = useSession();
+  const hide = useHideHeld(hideHeld);
   // What the member just asked for shows as Requested on every card at once, with no call, and a title's state read
   // since (its page opened again) wins over the row's older answer (src/title/asked.ts).
   const overlay = useAsked();
@@ -301,7 +303,8 @@ export function HomeScreen() {
 
   const first = parts[0] as HomeRow;
   const heroState = rows[rowKey(first)];
-  const heroCards = heroState?.status === 'loaded' ? heroState.page.results.slice(0, HERO_MAX).map((card) => overlay.card(card)) : [];
+  // Hide what I have: the hero skips what the member has and fills from the next titles of the same answer.
+  const heroCards = heroState?.status === 'loaded' ? heroSlides(heroState.page.results.map((card) => overlay.card(card)), hide, HERO_MAX) : [];
 
   const titleRow = (part: HomeRow) => {
     const key = rowKey(part);
@@ -315,6 +318,7 @@ export function HomeScreen() {
           cardWidth={widths[part.variant]}
           viewport={columnWidth}
           overlay={overlay.card}
+          hide={hide}
           onOpen={open}
           onRetry={() => home.retry(key)}
         />
@@ -339,6 +343,7 @@ export function HomeScreen() {
           cardWidth={widths.poster}
           viewport={columnWidth}
           overlay={overlay.card}
+          hide={hide}
           onOpen={open}
           onRetry={() => home.retry(key)}
         />
@@ -370,7 +375,7 @@ export function HomeScreen() {
     >
       <View testID="home-switch" style={styles.band}>
         <View style={[styles.bandInner, { paddingLeft, paddingRight }]}>
-          <FilterChips selected={filter} onChoose={choose} />
+          <FilterChips selected={filter} onChoose={choose} hide={{ value: hide, onToggle: () => hideHeld.set(!hide) }} />
         </View>
       </View>
       <View
@@ -416,6 +421,7 @@ function RowBody({
   cardWidth,
   viewport,
   overlay,
+  hide,
   onOpen,
   onRetry,
 }: {
@@ -428,6 +434,8 @@ function RowBody({
   viewport: number;
   /** The card as it is drawn: Requested if the member just asked for it. */
   overlay: (card: Card) => Card;
+  /** Hide what I have: the cards the member has are left out. */
+  hide: boolean;
   onOpen: (card: Card) => void;
   onRetry: () => void;
 }) {
@@ -436,7 +444,7 @@ function RowBody({
   return (
     <View style={styles.row}>
       {heading}
-      <CardRow cards={state.page.results.map(overlay)} variant={variant} cardWidth={cardWidth} viewport={viewport} onOpen={onOpen} />
+      <CardRow cards={visibleCards(state.page.results.map(overlay), hide)} variant={variant} cardWidth={cardWidth} viewport={viewport} onOpen={onOpen} />
     </View>
   );
 }

@@ -46,6 +46,7 @@ export const HOME_TEXT = {
   label: 'Show',
   filters: { all: 'All', movies: 'Movies', tv: 'TV' },
   shown: { all: 'All shown.', movies: 'Movies shown.', tv: 'TV shown.' },
+  hide: { label: 'Hide what I have', on: 'Hiding what you have.', off: 'Showing what you have.' },
 } as const;
 
 export const HERO_TEXT = {

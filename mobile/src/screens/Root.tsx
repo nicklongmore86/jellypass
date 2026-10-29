@@ -26,7 +26,8 @@ function ToTabs() {
 export function Root({ signedIn = () => <ToTabs /> }: { signedIn?: (me: Me) => ReactNode }) {
   const { phase, link } = useSession();
   if (phase.kind === 'starting') return <Loading label="Loading…" />;
-  if (link) return <ConfirmLinkScreen offer={link} />;
+  // A link waits while the app signs out: it is shown once that is done, and cannot be accepted over it.
+  if (link && phase.kind !== 'signingOut') return <ConfirmLinkScreen offer={link} />;
   switch (phase.kind) {
     case 'address':
       return <AddressScreen />;

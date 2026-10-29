@@ -26,11 +26,12 @@ import type { MediaType, Me, Request } from '../api/types';
 import { parseLinkAddress } from '../signin/address-input';
 import { createSignInApi, SignInError, type SignInApi, type SignInResult } from '../signin/signin-api';
 import type { StalledKind } from '../signin/wording';
+import { createHideStore, type HideStore } from '../home/hide';
 import { createRequestFilterStore, type RequestFilterStore } from '../requests/filters';
 import { createTitleCache, type TitleCache } from '../requests/titleCache';
 import { createAsked, type Asked } from '../title/asked';
 import { clientIdentity } from './identity';
-import { clearSession, readSession, writeSession, type StoredSession } from './store';
+import { clearSessionIf, readSession, writeSession, type StoredSession } from './store';
 
 export type Phase =
   | { kind: 'starting' }
@@ -89,6 +90,8 @@ export interface Session {
   titles: TitleCache;
   /** My requests' filters, kept while the app is open and reset with the session (in memory only). */
   requestFilters: RequestFilterStore;
+  /** Home's "Hide what I have": on at every sign-in, kept while the app is open and reset with the session (in memory only). */
+  hideHeld: HideStore;
   /**
    * Get this through the signed-in client. Once it is accepted (a 2xx) in the same session as when it was sent (no move
    * since), the title (and the seasons asked for) is added to `asked`. Rejects with the ApiError, or the caller's abort.
@@ -141,6 +144,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
   const askedRef = useRef<Asked | undefined>(undefined);
   const titlesRef = useRef<TitleCache | undefined>(undefined);
   const filtersRef = useRef<RequestFilterStore | undefined>(undefined);
+  const hideRef = useRef<HideStore | undefined>(undefined);
 
   const move = useCallback((next: Phase) => {
     generation.current += 1;
@@ -148,6 +152,13 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
     setPhase(next);
     return generation.current;
   }, []);
+
+  /**
+   * Deletes `session`'s credentials once its sign-out (or 401) is done, but only if what is kept is its own (same
+   * household and token), compared and deleted in one step of the credential queue: a newer sign-in's write is never
+   * erased, whatever order the two finish in.
+   */
+  const forget = useCallback((session: StoredSession) => clearSessionIf(session), []);
 
   const check = useCallback(
     async (session: StoredSession) => {
@@ -159,7 +170,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
       } catch (error) {
         if (generation.current !== mine) return;
         if (error instanceof ApiError && error.kind === 'unauthorized') {
-          await clearSession();
+          await forget(session);
           if (generation.current === mine) move({ kind: 'signin', address: session.address, expired: true });
           return;
         }
@@ -167,7 +178,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
         move({ kind: 'stalled', session, problem: stalledKind(error), ...(wait ? { retryAt: clock() + wait * 1000 } : {}) });
       }
     },
-    [fetch, now, clock, move],
+    [fetch, now, clock, move, forget],
   );
 
   useEffect(() => {
@@ -189,7 +200,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
     };
   }, [check, move]);
 
-  /** Signs out of the current sign-in, if any, then shows `next`. */
+  /** Signs out of the current sign-in, if any, then shows `next` (unless the app has moved on meanwhile). */
   const leave = useCallback(
     async (next: (session: StoredSession | undefined) => Phase) => {
       // A link the app held back (to the household it was on) is moot once it moves on.
@@ -197,28 +208,33 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
       askedRef.current?.forget();
       titlesRef.current?.forget();
       filtersRef.current?.reset();
+      hideRef.current?.reset();
       const session = sessionOf(phase);
       if (session) {
-        move({ kind: 'signingOut' });
+        const mine = move({ kind: 'signingOut' });
         try {
           await signInApi(session.address).signOut(session.token);
         } finally {
-          await clearSession();
+          await forget(session);
         }
+        // A sign-in or household chosen while this was out has moved the app already: it is not undone.
+        if (generation.current === mine) move(next(session));
+        return;
       }
       move(next(session));
     },
-    [phase, move, signInApi],
+    [phase, move, signInApi, forget],
   );
 
   const offerLink = useCallback((param: string | string[] | undefined) => setLink({ address: parseLinkAddress(param) }), []);
 
   const household = phase.kind === 'signin' ? phase.address : sessionOf(phase)?.address;
 
-  const signedIn = phase.kind === 'signedIn' ? phase.session : undefined;
+  const signedPhase = phase.kind === 'signedIn' ? phase : undefined;
+  const signedIn = signedPhase?.session;
   // A new client, overlay and titles for each sign-in (household, member or token); the old ones are forgotten as soon
   // as they are replaced.
-  const { api, asked, titles, requestFilters } = useMemo(
+  const { api, asked, titles, requestFilters, hideHeld } = useMemo(
     () => ({
       api: signedIn
         ? createApiClient({ address: signedIn.address, token: () => signedIn.token, ...(fetch ? { fetch } : {}), ...(now ? { now } : {}) })
@@ -226,6 +242,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
       asked: createAsked(),
       titles: createTitleCache(),
       requestFilters: createRequestFilterStore(),
+      hideHeld: createHideStore(),
     }),
     [signedIn, fetch, now],
   );
@@ -255,6 +272,13 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
       requestFilters.reset();
     };
   }, [requestFilters]);
+  useEffect(() => {
+    hideRef.current = hideHeld;
+    return () => {
+      if (hideRef.current === hideHeld) hideRef.current = undefined;
+      hideHeld.reset();
+    };
+  }, [hideHeld]);
 
   const getThis = useCallback(
     async (mediaType: MediaType, tmdbId: number, seasons: readonly number[], signal?: AbortSignal) => {
@@ -279,19 +303,24 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
     [api, asked],
   );
 
+  // The 401 callback belongs to the sign-in (the signedIn phase) it was made for. One that fires after the app moved on
+  // (a sign-out, another sign-in, even the same token checked again) is another session's: it does nothing, before
+  // anything is reset, deleted or moved.
   const expire = useCallback(async () => {
+    const mine = signedPhase;
+    if (!mine || phaseRef.current !== mine) return;
     askedRef.current?.forget();
     titlesRef.current?.forget();
     filtersRef.current?.reset();
-    const session = sessionOf(phaseRef.current);
-    if (!session) return;
-    const mine = move({ kind: 'signingOut' });
+    hideRef.current?.reset();
+    const session = mine.session;
+    const gen = move({ kind: 'signingOut' });
     try {
-      await clearSession();
+      await forget(session);
     } finally {
-      if (generation.current === mine) move({ kind: 'signin', address: session.address, expired: true });
+      if (generation.current === gen) move({ kind: 'signin', address: session.address, expired: true });
     }
-  }, [move]);
+  }, [signedPhase, move, forget]);
 
   // A link to the household the app is already on needs nothing.
   const offer = link?.address && household && link.address.origin === household.origin ? undefined : link;
@@ -333,7 +362,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
         if (generation.current !== epoch) {
           // It moved on while the sign-in was being written. Nothing newer has been kept (that would have moved to a
           // phase with a session), so the device forgets this one.
-          if (!sessionOf(phaseRef.current)) await clearSession();
+          if (!sessionOf(phaseRef.current)) await clearSessionIf(session);
           await revoke();
           return;
         }
@@ -352,10 +381,11 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
       asked,
       titles,
       requestFilters,
+      hideHeld,
       getThis,
       cancelRequest,
     }),
-    [phase, offer, household, offerLink, leave, move, check, signInApi, clock, api, expire, asked, titles, requestFilters, getThis, cancelRequest],
+    [phase, offer, household, offerLink, leave, move, check, signInApi, clock, api, expire, asked, titles, requestFilters, hideHeld, getThis, cancelRequest],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
