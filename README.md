@@ -159,11 +159,11 @@ as semantic-version tags. For predictable production upgrades, set
 `JELLYPASS_IMAGE` in `.env` to a versioned image such as:
 
 ```dotenv
-JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:3.6.1
+JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:3.7.0
 ```
 
-Each release is published as a semantic-version image tag, such as `3.6.1`,
-plus floating `3.6` and `3` tags that move to the newest release in that minor
+Each release is published as a semantic-version image tag, such as `3.7.0`,
+plus floating `3.7` and `3` tags that move to the newest release in that minor
 or major line; see [CHANGELOG.md](CHANGELOG.md) for what each one contains. `latest` is rebuilt on
 every push to `main` and may include unreleased changes, so use it, or build
 from source, only to test ahead of a release.
@@ -1214,6 +1214,10 @@ TV add-on gains a My requests page; see the 3.6.0 notes.
 Upgrading from 3.6.0 to 3.6.1 changes neither the state file nor any setting,
 needs no CDN purge, and changes nothing unless `TV_ADDON_ENABLED` is set; the
 TV add-on's cards show a focus ring; see the 3.6.1 notes.
+Upgrading from 3.6.1 to 3.7.0 changes neither the state file nor any setting,
+needs no CDN purge, and changes nothing unless `TV_ADDON_ENABLED` is set; the
+TV add-on gains a Discover page, opened only from a compass button in
+Jellyfin's header; see the 3.7.0 notes.
 Drain before rolling back to 2.3.x or 2.2.1: stop new "Get this" calls, wait
 until no request intents or deferred webhooks are left (at most 30 minutes plus
 one reconciliation interval, or restart JellyPass to reconcile at once), then
