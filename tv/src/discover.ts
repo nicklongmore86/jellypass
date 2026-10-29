@@ -280,10 +280,64 @@ export class DiscoverPage {
 
   #release(open: Open): void {
     open.paint = -1;
+    this.#teardown(open, 'body');
     if (open.dataWatch) open.dataWatch.disconnect();
     if (open.imageWatch) open.imageWatch.disconnect();
     open.dataWatch = undefined;
     open.imageWatch = undefined;
+  }
+
+  /**
+   * The ONE way anything the page drew goes (a redraw for another chip, the leaving of the page, a service row's or the whole
+   * list's sign-in prompt, an error state, a row or the hero drawn again): it bumps what the retained controls check (a row's
+   * `fill`; the hero and a row are also forgotten by identity, `open.hero` and `open.rows`), forgets the Try again pointers,
+   * and lets go of the pictures (unobserve, no `src`) before the DOM is emptied. `row` is one row's body; `hero` is the hero;
+   * `networks` is the services' rows; `body` is everything (the hero too).
+   */
+  #teardown(open: Open, scope: 'row' | 'hero' | 'networks' | 'body', row?: RowView): void {
+    if (scope === 'row' && row) {
+      row.retry = undefined;
+      row.fill += 1;
+      row.drawn = [];
+      this.#clearImages(row.unit);
+      row.unit.images = [];
+      row.body.textContent = '';
+      row.body.removeAttribute('aria-busy');
+      return;
+    }
+    if (scope === 'hero') {
+      if (open.hero) this.#dropUnit(open, open.hero.unit);
+      open.hero = undefined;
+      open.heroSlot.textContent = '';
+      return;
+    }
+    if (scope === 'networks') {
+      const slot = open.networks;
+      if (!slot) return;
+      const gone = open.rows.filter((one) => slot.contains(one.section));
+      for (const one of gone) {
+        this.#teardown(open, 'row', one);
+        if (open.dataWatch) open.dataWatch.unobserve(one.section);
+        this.#dropUnit(open, one.unit);
+      }
+      open.rows = open.rows.filter((one) => gone.indexOf(one) < 0);
+      open.byElement = open.byElement.filter((one) => !one.row || gone.indexOf(one.row) < 0);
+      open.retry = undefined;
+      slot.textContent = '';
+      slot.removeAttribute('aria-busy');
+      return;
+    }
+    for (const one of open.rows) this.#teardown(open, 'row', one);
+    for (const unit of open.units) this.#clearImages(unit);
+    this.#teardown(open, 'hero');
+    open.body.textContent = '';
+    open.rows = [];
+    open.units = [];
+    open.byElement = [];
+    open.retry = undefined;
+    open.networks = undefined;
+    open.studios = undefined;
+    open.foot = undefined;
   }
 
   #el(tag: string, className: string, text?: string): HTMLElement {
@@ -366,16 +420,7 @@ export class DiscoverPage {
     const Watcher = typeof IntersectionObserver === 'function' ? IntersectionObserver : undefined;
     open.dataWatch = Watcher ? new Watcher((entries) => this.#onData(open, paint, entries), { rootMargin: DATA_MARGIN }) : undefined;
     open.imageWatch = Watcher ? new Watcher((entries) => this.#onImages(open, paint, entries), { rootMargin: IMAGE_MARGIN }) : undefined;
-    for (const unit of open.units) this.#clearImages(unit);
-    open.body.textContent = '';
-    open.heroSlot.textContent = '';
-    open.rows = [];
-    open.units = [];
-    open.byElement = [];
-    open.hero = undefined;
-    open.networks = undefined;
-    open.studios = undefined;
-    open.foot = undefined;
+    this.#teardown(open, 'body');
     const layout = DISCOVER_LAYOUT[this.#filter];
     let feeds = true;
     for (const part of layout) {
@@ -467,8 +512,7 @@ export class DiscoverPage {
   }
 
   #skeleton(row: RowView): void {
-    row.retry = undefined;
-    row.body.textContent = '';
+    this.#teardown(row.scope.open, 'row', row);
     const scroller = this.#el('div', 'jellypass-tv-row-scroller padded-left padded-right jellypass-tv-discover-skeleton');
     scroller.setAttribute('aria-hidden', 'true');
     const list = this.#el('div', 'jellypass-tv-row-list');
@@ -525,9 +569,8 @@ export class DiscoverPage {
 
   /** A failure in `into`: its words, and Try again (never by itself) unless the sign-in is refused, which ends the page's rows. */
   #failed(open: Open, paint: number, failure: Failure, into: HTMLElement, owner: { retry: HTMLElement | undefined }, again: () => void, key: string): void {
-    into.textContent = '';
-    into.removeAttribute('aria-busy');
-    owner.retry = undefined;
+    if (into === open.networks) this.#teardown(open, 'networks');
+    else this.#teardown(open, 'row', owner as RowView);
     const kind = ERROR_TEXT[kindOf(failure)];
     if (failure.status === 401) {
       into.appendChild(this.#note(kind.title, kind.body));
@@ -556,13 +599,7 @@ export class DiscoverPage {
 
   /** The row's cards, as "Hide what I have" and the overlay leave them, or why there are none. */
   #fill(row: RowView): void {
-    row.retry = undefined;
-    row.body.textContent = '';
-    row.body.removeAttribute('aria-busy');
-    row.drawn = [];
-    row.fill += 1;
-    this.#clearImages(row.unit);
-    row.unit.images = [];
+    this.#teardown(row.scope.open, 'row', row);
     const cards = this.#visible(row);
     if (cards.length === 0) {
       row.body.appendChild(this.#el('p', 'jellypass-tv-discover-row-note-text padded-left padded-right', this.#hide.held && (row.answered as DiscoverCard[]).length > 0 ? DISCOVER_TEXT.nothingLeft : DISCOVER_TEXT.nothing));
@@ -631,9 +668,7 @@ export class DiscoverPage {
 
   #drawHero(open: Open): void {
     open.heroSlot.className = 'jellypass-tv-discover-hero-slot';
-    if (open.hero) this.#dropUnit(open, open.hero.unit);
-    open.heroSlot.textContent = '';
-    open.hero = undefined;
+    this.#teardown(open, 'hero');
     const slides = this.#heroSlides(open);
     if (slides.length === 0) return;
     const section = this.#el('section', 'jellypass-tv-discover-hero');
@@ -720,11 +755,9 @@ export class DiscoverPage {
   }
 
   #drawSources(open: Open, paint: number, sources: DiscoverSources): void {
-    open.retry = undefined;
     const slot = open.networks;
     if (slot) {
-      slot.textContent = '';
-      slot.removeAttribute('aria-busy');
+      this.#teardown(open, 'networks');
       for (const network of networksFor(this.#filter, sources.networks)) {
         const row = this.#addRow(open, 'poster', { kind: 'network', id: network.id, list: networkListFor(this.#filter, network) }, `net${network.id}`, DISCOVER_TEXT.networkHeading(network.name), false, false, network);
         slot.appendChild(row.section);

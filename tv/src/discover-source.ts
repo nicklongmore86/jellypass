@@ -240,8 +240,46 @@ export class SourcePage {
 
   #release(open: Open): void {
     open.gen = -1;
+    this.#teardown(open, 'view');
     if (open.imageWatch) open.imageWatch.disconnect();
     open.imageWatch = undefined;
+  }
+
+  /**
+   * The ONE way anything the page drew goes (every redraw, tab switch, Hide toggle, sign-in prompt, error state and leaving):
+   * it bumps the generations the retained controls check (`gridNo` for cards, `frameNo` for tabs and the toggle), forgets the
+   * pointers the one-answer controls check (`more`, `retry`, `note`), lets go of the pictures (unobserve, no `src`) and empties
+   * the DOM it covers. `grid` is the cards only (they are drawn again into the same grid); `panel` is everything under the tabs
+   * (the grid, Load more, the words, Try again); `view` is the whole page, header and tabs included.
+   */
+  #teardown(open: Open, scope: 'grid' | 'panel' | 'view'): void {
+    open.gridNo += 1;
+    open.drawn = [];
+    this.#resetUnits(open, scope === 'view');
+    if (scope === 'grid') {
+      if (open.grid) open.grid.textContent = '';
+      return;
+    }
+    open.grid = undefined;
+    open.more = undefined;
+    open.note = undefined;
+    open.retry = undefined;
+    open.loading = false;
+    if (scope === 'panel') {
+      if (open.panel) {
+        open.panel.textContent = '';
+        open.panel.removeAttribute('aria-busy');
+      }
+      return;
+    }
+    open.frameNo += 1;
+    open.tabs = {};
+    open.hideChip = undefined;
+    open.heading = undefined;
+    open.panel = undefined;
+    open.status = undefined;
+    open.fallback = undefined;
+    open.view.textContent = '';
   }
 
   // ---------------------------------------------------------------------------------------------------------------
@@ -252,7 +290,7 @@ export class SourcePage {
     open.gen += 1;
     const gen = open.gen;
     const render = open.render;
-    open.view.textContent = '';
+    this.#teardown(open, 'view');
     const request: DiscoverRequest = { kind: 'sources' };
     const kept = this.#data.peek(request) as { ok: true; value: DiscoverSources } | Failure | undefined;
     if (kept && kept.ok && !retry) {
@@ -274,7 +312,7 @@ export class SourcePage {
   }
 
   #known(open: Open, sources: DiscoverSources, sync: boolean): void {
-    open.view.textContent = '';
+    this.#teardown(open, 'view');
     const found: DiscoverNetwork | DiscoverStudio | undefined = (open.kind === 'service' ? sources.networks : sources.studios).filter((one) => one.id === open.id)[0];
     if (!found) {
       open.source = undefined;
@@ -307,7 +345,6 @@ export class SourcePage {
     if (open.imageWatch) open.imageWatch.disconnect();
     const Watcher = typeof IntersectionObserver === 'function' ? IntersectionObserver : undefined;
     open.imageWatch = Watcher ? new Watcher((entries) => this.#onImages(open, render, entries), { rootMargin: IMAGE_MARGIN }) : undefined;
-    open.units = new Map();
     const head = this.#el('div', 'jellypass-tv-source-head padded-left padded-right');
     const tile = this.#el('span', 'jellypass-tv-source-logo');
     const headUnit: Unit = { element: tile, images: [], near: !open.imageWatch };
@@ -397,20 +434,11 @@ export class SourcePage {
     open.list = list;
     open.pages = [];
     open.nextPage = null;
-    open.loading = false;
-    open.grid = undefined;
-    open.more = undefined;
-    open.note = undefined;
-    open.retry = undefined;
+    this.#teardown(open, 'panel');
     // The tab is where focus falls back to now (an empty Films page's pagination ends on Films, not on All).
     if (open.lists.length > 1) open.fallback = open.tabs[list];
-    this.#resetUnits(open);
-    open.drawn = [];
-    open.gridNo += 1;
     for (const key of Object.keys(open.tabs)) (open.tabs[key] as HTMLElement).setAttribute('aria-pressed', String(key === list));
     (open.heading as HTMLElement).textContent = SOURCE_TEXT.heading(open.kind, (open.source as DiscoverStudio).name, list);
-    const panel = open.panel as HTMLElement;
-    panel.textContent = '';
     const memory = this.#memory.get(this.#key(open));
     const wanted = memory && memory.loaded[list] ? (memory.loaded[list] as number) : 1;
     for (let page = 1; page <= wanted; page += 1) {
@@ -431,8 +459,7 @@ export class SourcePage {
 
   #skeleton(open: Open): void {
     const panel = open.panel as HTMLElement;
-    open.retry = undefined;
-    panel.textContent = '';
+    this.#teardown(open, 'panel');
     const grid = this.#el('div', 'jellypass-tv-source-grid jellypass-tv-discover-skeleton padded-left padded-right');
     grid.setAttribute('aria-hidden', 'true');
     for (let i = 0; i < SKELETON_CARDS; i += 1) grid.appendChild(this.#el('div', 'jellypass-tv-source-skeleton-card jellypass-tv-discover-skeleton-card jellypass-tv-discover-skeleton-poster'));
@@ -443,9 +470,7 @@ export class SourcePage {
   /** The grid's place in the panel, once there is a page to draw. */
   #frame(open: Open): void {
     const panel = open.panel as HTMLElement;
-    open.retry = undefined;
-    panel.textContent = '';
-    panel.removeAttribute('aria-busy');
+    this.#teardown(open, 'panel');
     open.grid = this.#el('div', 'jellypass-tv-source-grid padded-left padded-right');
     panel.appendChild(open.grid);
   }
@@ -517,14 +542,16 @@ export class SourcePage {
   }
 
   /** The cards' images are forgotten (the cards are being drawn again); the header's logo stays watched. */
-  #resetUnits(open: Open): void {
-    const head = open.headUnit;
+  #resetUnits(open: Open, all = false): void {
+    const head = all ? undefined : open.headUnit;
+    if (all) open.headUnit = undefined;
     // The cards go: their pictures let go of their sources (a card the remote left behind holds nothing).
     open.units.forEach((unit) => {
       if (unit === head) return;
       for (const one of unit.images) one.image.removeAttribute('src');
       unit.images = [];
     });
+    open.units.forEach((_unit, element) => { if (open.imageWatch) open.imageWatch.unobserve(element); });
     open.units = new Map();
     if (open.imageWatch) open.imageWatch.disconnect();
     if (head) {
@@ -536,10 +563,7 @@ export class SourcePage {
   /** The grid drawn again from the pages shown (the choice of "Hide what I have", the overlay): no call. */
   #fillGrid(open: Open): void {
     const grid = open.grid as HTMLElement;
-    grid.textContent = '';
-    open.gridNo += 1;
-    open.drawn = [];
-    this.#resetUnits(open);
+    this.#teardown(open, 'grid');
     const cards = this.#visible(open);
     if (cards.length === 0) {
       const held = open.pages.some((page) => page.cards.length > 0);
@@ -642,7 +666,7 @@ export class SourcePage {
     }
     const kind = ERROR_TEXT[kindOf(failure)];
     if (failure.status === 401) {
-      (open.panel as HTMLElement).textContent = '';
+      this.#teardown(open, 'panel');
       (open.panel as HTMLElement).appendChild(this.#note(kind.title, kind.body));
       return;
     }
@@ -657,9 +681,7 @@ export class SourcePage {
   #failed(open: Open, failure: Failure, into: HTMLElement, again: () => void, key: string): void {
     const render = open.render;
     const gen = open.gen;
-    into.textContent = '';
-    into.removeAttribute('aria-busy');
-    open.retry = undefined;
+    this.#teardown(open, into === open.view ? 'view' : 'panel');
     const kind = ERROR_TEXT[kindOf(failure)];
     if (failure.status === 401) {
       into.appendChild(this.#note(kind.title, kind.body));
