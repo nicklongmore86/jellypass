@@ -15,23 +15,47 @@ build.
 
 ## [Unreleased]
 
+## [1.2.0] - 2026-10-29
+
+A minor release: Home can hide what the household already has, and signing in
+and out is safer when two of them overlap. It still works with **JellyPass
+server 3.2.0 or later** (app API `v1`), as 1.0.0 and 1.1.0 do, so it can be
+installed before the household's server is upgraded. **Hide what I have needs no
+server change**: it only filters what the app has already loaded, so it works on
+any supported server. As in 1.1.0, **Cancel request and the day each title was
+requested need JellyPass server 3.5.0 or later** (`apiVersion` 2 in
+`GET /jellypass/app/v1/me`); on an older server the app shows neither, with no
+error. Members update by installing the new TestFlight build, or the new APK
+over the old one.
+
 ### Added
-- Home has a **Hide what I have** chip after All | Movies | TV, on by default at every sign-in. On, the rows and the
-  hero leave out the titles in your library and the ones already requested (including one you just asked for), and the
-  hero fills from the next titles; with none left it isn't shown. It reads nothing from the server. The choice is kept
-  only while you're signed in (never stored on the device) and starts on again after a sign-out or for another person.
-  The network and studio pages share it. My requests and Search are unchanged.
+
+- **Home: Hide what I have.** A chip after All | Movies | TV, on by default at
+  every sign-in. On, the rows and the hero leave out the titles in your library
+  and the ones already requested (including one you just asked for), and the
+  hero fills from the next titles; with none left it isn't shown. Turning it on
+  or off makes no call to the server. The choice is kept only while you're
+  signed in, never stored on the device, and starts on again after a sign-out,
+  an expired sign-in or a change of household or member. The network and
+  studio pages have the same chip and share the choice. My requests and Search
+  are unchanged.
 
 ### Fixed
-- Home's hero keeps the title you were on when **Hide what I have** is turned on or off (or a request removes a
-  title): the dots, the scroll position and the slide you see always agree, and if the title is gone it moves to the
-  nearest slide.
-- Signing out (or changing household) that finishes late no longer signs you out of, or erases the credentials of, the
-  household you signed in to meanwhile, and a setup link waits until the sign-out has finished.
-- A late "signed out" answer (a 401) from a previous sign-in no longer signs you out of, or resets **Hide what I
-  have** for, the sign-in you made after it, and the stored sign-in is only ever deleted if it is still the one that
-  ended, whatever order two sign-ins finish in.
-- Home's hero stays on the title you chose when its width changes (turning an iPad), instead of sitting between slides.
+
+- **Home's hero keeps the title you were on** when Hide what I have is
+  turned on or off, or a request removes a title: the dots, the scroll
+  position and the slide you see always agree, and if the title is gone it
+  moves to the nearest slide. It also stays on that title when its width
+  changes (turning an iPad), instead of sitting between slides.
+- **A late sign-out no longer touches a newer sign-in.** Signing out (or
+  changing household) that finishes late no longer signs you out of, or
+  erases the credentials of, the household you signed in to meanwhile, and a
+  setup link waits until the sign-out has finished. A late "signed out"
+  answer (a 401) from a previous sign-in no longer signs you out of, or resets
+  Hide what I have for, the sign-in you made after it.
+- **The stored sign-in is read, written and deleted one step at a time**, and
+  only ever deleted if it is still the one that ended, whatever order two
+  sign-ins finish in.
 
 ## [1.1.0] - 2026-10-28
 
@@ -133,6 +157,7 @@ is not supported.
 - **iPhone, iPad and Android.** Portrait on phones; iPad and Android tablets
   turn. iOS is distributed through TestFlight and Android as an APK.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/mobile-v1.1.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/mobile-v1.2.0...HEAD
+[1.2.0]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.2.0
 [1.1.0]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.1.0
 [1.0.0]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.0.0
