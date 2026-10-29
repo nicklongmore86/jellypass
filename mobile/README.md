@@ -481,7 +481,11 @@ Compliance**. If the app ever adds encryption of its own, this must change, and 
 ### Store links
 
 Three optional links, set as constants at the top of `app.config.ts` (they land in `extra`). While one is empty, or is
-not a plain `https:` URL, the app hides the link that opens it:
+not a plain `https:` URL, the app hides the link that opens it.
+
+Write each URL in its exact normalised form, the way a browser would print it: lowercase `https://`, a trailing `/`
+after a bare host (`https://example.org/`, not `https://example.org`), no default `:443`, no spaces, and punycode for a
+non-ASCII host. Anything else is refused as written (it is not tidied up), so the link simply stays hidden:
 
 | Setting | Where it shows |
 |---|---|
