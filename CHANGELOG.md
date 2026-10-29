@@ -18,6 +18,36 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+## [3.8.1] - 2026-10-29
+
+This is a patch release for the TV add-on, which is still experimental and off
+by default: **unless `TV_ADDON_ENABLED` is set, nothing changes** on any host.
+It renames one toggle and adds nothing. No setting is added, removed or
+renamed, and the server itself is unchanged: the state file (schema v7), the
+app API (`v1`, `apiVersion` 2), webhook payloads, the administrator API, the
+admin UI, the household app and the gateway are as in 3.8.0. Only the add-on's
+script changes. Read these before upgrading:
+
+- **Nothing to configure.** No setting is new, and nothing in `.env` needs to
+  change. Only households the TV add-on is on for (`TV_ADDON_ENABLED` and
+  `TV_ADDON_HOUSEHOLDS`) see anything new.
+- **The state file is unchanged** (schema v7, with the same fields as 3.8.0),
+  so 3.8.0 reads a state file written by 3.8.1.
+- **No CDN purge is needed.** The add-on's script and stylesheet are named for
+  a hash of their content: the script's name changes in this release and the
+  stylesheet, which is unchanged, keeps its name. The household address's
+  `/web/` page that carries the add-on's tag and the Samsung app's manifest
+  are sent `no-store`, so they name the new script at once.
+- **The Samsung app picks it up by itself.** Its loader reads the manifest
+  each time it starts, so a Samsung TV with the JellyPass build of the app
+  gets the new add-on at its next start. Nothing is reinstalled on the TV.
+- **To roll back,** set `JELLYPASS_IMAGE` back to
+  `ghcr.io/nicklongmore86/jellypass:3.8.0` and recreate the container. No
+  state-file or setting change is needed. The toggle is called Hide what I
+  have again and otherwise works as in 3.8.1.
+- **The iPhone, iPad and Android app ships separately;** its changes are
+  described in `mobile/CHANGELOG.md`.
+
 ### Changed
 
 - **TV add-on: the "Hide what I have" toggle is now called "New only".** The
@@ -3069,7 +3099,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.8.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.8.1...HEAD
+[3.8.1]: https://github.com/nicklongmore86/jellypass/compare/v3.8.0...v3.8.1
 [3.8.0]: https://github.com/nicklongmore86/jellypass/compare/v3.7.0...v3.8.0
 [3.7.0]: https://github.com/nicklongmore86/jellypass/compare/v3.6.1...v3.7.0
 [3.6.1]: https://github.com/nicklongmore86/jellypass/compare/v3.6.0...v3.6.1

@@ -53,6 +53,45 @@ function assertSection(notes, { version, nextVersion, subheadings }) {
 }
 
 describe('changelogSection with the real CHANGELOG.md', () => {
+  it('extracts 3.8.1 without its heading, up to the 3.8.0 section', () => {
+    const notes = changelogSection(CHANGELOG, '3.8.1');
+    assertSection(notes, {
+      version: '3.8.1',
+      nextVersion: '3.8.0',
+      subheadings: ['Changed'],
+    });
+    assert.match(notes, /^This is a patch release for the TV add-on/);
+    const flat = notes.replace(/\s+/g, ' ');
+    assert.match(flat, /\*\*unless `TV_ADDON_ENABLED` is set, nothing changes\*\* on any host/);
+    assert.match(flat, /the gateway are as in 3\.8\.0\. Only the add-on's script changes/);
+    assert.match(flat, /\*\*Nothing to configure\.\*\* No setting is new/);
+    assert.match(flat, /\*\*The state file is unchanged\*\* \(schema v7, with the same fields as 3\.8\.0\), so 3\.8\.0 reads a state file written by 3\.8\.1/);
+    assert.match(flat, /the script's name changes in this release and the stylesheet, which is unchanged, keeps its name/);
+    assert.match(flat, /gets the new add-on at its next start\. Nothing is reinstalled on the TV/);
+    assert.match(flat, /`ghcr\.io\/nicklongmore86\/jellypass:3\.8\.0`/);
+    assert.match(flat, /No state-file or setting change is needed/);
+    assert.match(flat, /`mobile\/CHANGELOG\.md`/);
+    assert.match(flat, /\*\*TV add-on: the "Hide what I have" toggle is now called "New only"\.\*\*/);
+    assert.match(flat, /"New only: show only titles you don't have or haven't requested"/);
+    const changed = notes.indexOf('### Changed');
+    for (const note of [
+      '**Nothing to configure.**',
+      '**The state file is unchanged**',
+      '**No CDN purge is needed.**',
+      '**The Samsung app picks it up by itself.**',
+      '**To roll back,**',
+      '**The iPhone, iPad and Android app ships separately;**',
+    ]) {
+      assert.ok(notes.indexOf(note) >= 0 && notes.indexOf(note) < changed, `upgrade note ${note} comes first`);
+    }
+    assert.equal(notes.match(/^- \*\*TV add-on: /gm)?.length, 1, 'one entry, not repeated');
+    assert.doesNotMatch(notes, /### (?:Security|Added|Fixed)/);
+    assert.doesNotMatch(notes, /### Upgrading from/);
+    assert.doesNotMatch(notes, /eas-cli|workflow|\btests?\b|Jest/i, 'no tests or CI');
+    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref|farmhouse|TU7000|sdb\b/i, 'no server-specific details');
+    assert.deepEqual(split(notes).definitions, []);
+  });
+
   it('extracts 3.8.0 without its heading, up to the 3.7.0 section', () => {
     const notes = changelogSection(CHANGELOG, '3.8.0');
     assertSection(notes, {
