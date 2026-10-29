@@ -7,6 +7,7 @@ import {
   DISCOVER_LAYOUT,
   DISCOVER_TEXT,
   heroCards,
+  isHeld,
   JUSTWATCH_NOTE,
   networkListFor,
   networksFor,
@@ -206,7 +207,7 @@ export class DiscoverPage {
       if (this.#hide.held && this.#visibleKeys(row) !== row.drawn.map((one) => this.#cardKey(one.card)).join(' ')) this.#fill(row);
       else for (const one of row.drawn) this.#mark(one);
     }
-    if (open.hero) this.#showSlide(open.hero);
+    this.#refreshHero(open);
   }
 
   /** The chips, new for each drawing: one kept from an earlier drawing (an earlier token) does nothing. */
@@ -324,6 +325,7 @@ export class DiscoverPage {
     this.#hide.held = !this.#hide.held;
     open.chips.hide?.setAttribute('aria-pressed', String(this.#hide.held));
     for (const row of open.rows) if (row.answered) this.#fill(row);
+    this.#refreshHero(open);
   }
 
   /** A card's state as the member sees it: the household's own, with what they just asked for on this TV. */
@@ -523,7 +525,7 @@ export class DiscoverPage {
     row.asked = true;
     row.answered = cards;
     this.#fill(row);
-    if (row.feeds) this.#drawHero(open, cards);
+    if (row.feeds) this.#drawHero(open);
   }
 
   /** The row's cards, as "Hide what I have" and the overlay leave them, or why there are none. */
@@ -569,11 +571,37 @@ export class DiscoverPage {
   // ---------------------------------------------------------------------------------------------------------------
   // The hero
 
-  #drawHero(open: Open, cards: DiscoverCard[]): void {
+  /** The slides the first row's answer gives now: with "Hide what I have" on, none that is in the library or asked for. */
+  #heroSlides(open: Open): DiscoverCard[] {
+    const feeding = open.rows.filter((row) => row.feeds && row.answered)[0];
+    if (!feeding) return [];
+    const held = this.#hide.held;
+    return heroCards(feeding.answered as DiscoverCard[], held ? (card) => isHeld({ state: this.#stateOf(card) }) : undefined);
+  }
+
+  /** The hero drawn again after "Hide what I have" or the overlay changed what it may show: no call, and focus never falls off the page. */
+  #refreshHero(open: Open): void {
+    const slides = this.#heroSlides(open);
+    const hero = open.hero;
+    if (hero && slides.length === hero.slides.length && slides.every((card, index) => this.#cardKey(card) === this.#cardKey(hero.slides[index] as DiscoverCard))) {
+      this.#showSlide(hero);
+      return;
+    }
+    if (!hero && slides.length === 0) return;
+    const inside = open.heroSlot.contains(this.#document.activeElement);
+    this.#drawHero(open);
+    // Focus was on a button of the hero that is gone: the new hero's View takes it, or the chip when there is no hero.
+    if (inside && this.#current(open) && !open.heroSlot.contains(this.#document.activeElement)) {
+      const target = open.hero ? open.hero.view : open.chips.hide;
+      if (target) target.focus();
+    }
+  }
+
+  #drawHero(open: Open): void {
     open.heroSlot.className = 'jellypass-tv-discover-hero-slot';
     open.heroSlot.textContent = '';
     open.hero = undefined;
-    const slides = heroCards(cards);
+    const slides = this.#heroSlides(open);
     if (slides.length === 0) return;
     const section = this.#el('section', 'jellypass-tv-discover-hero');
     section.setAttribute('aria-roledescription', 'carousel');

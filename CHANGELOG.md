@@ -18,6 +18,14 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Changed
+
+- TV add-on: **Hide what I have** on the Discover page is now **on when the page opens** (and on the service and studio
+  pages), and it also applies to the **hero**: with it on, the hero's slides skip titles in the library or already requested
+  (a title just asked for too) and are filled from the next titles of the same answer that have a wide picture; if none is
+  left, the hero is not shown. Switch it off and the hero is as before. The choice is kept for the session in memory only and is
+  back on for the next member. It makes no extra call. No server, API or setting change.
+
 ### Added
 
 - TV add-on: **service and studio pages** on the Discover page. A service row's heading ("Popular on Netflix ›") is now a

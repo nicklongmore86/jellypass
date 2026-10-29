@@ -150,11 +150,14 @@ export function rowCards<T extends Pick<DiscoverCard, 'state'>>(cards: ReadonlyA
   return kept;
 }
 
-/** The hero's slides: the first row's first cards with a backdrop to draw, at most {@link HERO_SLIDES}. */
-export function heroCards(cards: ReadonlyArray<DiscoverCard>): DiscoverCard[] {
+/**
+ * The hero's slides: the first row's first cards with a backdrop to draw, at most {@link HERO_SLIDES}. `skip` leaves a card out
+ * ("Hide what I have": the next ones with a backdrop fill its place, from the same answer).
+ */
+export function heroCards(cards: ReadonlyArray<DiscoverCard>, skip?: (card: DiscoverCard) => boolean): DiscoverCard[] {
   const slides: DiscoverCard[] = [];
   for (const card of cards) {
-    if (!card.backdropUrl) continue;
+    if (!card.backdropUrl || (skip && skip(card))) continue;
     slides.push(card);
     if (slides.length === HERO_SLIDES) break;
   }

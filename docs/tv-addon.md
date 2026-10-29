@@ -442,10 +442,19 @@ web's focus manager moves between the hero's buttons, the chips and the cards; B
   **14 per row**, each with a **badge in words**: *In your library*, *Requested*, *Available to get*, *Can't request* (the state
   the API gave the caller's household, through the "Get this" overlay, so a title just asked for reads Requested with no call), in
   a colour that goes with the words (never colour alone), and the same words in the card's accessible name. **Hide what I have** hides
-  *In your library* and *Requested* and fills the row from the rest of the answer; it asks nothing. Choosing a card opens the title
+  *In your library* and *Requested* and fills the row from the rest of the answer; it asks nothing. It is **on by default** (see below). Choosing a card opens the title
   page; **Back returns to the same card** (the page is drawn from the kept answers before anything is asked, so the host's focus
   key finds the card) and makes **no Discover call** (the title page makes its own two). After the cache's ten minutes the key may
   be gone and focus falls back to the hero's **View**.
+- **"Hide what I have" is on when the page opens, and the hero follows it.** Every sign-in starts with it on (the toggle's
+  `aria-pressed` says so); the member can switch it off, and the choice is kept **for the session in memory only** (Discover,
+  the service pages and the studio pages share it; it survives Back from a title) and is put back on when another member or no
+  one is signed in. It is never written to storage. With it on, the hero's slides skip the titles *In your library* or
+  *Requested* (a title just asked for through the "Get this" overlay too) and are filled from the next titles of the first row's
+  **same answer** that have a wide picture, so it costs no call and the page's budget is as it was (5 on opening, 10 more as the
+  rows come near, none on Back). If no slide is left the hero is not drawn at all (no empty hero). Switching it off, or the overlay
+  changing, redraws the hero from the answer with no call; the slide index is clamped to the new set, and focus that was on one of
+  the hero's buttons moves to the new **View** (or to the toggle when there is no hero), never nowhere.
 - **Rows ask as the remote scrolls.** The first four rows (or the chip's eager ones) and the sources are asked for when the page
   opens (**5 calls** on All); every other row asks once when it comes within 700 px of the screen (an `IntersectionObserver`,
   Chromium 51+): **10 more**, 15 in all (`tv-discover` in the budget file). Switching to Movies or TV asks for that chip's own

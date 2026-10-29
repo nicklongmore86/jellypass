@@ -3892,8 +3892,18 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
       },
     };
   };
-  const open = async (t, app, { header = LEGACY_HEADER, tv = true, observers = watchers(), ...options } = {}) => {
+  // "Hide what I have" is on by default; most of these tests are about something else and want every card drawn, so the harness
+  // turns it off as each drawing's toggle appears (before any answer is drawn), unless the test says `hideOn: true`.
+  const hideOff = (page) => {
+    const { MutationObserver } = page.document.defaultView;
+    const off = () => {
+      for (const chip of page.document.querySelectorAll('[data-jellypass-tv-focus="chip:hide"][aria-pressed="true"]')) chip.click();
+    };
+    new MutationObserver(off).observe(page.document.body, { childList: true, subtree: true });
+  };
+  const open = async (t, app, { header = LEGACY_HEADER, tv = true, observers = watchers(), hideOn = false, ...options } = {}) => {
     const page = await openJellyfinWeb(t, app, { scopeExtras: observers ? { IntersectionObserver: observers.IntersectionObserver } : undefined, ...options });
+    if (!hideOn) hideOff(page);
     if (tv) page.document.documentElement.classList.add('layout-tv');
     page.document.body.insertAdjacentHTML('afterbegin', header);
     page.home();
@@ -3960,9 +3970,11 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
 
   it('is written in the budget file as the page makes it: 5 calls on opening, 10 more as the rows come near the screen, none on Back', async (t) => {
     const app = await startApp(t, webWorld(), tvOn());
-    const page = await open(t, app);
+    // With "Hide what I have" on, as it is when the page opens: the budget is the same.
+    const page = await open(t, app, { hideOn: true });
     const before = page.requests.length;
     await goTo(page);
+    assert.equal(chip(page, 'hide').getAttribute('aria-pressed'), 'true');
     assert.ok(hosting(page));
     assert.equal(root(page).closest('#fallbackPage').id, 'fallbackPage', 'in Jellyfin\'s own page');
     assert.equal(headerTitle(page), 'Discover');
@@ -4316,6 +4328,152 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
     await app.background.settled();
   });
 
+  describe('"Hide what I have": on by default, and the hero follows it', () => {
+    const hero = (page) => page.document.querySelector('.jellypass-tv-discover-hero');
+    const slideOf = (page) => hero(page).querySelector('.jellypass-tv-discover-hero-title').textContent;
+    const dotsOf = (page) => hero(page).querySelector('.jellypass-tv-discover-hero-dots').textContent;
+    const slot = (page) => page.document.querySelector('.jellypass-tv-discover-hero-slot');
+    const hideChip = (page) => chip(page, 'hide');
+    // `/discover/trending` as the scripted API answers it: states in the rotation in_library, requested, get_this, unavailable, get_this, ...
+    const trending = (count) => cardsFor('/discover/trending', count);
+
+    it('is on when the page opens, with the same calls as before: the held titles are not in the hero or the rows, the toggle says so, and nothing more is asked', async (t) => {
+      const state = { cards: 20 };
+      const page = await openScripted(t, state, { hideOn: true });
+      const before = page.requests.length;
+      await goTo(page);
+      assert.equal(hideChip(page).getAttribute('aria-pressed'), 'true');
+      assert.deepEqual(discoverCalls(page, before), BUDGET.screens['tv-discover'].atOnce, 'the budget is as it was');
+      // The first two of the answer are in the library and requested: the first slide is the third, and five slides fill from the rest.
+      const cards = trending(20);
+      assert.equal(slideOf(page), cards[2].title);
+      assert.equal(dotsOf(page), '● ○ ○ ○ ○');
+      assert.ok(badges(rowNamed(page, 'Trending')).every((words) => words !== 'In your library' && words !== 'Requested'));
+      assert.equal(discoverCalls(page, before).length, 5);
+    });
+
+    it('fills the hero from the next titles with a wide picture, skipping those without one, from the same answer and with no call', async (t) => {
+      const state = { cards: 20 };
+      const fake = fakeApi(state);
+      const page = await open(t, await startApp(t, webWorld(), tvOn()), { hideOn: true, override: async (pathname) => {
+        const answer = await fake(pathname);
+        if (answer && pathname.endsWith('/discover/trending')) {
+          const body = JSON.parse(answer.body);
+          body.results[2].backdropUrl = null;
+          return json(body);
+        }
+        return answer;
+      } });
+      await goTo(page);
+      const cards = trending(20);
+      const next = () => page.click(hero(page).querySelector('[data-jellypass-tv-focus="hero:next"]'));
+      const seen = [slideOf(page)];
+      for (let i = 0; i < 4; i += 1) { next(); seen.push(slideOf(page)); }
+      // Eligible are 3, 4, 7, 8, 9 (2 has no picture); the page asked for nothing to find them.
+      assert.deepEqual(seen, [3, 4, 7, 8, 9].map((index) => cards[index].title));
+      assert.equal(dotsOf(page).split(' ').length, 5);
+    });
+
+    it('shows them again when it is switched off, and hides them again when it is switched on, with no call and the toggle\'s state in aria-pressed', async (t) => {
+      const state = { cards: 20 };
+      const page = await openScripted(t, state, { hideOn: true });
+      await goTo(page);
+      const cards = trending(20);
+      const mark = state.seen.length;
+      page.click(hideChip(page));
+      assert.equal(hideChip(page).getAttribute('aria-pressed'), 'false');
+      assert.equal(slideOf(page), cards[0].title, 'as before: the first of the answer');
+      assert.equal(dotsOf(page), '● ○ ○ ○ ○');
+      assert.ok(badges(rowNamed(page, 'Trending')).includes('In your library'));
+      page.click(hideChip(page));
+      assert.equal(hideChip(page).getAttribute('aria-pressed'), 'true');
+      assert.equal(slideOf(page), cards[2].title);
+      assert.equal(state.seen.length, mark, 'no call');
+    });
+
+    it('keeps the slide in range when the set shrinks: the index is clamped, and a hero with fewer slides shows fewer dots', async (t) => {
+      // Six cards: in the library, requested, get, unavailable, get, in the library. Off: six slides (five shown); on: three.
+      const page = await openScripted(t, { cards: 6 }, { hideOn: true });
+      await goTo(page);
+      page.click(hideChip(page));
+      assert.equal(dotsOf(page), '● ○ ○ ○ ○');
+      for (let i = 0; i < 4; i += 1) page.click(hero(page).querySelector('[data-jellypass-tv-focus="hero:next"]'));
+      assert.equal(dotsOf(page), '○ ○ ○ ○ ●');
+      page.click(hideChip(page));
+      assert.equal(dotsOf(page), '○ ○ ●', 'clamped to the last of three');
+      assert.equal(slideOf(page), trending(6)[4].title);
+    });
+
+    it('hides the hero when no slide is left and draws it again when something is, and focus never falls off the page', async (t) => {
+      // Two cards, both held: nothing for the hero while it is on.
+      const page = await openScripted(t, { cards: 2 }, { hideOn: true });
+      await goTo(page);
+      assert.equal(hero(page), null, 'no empty hero');
+      assert.equal(slot(page).children.length, 0);
+      page.click(hideChip(page));
+      assert.ok(hero(page), 'switched off: the hero is there');
+      // Focus is on the hero's View when the choice is made from there (a remote's OK on a button is a click): it moves to the toggle.
+      hero(page).querySelector('[data-jellypass-tv-focus="hero"]').focus();
+      page.click(hideChip(page));
+      assert.equal(hero(page), null);
+      assert.equal(focusKey(page), 'chip:hide', 'focus is on the toggle, not nowhere');
+      page.click(hideChip(page));
+      assert.ok(hero(page), 'and back again');
+    });
+
+    it('leaves a title just asked for out of the hero, from the overlay and with no call', async (t) => {
+      const app = await startApp(t, webWorld(), { ...tvOn(), reconcile: true });
+      const wide = (id, title) => ({ mediaType: 'movie', tmdbId: id, title, year: 2020, overview: '', posterUrl: null, backdropUrl: `https://image.tmdb.org/t/p/w780/b${id}.jpg`, rating: null, state: 'get_this', play: null });
+      const answer = { page: 1, nextPage: null, results: [{ ...wide(T_MOVIE, 'Hero One'), title: 'Hero One' }, wide(910_001, 'Hero Two'), wide(910_002, 'Hero Three')] };
+      const page = await open(t, app, { hideOn: true, override: (pathname) => (pathname === '/jellypass/app/v1/discover/trending' ? json(answer) : undefined) });
+      await goTo(page);
+      assert.equal(slideOf(page), 'Hero One');
+      assert.equal(dotsOf(page), '● ○ ○');
+      const from = page.location.hash;
+      page.click(hero(page).querySelector('[data-jellypass-tv-focus="hero"]'));
+      page.follow(from);
+      await page.settled();
+      page.click(page.view().querySelector('.jellypass-tv-title-get'));
+      await page.settled();
+      const mark = page.requests.length;
+      page.back();
+      await page.settled();
+      assert.equal(slideOf(page), 'Hero Two', 'what was just asked for is no longer in the hero');
+      assert.equal(dotsOf(page), '● ○');
+      assert.deepEqual(discoverCalls(page, mark), []);
+      page.click(hideChip(page));
+      assert.equal(dotsOf(page), '● ○ ○');
+      assert.equal(slideOf(page), 'Hero One', 'shown again with its new state when switched off');
+      await app.background.settled();
+    });
+
+    it('puts the default back for the next member or sign-in, remembers a choice only in memory, and stores nothing', async (t) => {
+      const state = {};
+      const page = await openScripted(t, state, { hideOn: true });
+      await goTo(page);
+      page.click(hideChip(page));
+      assert.equal(hideChip(page).getAttribute('aria-pressed'), 'false');
+      // Away and back (a title and Back): the choice is as left.
+      const from = page.location.hash;
+      page.click(cardsOf(rowNamed(page, 'Trending'))[0]);
+      page.follow(from);
+      await page.settled();
+      page.back();
+      await page.settled();
+      assert.equal(hideChip(page).getAttribute('aria-pressed'), 'false', 'remembered for the session');
+      // Another member: the default, on.
+      page.session.user = ANN;
+      page.session.token = TOKENS[ANN];
+      page.document.body.appendChild(page.document.createElement('div'));
+      await page.settled();
+      page.goTo('#/home.html');
+      await goTo(page);
+      assert.equal(hideChip(page).getAttribute('aria-pressed'), 'true');
+      // Nothing of it is stored.
+      lacks(readFileSync(path.join(DIST_TV, SCRIPT), 'utf8'), /localStorage|sessionStorage|indexedDB/);
+    });
+  });
+
   const SESSION_CHANGES = {
     'a sign-out': (page) => { page.session.user = null; page.session.token = null; },
     'another member': (page) => { page.session.user = ANN; page.session.token = TOKENS[ANN]; },
@@ -4325,10 +4483,11 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
   describe('signed in, session and member', () => {
     it('ends the page when no one is signed in or another member is, asks nothing more, and forgets the chip and the toggle', async (t) => {
       const state = {};
-      const page = await openScripted(t, state);
+      const page = await openScripted(t, state, { hideOn: true });
       await goTo(page);
       page.click(chip(page, 'movies'));
       page.click(chip(page, 'hide'));
+      assert.equal(chip(page, 'hide').getAttribute('aria-pressed'), 'false', 'switched off');
       await page.settled();
       const asked = state.seen.length;
       page.session.user = null;
@@ -4348,8 +4507,8 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
       await page.settled();
       page.goTo('#/home.html');
       await goTo(page);
-      assert.deepEqual(pressed(page), ['chip:all']);
-      assert.equal(chip(page, 'hide').getAttribute('aria-pressed'), 'false');
+      assert.deepEqual(pressed(page), ['chip:all', 'chip:hide']);
+      assert.equal(chip(page, 'hide').getAttribute('aria-pressed'), 'true', 'the default is back: on');
       assert.equal(state.seen.length > asked, true, 'asked afresh');
     });
 
@@ -4960,10 +5119,9 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
 
     it('draws each card with the household\'s state in words, hides what the household has with the one choice Discover shares, and asks nothing for it', async (t) => {
       const state = { cards: 20 };
-      const page = await openScripted(t, state);
+      const page = await openScripted(t, state, { hideOn: true });
       await goTo(page);
-      page.click(chip(page, 'hide'));
-      assert.equal(chip(page, 'hide').getAttribute('aria-pressed'), 'true');
+      assert.equal(chip(page, 'hide').getAttribute('aria-pressed'), 'true', 'on when Discover opens');
       await scrollThrough(page);
       const from = page.location.hash;
       page.click(rowNamed(page, 'Popular on Netflix').querySelector('h2 button'));
