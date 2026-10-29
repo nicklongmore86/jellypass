@@ -30,7 +30,7 @@ import { backdropSources, safeImageUrl, safeLogoUrl } from '../api/urls';
 import { Icon } from '../icons';
 import { colors, layout, radii, spacing, status as statusColors, typography, water } from '../theme';
 import { Button } from '../ui';
-import { nearestStop, resnapOffset, revealOffset, snapOffsets, type RowShape, type RowVariant } from './layout';
+import { nearestStop, POSTER_BADGE, resnapOffset, revealOffset, snapOffsets, type RowShape, type RowVariant } from './layout';
 import {
   backdropMeta,
   cardName,
@@ -290,8 +290,8 @@ export function StatusChip({
 }) {
   const pair = failed || !Object.hasOwn(STATE_COLORS, state) ? STATE_COLORS.unavailable : STATE_COLORS[state];
   const label = failed ? REQUEST_LABELS.failed : stateLabel(state);
-  // On a poster the badge is the short word on one line (no-break spaces, since a line limit would clip large text); the
-  // full wording stays the card's (or `spoken`) name.
+  // On a poster the badge is the short word on one line, sized so it always fits (POSTER_BADGE in ./layout, checked
+  // against the narrowest poster by __tests__/home-badge.test.ts); the full wording stays the card's (or `spoken`) name.
   const shown = overlay && !failed ? badgeWord(state).replace(/ /g, NO_BREAK_SPACE) : label;
   return (
     <View
@@ -299,8 +299,14 @@ export function StatusChip({
       style={[styles.chip, { backgroundColor: pair.bg }, overlay && styles.chipOverlay]}
       {...(spoken ? { accessible: true, accessibilityLabel: label } : hidden)}
     >
-      <View style={[styles.chipDot, { backgroundColor: pair.text }]} />
-      <Text style={[styles.chipText, { color: pair.text }]}>{shown}</Text>
+      <View style={[styles.chipDot, overlay && !failed && styles.chipOverlayDot, { backgroundColor: pair.text }]} />
+      {overlay && !failed ? (
+        <Text style={[styles.chipText, styles.chipOverlayText, { color: pair.text }]} maxFontSizeMultiplier={POSTER_BADGE.maxFontScale}>
+          {shown}
+        </Text>
+      ) : (
+        <Text style={[styles.chipText, { color: pair.text }]}>{shown}</Text>
+      )}
     </View>
   );
 }
@@ -829,8 +835,19 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.hairline,
   },
-  chipOverlay: { position: 'absolute', top: 8, left: 8, maxWidth: '85%', paddingVertical: 1.6, paddingLeft: 6, paddingRight: 7, gap: 4 },
+  chipOverlay: {
+    position: 'absolute',
+    top: POSTER_BADGE.inset,
+    left: POSTER_BADGE.inset,
+    maxWidth: `${POSTER_BADGE.maxWidthRatio * 100}%`,
+    paddingVertical: 1.6,
+    paddingLeft: POSTER_BADGE.paddingLeft,
+    paddingRight: POSTER_BADGE.paddingRight,
+    gap: POSTER_BADGE.gap,
+  },
+  chipOverlayText: { fontSize: POSTER_BADGE.fontSize, lineHeight: POSTER_BADGE.lineHeight },
   chipDot: { width: 6, height: 6, borderRadius: 3 },
+  chipOverlayDot: { width: POSTER_BADGE.dot, height: POSTER_BADGE.dot, borderRadius: POSTER_BADGE.dot / 2 },
   chipText: { ...typography.chip, flexShrink: 1 },
 
   // Far taller than a thumb in practice; the floor holds for a card with no image yet.

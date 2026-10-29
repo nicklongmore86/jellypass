@@ -4586,7 +4586,7 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
       await goTo(page);
       const toggle = hideChip(page);
       assert.equal(toggle.textContent, 'New only');
-      assert.equal(toggle.getAttribute('aria-label'), "Show only titles you don't have or haven't requested");
+      assert.equal(toggle.getAttribute('aria-label'), "New only: show only titles you don't have or haven't requested");
       assert.equal(toggle.getAttribute('aria-pressed'), 'true');
       assert.equal(page.document.body.textContent.includes('Hide what I have'), false);
     });
@@ -5304,7 +5304,7 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
         await toHash(page, hash);
         const toggle = page.document.querySelector('[data-jellypass-tv-focus="chip:hide"]');
         assert.equal(toggle.textContent, 'New only', hash);
-        assert.equal(toggle.getAttribute('aria-label'), "Show only titles you don't have or haven't requested", hash);
+        assert.equal(toggle.getAttribute('aria-label'), "New only: show only titles you don't have or haven't requested", hash);
         assert.equal(toggle.getAttribute('aria-pressed'), 'true', hash);
       }
     });

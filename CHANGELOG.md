@@ -22,9 +22,9 @@ changes are always listed at the top of the release notes.
 
 - **TV add-on: the "Hide what I have" toggle is now called "New only".** The
   Discover page and the service and studio pages show the shorter label, so it
-  matches the household app. A screen reader hears "Show only titles you don't
-  have or haven't requested". What it does, and that it is on when a page
-  opens, is unchanged.
+  matches the household app. A screen reader hears the visible words first: "New only:
+  show only titles you don't have or haven't requested". What it does, and that
+  it is on when a page opens, is unchanged.
 
 ## [3.8.0] - 2026-10-29
 

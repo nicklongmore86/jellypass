@@ -299,7 +299,7 @@ describe('New only', () => {
     const before = since().length;
     await pressNode(sourceChip());
     expect(sourceChip().props.accessibilityState).toEqual({ checked: true });
-    expect([sourceChip().props.accessibilityRole, sourceChip().props.accessibilityLabel]).toEqual(['checkbox', "Show only titles you don't have or haven't requested"]);
+    expect([sourceChip().props.accessibilityRole, sourceChip().props.accessibilityLabel]).toEqual(['checkbox', "New only: show only titles you don't have or haven't requested"]);
     expect(within(sourceChip()).queryAllByText('New only')).toHaveLength(1);
     expect(gridNames().slice(0, 2)).toEqual(["studio-420 1, 2015, Movie, Available to get", "studio-420 3, 2017, Movie, Can't request"]);
     expect(gridNames().some((name) => /Ready to watch|Requested/.test(name))).toBe(false);

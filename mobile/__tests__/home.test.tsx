@@ -12,7 +12,7 @@ import { ScrollView, StyleSheet } from 'react-native';
 
 import type { FetchLike } from '../src/api/client';
 import { CARD_GAP, STUDIO_TILE_WIDTH } from '../src/home/components';
-import { snapOffsets } from '../src/home/layout';
+import { POSTER_BADGE, snapOffsets } from '../src/home/layout';
 import { BADGE_WORDS, STATE_LABELS } from '../src/home/text';
 import { cardWidths } from '../src/screens/HomeScreen';
 import { layout } from '../src/theme';
@@ -215,7 +215,7 @@ describe('the cards', () => {
     const chips = screen.queryAllByTestId('status-chip', { includeHiddenElements: true });
     const overlays = chips.filter((node) => flat(node).position === 'absolute');
     expect(overlays.length).toBeGreaterThan(0);
-    expect(overlays.every((node) => flat(node).top === 8 && flat(node).left === 8)).toBe(true);
+    expect(overlays.every((node) => flat(node).top === 6 && flat(node).left === 6)).toBe(true);
   });
 
   it('open the title\'s page on the Home tab, with Back', async () => {
@@ -582,7 +582,7 @@ describe.each([['on', true], ['off', false]] as const)('accessibility, New only 
       expect([chip.props.accessibilityLabel, Number(flat(chip).minHeight) >= layout.touchTarget, flat(chip).flexShrink]).toEqual([chip.props.accessibilityLabel, true, 0]);
       for (const text of within(chip).queryAllByText(/./)) expect(text.props.numberOfLines).toBeUndefined();
     }
-    expect(within(scroller).queryAllByRole('checkbox').map((node) => node.props.accessibilityLabel)).toEqual(["Show only titles you don't have or haven't requested"]);
+    expect(within(scroller).queryAllByRole('checkbox').map((node) => node.props.accessibilityLabel)).toEqual(["New only: show only titles you don't have or haven't requested"]);
     expect(within(chips[3]!).queryAllByText('New only')).toHaveLength(1);
   });
 });
@@ -600,7 +600,10 @@ describe('the status badge on a poster', () => {
       // No break can fall inside it, and the pill is a small one (not the wide chip of the title page).
       expect(word).not.toMatch(/ /);
       expect(Object.values(BADGE_WORDS)).toContain(word.replace(/\u00a0/g, ' '));
-      expect(flat(chip)).toMatchObject({ top: 8, left: 8, alignSelf: 'flex-start' });
+      expect(flat(chip)).toMatchObject({ top: 6, left: 6, alignSelf: 'flex-start' });
+      // The text is the size, and capped at the scale, that __tests__/home-badge.test.ts proves fits the narrowest poster.
+      expect(text!.props.maxFontSizeMultiplier).toBe(POSTER_BADGE.maxFontScale);
+      expect(flat(text!)).toMatchObject({ fontSize: POSTER_BADGE.fontSize, lineHeight: POSTER_BADGE.lineHeight });
       expect(Number(flat(chip).paddingVertical)).toBeLessThanOrEqual(2.4);
     }
     expect([...words].sort()).toEqual(["Can't get", 'Get this', 'In library', 'Requested']);

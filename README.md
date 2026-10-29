@@ -1220,7 +1220,7 @@ TV add-on gains a Discover page, opened only from a compass button in
 Jellyfin's header; see the 3.7.0 notes.
 Upgrading from 3.7.0 to 3.8.0 changes neither the state file nor any setting,
 needs no CDN purge, and changes nothing unless `TV_ADDON_ENABLED` is set; the
-TV add-on gains service and studio pages, New only is on by default,
+TV add-on gains service and studio pages, Hide what I have is on by default,
 and its cards are Jellyfin web's size; see the 3.8.0 notes.
 Drain before rolling back to 2.3.x or 2.2.1: stop new "Get this" calls, wait
 until no request intents or deferred webhooks are left (at most 30 minutes plus

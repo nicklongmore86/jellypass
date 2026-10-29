@@ -10,6 +10,8 @@ import { Linking, StyleSheet, Text } from 'react-native';
 
 import type { FetchLike } from '../src/api/client';
 import { JUSTWATCH_CREDIT, JUSTWATCH_URL, TMDB_NOTICE, TMDB_SOURCE, TMDB_URL, type LinkedSentence } from '../src/credits';
+import { POSTER_BADGE } from '../src/home/layout';
+import { BADGE_WORDS } from '../src/home/text';
 import { SEARCH_TEXT } from '../src/search/text';
 import { colors, contrast, layout } from '../src/theme';
 import { showAll } from './support/home';
@@ -378,6 +380,11 @@ function pressables(): Node[] {
 }
 
 /** Every text the header, the screen and the tab bar draw, and what each sits in. */
+/** The word in the corner pill on a poster (its spaces are no-break). */
+function isPosterBadge(node: { props: { children?: unknown } }): boolean {
+  return Object.values<string>(BADGE_WORDS).includes([node.props.children].flat().join('').replace(/\u00a0/g, ' '));
+}
+
 function texts() {
   return screen
     .queryAllByText(/[\s\S]/, { includeHiddenElements: true })
@@ -485,7 +492,13 @@ describe('accessibility', () => {
         node.props.allowFontScaling === false && 'no font scaling',
         node.props.numberOfLines !== undefined && 'a line limit',
         node.props.adjustsFontSizeToFit && 'shrinks to fit',
-        typeof node.props.maxFontSizeMultiplier === 'number' && node.props.maxFontSizeMultiplier > 0 && node.props.maxFontSizeMultiplier < 3 && 'a low size cap',
+        // The one exception is the corner badge on a poster, which cannot grow past a ~95 pt poster: it is capped at
+        // POSTER_BADGE.maxFontScale, its wording is also in the card's accessible name, and home-badge.test.ts checks it fits.
+        typeof node.props.maxFontSizeMultiplier === 'number' &&
+          node.props.maxFontSizeMultiplier > 0 &&
+          node.props.maxFontSizeMultiplier < 3 &&
+          !(isPosterBadge(node) && node.props.maxFontSizeMultiplier === POSTER_BADGE.maxFontScale) &&
+          'a low size cap',
         ...[node, ...chain].map((at) => {
           const style = flat(at);
           if (typeof style.height === 'number' || typeof style.maxHeight === 'number') return `a fixed height on ${at.type}`;

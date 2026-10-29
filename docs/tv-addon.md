@@ -434,7 +434,7 @@ web's focus manager moves between the hero's buttons, the chips and the cards; B
 - **Parts, top to bottom.** A **hero** of up to five slides (the first row's first cards that have a backdrop): the title, its
   facts (type, year, TMDB rating, the state's words), the overview, and the buttons **‹**, **View** and **›** with the dots as
   text. **No auto-advance and no swipe**; **View** opens the title page. The **chips** **All / Movies / TV** (a chip shows other
-  lists, it does not filter the loaded ones; not sticky) and a toggle **New only**. Then the rows of the chip's layout
+  lists, it does not filter the loaded ones; not sticky) and a toggle **New only** (its `aria-label` starts with the visible words: "New only: show only titles you don't have or haven't requested"). Then the rows of the chip's layout
   (pinned to the app's `HOME_LAYOUT`): on All, Trending (posters), Popular movies, Popular series and New movie releases (wide
   backdrop cards), Upcoming movies and series (posters) and the eight **Popular on …** (a service) rows (posters, the film and series
   list the chip names); then a **foot** with the studios' logos (light tiles), the JustWatch line and the TMDB notice.

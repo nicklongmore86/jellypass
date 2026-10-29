@@ -22,14 +22,16 @@ build.
   scrolled fully into view at any screen width and text size.
 - **Poster badges are one short line.** A badge on a poster now says "In
   library", "Requested", "Get this" or "Can't get" (the words the TV add-on
-  uses) in a small corner pill, instead of wrapping over the poster. The full
+  uses) in a small corner pill, instead of wrapping over the poster. The pill's
+  text is 10 pt and does not grow with the system text size (the card's title
+  and details still do), so it fits whole on the narrowest poster; the full
   wording stays in each card's accessible name and on title pages.
 
 ### Changed
 
 - **"Hide what I have" is now "New only"** on Home and on the service and
-  studio pages. A screen reader hears "Show only titles you don't have or
-  haven't requested". It still works the same way and is on at every sign-in.
+  studio pages. A screen reader hears the visible words first: "New only: show only
+  titles you don't have or haven't requested". It still works the same way and is on at every sign-in.
 
 ## [1.2.0] - 2026-10-29
 

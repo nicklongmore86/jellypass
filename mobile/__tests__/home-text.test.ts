@@ -154,6 +154,6 @@ describe('the short words shared with the TV add-on', () => {
   });
 
   it('names the New only chip for a screen reader by what it does', () => {
-    expect([HOME_TEXT.hide.label, HOME_TEXT.hide.name]).toEqual(['New only', "Show only titles you don't have or haven't requested"]);
+    expect([HOME_TEXT.hide.label, HOME_TEXT.hide.name]).toEqual(['New only', "New only: show only titles you don't have or haven't requested"]);
   });
 });

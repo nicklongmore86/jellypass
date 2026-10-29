@@ -75,6 +75,30 @@ export const HERO_MAX = 5;
 /** From this window width (the stylesheet's 48rem) Home is laid out for a tablet: more cards in view, a wider hero. */
 export const TABLET_WIDTH = 768;
 
+/**
+ * The corner badge on a poster (StatusChip `overlay`). It is a single line that must always be whole: 10 pt (the stylesheet's
+ * 0.64rem) and scaled no more than `maxFontScale` with the system text size, because the narrowest poster the app draws is
+ * ~95 pt wide (a 337 pt window, three columns) and the pill may use `maxWidthRatio` of it. The badge is decoration: its
+ * full wording is in the card's accessible name, and the card's title and meta lines still follow the text size.
+ * The words use no-break spaces, so no line break can fall inside one; and no line limit or shrink-to-fit is used (the
+ * app lets all text grow, never clip), so the fit is guaranteed by these numbers alone, which __tests__/home-badge.test.ts
+ * checks against the real poster sizing. Every number the pill's width is made of is here so that test uses the same ones.
+ */
+export const POSTER_BADGE = {
+  fontSize: 10,
+  lineHeight: 14,
+  maxFontScale: 1,
+  /** Distance from the poster's top and left edges. */
+  inset: 6,
+  /** Share of the poster's width the pill may take. */
+  maxWidthRatio: 0.9,
+  paddingLeft: 5,
+  paddingRight: 6,
+  border: 1,
+  dot: 5,
+  gap: 3,
+} as const;
+
 export function rowKey(part: HomeRow): string {
   return `row-${part.list}`;
 }

@@ -61,7 +61,7 @@ export const HOME_TEXT = {
   hide: {
     label: 'New only',
     /** The chip's accessible name: the short label says little to a screen reader on its own. */
-    name: "Show only titles you don't have or haven't requested",
+    name: "New only: show only titles you don't have or haven't requested",
     on: 'Hiding what you have.', off: 'Showing what you have.',
   },
 } as const;

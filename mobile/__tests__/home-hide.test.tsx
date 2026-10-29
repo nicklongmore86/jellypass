@@ -5,6 +5,7 @@
 // so a failure never prints the component tree.
 import { act, fireEvent, render, screen, within } from '@testing-library/react-native';
 import { renderRouter } from 'expo-router/testing-library';
+import { useEffect } from 'react';
 import { ScrollView, StyleSheet } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
@@ -79,11 +80,11 @@ const heroTitles = (): string[] => {
 const callsMade = () => gateway.routes().length;
 
 describe('New only: the chip', () => {
-  it('is on by default, ticked, and a checkbox that reads as "Show only titles you don\'t have or haven\'t requested"', async () => {
+  it('is on by default, ticked, and a checkbox that reads as "New only: show only titles you don\'t have or haven\'t requested"', async () => {
     await start();
     expect([chip().props.accessibilityRole, chip().props.accessibilityLabel, chip().props.accessibilityState]).toEqual([
       'checkbox',
-      "Show only titles you don't have or haven't requested",
+      "New only: show only titles you don't have or haven't requested",
       { checked: true },
     ]);
     expect(within(chip()).queryAllByText('New only').length).toBe(1);
@@ -313,7 +314,11 @@ describe('New only: the helpers', () => {
 describe('New only: in the session', () => {
   let session: Session | undefined;
   function Probe() {
-    session = useSession();
+    const current = useSession();
+    // Kept for the test body after the render, not during it.
+    useEffect(() => {
+      session = current;
+    });
     return null;
   }
 
