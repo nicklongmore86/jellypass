@@ -658,6 +658,41 @@ bookmarked too. The add-on handles no key.
 - **Privacy.** Household-only view: a test draws a service and a studio page, with the same calls, in every "other household"
   world of the app tests and checks them byte-for-byte equal to the page with no other household, with no canary.
 
+### "See all" pages of the Discover rows
+
+`#/jellypass/list/<list>` (`tv/src/discover-source.ts`, the same page as a service's and a studio's, as a third kind): the full
+grid of one Discover list. Every list row (Trending, Popular movies, Popular series, New movie releases, Upcoming movies, Upcoming
+series, and the Trending movies / Trending series of the Movies and TV chips) has a **See all** button beside its heading, drawn
+by `tv/src/discover.ts`. The `h2` stays only the heading (a screen reader lists it as one); the button is a separate focus stop,
+named "<heading>, see all" (e.g. "Trending, see all"), and is where Back from the grid returns focus. A service row keeps its
+heading link, which is not changed.
+
+- **Parts.** An `h1` with the list's name (the row's heading, `LIST_HEADINGS` in `discover-model.ts`; also the header's title),
+  **New only** (the one shared setting, on by default), the grid of Jellyfin-sized `portraitCard`s with the short corner badge,
+  **Load more**, and the TMDB notice at the foot (every list is TMDB's; there is no JustWatch line, which is for a service's films).
+  No logo, no tabs. Choosing a card opens the title page; Back returns to the same grid card, with the pages that were showing, and
+  Back from the grid returns to the Discover row's See all button, with no call.
+- **Only the lists the rows show.** Any other name in the address is Not found and asks nothing.
+- **Calls** (`tv-discover-list` in the budget file): opened from its row **0** (the grid's first page is the row's own address,
+  `GET /discover/<list>`, kept); opened by its address **1** (that list's first page; the sources are not asked, there is nothing
+  to look up); **Load more 1** (`?page=n`); Back **0**. No server change: every list pages through the existing
+  `GET /discover/<list>?page=n`.
+- **Safeguards** are the service page's: every callback checks the session stamp (after a sign-out, another member or a new token an
+  old card, Load more or See all does nothing), one clean-up routine for every way the page goes, posters set only within about a
+  screen and a half, and a household-only view (a test compares the page and its calls in every "other household" world).
+
+### The Back button (desktop layout)
+
+Jellyfin 12.3's desktop toolbar has no Back, so in the **desktop layout only** the page host puts a **Back** button at the top of
+every JellyPass page (Discover, the See all grids, service, studio, title, My requests): a focusable `button` (Jellyfin's
+`emby-button`, `aria-label` "Back", first in the page), never drawn twice (the host draws it once per page opened, and removes it
+with the page). The TV layout (`layout-tv`) has none: Jellyfin's header Back and the remote cover it. It behaves like history back
+when the member came to the page from another page of Jellyfin web in this tab (`tv/src/history-trail.ts` keeps the addresses
+seen, in memory), and otherwise goes to Jellyfin's Home (`#/home`): a page opened by its own address, or after a reload, has no
+trail. A button of a page since left does nothing. The trail belongs to the session: a sign-out, another member or a new token
+(the shared session stamp's generation) empties it, so a new member's Back goes Home, and the host takes away a Back button drawn
+under the old session (it is drawn again for the new one) and ignores a press on a kept copy of it.
+
 ## Discover data layer
 
 The data of the Discover page ("The Discover page"; a mirror of the app's Home: hero, kind chips, rows, services, studios). The
