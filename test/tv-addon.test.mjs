@@ -1540,7 +1540,8 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     });
     assert.deepEqual(mixed, [], 'selectors outside, or across, the row, the pages and the page host');
     // The old overlay is gone: no stacking rules, no overlay box, and nothing keyed on Jellyfin's backdrop setting.
-    lacks(css, /z-index/, 'a z-index rule');
+    // The one stacking rule is the desktop Back button's bar, which must sit above the title page's fixed backdrop.
+    assert.deepEqual(rules.filter(({ body }) => /z-index/.test(body)).map(({ selector }) => selector), ['.jellypass-tv-back-bar'], 'stacking rules');
     lacks(css, /jellypass-tv-title-view|jellypass-tv-title-scroller/, 'the overlay\'s classes');
   });
 

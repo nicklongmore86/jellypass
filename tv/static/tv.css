@@ -699,7 +699,10 @@ html.jellypass-tv-hosting #fallbackPage[data-role="page"].page:not(.hide) > :not
 }
 /* The Back button at the top of a JellyPass page in the desktop layout (the toolbar there has none; the TV layout has Jellyfin's own
    Back and the remote). Jellyfin's own text-button look, with an arrow drawn here, and the same ring as the page's other controls. */
+/* Positioned and stacked once, so it is above the title page's fixed backdrop (which is later in the page, and would paint over it and take its clicks). */
 .jellypass-tv-back-bar {
+  position: relative;
+  z-index: 1;
   padding-top: 1em;
 }
 .jellypass-tv-back {
