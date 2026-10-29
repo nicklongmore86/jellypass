@@ -303,7 +303,7 @@ export function HomeScreen() {
 
   const first = parts[0] as HomeRow;
   const heroState = rows[rowKey(first)];
-  // Hide what I have: the hero skips what the member has and fills from the next titles of the same answer.
+  // New only: the hero skips what the member has and fills from the next titles of the same answer.
   const heroCards = heroState?.status === 'loaded' ? heroSlides(heroState.page.results.map((card) => overlay.card(card)), hide, HERO_MAX) : [];
 
   const titleRow = (part: HomeRow) => {
@@ -374,8 +374,8 @@ export function HomeScreen() {
       refreshControl={<RefreshControl refreshing={refreshing} onRefresh={() => void onRefresh()} tintColor={colors.accent} />}
     >
       <View testID="home-switch" style={styles.band}>
-        <View style={[styles.bandInner, { paddingLeft, paddingRight }]}>
-          <FilterChips selected={filter} onChoose={choose} hide={{ value: hide, onToggle: () => hideHeld.set(!hide) }} />
+        <View style={styles.bandInner}>
+          <FilterChips selected={filter} onChoose={choose} hide={{ value: hide, onToggle: () => hideHeld.set(!hide) }} inset={{ left: paddingLeft, right: paddingRight }} />
         </View>
       </View>
       <View
@@ -434,7 +434,7 @@ function RowBody({
   viewport: number;
   /** The card as it is drawn: Requested if the member just asked for it. */
   overlay: (card: Card) => Card;
-  /** Hide what I have: the cards the member has are left out. */
+  /** New only: the cards the member has are left out. */
   hide: boolean;
   onOpen: (card: Card) => void;
   onRetry: () => void;

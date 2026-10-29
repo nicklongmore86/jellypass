@@ -3895,7 +3895,7 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
       },
     };
   };
-  // "Hide what I have" is on when the page opens. Each test says which it wants: `hide: 'on'` leaves it as shipped; `hide: 'off'` turns
+  // "New only" is on when the page opens. Each test says which it wants: `hide: 'on'` leaves it as shipped; `hide: 'off'` turns
   // it off as each drawing's toggle appears (before any answer is drawn), for the tests that are about something else.
   const hideOff = (page) => {
     const { MutationObserver } = page.document.defaultView;
@@ -3906,7 +3906,7 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
     watch.observe(page.document.body, { childList: true, subtree: true });
   };
   const open = async (t, app, { header = LEGACY_HEADER, tv = true, observers = watchers(), hide, ...options } = {}) => {
-    assert.ok(hide === 'on' || hide === 'off', 'the test says whether "Hide what I have" is on');
+    assert.ok(hide === 'on' || hide === 'off', 'the test says whether "New only" is on');
     const page = await openJellyfinWeb(t, app, { scopeExtras: observers ? { IntersectionObserver: observers.IntersectionObserver } : undefined, ...options });
     if (hide === 'off') hideOff(page);
     if (tv) page.document.documentElement.classList.add('layout-tv');
@@ -3977,7 +3977,7 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
 
   it('is written in the budget file as the page makes it: 5 calls on opening, 10 more as the rows come near the screen, none on Back', async (t) => {
     const app = await startApp(t, webWorld(), tvOn());
-    // With "Hide what I have" on, as it is when the page opens: the budget is the same.
+    // With "New only" on, as it is when the page opens: the budget is the same.
     const page = await open(t, app, { hide: 'on' });
     const before = page.requests.length;
     await goTo(page);
@@ -4557,7 +4557,7 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
     await app.background.settled();
   });
 
-  describe('"Hide what I have": on by default, and the hero follows it', () => {
+  describe('"New only": on by default, and the hero follows it', () => {
     const hero = (page) => page.document.querySelector('.jellypass-tv-discover-hero');
     const slideOf = (page) => hero(page).querySelector('.jellypass-tv-discover-hero-title').textContent;
     const dotsOf = (page) => hero(page).querySelector('.jellypass-tv-discover-hero-dots').textContent;
@@ -4579,6 +4579,16 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
       assert.equal(dotsOf(page), '● ○ ○ ○ ○');
       assert.ok(badges(rowNamed(page, 'Trending')).every((words) => words !== 'In library' && words !== 'Requested'));
       assert.equal(discoverCalls(page, before).length, 5);
+    });
+
+    it('is called "New only" on the Discover page, named for a screen reader by what it does, and still a toggle button', async (t) => {
+      const page = await openScripted(t, { cards: 20 }, { hide: 'on' });
+      await goTo(page);
+      const toggle = hideChip(page);
+      assert.equal(toggle.textContent, 'New only');
+      assert.equal(toggle.getAttribute('aria-label'), "Show only titles you don't have or haven't requested");
+      assert.equal(toggle.getAttribute('aria-pressed'), 'true');
+      assert.equal(page.document.body.textContent.includes('Hide what I have'), false);
     });
 
     it('fills the hero from the next titles with a wide picture, skipping those without one, from the same answer and with no call', async (t) => {
@@ -5287,6 +5297,18 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
       assert.equal(more(page).textContent, 'Load more');
     });
 
+    it('is called "New only" on a studio page too, with the same name and state', async (t) => {
+      const state = { cards: 20, pages: { '/discover/studio/41077': 2 } };
+      const page = await openScripted(t, state, { hide: 'on' });
+      for (const hash of ['#/jellypass/studio/41077']) {
+        await toHash(page, hash);
+        const toggle = page.document.querySelector('[data-jellypass-tv-focus="chip:hide"]');
+        assert.equal(toggle.textContent, 'New only', hash);
+        assert.equal(toggle.getAttribute('aria-label'), "Show only titles you don't have or haven't requested", hash);
+        assert.equal(toggle.getAttribute('aria-pressed'), 'true', hash);
+      }
+    });
+
     it('is a studio\'s movies in a grid with Load more and no tabs and no JustWatch line, with the studio\'s logo and the notice', async (t) => {
       const state = { cards: 20, pages: { '/discover/studio/41077': 2 } };
       const page = await openScripted(t, state, { hide: 'off' });
@@ -5686,7 +5708,7 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
         assert.equal(gridCards(page).length, 40, 'the new Load more works');
       });
     });
-    describe('with "Hide what I have" on, as shipped', () => {
+    describe('with "New only" on, as shipped', () => {
       const connected = (page) => {
         const focused = page.focused();
         assert.ok(focused !== null && focused !== page.document.body && focused.isConnected, 'focus is on an element that is in the page');
@@ -5880,7 +5902,7 @@ assert.equal(connected(page), tab(page, 'films'), 'the Films tab has focus');
     });
 
     describe('the images', () => {
-      it('keeps one hero and its picture however often "Hide what I have" is pressed', async (t) => {
+      it('keeps one hero and its picture however often "New only" is pressed', async (t) => {
         const page = await openScripted(t, { cards: 6 }, { hide: 'on' });
         await goTo(page);
         const seen = new Set();

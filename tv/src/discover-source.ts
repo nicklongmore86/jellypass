@@ -13,7 +13,7 @@ import { ERROR_TEXT, kindOf, titleHash } from './title.js';
  * The JellyPass service and studio pages (docs/tv-addon.md, "Service and studio pages"): the household app's network and studio
  * pages as pages of Jellyfin web's at `#/jellypass/service/<id>` and `#/jellypass/studio/<id>`, on the page host, under
  * Jellyfin's real header and Back. A header with the logo, a service's All / Series / Films tabs (Films only for a service the
- * API lists films for), "Hide what I have", a grid of cards with Load more (one API page, 20 cards, each press), the JustWatch
+ * API lists films for), "New only", a grid of cards with Load more (one API page, 20 cards, each press), the JustWatch
  * credit under a service's All and Films, and the TMDB notice at the foot. Only a service or studio the API's sources list has a
  * page: any other address is "Not found", and an address that cannot be one asks nothing.
  *
@@ -337,7 +337,7 @@ export class SourcePage {
     return `${open.kind}:${open.id}`;
   }
 
-  /** The header, the tabs and "Hide what I have", the panel the list goes into, and the foot. */
+  /** The header, the tabs and "New only", the panel the list goes into, and the foot. */
   #drawFrame(open: Open): void {
     const render = open.render;
     open.frameNo += 1;
@@ -376,6 +376,7 @@ export class SourcePage {
     }
     // Beside the tabs it is set apart from them (as on Discover); alone (a studio, a service with no films) it starts the line.
     const hide = this.#button(`jellypass-tv-discover-chip jellypass-tv-discover-chip-toggle${open.lists.length > 1 ? '' : ' jellypass-tv-source-toggle-alone'}`, DISCOVER_TEXT.hideHeld, 'chip:hide');
+    hide.setAttribute('aria-label', DISCOVER_TEXT.hideHeldName);
     hide.setAttribute('aria-pressed', String(this.#hide.held));
     hide.addEventListener('click', () => { if (open.frameNo === frameNo) this.#toggleHide(open, render); });
     open.hideChip = hide;
@@ -526,7 +527,7 @@ export class SourcePage {
     return `${card.mediaType}:${card.tmdbId}`;
   }
 
-  /** Every card of the pages shown that "Hide what I have" leaves, in order. */
+  /** Every card of the pages shown that "New only" leaves, in order. */
   #visible(open: Open): DiscoverCard[] {
     const cards: DiscoverCard[] = [];
     for (const page of open.pages) {
@@ -561,7 +562,7 @@ export class SourcePage {
     }
   }
 
-  /** The grid drawn again from the pages shown (the choice of "Hide what I have", the overlay): no call. */
+  /** The grid drawn again from the pages shown (the choice of "New only", the overlay): no call. */
   #fillGrid(open: Open): void {
     const grid = open.grid as HTMLElement;
     this.#teardown(open, 'grid');

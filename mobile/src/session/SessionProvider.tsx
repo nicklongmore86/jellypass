@@ -90,7 +90,7 @@ export interface Session {
   titles: TitleCache;
   /** My requests' filters, kept while the app is open and reset with the session (in memory only). */
   requestFilters: RequestFilterStore;
-  /** Home's "Hide what I have": on at every sign-in, kept while the app is open and reset with the session (in memory only). */
+  /** Home's "New only": on at every sign-in, kept while the app is open and reset with the session (in memory only). */
   hideHeld: HideStore;
   /**
    * Get this through the signed-in client. Once it is accepted (a 2xx) in the same session as when it was sent (no move

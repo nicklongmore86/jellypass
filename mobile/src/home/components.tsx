@@ -47,6 +47,7 @@ import {
   shortOverview,
   networkLinkName,
   SOURCE_TEXT,
+  badgeWord,
   stateLabel,
   studioLinkName,
   studioName,
@@ -269,6 +270,8 @@ const STATE_COLORS: Record<HouseholdState, { bg: string; text: string }> = {
   requested: statusColors.warn,
 };
 
+const NO_BREAK_SPACE = '\u00a0';
+
 /**
  * A status chip: a dot and its word, solid, so it reads over any picture. `overlay` puts it on an image's top-left.
  * Hidden from screen readers where its card's name already says it; a title page's own status is `spoken`. `failed`
@@ -287,6 +290,9 @@ export function StatusChip({
 }) {
   const pair = failed || !Object.hasOwn(STATE_COLORS, state) ? STATE_COLORS.unavailable : STATE_COLORS[state];
   const label = failed ? REQUEST_LABELS.failed : stateLabel(state);
+  // On a poster the badge is the short word on one line (no-break spaces, since a line limit would clip large text); the
+  // full wording stays the card's (or `spoken`) name.
+  const shown = overlay && !failed ? badgeWord(state).replace(/ /g, NO_BREAK_SPACE) : label;
   return (
     <View
       testID="status-chip"
@@ -294,7 +300,7 @@ export function StatusChip({
       {...(spoken ? { accessible: true, accessibilityLabel: label } : hidden)}
     >
       <View style={[styles.chipDot, { backgroundColor: pair.text }]} />
-      <Text style={[styles.chipText, { color: pair.text }]}>{label}</Text>
+      <Text style={[styles.chipText, { color: pair.text }]}>{shown}</Text>
     </View>
   );
 }
@@ -579,14 +585,22 @@ export function FilterChips({
   selected,
   onChoose,
   hide,
+  inset = { left: 0, right: 0 },
 }: {
   selected: HomeFilter;
   onChoose: (filter: HomeFilter) => void;
-  /** "Hide what I have", a chip of its own after the radio group. */
+  /** "New only", a chip of its own after the radio group. */
   hide: { value: boolean; onToggle: () => void };
+  /** The screen's side padding, kept inside the scroller so the last chip scrolls fully clear of the edge. */
+  inset?: { left: number; right: number };
 }) {
   return (
-    <ScrollView testID="home-filters" horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterList}>
+    <ScrollView
+      testID="home-filters"
+      horizontal
+      showsHorizontalScrollIndicator={false}
+      contentContainerStyle={[styles.filterList, { paddingLeft: inset.left, paddingRight: inset.right }]}
+    >
       <View testID="home-filter-group" accessibilityRole="radiogroup" accessibilityLabel={HOME_TEXT.label} style={styles.filterGroup}>
         {HOME_FILTERS.map((filter) => {
           const checked = filter === selected;
@@ -620,7 +634,7 @@ export function HideChip({ value, onToggle, testID = 'home-hide' }: { value: boo
     <Pressable
       testID={testID}
       accessibilityRole="checkbox"
-      accessibilityLabel={HOME_TEXT.hide.label}
+      accessibilityLabel={HOME_TEXT.hide.name}
       accessibilityState={{ checked: value }}
       onPress={onToggle}
       style={({ pressed }) => [styles.filter, value && styles.filterChecked, pressed && styles.pressed]}
@@ -655,7 +669,7 @@ export function Hero({
   tablet: boolean;
   onOpen: (card: Card) => void;
 }) {
-  // The slide showing is kept by its title and its place: when the slides change (Hide what I have, a refresh, the
+  // The slide showing is kept by its title and its place: when the slides change (New only, a refresh, the
   // overlay) the same title stays selected if it is still there, else the place is clamped, and the scroll follows.
   const keyOf = (card: Card) => `${card.mediaType}-${card.tmdbId}`;
   const [shown, setShown] = useState<{ key: string | undefined; at: number }>({ key: undefined, at: 0 });
@@ -815,7 +829,7 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: colors.hairline,
   },
-  chipOverlay: { position: 'absolute', top: 8, left: 8, maxWidth: '85%' },
+  chipOverlay: { position: 'absolute', top: 8, left: 8, maxWidth: '85%', paddingVertical: 1.6, paddingLeft: 6, paddingRight: 7, gap: 4 },
   chipDot: { width: 6, height: 6, borderRadius: 3 },
   chipText: { ...typography.chip, flexShrink: 1 },
 
@@ -885,8 +899,9 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 6.4,
     minHeight: layout.touchTarget,
-    minWidth: 72,
-    paddingHorizontal: 17.6,
+    minWidth: 56,
+    paddingHorizontal: 14,
+    flexShrink: 0,
     borderWidth: 1.5,
     borderColor: colors.hairline,
     borderRadius: radii.chip,

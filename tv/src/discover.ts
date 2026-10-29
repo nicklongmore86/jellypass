@@ -27,7 +27,7 @@ import { ERROR_TEXT, kindOf, titleHash } from './title.js';
 /**
  * The JellyPass Discover page (docs/tv-addon.md, "The Discover page"): the household app's Home as a page of Jellyfin web's
  * at `#/jellypass/discover`, on the page host (page-host.ts), under Jellyfin's real header and Back. A hero of up to five
- * slides (Previous / View / Next and dots, no auto-advance, no swipe), the All / Movies / TV chips and "Hide what I have",
+ * slides (Previous / View / Next and dots, no auto-advance, no swipe), the All / Movies / TV chips and "New only",
  * the rows of `DISCOVER_LAYOUT`, and a foot with the studios, the JustWatch line and the TMDB notice. Choosing a card opens
  * the JellyPass title page; Back returns here with the same card focused and no Discover call (the answers are kept by
  * `DiscoverData`, and a returning page draws them before it asks for anything).
@@ -229,6 +229,7 @@ export class DiscoverPage {
     }
     const hide = this.#chip(DISCOVER_TEXT.hideHeld, 'chip:hide', this.#hide.held);
     hide.className += ' jellypass-tv-discover-chip-toggle';
+    hide.setAttribute('aria-label', DISCOVER_TEXT.hideHeldName);
     hide.addEventListener('click', () => this.#toggleHide(open, render));
     open.chips.hide = hide;
     open.chipBox.appendChild(hide);
@@ -397,7 +398,7 @@ export class DiscoverPage {
     return `${card.mediaType}:${card.tmdbId}`;
   }
 
-  /** The cards a row shows now, as keys: what "Hide what I have" leaves, at most the row's 14. */
+  /** The cards a row shows now, as keys: what "New only" leaves, at most the row's 14. */
   #visible(row: RowView): DiscoverCard[] {
     const states = (row.answered as DiscoverCard[]).map((card) => ({ card, state: this.#stateOf(card) }));
     return rowCards(states, this.#hide.held).map((one) => one.card);
@@ -597,7 +598,7 @@ export class DiscoverPage {
     if (row.feeds) this.#drawHero(open);
   }
 
-  /** The row's cards, as "Hide what I have" and the overlay leave them, or why there are none. */
+  /** The row's cards, as "New only" and the overlay leave them, or why there are none. */
   #fill(row: RowView): void {
     this.#teardown(row.scope.open, 'row', row);
     const cards = this.#visible(row);
@@ -640,7 +641,7 @@ export class DiscoverPage {
   // ---------------------------------------------------------------------------------------------------------------
   // The hero
 
-  /** The slides the first row's answer gives now: with "Hide what I have" on, none that is in the library or asked for. */
+  /** The slides the first row's answer gives now: with "New only" on, none that is in the library or asked for. */
   #heroSlides(open: Open): DiscoverCard[] {
     const feeding = open.rows.filter((row) => row.feeds && row.answered)[0];
     if (!feeding) return [];
@@ -648,7 +649,7 @@ export class DiscoverPage {
     return heroCards(feeding.answered as DiscoverCard[], held ? (card) => isHeld({ state: this.#stateOf(card) }) : undefined);
   }
 
-  /** The hero drawn again after "Hide what I have" or the overlay changed what it may show: no call, and focus never falls off the page. */
+  /** The hero drawn again after "New only" or the overlay changed what it may show: no call, and focus never falls off the page. */
   #refreshHero(open: Open): void {
     const slides = this.#heroSlides(open);
     const hero = open.hero;

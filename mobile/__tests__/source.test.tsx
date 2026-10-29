@@ -288,8 +288,8 @@ describe('late answers', () => {
   });
 });
 
-describe('Hide what I have', () => {
-  const sourceChip = () => only(screen.queryAllByTestId('source-hide'), 'Hide what I have chip');
+describe('New only', () => {
+  const sourceChip = () => only(screen.queryAllByTestId('source-hide'), 'New only chip');
 
   it('is the same choice as Home\'s, on by default: a page hides the library\'s and the requested titles, with no call', async () => {
     const { since } = await open('/home/studio/420');
@@ -299,7 +299,8 @@ describe('Hide what I have', () => {
     const before = since().length;
     await pressNode(sourceChip());
     expect(sourceChip().props.accessibilityState).toEqual({ checked: true });
-    expect([sourceChip().props.accessibilityRole, sourceChip().props.accessibilityLabel]).toEqual(['checkbox', 'Hide what I have']);
+    expect([sourceChip().props.accessibilityRole, sourceChip().props.accessibilityLabel]).toEqual(['checkbox', "Show only titles you don't have or haven't requested"]);
+    expect(within(sourceChip()).queryAllByText('New only')).toHaveLength(1);
     expect(gridNames().slice(0, 2)).toEqual(["studio-420 1, 2015, Movie, Available to get", "studio-420 3, 2017, Movie, Can't request"]);
     expect(gridNames().some((name) => /Ready to watch|Requested/.test(name))).toBe(false);
     expect(since().length - before).toBe(0);

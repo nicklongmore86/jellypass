@@ -22,6 +22,8 @@ import {
   SOURCE_TEXT,
   sourceHeading,
   studioLinkName,
+  BADGE_WORDS,
+  badgeWord,
   STATE_LABELS,
   stateLabel,
 } from '../src/home/text';
@@ -132,5 +134,26 @@ describe('card text', () => {
     const cut = shortOverview(long);
     expect(cut.length).toBeLessThanOrEqual(161);
     expect(cut.endsWith('word…')).toBe(true);
+  });
+});
+
+describe('the short words shared with the TV add-on', () => {
+  const tv = readFileSync(path.join(__dirname, '..', '..', 'tv', 'src', 'discover-model.ts'), 'utf8');
+
+  it.each([...Object.values(BADGE_WORDS), HOME_TEXT.hide.label, HOME_TEXT.hide.name])('has %j as the TV add-on has it', (text) => {
+    expect(tv).toContain(JSON.stringify(text).replace(/^"|"$/g, '') );
+  });
+
+  it('keeps each badge word short and different from the full wording, and an unknown state reads as "Can\'t get"', () => {
+    expect(BADGE_WORDS).toEqual({ in_library: 'In library', requested: 'Requested', get_this: 'Get this', unavailable: "Can't get" });
+    for (const [state, word] of Object.entries(BADGE_WORDS)) {
+      expect(word.length).toBeLessThanOrEqual(10);
+      if (state !== 'requested') expect(word).not.toBe(STATE_LABELS[state as keyof typeof STATE_LABELS]);
+    }
+    expect(badgeWord('surprise' as never)).toBe("Can't get");
+  });
+
+  it('names the New only chip for a screen reader by what it does', () => {
+    expect([HOME_TEXT.hide.label, HOME_TEXT.hide.name]).toEqual(['New only', "Show only titles you don't have or haven't requested"]);
   });
 });

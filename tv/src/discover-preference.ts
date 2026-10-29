@@ -1,5 +1,5 @@
 /**
- * "Hide what I have", shared by the Discover page and the service and studio pages: one choice for the member signed in, **on
+ * "New only", shared by the Discover page and the service and studio pages: one choice for the member signed in, **on
  * by default** (every sign-in starts with it on), in memory only and never stored: another member (or no one) signed in puts
  * it back on. Choosing it asks nothing: it only decides which of the cards already loaded are drawn (and the hero's slides).
  */

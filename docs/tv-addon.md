@@ -434,7 +434,7 @@ web's focus manager moves between the hero's buttons, the chips and the cards; B
 - **Parts, top to bottom.** A **hero** of up to five slides (the first row's first cards that have a backdrop): the title, its
   facts (type, year, TMDB rating, the state's words), the overview, and the buttons **‹**, **View** and **›** with the dots as
   text. **No auto-advance and no swipe**; **View** opens the title page. The **chips** **All / Movies / TV** (a chip shows other
-  lists, it does not filter the loaded ones; not sticky) and a toggle **Hide what I have**. Then the rows of the chip's layout
+  lists, it does not filter the loaded ones; not sticky) and a toggle **New only**. Then the rows of the chip's layout
   (pinned to the app's `HOME_LAYOUT`): on All, Trending (posters), Popular movies, Popular series and New movie releases (wide
   backdrop cards), Upcoming movies and series (posters) and the eight **Popular on …** (a service) rows (posters, the film and series
   list the chip names); then a **foot** with the studios' logos (light tiles), the JustWatch line and the TMDB notice.
@@ -452,12 +452,12 @@ web's focus manager moves between the hero's buttons, the chips and the cards; B
   *Requested*, *Get this*, *Can't get*; the card's accessible name keeps the whole sentence, *In your library*, *Requested*,
   *Available to get*, *Can't request*; the state
   the API gave the caller's household, through the "Get this" overlay, so a title just asked for reads Requested with no call), in
-  a colour that goes with the words (never colour alone, white on each above 5:1). **Hide what I have** hides
+  a colour that goes with the words (never colour alone, white on each above 5:1). **New only** hides
   *In your library* and *Requested* and fills the row from the rest of the answer; it asks nothing. It is **on by default** (see below). Choosing a card opens the title
   page; **Back returns to the same card** (the page is drawn from the kept answers before anything is asked, so the host's focus
   key finds the card) and makes **no Discover call** (the title page makes its own two). After the cache's ten minutes the key may
   be gone and focus falls back to the hero's **View**.
-- **"Hide what I have" is on when the page opens, and the hero follows it.** Every sign-in starts with it on (the toggle's
+- **"New only" is on when the page opens, and the hero follows it.** Every sign-in starts with it on (the toggle's
   `aria-pressed` says so); the member can switch it off, and the choice is kept **for the session in memory only** (Discover,
   the service pages and the studio pages share it; it survives Back from a title) and is put back on when another member or no
   one is signed in. It is never written to storage. With it on, the hero's slides skip the titles *In your library* or
@@ -528,7 +528,7 @@ without `layout-tv`, therefore gets no button; the Tizen app runs the TV layout.
 
 **Session isolation.** The page takes the shared session stamp (member, token and sign-in generation: `SessionWatch.stamp`) when
 it is drawn. Each drawing (the first, and the one a new token makes) holds its own stamp, never changed afterwards, and the cards,
-hero buttons, chips, "Hide what I have", Try again, the observers and the answers each remember the drawing and painting they
+hero buttons, chips, "New only", Try again, the observers and the answers each remember the drawing and painting they
 came from; they check both still hold, and the session still holds the stamp, before they do anything. After a sign-out, another
 member or a new token they do nothing (no `src`, no call, no navigation, no change to the page), and that includes an element
 kept from an earlier drawing and activated later. What is tested is these callbacks; it is not a claim about any other code
@@ -618,7 +618,7 @@ as the rows come near, none on Back, the chips as budgeted).
 
 ### Service and studio pages
 
-`tv/src/discover-source.ts` (the shared card in `tv/src/discover-card.ts`, "Hide what I have" in `tv/src/discover-preference.ts`):
+`tv/src/discover-source.ts` (the shared card in `tv/src/discover-card.ts`, "New only" in `tv/src/discover-preference.ts`):
 the household app's network and studio pages as pages of Jellyfin web's on the page host, in the TV and the desktop layout, under
 Jellyfin's real header and Back. Reached from the Discover page's service headings and studio tiles; the address works typed or
 bookmarked too. The add-on handles no key.
@@ -626,7 +626,7 @@ bookmarked too. The add-on handles no key.
 - **Parts.** The service's or studio's **logo** (on a light tile, decorative) and an `h1`: "Popular on Netflix", "Series on …",
   "Films on …" by the tab, or "Pixar movies". The header's title is the service's name or "<studio> movies". Then, for a service
   whose films the API lists (`hasFilms`), the tabs **All / Series / Films**; a service without films has its series only (no tabs,
-  no JustWatch line); a studio has one list. The tabs and **Hide what I have** are buttons with `aria-pressed` in a labelled group
+  no JustWatch line); a studio has one list. The tabs and **New only** are buttons with `aria-pressed` in a labelled group
   (the Discover page's chips: no arrow-key handling is needed, Jellyfin's focus manager moves between them). Then the **grid**:
   Jellyfin's `portraitCard`s in its own wrapping grid (`vertical-wrap`, with `itemsContainer-tv` on a TV: as many across as Jellyfin's library pages draw at that width), each with the household's state **in words** as on Discover (and in its accessible name),
   **20 cards a press** (one API page: a Discover row keeps 14 of its 20 for memory, but a grid that cut a page would need a call
@@ -673,7 +673,7 @@ server and the API are unchanged. It is three modules of the add-on:
   screen and a half of posters; the API's 20 are two screens, too many decoded images for a 2019 set, and a service's own
   page has the rest); the hero takes 5 slides from the first row's first cards with a backdrop; and the **badges**, from the
   card's state alone (the household's own view): "In your library", "Requested", "Available to get", "Can't request" (the
-  app's words, except that the app says "Ready to watch" for a title in the library). "Hide what I have" hides `in_library`
+  app's words, except that the app says "Ready to watch" for a title in the library). "New only" hides `in_library`
   and `requested` cards and fills the row from what is left.
 - **Answer cache** (`tv/src/discover-data.ts`, `DiscoverData`): per session, in memory only, keyed by address (the first page
   is the same entry wherever it is asked for), **ten minutes** on both clocks, at most **60** addresses (least recently used

@@ -12,6 +12,18 @@ export const STATE_LABELS: Record<HouseholdState, string> = {
   requested: 'Requested',
 };
 
+/**
+ * A poster's corner badge: the state in one or two short words so it stays a small single-line pill (the TV add-on's
+ * BADGE_WORDS, tv/src/discover-model.ts, which __tests__/home-text.test.ts checks). The full {@link STATE_LABELS} wording
+ * stays the card's accessible name.
+ */
+export const BADGE_WORDS: Record<HouseholdState, string> = {
+  in_library: 'In library',
+  requested: 'Requested',
+  get_this: 'Get this',
+  unavailable: "Can't get",
+};
+
 /** The coarse status of a request in "My requests" (and of a title the household asked for that failed). */
 export const REQUEST_LABELS: Record<CoarseStatus, string> = {
   requested: 'Requested',
@@ -46,7 +58,12 @@ export const HOME_TEXT = {
   label: 'Show',
   filters: { all: 'All', movies: 'Movies', tv: 'TV' },
   shown: { all: 'All shown.', movies: 'Movies shown.', tv: 'TV shown.' },
-  hide: { label: 'Hide what I have', on: 'Hiding what you have.', off: 'Showing what you have.' },
+  hide: {
+    label: 'New only',
+    /** The chip's accessible name: the short label says little to a screen reader on its own. */
+    name: "Show only titles you don't have or haven't requested",
+    on: 'Hiding what you have.', off: 'Showing what you have.',
+  },
 } as const;
 
 export const HERO_TEXT = {
@@ -93,6 +110,10 @@ export function networkLinkName(prefix: string, name: string): string {
 
 export function stateLabel(state: HouseholdState): string {
   return Object.hasOwn(STATE_LABELS, state) ? STATE_LABELS[state] : STATE_LABELS.unavailable;
+}
+
+export function badgeWord(state: HouseholdState): string {
+  return Object.hasOwn(BADGE_WORDS, state) ? BADGE_WORDS[state] : BADGE_WORDS.unavailable;
 }
 
 /** "★ 7.8 TMDB", as the PWA draws a rating. */

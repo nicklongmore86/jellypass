@@ -327,7 +327,7 @@ export function chosen(): string[] {
 }
 
 /**
- * Turns "Hide what I have" off where Home is on screen, for the tests of what a row or the hero shows with everything
+ * Turns "New only" off where Home is on screen, for the tests of what a row or the hero shows with everything
  * in it (it is on at every sign-in). A no-op where it is already off or Home is not mounted.
  */
 export async function showAll(): Promise<void> {

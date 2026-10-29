@@ -68,7 +68,7 @@ function start(): void {
   // The Discover page's answers (kept ten minutes, in memory) are timed on the monotonic clock, and the wall clock catches a long sleep.
   const discoverWatch = new SessionWatch(api, base.origin);
   const discoverData = new DiscoverData(api.fetch, base.origin, discoverWatch, () => performance.now(), () => Date.now());
-  // "Hide what I have" is one choice for the Discover page and the service and studio pages.
+  // "New only" is one choice for the Discover page and the service and studio pages.
   const hide = new HidePreference();
   const sources: SourcePage = new SourcePage(document, discoverWatch, discoverData, asked, { navigate }, hide);
   const discover = new DiscoverPage(document, discoverWatch, discoverData, asked, { navigate, openService: (id, list) => sources.prefer(id, list) }, hide);
