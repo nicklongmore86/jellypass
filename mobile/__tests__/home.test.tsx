@@ -65,10 +65,16 @@ beforeEach(() => {
   useHousehold();
 });
 
+// Whether "Hide what I have" stays on (as at every sign-in); the tests that read what a row shows leave it off.
+let hideHeld = false;
+afterEach(() => {
+  hideHeld = false;
+});
+
 async function start() {
   const app = await renderRouter({ appDir: 'src/app', overrides: {} }, { initialUrl: '/' });
   await settle();
-  await showAll();
+  if (!hideHeld) await showAll();
   return app;
 }
 
@@ -491,7 +497,11 @@ function wideEnough(node: Node): boolean {
   return false;
 }
 
-describe('accessibility', () => {
+describe.each([['on', true], ['off', false]] as const)('accessibility, Hide what I have %s', (_what, held) => {
+  beforeEach(() => {
+    hideHeld = held;
+  });
+
   it('keeps every pressable on a fully loaded Home named and a thumb\'s size', async () => {
     await start();
     await scrollToEnd();
@@ -546,14 +556,21 @@ describe('accessibility', () => {
   });
 });
 
-describe('on iPad', () => {
-  const widthOf = (name: string) => flat(link(name)).width;
+describe.each([['on', true], ['off', false]] as const)('on iPad, Hide what I have %s', (_what, held) => {
+  beforeEach(() => {
+    hideHeld = held;
+  });
+
+  // The first poster card and the first big card Hide what I have leaves in (titles 1 are in the library).
+  const widthOf = (name: RegExp) => flat(only(screen.queryAllByRole('link', { name }), `link ${name}`)).width;
+  const POSTER = /^trending 3, \d+, Movie, /;
+  const BIG = /^popular-movies 2, \d+, /;
 
   it('shows more cards: posters 168 pt and the big cards about a third of the column, the hero 21:9', async () => {
     mockWindow = IPAD;
     await start();
-    expect(widthOf('trending 1, 2020, Movie, TMDB rating 6.0 out of 10, Ready to watch')).toBe(168);
-    expect(widthOf('popular-movies 1, 2020, TMDB rating 6.0 out of 10, Ready to watch')).toBe(Math.round((1024 - 32) * 0.36));
+    expect(widthOf(POSTER)).toBe(168);
+    expect(widthOf(BIG)).toBe(Math.round((1024 - 32) * 0.36));
     const images = screen.queryAllByTestId('tmdb-image', { includeHiddenElements: true }).map((node) => String(node.props.source?.uri));
     expect(images.some((uri) => uri.includes('/w1280/'))).toBe(true);
     const frames = screen.queryAllByTestId('hero-slide-first').map((node) => node.props.style?.width);
@@ -563,8 +580,8 @@ describe('on iPad', () => {
 
   it('on a phone: posters 132 pt and the big cards nearly the column\'s width, the next one peeking', async () => {
     await start();
-    expect(widthOf('trending 1, 2020, Movie, TMDB rating 6.0 out of 10, Ready to watch')).toBe(132);
-    expect(widthOf('popular-movies 1, 2020, TMDB rating 6.0 out of 10, Ready to watch')).toBe(Math.round((390 - 32) * 0.92));
+    expect(widthOf(POSTER)).toBe(132);
+    expect(widthOf(BIG)).toBe(Math.round((390 - 32) * 0.92));
   });
 });
 
@@ -637,8 +654,9 @@ describe('the sideways rows', () => {
   it('keeps each row where it was left, and its stops, on coming Back from a title', async () => {
     // The mock ScrollView's scrollTo is a jest.fn every row shares.
     const scrolls = jest.spyOn(ScrollView.prototype, 'scrollTo').mockImplementation(() => undefined);
-    scrolls.mockClear();
     const app = await start();
+    // Not the hero's (showAll returns it to its first slide).
+    scrolls.mockClear();
     const before = rows().map((row) => row.offsets.join(','));
     expect(before.length).toBeGreaterThan(0);
     const first = () => screen.queryAllByTestId('card-row')[0]!;

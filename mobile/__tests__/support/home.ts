@@ -335,5 +335,11 @@ export async function showAll(): Promise<void> {
   if (chip?.props.accessibilityState?.checked) {
     await fireEvent.press(chip);
     await settle();
+    // The hero keeps its title selected through the change; a fresh Home shows its first slide.
+    const first = screen.queryAllByLabelText(/^Show title 1 of \d+: /)[0];
+    if (first && first.props.accessibilityState?.selected !== true) {
+      await fireEvent.press(first);
+      await settle();
+    }
   }
 }

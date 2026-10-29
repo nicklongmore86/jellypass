@@ -5,7 +5,7 @@
 // so a failure never prints the component tree.
 import { act, fireEvent, render, screen, within } from '@testing-library/react-native';
 import { renderRouter } from 'expo-router/testing-library';
-import { StyleSheet } from 'react-native';
+import { ScrollView, StyleSheet } from 'react-native';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import type { FetchLike } from '../src/api/client';
@@ -25,6 +25,13 @@ jest.mock('../src/api/transport', () => ({
 }));
 jest.mock('expo-constants', () => ({ __esModule: true, default: { expoConfig: jest.requireActual('../app.config').default } }));
 jest.mock('react-native-safe-area-context', () => jest.requireActual('react-native-safe-area-context/jest/mock').default);
+
+// The session Home is using, for the tests that change the overlay from outside (as a request on a title page does).
+let mockSession: Session | undefined;
+jest.mock('../src/session/SessionProvider', () => {
+  const actual = jest.requireActual('../src/session/SessionProvider');
+  return { ...actual, useSession: () => (mockSession = actual.useSession()) };
+});
 
 const STATES = ['in_library', 'get_this', 'unavailable', 'requested'] as const;
 type State = (typeof STATES)[number];
@@ -183,6 +190,89 @@ describe('Hide what I have: the rows and the hero', () => {
     await toggle();
     await toggle();
     expect(callsMade() - before).toBe(0);
+  });
+});
+
+describe('Hide what I have: the hero keeps its place', () => {
+  let scrolls: jest.SpyInstance;
+  beforeEach(() => {
+    scrolls = jest.spyOn(ScrollView.prototype, 'scrollTo').mockImplementation(() => undefined);
+  });
+  afterEach(() => scrolls.mockRestore());
+
+  /** The slide the track was last put at, as a title index (the track starts at 0). */
+  const visible = (): number => {
+    const SLIDE = screen.queryAllByTestId('hero-slide-first')[0]!.props.style.width as number;
+    const last = scrolls.mock.calls[scrolls.mock.calls.length - 1]?.[0] as { x: number } | undefined;
+    return Math.round((last?.x ?? 0) / SLIDE);
+  };
+  const selected = (): string[] =>
+    screen
+      .queryAllByLabelText(/^Show title \d+ of \d+: /)
+      .filter((node) => node.props.accessibilityState?.selected === true)
+      .map((node) => String(node.props.accessibilityLabel).replace(/^Show title \d+ of \d+: /, ''));
+  const agree = () => expect([selected(), heroTitles()[visible()]]).toEqual([[heroTitles()[visible()]], heroTitles()[visible()]]);
+  const dot = (n: number) => screen.queryAllByLabelText(new RegExp(`^Show title ${n} of \\d+: `))[0]!;
+
+  it('keeps the selected title (and scrolls to it) when hiding takes the others away and brings them back', async () => {
+    gateway = useTrending(['get_this', 'in_library', 'requested', 'in_library', 'get_this']);
+    await start();
+    await toggle();
+    await fireEvent.press(dot(5));
+    await settle();
+    expect([selected(), visible()]).toEqual([['trending 5'], 4]);
+    await toggle();
+    expect(heroTitles()).toEqual(['trending 1', 'trending 5']);
+    expect([selected(), visible()]).toEqual([['trending 5'], 1]);
+    await toggle();
+    expect([selected(), visible()]).toEqual([['trending 5'], 4]);
+    agree();
+  });
+
+  it('clamps to the last slide, moves the scroll there, and stays there when the others return', async () => {
+    gateway = useTrending(['get_this', 'get_this', 'in_library', 'requested', 'requested']);
+    await start();
+    await toggle();
+    await fireEvent.press(dot(5));
+    await settle();
+    expect([selected(), visible()]).toEqual([['trending 5'], 4]);
+    await toggle();
+    expect(heroTitles()).toEqual(['trending 1', 'trending 2']);
+    expect([selected(), visible()]).toEqual([['trending 2'], 1]);
+    await toggle();
+    // Not back at the fifth: the selection is the title it was clamped to.
+    expect([selected(), visible()]).toEqual([['trending 2'], 1]);
+    agree();
+  });
+
+  it('keeps dots, scroll and slide in step when a request shrinks the hero', async () => {
+    gateway = useTrending(['get_this', 'get_this', 'get_this']);
+    await start();
+    expect(heroTitles()).toEqual(['trending 1', 'trending 2', 'trending 3']);
+    await fireEvent.press(dot(3));
+    await settle();
+    expect([selected(), visible()]).toEqual([['trending 3'], 2]);
+    await act(async () => mockSession!.asked.add('movie', 5002, []));
+    await settle();
+    expect(heroTitles()).toEqual(['trending 1', 'trending 2']);
+    expect([selected(), visible()]).toEqual([['trending 2'], 1]);
+    agree();
+  });
+});
+
+describe('Hide what I have: a request just made', () => {
+  it('removes the title from the rows and the hero, and a page of the same title elsewhere is left alone', async () => {
+    gateway = useTrending(['get_this', 'get_this', 'get_this']);
+    await start();
+    expect(trendingCards().slice(0, 3)).toEqual(['trending 1', 'trending 2', 'trending 3']);
+    expect(heroTitles()).toEqual(['trending 1', 'trending 2', 'trending 3']);
+    await act(async () => mockSession!.asked.add('tv', 5001, []));
+    await settle();
+    expect(trendingCards().slice(0, 2)).toEqual(['trending 1', 'trending 3']);
+    expect(heroTitles()).toEqual(['trending 1', 'trending 3']);
+    await toggle();
+    expect(trendingCards().slice(0, 3)).toEqual(['trending 1', 'trending 2', 'trending 3']);
+    expect(heroTitles()).toEqual(['trending 1', 'trending 2', 'trending 3']);
   });
 });
 

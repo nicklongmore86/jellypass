@@ -655,17 +655,32 @@ export function Hero({
   tablet: boolean;
   onOpen: (card: Card) => void;
 }) {
-  const [shownIndex, setIndex] = useState(0);
-  // A refresh can bring back fewer titles than the one showing.
-  const index = Math.min(shownIndex, Math.max(0, cards.length - 1));
+  // The slide showing is kept by its title and its place: when the slides change (Hide what I have, a refresh, the
+  // overlay) the same title stays selected if it is still there, else the place is clamped, and the scroll follows.
+  const keyOf = (card: Card) => `${card.mediaType}-${card.tmdbId}`;
+  const [shown, setShown] = useState<{ key: string | undefined; at: number }>({ key: undefined, at: 0 });
+  const found = shown.key === undefined ? -1 : cards.findIndex((card) => keyOf(card) === shown.key);
+  const index = found >= 0 ? found : Math.min(shown.at, Math.max(0, cards.length - 1));
   const reduceMotion = useReduceMotion();
   const track = useRef<ScrollViewInstance>(null);
+  // Where the track was last put (or swiped) to, in slides.
+  const scrolledTo = useRef(0);
+  const shownKey = cards[index] ? keyOf(cards[index]) : undefined;
+  // What was clamped to is what is selected from now on (adjusted while rendering, before anything is drawn).
+  if (shownKey !== undefined && (shown.key !== shownKey || shown.at !== index)) setShown({ key: shownKey, at: index });
+  useEffect(() => {
+    if (scrolledTo.current !== index && width > 0) {
+      scrolledTo.current = index;
+      track.current?.scrollTo({ x: index * width, animated: false });
+    }
+  }, [index, width, shownKey]);
 
   if (cards.length === 0) return null;
   const total = cards.length;
   const show = (next: number) => {
+    scrolledTo.current = next;
     if (next === index) return;
-    setIndex(next);
+    setShown({ key: keyOf(cards[next]!), at: next });
     AccessibilityInfo.announceForAccessibility?.(`Showing ${next + 1} of ${total}: ${cards[next]!.title}`);
   };
   const goTo = (next: number) => {

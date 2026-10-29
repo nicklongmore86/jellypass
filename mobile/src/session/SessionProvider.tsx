@@ -153,6 +153,25 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
     return generation.current;
   }, []);
 
+  /**
+   * Deletes `session`'s credentials once its sign-out (or 401) is done. If the app has moved on since `mine` (another
+   * household or sign-in began), whatever is kept now may be the newer one's: it is deleted only if it is `session`'s
+   * own (same household and token).
+   */
+  const forget = useCallback(async (session: StoredSession, mine: number) => {
+    if (generation.current === mine) {
+      await clearSession();
+      return;
+    }
+    let kept: StoredSession | undefined;
+    try {
+      kept = await readSession();
+    } catch {
+      return;
+    }
+    if (kept && kept.token === session.token && kept.address.origin === session.address.origin) await clearSession();
+  }, []);
+
   const check = useCallback(
     async (session: StoredSession) => {
       const mine = move({ kind: 'checking', session });
@@ -163,7 +182,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
       } catch (error) {
         if (generation.current !== mine) return;
         if (error instanceof ApiError && error.kind === 'unauthorized') {
-          await clearSession();
+          await forget(session, mine);
           if (generation.current === mine) move({ kind: 'signin', address: session.address, expired: true });
           return;
         }
@@ -171,7 +190,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
         move({ kind: 'stalled', session, problem: stalledKind(error), ...(wait ? { retryAt: clock() + wait * 1000 } : {}) });
       }
     },
-    [fetch, now, clock, move],
+    [fetch, now, clock, move, forget],
   );
 
   useEffect(() => {
@@ -193,7 +212,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
     };
   }, [check, move]);
 
-  /** Signs out of the current sign-in, if any, then shows `next`. */
+  /** Signs out of the current sign-in, if any, then shows `next` (unless the app has moved on meanwhile). */
   const leave = useCallback(
     async (next: (session: StoredSession | undefined) => Phase) => {
       // A link the app held back (to the household it was on) is moot once it moves on.
@@ -204,16 +223,19 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
       hideRef.current?.reset();
       const session = sessionOf(phase);
       if (session) {
-        move({ kind: 'signingOut' });
+        const mine = move({ kind: 'signingOut' });
         try {
           await signInApi(session.address).signOut(session.token);
         } finally {
-          await clearSession();
+          await forget(session, mine);
         }
+        // A sign-in or household chosen while this was out has moved the app already: it is not undone.
+        if (generation.current === mine) move(next(session));
+        return;
       }
       move(next(session));
     },
-    [phase, move, signInApi],
+    [phase, move, signInApi, forget],
   );
 
   const offerLink = useCallback((param: string | string[] | undefined) => setLink({ address: parseLinkAddress(param) }), []);
@@ -296,15 +318,16 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
     askedRef.current?.forget();
     titlesRef.current?.forget();
     filtersRef.current?.reset();
+    hideRef.current?.reset();
     const session = sessionOf(phaseRef.current);
     if (!session) return;
     const mine = move({ kind: 'signingOut' });
     try {
-      await clearSession();
+      await forget(session, mine);
     } finally {
       if (generation.current === mine) move({ kind: 'signin', address: session.address, expired: true });
     }
-  }, [move]);
+  }, [move, forget]);
 
   // A link to the household the app is already on needs nothing.
   const offer = link?.address && household && link.address.origin === household.origin ? undefined : link;

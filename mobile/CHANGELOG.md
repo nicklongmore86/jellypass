@@ -22,6 +22,13 @@ build.
   only while you're signed in (never stored on the device) and starts on again after a sign-out or for another person.
   The network and studio pages share it. My requests and Search are unchanged.
 
+### Fixed
+- Home's hero keeps the title you were on when **Hide what I have** is turned on or off (or a request removes a
+  title): the dots, the scroll position and the slide you see always agree, and if the title is gone it moves to the
+  nearest slide.
+- Signing out (or changing household) that finishes late no longer signs you out of, or erases the credentials of, the
+  household you signed in to meanwhile, and a setup link waits until the sign-out has finished.
+
 ## [1.1.0] - 2026-10-28
 
 A minor release: My requests can be filtered, and a member can cancel a request
