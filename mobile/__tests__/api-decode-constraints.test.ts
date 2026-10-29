@@ -8,7 +8,7 @@ import { decodeAccepted, decodeMe, decodeMovie, decodePage, DecodeError, decodeR
 import { DOC, OPERATIONS, ORIGIN, fixture, type Json } from './support/app-api';
 import { ANNOTATIONS, resolve, validate } from './support/json-schema';
 
-type Path = Array<string | number>;
+type Path = (string | number)[];
 
 interface Case {
   /** Where the constraint is, as `Component.field` (an inline field keeps its parent's name): the LENIENT key. */
@@ -87,10 +87,10 @@ function withChange(base: unknown, change: Case): unknown {
  * The cases for `schema`, which applies at each of `places` in the fixture (with the value there). Every
  * `where keyword` the schema has is added to `stated`, reached by a fixture or not.
  */
-function walk(schema: Json, places: Array<{ path: Path; value: unknown }>, where: string, cases: Case[], stated: Set<string>): void {
+function walk(schema: Json, places: { path: Path; value: unknown }[], where: string, cases: Case[], stated: Set<string>): void {
   const unknown = Object.keys(schema).filter((keyword) => !WALKED.has(keyword) && !ANNOTATIONS.has(keyword));
   if (unknown.length) throw new Error(`${where}: no inside/outside values for ${unknown.join(', ')}`);
-  const add = (keyword: string, made: Array<Omit<Case, 'where' | 'keyword'>>): void => {
+  const add = (keyword: string, made: Omit<Case, 'where' | 'keyword'>[]): void => {
     stated.add(`${where} ${keyword}`);
     for (const change of made) cases.push({ where, keyword, ...change });
   };
@@ -173,7 +173,7 @@ for (const [key, op] of Object.entries(OPERATIONS)) {
   answers.set(`${JSON.stringify(schema)} ${op.fixture}`, { schema, fixtureName: op.fixture });
 }
 
-const cases: Array<Case & { fixtureName: string; schema: Json }> = [];
+const cases: (Case & { fixtureName: string; schema: Json })[] = [];
 const stated = new Set<string>();
 for (const { schema, fixtureName } of answers.values()) {
   const found: Case[] = [];

@@ -2,6 +2,7 @@
 // household chosen and the sign-in kept after it. Every move has a generation; a sign-out's end only deletes its own
 // session's credentials, and only changes the screen if nothing moved the app since. Queries read single fields.
 import { act, render, screen } from '@testing-library/react-native';
+import { useEffect } from 'react';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { SessionProvider, useSession, type Session } from '../src/session/SessionProvider';
@@ -14,7 +15,11 @@ jest.setTimeout(30_000);
 const B_TOKEN = 'synthetic-household-b-token-0002';
 let session: Session | undefined;
 function Probe() {
-  session = useSession();
+  const current = useSession();
+  // Kept for the test body after the render, not during it.
+  useEffect(() => {
+    session = current;
+  });
   return null;
 }
 

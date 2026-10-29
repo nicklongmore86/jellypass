@@ -178,7 +178,7 @@ describe('decoding, lenient only where the contract says', () => {
     expect(await api.me()).toEqual({ name: 'Synthetic Member', household: 'Synthetic Household', apiVersion: 0 });
   });
 
-  const malformed: Array<[string, string, unknown]> = [
+  const malformed: [string, string, unknown][] = [
     ['not JSON', 'page', '<html>oops</html>'],
     ['empty', 'page', ''],
     ['JSON null', 'page', 'null'],

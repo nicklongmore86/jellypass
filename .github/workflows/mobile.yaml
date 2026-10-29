@@ -2,10 +2,11 @@ name: Mobile
 
 # The household app for iPhone, iPad and Android (mobile/). It has its own
 # package.json and lockfile and is not part of the server's build or image, so
-# it runs only when mobile/ changes, the PWA files its tests read (app/src for
-# its wording, app/static for the stylesheet its theme is ported from and the
-# TMDB logo), the API contract its client is tested against (docs/app-api), or
-# the release workflow (mobile/__tests__/eas-json.test.ts checks it).
+# it runs only when mobile/ changes (the app, its tests and its ESLint config),
+# the PWA files its tests read (app/src for its wording, app/static for the
+# stylesheet its theme is ported from and the TMDB logo), the API contract its
+# client is tested against (docs/app-api), or the release workflow
+# (mobile/__tests__/eas-json.test.ts checks it).
 on:
   push:
     branches: [main]
@@ -52,6 +53,7 @@ jobs:
           cache-dependency-path: mobile/pnpm-lock.yaml
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
+      # eslint . over the whole package, tests and config files included (mobile/__tests__/lint-scope.test.ts).
       - run: pnpm lint
       # Jest's two workers and the parent each get at most 3 GB of heap (jest.config.js sets the workers), well inside
       # the runner's 16 GB.

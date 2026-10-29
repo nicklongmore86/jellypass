@@ -39,7 +39,7 @@ jest.mock('react-native/Libraries/Utilities/useWindowDimensions', () => ({ __esM
 
 let gateway: ReturnType<typeof sourceGateway>;
 
-function useHousehold(household: SourceHousehold = {}) {
+function serveHousehold(household: SourceHousehold = {}) {
   gateway = sourceGateway(household);
   mockFetch = gateway.fetch;
 }
@@ -48,7 +48,7 @@ beforeEach(() => {
   mockWindow = PHONE;
   store.__items.clear();
   keepSession(TOKEN, ORIGIN);
-  useHousehold();
+  serveHousehold();
 });
 
 async function start() {
@@ -159,7 +159,7 @@ describe("a network's tabs", () => {
   });
 
   it('has no tabs for a service the API lists no films for, and its Films address is Not found', async () => {
-    useHousehold({ override: (call) => (call.route === `GET ${API}/discover/sources` ? answer(200, sourcesAnswer((id) => id !== 453)) : undefined) });
+    serveHousehold({ override: (call) => (call.route === `GET ${API}/discover/sources` ? answer(200, sourcesAnswer((id) => id !== 453)) : undefined) });
     const { since } = await open('/home/network/453');
     expect(tabs()).toEqual([]);
     expect(title()).toBe('Series on Hulu');
@@ -197,7 +197,7 @@ function buttonNamedOrNone(name: string): number {
 describe('failures', () => {
   it('shows the fixed message for the first page and asks again only on Try again', async () => {
     let fail = true;
-    useHousehold({ source: () => (fail ? answer(502, { error: 'unavailable' }) : undefined) });
+    serveHousehold({ source: () => (fail ? answer(502, { error: 'unavailable' }) : undefined) });
     const { since } = await open('/home/studio/2');
     expect(shows("Can't load this right now")).toBe(true);
     expect(title()).toBe('Disney movies');
@@ -211,7 +211,7 @@ describe('failures', () => {
 
   it("keeps the pages it has when Load more fails, and Try again asks for that page alone", async () => {
     let fail = true;
-    useHousehold({ source: (_list, page) => (page === 2 && fail ? answer(429, { error: 'too_many_requests' }) : undefined) });
+    serveHousehold({ source: (_list, page) => (page === 2 && fail ? answer(429, { error: 'too_many_requests' }) : undefined) });
     const { since } = await open('/home/studio/2');
     await pressNode(buttonNamed('Load more'));
     expect(shows('Too many requests')).toBe(true);
@@ -226,7 +226,7 @@ describe('failures', () => {
 
   it('shows the sources failing with Try again, which reads them and the list again', async () => {
     let fail = true;
-    useHousehold({ override: (call) => (call.route === `GET ${API}/discover/sources` && fail ? offline(call) : undefined) });
+    serveHousehold({ override: (call) => (call.route === `GET ${API}/discover/sources` && fail ? offline(call) : undefined) });
     const { since } = await open('/home/network/213');
     expect(shows("You're offline")).toBe(true);
     fail = false;
@@ -236,7 +236,7 @@ describe('failures', () => {
   });
 
   it('signs the member out on a 401: the device forgets the sign-in', async () => {
-    useHousehold({
+    serveHousehold({
       source: () => answer(401, { error: 'unauthorized' }),
       override: (call) => (call.route === 'GET /Users/Public' ? answer(200, []) : undefined),
     });
@@ -249,7 +249,7 @@ describe('failures', () => {
 describe('late answers', () => {
   it("drop the tab switched away from: All's first page answering after Films does not replace it", async () => {
     const all = held();
-    useHousehold({ source: (list) => (list === 'network-213-all' ? all.promise : undefined) });
+    serveHousehold({ source: (list) => (list === 'network-213-all' ? all.promise : undefined) });
     await open('/home/network/213');
     await pressNode(tab('Films'));
     expect(gridNames()[0]).toBe('network-213-films 1, 2015, Movie, Available to get');
@@ -261,7 +261,7 @@ describe('late answers', () => {
 
   it("drop a Load more asked for before the switch: All's second page never lands on Films", async () => {
     const more = held();
-    useHousehold({ source: (list, page) => (list === 'network-213-all' && page === 2 ? more.promise : undefined) });
+    serveHousehold({ source: (list, page) => (list === 'network-213-all' && page === 2 ? more.promise : undefined) });
     await open('/home/network/213');
     await pressNode(buttonNamed('Load more'));
     await pressNode(tab('Films'));
@@ -276,7 +276,7 @@ describe('late answers', () => {
 
   it('ask for nothing on a second Load more while the first is out', async () => {
     const more = held();
-    useHousehold({ source: (_list, page) => (page === 2 ? more.promise : undefined) });
+    serveHousehold({ source: (_list, page) => (page === 2 ? more.promise : undefined) });
     const { since } = await open('/home/studio/2');
     await pressNode(buttonNamed('Load more'));
     expect(screen.queryAllByRole('button', { name: 'Loading…' })).toHaveLength(1);

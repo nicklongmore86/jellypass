@@ -33,7 +33,7 @@ Node 22 or later and pnpm (the version in `packageManager`, via `corepack enable
 cd mobile
 pnpm install --frozen-lockfile
 pnpm typecheck   # tsc --noEmit, strict
-pnpm lint        # expo lint (ESLint), no warnings allowed
+pnpm lint        # ESLint (eslint-config-expo) over the whole app, tests included, no warnings allowed
 pnpm test        # Jest (jest-expo)
 pnpm check       # all three
 ```
@@ -438,7 +438,7 @@ Edits reload on the phone as you save. Expo Go needs no Apple or Google develope
   never checks Expo's servers at launch.
 - No Android backup (`allowBackup: false`): the sign-in stays on the device. The `expo-secure-store` config plugin is
   not used, since it would add a Face ID usage string for biometrics the app does not use.
-- Expo's **CLI** (`expo start`, `expo lint`) sends anonymous usage telemetry by default. CI sets
+- Expo's **CLI** (`expo start`) sends anonymous usage telemetry by default. CI sets
   `EXPO_NO_TELEMETRY=1`; set it in your shell too (`export EXPO_NO_TELEMETRY=1`). EAS CLI has its own, which the
   release workflow turns off with `DISABLE_EAS_ANALYTICS=1`; do the same before running `eas` yourself.
 
