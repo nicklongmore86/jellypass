@@ -360,6 +360,7 @@ export class DiscoverPage {
     const Watcher = typeof IntersectionObserver === 'function' ? IntersectionObserver : undefined;
     open.dataWatch = Watcher ? new Watcher((entries) => this.#onData(open, paint, entries), { rootMargin: DATA_MARGIN }) : undefined;
     open.imageWatch = Watcher ? new Watcher((entries) => this.#onImages(open, paint, entries), { rootMargin: IMAGE_MARGIN }) : undefined;
+    for (const unit of open.units) this.#clearImages(unit);
     open.body.textContent = '';
     open.heroSlot.textContent = '';
     open.rows = [];
@@ -404,6 +405,20 @@ export class DiscoverPage {
       open.imageWatch.observe(element);
     }
     return unit;
+  }
+
+  /** The images of a unit that is being drawn again or dropped lose their sources (they are detached: nothing should still hold a picture). */
+  #clearImages(unit: Unit): void {
+    for (const one of unit.images) one.image.removeAttribute('src');
+  }
+
+  /** A unit that goes (the hero before it is drawn again): no longer watched or kept, and its images let go. */
+  #dropUnit(open: Open, unit: Unit): void {
+    if (open.imageWatch) open.imageWatch.unobserve(unit.element);
+    open.units = open.units.filter((one) => one !== unit);
+    open.byElement = open.byElement.filter((one) => one.unit !== unit);
+    this.#clearImages(unit);
+    unit.images = [];
   }
 
   #addRow(open: Open, variant: RowView['variant'], request: DiscoverRequest, key: string, heading: string, eager: boolean, feeds: boolean, network?: DiscoverNetwork): RowView {
@@ -533,6 +548,7 @@ export class DiscoverPage {
     row.body.textContent = '';
     row.body.removeAttribute('aria-busy');
     row.drawn = [];
+    this.#clearImages(row.unit);
     row.unit.images = [];
     const cards = this.#visible(row);
     if (cards.length === 0) {
@@ -599,6 +615,7 @@ export class DiscoverPage {
 
   #drawHero(open: Open): void {
     open.heroSlot.className = 'jellypass-tv-discover-hero-slot';
+    if (open.hero) this.#dropUnit(open, open.hero.unit);
     open.heroSlot.textContent = '';
     open.hero = undefined;
     const slides = this.#heroSlides(open);

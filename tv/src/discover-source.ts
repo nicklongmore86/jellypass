@@ -53,6 +53,9 @@ interface Open {
   view: HTMLElement;
   /** Bumped by every start, every change of tab and by leaving: an answer that comes for an earlier one is dropped. */
   gen: number;
+  /** The frame (tabs, toggle) drawn last and the grid drawn last: a card or control of an earlier one does nothing when pressed. */
+  frameNo: number;
+  gridNo: number;
   source: DiscoverNetwork | DiscoverStudio | undefined;
   lists: ReadonlyArray<NetworkList>;
   list: NetworkList;
@@ -210,7 +213,7 @@ export class SourcePage {
     }
     this.#asked.sync(session.userId);
     const open: Open = {
-      kind, id, userId: session.userId, render: { stamp: this.#watch.stamp(session) }, context, view, gen: 0, source: undefined, lists: [], list: 'all', pages: [], nextPage: null,
+      kind, id, userId: session.userId, render: { stamp: this.#watch.stamp(session) }, context, view, gen: 0, frameNo: 0, gridNo: 0, source: undefined, lists: [], list: 'all', pages: [], nextPage: null,
       loading: false, fallback: undefined, title: DISCOVER_TEXT.title, heading: undefined, tabs: {}, hideChip: undefined, panel: undefined, grid: undefined, more: undefined, note: undefined, status: undefined,
       drawn: [], imageWatch: undefined, units: new Map(), headUnit: undefined,
     };
@@ -296,6 +299,8 @@ export class SourcePage {
   /** The header, the tabs and "Hide what I have", the panel the list goes into, and the foot. */
   #drawFrame(open: Open): void {
     const render = open.render;
+    open.frameNo += 1;
+    const frameNo = open.frameNo;
     const source = open.source as DiscoverNetwork | DiscoverStudio;
     if (open.imageWatch) open.imageWatch.disconnect();
     const Watcher = typeof IntersectionObserver === 'function' ? IntersectionObserver : undefined;
@@ -326,7 +331,7 @@ export class SourcePage {
       for (const list of open.lists) {
         const tab = this.#button('jellypass-tv-discover-chip', SOURCE_TEXT.lists[list], `tab:${list}`);
         tab.setAttribute('aria-pressed', 'false');
-        tab.addEventListener('click', () => this.#choose(open, render, list));
+        tab.addEventListener('click', () => { if (open.frameNo === frameNo) this.#choose(open, render, list); });
         open.tabs[list] = tab;
         controls.appendChild(tab);
       }
@@ -334,7 +339,7 @@ export class SourcePage {
     // Beside the tabs it is set apart from them (as on Discover); alone (a studio, a service with no films) it starts the line.
     const hide = this.#button(`jellypass-tv-discover-chip jellypass-tv-discover-chip-toggle${open.lists.length > 1 ? '' : ' jellypass-tv-source-toggle-alone'}`, DISCOVER_TEXT.hideHeld, 'chip:hide');
     hide.setAttribute('aria-pressed', String(this.#hide.held));
-    hide.addEventListener('click', () => this.#toggleHide(open, render));
+    hide.addEventListener('click', () => { if (open.frameNo === frameNo) this.#toggleHide(open, render); });
     open.hideChip = hide;
     controls.appendChild(hide);
     open.view.appendChild(controls);
@@ -398,6 +403,7 @@ export class SourcePage {
     open.note = undefined;
     this.#resetUnits(open);
     open.drawn = [];
+    open.gridNo += 1;
     for (const key of Object.keys(open.tabs)) (open.tabs[key] as HTMLElement).setAttribute('aria-pressed', String(key === list));
     (open.heading as HTMLElement).textContent = SOURCE_TEXT.heading(open.kind, (open.source as DiscoverStudio).name, list);
     const panel = open.panel as HTMLElement;
@@ -447,6 +453,7 @@ export class SourcePage {
       if (!this.#live(open, render, gen) || 'stale' in result) return;
       if (result.ok) {
         const first = open.pages.length === 0;
+        const hadFocus = !first && open.more !== undefined && this.#document.activeElement === open.more;
         open.pages.push(result.value as ListPage);
         open.nextPage = (result.value as ListPage).nextPage;
         this.#remember(open);
@@ -454,11 +461,11 @@ export class SourcePage {
           this.#frame(open);
           this.#fillGrid(open);
           if (open.fallback) open.context.focus(open.fallback);
-        } else {
-          this.#append(open, result.value as ListPage);
         }
+        if (!first) this.#append(open, result.value as ListPage);
         open.loading = false;
         this.#offerMore(open);
+        if (hadFocus) this.#keepFocus(open);
         if (!first && open.status) open.status.textContent = SOURCE_TEXT.moreLoaded;
         return;
       }
@@ -507,6 +514,12 @@ export class SourcePage {
   /** The cards' images are forgotten (the cards are being drawn again); the header's logo stays watched. */
   #resetUnits(open: Open): void {
     const head = open.headUnit;
+    // The cards go: their pictures let go of their sources (a card the remote left behind holds nothing).
+    open.units.forEach((unit) => {
+      if (unit === head) return;
+      for (const one of unit.images) one.image.removeAttribute('src');
+      unit.images = [];
+    });
     open.units = new Map();
     if (open.imageWatch) {
       open.imageWatch.disconnect();
@@ -521,6 +534,7 @@ export class SourcePage {
   #fillGrid(open: Open): void {
     const grid = open.grid as HTMLElement;
     grid.textContent = '';
+    open.gridNo += 1;
     open.drawn = [];
     this.#resetUnits(open);
     const cards = this.#visible(open);
@@ -554,8 +568,19 @@ export class SourcePage {
     return added;
   }
 
+  /** Focus is never left on something that is gone: Load more drawn again, else the last card, else the tab or toggle. */
+  #keepFocus(open: Open): void {
+    const now = this.#document.activeElement;
+    if (now && now !== this.#document.body && open.view.contains(now)) return;
+    const last = open.drawn[open.drawn.length - 1];
+    if (open.more) open.more.focus();
+    else if (last) last.button.focus();
+    else if (open.fallback) open.context.focus(open.fallback);
+  }
+
   #draw(open: Open, grid: HTMLElement, card: DiscoverCard): void {
     const render = open.render;
+    const gridNo = open.gridNo;
     const unit: Unit = { element: grid, images: [], near: !open.imageWatch };
     const one = drawCard(this.#document, unit, { card, backdrop: false, tv: this.#tv(), key: `card:${card.mediaType}:${card.tmdbId}` });
     unit.element = one.button;
@@ -564,7 +589,7 @@ export class SourcePage {
       open.imageWatch.observe(one.button);
     }
     one.button.addEventListener('click', () => {
-      if (this.#live(open, render)) this.#host.navigate(titleHash(card.mediaType, card.tmdbId));
+      if (this.#live(open, render) && open.gridNo === gridNo) this.#host.navigate(titleHash(card.mediaType, card.tmdbId));
     });
     markCard(one, this.#stateOf(card));
     open.drawn.push(one);
@@ -591,7 +616,7 @@ export class SourcePage {
     const wrap = this.#el('div', 'jellypass-tv-source-more padded-left padded-right');
     const more = this.#button('raised jellypass-tv-discover-button', SOURCE_TEXT.loadMore, 'more');
     more.addEventListener('click', () => {
-      if (!this.#live(open, render, gen) || open.loading || open.nextPage === null) return;
+      if (!this.#live(open, render, gen) || open.more !== more || open.loading || open.nextPage === null) return;
       open.loading = true;
       more.textContent = SOURCE_TEXT.loading;
       more.setAttribute('aria-disabled', 'true');
