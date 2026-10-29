@@ -55,7 +55,7 @@ export function cardLabel(card: DiscoverCard, state: HouseholdState): string {
 /** A card's badge and name, from its state now: the words are always there, and the colour goes with them. */
 export function markCard(one: Drawn, state: HouseholdState): void {
   const badge = badgeOf(state);
-  one.badge.textContent = badge.label;
+  one.badge.textContent = badge.word;
   one.badge.className = `jellypass-tv-discover-badge jellypass-tv-discover-badge-${badge.tone}`;
   one.button.setAttribute('aria-label', cardLabel(one.card, state));
 }
@@ -68,19 +68,46 @@ function element(document: Document, tag: string, className: string, text?: stri
 }
 
 /**
+ * The sizes of Jellyfin web's cards the page draws, by the name its `cardBuilder` gives the shape: a scrolling row's poster
+ * (`overflowPortrait`) or wide card (`overflowBackdrop`), and a wrapping grid's poster (`portrait`, a share of the grid's width).
+ * Each has its card class and the class of its padder (the poster's 2:3 or the wide card's 16:9), so Jellyfin web's CSS sizes it.
+ */
+export type CardShape = 'overflowPortrait' | 'overflowBackdrop' | 'portrait';
+const CARD_CLASS: Record<CardShape, string> = {
+  overflowPortrait: JELLYFIN_CLASSES.card,
+  overflowBackdrop: JELLYFIN_CLASSES.cardBackdrop,
+  portrait: JELLYFIN_CLASSES.cardGrid,
+};
+
+/**
+ * A card that is still being asked for: Jellyfin web's own card markup of the shape (so it takes the shape's size and leaves no
+ * jump when the cards come), with only the padder's dark box showing.
+ */
+export function skeletonCard(document: Document, shape: CardShape): HTMLElement {
+  const card = element(document, 'div', `${CARD_CLASS[shape]} jellypass-tv-discover-skeleton-card`);
+  const box = element(document, 'div', 'cardBox cardBox-bottompadded');
+  const frame = element(document, 'div', 'cardScalable');
+  frame.appendChild(element(document, 'div', `cardPadder cardPadder-${shape}`));
+  box.appendChild(frame);
+  card.appendChild(box);
+  return card;
+}
+
+/**
  * Jellyfin web's portrait or backdrop card as a button (the shared `jellypass-tv-card` focus ring), `key` being what Back
  * returns focus to. The caller binds its click (it checks the session first) and calls {@link markCard}.
  */
-export function drawCard(document: Document, unit: Unit, options: { card: DiscoverCard; backdrop: boolean; tv: boolean; key: string }): Drawn {
-  const { card, backdrop, tv, key } = options;
-  const button = element(document, 'button', `${backdrop ? JELLYFIN_CLASSES.cardBackdrop : JELLYFIN_CLASSES.card} jellypass-tv-card${tv ? ` ${JELLYFIN_CLASSES.cardTv}` : ''}`) as HTMLButtonElement;
+export function drawCard(document: Document, unit: Unit, options: { card: DiscoverCard; shape: CardShape; tv: boolean; key: string }): Drawn {
+  const { card, shape, tv, key } = options;
+  const backdrop = shape === 'overflowBackdrop';
+  const button = element(document, 'button', `${CARD_CLASS[shape]} jellypass-tv-card${tv ? ` ${JELLYFIN_CLASSES.cardTv}` : ''}`) as HTMLButtonElement;
   button.type = 'button';
   button.setAttribute('data-media-type', card.mediaType);
   button.setAttribute('data-tmdb-id', String(card.tmdbId));
   button.setAttribute(FOCUS_ATTR, key);
   const box = element(document, 'div', 'cardBox cardBox-bottompadded');
   const frame = element(document, 'div', 'cardScalable');
-  frame.appendChild(element(document, 'div', `cardPadder cardPadder-${backdrop ? 'overflowBackdrop' : 'overflowPortrait'}`));
+  frame.appendChild(element(document, 'div', `cardPadder cardPadder-${shape}`));
   const picture = element(document, 'div', 'cardImageContainer coveredImage cardContent');
   const url = backdrop ? card.backdropUrl || card.posterUrl : card.posterUrl;
   if (url) picture.appendChild(imageIn(document, unit, 'jellypass-tv-card-image', url));

@@ -27,7 +27,8 @@
   align-items: flex-start;
   margin: 0 auto;
 }
-.jellypass-tv-row-list > .card > .cardBox {
+.jellypass-tv-row-list > .card > .cardBox,
+.jellypass-tv-source-grid > .card > .cardBox {
   margin-left: 0;
   margin-right: 1.2em;
 }
@@ -652,21 +653,8 @@ html.jellypass-tv-hosting #fallbackPage[data-role="page"].page:not(.hide) > :not
 .jellypass-tv-discover-note {
   padding-top: 2em;
 }
-.jellypass-tv-discover-skeleton-card {
-  display: inline-block;
-  flex: 0 0 auto;
-  margin-right: 1em;
-  border-radius: 0.4em;
-  background: rgba(255, 255, 255, 0.07);
-}
-.jellypass-tv-discover-skeleton-poster {
-  width: 12em;
-  height: 18em;
-}
-.jellypass-tv-discover-skeleton-backdrop {
-  width: 21em;
-  height: 11.8em;
-}
+/* A card still being asked for is Jellyfin's own card markup of its shape (jellypass-tv-discover-skeleton-card, with no image or
+   text), so it takes the card's size and the row's spacing from Jellyfin's CSS; only the padder's dark box shows. */
 /* The header button in the desktop layout's toolbar (Jellyfin draws a button's focus there with a script, which does not know
    ours): a ring in the toolbar's text colour, round like its other buttons and inside the button (the toolbar is as tall as the
    button, so an outer ring would be cut off at the top of the screen). The TV layout's is Jellyfin's own `show-focus`. */
@@ -698,17 +686,31 @@ html.jellypass-tv-hosting #fallbackPage[data-role="page"].page:not(.hide) > :not
   box-shadow: 0 0 0 0.2em #fff;
   box-shadow: 0 0 0 0.2em var(--jf-palette-text-primary, #fff);
 }
-/* The state's words on the card's corner, in the state's colour as well, so the colour is never the only sign. */
+/* The state in a word or two, a small pill in the poster's top right corner as Jellyfin's own indicators are (`.cardIndicators`;
+   the pill, shadow and 88% type are those of its `.countIndicator`), set in far enough to clear the focus ring, in the state's colour as
+   well, so the colour is never the only sign; the card's accessible name has the whole sentence. White on each of the colours
+   below is over 5:1 (test/tv-addon.test.mjs computes it). Longer than the card, it is cut short, never wider than the poster. */
 .jellypass-tv-discover-badge {
   position: absolute;
-  top: 0.5em;
-  left: 0.5em;
+  top: 0.4em;
+  right: 0.4em;
+  box-sizing: border-box;
+  max-width: 90%;
+  overflow: hidden;
   padding: 0.15em 0.55em;
-  border-radius: 0.35em;
+  border-radius: 100em;
   background: rgba(0, 0, 0, 0.72);
+  box-shadow: 0 2px 2px 0 rgba(0, 0, 0, 0.14), 0 1px 5px 0 rgba(0, 0, 0, 0.12), 0 3px 1px -2px rgba(0, 0, 0, 0.2);
   color: #fff;
-  font-size: 0.78em;
+  font-size: 88%;
   font-weight: 600;
+  line-height: 1.25;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+[dir='rtl'] .jellypass-tv-discover-badge {
+  right: auto;
+  left: 0.4em;
 }
 .jellypass-tv-discover-badge-owned {
   background: #1f6e44;
@@ -835,22 +837,8 @@ html.jellypass-tv-hosting #fallbackPage[data-role="page"].page:not(.hide) > :not
   align-items: flex-start;
   padding-top: 1em;
 }
-/* Seven across at any width: Jellyfin sizes its card for a scrolling row, so the grid sets its own. */
-.jellypass-tv-source-grid > .card {
-  flex: 0 0 auto;
-  box-sizing: border-box;
-  width: 13.4%;
-  margin: 0 0.8% 1.2em 0;
-}
-.jellypass-tv-source-grid > .card > .cardBox {
-  margin-left: 0;
-  margin-right: 0;
-}
-.jellypass-tv-source-skeleton-card {
-  width: 13.4%;
-  height: 14em;
-  margin: 0 0.8% 1.2em 0;
-}
+/* The grid is Jellyfin's own (`vertical-wrap`, with `itemsContainer-tv` on a TV) and its cards its `portraitCard`s: a share of the
+   grid's width that Jellyfin's CSS picks for the screen, as in its library pages. Nothing here sizes a card. */
 .jellypass-tv-source-toggle-alone {
   margin-left: 0;
 }

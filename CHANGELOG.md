@@ -20,6 +20,14 @@ changes are always listed at the top of the release notes.
 
 ### Changed
 
+- TV add-on: **the add-on's cards are now the size of Jellyfin web's own** in both layouts. Every row (Home, Search, the Discover
+  page) and the service and studio grids use Jellyfin's card classes and the class its TV sizes depend on (`itemsContainer-tv`)
+  instead of widths of the add-on's own, so on a TV a poster is the width of Jellyfin's Latest row (15.6vw, up from about 10vw),
+  the Discover page's wide cards 23.5vw, and the grids are Jellyfin's `portraitCard` grid; loading cards are the same markup, and the
+  sizes follow Jellyfin web when it changes them. The status **badge** on the Discover page's cards is now a small pill in the
+  poster's top right corner in the style of Jellyfin's own indicators, with short words (*In library*, *Requested*, *Get this*,
+  *Can't get*; the card's accessible name still says the whole sentence) and white-on-colour contrast above 5:1.
+
 - TV add-on: **Hide what I have** on the Discover page is now **on when the page opens** (and on the service and studio
   pages), and it also applies to the **hero**: with it on, the hero's slides skip titles in the library or already requested
   (a title just asked for too) and are filled from the next titles of the same answer that have a wide picture; if none is

@@ -138,7 +138,21 @@ export const JELLYFIN_CLASSES = {
   cardBackdrop: 'card overflowBackdropCard card-hoverable',
   /** What `cardBuilder` adds on a TV: the focus ring and zoom its CSS draws. */
   cardTv: 'show-focus show-animation',
+  /**
+   * What Jellyfin web's `emby-itemscontainer` adds to a row's list on a TV (`ItemsContainer.tsx`, `itemsContainer-tv`): its card
+   * sizes for a TV are keyed on `.itemsContainer-tv > .overflowPortraitCard` (15.6vw) and `> .overflowBackdropCard` (23.5vw),
+   * where a row without it gets the desktop's (`card.scss`). It is not `itemsContainer`, which Jellyfin's pages call `.pause()` on.
+   */
+  rowTv: 'itemsContainer-tv',
+  /** Jellyfin web's wrapping grid (the library pages' `vertical-wrap`), and its card in it, which sizes by a share of the grid's width. */
+  grid: 'vertical-wrap',
+  cardGrid: 'card portraitCard card-hoverable',
 } as const;
+
+/** The classes of a row's (or a grid's) list on a TV or not: Jellyfin web's own, so its card sizes apply. */
+export function listClasses(base: string, tv: boolean): string {
+  return tv ? `${base} ${JELLYFIN_CLASSES.rowTv}` : base;
+}
 
 /**
  * Jellyfin web's own details page for an item, as its router's hash route (the address the API's `play.url` names). Set
