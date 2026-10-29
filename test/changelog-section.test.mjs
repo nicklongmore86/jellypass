@@ -53,6 +53,54 @@ function assertSection(notes, { version, nextVersion, subheadings }) {
 }
 
 describe('changelogSection with the real CHANGELOG.md', () => {
+  it('extracts 3.8.0 without its heading, up to the 3.7.0 section', () => {
+    const notes = changelogSection(CHANGELOG, '3.8.0');
+    assertSection(notes, {
+      version: '3.8.0',
+      nextVersion: '3.7.0',
+      subheadings: ['Added', 'Changed'],
+    });
+    assert.match(notes, /^This is a minor release for the TV add-on/);
+    const flat = notes.replace(/\s+/g, ' ');
+    assert.match(flat, /\*\*unless `TV_ADDON_ENABLED` is set, nothing changes\*\* on any host/);
+    assert.match(flat, /This is a minor release because the add-on gains pages/);
+    assert.match(flat, /the gateway are as in 3\.7\.0/);
+    assert.match(flat, /\*\*Nothing to configure\.\*\* No setting is new/);
+    assert.match(flat, /\*\*The state file is unchanged\*\* \(schema v7, with the same fields as 3\.7\.0\), so 3\.7\.0 reads a state file written by 3\.8\.0/);
+    assert.match(flat, /both names change in this release/);
+    assert.match(flat, /\*\*It has been tested in a real Jellyfin 12\.3 container,\*\* .* \*\*On real Samsung TVs only what 3\.7\.0 added has been seen\*\*/);
+    assert.match(flat, /\*\*the new card sizes have not been seen on a physical TV\*\*/);
+    assert.match(flat, /gets the new add-on at its next start\. Nothing is reinstalled on the TV/);
+    assert.match(flat, /`ghcr\.io\/nicklongmore86\/jellypass:3\.7\.0`/);
+    assert.match(flat, /`mobile\/CHANGELOG\.md`/);
+    assert.match(flat, /\*\*TV add-on: service and studio pages\.\*\*/);
+    assert.match(flat, /`#\/jellypass\/service\/<id>`, `#\/jellypass\/studio\/<id>`/);
+    assert.match(flat, /\*\*TV add-on: Hide what I have is on when the Discover page opens,\*\*/);
+    assert.match(flat, /\*\*TV add-on: the add-on's cards are the size of Jellyfin web's own\*\*/);
+    assert.match(flat, /\*\*In library\*\*, \*\*Requested\*\*, \*\*Get this\*\* or \*\*Can't get\*\*/);
+    const added = notes.indexOf('### Added');
+    for (const note of [
+      '**Nothing to configure.**',
+      '**The state file is unchanged**',
+      '**Hide what I have is now on when the Discover page opens.**',
+      '**No CDN purge is needed.**',
+      '**It has been tested in a real Jellyfin 12.3 container,**',
+      '**The Samsung app picks it up by itself.**',
+      '**To roll back,**',
+      '**The iPhone, iPad and Android app ships separately.**',
+    ]) {
+      assert.ok(notes.indexOf(note) >= 0 && notes.indexOf(note) < added, `upgrade note ${note} comes first`);
+    }
+    assert.ok(added < notes.indexOf('### Changed'), 'Added comes before Changed');
+    assert.equal(flat.match(/Hide what I have\*\* \(the same choice/g)?.length, 1, 'the service pages\' toggle is listed once');
+    assert.equal(notes.match(/^- \*\*TV add-on: /gm)?.length, 4, 'one entry per change, none repeated');
+    assert.doesNotMatch(notes, /### (?:Security|Fixed)/);
+    assert.doesNotMatch(notes, /### Upgrading from/);
+    assert.doesNotMatch(notes, /eas-cli|workflow|\btests?\b|Jest/i, 'no tests or CI');
+    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref|farmhouse|TU7000|sdb\b/i, 'no server-specific details');
+    assert.deepEqual(split(notes).definitions, []);
+  });
+
   it('extracts 3.7.0 without its heading, up to the 3.6.1 section', () => {
     const notes = changelogSection(CHANGELOG, '3.7.0');
     assertSection(notes, {
