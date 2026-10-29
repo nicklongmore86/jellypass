@@ -1,5 +1,5 @@
 import type { Card, HouseholdState } from './api.js';
-import { JELLYFIN_CLASSES } from './jellyfin-web.js';
+import { JELLYFIN_CLASSES, listClasses } from './jellyfin-web.js';
 
 /**
  * The "Discover" section both rows draw, one component so Home and Search look and move alike: a Jellyfin web section
@@ -62,9 +62,10 @@ export function drawCards(document: Document, cards: Card[], options: DrawOption
   const scroller = element('div', 'jellypass-tv-row-scroller padded-left padded-right');
   // Not `itemsContainer`: Jellyfin web's pages call `.pause()` on every element with that class when they are left, and
   // that is a method of its own custom element, which this plain `div` is not (the page would fail with a TypeError).
-  const list = element('div', `jellypass-tv-row-list ${JELLYFIN_CLASSES.row}`);
-  // Jellyfin web's TV layout draws its cards with a focus ring and a focus zoom: its CSS keys on these two classes.
+  // Jellyfin web's TV layout draws its cards with a focus ring and a focus zoom (its CSS keys on `show-focus show-animation`)
+  // and sizes them by the list's `itemsContainer-tv`.
   const tv = document.documentElement.classList.contains('layout-tv');
+  const list = element('div', listClasses(`jellypass-tv-row-list ${JELLYFIN_CLASSES.row}`, tv));
   const drawn: Drawn[] = [];
   for (const card of cards) {
     const button = element('button', `${JELLYFIN_CLASSES.card} jellypass-tv-card${tv ? ` ${JELLYFIN_CLASSES.cardTv}` : ''}`) as HTMLButtonElement;

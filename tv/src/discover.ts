@@ -1,6 +1,6 @@
 import type { DiscoverCard, DiscoverNetwork, DiscoverSources, Failure, HouseholdState, NetworkList } from './api.js';
 import type { Asked } from './asked.js';
-import { drawCard, imageIn, markCard, setNear, type Drawn, type Unit } from './discover-card.js';
+import { drawCard, imageIn, markCard, setNear, skeletonCard, type Drawn, type Unit } from './discover-card.js';
 import type { DiscoverData, DiscoverRequest } from './discover-data.js';
 import {
   DISCOVER_FILTERS,
@@ -19,7 +19,7 @@ import {
   type DiscoverFilter,
 } from './discover-model.js';
 import type { HidePreference } from './discover-preference.js';
-import { JELLYFIN_CLASSES } from './jellyfin-web.js';
+import { JELLYFIN_CLASSES, listClasses } from './jellyfin-web.js';
 import { FOCUS_ATTR, type PageContext, type PageView } from './page-host.js';
 import type { SessionWatch, Stamp } from './session-watch.js';
 import { ERROR_TEXT, kindOf, titleHash } from './title.js';
@@ -515,8 +515,8 @@ export class DiscoverPage {
     this.#teardown(row.scope.open, 'row', row);
     const scroller = this.#el('div', 'jellypass-tv-row-scroller padded-left padded-right jellypass-tv-discover-skeleton');
     scroller.setAttribute('aria-hidden', 'true');
-    const list = this.#el('div', 'jellypass-tv-row-list');
-    for (let i = 0; i < SKELETON_CARDS; i += 1) list.appendChild(this.#el('div', `jellypass-tv-discover-skeleton-card jellypass-tv-discover-skeleton-${row.variant}`));
+    const list = this.#el('div', listClasses('jellypass-tv-row-list', this.#tv()));
+    for (let i = 0; i < SKELETON_CARDS; i += 1) list.appendChild(skeletonCard(this.#document, row.variant === 'backdrop' ? 'overflowBackdrop' : 'overflowPortrait'));
     scroller.appendChild(list);
     row.body.appendChild(scroller);
     row.body.setAttribute('aria-busy', 'true');
@@ -606,7 +606,7 @@ export class DiscoverPage {
       return;
     }
     const scroller = this.#el('div', 'jellypass-tv-row-scroller padded-left padded-right');
-    const list = this.#el('div', `jellypass-tv-row-list ${JELLYFIN_CLASSES.row}`);
+    const list = this.#el('div', listClasses(`jellypass-tv-row-list ${JELLYFIN_CLASSES.row}`, this.#tv()));
     for (const card of cards) {
       const one = this.#card(row, card);
       row.drawn.push(one);
@@ -617,7 +617,7 @@ export class DiscoverPage {
   }
 
   #card(row: RowView, card: DiscoverCard): Drawn {
-    const one = drawCard(this.#document, row.unit, { card, backdrop: row.variant === 'backdrop', tv: this.#tv(), key: `${row.id}:${card.mediaType}:${card.tmdbId}` });
+    const one = drawCard(this.#document, row.unit, { card, shape: row.variant === 'backdrop' ? 'overflowBackdrop' : 'overflowPortrait', tv: this.#tv(), key: `${row.id}:${card.mediaType}:${card.tmdbId}` });
     const fill = row.fill;
     one.button.addEventListener('click', () => {
       if (row.fill === fill) this.#openTitle(row.scope, card);

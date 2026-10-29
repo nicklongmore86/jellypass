@@ -702,6 +702,9 @@ describe('TV add-on: the Home row', { timeout: 60_000 }, () => {
     tv.home();
     await tv.settled();
     assert.ok(tv.cards().length > 0 && tv.cards().every((card) => card.classList.contains('show-focus') && card.classList.contains('show-animation')));
+    // Jellyfin web sizes a row's cards on a TV by `.itemsContainer-tv > .overflowPortraitCard` (card.scss): the list has the class there only.
+    for (const link of [desktop.rows()[0], tv.rows()[0]]) assert.equal(link.querySelector('.jellypass-tv-row-list').classList.contains('itemsContainer-tv'), link === tv.rows()[0]);
+    assert.ok(tv.cards().every((card) => card.parentNode.classList.contains('itemsContainer-tv') && card.classList.contains('overflowPortraitCard') && card.getAttribute('style') === null));
     // Nothing left to show: no title cards, no second call, and only the "My requests" card in a small row of the same look.
     const empty = await withTrending(t, app, (results) => results.map((card, index) => ({ ...card, state: index % 2 ? 'requested' : 'in_library' })));
     assert.deepEqual([empty.rows().length, empty.requests.length, empty.cards().length], [1, 1, 0]);
@@ -4047,6 +4050,119 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
     lacks(readFileSync(path.join(DIST_TV, STYLESHEET), 'utf8'), /position:\s*sticky/, 'a sticky rule');
   });
 
+  // Card sizes are Jellyfin web's, not ours: a card carries its shape's class and padder (card.scss sizes both), its list carries the
+  // class Jellyfin's TV sizes are keyed on, and nothing of the add-on's sets a card's width or height. Class names only in what is compared.
+  const classesOf = (element) => [...element.classList].sort().join(' ');
+  const SHAPES = {
+    poster: { card: 'overflowPortraitCard', padder: 'cardPadder-overflowPortrait' },
+    backdrop: { card: 'overflowBackdropCard', padder: 'cardPadder-overflowBackdrop' },
+  };
+  for (const tv of [true, false]) {
+    it(`sizes the Discover page's cards with Jellyfin web's own classes in the ${tv ? 'TV' : 'desktop'} layout: posters and wide cards by the shape of their row, in a list that has itemsContainer-tv only on a TV, and loading cards of the same shapes`, async (t) => {
+      const page = await open(t, await startApp(t, webWorld(), tvOn()), { hide: 'off', tv });
+      await goTo(page);
+      // Still loading: the rows below the fold are skeletons in the cards' own markup, before anything is asked.
+      const waiting = rows(page).filter((row) => row.querySelector('.jellypass-tv-discover-skeleton'));
+      assert.ok(waiting.length > 0, 'some row is loading');
+      for (const row of waiting) {
+        const list = row.querySelector('.jellypass-tv-row-list');
+        assert.equal(list.classList.contains('itemsContainer-tv'), tv, `${heading(row)} loading list`);
+        for (const card of list.children) {
+          assert.ok(card.classList.contains('card') && (card.classList.contains('overflowPortraitCard') || card.classList.contains('overflowBackdropCard')), classesOf(card));
+          const shape = card.classList.contains('overflowPortraitCard') ? SHAPES.poster : SHAPES.backdrop;
+          assert.ok(card.querySelector(`.cardBox .cardScalable .cardPadder.${shape.padder}`), `${heading(row)} loading padder`);
+          assert.equal(card.getAttribute('style'), null, 'no inline size');
+        }
+      }
+      await scrollThrough(page);
+      const seen = new Set();
+      for (const row of rows(page)) {
+        const list = row.querySelector('.jellypass-tv-row-list');
+        if (!list) continue;
+        // Jellyfin's TV card sizes are `.itemsContainer-tv > .overflow…Card`: the cards are the list's own children.
+        assert.equal(list.classList.contains('itemsContainer-tv'), tv, `${heading(row)} list`);
+        assert.equal(list.classList.contains('itemsContainer'), false, `${heading(row)} is not Jellyfin's itemsContainer`);
+        for (const card of cardsOf(row)) {
+          assert.equal(card.parentNode, list, 'a direct child of the list');
+          const shape = card.classList.contains('overflowBackdropCard') ? SHAPES.backdrop : SHAPES.poster;
+          seen.add(shape.card);
+          assert.equal(card.classList.contains(SHAPES.backdrop.card) !== card.classList.contains(SHAPES.poster.card), true, 'one shape');
+          assert.ok(card.querySelector(`.cardBox.cardBox-bottompadded .cardScalable .cardPadder.${shape.padder}`), `${heading(row)} padder`);
+          assert.equal(card.getAttribute('style'), null, 'no inline size on the card');
+          assert.equal(card.querySelector('.cardScalable').getAttribute('style'), null, 'no inline size on the picture');
+          assert.ok(card.querySelector('.cardText.cardText-first') && card.classList.contains('jellypass-tv-card'), 'Jellyfin\'s text classes and the shared ring');
+        }
+      }
+      assert.deepEqual([...seen].sort(), ['overflowBackdropCard', 'overflowPortraitCard'], 'both shapes are on the page');
+      // Popular movies / series / new releases are the wide rows, as the layout says; the others are posters.
+      assert.ok(cardsOf(rowNamed(page, 'Popular movies')).every((card) => card.classList.contains('overflowBackdropCard')));
+      assert.ok(cardsOf(rowNamed(page, 'Trending')).every((card) => card.classList.contains('overflowPortraitCard')));
+    });
+  }
+
+  it('keeps the add-on\'s stylesheet out of card sizes: no rule sets a width, height, flex-basis or padder of Jellyfin\'s cards or of the add-on\'s loading cards, and Jellyfin\'s own margin rule for a list\'s cards is kept for the row and the grid', () => {
+    const css = readFileSync(path.join(DIST_TV, STYLESHEET), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const rules = [...css.matchAll(/([^{}@]+)\{([^{}]*)\}/g)].flatMap(([, selectors, body]) => selectors.split(',').map((selector) => ({ selector: selector.trim(), body })));
+    const sizing = /(?:^|;)\s*(?:width|height|min-width|max-width|min-height|max-height|flex|flex-basis|padding-bottom|padding-top)\s*:/;
+    const touchesCard = /(?:\.card\b|Card\b|\.cardPadder|\.cardScalable|\.cardBox|\.jellypass-tv-discover-skeleton-card|\.jellypass-tv-card\b(?!-))/;
+    const offenders = rules.filter((rule) => touchesCard.test(rule.selector) && sizing.test(rule.body)).map((rule) => rule.selector);
+    // The loading card (jellypass-tv-discover-skeleton-card) and the poster image's fill are the only card rules, and neither sets a size.
+    assert.deepEqual(offenders, [], 'a rule sizes a card');
+    const margin = rules.find((rule) => rule.selector === '.jellypass-tv-row-list > .card > .cardBox');
+    assert.ok(margin && /margin-left:\s*0/.test(margin.body) && /margin-right:\s*1\.2em/.test(margin.body), 'the row keeps Jellyfin\'s margin for a list\'s cards');
+    const grid = rules.find((rule) => rule.selector === '.jellypass-tv-source-grid > .card > .cardBox');
+    assert.ok(grid && grid.body === margin.body, 'and so does the grid, the same rule');
+    for (const old of ['source-skeleton-card', 'discover-skeleton-poster', 'discover-skeleton-backdrop']) assert.equal(css.includes(old), false, `no ${old} rule left`);
+    assert.equal(/\.jellypass-tv-source-grid\s*>\s*\.card\s*\{/.test(css), false, 'no grid card size of the add-on\'s');
+  });
+
+  it('keeps the status badge a small pill like Jellyfin\'s own indicators: short words, a corner box well under the poster, 88% type, 4.5:1 text on every colour, and the whole sentence in the card\'s name', async (t) => {
+    const css = readFileSync(path.join(DIST_TV, STYLESHEET), 'utf8').replace(/\/\*[\s\S]*?\*\//g, '');
+    const rules = [...css.matchAll(/([^{}@]+)\{([^{}]*)\}/g)].flatMap(([, selectors, body]) => selectors.split(',').map((selector) => ({ selector: selector.trim(), body })));
+    const bodyOf = (selector) => rules.filter((rule) => rule.selector === selector).map((rule) => rule.body).join(';');
+    const badge = bodyOf('.jellypass-tv-discover-badge');
+    const px = (property) => badge.match(new RegExp(`(?:^|;)\\s*${property}:\\s*([\\d.]+)(em|%)`));
+    assert.match(badge, /position:\s*absolute/);
+    assert.match(badge, /white-space:\s*nowrap/);
+    assert.match(badge, /border-radius:\s*100em/);
+    // Type: Jellyfin's `.countIndicator` is 88%; never larger than the card's own secondary text (86%) by more than a hair, never smaller than 80%.
+    const font = Number(px('font-size')[1]);
+    assert.ok(font >= 80 && font <= 90, `font-size ${font}%`);
+    // Padding: a pill, not a banner.
+    const padding = badge.match(/padding:\s*([\d.]+)em\s+([\d.]+)em/);
+    assert.ok(padding && Number(padding[1]) <= 0.25 && Number(padding[2]) <= 0.6, 'padding');
+    // Never wider than most of the poster, and set in from the corner by at most a ring's width and a bit.
+    assert.ok(Number(px('max-width')[1]) <= 90 && px('max-width')[2] === '%', 'max-width');
+    for (const side of ['top', 'right']) assert.ok(Number(px(side)[1]) <= 0.5 && px(side)[2] === 'em', side);
+    assert.equal(/(?:^|;)\s*(?:width|height|min-width|min-height|display)\s*:/.test(badge), false, 'no fixed size or block');
+    assert.equal(/(?:^|;)\s*z-index/.test(badge), false);
+    // Words: short (so the pill stays small at 10 feet), one per state, and the sentence stays in the card's name.
+    const page = await openScripted(t, { cards: 20 }, { hide: 'off' });
+    await goTo(page);
+    const byState = new Map();
+    for (const card of cardsOf(rowNamed(page, 'Trending'))) {
+      const sentence = card.getAttribute('aria-label').split(', ').pop();
+      byState.set(sentence, card.querySelector('.jellypass-tv-discover-badge').textContent);
+    }
+    assert.deepEqual([...byState.keys()].sort(), ['Available to get', "Can't request", 'In your library', 'Requested'], 'every state is on the row');
+    assert.equal(new Set(byState.values()).size, 4, 'one word each');
+    for (const [sentence, words] of byState) {
+      assert.ok(words.length <= 10, `${sentence} badge is short`);
+      assert.notEqual(words, sentence === 'Requested' ? '' : sentence, 'the badge is not the sentence');
+    }
+    // Contrast of white text (the pill's own colour) on each tone's background, WCAG 2.x relative luminance.
+    const luminance = (hex) => {
+      const channel = (index) => { const v = parseInt(hex.slice(1 + index * 2, 3 + index * 2), 16) / 255; return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
+      return 0.2126 * channel(0) + 0.7152 * channel(1) + 0.0722 * channel(2);
+    };
+    for (const tone of ['owned', 'pending', 'open', 'closed']) {
+      const background = bodyOf(`.jellypass-tv-discover-badge-${tone}`).match(/background:\s*(#[0-9a-f]{6})/);
+      assert.ok(background, `${tone} has a colour`);
+      const ratio = 1.05 / (luminance(background[1]) + 0.05);
+      assert.ok(ratio >= 4.5, `${tone} contrast ${ratio.toFixed(2)}`);
+    }
+  });
+
   it('shows at most 14 cards per row, the household\'s own state on each as words (and a name that says it), and nothing of what is not asked for', async (t) => {
     const state = { cards: 20 };
     const page = await openScripted(t, state, { hide: 'off' });
@@ -4055,7 +4171,7 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
     for (const row of rows(page)) assert.equal(cardsOf(row).length, 14, heading(row));
     // The rotation of states in the fixture, as the four badges' words; the card's name says it too.
     const row = rowNamed(page, 'Trending');
-    assert.deepEqual(badges(row).slice(0, 5), ['In your library', 'Requested', 'Available to get', "Can't request", 'Available to get']);
+    assert.deepEqual(badges(row).slice(0, 5), ['In library', 'Requested', 'Get this', "Can't get", 'Get this']);
     const label = cardsOf(row)[0].getAttribute('aria-label');
     assert.match(label, /^Synthetic \d+, 2020, In your library$/);
     // Poster rows draw Jellyfin's portrait card, the three wide rows its backdrop card; both carry the shared focus ring class.
@@ -4080,15 +4196,15 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
     const seen = state.seen.length;
     const before = badges(rowNamed(page, 'Trending'));
     assert.equal(before.length, 14);
-    assert.equal(before.filter((words) => words === 'In your library' || words === 'Requested').length, 6);
-    assert.ok(before.includes('In your library') && before.includes('Requested'));
+    assert.equal(before.filter((words) => words === 'In library' || words === 'Requested').length, 6);
+    assert.ok(before.includes('In library') && before.includes('Requested'));
     assert.deepEqual(pressed(page), ['chip:all']);
     page.click(chip(page, 'hide'));
     assert.equal(chip(page, 'hide').getAttribute('aria-pressed'), 'true');
     for (const row of rows(page)) {
       // The 14 shown had 8 that are not held; the row now shows all 12 of the 20 that are: it is filled from the rest of the answer.
       assert.equal(cardsOf(row).length, 12, `${heading(row)} is filled from the rest of the 20`);
-      assert.ok(badges(row).every((words) => words === 'Available to get' || words === "Can't request"), heading(row));
+      assert.ok(badges(row).every((words) => words === 'Get this' || words === "Can't get"), heading(row));
     }
     assert.equal(state.seen.length, seen, 'no call');
     page.click(chip(page, 'hide'));
@@ -4461,7 +4577,7 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
       const cards = trending(20);
       assert.equal(slideOf(page), cards[2].title);
       assert.equal(dotsOf(page), '● ○ ○ ○ ○');
-      assert.ok(badges(rowNamed(page, 'Trending')).every((words) => words !== 'In your library' && words !== 'Requested'));
+      assert.ok(badges(rowNamed(page, 'Trending')).every((words) => words !== 'In library' && words !== 'Requested'));
       assert.equal(discoverCalls(page, before).length, 5);
     });
 
@@ -4497,7 +4613,7 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
       assert.equal(hideChip(page).getAttribute('aria-pressed'), 'false');
       assert.equal(slideOf(page), cards[0].title, 'as before: the first of the answer');
       assert.equal(dotsOf(page), '● ○ ○ ○ ○');
-      assert.ok(badges(rowNamed(page, 'Trending')).includes('In your library'));
+      assert.ok(badges(rowNamed(page, 'Trending')).includes('In library'));
       page.click(hideChip(page));
       assert.equal(hideChip(page).getAttribute('aria-pressed'), 'true');
       assert.equal(slideOf(page), cards[2].title);
@@ -5244,11 +5360,11 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
       assert.equal(hide().getAttribute('aria-pressed'), 'true', 'the choice came with the member');
       const words = () => gridCards(page).map((card) => card.querySelector('.jellypass-tv-discover-badge').textContent);
       assert.equal(words().length, 12);
-      assert.ok(words().every((one) => one === 'Available to get' || one === "Can't request"));
+      assert.ok(words().every((one) => one === 'Get this' || one === "Can't get"));
       const mark = page.requests.length;
       page.click(hide());
       assert.equal(gridCards(page).length, 20);
-      assert.deepEqual(words().slice(0, 5), ['In your library', 'Requested', 'Available to get', "Can't request", 'Available to get']);
+      assert.deepEqual(words().slice(0, 5), ['In library', 'Requested', 'Get this', "Can't get", 'Get this']);
       assert.match(gridCards(page)[0].getAttribute('aria-label'), /^Synthetic \d+, 2020, In your library$/);
       assert.deepEqual(asked(page, mark), [], 'no call');
       // And back on Discover it is as the member left it.
@@ -5391,6 +5507,46 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
         assert.deepEqual(outcome.calls, baseline.calls, `${name}: the calls the add-on made`);
         assert.ok(outcome.view === baseline.view, `${name}: the pages differ`);
       }
+    });
+
+    for (const tv of [true, false]) {
+      it(`sizes the service and studio grids with Jellyfin web's own classes in the ${tv ? 'TV' : 'desktop'} layout: its wrapping grid of portraitCards, itemsContainer-tv only on a TV, and loading cards in the same markup`, async (t) => {
+        const page = await openScripted(t, { cards: 20, pages: { '/discover/network/213/all': 2 } }, { hide: 'off', tv });
+        const pageGate = page.requests.length;
+        await toHash(page, SERVICE);
+        assert.ok(page.requests.length > pageGate);
+        for (const hash of [SERVICE, STUDIO]) {
+          if (hash === STUDIO) await toHash(page, STUDIO);
+          const grid = sourceRoot(page).querySelector('.jellypass-tv-source-grid');
+          assert.ok(grid.classList.contains('vertical-wrap'), 'Jellyfin\'s wrapping grid');
+          assert.equal(grid.classList.contains('itemsContainer-tv'), tv);
+          assert.equal(grid.classList.contains('itemsContainer'), false);
+          assert.ok(gridCards(page).length > 0);
+          for (const card of gridCards(page)) {
+            assert.equal(card.parentNode, grid, 'a direct child of the grid');
+            assert.ok(card.classList.contains('portraitCard') && !card.classList.contains('overflowPortraitCard'), classesOf(card));
+            assert.ok(card.querySelector('.cardBox.cardBox-bottompadded .cardScalable .cardPadder.cardPadder-portrait'));
+            assert.equal(card.getAttribute('style'), null, 'no inline size');
+          }
+        }
+      });
+    }
+
+    it('draws a service grid\'s loading cards in the same markup as its cards, so nothing jumps when they come', async (t) => {
+      let release;
+      const gate = new Promise((resolve) => { release = resolve; });
+      const page = await openScripted(t, { cards: 20, gates: { '/discover/network/213/all': gate } }, { hide: 'off' });
+      page.route(SERVICE);
+      for (let i = 0; i < 20 && !sourceRoot(page); i += 1) await pause(25);
+      const skeleton = sourceRoot(page).querySelector('.jellypass-tv-source-grid.jellypass-tv-discover-skeleton');
+      assert.ok(skeleton && skeleton.children.length > 0, 'loading');
+      assert.ok(skeleton.classList.contains('vertical-wrap'));
+      for (const card of skeleton.children) {
+        assert.ok(card.classList.contains('portraitCard') && card.querySelector('.cardBox .cardScalable .cardPadder-portrait'), classesOf(card));
+      }
+      release();
+      await page.settled();
+      assert.ok(gridCards(page).length > 0);
     });
 
     it('draws the shared focus ring on a service page\'s card, gives its tabs and Load more their own :focus rules, and keeps its classes to its own and the shared ones', async (t) => {

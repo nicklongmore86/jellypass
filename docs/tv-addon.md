@@ -438,10 +438,21 @@ web's focus manager moves between the hero's buttons, the chips and the cards; B
   (pinned to the app's `HOME_LAYOUT`): on All, Trending (posters), Popular movies, Popular series and New movie releases (wide
   backdrop cards), Upcoming movies and series (posters) and the eight **Popular on …** (a service) rows (posters, the film and series
   list the chip names); then a **foot** with the studios' logos (light tiles), the JustWatch line and the TMDB notice.
+- **Card sizes are Jellyfin web's.** Every card the add-on draws is Jellyfin 12.3's own card of its shape, and the stylesheet sets no card
+  width, height or padder: a poster in a scrolling row (Home, Search, Discover) is `overflowPortraitCard` with `cardPadder-overflowPortrait`,
+  a wide card `overflowBackdropCard` with `cardPadder-overflowBackdrop`, and a service or studio grid card `portraitCard` with
+  `cardPadder-portrait` in a `vertical-wrap` grid. On a TV the row's (or grid's) list also carries `itemsContainer-tv`, which Jellyfin's
+  TV card sizes are keyed on (`.itemsContainer-tv > .overflowPortraitCard` 15.6vw, `> .overflowBackdropCard` 23.5vw), so at 1920x1080
+  a poster is 299.5 px wide on the TV layout as in Jellyfin's own Latest row (200 px on the desktop layout), with its title and year in Jellyfin's
+  type. Loading cards are the same markup. The add-on keeps one copy of Jellyfin's `.itemsContainer > .card > .cardBox` margin rule
+  (Jellyfin's pages call `.pause()` on `.itemsContainer`, so the list cannot be one). My requests page entries are list rows (a 2:3
+  thumbnail beside the text), not cards.
 - **Cards.** Jellyfin's own `overflowPortraitCard` or `overflowBackdropCard` with the shared `jellypass-tv-card` focus ring, at most
-  **14 per row**, each with a **badge in words**: *In your library*, *Requested*, *Available to get*, *Can't request* (the state
+  **14 per row**, each with a **small badge in words** (a pill in the poster's top right corner, like Jellyfin's own indicators: *In library*,
+  *Requested*, *Get this*, *Can't get*; the card's accessible name keeps the whole sentence, *In your library*, *Requested*,
+  *Available to get*, *Can't request*; the state
   the API gave the caller's household, through the "Get this" overlay, so a title just asked for reads Requested with no call), in
-  a colour that goes with the words (never colour alone), and the same words in the card's accessible name. **Hide what I have** hides
+  a colour that goes with the words (never colour alone, white on each above 5:1). **Hide what I have** hides
   *In your library* and *Requested* and fills the row from the rest of the answer; it asks nothing. It is **on by default** (see below). Choosing a card opens the title
   page; **Back returns to the same card** (the page is drawn from the kept answers before anything is asked, so the host's focus
   key finds the card) and makes **no Discover call** (the title page makes its own two). After the cache's ten minutes the key may
@@ -617,7 +628,7 @@ bookmarked too. The add-on handles no key.
   whose films the API lists (`hasFilms`), the tabs **All / Series / Films**; a service without films has its series only (no tabs,
   no JustWatch line); a studio has one list. The tabs and **Hide what I have** are buttons with `aria-pressed` in a labelled group
   (the Discover page's chips: no arrow-key handling is needed, Jellyfin's focus manager moves between them). Then the **grid**:
-  Jellyfin's portrait cards, seven wide, each with the household's state **in words** as on Discover (and in its accessible name),
+  Jellyfin's `portraitCard`s in its own wrapping grid (`vertical-wrap`, with `itemsContainer-tv` on a TV: as many across as Jellyfin's library pages draw at that width), each with the household's state **in words** as on Discover (and in its accessible name),
   **20 cards a press** (one API page: a Discover row keeps 14 of its 20 for memory, but a grid that cut a page would need a call
   for some presses and none for others, and its images are windowed), a **Load more** button
   after the grid, the **JustWatch** line under All and Films of a service, and the **TMDB notice** (a focus stop, as on Discover).
@@ -956,7 +967,7 @@ that household:
    hero's text sits on its picture without being lost, and the page is not slow to scroll with every row loaded.
 18. **Service and studio pages.** On Discover, Up from the first card of a "Popular on …" row focuses the heading link (a visible
    ring round the words) and OK opens the service's page; a studio's tile takes the ring and OK opens its page. On the page, Down
-   from the tabs reaches the grid (seven across), Load more is the last stop of the grid and OK loads 20 more with focus on the first
+   from the tabs reaches the grid (as many across as Jellyfin's library grid), Load more is the last stop of the grid and OK loads 20 more with focus on the first
    new card, and Back from a title returns to the same card on the same tab. Scroll a service's grid through three Load mores and
    back up: no crash, no images that stay missing (the same memory check as 16).
 

@@ -1,6 +1,7 @@
 import type { DiscoverCard, DiscoverNetwork, DiscoverPage as ListPage, DiscoverSources, DiscoverStudio, Failure, HouseholdState, NetworkList } from './api.js';
 import type { Asked } from './asked.js';
-import { drawCard, imageIn, markCard, setNear, type Drawn, type Unit } from './discover-card.js';
+import { JELLYFIN_CLASSES, listClasses } from './jellyfin-web.js';
+import { drawCard, imageIn, markCard, setNear, skeletonCard, type Drawn, type Unit } from './discover-card.js';
 import type { DiscoverData, DiscoverRequest } from './discover-data.js';
 import { DISCOVER_TEXT, isHeld, JUSTWATCH_NOTE, listsOf, SOURCE_TEXT, sourceId, TMDB_NOTICE } from './discover-model.js';
 import type { HidePreference } from './discover-preference.js';
@@ -460,9 +461,9 @@ export class SourcePage {
   #skeleton(open: Open): void {
     const panel = open.panel as HTMLElement;
     this.#teardown(open, 'panel');
-    const grid = this.#el('div', 'jellypass-tv-source-grid jellypass-tv-discover-skeleton padded-left padded-right');
+    const grid = this.#el('div', listClasses(`jellypass-tv-source-grid ${JELLYFIN_CLASSES.grid} jellypass-tv-discover-skeleton padded-left padded-right`, this.#tv()));
     grid.setAttribute('aria-hidden', 'true');
-    for (let i = 0; i < SKELETON_CARDS; i += 1) grid.appendChild(this.#el('div', 'jellypass-tv-source-skeleton-card jellypass-tv-discover-skeleton-card jellypass-tv-discover-skeleton-poster'));
+    for (let i = 0; i < SKELETON_CARDS; i += 1) grid.appendChild(skeletonCard(this.#document, 'portrait'));
     panel.appendChild(grid);
     panel.setAttribute('aria-busy', 'true');
   }
@@ -471,7 +472,7 @@ export class SourcePage {
   #frame(open: Open): void {
     const panel = open.panel as HTMLElement;
     this.#teardown(open, 'panel');
-    open.grid = this.#el('div', 'jellypass-tv-source-grid padded-left padded-right');
+    open.grid = this.#el('div', listClasses(`jellypass-tv-source-grid ${JELLYFIN_CLASSES.grid} padded-left padded-right`, this.#tv()));
     panel.appendChild(open.grid);
   }
 
@@ -610,7 +611,7 @@ export class SourcePage {
     const render = open.render;
     const gridNo = open.gridNo;
     const unit: Unit = { element: grid, images: [], near: !open.imageWatch };
-    const one = drawCard(this.#document, unit, { card, backdrop: false, tv: this.#tv(), key: `card:${card.mediaType}:${card.tmdbId}` });
+    const one = drawCard(this.#document, unit, { card, shape: 'portrait', tv: this.#tv(), key: `card:${card.mediaType}:${card.tmdbId}` });
     unit.element = one.button;
     // Kept with or without an observer, so a redraw can let go of the pictures either way.
     open.units.set(one.button, unit);

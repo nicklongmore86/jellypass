@@ -118,18 +118,30 @@ export const STATE_LABELS: Readonly<Record<HouseholdState, string>> = {
 };
 
 /**
- * The badge a card carries: the state's words, and a `tone` for the colour that goes with them (the words are always
+ * The badge a card carries: the state's short words (`word`; `label` is the sentence), and a `tone` for the colour that goes with them (the words are always
  * there, so the colour is never the only sign). The state is the one the API gave for the caller's household, with
  * nothing of another household's or of any member's own in it.
  */
-export function badgeOf(state: HouseholdState): { label: string; tone: 'owned' | 'pending' | 'open' | 'closed' } {
+export function badgeOf(state: HouseholdState): { label: string; word: string; tone: 'owned' | 'pending' | 'open' | 'closed' } {
   switch (state) {
-    case 'in_library': return { label: STATE_LABELS.in_library, tone: 'owned' };
-    case 'requested': return { label: STATE_LABELS.requested, tone: 'pending' };
-    case 'get_this': return { label: STATE_LABELS.get_this, tone: 'open' };
-    default: return { label: STATE_LABELS.unavailable, tone: 'closed' };
+    case 'in_library': return { label: STATE_LABELS.in_library, word: BADGE_WORDS.in_library, tone: 'owned' };
+    case 'requested': return { label: STATE_LABELS.requested, word: BADGE_WORDS.requested, tone: 'pending' };
+    case 'get_this': return { label: STATE_LABELS.get_this, word: BADGE_WORDS.get_this, tone: 'open' };
+    default: return { label: STATE_LABELS.unavailable, word: BADGE_WORDS.unavailable, tone: 'closed' };
   }
 }
+
+/**
+ * What the badge on a card says: the state in one or two short words, so the badge stays a small pill in the corner like
+ * Jellyfin web's own indicators (the sentence {@link STATE_LABELS} is the card's accessible name, which a screen reader reads
+ * instead of the card's contents). The words are always there, and the colour goes with them.
+ */
+export const BADGE_WORDS: Readonly<Record<HouseholdState, string>> = {
+  in_library: 'In library',
+  requested: 'Requested',
+  get_this: 'Get this',
+  unavailable: "Can't get",
+};
 
 /**
  * Whether "Hide what I have" hides a card: the titles already in the library and those the household has asked for.
