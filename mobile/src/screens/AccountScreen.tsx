@@ -6,7 +6,8 @@ import { useState, type ReactNode } from 'react';
 import { Linking, Pressable, StyleSheet, Text, View } from 'react-native';
 
 import type { Me } from '../api/types';
-import { ABOUT_TEXT, apiVersionText, CREDIT_URLS, JUSTWATCH_CREDIT, TMDB_NOTICE, TMDB_SOURCE, TMDB_URL, versionText, type LinkedSentence } from '../credits';
+import { ABOUT_TEXT, allowedUrls, apiVersionText, JUSTWATCH_CREDIT, TMDB_NOTICE, TMDB_SOURCE, TMDB_URL, UNOFFICIAL_TEXT, versionText, type LinkedSentence } from '../credits';
+import { storeLink } from '../links';
 import { useSession } from '../session/SessionProvider';
 import { colors, layout, radii, spacing, typography } from '../theme';
 import { TmdbLogo } from '../TmdbLogo';
@@ -17,9 +18,9 @@ export function accountText(me: Pick<Me, 'name' | 'household'>): string {
   return [me.name, me.household].filter(Boolean).join(' · ') || 'Signed in';
 }
 
-/** Opens one of the credits' own links in the system browser; nothing else is ever opened. */
+/** Opens one of the credits' or the owner's configured links in the system browser; nothing else is ever opened. */
 export function openCredit(url: string): void {
-  if (!CREDIT_URLS.includes(url)) return;
+  if (!allowedUrls().includes(url)) return;
   Linking.openURL(url).catch(() => {
     // No browser to open it in: nothing to do, and nothing to log.
   });
@@ -55,6 +56,21 @@ function Sentence({ sentence, muted = true }: { sentence: LinkedSentence; muted?
   );
 }
 
+// A plain link a thumb's height tall, its words as its name. Shown only when the app config sets its URL.
+function PageLink({ label, url }: { label: string; url: string | null }) {
+  if (!url) return null;
+  return (
+    <Pressable
+      accessibilityRole="link"
+      accessibilityLabel={label}
+      onPress={() => openCredit(url)}
+      style={({ pressed }) => [styles.sentenceLink, pressed && styles.pressed]}
+    >
+      <Text style={styles.link}>{label}</Text>
+    </Pressable>
+  );
+}
+
 export function AccountScreen({ me }: { me: Me }) {
   const { signOut, changeHousehold } = useSession();
   const [busy, setBusy] = useState(false);
@@ -84,6 +100,9 @@ export function AccountScreen({ me }: { me: Me }) {
         <Text style={styles.text}>{TMDB_NOTICE}</Text>
         <Sentence sentence={TMDB_SOURCE} />
         <Sentence sentence={JUSTWATCH_CREDIT} />
+        <Text style={styles.muted}>{UNOFFICIAL_TEXT}</Text>
+        <PageLink label="Privacy policy" url={storeLink('privacyPolicyUrl')} />
+        <PageLink label="Support" url={storeLink('supportUrl')} />
         <Text style={[styles.muted, styles.version]}>{versionText()}</Text>
         <Text style={[styles.muted, styles.version]}>{apiVersionText(me.apiVersion)}</Text>
       </Group>

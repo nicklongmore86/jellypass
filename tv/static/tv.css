@@ -686,6 +686,51 @@ html.jellypass-tv-hosting #fallbackPage[data-role="page"].page:not(.hide) > :not
   box-shadow: 0 0 0 0.2em #fff;
   box-shadow: 0 0 0 0.2em var(--jf-palette-text-primary, #fff);
 }
+/* A list row's "see all": a small button after the heading, not the heading itself (the heading stays the words only). */
+.jellypass-tv-discover-see-all {
+  margin-left: 1em;
+  font-size: 0.75em;
+  font-weight: 500;
+  opacity: 0.85;
+}
+.jellypass-tv-discover-see-all:hover,
+.jellypass-tv-discover-see-all:focus {
+  opacity: 1;
+}
+/* The Back button at the top of a JellyPass page in the desktop layout (the toolbar there has none; the TV layout has Jellyfin's own
+   Back and the remote). Jellyfin's own text-button look, with an arrow drawn here, and the same ring as the page's other controls. */
+/* Positioned and stacked once, so it is above the title page's fixed backdrop (which is later in the page, and would paint over it and take its clicks). */
+.jellypass-tv-back-bar {
+  position: relative;
+  z-index: 1;
+  padding-top: 1em;
+}
+.jellypass-tv-back {
+  display: inline-flex;
+  align-items: center;
+  margin: 0;
+  padding: 0.4em 1em 0.4em 0.6em;
+  border: 0;
+  border-radius: 2em;
+  background: rgba(255, 255, 255, 0.1);
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+.jellypass-tv-back::before {
+  content: '\2039';
+  margin-right: 0.4em;
+  font-size: 1.4em;
+  line-height: 1;
+}
+.jellypass-tv-back:hover {
+  background: rgba(255, 255, 255, 0.2);
+}
+.jellypass-tv-back:focus {
+  outline: none;
+  box-shadow: 0 0 0 0.2em #fff;
+  box-shadow: 0 0 0 0.2em var(--jf-palette-text-primary, #fff);
+}
 /* The state in a word or two, a small pill in the poster's top right corner as Jellyfin's own indicators are (`.cardIndicators`;
    the pill, shadow and 88% type are those of its `.countIndicator`), set in far enough to clear the focus ring, in the state's colour as
    well, so the colour is never the only sign; the card's accessible name has the whole sentence. White on each of the colours

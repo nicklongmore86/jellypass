@@ -25,7 +25,7 @@ describe('app config', () => {
 
   it('is the rtc-services-llc/jellypass project on EAS', () => {
     // Permanent, like the app ids: EAS keeps the signing keys and build numbers under this project, owner and slug.
-    expect(config.extra).toEqual({ eas: { projectId: '1db20c4d-4270-404e-acf4-31a8bd6dd591' } });
+    expect(config.extra?.eas).toEqual({ projectId: '1db20c4d-4270-404e-acf4-31a8bd6dd591' });
     expect(config.owner).toBe('rtc-services-llc');
     expect(config.slug).toBe('jellypass');
   });

@@ -78,6 +78,18 @@ upgrading:
 - `docs/tv-addon.md`: the TV add-on is matched to the supported Jellyfin
   releases.
 
+### TV add-on
+
+The TV add-on is still experimental and off by default: unless `TV_ADDON_ENABLED` is set, nothing changes on any host. No server
+change (the app API, the state file and the settings are as before).
+
+- **See all on the Discover rows.** Trending, Popular movies, Popular series, New movie releases, Upcoming movies and Upcoming
+  series (and the Trending rows of the Movies and TV chips) have a "See all" button beside their heading, named for example
+  "Trending, see all". It opens a full grid page at `#/jellypass/list/<list>` with Load more, "New only" (the shared setting, on
+  by default), the short corner badges and Jellyfin-sized cards. Opening one from its row costs no call, Load more one call, Back none.
+- **A Back button on JellyPass pages in the desktop layout**, where Jellyfin 12.3's toolbar has none. It goes back in history, or
+  to Jellyfin's Home when there is nothing to go back to. The TV layout is unchanged.
+
 ## [3.8.1] - 2026-10-29
 
 This is a patch release for the TV add-on, which is still experimental and off

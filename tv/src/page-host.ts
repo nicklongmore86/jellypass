@@ -20,6 +20,8 @@ export const HOSTING_CLASS = 'jellypass-tv-hosting';
 export const PAGE_ATTR = 'data-jellypass-tv-page';
 /** On an element of a page that focus returns to on Back, with a key unique within the page. */
 export const FOCUS_ATTR = 'data-jellypass-tv-focus';
+/** On the Back button the host puts at the top of a JellyPass page in the desktop layout. */
+export const BACK_ATTR = 'data-jellypass-tv-back';
 /** How many pages' last focus is remembered (in memory only). */
 const FOCUS_MEMORY = 20;
 
@@ -68,6 +70,9 @@ interface Active {
   /** Jellyfin's `data-title` for its page, put back (with the header and document title it implies) when the host leaves. */
   priorTitle: string | null;
   view: PageView;
+  /** The Back button's bar, with the sign-in generation it was drawn under: after a change it is replaced, and the old one is inert. */
+  backBar?: HTMLElement | undefined;
+  backGeneration?: number | undefined;
 }
 
 /** The path of a `#/jellypass/...` hash (without its query), or undefined. */
@@ -106,7 +111,13 @@ export class PageHost {
   private failed: { hash: string; page: Element } | undefined;
   private focusKeys = new Map<string, string>();
 
-  constructor(private readonly document: Document, private readonly currentHash: () => string) {}
+  /**
+   * `back` is what the Back button does (history back, or Home when the member has come from nowhere in Jellyfin); without
+   * it no page has the button. The button is only for the desktop layout, whose toolbar has no Back (the TV layout has
+   * Jellyfin's own header Back and the remote). `generation` is the sign-in generation (SessionWatch.snapshot): a Back
+   * button works only under the one it was drawn under.
+   */
+  constructor(private readonly document: Document, private readonly currentHash: () => string, private readonly back?: () => void, private readonly generation: () => number = () => 0) {}
 
   /** Registers a page for a path pattern under `/jellypass/`, such as `/jellypass/about` or `/jellypass/title/:id`. */
   register(pattern: string, render: PageRender): void {
@@ -145,6 +156,7 @@ export class PageHost {
     // Set before Jellyfin's page exists, so its "Page not found" is never drawn; not while that page is not as expected
     // (the stylesheet checks its shape too), so then Jellyfin's page is shown as it is.
     this.hosting(Boolean(page) || !this.document.getElementById('fallbackPage'));
+    if (this.active) this.refreshBack(this.active);
     if (!page || this.active) return;
     this.open(page, hash, route, params);
   }
@@ -171,6 +183,8 @@ export class PageHost {
   /** A key or pointer press by the member: from here focus inside the page is theirs, to be remembered. */
   userInput(): void {
     if (!this.active) return;
+    // A press is the likeliest next thing after a session change that moved no element: the old Back button goes now.
+    this.refreshBack(this.active);
     this.active.focusPending = false;
     this.active.acted = true;
   }
@@ -229,10 +243,46 @@ export class PageHost {
     }
     const active: Active = { hash, page, container, cleanup: view.cleanup, focusPending: true, acted: false, priorTitle: page.getAttribute('data-title'), view };
     this.active = active;
+    this.drawBack(active);
     this.setTitle(page, view.title);
     this.restoreFocus(active);
     // Our own focus above is not the member moving it.
     active.focusPending = true;
+  }
+
+  /** The Back button, first in the page, once: nowhere in the TV layout, and not again if the page has it already. */
+  private drawBack(active: Active): void {
+    const back = this.back;
+    if (!back || this.document.documentElement.classList.contains('layout-tv')) return;
+    if (active.container.querySelector(`[${BACK_ATTR}]`)) return;
+    const generation = this.generation();
+    const bar = this.document.createElement('div');
+    bar.className = 'jellypass-tv-back-bar padded-left padded-right';
+    const button = this.document.createElement('button');
+    button.type = 'button';
+    button.className = 'emby-button jellypass-tv-back';
+    button.setAttribute(BACK_ATTR, '');
+    button.setAttribute(FOCUS_ATTR, 'back');
+    button.setAttribute('aria-label', 'Back');
+    button.textContent = 'Back';
+    // Only the page on show answers, under the session it was drawn in: a button kept from a page since left, or from
+    // before a sign-out, another member or a new token, does nothing.
+    button.addEventListener('click', () => {
+      if (this.active === active && active.backGeneration === generation && this.generation() === generation) back();
+    });
+    bar.appendChild(button);
+    active.container.insertBefore(bar, active.container.firstChild);
+    active.backBar = bar;
+    active.backGeneration = generation;
+  }
+
+  /** The session changed under the page on show: its Back button is taken away and drawn again for the new one. */
+  private refreshBack(active: Active): void {
+    if (!active.backBar || active.backGeneration === this.generation()) return;
+    active.backBar.remove();
+    active.backBar = undefined;
+    active.backGeneration = undefined;
+    this.drawBack(active);
   }
 
   private leave(): void {

@@ -15,6 +15,26 @@ build.
 
 ## [Unreleased]
 
+Store-readiness changes that need no server change.
+
+### Added
+
+- Account → About & credits says the app is an unofficial companion, not affiliated with Jellyfin or Seerr.
+- Optional **Privacy policy** and **Support** links in About, and a **What is JellyPass?** link on the address
+  screen. Each shows only when its https URL is set in the app config (`extra.privacyPolicyUrl`, `supportUrl`,
+  `aboutUrl`); they ship unset. They open in the system browser, are allow-listed, and carry no member data.
+- The address screen says what the app is: a companion for a JellyPass household server, whose address comes from
+  whoever runs your Jellyfin.
+- A `production-aab` EAS profile that builds an Android App Bundle for Google Play. The APK profiles, the release
+  workflow and the signing key are unchanged.
+
+### Changed
+
+- Cancelling a request no longer mentions a "download": an approved title "may still be added to the server, but it
+  won't be added for your household."
+- The app icons are 1024 × 1024 (the App Store's size), the same drawing as before. The Android adaptive icon's
+  foreground is scaled to sit inside the launcher's safe zone, so a round or squircle mask no longer clips the ticket.
+
 ## [1.2.1] - 2026-10-29
 
 A patch release: Home's filter chips and the poster badges are no longer cut

@@ -2,10 +2,11 @@ import { ABOUT_PATH, renderAbout } from './about.js';
 import { Asked } from './asked.js';
 import { DiscoverData } from './discover-data.js';
 import { DiscoverEntry } from './discover-entry.js';
-import { DISCOVER_HASH, DISCOVER_PATH, SERVICE_PATH, STUDIO_PATH } from './discover-model.js';
+import { DISCOVER_HASH, DISCOVER_PATH, LIST_PATH, SERVICE_PATH, STUDIO_PATH } from './discover-model.js';
 import { HidePreference } from './discover-preference.js';
 import { SourcePage } from './discover-source.js';
 import { DiscoverPage } from './discover.js';
+import { HistoryTrail } from './history-trail.js';
 import { isHomeShown, isSearchShown } from './jellyfin-web.js';
 import { PageHost } from './page-host.js';
 import { RequestsPage } from './requests.js';
@@ -75,18 +76,34 @@ function start(): void {
   const discoverEntry = new DiscoverEntry(document, discoverWatch, () => navigate(DISCOVER_HASH));
   const search: SearchRow = new SearchRow(document, api, base.origin, asked, (card) => navigate(titleHash(card.mediaType, card.tmdbId)));
   // JellyPass pages at #/jellypass/..., in Jellyfin web's own "page not found" page (tv/src/page-host.ts).
-  const host = new PageHost(document, () => location.hash);
+  // Back on a JellyPass page (the desktop layout has none of its own): history when the member came from another page of Jellyfin web, else Home.
+  // The trail is the session's: a sign-out, another member or a new token starts it again, so no one inherits Back destinations.
+  const trail = new HistoryTrail(location.hash);
+  let trailGeneration = discoverWatch.snapshot();
+  const trailSession = () => {
+    const now = discoverWatch.snapshot();
+    if (now === trailGeneration) return;
+    trailGeneration = now;
+    trail.reset(location.hash);
+  };
+  const host = new PageHost(document, () => location.hash, () => {
+    trailSession();
+    if (trail.canGoBack && typeof window.history === 'object' && window.history && typeof window.history.back === 'function') window.history.back();
+    else navigate('#/home');
+  }, () => discoverWatch.snapshot());
   host.register(ABOUT_PATH, renderAbout);
   host.register(TITLE_PATH, (context) => title.render(context));
   host.register(REQUESTS_PATH, (context) => requests.render(context));
   host.register(DISCOVER_PATH, (context) => discover.render(context));
   host.register(SERVICE_PATH, (context) => sources.renderService(context));
   host.register(STUDIO_PATH, (context) => sources.renderStudio(context));
+  host.register(LIST_PATH, (context) => sources.renderList(context));
   let timer: ReturnType<typeof setTimeout> | undefined;
   const settle = () => {
     if (timer !== undefined) return;
     timer = setTimeout(() => {
       timer = undefined;
+      safely(trailSession);
       safely(() => host.update());
       safely(() => title.update());
       safely(() => requests.update());
@@ -116,7 +133,11 @@ function start(): void {
   }
   listen('pageshow', (event) => safely(() => host.pageShown(event)));
   // A hash change is seen at once, so Jellyfin web's "Page not found" is hidden before it is drawn.
-  window.addEventListener('hashchange', () => safely(() => host.update()));
+  window.addEventListener('hashchange', () => {
+    safely(trailSession);
+    safely(() => trail.changed(location.hash));
+    safely(() => host.update());
+  });
   safely(() => host.update());
   safely(() => discoverEntry.update());
   row.update();

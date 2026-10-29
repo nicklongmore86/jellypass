@@ -1,4 +1,4 @@
-import type { DiscoverCard, DiscoverList, DiscoverNetwork, HouseholdState, NetworkList } from './api.js';
+import { DISCOVER_LISTS, type DiscoverCard, type DiscoverList, type DiscoverNetwork, type HouseholdState, type NetworkList } from './api.js';
 
 /**
  * What the Discover page shows and how it chooses, as the household app's Home does (app/src/main.ts `HOME_LAYOUT`, the
@@ -14,6 +14,13 @@ export const SERVICE_PATH = '/jellypass/service/:id';
 export const STUDIO_PATH = '/jellypass/studio/:id';
 export const serviceHash = (id: number): string => `#/jellypass/service/${id}`;
 export const studioHash = (id: number): string => `#/jellypass/studio/${id}`;
+/** A Discover row's "see all" page (`:list` is the API's list name), and the address a row's button opens it at. */
+export const LIST_PATH = '/jellypass/list/:list';
+export const listHash = (list: DiscoverList): string => `#/jellypass/list/${list}`;
+/** The list an address names, or undefined: only the lists the Discover rows show have a page (anything else asks nothing). */
+export function listOf(text: string): DiscoverList | undefined {
+  return DISCOVER_LISTS.filter((list) => list === text)[0];
+}
 
 /** The kind chips: the app's All / Movies / TV (a chip shows other lists, it does not filter the loaded ones). */
 export type DiscoverFilter = 'all' | 'movies' | 'tv';
@@ -38,6 +45,18 @@ export interface DiscoverRow {
   eager: boolean;
 }
 export type DiscoverPart = DiscoverRow | { part: 'networks' } | { part: 'studios' } | { part: 'credit' };
+
+/** What each list is called, on its row's heading and on its "see all" page (a test pins the layout's headings to these). */
+export const LIST_HEADINGS: Readonly<Record<DiscoverList, string>> = {
+  trending: 'Trending',
+  'trending-movies': 'Trending movies',
+  'trending-tv': 'Trending series',
+  'popular-movies': 'Popular movies',
+  'popular-tv': 'Popular series',
+  'new-movies': 'New movie releases',
+  upcoming: 'Upcoming movies',
+  'upcoming-tv': 'Upcoming series',
+};
 
 const row = (list: DiscoverList, heading: string, variant: DiscoverRow['variant'], eager: boolean): DiscoverRow => ({ part: 'row', list, heading, variant, eager });
 
@@ -202,6 +221,8 @@ export const DISCOVER_TEXT = {
   series: 'Series',
   /** The link in a service's heading says where it goes; a studio's tile is named as the app names it. */
   seeAll: (heading: string): string => `${heading}, see all`,
+  /** The button beside a list row's heading says this; its name (above) says whose. */
+  seeAllWords: 'See all',
   studioMovies: (name: string): string => `${name} movies`,
   /** A service's row: the app's `SOURCE_TEXT.heading` for a network (its list under the chip is not named, as the app's heading for All and Series is not). */
   networkHeading: (name: string): string => `Popular on ${name}`,
