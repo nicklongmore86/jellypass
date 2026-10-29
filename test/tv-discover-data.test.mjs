@@ -726,14 +726,16 @@ describe('TV Discover data layer: other households', () => {
     const quiet = await startApp(t, world());
     const sent = await quiet.get('/jellypass/app/v1/discover/trending', { user: ALICE });
     assert.equal(sent.status, 200);
-    const ids = (await sent.json()).results.slice(0, 2).map((entry) => entry.tmdbId);
-    assert.equal(ids.length, 2);
+    // One movie and one series from what Trending lists, each as its own media type, held by the other household.
+    const listed = (await sent.json()).results;
+    const picked = [listed.find((entry) => entry.mediaType === 'movie'), listed.find((entry) => entry.mediaType === 'tv')];
+    assert.ok(picked.every(Boolean), 'the fixture lists a movie and a series');
     const busy = await startApp(t, world({
-      media: Object.fromEntries(ids.map((id, index) => [id, { id: 7390000 + index, mediaType: 'movie', tmdbId: id, status: 5 }])),
+      media: Object.fromEntries(picked.map((entry, index) => [entry.tmdbId, { id: 7390000 + index, mediaType: entry.mediaType, tmdbId: entry.tmdbId, status: 5 }])),
       requests: {
-        21: ids.map((id, index) => ({
-          id: 9100 + index, status: 2, type: 'movie', is4k: false, createdAt: new Date().toISOString(), seasons: [],
-          media: { id: 7390000 + index, mediaType: 'movie', tmdbId: id, status: 5 },
+        21: picked.map((entry, index) => ({
+          id: 9100 + index, status: 2, type: entry.mediaType, is4k: false, createdAt: new Date().toISOString(), seasons: [],
+          media: { id: 7390000 + index, mediaType: entry.mediaType, tmdbId: entry.tmdbId, status: 5 },
           requestedBy: { id: 21, jellyfinUserId: BOB },
         })),
       },
@@ -764,6 +766,8 @@ describe('TV Discover data layer: other households', () => {
     const two = await run(busy);
     assert.deepEqual(two.calls, one.calls);
     assert.equal(one.calls.length, 5, 'the repeated address was kept');
+    // Every ask was answered with a page (a failure that came out the same both times would prove nothing).
+    for (const run of [one, two]) run.answers.forEach((answer, index) => assert.equal(JSON.parse(answer).ok, true, `answer ${index} succeeded`));
     two.answers.forEach((answer, index) => assert.ok(answer === one.answers[index], `answer ${index} is the same whatever another household holds`));
   });
 });

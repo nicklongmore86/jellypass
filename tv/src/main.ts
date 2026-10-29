@@ -1,18 +1,23 @@
 import { ABOUT_PATH, renderAbout } from './about.js';
 import { Asked } from './asked.js';
+import { DiscoverData } from './discover-data.js';
+import { DiscoverEntry } from './discover-entry.js';
+import { DISCOVER_HASH, DISCOVER_PATH } from './discover-model.js';
+import { DiscoverPage } from './discover.js';
 import { isHomeShown, isSearchShown } from './jellyfin-web.js';
 import { PageHost } from './page-host.js';
 import { RequestsPage } from './requests.js';
 import { REQUESTS_HASH, REQUESTS_PATH } from './requests-model.js';
 import { HomeRow } from './row.js';
 import { SearchRow } from './search.js';
+import { SessionWatch } from './session-watch.js';
 import { TITLE_PATH, TitlePage, titleHash } from './title.js';
 
 /**
  * The JellyPass TV add-on's entry (docs/tv-addon.md): one classic script that the household gateway adds to Jellyfin
  * web's page, built by scripts/build-tv.mjs to ES2017 for the TVs' Chromium 63. It waits for Jellyfin web's Home and adds
  * the JellyPass row to it, and one to Jellyfin web's Search page when something is searched for; a card opens the
- * JellyPass title page, a page of Jellyfin web's own (page-host.ts). It handles no key. It calls only the household app API, on the origin this script was loaded from.
+ * JellyPass title page, a page of Jellyfin web's own (page-host.ts); a compass button in Jellyfin's header opens the Discover page. It handles no key. It calls only the household app API, on the origin this script was loaded from.
  */
 
 /** The stylesheet's built (fingerprinted) name, next to this script; written in by scripts/build-tv.mjs. */
@@ -48,20 +53,27 @@ function start(): void {
     safely(() => row.overlayExpired());
     safely(() => search.overlayChanged());
     safely(() => title.overlayExpired());
+    safely(() => discover.overlayChanged());
   });
   const navigate = (hash: string) => {
     location.hash = hash;
   };
-  const title = new TitlePage(document, api, base.origin, asked, { changed: () => safely(() => row.update()), navigate });
+  const title = new TitlePage(document, api, base.origin, asked, { changed: () => { safely(() => row.update()); safely(() => discover.overlayChanged()); }, navigate });
   const row: HomeRow = new HomeRow(document, api, base.origin, asked, (card) => navigate(titleHash(card.mediaType, card.tmdbId)), () => navigate(REQUESTS_HASH));
   // A cancel in My requests puts the title back to Get this: Home's row and the Search row draw from the same overlay.
-  const requests = new RequestsPage(document, api, base.origin, asked, { changed: () => { safely(() => row.update()); safely(() => search.overlayChanged()); }, navigate }, () => performance.now(), () => Date.now());
+  const requests = new RequestsPage(document, api, base.origin, asked, { changed: () => { safely(() => row.update()); safely(() => search.overlayChanged()); safely(() => discover.overlayChanged()); }, navigate }, () => performance.now(), () => Date.now());
+  // The Discover page's answers (kept ten minutes, in memory) are timed on the monotonic clock, and the wall clock catches a long sleep.
+  const discoverWatch = new SessionWatch(api, base.origin);
+  const discoverData = new DiscoverData(api.fetch, base.origin, discoverWatch, () => performance.now(), () => Date.now());
+  const discover = new DiscoverPage(document, discoverWatch, discoverData, asked, { navigate });
+  const discoverEntry = new DiscoverEntry(document, discoverWatch, () => navigate(DISCOVER_HASH));
   const search: SearchRow = new SearchRow(document, api, base.origin, asked, (card) => navigate(titleHash(card.mediaType, card.tmdbId)));
   // JellyPass pages at #/jellypass/..., in Jellyfin web's own "page not found" page (tv/src/page-host.ts).
   const host = new PageHost(document, () => location.hash);
   host.register(ABOUT_PATH, renderAbout);
   host.register(TITLE_PATH, (context) => title.render(context));
   host.register(REQUESTS_PATH, (context) => requests.render(context));
+  host.register(DISCOVER_PATH, (context) => discover.render(context));
   let timer: ReturnType<typeof setTimeout> | undefined;
   const settle = () => {
     if (timer !== undefined) return;
@@ -70,6 +82,8 @@ function start(): void {
       safely(() => host.update());
       safely(() => title.update());
       safely(() => requests.update());
+      safely(() => discover.update());
+      safely(() => discoverEntry.update());
       safely(() => row.update());
       safely(() => search.update());
     }, SETTLE_MS);
@@ -95,6 +109,7 @@ function start(): void {
   // A hash change is seen at once, so Jellyfin web's "Page not found" is hidden before it is drawn.
   window.addEventListener('hashchange', () => safely(() => host.update()));
   safely(() => host.update());
+  safely(() => discoverEntry.update());
   row.update();
   search.update();
 }

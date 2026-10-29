@@ -81,6 +81,43 @@ export function isHomeShown(event: Event): boolean {
   return Boolean(target && target.id === 'indexPage');
 }
 
+/** Where the add-on's header button goes: in front of Jellyfin web's Search button, in whichever header the layout shows. */
+export interface HeaderSearch {
+  /** `legacy`: the TV layout's header (and the 10.11 the Samsung app bundles). `toolbar`: the desktop layout's React toolbar of 12.x. */
+  kind: 'legacy' | 'toolbar';
+  right: Element;
+  search: Element;
+  /** The toolbar's Search icon (an `<svg>` with one `<path>`), whose look the button's icon takes. */
+  icon: Element | undefined;
+}
+
+/**
+ * Jellyfin web's header, where its Search button is (checked against 12.3 and 10.11.3, docs/tv-addon.md, "The Discover page"):
+ * - the TV layout shows the legacy header (`scripts/libraryMenu.js` `renderHeader`): `.skinHeader .headerRight` with the Search
+ *   button (`button.headerSearchButton`, a direct child), not hidden. This is also what the Samsung app's 10.11 draws;
+ * - the desktop layout of 12.x hides that header (it is 0 by 0) and shows a React/MUI toolbar (`header.MuiAppBar-root`), whose
+ *   right-hand actions are a box holding the SyncPlay and Cast buttons and the Search link, `a[aria-label=Search][href="#/search"]`.
+ *   A button put there is not React's, so React leaves it alone while it re-renders around it; it is put back if the toolbar is
+ *   drawn again.
+ * Undefined if the header of the layout is not as that (no fall back to the other one), so a Jellyfin web that has changed it gets no button.
+ */
+export function headerSearch(document: Document): HeaderSearch | undefined {
+  // The layout decides which header is the visible one, and only that one is read: if its Search cannot be matched there is
+  // no button, never a fall back to the other header (the desktop layout's legacy header is in the page but hidden).
+  if (!document.documentElement.classList.contains('layout-tv')) {
+    const link = document.querySelector('header.MuiAppBar-root a.MuiIconButton-root[aria-label="Search"][href="#/search"]');
+    if (!link) return undefined;
+    const parent = link.parentNode;
+    const icons = link.querySelectorAll('svg');
+    const paths = icons.length === 1 ? (icons[0] as Element).querySelectorAll('path') : [];
+    return parent && parent.nodeType === 1 && paths.length === 1 ? { kind: 'toolbar', right: parent as Element, search: link, icon: icons[0] as Element } : undefined;
+  }
+  const search = document.querySelector('.skinHeader .headerRight > button.headerSearchButton');
+  const right = search ? search.parentNode : null;
+  if (!search || !right || right.nodeType !== 1 || search.classList.contains('hide')) return undefined;
+  return { kind: 'legacy', right: right as Element, search, icon: undefined };
+}
+
 /**
  * Class names Jellyfin web's focus manager and layout read, used on the row so its d-pad navigation drives it: a
  * section (`verticalSection`, with its heading classes, so the row lines up with Home's own), and `focuscontainer-x` on
@@ -97,6 +134,8 @@ export const JELLYFIN_CLASSES = {
   row: 'focuscontainer-x',
   /** Jellyfin web's own portrait card in a row (its width follows the screen), as `cardBuilder` names it. */
   card: 'card overflowPortraitCard card-hoverable',
+  /** Its backdrop (landscape) card in a row, which the Discover page's wide rows use. */
+  cardBackdrop: 'card overflowBackdropCard card-hoverable',
   /** What `cardBuilder` adds on a TV: the focus ring and zoom its CSS draws. */
   cardTv: 'show-focus show-animation',
 } as const;

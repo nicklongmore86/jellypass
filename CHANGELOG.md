@@ -20,6 +20,16 @@ changes are always listed at the top of the release notes.
 
 ### Added
 
+- TV add-on: a full **Discover** page in Jellyfin (`#/jellypass/discover`, in the TV and the desktop layout), the household
+  app's Home on the TV: a hero of up to five titles (Previous / View / Next and dots, no auto-advance), the All / Movies / TV
+  chips and a **Hide what I have** toggle, Trending, Popular, New releases and Upcoming rows, the eight "Popular on …" service rows and the studios, with a badge on each title (In your library, Requested, Available to get, Can't request;
+  words, not only colour) and the TMDB notice and JustWatch credit at the foot. It is reached **only** from a new **compass
+  button in Jellyfin's header, right before Search**, in both layouts, and only on households with the add-on on; if a Jellyfin
+  update changes its header so the button cannot be placed, nothing is drawn (the page's address still works). Choosing a title
+  opens the JellyPass title page, and Back returns to the same title without asking again. It asks for 5 things when it opens
+  and 10 more as the remote scrolls down to them (rows near the screen only, 14 titles each), and a row's pictures are loaded only
+  while it is near the screen, to spare a 2019 Samsung's memory. Home's Discover row is unchanged. The studios and services are
+  not links yet (their own pages come next). No server, API or setting change.
 - TV add-on: internal groundwork for a full **Discover** page (nothing of it is visible yet, and nothing changes on any
   household's TV). The add-on can now read the Discover lists, the services' and studios' pages and the sources list from
   the existing household API, keeps the answers in memory for ten minutes (forgotten on a sign-out, another member or a new

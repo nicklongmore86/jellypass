@@ -520,3 +520,231 @@
 html.jellypass-tv-hosting #fallbackPage[data-role="page"].page:not(.hide) > :not([data-jellypass-tv-page]) {
   display: none !important;
 }
+
+/*
+ * The Discover page (tv/src/discover.ts): a page of Jellyfin web's on the page host, laid out as the app's Home. It reuses the
+ * rows' strip and cards above (`jellypass-tv-row-*`, `jellypass-tv-card*`, Jellyfin's own `overflowPortraitCard` and
+ * `overflowBackdropCard` sizes) and adds the hero, the chips, a badge on each card and the foot. Every class of its own
+ * is `jellypass-tv-discover-*`. Spacing is margins (no `gap`), focus is `:focus`.
+ */
+.jellypass-tv-discover-page {
+  position: relative;
+  padding-bottom: 4em;
+  color: inherit;
+}
+.jellypass-tv-discover-hero-slot-waiting {
+  min-height: 56vh;
+}
+.jellypass-tv-discover-hero {
+  position: relative;
+  height: 56vh;
+  min-height: 22em;
+  overflow: hidden;
+  background: #0b0b0b;
+}
+.jellypass-tv-discover-hero-picture {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+}
+.jellypass-tv-discover-hero-image {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 25%;
+}
+.jellypass-tv-discover-hero-shade {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  background: linear-gradient(90deg, rgba(10, 10, 10, 0.92) 0%, rgba(10, 10, 10, 0.55) 45%, rgba(10, 10, 10, 0) 80%), linear-gradient(0deg, #0a0a0a 0%, rgba(10, 10, 10, 0) 38%);
+}
+.jellypass-tv-discover-hero-text {
+  position: absolute;
+  left: 0;
+  bottom: 3.2em;
+  width: 48%;
+}
+.jellypass-tv-discover-hero-title {
+  margin: 0 0 0.25em 0;
+  font-size: 2.8em;
+  line-height: 1.1;
+}
+.jellypass-tv-discover-hero-facts {
+  margin: 0 0 0.7em 0;
+  font-size: 1.05em;
+  opacity: 0.85;
+}
+.jellypass-tv-discover-hero-overview {
+  max-height: 4.4em;
+  margin: 0 0 1.1em 0;
+  overflow: hidden;
+  font-size: 1.05em;
+  line-height: 1.45;
+  opacity: 0.9;
+}
+.jellypass-tv-discover-hero-buttons {
+  white-space: nowrap;
+}
+.jellypass-tv-discover-button {
+  margin: 0 0.6em 0 0;
+  cursor: pointer;
+}
+.jellypass-tv-discover-button:focus,
+.jellypass-tv-discover-chip:focus {
+  box-shadow: 0 0 0 0.25em var(--jf-palette-text-primary, #fff);
+}
+.jellypass-tv-discover-hero-step {
+  padding: 0.1em 0.6em;
+  font-size: 1.6em;
+}
+.jellypass-tv-discover-hero-view {
+  min-width: 9em;
+}
+.jellypass-tv-discover-hero-dots {
+  margin-left: 0.8em;
+  font-size: 0.9em;
+  letter-spacing: 0.25em;
+  opacity: 0.7;
+}
+.jellypass-tv-discover-chips {
+  padding-top: 1.2em;
+  padding-bottom: 0.4em;
+  white-space: nowrap;
+}
+.jellypass-tv-discover-chip {
+  margin: 0 0.7em 0 0;
+  padding: 0.55em 1.3em;
+  border-radius: 2em;
+  background: rgba(255, 255, 255, 0.1);
+  font-size: 1.05em;
+  cursor: pointer;
+}
+.jellypass-tv-discover-chip[aria-pressed='true'] {
+  background: #f3f3f3;
+  color: #111;
+}
+.jellypass-tv-discover-chip-toggle {
+  margin-left: 2em;
+  border: 0.12em solid rgba(255, 255, 255, 0.35);
+  background: transparent;
+}
+.jellypass-tv-discover-chip-toggle[aria-pressed='true'] {
+  border-color: #f3f3f3;
+}
+.jellypass-tv-discover-row {
+  margin-top: 1.6em;
+}
+.jellypass-tv-discover-row-note {
+  padding-top: 0.5em;
+}
+.jellypass-tv-discover-row-note-text {
+  margin: 0.8em 0;
+  opacity: 0.8;
+}
+.jellypass-tv-discover-note {
+  padding-top: 2em;
+}
+.jellypass-tv-discover-skeleton-card {
+  display: inline-block;
+  flex: 0 0 auto;
+  margin-right: 1em;
+  border-radius: 0.4em;
+  background: rgba(255, 255, 255, 0.07);
+}
+.jellypass-tv-discover-skeleton-poster {
+  width: 12em;
+  height: 18em;
+}
+.jellypass-tv-discover-skeleton-backdrop {
+  width: 21em;
+  height: 11.8em;
+}
+/* The header button in the desktop layout's toolbar (Jellyfin draws a button's focus there with a script, which does not know
+   ours): a ring in the toolbar's text colour, round like its other buttons and inside the button (the toolbar is as tall as the
+   button, so an outer ring would be cut off at the top of the screen). The TV layout's is Jellyfin's own `show-focus`. */
+.jellypass-tv-discover-entry:focus {
+  outline: none;
+  box-shadow: inset 0 0 0 0.15em #fff;
+  box-shadow: inset 0 0 0 0.15em var(--jf-palette-text-primary, #fff);
+}
+/* The state's words on the card's corner, in the state's colour as well, so the colour is never the only sign. */
+.jellypass-tv-discover-badge {
+  position: absolute;
+  top: 0.5em;
+  left: 0.5em;
+  padding: 0.15em 0.55em;
+  border-radius: 0.35em;
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  font-size: 0.78em;
+  font-weight: 600;
+}
+.jellypass-tv-discover-badge-owned {
+  background: #1f6e44;
+}
+.jellypass-tv-discover-badge-pending {
+  background: #7d5f14;
+}
+.jellypass-tv-discover-badge-open {
+  background: #0b6a8f;
+}
+.jellypass-tv-discover-badge-closed {
+  background: #4a5568;
+}
+/* The foot: one block the remote can reach (so the page can scroll to the TMDB notice), with the studios' logos on light tiles
+   (TMDB draws them for a light background). */
+.jellypass-tv-discover-foot {
+  margin-top: 2.4em;
+  padding-top: 0.6em;
+  padding-bottom: 1em;
+  border-radius: 0.4em;
+}
+.jellypass-tv-discover-foot:focus {
+  outline: none;
+  box-shadow: inset 0 0 0 0.25em #fff;
+  box-shadow: inset 0 0 0 0.25em var(--jf-palette-text-primary, #fff);
+}
+.jellypass-tv-discover-foot-heading {
+  margin: 0 0 0.6em 0;
+}
+.jellypass-tv-discover-logos {
+  display: flex;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+.jellypass-tv-discover-logo {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 12em;
+  height: 6em;
+  margin: 0 1em 1em 0;
+  padding: 0.8em;
+  border-radius: 0.6em;
+  background: #f1f1f1;
+  color: #222;
+  font-weight: 700;
+  text-align: center;
+}
+.jellypass-tv-discover-logo-image {
+  max-width: 100%;
+  max-height: 100%;
+}
+.jellypass-tv-discover-credit,
+.jellypass-tv-discover-notice {
+  margin: 1.2em 0 0 0;
+  font-size: 0.9em;
+  opacity: 0.6;
+}
