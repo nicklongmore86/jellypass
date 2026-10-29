@@ -14,6 +14,33 @@ function releaseNotes(version: string): string {
 }
 
 describe('mobile release notes', () => {
+  it('extracts 1.2.1 without its heading, up to the 1.2.0 section', () => {
+    const notes = releaseNotes('1.2.1');
+    expect(notes).toMatch(/^A patch release: Home's filter chips and the poster badges are no longer cut\s+off/);
+    expect(notes).not.toMatch(/^## /m);
+    expect(notes).toMatch(/^### Fixed$/m);
+    expect(notes).toMatch(/^### Changed$/m);
+    expect(notes).not.toMatch(/^### (?:Added|Removed|Security)$/m);
+    expect(notes).not.toContain(releaseNotes('1.2.0').split('\n')[0]);
+    expect(notes).not.toMatch(/^\[[^\]]+\]: /m);
+    const flat = notes.replace(/\s+/g, ' ');
+    // The server it needs comes first, before the entries: nothing here changes what the server must be.
+    const fixed = flat.indexOf('### Fixed');
+    for (const note of [
+      '**JellyPass server 3.2.0 or later**',
+      '**Cancel request and the day each title was requested need JellyPass server 3.5.0 or later**',
+    ]) {
+      expect(flat.indexOf(note)).toBeGreaterThanOrEqual(0);
+      expect(flat.indexOf(note)).toBeLessThan(fixed);
+    }
+    expect(flat).toMatch(/\*\*Home: the last filter chip is no longer cut off\.\*\*/);
+    expect(flat).toMatch(/\*\*Poster badges are short and never cut off\.\*\* A badge on a poster says "In library", "Requested", "Get this" or "Can't get"/);
+    expect(flat).toMatch(/shows the same badge under the picture instead, where it can wrap/);
+    expect(flat).toMatch(/\*\*"Hide what I have" is now "New only"\*\*/);
+    expect(flat).toContain(`"New only: show only titles you don't have or haven't requested"`);
+    expect(notes).not.toMatch(/eas-cli|workflow|\btests?\b|maxWorkers/i);
+  });
+
   it('extracts 1.2.0 without its heading, up to the 1.1.0 section', () => {
     const notes = releaseNotes('1.2.0');
     expect(notes).toMatch(/^A minor release: Home can hide what the household already has/);
@@ -69,7 +96,7 @@ describe('mobile release notes', () => {
     expect(notes).not.toMatch(/eas-cli|workflow|\btests?\b/i);
   });
 
-  it("passes the release job's tag check for mobile-v<version in package.json> (mobile-v1.2.0 when it was cut)", () => {
+  it("passes the release job's tag check for mobile-v<version in package.json> (mobile-v1.2.1 when it was cut)", () => {
     const { version } = require('../package.json') as { version: string };
     // `node ../scripts/mobile-release-tag.mjs "$GITHUB_REF_NAME" package.json CHANGELOG.md`, from mobile/ (eas-json.test.ts).
     const check = (tag: string) =>
@@ -83,7 +110,7 @@ describe('mobile release notes', () => {
     expect(accepted.status).toBe(0);
     expect(accepted.stdout).toBe(`${version}\n`);
     // An older release's tag is refused once the version has moved on.
-    const old = check('mobile-v1.1.0');
+    const old = check('mobile-v1.2.0');
     expect(old.status).toBe(1);
     expect(old.stderr).toContain(`package.json says ${version}`);
   });
