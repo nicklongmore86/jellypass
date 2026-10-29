@@ -20,6 +20,9 @@ export const SIGNIN_NAME_TEXT = {
 } as const;
 
 export const ADDRESS_TEXT = {
+  /** What the app is, for a reviewer or anyone who installed it without a household. */
+  about: 'JellyPass is a companion app for a JellyPass household server. You get the address from whoever runs your Jellyfin.',
+  learnMore: 'What is JellyPass?',
   invalid: "That isn't a JellyPass household address. Check the one your household gave you, then try again.",
   badLink: "That link doesn't have a JellyPass household address in it.",
 } as const;
