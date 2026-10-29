@@ -141,6 +141,7 @@ describe('the fetch budget (docs/app-api/fetch-budget.json)', () => {
       .replace('{tmdbId}', '900002')
       .replace('{n}', '1')
       .replace('{query}', 'synthetic')
+      .replace('{list}', 'trending')
       .replace(/\/(network|studio)\/\{id\}/, (_, kind: string) => `/${kind}/${kind === 'network' ? 213 : 3}`);
   /** The client call that makes `METHOD /path` from the budget, its placeholders filled in. */
   function callFor(entry: string): (api: ReturnType<typeof clientWith>['api']) => Promise<unknown> {
