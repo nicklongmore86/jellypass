@@ -150,6 +150,18 @@ The PWA's Home (`home()` in `app/src/main.ts`, its pieces in `app/src/render.ts`
   group named Show; at large text the chips scroll sideways rather than wrap. The choice stays while the app is open
   (Home stays mounted under its tab, so coming back from a title or another tab finds it as left); choosing announces
   "Loading…" then "Movies shown." as the PWA does.
+- **Hide what I have** (`hide.ts`). A chip after All | Movies | TV, styled as they are (44 pt, the cyan tint, outline and
+  tick when on, the plain outline and no tick when off) and a checkbox to a screen reader (`accessibilityRole`
+  checkbox, state `checked`), not one of the radios. **On at every sign-in**; the choice is kept in memory for the
+  session only (`SessionProvider`'s `hideHeld`, one store per sign-in), reset by a sign-out, a 401, a change of household
+  and any other sign-in, never written to the device. On, the rows and the hero leave out the titles in your library
+  (Ready to watch) and the Requested ones (the household's, and any just asked for through the Requested overlay); what
+  can't be requested stays. It reads nothing: rows are filtered from the cards already loaded, so the call budget is
+  unchanged. The hero skips those titles and the ones with no wide picture and fills its five from the next ones of
+  the same answer; with none left it isn't drawn (no empty hero), and its place clamps when fewer slides are left. A row
+  left with no cards keeps its heading and says "Nothing to show here right now.", as a row that came back empty does.
+  The network and studio pages share the choice (the same chip above the grid; a page whose cards are all hidden says
+  the same line, with Load more still there). My requests and Search don't have the chip and are unchanged.
 - **Rows** (`layout.ts`, the PWA's `HOME_LAYOUT`): *All* Trending (posters), Popular movies, Popular series, New movie
   releases (big 16:9 backdrop cards, text below the image), Upcoming movies, Upcoming series, **Popular on** each of the
   eight services (mixed films and series), the Studios strip, then the JustWatch credit. *Movies* Trending movies,
@@ -195,7 +207,10 @@ The PWA's Home (`home()` in `app/src/main.ts`, its pieces in `app/src/render.ts`
   filter's first rows and the services again.
 - **Privacy.** Answers live in memory while Home is on screen and are never written to the device; no analytics.
 
-**Tests.** `home.test.tsx` (the rows per filter in order, the services' headings and waterlines, the studios, card
+**Tests.** `home-hide.test.tsx` (on by default; the rows and the hero filtered and filled from the same answer; no hero
+when none is left; the hero's place clamped; off restores; no calls; the checkbox's role, state and size; reset by a
+sign-out, a 401, a change of household and another sign-in; never stored; the Requested overlay counted as held; a late
+answer drawn with the choice as it stands), `home.test.tsx` (the rows per filter in order, the services' headings and waterlines, the studios, card
 text and names, status words, TMDB-only images and a broken one dropped, the hero's slides, controls and swipe and
 that it never moves by itself, the filter remembered, each failure's wording with no automatic retry, Try again, a 401,
 pull to refresh, nothing kept on the device, every pressable named and 44 pt high and wide, every text free to grow,
@@ -207,6 +222,7 @@ files). `tabs.test.tsx` counts Home's pressables (its chips are radios) and chec
 The PWA's `#/network/:id` and `#/studio/:id` (`sourceScreen()` in `app/src/main.ts`), on Home's stack at
 `/home/network/<id>` and `/home/studio/<id>`, opened from a service row's heading and a studio's logo.
 
+- **Hide what I have.** The same chip above the grid (`source-hide`), the same choice as Home's.
 - **Page.** The header says "Popular on Netflix" ("Series on" or "Films on" on those tabs) or "Pixar movies", over the
   logo (decorative: the header names it), then the same poster grid as Search (three columns on a phone, two on a very
   narrow one, as many as fit on an iPad) with **Load more** by the API's `nextPage`. A card opens its title on Home's

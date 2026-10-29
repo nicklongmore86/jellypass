@@ -27,6 +27,7 @@ import {
   NETWORKS,
   pageAnswer,
   scrollToEnd,
+  showAll,
   sourcesAnswer,
 } from './support/home';
 import { ORIGIN, TOKEN, answer, keepSession, offline, settle, shows, store, storedSession } from './support/household';
@@ -67,6 +68,7 @@ beforeEach(() => {
 async function start() {
   const app = await renderRouter({ appDir: 'src/app', overrides: {} }, { initialUrl: '/' });
   await settle();
+  await showAll();
   return app;
 }
 
@@ -331,7 +333,7 @@ describe('the filter', () => {
   it('is a radio group named Show, All chosen first, ticked and tinted', async () => {
     await start();
     // The group itself is not a screen-reader element (that would hide its chips), so it is found by its test ID.
-    const group = only(screen.queryAllByTestId('home-filters'), 'filter group');
+    const group = only(screen.queryAllByTestId('home-filter-group'), 'filter group');
     expect([group.props.accessibilityRole, group.props.accessibilityLabel]).toEqual(['radiogroup', 'Show']);
     expect(chosen()).toEqual(['All']);
     const all = only(screen.queryAllByTestId('home-filter-all'), 'All chip');
@@ -506,7 +508,7 @@ describe('accessibility', () => {
         const style = flat(node);
         const height = style.minHeight;
         return [
-          !['button', 'link', 'tab', 'radio'].includes(role) && `${what}: role ${role}`,
+          !['button', 'link', 'tab', 'radio', 'checkbox'].includes(role) && `${what}: role ${role}`,
           what.length === 0 && 'a pressable with no name',
           !(typeof height === 'number' && height >= layout.touchTarget) && `${what}: under 44 pt`,
           !wideEnough(node) && `${what}: under 44 pt wide`,

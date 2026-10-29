@@ -15,7 +15,7 @@ import type { FetchLike } from '../src/api/client';
 import { SOURCE_TEXT } from '../src/home/text';
 import { gridCardWidth, gridColumns } from '../src/search/text';
 import { layout } from '../src/theme';
-import { API, scrollToEnd, sourcesAnswer } from './support/home';
+import { API, scrollToEnd, showAll, sourcesAnswer } from './support/home';
 import { ORIGIN, TOKEN, answer, keepSession, offline, settle, shows, store, storedSession } from './support/household';
 import { wait } from './support/search';
 import { gridNames, held, sourceAnswer, sourceGateway, tabs, type SourceHousehold } from './support/source';
@@ -54,6 +54,7 @@ beforeEach(() => {
 async function start() {
   const app = await renderRouter({ appDir: 'src/app', overrides: {} }, { initialUrl: '/' });
   await settle();
+  await showAll();
   return app;
 }
 
@@ -287,6 +288,27 @@ describe('late answers', () => {
   });
 });
 
+describe('Hide what I have', () => {
+  const sourceChip = () => only(screen.queryAllByTestId('source-hide'), 'Hide what I have chip');
+
+  it('is the same choice as Home\'s, on by default: a page hides the library\'s and the requested titles, with no call', async () => {
+    const { since } = await open('/home/studio/420');
+    // start() turned it off on Home; the page shows everything.
+    expect(sourceChip().props.accessibilityState).toEqual({ checked: false });
+    expect(gridNames()).toHaveLength(20);
+    const before = since().length;
+    await pressNode(sourceChip());
+    expect(sourceChip().props.accessibilityState).toEqual({ checked: true });
+    expect([sourceChip().props.accessibilityRole, sourceChip().props.accessibilityLabel]).toEqual(['checkbox', 'Hide what I have']);
+    expect(gridNames().slice(0, 2)).toEqual(["studio-420 1, 2015, Movie, Available to get", "studio-420 3, 2017, Movie, Can't request"]);
+    expect(gridNames().some((name) => /Ready to watch|Requested/.test(name))).toBe(false);
+    expect(since().length - before).toBe(0);
+    await pressNode(buttonNamed('Back'));
+    // Home's chip is the same choice.
+    expect(only(screen.queryAllByTestId('home-hide'), 'Home chip').props.accessibilityState).toEqual({ checked: true });
+  });
+});
+
 describe('the overlay', () => {
   it('shows Requested right after Get this on a title opened from the page, with no call', async () => {
     await open('/home/studio/2');
@@ -324,8 +346,8 @@ function textOf(node: Node): string {
 
 describe('accessibility', () => {
   it.each([
-    ['a studio', '/home/studio/2', 20 + 1],
-    ["a network's", '/home/network/213', 3 + 20 + 1],
+    ['a studio', '/home/studio/2', 20 + 1 + 1],
+    ["a network's", '/home/network/213', 3 + 20 + 1 + 1],
   ] as const)("keeps every pressable on %s page named and a thumb's size", async (_what, path, count) => {
     await open(path);
     const found = pagePressables();
@@ -335,7 +357,7 @@ describe('accessibility', () => {
         const what = String(node.props.accessibilityLabel ?? textOf(node));
         const height = flat(node).minHeight;
         return [
-          !['button', 'link', 'tab'].includes(node.props.accessibilityRole) && `${what}: role ${String(node.props.accessibilityRole)}`,
+          !['button', 'link', 'tab', 'checkbox'].includes(node.props.accessibilityRole) && `${what}: role ${String(node.props.accessibilityRole)}`,
           what.length === 0 && 'a pressable with no name',
           !(typeof height === 'number' && height >= layout.touchTarget) && `${what}: under 44 pt`,
         ];

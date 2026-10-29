@@ -16,7 +16,7 @@ import { REQUESTS_TEXT } from '../src/requests/text';
 import { REQUESTS_MAX_WIDTH } from '../src/screens/RequestsScreen';
 import { layout } from '../src/theme';
 import { GET_THIS_TEXT } from '../src/title/text';
-import { API } from './support/home';
+import { API, showAll } from './support/home';
 import { ORIGIN, TOKEN, answer, fixture, keepSession, offline, settle, shows, store, storedSession, type Call } from './support/household';
 import { requestEntry, searchGateway, wait, type SearchHousehold } from './support/search';
 import { buttonNamed, flat, movieAnswer, only, pressNode, seriesAnswer } from './support/title';
@@ -74,6 +74,7 @@ beforeEach(() => {
 async function openRequests() {
   const app = await renderRouter({ appDir: 'src/app', overrides: {} }, { initialUrl: '/' });
   await settle();
+  await showAll();
   const before = gateway.calls.length;
   await act(async () => router.navigate('/requests'));
   await settle();

@@ -15,6 +15,13 @@ build.
 
 ## [Unreleased]
 
+### Added
+- Home has a **Hide what I have** chip after All | Movies | TV, on by default at every sign-in. On, the rows and the
+  hero leave out the titles in your library and the ones already requested (including one you just asked for), and the
+  hero fills from the next titles; with none left it isn't shown. It reads nothing from the server. The choice is kept
+  only while you're signed in (never stored on the device) and starts on again after a sign-out or for another person.
+  The network and studio pages share it. My requests and Search are unchanged.
+
 ## [1.1.0] - 2026-10-28
 
 A minor release: My requests can be filtered, and a member can cancel a request

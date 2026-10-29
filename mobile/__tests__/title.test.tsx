@@ -14,7 +14,7 @@ import type { FetchLike } from '../src/api/client';
 import { layout } from '../src/theme';
 import { ASKED_TTL_MS } from '../src/title/asked';
 import { GET_THIS_TEXT } from '../src/title/text';
-import { API } from './support/home';
+import { API, showAll } from './support/home';
 import { ORIGIN, TOKEN, answer, keepSession, offline, settle, shows, store, storedSession, type Call } from './support/household';
 import {
   buttonNamed,
@@ -73,6 +73,7 @@ afterEach(() => openURL.mockRestore());
 async function open(path: string) {
   const app = await renderRouter({ appDir: 'src/app', overrides: {} }, { initialUrl: '/' });
   await settle();
+  await showAll();
   await act(async () => router.push(path));
   await settle();
   return app;

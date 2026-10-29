@@ -26,6 +26,7 @@ import type { MediaType, Me, Request } from '../api/types';
 import { parseLinkAddress } from '../signin/address-input';
 import { createSignInApi, SignInError, type SignInApi, type SignInResult } from '../signin/signin-api';
 import type { StalledKind } from '../signin/wording';
+import { createHideStore, type HideStore } from '../home/hide';
 import { createRequestFilterStore, type RequestFilterStore } from '../requests/filters';
 import { createTitleCache, type TitleCache } from '../requests/titleCache';
 import { createAsked, type Asked } from '../title/asked';
@@ -89,6 +90,8 @@ export interface Session {
   titles: TitleCache;
   /** My requests' filters, kept while the app is open and reset with the session (in memory only). */
   requestFilters: RequestFilterStore;
+  /** Home's "Hide what I have": on at every sign-in, kept while the app is open and reset with the session (in memory only). */
+  hideHeld: HideStore;
   /**
    * Get this through the signed-in client. Once it is accepted (a 2xx) in the same session as when it was sent (no move
    * since), the title (and the seasons asked for) is added to `asked`. Rejects with the ApiError, or the caller's abort.
@@ -141,6 +144,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
   const askedRef = useRef<Asked | undefined>(undefined);
   const titlesRef = useRef<TitleCache | undefined>(undefined);
   const filtersRef = useRef<RequestFilterStore | undefined>(undefined);
+  const hideRef = useRef<HideStore | undefined>(undefined);
 
   const move = useCallback((next: Phase) => {
     generation.current += 1;
@@ -197,6 +201,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
       askedRef.current?.forget();
       titlesRef.current?.forget();
       filtersRef.current?.reset();
+      hideRef.current?.reset();
       const session = sessionOf(phase);
       if (session) {
         move({ kind: 'signingOut' });
@@ -218,7 +223,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
   const signedIn = phase.kind === 'signedIn' ? phase.session : undefined;
   // A new client, overlay and titles for each sign-in (household, member or token); the old ones are forgotten as soon
   // as they are replaced.
-  const { api, asked, titles, requestFilters } = useMemo(
+  const { api, asked, titles, requestFilters, hideHeld } = useMemo(
     () => ({
       api: signedIn
         ? createApiClient({ address: signedIn.address, token: () => signedIn.token, ...(fetch ? { fetch } : {}), ...(now ? { now } : {}) })
@@ -226,6 +231,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
       asked: createAsked(),
       titles: createTitleCache(),
       requestFilters: createRequestFilterStore(),
+      hideHeld: createHideStore(),
     }),
     [signedIn, fetch, now],
   );
@@ -255,6 +261,13 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
       requestFilters.reset();
     };
   }, [requestFilters]);
+  useEffect(() => {
+    hideRef.current = hideHeld;
+    return () => {
+      if (hideRef.current === hideHeld) hideRef.current = undefined;
+      hideHeld.reset();
+    };
+  }, [hideHeld]);
 
   const getThis = useCallback(
     async (mediaType: MediaType, tmdbId: number, seasons: readonly number[], signal?: AbortSignal) => {
@@ -352,10 +365,11 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
       asked,
       titles,
       requestFilters,
+      hideHeld,
       getThis,
       cancelRequest,
     }),
-    [phase, offer, household, offerLink, leave, move, check, signInApi, clock, api, expire, asked, titles, requestFilters, getThis, cancelRequest],
+    [phase, offer, household, offerLink, leave, move, check, signInApi, clock, api, expire, asked, titles, requestFilters, hideHeld, getThis, cancelRequest],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

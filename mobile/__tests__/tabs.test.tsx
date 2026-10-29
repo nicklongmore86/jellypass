@@ -12,6 +12,7 @@ import type { FetchLike } from '../src/api/client';
 import { JUSTWATCH_CREDIT, JUSTWATCH_URL, TMDB_NOTICE, TMDB_SOURCE, TMDB_URL, type LinkedSentence } from '../src/credits';
 import { SEARCH_TEXT } from '../src/search/text';
 import { colors, contrast, layout } from '../src/theme';
+import { showAll } from './support/home';
 import { ORIGIN, OTHER_ORIGIN, TOKEN, answer, button, fakeGateway, fixture, keepSession, press, settle, shows, store, storedSession } from './support/household';
 
 let mockFetch: FetchLike;
@@ -64,6 +65,7 @@ afterEach(() => openURL.mockRestore());
 async function start(initialUrl = '/') {
   const result = await renderRouter({ appDir: 'src/app', overrides: { '(tabs)/account/pushed': Pushed } }, { initialUrl });
   await settle();
+  await showAll();
   return result;
 }
 
@@ -416,9 +418,9 @@ describe('accessibility', () => {
 
   // Every pressable (anything that answers a press, whatever its role), not just the buttons and tabs: each is a
   // button, link or tab with a name, and at least a thumb's height.
-  // Home stays mounted under the other tabs: its 3 filter chips, the hero's 3 slides, Previous, Next and 3 dots, and the
+  // Home stays mounted under the other tabs: its 3 filter chips and Hide what I have, the hero's 3 slides, Previous, Next and 3 dots, and the
   // first four rows' 3 cards each (the fixture page has 3 titles), and the fixture's one studio, a link to its page.
-  const HOME = 3 + 3 + 2 + 3 + 4 * 3 + 1;
+  const HOME = 3 + 1 + 3 + 2 + 3 + 4 * 3 + 1;
   it.each([
     ['Home', 'Home', 4 + HOME],
     ['Search', 'Search', 4 + HOME],

@@ -575,34 +575,59 @@ export function JustWatchNote() {
  * Home's All | Movies | TV: a radio group of outlined chips, the chosen one filled with the cyan tint, outlined in
  * cyan and ticked, so it is never told by colour alone. At large text the chips scroll sideways rather than wrap.
  */
-export function FilterChips({ selected, onChoose }: { selected: HomeFilter; onChoose: (filter: HomeFilter) => void }) {
+export function FilterChips({
+  selected,
+  onChoose,
+  hide,
+}: {
+  selected: HomeFilter;
+  onChoose: (filter: HomeFilter) => void;
+  /** "Hide what I have", a chip of its own after the radio group. */
+  hide: { value: boolean; onToggle: () => void };
+}) {
   return (
-    <ScrollView
-      testID="home-filters"
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      accessibilityRole="radiogroup"
-      accessibilityLabel={HOME_TEXT.label}
-      contentContainerStyle={styles.filterList}
-    >
-      {HOME_FILTERS.map((filter) => {
-        const checked = filter === selected;
-        return (
-          <Pressable
-            key={filter}
-            testID={`home-filter-${filter}`}
-            accessibilityRole="radio"
-            accessibilityLabel={HOME_TEXT.filters[filter]}
-            accessibilityState={{ checked, selected: checked }}
-            onPress={() => onChoose(filter)}
-            style={({ pressed }) => [styles.filter, checked && styles.filterChecked, pressed && styles.pressed]}
-          >
-            {checked ? <Icon name="check" color={colors.accentText} size={17.6} strokeWidth={2.6} /> : null}
-            <Text style={[styles.filterText, checked && styles.filterTextChecked]}>{HOME_TEXT.filters[filter]}</Text>
-          </Pressable>
-        );
-      })}
+    <ScrollView testID="home-filters" horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterList}>
+      <View testID="home-filter-group" accessibilityRole="radiogroup" accessibilityLabel={HOME_TEXT.label} style={styles.filterGroup}>
+        {HOME_FILTERS.map((filter) => {
+          const checked = filter === selected;
+          return (
+            <Pressable
+              key={filter}
+              testID={`home-filter-${filter}`}
+              accessibilityRole="radio"
+              accessibilityLabel={HOME_TEXT.filters[filter]}
+              accessibilityState={{ checked, selected: checked }}
+              onPress={() => onChoose(filter)}
+              style={({ pressed }) => [styles.filter, checked && styles.filterChecked, pressed && styles.pressed]}
+            >
+              {checked ? <Icon name="check" color={colors.accentText} size={17.6} strokeWidth={2.6} /> : null}
+              <Text style={[styles.filterText, checked && styles.filterTextChecked]}>{HOME_TEXT.filters[filter]}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+      <HideChip value={hide.value} onToggle={hide.onToggle} />
     </ScrollView>
+  );
+}
+
+/**
+ * "Hide what I have": a chip that switches on and off. On is the cyan tint with a cyan outline and a tick, off the
+ * plain outline, so never colour alone; a checkbox to a screen reader, a thumb's size.
+ */
+export function HideChip({ value, onToggle, testID = 'home-hide' }: { value: boolean; onToggle: () => void; testID?: string }) {
+  return (
+    <Pressable
+      testID={testID}
+      accessibilityRole="checkbox"
+      accessibilityLabel={HOME_TEXT.hide.label}
+      accessibilityState={{ checked: value }}
+      onPress={onToggle}
+      style={({ pressed }) => [styles.filter, value && styles.filterChecked, pressed && styles.pressed]}
+    >
+      {value ? <Icon name="check" color={colors.accentText} size={17.6} strokeWidth={2.6} /> : null}
+      <Text style={[styles.filterText, value && styles.filterTextChecked]}>{HOME_TEXT.hide.label}</Text>
+    </Pressable>
   );
 }
 
@@ -850,6 +875,7 @@ const styles = StyleSheet.create({
     borderColor: colors.hairline,
     borderRadius: radii.chip,
   },
+  filterGroup: { flexDirection: 'row', gap: spacing.sm },
   filterChecked: { backgroundColor: colors.accentTint, borderColor: colors.accent },
   filterText: { fontSize: 15.2, lineHeight: 20, fontWeight: '700', color: colors.muted },
   filterTextChecked: { color: colors.accentText },

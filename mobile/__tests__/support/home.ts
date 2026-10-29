@@ -325,3 +325,15 @@ export function chosen(): string[] {
     .filter((node) => node.props.accessibilityState?.checked === true)
     .map((node) => String(node.props.accessibilityLabel));
 }
+
+/**
+ * Turns "Hide what I have" off where Home is on screen, for the tests of what a row or the hero shows with everything
+ * in it (it is on at every sign-in). A no-op where it is already off or Home is not mounted.
+ */
+export async function showAll(): Promise<void> {
+  const chip = screen.queryAllByTestId('home-hide', { includeHiddenElements: true })[0];
+  if (chip?.props.accessibilityState?.checked) {
+    await fireEvent.press(chip);
+    await settle();
+  }
+}
