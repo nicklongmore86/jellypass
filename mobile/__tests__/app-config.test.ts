@@ -92,6 +92,11 @@ describe('app config', () => {
     expect(names.filter((name) => /updates|analytics|tracking|sentry|segment|amplitude|firebase|insights|bugsnag|datadog/i.test(name))).toEqual([]);
     expect(config.updates?.enabled).toBe(false);
     expect(config.ios?.infoPlist?.NSPrivacyTracking ?? false).toBe(false);
-    expect(JSON.stringify(config)).not.toMatch(/https?:\/\//);
+    // The only addresses in it are the three jellypass.app store pages (store-links.test.tsx).
+    expect([...JSON.stringify(config).matchAll(/https?:\/\/[^"]*/g)].map(([url]) => url)).toEqual([
+      'https://jellypass.app/privacy/',
+      'https://jellypass.app/support/',
+      'https://jellypass.app/',
+    ]);
   });
 });

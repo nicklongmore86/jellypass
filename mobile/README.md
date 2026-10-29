@@ -452,7 +452,7 @@ Edits reload on the phone as you save. Expo Go needs no Apple or Google develope
 | Expo owner | `rtc-services-llc` (an Expo organization) | Set in `app.config.ts`. Must match the project's owner on expo.dev, or EAS CLI refuses to run |
 | EAS project ID | `1db20c4d-4270-404e-acf4-31a8bd6dd591` (`rtc-services-llc/jellypass` on expo.dev) | Set in `app.config.ts` as `extra.eas.projectId`. **Permanent**: EAS keeps the signing credentials and build numbers under it. Not secret |
 | Icon | `assets/icon.png`, `assets/adaptive-icon.png` | 1024 × 1024, opaque RGB (the App Store refuses alpha). The web app's icon, unchanged: `scripts/make-store-icons.py` holds a copy of `draw()` from the repo's `scripts/make-app-icons.py` and runs it at 1024 (`python3 scripts/make-store-icons.py`, needs Pillow). The adaptive icon is that drawing scaled to 84% and centred on the same navy (`#000b25`), so it lies inside Android's safe zone (the circle 66/108 of the canvas across); the iOS icon stays full-bleed. `__tests__/app-icons.test.ts` fails if the size, alpha or drawing drift |
-| Store links | `extra.privacyPolicyUrl`, `extra.supportUrl`, `extra.aboutUrl` in `app.config.ts` | Optional https pages the owner hosts, empty until set; see [Store links](#store-links) |
+| Store links | `extra.privacyPolicyUrl`, `extra.supportUrl`, `extra.aboutUrl` in `app.config.ts` | The owner's site: `https://jellypass.app/privacy/`, `https://jellypass.app/support/`, `https://jellypass.app/`; see [Store links](#store-links) |
 | Orientation | iPhone portrait; iPad all four; Android tablets turn freely (`orientation: 'default'`), Android phones locked to portrait at launch | iPad multitasking requires all four |
 | URL scheme | `jellypass://` | Setup links: `jellypass://connect?address=https://jelly-<household>.<domain>` |
 
@@ -480,23 +480,26 @@ Compliance**. If the app ever adds encryption of its own, this must change, and 
 
 ### Store links
 
-Three optional links, set as constants at the top of `app.config.ts` (they land in `extra`). While one is empty, or is
-not a plain `https:` URL, the app hides the link that opens it.
+Three links to the owner's site, [jellypass.app](https://jellypass.app/) (on Cloudflare Pages), set as constants at
+the top of `app.config.ts` (they land in `extra`). Each is optional: while one is empty, or is not a plain `https:` URL,
+the app hides the link that opens it.
 
 Write each URL in its exact normalised form, the way a browser would print it: lowercase `https://`, a trailing `/`
 after a bare host (`https://example.org/`, not `https://example.org`), no default `:443`, no spaces, and punycode for a
 non-ASCII host. Anything else is refused as written (it is not tidied up), so the link simply stays hidden:
 
-| Setting | Where it shows |
-|---|---|
-| `privacyPolicyUrl` | Account → About & credits → **Privacy policy** (both stores want one inside the app) |
-| `supportUrl` | Account → About & credits → **Support** |
-| `aboutUrl` | The address screen's **What is JellyPass?** |
+| Setting | Value | Where it shows |
+|---|---|---|
+| `privacyPolicyUrl` | `https://jellypass.app/privacy/` | Account → About & credits → **Privacy policy** (both stores want one inside the app) |
+| `supportUrl` | `https://jellypass.app/support/` | Account → About & credits → **Support** |
+| `aboutUrl` | `https://jellypass.app/` | The address screen's **What is JellyPass?** |
+
+The store listings' support URL is the same support page, and their contact email is **support@jellypass.app**.
 
 They open in the system browser, are allow-listed like the TMDB and JustWatch credits (`allowedUrls()` in
 `src/credits.ts`; nothing else is ever opened), and no token, address or other member data goes with them. The app
-config must hold no URL with credentials in it. `__tests__/store-links.test.tsx` covers hidden-when-unset, the
-https-only rule and the allow-list. About also says the app is an unofficial companion, not affiliated with Jellyfin
+config must hold no URL with credentials in it. `__tests__/store-links.test.tsx` covers the shipped links (shown, and
+opening these pages), hidden-when-unset through a test config, the https-only rule and the allow-list. About also says the app is an unofficial companion, not affiliated with Jellyfin
 or Seerr, and the address screen says what the app is for someone who installed it without a household.
 
 ### Android: a sideloaded APK, and an AAB for Google Play

@@ -1,5 +1,6 @@
-// The store-readiness pieces of the app (mobile/README.md, "Distribution"): the optional privacy-policy, support and
-// "What is JellyPass?" links come from the app config (`extra`) and are hidden while unset or not https; only those
+// The store-readiness pieces of the app (mobile/README.md, "Distribution"): the privacy-policy, support and "What is
+// JellyPass?" links come from the app config (`extra`), which ships the jellypass.app pages, and are hidden in a config
+// that leaves one unset or not https (driven here through a test config); only those
 // URLs and the credits' own can reach the system browser; About says the app is unofficial; the address screen says
 // what the app is; and nobody is told a request "downloads" anything.
 import { readdirSync, readFileSync } from 'node:fs';
@@ -19,7 +20,8 @@ import { ADDRESS_TEXT } from '../src/signin/wording';
 import { layout } from '../src/theme';
 import { IDENTITY, METRICS, fakeGateway, fixture, settle, shows } from './support/household';
 
-// What the app config says, swapped per test; jest-expo's expo-constants has none of this repo's.
+// What the app config says, swapped per test (`config.extra` for the shipped one); jest-expo's expo-constants has none
+// of this repo's.
 let mockExtra: Record<string, unknown> | undefined;
 jest.mock('expo-constants', () => ({
   __esModule: true,
@@ -34,6 +36,10 @@ const PRIVACY = 'https://example.org/jellypass/privacy';
 const SUPPORT = 'https://example.org/jellypass/support';
 const ABOUT = 'https://example.org/jellypass/about';
 const ALL = { privacyPolicyUrl: PRIVACY, supportUrl: SUPPORT, aboutUrl: ABOUT };
+
+// The pages the app ships with (app.config.ts).
+const SITE = { privacyPolicyUrl: 'https://jellypass.app/privacy/', supportUrl: 'https://jellypass.app/support/', aboutUrl: 'https://jellypass.app/' };
+const shipped = () => config.extra as Record<string, unknown>;
 
 const wrap = (child: React.ReactNode) => (
   <SafeAreaProvider initialMetrics={METRICS}>
@@ -78,9 +84,10 @@ beforeEach(() => {
 });
 
 describe('the configured links', () => {
-  it('ship unset: the app config offers no URL and holds no https address', () => {
-    expect(config.extra).toMatchObject({ privacyPolicyUrl: '', supportUrl: '', aboutUrl: '' });
-    expect(JSON.stringify(config)).not.toMatch(/https?:\/\//);
+  it('ship as the jellypass.app pages, each in its exact normalised https form', () => {
+    expect(config.extra).toMatchObject(SITE);
+    for (const url of Object.values(SITE)) expect(cleanStoreUrl(url)).toBe(url);
+    expect(storeLinks(shipped())).toEqual([SITE.privacyPolicyUrl, SITE.supportUrl, SITE.aboutUrl]);
   });
 
   it('are null while unset, empty, blank or missing', () => {
@@ -126,6 +133,10 @@ describe('the allow-list', () => {
   });
   afterEach(() => open.mockRestore());
 
+  it('is the credits and the three jellypass.app pages as shipped', () => {
+    expect(allowedUrls(shipped())).toEqual([TMDB_URL, JUSTWATCH_URL, SITE.privacyPolicyUrl, SITE.supportUrl, SITE.aboutUrl]);
+  });
+
   it('is the credits alone while nothing is configured', () => {
     expect(allowedUrls({})).toEqual([TMDB_URL, JUSTWATCH_URL]);
   });
@@ -160,6 +171,21 @@ describe('About & credits', () => {
     expect(shows(UNOFFICIAL_TEXT)).toBe(true);
   });
 
+  it('shows Privacy policy and Support as shipped, opening the jellypass.app pages in the system browser', async () => {
+    const open = jest.spyOn(Linking, 'openURL').mockResolvedValue(undefined);
+    try {
+      mockExtra = shipped();
+      await render(wrap(<AccountScreen me={me} />));
+      expect(minHeight('Privacy policy')).toBeGreaterThanOrEqual(layout.touchTarget);
+      expect(minHeight('Support')).toBeGreaterThanOrEqual(layout.touchTarget);
+      await tap('Privacy policy');
+      await tap('Support');
+      expect(open.mock.calls).toEqual([[SITE.privacyPolicyUrl], [SITE.supportUrl]]);
+    } finally {
+      open.mockRestore();
+    }
+  });
+
   it('hides Privacy policy and Support while unset', async () => {
     await render(wrap(<AccountScreen me={me} />));
     expect(link('Privacy policy')).toBeNull();
@@ -189,6 +215,19 @@ describe('About & credits', () => {
 });
 
 describe('the address screen', () => {
+  it('shows "What is JellyPass?" as shipped, opening jellypass.app', async () => {
+    const open = jest.spyOn(Linking, 'openURL').mockResolvedValue(undefined);
+    try {
+      mockExtra = shipped();
+      await render(wrap(<AddressScreen />));
+      await settle();
+      await tap(ADDRESS_TEXT.learnMore);
+      expect(open.mock.calls).toEqual([[SITE.aboutUrl]]);
+    } finally {
+      open.mockRestore();
+    }
+  });
+
   it('says what the app is, and hides "What is JellyPass?" while unset', async () => {
     await render(wrap(<AddressScreen />));
     await settle();
