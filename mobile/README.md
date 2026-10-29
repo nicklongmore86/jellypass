@@ -451,7 +451,8 @@ Edits reload on the phone as you save. Expo Go needs no Apple or Google develope
 | Android package | `com.rtcservices.jellypass` | **Final and permanent.** No hyphen, because Android forbids one. A different package is a different app, and members would have to reinstall and sign in again. Every APK must also be signed with the same key, forever (see [Distribution](#distribution)) |
 | Expo owner | `rtc-services-llc` (an Expo organization) | Set in `app.config.ts`. Must match the project's owner on expo.dev, or EAS CLI refuses to run |
 | EAS project ID | `1db20c4d-4270-404e-acf4-31a8bd6dd591` (`rtc-services-llc/jellypass` on expo.dev) | Set in `app.config.ts` as `extra.eas.projectId`. **Permanent**: EAS keeps the signing credentials and build numbers under it. Not secret |
-| Icon | `assets/icon.png`, `assets/adaptive-icon.png` | Placeholder: the PWA's 512 px icon. The App Store needs 1024 px: draw one with `draw(1024)` from `scripts/make-app-icons.py` before submitting |
+| Icon | `assets/icon.png`, `assets/adaptive-icon.png` | 1024 × 1024, opaque RGB (the App Store refuses alpha). The web app's icon, unchanged: `scripts/make-store-icons.py` holds a copy of `draw()` from the repo's `scripts/make-app-icons.py` and runs it at 1024 (`python3 scripts/make-store-icons.py`, needs Pillow). The adaptive icon is that same drawing over the same navy (`#000b25`), inside Android's safe zone. `__tests__/app-icons.test.ts` fails if the size, alpha or drawing drift |
+| Store links | `extra.privacyPolicyUrl`, `extra.supportUrl`, `extra.aboutUrl` in `app.config.ts` | Optional https pages the owner hosts, empty until set; see [Store links](#store-links) |
 | Orientation | iPhone portrait; iPad all four; Android tablets turn freely (`orientation: 'default'`), Android phones locked to portrait at launch | iPad multitasking requires all four |
 | URL scheme | `jellypass://` | Setup links: `jellypass://connect?address=https://jelly-<household>.<domain>` |
 
@@ -477,13 +478,39 @@ sets `ios.config.usesNonExemptEncryption: false` (`ITSAppUsesNonExemptEncryption
 Store Connect then asks no encryption questions and a new build goes to testers without stopping at **Missing
 Compliance**. If the app ever adds encryption of its own, this must change, and the questions be answered.
 
-### Android: a sideloaded APK, not Google Play
+### Store links
 
-Android builds are shared as an APK file that members install directly. There is no Play Store listing and
-no Play Console configuration in this project.
+Three optional links, set as constants at the top of `app.config.ts` (they land in `extra`). While one is empty, or is
+not a plain `https:` URL, the app hides the link that opens it:
 
-- **APK, not AAB.** The `preview` and `production` profiles in `eas.json` set
+| Setting | Where it shows |
+|---|---|
+| `privacyPolicyUrl` | Account → About & credits → **Privacy policy** (both stores want one inside the app) |
+| `supportUrl` | Account → About & credits → **Support** |
+| `aboutUrl` | The address screen's **What is JellyPass?** |
+
+They open in the system browser, are allow-listed like the TMDB and JustWatch credits (`allowedUrls()` in
+`src/credits.ts`; nothing else is ever opened), and no token, address or other member data goes with them. The app
+config must hold no URL with credentials in it. `__tests__/store-links.test.tsx` covers hidden-when-unset, the
+https-only rule and the allow-list. About also says the app is an unofficial companion, not affiliated with Jellyfin
+or Seerr, and the address screen says what the app is for someone who installed it without a household.
+
+### Android: a sideloaded APK, and an AAB for Google Play
+
+Android builds for members are an APK file they install directly. Google Play takes only an App Bundle (AAB), so
+`eas.json` has a separate profile for that. There is no Play Console configuration in this project yet, and the
+`Mobile release` workflow never builds the AAB.
+
+- **APK by default.** The `preview` and `production` profiles in `eas.json` set
   `"android": { "buildType": "apk" }`. EAS builds an AAB by default, which only Play can install.
+- **AAB for Play: `production-aab`.** Same signing (the EAS-managed keystore), the same ids, `autoIncrement` and
+  `store` distribution as `production`, with `"buildType": "app-bundle"`. Build it by hand, with a prompt-free CLI
+  as in [Run a build](#run-a-build):
+  `DISABLE_EAS_ANALYTICS=1 npx eas-cli@25.3.0 build --platform android --profile production-aab --non-interactive --wait`
+  (from `mobile/`). The `.aab` is on the build's page on expo.dev. It installs only from Play; for the closed or
+  production track, upload it in Play Console. Build numbers (`versionCode`) are EAS's, shared with the APK profiles.
+  Before the first upload, turn on Play App Signing and give it the existing EAS upload key (see the keystore notes
+  below), so APKs and the Play build keep one signing identity.
 - **Members must allow installs from unknown sources.** On Android 8 and later this is a per-app permission:
   the first time they open the APK from their browser or file manager, Android asks them to allow that app to
   install unknown apps (Settings → Apps → Special app access → Install unknown apps). Tell members to grant it

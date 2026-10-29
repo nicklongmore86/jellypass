@@ -4,6 +4,8 @@
 import * as Application from 'expo-application';
 import Constants from 'expo-constants';
 
+import { storeLinks } from './links';
+
 export const ABOUT_TEXT = 'JellyPass is your household’s way to browse what is in your Jellyfin library and to find more to watch.';
 
 /** TMDB's required notice, exactly as its terms give it. */
@@ -29,8 +31,16 @@ export const JUSTWATCH_CREDIT: LinkedSentence = {
   after: ', through TMDB.',
 };
 
-/** The links the Account screen may open: nothing else is ever handed to the system browser. */
+/** Said once in About, as the README does: JellyPass is nobody's official client. */
+export const UNOFFICIAL_TEXT = 'Unofficial companion; not affiliated with Jellyfin or Seerr.';
+
+/** The credits' own links, always allowed. */
 export const CREDIT_URLS: readonly string[] = [TMDB_URL, JUSTWATCH_URL];
+
+/** The links the app may open: the credits, and the owner's configured https pages. Nothing else reaches the browser. */
+export function allowedUrls(extra?: Record<string, unknown>): string[] {
+  return [...CREDIT_URLS, ...(extra ? storeLinks(extra) : storeLinks())];
+}
 
 /** The installed binary's own version and build number, as the OS reports them (null where there is no binary). */
 export interface InstalledVersion {

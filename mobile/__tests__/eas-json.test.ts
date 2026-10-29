@@ -53,8 +53,22 @@ describe('eas.json', () => {
     expect(profile.credentialsSource ?? 'remote').toBe('remote');
   });
 
-  it('has only those two build profiles', () => {
-    expect(Object.keys(easJson.build).sort()).toEqual(['preview', 'production']);
+  it('builds an Android App Bundle for Google Play in its own profile, alongside the APK ones', () => {
+    const profile = easJson.build['production-aab']!;
+    expect(profile).toBeDefined();
+    expect(profile.android?.buildType).toBe('app-bundle');
+    // The same signing, numbering and credentials as the APK: only the artifact differs.
+    expect(profile.distribution).toBe('store');
+    expect(profile.autoIncrement).toBe(true);
+    expect(profile.credentialsSource ?? 'remote').toBe('remote');
+    expect(profile.developmentClient ?? false).toBe(false);
+    // An AAB is only for Play, so the workflow (APK for sideloading, iOS for TestFlight) never offers or runs it.
+    expect(code).not.toMatch(/production-aab|app-bundle/);
+    expect(easJson.build.production!.android?.buildType).toBe('apk');
+  });
+
+  it('has only those build profiles', () => {
+    expect(Object.keys(easJson.build).sort()).toEqual(['preview', 'production', 'production-aab']);
   });
 
   it('never turns on EAS Update or carries build-time secrets', () => {

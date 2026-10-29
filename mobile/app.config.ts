@@ -19,13 +19,22 @@ const EAS_PROJECT_ID = '1db20c4d-4270-404e-acf4-31a8bd6dd591';
 // Jellyfin navy, the app's --bg: the splash, the root view behind every screen, and the Android icon's backdrop.
 const NAVY = '#000b25';
 
+// The store listing's public pages, https URLs the owner hosts. Each is optional: while one is empty the app hides the
+// link that opens it (src/links.ts). Nothing else reads them, and no token or household address is ever sent with them.
+//   privacyPolicyUrl: Account → About → "Privacy policy" (the stores require one inside the app)
+//   supportUrl:       Account → About → "Support"
+//   aboutUrl:         the address screen's "What is JellyPass?"
+const PRIVACY_POLICY_URL = '';
+const SUPPORT_URL = '';
+const ABOUT_URL = '';
+
 const config: ExpoConfig = {
   name: 'JellyPass',
   slug: 'jellypass',
   // The Expo organization the app belongs to, and its EAS project (eas.json has the build profiles). It must be the
   // project's owner on expo.dev, or EAS CLI refuses to run.
   owner: 'rtc-services-llc',
-  extra: { eas: { projectId: EAS_PROJECT_ID } },
+  extra: { eas: { projectId: EAS_PROJECT_ID }, privacyPolicyUrl: PRIVACY_POLICY_URL, supportUrl: SUPPORT_URL, aboutUrl: ABOUT_URL },
   version,
   // Turns freely ('default': Android's `unspecified`), so Android tablets rotate; an Android phone is locked to portrait
   // at launch (src/orientation.ts), as Android has no per-form-factor setting. The iPhone stays portrait and the iPad
