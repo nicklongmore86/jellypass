@@ -401,6 +401,8 @@ describe('accessibility', () => {
       'link:The Movie Database (TMDB)',
       `link:${sentenceOf(TMDB_SOURCE)}`,
       `link:${sentenceOf(JUSTWATCH_CREDIT)}`,
+      'link:Privacy policy',
+      'link:Support',
       'tab:Home',
       'tab:Search',
       'tab:My requests',
@@ -427,9 +429,10 @@ describe('accessibility', () => {
     // Its two requests, each one link, the eight filter chips (Status 4, Type 3, Asked by me) and the one cancellable
     // request's Cancel request button.
     ['My requests', 'My requests', 6 + 8 + 1 + HOME],
-    ['Account', 'Account', 9 + HOME],
+    // Its buttons and credits, and the shipped Privacy policy and Support links.
+    ['Account', 'Account', 11 + HOME],
     // Back, and the Account screen still mounted underneath it.
-    ['a pushed screen', '/account/pushed', 10 + HOME],
+    ['a pushed screen', '/account/pushed', 12 + HOME],
     // Back and Play, over Home.
     ['a title page', '/home/movie/900001', 6 + HOME],
     // Its three results and Load more.

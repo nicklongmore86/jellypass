@@ -20,9 +20,11 @@ Store-readiness changes that need no server change.
 ### Added
 
 - Account → About & credits says the app is an unofficial companion, not affiliated with Jellyfin or Seerr.
-- Optional **Privacy policy** and **Support** links in About, and a **What is JellyPass?** link on the address
-  screen. Each shows only when its https URL is set in the app config (`extra.privacyPolicyUrl`, `supportUrl`,
-  `aboutUrl`); they ship unset. They open in the system browser, are allow-listed, and carry no member data.
+- About, Privacy policy and Support links to jellypass.app: **Privacy policy**
+  (`https://jellypass.app/privacy/`) and **Support** (`https://jellypass.app/support/`) in Account → About & credits,
+  and **What is JellyPass?** (`https://jellypass.app/`) on the address screen. They are set in the app config
+  (`extra.privacyPolicyUrl`, `supportUrl`, `aboutUrl`), and a link whose URL is unset or not a plain https URL stays
+  hidden. They open in the system browser, are allow-listed, and carry no member data.
 - The address screen says what the app is: a companion for a JellyPass household server, whose address comes from
   whoever runs your Jellyfin.
 - A `production-aab` EAS profile that builds an Android App Bundle for Google Play. The APK profiles, the release
