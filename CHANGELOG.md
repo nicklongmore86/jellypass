@@ -82,8 +82,8 @@ Read these before upgrading:
     wide picture), with **‹**, **View** and **›** buttons and dots, and no
     auto-advance; **View** opens the title;
   - the **All / Movies / TV** chips and a **Hide what I have** toggle, which
-    hides the titles in the library or already requested and asks for
-    nothing;
+    hides the row titles in the library or already requested (the hero's
+    slides are unchanged) and asks for nothing;
   - on All, the **Trending**, **Popular movies**, **Popular series**, **New
     movie releases**, **Upcoming movies** and **Upcoming series** rows and
     the eight **Popular on …** service rows (Movies and TV show their own
@@ -102,7 +102,8 @@ Read these before upgrading:
   screen, to spare a 2019 Samsung's memory. Its answers are kept in memory
   for ten minutes and forgotten on a sign-out, another member or a new
   sign-in, and an answer that comes back for a session that has ended is
-  dropped. A row that fails says why, with **Try again**; nothing is asked
+  dropped. A row that fails says why, with **Try again** (a refused sign-in
+  shows **Sign in to continue** instead, with no Try again); nothing is asked
   again by itself, and after a "too many requests" answer nothing is asked
   until the time the server gave (or 30 seconds) is over. Home's and
   Search's Discover rows are unchanged. The calls the page makes are written
