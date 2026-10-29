@@ -405,7 +405,7 @@ describe('TV add-on: the gateway', { timeout: 30_000 }, () => {
  * DOM, in its own VM context), signed in as `user`. Its network is the test server. `home()` lays out Home's sections
  * as Jellyfin web does; `clock` holds the add-on's clocks, `now` its `Date.now` and `mono` its `performance.now`.
  */
-async function openJellyfinWeb(t, app, { user = ALICE, host = HOST_A, serverAddress = `https://${host}`, override, scopeExtras } = {}) {
+async function openJellyfinWeb(t, app, { user = ALICE, host = HOST_A, serverAddress = `https://${host}`, override, scopeExtras, startHash = '#/home.html' } = {}) {
   const served = await app.get('/web/index.html', { host, user: null });
   const { document, Event, CustomEvent, MutationObserver } = parseHTML(served.text);
   // Every listener the add-on puts on the document, as `type options` (strings, so nothing crosses realms).
@@ -426,7 +426,7 @@ async function openJellyfinWeb(t, app, { user = ALICE, host = HOST_A, serverAddr
   // ones (the add-on gathering page changes) run as set.
   const held = new Map();
   const storage = new Proxy({}, { get: (_target, name) => (...args) => stored.push([name, ...args]) });
-  const location = { href: `https://${host}/web/#/home.html`, origin: `https://${host}`, hash: '#/home.html' };
+  const location = { href: `https://${host}/web/${startHash}`, origin: `https://${host}`, hash: startHash };
   const windowListeners = [];
   /** The addresses the member came from, newest last: Jellyfin web's history. */
   const trail = [];
@@ -445,6 +445,8 @@ async function openJellyfinWeb(t, app, { user = ALICE, host = HOST_A, serverAddr
       if (!held.delete(id)) clearTimeout(id);
     },
     URL,
+    // Jellyfin web's history: Back is the trail's last address (nothing when the member has come from nowhere).
+    history: { back: () => { if (trail.length > 0) page.back(); } },
     // A `Date` whose `now` is the test's clock (the add-on also builds dates, for the day a request was made).
     Date: class extends Date { static now() { return clock.now; } },
     performance: { now: () => clock.mono },
@@ -1529,8 +1531,8 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
       assert.deepEqual(rules.filter(({ selector, body }) => /position:\s*fixed/.test(body)).map(({ selector }) => selector), ['.jellypass-tv-title-backdrop']);
       await home(page);
     }
-    // Every selector in the built stylesheet names classes of one of the three only (the page host's is `jellypass-tv-hosting`).
-    const isHost = (name) => name === 'jellypass-tv-hosting';
+    // Every selector in the built stylesheet names classes of one of the three only (the page host's are `jellypass-tv-hosting` and its Back button's `jellypass-tv-back*`).
+    const isHost = (name) => name === 'jellypass-tv-hosting' || name.startsWith('jellypass-tv-back');
     const mixed = rules.map(({ selector }) => selector).filter((selector) => {
       const names = (selector.match(/\.jellypass-tv[a-z0-9_-]*/g) ?? []).map((name) => name.slice(1));
       assert.ok(names.length > 0, selector);
@@ -4404,7 +4406,7 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
     const state = { failures: { '/discover/popular-tv': 500, '/discover/sources': 500 } };
     const page = await openScripted(t, state, { hide: 'off' });
     await goTo(page);
-    const rowRetry = rowNamed(page, 'Popular series').querySelector('button');
+    const rowRetry = rowNamed(page, 'Popular series').querySelector('.jellypass-tv-discover-row-note button');
     const sourcesRetry = [...root(page).querySelectorAll('button')].find((button) => button.textContent === 'Try again' && button !== rowRetry);
     assert.ok(rowRetry && sourcesRetry, 'both failures offer Try again');
     delete state.failures['/discover/popular-tv'];
@@ -4424,7 +4426,7 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
     const again = { failures: { '/discover/popular-tv': 500 } };
     const second = await openScripted(t, again, { hide: 'off' });
     await goTo(second);
-    const retry = rowNamed(second, 'Popular series').querySelector('button');
+    const retry = rowNamed(second, 'Popular series').querySelector('.jellypass-tv-discover-row-note button');
     delete again.failures['/discover/popular-tv'];
     second.click(retry);
     second.click(retry);
@@ -4456,7 +4458,7 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
     const state = { failures: { '/discover/popular-tv': 500 } };
     const page = await openScripted(t, state, { hide: 'off' });
     await goTo(page);
-    const retry = rowNamed(page, 'Popular series').querySelector('button');
+    const retry = rowNamed(page, 'Popular series').querySelector('.jellypass-tv-discover-row-note button');
     state.failures['/discover/popular-tv'] = 401;
     page.click(retry);
     await page.settled();
@@ -4465,7 +4467,7 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
     page.click(retry);
     await page.settled();
     assert.equal(page.requests.length, calls, 'the kept Try again asks nothing');
-    assert.equal(rowNamed(page, 'Popular series').querySelector('button'), null, 'no Try again for a refused sign-in');
+    assert.equal(rowNamed(page, 'Popular series').querySelector('.jellypass-tv-discover-row-note button'), null, 'no Try again for a refused sign-in');
   });
 
   it('shows a failed row with Try again, which asks once more and only when chosen; a refused sign-in says so; a rate limit says so', async (t) => {
@@ -4474,7 +4476,7 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
     await goTo(page);
     const row = rowNamed(page, 'Popular series');
     assert.match(row.querySelector('.jellypass-tv-discover-row-note-text').textContent, /^Can't load this right now\. /);
-    const retry = row.querySelector('button');
+    const retry = row.querySelector('.jellypass-tv-discover-row-note button');
     assert.equal(retry.textContent, 'Try again');
     assert.equal(retry.getAttribute('data-jellypass-tv-focus'), 'retry:popular-tv');
     assert.equal(cardsOf(rowNamed(page, 'Trending')).length, 6, 'the other rows are drawn');
@@ -4492,7 +4494,7 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
     const refused = await openScripted(t, { failures: Object.fromEntries(LISTS.map((list) => [`/discover/${list}`, 401])) }, { hide: 'off' });
     await goTo(refused);
     assert.match(rowNamed(refused, 'Trending').textContent, /Sign in to continue/);
-    assert.equal(rowNamed(refused, 'Trending').querySelector('button'), null, 'no Try again for a refused sign-in');
+    assert.equal(rowNamed(refused, 'Trending').querySelector('.jellypass-tv-discover-row-note button'), null, 'no Try again for a refused sign-in');
     const limited = await openScripted(t, { failures: { '/discover/popular-tv': 429 }, failureHeaders: { 'retry-after': '3' } }, { hide: 'off' });
     await goTo(limited);
     assert.match(rowNamed(limited, 'Popular series').textContent, /Too many requests/);
@@ -4801,7 +4803,7 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
         next: page.document.querySelector('[data-jellypass-tv-focus="hero:next"]'),
         movies: chip(page, 'movies'),
         hide: chip(page, 'hide'),
-        retry: rowNamed(page, 'Popular series').querySelector('button'),
+        retry: rowNamed(page, 'Popular series').querySelector('.jellypass-tv-discover-row-note button'),
       });
       const old = keep();
       assert.ok(Object.values(old).every((one) => one), 'every kind of element was found');
@@ -5934,6 +5936,326 @@ assert.equal(connected(page), tab(page, 'films'), 'the Films tab has focus');
         const live = new Set(gridCards(page).map((card) => card.querySelector('img')));
         for (const image of old) if (!live.has(image)) assert.equal(image.hasAttribute('src'), false, 'a replaced picture has no source');
       });
+    });
+  });
+
+  describe('"see all" pages of the list rows', () => {
+    const LIST = (list) => `#/jellypass/list/${list}`;
+    const listRoot = (page) => page.document.querySelector('[data-jellypass-tv-source="list"]');
+    const gridCards = (page) => [...page.document.querySelectorAll('.jellypass-tv-source-grid button.card')];
+    const more = (page) => page.document.querySelector('[data-jellypass-tv-focus="more"]');
+    const seeAll = (row) => row.querySelector('button.jellypass-tv-discover-see-all');
+    const asked = (page, from = 0) => page.requests.slice(from).map((request) => new URL(request.url)).filter((url) => url.pathname.includes('/discover/')).map((url) => url.pathname.replace('/jellypass/app/v1', '') + url.search);
+    const toHash = async (page, hash) => {
+      page.route(hash);
+      await page.settled();
+    };
+    const SEE_ALL = [['Trending', 'trending'], ['Popular movies', 'popular-movies'], ['Popular series', 'popular-tv'], ['New movie releases', 'new-movies'], ['Upcoming movies', 'upcoming'], ['Upcoming series', 'upcoming-tv']];
+
+    it('gives each list row a button of its own beside the heading: the heading stays a heading, the button is named "<heading>, see all", and a service row has none beside its link', async (t) => {
+      const page = await openScripted(t, {}, { hide: 'off' });
+      await goTo(page);
+      await scrollThrough(page);
+      for (const [name] of SEE_ALL) {
+        const row = rowNamed(page, name);
+        const button = seeAll(row);
+        assert.ok(button, `${name} has a see all button`);
+        assert.equal(button.getAttribute('aria-label'), `${name}, see all`);
+        assert.equal(button.textContent, 'See all');
+        assert.equal(row.querySelector('h2').textContent, name, 'the heading is only its words');
+        assert.equal(row.querySelector('h2').contains(button), false, 'the button is not inside the heading');
+        assert.equal(button.parentNode, row.querySelector('h2').parentNode, 'beside the heading');
+        assert.equal(row.querySelectorAll('button.jellypass-tv-discover-see-all').length, 1);
+        assert.equal(button.tagName, 'BUTTON');
+        assert.ok(button.classList.contains('show-focus'), 'a TV draws its focus ring');
+      }
+      assert.equal(seeAll(rowNamed(page, 'Popular on Netflix')), null, 'a service row has its heading link only');
+      // Under the other chips: every list row has one, for its own list.
+      for (const [key, names] of [['movies', ['Trending movies', 'Popular movies', 'New movie releases', 'Upcoming movies']], ['tv', ['Trending series', 'Popular series', 'Upcoming series']]]) {
+        page.click(chip(page, key));
+        await page.settled();
+        for (const name of names) assert.equal(seeAll(rowNamed(page, name)).getAttribute('aria-label'), `${name}, see all`, `${key}: ${name}`);
+      }
+    });
+
+    it('is written in the budget file: opened from its row it asks nothing, Load more asks the next page once, and Back (to Discover, from a title) asks nothing', async (t) => {
+      const state = { cards: 20, pages: { '/discover/popular-movies': 3 } };
+      const page = await openScripted(t, state, { hide: 'off' });
+      await goTo(page);
+      await scrollThrough(page);
+      const screen = BUDGET.screens['tv-discover-list'];
+      assert.equal(screen.calls, 1);
+      const button = seeAll(rowNamed(page, 'Popular movies'));
+      page.press('keydown');
+      button.focus();
+      const from = page.location.hash;
+      const mark = page.requests.length;
+      page.click(button);
+      assert.equal(page.location.hash, LIST('popular-movies'));
+      page.follow(from);
+      await page.settled();
+      assert.deepEqual(asked(page, mark), [], 'the row\'s first page is the grid\'s: no call');
+      assert.equal(headerTitle(page), 'Popular movies');
+      assert.equal(listRoot(page).closest('#fallbackPage').id, 'fallbackPage', 'in Jellyfin\'s own page');
+      assert.equal(listRoot(page).querySelector('h1').textContent, 'Popular movies');
+      assert.equal(gridCards(page).length, 20, 'a full page, not the row\'s 14');
+      // Load more: one call, the next page.
+      const next = page.requests.length;
+      page.press('keydown');
+      more(page).focus();
+      page.click(more(page));
+      await page.settled();
+      assert.deepEqual(asked(page, next), screen.loadMore.map((call) => call.replace('GET ', '').replace('{list}', 'popular-movies')));
+      assert.equal(gridCards(page).length, 40);
+      // A card opens the title; Back returns to the same card, with the pages that were showing, and asks nothing.
+      const card = gridCards(page)[30];
+      page.press('keydown');
+      card.focus();
+      const away = page.location.hash;
+      page.click(card);
+      assert.equal(page.location.hash, `#/jellypass/title/${card.getAttribute('data-media-type')}/${card.getAttribute('data-tmdb-id')}`);
+      page.follow(away);
+      await page.settled();
+      assert.ok(page.view(), 'the title page');
+      const before = page.requests.length;
+      page.back();
+      await page.settled();
+      assert.deepEqual(asked(page, before), [], 'Back asks nothing');
+      assert.equal(gridCards(page).length, 40);
+      assert.equal(focusKey(page), card.getAttribute('data-jellypass-tv-focus'), 'the same grid card');
+      // Back from the grid: Discover, with the row's see all button focused, and nothing asked.
+      const last = page.requests.length;
+      page.back();
+      await page.settled();
+      assert.ok(root(page), 'Discover');
+      assert.deepEqual(discoverCalls(page, last), [], 'no call');
+      assert.equal(focusKey(page), 'see:popular-movies', 'the same row\'s button');
+    });
+
+    it('opened by its own address asks for that list\'s first page and nothing else (not the sources)', async (t) => {
+      const page = await openScripted(t, {}, { hide: 'off' });
+      const mark = page.requests.length;
+      await toHash(page, LIST('upcoming-tv'));
+      const screen = BUDGET.screens['tv-discover-list'];
+      assert.deepEqual(asked(page, mark), screen.atOnce.map((call) => call.replace('GET ', '').replace('{list}', 'upcoming-tv')));
+      assert.equal(headerTitle(page), 'Upcoming series');
+      assert.equal(gridCards(page).length, 6);
+    });
+
+    it('has every list the rows show a page, titled as its row is, and no other address has one: nothing is asked for it', async (t) => {
+      const page = await openScripted(t, {}, { hide: 'off' });
+      const titles = { trending: 'Trending', 'trending-movies': 'Trending movies', 'trending-tv': 'Trending series', 'popular-movies': 'Popular movies', 'popular-tv': 'Popular series', 'new-movies': 'New movie releases', upcoming: 'Upcoming movies', 'upcoming-tv': 'Upcoming series' };
+      for (const [list, title] of Object.entries(titles)) {
+        await toHash(page, LIST(list));
+        assert.equal(headerTitle(page), title, list);
+        assert.equal(listRoot(page).querySelector('h1').textContent, title);
+      }
+      // The rows' headings are these titles, under every chip.
+      await goTo(page);
+      assert.deepEqual(headings(page).slice(0, 6), ['Trending', 'Popular movies', 'Popular series', 'New movie releases', 'Upcoming movies', 'Upcoming series']);
+      const mark = page.requests.length;
+      for (const bad of ['Trending', 'top-movies', '__proto__', 'constructor', '', 'trending/', '1']) {
+        await toHash(page, LIST(bad));
+        const view = listRoot(page);
+        if (view) assert.equal(view.textContent.includes('Not found'), true, bad);
+      }
+      assert.deepEqual(asked(page, mark), [], 'no call for an address that is no list');
+    });
+
+    it('shows the Load more grid as the service page does: "New only" on by default and shared, short corner badges, Jellyfin-sized cards, no tabs, no logo, the TMDB notice', async (t) => {
+      const page = await openScripted(t, { cards: 20, pages: { '/discover/trending': 2 } }, { hide: 'on' });
+      await toHash(page, LIST('trending'));
+      assert.equal(chip(page, 'hide').getAttribute('aria-pressed'), 'true', 'on by default');
+      assert.equal(page.document.querySelectorAll('[data-jellypass-tv-focus^="tab:"]').length, 0);
+      assert.equal(listRoot(page).querySelector('.jellypass-tv-source-logo'), null);
+      const cards = gridCards(page);
+      assert.ok(cards.length > 0 && cards.length < 20, 'what is in the library or asked for is hidden');
+      for (const card of cards) {
+        assert.ok(card.classList.contains('portraitCard'), 'Jellyfin\'s own grid card');
+        assert.ok(['Get this', "Can't get"].includes(card.querySelector('.jellypass-tv-discover-badge').textContent), 'a short word in the corner');
+      }
+      assert.ok(listRoot(page).querySelector('.vertical-wrap'));
+      assert.equal(listRoot(page).textContent.includes('This product uses TMDB and the TMDB APIs but is not endorsed, certified, or otherwise approved by TMDB.'), true);
+      assert.equal(listRoot(page).textContent.includes('JustWatch'), false, 'the JustWatch line is for a service');
+      // The one choice is shared with Discover: switch it off here, it is off there.
+      page.click(chip(page, 'hide'));
+      assert.equal(gridCards(page).length, 20);
+      await toHash(page, '#/jellypass/discover');
+      assert.equal(chip(page, 'hide').getAttribute('aria-pressed'), 'false');
+    });
+
+    it('asks for a poster only near the screen, and lets go of it when it leaves', async (t) => {
+      const page = await openScripted(t, { cards: 20 }, { hide: 'off' });
+      await toHash(page, LIST('trending'));
+      const images = () => [...listRoot(page).querySelectorAll('.jellypass-tv-source-grid img')];
+      assert.ok(images().length > 0);
+      assert.equal(images().filter((image) => image.hasAttribute('src')).length, 0, 'nothing is near the screen yet');
+      const card = gridCards(page)[0];
+      page.watchers.cross(card, true, IMAGE_MARGIN);
+      assert.equal(card.querySelector('img').hasAttribute('src'), true);
+      assert.equal(images().filter((image) => image.hasAttribute('src')).length, 1, 'only that card\'s');
+      page.watchers.cross(card, false, IMAGE_MARGIN);
+      assert.equal(card.querySelector('img').hasAttribute('src'), false);
+    });
+
+    it('is cleaned up the one way whatever removes it: leaving, a sign-out and another member, with the old buttons dead', async (t) => {
+      const state = { cards: 20, pages: { '/discover/trending': 3 } };
+      const page = await openScripted(t, state, { hide: 'off' });
+      await toHash(page, LIST('trending'));
+      const card = gridCards(page)[0];
+      const button = more(page);
+      const seen = () => state.seen.length;
+      // Leaving: the observers watch nothing, the pictures are let go, nothing remains.
+      await toHash(page, '#/home.html');
+      assert.equal(listRoot(page), null);
+      assert.equal(page.document.querySelectorAll('.jellypass-tv-source-grid').length, 0);
+      for (const watcher of page.watchers.all) if (watcher.options.rootMargin === IMAGE_MARGIN) assert.equal(watcher.watching.size, 0, 'no card is still watched');
+      const afterLeave = seen();
+      page.click(button);
+      page.click(card);
+      await page.settled();
+      assert.equal(seen(), afterLeave, 'a button of the page since left asks nothing');
+      assert.equal(page.location.hash, '#/home.html', 'and opens nothing');
+      // A sign-out ends the page.
+      await toHash(page, LIST('trending'));
+      const open = gridCards(page)[1];
+      const load = more(page);
+      page.session.user = null;
+      page.session.token = null;
+      page.document.body.appendChild(page.document.createElement('div'));
+      await page.settled();
+      assert.equal(listRoot(page), null, 'emptied');
+      const asking = seen();
+      const hashNow = page.location.hash;
+      page.click(load);
+      page.click(open);
+      await page.settled();
+      assert.equal(seen(), asking, 'Load more of a sign-in since ended asks nothing');
+      assert.equal(page.location.hash, hashNow, 'and a card opens nothing');
+      // Another member signing in is not the first member's page either.
+      page.session.user = ANN;
+      page.session.token = TOKENS[ANN];
+      page.document.body.appendChild(page.document.createElement('div'));
+      await page.settled();
+      page.click(load);
+      assert.equal(seen(), asking);
+    });
+
+    it('draws the Discover row\'s button dead after a sign-out: it opens nothing', async (t) => {
+      const page = await openScripted(t, {}, { hide: 'off' });
+      await goTo(page);
+      await scrollThrough(page);
+      const button = seeAll(rowNamed(page, 'Trending'));
+      page.session.token = 'a-new-token-for-the-same-member';
+      const mark = page.location.hash;
+      page.click(button);
+      assert.equal(page.location.hash, mark, 'a button of the drawing under the old token does nothing');
+    });
+
+    it('draws the same page, with the same calls, whatever other households hold or asked for', async (t) => {
+      const seen = {};
+      for (const [name, state] of Object.entries({ baseline: world(), ...otherHouseholdWorlds() })) {
+        const app = await startApp(t, Object.assign(state, { webPage: {} }), { ...tvOn(), reconcile: true });
+        const page = await open(t, app, { hide: 'off' });
+        const before = page.requests.length;
+        await toHash(page, LIST('popular-tv'));
+        const view = listRoot(page).outerHTML;
+        assertNoCanaries(view, `${name}: the page shows Seerr data planted as a canary`);
+        seen[name] = { calls: page.trace(before), view };
+      }
+      const { baseline, ...others } = seen;
+      assert.ok(Object.keys(others).length >= 5);
+      assert.ok(baseline.calls.length >= 1);
+      for (const [name, outcome] of Object.entries(others)) {
+        assert.deepEqual(outcome.calls, baseline.calls, `${name}: the calls`);
+        assert.ok(outcome.view === baseline.view, `${name}: the pages differ`);
+      }
+    });
+  });
+
+  describe('the Back button on JellyPass pages', () => {
+    const backs = (page) => [...page.document.querySelectorAll('[data-jellypass-tv-back]')];
+    const more = (page) => page.document.querySelector('[data-jellypass-tv-focus="more"]');
+    const toHash = async (page, hash) => {
+      page.route(hash);
+      await page.settled();
+    };
+    const PAGES = ['#/jellypass/discover', '#/jellypass/list/trending', '#/jellypass/service/213', '#/jellypass/studio/3', '#/jellypass/title/movie/603', '#/jellypass/requests'];
+
+    it('is on every JellyPass page in the desktop layout: one focusable button named "Back", first on the page, never twice across redraws, gone when the page is left', async (t) => {
+      const page = await openScripted(t, { cards: 20, pages: { '/discover/trending': 2 } }, { hide: 'off', tv: false });
+      for (const hash of PAGES) {
+        await toHash(page, hash);
+        const found = backs(page);
+        assert.equal(found.length, 1, hash);
+        const [button] = found;
+        assert.equal(button.tagName, 'BUTTON');
+        assert.equal(button.getAttribute('type'), 'button');
+        assert.equal(button.getAttribute('aria-label'), 'Back');
+        assert.equal(button.textContent, 'Back');
+        assert.ok(button.classList.contains('emby-button'), 'Jellyfin\'s own button');
+        assert.equal(button.hasAttribute('tabindex') && button.getAttribute('tabindex') !== '0', false, 'in the tab order');
+        assert.equal(hosted(page).firstElementChild.contains(button), true, `${hash}: first on the page`);
+        // Redraws: the page's own, and Jellyfin's page changing under it.
+        page.document.body.appendChild(page.document.createElement('div'));
+        await page.settled();
+        assert.equal(backs(page).length, 1, `${hash}: not twice`);
+      }
+      // Redraws of the page's own parts leave it at one.
+      await toHash(page, '#/jellypass/discover');
+      page.click(chip(page, 'movies'));
+      page.click(chip(page, 'hide'));
+      await page.settled();
+      assert.equal(backs(page).length, 1);
+      await toHash(page, '#/jellypass/list/trending');
+      page.click(chip(page, 'hide'));
+      page.click(more(page));
+      await page.settled();
+      assert.equal(backs(page).length, 1);
+      // Leaving JellyPass pages takes it away; Jellyfin's own pages never have it.
+      await toHash(page, '#/home.html');
+      assert.equal(backs(page).length, 0);
+      assert.equal(page.document.querySelectorAll('.jellypass-tv-back-bar').length, 0);
+    });
+
+    it('is not in the TV layout: Jellyfin\'s header Back and the remote cover it', async (t) => {
+      const page = await openScripted(t, { cards: 20 }, { hide: 'off', tv: true });
+      for (const hash of PAGES) {
+        await toHash(page, hash);
+        assert.equal(backs(page).length, 0, hash);
+        assert.ok(hosted(page), `${hash} is drawn`);
+      }
+    });
+
+    it('goes back in history when the member came from another page of Jellyfin web, and to Home when they did not', async (t) => {
+      const page = await openScripted(t, {}, { hide: 'off', tv: false });
+      await goTo(page);
+      await toHash(page, '#/jellypass/list/trending');
+      assert.equal(page.location.hash, '#/jellypass/list/trending');
+      page.click(backs(page)[0]);
+      await page.settled();
+      assert.equal(page.location.hash, '#/jellypass/discover', 'one step back');
+      assert.ok(root(page));
+      page.click(backs(page)[0]);
+      await page.settled();
+      assert.equal(page.location.hash, '#/home.html', 'and back to where it began');
+      // Opened by its own address (nothing before it in Jellyfin web): Home.
+      const direct = await openScripted(t, {}, { hide: 'off', tv: false, startHash: '#/jellypass/discover' });
+      direct.follow('#/home.html');
+      await direct.settled();
+      assert.equal(backs(direct).length, 1);
+      direct.click(backs(direct)[0]);
+      assert.equal(direct.location.hash, '#/home', 'Jellyfin Home');
+    });
+
+    it('does nothing from a button of a page since left', async (t) => {
+      const page = await openScripted(t, {}, { hide: 'off', tv: false });
+      await toHash(page, '#/jellypass/discover');
+      const stale = backs(page)[0];
+      await toHash(page, '#/jellypass/list/trending');
+      const now = page.location.hash;
+      page.click(stale);
+      assert.equal(page.location.hash, now);
     });
   });
 

@@ -20,6 +20,8 @@ export const HOSTING_CLASS = 'jellypass-tv-hosting';
 export const PAGE_ATTR = 'data-jellypass-tv-page';
 /** On an element of a page that focus returns to on Back, with a key unique within the page. */
 export const FOCUS_ATTR = 'data-jellypass-tv-focus';
+/** On the Back button the host puts at the top of a JellyPass page in the desktop layout. */
+export const BACK_ATTR = 'data-jellypass-tv-back';
 /** How many pages' last focus is remembered (in memory only). */
 const FOCUS_MEMORY = 20;
 
@@ -106,7 +108,12 @@ export class PageHost {
   private failed: { hash: string; page: Element } | undefined;
   private focusKeys = new Map<string, string>();
 
-  constructor(private readonly document: Document, private readonly currentHash: () => string) {}
+  /**
+   * `back` is what the Back button does (history back, or Home when the member has come from nowhere in Jellyfin); without
+   * it no page has the button. The button is only for the desktop layout, whose toolbar has no Back (the TV layout has
+   * Jellyfin's own header Back and the remote).
+   */
+  constructor(private readonly document: Document, private readonly currentHash: () => string, private readonly back?: () => void) {}
 
   /** Registers a page for a path pattern under `/jellypass/`, such as `/jellypass/about` or `/jellypass/title/:id`. */
   register(pattern: string, render: PageRender): void {
@@ -229,10 +236,33 @@ export class PageHost {
     }
     const active: Active = { hash, page, container, cleanup: view.cleanup, focusPending: true, acted: false, priorTitle: page.getAttribute('data-title'), view };
     this.active = active;
+    this.drawBack(active);
     this.setTitle(page, view.title);
     this.restoreFocus(active);
     // Our own focus above is not the member moving it.
     active.focusPending = true;
+  }
+
+  /** The Back button, first in the page, once: nowhere in the TV layout, and not again if the page has it already. */
+  private drawBack(active: Active): void {
+    const back = this.back;
+    if (!back || this.document.documentElement.classList.contains('layout-tv')) return;
+    if (active.container.querySelector(`[${BACK_ATTR}]`)) return;
+    const bar = this.document.createElement('div');
+    bar.className = 'jellypass-tv-back-bar padded-left padded-right';
+    const button = this.document.createElement('button');
+    button.type = 'button';
+    button.className = 'emby-button jellypass-tv-back';
+    button.setAttribute(BACK_ATTR, '');
+    button.setAttribute(FOCUS_ATTR, 'back');
+    button.setAttribute('aria-label', 'Back');
+    button.textContent = 'Back';
+    // Only the page on show answers: a button kept from a page since left does nothing.
+    button.addEventListener('click', () => {
+      if (this.active === active) back();
+    });
+    bar.appendChild(button);
+    active.container.insertBefore(bar, active.container.firstChild);
   }
 
   private leave(): void {

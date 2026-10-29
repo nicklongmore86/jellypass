@@ -1,4 +1,4 @@
-import type { DiscoverCard, DiscoverNetwork, DiscoverSources, Failure, HouseholdState, NetworkList } from './api.js';
+import type { DiscoverCard, DiscoverList, DiscoverNetwork, DiscoverSources, Failure, HouseholdState, NetworkList } from './api.js';
 import type { Asked } from './asked.js';
 import { drawCard, imageIn, markCard, setNear, skeletonCard, type Drawn, type Unit } from './discover-card.js';
 import type { DiscoverData, DiscoverRequest } from './discover-data.js';
@@ -9,6 +9,7 @@ import {
   heroCards,
   isHeld,
   JUSTWATCH_NOTE,
+  listHash,
   networkListFor,
   networksFor,
   rowCards,
@@ -480,6 +481,7 @@ export class DiscoverPage {
     if (network) title.appendChild(this.#serviceLink(open, network, heading, request));
     else title.textContent = heading;
     headingContainer.appendChild(title);
+    if (request.kind === 'list') headingContainer.appendChild(this.#seeAll(open, request.list, heading));
     section.appendChild(headingContainer);
     const body = this.#el('div', 'jellypass-tv-discover-row-body');
     section.appendChild(body);
@@ -510,6 +512,25 @@ export class DiscoverPage {
       this.#host.navigate(serviceHash(network.id));
     });
     return link;
+  }
+
+  /**
+   * A list row's "see all": a button beside the heading (the `h2` stays only the heading, so a screen reader lists it as one), named
+   * "<heading>, see all", the one focus stop above the row that Back returns to. It opens the list's grid page, whose first page
+   * is this row's own answer, so nothing is asked.
+   */
+  #seeAll(open: Open, list: DiscoverList, heading: string): HTMLElement {
+    const render = open.render;
+    const paint = open.paint;
+    const button = this.#el('button', `jellypass-tv-discover-link jellypass-tv-discover-see-all${this.#tv() ? ' show-focus' : ''}`, DISCOVER_TEXT.seeAllWords) as HTMLButtonElement;
+    button.type = 'button';
+    button.setAttribute('aria-label', DISCOVER_TEXT.seeAll(heading));
+    button.setAttribute(FOCUS_ATTR, `see:${list}`);
+    button.addEventListener('click', () => {
+      if (!this.#live(open, render, paint)) return;
+      this.#host.navigate(listHash(list));
+    });
+    return button;
   }
 
   #skeleton(row: RowView): void {

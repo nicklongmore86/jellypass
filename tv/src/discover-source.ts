@@ -1,9 +1,9 @@
-import type { DiscoverCard, DiscoverNetwork, DiscoverPage as ListPage, DiscoverSources, DiscoverStudio, Failure, HouseholdState, NetworkList } from './api.js';
+import type { DiscoverCard, DiscoverList, DiscoverNetwork, DiscoverPage as ListPage, DiscoverSources, DiscoverStudio, Failure, HouseholdState, NetworkList } from './api.js';
 import type { Asked } from './asked.js';
 import { JELLYFIN_CLASSES, listClasses } from './jellyfin-web.js';
 import { drawCard, imageIn, markCard, setNear, skeletonCard, type Drawn, type Unit } from './discover-card.js';
 import type { DiscoverData, DiscoverRequest } from './discover-data.js';
-import { DISCOVER_TEXT, isHeld, JUSTWATCH_NOTE, listsOf, SOURCE_TEXT, sourceId, TMDB_NOTICE } from './discover-model.js';
+import { DISCOVER_TEXT, isHeld, JUSTWATCH_NOTE, LIST_HEADINGS, listOf, listsOf, SOURCE_TEXT, sourceId, TMDB_NOTICE } from './discover-model.js';
 import type { HidePreference } from './discover-preference.js';
 import { FOCUS_ATTR, type PageContext, type PageView } from './page-host.js';
 import type { SessionWatch, Stamp } from './session-watch.js';
@@ -16,6 +16,11 @@ import { ERROR_TEXT, kindOf, titleHash } from './title.js';
  * API lists films for), "New only", a grid of cards with Load more (one API page, 20 cards, each press), the JustWatch
  * credit under a service's All and Films, and the TMDB notice at the foot. Only a service or studio the API's sources list has a
  * page: any other address is "Not found", and an address that cannot be one asks nothing.
+ *
+ * The same grid is the "see all" page of a Discover row (`#/jellypass/list/<list>`, docs/tv-addon.md, "See all"): a list the
+ * Discover rows show, with no tabs and no logo, "New only", the same cards and Load more, one API page (20 cards) a press. Its
+ * first page is the row's own address, so opening it from the row costs nothing and opening it directly costs one call (the
+ * sources are not asked: there is nothing to look up).
  *
  * It handles no key (Jellyfin web's focus manager moves between the tabs, the cards and Load more; Back is its history). Back
  * from a title returns to the same card: the page is drawn at once from the kept answers (`DiscoverData`, the pages that were
@@ -32,7 +37,7 @@ const IMAGE_MARGIN = '25% 0px';
 /** The placeholder cards a grid that is still loading shows. */
 const SKELETON_CARDS = 14;
 
-type Kind = 'service' | 'studio';
+type Kind = 'service' | 'studio' | 'list';
 
 /** What the page asks of the page around it. */
 export interface SourceHost {
@@ -48,6 +53,8 @@ interface Render {
 interface Open {
   kind: Kind;
   id: number;
+  /** A "see all" page's list. */
+  feed: DiscoverList | undefined;
   userId: string;
   render: Render;
   context: PageContext;
@@ -164,6 +171,10 @@ export class SourcePage {
     return this.#render('studio', context);
   }
 
+  public renderList(context: PageContext): PageView {
+    return this.#render('list', context);
+  }
+
   #live(open: Open, render: Render, gen?: number): boolean {
     return this.#open === open && open.render === render && (gen === undefined || open.gen === gen) && this.#watch.holds(render.stamp) !== undefined;
   }
@@ -208,15 +219,16 @@ export class SourcePage {
       view.appendChild(this.#note(ERROR_TEXT.unauthorized.title, ERROR_TEXT.unauthorized.body));
       return { title: DISCOVER_TEXT.title, cleanup };
     }
-    const id = sourceId(context.params.id ?? '');
-    if (id === undefined) {
+    const feed = kind === 'list' ? listOf(context.params.list ?? '') : undefined;
+    const id = kind === 'list' ? 0 : sourceId(context.params.id ?? '');
+    if (id === undefined || (kind === 'list' && feed === undefined)) {
       // Not a number the API has: nothing is asked.
       view.appendChild(this.#note(ERROR_TEXT.not_found.title, ERROR_TEXT.not_found.body));
       return { title: ERROR_TEXT.not_found.title, cleanup };
     }
     this.#asked.sync(session.userId);
     const open: Open = {
-      kind, id, userId: session.userId, render: { stamp: this.#watch.stamp(session) }, context, view, gen: 0, frameNo: 0, gridNo: 0, source: undefined, lists: [], list: 'all', pages: [], nextPage: null,
+      kind, id, feed, userId: session.userId, render: { stamp: this.#watch.stamp(session) }, context, view, gen: 0, frameNo: 0, gridNo: 0, source: undefined, lists: [], list: 'all', pages: [], nextPage: null,
       loading: false, fallback: undefined, retry: undefined, title: DISCOVER_TEXT.title, heading: undefined, tabs: {}, hideChip: undefined, panel: undefined, grid: undefined, more: undefined, note: undefined, status: undefined,
       drawn: [], imageWatch: undefined, units: new Map(), headUnit: undefined,
     };
@@ -292,6 +304,11 @@ export class SourcePage {
     const gen = open.gen;
     const render = open.render;
     this.#teardown(open, 'view');
+    if (open.kind === 'list') {
+      // A list needs no look-up: its first page is the only call, and a kept one is no call at all.
+      this.#knownList(open, sync);
+      return;
+    }
     const request: DiscoverRequest = { kind: 'sources' };
     const kept = this.#data.peek(request) as { ok: true; value: DiscoverSources } | Failure | undefined;
     if (kept && kept.ok && !retry) {
@@ -333,8 +350,26 @@ export class SourcePage {
     if (!sync && open.fallback) open.context.focus(open.fallback);
   }
 
+  /** A "see all" page: titled by its list, one list (no tabs), drawn from what is kept before anything is asked. */
+  #knownList(open: Open, sync: boolean): void {
+    open.source = undefined;
+    open.lists = ['all'];
+    open.list = 'all';
+    this.#drawFrame(open);
+    open.title = LIST_HEADINGS[open.feed as DiscoverList];
+    if (!sync) open.context.setTitle(open.title);
+    this.#showList(open, open.list);
+    if (!sync && open.fallback) open.context.focus(open.fallback);
+  }
+
   #key(open: Open): string {
-    return `${open.kind}:${open.id}`;
+    return open.kind === 'list' ? `list:${open.feed}` : `${open.kind}:${open.id}`;
+  }
+
+  /** The page's heading under a tab: a service's by its list, "<studio> movies", or the list's own name. */
+  #headingText(open: Open, list: NetworkList): string {
+    if (open.kind === 'list') return LIST_HEADINGS[open.feed as DiscoverList];
+    return SOURCE_TEXT.heading(open.kind, (open.source as DiscoverStudio).name, list);
   }
 
   /** The header, the tabs and "New only", the panel the list goes into, and the foot. */
@@ -342,21 +377,23 @@ export class SourcePage {
     const render = open.render;
     open.frameNo += 1;
     const frameNo = open.frameNo;
-    const source = open.source as DiscoverNetwork | DiscoverStudio;
+    const source = open.source;
     if (open.imageWatch) open.imageWatch.disconnect();
     const Watcher = typeof IntersectionObserver === 'function' ? IntersectionObserver : undefined;
     open.imageWatch = Watcher ? new Watcher((entries) => this.#onImages(open, render, entries), { rootMargin: IMAGE_MARGIN }) : undefined;
     const head = this.#el('div', 'jellypass-tv-source-head padded-left padded-right');
-    const tile = this.#el('span', 'jellypass-tv-source-logo');
-    const headUnit: Unit = { element: tile, images: [], near: !open.imageWatch };
-    open.headUnit = headUnit;
-    if (source.logoUrl) tile.appendChild(imageIn(this.#document, headUnit, 'jellypass-tv-source-logo-image', source.logoUrl));
-    else tile.textContent = source.name;
-    open.units.set(tile, headUnit);
-    if (open.imageWatch) open.imageWatch.observe(tile);
-    // The logo is decorative: the heading says the name.
-    tile.setAttribute('aria-hidden', 'true');
-    head.appendChild(tile);
+    if (source) {
+      const tile = this.#el('span', 'jellypass-tv-source-logo');
+      const headUnit: Unit = { element: tile, images: [], near: !open.imageWatch };
+      open.headUnit = headUnit;
+      if (source.logoUrl) tile.appendChild(imageIn(this.#document, headUnit, 'jellypass-tv-source-logo-image', source.logoUrl));
+      else tile.textContent = source.name;
+      open.units.set(tile, headUnit);
+      if (open.imageWatch) open.imageWatch.observe(tile);
+      // The logo is decorative: the heading says the name.
+      tile.setAttribute('aria-hidden', 'true');
+      head.appendChild(tile);
+    }
     const heading = this.#el('h1', 'jellypass-tv-source-heading');
     open.heading = heading;
     head.appendChild(heading);
@@ -410,6 +447,7 @@ export class SourcePage {
   // The list
 
   #request(open: Open, list: NetworkList, page: number): DiscoverRequest {
+    if (open.kind === 'list') return page > 1 ? { kind: 'list', list: open.feed as DiscoverList, page } : { kind: 'list', list: open.feed as DiscoverList };
     if (open.kind === 'service') return page > 1 ? { kind: 'network', id: open.id, list, page } : { kind: 'network', id: open.id, list };
     return page > 1 ? { kind: 'studio', id: open.id, page } : { kind: 'studio', id: open.id };
   }
@@ -440,7 +478,7 @@ export class SourcePage {
     // The tab is where focus falls back to now (an empty Films page's pagination ends on Films, not on All).
     if (open.lists.length > 1) open.fallback = open.tabs[list];
     for (const key of Object.keys(open.tabs)) (open.tabs[key] as HTMLElement).setAttribute('aria-pressed', String(key === list));
-    (open.heading as HTMLElement).textContent = SOURCE_TEXT.heading(open.kind, (open.source as DiscoverStudio).name, list);
+    (open.heading as HTMLElement).textContent = this.#headingText(open, list);
     const memory = this.#memory.get(this.#key(open));
     const wanted = memory && memory.loaded[list] ? (memory.loaded[list] as number) : 1;
     for (let page = 1; page <= wanted; page += 1) {
