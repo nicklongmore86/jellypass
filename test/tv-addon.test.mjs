@@ -4204,6 +4204,47 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
     for (const image of root(page).querySelectorAll('img')) assert.equal(image.getAttribute('referrerpolicy'), 'no-referrer');
   });
 
+  it('answers only the hero and row cards on the page: those a Hide redraw replaced do nothing, and the index never leaves the slides', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const fake = fakeApi({ cards: 6 });
+    // The first five of Trending are held: five slides with Hide off, one with it on.
+    const page = await open(t, app, { hide: 'off', override: async (pathname) => {
+      const answer = await fake(pathname);
+      if (answer && pathname.endsWith('/discover/trending')) {
+        const body = JSON.parse(answer.body);
+        for (let i = 0; i < 5; i += 1) body.results[i].state = 'in_library';
+        body.results[5].state = 'get_this';
+        return json(body);
+      }
+      return answer;
+    } });
+    await goTo(page);
+    const hero = () => page.document.querySelector('.jellypass-tv-discover-hero');
+    const named = (name) => hero().querySelector(`[data-jellypass-tv-focus="${name}"]`);
+    const title = () => hero().querySelector('.jellypass-tv-discover-hero-title').textContent;
+    const trending = cardsFor('/discover/trending', 6);
+    for (let i = 0; i < 4; i += 1) page.click(named('hero:next'));
+    assert.equal(title(), trending[4].title);
+    const old = { previous: named('hero:previous'), view: named('hero'), next: named('hero:next') };
+    const oldCards = cardsOf(rowNamed(page, 'Trending'));
+    assert.equal(oldCards.length, 6);
+    page.click(chip(page, 'hide'));
+    assert.equal(hero().querySelector('.jellypass-tv-discover-hero-dots').textContent, '●', 'one slide left');
+    const hash = page.location.hash;
+    for (const one of [old.view, old.previous, old.next, ...oldCards]) {
+      page.click(one);
+      assert.equal(page.location.hash, hash, 'a control the redraw replaced opens nothing');
+    }
+    assert.equal(cardsOf(rowNamed(page, 'Trending')).length, 1);
+    assert.equal(title(), trending[5].title, 'the slide did not move');
+    const target = `#/jellypass/title/${trending[5].mediaType}/${trending[5].tmdbId}`;
+    page.click(cardsOf(rowNamed(page, 'Trending'))[0]);
+    assert.equal(page.location.hash, target, 'the new card works');
+    page.location.hash = hash;
+    page.click(named('hero'));
+    assert.equal(page.location.hash, target, 'the new View opens the one slide');
+  });
+
   it('without an IntersectionObserver every row is asked for at once and every image is set', async (t) => {
     const app = await startApp(t, webWorld(), tvOn());
     const page = await open(t, app, { hide: 'off', observers: null });
@@ -5250,6 +5291,18 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
       assert.equal(sourceRoot(bare).querySelectorAll('img[src]').length, 5 + 1, 'every image, the logo too');
     });
 
+    it('lets go of the pictures of the cards a tab switch replaces where there is no IntersectionObserver', async (t) => {
+      const page = await open(t, await startApp(t, webWorld(), tvOn()), { hide: 'off', override: fakeApi({ cards: 5 }), observers: null });
+      await toHash(page, SERVICE);
+      const old = [...sourceRoot(page).querySelectorAll('.jellypass-tv-source-grid img')];
+      assert.equal(old.length, 5);
+      assert.ok(old.every((image) => image.hasAttribute('src')), 'every picture is set');
+      page.click(tab(page, 'films'));
+      await page.settled();
+      assert.ok(old.every((image) => !image.hasAttribute('src')), 'the replaced cards hold no picture');
+      assert.ok([...sourceRoot(page).querySelectorAll('.jellypass-tv-source-grid img')].every((image) => image.hasAttribute('src')), 'the new ones are set');
+    });
+
     it('draws the same page, with the same calls, whatever other households hold or asked for', async (t) => {
       const seen = {};
       for (const [name, state] of Object.entries({ baseline: world(), ...otherHouseholdWorlds() })) {
@@ -5438,7 +5491,22 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
         assert.equal(connected(page), gridCards(page)[shown], 'the first new card has focus');
       });
 
-      it('puts focus on the last card (or the tab) when the final page is all hidden and Load more goes', async (t) => {
+      it('puts focus on the tab, even after the remote has been used, when nothing is left to show and Load more goes', async (t) => {
+        const all = '/discover/network/213/all';
+        const state = { cards: 20, pages: { [all]: 2 }, allAs: { [all]: 'in_library', [`${all}?page=2`]: 'in_library' } };
+        const page = await openScripted(t, state, { hide: 'on' });
+        await toHash(page, SERVICE);
+        assert.equal(gridCards(page).length, 0, 'both pages are entirely hidden');
+        page.press('keydown');
+        more(page).focus();
+        page.click(more(page));
+        await page.settled();
+        assert.equal(more(page), null, 'the last page');
+        assert.equal(gridCards(page).length, 0);
+        assert.equal(connected(page), tab(page, 'all'), 'the tab has focus');
+      });
+
+      it('puts focus on the last card when the final page is all hidden and Load more goes', async (t) => {
         const all = '/discover/network/213/all';
         const state = { cards: 20, pages: { [all]: 2 }, allAs: { [`${all}?page=2`]: 'in_library' } };
         const page = await openScripted(t, state, { hide: 'on' });

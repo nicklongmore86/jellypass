@@ -89,6 +89,8 @@ interface RowView {
   asked: boolean;
   answered: DiscoverCard[] | undefined;
   drawn: Drawn[];
+  /** Bumped each time the row's cards are drawn: a card of an earlier drawing does nothing. */
+  fill: number;
 }
 
 interface Hero {
@@ -431,7 +433,7 @@ export class DiscoverPage {
     section.appendChild(headingContainer);
     const body = this.#el('div', 'jellypass-tv-discover-row-body');
     section.appendChild(body);
-    const row: RowView = { scope: { open, render: open.render, paint: open.paint }, id: key, heading, variant, request, eager, feeds, section, body, unit: this.#unit(open, section), asked: false, answered: undefined, drawn: [] };
+    const row: RowView = { scope: { open, render: open.render, paint: open.paint }, id: key, heading, variant, request, eager, feeds, section, body, unit: this.#unit(open, section), asked: false, answered: undefined, drawn: [], fill: 0 };
     this.#skeleton(row);
     open.rows.push(row);
     return row;
@@ -548,6 +550,7 @@ export class DiscoverPage {
     row.body.textContent = '';
     row.body.removeAttribute('aria-busy');
     row.drawn = [];
+    row.fill += 1;
     this.#clearImages(row.unit);
     row.unit.images = [];
     const cards = this.#visible(row);
@@ -568,7 +571,10 @@ export class DiscoverPage {
 
   #card(row: RowView, card: DiscoverCard): Drawn {
     const one = drawCard(this.#document, row.unit, { card, backdrop: row.variant === 'backdrop', tv: this.#tv(), key: `${row.id}:${card.mediaType}:${card.tmdbId}` });
-    one.button.addEventListener('click', () => this.#openTitle(row.scope, card));
+    const fill = row.fill;
+    one.button.addEventListener('click', () => {
+      if (row.fill === fill) this.#openTitle(row.scope, card);
+    });
     this.#mark(one);
     return one;
   }
@@ -649,9 +655,14 @@ export class DiscoverPage {
     const scope: Scope = { open, render: open.render, paint: open.paint };
     const hero: Hero = { slides, unit, title, facts, overview, dots, view, image };
     open.hero = hero;
+    // A button of a hero since drawn again does nothing: only the hero on the page is answered.
     previous.addEventListener('click', () => this.#step(scope, hero, -1));
     next.addEventListener('click', () => this.#step(scope, hero, 1));
-    view.addEventListener('click', () => this.#openTitle(scope, hero.slides[this.#slide] as DiscoverCard));
+    view.addEventListener('click', () => {
+      if (open.hero !== hero) return;
+      const card = hero.slides[this.#slide];
+      if (card) this.#openTitle(scope, card);
+    });
     this.#slide = Math.min(this.#slide, slides.length - 1);
     this.#showSlide(hero);
     // The hero is what the page opens on (or what Back finds again): the host leaves focus alone once the member has moved it.
@@ -659,12 +670,13 @@ export class DiscoverPage {
   }
 
   #step(scope: Scope, hero: Hero, by: number): void {
-    if (!this.#live(scope.open, scope.render, scope.paint)) return;
-    this.#slide = (this.#slide + by + hero.slides.length) % hero.slides.length;
+    if (scope.open.hero !== hero || !this.#live(scope.open, scope.render, scope.paint)) return;
+    this.#slide = (Math.min(this.#slide, hero.slides.length - 1) + by + hero.slides.length) % hero.slides.length;
     this.#showSlide(hero);
   }
 
   #showSlide(hero: Hero): void {
+    this.#slide = Math.max(0, Math.min(this.#slide, hero.slides.length - 1));
     const card = hero.slides[this.#slide] as DiscoverCard;
     const state = this.#stateOf(card);
     hero.title.textContent = card.title;

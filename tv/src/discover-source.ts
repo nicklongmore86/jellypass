@@ -312,10 +312,8 @@ export class SourcePage {
     open.headUnit = headUnit;
     if (source.logoUrl) tile.appendChild(imageIn(this.#document, headUnit, 'jellypass-tv-source-logo-image', source.logoUrl));
     else tile.textContent = source.name;
-    if (open.imageWatch) {
-      open.units.set(tile, headUnit);
-      open.imageWatch.observe(tile);
-    }
+    open.units.set(tile, headUnit);
+    if (open.imageWatch) open.imageWatch.observe(tile);
     // The logo is decorative: the heading says the name.
     tile.setAttribute('aria-hidden', 'true');
     head.appendChild(tile);
@@ -521,12 +519,10 @@ export class SourcePage {
       unit.images = [];
     });
     open.units = new Map();
-    if (open.imageWatch) {
-      open.imageWatch.disconnect();
-      if (head) {
-        open.units.set(head.element, head);
-        open.imageWatch.observe(head.element);
-      }
+    if (open.imageWatch) open.imageWatch.disconnect();
+    if (head) {
+      open.units.set(head.element, head);
+      if (open.imageWatch) open.imageWatch.observe(head.element);
     }
   }
 
@@ -575,7 +571,8 @@ export class SourcePage {
     const last = open.drawn[open.drawn.length - 1];
     if (open.more) open.more.focus();
     else if (last) last.button.focus();
-    else if (open.fallback) open.context.focus(open.fallback);
+    // The host ignores a focus request once the member has used the remote: this focus is ours, taken directly.
+    else if (open.fallback) open.fallback.focus();
   }
 
   #draw(open: Open, grid: HTMLElement, card: DiscoverCard): void {
@@ -584,10 +581,9 @@ export class SourcePage {
     const unit: Unit = { element: grid, images: [], near: !open.imageWatch };
     const one = drawCard(this.#document, unit, { card, backdrop: false, tv: this.#tv(), key: `card:${card.mediaType}:${card.tmdbId}` });
     unit.element = one.button;
-    if (open.imageWatch) {
-      open.units.set(one.button, unit);
-      open.imageWatch.observe(one.button);
-    }
+    // Kept with or without an observer, so a redraw can let go of the pictures either way.
+    open.units.set(one.button, unit);
+    if (open.imageWatch) open.imageWatch.observe(one.button);
     one.button.addEventListener('click', () => {
       if (this.#live(open, render) && open.gridNo === gridNo) this.#host.navigate(titleHash(card.mediaType, card.tmdbId));
     });
