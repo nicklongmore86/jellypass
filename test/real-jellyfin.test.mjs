@@ -409,11 +409,14 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     t.after(() => request(baseUrl, '/System/Configuration', { method: 'POST', token: fixture.token, body: configuration }));
     await request(baseUrl, '/System/Configuration', { method: 'POST', token: fixture.token, body: { ...configuration, QuickConnectAvailable: true } });
     const WEB = 'MediaBrowser Client="Jellyfin Web", Device="Firefox", DeviceId="jellypass-real-quick-connect", Version="10.11.3"';
-    // At Jellyfin itself Quick Connect is on and hands out a code, by every route it takes, the legacy prefix included.
-    // Jellyfin 12.x, as in production, no longer serves the /emby/ prefix itself; this 10.11.3 test server still does. The
-    // household host checks /emby/ paths either way.
+    // At Jellyfin itself Quick Connect is on and hands out a code, by every route it takes: Jellyfin 10.11 by the legacy
+    // prefix too, Jellyfin 12 (which no longer routes it) by the plain path only. The household host refuses every
+    // spelling on both.
     assert.equal(await request(baseUrl, '/QuickConnect/Enabled'), true);
-    assert.match((await request(baseUrl, '/emby/QuickConnect/Initiate', { method: 'POST', authorization: WEB })).Code, /^\d+$/);
+    assert.match((await request(baseUrl, '/QuickConnect/Initiate', { method: 'POST', authorization: WEB })).Code, /^\d+$/);
+    const legacyInitiate = await postWithHeaders(new URL(baseUrl).port, '/emby/QuickConnect/Initiate', { Host: new URL(baseUrl).host, Authorization: WEB }, {});
+    if (fixture.major < 12) assert.match(legacyInitiate.json().Code, /^\d+$/, legacyInitiate.text);
+    else assert.equal(legacyInitiate.status, 404, 'Jellyfin 12 routes /emby/ again: check the household host still refuses it');
 
     const householdStore = new GrantStore(path.join(await makeTempDir(t, 'jfa-real-quick-connect-'), 'grants.json'));
     await householdStore.load();
@@ -496,12 +499,14 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     await request(baseUrl, `/Users/${fixture.aliceId}/Password`, { method: 'POST', token: fixture.token, body: { NewPw: 'alice-paths' } });
     t.after(() => request(baseUrl, `/Users/${fixture.aliceId}/Password`, { method: 'POST', token: fixture.token, body: { ResetPassword: true } }));
     const WEB = 'MediaBrowser Client="Jellyfin Web", Device="Firefox", DeviceId="jellypass-real-paths", Version="10.11.3"';
-    // At Jellyfin itself Alice signs in by every one of these spellings, and by her ID.
-    // (Jellyfin 12.x, as in production, no longer serves /emby/ itself, while this 10.11.3 server does; the household host
-    // checks /emby/ paths either way.)
-    const spellings = ['/emby/Users/AuthenticateByName', '/MediaBrowser/Users/AuthenticateByName/', '/%65mby/Users/AuthenticateByName', '/Users/AuthenticateByName/', '/Users/%41uthenticateByName'];
+    // At Jellyfin itself Alice signs in by every one of these spellings, and by her ID; the legacy-prefixed ones only on
+    // Jellyfin 10.11, as Jellyfin 12 no longer routes the prefix. The household host checks them on both.
+    const legacy = ['/emby/Users/AuthenticateByName', '/MediaBrowser/Users/AuthenticateByName/', '/%65mby/Users/AuthenticateByName'];
+    const spellings = [...legacy, '/Users/AuthenticateByName/', '/Users/%41uthenticateByName'];
     for (const pathname of spellings) {
-      assert.equal((await request(baseUrl, pathname, { method: 'POST', authorization: WEB, body: { Username: 'Alice', Pw: 'alice-paths' } })).User.Id, fixture.aliceId, pathname);
+      const answer = await postWithHeaders(new URL(baseUrl).port, pathname, { Host: new URL(baseUrl).host, Authorization: WEB }, { Username: 'Alice', Pw: 'alice-paths' });
+      if (fixture.major >= 12 && legacy.includes(pathname)) assert.equal(answer.status, 404, `${pathname}: Jellyfin 12 routes the legacy prefix again`);
+      else assert.equal(answer.json().User.Id, fixture.aliceId, pathname);
     }
     assert.equal((await request(baseUrl, `/Users/${fixture.aliceId}/Authenticate?pw=alice-paths`, { method: 'POST', authorization: WEB })).User.Id, fixture.aliceId);
 
@@ -527,8 +532,12 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     const { date: _byIdDate, ...byIdHeaders } = byId.headers;
     const { date: _memberDate, ...memberHeaders } = memberById.headers;
     assert.deepEqual([memberById.status, memberById.text, memberHeaders], [byId.status, byId.text, byIdHeaders]);
-    // Bob is: signed in by Jellyfin through the legacy prefix.
-    const bob = await postWithHeaders(port, '/emby/Users/AuthenticateByName', host, { Username: 'Bob', Pw: '' });
+    // Bob is: signed in by Jellyfin, on the plain path and, on Jellyfin 10.11, through the legacy prefix. Jellyfin 12
+    // answers that prefix with a 404, which the household host answers as any failed sign-in of a member.
+    const legacyBob = await postWithHeaders(port, '/emby/Users/AuthenticateByName', host, { Username: 'Bob', Pw: '' });
+    if (fixture.major < 12) assert.equal(legacyBob.json().User.Id, fixture.bobId, legacyBob.text);
+    else assert.deepEqual([legacyBob.status, legacyBob.text], [401, '{"error":"invalid_credentials"}']);
+    const bob = await postWithHeaders(port, '/Users/AuthenticateByName', host, { Username: 'Bob', Pw: '' });
     assert.equal(bob.status, 200, bob.text);
     assert.equal(bob.json().User.Id, fixture.bobId);
     // Jellyfin 10.11 lists no hidden user publicly, and makes every new user hidden: Bob and the administrator are shown.
@@ -536,10 +545,12 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     const originalAdmin = (await client.getUsers()).find((entry) => entry.Policy.IsAdministrator);
     t.after(() => client.updatePolicy(originalAdmin.Id, originalAdmin.Policy));
     await client.updatePolicy(originalAdmin.Id, { ...originalAdmin.Policy, IsHidden: false });
-    assert.ok((await request(baseUrl, '/emby/Users/Public')).some((entry) => entry.Id === originalAdmin.Id), 'Jellyfin itself lists the administrator');
+    assert.ok((await request(baseUrl, '/Users/Public')).some((entry) => entry.Id === originalAdmin.Id), 'Jellyfin itself lists the administrator');
     for (const pathname of ['/Users/Public', '/emby/Users/Public', '/Users/Public/', '/%65mby/Users/%50ublic']) {
       const answer = await getWithHeaders(port, pathname, host);
-      assert.deepEqual(answer.json().map((entry) => entry.Id), [fixture.bobId], pathname);
+      // Jellyfin 12 answers the legacy prefix with a 404, which gets the household host's fixed one, listing no one.
+      if (fixture.major >= 12 && /^\/%65mby|^\/emby/i.test(pathname)) assert.deepEqual([answer.status, answer.text], [404, '{"error":"item_not_found"}'], pathname);
+      else assert.deepEqual(answer.json().map((entry) => entry.Id), [fixture.bobId], pathname);
     }
     // A title Bob may not see: its media is refused in every spelling, as on the plain path.
     await client.updateItem({ ...original, Tags: [...original.Tags, 'jp-paths-hidden'] });
@@ -682,30 +693,38 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     const dashed = (id) => `${id.slice(0, 8)}-${id.slice(8, 12)}-${id.slice(12, 16)}-${id.slice(16, 20)}-${id.slice(20)}`;
     const ids = (answer) => answer.json().Items.map((item) => item.Id);
 
-    // Jellyfin itself refuses Bob Alice's playlist, yet lists it, hidden clip included, once he names her.
+    // Jellyfin itself refuses Bob Alice's playlist. Jellyfin 10.11 lists it, hidden clip included, once he names her;
+    // Jellyfin 12 refuses that too.
     const atJellyfin = (pathname) => getWithHeaders(new URL(baseUrl).port, pathname, { Host: new URL(baseUrl).host });
     assert.equal((await atJellyfin(`/Users/${fixture.bobId}/Items/${clip.Id}?ApiKey=${tokens.bob}`)).status, 404);
     assert.equal((await atJellyfin(`/Playlists/${alicePlaylist}/Items?ApiKey=${tokens.bob}`)).status, 404);
     const leaked = await atJellyfin(`/Playlists/${alicePlaylist}/Items?userId=${fixture.aliceId}&ApiKey=${tokens.bob}`);
-    assert.equal(leaked.status, 200, 'Jellyfin no longer trusts a playlist\'s userId for the caller: revisit the gateway\'s user checks');
-    assert.ok(ids(leaked).includes(clip.Id), leaked.text);
+    if (fixture.major < 12) {
+      assert.equal(leaked.status, 200, 'Jellyfin 10.11 no longer trusts a playlist\'s userId for the caller: revisit the gateway\'s user checks');
+      assert.ok(ids(leaked).includes(clip.Id), leaked.text);
+    } else {
+      assert.equal(leaked.status, 403, `Jellyfin 12 trusts a playlist's userId for the caller again: ${leaked.text}`);
+      assert.ok(!leaked.text.includes(clip.Id), leaked.text);
+    }
 
-    // The household host refuses Bob every way of naming Alice, without sending it to Jellyfin. His token goes in a
-    // header, so that a query of one encoded key (`?userId%3D...`) is all Jellyfin would re-read as the query.
-    const asBob = { Host: host, 'X-Emby-Token': tokens.bob };
+    // The household host refuses Bob every way of naming Alice, without sending it to Jellyfin, however he gives his
+    // token, on every Jellyfin alike. His token goes in a header, so that a query of one encoded key (`?userId%3D...`) is
+    // all Jellyfin would re-read as the query. (Jellyfin 12 no longer reads X-Emby-Token; the household host still does.)
     const named = [
       `userId=${fixture.aliceId}`, `UserId=${fixture.aliceId.toUpperCase()}`, `userid=${dashed(fixture.aliceId)}`,
       `USERID=%7B${dashed(fixture.aliceId)}%7D`, `userId=${fixture.bobId}&userId=${fixture.aliceId}`, `userId%3D${fixture.aliceId}`,
     ];
-    for (const parameter of named) {
-      for (const pathname of [`/Playlists/${alicePlaylist}/Items`, `/emby/Playlists/${alicePlaylist}/Items`, `/Users/${fixture.aliceId}/Items`]) {
-        const answer = await getWithHeaders(port, `${pathname}?${parameter}`, asBob);
-        assert.deepEqual([answer.status, answer.text], [404, '{"error":"item_not_found"}'], `${pathname}?${parameter}`);
+    for (const asBob of [{ Host: host, Authorization: `MediaBrowser Token="${tokens.bob}"` }, { Host: host, 'X-Emby-Token': tokens.bob }]) {
+      for (const parameter of named) {
+        for (const pathname of [`/Playlists/${alicePlaylist}/Items`, `/emby/Playlists/${alicePlaylist}/Items`, `/Users/${fixture.aliceId}/Items`]) {
+          const answer = await getWithHeaders(port, `${pathname}?${parameter}`, asBob);
+          assert.deepEqual([answer.status, answer.text], [404, '{"error":"item_not_found"}'], `${pathname}?${parameter}`);
+        }
       }
-    }
-    for (const pathname of [`/Users/${fixture.aliceId}`, `/Users/${dashed(fixture.aliceId)}/Views`, `/Users/${fixture.aliceId}/Items?ParentId=${alicePlaylist}`]) {
-      const answer = await getWithHeaders(port, pathname, asBob);
-      assert.deepEqual([answer.status, answer.text], [404, '{"error":"item_not_found"}'], pathname);
+      for (const pathname of [`/Users/${fixture.aliceId}`, `/Users/${dashed(fixture.aliceId)}/Views`, `/Users/${fixture.aliceId}/Items?ParentId=${alicePlaylist}`]) {
+        const answer = await getWithHeaders(port, pathname, asBob);
+        assert.deepEqual([answer.status, answer.text], [404, '{"error":"item_not_found"}'], pathname);
+      }
     }
     // Without naming anyone, Bob gets Jellyfin's own refusal.
     assert.equal((await getWithHeaders(port, `/Playlists/${alicePlaylist}/Items?ApiKey=${tokens.bob}`, { Host: host })).status, 404);
@@ -742,7 +761,7 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
       return answer.json().AccessToken;
     };
     const tokens = { alice: await signIn('Alice'), bob: await signIn('Bob') };
-    const as = (token) => ({ Host: host, 'X-Emby-Token': token, 'Content-Type': 'application/json' });
+    const as = (token) => ({ Host: host, Authorization: `MediaBrowser Token="${token}"`, 'Content-Type': 'application/json' });
     const send = (method, pathname, token, body) => getWithHeaders(port, pathname, as(token), { method, body: body === undefined ? undefined : JSON.stringify(body) });
     const { Id: playlist } = await request(baseUrl, '/Playlists', { method: 'POST', token: tokens.alice, body: { Name: 'jp-share', Ids: [fixture.itemId], UserId: fixture.aliceId, MediaType: 'Video', IsPublic: false } });
     t.after(() => request(baseUrl, `/Items/${playlist}`, { method: 'DELETE', token: tokens.alice }));
@@ -771,8 +790,12 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     assert.equal(read.status, 200, read.text);
     assert.deepEqual(read.json().Items.map((item) => item.Id), [fixture.itemId]);
     const shareOf = async (token, id) => {
-      const answer = await send('GET', `/emby/playlists/${playlist}/users/${id}`, token);
+      const answer = await send('GET', `/playlists/${playlist}/users/${id}`, token);
       assert.equal(answer.status, 200, answer.text);
+      // The legacy prefix is let through to Jellyfin alike: Jellyfin 10.11 answers it as the plain path, Jellyfin 12
+      // (which no longer routes it) with its own 404.
+      const legacy = await send('GET', `/emby/playlists/${playlist}/users/${id}`, token);
+      assert.deepEqual([legacy.status, legacy.text], fixture.major < 12 ? [answer.status, answer.text] : [404, '']);
       return answer.json().CanEdit;
     };
     assert.equal(await shareOf(tokens.bob, fixture.bobId), false);
@@ -824,24 +847,32 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     const alice = await signIn(grove, 'Alice', 'jellypass-real-scope-alice');
     const bob = await signIn(heath, 'Bob', 'jellypass-real-scope-bob');
     const as = (host, token) => ({ Host: host, Authorization: `${WEB}, Token="${token}"` });
-    const atJellyfin = (pathname, token) => getWithHeaders(new URL(baseUrl).port, pathname, { Host: new URL(baseUrl).host, 'X-Emby-Token': token });
+    // Straight to Jellyfin, with a token as both Jellyfin 10.11 and 12 read it.
+    const direct = (token) => ({ Host: new URL(baseUrl).host, Authorization: `MediaBrowser Token="${token}"` });
+    const atJellyfin = (pathname, token) => getWithHeaders(new URL(baseUrl).port, pathname, direct(token));
 
     // Jellyfin lists every user to Alice; grove's host lists only her, in every filter.
     const everyone = await atJellyfin('/Users', alice);
     assert.ok(everyone.json().some((user) => user.Id === fixture.bobId), 'Jellyfin no longer lists every user to a member: revisit the gateway\'s /Users filter');
     // Each filter is still Jellyfin's own (a new user is hidden in 10.11, so `isHidden=false` leaves Alice off too).
     for (const pathname of ['/Users', '/users?isHidden=true', '/Users?isHidden=false', '/emby/Users/', '/Users?isDisabled=false']) {
-      const own = (await atJellyfin(pathname, alice)).json().filter((user) => user.Id === fixture.aliceId).map((user) => user.Name);
       const answer = await getWithHeaders(port, pathname, as(grove, alice));
+      if (fixture.major >= 12 && pathname.startsWith('/emby/')) {
+        // Jellyfin 12 no longer routes the legacy prefix: its 404 gets the household host's fixed one, listing no one.
+        assert.equal((await atJellyfin(pathname, alice)).status, 404);
+        assert.deepEqual([answer.status, answer.text], [404, '{"error":"item_not_found"}'], pathname);
+        continue;
+      }
+      const own = (await atJellyfin(pathname, alice)).json().filter((user) => user.Id === fixture.aliceId).map((user) => user.Name);
       assert.equal(answer.status, 200, answer.text);
       assert.deepEqual(answer.json().map((user) => user.Name), own, pathname);
     }
     assert.deepEqual((await getWithHeaders(port, '/Users', as(grove, alice))).json().map((user) => user.Name), ['Alice']);
 
     // Bob's SyncPlay group, listed with his name to anyone at Jellyfin, is not grove's.
-    const newGroup = await getWithHeaders(new URL(baseUrl).port, '/SyncPlay/New', { Host: new URL(baseUrl).host, 'X-Emby-Token': bob, 'Content-Type': 'application/json' }, { method: 'POST', body: JSON.stringify({ GroupName: 'Bob group' }) });
+    const newGroup = await getWithHeaders(new URL(baseUrl).port, '/SyncPlay/New', { ...direct(bob), 'Content-Type': 'application/json' }, { method: 'POST', body: JSON.stringify({ GroupName: 'Bob group' }) });
     assert.equal(newGroup.status, 200, newGroup.text);
-    t.after(() => getWithHeaders(new URL(baseUrl).port, '/SyncPlay/Leave', { Host: new URL(baseUrl).host, 'X-Emby-Token': bob }, { method: 'POST' }));
+    t.after(() => getWithHeaders(new URL(baseUrl).port, '/SyncPlay/Leave', direct(bob), { method: 'POST' }));
     const groups = (await atJellyfin('/SyncPlay/List', alice)).json();
     const bobGroup = groups.find((group) => group.Participants.includes('Bob'));
     assert.ok(bobGroup, 'Jellyfin no longer lists other users\' SyncPlay groups: revisit the gateway\'s SyncPlay filter');
@@ -864,13 +895,14 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     t.after(() => client.updatePolicy(fixture.aliceId, originalAlice.Policy));
     await client.updatePolicy(fixture.aliceId, { ...originalAlice.Policy, EnableRemoteControlOfOtherUsers: true });
     // Bob's session is remote-controllable once his client has a WebSocket open and has said it takes commands.
-    const socket = new WebSocket(`${baseUrl.replace(/^http/, 'ws')}/socket?api_key=${bob}&deviceId=jellypass-real-scope-bob`);
+    // (`ApiKey`, not the legacy `api_key`, which Jellyfin 12 no longer reads.)
+    const socket = new WebSocket(`${baseUrl.replace(/^http/, 'ws')}/socket?ApiKey=${bob}&deviceId=jellypass-real-scope-bob`);
     t.after(() => socket.close());
     await new Promise((resolve, reject) => {
       socket.onopen = resolve;
       socket.onerror = reject;
     });
-    const capabilities = await getWithHeaders(new URL(baseUrl).port, '/Sessions/Capabilities/Full', { Host: new URL(baseUrl).host, 'X-Emby-Token': bob, 'Content-Type': 'application/json' }, { method: 'POST', body: JSON.stringify({ PlayableMediaTypes: ['Video'], SupportedCommands: ['DisplayMessage'], SupportsMediaControl: true }) });
+    const capabilities = await getWithHeaders(new URL(baseUrl).port, '/Sessions/Capabilities/Full', { ...direct(bob), 'Content-Type': 'application/json' }, { method: 'POST', body: JSON.stringify({ PlayableMediaTypes: ['Video'], SupportedCommands: ['DisplayMessage'], SupportsMediaControl: true }) });
     assert.equal(capabilities.status, 204, capabilities.text);
     const controllable = `/Sessions?controllableByUserId=${fixture.aliceId}`;
     await waitFor(async () => (await atJellyfin(controllable, alice)).json().some((session) => session.UserId === fixture.bobId), 10).catch(() => undefined);
@@ -888,9 +920,12 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
         const expected = pathname.includes(fixture.aliceId) || pathname.includes(fixture.itemId) ? [404, '{"error":"item_not_found"}'] : [401, '{"error":"unauthorized"}'];
         assert.deepEqual([answer.status, answer.text], expected, `${pathname} ${token === alice ? 'Alice' : 'unknown'}`);
       }
-      assert.match(await rawUpgrade(port, `/socket?api_key=${token}&deviceId=jellypass-real-scope`, heath), /^HTTP\/1\.1 401 /);
+      // In the legacy `api_key` too, which the household host still reads though Jellyfin 12 does not.
+      for (const name of ['ApiKey', 'api_key']) {
+        assert.match(await rawUpgrade(port, `/socket?${name}=${token}&deviceId=jellypass-real-scope`, heath), /^HTTP\/1\.1 401 /, name);
+      }
     }
-    assert.match(await rawUpgrade(port, `/socket?api_key=${alice}&deviceId=jellypass-real-scope`, grove), /^HTTP\/1\.1 101 /);
+    assert.match(await rawUpgrade(port, `/socket?ApiKey=${alice}&deviceId=jellypass-real-scope`, grove), /^HTTP\/1\.1 101 /);
 
     // Signing Bob out through grove's host gets the answer a token Jellyfin never issued gets, and revokes nothing.
     const signOut = (host, token) => postWithHeaders(port, '/Sessions/Logout', as(host, token), undefined);
@@ -982,9 +1017,10 @@ async function setupJellyfin(url) {
   // A slow runner can take most of a minute to start Jellyfin, and as long again to complete its startup.
   // The version scripts/test-real-jellyfin.sh started, so a run never passes against another Jellyfin than it names.
   const expected = process.env.JELLYFIN_REAL_VERSION;
+  let version;
   await waitFor(async () => {
     const info = await request(url, '/System/Info/Public');
-    const version = info.Version ?? info.version;
+    version = info.Version ?? info.version;
     if (expected ? version !== expected : typeof version !== 'string') return false;
     // Since 10.11.4 Jellyfin answers /System/Info/Public while it starts, and every other route with a 503 until it has.
     await request(url, '/Startup/User');
@@ -1029,7 +1065,10 @@ async function setupJellyfin(url) {
     return libraryScan(all).LastExecutionResult?.StartTimeUtc !== startupScan.LastExecutionResult.StartTimeUtc
       && all.every((task) => task.State === 'Idle');
   });
-  return { token, aliceId: alice.Id, bobId: bob.Id, itemId: item.Id };
+  // Where Jellyfin's own answers differ between the supported releases, a test says what each does: Jellyfin 12 no longer
+  // routes the legacy `/emby` and `/mediabrowser` prefixes, nor reads a token from the legacy `X-Emby-Token`,
+  // `X-Emby-Authorization` and `X-MediaBrowser-Token` headers or the `api_key` query parameter.
+  return { token, aliceId: alice.Id, bobId: bob.Id, itemId: item.Id, major: Number.parseInt(version, 10) };
 }
 
 async function request(url, pathname, options = {}) {
