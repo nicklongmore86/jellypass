@@ -31,7 +31,7 @@ import { createRequestFilterStore, type RequestFilterStore } from '../requests/f
 import { createTitleCache, type TitleCache } from '../requests/titleCache';
 import { createAsked, type Asked } from '../title/asked';
 import { clientIdentity } from './identity';
-import { clearSession, readSession, writeSession, type StoredSession } from './store';
+import { clearSessionIf, readSession, writeSession, type StoredSession } from './store';
 
 export type Phase =
   | { kind: 'starting' }
@@ -154,23 +154,11 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
   }, []);
 
   /**
-   * Deletes `session`'s credentials once its sign-out (or 401) is done. If the app has moved on since `mine` (another
-   * household or sign-in began), whatever is kept now may be the newer one's: it is deleted only if it is `session`'s
-   * own (same household and token).
+   * Deletes `session`'s credentials once its sign-out (or 401) is done, but only if what is kept is its own (same
+   * household and token), compared and deleted in one step of the credential queue: a newer sign-in's write is never
+   * erased, whatever order the two finish in.
    */
-  const forget = useCallback(async (session: StoredSession, mine: number) => {
-    if (generation.current === mine) {
-      await clearSession();
-      return;
-    }
-    let kept: StoredSession | undefined;
-    try {
-      kept = await readSession();
-    } catch {
-      return;
-    }
-    if (kept && kept.token === session.token && kept.address.origin === session.address.origin) await clearSession();
-  }, []);
+  const forget = useCallback((session: StoredSession) => clearSessionIf(session), []);
 
   const check = useCallback(
     async (session: StoredSession) => {
@@ -182,7 +170,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
       } catch (error) {
         if (generation.current !== mine) return;
         if (error instanceof ApiError && error.kind === 'unauthorized') {
-          await forget(session, mine);
+          await forget(session);
           if (generation.current === mine) move({ kind: 'signin', address: session.address, expired: true });
           return;
         }
@@ -227,7 +215,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
         try {
           await signInApi(session.address).signOut(session.token);
         } finally {
-          await forget(session, mine);
+          await forget(session);
         }
         // A sign-in or household chosen while this was out has moved the app already: it is not undone.
         if (generation.current === mine) move(next(session));
@@ -242,7 +230,8 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
 
   const household = phase.kind === 'signin' ? phase.address : sessionOf(phase)?.address;
 
-  const signedIn = phase.kind === 'signedIn' ? phase.session : undefined;
+  const signedPhase = phase.kind === 'signedIn' ? phase : undefined;
+  const signedIn = signedPhase?.session;
   // A new client, overlay and titles for each sign-in (household, member or token); the old ones are forgotten as soon
   // as they are replaced.
   const { api, asked, titles, requestFilters, hideHeld } = useMemo(
@@ -314,20 +303,24 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
     [api, asked],
   );
 
+  // The 401 callback belongs to the sign-in (the signedIn phase) it was made for. One that fires after the app moved on
+  // (a sign-out, another sign-in, even the same token checked again) is another session's: it does nothing, before
+  // anything is reset, deleted or moved.
   const expire = useCallback(async () => {
+    const mine = signedPhase;
+    if (!mine || phaseRef.current !== mine) return;
     askedRef.current?.forget();
     titlesRef.current?.forget();
     filtersRef.current?.reset();
     hideRef.current?.reset();
-    const session = sessionOf(phaseRef.current);
-    if (!session) return;
-    const mine = move({ kind: 'signingOut' });
+    const session = mine.session;
+    const gen = move({ kind: 'signingOut' });
     try {
-      await forget(session, mine);
+      await forget(session);
     } finally {
-      if (generation.current === mine) move({ kind: 'signin', address: session.address, expired: true });
+      if (generation.current === gen) move({ kind: 'signin', address: session.address, expired: true });
     }
-  }, [move, forget]);
+  }, [signedPhase, move, forget]);
 
   // A link to the household the app is already on needs nothing.
   const offer = link?.address && household && link.address.origin === household.origin ? undefined : link;
@@ -369,7 +362,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
         if (generation.current !== epoch) {
           // It moved on while the sign-in was being written. Nothing newer has been kept (that would have moved to a
           // phase with a session), so the device forgets this one.
-          if (!sessionOf(phaseRef.current)) await clearSession();
+          if (!sessionOf(phaseRef.current)) await clearSessionIf(session);
           await revoke();
           return;
         }

@@ -28,6 +28,10 @@ build.
   nearest slide.
 - Signing out (or changing household) that finishes late no longer signs you out of, or erases the credentials of, the
   household you signed in to meanwhile, and a setup link waits until the sign-out has finished.
+- A late "signed out" answer (a 401) from a previous sign-in no longer signs you out of, or resets **Hide what I
+  have** for, the sign-in you made after it, and the stored sign-in is only ever deleted if it is still the one that
+  ended, whatever order two sign-ins finish in.
+- Home's hero stays on the title you chose when its width changes (turning an iPad), instead of sitting between slides.
 
 ## [1.1.0] - 2026-10-28
 

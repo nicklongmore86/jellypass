@@ -53,6 +53,17 @@ async function signInToB() {
   await settle();
 }
 
+/** Signs out of A, letting the held sign-out finish. */
+async function signOutA(gate: { release: () => Promise<void> }) {
+  let out!: Promise<void>;
+  await act(async () => {
+    out = session!.signOut();
+  });
+  await gate.release();
+  await act(async () => out);
+  await settle();
+}
+
 beforeEach(() => {
   session = undefined;
   store.__items.clear();
@@ -109,7 +120,27 @@ describe('a slow sign-out', () => {
     expect([session!.phase.kind, session!.household?.origin, storedSession()]).toEqual(['signin', OTHER_ORIGIN, undefined]);
   });
 
-  it('a 401 that lands after another household was signed in leaves that sign-in alone', async () => {
+  it("a stale 401 (A's callback, fired after B signed in) leaves B's credentials, phase and Hide choice alone", async () => {
+    const gate = await start();
+    const staleExpire = session!.expire;
+    await signOutA(gate);
+    await signInToB();
+    session!.hideHeld.set(false);
+    await act(async () => staleExpire());
+    await settle();
+    expect([session!.phase.kind, session!.household?.origin, storedSession()?.['token'], session!.hideHeld.get()]).toEqual(['signedIn', OTHER_ORIGIN, B_TOKEN, false]);
+  });
+
+  it("B's own 401 expires B", async () => {
+    const gate = await start();
+    await signOutA(gate);
+    await signInToB();
+    await act(async () => session!.expire());
+    await settle();
+    expect([session!.phase.kind, storedSession()]).toEqual(['signin', undefined]);
+  });
+
+  it("a held sign-out of A, then B's 401, then B signed in again: B's sign-in survives A's late end", async () => {
     const gate = await start();
     let out!: Promise<void>;
     await act(async () => {
@@ -118,7 +149,6 @@ describe('a slow sign-out', () => {
     await signInToB();
     await act(async () => session!.expire());
     await settle();
-    // B was the signed-in session, so its own 401 forgets it; the held sign-out of A must not touch anything else.
     expect(session!.phase.kind).toBe('signin');
     await signInToB();
     await gate.release();

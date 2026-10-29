@@ -32,8 +32,21 @@ function field(value: unknown): string | undefined {
   return typeof value === 'string' && value !== '' && value.length <= MAX_FIELD_LENGTH ? value : undefined;
 }
 
+// Every read, write and delete of the stored session goes through this one queue, so a compare-and-delete can never
+// interleave with another sign-in's write: one operation finishes before the next starts.
+let queue: Promise<unknown> = Promise.resolve();
+function serialized<T>(operation: () => Promise<T>): Promise<T> {
+  const run = queue.then(operation, operation);
+  queue = run.catch(() => undefined);
+  return run;
+}
+
 /** The stored session, or undefined when there is none. One that is not the shape written below is deleted. */
-export async function readSession(): Promise<StoredSession | undefined> {
+export function readSession(): Promise<StoredSession | undefined> {
+  return serialized(readNow);
+}
+
+async function readNow(): Promise<StoredSession | undefined> {
   const text = await SecureStore.getItemAsync(SESSION_KEY, STORE_OPTIONS);
   if (text === null) return undefined;
   let value: Record<string, unknown> = {};
@@ -49,24 +62,45 @@ export async function readSession(): Promise<StoredSession | undefined> {
   const userId = field(value['userId']);
   const name = field(value['name']);
   if (!address || address.origin !== origin || !token || !userId || !name) {
-    await clearSession();
+    await deleteNow();
     return undefined;
   }
   return { address, token, userId, name };
 }
 
-export async function writeSession(session: StoredSession): Promise<void> {
+export function writeSession(session: StoredSession): Promise<void> {
   const { address, token, userId, name } = session;
-  await SecureStore.setItemAsync(SESSION_KEY, JSON.stringify({ address: address.origin, token, userId, name }), STORE_OPTIONS);
+  return serialized(() => SecureStore.setItemAsync(SESSION_KEY, JSON.stringify({ address: address.origin, token, userId, name }), STORE_OPTIONS));
 }
 
-/** Deletes the session. Never throws: a failure here must not keep the app signed in on screen. */
-export async function clearSession(): Promise<void> {
+async function deleteNow(): Promise<void> {
   try {
     await SecureStore.deleteItemAsync(SESSION_KEY, STORE_OPTIONS);
   } catch {
     // Nothing more can be done; the next start finds the old token and /me answers 401 for it.
   }
+}
+
+/** Deletes the session. Never throws: a failure here must not keep the app signed in on screen. */
+export function clearSession(): Promise<void> {
+  return serialized(deleteNow);
+}
+
+/**
+ * Deletes the stored session only if it is `session`'s own (same household and token), read and deleted as one step in
+ * the queue: a newer sign-in's write comes before or after it, never between. Never throws; if the store cannot be
+ * read nothing is deleted (it may be a newer sign-in's).
+ */
+export function clearSessionIf(session: Pick<StoredSession, 'address' | 'token'>): Promise<void> {
+  return serialized(async () => {
+    let kept: StoredSession | undefined;
+    try {
+      kept = await readNow();
+    } catch {
+      return;
+    }
+    if (kept && kept.token === session.token && kept.address.origin === session.address.origin) await deleteNow();
+  });
 }
 
 /** This install's device ID, made the first time it is asked for. */

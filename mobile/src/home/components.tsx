@@ -663,14 +663,15 @@ export function Hero({
   const index = found >= 0 ? found : Math.min(shown.at, Math.max(0, cards.length - 1));
   const reduceMotion = useReduceMotion();
   const track = useRef<ScrollViewInstance>(null);
-  // Where the track was last put (or swiped) to, in slides.
-  const scrolledTo = useRef(0);
+  // Where the track was last put (or swiped) to: the slide, and the slide width that offset was measured in.
+  const scrolledTo = useRef({ at: 0, width: 0 });
   const shownKey = cards[index] ? keyOf(cards[index]) : undefined;
   // What was clamped to is what is selected from now on (adjusted while rendering, before anything is drawn).
   if (shownKey !== undefined && (shown.key !== shownKey || shown.at !== index)) setShown({ key: shownKey, at: index });
   useEffect(() => {
-    if (scrolledTo.current !== index && width > 0) {
-      scrolledTo.current = index;
+    // A new width (a rotation) moves every slide's offset, so the track is put back on the selected slide then too.
+    if (width > 0 && (scrolledTo.current.at !== index || scrolledTo.current.width !== width)) {
+      scrolledTo.current = { at: index, width };
       track.current?.scrollTo({ x: index * width, animated: false });
     }
   }, [index, width, shownKey]);
@@ -678,7 +679,7 @@ export function Hero({
   if (cards.length === 0) return null;
   const total = cards.length;
   const show = (next: number) => {
-    scrolledTo.current = next;
+    scrolledTo.current = { at: next, width };
     if (next === index) return;
     setShown({ key: keyOf(cards[next]!), at: next });
     AccessibilityInfo.announceForAccessibility?.(`Showing ${next + 1} of ${total}: ${cards[next]!.title}`);
