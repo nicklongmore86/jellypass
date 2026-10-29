@@ -575,34 +575,59 @@ export function JustWatchNote() {
  * Home's All | Movies | TV: a radio group of outlined chips, the chosen one filled with the cyan tint, outlined in
  * cyan and ticked, so it is never told by colour alone. At large text the chips scroll sideways rather than wrap.
  */
-export function FilterChips({ selected, onChoose }: { selected: HomeFilter; onChoose: (filter: HomeFilter) => void }) {
+export function FilterChips({
+  selected,
+  onChoose,
+  hide,
+}: {
+  selected: HomeFilter;
+  onChoose: (filter: HomeFilter) => void;
+  /** "Hide what I have", a chip of its own after the radio group. */
+  hide: { value: boolean; onToggle: () => void };
+}) {
   return (
-    <ScrollView
-      testID="home-filters"
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      accessibilityRole="radiogroup"
-      accessibilityLabel={HOME_TEXT.label}
-      contentContainerStyle={styles.filterList}
-    >
-      {HOME_FILTERS.map((filter) => {
-        const checked = filter === selected;
-        return (
-          <Pressable
-            key={filter}
-            testID={`home-filter-${filter}`}
-            accessibilityRole="radio"
-            accessibilityLabel={HOME_TEXT.filters[filter]}
-            accessibilityState={{ checked, selected: checked }}
-            onPress={() => onChoose(filter)}
-            style={({ pressed }) => [styles.filter, checked && styles.filterChecked, pressed && styles.pressed]}
-          >
-            {checked ? <Icon name="check" color={colors.accentText} size={17.6} strokeWidth={2.6} /> : null}
-            <Text style={[styles.filterText, checked && styles.filterTextChecked]}>{HOME_TEXT.filters[filter]}</Text>
-          </Pressable>
-        );
-      })}
+    <ScrollView testID="home-filters" horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.filterList}>
+      <View testID="home-filter-group" accessibilityRole="radiogroup" accessibilityLabel={HOME_TEXT.label} style={styles.filterGroup}>
+        {HOME_FILTERS.map((filter) => {
+          const checked = filter === selected;
+          return (
+            <Pressable
+              key={filter}
+              testID={`home-filter-${filter}`}
+              accessibilityRole="radio"
+              accessibilityLabel={HOME_TEXT.filters[filter]}
+              accessibilityState={{ checked, selected: checked }}
+              onPress={() => onChoose(filter)}
+              style={({ pressed }) => [styles.filter, checked && styles.filterChecked, pressed && styles.pressed]}
+            >
+              {checked ? <Icon name="check" color={colors.accentText} size={17.6} strokeWidth={2.6} /> : null}
+              <Text style={[styles.filterText, checked && styles.filterTextChecked]}>{HOME_TEXT.filters[filter]}</Text>
+            </Pressable>
+          );
+        })}
+      </View>
+      <HideChip value={hide.value} onToggle={hide.onToggle} />
     </ScrollView>
+  );
+}
+
+/**
+ * "Hide what I have": a chip that switches on and off. On is the cyan tint with a cyan outline and a tick, off the
+ * plain outline, so never colour alone; a checkbox to a screen reader, a thumb's size.
+ */
+export function HideChip({ value, onToggle, testID = 'home-hide' }: { value: boolean; onToggle: () => void; testID?: string }) {
+  return (
+    <Pressable
+      testID={testID}
+      accessibilityRole="checkbox"
+      accessibilityLabel={HOME_TEXT.hide.label}
+      accessibilityState={{ checked: value }}
+      onPress={onToggle}
+      style={({ pressed }) => [styles.filter, value && styles.filterChecked, pressed && styles.pressed]}
+    >
+      {value ? <Icon name="check" color={colors.accentText} size={17.6} strokeWidth={2.6} /> : null}
+      <Text style={[styles.filterText, value && styles.filterTextChecked]}>{HOME_TEXT.hide.label}</Text>
+    </Pressable>
   );
 }
 
@@ -630,17 +655,33 @@ export function Hero({
   tablet: boolean;
   onOpen: (card: Card) => void;
 }) {
-  const [shownIndex, setIndex] = useState(0);
-  // A refresh can bring back fewer titles than the one showing.
-  const index = Math.min(shownIndex, Math.max(0, cards.length - 1));
+  // The slide showing is kept by its title and its place: when the slides change (Hide what I have, a refresh, the
+  // overlay) the same title stays selected if it is still there, else the place is clamped, and the scroll follows.
+  const keyOf = (card: Card) => `${card.mediaType}-${card.tmdbId}`;
+  const [shown, setShown] = useState<{ key: string | undefined; at: number }>({ key: undefined, at: 0 });
+  const found = shown.key === undefined ? -1 : cards.findIndex((card) => keyOf(card) === shown.key);
+  const index = found >= 0 ? found : Math.min(shown.at, Math.max(0, cards.length - 1));
   const reduceMotion = useReduceMotion();
   const track = useRef<ScrollViewInstance>(null);
+  // Where the track was last put (or swiped) to: the slide, and the slide width that offset was measured in.
+  const scrolledTo = useRef({ at: 0, width: 0 });
+  const shownKey = cards[index] ? keyOf(cards[index]) : undefined;
+  // What was clamped to is what is selected from now on (adjusted while rendering, before anything is drawn).
+  if (shownKey !== undefined && (shown.key !== shownKey || shown.at !== index)) setShown({ key: shownKey, at: index });
+  useEffect(() => {
+    // A new width (a rotation) moves every slide's offset, so the track is put back on the selected slide then too.
+    if (width > 0 && (scrolledTo.current.at !== index || scrolledTo.current.width !== width)) {
+      scrolledTo.current = { at: index, width };
+      track.current?.scrollTo({ x: index * width, animated: false });
+    }
+  }, [index, width, shownKey]);
 
   if (cards.length === 0) return null;
   const total = cards.length;
   const show = (next: number) => {
+    scrolledTo.current = { at: next, width };
     if (next === index) return;
-    setIndex(next);
+    setShown({ key: keyOf(cards[next]!), at: next });
     AccessibilityInfo.announceForAccessibility?.(`Showing ${next + 1} of ${total}: ${cards[next]!.title}`);
   };
   const goTo = (next: number) => {
@@ -850,6 +891,7 @@ const styles = StyleSheet.create({
     borderColor: colors.hairline,
     borderRadius: radii.chip,
   },
+  filterGroup: { flexDirection: 'row', gap: spacing.sm },
   filterChecked: { backgroundColor: colors.accentTint, borderColor: colors.accent },
   filterText: { fontSize: 15.2, lineHeight: 20, fontWeight: '700', color: colors.muted },
   filterTextChecked: { color: colors.accentText },

@@ -15,6 +15,24 @@ build.
 
 ## [Unreleased]
 
+### Added
+- Home has a **Hide what I have** chip after All | Movies | TV, on by default at every sign-in. On, the rows and the
+  hero leave out the titles in your library and the ones already requested (including one you just asked for), and the
+  hero fills from the next titles; with none left it isn't shown. It reads nothing from the server. The choice is kept
+  only while you're signed in (never stored on the device) and starts on again after a sign-out or for another person.
+  The network and studio pages share it. My requests and Search are unchanged.
+
+### Fixed
+- Home's hero keeps the title you were on when **Hide what I have** is turned on or off (or a request removes a
+  title): the dots, the scroll position and the slide you see always agree, and if the title is gone it moves to the
+  nearest slide.
+- Signing out (or changing household) that finishes late no longer signs you out of, or erases the credentials of, the
+  household you signed in to meanwhile, and a setup link waits until the sign-out has finished.
+- A late "signed out" answer (a 401) from a previous sign-in no longer signs you out of, or resets **Hide what I
+  have** for, the sign-in you made after it, and the stored sign-in is only ever deleted if it is still the one that
+  ended, whatever order two sign-ins finish in.
+- Home's hero stays on the title you chose when its width changes (turning an iPad), instead of sitting between slides.
+
 ## [1.1.0] - 2026-10-28
 
 A minor release: My requests can be filtered, and a member can cancel a request

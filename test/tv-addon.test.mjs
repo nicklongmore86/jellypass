@@ -4400,6 +4400,74 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
     assert.equal(studios().length, 0, 'TV: no studios');
   });
 
+  it('answers only the Try again on show: a retained one, after the retry has worked, does nothing (a row, and the sources call)', async (t) => {
+    const state = { failures: { '/discover/popular-tv': 500, '/discover/sources': 500 } };
+    const page = await openScripted(t, state, { hide: 'off' });
+    await goTo(page);
+    const rowRetry = rowNamed(page, 'Popular series').querySelector('button');
+    const sourcesRetry = [...root(page).querySelectorAll('button')].find((button) => button.textContent === 'Try again' && button !== rowRetry);
+    assert.ok(rowRetry && sourcesRetry, 'both failures offer Try again');
+    delete state.failures['/discover/popular-tv'];
+    delete state.failures['/discover/sources'];
+    page.click(rowRetry);
+    page.click(sourcesRetry);
+    await page.settled();
+    assert.equal(cardsOf(rowNamed(page, 'Popular series')).length, 6, 'the row was drawn');
+    const html = root(page).innerHTML;
+    const calls = page.requests.length;
+    page.click(rowRetry);
+    page.click(sourcesRetry);
+    await page.settled();
+    assert.equal(page.requests.length, calls, 'no call');
+    assert.ok(root(page).innerHTML === html, 'the page is as it was');
+    // A retry pressed twice before the answer asks once.
+    const again = { failures: { '/discover/popular-tv': 500 } };
+    const second = await openScripted(t, again, { hide: 'off' });
+    await goTo(second);
+    const retry = rowNamed(second, 'Popular series').querySelector('button');
+    delete again.failures['/discover/popular-tv'];
+    second.click(retry);
+    second.click(retry);
+    await second.settled();
+    assert.equal(again.seen.filter((rel) => rel === '/discover/popular-tv').length, 2, 'one retry');
+  });
+
+  it('lets go of every picture and control when the page is left: a kept card opens nothing, a kept image window sets nothing', async (t) => {
+    const page = await openScripted(t, { cards: 6 }, { hide: 'off' });
+    await goTo(page);
+    await scrollThrough(page);
+    const row = rowNamed(page, 'Trending');
+    const cards = cardsOf(row);
+    for (const card of cards) page.watchers.cross(card, true, IMAGE_MARGIN);
+    page.watchers.cross(row, true, IMAGE_MARGIN);
+    const images = [...root(page).querySelectorAll('img')];
+    assert.ok(images.filter((image) => image.hasAttribute('src')).length > 0, 'pictures were set');
+    page.route('#/jellypass/service/213');
+    await page.settled();
+    assert.equal(images.filter((image) => image.hasAttribute('src')).length, 0, 'every picture was let go');
+    const hash = page.location.hash;
+    page.click(cards[0]);
+    page.watchers.cross(cards[0], true, IMAGE_MARGIN);
+    assert.equal(page.location.hash, hash, 'the kept card opens nothing');
+    assert.equal(images.filter((image) => image.hasAttribute('src')).length, 0, 'a kept image window sets nothing');
+  });
+
+  it('leaves a row dead when its Try again meets a refused sign-in: the kept Try again asks nothing', async (t) => {
+    const state = { failures: { '/discover/popular-tv': 500 } };
+    const page = await openScripted(t, state, { hide: 'off' });
+    await goTo(page);
+    const retry = rowNamed(page, 'Popular series').querySelector('button');
+    state.failures['/discover/popular-tv'] = 401;
+    page.click(retry);
+    await page.settled();
+    assert.match(rowNamed(page, 'Popular series').textContent, /Sign in to continue/);
+    const calls = page.requests.length;
+    page.click(retry);
+    await page.settled();
+    assert.equal(page.requests.length, calls, 'the kept Try again asks nothing');
+    assert.equal(rowNamed(page, 'Popular series').querySelector('button'), null, 'no Try again for a refused sign-in');
+  });
+
   it('shows a failed row with Try again, which asks once more and only when chosen; a refused sign-in says so; a rate limit says so', async (t) => {
     const state = { failures: { '/discover/popular-tv': 500 } };
     const page = await openScripted(t, state, { hide: 'off' });
@@ -5662,6 +5730,43 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
         assert.equal(connected(page), tab(page, 'all'), 'the tab has focus');
       });
 
+      it('answers only the Try again on show: a retained one, after the retry has worked, does nothing', async (t) => {
+        const all = '/discover/network/213/all';
+        const state = { cards: 1, failures: { [all]: 500 } };
+        const page = await openScripted(t, state, { hide: 'off' });
+        await toHash(page, SERVICE);
+        const retry = [...sourceRoot(page).querySelectorAll('button')].find((button) => button.textContent === 'Try again');
+        assert.ok(retry);
+        delete state.failures[all];
+        page.click(retry);
+        await page.settled();
+        assert.equal(gridCards(page).length, 1);
+        const html = sourceRoot(page).innerHTML;
+        const calls = page.requests.length;
+        page.click(retry);
+        await page.settled();
+        assert.equal(page.requests.length, calls, 'no call');
+        assert.equal(gridCards(page).length, 1, 'the card stays');
+        assert.equal(sourceRoot(page).querySelector('.jellypass-tv-discover-skeleton'), null, 'no skeleton is stranded');
+        assert.ok(sourceRoot(page).innerHTML === html, 'the page is as it was');
+      });
+
+      it('puts focus on the Films tab, not All, when the films that are left are all hidden and Load more goes', async (t) => {
+        const films = '/discover/network/213/films';
+        const state = { cards: 20, pages: { [films]: 2 }, allAs: { [films]: 'in_library', [`${films}?page=2`]: 'in_library' } };
+        const page = await openScripted(t, state, { hide: 'on' });
+        await toHash(page, SERVICE);
+        page.click(tab(page, 'films'));
+        await page.settled();
+        assert.equal(gridCards(page).length, 0, 'both film pages are entirely hidden');
+        page.press('keydown');
+        more(page).focus();
+        page.click(more(page));
+        await page.settled();
+        assert.equal(more(page), null, 'the last page');
+assert.equal(connected(page), tab(page, 'films'), 'the Films tab has focus');
+      });
+
       it('puts focus on the last card when the final page is all hidden and Load more goes', async (t) => {
         const all = '/discover/network/213/all';
         const state = { cards: 20, pages: { [all]: 2 }, allAs: { [`${all}?page=2`]: 'in_library' } };
@@ -5698,6 +5803,79 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
         assert.equal(page.requests.length, calls, 'the Load more of All asks nothing');
         page.click(gridCards(page)[0]);
         assert.notEqual(page.location.hash, hash, 'a card of the grid shown works');
+      });
+    });
+
+    describe('when a 401 removes the panel', () => {
+      const near = (page, cards) => {
+        for (const card of cards.slice(0, 3)) page.watchers.cross(card, true, IMAGE_MARGIN);
+        return cards.slice(0, 3).map((card) => card.querySelector('img'));
+      };
+
+      it('leaves nothing live after a 401 on Load more: a kept card and Load more do nothing and the pictures are let go', async (t) => {
+        const state = { cards: 20, pages: { '/discover/network/213/all': 3 }, failures: { '/discover/network/213/all?page=2': 401 } };
+        const page = await openScripted(t, state, { hide: 'off' });
+        await toHash(page, SERVICE);
+        const card = gridCards(page)[0];
+        const oldMore = more(page);
+        const images = near(page, gridCards(page));
+        assert.equal(images.filter((image) => image.hasAttribute('src')).length, 3, 'the pictures were set');
+        page.click(oldMore);
+        await page.settled();
+        assert.match(sourceRoot(page).textContent, /Sign in to continue/);
+        assert.equal(gridCards(page).length, 0, 'the cards are gone');
+        const hash = page.location.hash;
+        const calls = page.requests.length;
+        page.click(card);
+        page.click(oldMore);
+        page.watchers.cross(card, true, IMAGE_MARGIN);
+        await page.settled();
+        assert.equal(page.location.hash, hash, 'the kept card opens nothing');
+        assert.equal(page.requests.length, calls, 'the kept Load more asks nothing');
+        assert.equal(images.filter((image) => image.hasAttribute('src')).length, 0, 'the pictures were let go');
+        assert.equal(more(page), null, 'no Load more is offered');
+      });
+
+      it('leaves nothing live after a 401 on a tab switch: a kept card, Load more and picture do nothing', async (t) => {
+        const state = { cards: 20, pages: { '/discover/network/213/all': 3, '/discover/network/213/films': 3 }, failures: { '/discover/network/213/films': 401 } };
+        const page = await openScripted(t, state, { hide: 'off' });
+        await toHash(page, SERVICE);
+        const card = gridCards(page)[0];
+        const oldMore = more(page);
+        const images = near(page, gridCards(page));
+        page.click(tab(page, 'films'));
+        await page.settled();
+        assert.match(sourceRoot(page).textContent, /Sign in to continue/);
+        const hash = page.location.hash;
+        const calls = page.requests.length;
+        page.click(card);
+        page.click(oldMore);
+        await page.settled();
+        assert.equal(page.location.hash, hash, 'the kept card opens nothing');
+        assert.equal(page.requests.length, calls, 'the kept Load more asks nothing');
+        assert.equal(images.filter((image) => image.hasAttribute('src')).length, 0, 'the pictures were let go');
+        assert.equal(more(page), null);
+      });
+
+      it('lets go of the pictures and the controls of the whole page when the sources are refused after cards were drawn', async (t) => {
+        const state = { cards: 20, pages: { '/discover/network/213/all': 3 } };
+        const page = await openScripted(t, state, { hide: 'off' });
+        await toHash(page, SERVICE);
+        const card = gridCards(page)[0];
+        const oldMore = more(page);
+        const images = near(page, gridCards(page));
+        page.session.token = 'token-after-a-new-sign-in';
+        state.failures = { '/discover/sources': 401 };
+        page.document.body.appendChild(page.document.createElement('div'));
+        await page.settled();
+        const hash = page.location.hash;
+        const calls = page.requests.length;
+        page.click(card);
+        page.click(oldMore);
+        await page.settled();
+        assert.equal(page.location.hash, hash, 'the kept card opens nothing');
+        assert.equal(page.requests.length, calls, 'the kept Load more asks nothing');
+        assert.equal(images.filter((image) => image.hasAttribute('src')).length, 0, 'the pictures were let go');
       });
     });
 

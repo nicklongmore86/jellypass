@@ -11,7 +11,8 @@ import { ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-n
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import type { Card } from '../api/types';
-import { ErrorNotice, JustWatchNote, LogoTile } from '../home/components';
+import { ErrorNotice, HideChip, JustWatchNote, LogoTile } from '../home/components';
+import { useHideHeld, visibleCards } from '../home/hide';
 import { EMPTY_ROW_TEXT, sourceHeading, type SourceList } from '../home/text';
 import { titlePath } from '../navigation/titles';
 import { LoadMore, ResultsGrid, SkeletonGrid } from '../search/components';
@@ -23,7 +24,8 @@ import { colors, layout, spacing, typography } from '../theme';
 import { NotFoundScreen } from './NotFoundScreen';
 
 export function SourceScreen({ kind, id, list }: { kind: SourceKind; id: number; list: SourceList }) {
-  const { api, expire } = useSession();
+  const { api, expire, hideHeld } = useSession();
+  const hide = useHideHeld(hideHeld);
   const overlay = useAsked();
   const { state, select, loadMore, retry } = useSource(api, expire, overlay, kind, id, list);
   const insets = useSafeAreaInsets();
@@ -53,7 +55,10 @@ export function SourceScreen({ kind, id, list }: { kind: SourceKind; id: number;
           <>
             <LogoTile source={state.source} size="large" />
             {state.lists.length > 1 ? <SourceTabs lists={state.lists} selected={state.list} onChoose={choose} /> : null}
-            <Results shown={state.shown} columns={columns} cardWidth={cardWidth} overlay={overlay.card} onOpen={open} onMore={loadMore} onRetry={retry} />
+            <View style={styles.hideRow}>
+              <HideChip testID="source-hide" value={hide} onToggle={() => hideHeld.set(!hide)} />
+            </View>
+            <Results hide={hide} shown={state.shown} columns={columns} cardWidth={cardWidth} overlay={overlay.card} onOpen={open} onMore={loadMore} onRetry={retry} />
             {kind === 'network' && state.list !== 'series' && state.shown.status === 'loaded' ? <JustWatchNote /> : null}
           </>
         ) : null}
@@ -63,6 +68,7 @@ export function SourceScreen({ kind, id, list }: { kind: SourceKind; id: number;
 }
 
 function Results({
+  hide,
   shown,
   columns,
   cardWidth,
@@ -71,6 +77,8 @@ function Results({
   onMore,
   onRetry,
 }: {
+  /** Hide what I have: the cards the member has are left out. */
+  hide: boolean;
   shown: ListState;
   columns: number;
   cardWidth: number;
@@ -82,9 +90,10 @@ function Results({
   if (shown.status === 'loading') return <SkeletonGrid columns={columns} cardWidth={cardWidth} />;
   if (shown.status === 'failed') return <ErrorNotice error={shown.error} onRetry={onRetry} secondary={false} />;
   if (shown.cards.length === 0) return <Text style={styles.muted}>{EMPTY_ROW_TEXT}</Text>;
+  const cards = visibleCards(shown.cards.map(overlay), hide);
   return (
     <>
-      <ResultsGrid testID="source-grid" cards={shown.cards.map(overlay)} cardWidth={cardWidth} onOpen={onOpen} />
+      {cards.length ? <ResultsGrid testID="source-grid" cards={cards} cardWidth={cardWidth} onOpen={onOpen} /> : <Text style={styles.muted}>{EMPTY_ROW_TEXT}</Text>}
       {shown.more.status === 'failed' ? <ErrorNotice error={shown.more.error} onRetry={onRetry} secondary={false} /> : null}
       {shown.nextPage !== null && shown.more.status !== 'failed' ? <LoadMore loading={shown.more.status === 'loading'} onPress={onMore} /> : null}
     </>
@@ -94,5 +103,6 @@ function Results({
 const styles = StyleSheet.create({
   page: { flex: 1, backgroundColor: colors.bg },
   column: { width: '100%', maxWidth: layout.maxContentWidth, alignSelf: 'center', paddingTop: spacing.lg, paddingBottom: spacing.xxl, gap: spacing.lg },
+  hideRow: { flexDirection: 'row' },
   muted: { ...typography.body, color: colors.muted },
 });
