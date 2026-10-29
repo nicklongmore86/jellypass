@@ -15,6 +15,17 @@ build.
 
 ## [Unreleased]
 
+## [1.2.1] - 2026-10-29
+
+A patch release: Home's filter chips and the poster badges are no longer cut
+off, and "Hide what I have" is now called "New only". It still works with
+**JellyPass server 3.2.0 or later** (app API `v1`), as 1.0.0 to 1.2.0 do; none
+of these changes needs a server change. As in 1.1.0, **Cancel request and the
+day each title was requested need JellyPass server 3.5.0 or later**
+(`apiVersion` 2 in `GET /jellypass/app/v1/me`); on an older server the app
+shows neither, with no error. Members update by installing the new TestFlight
+build, or the new APK over the old one.
+
 ### Fixed
 
 - **Home: the last filter chip is no longer cut off.** The chip row scrolls
@@ -32,8 +43,9 @@ build.
 ### Changed
 
 - **"Hide what I have" is now "New only"** on Home and on the service and
-  studio pages. A screen reader hears the visible words first: "New only: show only
-  titles you don't have or haven't requested". It still works the same way and is on at every sign-in.
+  studio pages. A screen reader hears the visible words first: "New only: show
+  only titles you don't have or haven't requested". It still works the same
+  way and is on at every sign-in.
 
 ## [1.2.0] - 2026-10-29
 
@@ -177,7 +189,8 @@ is not supported.
 - **iPhone, iPad and Android.** Portrait on phones; iPad and Android tablets
   turn. iOS is distributed through TestFlight and Android as an APK.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/mobile-v1.2.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/mobile-v1.2.1...HEAD
+[1.2.1]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.2.1
 [1.2.0]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.2.0
 [1.1.0]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.1.0
 [1.0.0]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.0.0
