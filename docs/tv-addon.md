@@ -689,7 +689,9 @@ every JellyPass page (Discover, the See all grids, service, studio, title, My re
 with the page). The TV layout (`layout-tv`) has none: Jellyfin's header Back and the remote cover it. It behaves like history back
 when the member came to the page from another page of Jellyfin web in this tab (`tv/src/history-trail.ts` keeps the addresses
 seen, in memory), and otherwise goes to Jellyfin's Home (`#/home`): a page opened by its own address, or after a reload, has no
-trail. A button of a page since left does nothing.
+trail. A button of a page since left does nothing. The trail belongs to the session: a sign-out, another member or a new token
+(the shared session stamp's generation) empties it, so a new member's Back goes Home, and the host takes away a Back button drawn
+under the old session (it is drawn again for the new one) and ignores a press on a kept copy of it.
 
 ## Discover data layer
 

@@ -6258,6 +6258,37 @@ assert.equal(connected(page), tab(page, 'films'), 'the Films tab has focus');
       page.click(stale);
       assert.equal(page.location.hash, now);
     });
+
+    describe('when the session changes under the page (same route)', () => {
+      const changes = {
+        'a sign-out': (page) => { page.session.token = null; },
+        'another member': (page) => { page.session.user = ANN; page.session.token = TOKENS[ANN]; },
+        'a new token': (page) => { page.session.token = `${TOKENS[ALICE]}-renewed`; },
+      };
+      for (const [name, change] of Object.entries(changes)) {
+        it(`leaves the old Back button inert, empties the trail and sends the next Back to Home after ${name}`, async (t) => {
+          const page = await openScripted(t, {}, { hide: 'off', tv: false });
+          await goTo(page);
+          await toHash(page, '#/jellypass/list/trending');
+          const old = backs(page)[0];
+          change(page);
+          // Pressed at once, before the host has looked: the session stamp is checked on the press.
+          page.click(old);
+          assert.equal(page.location.hash, '#/jellypass/list/trending', 'the old button does nothing');
+          // Nothing on the page moved, so the host looks when the member next touches something, or the page changes.
+          page.document.body.appendChild(page.document.createElement('div'));
+          await page.settled();
+          assert.equal(page.location.hash, '#/jellypass/list/trending');
+          page.click(old);
+          assert.equal(page.location.hash, '#/jellypass/list/trending', 'inert after the host looked too');
+          assert.equal(old.isConnected, false, 'taken away');
+          const fresh = backs(page);
+          assert.equal(fresh.length, 1, 'one button, drawn for the new session');
+          page.click(fresh[0]);
+          assert.equal(page.location.hash, '#/home', 'the trail is empty: Home, not the old member\'s Discover');
+        });
+      }
+    });
   });
 
   describe('the stylesheet', () => {

@@ -36,6 +36,12 @@ export class SessionWatch {
     return session;
   }
 
+  /** The sign-in generation now: it differs from an earlier one whenever the member or the token seen here changed since (signing out included). */
+  public snapshot(): number {
+    this.current();
+    return this.#generation;
+  }
+
   /** Marks `session` (the one a call is sent under) so its answer can be checked with `holds`. */
   public stamp(session: Session): Stamp {
     this.current();

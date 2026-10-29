@@ -21,6 +21,11 @@ export class HistoryTrail {
     if (seen.length > 100) seen.shift();
   }
 
+  /** The session changed (a sign-out, another member, a new token): what was seen belongs to the last one, so only `hash` is left. */
+  public reset(hash: string): void {
+    this.#seen = [hash];
+  }
+
   /** Whether history has an in-app address to go back to. */
   public get canGoBack(): boolean {
     return this.#seen.length > 1;
