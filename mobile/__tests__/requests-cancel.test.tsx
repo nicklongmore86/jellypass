@@ -29,7 +29,7 @@ jest.mock('expo-constants', () => ({ __esModule: true, default: { expoConfig: je
 jest.mock('react-native-safe-area-context', () => jest.requireActual('react-native-safe-area-context/jest/mock').default);
 
 const CANCEL_BUDGET = BUDGET.screens['requests']!.cancel!;
-const FIXTURE = fixture('requests') as { results: Array<{ id: string; tmdbId: number }> };
+const FIXTURE = fixture('requests') as { results: { id: string; tmdbId: number }[] };
 const SERIES_ID = FIXTURE.results[0]!.id;
 
 /** What the fake server holds: the list it answers and what a cancel gets. */
@@ -41,7 +41,7 @@ let gateway: ReturnType<typeof searchGateway>;
 
 const cancelCall = (call: Call) => call.init.method === 'POST' && /\/requests\/[A-Za-z0-9_-]{22}\/cancel$/.test(call.url);
 
-function useHousehold(household: SearchHousehold = {}) {
+function serveHousehold(household: SearchHousehold = {}) {
   gateway = searchGateway({
     ...household,
     override: (call) => {
@@ -64,7 +64,7 @@ beforeEach(() => {
   list = JSON.parse(JSON.stringify(FIXTURE.results)) as unknown[];
   cancelAs = { status: 202, body: { status: 'accepted' } };
   hold = undefined;
-  useHousehold();
+  serveHousehold();
 });
 
 async function openRequests() {
@@ -93,7 +93,7 @@ describe('the button', () => {
   it('is on the entries the server lists as cancellable only, named by its request, with a 44pt target', async () => {
     await openRequests();
     expect(cancelButtons()).toEqual(['Cancel request: Series 900002']);
-    const style = [first('request-cancel').props.style].flat(2).filter(Boolean) as Array<{ minHeight?: number }>;
+    const style = [first('request-cancel').props.style].flat(2).filter(Boolean) as { minHeight?: number }[];
     expect(Math.max(...style.map((entry) => entry.minHeight ?? 0))).toBeGreaterThanOrEqual(layout.touchTarget);
     expect(first('request-cancel').props.accessibilityRole).toBe('button');
   });
@@ -133,7 +133,7 @@ describe('asking first', () => {
   it('has 44pt buttons that scroll, for the largest text', async () => {
     await openSheet();
     for (const id of ['cancel-confirm', 'cancel-keep']) {
-      const style = [first(id).props.style].flat(2).filter(Boolean) as Array<{ minHeight?: number }>;
+      const style = [first(id).props.style].flat(2).filter(Boolean) as { minHeight?: number }[];
       expect(Math.max(...style.map((entry) => entry.minHeight ?? 0))).toBeGreaterThanOrEqual(layout.touchTarget);
     }
     expect(first('cancel-sheet').type).toBe('RCTScrollView');
@@ -238,7 +238,7 @@ describe('cancelling', () => {
   it('shows the same confirmation whatever the server did with it', async () => {
     const run = async (extra: Record<string, unknown>) => {
       list = [requestEntry(SERIES_ID, 'tv', 900002, 'requested', { cancellable: true, requestedOn: '2026-10-27', ...extra })];
-      useHousehold();
+      serveHousehold();
       await openRequests();
       await pressNode(first('request-cancel'));
       await pressNode(first('cancel-confirm'));

@@ -107,7 +107,7 @@ describe('the client against docs/app-api/v1.openapi.json', () => {
       expectSameShape(decoded, responseSchema(key, op.status));
     });
 
-    const errors: Array<[number, string, ApiErrorKind, boolean]> = [
+    const errors: [number, string, ApiErrorKind, boolean][] = [
       [400, 'invalid_request', 'invalid_request', false],
       [401, 'unauthorized', 'unauthorized', false],
       [404, 'not_found', 'not_found', false],

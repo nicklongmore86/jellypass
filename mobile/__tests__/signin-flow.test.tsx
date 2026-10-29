@@ -3,6 +3,7 @@
 // Retry-After, the start-up check of a kept sign-in, and sign-out. A fake gateway answers; the credential store is the
 // in-memory mock. Queries never print the component tree (support/household.ts).
 import { act, render } from '@testing-library/react-native';
+import { useEffect } from 'react';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { AccountScreen } from '../src/screens/AccountScreen';
@@ -40,7 +41,11 @@ const HOUSEHOLD = { 'GET /Users/Public': () => answer(200, PROFILES), 'GET /jell
 
 let offer: ((param: string | string[] | undefined) => void) | undefined;
 function LinkProbe() {
-  offer = useSession().offerLink;
+  const { offerLink } = useSession();
+  // Kept for the test body after the render, not during it.
+  useEffect(() => {
+    offer = offerLink;
+  });
   return null;
 }
 

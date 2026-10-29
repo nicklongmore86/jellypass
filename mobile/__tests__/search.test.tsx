@@ -36,7 +36,7 @@ jest.mock('react-native/Libraries/Utilities/useWindowDimensions', () => ({ __esM
 
 let gateway: ReturnType<typeof searchGateway>;
 
-function useHousehold(household: SearchHousehold = {}) {
+function serveHousehold(household: SearchHousehold = {}) {
   gateway = searchGateway(household);
   mockFetch = gateway.fetch;
 }
@@ -45,7 +45,7 @@ beforeEach(() => {
   mockWindow = PHONE;
   store.__items.clear();
   keepSession(TOKEN, ORIGIN);
-  useHousehold();
+  serveHousehold();
 });
 
 /** Starts on Home, signed in, then opens the Search tab. */
@@ -130,7 +130,7 @@ describe('searching', () => {
 
   it('shows a skeleton while the first page loads, hidden from screen readers', async () => {
     const gate = heldSearches();
-    useHousehold({ search: gate.search });
+    serveHousehold({ search: gate.search });
     await openSearch();
     await typeQuery('dune');
     await wait(SEARCH_DEBOUNCE_MS);
@@ -142,7 +142,7 @@ describe('searching', () => {
   });
 
   it('says the PWA\'s words when nothing matches', async () => {
-    useHousehold({ search: (q, page) => answer(200, searchAnswer(q, page, { count: 0 })) });
+    serveHousehold({ search: (q, page) => answer(200, searchAnswer(q, page, { count: 0 })) });
     await openSearch();
     await typeQuery('zzz');
     await wait(SEARCH_DEBOUNCE_MS);
@@ -153,7 +153,7 @@ describe('searching', () => {
 
   it('never lets an older search answering late replace a newer one', async () => {
     const gate = heldSearches();
-    useHousehold({ search: gate.search });
+    serveHousehold({ search: gate.search });
     await openSearch();
     await typeQuery('first');
     await wait(SEARCH_DEBOUNCE_MS);
@@ -172,7 +172,7 @@ describe('searching', () => {
 describe('Load more', () => {
   it('adds the next page under the results, says Loading… (disabled) while it comes, and goes once there is no next page', async () => {
     const gate = heldSearches();
-    useHousehold({ search: gate.search });
+    serveHousehold({ search: gate.search });
     await openSearch();
     await typeQuery('dune');
     await submitQuery();
@@ -194,7 +194,7 @@ describe('Load more', () => {
 
   it('drops a page asked for under a search the member has since replaced', async () => {
     const gate = heldSearches();
-    useHousehold({ search: gate.search });
+    serveHousehold({ search: gate.search });
     await openSearch();
     await typeQuery('dune');
     await submitQuery();
@@ -217,7 +217,7 @@ describe('failures', () => {
     ['an answer of the wrong shape', () => answer(200, { results: 'canary' }), "Can't load this right now", 'Something went wrong. Try again in a moment.'],
   ] as const)('shows the fixed words for %s, with Try again for that search, and never asks again by itself', async (_what, respond, title, body) => {
     let fail = true;
-    useHousehold({ search: (q, page, call) => (fail ? respond(call) : answer(200, searchAnswer(q, page))) });
+    serveHousehold({ search: (q, page, call) => (fail ? respond(call) : answer(200, searchAnswer(q, page))) });
     await openSearch();
     await typeQuery('dune');
     await submitQuery();
@@ -234,7 +234,7 @@ describe('failures', () => {
 
   it('keeps the results when Load more fails, and Try again asks for that page alone', async () => {
     let fail = true;
-    useHousehold({ search: (q, page) => (page === 2 && fail ? answer(502, { error: 'unavailable' }) : answer(200, searchAnswer(q, page))) });
+    serveHousehold({ search: (q, page) => (page === 2 && fail ? answer(502, { error: 'unavailable' }) : answer(200, searchAnswer(q, page))) });
     await openSearch();
     await typeQuery('dune');
     await submitQuery();
@@ -249,7 +249,7 @@ describe('failures', () => {
   });
 
   it('signs the member out on a 401, back to the profile picker, and forgets the sign-in', async () => {
-    useHousehold({ search: () => answer(401, { error: 'unauthorized' }) });
+    serveHousehold({ search: () => answer(401, { error: 'unauthorized' }) });
     const app = await openSearch();
     await typeQuery('dune');
     await submitQuery();
@@ -279,7 +279,7 @@ describe('a result', () => {
 
   it('shows Requested right after Get this on its title page, with no call, and the server\'s state once it is read again', async () => {
     let server: 'get_this' | 'in_library' = 'get_this';
-    useHousehold({ override: (call) => (call.route === `GET ${API}/tv/3006` ? answer(200, seriesAnswer(3006, [server])) : undefined) });
+    serveHousehold({ override: (call) => (call.route === `GET ${API}/tv/3006` ? answer(200, seriesAnswer(3006, [server])) : undefined) });
     await openSearch();
     await typeQuery('dune');
     await submitQuery();
