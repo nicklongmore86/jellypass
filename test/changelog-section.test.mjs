@@ -53,6 +53,50 @@ function assertSection(notes, { version, nextVersion, subheadings }) {
 }
 
 describe('changelogSection with the real CHANGELOG.md', () => {
+  it('extracts 3.9.0 without its heading, up to the 3.8.1 section', () => {
+    const notes = changelogSection(CHANGELOG, '3.9.0');
+    assertSection(notes, {
+      version: '3.9.0',
+      nextVersion: '3.8.1',
+      subheadings: ['Added'],
+    });
+    assert.match(notes, /^This is a minor release for the TV add-on/);
+    const flat = notes.replace(/\s+/g, ' ');
+    assert.match(flat, /\*\*unless `TV_ADDON_ENABLED` is set, nothing changes\*\* on any host/);
+    assert.match(flat, /This is a minor release because the add-on gains pages/);
+    assert.match(flat, /the gateway are as in 3\.8\.1/);
+    assert.match(flat, /\*\*Nothing to configure\.\*\* No setting is new/);
+    assert.match(flat, /\*\*The state file is unchanged\*\* \(schema v7, with the same fields as 3\.8\.1\), so 3\.8\.1 reads a state file written by 3\.9\.0/);
+    assert.match(flat, /both names change in this release/);
+    assert.match(flat, /\*\*It has been tested in a real Jellyfin 12\.3 container,\*\* .* \*\*The See all pages have not been seen on a physical TV\*\*/);
+    assert.match(flat, /gets the new add-on at its next start\. Nothing is reinstalled on the TV/);
+    assert.match(flat, /`ghcr\.io\/nicklongmore86\/jellypass:3\.8\.1`/);
+    assert.match(flat, /No state-file or setting change is needed/);
+    assert.match(flat, /`mobile\/CHANGELOG\.md`/);
+    assert.match(flat, /\*\*TV add-on: See all on the Discover rows\.\*\*/);
+    assert.match(flat, /`#\/jellypass\/list\/<list>`/);
+    assert.match(flat, /\*\*TV add-on: a Back button on JellyPass pages in the desktop layout,\*\*/);
+    assert.match(flat, /belongs to the session: after a sign-out, another member's sign-in or a new token, Back goes to Home/);
+    const added = notes.indexOf('### Added');
+    for (const note of [
+      '**Nothing to configure.**',
+      '**The state file is unchanged**',
+      '**No CDN purge is needed.**',
+      '**It has been tested in a real Jellyfin 12.3 container,**',
+      '**The Samsung app picks it up by itself.**',
+      '**To roll back,**',
+      '**The iPhone, iPad and Android app ships separately;**',
+    ]) {
+      assert.ok(notes.indexOf(note) >= 0 && notes.indexOf(note) < added, `upgrade note ${note} comes first`);
+    }
+    assert.equal(notes.match(/^- \*\*TV add-on: /gm)?.length, 2, 'one entry per change, none repeated');
+    assert.doesNotMatch(notes, /### (?:Security|Changed|Fixed|TV add-on)/);
+    assert.doesNotMatch(notes, /### Upgrading from/);
+    assert.doesNotMatch(notes, /eas-cli|workflow|\btests?\b|Jest/i, 'no tests or CI');
+    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref|farmhouse|TU7000|sdb\b/i, 'no server-specific details');
+    assert.deepEqual(split(notes).definitions, []);
+  });
+
   it('extracts 3.8.1 without its heading, up to the 3.8.0 section', () => {
     const notes = changelogSection(CHANGELOG, '3.8.1');
     assertSection(notes, {
