@@ -1,6 +1,6 @@
 {
   "name": "jellypass-mobile",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "private": true,
   "description": "JellyPass household app for iPhone, iPad and Android (Expo). Separate from the server: not in its build, tests or image.",
   "main": "expo-router/entry",

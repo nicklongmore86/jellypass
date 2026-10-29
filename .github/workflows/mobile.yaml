@@ -53,4 +53,8 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm typecheck
       - run: pnpm lint
+      # Jest's two workers and the parent each get at most 3 GB of heap (jest.config.js sets the workers), well inside
+      # the runner's 16 GB.
       - run: pnpm test
+        env:
+          NODE_OPTIONS: --max-old-space-size=3072
