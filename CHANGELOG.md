@@ -18,25 +18,95 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+## [3.7.0] - 2026-10-29
+
+This is a minor release for the TV add-on, which is still experimental and off
+by default: **unless `TV_ADDON_ENABLED` is set, nothing changes** on any host.
+The add-on gains a **Discover** page, the household app's Home inside Jellyfin
+web, and the compass button in Jellyfin's header that opens it. Everything is
+additive. No setting is added, removed or renamed, and the server itself is
+unchanged: the state file (schema v7), the app API (`v1`, `apiVersion` 2),
+webhook payloads, the administrator API, the admin UI, the household app and
+the gateway are as in 3.6.1. The page uses only app API calls that already
+exist. The add-on's pages are not part of the public interface described at
+the top of this file. This is a minor release because the add-on gains a page.
+Read these before upgrading:
+
+- **Nothing to configure.** No setting is new, and nothing in `.env` needs to
+  change. Only households the TV add-on is on for (`TV_ADDON_ENABLED` and
+  `TV_ADDON_HOUSEHOLDS`) see anything new.
+- **The state file is unchanged** (schema v7, with the same fields as 3.6.1),
+  so 3.6.1 reads a state file written by 3.7.0.
+- **The Discover page is reached only from the compass button** that the
+  add-on puts in Jellyfin's header, immediately before Search. On Jellyfin web
+  12.3 it is drawn in both the TV layout and the desktop layout. Jellyfin web
+  10.11 in a desktop browser gets no button (the Samsung app's 10.11 runs the
+  TV layout, whose header has it). If a Jellyfin update changes its header so
+  that the button cannot be placed, the button does not appear, and **there is
+  no other way in**: no link on Home, no card at the end of a row, no menu
+  entry. Only an address typed into a browser opens it then.
+- **The services' headings and the studios' tiles are not links yet.** They
+  show what is there; their own pages come in a later release.
+- **No CDN purge is needed.** The add-on's script and stylesheet are named for
+  a hash of their content, and both names change in this release. The
+  household address's `/web/` page that carries the add-on's tag and the
+  Samsung app's manifest are sent `no-store`, so they name the new files at
+  once.
+- **It has been tested in a real Jellyfin 12.3 container,** in the TV layout
+  and the desktop layout, in a desktop browser, but **not on a real TV**.
+  Check the button, the page, its rows and Back in a desktop browser on that
+  household's address, then on a TV, before relying on it;
+  [docs/tv-addon.md](docs/tv-addon.md) lists what to check. **Memory on a
+  2019 Samsung is a real-TV check:** the page keeps pictures only for the rows
+  near the screen, but how much memory such a TV holds for them has not been
+  measured. Scroll the whole page down and up a few times, switch chips and
+  open and leave a title, and look for a crash, a reload or rows that stay
+  blank.
+- **The Samsung app picks it up by itself.** Its loader reads the manifest
+  each time it starts, so a Samsung TV with the JellyPass build of the app
+  gets the new add-on at its next start. Nothing is reinstalled on the TV.
+- **To roll back,** set `JELLYPASS_IMAGE` back to
+  `ghcr.io/nicklongmore86/jellypass:3.6.1` and recreate the container. No
+  state-file or setting change is needed. The add-on loses the Discover page
+  and its header button, and is otherwise as in 3.7.0.
+
 ### Added
 
-- TV add-on: a full **Discover** page in Jellyfin (`#/jellypass/discover`, in the TV and the desktop layout), the household
-  app's Home on the TV: a hero of up to five titles (Previous / View / Next and dots, no auto-advance), the All / Movies / TV
-  chips and a **Hide what I have** toggle, Trending, Popular, New releases and Upcoming rows, the eight "Popular on …" service rows and the studios, with a badge on each title (In your library, Requested, Available to get, Can't request;
-  words, not only colour) and the TMDB notice and JustWatch credit at the foot. It is reached **only** from a new **compass
-  button in Jellyfin's header, right before Search**, in both layouts, and only on households with the add-on on; if a Jellyfin
-  update changes its header so the button cannot be placed, nothing is drawn (the page's address still works). Choosing a title
-  opens the JellyPass title page, and Back returns to the same title without asking again. It asks for 5 things when it opens
-  and 10 more as the remote scrolls down to them (rows near the screen only, 14 titles each), and a row's pictures are loaded only
-  while it is near the screen, to spare a 2019 Samsung's memory. Home's Discover row is unchanged. The studios and services are
-  not links yet (their own pages come next). No server, API or setting change.
-- TV add-on: internal groundwork for a full **Discover** page (nothing of it is visible yet, and nothing changes on any
-  household's TV). The add-on can now read the Discover lists, the services' and studios' pages and the sources list from
-  the existing household API, keeps the answers in memory for ten minutes (forgotten on a sign-out, another member or a new
-  sign-in, and an answer that arrives after one is ignored), waits out a "too many requests" answer without trying again by
-  itself, and has the card limit per row and the status words ready for the page. The call budget for the page is written in
-  `docs/app-api/fetch-budget.json` (`tv-discover`: 5 calls when it opens, 10 more as rows come near the screen, none on
-  coming back) and pinned by a test. No server, API or setting change.
+- **TV add-on: the Discover page.** On the households the TV add-on is on
+  for, Jellyfin web gains a **Discover** page (`#/jellypass/discover`, a page
+  of Jellyfin web's own under its real header and Back, in the TV and the
+  desktop layout, with no key handling of its own), opened from a **compass
+  button in Jellyfin's header, right before Search** (see the upgrade notes
+  for where it appears). It is the household app's Home on the TV:
+  - a **hero** of up to five titles (the first row's first titles with a
+    wide picture), with **‹**, **View** and **›** buttons and dots, and no
+    auto-advance; **View** opens the title;
+  - the **All / Movies / TV** chips and a **Hide what I have** toggle, which
+    hides the titles in the library or already requested and asks for
+    nothing;
+  - on All, the **Trending**, **Popular movies**, **Popular series**, **New
+    movie releases**, **Upcoming movies** and **Upcoming series** rows and
+    the eight **Popular on …** service rows (Movies and TV show their own
+    rows, as the app does), at most 14 titles a row;
+  - a badge in words on each title, not only in colour: **In your library**,
+    **Requested**, **Available to get** or **Can't request**;
+  - at the foot, the studios (All and Movies), the JustWatch line (All and
+    Movies) and the TMDB notice (every chip), reachable by the remote.
+
+  Choosing a title opens the JellyPass title page, and Back returns to the
+  same title on the Discover page with no Discover call (within ten minutes
+  of opening it; after that the page asks again and focus may land on the
+  hero's **View**). The page asks
+  for 5 things when it opens on All and 10 more as the remote scrolls down to
+  the rows that need them; a row's pictures are set only while it is near the
+  screen, to spare a 2019 Samsung's memory. Its answers are kept in memory
+  for ten minutes and forgotten on a sign-out, another member or a new
+  sign-in, and an answer that comes back for a session that has ended is
+  dropped. A row that fails says why, with **Try again**; nothing is asked
+  again by itself, and after a "too many requests" answer nothing is asked
+  until the time the server gave (or 30 seconds) is over. Home's and
+  Search's Discover rows are unchanged. The calls the page makes are written
+  in `docs/app-api/fetch-budget.json` (`tv-discover`).
 
 ## [3.6.1] - 2026-10-28
 
@@ -2895,7 +2965,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.6.1...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.7.0...HEAD
+[3.7.0]: https://github.com/nicklongmore86/jellypass/compare/v3.6.1...v3.7.0
 [3.6.1]: https://github.com/nicklongmore86/jellypass/compare/v3.6.0...v3.6.1
 [3.6.0]: https://github.com/nicklongmore86/jellypass/compare/v3.5.0...v3.6.0
 [3.5.0]: https://github.com/nicklongmore86/jellypass/compare/v3.4.0...v3.5.0
