@@ -1,81 +1,112 @@
-// The corner badge on a poster must always be whole, on one line, inside the poster. This computes the narrowest poster the
-// app really draws (from the same sizing the screens use, at every window width) and the widest the badge can be at its
-// capped text size, with a deliberately generous width per character, so a longer badge word or a bigger font fails here
-// before it clips on a phone.
+// Where a card draws its status: a compact corner pill when the pill is estimated to fit on one line inside the poster at
+// the user's text size, else below the image as ordinary scalable text. This sweeps the card widths the app really draws
+// (from the same sizing the screens use, at whole and fractional window widths, with and without side insets, for poster
+// and backdrop cards) and the text scales, and checks both placements are chosen where they should be. The fit is an
+// estimate (a generous 0.6 em per character), not a measurement: it errs toward "below".
 import { cardWidths } from '../src/screens/HomeScreen';
 import { BADGE_WORDS } from '../src/home/text';
-import { POSTER_BADGE, TABLET_WIDTH } from '../src/home/layout';
+import { BADGE_EM_PER_CHAR, badgeFits, POSTER_BADGE, TABLET_WIDTH } from '../src/home/layout';
 import { gridCardWidth, gridColumns } from '../src/search/text';
 import { layout, spacing } from '../src/theme';
 
-/** A bold sans-serif's average advance is about 0.55 em (SF Pro Bold on "Requested" and "In library" is nearer 0.5); 0.6 em leaves margin. */
-const EM_PER_CHAR = 0.6;
+const LONGEST = Object.values(BADGE_WORDS).reduce((a, b) => (b.length > a.length ? b : a));
+const SCALES = [1, 1.15, 1.3, 1.6, 2, 3];
 
-/** Every poster width the app draws at a window `width` wide with `inset` pt of safe area on each side, and where. */
-function posterWidths(width: number, inset = 0): Array<{ where: string; width: number }> {
+/** The pill's width: its fixed parts, plus the longest word at `scale` (the estimate the placement uses, written out again). */
+function pillWidth(scale: number): number {
+  const fixed = POSTER_BADGE.paddingLeft + POSTER_BADGE.paddingRight + 2 * POSTER_BADGE.border + POSTER_BADGE.dot + POSTER_BADGE.gap;
+  return fixed + LONGEST.length * BADGE_EM_PER_CHAR * POSTER_BADGE.fontSize * scale;
+}
+
+/** Every card width the app draws at a window `width` wide with `inset` pt of safe area on each side, and where. */
+function cardsAt(width: number, inset = 0): { where: string; width: number }[] {
   const pad = Math.max(spacing.gutter, inset);
   const column = Math.max(0, Math.min(width, layout.maxContentWidth) - 2 * pad);
   const columns = gridColumns(width, column);
   const tablet = width >= TABLET_WIDTH;
+  const rows = cardWidths(column, tablet);
   return [
-    { where: `search and service/studio grid, ${columns} columns`, width: gridCardWidth(column, columns) },
-    { where: 'Home poster row', width: cardWidths(column, tablet).poster },
+    { where: `grid, ${columns} columns`, width: gridCardWidth(column, columns) },
+    { where: 'Home poster row', width: rows.poster },
+    { where: 'Home backdrop row', width: rows.backdrop },
   ];
 }
 
-/** The widest the badge's text may be on a poster `poster` wide, and the widest it can be (its longest word, at the capped size). */
-function badgeAt(poster: number) {
-  const pill = POSTER_BADGE.maxWidthRatio * poster;
-  const chrome = POSTER_BADGE.paddingLeft + POSTER_BADGE.paddingRight + 2 * POSTER_BADGE.border + POSTER_BADGE.dot + POSTER_BADGE.gap;
-  const longest = Math.max(...Object.values(BADGE_WORDS).map((word) => word.length));
-  const size = POSTER_BADGE.fontSize * POSTER_BADGE.maxFontScale;
-  return { room: pill - chrome, text: longest * EM_PER_CHAR * size, pill, size };
-}
+/** Whole widths 320..1400 plus tenths around the breakpoints the sizing switches at (the two/three column switch at 336/337, the tablet at 768). */
+const windows = [
+  ...Array.from({ length: 1400 - 320 + 1 }, (_, i) => 320 + i),
+  ...Array.from({ length: 20 }, (_, i) => 336 + (i + 1) / 10),
+  ...Array.from({ length: 20 }, (_, i) => 767 + (i + 1) / 10),
+];
 
-describe('the poster badge fits the narrowest poster', () => {
-  const windows = Array.from({ length: 1400 - 320 + 1 }, (_, i) => 320 + i);
-  const all = windows.flatMap((w) => posterWidths(w).map((poster) => ({ window: w, ...poster })));
+describe('the status badge placement', () => {
+  const all = windows.flatMap((w) => cardsAt(w).map((card) => ({ window: w, ...card })));
   const narrowest = all.reduce((least, one) => (one.width < least.width ? one : least));
 
-  it('finds the narrowest poster at a 337 pt window (three columns just past the two-column switch)', () => {
-    expect([narrowest.window, narrowest.width]).toEqual([337, 95]);
-    // The two widths the app is most used at.
-    expect(posterWidths(320)[0]!.width).toBe(139);
-    expect(posterWidths(390)[0]!.width).toBe(112);
+  it('finds the narrowest card at a 336.1 pt window (three columns just past the two-column switch)', () => {
+    expect(narrowest.width).toBe(94);
+    // A fractional window width is a point narrower than the whole 337 pt one; the sweep covers both.
+    expect(narrowest.window).toBe(336.1);
+    expect(cardsAt(336.5)[0]!.width).toBe(95);
+    expect(cardsAt(337.9)[0]!.width).toBe(95);
+    expect(cardsAt(337)[0]!.width).toBe(95);
+    expect(cardsAt(320)[0]!.width).toBe(139);
+    expect(cardsAt(390)[0]!.width).toBe(112);
   });
 
-  it.each([
-    ['the narrowest poster', () => narrowest.width],
-    ['a 320 pt window', () => Math.min(...posterWidths(320).map((p) => p.width))],
-    ['a 390 pt window', () => Math.min(...posterWidths(390).map((p) => p.width))],
-  ])('shows the longest badge word whole at %s', (_name, poster) => {
-    const { room, text } = badgeAt(poster());
-    expect(text).toBeLessThanOrEqual(room);
+  it('keeps the compact corner pill at ordinary text size on the narrowest card, with margin', () => {
+    expect(badgeFits(narrowest.width, 1, LONGEST)).toBe(true);
+    expect(pillWidth(1)).toBeLessThanOrEqual(POSTER_BADGE.maxWidthRatio * narrowest.width);
+    // The pill, from its inset, stays inside the poster.
+    expect(POSTER_BADGE.inset + POSTER_BADGE.maxWidthRatio * narrowest.width).toBeLessThan(narrowest.width);
+    // The base text is at least Apple's 11 pt minimum.
+    expect(POSTER_BADGE.fontSize).toBeGreaterThanOrEqual(11);
   });
 
-  it('keeps every word whole on every poster at every window width, with or without side insets', () => {
-    for (let w = 320; w <= 1400; w += 1) {
+  it('moves the status below the image on the narrowest card at large text sizes (2 and 3), never capping the text', () => {
+    for (const scale of [1.6, 2, 3]) expect(badgeFits(narrowest.width, scale, LONGEST)).toBe(false);
+    expect(Object.keys(POSTER_BADGE)).not.toContain('maxFontScale');
+  });
+
+  it('chooses each placement where the estimate says, on every card at every window width, scale and inset', () => {
+    let overlay = 0;
+    let below = 0;
+    for (const w of windows) {
       // Side insets only come with a landscape phone (at least 568 pt wide).
       for (const inset of w >= 568 ? [0, 47, 59] : [0]) {
-        for (const poster of posterWidths(w, inset)) {
-          const { room, text } = badgeAt(poster.width);
-          if (text > room) throw new Error(`${poster.where} at ${w} pt (inset ${inset}) is ${poster.width} pt wide: badge text ${text} pt > ${room} pt`);
+        for (const card of cardsAt(w, inset)) {
+          let fitted = true;
+          for (const scale of SCALES) {
+            const fits = badgeFits(card.width, scale, LONGEST);
+            // Overlay only when the whole pill is inside the room the poster gives it; below otherwise.
+            if (fits !== pillWidth(scale) <= POSTER_BADGE.maxWidthRatio * card.width) {
+              throw new Error(`${card.where} at ${w} pt (inset ${inset}), scale ${scale}: placed ${fits ? 'overlay' : 'below'}, pill ${pillWidth(scale)} vs ${POSTER_BADGE.maxWidthRatio * card.width}`);
+            }
+            // A bigger text size never goes back into the corner.
+            if (fits && !fitted) throw new Error(`${card.where} at ${w} pt: fits at scale ${scale} but not at a smaller one`);
+            fitted = fits;
+            if (fits) overlay += 1;
+            else below += 1;
+          }
         }
       }
     }
+    expect(overlay).toBeGreaterThan(0);
+    expect(below).toBeGreaterThan(0);
   });
 
-  it('keeps the pill, from its inset, inside the poster', () => {
-    const { pill } = badgeAt(narrowest.width);
-    expect(POSTER_BADGE.inset + pill).toBeLessThan(narrowest.width);
+  it('puts every card the app draws in the corner at ordinary text size', () => {
+    for (const card of all) expect(`${card.where} at ${card.window}: ${badgeFits(card.width, 1, LONGEST)}`).toBe(`${card.where} at ${card.window}: true`);
   });
 
-  it('would fail for a longer word or a larger font', () => {
-    const { room } = badgeAt(narrowest.width);
-    expect(('Not available'.length * EM_PER_CHAR * POSTER_BADGE.fontSize * POSTER_BADGE.maxFontScale) > room).toBe(true);
-    expect(10 * EM_PER_CHAR * POSTER_BADGE.fontSize * 1.3 > room).toBe(true);
-    // Reporting the numbers: the longest word's width against the room for it.
-    const { text } = badgeAt(narrowest.width);
-    expect([Math.round(narrowest.width), Math.round(room * 10) / 10, Math.round(text * 10) / 10]).toEqual([95, 64.5, 60]);
+  it('keeps the corner pill on a phone\'s backdrop card even at the largest text, and moves a 132 pt poster below the image there', () => {
+    expect(badgeFits(cardsAt(390)[2]!.width, 3, LONGEST)).toBe(true);
+    expect(badgeFits(132, 1.3, LONGEST)).toBe(true);
+    expect(badgeFits(132, 3, LONGEST)).toBe(false);
+  });
+
+  it('treats a text scale below 1 as 1 and a longer word as needing more room', () => {
+    expect(badgeFits(94, 0.5, LONGEST)).toBe(badgeFits(94, 1, LONGEST));
+    expect(badgeFits(94, 1, 'Not available now')).toBe(false);
   });
 });

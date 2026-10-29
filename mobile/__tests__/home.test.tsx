@@ -215,7 +215,7 @@ describe('the cards', () => {
     const chips = screen.queryAllByTestId('status-chip', { includeHiddenElements: true });
     const overlays = chips.filter((node) => flat(node).position === 'absolute');
     expect(overlays.length).toBeGreaterThan(0);
-    expect(overlays.every((node) => flat(node).top === 6 && flat(node).left === 6)).toBe(true);
+    expect(overlays.every((node) => flat(node).top === POSTER_BADGE.inset && flat(node).left === POSTER_BADGE.inset)).toBe(true);
   });
 
   it('open the title\'s page on the Home tab, with Back', async () => {
@@ -588,10 +588,14 @@ describe.each([['on', true], ['off', false]] as const)('accessibility, New only 
 });
 
 describe('the status badge on a poster', () => {
-  it('says the short word on one line, in a compact corner pill, with the full wording kept in the card\'s name', async () => {
+  const chips = () => screen.queryAllByTestId('status-chip', { includeHiddenElements: true });
+  const wordOf = (chip: ReturnType<typeof chips>[number]) => String(within(chip).queryAllByText(/./, { includeHiddenElements: true })[0]!.props.children);
+
+  it('says the short word on one line, in a compact corner pill at ordinary text size, with the full wording kept in the card\'s name', async () => {
     await start();
-    const overlays = screen.queryAllByTestId('status-chip', { includeHiddenElements: true }).filter((node) => flat(node).position === 'absolute');
+    const overlays = chips().filter((node) => flat(node).position === 'absolute');
     expect(overlays.length).toBeGreaterThan(0);
+    expect(chips().filter((chip) => flat(chip).maxWidth === '100%')).toHaveLength(0);
     const words = new Set<string>();
     for (const chip of overlays) {
       const [text] = within(chip).queryAllByText(/./, { includeHiddenElements: true });
@@ -600,10 +604,11 @@ describe('the status badge on a poster', () => {
       // No break can fall inside it, and the pill is a small one (not the wide chip of the title page).
       expect(word).not.toMatch(/ /);
       expect(Object.values(BADGE_WORDS)).toContain(word.replace(/\u00a0/g, ' '));
-      expect(flat(chip)).toMatchObject({ top: 6, left: 6, alignSelf: 'flex-start' });
-      // The text is the size, and capped at the scale, that __tests__/home-badge.test.ts proves fits the narrowest poster.
-      expect(text!.props.maxFontSizeMultiplier).toBe(POSTER_BADGE.maxFontScale);
-      expect(flat(text!)).toMatchObject({ fontSize: POSTER_BADGE.fontSize, lineHeight: POSTER_BADGE.lineHeight });
+      expect(flat(chip)).toMatchObject({ top: POSTER_BADGE.inset, left: POSTER_BADGE.inset, alignSelf: 'flex-start' });
+      // At least 11 pt, and the text size is never capped.
+      expect(text!.props.maxFontSizeMultiplier).toBeUndefined();
+      expect(text!.props.allowFontScaling).not.toBe(false);
+      expect(flat(text!).fontSize).toBeGreaterThanOrEqual(11);
       expect(Number(flat(chip).paddingVertical)).toBeLessThanOrEqual(2.4);
     }
     expect([...words].sort()).toEqual(["Can't get", 'Get this', 'In library', 'Requested']);
@@ -612,6 +617,42 @@ describe('the status badge on a poster', () => {
     }
   });
 
+  // Large text: the same words below the image, in the card's flow, free to wrap, uncapped, never dropped, and still
+  // hidden from screen readers (the card's name says it).
+  it.each([
+    ['390 wide at 2x text', { ...PHONE, fontScale: 2 }],
+    ['390 wide at 3x text', { ...PHONE, fontScale: 3 }],
+    ['320 wide at 3x text', { ...NARROW, fontScale: 3 }],
+  ])('puts the status below the image as ordinary text, %s', async (_name, window) => {
+    mockWindow = window;
+    await start();
+    // The hero's chip is a full-wording one, not a card's; a card's, when below, is the one in the flow at the card's width.
+    const all = chips().filter((chip) => flat(chip).maxWidth === '100%');
+    expect(all.length).toBeGreaterThan(0);
+    // Every 132 pt poster card has its chip below the image; the wide backdrop cards still fit the corner pill.
+    for (const card of screen.queryAllByRole('link', { name: /^trending \d+, \d+, (Movie|Series), / })) {
+      const inside = within(card).queryAllByTestId('status-chip', { includeHiddenElements: true });
+      expect(inside.map((chip) => flat(chip).position)).toEqual([undefined]);
+    }
+    for (const chip of all) {
+      const [text] = within(chip).queryAllByText(/./, { includeHiddenElements: true });
+      expect(Object.values(BADGE_WORDS)).toContain(wordOf(chip));
+      expect(chip.props.accessibilityElementsHidden).toBe(true);
+      expect(text!.props.maxFontSizeMultiplier).toBeUndefined();
+      expect(text!.props.numberOfLines).toBeUndefined();
+      expect(text!.props.allowFontScaling).not.toBe(false);
+    }
+    // Each card's accessible name still says it.
+    expect(links().some((name) => name.endsWith(', Available to get'))).toBe(true);
+  });
+
+  it('draws the status in the card\'s flow, between the image and the title, when it is below', async () => {
+    mockWindow = { ...PHONE, fontScale: 3 };
+    await start();
+    const card = only(screen.queryAllByRole('link', { name: /^trending 3, \d+, Movie, / }), 'poster card');
+    const [first, second] = card.children as Array<{ props: { testID?: string } }>;
+    expect([first!.props.testID, second!.props.testID]).toEqual([undefined, 'status-chip']);
+  });
 });
 
 describe.each([['on', true], ['off', false]] as const)('on iPad, New only %s', (_what, held) => {

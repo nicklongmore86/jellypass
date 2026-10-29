@@ -20,12 +20,14 @@ build.
 - **Home: the last filter chip is no longer cut off.** The chip row scrolls
   sideways with the screen's side padding inside it, so the last chip can be
   scrolled fully into view at any screen width and text size.
-- **Poster badges are one short line.** A badge on a poster now says "In
+- **Poster badges are short and never cut off.** A badge on a poster says "In
   library", "Requested", "Get this" or "Can't get" (the words the TV add-on
-  uses) in a small corner pill, instead of wrapping over the poster. The pill's
-  text is 10 pt and does not grow with the system text size (the card's title
-  and details still do), so it fits whole on the narrowest poster; the full
-  wording stays in each card's accessible name and on title pages.
+  uses) in a small corner pill, at least 11 pt, instead of wrapping over the
+  poster. The badge text follows the system text size like all other text. When
+  the app estimates that the pill would not fit on one line inside a poster at
+  your text size, it shows the same badge under the picture instead, where it
+  can wrap. The full wording stays in each card's accessible name and on title
+  pages.
 
 ### Changed
 

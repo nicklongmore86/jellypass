@@ -76,28 +76,41 @@ export const HERO_MAX = 5;
 export const TABLET_WIDTH = 768;
 
 /**
- * The corner badge on a poster (StatusChip `overlay`). It is a single line that must always be whole: 10 pt (the stylesheet's
- * 0.64rem) and scaled no more than `maxFontScale` with the system text size, because the narrowest poster the app draws is
- * ~95 pt wide (a 337 pt window, three columns) and the pill may use `maxWidthRatio` of it. The badge is decoration: its
- * full wording is in the card's accessible name, and the card's title and meta lines still follow the text size.
- * The words use no-break spaces, so no line break can fall inside one; and no line limit or shrink-to-fit is used (the
- * app lets all text grow, never clip), so the fit is guaranteed by these numbers alone, which __tests__/home-badge.test.ts
- * checks against the real poster sizing. Every number the pill's width is made of is here so that test uses the same ones.
+ * The corner badge on a poster (StatusChip `overlay`): a compact pill over the image's top-left. Its text is 11 pt (Apple's
+ * minimum) and grows with the system text size like all other text, never capped. A pill that grows past a small poster
+ * would cover it, so {@link badgeFits} estimates from the card's width and the user's text scale whether the pill's longest
+ * word fits on one line inside the poster; if it would not, the card draws the same chip below the image instead
+ * (`below`), as ordinary scalable text that may wrap. The status is never dropped, and its full wording is in the card's
+ * accessible name either way.
+ * `badgeFits` is an estimate, not a guarantee: it uses a deliberately generous width per character (EM_PER_CHAR) so it errs
+ * toward the below-image placement. Every number the pill's width is made of is here so __tests__/home-badge.test.ts uses
+ * the same ones.
  */
 export const POSTER_BADGE = {
-  fontSize: 10,
-  lineHeight: 14,
-  maxFontScale: 1,
+  fontSize: 11,
   /** Distance from the poster's top and left edges. */
-  inset: 6,
+  inset: 5,
   /** Share of the poster's width the pill may take. */
-  maxWidthRatio: 0.9,
-  paddingLeft: 5,
-  paddingRight: 6,
+  maxWidthRatio: 0.92,
+  paddingLeft: 4,
+  paddingRight: 5,
   border: 1,
   dot: 5,
   gap: 3,
 } as const;
+
+/** A bold sans-serif's average advance is about 0.55 em (SF Pro Bold on "Requested" and "In library" is nearer 0.5); 0.6 em leaves margin. */
+export const BADGE_EM_PER_CHAR = 0.6;
+
+/**
+ * Whether the corner pill is estimated to fit `word` on one line inside a poster `cardWidth` wide at the text scale
+ * `fontScale` (the width of the dot, gap, padding and border does not scale). An estimate: see {@link POSTER_BADGE}.
+ */
+export function badgeFits(cardWidth: number, fontScale: number, word: string): boolean {
+  const chrome = POSTER_BADGE.paddingLeft + POSTER_BADGE.paddingRight + 2 * POSTER_BADGE.border + POSTER_BADGE.dot + POSTER_BADGE.gap;
+  const room = POSTER_BADGE.maxWidthRatio * cardWidth - chrome;
+  return word.length * BADGE_EM_PER_CHAR * POSTER_BADGE.fontSize * Math.max(1, fontScale) <= room;
+}
 
 export function rowKey(part: HomeRow): string {
   return `row-${part.list}`;

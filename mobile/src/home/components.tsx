@@ -23,6 +23,7 @@ import {
   type NativeSyntheticEvent,
   type ScrollViewInstance,
   type StyleProp,
+  useWindowDimensions,
 } from 'react-native';
 
 import type { Card, HouseholdState, Source } from '../api/types';
@@ -30,7 +31,7 @@ import { backdropSources, safeImageUrl, safeLogoUrl } from '../api/urls';
 import { Icon } from '../icons';
 import { colors, layout, radii, spacing, status as statusColors, typography, water } from '../theme';
 import { Button } from '../ui';
-import { nearestStop, POSTER_BADGE, resnapOffset, revealOffset, snapOffsets, type RowShape, type RowVariant } from './layout';
+import { badgeFits, nearestStop, POSTER_BADGE, resnapOffset, revealOffset, snapOffsets, type RowShape, type RowVariant } from './layout';
 import {
   backdropMeta,
   cardName,
@@ -47,6 +48,7 @@ import {
   shortOverview,
   networkLinkName,
   SOURCE_TEXT,
+  BADGE_WORDS,
   badgeWord,
   stateLabel,
   studioLinkName,
@@ -273,40 +275,49 @@ const STATE_COLORS: Record<HouseholdState, { bg: string; text: string }> = {
 const NO_BREAK_SPACE = '\u00a0';
 
 /**
- * A status chip: a dot and its word, solid, so it reads over any picture. `overlay` puts it on an image's top-left.
- * Hidden from screen readers where its card's name already says it; a title page's own status is `spoken`. `failed`
- * is a title the household asked for that did not work out: "We couldn't get this".
+ * Where a card draws its status: in the compact corner pill over the image if the pill is estimated to fit on one line at
+ * the user's text size (POSTER_BADGE in ./layout), else below the image. The longest short word decides, so every card of a
+ * width places it the same way.
+ */
+function useBadgePlacement(cardWidth: number): 'overlay' | 'below' {
+  const { fontScale } = useWindowDimensions();
+  const longest = Object.values(BADGE_WORDS).reduce((a, b) => (b.length > a.length ? b : a));
+  return badgeFits(cardWidth, fontScale, longest) ? 'overlay' : 'below';
+}
+
+/**
+ * A status chip: a dot and its word, solid, so it reads over any picture. `overlay` puts the short word in a compact pill on
+ * an image's top-left, on one line; `below` is the same short word and colours as ordinary text in the card's flow, which
+ * wraps if the text size is large. Neither caps the text size. Hidden from screen readers where its card's name already
+ * says it; a title page's own status is `spoken`. `failed` is a title the household asked for that did not work out: "We
+ * couldn't get this".
  */
 export function StatusChip({
   state,
   overlay = false,
+  below = false,
   spoken = false,
   failed = false,
 }: {
   state: HouseholdState;
   overlay?: boolean;
+  below?: boolean;
   spoken?: boolean;
   failed?: boolean;
 }) {
   const pair = failed || !Object.hasOwn(STATE_COLORS, state) ? STATE_COLORS.unavailable : STATE_COLORS[state];
   const label = failed ? REQUEST_LABELS.failed : stateLabel(state);
-  // On a poster the badge is the short word on one line, sized so it always fits (POSTER_BADGE in ./layout, checked
-  // against the narrowest poster by __tests__/home-badge.test.ts); the full wording stays the card's (or `spoken`) name.
-  const shown = overlay && !failed ? badgeWord(state).replace(/ /g, NO_BREAK_SPACE) : label;
+  const short = (overlay || below) && !failed;
+  // On a card the badge is the short word; the full wording stays the card's (or `spoken`) name.
+  const shown = !short ? label : overlay ? badgeWord(state).replace(/ /g, NO_BREAK_SPACE) : badgeWord(state);
   return (
     <View
       testID="status-chip"
-      style={[styles.chip, { backgroundColor: pair.bg }, overlay && styles.chipOverlay]}
+      style={[styles.chip, { backgroundColor: pair.bg }, overlay && styles.chipOverlay, below && styles.chipBelow]}
       {...(spoken ? { accessible: true, accessibilityLabel: label } : hidden)}
     >
       <View style={[styles.chipDot, overlay && !failed && styles.chipOverlayDot, { backgroundColor: pair.text }]} />
-      {overlay && !failed ? (
-        <Text style={[styles.chipText, styles.chipOverlayText, { color: pair.text }]} maxFontSizeMultiplier={POSTER_BADGE.maxFontScale}>
-          {shown}
-        </Text>
-      ) : (
-        <Text style={[styles.chipText, { color: pair.text }]}>{shown}</Text>
-      )}
+      <Text style={[styles.chipText, overlay && !failed && styles.chipOverlayText, { color: pair.text }]}>{shown}</Text>
     </View>
   );
 }
@@ -339,6 +350,7 @@ export function backdropUri(url: string | null, width: number, scale = PixelRati
 /** A poster card: poster with its status chip at the top-left, then the title and "year · Movie/Series". */
 export function PosterCard({ card, width, onOpen }: { card: Card; width: number; onOpen: (card: Card) => void }) {
   const onFocus = useContext(CardFocus);
+  const badge = useBadgePlacement(width);
   return (
     <Pressable
       accessibilityRole="link"
@@ -350,7 +362,7 @@ export function PosterCard({ card, width, onOpen }: { card: Card; width: number;
       <View style={[styles.poster, !safeImageUrl(card.posterUrl) && styles.frameEmpty]}>
         <TmdbImage uri={card.posterUrl} style={styles.fillImage} />
       </View>
-      <StatusChip state={card.state} overlay />
+      <StatusChip state={card.state} overlay={badge === 'overlay'} below={badge === 'below'} />
       <Text style={styles.cardTitle}>{card.title}</Text>
       <Text style={styles.cardMeta}>{posterMeta(card)}</Text>
     </Pressable>
@@ -364,6 +376,7 @@ export function PosterCard({ card, width, onOpen }: { card: Card; width: number;
  */
 export function BackdropCard({ card, width, onOpen }: { card: Card; width: number; onOpen: (card: Card) => void }) {
   const onFocus = useContext(CardFocus);
+  const badge = useBadgePlacement(width);
   const backdrop = backdropUri(card.backdropUrl, width);
   const meta = backdropMeta(card);
   return (
@@ -377,7 +390,7 @@ export function BackdropCard({ card, width, onOpen }: { card: Card; width: numbe
       <View style={styles.backdropFrame}>
         <TmdbImage uri={backdrop ?? card.posterUrl} style={styles.fillImage} />
       </View>
-      <StatusChip state={card.state} overlay />
+      <StatusChip state={card.state} overlay={badge === 'overlay'} below={badge === 'below'} />
       <View style={styles.backdropText}>
         <Text style={styles.backdropTitle}>{card.title}</Text>
         {meta ? <Text style={styles.backdropMeta}>{meta}</Text> : null}
@@ -845,7 +858,9 @@ const styles = StyleSheet.create({
     paddingRight: POSTER_BADGE.paddingRight,
     gap: POSTER_BADGE.gap,
   },
-  chipOverlayText: { fontSize: POSTER_BADGE.fontSize, lineHeight: POSTER_BADGE.lineHeight },
+  // Below the image the chip is in the card's flow and the card's width is all it may use; its text wraps at large sizes.
+  chipBelow: { maxWidth: '100%' },
+  chipOverlayText: { fontSize: POSTER_BADGE.fontSize },
   chipDot: { width: 6, height: 6, borderRadius: 3 },
   chipOverlayDot: { width: POSTER_BADGE.dot, height: POSTER_BADGE.dot, borderRadius: POSTER_BADGE.dot / 2 },
   chipText: { ...typography.chip, flexShrink: 1 },
