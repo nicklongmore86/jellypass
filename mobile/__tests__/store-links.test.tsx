@@ -41,6 +41,34 @@ const wrap = (child: React.ReactNode) => (
   </SafeAreaProvider>
 );
 
+// Not a plain https URL as written: padding, odd characters, other schemes, unnormalised forms.
+const EDGE_CASES = [
+  ` ${PRIVACY}`,
+  `${PRIVACY} `,
+  `\n${PRIVACY}\n`,
+  `\t${PRIVACY}`,
+  `\u00a0${PRIVACY}`,
+  `${PRIVACY}\u00a0`,
+  `https://example.org/\u200bprivacy`,
+  `https://exam\u200bple.org/privacy`,
+  `\ufeff${PRIVACY}`,
+  `https://example.org/pri\u0000vacy`,
+  `https://example.org\u0000/`,
+  'https:example.org',
+  'https:/example.org',
+  'https:///example.org',
+  'https:\\\\example.org',
+  'javascript:alert(1)',
+  'intent://example.org/#Intent;scheme=https;end',
+  'HTTPS://example.org/privacy',
+  'Https://example.org/privacy',
+  'https://localhost/',
+  'https://münchen.example/',
+  'https://example.org:443/',
+  'https://@example.org/',
+  'https://example.org',
+];
+
 const link = (name: string) => screen.queryByRole('link', { name });
 const minHeight = (name: string) => StyleSheet.flatten(link(name)!.props.style).minHeight;
 const tap = (name: string) => fireEvent.press(link(name)!);
@@ -64,7 +92,6 @@ describe('the configured links', () => {
 
   it('accept only a plain https URL', () => {
     expect(cleanStoreUrl(PRIVACY)).toBe(PRIVACY);
-    expect(cleanStoreUrl(`  ${PRIVACY}  `)).toBe(PRIVACY);
     for (const bad of [
       'http://example.org/privacy',
       'javascript:alert(1)',
@@ -72,11 +99,18 @@ describe('the configured links', () => {
       'file:///etc/passwd',
       'https://user:secret@example.org/',
       'https://example.org/a b',
+      ...EDGE_CASES,
       'example.org/privacy',
       'https://',
       `https://example.org/${'a'.repeat(500)}`,
     ]) {
       expect(cleanStoreUrl(bad)).toBeNull();
+    }
+  });
+
+  it('accept an IP literal host and a normalised path, query and port', () => {
+    for (const ok of ['https://203.0.113.7/privacy', 'https://[2001:db8::1]/privacy', 'https://example.org:8443/a?b=c', 'https://xn--mnchen-3ya.example/']) {
+      expect(cleanStoreUrl(ok)).toBe(ok);
     }
   });
 

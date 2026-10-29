@@ -69,7 +69,7 @@ const config: ExpoConfig = {
   android: {
     package: ANDROID_PACKAGE,
     // No versionCode here either: EAS raises it for every APK, so each installs over the last.
-    // A placeholder from the PWA icon: its ticket already sits inside the adaptive icon's safe zone.
+    // The PWA icon's ticket, scaled to sit inside the adaptive icon's safe zone (scripts/make-store-icons.py).
     adaptiveIcon: { foregroundImage: './assets/adaptive-icon.png', backgroundColor: NAVY },
     // No Android backup: the sign-in is only ever on this device (a restored Keystore-encrypted value is unreadable
     // anyway), and the app keeps nothing else worth restoring.

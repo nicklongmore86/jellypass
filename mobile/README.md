@@ -451,7 +451,7 @@ Edits reload on the phone as you save. Expo Go needs no Apple or Google develope
 | Android package | `com.rtcservices.jellypass` | **Final and permanent.** No hyphen, because Android forbids one. A different package is a different app, and members would have to reinstall and sign in again. Every APK must also be signed with the same key, forever (see [Distribution](#distribution)) |
 | Expo owner | `rtc-services-llc` (an Expo organization) | Set in `app.config.ts`. Must match the project's owner on expo.dev, or EAS CLI refuses to run |
 | EAS project ID | `1db20c4d-4270-404e-acf4-31a8bd6dd591` (`rtc-services-llc/jellypass` on expo.dev) | Set in `app.config.ts` as `extra.eas.projectId`. **Permanent**: EAS keeps the signing credentials and build numbers under it. Not secret |
-| Icon | `assets/icon.png`, `assets/adaptive-icon.png` | 1024 × 1024, opaque RGB (the App Store refuses alpha). The web app's icon, unchanged: `scripts/make-store-icons.py` holds a copy of `draw()` from the repo's `scripts/make-app-icons.py` and runs it at 1024 (`python3 scripts/make-store-icons.py`, needs Pillow). The adaptive icon is that same drawing over the same navy (`#000b25`), inside Android's safe zone. `__tests__/app-icons.test.ts` fails if the size, alpha or drawing drift |
+| Icon | `assets/icon.png`, `assets/adaptive-icon.png` | 1024 × 1024, opaque RGB (the App Store refuses alpha). The web app's icon, unchanged: `scripts/make-store-icons.py` holds a copy of `draw()` from the repo's `scripts/make-app-icons.py` and runs it at 1024 (`python3 scripts/make-store-icons.py`, needs Pillow). The adaptive icon is that drawing scaled to 84% and centred on the same navy (`#000b25`), so it lies inside Android's safe zone (the circle 66/108 of the canvas across); the iOS icon stays full-bleed. `__tests__/app-icons.test.ts` fails if the size, alpha or drawing drift |
 | Store links | `extra.privacyPolicyUrl`, `extra.supportUrl`, `extra.aboutUrl` in `app.config.ts` | Optional https pages the owner hosts, empty until set; see [Store links](#store-links) |
 | Orientation | iPhone portrait; iPad all four; Android tablets turn freely (`orientation: 'default'`), Android phones locked to portrait at launch | iPad multitasking requires all four |
 | URL scheme | `jellypass://` | Setup links: `jellypass://connect?address=https://jelly-<household>.<domain>` |
@@ -509,8 +509,17 @@ Android builds for members are an APK file they install directly. Google Play ta
   `DISABLE_EAS_ANALYTICS=1 npx eas-cli@25.3.0 build --platform android --profile production-aab --non-interactive --wait`
   (from `mobile/`). The `.aab` is on the build's page on expo.dev. It installs only from Play; for the closed or
   production track, upload it in Play Console. Build numbers (`versionCode`) are EAS's, shared with the APK profiles.
-  Before the first upload, turn on Play App Signing and give it the existing EAS upload key (see the keystore notes
-  below), so APKs and the Play build keep one signing identity.
+  Before the first upload, enrol in Play App Signing and give Play the existing EAS keystore's key as the
+  **app signing key**, not just as an upload key (see below), so APKs and the Play build keep one signing identity.
+- **Play App Signing: bring the existing key.** Play re-signs what it distributes with the *app signing key*; the
+  *upload key* only proves who uploaded. If you let Google generate the app signing key, Play builds are signed with a
+  new key and members who sideloaded the APK cannot update to them (or back) without uninstalling. When enrolling,
+  choose the option to use an existing app signing key (Play Console → Test and release → App signing, "Export and
+  upload a key from a Java keystore"), and export the EAS keystore's key with Google's PEPK tool (download a copy as in
+  [Back up the Android keystore](#back-up-the-android-keystore)). Then give Play a separate upload key (a new one, or
+  the same keystore) for the AAB uploads. This is a one-time choice made at the first upload. See Android's
+  [Sign your app](https://developer.android.com/studio/publish/app-signing) and Play's
+  [Use Play App Signing](https://support.google.com/googleplay/android-developer/answer/9842756).
 - **Members must allow installs from unknown sources.** On Android 8 and later this is a per-app permission:
   the first time they open the APK from their browser or file manager, Android asks them to allow that app to
   install unknown apps (Settings → Apps → Special app access → Install unknown apps). Tell members to grant it

@@ -32,7 +32,8 @@ Store-readiness changes that need no server change.
 
 - Cancelling a request no longer mentions a "download": an approved title "may still be added to the server, but it
   won't be added for your household."
-- The app icons are 1024 × 1024 (the App Store's size), the same drawing as before.
+- The app icons are 1024 × 1024 (the App Store's size), the same drawing as before. The Android adaptive icon's
+  foreground is scaled to sit inside the launcher's safe zone, so a round or squircle mask no longer clips the ticket.
 
 ## [1.2.1] - 2026-10-29
 

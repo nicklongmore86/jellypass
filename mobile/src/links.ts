@@ -7,19 +7,29 @@ export type StoreLink = 'privacyPolicyUrl' | 'supportUrl' | 'aboutUrl';
 
 export const STORE_LINK_KEYS: readonly StoreLink[] = ['privacyPolicyUrl', 'supportUrl', 'aboutUrl'];
 
-/** The URL as it may be opened (https, a host, no credentials, no whitespace), or null. */
+/** Whitespace, control and invisible format characters (zero-width, BOM, bidi marks, NBSP, ...) anywhere in the text. */
+const UNSAFE = /[\p{White_Space}\p{Cc}\p{Cf}\p{Zl}\p{Zp}]/u;
+
+/**
+ * The URL as it may be opened, or null. The text is judged as written, never trimmed: it must start exactly with
+ * `https://` (lower case), hold no whitespace, control or format character, parse to a host (a dotted name, or an
+ * IP literal) with no credentials, and serialize back to itself, so the allow-list holds the exact string the config
+ * says. Non-ASCII hosts and unnormalised forms (`HTTPS://`, a missing path, an explicit default port) are refused;
+ * write the punycode, normalised form in the config.
+ */
 export function cleanStoreUrl(value: unknown): string | null {
   if (typeof value !== 'string') return null;
-  const text = value.trim();
-  if (text === '' || /\s/.test(text) || text.length > 500) return null;
+  if (value === '' || value.length > 500 || UNSAFE.test(value) || !value.startsWith('https://')) return null;
   let url: URL;
   try {
-    url = new URL(text);
+    url = new URL(value);
   } catch {
     return null;
   }
-  if (url.protocol !== 'https:' || url.hostname === '' || url.username !== '' || url.password !== '') return null;
-  return text;
+  if (url.protocol !== 'https:' || url.username !== '' || url.password !== '') return null;
+  const host = url.hostname;
+  if (host === '' || !(host.includes('.') || host.startsWith('['))) return null;
+  return url.href === value ? value : null;
 }
 
 /** The configured link's URL, or null (so the link is hidden) when unset or not an https URL. */
