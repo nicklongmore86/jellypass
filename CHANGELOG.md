@@ -41,11 +41,11 @@ upgrading:
   again every 30 seconds and on the next household request), instead of
   relaying unchecked. They serve as soon as Jellyfin answers.
 - **The state file keeps schema v7.** A confirmation is stored in a new
-  optional field, `jellyfinVersionConfirmed`, which 3.8.1 keeps as it is
-  without reading it, so rolling back needs no state change (3.8.1 does not
+  optional field, `jellyfinVersionConfirmed`, which 3.9.0 keeps as it is
+  without reading it, so rolling back needs no state change (3.9.0 does not
   check the version at all).
 - **To roll back,** set `JELLYPASS_IMAGE` back to
-  `ghcr.io/nicklongmore86/jellypass:3.8.1` and recreate the container.
+  `ghcr.io/nicklongmore86/jellypass:3.9.0` and recreate the container.
 
 ### Added
 
@@ -78,17 +78,61 @@ upgrading:
 - `docs/tv-addon.md`: the TV add-on is matched to the supported Jellyfin
   releases.
 
-### TV add-on
+## [3.9.0] - 2026-10-29
 
-The TV add-on is still experimental and off by default: unless `TV_ADDON_ENABLED` is set, nothing changes on any host. No server
-change (the app API, the state file and the settings are as before).
+This is a minor release for the TV add-on, which is still experimental and off
+by default: **unless `TV_ADDON_ENABLED` is set, nothing changes** on any host.
+Each list row of the Discover page gains **a See all page**, a full grid of
+that list, and in the desktop layout every JellyPass page gains **a Back
+button**. No setting is added, removed or renamed, and the server itself is
+unchanged: the state file (schema v7), the app API (`v1`, `apiVersion` 2),
+webhook payloads, the administrator API, the admin UI, the household app and
+the gateway are as in 3.8.1. The pages use only app API calls that already
+exist. The add-on's pages are not part of the public interface described at
+the top of this file. This is a minor release because the add-on gains pages.
+Read these before upgrading:
 
-- **See all on the Discover rows.** Trending, Popular movies, Popular series, New movie releases, Upcoming movies and Upcoming
-  series (and the Trending rows of the Movies and TV chips) have a "See all" button beside their heading, named for example
-  "Trending, see all". It opens a full grid page at `#/jellypass/list/<list>` with Load more, "New only" (the shared setting, on
-  by default), the short corner badges and Jellyfin-sized cards. Opening one from its row costs no call, Load more one call, Back none.
-- **A Back button on JellyPass pages in the desktop layout**, where Jellyfin 12.3's toolbar has none. It goes back in history, or
-  to Jellyfin's Home when there is nothing to go back to. The TV layout is unchanged.
+- **Nothing to configure.** No setting is new, and nothing in `.env` needs to
+  change. Only households the TV add-on is on for (`TV_ADDON_ENABLED` and
+  `TV_ADDON_HOUSEHOLDS`) see anything new.
+- **The state file is unchanged** (schema v7, with the same fields as 3.8.1),
+  so 3.8.1 reads a state file written by 3.9.0.
+- **No CDN purge is needed.** The add-on's script and stylesheet are named for
+  a hash of their content, and both names change in this release. The
+  household address's `/web/` page that carries the add-on's tag and the
+  Samsung app's manifest are sent `no-store`, so they name the new files at
+  once.
+- **It has been tested in a real Jellyfin 12.3 container,** in the TV layout
+  and the desktop layout, in a desktop browser. **The See all pages have not
+  been seen on a physical TV**; check them on a TV before relying on them
+  ([docs/tv-addon.md](docs/tv-addon.md) describes them). The Back button is
+  not drawn in the TV layout.
+- **The Samsung app picks it up by itself.** Its loader reads the manifest
+  each time it starts, so a Samsung TV with the JellyPass build of the app
+  gets the new add-on at its next start. Nothing is reinstalled on the TV.
+- **To roll back,** set `JELLYPASS_IMAGE` back to
+  `ghcr.io/nicklongmore86/jellypass:3.8.1` and recreate the container. No
+  state-file or setting change is needed. The Discover rows lose their See all
+  buttons, a See all page's address says "Not found", and the desktop layout
+  has no Back button on JellyPass pages.
+- **The iPhone, iPad and Android app ships separately;** its changes are
+  described in `mobile/CHANGELOG.md`.
+
+### Added
+
+- **TV add-on: See all on the Discover rows.** Trending, Popular movies,
+  Popular series, New movie releases, Upcoming movies and Upcoming series (and
+  the Trending rows of the Movies and TV chips) have a "See all" button beside
+  their heading, named for example "Trending, see all". It opens a full grid
+  page at `#/jellypass/list/<list>` with Load more, "New only" (the shared
+  setting, on by default), the short corner badges and Jellyfin-sized cards.
+  Opening one from its row costs no call, Load more one call, Back none. The
+  calls are written in `docs/app-api/fetch-budget.json` (`tv-discover-list`).
+- **TV add-on: a Back button on JellyPass pages in the desktop layout,** where
+  Jellyfin 12.3's toolbar has none. It goes back in history, or to Jellyfin's
+  Home when there is nothing to go back to. The history it goes back through
+  belongs to the session: after a sign-out, another member's sign-in or a new
+  token, Back goes to Home. The TV layout is unchanged.
 
 ## [3.8.1] - 2026-10-29
 
@@ -3171,7 +3215,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.8.1...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.9.0...HEAD
+[3.9.0]: https://github.com/nicklongmore86/jellypass/compare/v3.8.1...v3.9.0
 [3.8.1]: https://github.com/nicklongmore86/jellypass/compare/v3.8.0...v3.8.1
 [3.8.0]: https://github.com/nicklongmore86/jellypass/compare/v3.7.0...v3.8.0
 [3.7.0]: https://github.com/nicklongmore86/jellypass/compare/v3.6.1...v3.7.0
