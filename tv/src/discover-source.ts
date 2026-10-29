@@ -66,6 +66,8 @@ interface Open {
   loading: boolean;
   /** The chip or tab that focus falls back to. */
   fallback: HTMLElement | undefined;
+  /** The Try again of the failure on show: only this one answers, once; a retained one (the panel since drawn again) does nothing. */
+  retry: HTMLElement | undefined;
   /** The header's title: the service's name, "<studio> movies", or "Not found". */
   title: string;
   heading: HTMLElement | undefined;
@@ -214,7 +216,7 @@ export class SourcePage {
     this.#asked.sync(session.userId);
     const open: Open = {
       kind, id, userId: session.userId, render: { stamp: this.#watch.stamp(session) }, context, view, gen: 0, frameNo: 0, gridNo: 0, source: undefined, lists: [], list: 'all', pages: [], nextPage: null,
-      loading: false, fallback: undefined, title: DISCOVER_TEXT.title, heading: undefined, tabs: {}, hideChip: undefined, panel: undefined, grid: undefined, more: undefined, note: undefined, status: undefined,
+      loading: false, fallback: undefined, retry: undefined, title: DISCOVER_TEXT.title, heading: undefined, tabs: {}, hideChip: undefined, panel: undefined, grid: undefined, more: undefined, note: undefined, status: undefined,
       drawn: [], imageWatch: undefined, units: new Map(), headUnit: undefined,
     };
     this.#open = open;
@@ -399,6 +401,9 @@ export class SourcePage {
     open.grid = undefined;
     open.more = undefined;
     open.note = undefined;
+    open.retry = undefined;
+    // The tab is where focus falls back to now (an empty Films page's pagination ends on Films, not on All).
+    if (open.lists.length > 1) open.fallback = open.tabs[list];
     this.#resetUnits(open);
     open.drawn = [];
     open.gridNo += 1;
@@ -426,6 +431,7 @@ export class SourcePage {
 
   #skeleton(open: Open): void {
     const panel = open.panel as HTMLElement;
+    open.retry = undefined;
     panel.textContent = '';
     const grid = this.#el('div', 'jellypass-tv-source-grid jellypass-tv-discover-skeleton padded-left padded-right');
     grid.setAttribute('aria-hidden', 'true');
@@ -437,6 +443,7 @@ export class SourcePage {
   /** The grid's place in the panel, once there is a page to draw. */
   #frame(open: Open): void {
     const panel = open.panel as HTMLElement;
+    open.retry = undefined;
     panel.textContent = '';
     panel.removeAttribute('aria-busy');
     open.grid = this.#el('div', 'jellypass-tv-source-grid padded-left padded-right');
@@ -652,6 +659,7 @@ export class SourcePage {
     const gen = open.gen;
     into.textContent = '';
     into.removeAttribute('aria-busy');
+    open.retry = undefined;
     const kind = ERROR_TEXT[kindOf(failure)];
     if (failure.status === 401) {
       into.appendChild(this.#note(kind.title, kind.body));
@@ -660,8 +668,11 @@ export class SourcePage {
     const note = this.#el('div', 'jellypass-tv-discover-row-note padded-left padded-right');
     note.appendChild(this.#el('p', 'jellypass-tv-discover-row-note-text', `${kind.title}. ${kind.body}`));
     const retry = this.#button('raised jellypass-tv-discover-button', DISCOVER_TEXT.retry, key);
+    open.retry = retry;
     retry.addEventListener('click', () => {
-      if (this.#live(open, render, gen)) again();
+      if (open.retry !== retry || !this.#live(open, render, gen)) return;
+      open.retry = undefined;
+      again();
     });
     note.appendChild(retry);
     into.appendChild(note);

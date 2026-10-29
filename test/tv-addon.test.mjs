@@ -4284,6 +4284,38 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
     assert.equal(studios().length, 0, 'TV: no studios');
   });
 
+  it('answers only the Try again on show: a retained one, after the retry has worked, does nothing (a row, and the sources call)', async (t) => {
+    const state = { failures: { '/discover/popular-tv': 500, '/discover/sources': 500 } };
+    const page = await openScripted(t, state, { hide: 'off' });
+    await goTo(page);
+    const rowRetry = rowNamed(page, 'Popular series').querySelector('button');
+    const sourcesRetry = [...root(page).querySelectorAll('button')].find((button) => button.textContent === 'Try again' && button !== rowRetry);
+    assert.ok(rowRetry && sourcesRetry, 'both failures offer Try again');
+    delete state.failures['/discover/popular-tv'];
+    delete state.failures['/discover/sources'];
+    page.click(rowRetry);
+    page.click(sourcesRetry);
+    await page.settled();
+    assert.equal(cardsOf(rowNamed(page, 'Popular series')).length, 6, 'the row was drawn');
+    const html = root(page).innerHTML;
+    const calls = page.requests.length;
+    page.click(rowRetry);
+    page.click(sourcesRetry);
+    await page.settled();
+    assert.equal(page.requests.length, calls, 'no call');
+    assert.ok(root(page).innerHTML === html, 'the page is as it was');
+    // A retry pressed twice before the answer asks once.
+    const again = { failures: { '/discover/popular-tv': 500 } };
+    const second = await openScripted(t, again, { hide: 'off' });
+    await goTo(second);
+    const retry = rowNamed(second, 'Popular series').querySelector('button');
+    delete again.failures['/discover/popular-tv'];
+    second.click(retry);
+    second.click(retry);
+    await second.settled();
+    assert.equal(again.seen.filter((rel) => rel === '/discover/popular-tv').length, 2, 'one retry');
+  });
+
   it('shows a failed row with Try again, which asks once more and only when chosen; a refused sign-in says so; a rate limit says so', async (t) => {
     const state = { failures: { '/discover/popular-tv': 500 } };
     const page = await openScripted(t, state, { hide: 'off' });
@@ -5504,6 +5536,43 @@ describe('TV add-on: the Discover page', { timeout: 240_000 }, () => {
         assert.equal(more(page), null, 'the last page');
         assert.equal(gridCards(page).length, 0);
         assert.equal(connected(page), tab(page, 'all'), 'the tab has focus');
+      });
+
+      it('answers only the Try again on show: a retained one, after the retry has worked, does nothing', async (t) => {
+        const all = '/discover/network/213/all';
+        const state = { cards: 1, failures: { [all]: 500 } };
+        const page = await openScripted(t, state, { hide: 'off' });
+        await toHash(page, SERVICE);
+        const retry = [...sourceRoot(page).querySelectorAll('button')].find((button) => button.textContent === 'Try again');
+        assert.ok(retry);
+        delete state.failures[all];
+        page.click(retry);
+        await page.settled();
+        assert.equal(gridCards(page).length, 1);
+        const html = sourceRoot(page).innerHTML;
+        const calls = page.requests.length;
+        page.click(retry);
+        await page.settled();
+        assert.equal(page.requests.length, calls, 'no call');
+        assert.equal(gridCards(page).length, 1, 'the card stays');
+        assert.equal(sourceRoot(page).querySelector('.jellypass-tv-discover-skeleton'), null, 'no skeleton is stranded');
+        assert.ok(sourceRoot(page).innerHTML === html, 'the page is as it was');
+      });
+
+      it('puts focus on the Films tab, not All, when the films that are left are all hidden and Load more goes', async (t) => {
+        const films = '/discover/network/213/films';
+        const state = { cards: 20, pages: { [films]: 2 }, allAs: { [films]: 'in_library', [`${films}?page=2`]: 'in_library' } };
+        const page = await openScripted(t, state, { hide: 'on' });
+        await toHash(page, SERVICE);
+        page.click(tab(page, 'films'));
+        await page.settled();
+        assert.equal(gridCards(page).length, 0, 'both film pages are entirely hidden');
+        page.press('keydown');
+        more(page).focus();
+        page.click(more(page));
+        await page.settled();
+        assert.equal(more(page), null, 'the last page');
+assert.equal(connected(page), tab(page, 'films'), 'the Films tab has focus');
       });
 
       it('puts focus on the last card when the final page is all hidden and Load more goes', async (t) => {

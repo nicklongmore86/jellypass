@@ -91,6 +91,8 @@ interface RowView {
   drawn: Drawn[];
   /** Bumped each time the row's cards are drawn: a card of an earlier drawing does nothing. */
   fill: number;
+  /** The Try again of the failure on show: only this one answers, once; a retained one does nothing. */
+  retry: HTMLElement | undefined;
 }
 
 interface Hero {
@@ -106,6 +108,8 @@ interface Hero {
 
 interface Open {
   userId: string;
+  /** The Try again of a failed sources call on show (see RowView.retry). */
+  retry: HTMLElement | undefined;
   /** The drawing under the session the page is shown for (member, token and sign-in generation): every callback checks it still holds. */
   render: Render;
   context: PageContext;
@@ -252,7 +256,7 @@ export class DiscoverPage {
     view.appendChild(heroSlot);
     view.appendChild(chips);
     view.appendChild(body);
-    const open: Open = { userId: session.userId, render: { stamp: this.#watch.stamp(session) }, context, view, heroSlot, chipBox: chips, chips: {}, body, paint: 0, rows: [], units: [], hero: undefined, networks: undefined, studios: undefined, foot: undefined, dataWatch: undefined, imageWatch: undefined, byElement: [] };
+    const open: Open = { retry: undefined, userId: session.userId, render: { stamp: this.#watch.stamp(session) }, context, view, heroSlot, chipBox: chips, chips: {}, body, paint: 0, rows: [], units: [], hero: undefined, networks: undefined, studios: undefined, foot: undefined, dataWatch: undefined, imageWatch: undefined, byElement: [] };
     this.#drawChips(open);
     this.#open = open;
     this.#paint(open);
@@ -433,7 +437,7 @@ export class DiscoverPage {
     section.appendChild(headingContainer);
     const body = this.#el('div', 'jellypass-tv-discover-row-body');
     section.appendChild(body);
-    const row: RowView = { scope: { open, render: open.render, paint: open.paint }, id: key, heading, variant, request, eager, feeds, section, body, unit: this.#unit(open, section), asked: false, answered: undefined, drawn: [], fill: 0 };
+    const row: RowView = { scope: { open, render: open.render, paint: open.paint }, id: key, heading, variant, request, eager, feeds, section, body, unit: this.#unit(open, section), asked: false, answered: undefined, drawn: [], fill: 0, retry: undefined };
     this.#skeleton(row);
     open.rows.push(row);
     return row;
@@ -463,6 +467,7 @@ export class DiscoverPage {
   }
 
   #skeleton(row: RowView): void {
+    row.retry = undefined;
     row.body.textContent = '';
     const scroller = this.#el('div', 'jellypass-tv-row-scroller padded-left padded-right jellypass-tv-discover-skeleton');
     scroller.setAttribute('aria-hidden', 'true');
@@ -514,14 +519,15 @@ export class DiscoverPage {
     if (result.ok) this.#settle(open, row, (result.value as { cards: DiscoverCard[] }).cards);
     else {
       if (row.feeds) open.heroSlot.className = 'jellypass-tv-discover-hero-slot';
-      this.#failed(open, paint, result, row.body, () => { this.#skeleton(row); this.#load(open, paint, row, true); }, row.id);
+      this.#failed(open, paint, result, row.body, row, () => { this.#skeleton(row); this.#load(open, paint, row, true); }, row.id);
     }
   }
 
   /** A failure in `into`: its words, and Try again (never by itself) unless the sign-in is refused, which ends the page's rows. */
-  #failed(open: Open, paint: number, failure: Failure, into: HTMLElement, again: () => void, key: string): void {
+  #failed(open: Open, paint: number, failure: Failure, into: HTMLElement, owner: { retry: HTMLElement | undefined }, again: () => void, key: string): void {
     into.textContent = '';
     into.removeAttribute('aria-busy');
+    owner.retry = undefined;
     const kind = ERROR_TEXT[kindOf(failure)];
     if (failure.status === 401) {
       into.appendChild(this.#note(kind.title, kind.body));
@@ -530,8 +536,11 @@ export class DiscoverPage {
     const note = this.#el('div', 'jellypass-tv-discover-row-note padded-left padded-right');
     note.appendChild(this.#el('p', 'jellypass-tv-discover-row-note-text', `${kind.title}. ${kind.body}`));
     const retry = this.#button('raised jellypass-tv-discover-button', DISCOVER_TEXT.retry, `retry:${key}`);
+    owner.retry = retry;
     retry.addEventListener('click', () => {
-      if (open.paint === paint && this.#current(open)) again();
+      if (owner.retry !== retry || open.paint !== paint || !this.#current(open)) return;
+      owner.retry = undefined;
+      again();
     });
     note.appendChild(retry);
     into.appendChild(note);
@@ -547,6 +556,7 @@ export class DiscoverPage {
 
   /** The row's cards, as "Hide what I have" and the overlay leave them, or why there are none. */
   #fill(row: RowView): void {
+    row.retry = undefined;
     row.body.textContent = '';
     row.body.removeAttribute('aria-busy');
     row.drawn = [];
@@ -705,11 +715,12 @@ export class DiscoverPage {
     this.#data.get(request, { retry }).then((result) => {
       if (open.paint !== paint || !this.#current(open) || 'stale' in result) return;
       if (result.ok) this.#drawSources(open, paint, result.value as DiscoverSources);
-      else if (open.networks) this.#failed(open, paint, result, open.networks, () => this.#sources(open, paint, true), 'sources');
+      else if (open.networks) this.#failed(open, paint, result, open.networks, open, () => this.#sources(open, paint, true), 'sources');
     });
   }
 
   #drawSources(open: Open, paint: number, sources: DiscoverSources): void {
+    open.retry = undefined;
     const slot = open.networks;
     if (slot) {
       slot.textContent = '';
