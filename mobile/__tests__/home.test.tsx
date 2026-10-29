@@ -650,7 +650,7 @@ describe('the status badge on a poster', () => {
     mockWindow = { ...PHONE, fontScale: 3 };
     await start();
     const card = only(screen.queryAllByRole('link', { name: /^trending 3, \d+, Movie, / }), 'poster card');
-    const [first, second] = card.children as Array<{ props: { testID?: string } }>;
+    const [first, second] = card.children as { props: { testID?: string } }[];
     expect([first!.props.testID, second!.props.testID]).toEqual([undefined, 'status-chip']);
   });
 });
