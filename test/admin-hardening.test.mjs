@@ -342,7 +342,8 @@ describe('admin surface hardening', { timeout: 20_000 }, () => {
       assert.equal(response.headers['permissions-policy'], APP_PERMISSIONS_POLICY, pathname);
       assert.equal(response.headers['cross-origin-opener-policy'], 'same-origin', pathname);
       assert.equal(response.headers['cross-origin-resource-policy'], 'same-origin', pathname);
-      assert.equal(response.headers['cache-control'], 'no-store', pathname);
+      // The page is no-transform too, so no CDN adds a script to it (see html-response.ts); its files are not.
+      assert.equal(response.headers['cache-control'], pathname === '/admin/' ? 'no-store, no-transform' : 'no-store', pathname);
       assert.equal(response.headers['x-frame-options'], 'DENY', pathname);
       const csp = response.headers['content-security-policy'];
       assert.match(csp, /(?:^|; )form-action 'none'(?:;|$)/, pathname);

@@ -53,14 +53,16 @@ flowchart LR
   just before it.
   - **Never twice:** a page that already has a `data-jellypass-tv` tag is sent as it is.
   - **Headers:** Jellyfin's own (`Content-Type`, any `Content-Security-Policy`, `X-Frame-Options`, `Vary`, …) are kept
-    as Jellyfin sent them. `Content-Length` is the new length. `ETag`, `Last-Modified`, `Accept-Ranges`, `Expires`,
+    as Jellyfin sent them. `Content-Length` is the new length (of the br or gzip body when JellyPass compresses the
+    page for a client that accepts it, see README "CDNs and HTML pages"). `ETag`, `Last-Modified`, `Accept-Ranges`, `Expires`,
     `Age`, `Pragma` and Jellyfin's `Cache-Control` are dropped, because they described the page without the tag. The
-    page is sent `Cache-Control`, `CDN-Cache-Control` and `Cloudflare-CDN-Cache-Control: no-store` (as the PWA's page
-    is), so neither a browser nor Cloudflare stores the page from now on. These headers can't remove a copy
+    page is sent `Cache-Control: no-store, no-transform` (no-transform as on every HTML page, so no CDN adds a script
+    to it), `CDN-Cache-Control` and `Cloudflare-CDN-Cache-Control: no-store` (as the PWA's page is), so neither a browser nor Cloudflare stores the page from now on. These headers can't remove a copy
     cached *before* the gateway started sending them (an older Jellyfin web page a browser or Cloudflare already
     holds). On rollout, check that the household host's page comes back with the tag and `no-store`, or purge
     Cloudflare's cache for that host's `/web/` page once, before testing on a TV.
-  - **Anything else is relayed exactly as Jellyfin sent it:** another status (a `302`, a `500`), another type, an
+  - **Anything else is relayed as Jellyfin sent it** (HTML marked `no-transform` and compressed if Jellyfin did not
+    encode it, as everywhere): another status (a `302`, a `500`), another type, an
     encoding Jellyfin used anyway, a page with no `</head>`, a larger page, every other file of Jellyfin web (its HTML
     included), every other path. A `HEAD` gets the `GET`'s headers and no body.
   - **CSP:** Jellyfin sends none for its web client today (none reaches the household host). If one is sent, it is

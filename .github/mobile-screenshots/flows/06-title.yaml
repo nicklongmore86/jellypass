@@ -1,0 +1,17 @@
+# Big Buck Bunny's title page, from its search result: the household has it, so it shows In library and Play. Taps are
+# repeated until they land (03-see-all.yaml).
+appId: com.rtc-services.jellypass
+---
+- repeat:
+    while:
+      notVisible:
+        id: "detail-facts"
+    times: 5
+    commands:
+      - tapOn: "Big Buck Bunny.*Ready to watch"
+      - waitForAnimationToEnd:
+          timeout: 5000
+- assertVisible:
+    id: "detail-facts"
+- waitForAnimationToEnd:
+    timeout: 10000

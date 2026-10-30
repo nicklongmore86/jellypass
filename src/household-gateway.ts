@@ -9,6 +9,7 @@ import { NEVER_STORE, type AppAssets } from './app-assets.js';
 import { ClientIpResolver, normaliseIp } from './client-ip.js';
 import { DEFAULT_WS_IDLE_TIMEOUT_MS, DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS, type LogLevel } from './config.js';
 import { LIBRARY_JOIN_HTML, LIBRARY_JOIN_JS, LIBRARY_JOIN_STYLES } from './household-ui.js';
+import { strongIfNoneMatch, writeStreamedHead, writeWhole } from './html-response.js';
 import { AttemptCounter } from './rate-limit.js';
 import type { TvAssets } from './tv-assets.js';
 import { applyTvCors, corsFamily } from './tv-cors.js';
@@ -349,7 +350,7 @@ export class HouseholdGateway {
         await this.#refuseSignInById(request, response);
         return;
       case 'libraryJoinAsset':
-        writeAsset(response, decision.asset.body, decision.asset.contentType);
+        writeAsset(request, response, decision.asset.body, decision.asset.contentType);
         return;
       case 'libraryJoin':
         await this.#joinLibrary(request, response, requestUrl, this.#libraryJoin as NonNullable<HouseholdGatewayOptions['libraryJoin']>);
@@ -777,8 +778,7 @@ export class HouseholdGateway {
     if (answer?.status === 200) {
       const signedIn = signedInUser(answer.body);
       if (signedIn?.userId.toLowerCase() === member.Id.toLowerCase()) {
-        response.writeHead(answer.status, answer.headers);
-        response.end(answer.body);
+        writeWhole(request, response, answer.status, answer.headers, answer.body);
         return;
       }
       if (signedIn) await this.#revoke(signedIn.token);
@@ -899,10 +899,7 @@ export class HouseholdGateway {
     }
     if (response.destroyed) return;
     if (!answer) writeJson(response, 502, { error: 'jellyfin_unavailable' });
-    else {
-      response.writeHead(answer.status, answer.headers);
-      response.end(answer.body);
-    }
+    else writeWhole(request, response, answer.status, answer.headers, answer.body);
   }
 
   /**
@@ -995,7 +992,7 @@ export class HouseholdGateway {
     await new Promise<void>((resolve) => {
       const exchange = this.#exchange();
       const upstream = this.#transport().request(this.#requestOptions(request), (upstreamResponse) => {
-        relayResponse(upstreamResponse, response, exchange, resolve);
+        relayResponse(request, upstreamResponse, response, exchange, resolve);
       });
       guardUpstream(upstream, response, exchange, resolve);
       request.on('error', (error) => {
@@ -1032,14 +1029,13 @@ export class HouseholdGateway {
           && (encoding === undefined || encoding.trim().toLowerCase() === 'identity')
           && !(declared > MAX_WEB_PAGE_BYTES);
         const relay = (prefix: Buffer[]) => {
-          response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
           if (head) {
+            writeStreamedHead(request, response, upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
             upstreamResponse.destroy();
-            response.end();
+            if (!response.writableEnded) response.end();
             return resolve();
           }
-          for (const chunk of prefix) response.write(chunk);
-          relayResponse(upstreamResponse, response, exchange, resolve, { writeHead: false });
+          relayResponse(request, upstreamResponse, response, exchange, resolve, prefix);
         };
         if (!html) return relay([]);
         const chunks: Buffer[] = [];
@@ -1058,14 +1054,12 @@ export class HouseholdGateway {
           const page = Buffer.concat(chunks);
           const injected = tv.inject(page);
           if (!injected) {
-            response.writeHead(200, upstreamResponse.headers);
-            response.end(head ? undefined : page);
+            writeWhole(request, response, 200, upstreamResponse.headers, page);
             return resolve();
           }
           const answer: IncomingHttpHeaders = { ...upstreamResponse.headers };
           for (const name of WEB_PAGE_DROPPED_RESPONSE_HEADERS) delete answer[name];
-          response.writeHead(200, { ...answer, ...NEVER_STORE, 'content-length': String(injected.length) });
-          response.end(head ? undefined : injected);
+          writeWhole(request, response, 200, { ...answer, ...NEVER_STORE, 'content-length': String(injected.length) }, injected);
           resolve();
         };
         upstreamResponse.on('data', onData);
@@ -1203,10 +1197,7 @@ export class HouseholdGateway {
     const answer = await this.#sendWhole(request, headers, body, { totalTimeoutMs: 15_000, context: 'household SyncPlay join' });
     if (response.destroyed) return;
     if (!answer) writeJson(response, 502, { error: 'jellyfin_unavailable' });
-    else {
-      response.writeHead(answer.status, answer.headers);
-      response.end(answer.body);
-    }
+    else writeWhole(request, response, answer.status, answer.headers, answer.body);
   }
 
   async #proxyBrandingConfiguration(request: IncomingMessage, response: ServerResponse): Promise<void> {
@@ -1487,6 +1478,8 @@ export class HouseholdGateway {
     }
     headers['x-forwarded-proto'] ??= 'encrypted' in request.socket && request.socket.encrypted ? 'https' : 'http';
     headers['x-real-ip'] ??= this.#clientAddress(request);
+    // A page JellyPass encoded carries a weak tag (see html-response.ts), which Jellyfin would never match as it is.
+    if (headers['if-none-match'] !== undefined) headers['if-none-match'] = strongIfNoneMatch(headers['if-none-match']);
     return {
       protocol: this.#target.protocol,
       hostname: this.#target.hostname,
@@ -1581,12 +1574,14 @@ function guardUpstream(upstream: http.ClientRequest, response: ServerResponse, e
   });
 }
 
+/** Relays Jellyfin's answer as it streams in, after `prefix` (what was already read of it); HTML as writeStreamedHead says. */
 function relayResponse(
+  request: IncomingMessage,
   upstreamResponse: IncomingMessage,
   response: ServerResponse,
   exchange: Exchange,
   resolve: () => void,
-  { writeHead = true }: { writeHead?: boolean } = {},
+  prefix: Buffer[] = [],
 ): void {
   upstreamResponse.on('error', (error) => {
     exchange.error('upstream', 'proxy upstream response', error);
@@ -1596,8 +1591,15 @@ function relayResponse(
   upstreamResponse.once('close', () => {
     if (!upstreamResponse.complete) response.destroy();
   });
-  if (writeHead) response.writeHead(upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
-  upstreamResponse.pipe(response);
+  const body = writeStreamedHead(request, response, upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
+  if (!body) {
+    // Answered with a 406: the rest of the page is read and dropped.
+    upstreamResponse.resume();
+    upstreamResponse.once('end', resolve);
+    return;
+  }
+  for (const chunk of prefix) body.write(chunk);
+  upstreamResponse.pipe(body);
   upstreamResponse.once('end', resolve);
 }
 
@@ -2105,8 +2107,8 @@ function sanitizedHeaders(headers: IncomingHttpHeaders, contentLength: number): 
   return result;
 }
 
-function writeAsset(response: ServerResponse, body: string, contentType: string): void {
-  response.writeHead(200, {
+function writeAsset(request: IncomingMessage, response: ServerResponse, body: string, contentType: string): void {
+  writeWhole(request, response, 200, {
     'Content-Type': contentType,
     'Content-Length': Buffer.byteLength(body),
     'Cache-Control': 'no-store',
@@ -2114,8 +2116,7 @@ function writeAsset(response: ServerResponse, body: string, contentType: string)
     'Referrer-Policy': 'no-referrer',
     'X-Content-Type-Options': 'nosniff',
     'X-Frame-Options': 'DENY',
-  });
-  response.end(body);
+  }, Buffer.from(body));
 }
 
 function writeJson(response: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
