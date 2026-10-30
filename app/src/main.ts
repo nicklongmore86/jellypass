@@ -1,12 +1,19 @@
-import { ApiError, createApi, createSignInApi, type Api, type ApiErrorKind, type SignInApi } from './api.js';
+import { ApiError, createApi, createSignInApi, HIDING_API_VERSION, type Api, type ApiErrorKind, type SignInApi } from './api.js';
 import {
   accountText,
   accountView,
   cardList,
+  cardItem,
+  addCardControls,
   el,
   ERROR_TEXT,
   errorState,
   type GetThisHandler,
+  type CardActions,
+  hiddenItem,
+  HIDE_TEXT,
+  hideFailureText,
+  type HideOutcome,
   HEADER_TITLE,
   heroCarousel,
   HOME_FILTERS,
@@ -25,6 +32,8 @@ import {
   type RequestFilter,
   REQUESTS_TEXT,
   requestItem,
+  requestViews,
+  href as cardHref,
   CANCEL_TEXT,
   type CancelHandler,
   searchForm,
@@ -53,7 +62,7 @@ import {
 import { icon } from './icons.js';
 import { clearSignIn, deviceId, jellyfinToken } from './session.js';
 import { showSignIn } from './signin.js';
-import type { DiscoverList, MediaType, Me, Network, Page, RequestEntry, Source, SourceKind, Sources } from './types.js';
+import type { Card, DiscoverList, HiddenEntry, MediaType, Me, Network, Page, RequestEntry, Source, SourceKind, Sources } from './types.js';
 
 /** One of Home's rows, fetched from a discover list; `eager` rows are asked for at once, the others as they near the screen. */
 interface HomeRow {
@@ -174,6 +183,7 @@ function syncCredentials(): boolean {
   me = undefined;
   requestFilter = { ...NO_REQUEST_FILTER };
   api.forgetAsked();
+  clearToast();
   return true;
 }
 let first = true;
@@ -435,7 +445,7 @@ function stampHistory(): void {
 
 /** Where Back goes when the app was opened on this screen and there is nothing in the app to go back to. */
 function parentHash(route: Route): string {
-  return route.name === 'season' ? `#/tv/${route.id}` : '#/';
+  return route.name === 'season' ? `#/tv/${route.id}` : route.name === 'hidden' ? '#/requests' : '#/';
 }
 
 function goBack(): void {
@@ -458,6 +468,7 @@ function signIn(signal: AbortSignal, current: () => boolean, expired: boolean): 
   me = undefined;
   requestFilter = { ...NO_REQUEST_FILTER };
   api.forgetAsked();
+  clearToast();
   setChrome();
   void showSignIn({
     doc,
@@ -472,6 +483,177 @@ function signIn(signal: AbortSignal, current: () => boolean, expired: boolean): 
     current,
     signal,
   }, expired);
+}
+
+/** Whether this server has hiding titles (`apiVersion` 3); a server before it shows none of it and is never asked. */
+function supportsHiding(): boolean {
+  return (me?.apiVersion ?? 0) >= HIDING_API_VERSION;
+}
+
+/**
+ * Hides or unhides one title: the call, once, and how it ended. A refused sign-in takes over the screen; every other
+ * failure is returned for the caller to say in fixed words. Never rejects, and is never given the screen's abort
+ * signal: a change the member asked for is sent whether or not they leave the screen.
+ */
+async function changeHidden(mediaType: MediaType, id: number, hidden: boolean): Promise<HideOutcome> {
+  try {
+    await api.setHidden(mediaType, id, hidden);
+    return 'accepted';
+  } catch (error) {
+    const kind = kindOf(error);
+    if (kind === 'unauthorized') {
+      const mine = navigation;
+      signIn((navigationAbort as AbortController).signal, () => mine === navigation, Boolean(jellyfinToken(localStorage, origin)));
+    }
+    return kind;
+  }
+}
+
+/** The one line that follows a hide from a card: what happened, with Undo when it can be undone. Gone with the next screen. */
+let toast: HTMLElement | undefined;
+function clearToast(): void {
+  toast?.remove();
+  toast = undefined;
+}
+function showToast(text: string, undo?: { label: string; run: () => Promise<void> }, failed = false): void {
+  clearToast();
+  const note = el(doc, 'p', { class: 'toast-text', text });
+  const box = el(doc, 'div', { class: 'toast', attrs: { role: failed ? 'alert' : 'status' } }, [note]);
+  if (undo) {
+    const button = el(doc, 'button', { class: 'button button-small button-secondary', text: HIDE_TEXT.undo, attrs: { type: 'button', 'aria-label': undo.label } });
+    button.addEventListener('click', () => {
+      if (button.disabled) return;
+      button.disabled = true;
+      void undo.run().finally(() => { button.disabled = false; });
+    });
+    box.append(button);
+  }
+  const dismiss = el(doc, 'button', { class: 'button button-small button-secondary', text: HIDE_TEXT.dismiss, attrs: { type: 'button' } });
+  dismiss.addEventListener('click', clearToast);
+  box.append(dismiss);
+  toast = box;
+  doc.body.append(box);
+}
+
+/** What the screen put there for a card that left it: put back where it was by Undo. */
+interface Removal {
+  node: Element;
+  parent: Element;
+  before: Node | null;
+  /** In place of the list when this was its last card. */
+  placeholder?: Element;
+}
+
+/** Takes the title's cards off this screen at once (a row, See all, a service or studio page) and tells where each was. */
+function removeCards(card: Pick<Card, 'mediaType' | 'tmdbId'>): Removal[] {
+  const target = cardHref(card);
+  const removals: Removal[] = [];
+  for (const link of Array.from(main.querySelectorAll<HTMLAnchorElement>('li.card > a.card-link'))) {
+    if (link.getAttribute('href') !== target) continue;
+    const node = link.parentElement as Element;
+    const parent = node.parentElement as Element;
+    const removal: Removal = { node, parent, before: node.nextSibling };
+    node.remove();
+    if (parent.tagName === 'UL' && parent.children.length === 0) {
+      removal.placeholder = el(doc, 'p', { class: 'muted', text: 'Nothing to show here right now.' });
+      parent.replaceWith(removal.placeholder);
+    }
+    removals.push(removal);
+  }
+  return removals;
+}
+
+function restoreCards(removals: readonly Removal[]): Element | undefined {
+  let first: Element | undefined;
+  for (const { node, parent, before, placeholder } of removals) {
+    if (placeholder?.isConnected) placeholder.replaceWith(parent);
+    parent.insertBefore(node, before && before.parentNode === parent ? before : null);
+    first ??= node.querySelector('a.card-link') ?? undefined;
+  }
+  return first;
+}
+
+/** After a card left, focus goes to its neighbour (the next card, else the previous), else the row's heading, else the screen's. */
+function focusBeside(removal: Removal | undefined): void {
+  const scope = removal?.placeholder ?? removal?.parent;
+  const next = removal?.before?.nodeType === 1 ? (removal.before as Element) : removal?.parent.lastElementChild;
+  const target = next?.querySelector<HTMLElement>('a.card-link')
+    ?? scope?.closest('section')?.querySelector<HTMLElement>('h2')
+    ?? main.querySelector<HTMLElement>('h1');
+  if (target) {
+    if (!target.hasAttribute('tabindex') && target.tagName !== 'A') target.setAttribute('tabindex', '-1');
+    target.focus({ preventScroll: true });
+  }
+}
+
+/**
+ * The controls on a card: "Not interested" in a menu, and Unhide on a title that Search marks hidden. On Discover (a row,
+ * See all, a service or studio page) a hidden title leaves the screen at once, with Undo in a line that stays until the
+ * member goes on; in Search it stays, marked, and Unhide is on its card. Undefined for a server before `apiVersion` 3.
+ */
+function cardActionsFor(surface: 'discover' | 'search'): CardActions | undefined {
+  if (!supportsHiding()) return undefined;
+  const actions: CardActions = {
+    async hide(card, item) {
+      const outcome = await changeHidden(card.mediaType, card.tmdbId, true);
+      if (outcome !== 'accepted') {
+        if (outcome !== 'unauthorized') showToast(hideFailureText(outcome), undefined, true);
+        return;
+      }
+      announce(HIDE_TEXT.hidden(card.title));
+      if (surface === 'search') {
+        const marked = cardItem(doc, { ...card, hidden: true }, actions);
+        item.replaceWith(marked);
+        marked.querySelector<HTMLElement>('.card-unhide')?.focus({ preventScroll: true });
+        const undoMark = {
+          label: HIDE_TEXT.undoLabel(card.title),
+          run: async (): Promise<void> => {
+            const undone = await changeHidden(card.mediaType, card.tmdbId, false);
+            if (undone !== 'accepted') return void (undone !== 'unauthorized' && showToast(hideFailureText(undone), undoMark, true));
+            const back = cardItem(doc, { ...card, hidden: false }, actions);
+            marked.replaceWith(back);
+            back.querySelector<HTMLElement>('.card-more')?.focus({ preventScroll: true });
+            clearToast();
+            announce(HIDE_TEXT.unhidden(card.title));
+          },
+        };
+        showToast(HIDE_TEXT.hidden(card.title), undoMark);
+        return;
+      }
+      const removals = removeCards(card);
+      focusBeside(removals.find((removal) => removal.node === item) ?? removals[0]);
+      const undo = {
+        label: HIDE_TEXT.undoLabel(card.title),
+        run: async (): Promise<void> => {
+          const undone = await changeHidden(card.mediaType, card.tmdbId, false);
+          // A failed Undo says why and keeps Undo, so it can be tried again.
+          if (undone !== 'accepted') return void (undone !== 'unauthorized' && showToast(hideFailureText(undone), undo, true));
+          const first = restoreCards(removals);
+          clearToast();
+          announce(HIDE_TEXT.unhidden(card.title));
+          (first as HTMLElement | undefined)?.focus({ preventScroll: true });
+        },
+      };
+      showToast(HIDE_TEXT.hidden(card.title), undo);
+    },
+    async unhide(card, item) {
+      const outcome = await changeHidden(card.mediaType, card.tmdbId, false);
+      if (outcome !== 'accepted') {
+        const button = item.querySelector<HTMLButtonElement>('.card-unhide');
+        if (button) {
+          button.disabled = false;
+          button.textContent = HIDE_TEXT.unhide;
+        }
+        if (outcome !== 'unauthorized') showToast(hideFailureText(outcome), undefined, true);
+        return;
+      }
+      const shown = cardItem(doc, { ...card, hidden: false }, actions);
+      item.replaceWith(shown);
+      shown.querySelector<HTMLElement>('.card-more')?.focus({ preventScroll: true });
+      announce(HIDE_TEXT.unhidden(card.title));
+    },
+  };
+  return actions;
 }
 
 function failure(kind: ApiErrorKind, retry: () => void): void {
@@ -489,7 +671,7 @@ function failure(kind: ApiErrorKind, retry: () => void): void {
 }
 
 interface Route {
-  name: 'home' | 'search' | 'requests' | 'movie' | 'tv' | 'season' | 'account' | SourceKind;
+  name: 'home' | 'search' | 'requests' | 'hidden' | 'movie' | 'tv' | 'season' | 'account' | SourceKind;
   id?: number;
   season?: number;
   query?: string;
@@ -510,6 +692,7 @@ function parse(hash: string): Route {
   // The old About address is the Account tab now.
   if (path === '/account' || path === '/about') return { name: 'account' };
   if (path === '/requests') return { name: 'requests' };
+  if (path === '/requests/hidden') return { name: 'hidden' };
   const season = /^\/tv\/(\d{1,10})\/season\/(\d{1,4})$/.exec(path);
   if (season) return { name: 'season', id: Number(season[1]), season: Number(season[2]) };
   const source = /^\/(network|studio)\/(\d{1,10})$/.exec(path);
@@ -525,7 +708,7 @@ function parse(hash: string): Route {
 }
 
 function markNav(route: Route): void {
-  const current = route.name === 'search' || route.name === 'requests' || route.name === 'account' ? route.name : 'home';
+  const current = route.name === 'hidden' ? 'requests' : route.name === 'search' || route.name === 'requests' || route.name === 'account' ? route.name : 'home';
   for (const link of doc.querySelectorAll<HTMLAnchorElement>('nav a[data-nav]')) {
     if (link.dataset['nav'] === current) link.setAttribute('aria-current', 'page');
     else link.removeAttribute('aria-current');
@@ -548,6 +731,7 @@ async function render(): Promise<void> {
     }
   }
   syncCredentials();
+  clearToast();
   const route = parse(location.hash);
   capturePosition();
   stampHistory();
@@ -584,6 +768,7 @@ async function render(): Promise<void> {
     if (route.name === 'home') await home(route.filter ?? 'all', abort.signal, current);
     else if (route.name === 'search') await search(route.query ?? '', abort.signal, current);
     else if (route.name === 'requests') await requestsScreen(abort.signal, current);
+    else if (route.name === 'hidden') await hiddenScreen(abort.signal, current);
     else if (route.name === 'movie' || route.name === 'tv') await title(route, abort.signal, current);
     else if (route.name === 'network' || route.name === 'studio') await sourceScreen(route, abort.signal, current);
     else await season(route, abort.signal, current);
@@ -659,7 +844,7 @@ async function home(filter: HomeFilter, signal: AbortSignal, current: () => bool
       if (!part.eager) {
         const slot = lazySlot(id);
         slots.push(slot);
-        watch(slot, () => api.discover(part.list, sig), (page) => titleRow(doc, id, part.heading, page, part.variant, part.accent), part.heading);
+        watch(slot, () => api.discover(part.list, sig), (page) => titleRow(doc, id, part.heading, page, part.variant, part.accent, cardActionsFor('discover')), part.heading);
         return;
       }
       const slot = el(doc, 'div', { class: 'home-row' }, [skeletonRow(doc, part.variant)]);
@@ -669,7 +854,7 @@ async function home(filter: HomeFilter, signal: AbortSignal, current: () => bool
         try {
           const page = await api.discover(part.list, sig);
           if (!live()) return;
-          slot.replaceChildren(titleRow(doc, id, part.heading, page, part.variant, part.accent));
+          slot.replaceChildren(titleRow(doc, id, part.heading, page, part.variant, part.accent, cardActionsFor('discover')));
           if (isHero) {
             // The hero is drawn from the first row's own answer: it asks for nothing more.
             const hero = heroCarousel(doc, page.results, shown);
@@ -722,7 +907,7 @@ async function home(filter: HomeFilter, signal: AbortSignal, current: () => bool
         const accent = NETWORK_ACCENTS[network.id];
         networksSlot.append(slot);
         watch(slot, () => api.source('network', network.id, 1, sig, list === 'all' || list === 'films' ? list : undefined),
-          (page) => sourceRow(doc, slot.dataset['key'] as string, 'network', network, page, list, accent), SOURCE_TEXT.heading('network', network.name, list));
+          (page) => sourceRow(doc, slot.dataset['key'] as string, 'network', network, page, list, accent, cardActionsFor('discover')), SOURCE_TEXT.heading('network', network.name, list));
       }
       if (listed.some((network) => network.hasFilms) && shown !== 'tv') creditSlot.append(el(doc, 'div', { class: 'home-row' }, [justWatchNote(doc)]));
       await Promise.all(again);
@@ -899,6 +1084,8 @@ async function search(initial: string, signal: AbortSignal, current: () => boole
   const back = restoring;
   let wanted = back?.loaded ?? 1;
   let scrollBack = back;
+  /** The cards on the page, so the hiding controls can be added to them once /me says the server has hiding (results never wait for /me). */
+  const drawn: Array<{ card: Card; item: HTMLElement }> = [];
   /** True while the screen is still being put back and the member has not taken over. */
   const resuming = () => scrollBack !== undefined && restoreLive(scrollBack);
   searchPages = 1;
@@ -948,8 +1135,10 @@ async function search(initial: string, signal: AbortSignal, current: () => boole
     try {
       const answer = await api.search(query, page, controller.signal);
       if (mine !== sequence || !current()) return;
-      const fresh = cardList(doc, answer.results, 'grid');
+      const fresh = cardList(doc, answer.results, 'grid', 'poster', cardActionsFor('search'));
       const firstNew = fresh.querySelector<HTMLElement>('a.card-link');
+      if (!append) drawn.length = 0;
+      answer.results.forEach((card, index) => drawn.push({ card, item: fresh.children[index] as HTMLElement }));
       results.querySelector('.load-more')?.remove();
       if (append) {
         results.querySelector('ul.grid')?.append(...Array.from(fresh.children));
@@ -1001,6 +1190,9 @@ async function search(initial: string, signal: AbortSignal, current: () => boole
   focusHeading();
   if (initial.trim()) run(initial, true);
   await loadMe(signal);
+  // Results that were drawn before /me answered get their controls now.
+  const actions = current() ? cardActionsFor('search') : undefined;
+  if (actions) for (const { card, item } of drawn) addCardControls(doc, item, card, actions);
 }
 
 /**
@@ -1068,7 +1260,8 @@ async function title(route: Route, signal: AbortSignal, current: () => boolean):
   let [answer, failed] = await load();
   if (!current()) return;
   const draw = (asked: ReadonlySet<number>, confirmed: boolean) => {
-    show(titleDetail(doc, answer, origin, { onGet, asked, failed, confirmed, onReload: () => void render() }));
+    const hiding = supportsHiding() ? { hidden: answer.hidden === true, run: (hidden: boolean) => changeHidden(mediaType, id, hidden) } : undefined;
+    show(titleDetail(doc, answer, origin, { onGet, asked, failed, confirmed, onReload: () => void render(), ...(hiding ? { hiding } : {}) }));
     if (confirmed) main.querySelector<HTMLElement>('.get-message')?.focus({ preventScroll: true });
   };
   const onGet = getThisFor(mediaType, id, signal, current, async (asked) => {
@@ -1159,7 +1352,7 @@ async function sourceScreen(route: Route, signal: AbortSignal, current: () => bo
     const wanted = back?.loaded ?? 1;
     let answer = await fetchList(shown, 1, controller.signal);
     if (!live()) return;
-    const grid = cardList(doc, answer.results, 'grid');
+    const grid = cardList(doc, answer.results, 'grid', 'poster', cardActionsFor('discover'));
     const results = el(doc, 'div', { class: 'search-results' }, [
       answer.results.length ? grid : el(doc, 'p', { class: 'muted', text: 'Nothing to show here right now.' }),
     ]);
@@ -1167,7 +1360,7 @@ async function sourceScreen(route: Route, signal: AbortSignal, current: () => bo
     // A service's films are TMDB's where-to-watch data, which is JustWatch's.
     panel.replaceChildren(results, ...(kind === 'network' && shown !== 'series' ? [justWatchNote(doc)] : []));
     const append = (page: Page) => {
-      const fresh = cardList(doc, page.results, 'grid');
+      const fresh = cardList(doc, page.results, 'grid', 'poster', cardActionsFor('discover'));
       const firstNew = fresh.querySelector<HTMLElement>('a.card-link');
       grid.append(...Array.from(fresh.children));
       return firstNew;
@@ -1285,6 +1478,8 @@ async function requestsScreen(signal: AbortSignal, current: () => boolean, again
   // After a cancel the screen stays as it is while the list is read again, and the one fixed confirmation is shown.
   if (!again) busy(el(doc, 'h1', { class: 'screen-title visually-hidden', text: REQUESTS_TEXT.title, attrs: { tabindex: '-1', [HEADER_TITLE]: '' } }), skeletonRequests(doc));
   await loadMe(signal);
+  // A server with hiding has the Hidden view beside this one; an older one has only this.
+  const views = supportsHiding() ? [requestViews(doc, 'requests')] : [];
   const read = ++listReads;
   let listed: RequestEntry[];
   try {
@@ -1307,7 +1502,7 @@ async function requestsScreen(signal: AbortSignal, current: () => boolean, again
     else focusHeading();
   };
   if (entries.length === 0) {
-    show(heading, ...(notice ? [notice] : []), el(doc, 'p', { class: 'muted', text: REQUESTS_TEXT.empty }));
+    show(heading, ...views, ...(notice ? [notice] : []), el(doc, 'p', { class: 'muted', text: REQUESTS_TEXT.empty }));
     settle();
     return;
   }
@@ -1428,13 +1623,129 @@ async function requestsScreen(signal: AbortSignal, current: () => boolean, again
     const first = shown;
     void showMore().then(() => rows.slice(first).find(({ item }) => !item.hidden)?.item.querySelector('a')?.focus());
   });
-  show(heading, ...(notice ? [notice] : []), bar, list, hint, none, more);
+  show(heading, ...views, ...(notice ? [notice] : []), bar, list, hint, none, more);
   settle();
   // Coming back, the entries that were showing are drawn at once (their titles follow) and the scroll put back.
   const size = Math.max(REQUESTS_PER_PAGE, again?.keep ?? back?.loaded ?? 0);
   requestsShown = 0;
   await showMore(size);
   if (size === REQUESTS_PER_PAGE && !again && restoreLive(back)) appScrollTo(back.y);
+}
+
+/**
+ * My requests' Hidden view: the member's own hidden titles, newest first, each with Unhide. The list carries only IDs
+ * (50 a page); the titles are named ten at a time (four calls at once), like My requests, and **Load more** names the next
+ * ten, reading the list's next page only once the ones already read are all shown. Unhide drops the title from the view
+ * at once. A server without hiding has no such view: the address is My requests.
+ */
+async function hiddenScreen(signal: AbortSignal, current: () => boolean): Promise<void> {
+  setTitle(HIDE_TEXT.hiddenTitle);
+  const heading = el(doc, 'h1', { class: 'screen-title visually-hidden', text: REQUESTS_TEXT.title, attrs: { tabindex: '-1', [HEADER_TITLE]: '' } });
+  busy(heading, skeletonRequests(doc));
+  await loadMe(signal);
+  if (!current()) return;
+  if (!supportsHiding()) {
+    history.replaceState(history.state, '', '#/requests');
+    shownRoute = parse(location.hash);
+    return requestsScreen(signal, current);
+  }
+  const first = await api.hiddenList(1, signal);
+  if (!current()) return;
+  const entries: HiddenEntry[] = [...first.results];
+  let nextPage = first.nextPage;
+  const views = requestViews(doc, 'hidden');
+  const list = el(doc, 'ul', { class: 'request-list' });
+  const empty = el(doc, 'p', { class: 'muted', text: HIDE_TEXT.empty, attrs: { hidden: '' } });
+  const more = el(doc, 'button', { class: 'button button-secondary load-more', text: 'Load more', attrs: { type: 'button' } });
+  const rows: Array<{ entry: HiddenEntry; item: HTMLElement }> = [];
+  let shown = 0;
+  const sync = (): void => {
+    empty.hidden = !(rows.length === 0 && entries.length === 0 && nextPage === null);
+    more.hidden = shown >= entries.length && nextPage === null;
+    more.disabled = false;
+    more.textContent = 'Load more';
+  };
+
+  async function onUnhide(entry: HiddenEntry, item: HTMLElement): Promise<void> {
+    const button = item.querySelector<HTMLButtonElement>('button.hidden-unhide');
+    const name = item.querySelector('.card-title')?.textContent ?? '';
+    const outcome = await changeHidden(entry.mediaType, entry.tmdbId, false);
+    if (!current()) return;
+    if (outcome !== 'accepted') {
+      if (outcome === 'unauthorized') return;
+      if (button) {
+        button.disabled = false;
+        button.textContent = HIDE_TEXT.unhide;
+      }
+      item.querySelector('.get-error')?.remove();
+      item.append(el(doc, 'p', { class: 'get-message get-error', text: hideFailureText(outcome), attrs: { role: 'alert' } }));
+      return;
+    }
+    const at = rows.findIndex((row) => row.item === item);
+    const neighbour = rows[at + 1]?.item ?? rows[at - 1]?.item;
+    if (at >= 0) {
+      rows.splice(at, 1);
+      const spot = entries.indexOf(entry);
+      if (spot >= 0) entries.splice(spot, 1);
+      shown -= 1;
+    }
+    item.remove();
+    announce(name && name !== HIDE_TEXT.loading ? HIDE_TEXT.unhidden(name) : 'Unhid.');
+    sync();
+    if (!empty.hidden) empty.setAttribute('tabindex', '-1');
+    (neighbour?.querySelector<HTMLElement>('button.hidden-unhide') ?? (rows.length === 0 ? more.hidden ? empty : more : heading)).focus({ preventScroll: true });
+  }
+
+  async function showMore(): Promise<void> {
+    if (shown >= entries.length && nextPage !== null) {
+      const page = await api.hiddenList(nextPage, signal);
+      if (!current()) return;
+      entries.push(...page.results);
+      nextPage = page.nextPage;
+    }
+    const batch = entries.slice(shown, shown + REQUESTS_PER_PAGE);
+    shown += batch.length;
+    const items = batch.map((entry) => hiddenItem(doc, entry, (picked, item) => void onUnhide(picked, item)));
+    list.append(...items);
+    batch.forEach((entry, index) => rows.push({ entry, item: items[index] as HTMLElement }));
+    sync();
+    let next = 0;
+    const worker = async (): Promise<void> => {
+      while (next < batch.length && current()) {
+        const index = next++;
+        const entry = batch[index] as HiddenEntry;
+        try {
+          const found = await api.requestTitle(entry.mediaType, entry.tmdbId, signal);
+          if (current()) setRequestTitle(items[index] as HTMLElement, found);
+        } catch (error) {
+          if (!current() || signal.aborted) return;
+          if (kindOf(error) === 'unauthorized') return failure('unauthorized', () => void render());
+          // Unhide still works: only the name could not be read.
+          setRequestTitle(items[index] as HTMLElement, undefined);
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(REQUEST_TITLE_CALLS, batch.length) }, worker));
+  }
+
+  more.addEventListener('click', () => {
+    more.disabled = true;
+    more.textContent = 'Loading…';
+    const from = rows.length;
+    void showMore().then(() => rows[from]?.item.querySelector<HTMLElement>('a')?.focus(), (error: unknown) => {
+      if (!current() || signal.aborted) return;
+      const kind = kindOf(error);
+      if (kind === 'unauthorized') return failure(kind, () => void render());
+      announce('');
+      more.remove();
+      main.append(errorState(doc, kind, () => void render()));
+    });
+  });
+  show(heading, views, list, empty, more);
+  sync();
+  announce('');
+  focusHeading();
+  await showMore();
 }
 
 // Signing in or out on the same address (in another tab, or in Jellyfin web) is picked up without a reload.
@@ -1463,6 +1774,7 @@ async function signOut(button: HTMLButtonElement): Promise<void> {
   me = undefined;
   requestFilter = { ...NO_REQUEST_FILTER };
   api.forgetAsked();
+  clearToast();
   if (!cleared) {
     announce("Couldn't remove your sign-in from this browser.");
     return;

@@ -1290,7 +1290,7 @@ describe('household app page: rendering', () => {
 
   it('shows only fixed text for each error, with a sign-in link for 401 and no upstream text', async () => {
     const { document, Event, errorState, ERROR_TEXT } = await renderer();
-    assert.deepEqual(Object.keys(ERROR_TEXT).sort(), ['not_found', 'offline', 'rate_limited', 'unauthorized', 'unavailable']);
+    assert.deepEqual(Object.keys(ERROR_TEXT).sort(), ['hidden_limit_reached', 'not_found', 'offline', 'rate_limited', 'unauthorized', 'unavailable']);
     for (const [kind, text] of Object.entries(ERROR_TEXT)) {
       let retried = 0;
       const box = errorState(document, kind, () => { retried += 1; });
@@ -2221,7 +2221,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
             if (holdMe && url === '/jellypass/app/v1/me') await holdMe;
             answer = (await override?.(url, init)) ?? await (init.method === 'POST'
               ? post(app.port, url, { Host: host, ...init.headers }, init.body ? JSON.parse(init.body) : undefined)
-              : get(app.port, url, { Host: host, ...init.headers }));
+              : get(app.port, url, { Host: host, ...init.headers }, init.method === 'DELETE' ? { method: 'DELETE' } : undefined));
           } finally {
             pending -= 1;
           }
@@ -2318,7 +2318,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     assert.deepEqual(cards.map((item) => item.querySelector('.badge').textContent),
       ['Available to get', 'Available to get', 'Ready to watch']);
     // The title in the library has its Play button on its own page (below), not on the card.
-    assert.equal(page.document.querySelectorAll('.row-list a.button, .row-list button').length, 0, 'no Play on any card');
+    assert.equal(page.document.querySelectorAll('.row-list a.button, .row-list button:not(.card-more):not(.card-menu-item)').length, 0, 'no Play on any card');
     assert.equal([...page.document.querySelectorAll('.row-list a')].filter((anchor) => anchor.textContent === 'Play').length, 0);
     assert.ok(page.document.querySelector('[role="alert"]') === null);
     assert.equal(page.document.getElementById('screen').getAttribute('aria-busy'), 'false');
@@ -4852,8 +4852,8 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       page.go('#/');
       page.go(`#/movie/${T_MOVIE}`);
       await page.until(() => page.main().querySelector('.badge')?.textContent === 'Requested', 'Requested');
-      assert.ok(page.main().querySelector('button') === null);
-      assert.ok(page.main().querySelector('.get-message') === null);
+      assert.ok(page.main().querySelector('button:not(.hide-button):not(.hide-undo)') === null);
+      assert.ok(page.main().querySelector('.get-message:not(.hide-message)') === null);
       assertNoCanaries(page.serialize(), 'after Get this');
     });
 
@@ -4895,7 +4895,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         await ask(page);
         // The refetch after the accepted call still said get_this; the page shows Requested all the same.
         assert.equal(page.main().querySelector('.badge').textContent, 'Requested');
-        assert.ok(page.main().querySelector('button') === null, 'no Get this button');
+        assert.ok(page.main().querySelector('button:not(.hide-button):not(.hide-undo)') === null, 'no Get this button');
         page.back().dispatchEvent(new page.Event('click'));
         const card = await page.until(() => cardFor(page, 'Synthetic Movie One'), 'the search results again');
         assert.equal(statusOf(card), 'Requested');
@@ -4912,7 +4912,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         await homeReady(page);
         page.go(`#/movie/${T_MOVIE}`);
         await page.until(() => page.main().querySelector('.badge')?.textContent === 'Requested', 'Requested');
-        assert.ok(page.main().querySelector('button') === null);
+        assert.ok(page.main().querySelector('button:not(.hide-button):not(.hide-undo)') === null);
       });
 
       it('expires after two minutes, then the server\'s answer shows', async (t) => {
@@ -5144,7 +5144,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.equal(page.main().querySelector('.get-message').textContent, "Thanks — we'll get this for your household.");
       assert.equal(page.main().querySelector('.get-refresh').textContent, 'Something went wrong. Try again in a moment.');
       assert.equal(page.main().querySelector('.get-error'), null);
-      assert.equal(page.main().querySelectorAll('button').length, 1, 'only the retry');
+      assert.equal(page.main().querySelectorAll('button:not(.hide-button):not(.hide-undo)').length, 1, 'only the retry');
       assert.equal(retry.textContent, 'Try again');
       assert.ok(retry !== button && page.main().textContent.includes('Sending') === false);
       assert.doesNotMatch(page.serialize(), /canary|upstream/i);
@@ -5194,13 +5194,13 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       const app = await startApp(t);
       const held = await openApp(t, app, { hash: `#/movie/${OWN_MOVIE}` });
       await held.until(() => held.main().querySelector('a.button'), 'Play');
-      assert.ok(held.main().querySelector('button') === null);
+      assert.ok(held.main().querySelector('button:not(.hide-button):not(.hide-undo)') === null);
       assert.equal(held.main().querySelector('.badge').textContent, 'Ready to watch');
       const blocked = await startApp(t, world({ seerrUsers: { 11: { jellyfinUserId: ALICE, permissions: 0 } } }));
       const page = await openApp(t, blocked, { hash: `#/movie/${T_MOVIE}` });
       await page.until(() => page.main().querySelector('.badge'), 'the badge');
       assert.equal(page.main().querySelector('.badge').textContent, "Can't request");
-      assert.ok(page.main().querySelector('button') === null);
+      assert.ok(page.main().querySelector('button:not(.hide-button):not(.hide-undo)') === null);
       assert.equal(posts(page).length, 0);
     });
 
@@ -5270,7 +5270,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         && [...page.main().querySelectorAll('.request .card-title')].every((title) => title.textContent !== 'Loading title…'), 'the requests');
       assert.equal(page.main().querySelector('h1').textContent, 'My requests');
       assert.equal(page.document.title, 'My requests – JellyPass');
-      assert.equal(page.document.querySelector('nav a[aria-current="page"]').dataset.nav, 'requests');
+      assert.equal(page.document.querySelector('.tabbar a[aria-current="page"]').dataset.nav, 'requests');
       assert.equal(page.document.querySelector('nav a[data-nav="requests"]').textContent, 'My requests');
       const items = [...page.main().querySelectorAll('.request')];
       const byTitle = Object.fromEntries(items.map((item) => [item.querySelector('.card-title').textContent, item]));
@@ -5337,7 +5337,7 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}`, override: (url) => (url === '/jellypass/app/v1/requests' ? body(failed) : undefined) });
       await page.until(() => page.main().querySelector('.failed-note'), 'the note');
       assert.equal(page.main().querySelector('.badge').textContent, "We couldn't get this");
-      assert.ok(page.main().querySelector('button') === null, 'no Get this for a failed title');
+      assert.ok(page.main().querySelector('button:not(.hide-button):not(.hide-undo)') === null, 'no Get this for a failed title');
       // A failing list never breaks the title.
       const broken = await openApp(t, app, { hash: `#/movie/${T_MOVIE}`, override: (url) => (url === '/jellypass/app/v1/requests' ? { status: 502, body: Buffer.from('{}'), headers: {} } : undefined) });
       await broken.until(() => broken.main().querySelector('button'), 'the button');
@@ -5363,6 +5363,472 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       assert.doesNotMatch(sources, /localStorage\.setItem|sessionStorage|indexedDB|caches\./, 'the app still keeps nothing');
       await settle();
       t.diagnostic('checked');
+    });
+  });
+
+  describe('hidden titles ("Not interested")', () => {
+    const json = (body, status = 200) => ({ status, body: Buffer.from(JSON.stringify(body)), headers: { 'content-type': 'application/json' } });
+    const click = (page, node) => node.dispatchEvent(new page.Event('click', { bubbles: true }));
+    const key = (page, node, name) => node.dispatchEvent(Object.assign(new page.Event('keydown', { bubbles: true }), { key: name }));
+    const HIDDEN = '/jellypass/app/v1/hidden';
+    // What each action costs, pinned in docs/app-api/fetch-budget.json ("hiding") where a native client reads the same numbers.
+    const COST = JSON.parse(readFileSync(path.join(import.meta.dirname, '..', 'docs', 'app-api', 'fetch-budget.json'), 'utf8')).hiding;
+    const generic = (call) => call.replace('/jellypass/app/v1', '').replace(/\/hidden\/(movie|tv)\/\d+$/, '/hidden/{mediaType}/{tmdbId}');
+    const hiddenCalls = (page) => page.requests.filter((request) => request.url.startsWith(HIDDEN)).map((request) => `${request.init.method ?? 'GET'} ${request.url.replace('/jellypass/app/v1', '')}`);
+    const ready = (page, count) => page.until(() => page.main().querySelectorAll('.request').length === count
+      && [...page.main().querySelectorAll('.request .card-title')].every((title) => title.textContent !== 'Loading title…'), `${count} hidden titles named`);
+    const homeReady = (page) => page.until(() => page.document.querySelectorAll('ul.row-list[aria-labelledby]').length === 4, 'home');
+    const trending = (page) => page.document.querySelector('#row-trending-heading').parentElement;
+    const names = (node) => [...node.querySelectorAll('.card .card-title')].map((title) => title.textContent);
+    const titleReady = (page) => page.until(() => page.main().querySelector('article.detail .hide-button'), 'the title page with Not interested');
+    const settledCalls = async (page) => {
+      let count;
+      do {
+        count = page.requests.length;
+        await page.until(() => page.pending() === 0, 'every call answered');
+        await new Promise((resolve) => setImmediate(resolve));
+      } while (page.requests.length !== count);
+    };
+    /** Serves /me as a server of this revision, and /hidden as `state` says; anything else is the real API's. */
+    const server = (state = {}) => (url, init) => {
+      if (url === '/jellypass/app/v1/me' && state.apiVersion !== undefined) return json({ name: 'n', household: 'h', apiVersion: state.apiVersion });
+      if (url.startsWith(HIDDEN) && state.hiddenAnswer) {
+        const method = init?.method ?? 'GET';
+        (state.calls ??= []).push(`${method} ${url.replace('/jellypass/app/v1', '')}`);
+        return state.hiddenAnswer(url, method);
+      }
+      return state.override?.(url, init);
+    };
+
+    it('offers Not interested on a title page with what it does, hides with one POST, then Unhide, and Undo is one DELETE', async (t) => {
+      const app = await startApp(t);
+      const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}` });
+      const button = await titleReady(page);
+      assert.equal(button.textContent, 'Not interested');
+      assert.equal(button.getAttribute('aria-label'), 'Hide Synthetic Movie One from Discover');
+      assert.equal(page.main().querySelector('.hide-note').textContent, 'Only for you in this household. This does not cancel requests or remove downloads.');
+      assert.equal(page.main().querySelector('.hidden-tag').hidden, true);
+      await settledCalls(page);
+      const before = page.requests.length;
+      click(page, button);
+      await page.until(() => page.main().querySelector('.hide-button')?.textContent === 'Unhide', 'Unhide');
+      assert.deepEqual(page.requests.slice(before).map((request) => `${request.init.method} ${request.url}`), [`POST ${HIDDEN}/movie/${T_MOVIE}`]);
+      assert.equal(page.requests[before].init.body, '{}');
+      assert.deepEqual(page.requests.slice(before).map((request) => generic(`${request.init.method} ${request.url}`)), COST.hide, 'a hide is one POST');
+      assert.equal(page.main().querySelector('.hide-button').getAttribute('aria-label'), 'Unhide Synthetic Movie One');
+      assert.equal(page.main().querySelector('.hidden-tag').textContent, 'Hidden from Discover');
+      const message = page.main().querySelector('.hide-message');
+      assert.equal(message.getAttribute('role'), 'status');
+      assert.match(message.textContent, /^Hidden Synthetic Movie One from Discover\./);
+      const undo = message.querySelector('button');
+      assert.equal(undo.getAttribute('aria-label'), 'Undo hiding Synthetic Movie One');
+      assert.equal(page.focused()?.classList.contains('hide-button'), true, 'focus stays on the one control');
+      // The server has it: the same member's search says so, from the server itself.
+      assert.equal((await app.get(`/jellypass/app/v1/movie/${T_MOVIE}`)).text.includes('"hidden":true'), true);
+      click(page, undo);
+      await page.until(() => page.main().querySelector('.hide-button')?.textContent === 'Not interested', 'Not interested again');
+      assert.deepEqual(page.requests.slice(before).map((request) => `${request.init.method} ${request.url}`), [`POST ${HIDDEN}/movie/${T_MOVIE}`, `DELETE ${HIDDEN}/movie/${T_MOVIE}`]);
+      assert.equal(page.requests[before + 1].init.body, undefined);
+      assert.deepEqual([generic(`${page.requests[before + 1].init.method} ${page.requests[before + 1].url}`)], COST.undo, 'an undo is one unhide');
+      assert.equal(page.main().querySelector('.hidden-tag').hidden, true);
+      assert.equal(page.focused()?.classList.contains('hide-button'), true);
+      assert.equal((await app.get(`/jellypass/app/v1/movie/${T_MOVIE}`)).text.includes('"hidden":true'), false);
+      assertNoCanaries(page.serialize(), 'after hiding');
+    });
+
+    it('a title that is already hidden opens with Unhide and the tag; a hide and unhide are sent once each, never repeated', async (t) => {
+      const app = await startApp(t);
+      assert.equal((await app.post(`${HIDDEN}/movie/${T_MOVIE}`)).text, '{"hidden":true}');
+      const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}` });
+      const button = await titleReady(page);
+      assert.equal(button.textContent, 'Unhide');
+      assert.equal(page.main().querySelector('.hidden-tag').textContent, 'Hidden from Discover');
+      await settledCalls(page);
+      const before = page.requests.length;
+      click(page, button);
+      assert.equal(button.disabled, true, 'while the call is out');
+      click(page, button);
+      await page.until(() => page.main().querySelector('.hide-button')?.textContent === 'Not interested', 'Not interested');
+      assert.deepEqual(hiddenCalls(page).map(generic), COST.unhide);
+      assert.equal(page.requests.length - before, 1);
+      assert.equal(page.main().querySelector('.hide-message').textContent, 'Unhid Synthetic Movie One.');
+    });
+
+    it('says each failure in fixed words: the limit (409), too many tries (429), offline and an outage; upstream text is never shown', async (t) => {
+      const app = await startApp(t);
+      const answers = [
+        [409, 'hidden_limit_reached', "You've hidden as many titles as you can (2,000). Unhide some to hide more."],
+        [429, 'too_many_requests', 'Too many tries, try again in a few minutes.'],
+        [502, 'unavailable', "We couldn't change that just now. Try again in a moment."],
+      ];
+      for (const [status, error, text] of answers) {
+        const state = { hiddenAnswer: () => ({ status, body: Buffer.from(JSON.stringify({ error, detail: 'upstream said something private' })), headers: { 'content-type': 'application/json' } }) };
+        const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}`, override: server({ ...state }) });
+        click(page, await titleReady(page));
+        await page.until(() => page.main().querySelector('.hide-message')?.textContent, `the message for ${status}`);
+        assert.equal(page.main().querySelector('.hide-message').textContent, text);
+        assert.equal(page.main().querySelector('.hide-message').className.includes('get-error'), true);
+        assert.equal(page.main().querySelector('.hide-button').textContent, 'Not interested', 'nothing was hidden');
+        assert.equal(page.main().querySelector('.hide-button').disabled, false, 'and it can be tried again');
+        assert.doesNotMatch(page.serialize(), /private/);
+      }
+      const offline = await openApp(t, app, { hash: `#/movie/${T_MOVIE}`, override: server({ hiddenAnswer: () => { throw new TypeError('network'); } }) });
+      click(offline, await titleReady(offline));
+      await offline.until(() => offline.main().querySelector('.hide-message')?.textContent, 'the offline message');
+      assert.equal(offline.main().querySelector('.hide-message').textContent, "You're offline. Check your connection, then try again.");
+    });
+
+    it('a server before apiVersion 3 shows none of it and is never asked: no menu, no button, no Hidden view', async (t) => {
+      const app = await startApp(t);
+      const state = { apiVersion: 2 };
+      const page = await openApp(t, app, { override: server(state) });
+      await homeReady(page);
+      assert.equal(page.document.querySelectorAll('.card-more, .card-menu-item, .hide-button').length, 0);
+      page.go(`#/movie/${T_MOVIE}`);
+      await page.until(() => page.main().querySelector('article.detail'), 'the title');
+      assert.equal(page.main().querySelector('.hide-box'), null);
+      page.go('#/search?q=synthetic');
+      await page.until(() => page.main().querySelector('ul.grid li.card'), 'results');
+      assert.equal(page.main().querySelectorAll('.card-more').length, 0);
+      page.go('#/requests');
+      await page.until(() => page.main().querySelector('h1')?.textContent === 'My requests' && page.main().querySelector('.muted, ul.request-list'), 'My requests');
+      assert.equal(page.main().querySelector('.request-views'), null);
+      page.go('#/requests/hidden');
+      await page.until(() => page.location.hash === '#/requests' && page.main().querySelector('h1')?.textContent === 'My requests' && !page.main().querySelector('.skeleton'), 'My requests instead of Hidden');
+      assert.deepEqual(hiddenCalls(page), []);
+    });
+
+    describe('cards', () => {
+      it('a row card has a More options button and a one-item menu: Escape closes it and gives focus back, choosing sends one POST', async (t) => {
+        const app = await startApp(t);
+        const page = await openApp(t, app);
+        await homeReady(page);
+        const card = trending(page).querySelector('li.card');
+        const more = card.querySelector('.card-more');
+        assert.equal(more.getAttribute('aria-label'), 'More options for Synthetic Movie One');
+        assert.equal(more.getAttribute('aria-haspopup'), 'menu');
+        assert.equal(more.getAttribute('aria-expanded'), 'false');
+        assert.equal(more.closest('a'), null, 'a sibling of the link, never inside it');
+        const menu = card.querySelector('.card-menu');
+        assert.equal(menu.hidden, true);
+        click(page, more);
+        assert.equal(menu.hidden, false);
+        assert.equal(more.getAttribute('aria-expanded'), 'true');
+        assert.equal(page.focused()?.textContent, 'Not interested');
+        assert.equal(page.focused()?.getAttribute('aria-label'), 'Hide Synthetic Movie One from Discover');
+        key(page, page.focused(), 'Escape');
+        assert.equal(menu.hidden, true);
+        assert.equal(page.focused(), more);
+        // A click anywhere else closes it too.
+        click(page, more);
+        click(page, page.document.getElementById('screen'));
+        assert.equal(menu.hidden, true);
+        assert.deepEqual(hiddenCalls(page), []);
+      });
+
+      it('Not interested takes the title off the row at once, moves focus to the next card, and Undo puts it back where it was', async (t) => {
+        const app = await startApp(t);
+        const page = await openApp(t, app);
+        await homeReady(page);
+        await settledCalls(page);
+        const before = page.requests.length;
+        assert.deepEqual(names(trending(page)), ['Synthetic Movie One', 'Synthetic Series Two', 'Synthetic Movie Three']);
+        const first = trending(page).querySelector('li.card');
+        click(page, first.querySelector('.card-more'));
+        click(page, first.querySelector('.card-menu-item'));
+        await page.until(() => names(trending(page)).length === 2, 'the card gone');
+        assert.deepEqual(names(trending(page)), ['Synthetic Series Two', 'Synthetic Movie Three']);
+        assert.equal(page.focused()?.getAttribute('href'), `#/tv/${T_TV}`, 'focus is on the next card');
+        const toast = page.document.querySelector('.toast');
+        assert.equal(toast.getAttribute('role'), 'status');
+        assert.equal(toast.querySelector('.toast-text').textContent, 'Hidden Synthetic Movie One from Discover.');
+        assert.equal(page.document.getElementById('status').textContent, 'Hidden Synthetic Movie One from Discover.');
+        assert.deepEqual(page.requests.slice(before).map((request) => `${request.init.method} ${request.url}`), [`POST ${HIDDEN}/movie/${T_MOVIE}`]);
+        const undo = toast.querySelector('button');
+        assert.equal(undo.getAttribute('aria-label'), 'Undo hiding Synthetic Movie One');
+        click(page, undo);
+        await page.until(() => names(trending(page)).length === 3, 'the card back');
+        assert.deepEqual(names(trending(page)), ['Synthetic Movie One', 'Synthetic Series Two', 'Synthetic Movie Three']);
+        assert.equal(page.document.querySelector('.toast'), null);
+        assert.equal(page.focused()?.getAttribute('href'), `#/movie/${T_MOVIE}`);
+        assert.deepEqual(page.requests.slice(before).map((request) => `${request.init.method} ${request.url}`), [`POST ${HIDDEN}/movie/${T_MOVIE}`, `DELETE ${HIDDEN}/movie/${T_MOVIE}`]);
+      });
+
+      it('the server leaves a hidden title out of every row afterwards, with no call more and none to /hidden, and Home shows it nowhere', async (t) => {
+        const app = await startApp(t);
+        assert.equal((await app.post(`${HIDDEN}/movie/${T_MOVIE}`)).status, 200);
+        const page = await openApp(t, app);
+        await homeReady(page);
+        await settledCalls(page);
+        assert.deepEqual(names(trending(page)), ['Synthetic Series Two', 'Synthetic Movie Three']);
+        assert.deepEqual(hiddenCalls(page), [], 'no list is read to filter');
+        assert.equal(page.document.querySelector('.hero-slide .hero-link[href="#/movie/' + T_MOVIE + '"]'), null);
+      });
+
+      it('a list read that began before the hide is told over: a stale answer never brings the title back, a later one is the server\'s word', async (t) => {
+        const app = await startApp(t);
+        const state = { override: (url) => undefined };
+        const page = await openApp(t, app, { override: server(state) });
+        await homeReady(page);
+        // The server's lists still say it (a stale read): once the hide is accepted, Home drawn again leaves it out only for reads that began before.
+        const first = trending(page).querySelector('li.card');
+        click(page, first.querySelector('.card-more'));
+        click(page, first.querySelector('.card-menu-item'));
+        await page.until(() => names(trending(page)).length === 2, 'the card gone');
+        // Another device unhid it: the server lists it again, and a read that began after the hide shows it.
+        assert.equal((await app.post(`${HIDDEN}/movie/${T_MOVIE}`, undefined, { method: 'DELETE' })).status, 200);
+        page.go('#/account');
+        await page.until(() => page.main().querySelector('.account'), 'Account');
+        page.go('#/');
+        await homeReady(page);
+        assert.deepEqual(names(trending(page)), ['Synthetic Movie One', 'Synthetic Series Two', 'Synthetic Movie Three']);
+      });
+
+      it('Search keeps a hidden title, marked Hidden from Discover with Unhide on its card; Unhide sends one DELETE and the menu returns', async (t) => {
+        const app = await startApp(t);
+        assert.equal((await app.post(`${HIDDEN}/movie/${T_MOVIE}`)).status, 200);
+        const page = await openApp(t, app, { hash: '#/search?q=synthetic' });
+        await page.until(() => page.main().querySelector('ul.grid li.card'), 'results');
+        await settledCalls(page);
+        const cards = [...page.main().querySelectorAll('li.card')];
+        const mark = (item) => item.querySelector('.hidden-tag')?.textContent;
+        const hidden = cards.find((item) => item.textContent.includes('Synthetic Movie One'));
+        assert.equal(mark(hidden), 'Hidden from Discover');
+        assert.equal(hidden.querySelector('.card-more'), null);
+        assert.equal(cards.filter((item) => mark(item)).length, 1, 'only the hidden one is marked');
+        const unhide = hidden.querySelector('.card-unhide');
+        assert.equal(unhide.textContent, 'Unhide');
+        assert.equal(unhide.getAttribute('aria-label'), 'Unhide Synthetic Movie One');
+        assert.equal(unhide.closest('a'), null);
+        const before = page.requests.length;
+        click(page, unhide);
+        await page.until(() => [...page.main().querySelectorAll('li.card')].find((item) => item.textContent.includes('Synthetic Movie One'))?.querySelector('.card-more'), 'the menu back');
+        const again = [...page.main().querySelectorAll('li.card')].find((item) => item.textContent.includes('Synthetic Movie One'));
+        assert.equal(again.querySelector('.hidden-tag'), null);
+        assert.equal(page.focused()?.classList.contains('card-more'), true);
+        assert.deepEqual(page.requests.slice(before).map((request) => `${request.init.method} ${request.url}`), [`DELETE ${HIDDEN}/movie/${T_MOVIE}`]);
+        assert.equal(page.document.getElementById('status').textContent, 'Unhid Synthetic Movie One.');
+      });
+
+      it('Not interested in Search marks the card instead of removing it, with Undo', async (t) => {
+        const app = await startApp(t);
+        const page = await openApp(t, app, { hash: '#/search?q=synthetic' });
+        await page.until(() => page.main().querySelector('ul.grid li.card'), 'results');
+        const count = page.main().querySelectorAll('li.card').length;
+        const item = [...page.main().querySelectorAll('li.card')].find((card) => card.textContent.includes('Synthetic Series Two'));
+        click(page, item.querySelector('.card-more'));
+        click(page, item.querySelector('.card-menu-item'));
+        await page.until(() => [...page.main().querySelectorAll('li.card')].some((card) => card.querySelector('.hidden-tag')), 'the card marked');
+        assert.equal(page.main().querySelectorAll('li.card').length, count, 'still in the results');
+        assert.equal(page.focused()?.classList.contains('card-unhide'), true);
+        click(page, page.document.querySelector('.toast button'));
+        await page.until(() => ![...page.main().querySelectorAll('li.card')].some((card) => card.querySelector('.hidden-tag')), 'the mark gone');
+        assert.deepEqual(hiddenCalls(page), [`POST /hidden/tv/${T_TV}`, `DELETE /hidden/tv/${T_TV}`]);
+      });
+
+      it('a failed hide from a card leaves the card, says why in fixed words and is not sent again', async (t) => {
+        const app = await startApp(t);
+        const state = { hiddenAnswer: () => ({ status: 409, body: Buffer.from('{"error":"hidden_limit_reached"}'), headers: { 'content-type': 'application/json' } }) };
+        const page = await openApp(t, app, { override: server(state) });
+        await homeReady(page);
+        const first = trending(page).querySelector('li.card');
+        click(page, first.querySelector('.card-more'));
+        click(page, first.querySelector('.card-menu-item'));
+        await page.until(() => page.document.querySelector('.toast'), 'the message');
+        assert.equal(page.document.querySelector('.toast').getAttribute('role'), 'alert');
+        assert.equal(page.document.querySelector('.toast-text').textContent, "You've hidden as many titles as you can (2,000). Unhide some to hide more.");
+        assert.equal(names(trending(page)).length, 3);
+        assert.deepEqual(state.calls, [`POST /hidden/movie/${T_MOVIE}`]);
+      });
+    });
+
+    describe('My requests: the Hidden view', () => {
+      it('is a separate view beside Requests, not a filter: two links, the current one marked', async (t) => {
+        const app = await startApp(t);
+        const page = await openApp(t, app, { hash: '#/requests/hidden' });
+        await page.until(() => page.main().querySelector('.request-views'), 'the views');
+        const views = page.main().querySelector('.request-views');
+        assert.equal(views.tagName, 'NAV');
+        assert.equal(views.getAttribute('aria-label'), 'My requests views');
+        assert.deepEqual([...views.querySelectorAll('a')].map((link) => [link.textContent, link.getAttribute('href'), link.getAttribute('aria-current')]),
+          [['Requests', '#/requests', null], ['Hidden', '#/requests/hidden', 'page']]);
+        assert.equal(page.main().querySelector('.request-filters'), null, 'no filter chips here');
+        assert.equal(page.document.querySelector('.tabbar a[aria-current="page"]').dataset.nav, 'requests');
+        page.go('#/requests');
+        await page.until(() => page.main().querySelector('.request-filters, .muted'), 'Requests');
+        assert.deepEqual([...page.main().querySelectorAll('.request-views a')].map((link) => link.getAttribute('aria-current')), ['page', null]);
+      });
+
+      it('says there is nothing hidden, with one call', async (t) => {
+        const app = await startApp(t);
+        const page = await openApp(t, app, { hash: '#/requests/hidden' });
+        await page.until(() => page.main().querySelector('.muted:not([hidden])'), 'the empty text');
+        assert.equal(page.main().querySelector('.muted').textContent, 'Nothing hidden. Titles you mark Not interested are listed here, so you can bring them back.');
+        await settledCalls(page);
+        assert.deepEqual(hiddenCalls(page), ['GET /hidden']);
+        assert.equal(page.main().querySelector('.load-more').hidden, true);
+      });
+
+      it('lists the member\'s own hides newest first, names each with a title call, and Unhide drops one with a single DELETE', async (t) => {
+        const app = await startApp(t);
+        await app.post(`${HIDDEN}/movie/${T_MOVIE}`);
+        await app.post(`${HIDDEN}/tv/${T_TV}`);
+        const page = await openApp(t, app, { hash: '#/requests/hidden' });
+        await ready(page, 2);
+        await settledCalls(page);
+        assert.deepEqual([...page.main().querySelectorAll('.request .card-title')].map((title) => title.textContent), ['Synthetic Series Two', 'Synthetic Movie One']);
+        assert.deepEqual([...page.main().querySelectorAll('.request .card-meta')].map((meta) => meta.textContent).map((text) => text.replace(/^\d{4} · /, '')), ['Series', 'Movie']);
+        assert.match(page.main().querySelector('.request-on').textContent, /^Hidden on /);
+        assert.deepEqual(page.requests.filter((request) => !request.url.endsWith('/me')).map((request) => `${request.init.method ?? 'GET'} ${request.url.replace('/jellypass/app/v1', '').replace(/\/(movie|tv)\/\d+/, '/$1/{tmdbId}')}`).sort(), COST.hiddenTab.atOnce);
+        assert.equal(COST.hiddenTab.calls, 3);
+        const buttons = [...page.main().querySelectorAll('button.hidden-unhide')];
+        assert.deepEqual(buttons.map((button) => button.getAttribute('aria-label')), ['Unhide Synthetic Series Two', 'Unhide Synthetic Movie One']);
+        const before = page.requests.length;
+        click(page, buttons[0]);
+        await page.until(() => page.main().querySelectorAll('.request').length === 1, 'the entry gone');
+        assert.deepEqual(page.requests.slice(before).map((request) => `${request.init.method} ${request.url}`), [`DELETE ${HIDDEN}/tv/${T_TV}`]);
+        assert.equal(page.document.getElementById('status').textContent, 'Unhid Synthetic Series Two.');
+        assert.equal(page.focused()?.getAttribute('aria-label'), 'Unhide Synthetic Movie One', 'focus moves to the next entry');
+        click(page, page.main().querySelector('button.hidden-unhide'));
+        await page.until(() => page.main().querySelectorAll('.request').length === 0 && !page.main().querySelector('.muted').hidden, 'the empty text');
+        assert.equal(page.focused()?.classList.contains('muted'), true);
+        assert.equal((await app.get(`${HIDDEN}`)).text.includes('"results":[]'), true, 'and the server has none');
+      });
+
+      it('names ten at a time and pages the list only when the 50 read are all shown (the pinned budget)', async (t) => {
+        const app = await startApp(t);
+        const entries = (from, count) => Array.from({ length: count }, (_, index) => ({ mediaType: 'movie', tmdbId: from + index, hiddenAt: '2026-10-30T12:00:00.000Z' }));
+        const pages = { 1: { page: 1, nextPage: 2, results: entries(900_100, 50) }, 2: { page: 2, nextPage: null, results: entries(900_200, 3) } };
+        const state = { override: undefined, hiddenAnswer: (url) => json(pages[new URL(url, 'https://x').searchParams.get('page') ?? 1]) };
+        const inner = server(state);
+        const page = await openApp(t, app, {
+          hash: '#/requests/hidden',
+          override: (url, init) => (/^\/jellypass\/app\/v1\/(movie|tv)\/9001|^\/jellypass\/app\/v1\/(movie|tv)\/9002/.test(url)
+            ? json({ mediaType: 'movie', tmdbId: Number(url.split('/').pop()), title: `T${url.split('/').pop()}`, year: 2026, overview: '', posterUrl: null, backdropUrl: null, rating: null, state: 'get_this', play: null, hidden: true, genres: [], runtime: null })
+            : inner(url, init)),
+        });
+        await ready(page, 10);
+        await settledCalls(page);
+        assert.equal(hiddenCalls(page).length, 1);
+        const titleCalls = () => page.requests.filter((request) => /\/movie\/9/.test(request.url)).length;
+        assert.equal(titleCalls(), 10);
+        for (let round = 2; round <= 5; round += 1) {
+          click(page, page.main().querySelector('.load-more'));
+          await ready(page, round * 10);
+        }
+        assert.equal(hiddenCalls(page).length, 1, 'no second page while the first still has titles to show');
+        click(page, page.main().querySelector('.load-more'));
+        await ready(page, 53);
+        await settledCalls(page);
+        assert.deepEqual(hiddenCalls(page), ['GET /hidden', 'GET /hidden?page=2']);
+        assert.deepEqual(hiddenCalls(page).slice(1).map((call) => call.replace(/page=\d+/, 'page={page}')), COST.hiddenTab.loadMore);
+        assert.equal(titleCalls(), 53);
+        assert.equal(COST.hiddenTab.titlesAtOnce, 10);
+        assert.equal(page.main().querySelector('.load-more').hidden, true);
+      });
+    });
+
+    describe('privacy', () => {
+      it('keeps nothing: no storage written, nothing hidden in an address, a header or the page beyond the member\'s own screen', async (t) => {
+        const app = await startApp(t);
+        const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}` });
+        const stored = JSON.stringify([...page.store.entries()]);
+        click(page, await titleReady(page));
+        await page.until(() => page.main().querySelector('.hide-button')?.textContent === 'Unhide', 'hidden');
+        page.go('#/requests/hidden');
+        await ready(page, 1);
+        assert.equal(JSON.stringify([...page.store.entries()]), stored, 'localStorage is as it was');
+        assert.deepEqual(page.sessionWrites, []);
+        for (const request of page.requests) {
+          assert.doesNotMatch(request.url, /hidden=|hide=/);
+          assert.deepEqual(Object.keys(request.init.headers).sort().filter((name) => !['Accept', 'Authorization', 'Content-Type'].includes(name)), []);
+          assert.equal(request.init.credentials, 'omit');
+          assert.equal(request.init.cache, 'no-store');
+        }
+        assert.ok(page.location.hash.startsWith('#/requests'));
+        const sources = FILES.filter((name) => name.startsWith('js/')).map((name) => read(name)).join('\n');
+        assert.doesNotMatch(sources, /(?:hidden|hide)[A-Za-z]*\s*[:=]\s*(?:localStorage|sessionStorage)|localStorage\.setItem\([^)]*hid/i);
+        assertNoCanaries(page.serialize(), 'after the hidden view');
+      });
+
+      it('forgets what it knew when the member changes: the next member never has the first one\'s hides told over their lists', async (t) => {
+        const app = await startApp(t);
+        // The server (as a stale one) lists the title again even though this member hid it.
+        const page = await openApp(t, app);
+        await homeReady(page);
+        const first = trending(page).querySelector('li.card');
+        click(page, first.querySelector('.card-more'));
+        click(page, first.querySelector('.card-menu-item'));
+        await page.until(() => names(trending(page)).length === 2, 'hidden');
+        assert.ok(page.document.querySelector('.toast'));
+        // Another member signs in on this address.
+        assert.equal((await app.post(`${HIDDEN}/movie/${T_MOVIE}`, undefined, { method: 'DELETE' })).status, 200);
+        page.store.set('jellyfin_credentials', JSON.stringify({ Servers: [{ ManualAddress: `https://${HOST_A}`, AccessToken: TOKENS[ANN], UserId: ANN }] }));
+        for (const listener of page.listeners.storage ?? []) listener({ key: 'jellyfin_credentials' });
+        await page.until(() => page.document.querySelector('ul.row-list[aria-labelledby]') && names(trending(page)).length === 3, 'Home for the next member');
+        assert.equal(page.document.querySelector('.toast'), null, 'and the line about the first one\'s hide is gone');
+        assert.deepEqual(names(trending(page)), ['Synthetic Movie One', 'Synthetic Series Two', 'Synthetic Movie Three']);
+      });
+
+      it('is told over by a read that began before the change, and forgotten on sign-out, a member change and a refused sign-in', async () => {
+        const { createApi } = await import(pathToFileURL(path.join(DIST_APP, BUILT('js/api.js'))).href);
+        const card = { mediaType: 'movie', tmdbId: 7, title: 'T', year: null, overview: '', posterUrl: null, backdropUrl: null, rating: null, state: 'get_this', play: null };
+        const other = { ...card, tmdbId: 8 };
+        const make = () => {
+          const log = { held: [], status: 200, list: [card, other], hiddenFlags: false };
+          const token = { value: 'token-a' };
+          const fetch = async (url, init = {}) => {
+            if (url.startsWith('/jellypass/app/v1/hidden/')) return new Response('{}', { status: log.status });
+            const body = JSON.stringify(url.includes('/search') ? { page: 1, nextPage: null, results: log.list.map((entry) => ({ ...entry, hidden: log.hiddenFlags })) } : { page: 1, nextPage: null, results: log.list });
+            if (log.held.length && !log.released) await new Promise((resolve) => log.held.push(resolve));
+            return new Response(body, { status: 200 });
+          };
+          return { api: createApi({ fetch, token: () => token.value }), log, token };
+        };
+        const ids = (page) => page.results.map((entry) => entry.tmdbId);
+        // A discovery read begun before the hide answers after it: the title is left out. One begun after it is the server's word.
+        {
+          const { api, log } = make();
+          log.held.push(() => undefined);
+          const stale = api.discover('trending');
+          await new Promise((resolve) => setImmediate(resolve));
+          await api.setHidden('movie', 7, true);
+          log.released = true;
+          log.held.slice(1).forEach((resolve) => resolve());
+          assert.deepEqual(ids(await stale), [8]);
+          assert.deepEqual(ids(await api.discover('trending')), [7, 8], 'a read begun after the hide is the server\'s own word');
+        }
+        // Search and title reads carry the flag as it is now; a failed or refused change changes nothing.
+        {
+          const { api, log } = make();
+          log.held.push(() => undefined);
+          const stale = api.search('t', 1);
+          await new Promise((resolve) => setImmediate(resolve));
+          await api.setHidden('movie', 7, true);
+          log.released = true;
+          log.held.slice(1).forEach((resolve) => resolve());
+          assert.deepEqual((await stale).results.map((entry) => entry.hidden), [true, false]);
+          log.status = 409;
+          await assert.rejects(api.setHidden('movie', 8, true), (error) => error.kind === 'hidden_limit_reached');
+          assert.deepEqual((await api.search('t', 1)).results.map((entry) => entry.hidden), [false, false], 'the server\'s word since; the refused hide never shows');
+          log.status = 500;
+          await assert.rejects(api.setHidden('movie', 8, true), (error) => error.kind === 'unavailable');
+          log.status = 429;
+          await assert.rejects(api.setHidden('movie', 8, true), (error) => error.kind === 'rate_limited');
+        }
+        // Another token (a member change) and a 401 forget it; so does forgetAsked (sign-out).
+        for (const forget of [(made) => { made.token.value = 'token-b'; }, (made) => made.api.forgetAsked(), (made) => { made.log.status = 401; return made.api.setHidden('movie', 9, true).catch(() => undefined); }]) {
+          const made = make();
+          await made.api.setHidden('movie', 7, true);
+          made.log.held.push(() => undefined);
+          const stale = made.api.discover('trending');
+          await new Promise((resolve) => setImmediate(resolve));
+          await forget(made);
+          made.log.released = true;
+          made.log.held.slice(1).forEach((resolve) => resolve());
+          assert.deepEqual(ids(await stale), [7, 8], 'nothing of the first sign-in is left');
+        }
+      });
     });
   });
 });

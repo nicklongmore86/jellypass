@@ -372,6 +372,34 @@ main {
 .request-cancel-body { margin: 0; font-size: 0.9rem; }
 .request-cancel-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
 .request-cancel, .request-cancel-actions .button { min-height: 2.75rem; }
+/* Hiding a title: a card's More button (a sibling of its link, top-right of the picture) with a one-item menu, the hidden tag, and the title page's own control. */
+.card-more-box { position: absolute; top: 0.2rem; right: 0.2rem; }
+.card-backdrop > .card-more-box { top: 0.5rem; right: 0.5rem; }
+.card-more {
+  display: inline-flex; align-items: center; justify-content: center; width: 2.75rem; height: 2.75rem; padding: 0; border: 0; border-radius: var(--radius-chip);
+  background: transparent; color: var(--text); cursor: pointer; touch-action: manipulation;
+}
+.card-more .icon { width: 1.4rem; height: 1.4rem; padding: 0.2rem; border-radius: 50%; background: var(--surface); fill: currentColor; stroke: none; }
+.card-more:focus-visible, .card-menu-item:focus-visible, .card-unhide:focus-visible { outline: 3px solid var(--accent-text); outline-offset: 1px; }
+.card-menu { position: absolute; z-index: 4; top: 100%; right: 0; min-width: 9.5rem; padding: 0.25rem; border-radius: var(--radius-chip); background: var(--surface); border: 1px solid var(--hairline); box-shadow: 0 0.4rem 1.2rem rgba(0, 0, 0, 0.35); }
+.card-menu[hidden] { display: none; }
+.card-menu-item { display: block; width: 100%; min-height: 2.75rem; padding: 0 0.8rem; border: 0; border-radius: var(--radius-chip); background: transparent; color: var(--text); font: inherit; font-weight: 700; text-align: left; cursor: pointer; }
+.hidden-tag { margin: 0; color: var(--muted); font-size: 0.78rem; font-weight: 700; }
+.hidden-tag[hidden] { display: none; }
+.card-unhide { justify-self: start; min-height: 2.75rem; }
+.hide-box { display: grid; gap: 0.5rem; justify-items: start; margin-top: 0.75rem; }
+.hide-button, .hide-undo { min-height: 2.75rem; }
+.hide-note { margin: 0; font-size: 0.85rem; }
+.hide-message { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.request-views { margin-bottom: 1rem; }
+.request-views .segment { text-decoration: none; }
+.request-views .segment[aria-current='page'] { background: var(--accent-tint); border-color: var(--accent); color: var(--accent-text); }
+.request-views .segment:focus-visible { outline: 3px solid var(--accent-text); outline-offset: 1px; }
+.hidden-unhide { min-height: 2.75rem; }
+.toast { position: fixed; z-index: 20; left: 50%; bottom: calc(var(--tabbar-box, 5rem) + 0.75rem); transform: translateX(-50%); display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; width: max-content; max-width: calc(100% - 2rem); padding: 0.6rem 0.9rem; border-radius: var(--radius-card); background: var(--surface); border: 1px solid var(--hairline); box-shadow: 0 0.4rem 1.2rem rgba(0, 0, 0, 0.35); color: var(--text); }
+.toast[hidden] { display: none; }
+.toast-text { margin: 0; }
+.toast .button { min-height: 2.75rem; }
 .request-seasons { display: grid; gap: 0.35rem; width: 100%; }
 .request-season { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.35rem 0.75rem; }
 .request-season > .failed-note, .request > .failed-note { flex-basis: 100%; margin: 0; font-size: 0.85rem; }

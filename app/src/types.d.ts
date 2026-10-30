@@ -5,7 +5,7 @@ export type HouseholdState = 'unavailable' | 'in_library' | 'requested' | 'get_t
 export interface Me {
   name: string;
   household: string;
-  /** The revision of the v1 contract the server speaks (not read by the app). */
+  /** The revision of the v1 contract the server speaks; hiding titles needs 3. */
   apiVersion: number;
 }
 
@@ -25,6 +25,8 @@ export interface Card {
   rating: number | null;
   state: HouseholdState;
   play: Play | null;
+  /** The caller hid it ("Not interested"). Only in search results and on title pages; absent from a server before `apiVersion` 3. */
+  hidden?: boolean;
 }
 
 export interface Page {
@@ -112,4 +114,17 @@ export interface RequestEntry {
 
 export interface RequestList {
   results: RequestEntry[];
+}
+
+/** One of the caller's own hidden titles (`GET /hidden`): IDs only, newest first; a title is named with its own call. */
+export interface HiddenEntry {
+  mediaType: MediaType;
+  tmdbId: number;
+  hiddenAt: string;
+}
+
+export interface HiddenList {
+  page: number;
+  nextPage: number | null;
+  results: HiddenEntry[];
 }

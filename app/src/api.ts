@@ -1,11 +1,14 @@
 import { createAsked, type Asked } from './asked.js';
+import { createHiddenOverlay, type HiddenOverlay } from './hidden.js';
 import { createTitleCache, type TitleCache, type TitleDetails } from './titles.js';
-import type { DiscoverList, MediaType, Me, Movie, Page, RequestEntry, RequestList, Season, Series, SourceKind, Sources } from './types.js';
+import type { DiscoverList, HiddenList, MediaType, Me, Movie, Page, RequestEntry, RequestList, Season, Series, SourceKind, Sources } from './types.js';
 
 export const API_PREFIX = '/jellypass/app/v1';
+/** The revision of the contract that has hiding titles ("Not interested"); a server before it has none of it. */
+export const HIDING_API_VERSION = 3;
 
 /** The only failures the app tells apart, each with a fixed message (see render.ts); upstream text is never shown. */
-export type ApiErrorKind = 'unauthorized' | 'rate_limited' | 'not_found' | 'unavailable' | 'offline';
+export type ApiErrorKind = 'unauthorized' | 'rate_limited' | 'not_found' | 'unavailable' | 'offline' | 'hidden_limit_reached';
 
 export class ApiError extends Error {
   public constructor(public readonly kind: ApiErrorKind) {
@@ -21,6 +24,8 @@ export interface ApiOptions {
   asked?: Asked;
   /** The titles My requests has named in this sign-in; forgotten with the overlay. */
   titles?: TitleCache;
+  /** The titles this member hid or unhid in this page's life; forgotten with the overlay. */
+  hidden?: HiddenOverlay;
 }
 
 export interface Api {
@@ -50,12 +55,21 @@ export interface Api {
    * call, from one read in the last ten minutes of this sign-in. Never its state.
    */
   requestTitle(mediaType: MediaType, tmdbId: number, signal?: AbortSignal): Promise<TitleDetails>;
+  /**
+   * "Not interested" (`hidden` true) or Unhide: resolves once the API has written it (it answers the same whether or
+   * not the title already was hidden). Needs `apiVersion` 3 (see {@link HIDING_API_VERSION}); hiding past the member's
+   * 2,000 is `hidden_limit_reached`. The change is shown at once on every list and card read afterwards.
+   */
+  setHidden(mediaType: MediaType, tmdbId: number, hidden: boolean, signal?: AbortSignal): Promise<void>;
+  /** The member's own hidden titles, newest first, 50 a page (My requests' Hidden tab); IDs only. Needs `apiVersion` 3. */
+  hiddenList(page: number, signal?: AbortSignal): Promise<HiddenList>;
   /** Forgets what this member just asked for (sign-out). */
   forgetAsked(): void;
 }
 
-function kindOf(status: number): ApiErrorKind {
+function kindOf(status: number, hiding = false): ApiErrorKind {
   if (status === 401) return 'unauthorized';
+  if (status === 409 && hiding) return 'hidden_limit_reached';
   if (status === 429) return 'rate_limited';
   if (status === 404) return 'not_found';
   return 'unavailable';
@@ -64,11 +78,13 @@ function kindOf(status: number): ApiErrorKind {
 export function createApi(options: ApiOptions): Api {
   const asked = options.asked ?? createAsked();
   const titles = options.titles ?? createTitleCache();
+  const hidden = options.hidden ?? createHiddenOverlay();
   // Bumped each time the titles are forgotten: a title read before is not kept for whoever is signed in after.
   let titlesEpoch = 0;
   function forget(): void {
     asked.forget();
     titles.forget();
+    hidden.forget();
     titlesEpoch += 1;
   }
   // The overlay belongs to whoever holds this token and this /me identity: any other (or none) starts it empty.
@@ -85,14 +101,14 @@ export function createApi(options: ApiOptions): Api {
     sync(options.token());
     return apply(value);
   };
-  async function call(path: string, init: { body?: unknown }, signal?: AbortSignal): Promise<Response> {
+  async function call(path: string, init: { body?: unknown; method?: 'DELETE'; hiding?: boolean }, signal?: AbortSignal): Promise<Response> {
     const token = options.token();
     sync(token);
     if (!token) throw new ApiError('unauthorized');
     let response: Response;
     try {
       response = await options.fetch(`${API_PREFIX}${path}`, {
-        method: init.body === undefined ? 'GET' : 'POST',
+        method: init.method ?? (init.body === undefined ? 'GET' : 'POST'),
         headers: {
           Accept: 'application/json',
           Authorization: `MediaBrowser Token="${encodeURIComponent(token).replace(/"/g, '%22')}"`,
@@ -116,7 +132,7 @@ export function createApi(options: ApiOptions): Api {
         forget();
         identity = undefined;
       }
-      throw new ApiError(kindOf(response.status));
+      throw new ApiError(kindOf(response.status, init.hiding));
     }
     return response;
   }
@@ -130,8 +146,17 @@ export function createApi(options: ApiOptions): Api {
     }
   }
 
-  const movie = (tmdbId: number, signal?: AbortSignal) => get<Movie>(`/movie/${tmdbId}`, signal).then(seen(asked.movie));
-  const tv = (tmdbId: number, signal?: AbortSignal) => get<Series>(`/tv/${tmdbId}`, signal).then(seen(asked.series));
+  /** A read, as of when it began: what the member hid or unhid after that is told over its answer (see {@link HiddenOverlay}). */
+  const read = async <T>(fetchIt: (began: number) => Promise<T>, apply: (value: T, began: number) => T): Promise<T> => {
+    const began = hidden.begin();
+    const value = await fetchIt(began);
+    sync(options.token());
+    return apply(value, began);
+  };
+  const movie = (tmdbId: number, signal?: AbortSignal) =>
+    read(() => get<Movie>(`/movie/${tmdbId}`, signal), (value, began) => hidden.flagged(asked.movie(value), began));
+  const tv = (tmdbId: number, signal?: AbortSignal) =>
+    read(() => get<Series>(`/tv/${tmdbId}`, signal), (value, began) => hidden.flagged(asked.series(value), began));
 
   return {
     me: async (signal) => {
@@ -143,11 +168,12 @@ export function createApi(options: ApiOptions): Api {
       identity = now;
       return me;
     },
-    search: (query, page, signal) => get<Page>(`/search?q=${encodeURIComponent(query)}&page=${page}`, signal).then(seen(asked.page)),
-    discover: (list, signal) => get<Page>(`/discover/${list}`, signal).then(seen(asked.page)),
+    search: (query, page, signal) =>
+      read(() => get<Page>(`/search?q=${encodeURIComponent(query)}&page=${page}`, signal), (value, began) => hidden.flaggedPage(asked.page(value), began)),
+    discover: (list, signal) => read(() => get<Page>(`/discover/${list}`, signal), (value, began) => hidden.list(asked.page(value), began)),
     sources: (signal) => get<Sources>('/discover/sources', signal),
     source: (kind, id, page, signal, list) =>
-      get<Page>(`/discover/${kind}/${id}${list ? `/${list}` : ''}${page > 1 ? `?page=${page}` : ''}`, signal).then(seen(asked.page)),
+      read(() => get<Page>(`/discover/${kind}/${id}${list ? `/${list}` : ''}${page > 1 ? `?page=${page}` : ''}`, signal), (value, began) => hidden.list(asked.page(value), began)),
     movie,
     tv,
     season: (tmdbId, seasonNumber, signal) => get<Season>(`/tv/${tmdbId}/season/${seasonNumber}`, signal).then(seen(asked.season)),
@@ -170,6 +196,15 @@ export function createApi(options: ApiOptions): Api {
       sync(options.token());
       if (before !== undefined && owner === before) asked.withdraw(entry.mediaType, entry.tmdbId);
     },
+    setHidden: async (mediaType, tmdbId, value, signal) => {
+      const before = options.token();
+      const response = await call(`/hidden/${mediaType}/${tmdbId}`, value ? { body: {}, hiding: true } : { method: 'DELETE' }, signal);
+      await response.body?.cancel().catch(() => undefined);
+      // Only an accepted call, and only for the member who made it: not if the sign-in changed while the call was out.
+      sync(options.token());
+      if (before !== undefined && owner === before) hidden.set(mediaType, tmdbId, value);
+    },
+    hiddenList: (page, signal) => get<HiddenList>(`/hidden${page > 1 ? `?page=${page}` : ''}`, signal),
     requestTitle: async (mediaType, tmdbId, signal) => {
       sync(options.token());
       // A kept title is used as it is: its state is not handed to the overlay again.

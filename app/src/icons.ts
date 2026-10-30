@@ -32,6 +32,11 @@ const SHAPES = {
   check: [['path', { d: 'M5.5 12.5 10 17l8.5-9.5' }]],
   prev: [['path', { d: 'M14.5 5.5 8 12l6.5 6.5' }]],
   next: [['path', { d: 'M9.5 5.5 16 12l-6.5 6.5' }]],
+  more: [
+    ['circle', { cx: '6', cy: '12', r: '1.4' }],
+    ['circle', { cx: '12', cy: '12', r: '1.4' }],
+    ['circle', { cx: '18', cy: '12', r: '1.4' }],
+  ],
 } as const satisfies Record<string, readonly Shape[]>;
 
 export type IconName = keyof typeof SHAPES;
