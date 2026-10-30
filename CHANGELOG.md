@@ -21,11 +21,27 @@ changes are always listed at the top of the release notes.
 ### Security
 
 - Household gateway routes now deny by default: explicit Jellyfin 10.11.11/12.4 OpenAPI templates, legacy client routes and vetted plugin compatibility entries replace open-ended relay. Unknown plugin namespaces return fixed JSON 404 over HTTP and WebSocket; only the session socket can upgrade. Existing refusals and household scope checks remain. Jellyfin Enhanced public-config is preserved byte-identically.
-- Additional plugin endpoints require deliberate exact-path `HOUSEHOLD_PLUGIN_ROUTES` configuration and a privacy audit; see README. Previously unrecognised paths (including inactive TV and removed bridge paths) no longer relay.
+- Additional plugin endpoints require deliberate exact-path `HOUSEHOLD_PLUGIN_ROUTES` configuration and a privacy audit; see "Deployment self-check and plugin routes" in docs/server-reference.md. Previously unrecognised paths (including inactive TV and removed bridge paths) no longer relay.
 
 ### Added
 
 - Authenticated admin deployment self-check for direct Jellyfin origins, Quick Connect, household proxy headers, public Seerr, version-gate support, and TMDB key validity. Public probes carry no service credentials, use timeouts and bounded reads, never follow redirects, and run at most once per minute. Inside probes explicitly warn about external-reachability limits.
+
+### Changed
+
+- README: shortened to an overview, quick start and links. Its reference
+  sections moved unchanged to `docs/server-reference.md` and
+  `docs/household-hosts.md`, and the guide is at https://jellypass.app/docs/.
+  Links to the README's old sections still land on it, in a "Moved sections"
+  list that points to their new place.
+  The quick start now gives the data folder to UID 1000
+  (`sudo chown 1000:1000 data`): created by root with `mkdir -m 700` alone,
+  the container could not write its state file and stopped with `EACCES`.
+- `compose.example.yaml` (the build-from-source Compose file): its service is
+  now named `jellypass`, as in `compose.yaml` and the webhook URL examples,
+  instead of `access-bridge`. If you started JellyPass from that file before,
+  run `docker compose -f compose.example.yaml up --build -d --remove-orphans`
+  once, so the old `access-bridge` container is removed and frees port 8787.
 
 ## [3.10.0] - 2026-10-30
 
