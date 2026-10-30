@@ -625,7 +625,6 @@ export async function createFakeJellyfinForApp(state) {
         Id, Name: user.Name, HasPassword: true, HasConfiguredPassword: true,
       })));
     }
-    if (route === '/web/config.json' && state.webConfig && request.method === 'GET') return send(response, 200, state.webConfig);
     if (route === '/branding/configuration' && request.method === 'GET') return send(response, 200, { LoginDisclaimer: '', CustomCss: '', SplashscreenEnabled: false });
     if (route === '/users/authenticatebyname' && request.method === 'POST') {
       return readJson(request).then((body) => {

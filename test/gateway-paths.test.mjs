@@ -40,13 +40,12 @@ const routed = (path) => {
   ];
 };
 /**
- * Repeated-slash spellings are now refused before endpoint-specific checks or relay.
+ * Paths with repeated slashes are refused before endpoint-specific checks or relay.
  */
-const unrouted = (path) => {
+const repeatedSlashes = (path) => {
   const [, first, rest] = /^\/([^/]+)\/(.+)$/.exec(path);
   return [`//${first}//${rest}/`, `/emby//${first}/${rest}`, `${path}//`];
 };
-const spellings = routed;
 
 /** Requests that reached the fake Jellyfin at anything but the gateway's own reads (its user list, /Users/Me, items). */
 const forwarded = (app) => app.jellyfin.requests.filter((request) =>
@@ -63,23 +62,6 @@ describe('household paths with empty segments', () => {
     });
   }
 
-  it('normalises configured jellyfin-web server bases before the client appends paths', async (t) => {
-    const state = world();
-    state.webConfig = { servers: ['https://jelly.example.test/', 'https://jelly.example.test/emby///', 'https://other.example.test', null, 'invalid/'], theme: 'dark' };
-    const app = await startApp(t, state);
-    const answer = await get(app.port, '/web/config.json', { Host: HOST_A, 'If-None-Match': '"old-config"', Range: 'bytes=0-20' });
-    const upstream = app.jellyfin.requests.find((request) => request.pathname === '/web/config.json');
-    assert.equal(upstream.headers['if-none-match'], undefined);
-    assert.equal(upstream.headers.range, undefined);
-    assert.equal(answer.headers['cache-control'], 'no-store');
-    assert.equal(answer.status, 200);
-    assert.deepEqual(answer.json(), { servers: ['https://jelly.example.test', 'https://jelly.example.test/emby', 'https://other.example.test', null, 'invalid/'], theme: 'dark' });
-    for (const server of answer.json().servers.slice(0, 3)) {
-      // The exact join used by jellyfin-web's initial server discovery.
-      assert.ok(!new URL(`${server}/System/Info/Public`).pathname.includes('//'));
-    }
-  });
-
   it('allows a trailing slash and duplicate slashes in the query', async (t) => {
     const app = await startApp(t);
     const answer = await get(app.port, '/Users/Public/?value=//', { Host: HOST_A });
@@ -87,29 +69,31 @@ describe('household paths with empty segments', () => {
     assert.deepEqual(answer.json().map((user) => user.Name), ['Alice', 'Ann']);
   });
 
-  it('closes a refused upgrade even when the client keeps its writable half open', async (t) => {
-    const app = await startApp(t);
-    const before = app.jellyfin.requests.length;
-    const serverClosed = new Promise((resolve) => app.server.once('connection', (socket) => socket.once('close', resolve)));
-    const answer = await new Promise((resolve, reject) => {
-      const socket = connect({ port: app.port, host: '127.0.0.1', allowHalfOpen: true });
-      t.after(() => socket.destroy());
-      const timer = setTimeout(() => { socket.destroy(); reject(new Error('upgrade socket lingered')); }, 2_000);
-      let text = '';
-      socket.on('data', (chunk) => { text += chunk.toString(); });
-      socket.once('error', reject);
-      socket.once('end', () => { clearTimeout(timer); resolve(text); });
-      socket.once('connect', () => socket.write(`GET //socket HTTP/1.1\r\nHost: ${HOST_A}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n`));
+  for (const path of ['//socket', '/%2Fsocket']) {
+    it(`closes refused upgrade ${path} even when the client keeps its writable half open`, async (t) => {
+      const app = await startApp(t);
+      const before = app.jellyfin.requests.length;
+      const serverClosed = new Promise((resolve) => app.server.once('connection', (socket) => socket.once('close', resolve)));
+      const answer = await new Promise((resolve, reject) => {
+        const socket = connect({ port: app.port, host: '127.0.0.1', allowHalfOpen: true });
+        t.after(() => socket.destroy());
+        const timer = setTimeout(() => { socket.destroy(); reject(new Error('upgrade socket lingered')); }, 2_000);
+        let text = '';
+        socket.on('data', (chunk) => { text += chunk.toString(); });
+        socket.once('error', reject);
+        socket.once('end', () => { clearTimeout(timer); resolve(text); });
+        socket.once('connect', () => socket.write(`GET ${path} HTTP/1.1\r\nHost: ${HOST_A}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n`));
+      });
+      await Promise.race([serverClosed, new Promise((_, reject) => {
+        const timer = setTimeout(() => reject(new Error('server kept upgrade socket open')), 2_000);
+        timer.unref();
+        serverClosed.then(() => clearTimeout(timer));
+      })]);
+      assert.match(answer, /^HTTP\/1.1 404 Not Found\r\n/);
+      assert.equal(answer.split('\r\n\r\n')[1], '{"error":"not_found"}');
+      assert.equal(app.jellyfin.requests.length, before);
     });
-    await Promise.race([serverClosed, new Promise((_, reject) => {
-      const timer = setTimeout(() => reject(new Error('server kept upgrade socket open')), 2_000);
-      timer.unref();
-      serverClosed.then(() => clearTimeout(timer));
-    })]);
-    assert.match(answer, /^HTTP\/1.1 404 Not Found\r\n/);
-    assert.equal(answer.split('\r\n\r\n')[1], '{"error":"not_found"}');
-    assert.equal(app.jellyfin.requests.length, before);
-  });
+  }
 });
 
 describe('household host checks in every spelling Jellyfin routes', { timeout: 60_000 }, () => {
@@ -119,7 +103,7 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
     const signIn = (path, username, password) => post(app.port, path, { Host: HOST_A, Authorization: AUTHORIZATION, 'X-Forwarded-For': `203.0.113.${++client}` }, { Username: username, Pw: password });
     const bare = await signIn('/Users/AuthenticateByName', 'Outsider', 'out-pass');
     assert.deepEqual([bare.status, bare.text], [401, NOT_A_MEMBER]);
-    for (const path of spellings('/Users/AuthenticateByName')) {
+    for (const path of routed('/Users/AuthenticateByName')) {
       const answer = await signIn(path, 'Outsider', 'out-pass');
       assert.deepEqual([answer.status, answer.text, answer.headers['content-type']], [401, NOT_A_MEMBER, bare.headers['content-type']], path);
     }
@@ -144,7 +128,7 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
     let client = 0;
     const answers = [];
     for (const [id, password] of [[ALICE, 'alice-pass'], [OUTSIDER, 'out-pass'], [ALICE, 'wrong'], [dashed(ALICE), 'alice-pass'], [`{${dashed(OUTSIDER)}}`, 'out-pass'], ['not-a-user', '']]) {
-      for (const path of [`/Users/${id}/Authenticate`, ...spellings(`/Users/${id}/Authenticate`)]) {
+      for (const path of [`/Users/${id}/Authenticate`, ...routed(`/Users/${id}/Authenticate`)]) {
         const started = performance.now();
         const answer = await post(app.port, `${path}?pw=${password}`, { Host: HOST_A, Authorization: AUTHORIZATION, 'X-Forwarded-For': `203.0.113.${++client}` }, {});
         const took = performance.now() - started;
@@ -182,7 +166,7 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
       const answer = await get(app.port, path, { Host: HOST_A });
       assert.deepEqual([answer.status, answer.text], [200, bare.text], path);
     }
-    for (const path of unrouted('/Users/Public')) {
+    for (const path of repeatedSlashes('/Users/Public')) {
       const answer = await get(app.port, path, { Host: HOST_A });
       assert.deepEqual([answer.status, answer.text], [404, '{"error":"not_found"}'], path);
     }
@@ -201,7 +185,7 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
   it('refuses password recovery in every spelling without asking Jellyfin', async (t) => {
     const app = await startApp(t);
     for (const bare of ['/Users/ForgotPassword', '/Users/ForgotPassword/Pin']) {
-      for (const path of [bare, ...spellings(bare)]) {
+      for (const path of [bare, ...routed(bare)]) {
         const answer = await post(app.port, path, { Host: HOST_A }, { EnteredUsername: 'Alice', Pin: '0000' });
         assert.deepEqual([answer.status, answer.text], [403, '{"error":"household_password_recovery_disabled"}'], path);
       }
@@ -209,7 +193,7 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
     assert.deepEqual(forwarded(app), []);
   });
 
-  for (const path of spellings('/Sessions/Logout')) {
+  for (const path of routed('/Sessions/Logout')) {
     it(`forgets the app's session when it signs out at ${path}`, async (t) => {
       const app = await startApp(t, world({ passwords }));
       const { AccessToken } = (await post(app.port, '/Users/AuthenticateByName', { Host: HOST_A, Authorization: AUTHORIZATION }, { Username: 'Alice', Pw: 'alice-pass' })).json();
@@ -239,7 +223,7 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
     const alice = { Host: HOST_A, Authorization: `${AUTHORIZATION}, Token="token-alice"` };
     const media = (id) => [`/Videos/${id}/stream`, `/Videos/${id}/stream.mkv`, `/Audio/${id}/master.m3u8`, `/Items/${id}/Download`];
     for (const bare of media(HIDDEN)) {
-      for (const path of [bare, ...spellings(bare)]) {
+      for (const path of [bare, ...routed(bare)]) {
         const answer = await get(app.port, `${path}?Static=true`, alice);
         assert.deepEqual([answer.status, answer.text], [404, ITEM_NOT_FOUND], path);
       }
@@ -281,7 +265,7 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
       ['POST', `/Users/${ALICE}/PlayingItems/${id}/Progress`], ['DELETE', `/Users/${ALICE}/FavoriteItems/${id}`],
     ];
     for (const [method, bare] of itemRoutes(HIDDEN)) {
-      for (const path of [bare, ...spellings(bare)]) {
+      for (const path of [bare, ...routed(bare)]) {
         const answer = await get(app.port, `${path}?${query}`, alice, { method });
         assert.deepEqual([answer.status, method === 'HEAD' ? ITEM_NOT_FOUND : answer.text], [404, ITEM_NOT_FOUND], `${method} ${path}`);
       }
@@ -352,7 +336,7 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
     };
     const before = proxied();
     for (const [method, bare] of userRoutes(BOB)) {
-      for (const path of [bare, ...spellings(bare)]) await refused(method, path);
+      for (const path of [bare, ...routed(bare)]) await refused(method, path);
       assert.match(await upgrade(app.port, bare, HOST_A), /^HTTP\/1\.1 404 /, bare);
     }
     // A fixed name under /Users is only that route: anything longer takes the name for a user ID.
@@ -434,11 +418,11 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
     assert.equal((await send('GET', share(ANN), bob)).status, 403);
     assert.equal((await send('POST', share(BOB), bob, { CanEdit: true })).status, 403);
     // Every spelling is proxied, for Jellyfin to answer: those it routes change the share.
-    for (const path of [share(BOB), ...spellings(share(BOB))]) {
+    for (const path of [share(BOB), ...routed(share(BOB))]) {
       const sent = proxied();
       const answer = await send('POST', path, alice, { CanEdit: true });
       assert.equal(proxied(), sent + 1, path);
-      if (!unrouted(share(BOB)).includes(path)) assert.deepEqual([answer.status, app.jellyfin.requests.at(-1).path], [204, path]);
+      if (!repeatedSlashes(share(BOB)).includes(path)) assert.deepEqual([answer.status, app.jellyfin.requests.at(-1).path], [204, path]);
     }
     assert.deepEqual((await send('GET', share(BOB), bob)).json(), { UserId: BOB, CanEdit: true });
     // An editor still may not change who it is shared with: only its owner may.
@@ -450,7 +434,7 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
   it('never proxies the household app\'s own paths, in any spelling', async (t) => {
     const app = await startApp(t);
     for (const bare of ['/jellypass/app/v1/me', '/jellypass/app/', '/jellypass/app/nope.js']) {
-      for (const path of spellings(bare)) {
+      for (const path of routed(bare)) {
         const answer = await get(app.port, path, { Host: HOST_A });
         assert.match(answer.headers['cache-control'] ?? '', /no-store/, `${path}: ${answer.status}`);
       }
@@ -463,6 +447,7 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
     const alice = { Host: HOST_A, Authorization: `${AUTHORIZATION}, Token="token-alice"` };
     const ambiguous = [
       '/Users%2FAuthenticateByName',
+      '/Users/%252FPublic',
       '/Users/AuthenticateByName%2f',
       '/Users%5CAuthenticateByName',
       '/Users\\AuthenticateByName',

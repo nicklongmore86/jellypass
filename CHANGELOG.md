@@ -53,6 +53,13 @@ upgrading:
 - **To roll back,** set `JELLYPASS_IMAGE` back to
   `ghcr.io/nicklongmore86/jellypass:3.9.0` and recreate the container.
 
+### Security
+
+- **Household hosts refuse paths with empty segments.** HTTP requests and
+  WebSocket upgrades whose raw or once-decoded path contains `//` receive a
+  fixed `404 not_found` before any relay. This is precautionary hardening;
+  no disclosure was observed on real Jellyfin or production.
+
 ### Added
 
 - **Supported Jellyfin versions.** JellyPass reads Jellyfin's version from
@@ -83,14 +90,6 @@ upgrading:
   (previous)" instead of "Jellyfin 10.11 or newer".
 - `docs/tv-addon.md`: the TV add-on is matched to the supported Jellyfin
   releases.
-
-### Security
-
-- Household hosts now refuse HTTP requests and WebSocket upgrades whose raw
-  path or once-decoded path contains `//`, with a fixed `404 not_found` before
-  any relay. This is precautionary hardening; no disclosure was observed on
-  real Jellyfin or production. Household-served jellyfin-web configuration
-  trims server base URLs so trailing slashes do not generate refused paths.
 
 ## [3.9.0] - 2026-10-29
 

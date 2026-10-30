@@ -37,6 +37,7 @@ The administrator retains a separate recovery path that is not exposed through h
 - Requests with an unknown or ambiguous hostname fail closed. They must not fall back to the complete Jellyfin user list.
 - `GET /Users/Public` is intercepted on a household hostname and filtered to that household's user IDs.
 - The response preserves Jellyfin's schema and the upstream ordering of the remaining users.
+- Household hosts refuse request paths containing `//`, including after one percent-decode, with the fixed JSON `404 {"error":"not_found"}` before interception or relay. WebSocket upgrades receive the same refusal and close cleanly. A single trailing slash remains allowed; query values are unaffected. Clients must not send `//` in paths; stock jellyfin-web does not: its `config.json` has an empty `servers` array and its add-server form strips trailing slashes. Real Jellyfin already returns `404` for repeated-slash discovery paths. This is precautionary hardening, not a confirmed data disclosure.
 - All other supported Jellyfin traffic is proxied without buffering large media bodies and with range requests, streaming, and WebSocket upgrades preserved.
 - JellyPass trusts the HTTP `Host` authority only when traffic comes through the deployment's trusted reverse proxy. TLS and DNS ownership remain outside the application.
 
@@ -139,16 +140,3 @@ Upstream references:
 - [Jellyfin server configuration](https://github.com/jellyfin/jellyfin/blob/master/MediaBrowser.Model/Configuration/ServerConfiguration.cs)
 - [Jellyfin Web login controller](https://github.com/jellyfin/jellyfin-web/blob/master/src/apps/legacy/controllers/session/login/index.js)
 - [Community SSO for Jellyfin](https://github.com/Flowfin/jellyfin-plugin-sso)
-
-Household hosts refuse request paths containing `//`, including after one percent-decode,
-with the fixed JSON `404 {"error":"not_found"}` before interception or relay. This also
-applies to WebSocket upgrades, whose sockets are closed after the response. A single
-trailing slash remains allowed; query values are unaffected. This is precautionary
-hardening against differences in upstream routing, not a confirmed data disclosure.
-
-Jellyfin-web can otherwise generate `//` when a server URL in its `config.json`
-ends in `/`. On household hosts, JellyPass trims trailing slashes from HTTP(S)
-server URLs in `/web/config.json` before the client builds its requests. The
-PWA, mobile app, TV add-on and Samsung loader already build paths from fixed
-prefixes or slash-free URL origins. Bundled web clients with their own local
-configuration should likewise use server URLs without trailing slashes.
