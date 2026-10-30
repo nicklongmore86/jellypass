@@ -4,6 +4,7 @@ import { createServer, request as httpRequest } from 'node:http';
 import { connect } from 'node:net';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
+import { brotliDecompressSync, gunzipSync } from 'node:zlib';
 import { AccessService, accessTag } from '../dist/access-service.js';
 import { JellyfinClient } from '../dist/jellyfin.js';
 import { makeServer } from '../dist/server.js';
@@ -439,12 +440,14 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     assert.ok(/<\/head>/i.test(direct.text), 'Jellyfin web\'s page has a </head>');
     const tag = /<script defer src="(\/jellypass\/tv\/jellypass-tv\.[0-9a-f]{12}\.js)" data-jellypass-tv><\/script>/;
     for (const pathname of ['/web/index.html', '/web/']) {
-      // Whatever encodings and validators the browser offers, the page comes back whole, with the tag.
-      const page = await getWithHeaders(port, pathname, { Host: 'jelly-tvhouse.example.test', 'Accept-Encoding': 'gzip, br', 'If-Modified-Since': new Date().toUTCString() });
-      assert.equal(page.status, 200, pathname);
-      assert.equal(page.headers['content-encoding'], undefined, pathname);
-      assert.equal(page.headers['cache-control'], 'no-store', pathname);
-      assert.equal(page.headers.etag, undefined, pathname);
+      // Whatever encodings and validators the browser offers, the page comes back whole, with the tag; Jellyfin is asked
+      // for it unencoded, and JellyPass encodes it (in the coding the browser prefers) and marks it no-transform.
+      const answer = await getWithHeaders(port, pathname, { Host: 'jelly-tvhouse.example.test', 'Accept-Encoding': 'gzip, br', 'If-Modified-Since': new Date().toUTCString() });
+      assert.equal(answer.status, 200, pathname);
+      assert.equal(answer.headers['content-encoding'], 'br', pathname);
+      assert.equal(answer.headers['cache-control'], 'no-store, no-transform', pathname);
+      assert.equal(answer.headers.etag, undefined, pathname);
+      const page = { text: brotliDecompressSync(answer.body).toString('utf8') };
       assert.equal(page.text.split('data-jellypass-tv').length - 1, 1, pathname);
       assert.equal(page.text.replace(tag, ''), direct.text, `${pathname}: Jellyfin's page with the tag and nothing else`);
       assert.ok(page.text.indexOf('data-jellypass-tv') < page.text.search(/<\/head>/i), `${pathname}: in the head`);
@@ -453,6 +456,63 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     }
     const other = await getWithHeaders(port, '/web/index.html', { Host: 'jelly-otherhouse.example.test', 'Accept-Encoding': 'identity' });
     assert.deepEqual([other.status, other.text], [200, direct.text]);
+    // Relayed without the add-on, the page is still marked no-transform, and comes back whole in the coding the client
+    // asked for: Jellyfin's own (br or gzip, passed through with its strong tag), or JellyPass's when Jellyfin sends it
+    // unencoded (it does not know x-gzip), with the tag weakened. A HEAD gets the GET's headers.
+    assert.match(other.headers['cache-control'] ?? '', /(?:^|,\s*)no-transform$/);
+    const otherHost = { Host: 'jelly-otherhouse.example.test' };
+    let weak;
+    for (const [accept, coding, by] of [['gzip', 'gzip', 'jellyfin'], ['br', 'br', 'jellyfin'], ['gzip, br', 'br', 'jellyfin'], ['x-gzip', 'gzip', 'jellypass']]) {
+      const relayed = await getWithHeaders(port, '/web/index.html', { ...otherHost, 'Accept-Encoding': accept });
+      assert.equal(relayed.status, 200, accept);
+      assert.match(relayed.headers['cache-control'] ?? '', /(?:^|,\s*)no-transform$/, accept);
+      assert.match(relayed.headers.vary ?? '', /accept-encoding/i, accept);
+      assert.equal(relayed.headers['content-encoding'], coding, accept);
+      assert.match(relayed.headers.etag ?? '', by === 'jellypass' ? /^W\/"/ : /^"/, accept);
+      assert.equal((coding === 'br' ? brotliDecompressSync : gunzipSync)(relayed.body).toString('utf8'), direct.text, accept);
+      const head = await getWithHeaders(port, '/web/index.html', { ...otherHost, 'Accept-Encoding': accept }, { method: 'HEAD' });
+      assert.deepEqual([head.status, head.body.length], [200, 0], `HEAD ${accept}`);
+      for (const name of ['content-encoding', 'etag', 'vary', 'cache-control']) assert.equal(head.headers[name], relayed.headers[name], `HEAD ${accept}: ${name}`);
+      if (by === 'jellypass') {
+        assert.deepEqual([head.headers['content-length'], head.headers['accept-ranges']], [undefined, undefined], `HEAD ${accept}`);
+        weak = relayed.headers.etag;
+      }
+      // Revalidated with the tag it was given, the page is not modified, and the 304 carries that tag back.
+      for (const method of ['GET', 'HEAD']) {
+        const again = await getWithHeaders(port, '/web/index.html', { ...otherHost, 'Accept-Encoding': accept, 'If-None-Match': relayed.headers.etag }, { method });
+        assert.deepEqual([again.status, again.headers.etag, again.body.length], [304, relayed.headers.etag, 0], `${method} ${accept} revalidated`);
+        // Jellyfin's own 304 to a HEAD names the coding it would use, passed through; JellyPass's coding is never named on one.
+        assert.ok(again.headers['content-encoding'] === undefined || (by === 'jellyfin' && again.headers['content-encoding'] === coding), `${method} ${accept} revalidated: ${again.headers['content-encoding']}`);
+        assert.match(again.headers.vary ?? '', /accept-encoding/i, `${method} ${accept} revalidated`);
+        if (again.headers['cache-control'] !== undefined) assert.match(again.headers['cache-control'], /(?:^|,\s*)no-transform$/, `${method} ${accept} revalidated`);
+      }
+    }
+    // Jellyfin itself does not match the weak form: JellyPass asks it with the strong one.
+    const directWeak = await new Promise((resolve, reject) => {
+      httpRequest(`${baseUrl}/web/index.html`, { headers: { 'If-None-Match': weak } }, (response) => {
+        response.resume();
+        response.on('end', () => resolve(response.statusCode));
+      }).on('error', reject).end();
+    });
+    assert.equal(directWeak, 200, `Jellyfin compares ${weak} exactly`);
+    // A client that accepts no coding of the page, not even unencoded, is refused, on either household; one that accepts
+    // it unencoded gets it so.
+    for (const host of ['jelly-tvhouse.example.test', 'jelly-otherhouse.example.test']) {
+      for (const accept of ['*;q=0', 'br;q=0, gzip;q=0, identity;q=0']) {
+        for (const method of ['GET', 'HEAD']) {
+          const refused = await getWithHeaders(port, '/web/index.html', { Host: host, 'Accept-Encoding': accept }, { method });
+          assert.deepEqual([refused.status, refused.headers['cache-control'], refused.headers['content-encoding']], [406, 'no-store', undefined], `${host} ${method} ${accept}`);
+        }
+      }
+      const identity = await getWithHeaders(port, '/web/index.html', { Host: host, 'Accept-Encoding': 'br;q=0, gzip;q=0' });
+      assert.deepEqual([identity.status, identity.headers['content-encoding']], [200, undefined], host);
+    }
+    // The page with the add-on: a HEAD is encoded as its GET is, with the GET's exact length.
+    for (const accept of ['gzip', 'br']) {
+      const get = await getWithHeaders(port, '/web/index.html', { Host: 'jelly-tvhouse.example.test', 'Accept-Encoding': accept });
+      const head = await getWithHeaders(port, '/web/index.html', { Host: 'jelly-tvhouse.example.test', 'Accept-Encoding': accept }, { method: 'HEAD' });
+      assert.deepEqual([head.status, head.headers['content-encoding'], head.headers['content-length'], head.body.length], [200, accept, String(get.body.length), 0], `tv HEAD ${accept}`);
+    }
   });
 
   it('checks a household sign-in, profile list and protected media in every spelling Jellyfin routes', async (t) => {
@@ -486,6 +546,14 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     t.after(() => new Promise((resolve) => gateway.close(resolve)));
     const port = gateway.address().port;
     const host = { Host: 'jelly-pathhouse.example.test', Authorization: WEB };
+    jellyfin.seen.length = 0;
+    // Real Jellyfin already refuses repeated-slash discovery paths, so trailing-slash server bases cannot work.
+    assert.equal((await fetch(`${baseUrl}//System/Info/Public`)).status, 404);
+    assert.equal((await fetch(`${baseUrl}/System//Info/Public`)).status, 404);
+    const emptySegment = await getWithHeaders(port, '//x/Users/Public', host);
+    assert.deepEqual([emptySegment.status, emptySegment.text], [404, '{"error":"not_found"}']);
+    assert.deepEqual(jellyfin.seen, [], 'empty-segment path reached real Jellyfin');
+
     // Alice is no member here: refused in every spelling, by name or by ID, as on the plain path.
     for (const pathname of ['/Users/AuthenticateByName', ...spellings]) {
       const answer = await postWithHeaders(port, pathname, host, { Username: 'Alice', Pw: 'alice-paths' });

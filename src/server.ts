@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import type { Duplex } from 'node:stream';
 import { ConflictError, UserProvisioningError, type AccessService } from './access-service.js';
 import { HouseholdApp, type HouseholdAppOptions } from './app-api.js';
 import { AdminActionLimitError, AdminSeerrError, type AdminRequests } from './admin-requests.js';
@@ -10,6 +11,7 @@ import { ClientIpResolver } from './client-ip.js';
 import type { LogLevel } from './config.js';
 import { HouseholdGateway } from './household-gateway.js';
 import type { HouseholdRequests } from './household-requests.js';
+import { writeWhole } from './html-response.js';
 import { UNKNOWN_VERSION_MESSAGE, UNTESTED_VERSION_MESSAGE, VersionConfirmationError, type HouseholdDecision, type JellyfinVersionGate } from './jellyfin-version.js';
 import { RECENT_REQUESTS_LIMIT } from './seerr.js';
 import { BackgroundTasks } from './shutdown.js';
@@ -17,6 +19,8 @@ import { TvAssets } from './tv-assets.js';
 import { parseWebhook } from './webhook.js';
 
 const BODY_LIMIT = 64 * 1024;
+/** The admin page's bytes, once, so its encoded copies are worked out once (see html-response.ts). */
+const ADMIN_HTML_BYTES = Buffer.from(ADMIN_HTML);
 const ID_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/;
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -73,8 +77,8 @@ export interface ServerOptions {
   adminRequests?: Pick<AdminRequests, 'list' | 'approve' | 'decline' | 'cancel' | 'release'>;
   /**
    * The Jellyfin version check (docs: README, "Supported Jellyfin versions"): household hosts answer a fixed 503 unless
-   * it decides they serve, and the admin API reads and confirms it at /v1/jellyfin/version. Without it household hosts
-   * serve whatever the version.
+   * it decides they serve (always, unless it enforces: see JELLYFIN_VERSION_ENFORCEMENT), and the admin API reads and
+   * confirms it at /v1/jellyfin/version. Without it household hosts serve whatever the version.
    */
   jellyfinVersion?: Pick<JellyfinVersionGate, 'decision' | 'householdDecision' | 'status' | 'confirm' | 'clearConfirmation' | 'renderMetrics'>;
 }
@@ -125,10 +129,13 @@ export function makeServer(
   const titleHolds = options?.titleHolds;
   const checkTitleHolds = () => { if (titleHolds) background.run((signal) => titleHolds.checkTitleHolds({ signal })); };
   const clientIp = new ClientIpResolver(options?.trustedProxies);
-  const server = createServer(async (request, response) => {
+  // Node's own check would answer an HTTP/1.1 request with no Host with a bare 400 before any handler; singleHost
+  // gives it the fixed invalid_host answer instead.
+  const server = createServer({ requireHostHeader: false }, async (request, response) => {
     try {
-      const url = new URL(request.url ?? '/', 'http://localhost');
-      if (['/jellypass/add', '/jellypass/add.js', '/jellypass/add.css'].includes(url.pathname)) {
+      if (!singleHost(request)) return invalidHost(response);
+      // A household path such as // is no valid URL input; the gateway refuses it below.
+      if (['/jellypass/add', '/jellypass/add.js', '/jellypass/add.css'].includes(URL.parse(request.url ?? '/', 'http://localhost')?.pathname ?? '')) {
         return json(response, 410, { error: 'library_add_removed_use_household_app' });
       }
       const householdId = householdGateway?.householdId(request.headers.host);
@@ -138,6 +145,7 @@ export function makeServer(
         await householdGateway?.handle(request, response, householdId);
         return;
       }
+      const url = new URL(request.url ?? '/', 'http://localhost');
       const segments = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
       // Cross-site request forgery: a state-changing request a browser sends with the session cookie must come from the
       // admin origin itself. SameSite=Strict alone is not enough, as every sibling host under the same site (household
@@ -153,16 +161,16 @@ export function makeServer(
         return redirect(response, '/admin/');
       }
       if (request.method === 'GET' && (url.pathname === '/admin' || url.pathname === '/admin/')) {
-        return asset(response, 200, ADMIN_HTML, 'text/html; charset=utf-8');
+        return asset(request, response, 200, ADMIN_HTML_BYTES, 'text/html; charset=utf-8');
       }
       if (request.method === 'GET' && url.pathname === '/admin/styles.css') {
-        return asset(response, 200, ADMIN_STYLES, 'text/css; charset=utf-8');
+        return asset(request, response, 200, Buffer.from(ADMIN_STYLES), 'text/css; charset=utf-8');
       }
       if (request.method === 'GET' && url.pathname === '/admin/app.js') {
-        return asset(response, 200, ADMIN_APP_JS, 'text/javascript; charset=utf-8');
+        return asset(request, response, 200, Buffer.from(ADMIN_APP_JS), 'text/javascript; charset=utf-8');
       }
       if (request.method === 'GET' && url.pathname === '/admin/favicon.svg') {
-        return asset(response, 200, ADMIN_FAVICON_SVG, 'image/svg+xml; charset=utf-8');
+        return asset(request, response, 200, Buffer.from(ADMIN_FAVICON_SVG), 'image/svg+xml; charset=utf-8');
       }
       if (request.method === 'POST' && url.pathname === '/auth/login') {
         if (!webAuth) return json(response, 404, { error: 'web_auth_not_configured' });
@@ -425,6 +433,7 @@ export function makeServer(
     }
   });
   server.on('upgrade', (request, socket, head) => {
+    if (!singleHost(request)) return invalidHostUpgrade(socket);
     const householdId = householdGateway?.householdId(request.headers.host);
     if (!householdGateway || !householdId) {
       socket.destroy();
@@ -451,6 +460,61 @@ export function makeServer(
   return Object.assign(server, {
     closeWebSockets: async () => householdGateway ? householdGateway.closeWebSockets() : 0,
   });
+}
+
+const HOST_VALUE = /^(?:[A-Za-z0-9._-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$/;
+const INVALID_HOST = JSON.stringify({ error: 'invalid_host' });
+
+/**
+ * Whether the request names exactly one host: one Host header (none only from an HTTP/1.0 client, which then reaches
+ * the admin side as before), a plain host[:port] with no userinfo, whitespace or other characters, and for an
+ * absolute-form target the same authority as the Host (so an HTTP/1.0 absolute-form target with no Host is refused).
+ * Node keeps only the first of several Host headers in `request.headers.host` while a proxy in front may route on
+ * another, so the server refuses anything else with a fixed 400 before a household is chosen or anything relayed.
+ */
+function singleHost(request: IncomingMessage): boolean {
+  const hosts: string[] = [];
+  for (let index = 0; index < request.rawHeaders.length; index += 2) {
+    if (request.rawHeaders[index]?.toLowerCase() === 'host') hosts.push(request.rawHeaders[index + 1] ?? '');
+  }
+  if (hosts.length > 1 || (hosts.length === 0 && request.httpVersion !== '1.0')) return false;
+  const [host] = hosts;
+  if (host !== undefined && !HOST_VALUE.test(host)) return false;
+  const target = request.url ?? '';
+  if (target.startsWith('/') || target === '*') return true;
+  const authority = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/([^/?#]*)/.exec(target)?.[1];
+  return authority !== undefined && host !== undefined && authority.toLowerCase() === host.toLowerCase();
+}
+
+/** The fixed answer to a request {@link singleHost} refuses; the connection is closed after it. */
+function invalidHost(response: ServerResponse): void {
+  response.setHeader('Connection', 'close');
+  json(response, 400, { error: 'invalid_host' });
+}
+
+/** {@link invalidHost} for a WebSocket upgrade, written to the raw socket. */
+function invalidHostUpgrade(socket: Duplex): void {
+  refuseSocket(
+    socket,
+    'HTTP/1.1 400 Bad Request\r\nContent-Type: application/json; charset=utf-8\r\n'
+      + `Content-Length: ${Buffer.byteLength(INVALID_HOST)}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n${INVALID_HOST}`,
+  );
+}
+
+/** How long a refused raw socket may take to flush its answer before it is destroyed anyway. */
+const REFUSAL_FLUSH_MS = 1_000;
+
+/**
+ * Writes a whole HTTP answer to a raw socket (an upgrade's) and then destroys it. `end()` alone closes only the write
+ * side, so a client that keeps its own side open (allowHalfOpen) would hold the server socket readable indefinitely;
+ * a client that stops reading cannot hold it past REFUSAL_FLUSH_MS either.
+ */
+function refuseSocket(socket: Duplex, answer: string): void {
+  const destroy = () => socket.destroy();
+  const timer = setTimeout(destroy, REFUSAL_FLUSH_MS);
+  timer.unref();
+  socket.on('error', destroy).once('close', () => clearTimeout(timer));
+  socket.end(answer, destroy);
 }
 
 function authorized(request: IncomingMessage, expectedToken: string): boolean {
@@ -569,10 +633,11 @@ function text(response: ServerResponse, status: number, body: string, contentTyp
  * Headers for the admin UI's own files: the household app's set. The UI posts no forms (every form's submit is handled
  * by script with fetch), so form-action is 'none'.
  */
-function asset(response: ServerResponse, status: number, body: string, contentType: string): void {
-  response.writeHead(status, {
+function asset(request: IncomingMessage, response: ServerResponse, status: number, body: Buffer, contentType: string): void {
+  // The page is marked no-transform and compressed (see html-response.ts); its script, styles and icon are sent as they are.
+  writeWhole(request, response, status, {
     'Content-Type': contentType,
-    'Content-Length': Buffer.byteLength(body),
+    'Content-Length': body.length,
     'Cache-Control': 'no-store',
     'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     'Referrer-Policy': 'no-referrer',
@@ -581,8 +646,7 @@ function asset(response: ServerResponse, status: number, body: string, contentTy
     'Cross-Origin-Opener-Policy': 'same-origin',
     'Cross-Origin-Resource-Policy': 'same-origin',
     'Permissions-Policy': APP_PERMISSIONS_POLICY,
-  });
-  response.end(body);
+  }, body);
 }
 
 function image(response: ServerResponse, body: Uint8Array, upstreamContentType: string): void {
@@ -601,8 +665,9 @@ function image(response: ServerResponse, body: Uint8Array, upstreamContentType: 
 }
 
 /**
- * A household host's fixed 503 while the Jellyfin version is untested and not confirmed, or not known: never relayed
- * to Jellyfin, and the same for every path and for a WebSocket upgrade, so it tells a caller nothing but that.
+ * A household host's fixed 503, when enforcing, while the Jellyfin version is untested and not confirmed, or not known:
+ * never relayed to Jellyfin, and the same for every path and for a WebSocket upgrade, so it tells a caller nothing but
+ * that.
  */
 function versionRefusal(decision: Exclude<HouseholdDecision, 'serve'>): { headers: Record<string, string>; body: string } {
   const body = decision === 'refuse' ? UNTESTED_VERSION_MESSAGE : UNKNOWN_VERSION_MESSAGE;

@@ -35,8 +35,10 @@ The administrator retains a separate recovery path that is not exposed through h
 - An access group's stable ID is also its household ID; its Jellyfin user IDs are the visible household members.
 - The hostname is derived from `HOUSEHOLD_HOST_PREFIX + group ID + HOUSEHOLD_DOMAIN`.
 - Requests with an unknown or ambiguous hostname fail closed. They must not fall back to the complete Jellyfin user list.
+- A request that does not name exactly one host (two `Host` headers, a `Host` that is not a plain `host[:port]`, an absolute-form target whose authority is not the `Host`) fails closed with a fixed `400 invalid_host`, HTTP and WebSocket alike, before a household is chosen, so a proxy and JellyPass can never read different hosts. HTTP/1.0 may leave `Host` out; such a request (with an origin-form target) names no household, as before.
 - `GET /Users/Public` is intercepted on a household hostname and filtered to that household's user IDs.
 - The response preserves Jellyfin's schema and the upstream ordering of the remaining users.
+- Household hosts refuse request paths containing `//`, including after one percent-decode, with the fixed JSON `404 {"error":"not_found"}` before interception or relay. WebSocket upgrades receive the same refusal and close cleanly. A single trailing slash remains allowed; query values are unaffected. Clients must not send `//` in paths. Tests show that real Jellyfin returns `404` for repeated-slash discovery paths and stock jellyfin-web's `config.json` has `servers: []`. This is precautionary hardening, not a confirmed data disclosure.
 - All other supported Jellyfin traffic is proxied without buffering large media bodies and with range requests, streaming, and WebSocket upgrades preserved.
 - JellyPass trusts the HTTP `Host` authority only when traffic comes through the deployment's trusted reverse proxy. TLS and DNS ownership remain outside the application.
 
@@ -78,6 +80,10 @@ Filtering public discovery is a usability and privacy boundary. It is not author
 - First-login user creation, if enabled later, is allowlisted per household, idempotent, and auditable. It never creates an administrator.
 - Jellyfin accounts managed through SSO have unusable random local passwords and no user-facing reset path.
 - Removing a user from a household revokes new household sign-ins. Session/token revocation policy will be specified before automatic provisioning ships.
+
+### No scripts added on the way
+
+A household hostname is often reached through a CDN. Every HTML page JellyPass serves or relays on it (the household app, Jellyfin web's page with or without the TV add-on, and any other HTML from Jellyfin) carries `Cache-Control: no-transform`, added to Jellyfin's or JellyPass's own directives, so a CDN that honours it (Cloudflare Web Analytics' automatic setup is one) adds no script to it. JellyPass compresses those pages itself (br or gzip, as the client accepts, unless Jellyfin already encoded them), because such a CDN no longer does; every other answer is left to the CDN. See README "CDNs and HTML pages".
 
 ## Boundary model
 

@@ -1,0 +1,13 @@
+# iPad only, before the app: iPadOS 26 opens apps in resizable windows by default, which draws a resize grip in the
+# screenshots' corner. Settings → Multitasking & Gestures → Full Screen Apps opens them full screen, as most iPads are.
+appId: com.apple.Preferences
+---
+- launchApp:
+    stopApp: true
+- scrollUntilVisible:
+    element: "Multitasking & Gestures"
+    direction: DOWN
+    timeout: 30000
+- tapOn: "Multitasking & Gestures"
+- tapOn: "Full Screen Apps"
+- stopApp
