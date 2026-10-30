@@ -453,9 +453,33 @@ export function LogoTile({ source, size }: { source: Source; size: 'small' | 'la
 }
 
 /**
+ * The whole heading row (title, logo and chevron) as one touch target, 44 pt tall with a pressed state. It is touch-only:
+ * not an accessibility element, so a screen reader still gets the heading as a header and the chevron as the one
+ * "See all <row>" link, never a third, duplicate stop. A press on the chevron is the chevron's own.
+ */
+/** The tap target's style: the heading row's layout, 44 pt tall, dimmed while a finger is on it. */
+export function headingTapStyle(pressed: boolean) {
+  return [styles.networkHeading, styles.headingTap, pressed && styles.pressed];
+}
+
+function HeadingTap({ onOpen, children }: { onOpen: () => void; children: ReactNode }) {
+  return (
+    <Pressable
+      testID="row-heading-tap"
+      accessible={false}
+      importantForAccessibility="no"
+      onPress={onOpen}
+      style={({ pressed }) => headingTapStyle(pressed)}
+    >
+      {children}
+    </Pressable>
+  );
+}
+
+/**
  * "Popular on" and the network's logo: one heading, named in words, so a screen reader's headings still land on it.
  * With `onOpen`, the PWA's chevron after the logo is a link of its own to the network's page ("See all Popular on
- * Netflix"); the heading itself is not pressable.
+ * Netflix"); the heading row as a whole is a touch-only target for the same page.
  */
 export function NetworkHeading({ prefix, network, onOpen }: { prefix: string; network: Source; onOpen?: () => void }) {
   const heading = (
@@ -466,28 +490,28 @@ export function NetworkHeading({ prefix, network, onOpen }: { prefix: string; ne
   );
   if (!onOpen) return heading;
   return (
-    <View style={styles.networkHeading}>
+    <HeadingTap onOpen={onOpen}>
       {heading}
       <Pressable
         testID="row-heading-link"
         accessibilityRole="link"
         accessibilityLabel={networkLinkName(prefix, network.name)}
         onPress={onOpen}
-        style={({ pressed }) => [styles.headingLink, pressed && styles.pressed]}
+        style={styles.headingLink}
       >
         <Icon name="next" color={colors.text} size={20} />
       </Pressable>
-    </View>
+    </HeadingTap>
   );
 }
 
 /**
  * A list row's heading with the same chevron after it as a service row's, a link of its own to the row's full grid ("See
- * all Trending"); the heading itself is not pressable, so a screen reader's headings still land on it alone.
+ * all Trending"); the whole heading row is a touch-only target for the same page, so a screen reader's headings still land on it alone.
  */
 export function ListHeading({ title, onOpen }: { title: string; onOpen: () => void }) {
   return (
-    <View style={styles.networkHeading}>
+    <HeadingTap onOpen={onOpen}>
       <Text accessibilityRole="header" style={styles.rowHeadingText}>
         {title}
       </Text>
@@ -496,11 +520,11 @@ export function ListHeading({ title, onOpen }: { title: string; onOpen: () => vo
         accessibilityRole="link"
         accessibilityLabel={listLinkName(title)}
         onPress={onOpen}
-        style={({ pressed }) => [styles.headingLink, pressed && styles.pressed]}
+        style={styles.headingLink}
       >
         <Icon name="next" color={colors.text} size={20} />
       </Pressable>
-    </View>
+    </HeadingTap>
   );
 }
 
@@ -914,6 +938,7 @@ const styles = StyleSheet.create({
   rowHeading: { gap: spacing.sm, alignSelf: 'flex-start' },
   rowHeadingText: { ...typography.rowHeading, color: colors.text },
   networkHeading: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.sm },
+  headingTap: { minHeight: layout.touchTarget },
   headingLink: { minHeight: layout.touchTarget, minWidth: layout.touchTarget, alignItems: 'center', justifyContent: 'center' },
   studioLink: { width: STUDIO_TILE_WIDTH, minHeight: layout.touchTarget, borderRadius: radii.card },
   waterline: { flexDirection: 'row', height: layout.waterline.height },

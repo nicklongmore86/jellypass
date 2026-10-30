@@ -473,7 +473,9 @@ function pressables(): Node[] {
   const found: Node[] = [];
   const visit = (node: Node) => {
     const { onPress, onClick, onResponderRelease } = node.props;
-    if ([onPress, onClick, onResponderRelease].some((handler) => typeof handler === 'function')) found.push(node);
+    // The heading rows' touch-only tap targets (heading-tap.test.tsx) are no accessibility element: the chevron beside them is.
+    const touchOnly = node.props.testID === 'row-heading-tap';
+    if (!touchOnly && [onPress, onClick, onResponderRelease].some((handler) => typeof handler === 'function')) found.push(node);
     for (const child of node.children) if (typeof child !== 'string') visit(child);
   };
   visit(screen.root as Node);

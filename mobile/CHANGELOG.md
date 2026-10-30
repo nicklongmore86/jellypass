@@ -15,6 +15,14 @@ build.
 
 ## [Unreleased]
 
+### Changed
+
+- **Home: the whole row heading opens its See all page.** On a list row and on a service row, a tap anywhere on the
+  heading line (the title, the service's logo or the space beside them) opens the same page the chevron does, with the
+  same filter and New only choice and no extra call. The line is at least 44 pt tall and dims while pressed. Screen
+  readers are unchanged: the heading is still a heading, and the one "See all <heading>" link is still the chevron.
+  Rows without a See all page (Studios) stay plain headings.
+
 ## [1.3.0] - 2026-10-30
 
 A minor release, and the first build sent for App Store review: each list row
