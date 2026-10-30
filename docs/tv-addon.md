@@ -10,10 +10,11 @@ JellyPass title page, a page of Jellyfin web's own at `#/jellypass/title/<movie|
 this**. On Jellyfin web's own **Search** page the same script adds a **Discover** row of what was searched for and can be
 had ("The Search row"). The **Samsung app** (step 5) is built: a JellyPass build of Jellyfin's Tizen app whose loader adds
 the same script from the household host, and the household host's cross-origin rules for it (see "The Samsung app"); it
-has not been installed on a TV. **My requests** (step 6) is a JellyPass page of Jellyfin web's own at `#/jellypass/requests`
+has been installed in place over an existing developer-signed Jellyfin app on real Samsung TVs (Tizen 5.0 and 5.5),
+keeping their sign-ins. **My requests** (step 6) is a JellyPass page of Jellyfin web's own at `#/jellypass/requests`
 ("My requests"), reached from a card at the end of the Discover row and from a title the household is following; it lists
-the household's requests with their statuses and can cancel the ones the server says the member may. Nothing has been run
-on a real TV yet (see "What must be checked on a real TV"). The **Discover page** (PR B of the 2026-10-28 study) is a JellyPass
+the household's requests with their statuses and can cancel the ones the server says the member may. The checks in "What must be checked on a
+real TV" have not been run on a TV yet. The **Discover page** (PR B of the 2026-10-28 study) is a JellyPass
 page at `#/jellypass/discover`, mirroring the app's Home, reached only from a compass button in Jellyfin's header
 ("The Discover page"); a service row's heading and a studio's logo there open the **service and studio pages**
 (`#/jellypass/service/<id>`, `#/jellypass/studio/<id>`, "Service and studio pages").
@@ -54,7 +55,7 @@ flowchart LR
   - **Never twice:** a page that already has a `data-jellypass-tv` tag is sent as it is.
   - **Headers:** Jellyfin's own (`Content-Type`, any `Content-Security-Policy`, `X-Frame-Options`, `Vary`, …) are kept
     as Jellyfin sent them. `Content-Length` is the new length (of the br or gzip body when JellyPass compresses the
-    page for a client that accepts it, see README "CDNs and HTML pages"). `ETag`, `Last-Modified`, `Accept-Ranges`, `Expires`,
+    page for a client that accepts it, see docs/server-reference.md, "CDNs and HTML pages"). `ETag`, `Last-Modified`, `Accept-Ranges`, `Expires`,
     `Age`, `Pragma` and Jellyfin's `Cache-Control` are dropped, because they described the page without the tag. The
     page is sent `Cache-Control: no-store, no-transform` (no-transform as on every HTML page, so no CDN adds a script
     to it), `CDN-Cache-Control` and `Cloudflare-CDN-Cache-Control: no-store` (as the PWA's page is), so neither a browser nor Cloudflare stores the page from now on. These headers can't remove a copy
@@ -81,7 +82,7 @@ flowchart LR
 
 ### Tested against
 
-The add-on is matched to the Jellyfin releases JellyPass supports (README, "Supported Jellyfin versions"): Jellyfin
+The add-on is matched to the Jellyfin releases JellyPass supports (docs/server-reference.md, "Supported Jellyfin versions"): Jellyfin
 web **12.x** and **10.11.x**. It runs inside Jellyfin web's own page and relies on its markup, so it is checked against
 those releases only. On any other Jellyfin version, JellyPass 3.x warns until an administrator confirms that exact
 version, and household hosts keep serving the add-on unchanged, untested against that version's page; from JellyPass
@@ -936,7 +937,7 @@ Each step is its own pull request, behind the same settings:
 4. **My requests (done, redesign step 6).** The household's requests with their coarse statuses, named ten at a time, with
    the filters and **Cancel request**, as the PWA does: a page of Jellyfin web's at `#/jellypass/requests`, reached from a
    card at the end of the Discover row and a button on a followed title's page. See "My requests".
-5. **Samsung loader app (Tizen) (built; not installed).** See "The Samsung app".
+5. **Samsung loader app (Tizen) (built; installed on real Samsung TVs, Tizen 5.0 and 5.5).** See "The Samsung app".
    - CORS on `/jellypass/app/v1/*` and `/jellypass/tv/*` for the app's origin only (`file://` or `null`, not `*`), no
      credentials; preflight `204` before any token check; the native-client contract updated, since it makes the one
      exception to "CORS stays off". (`Cross-Origin-Resource-Policy` is not needed: the add-on's files are sent without
