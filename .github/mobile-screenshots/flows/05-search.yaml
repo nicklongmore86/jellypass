@@ -1,12 +1,19 @@
 # Search for a film the demo household has: Big Buck Bunny shows as In library.
 appId: com.rtc-services.jellypass
 ---
-- tapOn:
-    id: "tab-search"
-- extendedWaitUntil:
-    visible:
-      id: "search-field"
-    timeout: 30000
+# The first tap on the tab is sometimes lost just after My requests loads, so it is tapped until Search shows.
+- repeat:
+    while:
+      notVisible:
+        id: "search-field"
+    times: 5
+    commands:
+      - tapOn:
+          id: "tab-search"
+      - waitForAnimationToEnd:
+          timeout: 5000
+- assertVisible:
+    id: "search-field"
 - tapOn:
     id: "search-field"
 - inputText: "Big Buck Bunny"

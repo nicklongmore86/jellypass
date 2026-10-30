@@ -62,7 +62,8 @@ for shot in "${shots[@]}"; do
   xcrun simctl io "$udid" screenshot --type=png "$file"
 done
 
-# App Store Connect takes exact sizes only, and no alpha channel.
+# App Store Connect takes exact sizes only, and no alpha channel: simctl's PNGs have one, so it is dropped first.
+xcrun swift "${here}/strip-alpha.swift" "$out"/*.png
 failed=0
 for file in "$out"/*.png; do
   width="$(sips -g pixelWidth "$file" | awk '/pixelWidth/ {print $2}')"
