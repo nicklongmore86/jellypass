@@ -521,6 +521,14 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     t.after(() => new Promise((resolve) => gateway.close(resolve)));
     const port = gateway.address().port;
     const host = { Host: 'jelly-pathhouse.example.test', Authorization: WEB };
+    jellyfin.seen.length = 0;
+    // Real Jellyfin already refuses repeated-slash discovery paths, so trailing-slash server bases cannot work.
+    assert.equal((await fetch(`${baseUrl}//System/Info/Public`)).status, 404);
+    assert.equal((await fetch(`${baseUrl}/System//Info/Public`)).status, 404);
+    const emptySegment = await getWithHeaders(port, '//x/Users/Public', host);
+    assert.deepEqual([emptySegment.status, emptySegment.text], [404, '{"error":"not_found"}']);
+    assert.deepEqual(jellyfin.seen, [], 'empty-segment path reached real Jellyfin');
+
     // Alice is no member here: refused in every spelling, by name or by ID, as on the plain path.
     for (const pathname of ['/Users/AuthenticateByName', ...spellings]) {
       const answer = await postWithHeaders(port, pathname, host, { Username: 'Alice', Pw: 'alice-paths' });
