@@ -52,9 +52,8 @@ authority. See [how access enforcement works](docs/server-reference.md#how-acces
 ## Requirements
 
 - Jellyfin **12.x or 10.11.x**, and a Jellyfin administrator API key. On any
-  other version, JellyPass 3.x keeps serving household addresses but warns (in
-  its log and the admin site) until an administrator confirms that exact
-  version; JellyPass 4.0.0 will refuse household requests until then
+  other version, household addresses answer `503` until an administrator
+  confirms that exact version (3.x only warned)
   ([supported versions](docs/server-reference.md#supported-jellyfin-versions)).
 - Seerr (or Jellyseerr) with users imported from or linked to Jellyfin.
 - Docker with Compose v2 (images for `linux/amd64` and `linux/arm64`), or

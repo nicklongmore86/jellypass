@@ -134,10 +134,13 @@ Refused availability webhooks are not retried; missed titles rely on the request
 
 ### Changed
 
-- An unconfirmed Jellyfin version is logged once when it is first read, and
-  not again after an administrator confirms it or while
-  `JELLYFIN_UNTESTED_VERSION_OK` names it; 3.10.0 could repeat the warning
-  on later reads.
+- **A confirmed Jellyfin version is logged once.** An untested version an
+  administrator confirms is logged at the confirmation and not again on later
+  reads; one confirmed before startup (stored, or named by
+  `JELLYFIN_UNTESTED_VERSION_OK`) is logged once, as information rather than a
+  warning, when it is first read. 3.10.0 logged the warning again on the
+  next read after an administrator confirmed the version. Withdrawing a
+  confirmation warns once again.
 - README: shortened to an overview, quick start and links. Its reference
   sections moved unchanged to `docs/server-reference.md` and
   `docs/household-hosts.md`, and the guide is at https://jellypass.app/docs/.

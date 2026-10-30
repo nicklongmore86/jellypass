@@ -16,7 +16,7 @@ export interface SelfCheckOptions {
   timeoutMs?: number;
   now?: () => number;
 }
-/** The version check: household hosts keep serving on an unconfirmed or unread version while JELLYFIN_VERSION_ENFORCEMENT is 'warn'. */
+/** The version check: refused household hosts fail it; they serve on an unconfirmed or unread version only in 'warn' mode (see JELLYFIN_VERSION_ENFORCEMENT). */
 export function versionCheckResult(status: Pick<JellyfinVersionStatus, 'supported' | 'confirmation' | 'householdHosts'>): SelfCheckResult {
   if (status.supported) return { check: 'version', status: 'pass', explanation: 'Jellyfin is on a supported release.' };
   if (status.householdHosts !== 'serving') return { check: 'version', status: 'fail', explanation: 'Household hosts are paused by the Jellyfin version gate.' };

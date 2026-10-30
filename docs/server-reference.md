@@ -130,25 +130,29 @@ supported release's. On an unconfirmed version:
   reads, and the admin site shows it with an **Allow Jellyfin X** button.
   `GET /v1/jellyfin/version` (`confirmation: "unconfirmed"`) and the
   `jfa_jellyfin_version_info` metric (`confirmed="false"`) report it too.
-- **In JellyPass 3.x, household hostnames keep serving** as they did before
-  the check existed (`enforcement: "warn"`). The household privacy checks were
-  written against the supported versions, so confirm a version only once you
-  are satisfied they hold on it.
-- **From JellyPass 4.0.0, household hostnames will refuse to serve on an
-  unconfirmed version**: every request (and WebSocket) there will get a fixed
-  `503` with a plain-text message, with nothing relayed to Jellyfin, until
-  that exact version is confirmed; likewise while the version cannot be read.
-- The admin site, webhooks, grants and reconciliation keep working.
+- **Household addresses refuse to serve** (`enforcement: "refuse"`, from
+  JellyPass 4.0.0; 3.x only warned): every request and WebSocket there gets a
+  fixed `503` with a plain-text message, with nothing relayed to Jellyfin,
+  until that exact version is confirmed. `jfa_household_hosts_refusing` is `1`
+  meanwhile. The household privacy checks were written against the supported
+  versions, so confirm a version only once you are satisfied they hold on it.
+- The admin listener (admin site, API, webhooks, health), grants and
+  reconciliation keep working.
 - An administrator confirms one **exact** version, either in the admin site
-  (stored in the state file) or by setting `JELLYFIN_UNTESTED_VERSION_OK` to it,
-  which clears the warning. A later upgrade to another untested version is
+  (stored in the state file) or by setting `JELLYFIN_UNTESTED_VERSION_OK` to it.
+  A confirmed version is logged once, when it is confirmed or first read, and
+  not on later reads. A later upgrade to another untested version is
   unconfirmed again until it is confirmed in turn; the confirmation can be
-  withdrawn in the admin site.
+  withdrawn in the admin site, which warns again. A confirmation made in
+  3.10.0 is kept by the upgrade to 4.0.0, so household addresses keep serving
+  on that version.
 
 While the version is not known (Jellyfin unreachable when JellyPass starts, or
 its last read failed), JellyPass does not wait for it: it starts as usual, the
-admin site shows that the version cannot be read, and household hostnames
-serve as before. It reads the version again every 30 seconds.
+admin site shows that the version cannot be read, and household addresses
+answer `503` until it is read. A household request reads it again (at most
+every five seconds, waiting up to five), and so does a retry every 30
+seconds.
 
 ## Quick start with Docker Compose
 

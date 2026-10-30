@@ -10,10 +10,10 @@ export const SUPPORTED_JELLYFIN_RELEASES: readonly string[] = ['10.11', '12'];
 /**
  * What household hosts do on an untested version an administrator has not confirmed, or while the version is not known:
  * 'warn' keeps serving them as before and only warns (the log, the admin site, the admin API and metrics); 'refuse'
- * answers them a fixed 503. 3.x warns, since refusing would break requests that worked in 3.9.0; 4.0.0 sets 'refuse'.
+ * answers them a fixed 503. 3.x warned, since refusing would have broken requests that worked in 3.9.0; 4.0.0 refuses.
  */
 export type VersionEnforcement = 'warn' | 'refuse';
-export const JELLYFIN_VERSION_ENFORCEMENT: VersionEnforcement = 'warn';
+export const JELLYFIN_VERSION_ENFORCEMENT: VersionEnforcement = 'refuse';
 
 /** How often the version is read again once it is known; an upgrade is noticed within this. */
 export const VERSION_CHECK_INTERVAL_MS = 5 * 60_000;
@@ -100,7 +100,10 @@ export class JellyfinVersionGate {
   #stopped = false;
   /** The last version read, so each new one is logged once. */
   #lastRead: string | undefined;
-  /** The last version a warning was logged for, so each untested version is logged once while it lasts. */
+  /**
+   * The last untested version logged, so each is logged once while it lasts: when first read (confirmed or not), or
+   * when an administrator confirms it. Later reads and requests log nothing more about it.
+   */
   #warned: string | undefined;
 
   public constructor(options: JellyfinVersionGateOptions) {
@@ -205,13 +208,15 @@ export class JellyfinVersionGate {
         : 'an administrator confirmed an untested Jellyfin version',
       version,
     });
-    this.#warned = undefined;
+    // Logged just now, so the next read does not log it again.
+    this.#warned = version;
     return this.status();
   }
 
-  /** Withdraws the stored confirmation; an untested version Jellyfin runs is warned about (or refused) again. */
+  /** Withdraws the stored confirmation; an untested version Jellyfin runs is warned about (or refused) again, once. */
   public async clearConfirmation(): Promise<JellyfinVersionStatus> {
     await this.#confirmation.set(undefined);
+    this.#warned = undefined;
     this.#report();
     return this.status();
   }
@@ -255,7 +260,8 @@ export class JellyfinVersionGate {
     this.#warned = version;
     const confirmed = this.#isConfirmed(version);
     this.#log({
-      level: 'warn',
+      // A confirmed version is nothing to act on: noted once, at startup or when it is first read.
+      level: confirmed ? 'info' : 'warn',
       message: confirmed
         ? 'Jellyfin runs a version JellyPass has not been tested with; an administrator confirmed it, so household hosts serve'
         : this.#enforcement === 'refuse'
