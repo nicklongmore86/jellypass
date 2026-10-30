@@ -8,11 +8,17 @@
 // anywhere signs the member out. Every title answer read is seen by the session's overlay (src/title/asked.ts).
 //
 // The list is paged by place, newest first, so an unhide accepted while the tab is loaded (here or anywhere in this
-// session) moves every later title up by one, and a hide moves them down by one. The next page is read from where the
-// first title not yet listed is now: each unhide of a listed title counts one place back, so that page may be the one
-// already read (read again, its listed titles left out). A hide is never counted, as the server keeps the place of a
-// title hidden twice: the page read may then start a title or two early, which are listed already and left out, but
-// never late, so no title is ever skipped. A page that adds nothing new reads the next one at once.
+// session) moves every later title up by one, and a hide moves them down by one. The next page is read from `end`, a
+// place never past the first title not yet listed (titles hidden since the tab was read aside), so that page may be
+// one already read (read again, its listed titles left out) but no title is ever skipped:
+// - Each unhide of a title read and not unhidden since (or hidden in this session: it may be the newest now) counts
+//   one place back, at once, even while a page is out. A hide is never counted: the page read may then start a title
+//   or two early, never late.
+// - A page answered while titles were unhidden may have been read before or after each of them. When `end` has moved
+//   back before the page's first place, the titles between may have moved up past it unread, so `end` stays there and
+//   that page is read next; otherwise `end` is the page's end, less one place for each title unhidden while it was out
+//   that was read before or is on it.
+// A page that adds nothing new reads the next one at once.
 //
 // Everything is kept in memory only: no answer is ever written to the device.
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -76,19 +82,22 @@ export function useHiddenList(
   const next = useRef<number | null>(null);
   const count = useRef(0);
   const busy = useRef(false);
-  // Where the list stood: the place just past the last page read, how far the titles after it have moved up since (by
-  // unhides), the hidden titles before that place, and what was unhidden while a page was being read.
+  // Where the list stood: the place the next page is read from, the hidden titles that may be before it (each unhide
+  // of one counts a place back), and what was unhidden while a page was being read (and whether it was counted).
   const end = useRef(0);
-  const moved = useRef(0);
   const ahead = useRef(new Set<string>());
-  const unhiding = useRef<Set<string> | undefined>(undefined);
+  const unhiding = useRef<{ key: string; counted: boolean }[] | undefined>(undefined);
 
   useEffect(
     () =>
       marks.watch((key, hidden) => {
-        if (hidden) return;
-        unhiding.current?.add(key);
-        if (ahead.current.delete(key)) moved.current += 1;
+        if (hidden) {
+          ahead.current.add(key);
+          return;
+        }
+        const counted = ahead.current.delete(key);
+        if (counted) end.current -= 1;
+        unhiding.current?.push({ key, counted });
       }),
     [marks],
   );
@@ -104,14 +113,13 @@ export function useHiddenList(
   const current = (mine: number) => live.current && reading.current === mine;
 
   /**
-   * Reads page `page` of the list and adds the titles not yet listed after `before`. A title unhidden while it was out
-   * may or may not be on it: one listed or on it counts as moved up (a page read early is only read again, never late),
-   * and then there may be more even when the server says there is none.
+   * Reads page `page` of the list and adds the titles not yet listed after `before`, then moves `end` as the header
+   * says. When `end` is before the page's end, there may be more even when the server says there is none.
    */
   const readPage = useCallback(
     async (page: number, before: readonly HiddenTitle[], signal: AbortSignal, mine: number): Promise<{ added: number; nextPage: number | null } | undefined> => {
       if (!api) return undefined;
-      const unhidden = new Set<string>();
+      const unhidden: { key: string; counted: boolean }[] = [];
       unhiding.current = unhidden;
       const answer = await api.hidden(page, { signal });
       if (!current(mine)) return undefined;
@@ -120,16 +128,15 @@ export function useHiddenList(
       const read = new Set(answer.results.map(keyOf));
       const fresh = answer.results.filter((entry) => !listed.has(keyOf(entry)));
       entries.current = [...before, ...fresh];
-      end.current = (page - 1) * HIDDEN_PAGE_SIZE + answer.results.length;
-      moved.current = 0;
-      for (const key of read) ahead.current.add(key);
-      for (const key of unhidden) {
-        if (!listed.has(key) && !read.has(key)) continue;
-        ahead.current.delete(key);
-        moved.current += 1;
-      }
+      const start = (page - 1) * HIDDEN_PAGE_SIZE;
+      const shifted = unhidden.filter(({ key, counted }) => counted || read.has(key)).length;
+      // A title unhidden while the page was out and still on it was unhidden after the server read it: not ahead now.
+      const gone = new Set(unhidden.map(({ key }) => key));
+      for (const key of read) if (!gone.has(key)) ahead.current.add(key);
+      const after = start + answer.results.length - shifted;
+      end.current = end.current < start ? Math.min(end.current, after) : after;
       // Even at the list's end, a title may have moved up into what this page held: it is read again.
-      next.current = answer.nextPage ?? (moved.current > 0 ? page : null);
+      next.current = answer.nextPage ?? (end.current < start + answer.results.length ? Math.floor(Math.max(0, end.current) / HIDDEN_PAGE_SIZE) + 1 : null);
       return { added: fresh.length, nextPage: next.current };
     },
     [api],
@@ -208,6 +215,7 @@ export function useHiddenList(
     setMore({ status: 'idle' });
     try {
       ahead.current = new Set();
+      end.current = 0;
       const page = await readPage(1, [], controller.signal, mine);
       if (!page) return;
       count.current = 0;
@@ -238,9 +246,7 @@ export function useHiddenList(
           setMore({ status: 'loading' });
           let page: { added: number; nextPage: number | null } | undefined;
           do {
-            // The first title not yet listed is now `moved` places before where the last page read ended.
-            const at = Math.max(0, end.current - moved.current);
-            page = await readPage(Math.floor(at / HIDDEN_PAGE_SIZE) + 1, entries.current, signal, mine);
+            page = await readPage(Math.floor(Math.max(0, end.current) / HIDDEN_PAGE_SIZE) + 1, entries.current, signal, mine);
             if (!page) return;
           } while (page.added === 0 && page.nextPage !== null);
           setMore({ status: 'idle' });

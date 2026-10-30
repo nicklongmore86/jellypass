@@ -33,6 +33,12 @@ jest.mock('expo-constants', () => ({ __esModule: true, default: { expoConfig: je
 jest.mock('react-native-safe-area-context', () => jest.requireActual('react-native-safe-area-context/jest/mock').default);
 const PHONE = { width: 390, height: 844, scale: 2, fontScale: 1 };
 let mockWindow = PHONE;
+// The session's store of hide marks, as the last sign-in made it: a test unhides through it as a title page would.
+let mockMarks: import('../src/hidden/store').HiddenTitles | undefined;
+jest.mock('../src/hidden/store', () => {
+  const actual = jest.requireActual('../src/hidden/store');
+  return { ...actual, createHiddenTitles: () => (mockMarks = actual.createHiddenTitles()) };
+});
 jest.mock('react-native/Libraries/Utilities/useWindowDimensions', () => ({ __esModule: true, default: () => mockWindow }));
 
 const HIDING = (BUDGET as unknown as { hiding: { hide: string[]; unhide: string[]; undo: string[]; hiddenTab: { calls: number; titlesAtOnce: number; atOnce: string[]; loadMore: string[] } } }).hiding;
@@ -219,6 +225,105 @@ describe('the Hidden tab', () => {
     await settle();
     await loadAll();
     expect(names()).toEqual(hiddenTitles(51).map(nameOf).filter((name) => name !== 'Series 102'));
+  });
+
+  describe('skips and repeats no title when titles are unhidden while a later page is out', () => {
+    let hold: ReturnType<typeof held> | undefined;
+    beforeEach(() => {
+      hold = undefined;
+    });
+    const useHolding = (count: number) => useHousehold({ hidden: hiddenTitles(count), list: (page) => (page > 1 && hold ? hold.promise : undefined) });
+
+    /** Presses Load more until `count` entries are shown. */
+    async function showUpTo(count: number) {
+      for (let step = 0; step < 20 && entries().length < count; step += 1) await pressNode(buttonNamed(MORE_TEXT.button));
+      expect(entries()).toHaveLength(count);
+    }
+    /** Presses Load more with the list's next page held: the answer waits for `release`. */
+    async function readHeld() {
+      hold = held();
+      const out = hold;
+      await pressNode(buttonNamed(MORE_TEXT.button));
+      hold = undefined;
+      return out;
+    }
+    const unhide = (name: string) => pressNode(buttonNamed(new RegExp(`^Unhide ${name} \\(`)));
+    /** Unhides `key` as the server accepting it elsewhere in this session (a title's page) would. */
+    async function unhideElsewhere(key: string) {
+      const list = serverList();
+      list.splice(list.indexOf(key), 1);
+      const [mediaType, id] = key.split(':');
+      await act(async () => mockMarks!.mark({ mediaType: mediaType as 'movie' | 'tv', tmdbId: Number(id), title: nameOf(key), year: 2024, hidden: true }, false));
+      await settle();
+    }
+    /** Every title shown exactly once: all `count` but those unhidden. */
+    function expectEach(count: number, unhidden: readonly string[]) {
+      const shown = names();
+      expect(shown.length).toBe(new Set(shown).size);
+      expect([...shown].sort()).toEqual(hiddenTitles(count).map(nameOf).filter((name) => !unhidden.includes(name)).sort());
+    }
+
+    it('101 hidden: two from page 1 unhidden while page 2 is out, read after them', async () => {
+      useHolding(101);
+      await openRequests();
+      await chooseView('Hidden');
+      await showUpTo(50);
+      const out = await readHeld();
+      await unhide('Series 102');
+      await unhide('Film 103');
+      // The server read page 2 after both unhides: Film 151 and Series 152 moved up onto page 1.
+      out.release(hiddenAnswer(2));
+      await settle();
+      await loadAll();
+      expectEach(101, ['Series 102', 'Film 103']);
+    });
+
+    it('120 hidden: one from page 1 unhidden while page 3 is out, read after it', async () => {
+      useHolding(120);
+      await openRequests();
+      await chooseView('Hidden');
+      await showUpTo(50);
+      await pressNode(buttonNamed(MORE_TEXT.button));
+      await showUpTo(100);
+      const out = await readHeld();
+      await unhide('Series 104');
+      out.release(hiddenAnswer(3));
+      await settle();
+      await loadAll();
+      expectEach(120, ['Series 104']);
+    });
+
+    it('101 hidden: page 2 read between two unhides, the second of a title on it (unhidden elsewhere)', async () => {
+      useHolding(101);
+      await openRequests();
+      await chooseView('Hidden');
+      await showUpTo(50);
+      const out = await readHeld();
+      await unhide('Series 102');
+      const page = hiddenAnswer(2);
+      await unhideElsewhere('movie:153');
+      out.release(page);
+      await settle();
+      await loadAll();
+      expectEach(101, ['Series 102', 'Film 153']);
+    });
+
+    it('101 hidden: page 2 read before an unhide from page 1 and one hidden elsewhere', async () => {
+      useHolding(101);
+      await openRequests();
+      await chooseView('Hidden');
+      await showUpTo(50);
+      const out = await readHeld();
+      const page = hiddenAnswer(2);
+      await unhide('Film 105');
+      serverList().unshift('movie:901');
+      out.release(page);
+      await settle();
+      await loadAll();
+      const shown = names().filter((name) => name !== 'Film 901');
+      expect(names().length).toBe(new Set(names()).size);
+      expect(shown.sort()).toEqual(hiddenTitles(101).map(nameOf).filter((name) => name !== 'Film 105').sort());
+    });
   });
 
   it('says so in fixed words when Unhide fails, keeping the entry', async () => {
