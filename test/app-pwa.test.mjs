@@ -2668,7 +2668,8 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         click(page, item.querySelector('.request-cancel'));
         assert.equal(panel.hidden, false);
         assert.equal(panel.getAttribute('role'), 'group');
-        assert.equal(panel.querySelector('.request-cancel-body').textContent, "This withdraws your household's request. If it has already been approved, the download may still finish, but it won't be added for your household.");
+        assert.equal(panel.querySelector('.request-cancel-body').textContent, "This withdraws your household's request. If it has already been approved, it may still be added to the server, but it won't be added for your household.");
+        assert.doesNotMatch(panel.textContent, /download/i, 'store wording: never "download"');
         assert.deepEqual([...panel.querySelectorAll('button')].map((button) => button.textContent), ['Cancel request', 'Keep request']);
         assert.equal(page.focused()?.textContent, 'Cancel this request?');
         click(page, [...panel.querySelectorAll('button')][1]);
@@ -5408,7 +5409,8 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       const button = await titleReady(page);
       assert.equal(button.textContent, 'Not interested');
       assert.equal(button.getAttribute('aria-label'), 'Hide Synthetic Movie One from Discover');
-      assert.equal(page.main().querySelector('.hide-note').textContent, 'Only for you in this household. This does not cancel requests or remove downloads.');
+      assert.equal(page.main().querySelector('.hide-note').textContent, 'Only for you in this household. It does not cancel requests or take anything out of your library.');
+      assert.doesNotMatch(page.main().querySelector('.hide-box').textContent, /download/i, 'store wording: never "download"');
       assert.equal(page.main().querySelector('.hidden-tag').hidden, true);
       await settledCalls(page);
       const before = page.requests.length;
@@ -5733,6 +5735,84 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         assert.equal(titleCalls(), 53);
         assert.equal(COST.hiddenTab.titlesAtOnce, 10);
         assert.equal(page.main().querySelector('.load-more').hidden, true);
+      });
+    });
+
+    it('never says "download" in what the web app or the TV add-on shows (the store wording rule)', () => {
+      const files = (dir) => readdirSync(dir, { recursive: true }).map((name) => path.join(dir, String(name))).filter((file) => /\.(js|html|css|json)$/.test(file));
+      const shipped = [...files(DIST_APP), ...files(path.join(import.meta.dirname, '..', 'dist', 'tv'))];
+      assert.ok(shipped.some((file) => file.includes(`${path.sep}tv${path.sep}`)) && shipped.some((file) => /render\.[0-9a-f]+\.js$/.test(file)), 'both built');
+      for (const file of shipped) assert.doesNotMatch(readFileSync(file, 'utf8'), /download/i, file);
+    });
+
+    describe('a refused sign-in (401) on the change itself', () => {
+      const refusing = (method) => async (url, init) => (url.startsWith(HIDDEN) && init.method === method ? json({ error: 'unauthorized' }, 401) : undefined);
+      const atSignIn = (page) => page.until(() => page.main().querySelector('[data-screen="signin"] h1')?.textContent === 'Sign in', 'the sign-in state');
+      const settledAtSignIn = async (page) => {
+        await atSignIn(page);
+        await settledCalls(page);
+        assert.equal(page.document.body.textContent.includes('Sending…'), false, 'nothing is left sending');
+        assert.equal(Boolean(page.document.querySelector('.toast')), false, 'no line, no Undo');
+      };
+
+      it('a hide from a card takes the member to sign-in', async (t) => {
+        const app = await startApp(t);
+        const page = await openApp(t, app, { override: refusing('POST') });
+        await homeReady(page);
+        const card = trending(page).querySelector('li.card');
+        click(page, card.querySelector('.card-more'));
+        click(page, card.querySelector('.card-menu-item'));
+        await settledAtSignIn(page);
+      });
+
+      it('a hide on a title page takes the member to sign-in', async (t) => {
+        const app = await startApp(t);
+        const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}`, override: refusing('POST') });
+        click(page, await titleReady(page));
+        await settledAtSignIn(page);
+      });
+
+      it('Unhide in the Hidden view takes the member to sign-in', async (t) => {
+        const app = await startApp(t);
+        await app.post(`${HIDDEN}/movie/${T_MOVIE}`);
+        const page = await openApp(t, app, { hash: '#/requests/hidden', override: refusing('DELETE') });
+        await ready(page, 1);
+        click(page, page.main().querySelector('button.hidden-unhide'));
+        await settledAtSignIn(page);
+      });
+
+      it('Unhide on a Search card takes the member to sign-in', async (t) => {
+        const app = await startApp(t);
+        await app.post(`${HIDDEN}/movie/${T_MOVIE}`);
+        const page = await openApp(t, app, { hash: '#/search?q=synthetic', override: refusing('DELETE') });
+        const unhide = await page.until(() => page.main().querySelector('.card-unhide'), 'the Unhide');
+        click(page, unhide);
+        await settledAtSignIn(page);
+      });
+
+      for (const surface of ['row', 'search']) {
+        it(`Undo of a hide (${surface}) takes the member to sign-in`, async (t) => {
+          const app = await startApp(t);
+          const page = await openApp(t, app, { hash: surface === 'row' ? '#/' : '#/search?q=synthetic', override: refusing('DELETE') });
+          const card = surface === 'row'
+            ? (await homeReady(page), trending(page).querySelector('li.card'))
+            : await page.until(() => page.main().querySelector('ul.grid li.card .card-more')?.closest('li.card'), 'results');
+          click(page, card.querySelector('.card-more'));
+          click(page, card.querySelector('.card-menu-item'));
+          const undo = await page.until(() => page.document.querySelector('.toast button'), 'the Undo');
+          click(page, undo);
+          await settledAtSignIn(page);
+          assert.equal((await app.get(`${HIDDEN}`)).text.includes(`"tmdbId":`), true, 'the hide stands: the Undo was refused');
+        });
+      }
+
+      it('on the title page, Undo takes the member to sign-in', async (t) => {
+        const app = await startApp(t);
+        const page = await openApp(t, app, { hash: `#/movie/${T_MOVIE}`, override: refusing('DELETE') });
+        click(page, await titleReady(page));
+        const undo = await page.until(() => page.main().querySelector('.hide-message button'), 'the Undo');
+        click(page, undo);
+        await settledAtSignIn(page);
       });
     });
 

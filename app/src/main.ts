@@ -503,7 +503,9 @@ async function changeHidden(mediaType: MediaType, id: number, hidden: boolean): 
     await api.setHidden(mediaType, id, hidden);
     return api.session() === session ? 'accepted' : 'stale';
   } catch (error) {
-    if (error instanceof SessionChangedError || api.session() !== session) return 'stale';
+    // An ApiError is this call's own answer, in the session it was sent in (the api says SessionChangedError for any
+    // answer that came after): its own refusal ends that session, and it still takes the member to sign-in.
+    if (error instanceof SessionChangedError || (!(error instanceof ApiError) && api.session() !== session)) return 'stale';
     const kind = kindOf(error);
     if (kind === 'unauthorized') {
       const mine = navigation;

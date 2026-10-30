@@ -437,8 +437,7 @@ titles carry the boolean `hidden` flag (`tv/src/api.ts`, `hidingKnown`), which a
 of this is drawn and nothing is asked**.
 
 - **The title page** has a button among the others, **Not interested** (**Unhide** once hidden), reached by the remote like
-  them (`mainDetailButtons` is a focus container), with "Only for you in this household. This does not cancel requests or
-  remove downloads." under the buttons. One press sends one `POST /hidden/{movie|tv}/{id}` (`DELETE` for Unhide) and the button
+  them (`mainDetailButtons` is a focus container), with "Only for you in this household. It does not cancel requests or take anything out of your library." under the buttons. One press sends one `POST /hidden/{movie|tv}/{id}` (`DELETE` for Unhide) and the button
   is disabled ("Sending…") while it is out. An accepted call changes the button's label **in place** (the page is not drawn
   again, so focus stays on the button), says "Hidden from Discover. Choose Unhide to undo." (the button is the undo: it stays,
   focused, for as long as the page is open, and the Hidden view below is the route that never goes away), and adds "Hidden

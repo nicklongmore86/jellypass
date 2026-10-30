@@ -49,7 +49,7 @@ export const GET_THIS_TEXT = {
 export const CANCEL_TEXT = {
   button: 'Cancel request',
   heading: 'Cancel this request?',
-  body: "This withdraws your household's request. If it has already been approved, the download may still finish, but it won't be added for your household.",
+  body: "This withdraws your household's request. If it has already been approved, it may still be added to the server, but it won't be added for your household.",
   confirm: 'Cancel request',
   keep: 'Keep request',
   sending: 'Cancelling…',
@@ -74,7 +74,7 @@ export const HIDE_TEXT = {
   unhide: 'Unhide',
   undo: 'Undo',
   sending: 'Sending…',
-  note: 'Only for you in this household. This does not cancel requests or remove downloads.',
+  note: 'Only for you in this household. It does not cancel requests or take anything out of your library.',
   tag: 'Hidden from Discover',
   dismiss: 'Dismiss',
   hideLabel: (title: string) => `Hide ${title} from Discover`,

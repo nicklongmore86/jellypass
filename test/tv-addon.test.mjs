@@ -3336,7 +3336,8 @@ describe('TV add-on: My requests', { timeout: 180_000 }, () => {
       assert.equal(cancelOpen(item).hidden, true);
       assert.equal(panel(item).getAttribute('role'), 'group');
       assert.equal(part(panel(item), '.jellypass-tv-requests-cancel-heading'), 'Cancel this request?');
-      assert.equal(part(panel(item), '.jellypass-tv-requests-note'), "This withdraws your household's request. If it has already been approved, the download may still finish, but it won't be added for your household.");
+      assert.equal(part(panel(item), '.jellypass-tv-requests-note'), "This withdraws your household's request. If it has already been approved, it may still be added to the server, but it won't be added for your household.");
+      assert.doesNotMatch(panel(item).textContent, /download/i, 'store wording: never "download"');
       assert.deepEqual(panelButtons(item).map((button) => button.textContent), ['Keep request', 'Cancel request']);
       assert.ok(page.focused() === panelButtons(item)[0], 'the safe answer has focus');
       page.click(panelButtons(item)[0]);
@@ -6393,7 +6394,8 @@ describe('TV add-on: hidden titles ("Not interested")', { timeout: 240_000 }, ()
       assert.ok(button.closest('.mainDetailButtons.focuscontainer-x'), 'in the focus container with the other buttons');
       assert.ok(button.classList.contains('emby-button') && button.classList.contains('show-focus'));
       assert.equal(button.getAttribute('data-jellypass-tv-focus'), 'hide');
-      assert.equal(part(page.view(), '.jellypass-tv-title-hide-box .jellypass-tv-title-note'), 'Only for you in this household. This does not cancel requests or remove downloads.');
+      assert.equal(part(page.view(), '.jellypass-tv-title-hide-box .jellypass-tv-title-note'), 'Only for you in this household. It does not cancel requests or take anything out of your library.');
+      assert.doesNotMatch(page.view().querySelector('.jellypass-tv-title-hide-box').textContent, /download/i, 'store wording: never "download"');
       assert.equal(page.view().querySelector('.jellypass-tv-title-hidden-fact'), null);
       const before = page.requests.length;
       page.click(button);
@@ -6859,6 +6861,18 @@ describe('TV add-on: hidden titles ("Not interested")', { timeout: 240_000 }, ()
       await page.settled();
       assert.equal(part(rows(page)[0], '.jellypass-tv-hidden-message'), "We couldn't change that just now. Try again in a moment.");
       assert.equal(named(page).length, 1, 'the entry stays');
+    });
+
+    it('a refused token (401) on Unhide says sign in, with nothing left sending', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      await app.post(`${HIDDEN}/movie/${T_MOVIE}`);
+      const page = await open(t, app, { override: (pathname, init) => (pathname.startsWith(HIDDEN) && init.method === 'DELETE' ? { status: 401, body: '{"error":"unauthorized"}' } : undefined) });
+      await toHidden(page);
+      page.click(rows(page)[0].querySelector('.jellypass-tv-hidden-unhide'));
+      await page.settled();
+      assert.equal(part(page.document, '[data-jellypass-tv-hidden] .jellypass-tv-requests-error'), 'Sign in to continue');
+      assert.equal(page.document.documentElement.textContent.includes('Sending…'), false);
+      assert.equal(rows(page).length, 0);
     });
 
     describe('paging while titles are unhidden', () => {

@@ -1528,8 +1528,7 @@ blocking "Get this", so the household's view survives a rollback. What they do n
 request** on each My requests entry whose `cancellable` is true, and nowhere else: a server before `apiVersion` 2 sends
 no such field (so no button), and an entry the caller may not cancel has none. Each entry also shows `requestedOn` as
 the member's locale writes that UTC day (no time): "Requested on Oct 27, 2026". The button asks first (an inline
-confirmation in the web app, a sheet in the mobile app): "This withdraws your household's request. If it has already been
-approved, the download may still finish, but it won't be added for your household.", with **Cancel request** and
+confirmation in the web app, a sheet in the mobile app): "This withdraws your household's request. If it has already been approved, it may still be added to the server, but it won't be added for your household.", with **Cancel request** and
 **Keep request**. Confirming sends one `POST /requests/:id/cancel` with `{}` (both buttons disabled while it is out,
 never repeated by the app). On the fixed `202` the app shows the same **Request cancelled** every time, whatever the
 server then did, takes the entry off the list at once and reads the list again; the overlay (the in-memory memory of what
@@ -1651,8 +1650,7 @@ Unhide; those controls come in each client's own release. This section is the se
   never reads `/hidden` to filter a list (see `fetch-budget.json`, `hiding`).
 - **The household web app** (`app/src`). Controls appear only when `/me` says `apiVersion >= 3`; on an older server nothing
   of it is drawn, `#/requests/hidden` is My requests and `/hidden` is never called. A title page has **Not interested**
-  (**Unhide** once hidden, from the title's own `hidden` flag) with "Only for you in this household. This does not cancel
-  requests or remove downloads.", and after a hide a polite confirmation with **Undo**. A poster has a **More options**
+  (**Unhide** once hidden, from the title's own `hidden` flag) with "Only for you in this household. It does not cancel requests or take anything out of your library.", and after a hide a polite confirmation with **Undo**. A poster has a **More options**
   button, a sibling of its link (never inside it), that opens a one-item menu (Not interested): it opens from a click, a tap or
   Enter/Space, closes on Escape (focus back on the button), on choosing and on any click or focus outside, and needs no hover or
   long press. On a row, See all, a service or a studio page the title leaves at once, focus goes to the next card (else the

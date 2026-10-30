@@ -13,7 +13,7 @@ export const HIDDEN_TEXT = {
   hide: 'Not interested',
   unhide: 'Unhide',
   sending: 'Sending…',
-  note: 'Only for you in this household. This does not cancel requests or remove downloads.',
+  note: 'Only for you in this household. It does not cancel requests or take anything out of your library.',
   tag: 'Hidden from Discover',
   hidden: 'Hidden from Discover. Choose Unhide to undo.',
   unhidden: 'Unhidden.',
