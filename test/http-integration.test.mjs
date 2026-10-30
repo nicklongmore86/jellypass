@@ -423,7 +423,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     const seerrTest = await fetch(`${bridgeUrl}/webhooks/seerr`, {
       method: 'POST',
       headers: { Authorization: 'Bearer webhook-secret', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ notificationType: 'TEST_NOTIFICATION', request: { id: '' } }),
+      body: JSON.stringify({ notificationType: 'TEST_NOTIFICATION', event: '', media: {}, request: { id: '', requestedBy: { jellyfinUserId: '', username: '' } } }),
     });
     assert.equal(seerrTest.status, 202);
     assert.deepEqual(await seerrTest.json(), { status: 'ignored' });

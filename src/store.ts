@@ -453,11 +453,6 @@ export class GrantStore {
     return result;
   }
 
-  /** Whether joinGrant would change the grant now; it reads only, so it needs no turn in the write queue. */
-  public wouldJoin(input: { itemId: string; userId: string; groupIds: string[] }): boolean {
-    return Boolean(this.#planJoin(input));
-  }
-
   #planJoin(input: { itemId: string; userId: string; groupIds: string[] }): { previous: GrantRecord; join: LibraryJoin } | undefined {
     const itemId = normalizeId(input.itemId);
     const userId = normalizeId(input.userId);
@@ -1321,7 +1316,7 @@ function migrateState(value: unknown): { state: GrantState; changed: boolean } {
   };
   if (!candidate.grants || typeof candidate.grants !== 'object') throw new Error('state file is missing grants');
   if (typeof candidate.version === 'number' && candidate.version >= 1 && candidate.version < 7) {
-    throw new Error('pre-3.0 state schema is unsupported: upgrade via 3.9.x first');
+    throw new Error('1.x state (schema v1–v6) is unsupported: upgrade via 3.9.x first');
   }
   if (candidate.version !== 7) throw new Error('unsupported state schema version');
   if (!candidate.groups || typeof candidate.groups !== 'object') throw new Error('state file is missing groups');

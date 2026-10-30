@@ -530,7 +530,7 @@ A native client (an iPhone app first) uses the same `/jellypass/app/v1` API as t
 endpoint of its own. This is the contract it is built against; the server keeps it, and a store build that lags the
 server by months still works.
 
-- **One address, one household.** The household is the one whose address the client calls: `https://media.example.com`
+- **One address, one household.** The household is the one whose address the client calls: `https://jelly-<id>.<domain>`
   (from `HOUSEHOLD_DOMAIN` and the `jelly-` prefix), decided from the `Host` header the HTTP client sends, never from
   anything in the request. Every call goes to an absolute URL on that address: `https://<household host>/jellypass/app/v1/...`
   for the API and `https://<household host>/Users/...` and `/Sessions/Logout` for sign-in and sign-out, through the

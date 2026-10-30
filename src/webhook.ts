@@ -16,6 +16,7 @@ export function parseWebhook(value: unknown): SeerrWebhook | IgnoredWebhook {
   if (!NOTIFICATION_TYPE_PATTERN.test(notificationType)) throw new Error('notificationType is invalid');
   // Only availability events grant access. Others, such as Seerr's TEST_NOTIFICATION, are
   // acknowledged without validating IDs that Seerr leaves empty for them.
+  if (notificationType === 'TEST_NOTIFICATION') requireTemplate(body);
   if (notificationType !== 'MEDIA_AVAILABLE') return { notificationType };
   const request = objectAt(body, 'request');
   idAt(request, 'id');
@@ -75,4 +76,16 @@ function idAt(parent: Record<string, unknown>, key: string): string {
 function optionalIdAt(parent: Record<string, unknown>, key: string): string | undefined {
   if (parent[key] === undefined || parent[key] === null || parent[key] === '') return undefined;
   return idAt(parent, key);
+}
+
+// Seerr v3.5.1 uses its configured JSON template for Test too, with empty ID values.
+function requireTemplate(body: Record<string, unknown>): void {
+  const request = body.request;
+  const requestedBy = request && typeof request === 'object' ? (request as Record<string, unknown>).requestedBy : null;
+  if (typeof body.event !== 'string' || !body.media || typeof body.media !== 'object' || Array.isArray(body.media)
+    || !requestedBy || typeof requestedBy !== 'object' || Array.isArray(requestedBy)
+    || typeof (requestedBy as Record<string, unknown>).jellyfinUserId !== 'string'
+    || typeof (requestedBy as Record<string, unknown>).username !== 'string') {
+    throw new Error('webhook_payload_removed_use_current_seerr_template');
+  }
 }

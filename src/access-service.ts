@@ -586,6 +586,24 @@ export class AccessService {
     this.#metrics.gauge('jfa_last_webhook_received_timestamp_seconds', Math.floor(Date.now() / 1000));
   }
 
+  #lastRemovedWebhookAt: number | null = null;
+  #removedWebhookWarnings = new Map<string, number>();
+
+  public webhookStatus(): { lastRemovedFormAt: number | null } {
+    return { lastRemovedFormAt: this.#lastRemovedWebhookAt };
+  }
+
+  public recordRemovedWebhook(error: string): void {
+    const now = Date.now();
+    this.#lastRemovedWebhookAt = now;
+    this.recordWebhookReceived();
+    this.#metrics.increment('jfa_webhooks_total', { result: 'removed_form' });
+    if (now - (this.#removedWebhookWarnings.get(error) ?? -Infinity) >= 60_000) {
+      this.#removedWebhookWarnings.set(error, now);
+      console.warn(JSON.stringify({ level: 'warn', message: 'Seerr webhook refused: update authorization header and template', error }));
+    }
+  }
+
   public recordInvalidWebhook(): void {
     this.#metrics.increment('jfa_webhooks_total', { result: 'invalid' });
   }

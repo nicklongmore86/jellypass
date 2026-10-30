@@ -202,6 +202,7 @@ export function makeServer(
       }
       if (request.method === 'POST' && url.pathname === '/webhooks/seerr') {
         if (url.searchParams.has('token')) {
+          service.recordRemovedWebhook('webhook_query_token_removed_use_authorization_header');
           return json(response, 400, { error: 'webhook_query_token_removed_use_authorization_header' });
         }
         if (!authorized(request, tokens.webhook)) {
@@ -212,10 +213,11 @@ export function makeServer(
         try {
           event = parseWebhook(await readJson(request, { requireJsonType: false }));
         } catch (error) {
-          service.recordInvalidWebhook();
           if (error instanceof Error && error.message === 'webhook_payload_removed_use_current_seerr_template') {
+            service.recordRemovedWebhook(error.message);
             return json(response, 400, { error: error.message });
           }
+          service.recordInvalidWebhook();
           throw error;
         }
         const result = await service.processWebhook(event);
@@ -231,6 +233,7 @@ export function makeServer(
         if (session.status !== 'active') return json(response, 401, { error: 'unauthorized' });
       }
 
+      if (request.method === 'GET' && url.pathname === '/v1/webhooks/status') return json(response, 200, service.webhookStatus());
       if (request.method === 'GET' && url.pathname === '/metrics') {
         return text(response, 200, service.renderMetrics() + (jellyfinVersion?.renderMetrics() ?? ''), 'text/plain; version=0.0.4; charset=utf-8');
       }

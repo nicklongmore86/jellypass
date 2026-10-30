@@ -18,7 +18,6 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
-<<<<<<< HEAD
 ### BREAKING — 4.0 cuts
 
 - Removed the legacy add-to-library page. Use **Get this** in the household app.
@@ -31,12 +30,22 @@ changes are always listed at the top of the release notes.
   (event, media, request and requestedBy). Reduced older templates receive
   `400 webhook_payload_removed_use_current_seerr_template`; replace the template
   in Seerr's webhook UI. Empty Jellyfin IDs still resolve through the Seerr API.
-- Upgrade from **2.x via 3.9.x first**, with a state backup. Pre-3.0 schemas
-  v1–v6 fail startup with that instruction. Schema v7 is retained for 3.x;
+- Upgrade from **2.x via 3.9.x first**, with a state backup.
+  1.x state (schema v1–v6) files fail startup with that instruction.
+  Schema v7 is retained for 3.x;
   2.x also wrote v7 without a release marker, so that provenance cannot be
   detected. Rollback to 2.x is unsupported; use a matching pre-upgrade backup.
 
-=======
+Before upgrading, on **3.9.x/3.10**:
+
+1. In Seerr → Settings → Notifications → Webhook, set Authorization Header to `Bearer <WEBHOOK_TOKEN>`.
+2. Remove `?token=…` from the URL.
+3. Check the payload has `request.requestedBy` with `jellyfinUserId` and `username`.
+4. Press Test and expect `202 ignored` (`401` means the header is wrong).
+5. After upgrading, watch `jfa_webhooks_total{result="removed_form"}` and the admin dashboard warning.
+
+Refused availability webhooks are not retried; missed titles rely on the request backfill.
+
 JellyPass now has a written Jellyfin support policy: **it supports the current
 Jellyfin release and the one before it, Jellyfin 12.x and 10.11.x**, and tests
 both against a real Jellyfin in CI and before every release. On any other
@@ -102,7 +111,6 @@ upgrading:
   (previous)" instead of "Jellyfin 10.11 or newer".
 - `docs/tv-addon.md`: the TV add-on is matched to the supported Jellyfin
   releases.
->>>>>>> origin/main
 
 ## [3.9.0] - 2026-10-29
 

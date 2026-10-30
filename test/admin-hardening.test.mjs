@@ -356,10 +356,37 @@ describe('admin surface hardening', { timeout: 20_000 }, () => {
     }
   });
 
+  it('reports removed forms, checks Test templates and rate limits structured warnings', async () => {
+    const warnings = [];
+    const previous = console.warn;
+    console.warn = (line) => warnings.push(JSON.parse(line));
+    try {
+      // Each error was already warned above; repeats must not flood the log.
+      for (let i = 0; i < 3; i++) {
+        const answer = await send(port, '/webhooks/seerr?token=secret', {}, { method: 'POST', body: '{}' });
+        assert.equal(answer.status, 400);
+      }
+      for (const requestedBy of [undefined, {}, { jellyfinUserId: '' }, { username: '' }]) {
+        const answer = await send(port, '/webhooks/seerr', { authorization: 'Bearer webhook-secret' }, {
+          method: 'POST', body: JSON.stringify({ notificationType: 'TEST_NOTIFICATION', event: '', media: {}, request: { id: '', requestedBy } }),
+        });
+        assert.equal(answer.status, 400);
+        assert.equal(JSON.parse(answer.body).error, 'webhook_payload_removed_use_current_seerr_template');
+      }
+      assert.equal(warnings.length, 0);
+    } finally { console.warn = previous; }
+    const status = await send(port, '/v1/webhooks/status', { authorization: 'Bearer admin-secret' });
+    assert.ok(Date.now() - JSON.parse(status.body).lastRemovedFormAt < 5000);
+    assert.equal((await send(port, '/v1/webhooks/status', {})).status, 401);
+    const metrics = await send(port, '/metrics', { authorization: 'Bearer admin-secret' });
+    assert.match(metrics.body, /jfa_webhooks_total\{result="removed_form"\} 12/);
+    assert.match(metrics.body, /jfa_last_webhook_received_timestamp_seconds [1-9]/);
+  });
+
   it('keeps the Seerr webhook, /health and /metrics as they were', async () => {
     const webhook = await send(port, '/webhooks/seerr', { authorization: 'Bearer webhook-secret', 'content-type': 'text/plain', 'sec-fetch-site': 'cross-site' }, {
       method: 'POST',
-      body: JSON.stringify({ notificationType: 'TEST_NOTIFICATION', request: { id: '1' } }),
+      body: JSON.stringify({ notificationType: 'TEST_NOTIFICATION', event: '', media: {}, request: { id: '', requestedBy: { jellyfinUserId: '', username: '' } } }),
     });
     assert.equal(webhook.status, 202);
     assert.equal((await send(port, '/health', {})).status, 200);

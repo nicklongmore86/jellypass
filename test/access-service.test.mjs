@@ -40,7 +40,7 @@ describe('access tags and webhook validation', () => {
   });
 
   it('ignores non-availability events without validating their IDs', async (t) => {
-    assert.deepEqual(parseWebhook({ notificationType: 'TEST_NOTIFICATION', request: { id: '' } }), { notificationType: 'TEST_NOTIFICATION' });
+    assert.deepEqual(parseWebhook({ notificationType: 'TEST_NOTIFICATION', event: '', media: {}, request: { id: '', requestedBy: { jellyfinUserId: '', username: '' } } }), { notificationType: 'TEST_NOTIFICATION' });
     assert.deepEqual(parseWebhook({ notificationType: 'MEDIA_PENDING' }), { notificationType: 'MEDIA_PENDING' });
     assert.throws(() => parseWebhook({ notificationType: 'MEDIA_AVAILABLE', request: { id: '' } }), /id must be a non-empty string/);
     assert.throws(() => parseWebhook({ notificationType: 'MEDIA_AVAILABLE' }), /request must be an object/);
@@ -53,7 +53,7 @@ describe('access tags and webhook validation', () => {
     const store = new GrantStore(await stateFile(t));
     await store.load();
     const service = new AccessService(fakeJellyfin(), store);
-    assert.equal(await service.processWebhook(parseWebhook({ notificationType: 'TEST_NOTIFICATION', request: { id: '' } })), null);
+    assert.equal(await service.processWebhook(parseWebhook({ notificationType: 'TEST_NOTIFICATION', event: '', media: {}, request: { id: '', requestedBy: { jellyfinUserId: '', username: '' } } })), null);
     assert.equal(store.list().length, 0);
     assert.match(service.renderMetrics(), /jfa_webhooks_total\{result="ignored"\} 1/);
   });
@@ -1138,4 +1138,22 @@ describe('Seerr recent requests cache', () => {
       assert.equal(calls.list, 2);
     });
   });
+});
+
+it('logs each removed-form error once per minute while counting every refusal', async (t) => {
+  const store = new GrantStore(await stateFile(t));
+  await store.load();
+  const service = new AccessService(fakeJellyfin(), store);
+  const warnings = [];
+  const previous = console.warn;
+  console.warn = (line) => warnings.push(JSON.parse(line));
+  try {
+    for (const error of ['webhook_query_token_removed_use_authorization_header', 'webhook_payload_removed_use_current_seerr_template']) {
+      service.recordRemovedWebhook(error);
+      service.recordRemovedWebhook(error);
+    }
+  } finally { console.warn = previous; }
+  assert.equal(warnings.length, 2);
+  assert.ok(warnings.every((entry) => entry.level === 'warn' && entry.error.startsWith('webhook_')));
+  assert.match(service.renderMetrics(), /jfa_webhooks_total\{result="removed_form"\} 4/);
 });

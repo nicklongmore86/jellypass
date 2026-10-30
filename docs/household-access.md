@@ -20,8 +20,8 @@ The recovered integration suite confirms that password authentication is still d
 Give every household its own JellyPass hostname, following the pattern of the first household:
 
 ```text
-media.example.com
-media-b.example.com
+jelly-household-a.example.com
+jelly-household-b.example.com
 ```
 
 Jellyfin clients use the household hostname as their server address. JellyPass uses that hostname to present only the household's users instead of the server-wide public-user list. The final sign-in experience is passwordless and uses an identity provider assigned to that household.

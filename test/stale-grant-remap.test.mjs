@@ -1727,7 +1727,6 @@ describe('store writes that throw partway leave everything as it was', { timeout
 // Keep verifying that existing audit records and removal marks survive grant moves.
 async function seedJoin(service, store, userId, itemId) {
   const input = { itemId, userId, groupIds: store.listGroupIdsForUser(userId) };
-  if (!store.wouldJoin(input)) return 'unchanged';
   const joined = await store.joinGrant(input);
   if (!joined) return 'unchanged';
   await service.setGrantGroups(itemId, joined.current.groupIds);

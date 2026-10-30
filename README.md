@@ -467,7 +467,7 @@ unreachable, is handled normally when it is retried.
 
 After configuration, use Seerr's test function if available. Every event
 other than `MEDIA_AVAILABLE`, including Seerr's `TEST_NOTIFICATION`, returns
-`202` with `{"status":"ignored"}` once the token is accepted, even though Seerr
+`202` with `{"status":"ignored"}` once the token and full Test template are accepted, even though Seerr
 sends an empty request ID for test events. The `notificationType` itself must
 still be a real value made of uppercase letters and underscores; an unfilled
 `{{notification_type}}` returns `400` and is counted as invalid. A `202` therefore proves only that
@@ -551,7 +551,7 @@ HOUSEHOLD_HOST_PREFIX=jelly-
 ```
 
 the group ID `grove` receives the URL
-`https://media.example.com`. On that hostname, JellyPass filters
+`https://jelly-grove.example.com`. On that hostname, JellyPass filters
 Jellyfin's public-user response to the group's members and proxies supported
 Jellyfin HTTP, streaming, byte-range, HLS, and WebSocket traffic.
 
@@ -896,7 +896,7 @@ About screen, as TMDB's API terms require.
 ### Household app (PWA)
 
 With `HOUSEHOLD_APP_ENABLED=true`, each household hostname also serves the
-app itself at `https://media.example.com/jellypass/app/`: an
+app itself at `https://jelly-<household>.<HOUSEHOLD_DOMAIN>/jellypass/app/`: an
 installable web app (a PWA) to browse what is in the household's Jellyfin
 library and find more to watch. It shows each title's state (`Ready to watch`
 with a **Play** button, `Available to get`, `Requested` or `Can't request`) and offers
@@ -1074,10 +1074,19 @@ Back up the state file first. Read the [changelog](CHANGELOG.md) before
 changing between versioned tags. For 4.0, replace any webhook URL `?token=` with
 `Authorization: Bearer YOUR_WEBHOOK_TOKEN` in Seerr's webhook form and use the
 full template above. Use **Get this** in the household app to add a title.
-Upgrade from 2.x (or older) via 3.9.x first. State schemas v1–v6 are refused;
+Upgrade from 2.x (or older) via 3.9.x first. 1.x state (schema v1–v6) is refused;
 3.x schema v7 is retained. Schema v7 was also used by 2.x and has no release
 marker, so the server cannot detect that source version. Rollback to 2.x is
 unsupported; restore a backup made with the release you intend to run.
+
+Pin the desired image before upgrading or rolling back:
+
+```sh
+JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:PREVIOUS_VERSION docker compose up -d
+```
+
+Rollback requires the pre-upgrade backup. See the [3.0.0 notes](CHANGELOG.md#300---2026-10-26)
+for administrator sign-in and API changes.
 
 Upgrading from 3.0.0 to 3.0.1 changes neither the state file nor any setting;
 admin requests to routes that read no body are now `415` if they carry a
