@@ -1,7 +1,9 @@
 // Checks a GitHub Actions workflow's jellyfin-integration job against scripts/jellyfin-versions.json: its matrix must
 // list exactly the pinned image/version pairs (none missing, none extra, none mispaired), its test step must run on the
 // matrix image with nothing that skips it or ignores its failure, and (for the release workflow) the publishing jobs
-// must wait for it.
+// must wait for it. Its triggers must also still start it: each event `requiredOn` names, with no filter that could skip
+// the runs that matter (paths filters, ignore lists, `!` patterns, a branch or tag list without the required one, or
+// pull_request types without opened and synchronize).
 //
 // The repository has no YAML parser, so readWorkflow reads the YAML subset the workflows use: one document of block
 // mappings and sequences, plain and quoted single-line scalars, one-line flow sequences of those scalars, and literal (`|`)
@@ -30,10 +32,13 @@ export function jellyfinMatrix(workflowText) {
 
 /**
  * Throws, saying why, unless the workflow's matrix is exactly `pinned` (in any order), its one `pnpm test:real` step
- * runs on the matrix image and version and always runs and fails the job, and each of `publishJobs` waits for
- * jellyfin-integration (directly or through another job that does) with no `if` that would run it after a failure.
+ * runs on the matrix image and version and always runs and fails the job, each of `publishJobs` waits for
+ * jellyfin-integration (directly or through another job that does) with no `if` that would run it after a failure, and
+ * it runs on every event in `requiredOn`: `{ pull_request: {} }` for every pull request, `{ push: { branches: 'main' } }`
+ * for pushes to main, `{ push: { tags: 'v*.*.*' } }` for release tags.
  */
-export function checkJellyfinMatrix(workflowText, pinned, { publishJobs = [] } = {}) {
+export function checkJellyfinMatrix(workflowText, pinned, { publishJobs = [], requiredOn } = {}) {
+  if (!isMapping(requiredOn) || !Object.keys(requiredOn).length) throw new Error('requiredOn must name the triggers to check');
   const key = ({ image, version }) => `${image} @ ${version}`;
   const wanted = pinned.map(key);
   const found = jellyfinMatrix(workflowText).map(key);
@@ -46,6 +51,7 @@ export function checkJellyfinMatrix(workflowText, pinned, { publishJobs = [] } =
   }
 
   const workflow = readWorkflow(workflowText);
+  checkTriggers(workflow.on, requiredOn);
   // Workflow defaults (a shell, a working directory) would change how the test step runs.
   if (Object.hasOwn(workflow, 'defaults')) throw new Error('the workflow must not set defaults');
   const job = workflow.jobs[MATRIX_JOB];
@@ -76,6 +82,39 @@ export function checkJellyfinMatrix(workflowText, pinned, { publishJobs = [] } =
       throw new Error(`${name} has "if: ${publish.if}", which could run it after ${MATRIX_JOB} fails`);
     }
     if (!gatedBy(workflow.jobs, name)) throw new Error(`${name} does not need ${MATRIX_JOB}`);
+  }
+}
+
+/** Throws unless every event in `required` triggers the workflow with no filter that could skip the required runs. */
+function checkTriggers(on, required) {
+  // `on: push` and `on: [push, pull_request]` are the unfiltered short forms.
+  const events = typeof on === 'string' ? { [on]: null } : Array.isArray(on) ? Object.fromEntries(on.map((event) => [event, null])) : on;
+  if (!isMapping(events)) throw new Error('the workflow has no "on" triggers');
+  for (const [event, want] of Object.entries(required)) {
+    if (!Object.hasOwn(events, event)) throw new Error(`the workflow does not run on ${event}`);
+    const filters = events[event] ?? {};
+    if (!isMapping(filters)) throw new Error(`on.${event} must be empty or a mapping of filters`);
+    const allowed = event === 'pull_request' ? ['branches', 'types'] : ['branches', 'tags'];
+    onlyKeys(filters, allowed, `on.${event}`);
+    const list = (name) => {
+      if (!Object.hasOwn(filters, name)) return null;
+      const value = typeof filters[name] === 'string' ? [filters[name]] : filters[name];
+      if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) throw new Error(`on.${event}.${name} is not a list`);
+      if (name !== 'types' && value.some((item) => item.startsWith('!'))) throw new Error(`on.${event}.${name} must not exclude with "!"`);
+      return value;
+    };
+    const branches = list('branches');
+    const tags = list('tags');
+    // A push with only one of branches and tags runs for none of the other kind.
+    for (const [name, mine, other] of [['branches', branches, tags], ['tags', tags, branches]]) {
+      const needed = event === 'pull_request' ? (name === 'branches' ? 'main' : null) : want[name];
+      if (!needed) continue;
+      if (mine ? !mine.includes(needed) : other) throw new Error(`on.${event} does not run for ${name} ${needed}`);
+    }
+    const types = event === 'pull_request' ? list('types') : null;
+    if (types && !['opened', 'synchronize'].every((type) => types.includes(type))) {
+      throw new Error('on.pull_request.types must include opened and synchronize');
+    }
   }
 }
 

@@ -25,6 +25,9 @@ import { makeTempDir } from './support/temp-dir.mjs';
 const HOST = 'jelly-grove.example.test';
 const ADMIN = { Authorization: 'Bearer admin-secret' };
 const RELAYED = 'jellyfin web page';
+// CI runs on every pull request and every push to main; the release workflow on every release tag.
+const CI_ON = { pull_request: {}, push: { branches: 'main' } };
+const RELEASE_ON = { push: { tags: 'v*.*.*' } };
 
 describe('supported Jellyfin versions', () => {
   it('supports every 10.11.x and every 12.x, and nothing else', () => {
@@ -47,8 +50,8 @@ describe('supported Jellyfin versions', () => {
     for (const release of SUPPORTED_JELLYFIN_RELEASES) {
       assert.ok(pinned.some(({ version }) => version === release || version.startsWith(`${release}.`)), `no CI image for ${release}`);
     }
-    checkJellyfinMatrix(await readFile('.github/workflows/ci.yaml', 'utf8'), pinned);
-    checkJellyfinMatrix(await readFile('.github/workflows/release.yaml', 'utf8'), pinned, { publishJobs: ['container', 'release'] });
+    checkJellyfinMatrix(await readFile('.github/workflows/ci.yaml', 'utf8'), pinned, { requiredOn: CI_ON });
+    checkJellyfinMatrix(await readFile('.github/workflows/release.yaml', 'utf8'), pinned, { publishJobs: ['container', 'release'], requiredOn: RELEASE_ON });
   });
 
   it('refuses a workflow matrix that differs from the pinned images in any way', () => {
@@ -84,7 +87,7 @@ describe('supported Jellyfin versions', () => {
       '      - run: gh release create',
       '',
     ].join('\n');
-    const options = { publishJobs: ['container', 'release'] };
+    const options = { publishJobs: ['container', 'release'], requiredOn: RELEASE_ON };
     checkJellyfinMatrix(workflow(), pinned, options);
     checkJellyfinMatrix(workflow({ entries: [...pinned].reverse() }), pinned, options);
     assert.deepEqual(jellyfinMatrix(workflow()), pinned);
@@ -148,7 +151,39 @@ describe('supported Jellyfin versions', () => {
     refused(workflow().replace("    if: startsWith(github.ref, 'refs/tags/v')", "    if: always() && startsWith(github.ref, 'refs/tags/v')"), /release has "if: always\(\) && /);
     refused(workflow().replace('    needs: container', '    needs: [container, validate]').replace(/ {2}container:\n {4}needs: .*\n/, '  container:\n    if: always()\n    needs: [validate, jellyfin-integration]\n'), /container has "if: always\(\)"/);
     refused(workflow().replace('    needs: container', '    needs: validate'), /release does not need jellyfin-integration/);
-    assert.throws(() => checkJellyfinMatrix(workflow(), pinned, { publishJobs: ['publish'] }), /no publish job/);
+    assert.throws(() => checkJellyfinMatrix(workflow(), pinned, { ...options, publishJobs: ['publish'] }), /no publish job/);
+    assert.throws(() => checkJellyfinMatrix(workflow(), pinned, { publishJobs: [] }), /requiredOn must name the triggers/);
+
+    // Triggers: the real forms pass; anything that could skip the runs that matter is refused.
+    const on = (text) => {
+      const replaced = workflow().replace("on:\n  push:\n    tags: ['v*.*.*']\n", `${text}\n`);
+      assert.notEqual(replaced, workflow());
+      return replaced;
+    };
+    const ci = (text) => checkJellyfinMatrix(on(text), pinned, { requiredOn: CI_ON });
+    const ciRefused = (text, pattern) => assert.throws(() => ci(text), pattern);
+    const release = (text) => checkJellyfinMatrix(on(text), pinned, options);
+    const releaseRefused = (text, pattern) => assert.throws(() => release(text), pattern);
+    ci('on:\n  push:\n    branches: [main]\n  pull_request:');
+    ci('on: [push, pull_request]');
+    ci('on:\n  push:\n  pull_request:\n    branches: [main]\n    types: [opened, synchronize, reopened]');
+    release("on:\n  push:\n    branches: [main]\n    tags: ['v*.*.*']\n  workflow_dispatch:");
+    release('on:\n  push:\n    tags: v*.*.*');
+    ciRefused('on: workflow_dispatch', /does not run on pull_request/);
+    releaseRefused('on: workflow_dispatch', /does not run on push/);
+    ciRefused('on:\n  push:\n    branches: [main]', /does not run on pull_request/);
+    ciRefused('on:\n  pull_request:', /does not run on push/);
+    ciRefused("on:\n  push:\n    tags: ['v*.*.*']\n  pull_request:", /on\.push does not run for branches main/);
+    releaseRefused('on:\n  push:\n    branches: [main]\n  workflow_dispatch:', /on\.push does not run for tags v\*\.\*\.\*/);
+    releaseRefused("on:\n  push:\n    tags: ['v*']", /on\.push does not run for tags v\*\.\*\.\*/);
+    releaseRefused("on:\n  push:\n    tags: ['v*.*.*', '!v1.*']", /on\.push\.tags must not exclude/);
+    ciRefused("on:\n  push:\n    branches: [main]\n  pull_request:\n    paths-ignore: ['src/**']", /on\.pull_request has unexpected "paths-ignore"/);
+    ciRefused("on:\n  push:\n    branches: [main]\n    paths: ['docs/**']\n  pull_request:", /on\.push has unexpected "paths"/);
+    ciRefused('on:\n  push:\n    branches-ignore: [main]\n  pull_request:', /on\.push has unexpected "branches-ignore"/);
+    ciRefused('on:\n  push:\n    branches: [release]\n  pull_request:', /on\.push does not run for branches main/);
+    ciRefused('on:\n  push:\n    branches: [main]\n  pull_request:\n    branches: [develop]', /on\.pull_request does not run for branches main/);
+    ciRefused('on:\n  push:\n    branches: [main]\n  pull_request:\n    types: [closed]', /types must include opened and synchronize/);
+    ciRefused('on:\n  push:\n    branches: [main]\n  pull_request: x', /on\.pull_request must be empty or a mapping/);
 
     // Anything the reader does not fully support is refused rather than guessed at.
     refused(workflow().replace('fail-fast: false', 'fail-fast: &x false'), /unsupported YAML/);
