@@ -1,9 +1,15 @@
-# Trending's full grid, from the link beside its heading on Home.
+# Trending's full grid, from the link beside its heading on Home. Each flow is a new Maestro session, and its first tap
+# is sometimes lost, so every tap that moves to another screen is repeated until that screen shows.
 appId: com.rtc-services.jellypass
 ---
-- tapOn: "See all Trending"
-- extendedWaitUntil:
-    visible: "Back"
-    timeout: 30000
+- repeat:
+    while:
+      notVisible: "Back"
+    times: 5
+    commands:
+      - tapOn: "See all Trending"
+      - waitForAnimationToEnd:
+          timeout: 5000
+- assertVisible: "Back"
 - waitForAnimationToEnd:
     timeout: 10000

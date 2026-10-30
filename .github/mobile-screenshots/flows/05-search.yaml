@@ -1,7 +1,7 @@
 # Search for a film the demo household has: Big Buck Bunny shows as In library.
 appId: com.rtc-services.jellypass
 ---
-# The first tap on the tab is sometimes lost just after My requests loads, so it is tapped until Search shows.
+# Taps are repeated until they land (03-see-all.yaml).
 - repeat:
     while:
       notVisible:

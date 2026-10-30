@@ -1,9 +1,24 @@
-# Back to Home, then the demo member's own requests.
+# Back to Home, then the demo member's own requests. Taps are repeated until they land (03-see-all.yaml).
 appId: com.rtc-services.jellypass
 ---
-- tapOn: "Back"
-- tapOn:
-    id: "tab-requests"
+- repeat:
+    while:
+      visible: "Back"
+    times: 5
+    commands:
+      - tapOn: "Back"
+      - waitForAnimationToEnd:
+          timeout: 5000
+- repeat:
+    while:
+      notVisible:
+        id: "request-list"
+    times: 5
+    commands:
+      - tapOn:
+          id: "tab-requests"
+      - waitForAnimationToEnd:
+          timeout: 5000
 - extendedWaitUntil:
     visible: "Requested.*"
     timeout: 30000
