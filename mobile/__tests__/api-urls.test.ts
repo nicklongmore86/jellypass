@@ -39,7 +39,7 @@ describe('a household address', () => {
     ['https://my-house-2.example.com', 'my-house-2.example.com'],
     ['https://xn--bcher-kva.example', 'xn--bcher-kva.example'],
     [`https://${'a'.repeat(63)}.example.com`, `${'a'.repeat(63)}.example.com`],
-    // Example household addresses, including the shape older app versions took.
+    // Neutral example addresses with a household subdomain and the legacy jelly- prefix.
     ['https://grove.example.org', 'grove.example.org'],
     ['https://jelly-household.example.test', 'jelly-household.example.test'],
     // A paste from notes or chat: ASCII space, tab, CR and LF at the ends only.

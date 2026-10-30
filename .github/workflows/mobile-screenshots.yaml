@@ -1,6 +1,10 @@
 name: Mobile screenshots
 
-# App Store screenshots use a simulator build and a configured demo household.
+# App Store screenshots use a Release simulator build and a configured demo household.
+# Devices: iPhone 6.9" (1320x2868) and iPad 13" (2064x2752), both portrait.
+# The screenshots artifact contains the six numbered App Store images for each device.
+# Store image 06-sign-in shows the address screen and may reveal the configured address.
+# Never upload Maestro debug output: commands and view trees can contain expanded secrets.
 # Set MOBILE_SCREENSHOT_ADDRESS and MOBILE_SCREENSHOT_PROFILE repository secrets.
 #
 # Run by hand (Actions → Mobile screenshots → Run workflow) on any ref, or push a `screenshots/**` branch to take them
@@ -47,7 +51,17 @@ jobs:
           cache: pnpm
           cache-dependency-path: mobile/pnpm-lock.yaml
       - name: Require screenshot configuration
-        run: test -n "$ADDRESS" && test -n "$PROFILE"
+        run: |
+          missing=0
+          if [ -z "$ADDRESS" ]; then
+            echo "::error::Missing MOBILE_SCREENSHOT_ADDRESS repository secret"
+            missing=1
+          fi
+          if [ -z "$PROFILE" ]; then
+            echo "::error::Missing MOBILE_SCREENSHOT_PROFILE repository secret"
+            missing=1
+          fi
+          exit "$missing"
       - name: Show the toolchain
         run: |
           xcodebuild -version
@@ -92,14 +106,6 @@ jobs:
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: screenshots
-          path: screenshots/
+          path: screenshots/*/0[1-6]-*.png
+          retention-days: 3
           if-no-files-found: error
-      # On a failure, Maestro's own record of the failing flow (its screenshot and view tree) and whatever was taken.
-      - if: failure()
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: maestro-debug
-          path: |
-            ~/.maestro/tests/
-            screenshots/
-          if-no-files-found: ignore
