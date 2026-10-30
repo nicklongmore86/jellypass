@@ -55,6 +55,10 @@ upgrading:
 
 ### Security
 
+- **Household hosts refuse paths with empty segments.** HTTP requests and
+  WebSocket upgrades whose raw or once-decoded path contains `//` receive a
+  fixed `404 not_found` before any relay. This is precautionary hardening;
+  no disclosure was observed on real Jellyfin or production.
 - **A request must name exactly one host.** Until now, a request with two
   `Host` headers was answered for the first of them, so a client reaching the
   JellyPass port directly could have it read a different host from a proxy

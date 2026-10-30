@@ -1014,6 +1014,7 @@ export async function startApp(t, state = world(), options = {}) {
   await listen(server);
   const port = server.address().port;
   return {
+    server,
     port,
     /** The JellyPass server, to watch its own end of a connection. */
     server,

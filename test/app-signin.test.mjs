@@ -390,7 +390,7 @@ describe('household app sign-in through the gateway', { timeout: 30_000 }, () =>
       assert.equal(verifications(app), 7, 'each checked with Jellyfin again');
     });
 
-    for (const path of ['/Sessions/Logout/', '/sessions/logout', '/SESSIONS/LOGOUT', '/Sessions/Logout?client=web', '/Sessions/%4Cogout', '/Sessions/Logout//']) {
+    for (const path of ['/Sessions/Logout/', '/sessions/logout', '/SESSIONS/LOGOUT', '/Sessions/Logout?client=web', '/Sessions/%4Cogout']) {
       it(`forgets it when it signs out at ${path}, as Jellyfin routes it`, async (t) => {
         const app = await startApp(t, world({ passwords }));
         const token = await tokenOf(app, HOST_A, 'Alice', 'alice-pass');
@@ -919,7 +919,6 @@ describe('Quick Connect and Streamyfin on a household host', { timeout: 30_000 }
       path.toLowerCase(),
       path.toUpperCase(),
       `${path}/`,
-      `${path}//`,
       `/${first}/%${rest.charCodeAt(0).toString(16).toUpperCase()}${rest.slice(1)}`,
       `/emby${path}`,
       `/MediaBrowser${path}/`,

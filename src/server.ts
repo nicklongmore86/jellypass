@@ -140,7 +140,6 @@ export function makeServer(
   const server = createServer({ requireHostHeader: false }, async (request, response) => {
     try {
       if (!singleHost(request)) return invalidHost(response);
-      const url = new URL(request.url ?? '/', 'http://localhost');
       const householdId = householdGateway?.householdId(request.headers.host);
       if (householdId) {
         const decision = jellyfinVersion ? await jellyfinVersion.householdDecision() : 'serve';
@@ -148,6 +147,7 @@ export function makeServer(
         await householdGateway?.handle(request, response, householdId);
         return;
       }
+      const url = new URL(request.url ?? '/', 'http://localhost');
       const segments = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
       // Cross-site request forgery: a state-changing request a browser sends with the session cookie must come from the
       // admin origin itself. SameSite=Strict alone is not enough, as every sibling host under the same site (household

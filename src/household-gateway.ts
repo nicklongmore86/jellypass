@@ -284,6 +284,10 @@ export class HouseholdGateway {
   }
 
   public async handle(request: IncomingMessage, response: ServerResponse, householdId: string): Promise<void> {
+    if (hasEmptyPathSegment(request.url ?? '/')) {
+      writeJson(response, 404, { error: 'not_found' }, NEVER_STORE);
+      return;
+    }
     const requestUrl = new URL(request.url ?? '/', 'http://localhost');
     // Every decision below is made on the route Jellyfin takes the path to, never on the path as spelled.
     const route = jellyfinRoute(request.url ?? '/');
@@ -465,6 +469,16 @@ export class HouseholdGateway {
       exchange.error('client', 'websocket client socket', error);
       socket.destroy();
     });
+    if (hasEmptyPathSegment(request.url ?? '/')) {
+      const body = JSON.stringify({ error: 'not_found' });
+      // A peer may keep its writable half open forever. Flush the answer, then close both halves;
+      // the timer also closes a socket whose peer never drains the write.
+      const timer = setTimeout(() => socket.destroy(), 1_000);
+      timer.unref();
+      socket.once('close', () => clearTimeout(timer));
+      socket.write(`HTTP/1.1 404 Not Found\r\n${neverStoreHeaders()}Content-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`, () => socket.destroy());
+      return;
+    }
     if (this.#closing) {
       socket.end(`HTTP/1.1 503 Service Unavailable\r\n${neverStoreHeaders()}Connection: close\r\n\r\n`);
       return;
@@ -1874,6 +1888,13 @@ function carriesToken(credentials: JellyfinCredentials): boolean {
 }
 
 const LEGACY_PREFIXES = new Set(['emby', 'mediabrowser']);
+
+function hasEmptyPathSegment(target: string): boolean {
+  const path = target.split('?', 1)[0] as string;
+  // Only %2F can introduce a slash in one percent-decode. Checking it directly also
+  // catches empty segments alongside malformed escapes, which routing refuses separately.
+  return path.includes('//') || path.replace(/%2f/gi, '/').includes('//');
+}
 
 /**
  * The route Jellyfin 10.11 takes a request target to, which every decision a household host makes about a path is made
