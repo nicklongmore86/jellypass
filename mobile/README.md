@@ -265,9 +265,9 @@ filters. The PWA has no such page.
   `tv-discover-list`. Failures, Try again and a 401 are as on the network and studio pages.
 
 **Tests.** `list.test.tsx` (each row's link under All, Movies and TV, its name and place after the heading, the route
-and the row's titles with no call, the filter and New only kept, Load more, Back to the grid, the address, Not found,
-each failure, a 401, every pressable named and 44 pt, every text free to grow, the badges, phone and iPad columns) and
-`row-pages.test.ts`.
+and the row's titles with no call, the filter and New only kept, Load more, Back to the grid, the address and its
+calls, Not found), `list-states.test.tsx` (each failure, a 401, an empty list, every pressable named and 44 pt, every
+text free to grow, the badges, phone and iPad columns) and `row-pages.test.ts`.
 
 ## Title pages and Get this (`src/title`, `src/screens/TitleScreen.tsx`)
 
