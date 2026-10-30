@@ -108,6 +108,11 @@ export function networkLinkName(prefix: string, name: string): string {
   return `See all ${prefix} ${name}`;
 }
 
+/** The link beside a list row's heading on Home, to its full grid: "See all Trending". */
+export function listLinkName(heading: string): string {
+  return `See all ${heading}`;
+}
+
 export function stateLabel(state: HouseholdState): string {
   return Object.hasOwn(STATE_LABELS, state) ? STATE_LABELS[state] : STATE_LABELS.unavailable;
 }

@@ -15,10 +15,17 @@ build.
 
 ## [Unreleased]
 
-Store-readiness changes that need no server change.
+Store-readiness changes and See all pages for Home's rows; none needs a server change.
 
 ### Added
 
+- **Home: See all on every list row.** Trending, Popular movies, Popular series, New movie releases, Upcoming movies
+  and Upcoming series (and Trending movies / Trending series under the Movies and TV filters) have the same chevron
+  after their heading as the service rows, a link named "See all <heading>" (for example "See all Trending"). It opens
+  the row's full list as a poster grid on Home's stack, like a service's page: New only (the same choice as Home's),
+  the short corner badges, Load more, and Back to Home with the filter as it was. Opened from its row it makes no
+  call; Load more asks for one page. It uses the server's existing `GET /discover/<list>?page=n`, as the TV add-on's
+  See all pages (server 3.9.0) do.
 - Account → About & credits says the app is an unofficial companion, not affiliated with Jellyfin or Seerr.
 - About, Privacy policy and Support links to jellypass.app: **Privacy policy**
   (`https://jellypass.app/privacy/`) and **Support** (`https://jellypass.app/support/`) in Account → About & credits,

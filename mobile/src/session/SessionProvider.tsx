@@ -13,7 +13,8 @@
 // - What the member just asked for (src/title/asked.ts) belongs to one signed-in session: a sign-out, a 401 or any
 //   other sign-in (household, member or token) starts it empty. Coming back to the foreground reads its clocks again
 //   (a timer may have slept with the app), and leaving the provider stops its timer. The titles My requests has named
-//   (src/requests/titleCache.ts) belong to the same session and are forgotten with it.
+//   (src/requests/titleCache.ts) belong to the same session and are forgotten with it, as is the page a Home row hands
+//   its See all page (src/home/rowPages.ts).
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { AppState } from 'react-native';
@@ -27,6 +28,7 @@ import { parseLinkAddress } from '../signin/address-input';
 import { createSignInApi, SignInError, type SignInApi, type SignInResult } from '../signin/signin-api';
 import type { StalledKind } from '../signin/wording';
 import { createHideStore, type HideStore } from '../home/hide';
+import { createRowPages, type RowPages } from '../home/rowPages';
 import { createRequestFilterStore, type RequestFilterStore } from '../requests/filters';
 import { createTitleCache, type TitleCache } from '../requests/titleCache';
 import { createAsked, type Asked } from '../title/asked';
@@ -92,6 +94,8 @@ export interface Session {
   requestFilters: RequestFilterStore;
   /** Home's "New only": on at every sign-in, kept while the app is open and reset with the session (in memory only). */
   hideHeld: HideStore;
+  /** The page a Home row hands its See all page as it opens (in memory only). */
+  rowPages: RowPages;
   /**
    * Get this through the signed-in client. Once it is accepted (a 2xx) in the same session as when it was sent (no move
    * since), the title (and the seasons asked for) is added to `asked`. Rejects with the ApiError, or the caller's abort.
@@ -145,6 +149,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
   const titlesRef = useRef<TitleCache | undefined>(undefined);
   const filtersRef = useRef<RequestFilterStore | undefined>(undefined);
   const hideRef = useRef<HideStore | undefined>(undefined);
+  const rowPagesRef = useRef<RowPages | undefined>(undefined);
 
   const move = useCallback((next: Phase) => {
     generation.current += 1;
@@ -209,6 +214,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
       titlesRef.current?.forget();
       filtersRef.current?.reset();
       hideRef.current?.reset();
+      rowPagesRef.current?.forget();
       const session = sessionOf(phase);
       if (session) {
         const mine = move({ kind: 'signingOut' });
@@ -234,7 +240,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
   const signedIn = signedPhase?.session;
   // A new client, overlay and titles for each sign-in (household, member or token); the old ones are forgotten as soon
   // as they are replaced.
-  const { api, asked, titles, requestFilters, hideHeld } = useMemo(
+  const { api, asked, titles, requestFilters, hideHeld, rowPages } = useMemo(
     () => ({
       api: signedIn
         ? createApiClient({ address: signedIn.address, token: () => signedIn.token, ...(fetch ? { fetch } : {}), ...(now ? { now } : {}) })
@@ -243,6 +249,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
       titles: createTitleCache(),
       requestFilters: createRequestFilterStore(),
       hideHeld: createHideStore(),
+      rowPages: createRowPages(),
     }),
     [signedIn, fetch, now],
   );
@@ -279,6 +286,13 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
       hideHeld.reset();
     };
   }, [hideHeld]);
+  useEffect(() => {
+    rowPagesRef.current = rowPages;
+    return () => {
+      if (rowPagesRef.current === rowPages) rowPagesRef.current = undefined;
+      rowPages.forget();
+    };
+  }, [rowPages]);
 
   const getThis = useCallback(
     async (mediaType: MediaType, tmdbId: number, seasons: readonly number[], signal?: AbortSignal) => {
@@ -313,6 +327,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
     titlesRef.current?.forget();
     filtersRef.current?.reset();
     hideRef.current?.reset();
+    rowPagesRef.current?.forget();
     const session = mine.session;
     const gen = move({ kind: 'signingOut' });
     try {
@@ -382,10 +397,11 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
       titles,
       requestFilters,
       hideHeld,
+      rowPages,
       getThis,
       cancelRequest,
     }),
-    [phase, offer, household, offerLink, leave, move, check, signInApi, clock, api, expire, asked, titles, requestFilters, hideHeld, getThis, cancelRequest],
+    [phase, offer, household, offerLink, leave, move, check, signInApi, clock, api, expire, asked, titles, requestFilters, hideHeld, rowPages, getThis, cancelRequest],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
