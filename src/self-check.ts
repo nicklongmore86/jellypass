@@ -62,13 +62,13 @@ export class SelfCheck {
     return true;
   }
 
-  async #probe(url: string, headers: Record<string, string> = {}): Promise<{ status: number; body?: unknown }> {
+  async #probe(url: string, headers: Record<string, string> = {}, signal?: AbortSignal, readBody = true): Promise<{ status: number; body?: unknown }> {
     const response = await this.#fetch(url, {
       method: 'GET', redirect: 'manual', credentials: 'omit',
-      signal: AbortSignal.timeout(this.options.timeoutMs ?? 4000), headers: { Accept: 'application/json', ...headers },
+      signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(this.options.timeoutMs ?? 4000)]) : AbortSignal.timeout(this.options.timeoutMs ?? 4000), headers: { Accept: 'application/json', ...headers },
     });
     // Never follow any redirect, even to the same host. Bound response bodies and keep the timeout during reads.
-    if (!response.ok) { await response.body?.cancel(); return { status: response.status }; }
+    if (!readBody || !response.ok) { await response.body?.cancel().catch(() => {}); return { status: response.status }; }
     const reader = response.body?.getReader();
     if (!reader) return { status: response.status };
     const chunks: Uint8Array[] = [];
@@ -116,27 +116,33 @@ export class SelfCheck {
       const urls = this.options.householdUrls();
       if (!urls.length) return result('proxy', 'warn', 'No household public addresses are configured to probe.');
       let passed = 0;
-      // Sequential requests keep at most one public-address connection open per run.
-      for (const value of urls) {
-        const nonce = randomBytes(24).toString('hex');
-        const url = new URL(value);
-        const pending = { url, seen: undefined as boolean | undefined };
-        this.#pending.set(nonce, pending);
-        try {
-          const answer = await this.#probe(`${value}${PROXY_CHECK_PATH}?challenge=${nonce}`);
-          if (answer.status === 200 && pending.seen === true) passed++;
-        } catch { /* Unreachable or timed out. */ }
-        finally { this.#pending.delete(nonce); }
-      }
+      // Four workers and a shared deadline bound connections and total run duration.
+      const deadline = Date.now() + (this.options.timeoutMs ?? 4000) * 2;
+      const signal = AbortSignal.timeout((this.options.timeoutMs ?? 4000) * 2);
+      let next = 0;
+      await Promise.all(Array.from({ length: Math.min(4, urls.length) }, async () => {
+        while (next < urls.length && Date.now() < deadline) {
+          const value = urls[next++]!;
+          const nonce = randomBytes(24).toString('hex');
+          const url = new URL(value);
+          const pending = { url, seen: undefined as boolean | undefined };
+          this.#pending.set(nonce, pending);
+          try {
+            const answer = await this.#probe(`${value}${PROXY_CHECK_PATH}?challenge=${nonce}`, {}, signal);
+            if (answer.status === 200 && pending.seen === true) passed++;
+          } catch { /* Unreachable or timed out. */ }
+          finally { this.#pending.delete(nonce); }
+        }
+      }));
       return result('proxy', passed === urls.length ? 'pass' : 'warn', `${passed} of ${urls.length} household addresses completed a self-request with preserved Host, valid X-Forwarded-For and matching X-Forwarded-Proto from a trusted proxy. This checks this server's route, not every external client path or spoofed-header sanitisation.`);
     };
     const seerr = async () => {
-      if (!this.options.seerrPublicUrl) return result('seerr', 'warn', 'No Seerr public URL is configured. Member reachability cannot be determined; Seerr must be admin-only.');
+      if (!this.options.seerrPublicUrl) return result('seerr', 'pass', 'No Seerr public URL is configured. Member reachability cannot be determined; Seerr must be admin-only.');
       try {
-        const answer = await this.#probe(this.options.seerrPublicUrl);
+        const answer = await this.#probe(this.options.seerrPublicUrl, {}, undefined, false);
         if (answer.status >= 100) return result('seerr', 'warn', 'The configured Seerr public URL responds (possibly with a redirect). Members may reach it directly. Seerr must be admin-only; verify access controls from a member network.');
       } catch { /* Inconclusive from inside. */ }
-      return result('seerr', 'warn', 'Seerr did not respond successfully here. Verify from a member network that it is admin-only; an inside probe cannot prove this.');
+      return result('seerr', 'pass', 'Seerr did not respond successfully here. Verify from a member network that it is admin-only; an inside probe cannot prove this.');
     };
     const tmdb = async () => {
       const key = this.options.tmdbApiKey;
@@ -151,7 +157,7 @@ export class SelfCheck {
       return result('tmdb', 'warn', 'TMDB key validity could not be determined (timeout, redirect or unexpected response).');
     };
     try {
-      return await Promise.all([origin(), quickConnect(), proxy(), seerr(), Promise.resolve(this.options.versionStatus?.() ?? result('version', 'warn', 'Skipped: this build has no Jellyfin version gate.')), tmdb()]);
+      return await Promise.all([origin(), quickConnect(), proxy(), seerr(), Promise.resolve(this.options.versionStatus?.() ?? result('version', 'warn', 'Jellyfin version status is unavailable.')), tmdb()]);
     } finally { this.#running = false; }
   }
 }

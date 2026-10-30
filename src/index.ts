@@ -40,6 +40,7 @@ async function main(): Promise<void> {
       }));
     }
   }
+  if (config.additionalPluginRoutes.length) console.warn(JSON.stringify({ level: 'warn', message: 'HOUSEHOLD_PLUGIN_ROUTES adds household relay routes; audit member privacy', templates: config.additionalPluginRoutes }));
   const service = new AccessService(jellyfin, store, undefined, seerr, { logLevel: config.logLevel });
   // Read now and on a slow interval; startup never waits for it (see JellyfinVersionGate).
   const jellyfinVersion = new JellyfinVersionGate({
@@ -65,6 +66,10 @@ async function main(): Promise<void> {
   }) : undefined;
   const server = makeServer(service, { webhook: config.webhookToken, admin: config.adminToken }, webAuth, {
     selfCheck: new SelfCheck({
+      versionStatus: () => {
+        const status = jellyfinVersion.status();
+        return { check: 'version', status: status.supported ? 'pass' : status.householdHosts === 'serving' ? 'warn' : 'fail', explanation: status.supported ? 'Jellyfin is on a supported release.' : status.householdHosts === 'serving' ? 'An administrator confirmed this untested Jellyfin version.' : 'Household hosts are paused by the Jellyfin version gate.' };
+      },
       jellyfinUrl: config.jellyfinUrl,
       jellyfinPublicUrls: config.jellyfinPublicUrls,
       ...(config.seerrPublicUrl ? { seerrPublicUrl: config.seerrPublicUrl } : {}),

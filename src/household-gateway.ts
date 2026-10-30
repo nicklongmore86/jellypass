@@ -4,7 +4,7 @@ import http, { type IncomingHttpHeaders, type IncomingMessage, type RequestOptio
 import https from 'node:https';
 import type { Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
-import { householdRouteAllowed, parseAdditionalPluginRoutes } from './gateway-route-policy.js';
+import { householdRouteAllowed, parseAdditionalPluginRoutes, historicallyRefusedPluginRoute } from './gateway-route-policy.js';
 import type { HouseholdAppHandler, JellyfinCaller } from './app-api.js';
 import { NEVER_STORE, type AppAssets } from './app-assets.js';
 import { ClientIpResolver, normaliseIp } from './client-ip.js';
@@ -400,7 +400,14 @@ export class HouseholdGateway {
     const decision = this.#decideRoute(method, route, query, tv);
     if (!/%[0-9a-f]{2}/i.test(route)) return decision;
     // Unknown routes with another encoded interpretation are never forwarded or accepted as plugin overrides.
-    if (decision.kind === 'unknownRoute') return undefined;
+    if (decision.kind === 'unknownRoute') {
+      const further = furtherDecodedRoute(route);
+      if (further === undefined && route.startsWith('/users/')) return undefined;
+      // Preserve existing 400s for ambiguous app/sign-in/Quick Connect paths. Unknown relay paths stay fixed 404s.
+      if (further && historicallyRefusedPluginRoute(further)) return undefined;
+      if (further && ['app', 'signIn', 'signInById', 'publicUsers', 'quickConnect', 'quickConnectEnabled'].includes(this.#decideRoute(method, further, query, tv).kind)) return undefined;
+      return decision;
+    }
     const further = furtherDecodedRoute(route);
     if (further === undefined) return undefined;
     return JSON.stringify(this.#decideRoute(method, further, query, tv)) === JSON.stringify(decision) ? decision : undefined;
@@ -425,7 +432,7 @@ export class HouseholdGateway {
       if (method === 'POST' && route === LIBRARY_JOIN_PATH) return { kind: 'libraryJoin' };
     }
     if (isServerInternalStreamRoute(route)) return { kind: 'notFound' };
-    if (!householdRouteAllowed(route, this.#additionalPluginRoutes)) return { kind: 'unknownRoute' };
+    if (!householdRouteAllowed(route, this.#additionalPluginRoutes, method ?? 'GET')) return { kind: 'unknownRoute' };
     const userIds = userScopedIds(route, query);
     if (userIds.length && (method === 'GET' || method === 'HEAD') && isUserImageRoute(route)) return { kind: 'userImage', userIds };
     const list = method === 'GET' ? userListOf(route) : undefined;

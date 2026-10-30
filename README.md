@@ -22,9 +22,11 @@ with or endorsed by Jellyfin, Seerr, or Jellyseerr.
 
 ## Deployment self-check and plugin routes
 
-After signing in to `/admin/`, choose **Run self-check**. It checks direct Jellyfin bypass risks, Quick Connect, household proxy headers, public Seerr access, Jellyfin support (when a version gate is installed), and TMDB key validity. The authenticated API is `POST /v1/self-check`; cookie requests must come from the admin origin. Runs are limited to one per minute, with four-second probe timeouts and no redirect following.
+After signing in to `/admin/`, choose **Run self-check**. It checks direct Jellyfin bypass risks, Quick Connect, household proxy headers, public Seerr access, Jellyfin version-gate support, and TMDB key validity. The authenticated API is `POST /v1/self-check`; cookie requests must come from the admin origin. Runs are limited to one per minute, with four-second probe timeouts and no redirect following.
 
 Set `JELLYFIN_PUBLIC_URLS=https://origin.example.com` (comma-separated if there are several) and `SEERR_PUBLIC_URL=https://requests.example.com` to probe those public URLs without sending service API keys. Household addresses are self-requested through the public proxy; configure `TRUSTED_PROXIES` correctly. A direct Jellyfin answer is a bypass risk; public Seerr access is a warning because Seerr must be admin-only. A server-side probe cannot prove what outside users can reach: repeat access checks from a member network. See [household access](docs/household-access.md#admin-deployment-self-check) for the limits.
+
+Household hosts are for non-admin members. Manage Jellyfin through its own separate administrator address. Elevated and startup APIs are refused, so the Jellyfin dashboard will not work on household hosts.
 
 Household hosts now refuse routes outside the explicit Jellyfin core and vetted-plugin allow-list in `src/gateway-route-policy.ts`. To expose a reviewed additional plugin endpoint, set, for example:
 
@@ -32,7 +34,7 @@ Household hosts now refuse routes outside the explicit Jellyfin core and vetted-
 HOUSEHOLD_PLUGIN_ROUTES=/exampleplugin/status,/exampleplugin/config
 ```
 
-Only exact lowercase paths are accepted, without wildcards, query strings, encodings, dot segments or legacy prefixes. Restart after changing configuration. Existing explicit gateway refusals and household scope checks still apply. Historically refused plugin endpoints cannot be re-enabled by this option. **Warning:** plugin endpoints can disclose other households' names, requests, media or API keys. Audit each response and its authorization before exposing it; allowing a plugin route accepts responsibility for its privacy behavior. Prefer adding a reviewed, tested entry to the table for wider support. Jellyfin Enhanced's existing `public-config` remains byte-identical.
+Only exact lowercase paths are accepted, without wildcards, query strings, encodings, dot segments or legacy prefixes. Restart after changing configuration. Existing explicit gateway refusals and household scope checks still apply. Elevated/admin namespaces and historically refused plugin endpoints cannot be re-enabled by this option. Added paths are logged as a warning at startup. **Warning:** plugin endpoints can disclose other households' names, requests, media or API keys. Audit each response and its authorization before exposing it; allowing a plugin route accepts responsibility for its privacy behavior. Prefer adding a reviewed, tested entry to the table for wider support. Jellyfin Enhanced's existing `public-config` remains byte-identical.
 
 ## What it does
 
@@ -579,11 +581,11 @@ Access groups can also act as households. With:
 
 ```dotenv
 HOUSEHOLD_DOMAIN=example.com
-HOUSEHOLD_HOST_PREFIX=media-
+HOUSEHOLD_HOST_PREFIX=jelly-
 ```
 
 the group ID `grove` receives the URL
-`https://media-grove.example.com`. On that hostname, JellyPass filters
+`https://jelly-grove.example.com`. On that hostname, JellyPass filters
 Jellyfin's public-user response to the group's members and proxies supported
 Jellyfin HTTP, streaming, byte-range, HLS, and WebSocket traffic.
 
@@ -694,7 +696,7 @@ but must never learn who requested it or which household holds it.
 
 With Seerr configured (`SEERR_URL` and `SEERR_API_KEY`), every household
 hostname serves a small page at `/jellypass/add`, for example
-`https://media-grove.example.com/jellypass/add`. A member who is signed in
+`https://jelly-grove.example.com/jellypass/add`. A member who is signed in
 to Jellyfin on that hostname pastes a Seerr or TMDB link to a movie or series
 (or a bare TMDB ID) and selects **Add to my library**. Share the link with
 households. The page reuses the Jellyfin web client's sign-in on the same
@@ -1019,7 +1021,7 @@ Without Seerr, `/jellypass/add` paths are proxied to Jellyfin like any other.
 ### Household app (PWA)
 
 With `HOUSEHOLD_APP_ENABLED=true`, each household hostname also serves the
-app itself at `https://media-grove.example.com/jellypass/app/`: an
+app itself at `https://jelly-<household>.<HOUSEHOLD_DOMAIN>/jellypass/app/`: an
 installable web app (a PWA) to browse what is in the household's Jellyfin
 library and find more to watch. It shows each title's state (`Ready to watch`
 with a **Play** button, `Available to get`, `Requested` or `Can't request`) and offers

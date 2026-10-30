@@ -1,0 +1,273 @@
+{
+  "/auth/keys": [
+    "GET",
+    "POST"
+  ],
+  "/auth/keys/{key}": [
+    "DELETE"
+  ],
+  "/auth/passwordresetproviders": [
+    "GET"
+  ],
+  "/auth/providers": [
+    "GET"
+  ],
+  "/backup": [
+    "GET"
+  ],
+  "/backup/create": [
+    "POST"
+  ],
+  "/backup/manifest": [
+    "GET"
+  ],
+  "/backup/restore": [
+    "POST"
+  ],
+  "/branding/splashscreen": [
+    "DELETE",
+    "POST"
+  ],
+  "/devices": [
+    "DELETE",
+    "GET"
+  ],
+  "/devices/info": [
+    "GET"
+  ],
+  "/devices/options": [
+    "GET",
+    "POST"
+  ],
+  "/environment/defaultdirectorybrowser": [
+    "GET"
+  ],
+  "/environment/directorycontents": [
+    "GET"
+  ],
+  "/environment/drives": [
+    "GET"
+  ],
+  "/environment/networkshares": [
+    "GET"
+  ],
+  "/environment/parentpath": [
+    "GET"
+  ],
+  "/environment/validatepath": [
+    "POST"
+  ],
+  "/items/remotesearch/apply/{itemid}": [
+    "POST"
+  ],
+  "/items/remotesearch/person": [
+    "POST"
+  ],
+  "/items/{itemid}": [
+    "POST"
+  ],
+  "/items/{itemid}/contenttype": [
+    "POST"
+  ],
+  "/items/{itemid}/externalidinfos": [
+    "GET"
+  ],
+  "/items/{itemid}/images/{imagetype}": [
+    "DELETE",
+    "POST"
+  ],
+  "/items/{itemid}/images/{imagetype}/{imageindex}": [
+    "DELETE",
+    "POST"
+  ],
+  "/items/{itemid}/images/{imagetype}/{imageindex}/index": [
+    "POST"
+  ],
+  "/items/{itemid}/metadataeditor": [
+    "GET"
+  ],
+  "/items/{itemid}/refresh": [
+    "POST"
+  ],
+  "/items/{itemid}/remoteimages/download": [
+    "POST"
+  ],
+  "/library/mediafolders": [
+    "GET"
+  ],
+  "/library/physicalpaths": [
+    "GET"
+  ],
+  "/library/refresh": [
+    "POST"
+  ],
+  "/library/virtualfolders": [
+    "DELETE",
+    "GET",
+    "POST"
+  ],
+  "/library/virtualfolders/libraryoptions": [
+    "POST"
+  ],
+  "/library/virtualfolders/name": [
+    "POST"
+  ],
+  "/library/virtualfolders/paths": [
+    "DELETE",
+    "POST"
+  ],
+  "/library/virtualfolders/paths/update": [
+    "POST"
+  ],
+  "/livetv/channelmappingoptions": [
+    "GET"
+  ],
+  "/livetv/channelmappings": [
+    "POST"
+  ],
+  "/livetv/listingproviders": [
+    "DELETE",
+    "POST"
+  ],
+  "/livetv/listingproviders/schedulesdirect/countries": [
+    "GET"
+  ],
+  "/livetv/tunerhosts": [
+    "DELETE",
+    "POST"
+  ],
+  "/livetv/tuners/discover": [
+    "GET"
+  ],
+  "/livetv/tuners/discvover": [
+    "GET"
+  ],
+  "/livetv/tuners/{tunerid}/reset": [
+    "POST"
+  ],
+  "/packages": [
+    "GET"
+  ],
+  "/packages/installed/{name}": [
+    "POST"
+  ],
+  "/packages/installing/{packageid}": [
+    "DELETE"
+  ],
+  "/packages/{name}": [
+    "GET"
+  ],
+  "/plugins": [
+    "GET"
+  ],
+  "/plugins/{pluginid}": [
+    "DELETE"
+  ],
+  "/plugins/{pluginid}/configuration": [
+    "GET",
+    "POST"
+  ],
+  "/plugins/{pluginid}/manifest": [
+    "POST"
+  ],
+  "/plugins/{pluginid}/{version}": [
+    "DELETE"
+  ],
+  "/plugins/{pluginid}/{version}/disable": [
+    "POST"
+  ],
+  "/plugins/{pluginid}/{version}/enable": [
+    "POST"
+  ],
+  "/plugins/{pluginid}/{version}/image": [
+    "GET"
+  ],
+  "/repositories": [
+    "GET",
+    "POST"
+  ],
+  "/scheduledtasks": [
+    "GET"
+  ],
+  "/scheduledtasks/running/{taskid}": [
+    "DELETE",
+    "POST"
+  ],
+  "/scheduledtasks/{taskid}": [
+    "GET"
+  ],
+  "/scheduledtasks/{taskid}/triggers": [
+    "POST"
+  ],
+  "/startup/complete": [
+    "POST"
+  ],
+  "/startup/configuration": [
+    "GET",
+    "POST"
+  ],
+  "/startup/firstuser": [
+    "GET"
+  ],
+  "/startup/remoteaccess": [
+    "POST"
+  ],
+  "/startup/user": [
+    "GET",
+    "POST"
+  ],
+  "/system/activitylog/entries": [
+    "GET"
+  ],
+  "/system/configuration": [
+    "POST"
+  ],
+  "/system/configuration/branding": [
+    "POST"
+  ],
+  "/system/configuration/metadataoptions/default": [
+    "GET"
+  ],
+  "/system/configuration/{key}": [
+    "POST"
+  ],
+  "/system/info/storage": [
+    "GET"
+  ],
+  "/system/logs": [
+    "GET"
+  ],
+  "/system/logs/log": [
+    "GET"
+  ],
+  "/system/mediaencoder/path": [
+    "POST"
+  ],
+  "/system/restart": [
+    "POST"
+  ],
+  "/system/shutdown": [
+    "POST"
+  ],
+  "/users/new": [
+    "POST"
+  ],
+  "/users/{userid}": [
+    "DELETE"
+  ],
+  "/users/{userid}/policy": [
+    "POST"
+  ],
+  "/videos/mergeversions": [
+    "POST"
+  ],
+  "/videos/{itemid}/alternatesources": [
+    "DELETE"
+  ],
+  "/videos/{itemid}/subtitles/{index}": [
+    "DELETE"
+  ],
+  "/web/configurationpages": [
+    "GET"
+  ]
+}

@@ -1,9 +1,9 @@
 /**
- * Auditable household relay policy. Exact path templates from the union of Jellyfin 10.11.11 and 12.4.0 OpenAPI:
+ * Auditable household relay policy. Member subset of path templates from Jellyfin 10.11.11 and 12.4.0 OpenAPI:
  * https://repo.jellyfin.org/files/openapi/stable/jellyfin-openapi-10.11.11.json
  * https://repo.jellyfin.org/files/openapi/jellyfin-openapi-stable.json (12.4.0, retrieved 2026-10-30).
  * Route membership never overrides gateway refusals, membership checks or item/user scoping.
- * Methods remain Jellyfin's responsibility, as before; unknown paths never reach it.
+ * Elevated methods are refused here, including on paths shared with member reads.
  * {name} matches one segment, {*asset} only static asset descendants. Input MUST be the gateway's canonical route.
  */
 export const HOUSEHOLD_RELAY_ROUTES: readonly string[] = [
@@ -33,6 +33,18 @@ export const HOUSEHOLD_RELAY_ROUTES: readonly string[] = [
   "/users/{user}/items/{item}",
   // Legacy watched-state update; gateway checks user and item.
   "/users/{user}/playeditems/{item}",
+  // Legacy member item details/state; gateway checks both user and item.
+  "/users/{user}/items/{item}/specialfeatures",
+  // Legacy member item details/state; gateway checks both user and item.
+  "/users/{user}/items/{item}/localtrailers",
+  // Legacy member item details/state; gateway checks both user and item.
+  "/users/{user}/items/{item}/intros",
+  // Legacy member item details/state; gateway checks both user and item.
+  "/users/{user}/items/{item}/rating",
+  // Legacy member item details/state; gateway checks both user and item.
+  "/users/{user}/items/{item}/userdata",
+  // Legacy playback start and stop; gateway checks user and item.
+  "/users/{user}/playingitems/{item}",
   // Legacy playback progress; gateway checks user and item.
   "/users/{user}/playingitems/{item}/progress",
   // Legacy favorite-state update; gateway checks user and item.
@@ -84,22 +96,6 @@ export const HOUSEHOLD_RELAY_ROUTES: readonly string[] = [
   "/audio/{itemid}/stream.{container}",
   // Gets an audio stream.
   "/audio/{itemid}/universal",
-  // Get all keys.
-  "/auth/keys",
-  // Remove an api key.
-  "/auth/keys/{key}",
-  // Get all password reset providers.
-  "/auth/passwordresetproviders",
-  // Get all auth providers.
-  "/auth/providers",
-  // Gets a list of all currently present backups in the backup directory.
-  "/backup",
-  // Creates a new Backup.
-  "/backup/create",
-  // Gets the descriptor from an existing archive is present.
-  "/backup/manifest",
-  // Restores to a backup by restarting the server and applying the backup.
-  "/backup/restore",
   // Gets branding configuration.
   "/branding/configuration",
   // Gets branding css.
@@ -124,26 +120,8 @@ export const HOUSEHOLD_RELAY_ROUTES: readonly string[] = [
   "/collections",
   // Adds items to a collection.
   "/collections/{collectionid}/items",
-  // Get Devices.
-  "/devices",
-  // Get info for a device.
-  "/devices/info",
-  // Get options for a device.
-  "/devices/options",
   // Get Display Preferences.
   "/displaypreferences/{displaypreferencesid}",
-  // Get Default directory browser.
-  "/environment/defaultdirectorybrowser",
-  // Gets the contents of a given directory in the file system.
-  "/environment/directorycontents",
-  // Gets available drives from the server's file system.
-  "/environment/drives",
-  // Gets network paths.
-  "/environment/networkshares",
-  // Gets the parent path of a given path.
-  "/environment/parentpath",
-  // Validates path.
-  "/environment/validatepath",
   // Gets a list of available fallback font files.
   "/fallbackfont/fonts",
   // Gets a fallback font file.
@@ -168,8 +146,6 @@ export const HOUSEHOLD_RELAY_ROUTES: readonly string[] = [
   "/items/filters2",
   // Gets latest media.
   "/items/latest",
-  // Applies search criteria to an item and refreshes metadata.
-  "/items/remotesearch/apply/{itemid}",
   // Get book remote search.
   "/items/remotesearch/book",
   // Get box set remote search.
@@ -182,8 +158,6 @@ export const HOUSEHOLD_RELAY_ROUTES: readonly string[] = [
   "/items/remotesearch/musicartist",
   // Get music video remote search.
   "/items/remotesearch/musicvideo",
-  // Get person remote search.
-  "/items/remotesearch/person",
   // Get series remote search.
   "/items/remotesearch/series",
   // Get trailer remote search.
@@ -198,14 +172,10 @@ export const HOUSEHOLD_RELAY_ROUTES: readonly string[] = [
   "/items/{itemid}/ancestors",
   // Gets the collections that include the specified item.
   "/items/{itemid}/collections",
-  // Updates an item's content type.
-  "/items/{itemid}/contenttype",
   // Gets critic review for an item.
   "/items/{itemid}/criticreviews",
   // Downloads item media.
   "/items/{itemid}/download",
-  // Get the item's external id info.
-  "/items/{itemid}/externalidinfos",
   // Get the original file of an item.
   "/items/{itemid}/file",
   // Get item image infos.
@@ -214,8 +184,6 @@ export const HOUSEHOLD_RELAY_ROUTES: readonly string[] = [
   "/items/{itemid}/images/{imagetype}",
   // Delete an item's image.
   "/items/{itemid}/images/{imagetype}/{imageindex}",
-  // Updates the index for an item image.
-  "/items/{itemid}/images/{imagetype}/{imageindex}/index",
   // Gets the item's image.
   "/items/{itemid}/images/{imagetype}/{imageindex}/{tag}/{format}/{maxwidth}/{maxheight}/{percentplayed}/{unplayedcount}",
   // Creates an instant playlist based on a given item.
@@ -224,16 +192,10 @@ export const HOUSEHOLD_RELAY_ROUTES: readonly string[] = [
   "/items/{itemid}/intros",
   // Gets local trailers for an item.
   "/items/{itemid}/localtrailers",
-  // Gets metadata editor info for an item.
-  "/items/{itemid}/metadataeditor",
   // Gets live playback media info for an item.
   "/items/{itemid}/playbackinfo",
-  // Refreshes metadata for an item.
-  "/items/{itemid}/refresh",
   // Gets available remote images for an item.
   "/items/{itemid}/remoteimages",
-  // Downloads a remote image for an item.
-  "/items/{itemid}/remoteimages/download",
   // Gets available remote image providers for an item.
   "/items/{itemid}/remoteimages/providers",
   // Search remote subtitles.
@@ -290,42 +252,10 @@ export const HOUSEHOLD_RELAY_ROUTES: readonly string[] = [
   "/jellyfinenhanced/version",
   // Provider presentation.
   "/jellyfinenhanced/watch-providers",
-  // Gets the library options info.
-  "/libraries/availableoptions",
-  // Reports that new movies have been added by an external source.
-  "/library/media/updated",
-  // Gets all user media folders.
-  "/library/mediafolders",
-  // Reports that new movies have been added by an external source.
-  "/library/movies/added",
-  // Reports that new movies have been added by an external source.
-  "/library/movies/updated",
-  // Gets a list of physical paths from virtual folders.
-  "/library/physicalpaths",
-  // Starts a library scan.
-  "/library/refresh",
-  // Reports that new episodes of a series have been added by an external source.
-  "/library/series/added",
-  // Reports that new episodes of a series have been added by an external source.
-  "/library/series/updated",
-  // Gets all virtual folders.
-  "/library/virtualfolders",
-  // Update library options.
-  "/library/virtualfolders/libraryoptions",
-  // Renames a virtual folder.
-  "/library/virtualfolders/name",
-  // Add a media path to a library.
-  "/library/virtualfolders/paths",
-  // Updates a media path.
-  "/library/virtualfolders/paths/update",
   // Closes a media source.
   "/livestreams/close",
   // Opens a media source.
   "/livestreams/open",
-  // Get channel mapping options.
-  "/livetv/channelmappingoptions",
-  // Set channel mappings.
-  "/livetv/channelmappings",
   // Gets available live tv channels.
   "/livetv/channels",
   // Gets a live tv channel.
@@ -334,14 +264,6 @@ export const HOUSEHOLD_RELAY_ROUTES: readonly string[] = [
   "/livetv/guideinfo",
   // Gets available live tv services.
   "/livetv/info",
-  // Adds a listings provider.
-  "/livetv/listingproviders",
-  // Gets default listings provider info.
-  "/livetv/listingproviders/default",
-  // Gets available lineups.
-  "/livetv/listingproviders/lineups",
-  // Gets available countries.
-  "/livetv/listingproviders/schedulesdirect/countries",
   // Gets a live tv recording stream.
   "/livetv/liverecordings/{recordingid}/stream",
   // Gets a live tv channel stream.
@@ -374,16 +296,6 @@ export const HOUSEHOLD_RELAY_ROUTES: readonly string[] = [
   "/livetv/timers/defaults",
   // Gets a timer.
   "/livetv/timers/{timerid}",
-  // Adds a tuner host.
-  "/livetv/tunerhosts",
-  // Get tuner host types.
-  "/livetv/tunerhosts/types",
-  // Discover tuners.
-  "/livetv/tuners/discover",
-  // Discover tuners.
-  "/livetv/tuners/discvover",
-  // Resets a tv tuner.
-  "/livetv/tuners/{tunerid}/reset",
   // Gets known countries.
   "/localization/countries",
   // Gets known cultures.
@@ -410,14 +322,6 @@ export const HOUSEHOLD_RELAY_ROUTES: readonly string[] = [
   "/musicgenres/{name}/images/{imagetype}/{imageindex}",
   // Creates an instant playlist based on a given genre.
   "/musicgenres/{name}/instantmix",
-  // Gets available packages.
-  "/packages",
-  // Installs a package.
-  "/packages/installed/{name}",
-  // Cancels a package installation.
-  "/packages/installing/{packageid}",
-  // Gets a package by name or assembly GUID.
-  "/packages/{name}",
   // Gets all persons.
   "/persons",
   // Get person by name.
@@ -446,22 +350,6 @@ export const HOUSEHOLD_RELAY_ROUTES: readonly string[] = [
   "/playlists/{playlistid}/users",
   // Get a playlist user.
   "/playlists/{playlistid}/users/{userid}",
-  // Gets a list of currently installed plugins.
-  "/plugins",
-  // Uninstalls a plugin.
-  "/plugins/{pluginid}",
-  // Gets plugin configuration.
-  "/plugins/{pluginid}/configuration",
-  // Gets a plugin's manifest.
-  "/plugins/{pluginid}/manifest",
-  // Uninstalls a plugin by version.
-  "/plugins/{pluginid}/{version}",
-  // Disable a plugin.
-  "/plugins/{pluginid}/{version}/disable",
-  // Enables a disabled plugin.
-  "/plugins/{pluginid}/{version}/enable",
-  // Gets a plugin's image.
-  "/plugins/{pluginid}/{version}/image",
   // Gets the remote lyrics.
   "/providers/lyrics/{lyricid}",
   // Gets the remote subtitles.
@@ -474,16 +362,6 @@ export const HOUSEHOLD_RELAY_ROUTES: readonly string[] = [
   "/quickconnect/enabled",
   // Initiate a new quick connect request.
   "/quickconnect/initiate",
-  // Gets all package repositories.
-  "/repositories",
-  // Get tasks.
-  "/scheduledtasks",
-  // Start specified task.
-  "/scheduledtasks/running/{taskid}",
-  // Get task by id.
-  "/scheduledtasks/{taskid}",
-  // Update specified task triggers.
-  "/scheduledtasks/{taskid}/triggers",
   // Gets the search hint result.
   "/search/hints",
   // Gets a list of sessions.
@@ -534,16 +412,6 @@ export const HOUSEHOLD_RELAY_ROUTES: readonly string[] = [
   "/socket",
   // Creates an instant playlist based on a given song.
   "/songs/{itemid}/instantmix",
-  // Completes the startup wizard.
-  "/startup/complete",
-  // Gets the initial startup wizard configuration.
-  "/startup/configuration",
-  // Gets the first user.
-  "/startup/firstuser",
-  // Sets remote access and UPnP.
-  "/startup/remoteaccess",
-  // Gets the first user.
-  "/startup/user",
   // Gets all studios from a given item, folder, or the entire library.
   "/studios",
   // Gets a studio by name.
@@ -596,34 +464,18 @@ export const HOUSEHOLD_RELAY_ROUTES: readonly string[] = [
   "/syncplay/unpause",
   // Gets a SyncPlay group by id.
   "/syncplay/{id}",
-  // Gets activity log entries.
-  "/system/activitylog/entries",
   // Gets application configuration.
   "/system/configuration",
-  // Updates branding configuration.
-  "/system/configuration/branding",
-  // Gets a default MetadataOptions object.
-  "/system/configuration/metadataoptions/default",
-  // Gets a named configuration.
-  "/system/configuration/{key}",
+  // jellyfin-web reads encoding defaults for member playback; other named configurations stay private.
+  "/system/configuration/encoding",
   // Gets information about the request endpoint.
   "/system/endpoint",
   // Gets information about the server.
   "/system/info",
   // Gets public information about the server.
   "/system/info/public",
-  // Gets information about the server.
-  "/system/info/storage",
-  // Gets a list of available server log files.
-  "/system/logs",
-  // Gets a log file.
-  "/system/logs/log",
   // Pings the system.
   "/system/ping",
-  // Restarts the application.
-  "/system/restart",
-  // Shuts down the application.
-  "/system/shutdown",
   // Gets the TMDb image configuration options.
   "/tmdb/clientconfiguration",
   // Finds movies and trailers similar to a given trailer.
@@ -656,28 +508,20 @@ export const HOUSEHOLD_RELAY_ROUTES: readonly string[] = [
   "/users/forgotpassword/pin",
   // Gets the user based on auth token.
   "/users/me",
-  // Creates a user.
-  "/users/new",
   // Updates a user's password.
   "/users/password",
   // Gets a list of publicly visible users for display on a login screen.
   "/users/public",
   // Gets a user by Id.
   "/users/{userid}",
-  // Updates a user policy.
-  "/users/{userid}/policy",
   // Get user views.
   "/userviews",
   // Get user view grouping options.
   "/userviews/groupingoptions",
   // Stops an active encoding.
   "/videos/activeencodings",
-  // Merges videos into a single record.
-  "/videos/mergeversions",
   // Gets additional parts for a video.
   "/videos/{itemid}/additionalparts",
-  // Removes alternate video sources.
-  "/videos/{itemid}/alternatesources",
   // Gets a hls video playlist.
   "/videos/{itemid}/hls/{playlistid}/stream.m3u8",
   // Gets a hls video segment.
@@ -696,8 +540,6 @@ export const HOUSEHOLD_RELAY_ROUTES: readonly string[] = [
   "/videos/{itemid}/stream.{container}",
   // Upload an external subtitle file.
   "/videos/{itemid}/subtitles",
-  // Deletes an external subtitle file.
-  "/videos/{itemid}/subtitles/{index}",
   // Gets an image tiles playlist for trickplay.
   "/videos/{itemid}/trickplay/{width}/tiles.m3u8",
   // Gets a trickplay tile image.
@@ -710,10 +552,6 @@ export const HOUSEHOLD_RELAY_ROUTES: readonly string[] = [
   "/videos/{routeitemid}/{routemediasourceid}/subtitles/{routeindex}/{routestartpositionticks}/stream.{routeformat}",
   // Get video attachment.
   "/videos/{videoid}/{mediasourceid}/attachments/{index}",
-  // Gets a dashboard configuration page.
-  "/web/configurationpage",
-  // Gets the configuration pages.
-  "/web/configurationpages",
   // Jellyfin web page, scripts, styles, translations and client configuration.
   "/web/{*asset}",
   // Get years.
@@ -728,18 +566,117 @@ function routePattern(template: string): RegExp {
   return new RegExp(`^${parts.join('')}$`);
 }
 const patterns = HOUSEHOLD_RELAY_ROUTES.map(routePattern);
-export function householdRouteAllowed(route: string, additional: readonly string[] = []): boolean {
+// Audited against Jellyfin.Api.dll controller/method authorization metadata from both pinned images.
+// test/fixtures/gateway-elevated-routes.json records the 85 elevated path templates and their methods.
+// GET /System/Configuration is needed by jellyfin-web for member playback/UI settings;
+// named configuration is limited to encoding (playback defaults), never arbitrary keys.
+const elevatedMethods: Record<string, readonly string[]> = {
+  "/auth/keys": ["GET", "POST"],
+  "/auth/keys/{key}": ["DELETE"],
+  "/auth/passwordresetproviders": ["GET"],
+  "/auth/providers": ["GET"],
+  "/backup": ["GET"],
+  "/backup/create": ["POST"],
+  "/backup/manifest": ["GET"],
+  "/backup/restore": ["POST"],
+  "/branding/splashscreen": ["DELETE", "POST"],
+  "/devices": ["DELETE", "GET"],
+  "/devices/info": ["GET"],
+  "/devices/options": ["GET", "POST"],
+  "/environment/defaultdirectorybrowser": ["GET"],
+  "/environment/directorycontents": ["GET"],
+  "/environment/drives": ["GET"],
+  "/environment/networkshares": ["GET"],
+  "/environment/parentpath": ["GET"],
+  "/environment/validatepath": ["POST"],
+  "/items/remotesearch/apply/{itemid}": ["POST"],
+  "/items/remotesearch/person": ["POST"],
+  "/items/{itemid}": ["POST"],
+  "/items/{itemid}/contenttype": ["POST"],
+  "/items/{itemid}/externalidinfos": ["GET"],
+  "/items/{itemid}/images/{imagetype}": ["DELETE", "POST"],
+  "/items/{itemid}/images/{imagetype}/{imageindex}": ["DELETE", "POST"],
+  "/items/{itemid}/images/{imagetype}/{imageindex}/index": ["POST"],
+  "/items/{itemid}/metadataeditor": ["GET"],
+  "/items/{itemid}/refresh": ["POST"],
+  "/items/{itemid}/remoteimages/download": ["POST"],
+  "/library/mediafolders": ["GET"],
+  "/library/physicalpaths": ["GET"],
+  "/library/refresh": ["POST"],
+  "/library/virtualfolders": ["DELETE", "GET", "POST"],
+  "/library/virtualfolders/libraryoptions": ["POST"],
+  "/library/virtualfolders/name": ["POST"],
+  "/library/virtualfolders/paths": ["DELETE", "POST"],
+  "/library/virtualfolders/paths/update": ["POST"],
+  "/livetv/channelmappingoptions": ["GET"],
+  "/livetv/channelmappings": ["POST"],
+  "/livetv/listingproviders": ["DELETE", "POST"],
+  "/livetv/listingproviders/schedulesdirect/countries": ["GET"],
+  "/livetv/tunerhosts": ["DELETE", "POST"],
+  "/livetv/tuners/discover": ["GET"],
+  "/livetv/tuners/discvover": ["GET"],
+  "/livetv/tuners/{tunerid}/reset": ["POST"],
+  "/packages": ["GET"],
+  "/packages/installed/{name}": ["POST"],
+  "/packages/installing/{packageid}": ["DELETE"],
+  "/packages/{name}": ["GET"],
+  "/plugins": ["GET"],
+  "/plugins/{pluginid}": ["DELETE"],
+  "/plugins/{pluginid}/configuration": ["GET", "POST"],
+  "/plugins/{pluginid}/manifest": ["POST"],
+  "/plugins/{pluginid}/{version}": ["DELETE"],
+  "/plugins/{pluginid}/{version}/disable": ["POST"],
+  "/plugins/{pluginid}/{version}/enable": ["POST"],
+  "/plugins/{pluginid}/{version}/image": ["GET"],
+  "/repositories": ["GET", "POST"],
+  "/scheduledtasks": ["GET"],
+  "/scheduledtasks/running/{taskid}": ["DELETE", "POST"],
+  "/scheduledtasks/{taskid}": ["GET"],
+  "/scheduledtasks/{taskid}/triggers": ["POST"],
+  "/startup/complete": ["POST"],
+  "/startup/configuration": ["GET", "POST"],
+  "/startup/firstuser": ["GET"],
+  "/startup/remoteaccess": ["POST"],
+  "/startup/user": ["GET", "POST"],
+  "/system/activitylog/entries": ["GET"],
+  "/system/configuration": ["POST"],
+  "/system/configuration/branding": ["POST"],
+  "/system/configuration/metadataoptions/default": ["GET"],
+  "/system/configuration/{key}": ["POST"],
+  "/system/info/storage": ["GET"],
+  "/system/logs": ["GET"],
+  "/system/logs/log": ["GET"],
+  "/system/mediaencoder/path": ["POST"],
+  "/system/restart": ["POST"],
+  "/system/shutdown": ["POST"],
+  "/users/new": ["POST"],
+  "/users/{userid}": ["DELETE"],
+  "/users/{userid}/policy": ["POST"],
+  "/videos/mergeversions": ["POST"],
+  "/videos/{itemid}/alternatesources": ["DELETE"],
+  "/videos/{itemid}/subtitles/{index}": ["DELETE"],
+  "/web/configurationpages": ["GET"],
+};
+const elevatedPatterns = Object.entries(elevatedMethods).map(([path, methods]) => ({ pattern: routePattern(path), namespace: new RegExp(routePattern(path).source.slice(0, -1) + '(?:/|$)'), methods }));
+// Library setup/options and external filesystem-update hooks are dashboard/integration operations,
+// even where Jellyfin uses ordinary authorization rather than an elevation policy.
+const adminNamespace = /^\/(?:plugins|auth|packages|repositories|scheduledtasks|devices|backup|startup|environment|libraries)(?:\/|$)|^\/(?:library\/(?:virtualfolders|refresh|physicalpaths|mediafolders|media|movies|series)|system\/(?:activitylog|logs|restart|shutdown|info\/storage)|livetv\/(?:tunerhosts|tuners|listingproviders|channelmapping)|web\/configurationpages?)(?:\/|$)|^\/users\/(?:new|[^/]+\/policy)$/;
+export function householdRouteAllowed(route: string, additional: readonly string[] = [], method = 'GET'): boolean {
+  if (adminNamespace.test(route) || elevatedPatterns.some(({ pattern, methods }) => pattern.test(route) && methods.includes(method === 'HEAD' ? 'GET' : method))) return false;
+  if (route.startsWith('/system/configuration/') && route !== '/system/configuration/encoding') return false;
   return patterns.some((pattern) => pattern.test(route)) || additional.includes(route);
 }
 
 /** Exact canonical paths only: no namespace wildcards, queries, encodings or legacy-prefix ambiguity. */
+const historicalRefusal = /^\/(?:streamyfin(?:\/|$)|jellyfinenhanced\/(?:jellyseerr|arr|proxy|reviews|items\/by-providers|tmdb\/(?:search\/(?:person|keyword)|genres\/(?:movie|tv)))(?:\/|$))/;
+export function historicallyRefusedPluginRoute(route: string): boolean { return historicalRefusal.test(route); }
 export function parseAdditionalPluginRoutes(input: string | undefined): string[] {
   const paths = [...new Set((input ?? '').split(',').map((value) => value.trim()).filter(Boolean))];
   // Configuration may add an endpoint but cannot re-enable a historical privacy refusal.
   // This is only an override fence: the relay boundary itself is the allow-list above.
-  const historicalRefusal = /^\/(?:streamyfin(?:\/|$)|jellyfinenhanced\/(?:jellyseerr|arr|proxy|reviews|items\/by-providers|tmdb\/(?:search\/(?:person|keyword)|genres\/(?:movie|tv)))(?:\/|$))/;
-  if (paths.some((value) => historicalRefusal.test(value) || !/^\/[a-z0-9_-]+(?:\/[a-z0-9_.-]+)*$/.test(value) || value.split('/').some((part) => part === '.' || part === '..') || /^\/(?:emby|mediabrowser)(?:\/|$)/.test(value))) {
-    throw new Error('HOUSEHOLD_PLUGIN_ROUTES must contain comma-separated exact lowercase paths without wildcards, encodings, legacy prefixes or historically refused plugin endpoints');
+
+  if (paths.some((value) => historicalRefusal.test(value) || adminNamespace.test(value) || elevatedPatterns.some(({ namespace }) => namespace.test(value)) || value.startsWith('/system/configuration') || !/^\/[a-z0-9_-]+(?:\/[a-z0-9_.-]+)*$/.test(value) || value.split('/').some((part) => part === '.' || part === '..') || /^\/(?:emby|mediabrowser)(?:\/|$)/.test(value))) {
+    throw new Error('HOUSEHOLD_PLUGIN_ROUTES must contain comma-separated exact lowercase paths without wildcards, encodings, legacy prefixes or elevated/admin namespaces or historically refused plugin endpoints');
   }
   return paths;
 }

@@ -224,7 +224,7 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
     for (const [method, bare] of itemRoutes(HIDDEN)) {
       for (const path of [bare, ...spellings(bare)]) {
         const answer = await get(app.port, `${path}?${query}`, alice, { method });
-        const refused = bare.endsWith('/SomeRouteJellyfinAddsLater') ? '{"error":"not_found"}' : ITEM_NOT_FOUND;
+        const refused = (bare.endsWith('/SomeRouteJellyfinAddsLater') || (method === 'POST' && bare.endsWith('/Images/Primary'))) ? '{"error":"not_found"}' : ITEM_NOT_FOUND;
         assert.deepEqual([answer.status, method === 'HEAD' ? refused : answer.text], [404, refused], `${method} ${path}`);
       }
       // As a WebSocket upgrade (a GET), save an image's route, which is Jellyfin's to answer (below).
@@ -244,7 +244,7 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
     // An item she may see is proxied, by every route.
     for (const [method, bare] of itemRoutes(ITEMS.ownMovie)) {
       const answer = await get(app.port, `${bare}?${query}`, alice, { method });
-      if (bare.endsWith('/SomeRouteJellyfinAddsLater')) { assert.equal(answer.text, '{"error":"not_found"}'); continue; }
+      if (bare.endsWith('/SomeRouteJellyfinAddsLater') || (method === 'POST' && bare.endsWith('/Images/Primary'))) { assert.equal(answer.text, '{"error":"not_found"}'); continue; }
       assert.notEqual(answer.text, ITEM_NOT_FOUND, `${method} ${bare}`);
       assert.equal(app.jellyfin.requests.at(-1).path, `${bare}?${query}`, `${method} ${bare}`);
     }
@@ -291,8 +291,8 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
     const proxied = () => app.jellyfin.requests.filter((request) => request.pathname !== '/Users/Me').length;
     const refused = async (method, path, headers = alice) => {
       const answer = await get(app.port, path, headers, { method });
-      const canonical = decodeURIComponent(path.split('?')[0]).toLowerCase().replace(/\/+$/, '');
-      const unknown = /\/(?:someroutejellyfinaddslater|authenticate|public)$/.test(canonical);
+      const canonical = decodeURIComponent(path.split('?')[0]).toLowerCase().replace(/\/+/g, '/').replace(/\/+$/, '');
+      const unknown = /\/(?:someroutejellyfinaddslater|authenticate|public|policy)$/.test(canonical) || (method === 'DELETE' && /^\/(?:emby\/|mediabrowser\/)?users\/[^/]+$/.test(canonical));
       const refused = unknown ? '{"error":"not_found"}' : ITEM_NOT_FOUND;
       assert.deepEqual([answer.status, method === 'HEAD' ? refused : answer.text], [404, refused], `${method} ${path}`);
     };
@@ -328,7 +328,7 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
     ];
     for (const [method, path] of own) {
       const answer = await get(app.port, path, alice, { method });
-      if (/\/(?:SomeRouteJellyfinAddsLater|Authenticate|Public)(?:\?|$)/.test(path)) { assert.equal(answer.text, '{"error":"not_found"}'); continue; }
+      if (/\/(?:SomeRouteJellyfinAddsLater|Authenticate|Public|Policy)(?:\?|$)/.test(path) || (method === 'DELETE' && /^\/Users\/[^/?]+(?:\?|$)/.test(path))) { assert.equal(answer.text, '{"error":"not_found"}'); continue; }
       assert.notEqual(answer.text, ITEM_NOT_FOUND, `${method} ${path}`);
       assert.equal(app.jellyfin.requests.at(-1).path, path, `${method} ${path}`);
     }
@@ -458,7 +458,7 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
     }
     assert.deepEqual(app.jellyfin.requests.slice(before).map((request) => request.path), paths);
     // Further decoding would change unknown-path refusal to the core logout route: ambiguous.
-    assert.equal((await get(app.port, '/Sessions/%254Cogout', { Host: HOST_A })).status, 400);
+    assert.equal((await get(app.port, '/Sessions/%254Cogout', { Host: HOST_A })).status, 404);
     // But under /Users every other name is a user's ID, which decoding again would make a fixed name: ambiguous.
     const user = await get(app.port, '/Users/%2541uthenticateByName', { Host: HOST_A });
     assert.deepEqual([user.status, user.text], [400, INVALID_PATH]);
@@ -485,10 +485,20 @@ function upgrade(port, pathname, host) {
 
 
 describe('household deny-by-default routing', () => {
+  it('refuses administrative routes with fixed 404 and no upstream request, even with a member token', async (t) => {
+    const app = await startApp(t);
+    const before = app.jellyfin.requests.length;
+    const paths = ['/Plugins', '/Plugins/abc/configuration', '/Auth/Keys', '/Auth/Keys/abc', '/Packages', '/Repositories', '/System/Configuration/secrets', '/System/Logs', '/System/Restart', '/System/Shutdown', '/Backup/Create', '/Startup/Configuration', '/Environment/Drives', '/Library/VirtualFolders', '/Library/Refresh', '/Library/Media/Updated', '/Library/Movies/Added', '/Library/Series/Updated', '/Libraries/AvailableOptions', '/Users/New', '/Users/abc/Policy', '/ScheduledTasks', '/Devices', '/System/ActivityLog/Entries', '/LiveTv/TunerHosts', '/LiveTv/ListingProviders'];
+    for (const path of paths) for (const method of ['GET', 'POST', 'DELETE']) {
+      const answer = await get(app.port, path, { Host: HOST_A, Authorization: `${AUTHORIZATION}, Token="token-alice"` }, { method });
+      assert.deepEqual([answer.status, answer.text], [404, '{"error":"not_found"}'], `${method} ${path}`);
+    }
+    assert.equal(app.jellyfin.requests.length, before);
+  });
   it('refuses unknown namespaces in every canonical spelling without HTTP or WebSocket relay', async (t) => {
     const app = await startApp(t);
     const before = app.jellyfin.requests.length;
-    for (const path of ['/UnknownPlugin/config', ...spellings('/UnknownPlugin/config'), '/%55nknownPlugin/config']) {
+    for (const path of ['/UnknownPlugin/%2563onfig', '/UnknownPlugin/%63onfig', '/Sessions/%254Cogout', '/UnknownPlugin/config', ...spellings('/UnknownPlugin/config'), '/%55nknownPlugin/config']) {
       const answer = await get(app.port, path, { Host: HOST_A });
       assert.deepEqual([answer.status, answer.text, answer.headers['cache-control']], [404, '{"error":"not_found"}', 'no-store'], path);
       assert.match(await upgrade(app.port, path, HOST_A), /^HTTP\/1\.1 404 /, path);

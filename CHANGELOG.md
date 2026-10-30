@@ -25,7 +25,7 @@ changes are always listed at the top of the release notes.
 
 ### Added
 
-- Authenticated admin deployment self-check for direct Jellyfin origins, Quick Connect, household proxy headers, public Seerr, version support when the gate is available, and TMDB key validity. Public probes carry no service credentials, use timeouts and bounded reads, never follow redirects, and run at most once per minute. Inside probes explicitly warn about external-reachability limits.
+- Authenticated admin deployment self-check for direct Jellyfin origins, Quick Connect, household proxy headers, public Seerr, version-gate support, and TMDB key validity. Public probes carry no service credentials, use timeouts and bounded reads, never follow redirects, and run at most once per minute. Inside probes explicitly warn about external-reachability limits.
 
 JellyPass now has a written Jellyfin support policy: **it supports the current
 Jellyfin release and the one before it, Jellyfin 12.x and 10.11.x**, and tests

@@ -485,6 +485,40 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
       assert.equal(answer.status, 200, path);
       assert.notEqual(answer.text, '{"error":"not_found"}', path);
     }
+    const WEB = 'MediaBrowser Client="Jellyfin Web", Device="Browser", DeviceId="jp-member-policy", Version="12.4.0"';
+    const login = await postWithHeaders(port, '/Users/AuthenticateByName', { Host: host, Authorization: WEB }, { Username: 'Bob', Pw: '' });
+    assert.equal(login.status, 200, login.text);
+    const token = login.json().AccessToken;
+    const member = { Host: host, Authorization: `${WEB}, Token="${token}"` };
+    assert.equal(login.json().User.Policy.IsAdministrator, false, 'exercise a MEMBER token');
+    let clip;
+    await waitFor(async () => {
+      clip = (await request(baseUrl, '/Items?Recursive=true&SearchTerm=Gateway%20Clip&IncludeItemTypes=Movie', { token: fixture.token })).Items?.[0];
+      return !!clip;
+    });
+    for (const pathname of ['/Users/Me', '/UserViews', '/Items', `/Items/${clip.Id}/PlaybackInfo`, `/Users/${fixture.bobId}/Items/${clip.Id}/SpecialFeatures`]) {
+      const answer = await getWithHeaders(port, pathname, member);
+      assert.equal(answer.status, 200, `${pathname}: ${answer.text}`);
+    }
+    const info = (await getWithHeaders(port, `/Items/${clip.Id}/PlaybackInfo`, member)).json();
+    const source = info.MediaSources[0];
+    const range = await getWithHeaders(port, `/Videos/${clip.Id}/stream?Static=true&MediaSourceId=${source.Id}`, { ...member, Range: 'bytes=0-31' });
+    assert.equal(range.status, 206, range.text);
+    assert.match(range.headers['content-range'], /^bytes 0-31\//);
+    const master = await getWithHeaders(port, `/Videos/${clip.Id}/master.m3u8?MediaSourceId=${source.Id}&VideoCodec=h264&AudioCodec=aac&SegmentContainer=ts&ApiKey=${token}`, member);
+    assert.equal(master.status, 200, master.text);
+    assert.match(master.text, /^#EXTM3U/);
+    for (const action of ['', '/Progress', '/Stopped']) {
+      const answer = await postWithHeaders(port, `/Sessions/Playing${action}`, member, { ItemId: clip.Id, MediaSourceId: source.Id, PositionTicks: 0, PlayMethod: 'DirectPlay', PlaySessionId: 'jp-member-policy' });
+      assert.equal(answer.status, 204, `${action}: ${answer.text}`);
+    }
+    assert.match(await rawUpgrade(port, `/socket?ApiKey=${token}&deviceId=jp-member-policy`, host), /^HTTP\/1\.1 101 /);
+    upstream.seen.length = 0;
+    for (const pathname of ['/Plugins', '/Plugins/abc/configuration', '/Auth/Keys', '/System/Logs', '/Startup/Configuration']) {
+      const answer = await getWithHeaders(port, pathname, member);
+      assert.deepEqual([answer.status, answer.text], [404, '{"error":"not_found"}'], pathname);
+    }
+    assert.deepEqual(upstream.seen, [], 'administrative routes must never reach Jellyfin');
     // Follow actual asset links from the installed jellyfin-web, beyond the injection fixture's shortened page.
     const page = await getWithHeaders(port, '/web/index.html', { Host: host });
     const assets = [...page.text.matchAll(/(?:src|href)="([^"#]+\.(?:js|css)(?:\?[^" ]*)?)"/g)].map((m) => new URL(m[1], 'http://localhost/web/index.html'));

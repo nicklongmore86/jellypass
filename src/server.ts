@@ -233,6 +233,7 @@ export function makeServer(
       }
 
       if (request.method === 'POST' && url.pathname === '/v1/self-check') {
+        requireJsonIfBody(request);
         const results = await options?.selfCheck?.run();
         if (!options?.selfCheck) return json(response, 404, { error: 'self_check_not_configured' });
         if (!results) { response.setHeader('Retry-After', '60'); return json(response, 429, { error: 'too_many_requests' }); }
