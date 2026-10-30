@@ -10,6 +10,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import vm from 'node:vm';
+import { brotliDecompressSync } from 'node:zlib';
 import { parse } from 'acorn';
 import { parseHTML } from 'linkedom';
 import { TvAssets } from '../dist/tv-assets.js';
@@ -254,7 +255,8 @@ describe('TV add-on: the gateway', { timeout: 30_000 }, () => {
     assert.equal(page.status, 200);
     assert.equal(page.text, JELLYFIN_WEB_PAGE);
     assert.equal(page.headers.etag, '"jellyfin-web-etag"');
-    assert.equal(page.headers['cache-control'], 'no-cache');
+    // Marked no-transform, as every page on a household host is (see html-response.ts), but otherwise as Jellyfin sent it.
+    assert.equal(page.headers['cache-control'], 'no-cache, no-transform');
     const conditional = await app.get('/web/', { user: null, headers: { 'If-None-Match': '"jellyfin-web-etag"' } });
     assert.equal(conditional.status, 304);
     const tv = await app.get(SCRIPT_PATH, { user: null });
@@ -300,8 +302,9 @@ describe('TV add-on: the gateway', { timeout: 30_000 }, () => {
       headers: { 'Accept-Encoding': 'gzip, deflate, br', 'If-None-Match': '"jellyfin-web-etag"', 'If-Modified-Since': 'Tue, 21 Oct 2025 10:00:00 GMT', Range: 'bytes=0-9', 'If-Range': '"jellyfin-web-etag"' },
     });
     assert.equal(page.status, 200);
-    assert.equal(count(page.text, TAG), 1);
-    assert.equal(page.headers['content-encoding'], undefined);
+    // JellyPass encodes the page itself, after adding the tag, in the coding the client prefers (see html-response.ts).
+    assert.equal(page.headers['content-encoding'], 'br');
+    assert.equal(count(brotliDecompressSync(page.body).toString('utf8'), TAG), 1);
     const sent = app.jellyfin.requests.at(-1).headers;
     assert.equal(sent['accept-encoding'], 'identity');
     for (const name of ['if-none-match', 'if-modified-since', 'range', 'if-range']) assert.equal(sent[name], undefined, name);
@@ -313,7 +316,7 @@ describe('TV add-on: the gateway', { timeout: 30_000 }, () => {
     const app = await startApp(t, state, tvOn());
     const page = await app.get('/web/index.html', { user: null });
     assert.equal(count(page.text, TAG), 1);
-    for (const [name, value] of Object.entries(NEVER_STORE)) assert.equal(page.headers[name], value, name);
+    for (const [name, value] of Object.entries({ ...NEVER_STORE, 'cache-control': 'no-store, no-transform' })) assert.equal(page.headers[name], value, name);
     for (const name of ['etag', 'last-modified', 'accept-ranges', 'expires']) assert.equal(page.headers[name], undefined, name);
     assert.equal(page.headers['content-security-policy'], "default-src 'self'; img-src *");
     assert.equal(page.headers['x-frame-options'], 'SAMEORIGIN');
@@ -329,7 +332,7 @@ describe('TV add-on: the gateway', { timeout: 30_000 }, () => {
     assert.equal(head.status, 200);
     assert.equal(head.body.length, 0);
     assert.equal(head.headers['content-length'], get_.headers['content-length']);
-    assert.equal(head.headers['cache-control'], 'no-store');
+    assert.equal(head.headers['cache-control'], 'no-store, no-transform');
     assert.equal(app.jellyfin.requests.at(-1).method, 'GET');
   });
 

@@ -369,6 +369,30 @@ Jellyfin's known proxies to match (see [Forwarding to Jellyfin](#forwarding-to-j
 Otherwise every client is attributed to a CDN edge address: the per-client
 login limits are shared again, and Jellyfin sees the CDN as the client.
 
+#### CDNs and HTML pages
+
+Some CDNs change the HTML pages they pass on: Cloudflare Web Analytics'
+automatic setup, for example, adds a `static.cloudflareinsights.com` script to
+every page. JellyPass promises no analytics, so every HTML page it serves or
+relays (the household app at `/jellypass/app/`, Jellyfin web under `/web/`
+with or without the TV add-on, `/jellypass/add`, any other HTML Jellyfin
+sends, and the admin site) carries `no-transform` in its `Cache-Control`.
+JellyPass adds it to the directives already there (`no-store, no-transform`,
+`no-cache, no-transform`), or sends `no-transform` alone, so caching is
+unchanged. A CDN that honours it adds nothing to the page.
+
+Such a CDN also stops compressing those pages, so JellyPass compresses them
+itself: with br or gzip, whichever the client prefers, plus
+`Vary: Accept-Encoding`. A page Jellyfin has already encoded is passed
+through as it is. A page JellyPass compresses carries Jellyfin's `ETag` made
+weak (`W/"…"`); JellyPass revalidates it with Jellyfin by the strong tag, so
+the browser still gets a `304`. A client that accepts no coding at all, not
+even unencoded (`Accept-Encoding: *;q=0`), gets a `406`. Nothing else is touched: scripts, styles, images, JSON,
+video and HLS keep their headers, and the CDN compresses them as before. On a
+reverse proxy in front of JellyPass, don't strip `no-transform` from
+`Cache-Control`; it may compress the pages again only if it leaves
+`Content-Encoding` responses alone (nginx's `gzip` does).
+
 #### Login lockouts are best-effort
 
 The household and administrator login limits each track at most 10,000 client
@@ -1097,7 +1121,9 @@ switched off (those answer the same fixed `404`).
   with a valid one, both `no-store`. The page, the `/jellypass/app` redirect
   and `sw.js` keep their addresses, so they are sent with
   `Cache-Control: no-store` plus `CDN-Cache-Control: no-store` and
-  `Cloudflare-CDN-Cache-Control: no-store`, and no `ETag`. Per Cloudflare's documentation `no-store` is never cached at its
+  `Cloudflare-CDN-Cache-Control: no-store`, and no `ETag` (the page's
+  `Cache-Control` is `no-store, no-transform`, see
+  [CDNs and HTML pages](#cdns-and-html-pages)). Per Cloudflare's documentation `no-store` is never cached at its
   edge, `Cloudflare-CDN-Cache-Control` / `CDN-Cache-Control` are the headers it
   reads for its own cache (the former is not forwarded to browsers), and its
   Browser Cache TTL setting only rewrites `Cache-Control` on responses it caches.
