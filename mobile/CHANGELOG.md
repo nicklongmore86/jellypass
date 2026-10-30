@@ -55,8 +55,9 @@ build, or the new APK over the old one.
 - **Any HTTPS household address works.** The app no longer requires `https://jelly-<household>.<domain>`: it takes
   whatever HTTPS address the household's administrator gives out, such as `https://media.example.com` or
   `https://films.example.net:8443` (a port is kept, `:443` is dropped), typed or in a setup link. It still refuses
-  `http://`, IP addresses, and anything around the address (a name or password, a path, a query or a fragment), and
-  says which when a typed address is refused. A sign-in kept on a `jelly-` address keeps working. App versions up to
+  `http://`, IP addresses, `.local` names, and anything around the address (a name or password, a path, a query or a
+  fragment), and says which when a typed address is refused. A name with non-ASCII letters must be entered in its
+  `xn--` form. A sign-in kept on a `jelly-` address keeps working. App versions up to
   1.2.1 take only the `jelly-` form, so a household on any other address needs this version or later.
 - Cancelling a request no longer mentions a "download": an approved title "may still be added to the server, but it
   won't be added for your household."
