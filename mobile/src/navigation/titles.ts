@@ -1,6 +1,6 @@
 // Where a title's pages open: on the stack of the tab the member opened it from (Home, Search or My requests), so the
 // tab bar keeps that tab and Back leads back to where they were. Each of those tabs has the same three routes.
-import type { Card } from '../api/types';
+import type { Card, DiscoverList } from '../api/types';
 import type { SourceList } from '../home/text';
 import type { TabSpec } from './tabs';
 
@@ -24,4 +24,9 @@ export function studioPath(id: number): string {
 /** A network's page on Home's stack, on one of its lists: `/home/network/<id>`, or `?kind=series` or `films`. */
 export function networkPath(id: number, list: SourceList = 'all'): string {
   return `/home/network/${id}${list === 'all' ? '' : `?kind=${list}`}`;
+}
+
+/** A Discover row's full list ("See all"), on Home's stack: `/home/list/trending`, `/home/list/popular-tv`, … */
+export function listPath(list: DiscoverList): string {
+  return `/home/list/${list}`;
 }
