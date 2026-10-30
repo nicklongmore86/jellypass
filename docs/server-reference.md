@@ -4,7 +4,7 @@ The full reference for running a JellyPass server: how access is enforced, every
 setting, Seerr, the administrator UI, operations and upgrades, troubleshooting,
 the administrator API, security, limitations and development. It moved here from the README;
 the website's [documentation](https://jellypass.app/docs/) is the shorter guide.
-Household hostnames, Add to my library and the household app are in
+Household hostnames and the household app are in
 [Household hostnames and the household app](household-hosts.md).
 
 ## What it does
@@ -92,8 +92,7 @@ requester's household can see the title; members of other households cannot.
 - Joining a household later does not change older grants. Add the group to
   those grants, or add the user to a household that is already assigned.
 - A member of another household can add the title to their own library with
-  [Add to my library](household-hosts.md#add-to-my-library), which adds their households to the
-  grant.
+  **Get this**, which adds the household whose address they used to the grant.
 
 ## Requirements
 
@@ -366,8 +365,8 @@ Some CDNs change the HTML pages they pass on: Cloudflare Web Analytics'
 automatic setup, for example, adds a `static.cloudflareinsights.com` script to
 every page. JellyPass promises no analytics, so every HTML page it serves or
 relays (the household app at `/jellypass/app/`, Jellyfin web under `/web/`
-with or without the TV add-on, `/jellypass/add`, any other HTML Jellyfin
-sends, and the admin site) carries `no-transform` in its `Cache-Control`.
+with or without the TV add-on, any other HTML Jellyfin sends, and the admin
+site) carries `no-transform` in its `Cache-Control`.
 JellyPass adds it to the directives already there (`no-store, no-transform`,
 `no-cache, no-transform`), or sends `no-transform` alone, so caching is
 unchanged. A CDN that honours it adds nothing to the page.
@@ -430,8 +429,7 @@ In **Settings → Notifications → Webhook**:
 2. Select only **Request Available**.
 3. Set the URL to `http://jellypass:8787/webhooks/seerr` for a shared Docker
    network, adjusting the host for your installation.
-4. Set the authorization header to `Bearer YOUR_WEBHOOK_TOKEN` (recommended;
-   the `?token=` URL form below is deprecated).
+4. Set the authorization header to `Bearer YOUR_WEBHOOK_TOKEN`.
 5. Use the payload below.
 
 ```json
@@ -462,13 +460,16 @@ and no template variable carries the 4K item. So when `event` names a 4K
 request, or the payload has no recognizable `event`, JellyPass asks Seerr for
 the request and grants the 4K item. Without `SEERR_URL` and `SEERR_API_KEY`,
 JellyPass can only use the payload IDs, so it does so only for a recognized HD
-`event`. A 4K event, or a payload whose `event` is missing, empty, unfilled
+`event`. A 4K event, or a payload whose `event` is empty, unfilled
 (`{{event}}`) or unrecognized, is rejected with `502` and counted as an error
 rather than granted on what may be the HD item. A payload without both Jellyfin
 IDs still returns `400` ("missing Jellyfin IDs"). A repeated webhook for a
 request JellyPass has already handled skips this check, because it only
 reapplies the recorded grant or is ignored (see below). Keep
-`"event": "{{event}}"` in the payload when Seerr lookup is not configured.
+`"event": "{{event}}"` in the payload. The full structure above is required,
+including `event`, `media` and `request.requestedBy`; reduced templates return
+`400 webhook_payload_removed_use_current_seerr_template`. Empty Jellyfin ID
+strings remain valid when Seerr API lookup is configured.
 
 Seerr may deliver the same webhook more than once. A request is handled once
 its grant has been stored, and a handled request is never granted again. If a
@@ -479,30 +480,14 @@ administrator revoked the request, the webhook returns `202` with
 webhook that failed before its grant was stored, for example because Seerr was
 unreachable, is handled normally when it is retried.
 
-Some Jellyseerr releases do not expose Jellyfin IDs as webhook template
-variables. When `SEERR_URL` and `SEERR_API_KEY` are configured, this smaller
-payload is sufficient because JellyPass resolves the request through the API:
-
-```json
-{
-  "notificationType": "{{notification_type}}",
-  "request": { "id": "{{request_id}}" }
-}
-```
-
-Send the token as `Authorization: Bearer YOUR_WEBHOOK_TOKEN`; this is the
-recommended form. **Deprecated:** appending `?token=YOUR_WEBHOOK_TOKEN` to the
-webhook URL still works in JellyPass 3.x but will be removed in 4.0.0. Query
-strings can appear in proxy logs, browser history, and diagnostics, so if you
-use it, move the token to the header.
-
 After configuration, use Seerr's test function if available. Every event
 other than `MEDIA_AVAILABLE`, including Seerr's `TEST_NOTIFICATION`, returns
-`202` with `{"status":"ignored"}` once the token is accepted, even though Seerr
+`202` with `{"status":"ignored"}` once the token and full Test template are accepted, even though Seerr
 sends an empty request ID for test events. The `notificationType` itself must
 still be a real value made of uppercase letters and underscores; an unfilled
-`{{notification_type}}` returns `400` and is counted as invalid. A `202` therefore proves only that
-JellyPass is reachable and the token is correct, not that the payload works:
+`{{notification_type}}` returns `400` and is counted as invalid. A `202` therefore proves that
+JellyPass is reachable, the token is correct and the Test template is valid. It
+does not prove that an availability event can grant access:
 `MEDIA_AVAILABLE` events are validated strictly, and a missing, empty, or
 unfilled `{{...}}` ID returns `400` and is counted as
 `jfa_webhooks_total{result="invalid"}`.
@@ -610,6 +595,10 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" \
   http://127.0.0.1:8787/metrics
 ```
 
+The removed-form counter, `jfa_webhooks_total{result="removed_form"}`, counts
+refused query-token calls only when the token matches, and authenticated
+reduced templates. Inspect `GET /v1/webhooks/status` for the admin warning.
+
 ### Backup and restore
 
 The state file is the only JellyPass application data that must persist. It
@@ -642,40 +631,23 @@ curl http://127.0.0.1:8787/health
 ```
 
 Back up the state file first. Read the [changelog](../CHANGELOG.md) before
-changing between versioned tags. Upgrading from 1.1.0 to 2.0.0 is a breaking
-upgrade; follow [Upgrading from 1.1.0](../CHANGELOG.md#upgrading-from-110) in the
-2.0.0 notes. Upgrading from 2.0.0 to 2.1.0 does not change the state file;
-check [Upgrading from 2.0.0](../CHANGELOG.md#upgrading-from-200) in the 2.1.0
-notes if Seerr lookup is not configured or JellyPass runs behind a reverse
-proxy. Upgrading from 2.1.0 to 2.1.1 changes neither the state file nor any
-setting. Upgrading from 2.1.1 to 2.2.0 changes no setting and keeps the state
-file at schema v7, adding new records to it; see
-[Upgrading from 2.1.1](../CHANGELOG.md#upgrading-from-211). Upgrading from 2.2.0
-to 2.2.1 changes neither the state file nor any setting. Upgrading from 2.2.1
-to 2.3.0 keeps the state file at schema v7, adds optional settings for the
-household app (off by default), which limits households to 100 while it is
-enabled; see [Upgrading from 2.2.1](../CHANGELOG.md#upgrading-from-221).
-Rolling back from 2.3.0 to 2.2.1 needs no state-file change. Upgrading from
-2.3.0 to 2.4.0 changes no setting, changes how sign-in on household hostnames
-answers, and needs one CDN purge of `/jellypass/app/*`; see
-[Upgrading from 2.3.0](../CHANGELOG.md#upgrading-from-230). It keeps the state
-file at schema v7, and the household app's "Get this" adds `appRequests`,
-`appIdKey`, `appRequestIntents`, `deferredWebhooks`, `appSafetyTombstones`,
-`householdEpochs` and `nextHouseholdEpoch`; 2.3.0 and 2.2.1 load and keep them
-without reading them (see
-[Rolling back to 2.3.0](../CHANGELOG.md#rolling-back-to-230)).
-Upgrading from 2.4.0 to 2.4.1 changes neither the state file nor any setting.
-Upgrading from 2.4.1 to 2.5.0 changes neither the state file nor any setting,
-and needs no CDN purge; with the household app enabled, it changes how some
-failed sign-outs on household hostnames answer (see the 2.5.0 notes).
-Upgrading from 2.5.0 to 2.6.0 changes neither the state file nor any setting,
-and needs no CDN purge.
-Upgrading from 2.6.0 to 2.7.0 changes neither the state file nor any setting,
-and needs no CDN purge.
-Upgrading from 2.7.0 to 3.0.0 changes neither the state file nor any setting,
-but every administrator signs in again, and admin API clients may need changes
-(a matching `Origin` for session-cookie scripts, JSON request bodies, `Host`
-passed unchanged by the proxy); see the 3.0.0 notes.
+changing between versioned tags. For 4.0, replace any webhook URL `?token=` with
+`Authorization: Bearer YOUR_WEBHOOK_TOKEN` in Seerr's webhook form and use the
+full template above. Use **Get this** in the household app to add a title.
+Upgrade from 2.x (or older) via 3.9.x first. 1.x state (schema v1–v6) is refused;
+3.x schema v7 is retained. Schema v7 was also used by 2.x and has no release
+marker, so the server cannot detect that source version. Rollback to 2.x is
+unsupported; restore a backup made with the release you intend to run.
+
+Pin the desired image before upgrading or rolling back:
+
+```sh
+JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:PREVIOUS_VERSION docker compose up -d
+```
+
+Rollback requires the pre-upgrade backup. See the [3.0.0 notes](../CHANGELOG.md#300---2026-10-26)
+for administrator sign-in and API changes.
+
 Upgrading from 3.0.0 to 3.0.1 changes neither the state file nor any setting;
 admin requests to routes that read no body are now `415` if they carry a
 non-JSON body; see the 3.0.1 notes.
@@ -747,16 +719,6 @@ If you build from source with `compose.example.yaml`, its service is now named
 `docker compose -f compose.example.yaml up --build -d --remove-orphans` once
 after updating, so the old `access-bridge` container is removed and frees port
 8787.
-Drain before rolling back to 2.3.x or 2.2.1: stop new "Get this" calls, wait
-until no request intents or deferred webhooks are left (at most 30 minutes plus
-one reconciliation interval, or restart JellyPass to reconcile at once), then
-check the admin-only `GET /v1/app/outstanding` and roll back only once it
-answers `"clear": true`. Requests an outstanding safety marker
-(`appSafetyTombstones`) covers are granted as ordinary requests while rolled
-back, and a marker is not limited to 30 days: one naming a request not handled
-yet (pending, declined or never available) lasts until it is, up to 400 days;
-see
-[Store, bounds and rollback](app-design.md#get-this-as-implemented-step-2a).
 Request cancelling keeps the state file at schema v7, adding `appWithdrawals`
 and a `withdrawn` mark on cancelled records. Before rolling back to 3.4.0 or
 earlier, `GET /v1/app/outstanding` must show no `withdrawals` either: those
@@ -764,22 +726,6 @@ versions grant a cancelled request to its requester's households, and give a
 requester who cancelled access to a title they cancelled that has arrived
 (held or followed); see
 [Cancelling](app-design.md#cancelling-step-2c) for how to clear them.
-Rolling back from
-2.2.0 to 2.1.1, 2.1.0 or 2.0.0 keeps the state file readable, but those
-versions retry grants marked `orphaned` (see
-[A re-imported title is public](#a-re-imported-title-is-public-or-a-grant-is-orphaned))
-and count them in `jfa_sync_errors`, drop a grant's join audit history and
-`remap` note whenever they rewrite it, keep administrator removal records
-without enforcing them, and their request backfill grants unapproved requests
-again. Remap or revoke orphaned grants first, and see
-[Rolling back to 2.1.1](../CHANGELOG.md#rolling-back-to-211). Upgrades can migrate the state file to a newer schema that older
-versions cannot read, so rolling back requires the backup taken before the
-upgrade. Pinning `JELLYPASS_IMAGE` makes rollback explicit:
-
-```sh
-JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:PREVIOUS_VERSION docker compose up -d
-```
-
 For a source build, fast-forward the repository and rebuild:
 
 ```sh
@@ -816,14 +762,24 @@ could not resolve, store or apply the grant; the error is logged. In any case,
 `jfa_request_backfill_total{result="granted"}` shows requests the backfill
 applied instead, and `{result="error"}` counts requests it could not process.
 
+Authenticated removed forms increment `jfa_webhooks_total{result="removed_form"}`.
+Query-token refusals do not update the last-received timestamp; authenticated
+reduced templates do, once. The admin warning lasts up to
+24 hours, clears when a later authenticated webhook is accepted, and is held
+in memory, so restarting JellyPass clears it.
+
 ### Webhook returns `401`
 
-The bearer header or `token` query value does not exactly match
-`WEBHOOK_TOKEN`. Confirm that whitespace was not copied into either value.
+The bearer authorization header does not exactly match `WEBHOOK_TOKEN`.
+Confirm that whitespace was not copied into the value. Query tokens return
+`400 webhook_query_token_removed_use_authorization_header`; remove `?token=`
+and configure the authorization header instead.
 
 ### Webhook reports missing Jellyfin IDs
 
-Configure `SEERR_URL` and `SEERR_API_KEY` and use the request-ID-only payload.
+Configure `SEERR_URL` and `SEERR_API_KEY` and use the full current Seerr
+template above, including `request.requestedBy`. Empty Jellyfin ID strings
+can then resolve through the Seerr API.
 Also confirm that the requester was imported from Jellyfin.
 
 ### Library is empty or stale
@@ -888,7 +844,7 @@ from an item (in **Grants**, a bulk change, `PUT /v1/grants/{itemId}/manual`
 or `PUT /v1/grants/{itemId}/groups`) is remembered for that item only, in the
 same per-item removal record household library joins use (`removedAccess` in
 the state file, `removed` in `GET /v1/grants`; see
-[Add to my library](household-hosts.md#add-to-my-library)), together with each user the change
+**Get this**), together with each user the change
 took access from: no later recovery or **Move**, previews included, adds that
 user or group to that item again, so a copy left on the old grant cannot
 restore it. Removing one from the old grant does not take it off the new one.
@@ -899,7 +855,7 @@ it everywhere.
 When a grant moves to another item, what an administrator removed from the old
 item follows it: its removal marks and revoked requests are recorded for the
 new item too, so nobody removed before the move can add themselves back with
-**Add to my library**, and no later move restores them. Marks only restrict:
+**Get this**, and no later move restores them. Marks only restrict:
 they never give anyone access. A user, group or request the new item's grant
 already had on its own (for example from an unfinished earlier move) keeps its
 access there. The old grant's library joins (an audit trail) move with the
@@ -949,6 +905,7 @@ blocked-tag policy.
 | --- | --- | --- |
 | `GET` | `/health` | Public process liveness. |
 | `POST` | `/webhooks/seerr` | Authenticated Seerr availability webhook. |
+| `GET` | `/v1/webhooks/status` | Admin-only removed-form warning status: `lastRemovedFormAt` is Unix milliseconds or `null`; cleared by an accepted webhook or restart. |
 | `GET` | `/v1/app/outstanding` | What household app "Get this" still protects or has in flight: safety markers, request intents, deferred webhooks and cancels that still decide a grant (`withdrawals`), with `"clear": true` once all are 0. Check it before rolling back. |
 | `GET` | `/v1/app/held` | Titles a household app cancel left held for no household (private to everyone but Jellyfin administrators) until an administrator gives them to someone. Read-only. |
 | `GET` | `/v1/app/requests` | Every household's app requests by Seerr request, with Seerr's status, followers and the actions offered, and the held titles (the admin UI's Requests tab). |
@@ -980,13 +937,6 @@ blocked-tag policy.
 | `PUT` | `/v1/library/access` | Assign one audience to up to 500 items; supports `?dryRun=true`. |
 | `POST` | `/v1/reconcile` | Reconcile all grants; supports `?dryRun=true`. |
 | `GET` | `/metrics` | Prometheus metrics. |
-
-On household hostnames, with Seerr configured:
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET` | `/jellypass/add` | The [Add to my library](household-hosts.md#add-to-my-library) page. |
-| `POST` | `/jellypass/add` | Add a title to the signed-in Jellyfin user's library; always `202` once authenticated and valid. |
 
 With `HOUSEHOLD_APP_ENABLED=true`, household hostnames also serve the
 [household app API](household-hosts.md#household-app-api) under `/jellypass/app/v1/`.

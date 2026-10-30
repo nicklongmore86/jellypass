@@ -128,7 +128,7 @@ body{background:radial-gradient(circle at 14% 4%,rgba(170,92,195,.2) 0,transpare
 export const ADMIN_APP_JS = `
 (() => {
   'use strict';
-  const state = { jellyfinVersion: null, grants: [], groups: [], users: [], seerrImportAvailable: false, catalog: [], catalogSyncedAt: null, recentRequests: [], recentRequestsUnavailable: false, selectedItems: new Set(), catalogPage: 1, catalogPageSize: 25, activeTab: 'dashboard', appRequests: [], heldTitles: [], requestsLoaded: false, requestsUnavailable: '', pendingAction: null, pendingRelease: null };
+  const state = { lastRemovedFormAt: null, jellyfinVersion: null, grants: [], groups: [], users: [], seerrImportAvailable: false, catalog: [], catalogSyncedAt: null, recentRequests: [], recentRequestsUnavailable: false, selectedItems: new Set(), catalogPage: 1, catalogPageSize: 25, activeTab: 'dashboard', appRequests: [], heldTitles: [], requestsLoaded: false, requestsUnavailable: '', pendingAction: null, pendingRelease: null };
   const byId = (id) => document.getElementById(id);
   const loginView = byId('login-view');
   const appView = byId('app-view');
@@ -257,9 +257,10 @@ export const ADMIN_APP_JS = `
       if (error.stale || error.status === 401) throw error;
       return null;
     });
-    const results = await Promise.all([api('/v1/grants'), api('/v1/groups'), api('/v1/users'), api('/v1/library'), recent, version]);
+    const results = await Promise.all([api('/v1/grants'), api('/v1/groups'), api('/v1/users'), api('/v1/library'), recent, version, api('/v1/webhooks/status')]);
     assertSession(epoch);
     state.jellyfinVersion = results[5];
+    state.lastRemovedFormAt = results[6].lastRemovedFormAt;
     state.grants = results[0].grants;
     state.groups = results[1].groups;
     state.users = results[2].users;
@@ -1034,10 +1035,13 @@ export const ADMIN_APP_JS = `
     const syncedAt = state.catalogSyncedAt ? Date.parse(state.catalogSyncedAt) : 0;
     const syncOverdue = !syncedAt || Date.now() - syncedAt > 2 * 60 * 60 * 1000;
     const version = state.jellyfinVersion;
-    if (version && version.householdHosts !== 'serving') setHealth('warning', 'Household hosts paused');
-    else if (version && version.confirmation === 'unconfirmed') setHealth('warning', 'Jellyfin version not confirmed');
-    else if (attention) setHealth('warning', attention + ' polic' + (attention === 1 ? 'y' : 'ies') + ' need attention');
-    else if (syncOverdue) setHealth('warning', syncedAt ? 'Library sync overdue' : 'Library sync required');
+    const warnings = [];
+    if (version && version.householdHosts !== 'serving') warnings.push('Household hosts paused');
+    else if (version && version.confirmation === 'unconfirmed') warnings.push('Jellyfin version not confirmed');
+    if (state.lastRemovedFormAt && Date.now() - state.lastRemovedFormAt < 24 * 60 * 60 * 1000) warnings.push('Seerr webhook refused: update header and template');
+    if (attention) warnings.push(attention + ' polic' + (attention === 1 ? 'y' : 'ies') + ' need attention');
+    if (syncOverdue) warnings.push(syncedAt ? 'Library sync overdue' : 'Library sync required');
+    if (warnings.length) setHealth('warning', warnings.join(' · '));
     else setHealth('healthy', 'Sync healthy');
   }
 

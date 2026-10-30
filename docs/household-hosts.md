@@ -1,6 +1,6 @@
 # Household hostnames and the household app
 
-How household hostnames behave, Add to my library, the household app API and
+How household hostnames behave, the household app API and
 "Get this", and the household web app (PWA). It moved here from the README; the
 website's [documentation](https://jellypass.app/docs/) is the shorter guide.
 Settings, Seerr, operations and the administrator API are in the
@@ -123,96 +123,6 @@ Unknown household hostnames fail closed with `404`. Group IDs used as household
 IDs must contain lowercase letters, numbers, and hyphens and be no longer than
 63 characters.
 
-### Add to my library
-
-Seerr hides **Request** for a movie that is already available and rejects a
-duplicate request while it downloads, so a second household cannot get a movie
-another household requested through Seerr. Household records exist for
-privacy, not control: any household may watch a title another household has,
-but must never learn who requested it or which household holds it.
-
-With Seerr configured (`SEERR_URL` and `SEERR_API_KEY`), every household
-hostname serves a small page at `/jellypass/add`, for example
-`https://jelly-grove.example.com/jellypass/add`. A member who is signed in
-to Jellyfin on that hostname pastes a Seerr or TMDB link to a movie or series
-(or a bare TMDB ID) and selects **Add to my library**. Share the link with
-households. The page reuses the Jellyfin web client's sign-in on the same
-hostname and has no sign-in of its own.
-
-JellyPass looks the title up in Seerr, takes the HD Jellyfin item Seerr has
-linked to it (4K items are never joined) and, when that item has a grant that
-came from at least one request, adds the caller's households to it. A caller in
-no household is added as a user instead. It applies the change to Jellyfin in
-the background, normally within seconds.
-
-- **Nothing is removed**, and manual-only grants (no requests) are left exactly
-  as an administrator set them, the same rule as the request backfill. Public
-  titles need no join.
-- **Administrator removals stick.** A household an administrator took off a
-  grant (in the grant's groups, the manual-access dialog, or bulk access) is
-  remembered for that item, and so is every user that change, or revoking a
-  request, took access from (a removed manual user, the requester, each member
-  of a removed household with no other access). Both are kept in the state
-  file's per-item removal record (`removedAccess`), shown as `removed`
-  (`groupIds`, `userIds`) on the grant in `GET /v1/grants`; grant moves use the
-  same record (see
-  [A re-imported title is public](server-reference.md#a-re-imported-title-is-public-or-a-grant-is-orphaned)),
-  and the marks follow a grant moved to a re-imported item. A join never adds a marked household, and a marked user's
-  own joins change nothing at all, whichever household they belong to later
-  and even once they belong to none. A caller's unmarked households are still
-  added. A mark is personal: it does not stop another, unmarked member of the
-  caller's household from joining that household, which then includes the
-  marked user; remove the household itself to prevent that. Assigning a
-  household again clears its mark, and assigning a user as a manual user, or
-  adding a household they belong to, clears theirs; deleting a group clears
-  its own mark from every item but not its former members'. Changing a
-  household's membership marks nobody. A new Seerr request still adds its
-  requester's households as before. Joins never touch a grant left behind on a
-  deleted item (orphaned, or split by a move) while it waits for an
-  administrator.
-- **Joins are audited.** Each join that changed a grant is recorded in the
-  grant's `joins` (user, households added, whether the user was added, time),
-  visible only to administrators through `GET /v1/grants`, and logged as
-  `household library join`.
-- **The answer never tells what happened.** Once the caller is signed in and
-  the input is valid, the response is always `202 {"status":"accepted"}`, sent
-  at once, before the title is looked up: the Seerr lookup, the join and
-  applying it to Jellyfin all run in the background afterwards, so neither the
-  answer nor how long it takes depends on whether the title was joined,
-  already visible, public, held by another household, manual-only, not in the
-  library, or could not be looked up. Requester IDs, household names, counts, timestamps and item IDs
-  are never returned. The caller can only tell whether the title appears in
-  their library afterwards. Details are logged server-side
-  (`library join changed nothing` and similar at `LOG_LEVEL=debug`).
-- **Identity comes from Jellyfin only.** `POST /jellypass/add` takes
-  `{"mediaType": "movie" | "tv", "tmdbId": <number>}` and the caller's Jellyfin
-  token in the usual `Authorization` header; JellyPass checks it with
-  Jellyfin's `GET /Users/Me`, exactly as it does for protected media, and
-  ignores any user ID in the body. A missing, invalid or disabled user's token
-  gets `401`, malformed input `400`, and administrators (who see everything
-  already) change nothing.
-- **Rate limited.** Each client address (after `TRUSTED_PROXIES`) may call it
-  30 times in 10 minutes, signed in or not; further calls get `429`. Each
-  user may start 10 joins in 10 minutes, and all users together 200; a signed-in,
-  valid call past either budget gets the same `202` but its join is not
-  started, so try again later. A call past a user's own budget does not use up
-  the shared one. These budgets count calls and are never given back when a
-  join finishes, so whether a call is started depends only on how many calls
-  were made and when, not on any title. They are submission-rate limits over
-  fixed 10-minute windows, each starting at the first call counted in it: at
-  most 200 joins are started per window, but this is not a bound on joins in
-  flight, since joins still waiting on Seerr or Jellyfin from one window add
-  to those started in the next. A join that
-  would change nothing (public, already visible, manual-only, missing) is
-  decided without waiting behind other writes.
-  During shutdown it answers `503`; joins already running are stopped before
-  their next step and given the usual grace period, and a join that was saved
-  but not yet applied to Jellyfin is applied after restart.
-- `jfa_library_joins_total{result="joined"|"unchanged"|"error"|"dropped"}`
-  counts calls. `unchanged` deliberately covers every no-op reason, `dropped`
-  counts calls not started because a budget was used up, and no label names a
-  title.
-
 ### Household app API
 
 The backend of the household app (a PWA first; see
@@ -324,7 +234,7 @@ the background and is never part of any answer:
   by the title's name and year, so an item without TMDB metadata counts too;
   a different title of the same name and year held that way makes the call a
   join or nothing rather than a request): the household joins the title's grant by the same rules as
-  [Add to my library](#add-to-my-library): only a grant made from a request,
+  **Get this**: only a grant made from a request,
   never a manual-only one, and never if an administrator removed the household
   or the caller. **A title Jellyfin has is never requested in Seerr**, so a
   late request can no longer make a public title private or undo an
@@ -452,7 +362,6 @@ otherwise approved by [TMDB](https://www.themoviedb.org/). Titles, overviews
 and images come from TMDB. The app shows this notice with TMDB's logo on its
 About screen, as TMDB's API terms require.
 
-Without Seerr, `/jellypass/add` paths are proxied to Jellyfin like any other.
 `/jellypass/app` paths never are: without the app they answer `404`.
 
 ### Household app (PWA)

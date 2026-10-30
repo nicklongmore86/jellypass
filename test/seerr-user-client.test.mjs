@@ -81,7 +81,6 @@ const ADMIN_CALLS = {
   deleteRequest: (client) => client.deleteRequest('5'),
   removeMovieFromRadarr: (client) => client.removeMovieFromRadarr(7),
   radarrConfigured: (client) => client.radarrConfigured(),
-  getJellyfinItemId: (client) => client.getJellyfinItemId('movie', 900001),
   importJellyfinUser: (client) => client.importJellyfinUser(MEMBER_JELLYFIN_ID),
   listRequestsSince: (client) => client.listRequestsSince(new Date('2026-01-01T00:00:00.000Z')),
   getRecentRequests: (client) => client.getRecentRequests(1),
