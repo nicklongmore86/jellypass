@@ -39,8 +39,9 @@ udid="$(xcrun simctl create "screenshots-${name}" "$device_type" "$runtime")"
 xcrun simctl boot "$udid"
 xcrun simctl bootstatus "$udid" -b
 xcrun simctl ui "$udid" appearance light
+# A full battery that is not charging: "charged" draws the charging bolt.
 xcrun simctl status_bar "$udid" override --time 9:41 --dataNetwork wifi --wifiMode active --wifiBars 3 \
-  --cellularMode active --cellularBars 4 --operatorName '' --batteryState charged --batteryLevel 100
+  --cellularMode active --cellularBars 4 --operatorName '' --batteryState discharging --batteryLevel 100
 xcrun simctl install "$udid" "$app"
 
 mkdir -p "$out"
