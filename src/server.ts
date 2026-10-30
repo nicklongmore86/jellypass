@@ -137,7 +137,11 @@ export function makeServer(
   const server = createServer({ requireHostHeader: false }, async (request, response) => {
     try {
       if (!singleHost(request)) return invalidHost(response);
-      // A household path such as // is no valid URL input; the gateway refuses it below.
+      // The URL parser reads a target that starts with two slashes or backslashes (`//`, `/\evil.example`) as a host, not
+      // a path, so such a target is refused before anything parses or routes it, on every host (the household gateway
+      // refuses its other empty segments itself).
+      if (/^[/\\]{2}/.test(request.url ?? '/')) return json(response, 404, { error: 'not_found' });
+      // Another household path with an empty segment is refused by the gateway below.
       if (['/jellypass/add', '/jellypass/add.js', '/jellypass/add.css'].includes(URL.parse(request.url ?? '/', 'http://localhost')?.pathname ?? '')) {
         return json(response, 410, { error: 'library_add_removed_use_household_app' });
       }
@@ -149,9 +153,6 @@ export function makeServer(
         await householdGateway?.handle(request, response, householdId);
         return;
       }
-      // The URL parser reads a target that starts with two slashes or backslashes (`//`, `/\evil.example`) as a host, not
-      // a path. It names no admin route, so it is refused as a household host refuses it, never parsed.
-      if (/^[/\\]{2}/.test(request.url ?? '/')) return json(response, 404, { error: 'not_found' });
       const url = new URL(request.url ?? '/', 'http://localhost');
       const segments = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
       // Cross-site request forgery: a state-changing request a browser sends with the session cookie must come from the
