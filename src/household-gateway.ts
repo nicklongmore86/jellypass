@@ -4,6 +4,7 @@ import http, { type IncomingHttpHeaders, type IncomingMessage, type RequestOptio
 import https from 'node:https';
 import type { Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
+import { householdRouteAllowed, parseAdditionalPluginRoutes } from './gateway-route-policy.js';
 import type { HouseholdAppHandler, JellyfinCaller } from './app-api.js';
 import { NEVER_STORE, type AppAssets } from './app-assets.js';
 import { ClientIpResolver, normaliseIp } from './client-ip.js';
@@ -19,31 +20,6 @@ const QUICK_CONNECT_ENABLED_PATH = '/quickconnect/enabled';
 /** Quick Connect: every route under it, and the sign-in it ends in, which Jellyfin does not scope to a household. */
 const QUICK_CONNECT_PATH = '/quickconnect';
 const AUTHENTICATE_WITH_QUICK_CONNECT_PATH = '/users/authenticatewithquickconnect';
-/** The Streamyfin plugin's routes, which hand its settings (Seerr's keys among them) to any signed-in user. */
-const STREAMYFIN_PATH = '/streamyfin';
-/**
- * The Jellyfin Enhanced plugin's routes (12.13) that a household host answers itself, each with every path below it:
- * - those that relay Seerr (or Sonarr and Radarr, which Seerr's requests feed): their answers carry other users'
- *   requests and their requesters, and they take requests past the household app's own checks. Of its `tmdb` routes
- *   only these four go to Seerr (its search and genre lists); `tmdb/validate` and the rest of `tmdb/...` go to TMDB
- *   with the plugin's own key, carry nothing from Seerr and are relayed.
- * - `reviews`, read and write: they hand out other users' reviews and names without checking that the caller may see
- *   the item.
- * - `items/by-providers`: it looks a provider ID up across the whole library without checking that the caller may see
- *   what it finds.
- * Its other routes (its scripts and settings among them) are relayed.
- */
-const JELLYFIN_ENHANCED_REFUSED_PATHS = [
-  '/jellyfinenhanced/jellyseerr',
-  '/jellyfinenhanced/arr',
-  '/jellyfinenhanced/proxy',
-  '/jellyfinenhanced/tmdb/search/person',
-  '/jellyfinenhanced/tmdb/search/keyword',
-  '/jellyfinenhanced/tmdb/genres/movie',
-  '/jellyfinenhanced/tmdb/genres/tv',
-  '/jellyfinenhanced/reviews',
-  '/jellyfinenhanced/items/by-providers',
-];
 const AUTHENTICATE_BY_NAME_PATH = '/users/authenticatebyname';
 /** Jellyfin's obsolete sign-in by user ID and password, still routed in 10.11 and, like AuthenticateByName, not scoped to a household. */
 const AUTHENTICATE_BY_ID_ROUTE = /^\/users\/([^/]+)\/authenticate$/;
@@ -138,6 +114,7 @@ const HOUSEHOLD_LOGIN_CSS = `
 
 export interface HouseholdGatewayOptions {
   jellyfinUrl: string;
+  additionalPluginRoutes?: string[];
   domain: string;
   hostPrefix: string;
   memberIds: (householdId: string) => string[] | undefined;
@@ -208,6 +185,7 @@ interface JellyfinCredentials {
 }
 
 export class HouseholdGateway {
+  readonly #additionalPluginRoutes: string[];
   readonly #target: URL;
   readonly #domain: string;
   readonly #hostPrefix: string;
@@ -239,6 +217,7 @@ export class HouseholdGateway {
   #closing = false;
 
   public constructor(options: HouseholdGatewayOptions) {
+    this.#additionalPluginRoutes = parseAdditionalPluginRoutes(options.additionalPluginRoutes?.join(','));
     this.#target = new URL(options.jellyfinUrl);
     if (this.#target.protocol !== 'http:' && this.#target.protocol !== 'https:') {
       throw new Error('household gateway requires an HTTP(S) Jellyfin URL');
@@ -351,8 +330,7 @@ export class HouseholdGateway {
       case 'quickConnect':
         writeJson(response, 403, { error: 'household_quick_connect_disabled' });
         return;
-      case 'streamyfin':
-      case 'jellyfinEnhanced':
+      case 'unknownRoute':
         writeJson(response, 404, { error: 'not_found' });
         return;
       case 'forgotPassword':
@@ -421,6 +399,8 @@ export class HouseholdGateway {
   #decide(method: string | undefined, route: string, query: URLSearchParams, tv: boolean): RouteDecision | undefined {
     const decision = this.#decideRoute(method, route, query, tv);
     if (!/%[0-9a-f]{2}/i.test(route)) return decision;
+    // Unknown routes with another encoded interpretation are never forwarded or accepted as plugin overrides.
+    if (decision.kind === 'unknownRoute') return undefined;
     const further = furtherDecodedRoute(route);
     if (further === undefined) return undefined;
     return JSON.stringify(this.#decideRoute(method, further, query, tv)) === JSON.stringify(decision) ? decision : undefined;
@@ -435,8 +415,6 @@ export class HouseholdGateway {
     if (method === 'GET' && route === BRANDING_CONFIGURATION_PATH) return { kind: 'branding' };
     if (method === 'GET' && route === QUICK_CONNECT_ENABLED_PATH) return { kind: 'quickConnectEnabled' };
     if (isQuickConnectRoute(route)) return { kind: 'quickConnect' };
-    if (isStreamyfinRoute(route)) return { kind: 'streamyfin' };
-    if (isRefusedJellyfinEnhancedRoute(route)) return { kind: 'jellyfinEnhanced' };
     if (method === 'POST' && FORGOT_PASSWORD_PATHS.has(route)) return { kind: 'forgotPassword' };
     if (this.#app && method === 'POST' && route === LOGOUT_PATH) return { kind: 'signOut' };
     if (method === 'POST' && route === AUTHENTICATE_BY_NAME_PATH) return { kind: 'signIn' };
@@ -447,6 +425,7 @@ export class HouseholdGateway {
       if (method === 'POST' && route === LIBRARY_JOIN_PATH) return { kind: 'libraryJoin' };
     }
     if (isServerInternalStreamRoute(route)) return { kind: 'notFound' };
+    if (!householdRouteAllowed(route, this.#additionalPluginRoutes)) return { kind: 'unknownRoute' };
     const userIds = userScopedIds(route, query);
     if (userIds.length && (method === 'GET' || method === 'HEAD') && isUserImageRoute(route)) return { kind: 'userImage', userIds };
     const list = method === 'GET' ? userListOf(route) : undefined;
@@ -476,12 +455,12 @@ export class HouseholdGateway {
       socket.end(`HTTP/1.1 400 Bad Request\r\n${neverStoreHeaders()}Connection: close\r\n\r\n`);
       return;
     }
-    const appPath = decision.kind === 'app';
     // Jellyfin's only WebSocket is an ordinary route: anything a household host checks or answers itself (the app API,
-    // which has none, Quick Connect, Streamyfin, Jellyfin Enhanced's refused routes, a route that names an item or a user) is never proxied as an upgrade.
+    // which has none, Quick Connect, a route that names an item or a user) is never proxied as an upgrade.
     const memberIds = this.#memberIds(householdId);
-    if (!memberIds || decision.kind !== 'proxy') {
-      socket.end(`HTTP/1.1 404 Not Found\r\n${appPath ? neverStoreHeaders() : ''}Connection: close\r\n\r\n`);
+    if (!memberIds || decision.kind !== 'proxy' || route !== '/socket') {
+      const body = JSON.stringify({ error: 'not_found' });
+      socket.end(`HTTP/1.1 404 Not Found\r\n${neverStoreHeaders()}Content-Type: application/json; charset=utf-8\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`);
       return;
     }
     const credentials = this.#credentials(request, new URL(request.url ?? '/', 'http://localhost'));
@@ -1782,8 +1761,8 @@ function isServerInternalStreamRoute(route: string): boolean {
 
 /** What a household host does with a request; see HouseholdGateway.#decide. */
 type RouteDecision =
-  | { kind: 'app' | 'publicUsers' | 'branding' | 'quickConnectEnabled' | 'quickConnect' | 'streamyfin' | 'jellyfinEnhanced' | 'forgotPassword' }
-  | { kind: 'signOut' | 'signIn' | 'signInById' | 'libraryJoin' | 'notFound' | 'proxy' | 'tvAsset' | 'webPage' }
+  | { kind: 'app' | 'publicUsers' | 'branding' | 'quickConnectEnabled' | 'quickConnect' | 'forgotPassword' }
+  | { kind: 'signOut' | 'signIn' | 'signInById' | 'libraryJoin' | 'unknownRoute' | 'notFound' | 'proxy' | 'tvAsset' | 'webPage' }
   | { kind: 'libraryJoinAsset'; asset: { body: string; contentType: string } }
   | { kind: 'userImage'; userIds: string[] }
   | { kind: 'userList'; list: UserList; userIds: string[] }
@@ -1946,14 +1925,6 @@ function isAppRoute(route: string): boolean {
 
 function isQuickConnectRoute(route: string): boolean {
   return route === QUICK_CONNECT_PATH || route.startsWith(`${QUICK_CONNECT_PATH}/`) || route === AUTHENTICATE_WITH_QUICK_CONNECT_PATH;
-}
-
-function isStreamyfinRoute(route: string): boolean {
-  return route === STREAMYFIN_PATH || route.startsWith(`${STREAMYFIN_PATH}/`);
-}
-
-function isRefusedJellyfinEnhancedRoute(route: string): boolean {
-  return JELLYFIN_ENHANCED_REFUSED_PATHS.some((path) => route === path || route.startsWith(`${path}/`));
 }
 
 /**

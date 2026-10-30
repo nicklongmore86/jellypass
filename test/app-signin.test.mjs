@@ -998,7 +998,7 @@ describe('Quick Connect and Streamyfin on a household host', { timeout: 30_000 }
     assert.equal(asks(app), before, 'an upgrade reached Jellyfin');
   });
 
-  it('still signs members in by name and refuses anyone else, and still proxies what is merely named alike', async (t) => {
+  it('still signs members in by name and refuses anyone else, and refuses unknown namespaces merely named alike', async (t) => {
     const app = await startApp(t, world({ passwords: { [ALICE]: 'alice-pass', [OUTSIDER]: 'out-pass' } }));
     const signIn = (username, password) => post(app.port, '/Users/AuthenticateByName', { Host: HOST_A, Authorization: AUTHORIZATION }, { Username: username, Pw: password });
     const alice = await signIn('Alice', 'alice-pass');
@@ -1006,11 +1006,11 @@ describe('Quick Connect and Streamyfin on a household host', { timeout: 30_000 }
     assert.equal(alice.json().User.Id, ALICE);
     const outsider = await signIn('Outsider', 'out-pass');
     assert.deepEqual([outsider.status, outsider.text], [401, NOT_A_MEMBER]);
-    // Only Quick Connect's own routes are answered here: a look-alike path still reaches Jellyfin.
+    // Look-alike namespaces are unknown and fail closed.
     const before = asks(app);
     await get(app.port, '/QuickConnectX/Enabled', { Host: HOST_A });
     await get(app.port, '/StreamyfinX/config', { Host: HOST_A });
-    assert.equal(asks(app), before + 2);
+    assert.equal(asks(app), before);
   });
 });
 
@@ -1231,15 +1231,30 @@ describe('Jellyfin Enhanced Seerr, reviews and provider lookup routes on a house
     assert.equal(asks(app), before, 'an upgrade reached Jellyfin');
   });
 
-  it('still relays the plugin\'s other routes, and what is merely named alike, to Jellyfin', async (t) => {
+  it('relays vetted plugin routes and refuses namespaces merely named alike', async (t) => {
     const app = await startApp(t);
+    const vetted = new Set([
+      '/JellyfinEnhanced/script', '/JellyfinEnhanced/bundle.js', '/JellyfinEnhanced/js/enhanced/helpers.js',
+      '/JellyfinEnhanced/version', '/JellyfinEnhanced/public-config', '/JellyfinEnhanced/bootstrap',
+      '/JellyfinEnhanced/locales/en.json', '/JellyfinEnhanced/tag-styles', '/JellyfinEnhanced/tmdb/movie/603',
+      '/JellyfinEnhanced/tmdb/search/movie', '/JellyfinEnhanced/tmdb/genre/movie/list', '/JellyfinEnhanced/tmdb/validate',
+      '/JellyfinEnhanced/watch-providers', '/JellyfinEnhanced/anilist/reviews', '/JellyfinEnhanced/items',
+      '/JellyfinEnhanced/item-stats/0123456789abcdef0123456789abcdef/0123456789abcdef0123456789abcdef',
+      '/JellyfinEnhanced/activity', '/JellyfinEnhanced/active-streams/sessions', '/JellyfinEnhanced/translate',
+      '/JellyfinEnhanced/translate/languages',
+    ]);
     for (const path of NOT_SEERR) {
       for (const spelling of [path, path.toLowerCase(), `/emby${path}/`]) {
         const before = asks(app);
         const answer = await get(app.port, spelling, { Host: HOST_A, ...callers.member });
-        assert.notEqual(answer.text, NOT_FOUND, spelling);
-        assert.equal(asks(app), before + 1, `${spelling} did not reach Jellyfin`);
-        assert.equal(app.jellyfin.requests.at(-1).pathname, spelling, spelling);
+        if (vetted.has(path)) {
+          assert.notEqual(answer.text, NOT_FOUND, spelling);
+          assert.equal(asks(app), before + 1, `${spelling} did not reach Jellyfin`);
+          assert.equal(app.jellyfin.requests.at(-1).pathname, spelling, spelling);
+        } else {
+          assert.deepEqual([answer.status, answer.text], [404, NOT_FOUND], spelling);
+          assert.equal(asks(app), before, spelling);
+        }
       }
     }
   });

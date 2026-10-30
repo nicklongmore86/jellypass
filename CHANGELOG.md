@@ -18,6 +18,15 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Security
+
+- Household gateway routes now deny by default: explicit Jellyfin 10.11.11/12.4 OpenAPI templates, legacy client routes and vetted plugin compatibility entries replace open-ended relay. Unknown plugin namespaces return fixed JSON 404 over HTTP and WebSocket; only the session socket can upgrade. Existing refusals and household scope checks remain. Jellyfin Enhanced public-config is preserved byte-identically.
+- Additional plugin endpoints require deliberate exact-path `HOUSEHOLD_PLUGIN_ROUTES` configuration and a privacy audit; see README. Previously unrecognised paths (including inactive TV and removed bridge paths) no longer relay.
+
+### Added
+
+- Authenticated admin deployment self-check for direct Jellyfin origins, Quick Connect, household proxy headers, public Seerr, version support when the gate is available, and TMDB key validity. Public probes carry no service credentials, use timeouts and bounded reads, never follow redirects, and run at most once per minute. Inside probes explicitly warn about external-reachability limits.
+
 ## [3.9.0] - 2026-10-29
 
 This is a minor release for the TV add-on, which is still experimental and off

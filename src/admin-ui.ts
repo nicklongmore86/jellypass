@@ -42,6 +42,12 @@ export const ADMIN_HTML = `<!doctype html>
       </div>
 
       <nav class="tabs" aria-label="Admin sections"><button class="active" data-tab="dashboard">Dashboard</button><button data-tab="requests">Requests <span id="requests-count"></span></button><button data-tab="library">Library <span id="library-count"></span></button><button data-tab="grants">Grants <span id="grant-count"></span></button><button data-tab="groups">Groups <span id="group-count"></span></button></nav>
+      <section class="panel" aria-labelledby="self-check-title" style="padding:24px;margin-top:24px">
+        <h2 id="self-check-title">Deployment self-check</h2>
+        <p>Check gateway bypass risks, Quick Connect, proxy headers, Seerr, Jellyfin support and TMDB. Inside probes cannot prove outside access is blocked.</p>
+        <button id="run-self-check" class="button quiet" type="button">Run self-check</button>
+        <div id="self-check-results" role="status" aria-live="polite"></div>
+      </section>
       <section id="dashboard-panel" class="tab-panel">
         <div class="section-tools"><div><h2>Access overview</h2><p>A compact view of JellyPass activity and policy health.</p></div></div>
         <div class="stats" aria-label="Access summary">
@@ -1249,6 +1255,17 @@ export const ADMIN_APP_JS = `
     scrollToTop();
   }
 
+  byId('run-self-check').addEventListener('click', async () => {
+    const button = byId('run-self-check');
+    const output = byId('self-check-results');
+    button.disabled = true;
+    output.textContent = 'Checking configured services…';
+    try {
+      const answer = await api('/v1/self-check', { method: 'POST' });
+      output.replaceChildren(...answer.results.map((entry) => node('p', { text: entry.status.toUpperCase() + ' — ' + entry.check + ': ' + entry.explanation })));
+    } catch (error) { output.textContent = error.message; }
+    finally { button.disabled = false; }
+  });
   document.querySelectorAll('.tabs button').forEach((button) => button.addEventListener('click', () => activateTab(button.dataset.tab)));
 
   scrollToTop();

@@ -405,11 +405,12 @@ describe('household "Add to my library"', { timeout: 10_000 }, () => {
     assert.doesNotMatch((await send(baseUrl, '/jellypass/add.js', {})).body, /innerHTML/);
   });
 
-  it('leaves the paths to Jellyfin when Seerr lookup is not configured', async (t) => {
+  it('refuses the paths when Seerr lookup is not configured', async (t) => {
     const { baseUrl, jellyfin } = await gateway(t, { seerr: false });
     const page = await send(baseUrl, JOIN_PATH, {});
-    assert.equal(page.status, 401, 'the fake Jellyfin answers unauthenticated requests itself');
-    assert.equal(jellyfin.requestedPaths.at(-1), JOIN_PATH);
+    assert.equal(page.status, 404);
+    assert.equal(page.body, '{"error":"not_found"}');
+    assert.notEqual(jellyfin.requestedPaths.at(-1), JOIN_PATH);
   });
 });
 

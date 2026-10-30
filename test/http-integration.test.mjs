@@ -571,12 +571,11 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     }
   });
 
-  it('passes removed bridge paths on household hostnames through to Jellyfin', async () => {
+  it('refuses removed bridge paths on household hostnames', async () => {
     const response = await fetchWithHost(bridgeUrl, '/jellyquest-bridge/health', 'jelly-grove.example.test');
-    // The fake Jellyfin rejects unauthenticated requests with an empty 401; JellyPass never answers this path.
-    assert.equal(response.status, 401);
-    assert.deepEqual(await response.json(), {});
-    assert.equal(jellyfin.requestedPaths.at(-1), '/jellyquest-bridge/health');
+    assert.equal(response.status, 404);
+    assert.deepEqual(await response.json(), { error: 'not_found' });
+    assert.notEqual(jellyfin.requestedPaths.at(-1), '/jellyquest-bridge/health');
   });
 });
 

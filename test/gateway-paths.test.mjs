@@ -224,7 +224,8 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
     for (const [method, bare] of itemRoutes(HIDDEN)) {
       for (const path of [bare, ...spellings(bare)]) {
         const answer = await get(app.port, `${path}?${query}`, alice, { method });
-        assert.deepEqual([answer.status, method === 'HEAD' ? ITEM_NOT_FOUND : answer.text], [404, ITEM_NOT_FOUND], `${method} ${path}`);
+        const refused = bare.endsWith('/SomeRouteJellyfinAddsLater') ? '{"error":"not_found"}' : ITEM_NOT_FOUND;
+        assert.deepEqual([answer.status, method === 'HEAD' ? refused : answer.text], [404, refused], `${method} ${path}`);
       }
       // As a WebSocket upgrade (a GET), save an image's route, which is Jellyfin's to answer (below).
       if (!bare.includes('/Images/')) assert.match(await upgrade(app.port, bare, HOST_A), /^HTTP\/1\.1 404 /, bare);
@@ -243,6 +244,7 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
     // An item she may see is proxied, by every route.
     for (const [method, bare] of itemRoutes(ITEMS.ownMovie)) {
       const answer = await get(app.port, `${bare}?${query}`, alice, { method });
+      if (bare.endsWith('/SomeRouteJellyfinAddsLater')) { assert.equal(answer.text, '{"error":"not_found"}'); continue; }
       assert.notEqual(answer.text, ITEM_NOT_FOUND, `${method} ${bare}`);
       assert.equal(app.jellyfin.requests.at(-1).path, `${bare}?${query}`, `${method} ${bare}`);
     }
@@ -289,7 +291,10 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
     const proxied = () => app.jellyfin.requests.filter((request) => request.pathname !== '/Users/Me').length;
     const refused = async (method, path, headers = alice) => {
       const answer = await get(app.port, path, headers, { method });
-      assert.deepEqual([answer.status, method === 'HEAD' ? ITEM_NOT_FOUND : answer.text], [404, ITEM_NOT_FOUND], `${method} ${path}`);
+      const canonical = decodeURIComponent(path.split('?')[0]).toLowerCase().replace(/\/+$/, '');
+      const unknown = /\/(?:someroutejellyfinaddslater|authenticate|public)$/.test(canonical);
+      const refused = unknown ? '{"error":"not_found"}' : ITEM_NOT_FOUND;
+      assert.deepEqual([answer.status, method === 'HEAD' ? refused : answer.text], [404, refused], `${method} ${path}`);
     };
     const before = proxied();
     for (const [method, bare] of userRoutes(BOB)) {
@@ -323,6 +328,7 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
     ];
     for (const [method, path] of own) {
       const answer = await get(app.port, path, alice, { method });
+      if (/\/(?:SomeRouteJellyfinAddsLater|Authenticate|Public)(?:\?|$)/.test(path)) { assert.equal(answer.text, '{"error":"not_found"}'); continue; }
       assert.notEqual(answer.text, ITEM_NOT_FOUND, `${method} ${path}`);
       assert.equal(app.jellyfin.requests.at(-1).path, path, `${method} ${path}`);
     }
@@ -451,8 +457,8 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
       assert.equal((await get(app.port, path, { Host: HOST_A })).status, 401, path);
     }
     assert.deepEqual(app.jellyfin.requests.slice(before).map((request) => request.path), paths);
-    // GET of a sign-out route is no sign-out, so its double encoding changes nothing either.
-    assert.equal((await get(app.port, '/Sessions/%254Cogout', { Host: HOST_A })).status, 401);
+    // Further decoding would change unknown-path refusal to the core logout route: ambiguous.
+    assert.equal((await get(app.port, '/Sessions/%254Cogout', { Host: HOST_A })).status, 400);
     // But under /Users every other name is a user's ID, which decoding again would make a fixed name: ambiguous.
     const user = await get(app.port, '/Users/%2541uthenticateByName', { Host: HOST_A });
     assert.deepEqual([user.status, user.text], [400, INVALID_PATH]);
@@ -476,3 +482,17 @@ function upgrade(port, pathname, host) {
     socket.once('error', reject);
   });
 }
+
+
+describe('household deny-by-default routing', () => {
+  it('refuses unknown namespaces in every canonical spelling without HTTP or WebSocket relay', async (t) => {
+    const app = await startApp(t);
+    const before = app.jellyfin.requests.length;
+    for (const path of ['/UnknownPlugin/config', ...spellings('/UnknownPlugin/config'), '/%55nknownPlugin/config']) {
+      const answer = await get(app.port, path, { Host: HOST_A });
+      assert.deepEqual([answer.status, answer.text, answer.headers['cache-control']], [404, '{"error":"not_found"}', 'no-store'], path);
+      assert.match(await upgrade(app.port, path, HOST_A), /^HTTP\/1\.1 404 /, path);
+    }
+    assert.equal(app.jellyfin.requests.length, before);
+  });
+});

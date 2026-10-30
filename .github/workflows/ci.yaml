@@ -25,6 +25,11 @@ jobs:
       - run: docker build .
 
   jellyfin-integration:
+    strategy:
+      matrix:
+        image: ['jellyfin/jellyfin:10.11.11', 'jellyfin/jellyfin:12.4.20261026-211555']
+    env:
+      JELLYFIN_IMAGE: ${{ matrix.image }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -34,7 +39,7 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # Starts a throwaway jellyfin/jellyfin:10.11.3 container, runs
+      # Starts a throwaway supported Jellyfin container, runs
       # test/real-jellyfin.test.mjs against it, and prints its logs on failure.
       - run: pnpm test:real
 

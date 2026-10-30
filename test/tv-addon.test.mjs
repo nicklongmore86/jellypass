@@ -248,7 +248,7 @@ describe('TV add-on: the build', () => {
 });
 
 describe('TV add-on: the gateway', { timeout: 30_000 }, () => {
-  it('changes nothing while it is off: Jellyfin web\'s page and /jellypass/tv are relayed to Jellyfin as before', async (t) => {
+  it('preserves Jellyfin web while off and refuses inactive TV assets', async (t) => {
     const app = await startApp(t, webWorld());
     const page = await app.get('/web/index.html', { user: null, headers: { 'Accept-Encoding': 'identity' } });
     assert.equal(page.status, 200);
@@ -258,22 +258,22 @@ describe('TV add-on: the gateway', { timeout: 30_000 }, () => {
     const conditional = await app.get('/web/', { user: null, headers: { 'If-None-Match': '"jellyfin-web-etag"' } });
     assert.equal(conditional.status, 304);
     const tv = await app.get(SCRIPT_PATH, { user: null });
-    assert.deepEqual([tv.status, tv.text], [401, '{}'], 'answered by Jellyfin (which asks this fake\'s unknown paths for a token)');
-    assert.deepEqual(webCalls(app), ['GET /web/index.html', 'GET /web/', `GET ${SCRIPT_PATH}`]);
+    assert.deepEqual([tv.status, tv.text], [404, '{"error":"not_found"}']);
+    assert.deepEqual(webCalls(app), ['GET /web/index.html', 'GET /web/']);
   });
 
   it('changes nothing on a household it is not on for, nor on the admin host', async (t) => {
     const app = await startApp(t, webWorld(), tvOn());
     const mill = await app.get('/web/index.html', { host: HOST_B, user: null, headers: { 'Accept-Encoding': 'identity' } });
     assert.deepEqual([mill.status, mill.text, mill.headers.etag], [200, JELLYFIN_WEB_PAGE, '"jellyfin-web-etag"']);
-    assert.deepEqual([(await app.get(SCRIPT_PATH, { host: HOST_B, user: null })).text], ['{}']);
+    assert.deepEqual([(await app.get(SCRIPT_PATH, { host: HOST_B, user: null })).text], ['{"error":"not_found"}']);
     // The admin host never relays anything to Jellyfin, and never serves the add-on.
     for (const pathname of ['/web/index.html', '/web/', SCRIPT_PATH]) {
       const admin = await app.get(pathname, { host: ADMIN_HOST, user: null });
       assert.equal(admin.status, 401, pathname);
       lacks(admin.text, /jellypass-tv/);
     }
-    assert.deepEqual(webCalls(app), ['GET /web/index.html', `GET ${SCRIPT_PATH}`]);
+    assert.deepEqual(webCalls(app), ['GET /web/index.html']);
   });
 
   it('adds exactly one script tag, before </head>, to Jellyfin web\'s page in every spelling Jellyfin serves it at', async (t) => {

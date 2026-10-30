@@ -35,18 +35,18 @@ describe('socket error handling', { timeout: 10_000 }, () => {
         response.end(JSON.stringify({ ServerName: 'Test Jellyfin' }));
         return;
       }
-      if (request.url === '/stream-reset') {
+      if (request.url === '/web/stream-reset') {
         response.writeHead(200, { 'Content-Type': 'application/octet-stream' });
         response.write(Buffer.alloc(1024));
         setTimeout(() => request.socket.resetAndDestroy(), 20);
         return;
       }
-      if (request.url === '/hold-headers' || (request.url === '/Users/Public' && holdPublicUsers)) {
+      if (request.url === '/web/hold-headers' || (request.url === '/Users/Public' && holdPublicUsers)) {
         heldBeforeHeaders.add(response);
         response.once('close', () => heldBeforeHeaders.delete(response));
         return;
       }
-      if (request.url === '/stream-hold') {
+      if (request.url === '/web/stream-hold') {
         heldResponses.add(response);
         response.once('close', () => heldResponses.delete(response));
         response.writeHead(200, { 'Content-Type': 'application/octet-stream' });
@@ -63,9 +63,9 @@ describe('socket error handling', { timeout: 10_000 }, () => {
       upstreamUpgradeSockets.add(socket);
       socket.once('close', () => upstreamUpgradeSockets.delete(socket));
       upgradeSeen.push(request.url);
-      if (request.url === '/socket-hold') return;
+      if (request.url === '/socket?hold=1') return;
       socket.write('HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n');
-      if (request.url === '/socket-reset') setTimeout(() => socket.resetAndDestroy(), 20);
+      if (request.url === '/socket?reset=1') setTimeout(() => socket.resetAndDestroy(), 20);
       else socket.on('data', (chunk) => socket.write(chunk));
     });
     await listen(upstream);
@@ -99,7 +99,7 @@ describe('socket error handling', { timeout: 10_000 }, () => {
   });
 
   it('survives an upstream reset after a WebSocket upgrade, closes the client, and warns', async () => {
-    const { socket, response } = await upgrade(gatewayPort, '/socket-reset');
+    const { socket, response } = await upgrade(gatewayPort, '/socket?reset=1');
     assert.match(response, /^HTTP\/1\.1 101/);
     socket.on('error', () => {});
     await once(socket, 'close');
@@ -111,7 +111,7 @@ describe('socket error handling', { timeout: 10_000 }, () => {
 
   it('survives a client reset while the upstream upgrade is still pending', async () => {
     const seen = upgradeSeen.length;
-    const socket = await rawUpgradeRequest(gatewayPort, '/socket-hold');
+    const socket = await rawUpgradeRequest(gatewayPort, '/socket?hold=1');
     await waitFor(() => upgradeSeen.length > seen);
     const pending = [...upstreamUpgradeSockets];
     socket.resetAndDestroy();
@@ -122,7 +122,7 @@ describe('socket error handling', { timeout: 10_000 }, () => {
 
   it('aborts the pending upstream upgrade when the client half-closes', async () => {
     const seen = upgradeSeen.length;
-    const socket = await rawUpgradeRequest(gatewayPort, '/socket-hold');
+    const socket = await rawUpgradeRequest(gatewayPort, '/socket?hold=1');
     await waitFor(() => upgradeSeen.length > seen);
     const pending = [...upstreamUpgradeSockets];
     const clientClosed = once(socket, 'close');
@@ -153,7 +153,7 @@ describe('socket error handling', { timeout: 10_000 }, () => {
   });
 
   it('survives an upstream reset in the middle of a proxied response and warns', async () => {
-    await assert.rejects(get(gatewayPort, '/stream-reset'));
+    await assert.rejects(get(gatewayPort, '/web/stream-reset'));
     await assertStillServing(gatewayPort);
     // The reset is reported once at warn; its follow-on "aborted" response error is only a debug detail.
     assert.deepEqual(upstreamWarnings().map(({ code }) => code), ['ECONNRESET']);
@@ -163,7 +163,7 @@ describe('socket error handling', { timeout: 10_000 }, () => {
     const socket = connectSocket(gatewayPort, '127.0.0.1');
     socket.on('error', () => {});
     await once(socket, 'connect');
-    socket.write(`GET /stream-hold HTTP/1.1\r\nHost: ${HOUSEHOLD_HOST}\r\n\r\n`);
+    socket.write(`GET /web/stream-hold HTTP/1.1\r\nHost: ${HOUSEHOLD_HOST}\r\n\r\n`);
     await once(socket, 'data');
     assert.equal(heldResponses.size, 1);
     const upstreamClosed = once([...heldResponses][0], 'close');
@@ -173,7 +173,7 @@ describe('socket error handling', { timeout: 10_000 }, () => {
     assert.deepEqual(warnings, []);
   });
 
-  for (const [name, pathname] of [['a proxied GET', '/hold-headers'], ['a transformed JSON proxy', '/Users/Public']]) {
+  for (const [name, pathname] of [['a proxied GET', '/web/hold-headers'], ['a transformed JSON proxy', '/Users/Public']]) {
     it(`releases the upstream when the client disconnects before response headers on ${name}`, async () => {
       holdPublicUsers = true;
       try {

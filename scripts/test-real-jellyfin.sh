@@ -4,7 +4,7 @@
 # Jellyfin container is started with Docker and removed afterwards. Run after `pnpm build`.
 set -euo pipefail
 
-JELLYFIN_IMAGE="${JELLYFIN_IMAGE:-jellyfin/jellyfin:10.11.3}"
+JELLYFIN_IMAGE="${JELLYFIN_IMAGE:-jellyfin/jellyfin:10.11.11}"
 JELLYFIN_PORT="${JELLYFIN_PORT:-18096}"
 
 if [[ -n "${JELLYFIN_REAL_URL:-}" ]]; then

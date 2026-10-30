@@ -638,3 +638,17 @@ describe('admin UI Requests tab', () => {
     assert.equal(page.document.querySelectorAll('#household-requests-list .request-row').length, 3);
   });
 });
+
+describe('admin deployment self-check UI', () => {
+  it('runs only on demand and renders upstream explanations as text', async () => {
+    const page = adminPage((path) => path === '/v1/self-check' ? { status: 200, body: { results: [{ check: 'origin', status: 'warn', explanation: '<script>untrusted</script>' }] } } : DATA[path]);
+    await page.settle();
+    assert.ok(!page.requests.includes('POST /v1/self-check'));
+    page.click('run-self-check');
+    await page.settle();
+    assert.ok(page.requests.includes('POST /v1/self-check'));
+    const output = page.document.getElementById('self-check-results');
+    assert.equal(output.textContent, 'WARN — origin: <script>untrusted</script>');
+    assert.equal(output.querySelector('script'), null);
+  });
+});

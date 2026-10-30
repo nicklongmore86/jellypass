@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import type { SelfCheck } from './self-check.js';
 import { ConflictError, UserProvisioningError, type AccessService } from './access-service.js';
 import { HouseholdApp, type HouseholdAppOptions } from './app-api.js';
 import { AdminActionLimitError, AdminSeerrError, type AdminRequests } from './admin-requests.js';
@@ -28,9 +29,11 @@ export interface ServerTokens {
 }
 
 export interface ServerOptions {
+  selfCheck?: SelfCheck;
   /** Reverse proxies trusted to report the client address in X-Forwarded-For; empty uses the TCP peer. */
   trustedProxies?: string[];
   householdGateway?: {
+    additionalPluginRoutes?: string[];
     jellyfinUrl: string;
     domain: string;
     hostPrefix: string;
@@ -127,6 +130,7 @@ export function makeServer(
     try {
       const url = new URL(request.url ?? '/', 'http://localhost');
       const householdId = householdGateway?.householdId(request.headers.host);
+      if (options?.selfCheck?.handleProxyRequest(request, response)) return;
       if (householdId) {
         await householdGateway?.handle(request, response, householdId);
         return;
@@ -216,6 +220,14 @@ export function makeServer(
         const session = webAuth ? await webAuth.session(request) : { status: 'none' as const };
         if (session.status === 'unavailable') return json(response, 503, { error: 'session_check_unavailable' });
         if (session.status !== 'active') return json(response, 401, { error: 'unauthorized' });
+      }
+
+      if (request.method === 'POST' && url.pathname === '/v1/self-check') {
+        const results = await options?.selfCheck?.run();
+        if (!options?.selfCheck) return json(response, 404, { error: 'self_check_not_configured' });
+        if (!results) { response.setHeader('Retry-After', '60'); return json(response, 429, { error: 'too_many_requests' }); }
+        response.setHeader('Cache-Control', 'no-store');
+        return json(response, 200, { results });
       }
 
       if (request.method === 'GET' && url.pathname === '/metrics') {

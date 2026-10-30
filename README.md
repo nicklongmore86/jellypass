@@ -20,6 +20,20 @@ with or endorsed by Jellyfin, Seerr, or Jellyseerr.
 > with non-critical users and media first, keep a backup of the state file, and
 > retain a separate Jellyfin administrator recovery path.
 
+## Deployment self-check and plugin routes
+
+After signing in to `/admin/`, choose **Run self-check**. It checks direct Jellyfin bypass risks, Quick Connect, household proxy headers, public Seerr access, Jellyfin support (when a version gate is installed), and TMDB key validity. The authenticated API is `POST /v1/self-check`; cookie requests must come from the admin origin. Runs are limited to one per minute, with four-second probe timeouts and no redirect following.
+
+Set `JELLYFIN_PUBLIC_URLS=https://origin.example.com` (comma-separated if there are several) and `SEERR_PUBLIC_URL=https://requests.example.com` to probe those public URLs without sending service API keys. Household addresses are self-requested through the public proxy; configure `TRUSTED_PROXIES` correctly. A direct Jellyfin answer is a bypass risk; public Seerr access is a warning because Seerr must be admin-only. A server-side probe cannot prove what outside users can reach: repeat access checks from a member network. See [household access](docs/household-access.md#admin-deployment-self-check) for the limits.
+
+Household hosts now refuse routes outside the explicit Jellyfin core and vetted-plugin allow-list in `src/gateway-route-policy.ts`. To expose a reviewed additional plugin endpoint, set, for example:
+
+```dotenv
+HOUSEHOLD_PLUGIN_ROUTES=/exampleplugin/status,/exampleplugin/config
+```
+
+Only exact lowercase paths are accepted, without wildcards, query strings, encodings, dot segments or legacy prefixes. Restart after changing configuration. Existing explicit gateway refusals and household scope checks still apply. Historically refused plugin endpoints cannot be re-enabled by this option. **Warning:** plugin endpoints can disclose other households' names, requests, media or API keys. Audit each response and its authorization before exposing it; allowing a plugin route accepts responsibility for its privacy behavior. Prefer adding a reviewed, tested entry to the table for wider support. Jellyfin Enhanced's existing `public-config` remains byte-identical.
+
 ## What it does
 
 - Converts Seerr `MEDIA_AVAILABLE` webhooks into durable access grants.
@@ -200,6 +214,9 @@ JellyPass reads configuration from environment variables at startup.
 | `CATALOG_SYNC_INTERVAL_SECONDS` | No | `3600` | Jellyfin catalog refresh interval; `0` disables scheduling. Maximum `604800`. |
 | `HOUSEHOLD_DOMAIN` | No | — | Enables household hostnames below this DNS domain. |
 | `HOUSEHOLD_HOST_PREFIX` | No | `jelly-` | Prefix placed before each DNS-safe group ID. |
+| `HOUSEHOLD_PLUGIN_ROUTES` | No | — | Comma-separated exact lowercase plugin paths added to the household relay allow-list. No wildcards; existing security refusals remain. Audit plugin privacy before using this option. |
+| `JELLYFIN_PUBLIC_URLS` | No | — | Comma-separated public Jellyfin URLs for the admin self-check's anonymous direct-origin probes. |
+| `SEERR_PUBLIC_URL` | No | — | Public Seerr URL for the admin self-check. Seerr must be admin-only. |
 | `HOUSEHOLD_APP_ENABLED` | No | `false` | Serves the [household app API](#household-app-api) (titles, "Get this" and the household's requests) at `/jellypass/app/v1/*`, and the [app](#household-app-pwa) at `/jellypass/app/`, on household hostnames. Requires `HOUSEHOLD_DOMAIN`, Seerr configuration and `TMDB_API_KEY`; startup stops if any is missing. While `false`, those paths answer `404` and are never proxied to Jellyfin. |
 | `TV_ADDON_ENABLED` | No | `false` | Adds the [TV add-on](docs/tv-addon.md) (a JellyPass row on Jellyfin web's Home) to Jellyfin web's page on the household hostnames in `TV_ADDON_HOUSEHOLDS`, and serves its files at `/jellypass/tv/` there. Requires `HOUSEHOLD_APP_ENABLED`. While `false`, nothing on any host changes. |
 | `TV_ADDON_HOUSEHOLDS` | Conditional | — | Household (group) IDs separated by commas, or `*` for every household, that the TV add-on is on for. Required when `TV_ADDON_ENABLED` is true; startup stops on an empty or invalid list. Other households' hostnames are unchanged. |
@@ -522,11 +539,11 @@ Access groups can also act as households. With:
 
 ```dotenv
 HOUSEHOLD_DOMAIN=example.com
-HOUSEHOLD_HOST_PREFIX=jelly-
+HOUSEHOLD_HOST_PREFIX=media-
 ```
 
 the group ID `grove` receives the URL
-`https://jelly-grove.example.com`. On that hostname, JellyPass filters
+`https://media-grove.example.com`. On that hostname, JellyPass filters
 Jellyfin's public-user response to the group's members and proxies supported
 Jellyfin HTTP, streaming, byte-range, HLS, and WebSocket traffic.
 
@@ -637,7 +654,7 @@ but must never learn who requested it or which household holds it.
 
 With Seerr configured (`SEERR_URL` and `SEERR_API_KEY`), every household
 hostname serves a small page at `/jellypass/add`, for example
-`https://jelly-grove.example.com/jellypass/add`. A member who is signed in
+`https://media-grove.example.com/jellypass/add`. A member who is signed in
 to Jellyfin on that hostname pastes a Seerr or TMDB link to a movie or series
 (or a bare TMDB ID) and selects **Add to my library**. Share the link with
 households. The page reuses the Jellyfin web client's sign-in on the same
@@ -962,7 +979,7 @@ Without Seerr, `/jellypass/add` paths are proxied to Jellyfin like any other.
 ### Household app (PWA)
 
 With `HOUSEHOLD_APP_ENABLED=true`, each household hostname also serves the
-app itself at `https://jelly-<household>.<HOUSEHOLD_DOMAIN>/jellypass/app/`: an
+app itself at `https://media-grove.example.com/jellypass/app/`: an
 installable web app (a PWA) to browse what is in the household's Jellyfin
 library and find more to watch. It shows each title's state (`Ready to watch`
 with a **Play** button, `Available to get`, `Requested` or `Can't request`) and offers
@@ -1536,9 +1553,11 @@ The runtime uses only Node.js standard-library modules. TypeScript and Node type
 definitions are development dependencies.
 
 CI performs type checking, unit and HTTP integration tests, a production
-container build, an integration test against Jellyfin 10.11.3, and one against
-Seerr 3.5.1 (`pnpm test:seerr`, which starts its own container). To run the
-real-Jellyfin test locally, start an equivalent fresh Jellyfin container with
+container build, integration tests against Jellyfin 10.11.11 and
+`jellyfin/jellyfin:12.4.20261026-211555`, and one against Seerr 3.5.1 (`pnpm test:seerr`, which starts its own container). To run the
+real-Jellyfin test locally, use `JELLYFIN_IMAGE=jellyfin/jellyfin:10.11.11 pnpm test:real`
+(or the 12.4 image above); the script removes its container afterwards. To use
+your own fresh Jellyfin container, start it with
 `test/fixtures` mounted at `/media`, then run:
 
 ```sh
