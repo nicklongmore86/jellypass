@@ -155,6 +155,8 @@ export function createApi(options: ApiOptions): Api {
     }
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
+      // The sign-in may have ended while the body was let go: then this answer is nobody's, whatever it says.
+      if (ended()) throw new SessionChangedError();
       // A refused sign-in is nobody's: whatever was shown as requested for it is dropped. A late refusal of a token
       // no longer held says nothing about the one held now.
       if (response.status === 401 && options.token() === token) {

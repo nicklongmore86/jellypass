@@ -10,6 +10,7 @@ import { describe, it } from 'node:test';
 import { pathToFileURL } from 'node:url';
 import vm from 'node:vm';
 import { parseHTML } from 'linkedom';
+import { parse } from 'acorn';
 import { APP_BUDGET_WINDOW_MS, APP_BURST_WINDOW_MS, MAX_APP_REQUESTS_PER_CLIENT, MAX_APP_REQUESTS_PER_HOUSEHOLD_BURST, MAX_APP_REQUESTS_PER_USER } from '../dist/app-api.js';
 import { APP_CONTENT_SECURITY_POLICY, APP_PERMISSIONS_POLICY } from '../dist/app-assets.js';
 import { buildApp, contentHash, stampWorker } from '../scripts/build-app.mjs';
@@ -5739,10 +5740,40 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
     });
 
     it('never says "download" in what the web app or the TV add-on shows (the store wording rule)', () => {
-      const files = (dir) => readdirSync(dir, { recursive: true }).map((name) => path.join(dir, String(name))).filter((file) => /\.(js|html|css|json)$/.test(file));
+      // Only words a person can see: string and template literals in the scripts, text and attributes in the page and
+      // manifest. Identifiers (`downloadProgress`) are code, not copy.
+      const DOWNLOAD = /\bdownload(s|ed|ing)?\b/i;
+      const copy = (file) => {
+        const source = readFileSync(file, 'utf8');
+        if (!file.endsWith('.js')) return [source];
+        const strings = [];
+        const visit = (node) => {
+          if (!node || typeof node.type !== 'string') return;
+          if (node.type === 'Literal' && typeof node.value === 'string') strings.push(node.value);
+          if (node.type === 'TemplateElement') strings.push(node.value.cooked ?? node.value.raw);
+          for (const value of Object.values(node)) {
+            if (Array.isArray(value)) value.forEach(visit);
+            else if (value && typeof value === 'object') visit(value);
+          }
+        };
+        visit(parse(source, { ecmaVersion: 'latest', sourceType: 'module' }));
+        return strings;
+      };
+      const says = (file) => copy(file).some((text) => DOWNLOAD.test(text));
+      // The rule itself: the old copy is caught, an identifier is not.
+      const probe = path.join(mkdtempSync(path.join(os.tmpdir(), 'jellypass-copy-')), 'probe.js');
+      try {
+        writeFileSync(probe, 'const downloadProgress = 0; export const note = `If it has already been approved, the download may still finish.`;');
+        assert.equal(says(probe), true, 'the old wording is caught');
+        writeFileSync(probe, 'const downloadProgress = 0; export const note = "Only for you.";');
+        assert.equal(says(probe), false, 'an identifier is not copy');
+      } finally {
+        rmSync(path.dirname(probe), { recursive: true, force: true });
+      }
+      const files = (dir) => readdirSync(dir, { recursive: true }).map((name) => path.join(dir, String(name))).filter((file) => /\.(js|html|webmanifest)$/.test(file));
       const shipped = [...files(DIST_APP), ...files(path.join(import.meta.dirname, '..', 'dist', 'tv'))];
       assert.ok(shipped.some((file) => file.includes(`${path.sep}tv${path.sep}`)) && shipped.some((file) => /render\.[0-9a-f]+\.js$/.test(file)), 'both built');
-      for (const file of shipped) assert.doesNotMatch(readFileSync(file, 'utf8'), /download/i, file);
+      for (const file of shipped) assert.equal(says(file), false, file);
     });
 
     describe('a refused sign-in (401) on the change itself', () => {
@@ -5804,6 +5835,41 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
           await settledAtSignIn(page);
           assert.equal((await app.get(`${HIDDEN}`)).text.includes(`"tmdbId":`), true, 'the hide stands: the Undo was refused');
         });
+      }
+
+      for (const status of [401, 500]) {
+        for (const action of ['hide', 'undo']) {
+          it(`${action === 'hide' ? 'a hide' : 'an Undo'} answered ${status} whose body is still being let go when another member signs in is silent for them`, async (t) => {
+            const app = await startApp(t);
+            let release;
+            let cancelling = false;
+            const held = new Promise((resolve) => { release = resolve; });
+            t.after(() => release());
+            const page = await openApp(t, app, { override: (url, init) => (url.startsWith(HIDDEN) && init.method === (action === 'hide' ? 'POST' : 'DELETE')
+              ? { status, body: new ReadableStream({ cancel() { cancelling = true; return held; } }), headers: {} }
+              : undefined) });
+            await homeReady(page);
+            await settledCalls(page);
+            const card = trending(page).querySelector('li.card');
+            click(page, card.querySelector('.card-more'));
+            click(page, card.querySelector('.card-menu-item'));
+            if (action === 'undo') click(page, await page.until(() => page.document.querySelector('.toast button'), 'the Undo'));
+            await page.until(() => cancelling, 'the error body being let go');
+            page.store.delete('jellyfin_credentials');
+            page.go('#/account');
+            await page.until(() => page.main().querySelector('.account-out'), 'signed out');
+            page.store.set('jellyfin_credentials', JSON.stringify({ Servers: [{ ManualAddress: page.location.origin, AccessToken: TOKENS[ANN], UserId: ANN }] }));
+            page.go('#/');
+            await homeReady(page);
+            await settledCalls(page);
+            const before = page.main().outerHTML;
+            release();
+            await new Promise((resolve) => setTimeout(resolve, 100));
+            await settledCalls(page);
+            assert.equal(page.main().outerHTML, before, 'Ann\'s Home is as it was');
+            assert.equal(Boolean(page.document.querySelector('.toast')), false, 'no line from the old answer');
+          });
+        }
       }
 
       it('on the title page, Undo takes the member to sign-in', async (t) => {
