@@ -5669,26 +5669,32 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
         assert.equal(page.main().querySelector('.load-more').hidden, true);
       });
 
-      it('lists the member\'s own hides newest first, names each with a title call, and Unhide drops one with a single DELETE', async (t) => {
+      it('lists the member\'s own hides, names each with a title call, and Unhide drops one with a single DELETE', async (t) => {
         const app = await startApp(t);
         await app.post(`${HIDDEN}/movie/${T_MOVIE}`);
         await app.post(`${HIDDEN}/tv/${T_TV}`);
         const page = await openApp(t, app, { hash: '#/requests/hidden' });
         await ready(page, 2);
         await settledCalls(page);
-        assert.deepEqual([...page.main().querySelectorAll('.request .card-title')].map((title) => title.textContent), ['Synthetic Series Two', 'Synthetic Movie One']);
-        assert.deepEqual([...page.main().querySelectorAll('.request .card-meta')].map((meta) => meta.textContent).map((text) => text.replace(/^\d{4} · /, '')), ['Series', 'Movie']);
+        // (Both were hidden in the same millisecond, so their order is the server's tie-break: only the names are pinned.)
+        const titles = () => [...page.main().querySelectorAll('.request .card-title')].map((title) => title.textContent);
+        assert.deepEqual([...titles()].sort(), ['Synthetic Movie One', 'Synthetic Series Two']);
+        const kinds = [...page.main().querySelectorAll('.request .card-meta')].map((meta) => meta.textContent.replace(/^\d{4} · /, ''));
+        assert.deepEqual(kinds.sort(), ['Movie', 'Series']);
         assert.match(page.main().querySelector('.request-on').textContent, /^Hidden on /);
         assert.deepEqual(page.requests.filter((request) => !request.url.endsWith('/me')).map((request) => `${request.init.method ?? 'GET'} ${request.url.replace('/jellypass/app/v1', '').replace(/\/(movie|tv)\/\d+/, '/$1/{tmdbId}')}`).sort(), COST.hiddenTab.atOnce);
         assert.equal(COST.hiddenTab.calls, 3);
         const buttons = [...page.main().querySelectorAll('button.hidden-unhide')];
-        assert.deepEqual(buttons.map((button) => button.getAttribute('aria-label')), ['Unhide Synthetic Series Two', 'Unhide Synthetic Movie One']);
+        const first = titles()[0];
+        const second = titles()[1];
+        assert.deepEqual(buttons.map((button) => button.getAttribute('aria-label')), [`Unhide ${first}`, `Unhide ${second}`]);
         const before = page.requests.length;
+        const kind = first === 'Synthetic Series Two' ? `tv/${T_TV}` : `movie/${T_MOVIE}`;
         click(page, buttons[0]);
         await page.until(() => page.main().querySelectorAll('.request').length === 1, 'the entry gone');
-        assert.deepEqual(page.requests.slice(before).map((request) => `${request.init.method} ${request.url}`), [`DELETE ${HIDDEN}/tv/${T_TV}`]);
-        assert.equal(page.document.getElementById('status').textContent, 'Unhid Synthetic Series Two.');
-        assert.equal(page.focused()?.getAttribute('aria-label'), 'Unhide Synthetic Movie One', 'focus moves to the next entry');
+        assert.deepEqual(page.requests.slice(before).map((request) => `${request.init.method} ${request.url}`), [`DELETE ${HIDDEN}/${kind}`]);
+        assert.equal(page.document.getElementById('status').textContent, `Unhid ${first}.`);
+        assert.equal(page.focused()?.getAttribute('aria-label'), `Unhide ${second}`, 'focus moves to the next entry');
         click(page, page.main().querySelector('button.hidden-unhide'));
         await page.until(() => page.main().querySelectorAll('.request').length === 0 && !page.main().querySelector('.muted').hidden, 'the empty text');
         assert.equal(page.focused()?.classList.contains('muted'), true);

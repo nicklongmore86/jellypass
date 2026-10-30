@@ -374,6 +374,9 @@ main {
 .request-cancel, .request-cancel-actions .button { min-height: 2.75rem; }
 /* Hiding a title: a card's More button (a sibling of its link, top-right of the picture) with a one-item menu, the hidden tag, and the title page's own control. */
 .card-more-box { position: absolute; top: 0.2rem; right: 0.2rem; }
+/* A card with its More button leaves the button's corner clear: the status chip wraps rather than runs under it. */
+.card:has(> .card-more-box) > .badge { max-width: calc(100% - 3.6rem); }
+.card-backdrop:has(> .card-more-box) > .badge { max-width: calc(100% - 4.5rem); }
 .card-backdrop > .card-more-box { top: 0.5rem; right: 0.5rem; }
 .card-more {
   display: inline-flex; align-items: center; justify-content: center; width: 2.75rem; height: 2.75rem; padding: 0; border: 0; border-radius: var(--radius-chip);
