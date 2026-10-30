@@ -5,6 +5,17 @@
 # simctl (Maestro's own screenshots can be scaled), named for its place in the App Store listing.
 set -euo pipefail
 
+missing=0
+if [ -z "${ADDRESS:-}" ]; then
+  echo "::error::Missing ADDRESS; set MOBILE_SCREENSHOT_ADDRESS for the workflow"
+  missing=1
+fi
+if [ -z "${PROFILE:-}" ]; then
+  echo "::error::Missing PROFILE; set MOBILE_SCREENSHOT_PROFILE for the workflow"
+  missing=1
+fi
+[ "$missing" -eq 0 ] || exit 1
+
 app="$1"
 out="$2"
 expected="$3"
@@ -51,9 +62,8 @@ fi
 for shot in "${shots[@]}"; do
   flow="${shot%%:*}"
   file="${out}/${shot#*:}.png"
-  if ! maestro --device "$udid" test "${here}/flows/${flow}.yaml"; then
-    # What the screen showed when the flow gave up, for the run's maestro-debug artifact.
-    xcrun simctl io "$udid" screenshot --type=png "${out}/failed-${flow}.png" || true
+  if ! maestro --device "$udid" test -e ADDRESS="$ADDRESS" -e PROFILE="$PROFILE" "${here}/flows/${flow}.yaml"; then
+    # Do not capture failure screens: sign-in failures may display configured values.
     echo "::error::The ${flow} flow failed on ${name}"
     exit 1
   fi

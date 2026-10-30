@@ -1,3 +1,4 @@
+import { loadPrivateDenylist, privateMatchCount } from '../scripts/private-identifiers.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -98,7 +99,7 @@ describe('changelogSection with the real CHANGELOG.md', () => {
     assert.doesNotMatch(notes, /### (?:Fixed|Removed|TV add-on)/);
     assert.doesNotMatch(notes, /### Upgrading from/);
     assert.doesNotMatch(notes, /hidden titles|\/hidden|apiVersion` 3|invalid_household|:8788|schema v8/i, 'no 4.0.0 changes');
-    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref|farmhouse|production|starrgroup|TU7000|sdb\b/i, 'no server-specific details');
+    assertNoServerDetails(notes);
     assert.deepEqual(split(notes).definitions, []);
   });
 
@@ -142,7 +143,7 @@ describe('changelogSection with the real CHANGELOG.md', () => {
     assert.doesNotMatch(notes, /### (?:Security|Changed|Fixed|TV add-on)/);
     assert.doesNotMatch(notes, /### Upgrading from/);
     assert.doesNotMatch(notes, /eas-cli|workflow|\btests?\b|Jest/i, 'no tests or CI');
-    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref|farmhouse|TU7000|sdb\b/i, 'no server-specific details');
+    assertNoServerDetails(notes);
     assert.deepEqual(split(notes).definitions, []);
   });
 
@@ -181,7 +182,7 @@ describe('changelogSection with the real CHANGELOG.md', () => {
     assert.doesNotMatch(notes, /### (?:Security|Added|Fixed)/);
     assert.doesNotMatch(notes, /### Upgrading from/);
     assert.doesNotMatch(notes, /eas-cli|workflow|\btests?\b|Jest/i, 'no tests or CI');
-    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref|farmhouse|TU7000|sdb\b/i, 'no server-specific details');
+    assertNoServerDetails(notes);
     assert.deepEqual(split(notes).definitions, []);
   });
 
@@ -229,7 +230,7 @@ describe('changelogSection with the real CHANGELOG.md', () => {
     assert.doesNotMatch(notes, /### (?:Security|Fixed)/);
     assert.doesNotMatch(notes, /### Upgrading from/);
     assert.doesNotMatch(notes, /eas-cli|workflow|\btests?\b|Jest/i, 'no tests or CI');
-    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref|farmhouse|TU7000|sdb\b/i, 'no server-specific details');
+    assertNoServerDetails(notes);
     assert.deepEqual(split(notes).definitions, []);
   });
 
@@ -275,7 +276,7 @@ describe('changelogSection with the real CHANGELOG.md', () => {
     assert.doesNotMatch(notes, /groundwork|nothing of it is visible/i, 'the groundwork entry is folded into the page');
     assert.doesNotMatch(notes, /Mobile app|mobile\/CHANGELOG/, 'mobile/ is unchanged since 3.6.1');
     assert.doesNotMatch(notes, /eas-cli|workflow|\btests?\b/i, 'no tests or CI');
-    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref|farmhouse/i, 'no server-specific details');
+    assertNoServerDetails(notes);
     assert.deepEqual(split(notes).definitions, []);
   });
 
@@ -313,7 +314,7 @@ describe('changelogSection with the real CHANGELOG.md', () => {
     assert.doesNotMatch(notes, /### Upgrading from/);
     assert.doesNotMatch(notes, /Mobile app|mobile\/CHANGELOG/, 'mobile/ is unchanged since 3.6.0');
     assert.doesNotMatch(notes, /eas-cli|workflow|\btests?\b/i, 'no tests or CI');
-    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref|farmhouse/i, 'no server-specific details');
+    assertNoServerDetails(notes);
     assert.deepEqual(split(notes).definitions, []);
   });
 
@@ -354,7 +355,7 @@ describe('changelogSection with the real CHANGELOG.md', () => {
     assert.doesNotMatch(notes, /### (?:Security|Changed)/);
     assert.doesNotMatch(notes, /### Upgrading from/);
     assert.doesNotMatch(notes, /eas-cli|workflow|\btests?\b/i, 'no tests or CI');
-    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref|farmhouse/i, 'no server-specific details');
+    assertNoServerDetails(notes);
     assert.deepEqual(split(notes).definitions, []);
   });
 
@@ -1126,3 +1127,10 @@ describe('changelog-section command line', () => {
     assert.equal(result.stderr, '::error title=Release notes::CHANGELOG.md has no "## [9.9.9]" section\n');
   });
 });
+
+const privateTerms = loadPrivateDenylist();
+if (!privateTerms) console.log('NOTICE: private release-note checks skipped; no private deny-list configured.');
+function assertNoServerDetails(notes) {
+  assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref|production|TU7000|sdb\b/i, 'no server-specific details');
+  if (privateTerms) assert.equal(privateMatchCount(notes, privateTerms), 0, 'no private deployment details');
+}

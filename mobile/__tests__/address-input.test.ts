@@ -11,7 +11,7 @@ describe('a typed address', () => {
     ['https://films.example.net:8443/', 'https://films.example.net:8443'],
     ['media.example.com:443', 'https://media.example.com'],
     ['jellyfin.example.test', 'https://jellyfin.example.test'],
-    ['jelly-demo.jellypass.app', 'https://jelly-demo.jellypass.app'],
+    ['grove.example.org', 'https://grove.example.org'],
     // An address an older app version took still works.
     ['jelly-home.example.test', 'https://jelly-home.example.test'],
     // Pasted from notes or chat, with a newline or a tab at an end.
@@ -66,7 +66,7 @@ describe("a setup link's address", () => {
   it('takes exactly one household address', () => {
     expect(parseLinkAddress('https://media.example.com')?.host).toBe('media.example.com');
     expect(parseLinkAddress('https://films.example.net:8443')?.origin).toBe('https://films.example.net:8443');
-    expect(parseLinkAddress('https://jelly-demo.jellypass.app')?.host).toBe('jelly-demo.jellypass.app');
+    expect(parseLinkAddress('https://grove.example.org')?.host).toBe('grove.example.org');
   });
 
   it('refuses none, several, a bare host or anything else', () => {
