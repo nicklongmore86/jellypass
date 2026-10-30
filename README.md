@@ -575,7 +575,13 @@ Deployment requirements:
 - Point each hostname, or a suitable wildcard DNS record, at the reverse proxy.
 - Use a TLS certificate covering each hostname; `*.example.com` covers the
   single-label format above.
-- Preserve the original `Host` header.
+- Preserve the original `Host` header, and send exactly one. JellyPass refuses
+  a request that does not name exactly one host (two `Host` headers, a `Host`
+  with userinfo, whitespace or other characters, or an absolute-form target
+  whose authority is not the `Host`) with a fixed `400`
+  (`{"error":"invalid_host"}`), WebSocket upgrades included, before a household
+  is chosen. An HTTP/1.0 request with no `Host` and an ordinary path is
+  answered as before, as no household's.
 - Forward WebSocket upgrades and byte-range requests.
 - Avoid proxy buffering for large media responses.
 - Do not expose the JellyPass listener directly to untrusted clients.

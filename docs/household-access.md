@@ -35,6 +35,7 @@ The administrator retains a separate recovery path that is not exposed through h
 - An access group's stable ID is also its household ID; its Jellyfin user IDs are the visible household members.
 - The hostname is derived from `HOUSEHOLD_HOST_PREFIX + group ID + HOUSEHOLD_DOMAIN`.
 - Requests with an unknown or ambiguous hostname fail closed. They must not fall back to the complete Jellyfin user list.
+- A request that does not name exactly one host (two `Host` headers, a `Host` that is not a plain `host[:port]`, an absolute-form target whose authority is not the `Host`) fails closed with a fixed `400 invalid_host`, HTTP and WebSocket alike, before a household is chosen, so a proxy and JellyPass can never read different hosts. HTTP/1.0 may leave `Host` out; such a request (with an origin-form target) names no household, as before.
 - `GET /Users/Public` is intercepted on a household hostname and filtered to that household's user IDs.
 - The response preserves Jellyfin's schema and the upstream ordering of the remaining users.
 - All other supported Jellyfin traffic is proxied without buffering large media bodies and with range requests, streaming, and WebSocket upgrades preserved.

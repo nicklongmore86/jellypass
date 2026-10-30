@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import type { Duplex } from 'node:stream';
 import { ConflictError, UserProvisioningError, type AccessService } from './access-service.js';
 import { HouseholdApp, type HouseholdAppOptions } from './app-api.js';
 import { AdminActionLimitError, AdminSeerrError, type AdminRequests } from './admin-requests.js';
@@ -131,8 +132,11 @@ export function makeServer(
   const titleHolds = options?.titleHolds;
   const checkTitleHolds = () => { if (titleHolds) background.run((signal) => titleHolds.checkTitleHolds({ signal })); };
   const clientIp = new ClientIpResolver(options?.trustedProxies);
-  const server = createServer(async (request, response) => {
+  // Node's own check would answer an HTTP/1.1 request with no Host with a bare 400 before any handler; singleHost
+  // gives it the fixed invalid_host answer instead.
+  const server = createServer({ requireHostHeader: false }, async (request, response) => {
     try {
+      if (!singleHost(request)) return invalidHost(response);
       const url = new URL(request.url ?? '/', 'http://localhost');
       const householdId = householdGateway?.householdId(request.headers.host);
       if (householdId) {
@@ -417,6 +421,7 @@ export function makeServer(
     }
   });
   server.on('upgrade', (request, socket, head) => {
+    if (!singleHost(request)) return invalidHostUpgrade(socket);
     const householdId = householdGateway?.householdId(request.headers.host);
     if (!householdGateway || !householdId) {
       socket.destroy();
@@ -443,6 +448,61 @@ export function makeServer(
   return Object.assign(server, {
     closeWebSockets: async () => householdGateway ? householdGateway.closeWebSockets() : 0,
   });
+}
+
+const HOST_VALUE = /^(?:[A-Za-z0-9._-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$/;
+const INVALID_HOST = JSON.stringify({ error: 'invalid_host' });
+
+/**
+ * Whether the request names exactly one host: one Host header (none only from an HTTP/1.0 client, which then reaches
+ * the admin side as before), a plain host[:port] with no userinfo, whitespace or other characters, and for an
+ * absolute-form target the same authority as the Host (so an HTTP/1.0 absolute-form target with no Host is refused).
+ * Node keeps only the first of several Host headers in `request.headers.host` while a proxy in front may route on
+ * another, so the server refuses anything else with a fixed 400 before a household is chosen or anything relayed.
+ */
+function singleHost(request: IncomingMessage): boolean {
+  const hosts: string[] = [];
+  for (let index = 0; index < request.rawHeaders.length; index += 2) {
+    if (request.rawHeaders[index]?.toLowerCase() === 'host') hosts.push(request.rawHeaders[index + 1] ?? '');
+  }
+  if (hosts.length > 1 || (hosts.length === 0 && request.httpVersion !== '1.0')) return false;
+  const [host] = hosts;
+  if (host !== undefined && !HOST_VALUE.test(host)) return false;
+  const target = request.url ?? '';
+  if (target.startsWith('/') || target === '*') return true;
+  const authority = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/([^/?#]*)/.exec(target)?.[1];
+  return authority !== undefined && host !== undefined && authority.toLowerCase() === host.toLowerCase();
+}
+
+/** The fixed answer to a request {@link singleHost} refuses; the connection is closed after it. */
+function invalidHost(response: ServerResponse): void {
+  response.setHeader('Connection', 'close');
+  json(response, 400, { error: 'invalid_host' });
+}
+
+/** {@link invalidHost} for a WebSocket upgrade, written to the raw socket. */
+function invalidHostUpgrade(socket: Duplex): void {
+  refuseSocket(
+    socket,
+    'HTTP/1.1 400 Bad Request\r\nContent-Type: application/json; charset=utf-8\r\n'
+      + `Content-Length: ${Buffer.byteLength(INVALID_HOST)}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n${INVALID_HOST}`,
+  );
+}
+
+/** How long a refused raw socket may take to flush its answer before it is destroyed anyway. */
+const REFUSAL_FLUSH_MS = 1_000;
+
+/**
+ * Writes a whole HTTP answer to a raw socket (an upgrade's) and then destroys it. `end()` alone closes only the write
+ * side, so a client that keeps its own side open (allowHalfOpen) would hold the server socket readable indefinitely;
+ * a client that stops reading cannot hold it past REFUSAL_FLUSH_MS either.
+ */
+function refuseSocket(socket: Duplex, answer: string): void {
+  const destroy = () => socket.destroy();
+  const timer = setTimeout(destroy, REFUSAL_FLUSH_MS);
+  timer.unref();
+  socket.on('error', destroy).once('close', () => clearTimeout(timer));
+  socket.end(answer, destroy);
 }
 
 function authorized(request: IncomingMessage, expectedToken: string): boolean {
