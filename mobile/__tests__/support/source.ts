@@ -39,6 +39,7 @@ export function sourceAnswer(list: string, page = 1, { count = 20, last = 3 }: {
         rating: null,
         state: STATES[index % 4],
         play: null,
+        hidden: false,
       };
     }),
   };

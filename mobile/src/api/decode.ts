@@ -15,6 +15,9 @@ import {
   type Card,
   type CoarseStatus,
   type Episode,
+  type Hidden,
+  type HiddenPage,
+  type HiddenTitle,
   type HouseholdState,
   type MediaType,
   type Me,
@@ -72,6 +75,7 @@ const LOGO_URL = /^https:\/\/image\.tmdb\.org\/t\/p\/w300\/[A-Za-z0-9_-]{1,100}\
 const PLAY_ITEM_ID = /^[0-9a-f]{32}$/;
 const REQUEST_ID = /^[A-Za-z0-9_-]{22}$/;
 const REQUESTED_ON = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/;
+const HIDDEN_AT = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$/;
 
 function object(value: unknown, path: string): Fields {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) throw new DecodeError(path);
@@ -201,6 +205,8 @@ function card(record: Fields, path: string, context: DecodeContext, tmdbId: Rang
     rating: nullableNumber(record, 'rating', path, { min: 0, max: 10 }),
     state: titleState,
     play: play(record, path, titleState, context),
+    // Added in apiVersion 3: a server before it sends none, and hides nothing.
+    hidden: field(record, 'hidden') === undefined ? false : boolean(record, 'hidden', path),
   };
 }
 
@@ -315,6 +321,28 @@ function decodeRequest(value: unknown, path: string): Request {
 
 export function decodeRequests(value: unknown): Requests {
   return { results: array(object(value, '$'), 'results', '$', decodeRequest) };
+}
+
+export function decodeHidden(value: unknown): Hidden {
+  return { hidden: boolean(object(value, '$'), 'hidden', '$') };
+}
+
+function decodeHiddenTitle(value: unknown, path: string): HiddenTitle {
+  const record = object(value, path);
+  return {
+    mediaType: mediaType(record, path),
+    tmdbId: integer(record, 'tmdbId', path, PATH_TMDB_ID),
+    hiddenAt: string(record, 'hiddenAt', path, { pattern: HIDDEN_AT }),
+  };
+}
+
+export function decodeHiddenPage(value: unknown): HiddenPage {
+  const record = object(value, '$');
+  return {
+    page: integer(record, 'page', '$', { min: 1, max: 500 }),
+    nextPage: nullableInteger(record, 'nextPage', '$', { min: 2, max: 500 }),
+    results: array(record, 'results', '$', decodeHiddenTitle, 50),
+  };
 }
 
 export function decodeAccepted(value: unknown): Accepted {

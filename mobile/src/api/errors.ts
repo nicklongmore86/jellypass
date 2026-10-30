@@ -9,6 +9,8 @@ export type ApiErrorKind =
   | 'unauthorized'
   /** 404: an unknown title or path, or (with `householdNotFound`) an address no household has. */
   | 'not_found'
+  /** 409: hiding one more title past the caller's 2,000 (`hidden_limit_reached`); unhiding some makes room. */
+  | 'hidden_limit_reached'
   /** 429: stop, and offer a retry (with `retryAfterSeconds` when the server said); never retry by itself. */
   | 'too_many_requests'
   /** 502, or any status the contract does not list. */
@@ -55,6 +57,8 @@ export function kindOfStatus(status: number): ApiErrorKind {
       return 'unauthorized';
     case 404:
       return 'not_found';
+    case 409:
+      return 'hidden_limit_reached';
     case 429:
       return 'too_many_requests';
     default:

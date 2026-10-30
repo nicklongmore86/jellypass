@@ -153,7 +153,10 @@ export interface LibraryJoin {
 }
 
 export interface GrantState {
-  /** 8 since 4.0.0 (householdAddresses); 3.9.0 and earlier refuse to start on it (see the 4.0.0 rollback notes). */
+  /**
+   * 8 since 4.0.0 (householdAddresses, appHiddenTitles); 3.9.0 and earlier refuse to start on it (see the 4.0.0 rollback
+   * notes).
+   */
   version: 8;
   grants: Record<string, GrantRecord>;
   groups: Record<string, AccessGroup>;
@@ -216,7 +219,19 @@ export interface GrantState {
    * AppWithdrawal). Additive like `appRequests`.
    */
   appWithdrawals?: Record<string, AppWithdrawal>;
+  /**
+   * Household app "Not interested" titles (see AppHiddenTitles), by household (group) ID, then by member: each member's
+   * own, private to them in that household. Removed with the member's membership and with the household. Additive in 8:
+   * a 4.0.0 build without it keeps the field as it is without reading it.
+   */
+  appHiddenTitles?: Record<string, Record<string, AppHiddenTitles>>;
 }
+
+/**
+ * One member's hidden titles in one household, by title key (`movie:<tmdbId>` or `tv:<tmdbId>`), each with when it was
+ * hidden (ISO 8601). At most MAX_HIDDEN_TITLES_PER_MEMBER. Only IDs: no title, image or other TMDB text is kept.
+ */
+export type AppHiddenTitles = Record<string, string>;
 
 /**
  * Households withdrew their interest in a Seerr request (docs/app-design.md, "Cancelling (step 2c)"): when the request

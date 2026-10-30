@@ -17,8 +17,8 @@ export const TIZEN_APP_ORIGINS: ReadonlySet<string> = new Set(['file://', 'null'
 
 /** The two families of paths that answer the app, with the methods and request headers each allows. */
 const FAMILIES = {
-  /** The app API: reads and "Get this" (a JSON `POST`), with the token in `Authorization`. */
-  api: { prefix: '/jellypass/app/v1/', methods: ['GET', 'POST'], headers: ['authorization', 'content-type'] },
+  /** The app API: reads, "Get this" and hiding (a JSON `POST`), and unhiding (`DELETE`), with the token in `Authorization`. */
+  api: { prefix: '/jellypass/app/v1/', methods: ['GET', 'POST', 'DELETE'], headers: ['authorization', 'content-type'] },
   /** The add-on's files and its manifest: plain reads. */
   tv: { prefix: '/jellypass/tv/', methods: ['GET', 'HEAD'], headers: [] as string[] },
 } as const;

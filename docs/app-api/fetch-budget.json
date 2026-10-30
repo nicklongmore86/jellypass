@@ -302,5 +302,29 @@
         "POST /tv/{tmdbId}/get"
       ]
     }
+  },
+  "hiding": {
+    "description": "Hidden titles (\"Not interested\", server 4.0.0, apiVersion 3), for the clients that add them: what each action costs. The server leaves a member's hidden titles out of every discovery list itself, so no screen above makes any call more for them, and no client reads /hidden to filter a list. 'hide' and 'unhide' are one call each, after which a client updates what it shows from its own answer, reading nothing again; 'undo' (the toast's Undo after a hide) is one unhide. The Hidden tab of My requests ('hiddenTab') reads one page of the member's own list (50 IDs, newest first) and names each title shown with one title call, at most 'titlesAtOnce' before the member asks for more, as My requests does; 'loadMore' is the next page of the list. A failed hide or unhide is that one call, never repeated by the client. Pinned by each client's own budget test when it ships hiding.",
+    "hide": [
+      "POST /hidden/{mediaType}/{tmdbId}"
+    ],
+    "unhide": [
+      "DELETE /hidden/{mediaType}/{tmdbId}"
+    ],
+    "undo": [
+      "DELETE /hidden/{mediaType}/{tmdbId}"
+    ],
+    "hiddenTab": {
+      "calls": 3,
+      "titlesAtOnce": 10,
+      "atOnce": [
+        "GET /hidden",
+        "GET /movie/{tmdbId}",
+        "GET /tv/{tmdbId}"
+      ],
+      "loadMore": [
+        "GET /hidden?page={page}"
+      ]
+    }
   }
 }

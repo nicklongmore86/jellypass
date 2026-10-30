@@ -72,6 +72,8 @@ export interface Operation {
   sends: string;
   /** Its success status and answer fixture. */
   status: 200 | 202;
+  /** Error statuses it declares beyond the ones every operation does. */
+  errors?: number[];
   fixture: string;
 }
 
@@ -92,6 +94,11 @@ export const OPERATIONS: Record<string, Operation> = {
   'POST /tv/{tmdbId}/get': { call: (api) => api.getThis('tv', 900002, [1, 2]), sends: 'POST /tv/900002/get', status: 202, fixture: 'accepted' },
   'GET /requests': { call: (api) => api.requests(), sends: 'GET /requests', status: 200, fixture: 'requests' },
   'POST /requests/{id}/cancel': { call: (api) => api.cancelRequest('AAAAAAAAAAAAAAAAAAAAAA'), sends: 'POST /requests/AAAAAAAAAAAAAAAAAAAAAA/cancel', status: 202, fixture: 'accepted' },
+  'GET /hidden': { call: (api) => api.hidden(2), sends: 'GET /hidden?page=2', status: 200, fixture: 'hidden-page' },
+  'POST /hidden/movie/{tmdbId}': { call: (api) => api.setHidden('movie', 900001, true), sends: 'POST /hidden/movie/900001', status: 200, fixture: 'hidden', errors: [409] },
+  'POST /hidden/tv/{tmdbId}': { call: (api) => api.setHidden('tv', 900002, true), sends: 'POST /hidden/tv/900002', status: 200, fixture: 'hidden', errors: [409] },
+  'DELETE /hidden/movie/{tmdbId}': { call: (api) => api.setHidden('movie', 900001, false), sends: 'DELETE /hidden/movie/900001', status: 200, fixture: 'unhidden' },
+  'DELETE /hidden/tv/{tmdbId}': { call: (api) => api.setHidden('tv', 900002, false), sends: 'DELETE /hidden/tv/900002', status: 200, fixture: 'unhidden' },
 };
 
 /** `METHOD path` of a recorded call, under /jellypass/app/v1. */

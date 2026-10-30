@@ -62,6 +62,18 @@ describe('what the client sends', () => {
     ]);
   });
 
+  it('hides with a POST and unhides with a DELETE, neither with a body, and reads the answer', async () => {
+    const { api, calls } = clientWith((url, init) => answer(200, url.endsWith('/hidden') ? fixture('hidden-page') : { hidden: init.method === 'POST' }));
+    expect(await api.setHidden('movie', 900001, true)).toEqual({ hidden: true });
+    expect(await api.setHidden('tv', 900002, false)).toEqual({ hidden: false });
+    await api.hidden();
+    expect(calls.map(({ url, init }) => [url, init.method, init.headers['Content-Type'], init.body])).toEqual([
+      [`${API}/hidden/movie/900001`, 'POST', undefined, undefined],
+      [`${API}/hidden/tv/900002`, 'DELETE', undefined, undefined],
+      [`${API}/hidden`, 'GET', undefined, undefined],
+    ]);
+  });
+
   it('percent-encodes the token, so it can never end the header field early', async () => {
     const { api, calls } = clientWith(() => answer(200, fixture('me')), { token: 'a"b, c' });
     await api.me();
@@ -94,6 +106,10 @@ describe('what the client sends', () => {
     ['101 seasons asked for', (api) => api.getThis('tv', 900002, Array.from({ length: 101 }, (_, index) => index + 1))],
     ['a movie with seasons', (api) => api.getThis('movie', 900001, [1])],
     ['an unknown media type', (api) => api.getThis('person' as 'movie', 1)],
+    ['hiding TMDB ID 0', (api) => api.setHidden('movie', 0, true)],
+    ['unhiding TMDB ID 2^31', (api) => api.setHidden('tv', 2147483648, false)],
+    ['hiding an unknown media type', (api) => api.setHidden('person' as 'movie', 1, true)],
+    ['hidden page 0', (api) => api.hidden(0)],
   ])('refuses %s without a call: invalid_request', async (_name, call) => {
     const { api, calls } = clientWith(() => answer(200, {}));
     expect((await failure(call(api))).kind).toBe('invalid_request');
@@ -176,6 +192,16 @@ describe('decoding, lenient only where the contract says', () => {
   it('reads a /me without apiVersion as revision 0 (3.1.1 and earlier)', async () => {
     const { api } = clientWith(() => answer(200, { name: 'Synthetic Member', household: 'Synthetic Household' }));
     expect(await api.me()).toEqual({ name: 'Synthetic Member', household: 'Synthetic Household', apiVersion: 0 });
+  });
+
+  it('reads a card or title without hidden as not hidden (before apiVersion 3)', async () => {
+    const page = fixture('page');
+    for (const card of page.results as Json[]) delete card.hidden;
+    const movie = fixture('movie');
+    delete movie.hidden;
+    const { api } = clientWith((url) => answer(200, url.includes('/movie/') ? movie : page));
+    expect((await api.discover('trending')).results.map((card) => card.hidden)).toEqual([false, false, false]);
+    expect((await api.movie(900001)).hidden).toBe(false);
   });
 
   const malformed: [string, string, unknown][] = [

@@ -29,7 +29,7 @@ export const DISCOVER_LISTS = [
 export type DiscoverList = (typeof DISCOVER_LISTS)[number];
 
 /** The error codes the API sends, each always with its own status. */
-export const ERROR_CODES = ['invalid_request', 'unauthorized', 'not_found', 'household_not_found', 'too_many_requests', 'unavailable'] as const;
+export const ERROR_CODES = ['invalid_request', 'unauthorized', 'not_found', 'household_not_found', 'hidden_limit_reached', 'too_many_requests', 'unavailable'] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
 export interface Me {
@@ -59,6 +59,11 @@ export interface Card {
   state: HouseholdState;
   /** Only for `in_library`. */
   play: Play | null;
+  /**
+   * The caller hid it ("Not interested"): only ever true in search results and on title pages, as discovery lists leave
+   * hidden titles out. False from a server before `apiVersion` 3, which has no hiding.
+   */
+  hidden: boolean;
 }
 
 export interface Page {
@@ -143,6 +148,25 @@ export interface Request {
 
 export interface Requests {
   results: Request[];
+}
+
+/** The answer to hiding (`true`) or unhiding (`false`) a title, the same whether or not it was hidden. */
+export interface Hidden {
+  hidden: boolean;
+}
+
+export interface HiddenTitle {
+  mediaType: MediaType;
+  tmdbId: number;
+  /** When the caller first hid it (ISO 8601, UTC). */
+  hiddenAt: string;
+}
+
+/** A page of the caller's own hidden titles, newest first (`apiVersion` 3). */
+export interface HiddenPage {
+  page: number;
+  nextPage: number | null;
+  results: HiddenTitle[];
 }
 
 /** "Get this" always answers this, whatever happens to the title. */

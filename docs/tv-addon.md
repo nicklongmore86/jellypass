@@ -763,8 +763,8 @@ flowchart LR
   exactly as before, and so does any other origin (every web page has an `https://` origin) apart from `Vary: Origin`
   on those two paths (see "Caches"; `src/tv-cors.ts`, tested).
 - **Preflight.** An `OPTIONS` from that origin asking for an allowed method and allowed headers is answered `204` at
-  once, before any token is looked at, with `Access-Control-Allow-Origin: <that origin>`, `-Allow-Methods` (`GET, POST`
-  for the API; `GET, HEAD` for the files), `-Allow-Headers: Authorization, Content-Type` (the API only; the files need
+  once, before any token is looked at, with `Access-Control-Allow-Origin: <that origin>`, `-Allow-Methods` (`GET, POST,
+  DELETE` for the API, `DELETE` since 4.0.0 for unhiding; `GET, HEAD` for the files), `-Allow-Headers: Authorization, Content-Type` (the API only; the files need
   none), `-Max-Age: 600`, `Vary: Origin` and `no-store`. A preflight asking for anything else (another method, another
   header, a cookie) gets the old answer (`401` for the API, `404` for the files), with no CORS header.
 - **Answers.** Every other answer to that origin, a refusal (`401`, `404`, `429`) included, carries

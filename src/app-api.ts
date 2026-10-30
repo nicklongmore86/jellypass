@@ -52,7 +52,7 @@ export const APP_API_PREFIX = '/jellypass/app/v1';
  * an endpoint to v1, never lowered. v1 only ever gains (see docs/app-design.md, "Native clients (contract)"); anything
  * else is a new path, `/jellypass/app/v2`.
  */
-export const APP_API_VERSION = 2;
+export const APP_API_VERSION = 3;
 /** How long a verified Jellyfin token is trusted without asking Jellyfin again (at most 5 minutes). */
 export const APP_SESSION_TTL_MS = 5 * 60 * 1000;
 /** How long after a sign-out through the household host its tokens are still never kept as verified. */
@@ -137,8 +137,8 @@ const SEERR_REQUEST = 32;
 const SEERR_REQUEST_MOVIE = 262_144;
 const SEERR_REQUEST_TV = 524_288;
 
-export type AppEndpoint = 'me' | 'search' | 'discover' | 'movie' | 'tv' | 'season' | 'get' | 'requests' | 'cancel' | 'unknown';
-export type AppOutcome = 'ok' | 'unauthorized' | 'rate_limited' | 'invalid' | 'not_found' | 'unavailable';
+export type AppEndpoint = 'me' | 'search' | 'discover' | 'movie' | 'tv' | 'season' | 'get' | 'requests' | 'cancel' | 'hide' | 'unhide' | 'hidden' | 'unknown';
+export type AppOutcome = 'ok' | 'unauthorized' | 'rate_limited' | 'invalid' | 'not_found' | 'hidden_limit' | 'unavailable';
 
 /**
  * The only error answers, the same for every endpoint and every title. `unauthorized` covers a missing, invalid or
@@ -149,6 +149,8 @@ const APP_ERRORS: Record<Exclude<AppOutcome, 'ok'>, { status: number; body: { er
   rate_limited: { status: 429, body: { error: 'too_many_requests' } },
   invalid: { status: 400, body: { error: 'invalid_request' } },
   not_found: { status: 404, body: { error: 'not_found' } },
+  /** Only from hiding a new title past MAX_HIDDEN_TITLES_PER_MEMBER: decided by the caller's own hidden titles alone. */
+  hidden_limit: { status: 409, body: { error: 'hidden_limit_reached' } },
   unavailable: { status: 502, body: { error: 'unavailable' } },
 };
 
@@ -176,6 +178,8 @@ export type HouseholdState = 'unavailable' | 'in_library' | 'requested' | 'get_t
 const GET_THIS_ACCEPTED = { status: 'accepted' };
 const MAX_GET_THIS_BODY_BYTES = 1024;
 const MAX_SEASONS_ASKED = 100;
+/** The member's own hidden titles listed per page of GET /hidden. */
+export const HIDDEN_PAGE_SIZE = 50;
 
 /** The caller as Jellyfin's GET /Users/Me reports them. */
 export interface JellyfinCaller {
@@ -234,6 +238,11 @@ export interface HouseholdAppOptions {
   members: { member(jellyfinUserId: string): Pick<SeerrMemberClient, 'ownUser' | 'quota'> | undefined };
   /** "Get this" and the household's own records. Without it, those endpoints answer `404` and nothing is `requested`. */
   requests?: Pick<HouseholdRequests, 'submit' | 'cancel' | 'activeKeys' | 'readyKeys' | 'list'>;
+  /**
+   * Each member's own "Not interested" titles in each household (GrantStore's hidden titles). Without it, the hidden
+   * endpoints answer `404` and nothing is hidden.
+   */
+  hidden?: HiddenTitles;
   /** A household's name, or undefined once it no longer exists. */
   householdName: (householdId: string) => string | undefined;
   /** How many households there are. */
@@ -262,6 +271,17 @@ export interface HouseholdAppOptions {
   logLevel?: string;
 }
 
+/**
+ * A member's own hidden titles in a household, kept per household and member (see GrantStore.hideTitle): nothing here
+ * reads or changes another member's. `hide` and `unhide` refuse (`not_member`) a caller who is not a member now.
+ */
+export interface HiddenTitles {
+  keys(householdId: string, userId: string): ReadonlySet<string>;
+  list(householdId: string, userId: string): Array<{ mediaType: MediaType; tmdbId: number; hiddenAt: string }>;
+  hide(input: { householdId: string; userId: string; mediaType: MediaType; tmdbId: number; at: string }): Promise<'hidden' | 'limit' | 'not_member'>;
+  unhide(input: { householdId: string; userId: string; mediaType: MediaType; tmdbId: number }): Promise<'unhidden' | 'not_member'>;
+}
+
 /** One title's household state, with the caller's own Jellyfin item only when it is `in_library`. */
 interface TitleState {
   state: HouseholdState;
@@ -284,6 +304,11 @@ interface HouseholdView {
    * (another library, a parental limit) is still `requested` for them, never `get_this`.
    */
   requested: ReadonlySet<string>;
+  /**
+   * The caller's own hidden titles in this household (see HiddenTitles): left out of discovery lists, and flagged
+   * `hidden` on search results and title pages. Never a household state, and never anyone else's.
+   */
+  hidden: ReadonlySet<string>;
 }
 
 /**
@@ -432,6 +457,7 @@ export class HouseholdApp implements HouseholdAppHandler {
   readonly #blocklistSource: HouseholdAppOptions['blocklist'];
   readonly #members: HouseholdAppOptions['members'];
   readonly #requests: HouseholdAppOptions['requests'];
+  readonly #hidden: HouseholdAppOptions['hidden'];
   readonly #householdName: HouseholdAppOptions['householdName'];
   readonly #householdTotal: HouseholdAppOptions['householdTotal'];
   readonly #record: NonNullable<HouseholdAppOptions['record']>;
@@ -467,6 +493,7 @@ export class HouseholdApp implements HouseholdAppHandler {
     this.#blocklistSource = options.blocklist;
     this.#members = options.members;
     this.#requests = options.requests;
+    this.#hidden = options.hidden;
     this.#householdName = options.householdName;
     this.#householdTotal = options.householdTotal;
     this.#record = options.record ?? (() => undefined);
@@ -666,6 +693,14 @@ export class HouseholdApp implements HouseholdAppHandler {
   #route(method: string | undefined, pathname: string): Route | undefined {
     if (!pathname.startsWith(`${APP_API_PREFIX}/`)) return undefined;
     const path = pathname.slice(APP_API_PREFIX.length);
+    const hidden = /^\/hidden\/(movie|tv)\/([^/]+)$/.exec(path);
+    if (hidden && this.#hidden && (method === 'POST' || method === 'DELETE')) {
+      const mediaType = hidden[1] as MediaType;
+      const input = hidden[2] as string;
+      return method === 'POST'
+        ? { endpoint: 'hide', run: (caller, context, _url, request) => this.#hide(caller, context, request, mediaType, input) }
+        : { endpoint: 'unhide', run: (caller, context, _url, request) => this.#unhide(caller, context, request, mediaType, input) };
+    }
     if (method === 'POST') {
       const cancel = /^\/requests\/([^/]+)\/cancel$/.exec(path);
       if (cancel && this.#requests) {
@@ -681,6 +716,7 @@ export class HouseholdApp implements HouseholdAppHandler {
       };
     }
     if (method !== 'GET') return undefined;
+    if (path === '/hidden') return this.#hidden ? { endpoint: 'hidden', run: (caller, context, url) => this.#hiddenList(caller, context, url) } : undefined;
     if (path === '/requests') return this.#requests ? { endpoint: 'requests', run: (caller, context) => this.#list(caller, context) } : undefined;
     if (path === '/me') return { endpoint: 'me', run: (caller, context) => this.#me(caller, context) };
     if (path === '/search') return { endpoint: 'search', run: (caller, context, url) => this.#search(caller, context, url) };
@@ -761,7 +797,8 @@ export class HouseholdApp implements HouseholdAppHandler {
       this.#title(context, `search\n${query}\n${page}`, (signal) => this.#catalogue.search(query, page, { signal })),
       this.#view(caller, context),
     ]);
-    return pageOf(answer, page, undefined, view, context.origin);
+    // Search finds hidden titles too, flagged, so the member can unhide them.
+    return pageOf(answer, page, undefined, view, context.origin, false);
   }
 
   async #discover(
@@ -775,7 +812,7 @@ export class HouseholdApp implements HouseholdAppHandler {
       this.#title(context, `discover\n${list.list}\n${page}`, (signal) => this.#catalogue.discover(list.list, page, { signal })),
       this.#view(caller, context),
     ]);
-    return pageOf(answer, page, list.mediaType, view, context.origin);
+    return pageOf(answer, page, list.mediaType, view, context.origin, true);
   }
 
   /**
@@ -802,14 +839,14 @@ export class HouseholdApp implements HouseholdAppHandler {
         this.#title(context, `studio\n${id}\n${page}`, (signal) => this.#catalogue.studio(id, page, { signal })),
         this.#view(caller, context),
       ]);
-      return pageOf(answer, page, 'movie', view, context.origin);
+      return pageOf(answer, page, 'movie', view, context.origin, true);
     }
     if (list === 'all') {
       const [seriesAnswer, filmsAnswer, view] = await Promise.all([series(), films(), this.#view(caller, context)]);
-      return mixedPage(pageOf(filmsAnswer, page, 'movie', view, context.origin), pageOf(seriesAnswer, page, 'tv', view, context.origin));
+      return mixedPage(pageOf(filmsAnswer, page, 'movie', view, context.origin, true), pageOf(seriesAnswer, page, 'tv', view, context.origin, true));
     }
     const [answer, view] = await Promise.all([list === 'films' ? films() : series(), this.#view(caller, context)]);
-    return pageOf(answer, page, list === 'films' ? 'movie' : 'tv', view, context.origin);
+    return pageOf(answer, page, list === 'films' ? 'movie' : 'tv', view, context.origin, true);
   }
 
   async #movie(caller: JellyfinCaller, context: HouseholdAppRequest, input: string): Promise<MovieDto> {
@@ -826,6 +863,7 @@ export class HouseholdApp implements HouseholdAppHandler {
       genres: genreNames(field(answer, 'genres')),
       runtime: positiveInteger(field(answer, 'runtime')),
       ...stateFields(state, context.origin),
+      hidden: view.hidden.has(titleKey('movie', tmdbId)),
     };
   }
 
@@ -849,6 +887,7 @@ export class HouseholdApp implements HouseholdAppHandler {
         state: seasonState(view, tmdbId, inLibrary, season.seasonNumber),
       })),
       ...stateFields(state, context.origin),
+      hidden: view.hidden.has(titleKey('tv', tmdbId)),
     };
   }
 
@@ -936,6 +975,55 @@ export class HouseholdApp implements HouseholdAppHandler {
   }
 
   /**
+   * Hides a title for the caller in this household ("Not interested"): it leaves their discovery lists, and only theirs
+   * (see HiddenTitles). Only the call decides the answer: its form (a media type and a TMDB ID, an empty body or `{}`),
+   * the caller's membership now, and, for a title they have not hidden yet, their own count against
+   * MAX_HIDDEN_TITLES_PER_MEMBER (`409 hidden_limit_reached`). TMDB is never asked: a well-formed ID is hidden whether or
+   * not TMDB knows it. The same answer whether or not it was hidden already, once it is written.
+   */
+  async #hide(caller: JellyfinCaller, context: HouseholdAppRequest, request: IncomingMessage, mediaType: MediaType, input: string): Promise<HiddenDto> {
+    const hidden = this.#hidden as HiddenTitles;
+    const tmdbId = tmdbParameter(input);
+    getThisSeasons('movie', await readBody(request));
+    const result = await hidden.hide({
+      householdId: context.householdId,
+      userId: normalizedUserId(caller.id),
+      mediaType,
+      tmdbId,
+      at: new Date(this.#now()).toISOString(),
+    });
+    if (result === 'not_member') throw new AppAnswer('unauthorized');
+    if (result === 'limit') throw new AppAnswer('hidden_limit');
+    return { hidden: true };
+  }
+
+  /** Unhides a title for the caller in this household: the same answer whether or not it was hidden, once it is written. */
+  async #unhide(caller: JellyfinCaller, context: HouseholdAppRequest, request: IncomingMessage, mediaType: MediaType, input: string): Promise<HiddenDto> {
+    const hidden = this.#hidden as HiddenTitles;
+    const tmdbId = tmdbParameter(input);
+    getThisSeasons('movie', await readBody(request));
+    const result = await hidden.unhide({ householdId: context.householdId, userId: normalizedUserId(caller.id), mediaType, tmdbId });
+    if (result === 'not_member') throw new AppAnswer('unauthorized');
+    return { hidden: false };
+  }
+
+  /**
+   * The caller's own hidden titles in this household, newest first, {@link HIDDEN_PAGE_SIZE} a page: IDs, media types and
+   * when each was hidden, nothing else (a client names them as it names My requests' titles). Neither TMDB nor Jellyfin
+   * is asked anything. A page past the last is empty.
+   */
+  async #hiddenList(caller: JellyfinCaller, context: HouseholdAppRequest, url: URL): Promise<HiddenPageDto> {
+    const page = pageParameter(url);
+    const all = (this.#hidden as HiddenTitles).list(context.householdId, normalizedUserId(caller.id));
+    const start = (page - 1) * HIDDEN_PAGE_SIZE;
+    return {
+      page,
+      nextPage: all.length > start + HIDDEN_PAGE_SIZE && page < MAX_PAGE ? page + 1 : null,
+      results: all.slice(start, start + HIDDEN_PAGE_SIZE).map((entry) => ({ mediaType: entry.mediaType, tmdbId: entry.tmdbId, hiddenAt: entry.hiddenAt })),
+    };
+  }
+
+  /**
    * The household's own titles with their coarse status (see HouseholdRequests.list), `ready` only for what the
    * caller's own Jellyfin view has: the same view the title pages decide `in_library` from (the caller's library,
    * reused as for them, and a series' seasons with episodes).
@@ -985,7 +1073,8 @@ export class HouseholdApp implements HouseholdAppHandler {
     const requested = this.#requests
       ? new Set([...this.#requests.activeKeys(context.householdId), ...this.#requests.readyKeys(context.householdId)])
       : new Set<string>();
-    return { library, blocklist: blocked, eligible, requested };
+    const hidden = this.#hidden ? this.#hidden.keys(context.householdId, normalizedUserId(caller.id)) : new Set<string>();
+    return { library, blocklist: blocked, eligible, requested, hidden };
   }
 
   /**
@@ -1071,12 +1160,29 @@ export interface CardDto {
   rating: number | null;
   state: HouseholdState;
   play: PlayDto | null;
+  /**
+   * The caller hid this title (see HiddenTitles). Always false in discovery lists, which leave hidden titles out; true
+   * only in search results and on title pages. Since apiVersion 3.
+   */
+  hidden: boolean;
 }
 
 export interface PageDto {
   page: number;
   nextPage: number | null;
   results: CardDto[];
+}
+
+/** The answer to hiding (`true`) or unhiding (`false`) a title. */
+export interface HiddenDto {
+  hidden: boolean;
+}
+
+/** A page of the caller's own hidden titles (GET /hidden). */
+export interface HiddenPageDto {
+  page: number;
+  nextPage: number | null;
+  results: Array<{ mediaType: MediaType; tmdbId: number; hiddenAt: string }>;
 }
 
 /** A network or studio the app lists, from JellyPass's own allowlist: no TMDB call, the same for everyone. */
@@ -1125,10 +1231,6 @@ export interface SeasonDto {
   state: HouseholdState;
 }
 
-/**
- * A page of cards from a TMDB search or discover answer. Only movies and series are kept (people and collections are
- * not titles). `nextPage` comes only from the answer's own results: TMDB's totals and paging are never read.
- */
 /** Adds `by` to the count under `key`, dropping it at zero. */
 function adjust(counts: Map<string, number>, key: string, by: number): void {
   const count = (counts.get(key) ?? 0) + by;
@@ -1153,12 +1255,19 @@ function mixedPage(films: PageDto, series: PageDto): PageDto {
   return { page: films.page, nextPage: films.nextPage ?? series.nextPage, results };
 }
 
-function pageOf(answer: unknown, page: number, mediaType: MediaType | undefined, view: HouseholdView, origin: string): PageDto {
+/**
+ * A page of cards from a TMDB search or discover answer. Only movies and series are kept (people and collections are
+ * not titles). `nextPage` comes only from the answer's own results: TMDB's totals and paging are never read.
+ * `leaveOutHidden` (discovery lists) leaves out the caller's own hidden titles, so a page may be shorter, or empty, with
+ * a next page all the same: `nextPage` is decided from TMDB's entries before anything is left out, and no other page is
+ * read to make up for them.
+ */
+function pageOf(answer: unknown, page: number, mediaType: MediaType | undefined, view: HouseholdView, origin: string, leaveOutHidden: boolean): PageDto {
   const results = field(answer, 'results');
   const entries = Array.isArray(results) ? results : [];
   const cards = entries.flatMap((entry) => {
     const card = cardOf(entry, mediaType, view, origin);
-    return card ? [card] : [];
+    return card && !(leaveOutHidden && card.hidden) ? [card] : [];
   });
   return { page, nextPage: entries.length >= CATALOGUE_PAGE_SIZE && page < MAX_PAGE ? page + 1 : null, results: cards };
 }
@@ -1169,7 +1278,7 @@ function cardOf(entry: unknown, listType: MediaType | undefined, view: Household
   const tmdbId = positiveInteger(field(entry, 'id'));
   if (!mediaType || tmdbId === null) return undefined;
   const state = titleState(view, mediaType, tmdbId);
-  return { mediaType, tmdbId, ...titleFields(entry, mediaType), ...stateFields(state, origin) };
+  return { mediaType, tmdbId, ...titleFields(entry, mediaType), ...stateFields(state, origin), hidden: view.hidden.has(titleKey(mediaType, tmdbId)) };
 }
 
 /** The title fields every card and title shares, each copied from the one TMDB field chosen for it. */

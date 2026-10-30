@@ -93,7 +93,8 @@ Refused availability webhooks are not retried; missed titles rely on the request
 - **State file schema 8.** 4.0.0 migrates a schema 7 file on its first start
   (only the version changes, and a stored Jellyfin version confirmation is
   kept; the new `householdAddresses` map is added when an address is first
-  saved). **3.x refuses to start on a schema 8 file**
+  saved, and `appHiddenTitles` when a member first hides a title). **3.x
+  refuses to start on a schema 8 file**
   (`unsupported state schema version`): see Rollback.
 - **`HOUSEHOLD_APP_ENABLED` requires the household gateway** (on by
   `HOUSEHOLD_GATEWAY_ENABLED=true` or by `HOUSEHOLD_DOMAIN`) rather than
@@ -127,6 +128,27 @@ Refused availability webhooks are not retried; missed titles rely on the request
   startup. The household app's Play links stay on the address the request came
   in on. The map is kept in the state file and removed with its group. The
   admin UI's Groups tab lists each household's addresses.
+- **Hidden titles ("Not interested").** A household member can hide a title
+  from their own Discover lists, See all, service and studio pages (all three
+  tabs), in that household only, and unhide it again; it still appears in
+  their search results and on its title page, flagged `hidden`, and My
+  requests, "Get this", playback and the library are unchanged. Hiding never
+  cancels, withdraws, holds or blocks anything. The household app API gains
+  `POST` and `DELETE /jellypass/app/v1/hidden/{movie|tv}/{tmdbId}` (the same
+  `200 {"hidden":true|false}` whether or not the title was hidden) and
+  `GET /jellypass/app/v1/hidden?page=N`, the member's own list (TMDB ID, media
+  type and when it was hidden, newest first, 50 a page) for My requests' new
+  Hidden tab; every card and title page gains `hidden`, and `apiVersion` is 3.
+  Lists are not refilled: a page may be shorter, or empty with a next page, and
+  paging is unchanged. Each member hides at most 2,000 titles per household
+  (`409 {"error":"hidden_limit_reached"}` for one more; unhiding always
+  works). A member's hidden titles are removed when they leave the household,
+  and a household's when it is deleted; rejoining starts with none. Nothing
+  about one member's hidden titles reaches any other member or household. The
+  phone, TV and household web app add the controls in their own releases;
+  until then, older clients keep working (they ignore the new field) and a
+  title hidden elsewhere simply no longer appears in their discovery lists.
+  The Samsung TV app's cross-origin rules allow `DELETE` on the app API.
 - `HOUSEHOLD_GATEWAY_ENABLED` turns the gateway on without `HOUSEHOLD_DOMAIN`.
   `HOUSEHOLD_DOMAIN` and `HOUSEHOLD_HOST_PREFIX` keep working as the legacy
   rule: every household also keeps its generated address.
@@ -197,11 +219,17 @@ port `8787`. From 2.x, upgrade to 3.9.x or later 3.x first.
 3.x cannot read a schema 8 state file. Either restore the state-file backup
 from step 1 (losing changes made since), or stop 4.0.0 and downgrade the file
 in place, which drops only the address map (3.x serves the legacy addresses
-alone; a Jellyfin version confirmation is kept, and 3.10.0 reads it):
+alone; a Jellyfin version confirmation is kept, and 3.10.0 reads it) and the
+members' hidden titles (3.x has no hiding, so every title shows again):
 
 ```sh
-node -e "const f=process.argv[1],fs=require('fs'),s=JSON.parse(fs.readFileSync(f,'utf8'));if(s.version!==8)throw new Error('not schema 8');s.version=7;delete s.householdAddresses;fs.writeFileSync(f,JSON.stringify(s,null,2)+'\n')" data/grants.json
+node -e "const f=process.argv[1],fs=require('fs'),s=JSON.parse(fs.readFileSync(f,'utf8'));if(s.version!==8)throw new Error('not schema 8');s.version=7;delete s.householdAddresses;delete s.appHiddenTitles;fs.writeFileSync(f,JSON.stringify(s,null,2)+'\n')" data/grants.json
 ```
+
+Dropping the hidden titles matters: 3.x would keep the field without
+reading it, but would not remove a member's titles when they leave a
+household, so a member who left and rejoined before upgrading again would get
+their old ones back.
 
 Then restore the 3.x Compose file and `.env` (the admin site, webhook and
 health back on `:8787`; 3.x ignores `ADMIN_HOST`, `ADMIN_PORT`,

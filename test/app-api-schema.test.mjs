@@ -63,9 +63,14 @@ const ERROR_CODES = {
   400: ['invalid_request'],
   401: ['unauthorized'],
   404: ['not_found', 'household_not_found'],
+  409: ['hidden_limit_reached'],
   429: ['too_many_requests'],
   502: ['unavailable'],
 };
+/** The error statuses every operation declares; 409 only hiding does. */
+const COMMON_ERRORS = ['400', '401', '404', '429', '502'];
+/** The operations that hide a title, the only ones that can answer 409. */
+const HIDING = ['POST /hidden/movie/{tmdbId}', 'POST /hidden/tv/{tmdbId}'];
 
 /** The schema the document gives for this operation's answer with this status. */
 function responseSchema(operation, status) {
@@ -124,14 +129,17 @@ describe('household app API: the OpenAPI document', { timeout: 60_000 }, () => {
     assert.deepEqual(DOC.components.schemas.Error.properties.error.enum.slice().sort(), codes.slice().sort());
     for (const [status, allowed] of Object.entries(ERROR_CODES)) {
       for (const code of codes) {
-        const errors = validate({ error: code }, responseSchema(operation, status), DOC);
+        const errors = validate({ error: code }, responseSchema(status === '409' ? OPERATIONS.find((candidate) => candidate.key === HIDING[0]) : operation, status), DOC);
         assert.equal(errors.length === 0, allowed.includes(code), `${status} {"error":"${code}"}: ${errors.join('; ')}`);
       }
     }
     assert.notDeepEqual(validate({ error: 'unavailable' }, responseSchema(operation, 401), DOC), []);
-    // Every operation declares every error status, with the same answers.
+    // Every operation declares every common error status, with the same answers; only hiding declares 409.
+    const hiding = OPERATIONS.find((candidate) => candidate.key === HIDING[0]);
     for (const candidate of OPERATIONS) {
-      for (const status of Object.keys(ERROR_CODES)) assert.equal(responseSchema(candidate, status), responseSchema(operation, status), `${candidate.key} ${status}`);
+      for (const status of COMMON_ERRORS) assert.equal(responseSchema(candidate, status), responseSchema(operation, status), `${candidate.key} ${status}`);
+      assert.equal('409' in candidate.operation.responses, HIDING.includes(candidate.key), `${candidate.key} 409`);
+      if (HIDING.includes(candidate.key)) assert.equal(responseSchema(candidate, 409), responseSchema(hiding, 409), `${candidate.key} 409`);
     }
     // The design doc's list of fixed error bodies is the same pairing.
     const design = readFileSync(path.join(ROOT, 'docs', 'app-design.md'), 'utf8');
@@ -142,12 +150,12 @@ describe('household app API: the OpenAPI document', { timeout: 60_000 }, () => {
   });
 
   it('bounds each TMDB ID as the server does: any positive safe integer in a card, at most 2147483647 in a path', () => {
-    const card = { mediaType: 'movie', tmdbId: 1, title: 'T', year: null, overview: '', posterUrl: null, backdropUrl: null, rating: null, state: 'get_this', play: null };
+    const card = { mediaType: 'movie', tmdbId: 1, title: 'T', year: null, overview: '', posterUrl: null, backdropUrl: null, rating: null, state: 'get_this', play: null, hidden: false };
     const cardSchema = { $ref: '#/components/schemas/Card' };
     for (const tmdbId of [1, 2147483647, 2147483648, Number.MAX_SAFE_INTEGER]) assert.deepEqual(validate({ ...card, tmdbId }, cardSchema, DOC), [], String(tmdbId));
     for (const tmdbId of [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, '1']) assert.notDeepEqual(validate({ ...card, tmdbId }, cardSchema, DOC), [], String(tmdbId));
     // A title's own page, season and request echo the path's ID, which the server takes only up to 2147483647.
-    for (const name of ['Movie', 'Series', 'Season', 'Request']) {
+    for (const name of ['Movie', 'Series', 'Season', 'Request', 'HiddenTitle']) {
       assert.equal(DOC.components.schemas[name].properties.tmdbId.maximum, 2147483647, name);
       assert.equal(DOC.components.schemas[name].properties.tmdbId.minimum, 1, name);
     }
@@ -176,6 +184,7 @@ describe('household app API: the OpenAPI document', { timeout: 60_000 }, () => {
       `${APP}/search?q=${'a'.repeat(100)}`,
       `${APP}/search?q=${'a'.repeat(101)}`,
       `${APP}/search?q=a`,
+      ...['1', '40', '500', '501', '0', 'x'].map((page) => `${APP}/hidden?page=${page}`),
     ];
     for (const target of reads) {
       const url = new URL(target, 'https://household.invalid');
@@ -201,28 +210,32 @@ describe('household app API: the OpenAPI document', { timeout: 60_000 }, () => {
       [`${APP}/requests/${'A'.repeat(21)}/cancel`, {}],
       [`${APP}/requests/${'A'.repeat(23)}/cancel`, {}],
       [`${APP}/requests/${'A'.repeat(21)}=/cancel`, {}],
+      ...['1', '2147483647', '2147483648', '0', 'abc'].map((value) => [`${APP}/hidden/movie/${value}`, {}]),
+      [`${APP}/hidden/tv/${T_TV}`, {}],
+      [`${APP}/hidden/tv/${T_TV}`, { seasons: [1] }],
     ];
-    for (const [target, body] of bodies) {
-      const operation = operationFor('POST', target);
+    const deletes = bodies.filter(([target]) => target.startsWith(`${APP}/hidden/`)).map(([target, body]) => ['DELETE', target, body]);
+    for (const [method, target, body] of [...bodies.map(([target, body]) => ['POST', target, body]), ...deletes]) {
+      const operation = operationFor(method, target);
       const errors = [
         ...parameters(operation, target, []),
         ...validate(body, operation.operation.requestBody.content['application/json'].schema, DOC),
       ];
-      const answer = await app.post(target, body);
-      assert.equal(answer.status === 400, errors.length > 0, `POST ${target} ${JSON.stringify(body).slice(0, 60)} is ${answer.status}; the document says ${errors.join('; ') || 'valid'}`);
+      const answer = await app.post(target, body, { method });
+      assert.equal(answer.status === 400, errors.length > 0, `${method} ${target} ${JSON.stringify(body).slice(0, 60)} is ${answer.status}; the document says ${errors.join('; ') || 'valid'}`);
     }
     await app.background.settled();
   });
 
   it('lists the same endpoints as the API table in docs/household-hosts.md', () => {
     const readme = readFileSync(path.join(ROOT, 'docs/household-hosts.md'), 'utf8');
-    const rows = [...readme.matchAll(/^\| `(GET|POST)` \| `\/jellypass\/app\/v1([^`?]+)(?:\?[^`]*)?` \|/gm)].map((row) => `${row[1]} ${row[2]}`);
+    const rows = [...readme.matchAll(/^\| `(GET|POST|DELETE)` \| `\/jellypass\/app\/v1([^`?]+)(?:\?[^`]*)?` \|/gm)].map((row) => `${row[1]} ${row[2]}`);
     assert.ok(rows.length > 0, 'the table was found');
     assert.deepEqual(rows.sort(), OPERATIONS.map((operation) => operation.key).sort());
   });
 
   it('refuses an answer with a field it does not declare, or without one it requires', () => {
-    const card = { mediaType: 'movie', tmdbId: 1, title: 'T', year: null, overview: '', posterUrl: null, backdropUrl: null, rating: null, state: 'get_this', play: null };
+    const card = { mediaType: 'movie', tmdbId: 1, title: 'T', year: null, overview: '', posterUrl: null, backdropUrl: null, rating: null, state: 'get_this', play: null, hidden: false };
     const page = { $ref: '#/components/schemas/Page' };
     assert.deepEqual(validate({ page: 1, nextPage: null, results: [card] }, page, DOC), []);
     assert.deepEqual(validate({ page: 1, nextPage: null, results: [{ ...card, extra: 1 }] }, page, DOC), ['$.results[0]: unexpected extra']);
@@ -290,6 +303,22 @@ describe('household app API: the OpenAPI document', { timeout: 60_000 }, () => {
     }
     await app.background.settled();
     check(covered, 'GET', `${APP}/requests`, await app.get(`${APP}/requests`));
+    // Hiding and unhiding each kind, twice (the same answers), and the caller's own list, empty, full and past its end,
+    // in an app of their own (the household's burst budget is spent below).
+    const hiding = await startApp(t, world(), { stateFile: SEED });
+    check(covered, 'GET', `${APP}/hidden`, await hiding.get(`${APP}/hidden`));
+    for (const method of ['POST', 'POST', 'DELETE', 'DELETE', 'POST']) {
+      for (const pathname of [`${APP}/hidden/movie/${T_MOVIE}`, `${APP}/hidden/tv/${T_TV}`]) {
+        const answer = await hiding.post(pathname, undefined, { method });
+        assert.equal(answer.status, 200, `${method} ${pathname}`);
+        check(covered, method, pathname, answer);
+      }
+    }
+    for (const pathname of [`${APP}/hidden`, `${APP}/hidden?page=2`, `${APP}/search?q=synthetic`, `${APP}/movie/${T_MOVIE}`, `${APP}/tv/${T_TV}`, `${APP}/discover/trending`]) {
+      const answer = await hiding.get(pathname);
+      check(covered, 'GET', pathname, answer);
+      if (pathname === `${APP}/hidden`) assert.equal(answer.json().results.length, 2);
+    }
     assert.deepEqual([...states].sort(), DOC.components.schemas.HouseholdState.enum.slice().sort(), 'every state was checked');
     // Another household and member: the same document.
     check(covered, 'GET', `${APP}/me`, await app.get(`${APP}/me`, { host: HOST_B, user: BOB }));
@@ -310,7 +339,7 @@ describe('household app API: the OpenAPI document', { timeout: 60_000 }, () => {
       ['POST', `${APP}/movie/${T_MOVIE}/get`, 404, {}, { host: 'jelly-missing.example.test' }],
     ];
     for (const [method, pathname, status, body, options] of errors) {
-      const answer = method === 'POST' ? await app.post(pathname, body, options) : await app.get(pathname, options);
+      const answer = method === 'GET' ? await app.get(pathname, options) : await app.post(pathname, body, { ...options, method });
       assert.equal(answer.status, status, `${method} ${pathname}`);
       // An unknown path still answers in the document's one error shape.
       if (status === 404 && pathname.endsWith('nonsense')) {
@@ -329,10 +358,21 @@ describe('household app API: the OpenAPI document', { timeout: 60_000 }, () => {
     check(covered, 'GET', `${APP}/me`, limited);
 
     // Every operation's success was checked, and every error status at least once somewhere.
+    for (const [method, pathname] of [['POST', `${APP}/hidden/movie/0`], ['DELETE', `${APP}/hidden/tv/x`], ['GET', `${APP}/hidden?page=0`]]) {
+      const answer = method === 'GET' ? await hiding.get(pathname) : await hiding.post(pathname, {}, { method });
+      assert.equal(answer.status, 400, `${method} ${pathname}`);
+      check(covered, method, pathname, answer);
+    }
+    // A title at the limit: 2000 hidden by the store, then one more through the API.
+    await Promise.all(Array.from({ length: 2000 }, (_, index) =>
+      hiding.store.hideTitle({ householdId: 'grove', userId: ALICE, mediaType: 'movie', tmdbId: index + 1, at: '2026-10-30T00:00:00.000Z' })));
+    const full = await hiding.post(`${APP}/hidden/tv/2147483647`, undefined);
+    assert.equal(full.status, 409);
+    check(covered, 'POST', `${APP}/hidden/tv/2147483647`, full);
     for (const operation of OPERATIONS) {
-      const success = operation.method === 'POST' ? 202 : 200;
+      const success = Object.keys(operation.operation.responses).find((status) => status.startsWith('2'));
       assert.ok(covered.has(`${operation.key} ${success}`), `${operation.key} ${success} was checked`);
     }
-    for (const status of [400, 401, 404, 429, 502]) assert.ok([...covered].some((entry) => entry.endsWith(` ${status}`)), `a ${status} was checked`);
+    for (const status of [400, 401, 404, 409, 429, 502]) assert.ok([...covered].some((entry) => entry.endsWith(` ${status}`)), `a ${status} was checked`);
   });
 });

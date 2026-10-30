@@ -93,11 +93,11 @@ describe('household app API: answers', { timeout: 20_000 }, () => {
     const app = await startApp(t);
     const answer = await app.get(`${APP}/me`);
     assert.equal(answer.status, 200);
-    assert.deepEqual(answer.json(), { name: 'Alice', household: 'Grove', apiVersion: 2 });
+    assert.deepEqual(answer.json(), { name: 'Alice', household: 'Grove', apiVersion: 3 });
     assert.equal(app.seerr.calls.length, 0);
     assert.equal(app.tmdb.calls.length, 0);
     // The version is the server's, the same for every household and every member.
-    assert.equal(APP_API_VERSION, 2);
+    assert.equal(APP_API_VERSION, 3);
     assert.deepEqual((await app.get(`${APP}/me`, { host: HOST_B, user: BOB })).json(), { name: 'Bob', household: 'Mill', apiVersion: APP_API_VERSION });
   });
 
@@ -115,16 +115,16 @@ describe('household app API: answers', { timeout: 20_000 }, () => {
         {
           mediaType: 'movie', tmdbId: T_MOVIE, title: 'Synthetic Movie One', year: 2020,
           overview: 'A synthetic film used only in tests.', posterUrl: POSTER(T_MOVIE), backdropUrl: BACKDROP(T_MOVIE),
-          rating: 7.1, state: 'get_this', play: null,
+          rating: 7.1, state: 'get_this', play: null, hidden: false,
         },
         {
           mediaType: 'tv', tmdbId: T_TV, title: 'Synthetic Series Two', year: 2019,
           overview: 'A synthetic series used only in tests.', posterUrl: POSTER(T_TV), backdropUrl: BACKDROP(T_TV),
-          rating: 6.9, state: 'get_this', play: null,
+          rating: 6.9, state: 'get_this', play: null, hidden: false,
         },
         {
           mediaType: 'movie', tmdbId: OWN_MOVIE, title: 'Synthetic Movie Three', year: 2024, overview: 'Not in Seerr yet.',
-          posterUrl: POSTER(OWN_MOVIE), backdropUrl: null, rating: 5.5, state: 'in_library', play: PLAY(ITEMS.ownMovie),
+          posterUrl: POSTER(OWN_MOVIE), backdropUrl: null, rating: 5.5, state: 'in_library', play: PLAY(ITEMS.ownMovie), hidden: false,
         },
       ],
     });
@@ -135,7 +135,7 @@ describe('household app API: answers', { timeout: 20_000 }, () => {
     assert.deepEqual((await app.get(`${APP}/movie/${OWN_MOVIE}`)).json(), {
       mediaType: 'movie', tmdbId: OWN_MOVIE, title: 'Synthetic Movie Three', year: 2024,
       overview: 'A synthetic film used only in tests.', posterUrl: POSTER(OWN_MOVIE), backdropUrl: BACKDROP(T_MOVIE),
-      rating: 7.1, genres: ['Action', 'Science Fiction'], runtime: 101, state: 'in_library', play: PLAY(ITEMS.ownMovie),
+      rating: 7.1, genres: ['Action', 'Science Fiction'], runtime: 101, state: 'in_library', play: PLAY(ITEMS.ownMovie), hidden: false,
     });
     assert.deepEqual((await app.get(`${APP}/tv/${T_TV}`)).json(), {
       mediaType: 'tv', tmdbId: T_TV, title: 'Synthetic Series Two', year: 2019,
@@ -145,7 +145,7 @@ describe('household app API: answers', { timeout: 20_000 }, () => {
         { seasonNumber: 1, name: 'Season 1', episodeCount: 3, state: 'get_this' },
         { seasonNumber: 2, name: 'Season 2', episodeCount: 3, state: 'get_this' },
       ],
-      state: 'get_this', play: null,
+      state: 'get_this', play: null, hidden: false,
     });
     assert.deepEqual((await app.get(`${APP}/tv/${T_TV}/season/1`)).json(), {
       tmdbId: T_TV, seasonNumber: 1, name: 'Season 1', overview: '',
@@ -1270,7 +1270,7 @@ describe('household app API: sessions', { timeout: 20_000 }, () => {
       [`${APP}/me?api_key=token-alice`, {}],
     ]) {
       const answer = await app.get(pathname, { user: null, headers });
-      assert.deepEqual(answer.json(), { name: 'Alice', household: 'Grove', apiVersion: 2 }, JSON.stringify(headers));
+      assert.deepEqual(answer.json(), { name: 'Alice', household: 'Grove', apiVersion: 3 }, JSON.stringify(headers));
     }
   });
 

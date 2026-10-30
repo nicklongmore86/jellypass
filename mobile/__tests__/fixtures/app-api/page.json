@@ -15,7 +15,8 @@
       "play": {
         "itemId": "0123456789abcdef0123456789abcdef",
         "url": "https://media.example.com/web/#/details?id=0123456789abcdef0123456789abcdef"
-      }
+      },
+      "hidden": false
     },
     {
       "mediaType": "tv",
@@ -27,7 +28,8 @@
       "backdropUrl": null,
       "rating": null,
       "state": "requested",
-      "play": null
+      "play": null,
+      "hidden": true
     },
     {
       "mediaType": "movie",
@@ -39,7 +41,8 @@
       "backdropUrl": "https://image.tmdb.org/t/p/w780/c.webp",
       "rating": 0,
       "state": "unavailable",
-      "play": null
+      "play": null,
+      "hidden": false
     }
   ]
 }

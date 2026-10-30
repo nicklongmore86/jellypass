@@ -9,6 +9,7 @@ import type {
   AppRequestRecord,
   AppRequestStatus,
   AppSafetyTombstone,
+  AppHiddenTitles,
   AppWithdrawal,
   GrantRecord,
   GrantState,
@@ -44,6 +45,20 @@ export function becomesTitleHold(withdrawal: AppWithdrawal): boolean {
 }
 /** The most settled "Get this" records kept per household; its own oldest are pruned first. Pending ones are never. */
 export const MAX_APP_REQUESTS_PER_HOUSEHOLD = 2000;
+/**
+ * The most titles one member hides in one household (see GrantState.appHiddenTitles). Past it a new title is refused,
+ * never another one forgotten to make room. There is no household or server total: one would let a member's hides
+ * decide whether another member's, or another household's, are accepted.
+ */
+export const MAX_HIDDEN_TITLES_PER_MEMBER = 2000;
+/** What hideTitle did: hid the title (or it already was), refused a new one past the limit, or the caller is not a member. */
+export type HideTitleResult = 'hidden' | 'limit' | 'not_member';
+/** One hidden title, as the member's own list gives it. */
+export interface HiddenTitle {
+  mediaType: 'movie' | 'tv';
+  tmdbId: number;
+  hiddenAt: string;
+}
 /** The most deferred webhooks remembered (see GrantStore.deferWebhook); beyond it the oldest are left to the backfill. */
 export const MAX_DEFERRED_REQUESTS = 1000;
 
@@ -100,6 +115,7 @@ export class GrantStore {
     delete (this.#state as { appQuotaLedger?: unknown }).appQuotaLedger;
     this.#appIndexCache = undefined;
     const lifted = liftRemovals(this.#state);
+    const prunedHidden = this.#pruneHiddenTitles();
     // Requests already on grants (including ones recorded before handledRequestIds existed)
     // count as handled, so the backfill never re-imports one an administrator later removed.
     const handled = new Set(this.#state.handledRequestIds ?? []);
@@ -107,7 +123,7 @@ export class GrantStore {
     for (const grant of Object.values(this.#state.grants)) Object.keys(grant.requests).forEach((id) => handled.add(id));
     const seeded = this.#state.handledRequestIds === undefined || handled.size !== before;
     if (seeded) this.#state.handledRequestIds = [...handled];
-    if (migrated.changed || lifted || seeded) await this.#save();
+    if (migrated.changed || lifted || seeded || prunedHidden) await this.#save();
     if (this.#limitHouseholds && this.countGroups() > MAX_HOUSEHOLDS) {
       console.warn(JSON.stringify({
         level: 'warn',
@@ -162,6 +178,91 @@ export class GrantStore {
     else delete this.#state.householdAddresses;
     this.#addressesSnapshot = undefined;
     await this.#save();
+  }
+
+  /**
+   * The titles a member hid in a household (see GrantState.appHiddenTitles), as `mediaType:tmdbId` keys: theirs only,
+   * read from their own entry, so the work depends on their own count alone. Empty for a non-member.
+   */
+  public hiddenTitleKeys(householdIdInput: string, userIdInput: string): ReadonlySet<string> {
+    return new Set(Object.keys(this.#hiddenTitlesOf(householdIdInput, userIdInput) ?? {}));
+  }
+
+  /** A member's hidden titles in a household, newest first (then by key, so the order is stable). */
+  public listHiddenTitles(householdIdInput: string, userIdInput: string): HiddenTitle[] {
+    return Object.entries(this.#hiddenTitlesOf(householdIdInput, userIdInput) ?? {})
+      .sort(([leftKey, left], [rightKey, right]) => (left === right ? (leftKey < rightKey ? -1 : 1) : left < right ? 1 : -1))
+      .map(([key, hiddenAt]) => {
+        const [mediaType, tmdbId] = key.split(':') as ['movie' | 'tv', string];
+        return { mediaType, tmdbId: Number(tmdbId), hiddenAt };
+      });
+  }
+
+  /**
+   * Hides a title for a member of a household, as of `at`: a title already hidden keeps when it was first hidden. A new
+   * one past {@link MAX_HIDDEN_TITLES_PER_MEMBER} is refused (`limit`), and a caller who is not a member of the
+   * household now is refused (`not_member`) without writing, so a session verified before a member left never makes
+   * them an entry again. Every accepted call is written before it returns, changed or not.
+   */
+  public async hideTitle(input: { householdId: string; userId: string; mediaType: 'movie' | 'tv'; tmdbId: number; at: string }): Promise<HideTitleResult> {
+    this.#assertOpen();
+    const householdId = normalizeId(input.householdId);
+    const member = memberKey(input.userId);
+    if (!this.#isMember(householdId, member)) return 'not_member';
+    const key = `${input.mediaType}:${input.tmdbId}`;
+    const own = this.#state.appHiddenTitles?.[householdId]?.[member] ?? {};
+    if (!Object.hasOwn(own, key)) {
+      if (Object.keys(own).length >= MAX_HIDDEN_TITLES_PER_MEMBER) return 'limit';
+      const households = this.#state.appHiddenTitles ?? {};
+      this.#state.appHiddenTitles = { ...households, [householdId]: { ...households[householdId], [member]: { ...own, [key]: input.at } } };
+    }
+    await this.#save();
+    return 'hidden';
+  }
+
+  /**
+   * Unhides a title for a member of a household; one not hidden is the same call. Refused (`not_member`) without
+   * writing for a caller who is not a member now. Every accepted call is written before it returns, changed or not.
+   */
+  public async unhideTitle(input: { householdId: string; userId: string; mediaType: 'movie' | 'tv'; tmdbId: number }): Promise<'unhidden' | 'not_member'> {
+    this.#assertOpen();
+    const householdId = normalizeId(input.householdId);
+    const member = memberKey(input.userId);
+    if (!this.#isMember(householdId, member)) return 'not_member';
+    const key = `${input.mediaType}:${input.tmdbId}`;
+    const own = this.#state.appHiddenTitles?.[householdId]?.[member];
+    if (own && Object.hasOwn(own, key)) {
+      const { [key]: _, ...rest } = own;
+      this.#setHiddenTitles(householdId, member, rest);
+    }
+    await this.#save();
+    return 'unhidden';
+  }
+
+  /** A member's own entry, or undefined (none, or not a member of that household now). */
+  #hiddenTitlesOf(householdIdInput: string, userIdInput: string): AppHiddenTitles | undefined {
+    const householdId = normalizeId(householdIdInput);
+    const member = memberKey(userIdInput);
+    if (!this.#isMember(householdId, member)) return undefined;
+    const households = this.#state.appHiddenTitles;
+    if (!households || !Object.hasOwn(households, householdId)) return undefined;
+    const members = households[householdId] as Record<string, AppHiddenTitles>;
+    return Object.hasOwn(members, member) ? members[member] : undefined;
+  }
+
+  #isMember(householdId: string, member: string): boolean {
+    const group = Object.hasOwn(this.#state.groups, householdId) ? this.#state.groups[householdId] : undefined;
+    return group?.userIds.some((id) => memberKey(id) === member) ?? false;
+  }
+
+  /** Replaces a member's entry (removing it, and an emptied household, when it is empty). */
+  #setHiddenTitles(householdId: string, member: string, titles: AppHiddenTitles): void {
+    const { [householdId]: members = {}, ...households } = this.#state.appHiddenTitles ?? {};
+    const { [member]: _, ...others } = members;
+    const next = Object.keys(titles).length > 0 ? { ...others, [member]: titles } : others;
+    const all = Object.keys(next).length > 0 ? { ...households, [householdId]: next } : households;
+    if (Object.keys(all).length > 0) this.#state.appHiddenTitles = all;
+    else delete this.#state.appHiddenTitles;
   }
 
   public listPasswordlessUserIds(): string[] {
@@ -411,6 +512,10 @@ export class GrantStore {
       updatedAt: now,
     };
     this.#state.groups[id] = group;
+    // A member who leaves takes their hidden titles with them: rejoining starts with none.
+    for (const member of Object.keys(this.#state.appHiddenTitles?.[id] ?? {})) {
+      if (!this.#isMember(id, member)) this.#setHiddenTitles(id, member, {});
+    }
     for (const grant of Object.values(this.#state.grants)) {
       if (grant.groupIds.includes(id)) {
         grant.owners = this.resolveOwners(grant);
@@ -433,6 +538,12 @@ export class GrantStore {
       if (Object.keys(addresses).length > 0) this.#state.householdAddresses = addresses;
       else delete this.#state.householdAddresses;
       this.#addressesSnapshot = undefined;
+    }
+    // Its members' hidden titles go with it: a group created later under the same ID starts with none.
+    if (this.#state.appHiddenTitles?.[groupId]) {
+      const { [groupId]: _hidden, ...hidden } = this.#state.appHiddenTitles;
+      if (Object.keys(hidden).length > 0) this.#state.appHiddenTitles = hidden;
+      else delete this.#state.appHiddenTitles;
     }
     // A group created later under the same ID is a different household, with a new epoch.
     const { [groupId]: _, ...epochs } = this.#state.householdEpochs ?? {};
@@ -1173,6 +1284,22 @@ export class GrantStore {
     return { previous: clone(previous), current: clone(next) };
   }
 
+  /**
+   * Drops hidden titles of households that no longer exist and of members no longer in them (a state file an earlier
+   * build changed groups in). Returns whether anything was dropped.
+   */
+  #pruneHiddenTitles(): boolean {
+    let pruned = false;
+    for (const [householdId, members] of Object.entries(this.#state.appHiddenTitles ?? {})) {
+      for (const member of Object.keys(members)) {
+        if (this.#isMember(householdId, member)) continue;
+        this.#setHiddenTitles(householdId, member, {});
+        pruned = true;
+      }
+    }
+    return pruned;
+  }
+
   /** Every mutator calls this before touching state, so a change refused after close() leaves memory untouched too. */
   #assertOpen(): void {
     if (this.#closed) throw new Error('state store is closed');
@@ -1245,6 +1372,26 @@ type GrantAudit = Partial<Pick<GrantRecord, 'joins'>>;
 
 export function normalizeId(value: string): string {
   return value.trim().toLowerCase();
+}
+
+/** A member's key in GrantState.appHiddenTitles: their Jellyfin ID, lower case and without dashes, as the app compares it. */
+function memberKey(userId: string): string {
+  return normalizeId(userId).replace(/-/g, '');
+}
+
+const HIDDEN_TITLE_KEY = /^(?:movie|tv):[1-9][0-9]{0,9}$/;
+const ISO_INSTANT = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\.[0-9]{1,3})?Z$/;
+
+/** Whether `value` is a well-formed GrantState.appHiddenTitles: members by key, each at most the limit of valid entries. */
+function validHiddenTitles(value: unknown): boolean {
+  const isRecord = (entry: unknown): entry is Record<string, unknown> => Boolean(entry) && typeof entry === 'object' && !Array.isArray(entry);
+  if (!isRecord(value)) return false;
+  return Object.values(value).every((members) => isRecord(members) && Object.entries(members).every(([member, titles]) =>
+    /^[0-9a-z]{1,64}$/.test(member)
+    && isRecord(titles)
+    && Object.keys(titles).length <= MAX_HIDDEN_TITLES_PER_MEMBER
+    && Object.entries(titles).every(([key, at]) => HIDDEN_TITLE_KEY.test(key) && Number(key.split(':')[1]) <= 2_147_483_647
+      && typeof at === 'string' && ISO_INSTANT.test(at) && Number.isFinite(Date.parse(at)))));
 }
 
 function pendingSync(previous?: SyncStatus): SyncStatus {
@@ -1362,8 +1509,10 @@ function migrateState(value: unknown): { state: GrantState; changed: boolean } {
   if (addresses !== undefined && (!addresses || typeof addresses !== 'object' || Array.isArray(addresses))) {
     throw new Error('state file has an invalid householdAddresses');
   }
-  // 8 (4.0.0) adds only the optional address map, so a 7 file is an 8 one without it. Every field is kept, among them
-  // a Jellyfin version confirmation 3.10.0 stored.
+  const hidden = (value as { appHiddenTitles?: unknown }).appHiddenTitles;
+  if (hidden !== undefined && !validHiddenTitles(hidden)) throw new Error('state file has an invalid appHiddenTitles');
+  // 8 (4.0.0) adds only the optional address map and hidden titles, so a 7 file is an 8 one without them. Every field is
+  // kept, among them a Jellyfin version confirmation 3.10.0 stored.
   if (candidate.version === 7) return { state: { ...(value as Omit<GrantState, 'version'>), version: 8 }, changed: true };
   return { state: value as GrantState, changed: false };
 }
