@@ -342,7 +342,11 @@ member listener selects a household from `Host` alone (exact match, case and
 default ports aside; `X-Forwarded-Host` is never read) and answers a `Host`
 that is no household's with a fixed `421` (`{"error":"unknown_host"}`) on
 every path, WebSocket upgrades dropped: it never falls back to the admin site.
-The member listener starts only while the household gateway is on.
+The member listener starts only while the household gateway is on. Both
+listeners refuse a request that does not name exactly one host (two `Host`
+headers, a `Host` with userinfo, whitespace or other characters, or an
+absolute-form target whose authority is not the `Host`) with a fixed `400`
+(`{"error":"invalid_host"}`), before anything else is read.
 
 Keep the admin listener private: publish it on `127.0.0.1` or a LAN address,
 and if you want it behind your reverse proxy (for HTTPS), use a host of its own

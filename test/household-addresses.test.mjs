@@ -219,6 +219,92 @@ describe('member listener', () => {
   });
 });
 
+describe('one Host per request', () => {
+  const INVALID_HOST = '{"error":"invalid_host"}';
+  const users = (answer) => JSON.parse(answer.body).map((user) => user.Name);
+  // Each of these is refused with the fixed 400 on either listener, whatever the path; none is relayed.
+  const malformed = (host) => [
+    ['two Host headers, the household first', [`Host: ${MEDIA}`, `Host: ${HOST_B}`]],
+    ['two Host headers, the household last', [`Host: ${HOST_B}`, `Host: ${MEDIA}`]],
+    ['an unknown Host, then a household', ['Host: unknown.example.com', `Host: ${HOST_B}`]],
+    ['the same Host twice', [`Host: ${host}`, `Host: ${host}`]],
+    ['the same Host twice, spelled differently', [`host: ${host}`, `HOST: ${host.toUpperCase()}`]],
+    ['no Host', []],
+    ['an empty Host', ['Host: ']],
+    ['userinfo', [`Host: user@${host}`]],
+    ['whitespace inside', [`Host: ${host} x`]],
+    ['a path', [`Host: ${host}/x`]],
+    ['other characters', [`Host: <${host}`]],
+    ['a percent-encoding', [`Host: ${host}%2f`]],
+  ];
+
+  it('refuses a request with other than exactly one valid Host on the member listener, for HTTP and WebSocket alike', async (t) => {
+    const app = await startApp(t, world(), { addresses: ADDRESSES });
+    for (const [what, hosts] of malformed(MEDIA)) {
+      const answer = await raw(app.port, 'GET /Users/Public HTTP/1.1', hosts);
+      assert.equal(answer.status, 400, what);
+      // Node answers a missing Host itself, before any handler; everything else is JellyPass's fixed answer.
+      if (hosts.length) assert.deepEqual([answer.body, answer.headers['cache-control']], [INVALID_HOST, 'no-store'], what);
+      if (hosts.length) assert.match(await upgrade(app.port, '/socket?api_key=token-alice', hosts), /^HTTP\/1\.1 400 [^]*\r\n\r\n\{"error":"invalid_host"\}$/, what);
+    }
+    assert.deepEqual(relayed(app), [], 'nothing reached Jellyfin');
+    // One Host still selects its household, in either listener's casing of the header name.
+    assert.deepEqual(users(await raw(app.port, 'GET /Users/Public HTTP/1.1', [`host: ${HOST_B}`])), ['Bob']);
+    assert.deepEqual(users(await raw(app.port, 'GET /Users/Public HTTP/1.1', [`Host: ${MEDIA}`])), ['Alice', 'Ann']);
+    // HTTP/1.0 may leave Host out: then no household is named, so it is the fixed 421.
+    assert.deepEqual(await raw(app.port, 'GET /Users/Public HTTP/1.0', []).then((answer) => [answer.status, answer.body]), [421, UNKNOWN_HOST]);
+  });
+
+  it('refuses an absolute-form target whose authority is not the Host', async (t) => {
+    const app = await startApp(t, world(), { addresses: ADDRESSES });
+    for (const target of [`http://${HOST_B}/Users/Public`, `https://${HOST_B}/Users/Public`, `http://${MEDIA}:8443/Users/Public`, `http://user@${MEDIA}/Users/Public`, 'http:///Users/Public']) {
+      const answer = await raw(app.port, `GET ${target} HTTP/1.1`, [`Host: ${MEDIA}`]);
+      assert.deepEqual([answer.status, answer.body], [400, INVALID_HOST], target);
+    }
+    // One that agrees passes the Host check and is the gateway's to answer, which relays origin-form targets only.
+    const agreeing = await raw(app.port, `GET http://${MEDIA.toUpperCase()}/Users/Public HTTP/1.1`, [`Host: ${MEDIA}`]);
+    assert.equal(agreeing.status, 400);
+    assert.notEqual(agreeing.body, INVALID_HOST);
+    assert.deepEqual(relayed(app), [], 'nothing reached Jellyfin');
+  });
+
+  it('refuses the same on the admin listener, before the admin token or session is looked at', async (t) => {
+    const app = await startApp(t, world(), { addresses: ADDRESSES });
+    const admin = 'jellypass:8788';
+    for (const [what, hosts] of malformed(admin)) {
+      const answer = await raw(app.adminPort, 'GET /v1/groups HTTP/1.1', [...hosts, 'Authorization: Bearer admin-secret']);
+      assert.equal(answer.status, 400, what);
+      if (hosts.length) assert.equal(answer.body, INVALID_HOST, what);
+      if (hosts.length) assert.match(await upgrade(app.adminPort, '/socket', hosts), /^HTTP\/1\.1 400 [^]*\{"error":"invalid_host"\}$/, what);
+    }
+    const absolute = await raw(app.adminPort, `GET http://other.example.com/v1/groups HTTP/1.1`, [`Host: ${admin}`, 'Authorization: Bearer admin-secret']);
+    assert.deepEqual([absolute.status, absolute.body], [400, INVALID_HOST]);
+    assert.equal((await raw(app.adminPort, `GET http://${admin}/v1/groups HTTP/1.1`, [`Host: ${admin}`, 'Authorization: Bearer admin-secret'])).status, 200);
+    assert.equal((await raw(app.adminPort, 'GET /v1/groups HTTP/1.1', [`Host: ${admin}`, 'Authorization: Bearer admin-secret'])).status, 200);
+    // A WebSocket upgrade with one Host is still dropped.
+    assert.equal(await upgrade(app.adminPort, '/socket', admin), '');
+  });
+
+  it('refuses two Hosts on the legacy member-port webhook too, and answers 421 for an unknown Host before parsing the target', async (t) => {
+    const test = JSON.stringify({ notificationType: 'TEST_NOTIFICATION', subject: 'Test Notification' });
+    const webhook = (port, target, hosts) => raw(port, `POST ${target} HTTP/1.1`, [...hosts, 'Authorization: Bearer webhook-secret', 'Content-Type: application/json'], test);
+    const on = await startApp(t, world(), { addresses: ADDRESSES, memberWebhook: true });
+    for (const hosts of [['Host: jellypass:8787', `Host: ${MEDIA}`], [`Host: ${MEDIA}`, 'Host: jellypass:8787'], ['Host: jellypass:8787', 'Host: jellypass:8787']]) {
+      const answer = await webhook(on.port, '/webhooks/seerr', hosts);
+      assert.deepEqual([answer.status, answer.body], [400, INVALID_HOST], hosts.join(', '));
+    }
+    assert.equal((await webhook(on.port, 'http://other.example.com/webhooks/seerr', ['Host: jellypass:8787'])).status, 400);
+    assert.deepEqual(await webhook(on.port, '/webhooks/seerr', ['Host: jellypass:8787']).then((answer) => [answer.status, answer.body]), [202, '{"status":"ignored"}']);
+    // A target that is no URL: with the legacy webhook on, a POST's is parsed, and that is a fixed 400; anything else is the 421.
+    assert.deepEqual(await webhook(on.port, '//[bad', ['Host: jellypass:8787']).then((answer) => [answer.status, answer.body]), [400, '{"error":"invalid_request_target"}']);
+    assert.deepEqual(await raw(on.port, 'GET //[bad HTTP/1.1', ['Host: jellypass:8787']).then((answer) => [answer.status, answer.body]), [421, UNKNOWN_HOST]);
+    const off = await startApp(t, world(), { addresses: ADDRESSES });
+    for (const request of ['GET //[bad HTTP/1.1', 'POST //[bad HTTP/1.1']) {
+      assert.deepEqual(await raw(off.port, request, ['Host: unknown.example.com']).then((answer) => [answer.status, answer.body]), [421, UNKNOWN_HOST], request);
+    }
+  });
+});
+
 describe('admin listener', () => {
   it('serves the admin site, API, metrics and health for any Host, and never a household or WebSocket', async (t) => {
     const app = await startApp(t, world(), { addresses: ADDRESSES });
@@ -313,19 +399,52 @@ function run(env) {
 }
 
 /** The status line and headers of a WebSocket upgrade's answer, or '' if the connection was closed without one. */
+/** A WebSocket upgrade's answer, up to its end of headers (or the whole of it, if the socket closes first); `host` may be the Host lines. */
 function upgrade(port, pathname, host) {
+  const hosts = Array.isArray(host) ? host.map((line) => `${line}\r\n`).join('') : `Host: ${host}\r\n`;
   return new Promise((resolve, reject) => {
     const socket = connect(port, '127.0.0.1');
     let answer = '';
-    socket.once('connect', () => socket.write(`GET ${pathname} HTTP/1.1\r\nHost: ${host}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGVzdA==\r\nSec-WebSocket-Version: 13\r\n\r\n`));
+    socket.once('connect', () => socket.write(`GET ${pathname} HTTP/1.1\r\n${hosts}Connection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGVzdA==\r\nSec-WebSocket-Version: 13\r\n\r\n`));
     socket.on('data', (chunk) => {
       answer += chunk.toString('utf8');
-      if (answer.includes('\r\n\r\n')) {
+      const [head, body = ''] = answer.split('\r\n\r\n');
+      const length = /\r\ncontent-length: (\d+)/i.exec(head)?.[1];
+      if (answer.includes('\r\n\r\n') && Buffer.byteLength(body) >= Number(length ?? 0)) {
         socket.destroy();
         resolve(answer);
       }
     });
     socket.once('close', () => resolve(answer));
     socket.once('error', (error) => (error.code === 'ECONNRESET' ? resolve(answer) : reject(error)));
+  });
+}
+
+/** One request written as it is (each of `headers` a line), and its answer read to the end of the connection. */
+function raw(port, requestLine, headers, body = '') {
+  return new Promise((resolve, reject) => {
+    const socket = connect(port, '127.0.0.1');
+    const lines = [requestLine, ...headers, 'Connection: close', ...(body ? [`Content-Length: ${Buffer.byteLength(body)}`] : [])];
+    const chunks = [];
+    socket.once('connect', () => socket.write(`${lines.join('\r\n')}\r\n\r\n${body}`));
+    socket.on('data', (chunk) => chunks.push(chunk));
+    socket.once('error', reject);
+    socket.once('close', () => {
+      const answer = Buffer.concat(chunks).toString('utf8');
+      const end = answer.indexOf('\r\n\r\n');
+      const head = answer.slice(0, end).split('\r\n');
+      const headers = Object.fromEntries(head.slice(1).map((line) => [line.slice(0, line.indexOf(':')).toLowerCase(), line.slice(line.indexOf(':') + 1).trim()]));
+      let rest = answer.slice(end + 4);
+      if (/chunked/i.test(headers['transfer-encoding'] ?? '')) {
+        let decoded = '';
+        for (let size = parseInt(rest, 16); size > 0; size = parseInt(rest, 16)) {
+          const start = rest.indexOf('\r\n') + 2;
+          decoded += rest.slice(start, start + size);
+          rest = rest.slice(start + size + 2);
+        }
+        rest = decoded;
+      }
+      resolve({ status: Number(head[0]?.split(' ')[1]), headers, body: rest });
+    });
   });
 }

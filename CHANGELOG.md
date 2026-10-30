@@ -62,6 +62,21 @@ upgrades** (steps below); with them, existing household addresses such as
 - **`GET /v1/groups`** gains `householdAddresses`, and `householdUrl` is a
   household's mapped canonical address when it has one, else its legacy one.
 
+### Security
+
+- **A request must name exactly one host.** Before 4.0.0, a request with two
+  `Host` headers was answered for the first of them, so a proxy that routed on
+  another one could reach a different household's hostname (its users list,
+  for example) or, with an unknown first `Host`, the admin site, API and
+  webhook. Both listeners now refuse, with a fixed
+  `400 {"error":"invalid_host"}` and the connection closed, before anything is
+  relayed: more or fewer than one `Host` header (HTTP/1.0 may send none), a
+  `Host` that is not a plain `host[:port]` (userinfo, whitespace, a path or
+  other characters), and an absolute-form request target
+  (`GET http://host/path`) whose authority is not the `Host`. WebSocket
+  upgrades get the same `400`. A reverse proxy that sets one `Host` (nginx's
+  `proxy_set_header Host $host`, for example) is unaffected.
+
 ### Added
 
 - **Household address map.** Each household (group) can be given a canonical

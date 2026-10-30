@@ -1,5 +1,6 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import type { Duplex } from 'node:stream';
 import { ConflictError, UserProvisioningError, type AccessService } from './access-service.js';
 import { HouseholdApp, type HouseholdAppOptions } from './app-api.js';
 import { AdminActionLimitError, AdminSeerrError, type AdminRequests } from './admin-requests.js';
@@ -201,6 +202,7 @@ export function makeServers(
 
   const admin = createServer(async (request, response) => {
     try {
+      if (!singleHost(request)) return invalidHost(response);
       const url = new URL(request.url ?? '/', 'http://localhost');
       const segments = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
       // Cross-site request forgery: a state-changing request a browser sends with the session cookie must come from the
@@ -477,13 +479,17 @@ export function makeServers(
     }
   });
   // The admin listener proxies nothing, so it upgrades nothing.
-  admin.on('upgrade', (_request, socket) => socket.destroy());
+  admin.on('upgrade', (request, socket) => {
+    if (!singleHost(request)) return invalidHostUpgrade(socket);
+    socket.destroy();
+  });
 
   if (!householdGateway) {
     return { admin: Object.assign(admin, { closeWebSockets: async () => 0 }) };
   }
   const member = createServer(async (request, response) => {
     try {
+      if (!singleHost(request)) return invalidHost(response);
       const household = addresses().resolve(request.headers.host);
       if (household) {
         // Every household address, whichever source gave it, waits on the Jellyfin version check.
@@ -492,8 +498,16 @@ export function makeServers(
         await householdGateway.handle(request, response, household.householdId, household.origin);
         return;
       }
-      const url = new URL(request.url ?? '/', 'http://localhost');
-      if (options?.memberWebhook && request.method === 'POST' && url.pathname === '/webhooks/seerr') return await handleWebhook(request, response, url);
+      // The request target is parsed only to look for the legacy webhook; otherwise it is never read.
+      if (options?.memberWebhook && request.method === 'POST') {
+        let url: URL;
+        try {
+          url = new URL(request.url ?? '/', 'http://localhost');
+        } catch {
+          return json(response, 400, { error: 'invalid_request_target' });
+        }
+        if (url.pathname === '/webhooks/seerr') return await handleWebhook(request, response, url);
+      }
       // No household's address: the same answer for every path and method, and never the admin site.
       return json(response, 421, { error: 'unknown_host' });
     } catch (error) {
@@ -501,6 +515,7 @@ export function makeServers(
     }
   });
   member.on('upgrade', (request, socket, head) => {
+    if (!singleHost(request)) return invalidHostUpgrade(socket);
     const household = addresses().resolve(request.headers.host);
     if (!household) {
       socket.destroy();
@@ -532,6 +547,43 @@ export function makeServers(
     admin: Object.assign(admin, { closeWebSockets: async () => 0 }),
     member: Object.assign(member, { closeWebSockets: () => householdGateway.closeWebSockets() }),
   };
+}
+
+const HOST_VALUE = /^(?:[A-Za-z0-9._-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$/;
+const INVALID_HOST = JSON.stringify({ error: 'invalid_host' });
+
+/**
+ * Whether the request names exactly one host: one Host header (none only from an HTTP/1.0 client), a plain host[:port]
+ * with no userinfo, whitespace or other characters, and for an absolute-form target the same authority as the Host.
+ * Node keeps only the first of several Host headers in `request.headers.host` while a proxy in front may route on
+ * another, so both listeners refuse anything else with a fixed 400 before the target is parsed or anything relayed.
+ */
+function singleHost(request: IncomingMessage): boolean {
+  const hosts: string[] = [];
+  for (let index = 0; index < request.rawHeaders.length; index += 2) {
+    if (request.rawHeaders[index]?.toLowerCase() === 'host') hosts.push(request.rawHeaders[index + 1] ?? '');
+  }
+  if (hosts.length > 1 || (hosts.length === 0 && request.httpVersion !== '1.0')) return false;
+  const [host] = hosts;
+  if (host !== undefined && !HOST_VALUE.test(host)) return false;
+  const target = request.url ?? '';
+  if (target.startsWith('/') || target === '*') return true;
+  const authority = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/([^/?#]*)/.exec(target)?.[1];
+  return authority !== undefined && host !== undefined && authority.toLowerCase() === host.toLowerCase();
+}
+
+/** The fixed answer to a request {@link singleHost} refuses; the connection is closed after it. */
+function invalidHost(response: ServerResponse): void {
+  response.setHeader('Connection', 'close');
+  json(response, 400, { error: 'invalid_host' });
+}
+
+/** {@link invalidHost} for a WebSocket upgrade: written to the socket, which is then closed. */
+function invalidHostUpgrade(socket: Duplex): void {
+  socket.on('error', () => socket.destroy()).end(
+    'HTTP/1.1 400 Bad Request\r\nContent-Type: application/json; charset=utf-8\r\n'
+      + `Content-Length: ${Buffer.byteLength(INVALID_HOST)}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n${INVALID_HOST}`,
+  );
 }
 
 /** The admin API's (and the webhook's) answer to an error a handler threw. */
