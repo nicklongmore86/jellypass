@@ -47,6 +47,7 @@ import {
   FilterChips,
   Hero,
   JustWatchNote,
+  ListHeading,
   NetworkHeading,
   RowFailure,
   RowHeading,
@@ -59,7 +60,7 @@ import { heroSlides, useHideHeld, visibleCards } from '../home/hide';
 import { HERO_MAX, HOME_LAYOUT, LAZY_MARGIN, NETWORK_ACCENTS, networkKey, rowKey, TABLET_WIDTH, type HomeRow, type RowVariant } from '../home/layout';
 import { HOME_TEXT, SOURCE_TEXT, type HomeFilter } from '../home/text';
 import { listedNetworks, networkList, useHome, type RowState } from '../home/useHome';
-import { networkPath, studioPath, titlePath } from '../navigation/titles';
+import { listPath, networkPath, studioPath, titlePath } from '../navigation/titles';
 import { useAsked, useSession } from '../session/SessionProvider';
 import { colors, layout, spacing } from '../theme';
 
@@ -77,7 +78,7 @@ interface Slot {
 }
 
 export function HomeScreen() {
-  const { api, expire, hideHeld } = useSession();
+  const { api, expire, hideHeld, rowPages } = useSession();
   const hide = useHideHeld(hideHeld);
   // What the member just asked for shows as Requested on every card at once, with no call, and a title's state read
   // since (its page opened again) wins over the row's older answer (src/title/asked.ts).
@@ -252,6 +253,12 @@ export function HomeScreen() {
 
   const open = (card: Card) => router.push(titlePath('home', card));
   const openStudio = (studio: Source) => router.push(studioPath(studio.id));
+  /** A row's See all: its full grid, drawn first from the page the row has (no call), the filter's own list. */
+  const openList = (part: HomeRow) => {
+    const state = rows[rowKey(part)];
+    if (state?.status === 'loaded') rowPages.put(part.list, state.page);
+    router.push(listPath(part.list));
+  };
 
   /** The scroll view has caught up with the new drawing: it starts moving on from where the screen is now. */
   const caughtUp = (y: number) => {
@@ -312,7 +319,11 @@ export function HomeScreen() {
       <View key={key} testID={`home-slot-${key}`} onLayout={placed(key)} style={{ minHeight: reserved(rows[key], part.variant, widths[part.variant]) }}>
         <RowBody
           state={rows[key]}
-          heading={<RowHeading title={part.heading} />}
+          heading={
+            <RowHeading title={part.heading}>
+              <ListHeading title={part.heading} onOpen={() => openList(part)} />
+            </RowHeading>
+          }
           title={part.heading}
           variant={part.variant}
           cardWidth={widths[part.variant]}

@@ -3,6 +3,7 @@ import { AdminRequests } from './admin-requests.js';
 import { WebAuth } from './auth.js';
 import { loadConfig } from './config.js';
 import { JellyfinClient } from './jellyfin.js';
+import { JellyfinVersionGate } from './jellyfin-version.js';
 import { makeServers } from './server.js';
 import { SeerrClient } from './seerr.js';
 import { SeerrUserMap } from './seerr-users.js';
@@ -39,6 +40,13 @@ async function main(): Promise<void> {
     }
   }
   const service = new AccessService(jellyfin, store, undefined, seerr, { logLevel: config.logLevel });
+  // Read now and on a slow interval; startup never waits for it (see JellyfinVersionGate).
+  const jellyfinVersion = new JellyfinVersionGate({
+    read: () => jellyfin.getServerVersion(),
+    ...(config.jellyfinUntestedVersionOk ? { environmentConfirmed: config.jellyfinUntestedVersionOk } : {}),
+    confirmation: { get: () => store.getJellyfinVersionConfirmed(), set: (version) => store.setJellyfinVersionConfirmed(version) },
+  });
+  void jellyfinVersion.check();
   const webAuth = new WebAuth(jellyfin);
   // Shutdown aborts this signal: each job stops before its next step and failures from the abort are not logged.
   const background = new BackgroundTasks();
@@ -58,6 +66,7 @@ async function main(): Promise<void> {
   const servers = makeServers(service, { webhook: config.webhookToken, admin: config.adminToken }, webAuth, {
     trustedProxies: config.trustedProxies,
     background,
+    jellyfinVersion,
     ...(config.legacyWebhookOnMemberPort ? { memberWebhook: true } : {}),
     ...(config.householdGatewayEnabled ? {
       householdGateway: {
@@ -167,7 +176,11 @@ async function main(): Promise<void> {
       await seerr?.close();
       await store.close();
     },
-    timers: () => [reconcileTimer, catalogSyncTimer, backfillTimer],
+    timers: () => {
+      // No version read is scheduled after shutdown starts.
+      jellyfinVersion.stop();
+      return [reconcileTimer, catalogSyncTimer, backfillTimer];
+    },
     background,
   });
   // `on`, not `once`: a second signal must reach the idempotent handler rather than Node's default, which kills at once.

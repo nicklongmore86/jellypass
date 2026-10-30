@@ -112,6 +112,19 @@ export function badgeFits(cardWidth: number, fontScale: number, word: string): b
   return word.length * BADGE_EM_PER_CHAR * POSTER_BADGE.fontSize * Math.max(1, fontScale) <= room;
 }
 
+/**
+ * The row a "See all" page shows, by its list's name in the address: only the lists Home's rows show (under any filter),
+ * the TV add-on's `#/jellypass/list/<list>`. Anything else is undefined, and its page is Not found without a call.
+ */
+export function seeAllRow(name: string | string[] | undefined): HomeRow | undefined {
+  if (typeof name !== 'string') return undefined;
+  for (const parts of Object.values(HOME_LAYOUT)) {
+    const found = parts.find((part): part is HomeRow => part.part === 'row' && part.list === name);
+    if (found) return found;
+  }
+  return undefined;
+}
+
 export function rowKey(part: HomeRow): string {
   return `row-${part.list}`;
 }

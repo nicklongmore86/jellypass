@@ -67,7 +67,8 @@ export function SourceScreen({ kind, id, list }: { kind: SourceKind; id: number;
   );
 }
 
-function Results({
+/** The list's grid by its state, with Load more; also the See all pages' (ListScreen.tsx). */
+export function Results({
   hide,
   shown,
   columns,

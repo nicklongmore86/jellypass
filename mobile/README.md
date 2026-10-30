@@ -49,8 +49,10 @@ The PWA's sign-in (`app/src/signin.ts`) with an address step in front, as `docs/
 (contract)") asks. One household at a time; changing household signs out first.
 
 1. **Address.** The member types or pastes their household's address (`https://` is added if left off), or opens a
-   setup link, `jellypass://connect?address=https://jelly-<household>.<domain>` (the `jellypass` scheme,
-   `src/app/connect.tsx`). Both go through `parseHouseholdAddress`. A link is only ever an offer: the app shows the
+   setup link, `jellypass://connect?address=https://media.example.com` (the `jellypass` scheme,
+   `src/app/connect.tsx`). Any HTTPS address works, with no naming rule: whatever address the household's
+   administrator gives out (see [Household addresses](#household-addresses)). Both go through `readHouseholdAddress`,
+   and a refused typed address says why (only HTTPS, no IP address, nothing before or after the address). A link is only ever an offer: the app shows the
    address and asks before using it (and, when signed in elsewhere, says Continue signs out first), and even then it
    only opens the profile picker. A link never signs anyone in, and carries only the address. The app suggests no
    address and has no list of households.
@@ -79,6 +81,29 @@ The PWA's sign-in (`app/src/signin.ts`) with an address step in front, as `docs/
    at once), then deletes the sign-in from the device whatever came of that.
 
 Signed in, the Account tab shows "name · household" from `/me`, **Sign out** and **Change household** (below).
+
+### Household addresses
+
+The app has no naming rule: a household address is whatever HTTPS address the household's administrator gives out,
+for example `https://media.example.com` or `https://films.example.net:8443`. The server alone decides which names are
+household addresses. `readHouseholdAddress` (`src/api/address.ts`) takes:
+
+- `https://` only (any case). An `http://` address is refused, and the app has no cleartext or LAN mode.
+- A DNS name of at least two labels (letters, digits and inner hyphens, 63 characters a label, 253 in all),
+  lower-cased. An internationalised name is taken in its `xn--` form only; one typed with non-ASCII letters is refused
+  with a message asking for that form, since the app has no IDNA mapping.
+- An optional port from 1 to 65535. `:443` is dropped, so the origin kept is always the same for the same address.
+- Nothing after the host but an optional `/`: no path, query or fragment, no name or password before the host, and no
+  whitespace or control characters (surrounding whitespace is trimmed).
+- No IP address (`192.168.1.10`, `[::1]`) and no `.local` name, even over HTTPS: a phone needs the local-network
+  permission (iOS) or a network security config (Android) for those, and the app has neither.
+
+It is parsed by hand: React Native's `URL` is a few regular expressions that validate nothing, keep `:443` and
+neither lower-case nor IDNA-map the host. A typed address gets `https://` when it has no `<scheme>://` (so
+`films.example.net:8443` is a host and port). A setup link's address must be exactly one such origin, with its
+`https://`. A kept sign-in is read back only if its address parses to the same origin, so a sign-in kept by an older
+app version on a `https://jelly-<household>.<domain>` address keeps working after an upgrade. App versions up to
+1.2.1 take only that `jelly-` form.
 
 **Orientation.** Phones are portrait and tablets turn: iOS from Info.plist (iPhone portrait, iPad all four), and an
 Android phone is locked to portrait at launch with `expo-screen-orientation` when `expo-device` says it is a phone
@@ -171,7 +196,9 @@ The PWA's Home (`home()` in `app/src/main.ts`, its pieces in `app/src/render.ts`
   keeps its series under All and is left out under Movies. No all-time rows. Headings are heavy with the waterline: a
   cyan line and a purple cap (two segments, never a gradient), or one line in the service's brand colour; a service's
   heading is "Popular on" and its logo (a header, named "Popular on Netflix"), then a chevron, a 44 pt link of its own
-  to the service's page (on the list the row shows) named "See all Popular on Netflix". Each studio's logo is a link to its page named "Pixar, studio".
+  to the service's page (on the list the row shows) named "See all Popular on Netflix". Every other row (each
+  discover list) has the same chevron after its heading, a link to the list's full grid named "See all Trending" (see
+  "See all pages" below). Each studio's logo is a link to its page named "Pixar, studio".
 - **Hero.** The first five titles of the filter's first row, from that row's own answer (no extra call): a rounded
   card per slide, the backdrop with a solid navy panel **below** it (title, year, "★ 7.8 TMDB", the status, the start
   of the overview). Swipe, **Previous title** / **Next title** (wrapping) and one round dot per title (hollow, or larger
@@ -243,6 +270,29 @@ The PWA's `#/network/:id` and `#/studio/:id` (`sourceScreen()` in `app/src/main.
 failure, a 401, late answers, the overlay, every pressable named and 44 pt, every text free to grow, phone and iPad
 columns) and `source-budget.test.tsx` (the calls against `docs/app-api/fetch-budget.json`'s `network`,
 `network-series`, `network-films` and `studio`, which `test/app-pwa.test.mjs` pins for the PWA).
+
+## See all pages (`src/source/useList.ts`, `src/screens/ListScreen.tsx`)
+
+The TV add-on's `#/jellypass/list/<list>` (`tv/src/discover-source.ts`, its `list` kind), on Home's stack at
+`/home/list/<list>`, opened from the chevron after a list row's heading: Trending, Popular movies, Popular series, New
+movie releases, Upcoming movies and Upcoming series, and the Trending movies / Trending series rows of the Movies and TV
+filters. The PWA has no such page.
+
+- **Page.** The header says the row's heading, then **New only** (`list-hide`, the same choice as Home's) and the
+  network and studio pages' poster grid with **Load more**. No logo, no tabs, no JustWatch credit (every list is
+  TMDB's). A card opens its title on Home's stack and Back comes back to the same grid; the page's own Back (and the
+  swipe) comes back to Home with its filter as it was.
+- **The filter.** Each row's link opens the list that row shows, so Movies' Trending opens `trending-movies` and TV's
+  `trending-tv`. Only the lists Home's rows show have a page: any other name (`top-movies`, …) is Not found with no call.
+- **Calls.** Opened from its row, none: the row's page is handed to it in memory (`src/home/rowPages.ts`, taken once,
+  forgotten with the session). Opened by its address (a row not loaded yet), the list's first page alone,
+  `GET /discover/<list>`. One page per Load more (`?page=n`); Back none. These are `fetch-budget.json`'s
+  `tv-discover-list`. Failures, Try again and a 401 are as on the network and studio pages.
+
+**Tests.** `list.test.tsx` (each row's link under All, Movies and TV, its name and place after the heading, the route
+and the row's titles with no call, the filter and New only kept, Load more, Back to the grid, the address and its
+calls, Not found), `list-states.test.tsx` (each failure, a 401, an empty list, every pressable named and 44 pt, every
+text free to grow, the badges, phone and iPad columns) and `row-pages.test.ts`.
 
 ## Title pages and Get this (`src/title`, `src/screens/TitleScreen.tsx`)
 
@@ -379,9 +429,8 @@ files).
 `createApiClient({ address, token })` talks to one household's `/jellypass/app/v1` API, as
 `docs/app-design.md` ("Native clients (contract)") asks:
 
-- **One address.** `parseHouseholdAddress` takes `https://jelly-<household>.<domain>` (lower-cased; no port,
-  path, query or credentials) and nothing else, and every call is an absolute URL on it. There is no household
-  list. Parsed by hand: React Native's `URL` has no `hostname`.
+- **One address.** `parseHouseholdAddress` takes one HTTPS origin (see [Household addresses](#household-addresses))
+  and nothing else, and every call is an absolute URL on it. There is no household list.
 - **Headers.** `Authorization: MediaBrowser Token="<token>"` and `Accept: application/json` (plus
   `Content-Type` on a POST), `credentials: 'omit'`, and nothing else. No `cache` option, because React Native's
   fetch adds `?_=<time>` to a GET sent with `no-store`; the API answers `no-store` itself.
@@ -454,7 +503,7 @@ Edits reload on the phone as you save. Expo Go needs no Apple or Google develope
 | Icon | `assets/icon.png`, `assets/adaptive-icon.png` | 1024 × 1024, opaque RGB (the App Store refuses alpha). The web app's icon, unchanged: `scripts/make-store-icons.py` holds a copy of `draw()` from the repo's `scripts/make-app-icons.py` and runs it at 1024 (`python3 scripts/make-store-icons.py`, needs Pillow). The adaptive icon is that drawing scaled to 84% and centred on the same navy (`#000b25`), so it lies inside Android's safe zone (the circle 66/108 of the canvas across); the iOS icon stays full-bleed. `__tests__/app-icons.test.ts` fails if the size, alpha or drawing drift |
 | Store links | `extra.privacyPolicyUrl`, `extra.supportUrl`, `extra.aboutUrl` in `app.config.ts` | The owner's site: `https://jellypass.app/privacy/`, `https://jellypass.app/support/`, `https://jellypass.app/`; see [Store links](#store-links) |
 | Orientation | iPhone portrait; iPad all four; Android tablets turn freely (`orientation: 'default'`), Android phones locked to portrait at launch | iPad multitasking requires all four |
-| URL scheme | `jellypass://` | Setup links: `jellypass://connect?address=https://jelly-<household>.<domain>` |
+| URL scheme | `jellypass://` | Setup links: `jellypass://connect?address=https://media.example.com` (any household address) |
 
 ## What's next
 

@@ -10,7 +10,7 @@ const BASE = {
   SEERR_URL: 'http://seerr.test',
   SEERR_API_KEY: 'seerr-key',
 };
-const KEYS = [...Object.keys(BASE), 'REQUEST_BACKFILL_SINCE', 'REQUEST_BACKFILL_ENABLED', 'LOG_LEVEL', 'WS_IDLE_TIMEOUT_MS', 'WS_UPSTREAM_IDLE_TIMEOUT_MS', 'JELLYQUEST_BRIDGE_ENABLED', 'TRUSTED_PROXIES', 'TMDB_API_KEY', 'HOUSEHOLD_APP_ENABLED', 'HOUSEHOLD_DOMAIN', 'HOUSEHOLD_HOST_PREFIX', 'HOUSEHOLD_GATEWAY_ENABLED', 'TV_ADDON_ENABLED', 'TV_ADDON_HOUSEHOLDS', 'HOST', 'PORT', 'ADMIN_HOST', 'ADMIN_PORT', 'LEGACY_WEBHOOK_ON_MEMBER_PORT'];
+const KEYS = [...Object.keys(BASE), 'REQUEST_BACKFILL_SINCE', 'REQUEST_BACKFILL_ENABLED', 'LOG_LEVEL', 'WS_IDLE_TIMEOUT_MS', 'WS_UPSTREAM_IDLE_TIMEOUT_MS', 'JELLYQUEST_BRIDGE_ENABLED', 'TRUSTED_PROXIES', 'TMDB_API_KEY', 'HOUSEHOLD_APP_ENABLED', 'HOUSEHOLD_DOMAIN', 'HOUSEHOLD_HOST_PREFIX', 'HOUSEHOLD_GATEWAY_ENABLED', 'TV_ADDON_ENABLED', 'TV_ADDON_HOUSEHOLDS', 'HOST', 'PORT', 'ADMIN_HOST', 'ADMIN_PORT', 'LEGACY_WEBHOOK_ON_MEMBER_PORT', 'JELLYFIN_UNTESTED_VERSION_OK'];
 const saved = Object.fromEntries(KEYS.map((key) => [key, process.env[key]]));
 
 function load(overrides = {}) {
@@ -30,6 +30,19 @@ function restoreEnvironment() {
 
 const TMDB_V3_KEY = 'f00dfeedf00dfeedf00dfeedf00dfeed';
 const TMDB_V4_TOKEN = 'eyJhbGciOiJIUzI1NiJ9.eyJhdWQiOiJzeW50aGV0aWMiLCJzdWIiOiJ0ZXN0In0.c3ludGhldGljLXNpZ25hdHVyZQ';
+
+describe('JELLYFIN_UNTESTED_VERSION_OK', () => {
+  afterEach(restoreEnvironment);
+
+  it('is unset by default, and one exact version when set', () => {
+    assert.equal(load().jellyfinUntestedVersionOk, undefined);
+    assert.equal(load({ JELLYFIN_UNTESTED_VERSION_OK: ' ' }).jellyfinUntestedVersionOk, undefined);
+    assert.equal(load({ JELLYFIN_UNTESTED_VERSION_OK: ' 13.0.0 ' }).jellyfinUntestedVersionOk, '13.0.0');
+    for (const value of ['13.0.0, 13.1.0', '13.*', '13.0.0 13.1.0', '../13']) {
+      assert.throws(() => load({ JELLYFIN_UNTESTED_VERSION_OK: value }), /JELLYFIN_UNTESTED_VERSION_OK must be one exact Jellyfin version/, value);
+    }
+  });
+});
 
 describe('TMDB configuration', () => {
   afterEach(restoreEnvironment);

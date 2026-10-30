@@ -43,7 +43,7 @@ const config: ExpoConfig = {
   // Store validation needs all four on iPad for multitasking).
   orientation: 'default',
   icon: './assets/icon.png',
-  // The setup links a household hands out, `jellypass://connect?address=https://jelly-<household>.<domain>`: they only
+  // The setup links a household hands out, `jellypass://connect?address=https://media.example.com`: they only
   // offer the address, for the member to confirm (src/app/connect.tsx).
   scheme: 'jellypass',
   userInterfaceStyle: 'dark',

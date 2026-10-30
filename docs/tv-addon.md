@@ -79,8 +79,15 @@ flowchart LR
 
 ### Tested against
 
-- **The gateway's injection:** the Jellyfin web page that **Jellyfin 10.11.3** serves (`jellyfin/jellyfin:10.11.3`, the
-  CI image; `test/real-jellyfin.test.mjs`), as `/web/` and `/web/index.html`, with and without compression asked for.
+The add-on is matched to the Jellyfin releases JellyPass supports (README, "Supported Jellyfin versions"): Jellyfin
+web **12.x** and **10.11.x**. It runs inside Jellyfin web's own page and relies on its markup, so it is checked against
+those releases only. On any other Jellyfin version, household hosts (and with them the add-on) are paused until an
+administrator confirms that exact version; once confirmed, the add-on is served unchanged, untested against that
+version's page.
+
+- **The gateway's injection:** the Jellyfin web page that each CI image serves (`jellyfin/jellyfin:12.4.20261026-211555`
+  and `jellyfin/jellyfin:10.11.11`, pinned in `scripts/jellyfin-versions.json`; `test/real-jellyfin.test.mjs`), as
+  `/web/` and `/web/index.html`, with and without compression asked for.
   Also a simulated page with every header and answer case (`test/tv-addon.test.mjs`).
 - **The add-on's use of Jellyfin web:** checked by reading **Jellyfin web 10.11.11**'s built bundle (the one
   jellyfin-tizen 10.11 builds and JellyQuest used: `35c0793`). It covers the Home template, the Home tab's section

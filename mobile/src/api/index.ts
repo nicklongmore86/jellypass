@@ -1,4 +1,4 @@
-export { parseHouseholdAddress, type HouseholdAddress } from './address';
+export { parseHouseholdAddress, readHouseholdAddress, type AddressProblem, type AddressReading, type HouseholdAddress } from './address';
 export { signInAuthorization, tokenAuthorization, type ClientIdentity } from './auth';
 export {
   API_PREFIX,

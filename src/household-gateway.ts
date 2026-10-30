@@ -1243,6 +1243,13 @@ export class HouseholdGateway {
     return this.#userFor(this.#credentials(request, requestUrl));
   }
 
+  /**
+   * The request's own credentials, exactly as the client gave them, legacy forms included (X-Emby-Token,
+   * X-Emby-Authorization, X-MediaBrowser-Token, the Emby scheme, api_key). They are never rewritten into another form:
+   * Jellyfin 12 disabled the legacy ones, and translating them would turn them back on. So Jellyfin itself decides, on
+   * every version, whether they are valid and which one it reads first, for the check as for the relayed request; on
+   * Jellyfin 12 a legacy-only request is refused (fixed 401), as Jellyfin refuses it.
+   */
   #credentials(request: IncomingMessage, requestUrl: URL): JellyfinCredentials {
     const headers = new Headers({ Accept: 'application/json' });
     for (const name of ['authorization', 'x-emby-authorization', 'x-emby-token', 'x-mediabrowser-token']) {

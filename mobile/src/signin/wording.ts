@@ -1,6 +1,7 @@
 // The sign-in screens' fixed text. Failures use the PWA's wording (app/src/render.ts, SIGNIN_ERROR_TEXT and
 // SIGNIN_NAME_TEXT): none of it says whether a name exists, and no answer's body, status or upstream message is shown.
 
+import type { AddressProblem } from '../api/address';
 import type { SignInErrorKind } from './signin-api';
 
 export const SIGNIN_ERROR_TEXT: Record<SignInErrorKind, string> = {
@@ -20,10 +21,11 @@ export const SIGNIN_NAME_TEXT = {
 } as const;
 
 export const ADDRESS_TEXT = {
+  /** The address screen's help, under its heading. No address is ever suggested but the neutral example. */
+  intro: "Enter the address your household's administrator gave you, for example https://media.example.com, or open the setup link they sent you.",
   /** What the app is, for a reviewer or anyone who installed it without a household. */
   about: 'JellyPass is a companion app for a JellyPass household server. You get the address from whoever runs your Jellyfin.',
   learnMore: 'What is JellyPass?',
-  invalid: "That isn't a JellyPass household address. Check the one your household gave you, then try again.",
   badLink: "That link doesn't have a JellyPass household address in it.",
 } as const;
 
@@ -34,6 +36,18 @@ export const STALLED_TEXT = {
   not_found: "There's no JellyPass household at this address any more.",
   unavailable: "Can't reach your household right now. Try again in a moment.",
 } as const;
+
+/** Why a typed address was refused (readHouseholdAddress's AddressProblem). */
+export const ADDRESS_PROBLEM_TEXT: Record<AddressProblem, string> = {
+  invalid:
+    "That isn't a household address. Enter the address your household's administrator gave you, for example https://media.example.com.",
+  http: 'JellyPass only connects over HTTPS. Enter the https:// address your household\'s administrator gave you.',
+  local:
+    "JellyPass can't connect to an IP address or a .local name. Enter the address your household's administrator gave you, for example https://media.example.com.",
+  unicode:
+    "JellyPass can't use this address as typed. Ask your household's administrator for its plain form, which starts with xn--.",
+  extra: 'Enter only the address, with nothing before or after it, for example https://media.example.com.',
+};
 
 export type StalledKind = keyof typeof STALLED_TEXT;
 

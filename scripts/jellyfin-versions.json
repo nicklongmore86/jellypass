@@ -1,0 +1,4 @@
+[
+  { "image": "jellyfin/jellyfin:12.4.20261026-211555", "version": "12.4.0" },
+  { "image": "jellyfin/jellyfin:10.11.11", "version": "10.11.11" }
+]

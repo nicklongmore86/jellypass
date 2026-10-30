@@ -1,5 +1,5 @@
 // The household app API client: every call is an absolute URL on the one household address it was made for
-// (`https://jelly-<household>.<domain>/jellypass/app/v1/...`), with the token as `Authorization: MediaBrowser
+// (`https://media.example.com/jellypass/app/v1/...`), with the token as `Authorization: MediaBrowser
 // Token="..."` and nothing else that identifies the caller. See docs/app-design.md, "Native clients (contract)".
 //
 // - One call per method, never a retry: the PWA retries nothing on its own (every retry is a member's tap), and a

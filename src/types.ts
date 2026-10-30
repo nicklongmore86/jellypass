@@ -167,6 +167,11 @@ export interface GrantState {
    */
   householdAddresses?: Record<string, HouseholdAddressEntry>;
   /**
+   * The exact untested Jellyfin version an administrator allowed household hosts to serve on (see JellyfinVersionGate).
+   * Additive: an earlier build keeps the field as it is without reading it.
+   */
+  jellyfinVersionConfirmed?: string;
+  /**
    * Requests an administrator revoked, by request ID, with the items they were revoked from. Moving a grant (recovery
    * or remap) never adds a request to an item it was revoked from, so a copy left on a stale grant cannot restore it.
    */
