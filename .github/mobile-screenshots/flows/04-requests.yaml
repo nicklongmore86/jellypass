@@ -1,0 +1,10 @@
+# Back to Home, then the demo member's own requests.
+appId: com.rtc-services.jellypass
+---
+- tapOn: "Back"
+- tapOn: "My requests"
+- extendedWaitUntil:
+    visible: "Requested.*"
+    timeout: 30000
+- waitForAnimationToEnd:
+    timeout: 10000

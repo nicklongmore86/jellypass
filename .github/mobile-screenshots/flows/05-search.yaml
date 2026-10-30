@@ -1,0 +1,13 @@
+# Search for a film the demo household has: Big Buck Bunny shows as In library.
+appId: com.rtc-services.jellypass
+---
+- tapOn: "Search"
+- tapOn:
+    id: "search-field"
+- inputText: "Big Buck Bunny"
+- hideKeyboard
+- extendedWaitUntil:
+    visible: "Big Buck Bunny.*Ready to watch"
+    timeout: 30000
+- waitForAnimationToEnd:
+    timeout: 10000

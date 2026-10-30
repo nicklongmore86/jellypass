@@ -1,0 +1,9 @@
+# Big Buck Bunny's title page, from its search result: the household has it, so it shows In library and Play.
+appId: com.rtc-services.jellypass
+---
+- tapOn: "Big Buck Bunny.*Ready to watch"
+- extendedWaitUntil:
+    visible: "Back"
+    timeout: 30000
+- waitForAnimationToEnd:
+    timeout: 10000

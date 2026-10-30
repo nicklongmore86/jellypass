@@ -1,0 +1,9 @@
+# Trending's full grid, from the link beside its heading on Home.
+appId: com.rtc-services.jellypass
+---
+- tapOn: "See all Trending"
+- extendedWaitUntil:
+    visible: "Back"
+    timeout: 30000
+- waitForAnimationToEnd:
+    timeout: 10000

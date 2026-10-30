@@ -1,0 +1,13 @@
+# Continue to the demo's profile picker, sign in as the passwordless demo-family member, and wait for Home's rows.
+appId: com.rtc-services.jellypass
+---
+- tapOn: "Continue"
+- extendedWaitUntil:
+    visible: "demo-family"
+    timeout: 60000
+- tapOn: "demo-family"
+- extendedWaitUntil:
+    visible: "See all Trending"
+    timeout: 60000
+- waitForAnimationToEnd:
+    timeout: 10000
