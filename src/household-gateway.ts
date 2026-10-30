@@ -1483,8 +1483,7 @@ export class HouseholdGateway {
               return resolve();
             }
             const encoded = Buffer.from(JSON.stringify(transformed));
-            const answerHeaders = sanitizedHeaders(upstreamResponse.headers, encoded.length);
-            response.writeHead(200, answerHeaders);
+            response.writeHead(200, sanitizedHeaders(upstreamResponse.headers, encoded.length));
             response.end(encoded);
           } catch {
             writeJson(response, 502, { error: invalidResponseCode });

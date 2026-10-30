@@ -59,6 +59,22 @@ upgrading:
   WebSocket upgrades whose raw or once-decoded path contains `//` receive a
   fixed `404 not_found` before any relay. This is precautionary hardening;
   no disclosure was observed on real Jellyfin or production.
+- **A request must name exactly one host.** Until now, a request with two
+  `Host` headers was answered for the first of them, so a client reaching the
+  JellyPass port directly could have it read a different host from a proxy
+  that routed on another one: another household's hostname, or the admin
+  site, API and webhook. JellyPass now refuses, with a fixed
+  `400 {"error":"invalid_host"}` and the connection closed, before a household
+  is chosen or anything is relayed: more or fewer than one `Host` header, a
+  `Host` that is not a plain `host[:port]` (userinfo, whitespace, a path or
+  other characters, or empty), and an absolute-form request target
+  (`GET http://host/path`) whose authority is not the `Host`. WebSocket
+  upgrades get the same `400`, and the connection is closed on JellyPass's
+  side even if the client keeps its own side open. A reverse proxy that sets one `Host` (Nginx
+  Proxy Manager's `proxy_set_header Host $host`, for example) is unaffected.
+  An HTTP/1.0 request may still leave `Host` out: with an ordinary path it is
+  answered as no household's, as before; with an absolute-form target it is
+  refused.
 
 ### Added
 

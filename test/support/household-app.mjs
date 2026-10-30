@@ -1016,6 +1016,8 @@ export async function startApp(t, state = world(), options = {}) {
   return {
     server,
     port,
+    /** The JellyPass server, to watch its own end of a connection. */
+    server,
     seerr,
     tmdb,
     jellyfin,
