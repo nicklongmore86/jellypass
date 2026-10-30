@@ -149,6 +149,9 @@ export function makeServer(
         await householdGateway?.handle(request, response, householdId);
         return;
       }
+      // The URL parser reads a target that starts with two slashes or backslashes (`//`, `/\evil.example`) as a host, not
+      // a path. It names no admin route, so it is refused as a household host refuses it, never parsed.
+      if (/^[/\\]{2}/.test(request.url ?? '/')) return json(response, 404, { error: 'not_found' });
       const url = new URL(request.url ?? '/', 'http://localhost');
       const segments = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
       // Cross-site request forgery: a state-changing request a browser sends with the session cookie must come from the

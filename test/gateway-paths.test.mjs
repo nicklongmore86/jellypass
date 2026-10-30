@@ -51,6 +51,18 @@ const repeatedSlashes = (path) => {
 const forwarded = (app) => app.jellyfin.requests.filter((request) =>
   !['/Users', '/Users/Me'].includes(request.pathname) && !/^\/Users\/[0-9a-f]{32}\/Items\/[0-9a-f]{32}$/.test(request.pathname));
 
+/** Writes `head` to a raw socket and resolves with everything the server sent before closing it. */
+const rawRequest = (t, port, head) => new Promise((resolve, reject) => {
+  const socket = connect({ port, host: '127.0.0.1' });
+  t.after(() => socket.destroy());
+  const timer = setTimeout(() => { socket.destroy(); reject(new Error('no answer')); }, 2_000);
+  let text = '';
+  socket.on('data', (chunk) => { text += chunk.toString(); });
+  socket.once('error', reject);
+  socket.once('close', () => { clearTimeout(timer); resolve(text); });
+  socket.once('connect', () => socket.write(head));
+});
+
 describe('household paths with empty segments', () => {
   for (const path of ['//', '////', '//?value=x', '//Users/Public', '//x/Users/Public', '///Users/Public', '/Users//Public', '/%2F/Users/Public', '/emby//Users/Public', '/Users/Public//', '/Users/%2fPublic', '/%2f%2FUsers/Public']) {
     it(`refuses ${path} before any upstream request`, async (t) => {
@@ -58,6 +70,22 @@ describe('household paths with empty segments', () => {
       const before = app.jellyfin.requests.length;
       const answer = await get(app.port, path, { Host: HOST_A });
       assert.deepEqual([answer.status, answer.text], [404, '{"error":"not_found"}']);
+      assert.equal(app.jellyfin.requests.length, before);
+    });
+  }
+
+  // HTTP clients turn a backslash into a slash before sending, so these go over a raw socket. The URL parser reads `\`
+  // as `/`: `/\` is `//` (which it cannot parse) and `/\evil.example` names a host.
+  const BACKSLASHED = ['/\\', '/\\/', '//\\', '/\\?value=x', '/\\evil.example', '/\\evil.example/Users/Public', '/Users/\\/Public', '/%5C', '/%5cevil.example/Users/Public', '/Users/%5C/Public', '/%5C%2FUsers/Public'];
+  for (const upgrade of [false, true]) {
+    it(`refuses backslash spellings of // ${upgrade ? 'in a WebSocket upgrade' : 'over HTTP'} before any upstream request`, async (t) => {
+      const app = await startApp(t);
+      const before = app.jellyfin.requests.length;
+      for (const target of BACKSLASHED) {
+        const answer = await rawRequest(t, app.port, `GET ${target} HTTP/1.1\r\nHost: ${HOST_A}\r\n${upgrade ? 'Connection: Upgrade\r\nUpgrade: websocket\r\n' : 'Connection: close\r\n'}\r\n`);
+        assert.match(answer, /^HTTP\/1.1 404 Not Found\r\n/, target);
+        assert.equal(answer.split('\r\n\r\n')[1], '{"error":"not_found"}', target);
+      }
       assert.equal(app.jellyfin.requests.length, before);
     });
   }

@@ -51,6 +51,8 @@ Refused availability webhooks are not retried; missed titles rely on the request
 - Household gateway routes now deny by default: explicit Jellyfin 10.11.11/12.4 OpenAPI templates, legacy client routes and vetted plugin compatibility entries replace open-ended relay. Unknown plugin namespaces return fixed JSON 404 over HTTP and WebSocket; only the session socket can upgrade. Existing refusals and household scope checks remain. Jellyfin Enhanced public-config is preserved byte-identically.
 - Additional plugin endpoints require deliberate exact-path `HOUSEHOLD_PLUGIN_ROUTES` configuration and a privacy audit; see "Deployment self-check and plugin routes" in docs/server-reference.md. Previously unrecognised paths (including inactive TV and removed bridge paths) no longer relay.
 
+- Household hosts read a backslash (`\` or `%5C`) as a slash when refusing paths with empty segments, so `/\` and `/\evil.example` get `404 not_found` as `//` does, instead of `502 Invalid URL`. The admin host refuses a path starting with two slashes or backslashes (`//`, `/\`, `/\evil.example`) with the same `404`; it answered `502 Invalid URL` or read the rest as a host name. Neither reaches Jellyfin.
+
 ### Added
 
 - Authenticated admin deployment self-check for direct Jellyfin origins, Quick Connect, household proxy headers, public Seerr, version-gate support, and TMDB key validity. Public probes carry no service credentials, use timeouts and bounded reads, never follow redirects, and run at most once per minute. Inside probes explicitly warn about external-reachability limits.

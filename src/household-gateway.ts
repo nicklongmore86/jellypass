@@ -1767,7 +1767,9 @@ function hasEmptyPathSegment(target: string): boolean {
   const path = target.split('?', 1)[0] as string;
   // Only %2F can introduce a slash in one percent-decode. Checking it directly also
   // catches empty segments alongside malformed escapes, which routing refuses separately.
-  return path.includes('//') || path.replace(/%2f/gi, '/').includes('//');
+  // The URL parser reads a backslash as a slash (`/\` is `//`, which it cannot parse), so a
+  // backslash, raw or encoded once, counts as one here too.
+  return path.replace(/%2f|%5c|\\/gi, '/').includes('//');
 }
 
 /**

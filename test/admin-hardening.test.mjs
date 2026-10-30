@@ -320,6 +320,18 @@ describe('admin surface hardening', { timeout: 20_000 }, () => {
     assert.equal((await send(port, '/v1/groups', { authorization: 'Bearer admin-secret' })).body, groupsBefore);
   });
 
+  it('refuses a target the URL parser reads as a host (//, /\\) on admin and household hosts, without parsing it', async () => {
+    const requestsBefore = jellyfin.requestedPaths.length;
+    // Raw requests: HTTP clients turn a backslash into a slash before sending.
+    for (const host of ['media.example.com', 'jelly-grove.example.test']) {
+      for (const target of ['//', '/\\', '/\\/', '//\\', '/\\?x=1', '/\\evil.example', '/\\evil.example/v1/groups', '//evil.example/v1/groups']) {
+        const answer = await sendHeadersOnly(port, `GET ${target} HTTP/1.1\r\nHost: ${host}\r\nAuthorization: Bearer admin-secret\r\n\r\n`);
+        assert.deepEqual([answer.status, answer.body], [404, '{"error":"not_found"}'], `${host} ${target}`);
+      }
+    }
+    assert.equal(jellyfin.requestedPaths.length, requestsBefore, 'no Jellyfin call was made');
+  });
+
   it('refuses the removed add page and assets on admin and household hosts', async () => {
     const requestsBefore = jellyfin.requestedPaths.length;
     for (const host of ['media.example.com', 'jelly-grove.example.test']) {
