@@ -28,15 +28,15 @@ const SHAPES = {
     ['line', { x1: '15.8', y1: '7.7', x2: '18.4', y2: '10.3' }],
     ['line', { x1: '13.2', y1: '10.3', x2: '15.2', y2: '12.3' }],
   ],
-  back: [['path', { d: 'M14.5 5.5 8 12l6.5 6.5' }]],
-  check: [['path', { d: 'M5.5 12.5 10 17l8.5-9.5' }]],
-  prev: [['path', { d: 'M14.5 5.5 8 12l6.5 6.5' }]],
-  next: [['path', { d: 'M9.5 5.5 16 12l-6.5 6.5' }]],
   more: [
     ['circle', { cx: '6', cy: '12', r: '1.4' }],
     ['circle', { cx: '12', cy: '12', r: '1.4' }],
     ['circle', { cx: '18', cy: '12', r: '1.4' }],
   ],
+  back: [['path', { d: 'M14.5 5.5 8 12l6.5 6.5' }]],
+  check: [['path', { d: 'M5.5 12.5 10 17l8.5-9.5' }]],
+  prev: [['path', { d: 'M14.5 5.5 8 12l6.5 6.5' }]],
+  next: [['path', { d: 'M9.5 5.5 16 12l-6.5 6.5' }]],
 } as const satisfies Record<string, readonly Shape[]>;
 
 export type IconName = keyof typeof SHAPES;
