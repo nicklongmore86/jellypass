@@ -283,6 +283,10 @@ export class HouseholdGateway {
   }
 
   public async handle(request: IncomingMessage, response: ServerResponse, householdId: string): Promise<void> {
+    if (hasEmptyPathSegment(request.url ?? '/')) {
+      writeJson(response, 404, { error: 'not_found' }, NEVER_STORE);
+      return;
+    }
     const requestUrl = new URL(request.url ?? '/', 'http://localhost');
     // Every decision below is made on the route Jellyfin takes the path to, never on the path as spelled.
     const route = jellyfinRoute(request.url ?? '/');
@@ -339,6 +343,25 @@ export class HouseholdGateway {
         return;
       case 'publicUsers':
         await this.#proxyPublicUsers(request, response, memberIds);
+        return;
+      case 'webConfig':
+        // Jellyfin web appends `/System/Info/Public` and API paths to configured server URLs.
+        // Remove trailing separators here so a legitimate client never generates an empty segment.
+        await this.#proxyJson(request, response, 'invalid_web_config', (value) => {
+          if (!value || typeof value !== 'object' || Array.isArray(value)) return value;
+          const config = value as Record<string, unknown>;
+          if (!Array.isArray(config.servers)) return value;
+          return { ...config, servers: config.servers.map((server: unknown) => {
+            if (typeof server !== 'string') return server;
+            try {
+              const url = new URL(server);
+              return !url.search && !url.hash && (url.protocol === 'http:' || url.protocol === 'https:')
+                ? server.replace(/\/+$/, '') : server;
+            } catch {
+              return server;
+            }
+          }) };
+        }, { unconditional: true });
         return;
       case 'branding':
         await this.#proxyBrandingConfiguration(request, response);
@@ -431,6 +454,7 @@ export class HouseholdGateway {
     if (isAppRoute(route)) return { kind: 'app' };
     if (tv && (route === TV_PATH || route.startsWith(`${TV_PATH}/`))) return { kind: 'tvAsset' };
     if (tv && (method === 'GET' || method === 'HEAD') && WEB_PAGE_ROUTES.has(route)) return { kind: 'webPage' };
+    if (method === 'GET' && route === '/web/config.json') return { kind: 'webConfig' };
     if (method === 'GET' && route === PUBLIC_USERS_PATH) return { kind: 'publicUsers' };
     if (method === 'GET' && route === BRANDING_CONFIGURATION_PATH) return { kind: 'branding' };
     if (method === 'GET' && route === QUICK_CONNECT_ENABLED_PATH) return { kind: 'quickConnectEnabled' };
@@ -464,6 +488,16 @@ export class HouseholdGateway {
       exchange.error('client', 'websocket client socket', error);
       socket.destroy();
     });
+    if (hasEmptyPathSegment(request.url ?? '/')) {
+      const body = JSON.stringify({ error: 'not_found' });
+      // A peer may keep its writable half open forever. Flush the answer, then close both halves;
+      // the timer also closes a socket whose peer never drains the write.
+      const timer = setTimeout(() => socket.destroy(), 1_000);
+      timer.unref();
+      socket.once('close', () => clearTimeout(timer));
+      socket.write(`HTTP/1.1 404 Not Found\r\n${neverStoreHeaders()}Content-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`, () => socket.destroy());
+      return;
+    }
     if (this.#closing) {
       socket.end(`HTTP/1.1 503 Service Unavailable\r\n${neverStoreHeaders()}Connection: close\r\n\r\n`);
       return;
@@ -1422,10 +1456,14 @@ export class HouseholdGateway {
     response: ServerResponse,
     invalidResponseCode: string,
     transform: (value: unknown) => unknown | typeof REFUSED,
-    options: { failClosed?: boolean } = {},
+    options: { failClosed?: boolean; unconditional?: boolean } = {},
   ): Promise<void> {
     await new Promise<void>((resolve) => {
       const headers: IncomingHttpHeaders = { ...request.headers, 'accept-encoding': 'identity' };
+      if (options.unconditional) {
+        for (const name of WEB_PAGE_DROPPED_REQUEST_HEADERS) delete headers[name];
+        headers['accept-encoding'] = 'identity';
+      }
       const exchange = this.#exchange();
       const upstream = this.#transport().request(this.#requestOptions(request, headers), (upstreamResponse) => {
         const chunks: Buffer[] = [];
@@ -1469,7 +1507,11 @@ export class HouseholdGateway {
               return resolve();
             }
             const encoded = Buffer.from(JSON.stringify(transformed));
-            response.writeHead(200, sanitizedHeaders(upstreamResponse.headers, encoded.length));
+            const answerHeaders = sanitizedHeaders(upstreamResponse.headers, encoded.length);
+            if (options.unconditional) {
+              for (const name of ['etag', 'last-modified', 'accept-ranges', 'content-md5', 'digest']) delete answerHeaders[name];
+            }
+            response.writeHead(200, answerHeaders);
             response.end(encoded);
           } catch {
             writeJson(response, 502, { error: invalidResponseCode });
@@ -1789,7 +1831,7 @@ function isServerInternalStreamRoute(route: string): boolean {
 
 /** What a household host does with a request; see HouseholdGateway.#decide. */
 type RouteDecision =
-  | { kind: 'app' | 'publicUsers' | 'branding' | 'quickConnectEnabled' | 'quickConnect' | 'streamyfin' | 'jellyfinEnhanced' | 'forgotPassword' }
+  | { kind: 'app' | 'publicUsers' | 'webConfig' | 'branding' | 'quickConnectEnabled' | 'quickConnect' | 'streamyfin' | 'jellyfinEnhanced' | 'forgotPassword' }
   | { kind: 'signOut' | 'signIn' | 'signInById' | 'libraryJoin' | 'notFound' | 'proxy' | 'tvAsset' | 'webPage' }
   | { kind: 'libraryJoinAsset'; asset: { body: string; contentType: string } }
   | { kind: 'userImage'; userIds: string[] }
@@ -1805,7 +1847,7 @@ type RouteDecision =
  * or a user, whose own check refuses a non-member with its fixed 404; and sign-out, which checks its token itself (see
  * HouseholdGateway.#proxySignOut) so that a sign-out Jellyfin cannot be asked about is still forgotten.
  */
-const TOKEN_CHECKED_KINDS = new Set<RouteDecision['kind']>(['proxy', 'userImage', 'webPage', 'userList', 'syncPlayJoin']);
+const TOKEN_CHECKED_KINDS = new Set<RouteDecision['kind']>(['proxy', 'userImage', 'webPage', 'webConfig', 'userList', 'syncPlayJoin']);
 
 /** Jellyfin's route for joining a SyncPlay group; see HouseholdGateway.#proxySyncPlayJoin. */
 const SYNCPLAY_JOIN_ROUTE = '/syncplay/join';
@@ -1880,6 +1922,13 @@ function carriesToken(credentials: JellyfinCredentials): boolean {
 }
 
 const LEGACY_PREFIXES = new Set(['emby', 'mediabrowser']);
+
+function hasEmptyPathSegment(target: string): boolean {
+  const path = target.split('?', 1)[0] as string;
+  // Only %2F can introduce a slash in one percent-decode. Checking it directly also
+  // catches empty segments alongside malformed escapes, which routing refuses separately.
+  return path.includes('//') || path.replace(/%2f/gi, '/').includes('//');
+}
 
 /**
  * The route Jellyfin 10.11 takes a request target to, which every decision a household host makes about a path is made

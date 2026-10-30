@@ -40,18 +40,77 @@ const routed = (path) => {
   ];
 };
 /**
- * Spellings the gateway checks too though Jellyfin does not route them (repeated slashes): refused as the plain path
- * is when that is the check's answer, and otherwise sent to Jellyfin as spelled, for Jellyfin's own answer.
+ * Repeated-slash spellings are now refused before endpoint-specific checks or relay.
  */
 const unrouted = (path) => {
   const [, first, rest] = /^\/([^/]+)\/(.+)$/.exec(path);
   return [`//${first}//${rest}/`, `/emby//${first}/${rest}`, `${path}//`];
 };
-const spellings = (path) => [...routed(path), ...unrouted(path)];
+const spellings = routed;
 
 /** Requests that reached the fake Jellyfin at anything but the gateway's own reads (its user list, /Users/Me, items). */
 const forwarded = (app) => app.jellyfin.requests.filter((request) =>
   !['/Users', '/Users/Me'].includes(request.pathname) && !/^\/Users\/[0-9a-f]{32}\/Items\/[0-9a-f]{32}$/.test(request.pathname));
+
+describe('household paths with empty segments', () => {
+  for (const path of ['//', '////', '//?value=x', '//Users/Public', '//x/Users/Public', '///Users/Public', '/Users//Public', '/%2F/Users/Public', '/emby//Users/Public', '/Users/Public//', '/Users/%2fPublic', '/%2f%2FUsers/Public']) {
+    it(`refuses ${path} before any upstream request`, async (t) => {
+      const app = await startApp(t);
+      const before = app.jellyfin.requests.length;
+      const answer = await get(app.port, path, { Host: HOST_A });
+      assert.deepEqual([answer.status, answer.text], [404, '{"error":"not_found"}']);
+      assert.equal(app.jellyfin.requests.length, before);
+    });
+  }
+
+  it('normalises configured jellyfin-web server bases before the client appends paths', async (t) => {
+    const state = world();
+    state.webConfig = { servers: ['https://jelly.example.test/', 'https://jelly.example.test/emby///', 'https://other.example.test', null, 'invalid/'], theme: 'dark' };
+    const app = await startApp(t, state);
+    const answer = await get(app.port, '/web/config.json', { Host: HOST_A, 'If-None-Match': '"old-config"', Range: 'bytes=0-20' });
+    const upstream = app.jellyfin.requests.find((request) => request.pathname === '/web/config.json');
+    assert.equal(upstream.headers['if-none-match'], undefined);
+    assert.equal(upstream.headers.range, undefined);
+    assert.equal(answer.headers['cache-control'], 'no-store');
+    assert.equal(answer.status, 200);
+    assert.deepEqual(answer.json(), { servers: ['https://jelly.example.test', 'https://jelly.example.test/emby', 'https://other.example.test', null, 'invalid/'], theme: 'dark' });
+    for (const server of answer.json().servers.slice(0, 3)) {
+      // The exact join used by jellyfin-web's initial server discovery.
+      assert.ok(!new URL(`${server}/System/Info/Public`).pathname.includes('//'));
+    }
+  });
+
+  it('allows a trailing slash and duplicate slashes in the query', async (t) => {
+    const app = await startApp(t);
+    const answer = await get(app.port, '/Users/Public/?value=//', { Host: HOST_A });
+    assert.equal(answer.status, 200);
+    assert.deepEqual(answer.json().map((user) => user.Name), ['Alice', 'Ann']);
+  });
+
+  it('closes a refused upgrade even when the client keeps its writable half open', async (t) => {
+    const app = await startApp(t);
+    const before = app.jellyfin.requests.length;
+    const serverClosed = new Promise((resolve) => app.server.once('connection', (socket) => socket.once('close', resolve)));
+    const answer = await new Promise((resolve, reject) => {
+      const socket = connect({ port: app.port, host: '127.0.0.1', allowHalfOpen: true });
+      t.after(() => socket.destroy());
+      const timer = setTimeout(() => { socket.destroy(); reject(new Error('upgrade socket lingered')); }, 2_000);
+      let text = '';
+      socket.on('data', (chunk) => { text += chunk.toString(); });
+      socket.once('error', reject);
+      socket.once('end', () => { clearTimeout(timer); resolve(text); });
+      socket.once('connect', () => socket.write(`GET //socket HTTP/1.1\r\nHost: ${HOST_A}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n`));
+    });
+    await Promise.race([serverClosed, new Promise((_, reject) => {
+      const timer = setTimeout(() => reject(new Error('server kept upgrade socket open')), 2_000);
+      timer.unref();
+      serverClosed.then(() => clearTimeout(timer));
+    })]);
+    assert.match(answer, /^HTTP\/1.1 404 Not Found\r\n/);
+    assert.equal(answer.split('\r\n\r\n')[1], '{"error":"not_found"}');
+    assert.equal(app.jellyfin.requests.length, before);
+  });
+});
 
 describe('household host checks in every spelling Jellyfin routes', { timeout: 60_000 }, () => {
   it('refuses a non-member\'s sign-in by name in every spelling with the fixed answer, without asking Jellyfin to sign in', async (t) => {
@@ -125,7 +184,7 @@ describe('household host checks in every spelling Jellyfin routes', { timeout: 6
     }
     for (const path of unrouted('/Users/Public')) {
       const answer = await get(app.port, path, { Host: HOST_A });
-      assert.ok(!answer.text.includes('Outsider'), path);
+      assert.deepEqual([answer.status, answer.text], [404, '{"error":"not_found"}'], path);
     }
   });
 
