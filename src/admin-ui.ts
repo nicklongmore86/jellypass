@@ -41,6 +41,8 @@ export const ADMIN_HTML = `<!doctype html>
         <div><div id="hero-eyebrow" class="eyebrow">Jellyfin access</div><h1 id="hero-title">JellyPass dashboard</h1><p id="hero-subtitle" class="subtitle">Monitor library access, audiences, and synchronization health.</p></div>
       </div>
 
+      <div id="jellyfin-version" class="version-alert" role="alert" hidden><div><strong id="jellyfin-version-title"></strong><p id="jellyfin-version-text"></p></div><button id="jellyfin-version-confirm" class="button primary compact" type="button" hidden></button></div>
+
       <nav class="tabs" aria-label="Admin sections"><button class="active" data-tab="dashboard">Dashboard</button><button data-tab="requests">Requests <span id="requests-count"></span></button><button data-tab="library">Library <span id="library-count"></span></button><button data-tab="grants">Grants <span id="grant-count"></span></button><button data-tab="groups">Groups <span id="group-count"></span></button></nav>
       <section id="dashboard-panel" class="tab-panel">
         <div class="section-tools"><div><h2>Access overview</h2><p>A compact view of JellyPass activity and policy health.</p></div></div>
@@ -119,13 +121,14 @@ body{background:radial-gradient(circle at 14% 4%,rgba(170,92,195,.2) 0,transpare
 .requests-toolbar{display:grid;grid-template-columns:minmax(240px,1fr) repeat(3,minmax(150px,auto));gap:10px;margin-bottom:10px}.requests-toolbar .search input{width:100%}.requests-toolbar select{color:var(--text);background:#080e17;border:1px solid var(--line);border-radius:10px;padding:11px 13px;outline:none}.requests-summary{color:var(--muted);font-size:12px;margin:0 0 10px}.request-rows{display:grid;gap:8px}.request-row{display:grid;grid-template-columns:minmax(220px,1.4fr) minmax(170px,1fr) minmax(150px,.8fr) auto;gap:16px;align-items:center;padding:13px 15px;background:linear-gradient(145deg,rgba(16,29,56,.86),rgba(6,14,33,.9));border:1px solid var(--line);border-radius:12px}.request-row h3{font-size:15px;margin:0 0 3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.request-row .meta{display:block}.request-row .pill.status-requested,.request-row .pill.seerr-pending,.request-row .pill.seerr-approved{color:#ffe0a7;background:rgba(246,185,77,.1)}.request-row .pill.status-ready,.request-row .pill.seerr-completed{color:#a9f0d0;background:rgba(69,214,154,.1)}.request-row .pill.status-failed,.request-row .pill.status-declined,.request-row .pill.seerr-declined,.request-row .pill.seerr-failed,.request-row .pill.held{color:#ffc0c5;background:rgba(255,109,118,.1)}.request-row .card-actions{flex-wrap:wrap}.request-rows>.empty{padding:32px}
 @media(max-width:900px){.requests-toolbar{grid-template-columns:1fr 1fr}.request-row{grid-template-columns:1fr 1fr}.request-row .card-actions{grid-column:1/-1;justify-content:flex-start}}
 @media(max-width:620px){.requests-toolbar,.request-row{grid-template-columns:1fr}}
+.version-alert{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:0 0 18px;padding:13px 16px;border:1px solid rgba(255,109,118,.5);border-radius:11px;background:rgba(255,109,118,.09);color:#ffc7cb;font-size:13px}.version-alert strong{display:block;color:#ffdfe1;margin-bottom:3px}.version-alert p{margin:0}.version-alert.confirmed{border-color:rgba(246,185,77,.45);background:rgba(246,185,77,.09);color:#ffe0a7}.version-alert.confirmed strong{color:#ffe9c2}
 .notice{margin:0 0 18px;padding:11px 15px;border:1px solid rgba(246,185,77,.45);border-radius:10px;background:rgba(246,185,77,.09);color:#ffe0a7;font-size:13px}
 `;
 
 export const ADMIN_APP_JS = `
 (() => {
   'use strict';
-  const state = { grants: [], groups: [], users: [], seerrImportAvailable: false, catalog: [], catalogSyncedAt: null, recentRequests: [], recentRequestsUnavailable: false, selectedItems: new Set(), catalogPage: 1, catalogPageSize: 25, activeTab: 'dashboard', appRequests: [], heldTitles: [], requestsLoaded: false, requestsUnavailable: '', pendingAction: null, pendingRelease: null };
+  const state = { jellyfinVersion: null, grants: [], groups: [], users: [], seerrImportAvailable: false, catalog: [], catalogSyncedAt: null, recentRequests: [], recentRequestsUnavailable: false, selectedItems: new Set(), catalogPage: 1, catalogPageSize: 25, activeTab: 'dashboard', appRequests: [], heldTitles: [], requestsLoaded: false, requestsUnavailable: '', pendingAction: null, pendingRelease: null };
   const byId = (id) => document.getElementById(id);
   const loginView = byId('login-view');
   const appView = byId('app-view');
@@ -154,6 +157,9 @@ export const ADMIN_APP_JS = `
     request_gone: 'Seerr no longer has that request.',
     radarr_removal_not_offered: 'Removing from Radarr is not available for this title.',
     title_not_held: 'That title is no longer held. Change its access in Grants.',
+    jellyfin_version_changed: 'Jellyfin now reports another version. Check it again before allowing it.',
+    jellyfin_version_unknown: 'JellyPass cannot read the Jellyfin version yet. Try again in a moment.',
+    jellyfin_version_supported: 'This Jellyfin version is supported and needs no confirmation.',
   };
   // While Jellyfin cannot answer the server's session check, the server keeps the session and allows another check
   // 30 seconds later: the UI keeps its view and asks again, backing off to two minutes, never while the tab is hidden.
@@ -246,8 +252,14 @@ export const ADMIN_APP_JS = `
       if (error.stale || error.status === 401) throw error;
       return { requests: [], unavailable: true };
     });
-    const results = await Promise.all([api('/v1/grants'), api('/v1/groups'), api('/v1/users'), api('/v1/library'), recent]);
+    // The version check is optional too: a JellyPass without it answers 404, and the readout stays hidden.
+    const version = api('/v1/jellyfin/version').catch((error) => {
+      if (error.stale || error.status === 401) throw error;
+      return null;
+    });
+    const results = await Promise.all([api('/v1/grants'), api('/v1/groups'), api('/v1/users'), api('/v1/library'), recent, version]);
     assertSession(epoch);
+    state.jellyfinVersion = results[5];
     state.grants = results[0].grants;
     state.groups = results[1].groups;
     state.users = results[2].users;
@@ -277,6 +289,41 @@ export const ADMIN_APP_JS = `
     renderGroups();
     renderCatalog();
     renderRecentRequests();
+    renderJellyfinVersion();
+  }
+
+  // Shown only for a version outside the supported releases, or one that cannot be read: supported versions show nothing.
+  function renderJellyfinVersion() {
+    const status = state.jellyfinVersion;
+    const panel = byId('jellyfin-version');
+    const button = byId('jellyfin-version-confirm');
+    const releases = status ? status.supportedReleases.map((release) => release + '.x').join(' and ') : '';
+    panel.hidden = true;
+    button.hidden = true;
+    panel.classList.remove('confirmed');
+    if (!status || status.supported === true) return;
+    panel.hidden = false;
+    if (status.version === null) {
+      byId('jellyfin-version-title').textContent = 'Household hosts are paused: the Jellyfin version cannot be read';
+      byId('jellyfin-version-text').textContent = 'JellyPass checks the Jellyfin version before household hosts serve, and keeps trying. ' + (status.error ? 'Last error: ' + status.error : '');
+      return;
+    }
+    if (status.householdHosts === 'serving') {
+      panel.classList.add('confirmed');
+      byId('jellyfin-version-title').textContent = 'Jellyfin ' + status.version + ' is not a tested version';
+      byId('jellyfin-version-text').textContent = 'Household hosts serve on it because ' + (status.confirmedVersion === status.version ? 'an administrator allowed it' : 'JELLYFIN_UNTESTED_VERSION_OK names it') + '. JellyPass is tested with Jellyfin ' + releases + '.';
+      if (status.confirmedVersion === status.version) {
+        button.textContent = 'Withdraw';
+        button.dataset.action = 'withdraw';
+        button.hidden = false;
+      }
+      return;
+    }
+    byId('jellyfin-version-title').textContent = 'Household hosts are paused: Jellyfin ' + status.version + ' is not a tested version';
+    byId('jellyfin-version-text').textContent = 'JellyPass is tested with Jellyfin ' + releases + '. Household hosts answer 503 until you allow this exact version; the household privacy checks were not tested against it.';
+    button.textContent = 'Allow Jellyfin ' + status.version;
+    button.dataset.action = 'confirm';
+    button.hidden = false;
   }
 
   function renderRecentRequests() {
@@ -983,10 +1030,34 @@ export const ADMIN_APP_JS = `
       : attentionCount;
     const syncedAt = state.catalogSyncedAt ? Date.parse(state.catalogSyncedAt) : 0;
     const syncOverdue = !syncedAt || Date.now() - syncedAt > 2 * 60 * 60 * 1000;
-    if (attention) setHealth('warning', attention + ' polic' + (attention === 1 ? 'y' : 'ies') + ' need attention');
+    const version = state.jellyfinVersion;
+    if (version && version.householdHosts !== 'serving') setHealth('warning', 'Household hosts paused');
+    else if (attention) setHealth('warning', attention + ' polic' + (attention === 1 ? 'y' : 'ies') + ' need attention');
     else if (syncOverdue) setHealth('warning', syncedAt ? 'Library sync overdue' : 'Library sync required');
     else setHealth('healthy', 'Sync healthy');
   }
+
+  byId('jellyfin-version-confirm').addEventListener('click', async (event) => {
+    const button = event.currentTarget;
+    const status = state.jellyfinVersion;
+    if (!status) return;
+    const withdraw = button.dataset.action === 'withdraw';
+    if (!withdraw && !confirm('Allow household hosts to serve on Jellyfin ' + status.version + '? JellyPass has not been tested with it.')) return;
+    button.disabled = true;
+    try {
+      state.jellyfinVersion = withdraw
+        ? await api('/v1/jellyfin/version/confirmation', { method: 'DELETE' })
+        : await api('/v1/jellyfin/version/confirmation', { method: 'PUT', body: JSON.stringify({ version: status.version }) });
+      renderJellyfinVersion();
+      updateHealth();
+      toast(withdraw ? 'Household hosts are paused again for this version' : 'Household hosts serve on Jellyfin ' + status.version);
+    } catch (error) {
+      if (error.stale) return;
+      toast(error.message, true);
+    } finally {
+      button.disabled = false;
+    }
+  });
 
   byId('login-form').addEventListener('submit', async (event) => {
     event.preventDefault();

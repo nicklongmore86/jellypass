@@ -22,7 +22,7 @@ export function fixture(name: string): Json {
   return JSON.parse(readFileSync(path.join(__dirname, '..', 'fixtures', 'app-api', `${name}.json`), 'utf8')) as Json;
 }
 
-export const ORIGIN = 'https://jelly-household.example.test';
+export const ORIGIN = 'https://media.example.com';
 export const ADDRESS = parseHouseholdAddress(ORIGIN)!;
 export const TOKEN = 'synthetic-token-0123456789abcdef';
 export const API = `${ORIGIN}/jellypass/app/v1`;

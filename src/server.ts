@@ -4,12 +4,13 @@ import { ConflictError, UserProvisioningError, type AccessService } from './acce
 import { HouseholdApp, type HouseholdAppOptions } from './app-api.js';
 import { AdminActionLimitError, AdminSeerrError, type AdminRequests } from './admin-requests.js';
 import { ADMIN_APP_JS, ADMIN_FAVICON_SVG, ADMIN_HTML, ADMIN_STYLES } from './admin-ui.js';
-import { APP_PERMISSIONS_POLICY, AppAssets } from './app-assets.js';
+import { APP_PERMISSIONS_POLICY, AppAssets, NEVER_STORE } from './app-assets.js';
 import { expiredSessionCookie, hasSessionCookie, isSameOriginRequest, isSecureRequest, sessionCookie, type WebAuth } from './auth.js';
 import { ClientIpResolver } from './client-ip.js';
 import type { LogLevel } from './config.js';
 import { HouseholdGateway } from './household-gateway.js';
 import type { HouseholdRequests } from './household-requests.js';
+import { UNKNOWN_VERSION_MESSAGE, UNTESTED_VERSION_MESSAGE, VersionConfirmationError, type HouseholdDecision, type JellyfinVersionGate } from './jellyfin-version.js';
 import { RECENT_REQUESTS_LIMIT } from './seerr.js';
 import { BackgroundTasks } from './shutdown.js';
 import { TvAssets } from './tv-assets.js';
@@ -70,6 +71,12 @@ export interface ServerOptions {
    * those paths answer 404 `requests_not_configured`.
    */
   adminRequests?: Pick<AdminRequests, 'list' | 'approve' | 'decline' | 'cancel' | 'release'>;
+  /**
+   * The Jellyfin version check (docs: README, "Supported Jellyfin versions"): household hosts answer a fixed 503 unless
+   * it decides they serve, and the admin API reads and confirms it at /v1/jellyfin/version. Without it household hosts
+   * serve whatever the version.
+   */
+  jellyfinVersion?: Pick<JellyfinVersionGate, 'decision' | 'householdDecision' | 'status' | 'confirm' | 'clearConfirmation' | 'renderMetrics'>;
 }
 
 export interface JellyPassServer extends Server {
@@ -120,6 +127,7 @@ export function makeServer(
         } : {}),
       })
     : undefined;
+  const jellyfinVersion = options?.jellyfinVersion;
   const titleHolds = options?.titleHolds;
   const checkTitleHolds = () => { if (titleHolds) background.run((signal) => titleHolds.checkTitleHolds({ signal })); };
   const clientIp = new ClientIpResolver(options?.trustedProxies);
@@ -128,6 +136,8 @@ export function makeServer(
       const url = new URL(request.url ?? '/', 'http://localhost');
       const householdId = householdGateway?.householdId(request.headers.host);
       if (householdId) {
+        const decision = jellyfinVersion ? await jellyfinVersion.householdDecision() : 'serve';
+        if (decision !== 'serve') return versionRefused(response, decision);
         await householdGateway?.handle(request, response, householdId);
         return;
       }
@@ -219,7 +229,23 @@ export function makeServer(
       }
 
       if (request.method === 'GET' && url.pathname === '/metrics') {
-        return text(response, 200, service.renderMetrics(), 'text/plain; version=0.0.4; charset=utf-8');
+        return text(response, 200, service.renderMetrics() + (jellyfinVersion?.renderMetrics() ?? ''), 'text/plain; version=0.0.4; charset=utf-8');
+      }
+      if (url.pathname === '/v1/jellyfin/version' || url.pathname === '/v1/jellyfin/version/confirmation') {
+        if (request.method === 'GET' && url.pathname === '/v1/jellyfin/version') {
+          if (!jellyfinVersion) return json(response, 404, { error: 'jellyfin_version_not_checked' });
+          return json(response, 200, jellyfinVersion.status());
+        }
+        if (request.method === 'PUT' && url.pathname === '/v1/jellyfin/version/confirmation') {
+          const body = recordBody(await readJson(request));
+          if (!jellyfinVersion) return json(response, 404, { error: 'jellyfin_version_not_checked' });
+          return json(response, 200, await jellyfinVersion.confirm(nonEmptyString(body.version, 'version')));
+        }
+        if (request.method === 'DELETE' && url.pathname === '/v1/jellyfin/version/confirmation') {
+          requireJsonIfBody(request);
+          if (!jellyfinVersion) return json(response, 404, { error: 'jellyfin_version_not_checked' });
+          return json(response, 200, await jellyfinVersion.clearConfirmation());
+        }
       }
       if (request.method === 'GET' && url.pathname === '/v1/app/outstanding') {
         return json(response, 200, service.appOutstanding());
@@ -383,6 +409,7 @@ export function makeServer(
       if (error instanceof AdminActionLimitError) return json(response, 429, { error: 'too_many_requests' });
       if (error instanceof AdminSeerrError) return json(response, 502, { error: error.message });
       if (error instanceof ConflictError) return json(response, 409, { error: error.message, code: error.code });
+      if (error instanceof VersionConfirmationError) return json(response, 409, { error: error.message });
       const message = error instanceof Error ? error.message : 'unknown error';
       console.error(JSON.stringify({ level: 'error', message }));
       const status = message.includes('not found') ? 404 : isClientError(message) ? 400 : 502;
@@ -395,7 +422,23 @@ export function makeServer(
       socket.destroy();
       return;
     }
-    householdGateway.handleUpgrade(request, socket, head, householdId);
+    if (!jellyfinVersion || jellyfinVersion.decision() === 'serve') {
+      householdGateway.handleUpgrade(request, socket, head, householdId);
+      return;
+    }
+    // Waiting for the version: a client reset meanwhile must not be an unhandled 'error' event (see handleUpgrade).
+    const ignore = () => socket.destroy();
+    socket.on('error', ignore);
+    void jellyfinVersion.householdDecision().then((settled) => {
+      socket.off('error', ignore);
+      if (socket.destroyed) return;
+      if (settled === 'serve') householdGateway.handleUpgrade(request, socket, head, householdId);
+      else {
+        const { headers, body } = versionRefusal(settled);
+        const head = Object.entries(headers).map(([name, value]) => `${name}: ${value}\r\n`).join('');
+        socket.on('error', ignore).end(`HTTP/1.1 503 Service Unavailable\r\n${head}Connection: close\r\n\r\n${body}`);
+      }
+    });
   });
   return Object.assign(server, {
     closeWebSockets: async () => householdGateway ? householdGateway.closeWebSockets() : 0,
@@ -547,6 +590,29 @@ function image(response: ServerResponse, body: Uint8Array, upstreamContentType: 
     'Cross-Origin-Resource-Policy': 'same-origin',
   });
   response.end(body);
+}
+
+/**
+ * A household host's fixed 503 while the Jellyfin version is untested and not confirmed, or not known: never relayed
+ * to Jellyfin, and the same for every path and for a WebSocket upgrade, so it tells a caller nothing but that.
+ */
+function versionRefusal(decision: Exclude<HouseholdDecision, 'serve'>): { headers: Record<string, string>; body: string } {
+  const body = decision === 'refuse' ? UNTESTED_VERSION_MESSAGE : UNKNOWN_VERSION_MESSAGE;
+  return {
+    headers: {
+      'Content-Type': 'text/plain; charset=utf-8',
+      'Content-Length': String(Buffer.byteLength(body)),
+      ...NEVER_STORE,
+      'X-Content-Type-Options': 'nosniff',
+      'Retry-After': decision === 'refuse' ? '300' : '5',
+    },
+    body,
+  };
+}
+
+function versionRefused(response: ServerResponse, decision: Exclude<HouseholdDecision, 'serve'>): void {
+  const { headers, body } = versionRefusal(decision);
+  response.writeHead(503, headers).end(body);
 }
 
 function redirect(response: ServerResponse, location: string): void {

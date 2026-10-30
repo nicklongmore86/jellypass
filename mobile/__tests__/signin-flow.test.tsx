@@ -9,7 +9,7 @@ import { SafeAreaProvider } from 'react-native-safe-area-context';
 import { AccountScreen } from '../src/screens/AccountScreen';
 import { SessionProvider, useSession } from '../src/session/SessionProvider';
 import { Root } from '../src/screens/Root';
-import { ADDRESS_TEXT, SIGNIN_ERROR_TEXT, SIGNIN_NAME_TEXT, STALLED_TEXT } from '../src/signin/wording';
+import { ADDRESS_PROBLEM_TEXT, ADDRESS_TEXT, SIGNIN_ERROR_TEXT, SIGNIN_NAME_TEXT, STALLED_TEXT } from '../src/signin/wording';
 import {
   IDENTITY,
   METRICS,
@@ -70,7 +70,7 @@ async function openLink(param: string | string[] | undefined) {
 
 async function toPicker(routes: Routes) {
   const gateway = await start(routes);
-  await type('Household address', 'jelly-household.example.test');
+  await type('Household address', 'media.example.com');
   await press('Continue');
   await settle();
   return gateway;
@@ -86,24 +86,44 @@ describe('the address step', () => {
   it('starts there with nothing kept, and suggests no household', async () => {
     const gateway = await start(HOUSEHOLD);
     expect(shows('Connect to your household')).toBe(true);
-    expect(shows(/jelly-[a-z]/)).toBe(false);
+    expect(shows(ADDRESS_TEXT.intro)).toBe(true);
+    // The neutral example is the only address on the screen.
+    expect(shows(/https:\/\/(?!media\.example\.com[ ,.])/)).toBe(false);
     expect(gateway.calls).toEqual([]);
   });
 
-  it('refuses an address that is not a household one, without a call', async () => {
+  it('refuses an address that is not a household one, saying why, without a call', async () => {
     const gateway = await start(HOUSEHOLD);
-    for (const typed of ['jellyfin.example.test', 'http://jelly-household.example.test', 'jelly-household.example.test:8096']) {
+    for (const [typed, problem] of [
+      ['media', 'invalid'],
+      ['media.example.com:0', 'invalid'],
+      ['http://media.example.com', 'http'],
+      ['192.168.1.10:8920', 'local'],
+      ['bücher.example', 'unicode'],
+      ['media.example.com/web', 'extra'],
+      ['user:pw@media.example.com', 'extra'],
+    ] as const) {
       await type('Household address', typed);
       await press('Continue');
-      expect(shows(ADDRESS_TEXT.invalid)).toBe(true);
+      expect([typed, shows(ADDRESS_PROBLEM_TEXT[problem])]).toEqual([typed, true]);
     }
     expect(gateway.calls).toEqual([]);
+  });
+
+  it('takes any HTTPS name, with its port', async () => {
+    const gateway = await start(HOUSEHOLD);
+    await type('Household address', 'Films.Example.NET:8443');
+    await press('Continue');
+    await settle();
+    expect(shows('Choose your profile to sign in.')).toBe(true);
+    expect(shows('films.example.net:8443')).toBe(true);
+    expect(gateway.calls.map((call) => call.url)).toEqual(['https://films.example.net:8443/Users/Public']);
   });
 
   it('goes on to the household picker on that address only', async () => {
     const gateway = await toPicker(HOUSEHOLD);
     expect(shows('Choose your profile to sign in.')).toBe(true);
-    expect(shows('jelly-household.example.test')).toBe(true);
+    expect(shows('media.example.com')).toBe(true);
     expect(gateway.calls.map((call) => call.url)).toEqual([`${ORIGIN}/Users/Public`]);
   });
 });
@@ -113,7 +133,7 @@ describe('a setup link', () => {
     const gateway = await start(HOUSEHOLD);
     await openLink(ORIGIN);
     expect(shows('Connect to this household?')).toBe(true);
-    expect(shows('jelly-household.example.test')).toBe(true);
+    expect(shows('media.example.com')).toBe(true);
     expect(gateway.calls).toEqual([]);
     expect(storedSession()).toBeUndefined();
     await press('Continue');
@@ -133,7 +153,16 @@ describe('a setup link', () => {
 
   it('that names no household address is refused', async () => {
     const gateway = await start(HOUSEHOLD);
-    for (const param of [undefined, 'https://evil.example.test', 'jelly-household.example.test', [ORIGIN, OTHER_ORIGIN]]) {
+    for (const param of [
+      undefined,
+      'media.example.com',
+      'http://media.example.com',
+      'https://media.example.com/web',
+      'https://token@media.example.com',
+      'https://media.example.com/?token=x',
+      'https://192.168.1.10',
+      [ORIGIN, OTHER_ORIGIN],
+    ]) {
       await openLink(param);
       expect(shows(ADDRESS_TEXT.badLink)).toBe(true);
       await press('OK');
@@ -147,7 +176,7 @@ describe('a setup link', () => {
     const gateway = await start(HOUSEHOLD);
     expect(shows('Synthetic Member · Synthetic Household')).toBe(true);
     await openLink(OTHER_ORIGIN);
-    expect(shows(/signed in to jelly-household\.example\.test.*signs you out/)).toBe(true);
+    expect(shows(/signed in to media\.example\.com.*signs you out/)).toBe(true);
     await press('Continue');
     await settle();
     expect(gateway.calls.map((call) => call.url)).toEqual([
@@ -371,7 +400,7 @@ describe('a sign-in that finishes after the app moved on', () => {
     await openLink(OTHER_ORIGIN);
     await press('Continue');
     await settle();
-    expect(shows('jelly-elsewhere.example.test')).toBe(true);
+    expect(shows('films.example.net:8443')).toBe(true);
   }
 
   function expectRevokedOnly(gateway: Awaited<ReturnType<typeof start>>) {
@@ -380,7 +409,7 @@ describe('a sign-in that finishes after the app moved on', () => {
     const logouts = gateway.calls.filter((call) => call.route === 'POST /Sessions/Logout');
     expect(logouts.map((call) => [call.url, call.init.headers.Authorization])).toEqual([[`${ORIGIN}/Sessions/Logout`, `MediaBrowser Token="${STALE}"`]]);
     expect(shows('Choose your profile to sign in.')).toBe(true);
-    expect(shows('jelly-elsewhere.example.test')).toBe(true);
+    expect(shows('films.example.net:8443')).toBe(true);
     expect(shows('Synthetic Member · Synthetic Household')).toBe(false);
   }
 
@@ -425,6 +454,22 @@ describe('at start', () => {
       [`${ORIGIN}/jellypass/app/v1/me`, `MediaBrowser Token="${TOKEN}"`],
     ]);
     expect(shows('Synthetic Member · Synthetic Household')).toBe(true);
+  });
+
+  it('keeps a sign-in an older app version made on a jelly- address, and signs out there', async () => {
+    const legacy = 'https://jelly-farmhouse.example.org';
+    keepSession(TOKEN, legacy);
+    const gateway = await start(HOUSEHOLD);
+    expect(shows('Synthetic Member · Synthetic Household')).toBe(true);
+    expect(storedSession()).toEqual({ address: legacy, token: TOKEN, userId: 'u-ana', name: 'Ana Lima' });
+    await press('Sign out');
+    await settle();
+    expect(gateway.calls.map((call) => call.url)).toEqual([
+      `${legacy}/jellypass/app/v1/me`,
+      `${legacy}/Sessions/Logout`,
+      `${legacy}/Users/Public`,
+    ]);
+    expect(storedSession()).toBeUndefined();
   });
 
   it('drops a sign-in /me refuses (401) and shows the picker, saying it expired', async () => {
