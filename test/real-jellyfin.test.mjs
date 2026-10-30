@@ -49,8 +49,10 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
   it('rejects a Seerr-less webhook without a recognised HD event and grants nothing', async () => {
     for (const [requestId, event] of [['real-16', undefined], ['real-16b', 'Something Else']]) {
       assert.deepEqual(await sendWebhook(server, available(requestId, event)), {
-        status: 502,
-        body: { error: 'webhook event does not name an HD request and Seerr lookup is not configured' },
+        status: event === undefined ? 400 : 502,
+        body: { error: event === undefined
+          ? 'webhook_payload_removed_use_current_seerr_template'
+          : 'webhook event does not name an HD request and Seerr lookup is not configured' },
       }, String(event));
     }
 
