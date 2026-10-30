@@ -23,12 +23,13 @@ changes are always listed at the top of the release notes.
 This is a minor release. JellyPass now has a written Jellyfin support policy:
 **it supports the current Jellyfin release and the one before it, Jellyfin
 12.x and 10.11.x**, and tests both against a real Jellyfin in CI and before
-every release; on any other Jellyfin version, household hostnames pause until
-an administrator confirms that exact version. Requests that name more or fewer
-than one host, and household paths with empty segments, are now refused (see
-Security), and every HTML page is marked `no-transform` so a CDN that
-honours it adds no scripts. The state file (schema v7, plus one optional field), the app
-API (`v1`, `apiVersion` 2), webhook payloads, and every existing setting and
+every release; on any other Jellyfin version, JellyPass warns until an
+administrator confirms that exact version, and household hostnames keep
+serving as before. Requests that name more or fewer than one host, and
+household paths with empty segments, are now refused (see Security), and
+every HTML page is marked `no-transform` so a CDN that honours it adds no
+scripts. The state file (schema v7, plus one optional field), the app API
+(`v1`, `apiVersion` 2), webhook payloads, and every existing setting and
 administrator API endpoint are as in 3.9.0. This is a minor release because a
 setting, administrator API endpoints and metrics are added; the refusals fall
 under the rule at the top of this file. On a supported Jellyfin, nothing needs
@@ -36,18 +37,25 @@ doing. Read these before upgrading:
 
 - **Check your Jellyfin version first.** On Jellyfin 12.x or 10.11.x nothing
   changes and nothing needs configuring. On any other version (an older 10.x,
-  a pre-release, or a future 13.0 or later), **household hostnames answer
-  `503` from the moment you upgrade** until you confirm it: open the admin
-  site and choose **Allow Jellyfin X**, or set `JELLYFIN_UNTESTED_VERSION_OK`
-  to that exact version before upgrading. The admin site, webhooks and grants
-  keep working either way.
-- **Upgrading Jellyfin to an untested version later pauses household
-  hostnames again,** within five minutes, until that version is confirmed in
-  turn. A confirmation covers one exact version.
-- **Jellyfin unreachable when JellyPass starts:** JellyPass starts anyway, and
-  household hostnames answer `503` until Jellyfin reports its version (read
-  again every 30 seconds and on the next household request), instead of
-  relaying unchecked. They serve as soon as Jellyfin answers.
+  a future 13.0 or later, or **any build whose version has a suffix**: a
+  pre-release such as `12.5.0-rc1`, build metadata such as `12.4.0+abc`, or
+  any other non-numeric part), the version is **unconfirmed**: JellyPass logs
+  a warning (once per version), the admin site shows it with **Allow
+  Jellyfin X**, and **household hostnames keep serving exactly as in 3.9.0**.
+  Confirm that exact version in the admin site, or set
+  `JELLYFIN_UNTESTED_VERSION_OK` to it, to clear the warning.
+- **JellyPass 4.0.0 will refuse household requests on an unconfirmed
+  version:** household hostnames will answer `503` until that exact version is
+  confirmed, and also while the version cannot be read. 3.10.0 only warns,
+  because refusing requests that worked in 3.9.0 is not a security or privacy
+  fix.
+- **Upgrading Jellyfin to an untested version later warns again,** within
+  five minutes, until that version is confirmed in turn. A confirmation
+  covers one exact version.
+- **Jellyfin unreachable when JellyPass starts:** JellyPass starts anyway,
+  household hostnames serve as before, and the admin site shows that the
+  version cannot be read until Jellyfin reports it (read again every 30
+  seconds).
 - **On Jellyfin 12, clients that give their token only the legacy way**
   (`X-Emby-Token`, `X-Emby-Authorization`, `X-MediaBrowser-Token`, the `Emby`
   scheme or `api_key`) get `401` on household hostnames, as Jellyfin 12 itself
@@ -101,21 +109,24 @@ doing. Read these before upgrading:
 ### Added
 
 - **Supported Jellyfin versions.** JellyPass reads Jellyfin's version from
-  `/System/Info/Public` at startup and every five minutes, and logs a warning
-  on a version outside the supported releases (12.x and 10.11.x). Household
-  hostnames then refuse every request and WebSocket with a fixed `503` and a
-  plain-text message, never relaying it to Jellyfin, until an administrator
-  confirms that exact version. See README, "Supported Jellyfin versions".
-- **Admin site:** a banner shows an untested or unreadable Jellyfin version,
-  with **Allow Jellyfin X** (and **Withdraw** once allowed); the connection
-  status reads "Household hosts paused" while they are.
-- **Administrator API:** `GET /v1/jellyfin/version`,
-  `PUT /v1/jellyfin/version/confirmation` (`{"version": "..."}`, exactly the
-  version Jellyfin reports now) and `DELETE /v1/jellyfin/version/confirmation`.
+  `/System/Info/Public` at startup and every five minutes, and logs a warning,
+  once per version, on a version outside the supported releases (12.x and
+  10.11.x, with plain numeric versions only; a suffixed build is outside
+  them) until an administrator confirms that exact version. Household
+  hostnames keep serving on it. See README, "Supported Jellyfin versions".
+- **Admin site:** a banner shows an unconfirmed or unreadable Jellyfin
+  version, with **Allow Jellyfin X** (and **Withdraw** once allowed); the
+  connection status reads "Jellyfin version not confirmed" until it is.
+- **Administrator API:** `GET /v1/jellyfin/version` (with `confirmation`:
+  `not_needed`, `confirmed` or `unconfirmed`, and `enforcement`: `warn` in
+  3.x), `PUT /v1/jellyfin/version/confirmation` (`{"version": "..."}`,
+  exactly the version Jellyfin reports now) and
+  `DELETE /v1/jellyfin/version/confirmation`.
 - **Setting:** `JELLYFIN_UNTESTED_VERSION_OK`, one exact untested version that
-  household hostnames serve on without confirming it in the admin site.
+  counts as confirmed without confirming it in the admin site.
 - **Metrics:** `jfa_jellyfin_version_info{version,supported,confirmed}`,
-  `jfa_jellyfin_version_supported` and `jfa_household_hosts_refusing`.
+  `jfa_jellyfin_version_supported` and `jfa_household_hosts_refusing` (always
+  `0` in 3.x).
 
 ### Changed
 

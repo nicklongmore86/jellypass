@@ -66,8 +66,11 @@ describe('changelogSection with the real CHANGELOG.md', () => {
     assert.match(flat, /This is a minor release because a setting, administrator API endpoints and metrics are added/);
     assert.match(flat, /the app API \(`v1`, `apiVersion` 2\)/);
     assert.match(flat, /On Jellyfin 12\.x or 10\.11\.x nothing changes and nothing needs configuring/);
-    assert.match(flat, /a future 13\.0 or later\), \*\*household hostnames answer `503` from the moment you upgrade\*\*/);
+    assert.match(flat, /\*\*household hostnames keep serving exactly as in 3\.9\.0\*\*/);
+    assert.match(flat, /\*\*any build whose version has a suffix\*\*: a pre-release such as `12\.5\.0-rc1`, build metadata such as `12\.4\.0\+abc`/);
+    assert.match(flat, /\*\*JellyPass 4\.0\.0 will refuse household requests on an unconfirmed version:\*\* household hostnames will answer `503`/);
     assert.match(flat, /`JELLYFIN_UNTESTED_VERSION_OK`/);
+    assert.doesNotMatch(flat, /answer `503` from the moment you upgrade|pauses? household hostnames/, 'a minor release does not refuse on an untested version');
     assert.match(flat, /\*\*The state file keeps schema v7\.\*\* A confirmation is stored in a new optional field, `jellyfinVersionConfirmed`, which 3\.9\.0 keeps as it is/);
     assert.match(flat, /No CDN purge is needed unless your CDN caches HTML pages/);
     assert.match(flat, /`ghcr\.io\/nicklongmore86\/jellypass:3\.9\.0`/);
@@ -78,7 +81,8 @@ describe('changelogSection with the real CHANGELOG.md', () => {
     const security = notes.indexOf('### Security');
     for (const note of [
       '**Check your Jellyfin version first.**',
-      '**Upgrading Jellyfin to an untested version later pauses household',
+      '**JellyPass 4.0.0 will refuse household requests on an unconfirmed',
+      '**Upgrading Jellyfin to an untested version later warns again,**',
       '**Jellyfin unreachable when JellyPass starts:**',
       '**On Jellyfin 12, clients that give their token only the legacy way**',
       '**A reverse proxy that sends one `Host` is unaffected**',

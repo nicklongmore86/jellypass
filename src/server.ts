@@ -77,8 +77,8 @@ export interface ServerOptions {
   adminRequests?: Pick<AdminRequests, 'list' | 'approve' | 'decline' | 'cancel' | 'release'>;
   /**
    * The Jellyfin version check (docs: README, "Supported Jellyfin versions"): household hosts answer a fixed 503 unless
-   * it decides they serve, and the admin API reads and confirms it at /v1/jellyfin/version. Without it household hosts
-   * serve whatever the version.
+   * it decides they serve (always, unless it enforces: see JELLYFIN_VERSION_ENFORCEMENT), and the admin API reads and
+   * confirms it at /v1/jellyfin/version. Without it household hosts serve whatever the version.
    */
   jellyfinVersion?: Pick<JellyfinVersionGate, 'decision' | 'householdDecision' | 'status' | 'confirm' | 'clearConfirmation' | 'renderMetrics'>;
 }
@@ -656,8 +656,9 @@ function image(response: ServerResponse, body: Uint8Array, upstreamContentType: 
 }
 
 /**
- * A household host's fixed 503 while the Jellyfin version is untested and not confirmed, or not known: never relayed
- * to Jellyfin, and the same for every path and for a WebSocket upgrade, so it tells a caller nothing but that.
+ * A household host's fixed 503, when enforcing, while the Jellyfin version is untested and not confirmed, or not known:
+ * never relayed to Jellyfin, and the same for every path and for a WebSocket upgrade, so it tells a caller nothing but
+ * that.
  */
 function versionRefusal(decision: Exclude<HouseholdDecision, 'serve'>): { headers: Record<string, string>; body: string } {
   const body = decision === 'refuse' ? UNTESTED_VERSION_MESSAGE : UNKNOWN_VERSION_MESSAGE;

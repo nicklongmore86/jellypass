@@ -83,9 +83,9 @@ flowchart LR
 
 The add-on is matched to the Jellyfin releases JellyPass supports (README, "Supported Jellyfin versions"): Jellyfin
 web **12.x** and **10.11.x**. It runs inside Jellyfin web's own page and relies on its markup, so it is checked against
-those releases only. On any other Jellyfin version, household hosts (and with them the add-on) are paused until an
-administrator confirms that exact version; once confirmed, the add-on is served unchanged, untested against that
-version's page.
+those releases only. On any other Jellyfin version, JellyPass 3.x warns until an administrator confirms that exact
+version, and household hosts keep serving the add-on unchanged, untested against that version's page; from JellyPass
+4.0.0, household hosts (and with them the add-on) are paused until it is confirmed.
 
 - **The gateway's injection:** the Jellyfin web page that each CI image serves (`jellyfin/jellyfin:12.4.20261026-211555`
   and `jellyfin/jellyfin:10.11.11`, pinned in `scripts/jellyfin-versions.json`; `test/real-jellyfin.test.mjs`), as
