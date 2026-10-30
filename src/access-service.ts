@@ -596,7 +596,6 @@ export class AccessService {
   public recordRemovedWebhook(error: string): void {
     const now = Date.now();
     this.#lastRemovedWebhookAt = now;
-    this.recordWebhookReceived();
     this.#metrics.increment('jfa_webhooks_total', { result: 'removed_form' });
     if (now - (this.#removedWebhookWarnings.get(error) ?? -Infinity) >= 60_000) {
       this.#removedWebhookWarnings.set(error, now);
@@ -610,6 +609,7 @@ export class AccessService {
 
   public processWebhook(event: SeerrWebhook | IgnoredWebhook): Promise<GrantRecord | null> {
     return this.#exclusive(async () => {
+      this.#lastRemovedWebhookAt = null;
       if (event.notificationType !== 'MEDIA_AVAILABLE' || !('request' in event)) {
         this.#metrics.increment('jfa_webhooks_total', { result: 'ignored' });
         return null;

@@ -363,7 +363,7 @@ describe('admin surface hardening', { timeout: 20_000 }, () => {
     try {
       // Each error was already warned above; repeats must not flood the log.
       for (let i = 0; i < 3; i++) {
-        const answer = await send(port, '/webhooks/seerr?token=secret', {}, { method: 'POST', body: '{}' });
+        const answer = await send(port, '/webhooks/seerr?token=webhook-secret', {}, { method: 'POST', body: '{}' });
         assert.equal(answer.status, 400);
       }
       for (const requestedBy of [undefined, {}, { jellyfinUserId: '' }, { username: '' }]) {

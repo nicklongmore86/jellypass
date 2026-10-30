@@ -1032,10 +1032,12 @@ export const ADMIN_APP_JS = `
     const syncedAt = state.catalogSyncedAt ? Date.parse(state.catalogSyncedAt) : 0;
     const syncOverdue = !syncedAt || Date.now() - syncedAt > 2 * 60 * 60 * 1000;
     const version = state.jellyfinVersion;
-    if (version && version.householdHosts !== 'serving') setHealth('warning', 'Household hosts paused');
-    else if (state.lastRemovedFormAt && Date.now() - state.lastRemovedFormAt < 24 * 60 * 60 * 1000) setHealth('warning', 'Seerr webhook refused: update header and template');
-    else if (attention) setHealth('warning', attention + ' polic' + (attention === 1 ? 'y' : 'ies') + ' need attention');
-    else if (syncOverdue) setHealth('warning', syncedAt ? 'Library sync overdue' : 'Library sync required');
+    const warnings = [];
+    if (version && version.householdHosts !== 'serving') warnings.push('Household hosts paused');
+    if (state.lastRemovedFormAt && Date.now() - state.lastRemovedFormAt < 24 * 60 * 60 * 1000) warnings.push('Seerr webhook refused: update header and template');
+    if (attention) warnings.push(attention + ' polic' + (attention === 1 ? 'y' : 'ies') + ' need attention');
+    if (syncOverdue) warnings.push(syncedAt ? 'Library sync overdue' : 'Library sync required');
+    if (warnings.length) setHealth('warning', warnings.join(' · '));
     else setHealth('healthy', 'Sync healthy');
   }
 

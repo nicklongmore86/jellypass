@@ -470,8 +470,9 @@ other than `MEDIA_AVAILABLE`, including Seerr's `TEST_NOTIFICATION`, returns
 `202` with `{"status":"ignored"}` once the token and full Test template are accepted, even though Seerr
 sends an empty request ID for test events. The `notificationType` itself must
 still be a real value made of uppercase letters and underscores; an unfilled
-`{{notification_type}}` returns `400` and is counted as invalid. A `202` therefore proves only that
-JellyPass is reachable and the token is correct, not that the payload works:
+`{{notification_type}}` returns `400` and is counted as invalid. A `202` therefore proves that
+JellyPass is reachable, the token is correct and the Test template is valid. It
+does not prove that an availability event can grant access:
 `MEDIA_AVAILABLE` events are validated strictly, and a missing, empty, or
 unfilled `{{...}}` ID returns `400` and is counted as
 `jfa_webhooks_total{result="invalid"}`.
@@ -1039,6 +1040,10 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" \
   http://127.0.0.1:8787/metrics
 ```
 
+The removed-form counter, `jfa_webhooks_total{result="removed_form"}`, counts
+refused query-token calls only when the token matches, and authenticated
+reduced templates. Inspect `GET /v1/webhooks/status` for the admin warning.
+
 ### Backup and restore
 
 The state file is the only JellyPass application data that must persist. It
@@ -1189,14 +1194,24 @@ could not resolve, store or apply the grant; the error is logged. In any case,
 `jfa_request_backfill_total{result="granted"}` shows requests the backfill
 applied instead, and `{result="error"}` counts requests it could not process.
 
+Authenticated removed forms increment `jfa_webhooks_total{result="removed_form"}`.
+Query-token refusals do not update the last-received timestamp; authenticated
+reduced templates do, once. The admin warning lasts up to
+24 hours, clears when a later authenticated webhook is accepted, and is held
+in memory, so restarting JellyPass clears it.
+
 ### Webhook returns `401`
 
-The bearer header or `token` query value does not exactly match
-`WEBHOOK_TOKEN`. Confirm that whitespace was not copied into either value.
+The bearer authorization header does not exactly match `WEBHOOK_TOKEN`.
+Confirm that whitespace was not copied into the value. Query tokens return
+`400 webhook_query_token_removed_use_authorization_header`; remove `?token=`
+and configure the authorization header instead.
 
 ### Webhook reports missing Jellyfin IDs
 
-Configure `SEERR_URL` and `SEERR_API_KEY` and use the request-ID-only payload.
+Configure `SEERR_URL` and `SEERR_API_KEY` and use the full current Seerr
+template above, including `request.requestedBy`. Empty Jellyfin ID strings
+can then resolve through the Seerr API.
 Also confirm that the requester was imported from Jellyfin.
 
 ### Library is empty or stale
@@ -1322,6 +1337,7 @@ blocked-tag policy.
 | --- | --- | --- |
 | `GET` | `/health` | Public process liveness. |
 | `POST` | `/webhooks/seerr` | Authenticated Seerr availability webhook. |
+| `GET` | `/v1/webhooks/status` | Admin-only removed-form warning status: `lastRemovedFormAt` is Unix milliseconds or `null`; cleared by an accepted webhook or restart. |
 | `GET` | `/v1/app/outstanding` | What household app "Get this" still protects or has in flight: safety markers, request intents, deferred webhooks and cancels that still decide a grant (`withdrawals`), with `"clear": true` once all are 0. Check it before rolling back. |
 | `GET` | `/v1/app/held` | Titles a household app cancel left held for no household (private to everyone but Jellyfin administrators) until an administrator gives them to someone. Read-only. |
 | `GET` | `/v1/app/requests` | Every household's app requests by Seerr request, with Seerr's status, followers and the actions offered, and the held titles (the admin UI's Requests tab). |

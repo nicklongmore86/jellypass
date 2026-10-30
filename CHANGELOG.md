@@ -36,7 +36,7 @@ changes are always listed at the top of the release notes.
   2.x also wrote v7 without a release marker, so that provenance cannot be
   detected. Rollback to 2.x is unsupported; use a matching pre-upgrade backup.
 
-Before upgrading, on **3.9.x/3.10**:
+Before upgrading, on **3.9.x or later 3.x**:
 
 1. In Seerr → Settings → Notifications → Webhook, set Authorization Header to `Bearer <WEBHOOK_TOKEN>`.
 2. Remove `?token=…` from the URL.
@@ -45,6 +45,8 @@ Before upgrading, on **3.9.x/3.10**:
 5. After upgrading, watch `jfa_webhooks_total{result="removed_form"}` and the admin dashboard warning.
 
 Refused availability webhooks are not retried; missed titles rely on the request backfill.
+
+### Jellyfin version support policy
 
 JellyPass now has a written Jellyfin support policy: **it supports the current
 Jellyfin release and the one before it, Jellyfin 12.x and 10.11.x**, and tests

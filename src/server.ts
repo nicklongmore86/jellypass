@@ -202,7 +202,9 @@ export function makeServer(
       }
       if (request.method === 'POST' && url.pathname === '/webhooks/seerr') {
         if (url.searchParams.has('token')) {
-          service.recordRemovedWebhook('webhook_query_token_removed_use_authorization_header');
+          if (sameToken(url.searchParams.get('token') ?? '', tokens.webhook)) {
+            service.recordRemovedWebhook('webhook_query_token_removed_use_authorization_header');
+          }
           return json(response, 400, { error: 'webhook_query_token_removed_use_authorization_header' });
         }
         if (!authorized(request, tokens.webhook)) {

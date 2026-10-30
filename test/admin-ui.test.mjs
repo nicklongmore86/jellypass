@@ -645,4 +645,5 @@ it('warns administrators about recent refused removed-form webhooks', async () =
     ? { status: 200, body: { lastRemovedFormAt: Date.now() } } : DATA[path]);
   await page.settle();
   assert.match(page.document.querySelector('#connection').textContent, /Seerr webhook refused/);
+  assert.match(page.document.querySelector('#connection').textContent, /Library sync required/);
 });
