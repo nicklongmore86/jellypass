@@ -41,8 +41,35 @@ describe('one Host per request', { timeout: 60_000 }, () => {
       const refused = await upgrade(app.port, '/socket?api_key=token-alice&deviceId=x', hosts);
       assert.match(refused, /^HTTP\/1\.1 400 [^]*\r\nConnection: close\r\n\r\n\{"error":"invalid_host"\}$/, what);
     }
-    // No Host at all on HTTP/1.1: Node answers 400 itself, before any handler.
-    assert.equal((await raw(app.port, 'GET /Users/Public HTTP/1.1', [])).status, 400);
+    assert.deepEqual(relayed(app), [], 'nothing reached Jellyfin');
+  });
+
+  it('answers HTTP/1.1 with no Host with the same fixed 400, not Node\'s own bare one, on any path and for WebSocket', async (t) => {
+    const app = await startApp(t);
+    for (const target of ['/health', '/Users/Public', '/v1/groups']) {
+      const answer = await raw(app.port, `GET ${target} HTTP/1.1`, target === '/v1/groups' ? [BEARER] : []);
+      assert.deepEqual([answer.status, answer.body], [400, INVALID_HOST], target);
+      assert.equal(answer.headers['cache-control'], 'no-store', target);
+      assert.equal(answer.headers.connection, 'close', target);
+      assert.match(answer.headers['content-type'] ?? '', /^application\/json/, target);
+    }
+    assert.match(await upgrade(app.port, '/socket?api_key=token-alice&deviceId=x', []), /^HTTP\/1\.1 400 [^]*\r\nCache-Control: no-store\r\n[^]*\r\nConnection: close\r\n\r\n\{"error":"invalid_host"\}$/);
+    assert.deepEqual(relayed(app), [], 'nothing reached Jellyfin');
+  });
+
+  it('closes its own end of a refused connection even when the client keeps its end open', async (t) => {
+    const app = await startApp(t);
+    const websocket = `Connection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGVzdA==\r\nSec-WebSocket-Version: 13\r\n`;
+    for (const [what, request] of [
+      ['an upgrade with two Hosts', `GET /socket?api_key=token-alice&deviceId=x HTTP/1.1\r\nHost: ${HOST_A}\r\nHost: ${HOST_B}\r\n${websocket}\r\n`],
+      ['an upgrade with no Host', `GET /socket?api_key=token-alice&deviceId=x HTTP/1.1\r\n${websocket}\r\n`],
+      ['a request with two Hosts', `GET /Users/Public HTTP/1.1\r\nHost: ${HOST_A}\r\nHost: ${HOST_B}\r\n\r\n`],
+      ['a request with no Host', 'GET /health HTTP/1.1\r\n\r\n'],
+    ]) {
+      const { answer, closed } = await halfOpen(app, request);
+      assert.match(answer, /^HTTP\/1\.1 400 [^]*\{"error":"invalid_host"\}$/, what);
+      assert.ok(closed, `${what}: the server socket is closed within a second`);
+    }
     assert.deepEqual(relayed(app), [], 'nothing reached Jellyfin');
   });
 
@@ -158,6 +185,32 @@ function raw(port, requestLine, headers, body = '') {
         rest = decoded;
       }
       resolve({ status: Number(head[0]?.split(' ')[1]), headers, body: rest });
+    });
+  });
+}
+
+/**
+ * `request` written by a client that keeps its own end open after the server's answer (allowHalfOpen), and whether the
+ * server then closed its socket for the connection within a second.
+ */
+function halfOpen(app, request) {
+  return new Promise((resolve, reject) => {
+    const serverClosed = new Promise((settle) => {
+      app.server.once('connection', (serverSocket) => {
+        const timer = setTimeout(() => settle(false), 1_000);
+        serverSocket.once('close', () => { clearTimeout(timer); settle(true); });
+      });
+    });
+    const client = connect({ port: app.port, host: '127.0.0.1', allowHalfOpen: true });
+    let answer = '';
+    client.once('connect', () => client.write(request));
+    client.on('data', (chunk) => { answer += chunk.toString('utf8'); });
+    client.once('error', reject);
+    // The answer is whole once the server has ended its side; the client's side stays open until the verdict.
+    const ended = new Promise((settle) => client.once('end', settle));
+    void Promise.all([serverClosed, ended]).then(([closed]) => {
+      client.destroy();
+      resolve({ answer, closed });
     });
   });
 }

@@ -132,7 +132,9 @@ export function makeServer(
   const titleHolds = options?.titleHolds;
   const checkTitleHolds = () => { if (titleHolds) background.run((signal) => titleHolds.checkTitleHolds({ signal })); };
   const clientIp = new ClientIpResolver(options?.trustedProxies);
-  const server = createServer(async (request, response) => {
+  // Node's own check would answer an HTTP/1.1 request with no Host with a bare 400 before any handler; singleHost
+  // gives it the fixed invalid_host answer instead.
+  const server = createServer({ requireHostHeader: false }, async (request, response) => {
     try {
       if (!singleHost(request)) return invalidHost(response);
       const url = new URL(request.url ?? '/', 'http://localhost');
@@ -478,12 +480,29 @@ function invalidHost(response: ServerResponse): void {
   json(response, 400, { error: 'invalid_host' });
 }
 
-/** {@link invalidHost} for a WebSocket upgrade: written to the socket, which is then closed. */
+/** {@link invalidHost} for a WebSocket upgrade, written to the raw socket. */
 function invalidHostUpgrade(socket: Duplex): void {
-  socket.on('error', () => socket.destroy()).end(
+  refuseSocket(
+    socket,
     'HTTP/1.1 400 Bad Request\r\nContent-Type: application/json; charset=utf-8\r\n'
       + `Content-Length: ${Buffer.byteLength(INVALID_HOST)}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n${INVALID_HOST}`,
   );
+}
+
+/** How long a refused raw socket may take to flush its answer before it is destroyed anyway. */
+const REFUSAL_FLUSH_MS = 1_000;
+
+/**
+ * Writes a whole HTTP answer to a raw socket (an upgrade's) and then destroys it. `end()` alone closes only the write
+ * side, so a client that keeps its own side open (allowHalfOpen) would hold the server socket readable indefinitely;
+ * a client that stops reading cannot hold it past REFUSAL_FLUSH_MS either.
+ */
+function refuseSocket(socket: Duplex, answer: string): void {
+  const destroy = () => socket.destroy();
+  const timer = setTimeout(destroy, REFUSAL_FLUSH_MS);
+  timer.unref();
+  socket.on('error', destroy).once('close', () => clearTimeout(timer));
+  socket.end(answer, destroy);
 }
 
 function authorized(request: IncomingMessage, expectedToken: string): boolean {

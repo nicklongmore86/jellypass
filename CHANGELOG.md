@@ -65,7 +65,8 @@ upgrading:
   `Host` that is not a plain `host[:port]` (userinfo, whitespace, a path or
   other characters, or empty), and an absolute-form request target
   (`GET http://host/path`) whose authority is not the `Host`. WebSocket
-  upgrades get the same `400`. A reverse proxy that sets one `Host` (Nginx
+  upgrades get the same `400`, and the connection is closed on JellyPass's
+  side even if the client keeps its own side open. A reverse proxy that sets one `Host` (Nginx
   Proxy Manager's `proxy_set_header Host $host`, for example) is unaffected.
   An HTTP/1.0 request may still leave `Host` out: with an ordinary path it is
   answered as no household's, as before; with an absolute-form target it is
