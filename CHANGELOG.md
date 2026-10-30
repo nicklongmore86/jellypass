@@ -108,8 +108,13 @@ upgrading:
   unchanged. Because such a CDN also stops compressing these pages, JellyPass
   compresses them itself (br or gzip, as the client accepts, with
   `Vary: Accept-Encoding`); a page Jellyfin already encoded is passed through
-  as it is. Scripts, styles, images, JSON, video and HLS are not touched, so
-  the CDN keeps compressing them. Nothing to configure.
+  as it is. A `HEAD` gets the same headers as the `GET`. A page JellyPass
+  compresses carries Jellyfin's `ETag` made weak (`W/"…"`), and still
+  revalidates: JellyPass asks Jellyfin with the strong tag, and the `304`
+  carries the weak one back. A client that accepts no coding of a page at all,
+  not even unencoded (`Accept-Encoding: *;q=0`, for example), gets a `406`.
+  Scripts, styles, images, JSON, video and HLS are not touched, so the CDN
+  keeps compressing them. Nothing to configure.
 - **CI and the release workflow test every supported Jellyfin release:** the
   real-Jellyfin suite runs once against `jellyfin/jellyfin:12.4.20261026-211555`
   (12.4.0) and once against `jellyfin/jellyfin:10.11.11`, instead of 10.11.3

@@ -1034,6 +1034,12 @@ export async function startApp(t, state = world(), options = {}) {
       ...(user ? { Authorization: authorization(user) } : {}),
       ...headers,
     }),
+    /** HEAD `pathname`, like {@link get}. */
+    head: (pathname, { host = HOST_A, user = ALICE, headers } = {}) => get(port, pathname, {
+      Host: host,
+      ...(user ? { Authorization: authorization(user) } : {}),
+      ...headers,
+    }, { method: 'HEAD' }),
     /** POST `body` (a string or an object sent as JSON; undefined for none) to `pathname`, like {@link get}. */
     post: (pathname, body, { host = HOST_A, user = ALICE, headers } = {}) => get(port, pathname, {
       Host: host,

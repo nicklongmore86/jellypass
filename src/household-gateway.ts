@@ -9,7 +9,7 @@ import { NEVER_STORE, type AppAssets } from './app-assets.js';
 import { ClientIpResolver, normaliseIp } from './client-ip.js';
 import { DEFAULT_WS_IDLE_TIMEOUT_MS, DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS, type LogLevel } from './config.js';
 import { LIBRARY_JOIN_HTML, LIBRARY_JOIN_JS, LIBRARY_JOIN_STYLES } from './household-ui.js';
-import { writeStreamedHead, writeWhole } from './html-response.js';
+import { strongIfNoneMatch, writeStreamedHead, writeWhole } from './html-response.js';
 import { AttemptCounter } from './rate-limit.js';
 import type { TvAssets } from './tv-assets.js';
 import { applyTvCors, corsFamily } from './tv-cors.js';
@@ -1054,7 +1054,7 @@ export class HouseholdGateway {
           if (head) {
             writeStreamedHead(request, response, upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
             upstreamResponse.destroy();
-            response.end();
+            if (!response.writableEnded) response.end();
             return resolve();
           }
           relayResponse(request, upstreamResponse, response, exchange, resolve, prefix);
@@ -1500,6 +1500,8 @@ export class HouseholdGateway {
     }
     headers['x-forwarded-proto'] ??= 'encrypted' in request.socket && request.socket.encrypted ? 'https' : 'http';
     headers['x-real-ip'] ??= this.#clientAddress(request);
+    // A page JellyPass encoded carries a weak tag (see html-response.ts), which Jellyfin would never match as it is.
+    if (headers['if-none-match'] !== undefined) headers['if-none-match'] = strongIfNoneMatch(headers['if-none-match']);
     return {
       protocol: this.#target.protocol,
       hostname: this.#target.hostname,
@@ -1612,6 +1614,12 @@ function relayResponse(
     if (!upstreamResponse.complete) response.destroy();
   });
   const body = writeStreamedHead(request, response, upstreamResponse.statusCode ?? 502, upstreamResponse.headers);
+  if (!body) {
+    // Answered with a 406: the rest of the page is read and dropped.
+    upstreamResponse.resume();
+    upstreamResponse.once('end', resolve);
+    return;
+  }
   for (const chunk of prefix) body.write(chunk);
   upstreamResponse.pipe(body);
   upstreamResponse.once('end', resolve);

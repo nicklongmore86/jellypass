@@ -6,7 +6,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import { brotliDecompressSync, gunzipSync } from 'node:zlib';
-import { htmlAnswer, negotiatedCoding, withNoTransform, withVaryAcceptEncoding } from '../dist/html-response.js';
+import { htmlAnswer, negotiatedCoding, strongIfNoneMatch, withNoTransform, withVaryAcceptEncoding } from '../dist/html-response.js';
 import { JELLYFIN_WEB_PAGE, startApp, world } from './support/household-app.mjs';
 
 const DIST_APP = path.join(import.meta.dirname, '..', 'dist', 'app');
@@ -50,23 +50,45 @@ describe('HTML no-transform: the header rules', () => {
     for (const [value, expected] of table) assert.equal(withVaryAcceptEncoding(value), expected, JSON.stringify(value));
   });
 
-  it('picks br, then gzip, from what the client accepts, and nothing it refuses', () => {
+  it('picks br, then gzip, from what the client accepts, then unencoded, and nothing it refuses', () => {
     const table = [
-      [undefined, undefined],
-      ['', undefined],
-      ['identity', undefined],
-      ['deflate', undefined],
+      [undefined, 'identity'],
+      ['', 'identity'],
+      ['identity', 'identity'],
+      ['deflate', 'identity'],
       ['gzip', 'gzip'],
       ['x-gzip', 'gzip'],
       ['gzip, deflate, br', 'br'],
       ['br;q=0.5, gzip', 'gzip'],
-      ['br;q=0, gzip;q=0', undefined],
+      ['br;q=0, gzip;q=0', 'identity'],
+      ['br;q=0, gzip;q=0, identity;q=0', undefined],
+      ['*;q=0', undefined],
+      ['identity;q=0', undefined],
+      ['deflate, identity;q=0', undefined],
+      ['*;q=0, identity', 'identity'],
+      ['*;q=0, gzip', 'gzip'],
+      ['*;q=0.5', 'br'],
+      ['identity;q=0, gzip', 'gzip'],
       ['GZIP;Q=0.8', 'gzip'],
       ['*', 'br'],
       ['*, br;q=0', 'gzip'],
       [['gzip', 'br'], 'br'],
     ];
     for (const [value, expected] of table) assert.equal(negotiatedCoding(value), expected, JSON.stringify(value));
+  });
+
+  it('forwards If-None-Match with every weak tag in its strong form', () => {
+    const table = [
+      [undefined, undefined],
+      ['"abc"', '"abc"'],
+      ['W/"abc"', '"abc"'],
+      ['W/"abc", "def"', '"abc", "def"'],
+      ['W/"abc", "abc"', '"abc"'],
+      ['"a,W/b"', '"a,W/b"'],
+      ['*', '*'],
+      [['W/"abc"', 'W/"def"'], '"abc", "def"'],
+    ];
+    for (const [value, expected] of table) assert.equal(strongIfNoneMatch(value), expected, JSON.stringify(value));
   });
 
   it('touches only HTML: scripts, styles, JSON, images, video and HLS keep their headers', () => {
@@ -86,11 +108,11 @@ describe('HTML no-transform: the header rules', () => {
     assert.equal(encoded.coding, 'gzip');
     assert.deepEqual(encoded.headers, { 'Content-Type': 'text/html', 'Cache-Control': 'no-transform', Vary: 'Accept-Encoding', 'Content-Encoding': 'gzip', ETag: 'W/"abc"' });
     assert.equal(htmlAnswer(request('gzip'), 404, html, true).coding, 'gzip', 'an HTML error page too');
+    assert.deepEqual(htmlAnswer(request('gzip', 'HEAD'), 200, html, true), encoded, 'a HEAD alike');
     for (const [status, headers, hasBody, what] of [
-      [200, html, false, 'no body (HEAD)'],
+      [200, html, false, 'no body'],
       [206, { ...html, 'Content-Range': 'bytes 0-9/20' }, true, 'a range'],
       [200, { ...html, 'Content-Range': 'bytes 0-9/20' }, true, 'a Content-Range'],
-      [304, html, true, 'not modified'],
       [204, html, true, 'no content'],
       [200, { ...html, 'Content-Encoding': 'br' }, true, 'already encoded'],
     ]) {
@@ -100,6 +122,30 @@ describe('HTML no-transform: the header rules', () => {
     }
     const already = htmlAnswer(request('gzip'), 200, { ...html, 'Content-Encoding': 'br' }, true);
     assert.deepEqual([already.headers['Content-Encoding'], already.headers.ETag, already.headers['Content-Length']], ['br', '"abc"', '10'], 'left as it was');
+  });
+
+  it('refuses a successful page the client accepts nothing of, and sends unencoded when it accepts that', () => {
+    const html = { 'Content-Type': 'text/html', ETag: '"abc"', 'Content-Length': '10' };
+    for (const accept of ['*;q=0', 'br;q=0, gzip;q=0, identity;q=0', 'identity;q=0']) {
+      for (const method of ['GET', 'HEAD']) assert.equal(htmlAnswer(request(accept, method), 200, html, true).refused, true, `${method} ${accept}`);
+      assert.equal(htmlAnswer(request(accept), 404, html, true).refused, undefined, `${accept}: an error page is sent as it is`);
+      assert.equal(htmlAnswer(request(accept), 200, { ...html, 'Content-Encoding': 'gzip' }, true).refused, undefined, `${accept}: already encoded`);
+      assert.equal(htmlAnswer(request(accept), 200, { 'Content-Type': 'text/css' }, true).refused, undefined, `${accept}: not HTML`);
+    }
+    const identity = htmlAnswer(request('br;q=0, gzip;q=0'), 200, html, true);
+    assert.deepEqual([identity.coding, identity.refused, identity.headers.ETag, identity.headers['Content-Length']], [undefined, undefined, '"abc"', '10']);
+  });
+
+  it('marks a 304 like the page it revalidates, with the weak tag back when the client held the encoded page', () => {
+    const ask = (ifNoneMatch) => ({ method: 'GET', headers: { 'accept-encoding': 'gzip', 'if-none-match': ifNoneMatch } });
+    const jellyfin = { 'Content-Type': 'text/html', ETag: '"abc"', 'Cache-Control': 'no-cache' };
+    assert.deepEqual(htmlAnswer(ask('W/"abc"'), 304, jellyfin, false), { headers: { 'Content-Type': 'text/html', 'Cache-Control': 'no-cache, no-transform', Vary: 'Accept-Encoding', ETag: 'W/"abc"' } });
+    assert.deepEqual(htmlAnswer(ask('"abc"'), 304, jellyfin, false).headers.ETag, '"abc"', 'the unencoded page keeps its strong tag');
+    // With no type, only a weakened tag says the 304 is for an HTML page; Cache-Control is never added to a 304.
+    assert.deepEqual(htmlAnswer(ask('W/"abc"'), 304, { ETag: '"abc"' }, false), { headers: { Vary: 'Accept-Encoding', ETag: 'W/"abc"' } });
+    assert.deepEqual(htmlAnswer(ask('"abc"'), 304, { ETag: '"abc"' }, false), { headers: { ETag: '"abc"' } });
+    assert.deepEqual(htmlAnswer(ask('W/"abc"'), 304, { 'Content-Type': 'text/html' }, false), { headers: { 'Content-Type': 'text/html', Vary: 'Accept-Encoding' } });
+    assert.equal(htmlAnswer(ask('W/"abc"'), 304, jellyfin, false).coding, undefined);
   });
 });
 
@@ -179,5 +225,94 @@ describe('HTML no-transform: what the gateway serves and relays', { timeout: 30_
       assert.deepEqual([answer.headers['content-encoding'], answer.headers['cache-control'], answer.headers.etag], ['gzip', 'no-cache, no-transform', '"jellyfin-web-etag"'], accept);
       assert.equal(gunzipSync(answer.body).toString('utf8'), JELLYFIN_WEB_PAGE, accept);
     }
+  });
+  it('negotiates a HEAD as its GET: the household app\'s page and Jellyfin web\'s page with the add-on, with the exact length', async (t) => {
+    for (const [app, pathname] of [[await startApp(t), PAGE], [await startApp(t, webWorld(), tvOn), '/web/index.html']]) {
+      for (const accept of ['gzip', 'br', 'gzip, deflate, br', undefined]) {
+        const headers = accept ? { 'Accept-Encoding': accept } : {};
+        const get = await app.get(pathname, { user: null, headers });
+        const head = await app.head(pathname, { user: null, headers });
+        const what = `${pathname} ${accept}`;
+        assert.equal(head.status, 200, what);
+        assert.equal(head.body.length, 0, what);
+        for (const name of ['content-encoding', 'content-length', 'etag', 'vary', 'cache-control', 'content-type', 'accept-ranges']) {
+          assert.equal(head.headers[name], get.headers[name], `${what}: ${name}`);
+        }
+        if (accept) assert.match(head.headers['content-encoding'] ?? '', /^(?:br|gzip)$/, what);
+      }
+    }
+  });
+
+  it('negotiates a relayed page\'s HEAD as its GET, with no length or ranges when JellyPass encodes it', async (t) => {
+    for (const app of [await startApp(t, webWorld()), await startApp(t, webWorld({ body: `<html><head></head><body>${'x'.repeat(1024 * 1024)}</body></html>` }), tvOn)]) {
+      for (const [accept, coding] of [['br', 'br'], ['gzip', 'gzip'], ['identity', undefined]]) {
+        const get = await app.get('/web/index.html', { user: null, headers: { 'Accept-Encoding': accept } });
+        const head = await app.head('/web/index.html', { user: null, headers: { 'Accept-Encoding': accept } });
+        assert.equal(head.status, 200, accept);
+        assert.equal(head.body.length, 0, accept);
+        assert.equal(head.headers['content-encoding'], coding, accept);
+        for (const name of ['content-encoding', 'etag', 'vary', 'cache-control', 'accept-ranges']) assert.equal(head.headers[name], get.headers[name], `${accept}: ${name}`);
+        if (accept === 'br') {
+          // Encoded by JellyPass (the fake Jellyfin only gzips): the length of its encoded body is not known.
+          assert.deepEqual([head.headers['content-length'], head.headers['accept-ranges'], head.headers.etag], [undefined, undefined, 'W/"jellyfin-web-etag"']);
+        }
+      }
+    }
+  });
+
+  it('answers a 406 when the client accepts the page in no coding at all, and the page unencoded when it accepts that', async (t) => {
+    const notAcceptable = (answer, what, method = 'GET') => {
+      assert.equal(answer.status, 406, what);
+      assert.equal(answer.headers['cache-control'], 'no-store', what);
+      assert.equal(answer.headers['content-type'], 'text/plain; charset=utf-8', what);
+      assert.equal(answer.headers['content-encoding'], undefined, what);
+      assert.equal(answer.headers.etag, undefined, what);
+      assert.equal(answer.text, method === 'HEAD' ? '' : 'Not Acceptable: this page is sent br, gzip or unencoded.\n', what);
+    };
+    const app = await startApp(t);
+    const tv = await startApp(t, webWorld(), tvOn);
+    const relay = await startApp(t, webWorld());
+    for (const accept of ['*;q=0', 'br;q=0, gzip;q=0, identity;q=0', 'identity;q=0']) {
+      for (const method of ['get', 'head']) {
+        notAcceptable(await app[method](PAGE, { user: null, headers: { 'Accept-Encoding': accept } }), `app ${method} ${accept}`, method.toUpperCase());
+        notAcceptable(await tv[method]('/web/index.html', { user: null, headers: { 'Accept-Encoding': accept } }), `tv ${method} ${accept}`, method.toUpperCase());
+      }
+    }
+    // Relayed: the fake Jellyfin gzips whenever "gzip" is named, q=0 or not, so only a refusal that does not name it reaches JellyPass unencoded.
+    for (const accept of ['*;q=0', 'identity;q=0']) {
+      for (const method of ['get', 'head']) notAcceptable(await relay[method]('/web/index.html', { user: null, headers: { 'Accept-Encoding': accept } }), `relay ${method} ${accept}`, method.toUpperCase());
+    }
+    // Only the page: the household app's script is sent as it is.
+    assert.equal((await app.get(`${PAGE}sw.js`, { user: null, headers: { 'Accept-Encoding': '*;q=0' } })).status, 200);
+    for (const [target, pathname] of [[app, PAGE], [tv, '/web/index.html']]) {
+      const identity = await target.get(pathname, { user: null, headers: { 'Accept-Encoding': 'br;q=0, gzip;q=0' } });
+      assert.deepEqual([identity.status, identity.headers['content-encoding']], [200, undefined], pathname);
+      assert.equal(Number(identity.headers['content-length']), identity.body.length, pathname);
+    }
+  });
+
+  it('revalidates a page JellyPass encoded: its weak tag is asked of Jellyfin as the strong one, and the 304 carries it back', async (t) => {
+    const app = await startApp(t, webWorld());
+    const page = await app.get('/web/index.html', { user: null, headers: { 'Accept-Encoding': 'br' } });
+    assert.deepEqual([page.status, page.headers['content-encoding'], page.headers.etag], [200, 'br', 'W/"jellyfin-web-etag"']);
+    for (const method of ['get', 'head']) {
+      const again = await app[method]('/web/index.html', { user: null, headers: { 'Accept-Encoding': 'br', 'If-None-Match': page.headers.etag } });
+      assert.equal(again.status, 304, method);
+      assert.equal(app.jellyfin.requests.at(-1).headers['if-none-match'], '"jellyfin-web-etag"', `${method}: asked with the strong tag`);
+      assert.equal(again.headers.etag, 'W/"jellyfin-web-etag"', method);
+      assert.equal(again.headers.vary, 'Accept-Encoding', method);
+      assert.equal(again.headers['cache-control'], 'no-cache, no-transform', method);
+      assert.equal(again.headers['content-encoding'], undefined, method);
+      assert.equal(again.headers['content-length'], undefined, method);
+      assert.equal(again.body.length, 0, method);
+    }
+    // The page Jellyfin encoded keeps its strong tag, and revalidates with it.
+    const gzipped = await app.get('/web/index.html', { user: null, headers: { 'Accept-Encoding': 'gzip' } });
+    const strong = await app.get('/web/index.html', { user: null, headers: { 'Accept-Encoding': 'gzip', 'If-None-Match': gzipped.headers.etag } });
+    assert.deepEqual([strong.status, strong.headers.etag], [304, '"jellyfin-web-etag"']);
+    // A changed page is sent whole again.
+    const stale = await app.get('/web/index.html', { user: null, headers: { 'Accept-Encoding': 'br', 'If-None-Match': 'W/"older"' } });
+    assert.deepEqual([stale.status, stale.headers.etag], [200, 'W/"jellyfin-web-etag"']);
+    assert.equal(brotliDecompressSync(stale.body).toString('utf8'), JELLYFIN_WEB_PAGE);
   });
 });

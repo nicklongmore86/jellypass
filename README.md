@@ -384,7 +384,10 @@ unchanged. A CDN that honours it adds nothing to the page.
 Such a CDN also stops compressing those pages, so JellyPass compresses them
 itself: with br or gzip, whichever the client prefers, plus
 `Vary: Accept-Encoding`. A page Jellyfin has already encoded is passed
-through as it is. Nothing else is touched: scripts, styles, images, JSON,
+through as it is. A page JellyPass compresses carries Jellyfin's `ETag` made
+weak (`W/"…"`); JellyPass revalidates it with Jellyfin by the strong tag, so
+the browser still gets a `304`. A client that accepts no coding at all, not
+even unencoded (`Accept-Encoding: *;q=0`), gets a `406`. Nothing else is touched: scripts, styles, images, JSON,
 video and HLS keep their headers, and the CDN compresses them as before. On a
 reverse proxy in front of JellyPass, don't strip `no-transform` from
 `Cache-Control`; it may compress the pages again only if it leaves
