@@ -3,14 +3,21 @@
 // readHouseholdAddress, and neither ever signs anyone in: a typed address goes to the profile picker, and a link is
 // shown for the member to confirm first. A link carries only the address, never a token or a name.
 
-import { parseHouseholdAddress, readHouseholdAddress, type AddressReading, type HouseholdAddress } from '../api/address';
+import {
+  parseHouseholdAddress,
+  readHouseholdAddress,
+  trimPasteEnds,
+  type AddressReading,
+  type HouseholdAddress,
+} from '../api/address';
 
 /**
- * A typed or pasted address: `https://` is added when no scheme was given; anything else is as the parser takes it.
+ * A typed or pasted address: `https://` is added when no scheme was given; anything else is as the parser takes it,
+ * with the same ends trimmed (ASCII space, tab, CR and LF only) and every other control or invisible character refused.
  * Only `<scheme>://` counts as a scheme, so `films.example.net:8443` is a host and port, not a `films.example.net:` URL.
  */
 export function readTypedAddress(input: string): AddressReading {
-  const trimmed = input.trim();
+  const trimmed = trimPasteEnds(input);
   return readHouseholdAddress(/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`);
 }
 

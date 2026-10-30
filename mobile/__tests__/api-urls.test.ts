@@ -14,6 +14,15 @@ import {
 const origin = 'https://media.example.com';
 const itemId = '0123456789abcdef0123456789abcdef';
 
+/** Control and invisible characters an address never holds, not even at its ends. */
+const INVISIBLE = [
+  '\u0000', '\u0001', '\u000b', '\u000c', '\u001b', '\u001f', '\u007f', '\u0080', '\u0085', '\u009f', '\u00a0',
+  '\u1680', '\u2000', '\u200a', '\u200b', '\u200c', '\u200d', '\u200e', '\u200f', '\u2028', '\u2029', '\u202a',
+  '\u202b', '\u202c', '\u202d', '\u202e', '\u202f', '\u205f', '\u2060', '\u2066', '\u2067', '\u2068', '\u2069',
+  '\u3000', '\ufeff',
+];
+const codeOf = (character: string) => `U+${character.charCodeAt(0).toString(16).padStart(4, '0').toUpperCase()}`;
+
 describe('a household address', () => {
   it.each([
     ['https://media.example.com', 'media.example.com'],
@@ -33,6 +42,11 @@ describe('a household address', () => {
     // The demo household App Review signs in to, and every address older app versions took.
     ['https://jelly-demo.jellypass.app', 'jelly-demo.jellypass.app'],
     ['https://jelly-household.example.test', 'jelly-household.example.test'],
+    // A paste from notes or chat: ASCII space, tab, CR and LF at the ends only.
+    ['https://media.example.com\n', 'media.example.com'],
+    ['https://media.example.com\r\n', 'media.example.com'],
+    ['\thttps://media.example.com', 'media.example.com'],
+    [' \r\n\thttps://media.example.com/ \t\r\n', 'media.example.com'],
   ])('takes %j as %s', (input, host) => {
     expect(parseHouseholdAddress(input)).toEqual({ origin: `https://${host}`, host });
     expect(readHouseholdAddress(input)).toEqual({ address: { origin: `https://${host}`, host } });
@@ -97,6 +111,49 @@ describe('a household address', () => {
   ])('refuses %j (%s)', (input, problem) => {
     expect(parseHouseholdAddress(input)).toBeUndefined();
     expect(readHouseholdAddress(input)).toEqual({ problem });
+  });
+
+  it.each(INVISIBLE.map((character) => [codeOf(character), character]))('refuses %s at the start, the end or in the middle', (_, character) => {
+    for (const input of [
+      `${character}https://media.example.com`,
+      `\n${character}https://media.example.com`,
+      `https://media.example.com${character}`,
+      `https://media.example.com/${character}\r\n`,
+      `https://media.${character}example.com`,
+      `https://media.example.com${character}:8443`,
+      `htt${character}ps://media.example.com`,
+    ]) {
+      expect(readHouseholdAddress(input)).toEqual({ problem: 'invalid' });
+    }
+  });
+
+  it.each([
+    // Characters that lower-case or upper-case to ASCII: refused before any case is folded.
+    ['https://\u212a.com', 'U+212A KELVIN SIGN'],
+    ['https://media.\u212axample.com', 'U+212A KELVIN SIGN'],
+    ['https://\u0130mages.example.com', 'U+0130 LATIN CAPITAL LETTER I WITH DOT ABOVE'],
+    ['https://media.example.co\u017f', 'U+017F LATIN SMALL LETTER LONG S'],
+    ['https://med\u0131a.example.com', 'U+0131 LATIN SMALL LETTER DOTLESS I'],
+    ['https://\ufb01lms.example.net', 'U+FB01 LATIN SMALL LIGATURE FI'],
+    ['https://\u212bngstrom.example.com', 'U+212B ANGSTROM SIGN'],
+    ['http\u017f://media.example.com', 'U+017F in the scheme'],
+    ['HTTP\u017f://media.example.com', 'U+017F in an upper-case scheme'],
+  ])('refuses %j (%s) as unicode', (input) => {
+    expect(readHouseholdAddress(input)).toEqual({ problem: 'unicode' });
+  });
+
+  it('refuses every character that case-folds to ASCII, wherever it is', () => {
+    const folding: string[] = [];
+    for (let code = 0x80; code <= 0xffff; code += 1) {
+      if (code >= 0xd800 && code <= 0xdfff) continue;
+      const character = String.fromCharCode(code);
+      if (/[a-z]/i.test(character.toLowerCase() + character.toUpperCase())) folding.push(character);
+    }
+    expect(folding.length).toBeGreaterThan(5);
+    for (const character of folding) {
+      expect(readHouseholdAddress(`https://media${character}.example.com`)).toEqual({ problem: 'unicode' });
+      expect(readHouseholdAddress(`https://media.example.co${character}`)).toEqual({ problem: 'unicode' });
+    }
   });
 
   it('is frozen', () => {
