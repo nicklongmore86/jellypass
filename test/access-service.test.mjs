@@ -162,10 +162,10 @@ describe('state migration', () => {
     assert.deepEqual(grant.groupIds, []);
     assert.equal(grant.sync.state, 'pending');
     assert.deepEqual(grant.manualUserIds, []);
-    assert.equal(JSON.parse(await readFile(file, 'utf8')).version, 7);
+    assert.equal(JSON.parse(await readFile(file, 'utf8')).version, 8);
   });
 
-  it('adds manual audiences and catalog while migrating v2 state to v7', async (t) => {
+  it('adds manual audiences and catalog while migrating v2 state to v8', async (t) => {
     const file = await stateFile(t);
     await writeFile(file, JSON.stringify({
       version: 2,
@@ -181,12 +181,12 @@ describe('state migration', () => {
     await store.load();
     assert.deepEqual(store.get('item-1').manualUserIds, []);
     const migrated = JSON.parse(await readFile(file, 'utf8'));
-    assert.equal(migrated.version, 7);
+    assert.equal(migrated.version, 8);
     assert.deepEqual(migrated.catalog.items, {});
     assert.equal('claims' in migrated, false);
   });
 
-  it('preserves v3 grants while adding the v7 catalog and passwordless list', async (t) => {
+  it('preserves v3 grants while adding the v7 catalog (now v8) and passwordless list', async (t) => {
     const file = await stateFile(t);
     await writeFile(file, JSON.stringify({
       version: 3,
@@ -202,7 +202,7 @@ describe('state migration', () => {
     await store.load();
     assert.deepEqual(store.get('item-1').manualUserIds, ['bob-id']);
     const migrated = JSON.parse(await readFile(file, 'utf8'));
-    assert.equal(migrated.version, 7);
+    assert.equal(migrated.version, 8);
     assert.deepEqual(migrated.catalog, { items: {} });
     assert.equal('claims' in migrated, false);
     assert.deepEqual(migrated.passwordlessUserIds, []);
@@ -214,19 +214,19 @@ describe('state migration', () => {
     const store = new GrantStore(file);
     await store.load();
     const migrated = JSON.parse(await readFile(file, 'utf8'));
-    assert.equal(migrated.version, 7);
+    assert.equal(migrated.version, 8);
     assert.equal('claims' in migrated, false);
     assert.deepEqual(migrated.passwordlessUserIds, []);
   });
 
-  it('migrates v5 state to v7, dropping claims and adding an empty passwordless user list', async (t) => {
+  it('migrates v5 state to v8, dropping claims and adding an empty passwordless user list', async (t) => {
     const file = await stateFile(t);
     const claims = { 'movie:1': { mediaType: 'movie', tmdbId: 1, userIds: ['alice-id'], updatedAt: '2026-01-01T00:00:00.000Z' } };
     await writeFile(file, JSON.stringify({ version: 5, grants: {}, groups: {}, catalog: { items: {} }, claims }));
     const store = new GrantStore(file);
     await store.load();
     const migrated = JSON.parse(await readFile(file, 'utf8'));
-    assert.equal(migrated.version, 7);
+    assert.equal(migrated.version, 8);
     assert.equal('claims' in migrated, false);
     assert.deepEqual(migrated.passwordlessUserIds, []);
     await store.setUserPasswordless('Alice-ID', true);
@@ -256,19 +256,19 @@ describe('state migration', () => {
       const store = new GrantStore(file);
       await store.load();
       assert.deepEqual(store.get('item-1').owners, ['alice-id'], `v${version}`);
-      assert.equal(JSON.parse(await readFile(file, 'utf8')).version, 7);
+      assert.equal(JSON.parse(await readFile(file, 'utf8')).version, 8);
     }
   });
 
   it('rejects a newer state schema and leaves the file untouched', async (t) => {
     const file = await stateFile(t);
-    const contents = JSON.stringify({ version: 8, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], future: true });
+    const contents = JSON.stringify({ version: 9, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], future: true });
     await writeFile(file, contents);
     await assert.rejects(new GrantStore(file).load(), /unsupported state schema version/);
     assert.equal(await readFile(file, 'utf8'), contents);
   });
 
-  it('migrates v6 state to v7 by dropping claims and keeping grants that came from claims', async (t) => {
+  it('migrates v6 state to v8 by dropping claims and keeping grants that came from claims', async (t) => {
     const file = await stateFile(t);
     // Bob claimed item-1 before it became available, so 1.1.0 added him as a manual user.
     const grants = {
@@ -291,7 +291,7 @@ describe('state migration', () => {
     await store.load();
 
     const migrated = JSON.parse(await readFile(file, 'utf8'));
-    assert.equal(migrated.version, 7);
+    assert.equal(migrated.version, 8);
     assert.equal('claims' in migrated, false);
     assert.deepEqual(migrated.grants, grants);
     assert.deepEqual(migrated.passwordlessUserIds, ['carol-id']);

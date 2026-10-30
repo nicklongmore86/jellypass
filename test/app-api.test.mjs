@@ -29,6 +29,8 @@ import {
   TMDB_KEY,
   T_MOVIE,
   T_TV,
+  authorization,
+  get,
   mediaInfo,
   otherHouseholdWorlds,
   seerrRequest,
@@ -1008,7 +1010,7 @@ describe('household app API: one cache per household', { timeout: 120_000 }, () 
     await app.get(`${APP}/movie/${T_MOVIE}`);
     assert.equal(titleReads(), titles + 1);
     await assert.rejects(app.store.upsertGroup({ id: 'one-too-many', name: 'Too many', userIds: [] }), /groups must be at most 100/);
-    const refusal = await fetch(`http://127.0.0.1:${app.port}/v1/groups/one-too-many`, {
+    const refusal = await fetch(`http://127.0.0.1:${app.adminPort}/v1/groups/one-too-many`, {
       method: 'PUT',
       headers: { Authorization: 'Bearer admin-secret', 'Content-Type': 'application/json' },
       body: JSON.stringify({ name: 'Too many', userIds: [] }),
@@ -1067,7 +1069,7 @@ function stateWithGroups(count) {
 }
 
 describe('household limit: only while the household app is enabled', { timeout: 60_000 }, () => {
-  const putGroup = (app, id) => fetch(`http://127.0.0.1:${app.port}/v1/groups/${id}`, {
+  const putGroup = (app, id) => fetch(`http://127.0.0.1:${app.adminPort}/v1/groups/${id}`, {
     method: 'PUT',
     headers: { Authorization: 'Bearer admin-secret', 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: id, userIds: [] }),
@@ -1306,13 +1308,15 @@ describe('household app API: sessions', { timeout: 20_000 }, () => {
 
   it('is never served on the admin host', async (t) => {
     const app = await startApp(t);
+    // The admin listener, whatever the host; on the member listener a host that is no household's is a fixed 421.
     for (const host of ['jellypass.example.test', '127.0.0.1']) {
-      const asMember = await app.get(`${APP}/me`, { host });
+      const asMember = await get(app.adminPort, `${APP}/me`, { Host: host, Authorization: authorization(ALICE) });
       assert.equal(asMember.status, 401);
       assert.equal(asMember.text, UNAUTHORIZED);
-      const asAdmin = await app.get(`${APP}/search?q=synthetic`, { host, user: null, headers: { Authorization: 'Bearer admin-secret' } });
+      const asAdmin = await get(app.adminPort, `${APP}/search?q=synthetic`, { Host: host, Authorization: 'Bearer admin-secret' });
       assert.equal(asAdmin.status, 404);
       assert.deepEqual(asAdmin.json(), { error: 'not_found' });
+      assert.equal((await get(app.port, `${APP}/me`, { Host: host, Authorization: authorization(ALICE) })).status, 421);
     }
     assert.equal(app.seerr.calls.length, 0);
     assert.equal(app.tmdb.calls.length, 0);

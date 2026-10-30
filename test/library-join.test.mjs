@@ -4,7 +4,7 @@ import path from 'node:path';
 import { describe, it } from 'node:test';
 import { AccessService } from '../dist/access-service.js';
 import { JellyfinClient } from '../dist/jellyfin.js';
-import { makeServer } from '../dist/server.js';
+import { makeServers } from '../dist/server.js';
 import { BackgroundTasks, createShutdown } from '../dist/shutdown.js';
 import { GrantStore } from '../dist/store.js';
 import { createFakeJellyfin } from './support/fake-jellyfin.mjs';
@@ -46,17 +46,18 @@ describe('household "Add to my library"', { timeout: 10_000 }, () => {
         return running;
       },
     };
-    const server = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' }, undefined, {
+    const { member: server, admin } = makeServers(service, { webhook: 'webhook-secret', admin: 'admin-secret' }, undefined, {
       ...(trustedProxies ? { trustedProxies } : {}),
       background: tracked,
       householdGateway: { jellyfinUrl: jellyfin.url, domain: 'example.test', hostPrefix: 'jelly-' },
     });
-    await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
-    t.after(() => {
-      server.closeAllConnections();
-      return new Promise((resolve) => server.close(resolve));
-    });
+    await Promise.all([server, admin].map((listener) => new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve))));
+    t.after(() => Promise.all([server, admin].map((listener) => {
+      listener.closeAllConnections();
+      return new Promise((resolve) => listener.close(resolve));
+    })));
     const baseUrl = `http://127.0.0.1:${server.address().port}`;
+    const adminUrl = `http://127.0.0.1:${admin.address().port}`;
     // Household members sign in on their household hostname; Dave, in no household, signs in on Jellyfin itself.
     const login = async (username) => {
       const host = { Alice: HOUSEHOLD_HOST, Bob: HOUSEHOLD_HOST, Carol: 'jelly-cottage.example.test' }[username];
@@ -74,7 +75,7 @@ describe('household "Add to my library"', { timeout: 10_000 }, () => {
       body: typeof body === 'string' ? body : JSON.stringify(body),
     });
     const grantForAlice = async (itemId = 'item-1', requestId = '17') => {
-      const response = await fetch(`${baseUrl}/webhooks/seerr`, {
+      const response = await fetch(`${adminUrl}/webhooks/seerr`, {
         method: 'POST',
         headers: { Authorization: 'Bearer webhook-secret', 'Content-Type': 'application/json' },
         body: JSON.stringify({

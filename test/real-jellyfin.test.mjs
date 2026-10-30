@@ -6,7 +6,7 @@ import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
 import { AccessService, accessTag } from '../dist/access-service.js';
 import { JellyfinClient } from '../dist/jellyfin.js';
-import { makeServer } from '../dist/server.js';
+import { makeServers } from '../dist/server.js';
 import { GrantStore } from '../dist/store.js';
 import { createSignInApi, SignInError } from '../dist/app-js/api.js';
 import { clearSignIn, deviceId, jellyfinToken, storeSignIn } from '../dist/app-js/session.js';
@@ -31,7 +31,7 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     await store.load();
     client = new JellyfinClient(baseUrl, fixture.token);
     // No Seerr client: webhooks must carry an HD event to be trusted.
-    server = makeServer(new AccessService(client, store), { webhook: webhookToken, admin: 'real-admin-secret' });
+    server = makeServers(new AccessService(client, store), { webhook: webhookToken, admin: 'real-admin-secret' }).admin;
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   });
 
@@ -104,12 +104,10 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     await joinStore.upsertGroup({ id: 'realhouse', name: 'Real House', userIds: [fixture.aliceId] });
     const seerr = { getJellyfinItemId: async (mediaType, tmdbId) => (mediaType === 'movie' && tmdbId === 603 ? fixture.itemId : undefined) };
     const service = new AccessService(client, joinStore, undefined, seerr);
-    const gateway = makeServer(service, { webhook: webhookToken, admin: 'real-admin-secret' }, undefined, {
+    const gateway = await startGateway(t, service, {
       householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-' },
     });
-    await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
-    t.after(() => new Promise((resolve) => gateway.close(resolve)));
-    const granted = await sendWebhook(gateway, available('real-18', 'Movie Request Now Available'));
+    const granted = await sendWebhook(gateway.admin, available('real-18', 'Movie Request Now Available'));
     assert.equal(granted.status, 200, JSON.stringify(granted.body));
     assert.ok(user(await client.getUsers(), fixture.bobId).Policy.BlockedTags.includes(accessTag(fixture.itemId)));
 
@@ -151,7 +149,7 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     const tmdb = await createFakeTmdb(state);
     t.after(() => Promise.all([seerr.close(), tmdb.close()]));
     const admin = new SeerrClient(seerr.url, 'seerr-key');
-    const gateway = makeServer(new AccessService(client, appStore), { webhook: webhookToken, admin: 'real-admin-secret' }, undefined, {
+    const gateway = await startGateway(t, new AccessService(client, appStore), {
       householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-' },
       householdApp: {
         catalogue: new TmdbClient(TMDB_KEY, { baseUrl: tmdb.url }),
@@ -161,8 +159,6 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
         blocklistTtlMs: 0,
       },
     });
-    await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
-    t.after(() => new Promise((resolve) => gateway.close(resolve)));
     const bob = await request(baseUrl, '/Users/AuthenticateByName', {
       method: 'POST',
       authorization: 'MediaBrowser Client="jfa-test", Device="ci", DeviceId="jfa-real-app", Version="1.0"',
@@ -236,7 +232,7 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     const tmdb = await createFakeTmdb(state);
     t.after(() => Promise.all([seerr.close(), tmdb.close()]));
     const admin = new SeerrClient(seerr.url, 'seerr-key');
-    const gateway = makeServer(new AccessService(client, appStore), { webhook: webhookToken, admin: 'real-admin-secret' }, undefined, {
+    const gateway = await startGateway(t, new AccessService(client, appStore), {
       householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-' },
       householdApp: {
         catalogue: new TmdbClient(TMDB_KEY, { baseUrl: tmdb.url }),
@@ -244,8 +240,6 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
         members: new SeerrUserMap(admin),
       },
     });
-    await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
-    t.after(() => new Promise((resolve) => gateway.close(resolve)));
     const port = gateway.address().port;
     const host = 'jelly-signinhouse.example.test';
     const origin = `https://${host}`;
@@ -321,7 +315,7 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     t.after(() => Promise.all([seerr.close(), tmdb.close()]));
     const admin = new SeerrClient(seerr.url, 'seerr-key');
     const DELAY = 200;
-    const gateway = makeServer(new AccessService(client, appStore), { webhook: webhookToken, admin: 'real-admin-secret' }, undefined, {
+    const gateway = await startGateway(t, new AccessService(client, appStore), {
       householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: DELAY },
       householdApp: {
         catalogue: new TmdbClient(TMDB_KEY, { baseUrl: tmdb.url }),
@@ -329,8 +323,6 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
         members: new SeerrUserMap(admin),
       },
     });
-    await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
-    t.after(() => new Promise((resolve) => gateway.close(resolve)));
     const port = gateway.address().port;
     const host = 'jelly-hiddenhouse.example.test';
     const asPage = async (pathname, init = {}) => {
@@ -418,11 +410,9 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     const householdStore = new GrantStore(path.join(await makeTempDir(t, 'jfa-real-quick-connect-'), 'grants.json'));
     await householdStore.load();
     await householdStore.upsertGroup({ id: 'quickhouse', name: 'Quick House', userIds: [fixture.bobId] });
-    const gateway = makeServer(new AccessService(client, householdStore), { webhook: webhookToken, admin: 'real-admin-secret' }, undefined, {
+    const gateway = await startGateway(t, new AccessService(client, householdStore), {
       householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-' },
     });
-    await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
-    t.after(() => new Promise((resolve) => gateway.close(resolve)));
     const port = gateway.address().port;
     const host = { Host: 'jelly-quickhouse.example.test', Authorization: WEB };
     for (const pathname of ['/QuickConnect/Enabled', '/emby/QuickConnect/Enabled/', '/QuickConnect/%45nabled']) {
@@ -454,11 +444,9 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     await householdStore.load();
     await householdStore.upsertGroup({ id: 'tvhouse', name: 'TV House', userIds: [fixture.bobId] });
     await householdStore.upsertGroup({ id: 'otherhouse', name: 'Other House', userIds: [] });
-    const gateway = makeServer(new AccessService(client, householdStore), { webhook: webhookToken, admin: 'real-admin-secret' }, undefined, {
+    const gateway = await startGateway(t, new AccessService(client, householdStore), {
       householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-', tvAddon: { households: ['tvhouse'] } },
     });
-    await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
-    t.after(() => new Promise((resolve) => gateway.close(resolve)));
     const port = gateway.address().port;
     const direct = await new Promise((resolve, reject) => {
       httpRequest(`${baseUrl}/web/index.html`, (response) => {
@@ -508,11 +496,9 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     const householdStore = new GrantStore(path.join(await makeTempDir(t, 'jfa-real-paths-'), 'grants.json'));
     await householdStore.load();
     await householdStore.upsertGroup({ id: 'pathhouse', name: 'Path House', userIds: [fixture.bobId] });
-    const gateway = makeServer(new AccessService(client, householdStore), { webhook: webhookToken, admin: 'real-admin-secret' }, undefined, {
+    const gateway = await startGateway(t, new AccessService(client, householdStore), {
       householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: 0 },
     });
-    await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
-    t.after(() => new Promise((resolve) => gateway.close(resolve)));
     const port = gateway.address().port;
     const host = { Host: 'jelly-pathhouse.example.test', Authorization: WEB };
     // Alice is no member here: refused in every spelling, by name or by ID, as on the plain path.
@@ -568,11 +554,9 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     const householdStore = new GrantStore(path.join(await makeTempDir(t, 'jfa-real-media-'), 'grants.json'));
     await householdStore.load();
     await householdStore.upsertGroup({ id: 'cliphouse', name: 'Clip House', userIds: [fixture.aliceId, fixture.bobId] });
-    const gateway = makeServer(new AccessService(client, householdStore), { webhook: webhookToken, admin: 'real-admin-secret' }, undefined, {
+    const gateway = await startGateway(t, new AccessService(client, householdStore), {
       householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: 0 },
     });
-    await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
-    t.after(() => new Promise((resolve) => gateway.close(resolve)));
     const port = gateway.address().port;
     const host = 'jelly-cliphouse.example.test';
     const signIn = async (name) => {
@@ -657,11 +641,9 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     const householdStore = new GrantStore(path.join(await makeTempDir(t, 'jfa-real-userid-'), 'grants.json'));
     await householdStore.load();
     await householdStore.upsertGroup({ id: 'listhouse', name: 'List House', userIds: [fixture.aliceId, fixture.bobId] });
-    const gateway = makeServer(new AccessService(client, householdStore), { webhook: webhookToken, admin: 'real-admin-secret' }, undefined, {
+    const gateway = await startGateway(t, new AccessService(client, householdStore), {
       householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: 0 },
     });
-    await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
-    t.after(() => new Promise((resolve) => gateway.close(resolve)));
     const port = gateway.address().port;
     const host = 'jelly-listhouse.example.test';
     const signIn = async (name) => {
@@ -729,11 +711,9 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     const householdStore = new GrantStore(path.join(await makeTempDir(t, 'jfa-real-share-'), 'grants.json'));
     await householdStore.load();
     await householdStore.upsertGroup({ id: 'sharehouse', name: 'Share House', userIds: [fixture.aliceId, fixture.bobId] });
-    const gateway = makeServer(new AccessService(client, householdStore), { webhook: webhookToken, admin: 'real-admin-secret' }, undefined, {
+    const gateway = await startGateway(t, new AccessService(client, householdStore), {
       householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: 0 },
     });
-    await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
-    t.after(() => new Promise((resolve) => gateway.close(resolve)));
     const port = gateway.address().port;
     const host = 'jelly-sharehouse.example.test';
     const signIn = async (name) => {
@@ -796,25 +776,26 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     assert.equal((await send('GET', items, tokens.bob)).status, 404);
   });
 
-  it('shows Alice in grove only grove\'s users, sessions and SyncPlay groups, and refuses her token on another household\'s host', async (t) => {
+  it('shows Alice in grove (at mapped hostnames) only grove\'s users, sessions and SyncPlay groups, and refuses her token on another household\'s host', async (t) => {
     const WEB = 'MediaBrowser Client="Jellyfin Web", Device="Firefox", DeviceId="jellypass-real-scope", Version="10.11.3"';
     const householdStore = new GrantStore(path.join(await makeTempDir(t, 'jfa-real-scope-'), 'grants.json'));
     await householdStore.load();
     await householdStore.upsertGroup({ id: 'grove', name: 'Grove', userIds: [fixture.aliceId] });
     await householdStore.upsertGroup({ id: 'heath', name: 'Heath', userIds: [fixture.bobId] });
+    // Grove is at ordinary hostnames from the address map (no naming rule), heath at its legacy generated one.
+    await householdStore.setHouseholdAddresses('grove', { origin: 'https://media.example.com', aliases: ['https://films.example.net:8443'] });
     // With the household app on, as deployed, sign-out is the household host's own route.
     const seerr = await createFakeSeerr(world());
     const tmdb = await createFakeTmdb(world());
     t.after(() => Promise.all([seerr.close(), tmdb.close()]));
     const admin = new SeerrClient(seerr.url, 'seerr-key');
-    const gateway = makeServer(new AccessService(client, householdStore), { webhook: webhookToken, admin: 'real-admin-secret' }, undefined, {
+    const gateway = await startGateway(t, new AccessService(client, householdStore), {
       householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: 0 },
       householdApp: { catalogue: new TmdbClient(TMDB_KEY, { baseUrl: tmdb.url }), blocklist: admin, members: new SeerrUserMap(admin) },
     });
-    await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
-    t.after(() => new Promise((resolve) => gateway.close(resolve)));
     const port = gateway.address().port;
-    const grove = 'jelly-grove.example.test';
+    const grove = 'media.example.com';
+    const groveAlias = 'films.example.net:8443';
     const heath = 'jelly-heath.example.test';
     const signIn = async (host, name, device) => {
       const answer = await postWithHeaders(port, '/Users/AuthenticateByName', { Host: host, Authorization: WEB.replace('jellypass-real-scope', device) }, { Username: name, Pw: '' });
@@ -837,6 +818,15 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
       assert.deepEqual(answer.json().map((user) => user.Name), own, pathname);
     }
     assert.deepEqual((await getWithHeaders(port, '/Users', as(grove, alice))).json().map((user) => user.Name), ['Alice']);
+    // The alias is the same household; a hostname in no household's map is no household's, and never the admin site.
+    assert.deepEqual((await getWithHeaders(port, '/Users', as(groveAlias, alice))).json().map((user) => user.Name), ['Alice']);
+    assert.deepEqual((await getWithHeaders(port, '/Users/Public', { Host: grove })).json().map((user) => user.Name).includes('Bob'), false);
+    for (const other of ['jelly-grove.example.test.example.org', 'films.example.net', 'unknown.example.com']) {
+      const answer = await getWithHeaders(port, '/Users', as(other, alice));
+      assert.deepEqual([answer.status, answer.text], [421, '{"error":"unknown_host"}'], other);
+    }
+    const me = await getWithHeaders(port, '/jellypass/app/v1/me', { Host: groveAlias, Authorization: `MediaBrowser Token="${alice}"` });
+    assert.deepEqual([me.status, me.json().household], [200, 'Grove'], me.text);
 
     // Bob's SyncPlay group, listed with his name to anyone at Jellyfin, is not grove's.
     const newGroup = await getWithHeaders(new URL(baseUrl).port, '/SyncPlay/New', { Host: new URL(baseUrl).host, 'X-Emby-Token': bob, 'Content-Type': 'application/json' }, { method: 'POST', body: JSON.stringify({ GroupName: 'Bob group' }) });
@@ -891,6 +881,8 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
       assert.match(await rawUpgrade(port, `/socket?api_key=${token}&deviceId=jellypass-real-scope`, heath), /^HTTP\/1\.1 401 /);
     }
     assert.match(await rawUpgrade(port, `/socket?api_key=${alice}&deviceId=jellypass-real-scope`, grove), /^HTTP\/1\.1 101 /);
+    assert.match(await rawUpgrade(port, `/socket?api_key=${alice}&deviceId=jellypass-real-scope`, groveAlias), /^HTTP\/1\.1 101 /);
+    assert.match(await rawUpgrade(port, `/socket?api_key=${bob}&deviceId=jellypass-real-scope`, grove), /^HTTP\/1\.1 401 /);
 
     // Signing Bob out through grove's host gets the answer a token Jellyfin never issued gets, and revokes nothing.
     const signOut = (host, token) => postWithHeaders(port, '/Sessions/Logout', as(host, token), undefined);
@@ -945,6 +937,20 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     assert.deepEqual(await client.existingItems('movie', []), []);
   });
 });
+
+/**
+ * Both listeners for `service`, listening and closed after the test: the member listener (household hosts), with the
+ * admin listener as its `admin`.
+ */
+async function startGateway(t, service, options) {
+  const { member, admin } = makeServers(service, { webhook: webhookToken, admin: 'real-admin-secret' }, undefined, options);
+  await Promise.all([member, admin].map((server) => new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))));
+  t.after(() => Promise.all([member, admin].map((server) => {
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  })));
+  return Object.assign(member, { admin });
+}
 
 function postWithHost(server, pathname, host, authorization, body) {
   return new Promise((resolve, reject) => {

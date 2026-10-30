@@ -10,7 +10,7 @@ const BASE = {
   SEERR_URL: 'http://seerr.test',
   SEERR_API_KEY: 'seerr-key',
 };
-const KEYS = [...Object.keys(BASE), 'REQUEST_BACKFILL_SINCE', 'REQUEST_BACKFILL_ENABLED', 'LOG_LEVEL', 'WS_IDLE_TIMEOUT_MS', 'WS_UPSTREAM_IDLE_TIMEOUT_MS', 'JELLYQUEST_BRIDGE_ENABLED', 'TRUSTED_PROXIES', 'TMDB_API_KEY', 'HOUSEHOLD_APP_ENABLED', 'HOUSEHOLD_DOMAIN', 'TV_ADDON_ENABLED', 'TV_ADDON_HOUSEHOLDS'];
+const KEYS = [...Object.keys(BASE), 'REQUEST_BACKFILL_SINCE', 'REQUEST_BACKFILL_ENABLED', 'LOG_LEVEL', 'WS_IDLE_TIMEOUT_MS', 'WS_UPSTREAM_IDLE_TIMEOUT_MS', 'JELLYQUEST_BRIDGE_ENABLED', 'TRUSTED_PROXIES', 'TMDB_API_KEY', 'HOUSEHOLD_APP_ENABLED', 'HOUSEHOLD_DOMAIN', 'HOUSEHOLD_HOST_PREFIX', 'HOUSEHOLD_GATEWAY_ENABLED', 'TV_ADDON_ENABLED', 'TV_ADDON_HOUSEHOLDS', 'HOST', 'PORT', 'ADMIN_HOST', 'ADMIN_PORT', 'LEGACY_WEBHOOK_ON_MEMBER_PORT'];
 const saved = Object.fromEntries(KEYS.map((key) => [key, process.env[key]]));
 
 function load(overrides = {}) {
@@ -50,12 +50,12 @@ describe('household app configuration', () => {
 
   it('is off by default, even with everything it needs configured', () => {
     assert.equal(load().householdAppEnabled, false);
-    assert.equal(load({ HOUSEHOLD_DOMAIN: 'example.test', TMDB_API_KEY: TMDB_V3_KEY }).householdAppEnabled, false);
+    assert.equal(load({ HOUSEHOLD_DOMAIN: 'example.test', TRUSTED_PROXIES: '192.0.2.1', TMDB_API_KEY: TMDB_V3_KEY }).householdAppEnabled, false);
     assert.equal(load({ HOUSEHOLD_APP_ENABLED: 'false' }).householdAppEnabled, false);
   });
 
   it('needs household hosts, Seerr and TMDB when enabled', () => {
-    const ready = { HOUSEHOLD_APP_ENABLED: 'true', HOUSEHOLD_DOMAIN: 'example.test', TMDB_API_KEY: TMDB_V3_KEY };
+    const ready = { HOUSEHOLD_APP_ENABLED: 'true', HOUSEHOLD_DOMAIN: 'example.test', TRUSTED_PROXIES: '192.0.2.1', TMDB_API_KEY: TMDB_V3_KEY };
     assert.equal(load(ready).householdAppEnabled, true);
     assert.equal(load({ ...ready, HOUSEHOLD_APP_ENABLED: '1' }).householdAppEnabled, true);
     for (const missing of ['HOUSEHOLD_DOMAIN', 'TMDB_API_KEY']) {
@@ -66,9 +66,44 @@ describe('household app configuration', () => {
   });
 });
 
+describe('listeners and the household gateway', () => {
+  afterEach(restoreEnvironment);
+
+  it('puts the admin listener on 127.0.0.1:8788 and the member listener on 0.0.0.0:8787 by default', () => {
+    const config = load();
+    assert.deepEqual([config.adminHost, config.adminPort, config.host, config.port], ['127.0.0.1', 8788, '0.0.0.0', 8787]);
+    assert.equal(config.householdGatewayEnabled, false);
+    assert.equal(config.legacyWebhookOnMemberPort, false);
+    const custom = load({ ADMIN_HOST: '192.0.2.5', ADMIN_PORT: '9000', HOST: '127.0.0.1', PORT: '9001' });
+    assert.deepEqual([custom.adminHost, custom.adminPort, custom.host, custom.port], ['192.0.2.5', 9000, '127.0.0.1', 9001]);
+    for (const value of ['0', '65536', 'x']) assert.throws(() => load({ ADMIN_PORT: value }), /ADMIN_PORT must be an integer between 1 and 65535/, value);
+  });
+
+  it('turns the gateway on with HOUSEHOLD_GATEWAY_ENABLED or HOUSEHOLD_DOMAIN, and then requires TRUSTED_PROXIES', () => {
+    for (const env of [{ HOUSEHOLD_DOMAIN: 'example.test' }, { HOUSEHOLD_GATEWAY_ENABLED: 'true' }]) {
+      assert.throws(() => load(env), /^Error: TRUSTED_PROXIES is required when the household gateway is on/, JSON.stringify(env));
+      assert.throws(() => load({ ...env, TRUSTED_PROXIES: ' , ' }), /TRUSTED_PROXIES is required/, JSON.stringify(env));
+      assert.equal(load({ ...env, TRUSTED_PROXIES: '192.0.2.1' }).householdGatewayEnabled, true);
+    }
+    // The legacy rule only with HOUSEHOLD_DOMAIN; its prefix defaults to jelly-.
+    assert.equal(load({ HOUSEHOLD_GATEWAY_ENABLED: 'true', TRUSTED_PROXIES: '192.0.2.1' }).householdDomain, undefined);
+    assert.equal(load({ HOUSEHOLD_DOMAIN: 'example.test', TRUSTED_PROXIES: '192.0.2.1' }).householdHostPrefix, 'jelly-');
+    // Off explicitly, even with a domain: no member listener, so no proxy is required.
+    assert.equal(load({ HOUSEHOLD_DOMAIN: 'example.test', HOUSEHOLD_GATEWAY_ENABLED: 'false' }).householdGatewayEnabled, false);
+  });
+
+  it('refuses one port for both listeners while the gateway is on, and reads LEGACY_WEBHOOK_ON_MEMBER_PORT', () => {
+    const on = { HOUSEHOLD_GATEWAY_ENABLED: 'true', TRUSTED_PROXIES: '192.0.2.1' };
+    assert.throws(() => load({ ...on, PORT: '8787', ADMIN_PORT: '8787' }), /ADMIN_PORT must differ from PORT/);
+    assert.equal(load({ PORT: '8787', ADMIN_PORT: '8787' }).adminPort, 8787, 'no member listener without the gateway');
+    assert.equal(load({ ...on, LEGACY_WEBHOOK_ON_MEMBER_PORT: 'true' }).legacyWebhookOnMemberPort, true);
+    assert.throws(() => load({ LEGACY_WEBHOOK_ON_MEMBER_PORT: 'yes' }), /LEGACY_WEBHOOK_ON_MEMBER_PORT must be true, false, 1, or 0/);
+  });
+});
+
 describe('TV add-on configuration', () => {
   afterEach(restoreEnvironment);
-  const app = { HOUSEHOLD_APP_ENABLED: 'true', HOUSEHOLD_DOMAIN: 'example.test', TMDB_API_KEY: TMDB_V3_KEY };
+  const app = { HOUSEHOLD_APP_ENABLED: 'true', HOUSEHOLD_DOMAIN: 'example.test', TRUSTED_PROXIES: '192.0.2.1', TMDB_API_KEY: TMDB_V3_KEY };
 
   it('is off by default, even with households listed', () => {
     assert.equal(load(app).tvAddonHouseholds, undefined);

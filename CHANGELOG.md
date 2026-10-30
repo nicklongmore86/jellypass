@@ -18,6 +18,113 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+**BREAKING.** This is the 4.0.0 core: the admin site becomes private by
+default, on a listener of its own, and households can be served at any
+hostname. **An existing install must change its configuration before it
+upgrades** (steps below); with them, existing household addresses such as
+`https://jelly-<household>.<HOUSEHOLD_DOMAIN>` keep working unchanged.
+
+### Breaking changes
+
+- **Two listeners.** The admin site (`/admin/`, `/auth/*`), the administrative
+  API (`/v1/*`), `/metrics`, the Seerr webhook (`/webhooks/seerr`) and
+  `/health` move to the new **admin listener**, `ADMIN_HOST`:`ADMIN_PORT`
+  (default `127.0.0.1:8788`; the container image sets `ADMIN_HOST=0.0.0.0` and
+  the Compose files publish `127.0.0.1:8788`). `HOST`:`PORT` (default
+  `0.0.0.0:8787`) is now the **member listener**: household addresses only, and
+  it starts only with the household gateway on. On it a `Host` that is no
+  household's gets a fixed `421 {"error":"unknown_host"}` on every path
+  (WebSocket upgrades are dropped) instead of the admin site: before 4.0.0 any
+  host that was not a household's reached the admin site, the API, the webhook
+  and health. `ADMIN_PORT` must differ from `PORT` while the gateway is on.
+- **`TRUSTED_PROXIES` is required with the household gateway on.** Startup
+  stops with `TRUSTED_PROXIES is required when the household gateway is on`
+  without it. Its meaning is unchanged (whose `X-Forwarded-For` is believed for
+  rate limits); `X-Forwarded-Host` still never selects a household.
+- **Health checks** must use the admin port: `/health` is no longer answered on
+  `PORT`. The image's built-in `HEALTHCHECK` and the Compose files are updated;
+  a health check of your own on `:8787/health` now fails.
+- **The Seerr webhook URL** moves to the admin port, for example
+  `http://jellypass:8788/webhooks/seerr`. `LEGACY_WEBHOOK_ON_MEMBER_PORT=true`
+  keeps the old URL on `PORT` working while you change it (it answers
+  `POST /webhooks/seerr` there for a `Host` that is no household's, never on a
+  household address, and logs a warning at startup).
+- **State file schema 8.** 4.0.0 migrates a schema 7 file on its first start
+  (only the version changes; the new `householdAddresses` map is added when an
+  address is first saved). **3.9.0 refuses to start on a schema 8 file**
+  (`unsupported state schema version`): see Rollback.
+- **`HOUSEHOLD_APP_ENABLED` requires the household gateway** (on by
+  `HOUSEHOLD_GATEWAY_ENABLED=true` or by `HOUSEHOLD_DOMAIN`) rather than
+  `HOUSEHOLD_DOMAIN` itself; the startup error names both.
+- **Legacy addresses match exactly.** A legacy generated address is matched
+  only without a port (or with `:443`/`:80`); before 4.0.0 any port was
+  ignored. Map an address with another port explicitly.
+- **`GET /v1/groups`** gains `householdAddresses`, and `householdUrl` is a
+  household's mapped canonical address when it has one, else its legacy one.
+
+### Added
+
+- **Household address map.** Each household (group) can be given a canonical
+  HTTPS origin and aliases, any hostname and an optional port (for example
+  `https://media.example.com` and `https://films.example.net:8443`), with
+  `GET`/`PUT`/`DELETE /v1/groups/{id}/addresses` on the admin API (bearer or
+  same-origin session, JSON bodies only). Changes take effect at once. Matching
+  is exact (case and default ports aside), the same for HTTP and WebSocket
+  requests; an address another household or the legacy rule already has is
+  refused (`409 address_conflict`), and a stored map that conflicts stops
+  startup. The household app's Play links stay on the address the request came
+  in on. The map is kept in the state file and removed with its group. The
+  admin UI's Groups tab lists each household's addresses.
+- `HOUSEHOLD_GATEWAY_ENABLED` turns the gateway on without `HOUSEHOLD_DOMAIN`.
+  `HOUSEHOLD_DOMAIN` and `HOUSEHOLD_HOST_PREFIX` keep working as the legacy
+  rule: every household also keeps its generated address.
+
+### Upgrade from 3.9.0
+
+For an install like the documented one (Compose, a reverse proxy routing the
+household hostnames to `:8787`, Seerr calling `:8787/webhooks/seerr`). Nothing
+needs to change at the reverse proxy for household hostnames: they stay on
+port `8787`.
+
+1. Back up the state file, `.env` and the Compose file (`cp -p`).
+2. In the JellyPass `.env`, set `TRUSTED_PROXIES` to the reverse proxy's
+   address if it is empty (`HOUSEHOLD_DOMAIN` set means the gateway is on), and
+   add `LEGACY_WEBHOOK_ON_MEMBER_PORT=true` for the switch-over.
+3. In the Compose file, add the admin listener: `ADMIN_HOST: 0.0.0.0` and
+   `ADMIN_PORT: 8788` under `environment`, a port mapping that publishes `8788`
+   on a private address only (for example `127.0.0.1:8788:8788`, or the LAN
+   address you reached the admin site at), and change any `healthcheck` URL to
+   `http://127.0.0.1:8788/health`.
+4. If administrators reached the admin site through the reverse proxy, point
+   that proxy host at port `8788` instead of `8787` (keep it gated); if they
+   used `http://<lan address>:8787/admin/`, they now use `:8788`.
+5. Pull 4.0.0 and recreate the container. Check `curl http://127.0.0.1:8788/health`,
+   the startup log's `admin` and `member` listeners, and a household address
+   (its sign-in page and a WebSocket). The member port answers anything else
+   with `421`.
+6. In Seerr (**Settings → Notifications → Webhook**), change the URL's port to
+   `8788` (for example `http://jellypass:8788/webhooks/seerr`), save, and use
+   **Test** (`202 {"status":"ignored"}`). Then remove
+   `LEGACY_WEBHOOK_ON_MEMBER_PORT` and recreate the container once more.
+7. Optional: map new addresses with `PUT /v1/groups/{id}/addresses`. The
+   legacy addresses stay as long as `HOUSEHOLD_DOMAIN` is set.
+
+### Rollback to 3.9.0
+
+3.9.0 cannot read a schema 8 state file. Either restore the state-file backup
+from step 1 (losing changes made since), or stop 4.0.0 and downgrade the file
+in place, which drops only the address map (3.9.0 serves the legacy addresses
+alone):
+
+```sh
+node -e "const f=process.argv[1],fs=require('fs'),s=JSON.parse(fs.readFileSync(f,'utf8'));if(s.version!==8)throw new Error('not schema 8');s.version=7;delete s.householdAddresses;fs.writeFileSync(f,JSON.stringify(s,null,2)+'\n')" data/grants.json
+```
+
+Then restore the 3.9.0 Compose file and `.env` (the admin site, webhook and
+health back on `:8787`; 3.9.0 ignores `ADMIN_HOST`, `ADMIN_PORT`,
+`HOUSEHOLD_GATEWAY_ENABLED` and `LEGACY_WEBHOOK_ON_MEMBER_PORT`), point Seerr's
+webhook and any admin proxy host back at `:8787`, and start 3.9.0.
+
 ## [3.9.0] - 2026-10-29
 
 This is a minor release for the TV add-on, which is still experimental and off

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer, request as httpRequest } from 'node:http';
 import { connect as connectSocket, createServer as createNetServer, Socket } from 'node:net';
 import { after, before, beforeEach, describe, it, mock } from 'node:test';
-import { makeServer } from '../dist/server.js';
+import { makeServers } from '../dist/server.js';
 
 const HOUSEHOLD_HOST = 'jelly-grove.example.test';
 const uncaughtErrors = [];
@@ -69,9 +69,9 @@ describe('socket error handling', { timeout: 10_000 }, () => {
       else socket.on('data', (chunk) => socket.write(chunk));
     });
     await listen(upstream);
-    gateway = makeServer(stubService(), { webhook: 'webhook-secret', admin: 'admin-secret' }, undefined, {
+    ({ member: gateway } = makeServers(stubService(), { webhook: 'webhook-secret', admin: 'admin-secret' }, undefined, {
       householdGateway: { jellyfinUrl: `http://127.0.0.1:${upstream.address().port}`, domain: 'example.test', hostPrefix: 'jelly-' },
-    });
+    }));
     await listen(gateway);
     gatewayPort = gateway.address().port;
   });
@@ -135,7 +135,7 @@ describe('socket error handling', { timeout: 10_000 }, () => {
 
   it('answers 502 when the upstream refuses the upgrade connection', async () => {
     const closedPort = await unusedPort();
-    const isolated = makeServer(stubService(), { webhook: 'w', admin: 'a' }, undefined, {
+    const { member: isolated } = makeServers(stubService(), { webhook: 'w', admin: 'a' }, undefined, {
       householdGateway: { jellyfinUrl: `http://127.0.0.1:${closedPort}`, domain: 'example.test', hostPrefix: 'jelly-' },
     });
     await listen(isolated);
@@ -229,7 +229,7 @@ describe('socket error handling', { timeout: 10_000 }, () => {
   }
 
   it('logs routine client disconnects only when LOG_LEVEL is debug', async () => {
-    const debugGateway = makeServer(stubService(), { webhook: 'w', admin: 'a' }, undefined, {
+    const { member: debugGateway } = makeServers(stubService(), { webhook: 'w', admin: 'a' }, undefined, {
       householdGateway: {
         jellyfinUrl: `http://127.0.0.1:${upstream.address().port}`, domain: 'example.test', hostPrefix: 'jelly-', logLevel: 'debug',
       },
@@ -260,6 +260,7 @@ describe('socket error handling', { timeout: 10_000 }, () => {
 
 function stubService() {
   return {
+    getHouseholdAddresses: () => ({}),
     getHouseholdMemberIds: (householdId) => (householdId === 'grove' ? ['alice-id'] : undefined),
     isPasswordless: () => false,
     canJoinLibrary: () => false,

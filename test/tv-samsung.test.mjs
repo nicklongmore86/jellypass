@@ -122,7 +122,7 @@ describe('Samsung app: cross-origin rules on a household host', { timeout: 30_00
       }
     }
     // The admin host never serves the manifest; an unlisted household relays the path to Jellyfin, as before.
-    assert.equal((await get(on.port, MANIFEST, { Host: ADMIN_HOST })).status, 401);
+    assert.equal((await get(on.adminPort, MANIFEST, { Host: ADMIN_HOST })).status, 401);
     assert.equal((await get(on.port, MANIFEST, { Host: HOST_B })).text, '{}');
   });
 

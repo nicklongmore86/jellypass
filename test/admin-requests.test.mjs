@@ -44,7 +44,7 @@ const entries = async (app, options) => (await app.get(`${APP}/requests`, option
 const movieState = async (app, options) => (await app.get(`${APP}/movie/${T_MOVIE}`, options)).json().state;
 
 const admin = (app, pathname, { method = 'GET', body, headers = { Authorization: 'Bearer admin-secret' }, host = 'jellypass.example.test' } = {}) =>
-  get(app.port, pathname, { Host: host, ...headers, ...(body ? { 'Content-Type': 'application/json' } : {}) }, { method, body: body && JSON.stringify(body) });
+  get(app.portFor(host), pathname, { Host: host, ...headers, ...(body ? { 'Content-Type': 'application/json' } : {}) }, { method, body: body && JSON.stringify(body) });
 const listing = async (app) => (await admin(app, '/v1/app/requests')).json();
 const act = (app, requestId, action, body) => admin(app, `/v1/app/requests/${requestId}/${action}`, { method: 'POST', body });
 
@@ -122,7 +122,7 @@ describe('admin requests: who may call it', { timeout: 60_000 }, () => {
     assert.equal((await act(app, 7389999, 'cancel')).status, 404);
     assert.equal((await act(app, FIRST, 'cancel', { removeFromRadarr: 'yes' })).status, 400);
     assert.equal((await act(app, FIRST, 'cancel', { remove: true })).status, 400);
-    const plain = await get(app.port, `/v1/app/requests/${FIRST}/cancel`, {
+    const plain = await get(app.adminPort, `/v1/app/requests/${FIRST}/cancel`, {
       Host: 'jellypass.example.test', Authorization: 'Bearer admin-secret', 'Content-Type': 'text/plain',
     }, { method: 'POST', body: '{}' });
     assert.equal(plain.status, 415);

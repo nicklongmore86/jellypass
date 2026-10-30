@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { connect as connectSocket, Socket } from 'node:net';
 import { after, before, describe, it, mock } from 'node:test';
-import { makeServer } from '../dist/server.js';
+import { makeServers } from '../dist/server.js';
 
 const HOUSEHOLD_HOST = 'jelly-grove.example.test';
 const IDLE_TIMEOUT_MS = 150;
@@ -42,7 +42,7 @@ describe('WebSocket idle timeout', { timeout: 10_000 }, () => {
   });
 
   async function startGateway(webSocketIdleTimeoutMs, options = {}) {
-    const gateway = makeServer(stubService(), { webhook: 'w', admin: 'a' }, undefined, {
+    const { member: gateway } = makeServers(stubService(), { webhook: 'w', admin: 'a' }, undefined, {
       householdGateway: {
         jellyfinUrl: `http://127.0.0.1:${upstream.address().port}`,
         domain: 'example.test',
@@ -234,6 +234,7 @@ function textFrame(text) {
 
 function stubService() {
   return {
+    getHouseholdAddresses: () => ({}),
     getHouseholdMemberIds: (householdId) => (householdId === 'grove' ? ['alice-id'] : undefined),
     isPasswordless: () => false,
     canJoinLibrary: () => false,

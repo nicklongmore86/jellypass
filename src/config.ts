@@ -28,8 +28,12 @@ const MAX_WS_IDLE_TIMEOUT_MS = 86_400_000;
 const JELLYFIN_WEBSOCKET_LOST_TIMEOUT_MS = 60_000;
 
 export interface Config {
+  /** The member listener (household addresses only), HOST and PORT; started only with the household gateway on. */
   host: string;
   port: number;
+  /** The admin listener (admin site and API, metrics, the Seerr webhook, health), ADMIN_HOST and ADMIN_PORT. */
+  adminHost: string;
+  adminPort: number;
   webhookToken: string;
   adminToken: string;
   jellyfinUrl: string;
@@ -41,9 +45,20 @@ export interface Config {
   stateFile: string;
   reconcileIntervalSeconds: number;
   catalogSyncIntervalSeconds: number;
+  /**
+   * HOUSEHOLD_GATEWAY_ENABLED (default: on when HOUSEHOLD_DOMAIN is set): the member listener serves the households'
+   * addresses (the address map, and the legacy rule below). Needs TRUSTED_PROXIES.
+   */
+  householdGatewayEnabled: boolean;
+  /** The legacy address rule, `https://<householdHostPrefix><household>.<householdDomain>` (HOUSEHOLD_DOMAIN). */
   householdDomain?: string;
   householdHostPrefix: string;
-  /** Serves the household app API on household hosts; needs Seerr, TMDB_API_KEY and HOUSEHOLD_DOMAIN. */
+  /**
+   * LEGACY_WEBHOOK_ON_MEMBER_PORT: also answer POST /webhooks/seerr on the member listener, for a Host that is no
+   * household's, so a Seerr webhook URL from before 4.0.0 keeps working until it is moved to the admin listener.
+   */
+  legacyWebhookOnMemberPort: boolean;
+  /** Serves the household app API on household addresses; needs Seerr, TMDB_API_KEY and the household gateway. */
   householdAppEnabled: boolean;
   /**
    * The TV add-on (docs/tv-addon.md): the households whose hosts add it to Jellyfin web's page, or 'all'. Undefined
@@ -68,10 +83,8 @@ function required(name: string): string {
 }
 
 export function loadConfig(): Config {
-  const port = Number.parseInt(process.env.PORT ?? '8787', 10);
-  if (!Number.isInteger(port) || port < 1 || port > 65535) {
-    throw new Error('PORT must be an integer between 1 and 65535');
-  }
+  const port = portEnvironment('PORT', 8787);
+  const adminPort = portEnvironment('ADMIN_PORT', 8788);
   const reconcileIntervalSeconds = Number.parseInt(process.env.RECONCILE_INTERVAL_SECONDS ?? '300', 10);
   if (!Number.isInteger(reconcileIntervalSeconds) || reconcileIntervalSeconds < 0 || reconcileIntervalSeconds > 86_400) {
     throw new Error('RECONCILE_INTERVAL_SECONDS must be an integer between 0 and 86400');
@@ -111,19 +124,32 @@ export function loadConfig(): Config {
   if (householdDomain && !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(householdDomain)) {
     throw new Error('HOUSEHOLD_DOMAIN must be a valid DNS domain');
   }
+  // The legacy rule's own default, so an install from before 4.0.0 that never set a prefix keeps its addresses.
   const householdHostPrefix = process.env.HOUSEHOLD_HOST_PREFIX?.trim().toLowerCase() || 'jelly-';
   if (!/^[a-z0-9-]{1,32}$/.test(householdHostPrefix)) {
     throw new Error('HOUSEHOLD_HOST_PREFIX must contain only lowercase letters, numbers, and hyphens');
   }
+  const householdGatewayEnabled = booleanEnvironment('HOUSEHOLD_GATEWAY_ENABLED', Boolean(householdDomain));
   const householdAppEnabled = booleanEnvironment('HOUSEHOLD_APP_ENABLED', false);
-  if (householdAppEnabled && (!householdDomain || !seerrUrl || !tmdbApiKey)) {
-    throw new Error('HOUSEHOLD_DOMAIN, SEERR_URL, SEERR_API_KEY and TMDB_API_KEY are required when HOUSEHOLD_APP_ENABLED is true');
+  if (householdAppEnabled && (!householdGatewayEnabled || !seerrUrl || !tmdbApiKey)) {
+    throw new Error('the household gateway (HOUSEHOLD_GATEWAY_ENABLED, or HOUSEHOLD_DOMAIN), SEERR_URL, SEERR_API_KEY and TMDB_API_KEY are required when HOUSEHOLD_APP_ENABLED is true');
   }
+  const legacyWebhookOnMemberPort = booleanEnvironment('LEGACY_WEBHOOK_ON_MEMBER_PORT', false);
   const tvAddonHouseholds = parseTvAddon(householdAppEnabled);
   const logLevel = parseLogLevel(process.env.LOG_LEVEL);
   const webSocketIdleTimeoutMs = webSocketTimeout('WS_IDLE_TIMEOUT_MS', DEFAULT_WS_IDLE_TIMEOUT_MS);
   const webSocketUpstreamIdleTimeoutMs = webSocketTimeout('WS_UPSTREAM_IDLE_TIMEOUT_MS', DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS);
   const trustedProxies = parseTrustedProxies(process.env.TRUSTED_PROXIES);
+  // Household addresses are only ever served behind a reverse proxy (it terminates HTTPS); naming it is required, so
+  // sign-in rate limits apply per client rather than to the proxy as a whole.
+  if (householdGatewayEnabled && trustedProxies.length === 0) {
+    throw new Error('TRUSTED_PROXIES is required when the household gateway is on (HOUSEHOLD_GATEWAY_ENABLED, or HOUSEHOLD_DOMAIN): set it to the IP address or CIDR range of the reverse proxy in front of JellyPass');
+  }
+  const host = process.env.HOST?.trim() || '0.0.0.0';
+  const adminHost = process.env.ADMIN_HOST?.trim() || '127.0.0.1';
+  if (householdGatewayEnabled && adminPort === port) {
+    throw new Error('ADMIN_PORT must differ from PORT: the admin site is never served on the member (household) listener');
+  }
   const adminToken = process.env.ADMIN_TOKEN?.trim();
   if (!adminToken) {
     console.warn(JSON.stringify({
@@ -132,8 +158,10 @@ export function loadConfig(): Config {
     }));
   }
   return {
-    host: process.env.HOST?.trim() || '0.0.0.0',
+    host,
     port,
+    adminHost,
+    adminPort,
     webhookToken,
     adminToken: adminToken || webhookToken,
     jellyfinUrl: required('JELLYFIN_URL').replace(/\/+$/, ''),
@@ -143,8 +171,10 @@ export function loadConfig(): Config {
     stateFile: path.resolve(process.env.STATE_FILE?.trim() || './data/grants.json'),
     reconcileIntervalSeconds,
     catalogSyncIntervalSeconds,
+    householdGatewayEnabled,
     ...(householdDomain ? { householdDomain } : {}),
     householdHostPrefix,
+    legacyWebhookOnMemberPort,
     householdAppEnabled,
     ...(tvAddonHouseholds ? { tvAddonHouseholds } : {}),
     requestBackfillEnabled,
@@ -224,6 +254,14 @@ function webSocketTimeout(name: string, fallback: number): number {
     }));
   }
   return value;
+}
+
+function portEnvironment(name: string, fallback: number): number {
+  const port = Number.parseInt(process.env[name] ?? String(fallback), 10);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error(`${name} must be an integer between 1 and 65535`);
+  }
+  return port;
 }
 
 function booleanEnvironment(name: string, fallback: boolean): boolean {

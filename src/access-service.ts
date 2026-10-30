@@ -1,4 +1,5 @@
 import type { LogLevel } from './config.js';
+import type { HouseholdAddressEntry } from './household-addresses.js';
 import type { JellyfinClient } from './jellyfin.js';
 import { Metrics } from './metrics.js';
 import { RECENT_REQUESTS_LIMIT, SeerrError, type SeerrClient } from './seerr.js';
@@ -194,6 +195,16 @@ export class AccessService {
 
   public listGroups(): AccessGroup[] {
     return this.#store.listGroups();
+  }
+
+  /** The household address map as stored (see GrantStore.getHouseholdAddresses). */
+  public getHouseholdAddresses(): Readonly<Record<string, Readonly<HouseholdAddressEntry>>> {
+    return this.#store.getHouseholdAddresses();
+  }
+
+  /** Stores one household's address entry, or removes it; the caller has checked the whole map. */
+  public async setHouseholdAddresses(groupId: string, entry: HouseholdAddressEntry | undefined): Promise<void> {
+    await this.#store.setHouseholdAddresses(groupId, entry);
   }
 
   public getHouseholdMemberIds(groupId: string): string[] | undefined {

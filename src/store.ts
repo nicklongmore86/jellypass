@@ -1,6 +1,7 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
+import type { HouseholdAddressEntry } from './household-addresses.js';
 import type {
   AccessGroup,
   AccessRemovals,
@@ -46,7 +47,7 @@ export const MAX_APP_REQUESTS_PER_HOUSEHOLD = 2000;
 /** The most deferred webhooks remembered (see GrantStore.deferWebhook); beyond it the oldest are left to the backfill. */
 export const MAX_DEFERRED_REQUESTS = 1000;
 
-const EMPTY_STATE: GrantState = { version: 7, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [] };
+const EMPTY_STATE: GrantState = { version: 8, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [] };
 
 export class GrantStore {
   readonly #file: string;
@@ -64,6 +65,8 @@ export class GrantStore {
   /** "Get this" record IDs by household, rebuilt after each change (see #appIndex). */
   #appIndexCache: Map<string, string[]> | undefined;
   readonly #limitHouseholds: boolean;
+  /** See getHouseholdAddresses; dropped whenever the map changes. */
+  #addressesSnapshot: Readonly<Record<string, Readonly<HouseholdAddressEntry>>> | undefined;
 
   /** `limitHouseholds` (set when the household app is enabled) refuses new groups beyond {@link MAX_HOUSEHOLDS}. */
   public constructor(file: string, options: { limitHouseholds?: boolean } = {}) {
@@ -91,6 +94,7 @@ export class GrantStore {
     this.#assertOpen();
     const migrated = migrateState(JSON.parse(text) as unknown);
     this.#state = migrated.state;
+    this.#addressesSnapshot = undefined;
     this.#durableIntents = new Set(Object.keys(this.#state.appRequestIntents ?? {}));
     // Written only by unreleased builds of "Get this" that counted quotas; dropped with the next write.
     delete (this.#state as { appQuotaLedger?: unknown }).appQuotaLedger;
@@ -133,6 +137,31 @@ export class GrantStore {
   public getGroup(groupId: string): AccessGroup | undefined {
     const group = this.#state.groups[normalizeId(groupId)];
     return group ? clone(group) : undefined;
+  }
+
+  /**
+   * The household address map (see GrantState.householdAddresses). The same object until the map changes, so a caller
+   * can keep what it built from it until then.
+   */
+  public getHouseholdAddresses(): Readonly<Record<string, Readonly<HouseholdAddressEntry>>> {
+    this.#addressesSnapshot ??= Object.freeze(clone(this.#state.householdAddresses ?? {}));
+    return this.#addressesSnapshot;
+  }
+
+  /**
+   * Replaces one household's entry in the address map, or removes it (undefined). The caller has checked the whole map
+   * (HouseholdAddresses); an unknown group is refused.
+   */
+  public async setHouseholdAddresses(groupIdInput: string, entry: HouseholdAddressEntry | undefined): Promise<void> {
+    this.#assertOpen();
+    const groupId = normalizeId(groupIdInput);
+    if (!this.#state.groups[groupId]) throw new Error('group not found');
+    const { [groupId]: _, ...others } = this.#state.householdAddresses ?? {};
+    const next = entry ? { ...others, [groupId]: clone(entry) } : others;
+    if (Object.keys(next).length > 0) this.#state.householdAddresses = next;
+    else delete this.#state.householdAddresses;
+    this.#addressesSnapshot = undefined;
+    await this.#save();
   }
 
   public listPasswordlessUserIds(): string[] {
@@ -387,6 +416,13 @@ export class GrantStore {
     const groupId = normalizeId(groupIdInput);
     if (!this.#state.groups[groupId]) return [];
     delete this.#state.groups[groupId];
+    // A group created later under the same ID is a different household: it has no address until one is given.
+    if (this.#state.householdAddresses?.[groupId]) {
+      const { [groupId]: _address, ...addresses } = this.#state.householdAddresses;
+      if (Object.keys(addresses).length > 0) this.#state.householdAddresses = addresses;
+      else delete this.#state.householdAddresses;
+      this.#addressesSnapshot = undefined;
+    }
     // A group created later under the same ID is a different household, with a new epoch.
     const { [groupId]: _, ...epochs } = this.#state.householdEpochs ?? {};
     if (Object.keys(epochs).length > 0) this.#state.householdEpochs = epochs;
@@ -1312,11 +1348,17 @@ function migrateState(value: unknown): { state: GrantState; changed: boolean } {
   const handled = Array.isArray(candidate.handledRequestIds)
     ? { handledRequestIds: candidate.handledRequestIds as string[] }
     : {};
-  if (candidate.version === 7 || candidate.version === 6 || candidate.version === 5) {
+  if (candidate.version === 8 || candidate.version === 7 || candidate.version === 6 || candidate.version === 5) {
     if (!candidate.groups || typeof candidate.groups !== 'object') throw new Error('state file is missing groups');
     if (!candidate.catalog || typeof candidate.catalog !== 'object') throw new Error('state file is missing catalog');
-    if (candidate.version === 7) {
+    if (candidate.version === 8 || candidate.version === 7) {
       if (!Array.isArray(candidate.passwordlessUserIds)) throw new Error('state file is missing passwordlessUserIds');
+      const addresses = (value as { householdAddresses?: unknown }).householdAddresses;
+      if (addresses !== undefined && (!addresses || typeof addresses !== 'object' || Array.isArray(addresses))) {
+        throw new Error('state file has an invalid householdAddresses');
+      }
+      // 8 (4.0.0) adds only the optional address map, so a 7 file is an 8 one without it. Every field is kept.
+      if (candidate.version === 7) return { state: { ...(value as Omit<GrantState, 'version'>), version: 8 }, changed: true };
       return { state: value as GrantState, changed: false };
     }
     if (candidate.version === 6 && !Array.isArray(candidate.passwordlessUserIds)) {
@@ -1327,7 +1369,7 @@ function migrateState(value: unknown): { state: GrantState; changed: boolean } {
     // claim registry keeps every grant intact.
     return {
       state: {
-        version: 7,
+        version: 8,
         grants: candidate.grants as Record<string, GrantRecord>,
         groups: candidate.groups as Record<string, AccessGroup>,
         catalog: candidate.catalog as GrantState['catalog'],
@@ -1342,7 +1384,7 @@ function migrateState(value: unknown): { state: GrantState; changed: boolean } {
     if (!candidate.catalog || typeof candidate.catalog !== 'object') throw new Error('state file is missing catalog');
     return {
       state: {
-        version: 7,
+        version: 8,
         grants: candidate.grants as Record<string, GrantRecord>,
         groups: candidate.groups as Record<string, AccessGroup>,
         catalog: candidate.catalog as GrantState['catalog'],
@@ -1355,7 +1397,7 @@ function migrateState(value: unknown): { state: GrantState; changed: boolean } {
     if (!candidate.groups || typeof candidate.groups !== 'object') throw new Error('state file is missing groups');
     return {
       state: {
-        version: 7,
+        version: 8,
         grants: candidate.grants as Record<string, GrantRecord>,
         groups: candidate.groups as Record<string, AccessGroup>,
         catalog: { items: {} },
@@ -1370,7 +1412,7 @@ function migrateState(value: unknown): { state: GrantState; changed: boolean } {
       itemId,
       { ...grant, manualUserIds: [] },
     ]));
-    return { state: { version: 7, grants, groups: candidate.groups as Record<string, AccessGroup>, catalog: { items: {} }, passwordlessUserIds: [] }, changed: true };
+    return { state: { version: 8, grants, groups: candidate.groups as Record<string, AccessGroup>, catalog: { items: {} }, passwordlessUserIds: [] }, changed: true };
   }
   if (candidate.version !== 1) throw new Error('unsupported state schema version');
   const now = new Date().toISOString();
@@ -1385,5 +1427,5 @@ function migrateState(value: unknown): { state: GrantState; changed: boolean } {
       updatedAt: raw.updatedAt || now,
     };
   }
-  return { state: { version: 7, grants, groups: {}, catalog: { items: {} }, passwordlessUserIds: [] }, changed: true };
+  return { state: { version: 8, grants, groups: {}, catalog: { items: {} }, passwordlessUserIds: [] }, changed: true };
 }

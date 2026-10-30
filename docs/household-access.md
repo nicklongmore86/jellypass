@@ -2,7 +2,7 @@
 
 ## Status
 
-A household hostname is served by a TLS-terminating reverse proxy that forwards the original `Host` header to JellyPass, which then proxies Jellyfin.
+A household address is served by a TLS-terminating reverse proxy that forwards the original `Host` header to JellyPass's member listener, which then proxies Jellyfin. Since 4.0.0 a household's addresses are whatever HTTPS origins the administrator maps to it (any hostname, an optional port); the admin site is on a separate, private admin listener and never on the member listener.
 
 Read-only verification of a deployed household origin on 2026-09-01 confirmed:
 
@@ -17,28 +17,28 @@ The recovered integration suite confirms that password authentication is still d
 
 ## Goal
 
-Give every household its own JellyPass hostname, following the pattern of the first household:
+Give every household its own JellyPass address, mapped to it in the admin API. The hostname can be any name the administrator controls, for example:
 
 ```text
-jelly-household-a.example.com
-jelly-household-b.example.com
+https://media.example.com        → household-a
+https://films.example.net:8443   → household-b
 ```
 
-Jellyfin clients use the household hostname as their server address. JellyPass uses that hostname to present only the household's users instead of the server-wide public-user list. The final sign-in experience is passwordless and uses an identity provider assigned to that household.
+Jellyfin clients use the household address as their server address. JellyPass uses that address to present only the household's users instead of the server-wide public-user list. The final sign-in experience is passwordless and uses an identity provider assigned to that household.
 
-The administrator retains a separate recovery path that is not exposed through household hostnames.
+The administrator retains a separate recovery path that is not exposed through household addresses.
 
 ## Required behavior
 
 ### Household-scoped discovery
 
 - An access group's stable ID is also its household ID; its Jellyfin user IDs are the visible household members.
-- The hostname is derived from `HOUSEHOLD_HOST_PREFIX + group ID + HOUSEHOLD_DOMAIN`.
-- Requests with an unknown or ambiguous hostname fail closed. They must not fall back to the complete Jellyfin user list.
-- `GET /Users/Public` is intercepted on a household hostname and filtered to that household's user IDs.
+- A household's addresses come from the address map in the state file: a canonical origin and aliases per household (`PUT /v1/groups/{id}/addresses`). The `Host` header is matched exactly against them, case-insensitively and with default ports normalised; no naming rule applies. Installs from before 4.0.0 keep the legacy derived address `HOUSEHOLD_HOST_PREFIX + group ID + "." + HOUSEHOLD_DOMAIN` (prefix `jelly-` by default) as an extra address of every household; an address both would give is a configuration error.
+- Requests with an unknown hostname fail closed with a fixed `421` on the member listener. They must not fall back to the complete Jellyfin user list, nor to the admin site.
+- `GET /Users/Public` is intercepted on a household address and filtered to that household's user IDs.
 - The response preserves Jellyfin's schema and the upstream ordering of the remaining users.
 - All other supported Jellyfin traffic is proxied without buffering large media bodies and with range requests, streaming, and WebSocket upgrades preserved.
-- JellyPass trusts the HTTP `Host` authority only when traffic comes through the deployment's trusted reverse proxy. TLS and DNS ownership remain outside the application.
+- JellyPass reads the household from the HTTP `Host` authority only, never from `X-Forwarded-Host`. It cannot tell whether a request came through the reverse proxy, so the member listener must be reachable only by that proxy, which must pass the browser's `Host` on unchanged. `TRUSTED_PROXIES` (required with the gateway on) governs which peers' `X-Forwarded-For` is believed for rate limits; it does not gate `Host`. TLS and DNS ownership remain outside the application.
 
 Filtering public discovery is a usability and privacy boundary. It is not authorization: authenticated Jellyfin policy remains the authority for media access.
 
@@ -84,7 +84,7 @@ Filtering public discovery is a usability and privacy boundary. It is not author
 An access group currently serves both purposes:
 
 - it grants its Jellyfin users access to private media records;
-- when the household gateway is configured, its ID derives a hostname and its members become that hostname's visible profiles.
+- when the household gateway is configured, the addresses mapped to its ID (and its legacy derived one) show its members as that address's visible profiles.
 
 Current persisted shape:
 
@@ -98,12 +98,12 @@ Current persisted shape:
 }
 ```
 
-The hostname is derived rather than persisted. A future household-to-identity-provider mapping may reference the group ID, but identity-provider secrets do not belong in the state JSON file; they must be resolved from secret-backed configuration.
+Its addresses are persisted separately, in the state file's `householdAddresses` map keyed by group ID, and removed with the group; the legacy derived address is not persisted. A future household-to-identity-provider mapping may reference the group ID, but identity-provider secrets do not belong in the state JSON file; they must be resolved from secret-backed configuration.
 
 ## Delivery sequence
 
 1. Review, test, and commit the deployed source so GitHub becomes the source of truth again.
-2. Add a non-secret deployment runbook for the reverse proxy's wildcard or per-household host, preserved `Host` header, TLS, and JellyPass household environment settings.
+2. Add a non-secret deployment runbook for the reverse proxy's per-household hosts, preserved `Host` header, TLS, and JellyPass household environment settings.
 3. Add an external smoke test for the existing origin: expected household membership, Quick Connect disabled, login controls hidden, media byte ranges, and WebSocket upgrade behavior.
 4. Define the native-client SSO handoff and the separate administrator recovery origin.
 5. Add household-bound OIDC and explicit identity-to-Jellyfin-user mappings.
@@ -112,13 +112,13 @@ The hostname is derived rather than persisted. A future household-to-identity-pr
 
 The SSO step needs an explicit native-client design. The maintained Community SSO plugin supports non-web clients through Quick Connect, which conflicts with the requirement to disable Quick Connect globally. JellyPass must therefore provide and test its own client handoff, adopt a different supported mechanism, or formally limit the first passwordless release to compatible clients.
 
-## Acceptance criteria for the repeatable hostname milestone
+## Acceptance criteria for the repeatable address milestone
 
-- Two configured household hostnames return disjoint public-user lists from the same Jellyfin server.
+- Two configured household addresses return disjoint public-user lists from the same Jellyfin server.
 - Unknown hosts never reveal users.
-- A user belonging to multiple households appears only on those households' hostnames.
-- Duplicate normalized hostnames are rejected at configuration time.
-- Host matching is case-insensitive, ignores a valid port, and rejects malformed authorities.
+- A user belonging to multiple households appears only on those households' addresses.
+- Duplicate normalized addresses are rejected at configuration time.
+- Host matching is case-insensitive, treats `:443` and `:80` as no port, matches any other port exactly, and rejects malformed authorities.
 - Filtering failures fail closed rather than returning the unfiltered upstream response.
 - Authenticated media requests, byte ranges, and WebSocket upgrades survive the proxy unchanged.
 - Logs and metrics identify households by stable ID and do not expose usernames, tokens, passwords, or identity claims.

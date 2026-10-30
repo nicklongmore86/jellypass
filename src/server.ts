@@ -8,6 +8,7 @@ import { APP_PERMISSIONS_POLICY, AppAssets } from './app-assets.js';
 import { expiredSessionCookie, hasSessionCookie, isSameOriginRequest, isSecureRequest, sessionCookie, type WebAuth } from './auth.js';
 import { ClientIpResolver } from './client-ip.js';
 import type { LogLevel } from './config.js';
+import { HouseholdAddresses, HouseholdAddressError, normalizeEntry } from './household-addresses.js';
 import { HouseholdGateway } from './household-gateway.js';
 import type { HouseholdRequests } from './household-requests.js';
 import { RECENT_REQUESTS_LIMIT } from './seerr.js';
@@ -30,10 +31,18 @@ export interface ServerTokens {
 export interface ServerOptions {
   /** Reverse proxies trusted to report the client address in X-Forwarded-For; empty uses the TCP peer. */
   trustedProxies?: string[];
+  /**
+   * The member listener's household gateway: requests whose Host is a household's address (see household-addresses.ts)
+   * are that household's. Without it there is no member listener.
+   */
   householdGateway?: {
     jellyfinUrl: string;
-    domain: string;
-    hostPrefix: string;
+    /**
+     * The legacy address rule, `https://<hostPrefix><household>.<domain>` (HOUSEHOLD_DOMAIN, HOUSEHOLD_HOST_PREFIX),
+     * joined with the address map. Without `domain` only the map gives households addresses.
+     */
+    domain?: string;
+    hostPrefix?: string;
     webSocketIdleTimeoutMs?: number;
     webSocketUpstreamIdleTimeoutMs?: number;
     logLevel?: LogLevel;
@@ -70,6 +79,11 @@ export interface ServerOptions {
    * those paths answer 404 `requests_not_configured`.
    */
   adminRequests?: Pick<AdminRequests, 'list' | 'approve' | 'decline' | 'cancel' | 'release'>;
+  /**
+   * LEGACY_WEBHOOK_ON_MEMBER_PORT: the member listener also answers POST /webhooks/seerr for a Host that is no
+   * household's, exactly as the admin listener does, so a Seerr webhook URL from before 4.0.0 keeps working.
+   */
+  memberWebhook?: boolean;
 }
 
 export interface JellyPassServer extends Server {
@@ -77,21 +91,33 @@ export interface JellyPassServer extends Server {
   closeWebSockets(): Promise<number>;
 }
 
-export function makeServer(
+/** JellyPass's two listeners. They share nothing but the services behind them; neither ever answers for the other. */
+export interface JellyPassServers {
+  /**
+   * The admin listener: the admin site and API, /metrics, the Seerr webhook and /health, for any Host. It is meant to
+   * be reachable only by administrators (ADMIN_HOST) and never proxies to Jellyfin.
+   */
+  admin: JellyPassServer;
+  /**
+   * The member listener (with `householdGateway` only): household addresses and nothing else. A Host that is no
+   * household's gets a fixed 421 (WebSocket upgrades are dropped), never the admin site.
+   */
+  member?: JellyPassServer;
+}
+
+export function makeServers(
   service: AccessService,
   tokens: ServerTokens,
   webAuth?: WebAuth,
   options?: ServerOptions,
-): JellyPassServer {
+): JellyPassServers {
   const background = options?.background ?? new BackgroundTasks();
-  const { tvAddon: tvOption, ...gatewayOptions } = options?.householdGateway ?? {};
+  const { tvAddon: tvOption, domain, hostPrefix, ...gatewayOptions } = options?.householdGateway ?? {};
   const tvHouseholds = tvOption?.households;
   const householdGateway = options?.householdGateway
     ? new HouseholdGateway({
         ...gatewayOptions,
         jellyfinUrl: options.householdGateway.jellyfinUrl,
-        domain: options.householdGateway.domain,
-        hostPrefix: options.householdGateway.hostPrefix,
         ...(tvHouseholds ? {
           tvAddon: {
             enabled: (householdId: string) => tvHouseholds === 'all' || tvHouseholds.includes(householdId.toLowerCase()),
@@ -123,14 +149,51 @@ export function makeServer(
   const titleHolds = options?.titleHolds;
   const checkTitleHolds = () => { if (titleHolds) background.run((signal) => titleHolds.checkTitleHolds({ signal })); };
   const clientIp = new ClientIpResolver(options?.trustedProxies);
-  const server = createServer(async (request, response) => {
+  // The address map as stored, joined with the legacy rule; checked now, so a conflict stops startup. Rebuilt when the
+  // map changes (the store hands out the same object until then).
+  const legacyRule = domain ? { domain, prefix: hostPrefix ?? 'jelly-' } : undefined;
+  let addressSource = service.getHouseholdAddresses();
+  let addressBook = new HouseholdAddresses(addressSource, legacyRule);
+  const addresses = (): HouseholdAddresses => {
+    const current = service.getHouseholdAddresses();
+    if (current !== addressSource) {
+      addressBook = new HouseholdAddresses(current, legacyRule);
+      addressSource = current;
+    }
+    return addressBook;
+  };
+  // Address changes are checked against the map and stored one at a time, so two never pass the check together.
+  let addressWrites: Promise<unknown> = Promise.resolve();
+  const writeAddresses = <T>(write: () => Promise<T>): Promise<T> => {
+    const next = addressWrites.then(write, write);
+    addressWrites = next.catch(() => undefined);
+    return next;
+  };
+  const householdAddresses = (groupId: string) => {
+    const book = addresses();
+    return { groupId, gateway: householdGateway !== undefined, ...book.addresses(groupId), ...(householdGateway && book.householdUrl(groupId) ? { householdUrl: book.householdUrl(groupId) } : {}) };
+  };
+
+  const handleWebhook = async (request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> => {
+    if (!authorized(request, tokens.webhook) && !sameToken(url.searchParams.get('token') ?? '', tokens.webhook)) {
+      return json(response, 401, { error: 'unauthorized' });
+    }
+    service.recordWebhookReceived();
+    let event: ReturnType<typeof parseWebhook>;
+    try {
+      event = parseWebhook(await readJson(request, { requireJsonType: false }));
+    } catch (error) {
+      service.recordInvalidWebhook();
+      throw error;
+    }
+    const result = await service.processWebhook(event);
+    if (event.notificationType === 'MEDIA_AVAILABLE') checkTitleHolds();
+    return json(response, result ? 200 : 202, result ? { status: 'granted', grant: result } : { status: 'ignored' });
+  };
+
+  const admin = createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? '/', 'http://localhost');
-      const householdId = householdGateway?.householdId(request.headers.host);
-      if (householdId) {
-        await householdGateway?.handle(request, response, householdId);
-        return;
-      }
       const segments = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
       // Cross-site request forgery: a state-changing request a browser sends with the session cookie must come from the
       // admin origin itself. SameSite=Strict alone is not enough, as every sibling host under the same site (household
@@ -193,22 +256,7 @@ export function makeServer(
         response.setHeader('Set-Cookie', expiredSessionCookie(isSecureRequest(request)));
         return json(response, 200, { status: 'logged_out' });
       }
-      if (request.method === 'POST' && url.pathname === '/webhooks/seerr') {
-        if (!authorized(request, tokens.webhook) && !sameToken(url.searchParams.get('token') ?? '', tokens.webhook)) {
-          return json(response, 401, { error: 'unauthorized' });
-        }
-        service.recordWebhookReceived();
-        let event: ReturnType<typeof parseWebhook>;
-        try {
-          event = parseWebhook(await readJson(request, { requireJsonType: false }));
-        } catch (error) {
-          service.recordInvalidWebhook();
-          throw error;
-        }
-        const result = await service.processWebhook(event);
-        if (event.notificationType === 'MEDIA_AVAILABLE') checkTitleHolds();
-        return json(response, result ? 200 : 202, result ? { status: 'granted', grant: result } : { status: 'ignored' });
-      }
+      if (request.method === 'POST' && url.pathname === '/webhooks/seerr') return await handleWebhook(request, response, url);
       if (!authorized(request, tokens.admin)) {
         // Refused before the session is looked at, so a cross-origin request never starts a session's check at Jellyfin
         // or sees its outcome (a 503, or a demoted administrator's session ended). Without a session cookie it is 401.
@@ -255,10 +303,41 @@ export function makeServer(
         return json(response, 200, { grants: service.listGrants() });
       }
       if (request.method === 'GET' && url.pathname === '/v1/groups') {
-        return json(response, 200, { groups: service.listGroups().map((group) => ({
-          ...group,
-          ...(householdGateway?.householdUrl(group.id) ? { householdUrl: householdGateway.householdUrl(group.id) } : {}),
-        })) });
+        const book = addresses();
+        return json(response, 200, { groups: service.listGroups().map((group) => {
+          const { origin, aliases, legacy } = book.addresses(group.id);
+          const householdUrl = householdGateway ? book.householdUrl(group.id) : undefined;
+          return {
+            ...group,
+            ...(householdUrl ? { householdUrl } : {}),
+            // Every address that selects the household, the canonical one first (shown where householdUrl is).
+            ...(householdGateway ? { householdAddresses: [origin, ...aliases, legacy].filter((address) => address !== undefined) } : {}),
+          };
+        }) });
+      }
+      if (segments.length === 4 && segments[0] === 'v1' && segments[1] === 'groups' && segments[3] === 'addresses') {
+        if (request.method === 'GET') {
+          const groupId = validId(segments[2], 'groupId').toLowerCase();
+          if (!service.getHouseholdMemberIds(groupId)) throw new Error('group not found');
+          return json(response, 200, householdAddresses(groupId));
+        }
+        if (request.method === 'PUT') {
+          const body = recordBody(await readJson(request));
+          if (Object.keys(body).some((key) => key !== 'origin' && key !== 'aliases')) throw new Error('body must contain only origin and aliases');
+          const groupId = validId(segments[2], 'groupId').toLowerCase();
+          const entry = normalizeEntry(body as { origin: unknown; aliases?: unknown });
+          await writeAddresses(async () => {
+            addresses().with(groupId, entry);
+            await service.setHouseholdAddresses(groupId, entry);
+          });
+          return json(response, 200, { status: 'saved', ...householdAddresses(groupId) });
+        }
+        if (request.method === 'DELETE') {
+          requireJsonIfBody(request);
+          const groupId = validId(segments[2], 'groupId').toLowerCase();
+          await writeAddresses(() => service.setHouseholdAddresses(groupId, undefined));
+          return json(response, 200, { status: 'deleted', ...householdAddresses(groupId) });
+        }
       }
       if (request.method === 'GET' && url.pathname === '/v1/users') {
         return json(response, 200, {
@@ -370,36 +449,64 @@ export function makeServer(
       }
       return json(response, 404, { error: 'not_found' });
     } catch (error) {
-      if (error instanceof UserProvisioningError) {
-        console.error(JSON.stringify({ level: 'error', message: error.message, userId: error.user.id }));
-        return json(response, 502, {
-          error: error.message,
-          code: error.stage === 'household' ? 'user_created_household_assignment_failed' : 'user_created_jellyseerr_import_failed',
-          user: error.user,
-          ...(error.group ? { group: error.group } : {}),
-        });
-      }
-      if (error instanceof UnsupportedMediaTypeError) return json(response, 415, { error: 'unsupported_media_type' });
-      if (error instanceof AdminActionLimitError) return json(response, 429, { error: 'too_many_requests' });
-      if (error instanceof AdminSeerrError) return json(response, 502, { error: error.message });
-      if (error instanceof ConflictError) return json(response, 409, { error: error.message, code: error.code });
-      const message = error instanceof Error ? error.message : 'unknown error';
-      console.error(JSON.stringify({ level: 'error', message }));
-      const status = message.includes('not found') ? 404 : isClientError(message) ? 400 : 502;
-      return json(response, status, { error: message });
+      answerError(response, error);
     }
   });
-  server.on('upgrade', (request, socket, head) => {
-    const householdId = householdGateway?.householdId(request.headers.host);
-    if (!householdGateway || !householdId) {
+  // The admin listener proxies nothing, so it upgrades nothing.
+  admin.on('upgrade', (_request, socket) => socket.destroy());
+
+  if (!householdGateway) {
+    return { admin: Object.assign(admin, { closeWebSockets: async () => 0 }) };
+  }
+  const member = createServer(async (request, response) => {
+    try {
+      const household = addresses().resolve(request.headers.host);
+      if (household) {
+        await householdGateway.handle(request, response, household.householdId, household.origin);
+        return;
+      }
+      const url = new URL(request.url ?? '/', 'http://localhost');
+      if (options?.memberWebhook && request.method === 'POST' && url.pathname === '/webhooks/seerr') return await handleWebhook(request, response, url);
+      // No household's address: the same answer for every path and method, and never the admin site.
+      return json(response, 421, { error: 'unknown_host' });
+    } catch (error) {
+      answerError(response, error);
+    }
+  });
+  member.on('upgrade', (request, socket, head) => {
+    const household = addresses().resolve(request.headers.host);
+    if (!household) {
       socket.destroy();
       return;
     }
-    householdGateway.handleUpgrade(request, socket, head, householdId);
+    householdGateway.handleUpgrade(request, socket, head, household.householdId);
   });
-  return Object.assign(server, {
-    closeWebSockets: async () => householdGateway ? householdGateway.closeWebSockets() : 0,
-  });
+  return {
+    admin: Object.assign(admin, { closeWebSockets: async () => 0 }),
+    member: Object.assign(member, { closeWebSockets: () => householdGateway.closeWebSockets() }),
+  };
+}
+
+/** The admin API's (and the webhook's) answer to an error a handler threw. */
+function answerError(response: ServerResponse, error: unknown): void {
+  if (error instanceof UserProvisioningError) {
+    console.error(JSON.stringify({ level: 'error', message: error.message, userId: error.user.id }));
+    return json(response, 502, {
+      error: error.message,
+      code: error.stage === 'household' ? 'user_created_household_assignment_failed' : 'user_created_jellyseerr_import_failed',
+      user: error.user,
+      ...(error.group ? { group: error.group } : {}),
+    });
+  }
+  if (error instanceof UnsupportedMediaTypeError) return json(response, 415, { error: 'unsupported_media_type' });
+  if (error instanceof AdminActionLimitError) return json(response, 429, { error: 'too_many_requests' });
+  if (error instanceof AdminSeerrError) return json(response, 502, { error: error.message });
+  if (error instanceof ConflictError) return json(response, 409, { error: error.message, code: error.code });
+  if (error instanceof HouseholdAddressError) return json(response, error.code === 'address_conflict' ? 409 : 400, { error: error.message, code: error.code });
+  const message = error instanceof Error ? error.message : 'unknown error';
+  console.error(JSON.stringify({ level: 'error', message }));
+  const status = message.includes('not found') ? 404 : isClientError(message) ? 400 : 502;
+  return json(response, status, { error: message });
 }
 
 function authorized(request: IncomingMessage, expectedToken: string): boolean {

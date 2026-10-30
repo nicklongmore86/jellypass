@@ -10,8 +10,8 @@
       "url": "https://{householdHost}/jellypass/app/v1",
       "variables": {
         "householdHost": {
-          "default": "jelly-household.example.com",
-          "description": "The household's own address; the household is decided from it."
+          "default": "media.example.com",
+          "description": "The household's own address (host, and port if it is not 443), as its administrator mapped it: any hostname. The household is decided from it; a host that is no household's is answered 421 unknown_host."
         }
       }
     }
@@ -882,7 +882,7 @@
         }
       },
       "NotFoundError": {
-        "description": "404: not_found on a household host, household_not_found on a host of no household.",
+        "description": "404: not_found on a household host, household_not_found on a legacy generated address whose household does not exist.",
         "type": "object",
         "required": [
           "error"
