@@ -1,0 +1,26 @@
+# Search for a film the demo household has: Big Buck Bunny shows as In library.
+appId: com.rtc-services.jellypass
+---
+# Taps are repeated until they land (03-see-all.yaml).
+- repeat:
+    while:
+      notVisible:
+        id: "search-field"
+    times: 5
+    commands:
+      - tapOn:
+          id: "tab-search"
+      - waitForAnimationToEnd:
+          timeout: 5000
+- assertVisible:
+    id: "search-field"
+- tapOn:
+    id: "search-field"
+- inputText: "Big Buck Bunny"
+# Search sends it, and the field gives up the keyboard.
+- pressKey: Enter
+- extendedWaitUntil:
+    visible: "Big Buck Bunny.*Ready to watch"
+    timeout: 30000
+- waitForAnimationToEnd:
+    timeout: 10000

@@ -44,6 +44,12 @@ export const ADMIN_HTML = `<!doctype html>
       <div id="jellyfin-version" class="version-alert" role="alert" hidden><div><strong id="jellyfin-version-title"></strong><p id="jellyfin-version-text"></p></div><button id="jellyfin-version-confirm" class="button primary compact" type="button" hidden></button></div>
 
       <nav class="tabs" aria-label="Admin sections"><button class="active" data-tab="dashboard">Dashboard</button><button data-tab="requests">Requests <span id="requests-count"></span></button><button data-tab="library">Library <span id="library-count"></span></button><button data-tab="grants">Grants <span id="grant-count"></span></button><button data-tab="groups">Groups <span id="group-count"></span></button></nav>
+      <section class="panel" aria-labelledby="self-check-title" style="padding:24px;margin-top:24px">
+        <h2 id="self-check-title">Deployment self-check</h2>
+        <p>Check gateway bypass risks, Quick Connect, proxy headers, Seerr, Jellyfin support and TMDB. Inside probes cannot prove outside access is blocked.</p>
+        <button id="run-self-check" class="button quiet" type="button">Run self-check</button>
+        <div id="self-check-results" role="status" aria-live="polite"></div>
+      </section>
       <section id="dashboard-panel" class="tab-panel">
         <div class="section-tools"><div><h2>Access overview</h2><p>A compact view of JellyPass activity and policy health.</p></div></div>
         <div class="stats" aria-label="Access summary">
@@ -128,7 +134,7 @@ body{background:radial-gradient(circle at 14% 4%,rgba(170,92,195,.2) 0,transpare
 export const ADMIN_APP_JS = `
 (() => {
   'use strict';
-  const state = { jellyfinVersion: null, grants: [], groups: [], users: [], seerrImportAvailable: false, catalog: [], catalogSyncedAt: null, recentRequests: [], recentRequestsUnavailable: false, selectedItems: new Set(), catalogPage: 1, catalogPageSize: 25, activeTab: 'dashboard', appRequests: [], heldTitles: [], requestsLoaded: false, requestsUnavailable: '', pendingAction: null, pendingRelease: null };
+  const state = { lastRemovedFormAt: null, jellyfinVersion: null, grants: [], groups: [], users: [], seerrImportAvailable: false, catalog: [], catalogSyncedAt: null, recentRequests: [], recentRequestsUnavailable: false, selectedItems: new Set(), catalogPage: 1, catalogPageSize: 25, activeTab: 'dashboard', appRequests: [], heldTitles: [], requestsLoaded: false, requestsUnavailable: '', pendingAction: null, pendingRelease: null };
   const byId = (id) => document.getElementById(id);
   const loginView = byId('login-view');
   const appView = byId('app-view');
@@ -257,9 +263,10 @@ export const ADMIN_APP_JS = `
       if (error.stale || error.status === 401) throw error;
       return null;
     });
-    const results = await Promise.all([api('/v1/grants'), api('/v1/groups'), api('/v1/users'), api('/v1/library'), recent, version]);
+    const results = await Promise.all([api('/v1/grants'), api('/v1/groups'), api('/v1/users'), api('/v1/library'), recent, version, api('/v1/webhooks/status')]);
     assertSession(epoch);
     state.jellyfinVersion = results[5];
+    state.lastRemovedFormAt = results[6].lastRemovedFormAt;
     state.grants = results[0].grants;
     state.groups = results[1].groups;
     state.users = results[2].users;
@@ -303,15 +310,16 @@ export const ADMIN_APP_JS = `
     panel.classList.remove('confirmed');
     if (!status || status.supported === true) return;
     panel.hidden = false;
+    const enforcing = status.enforcement === 'refuse';
     if (status.version === null) {
-      byId('jellyfin-version-title').textContent = 'Household hosts are paused: the Jellyfin version cannot be read';
-      byId('jellyfin-version-text').textContent = 'JellyPass checks the Jellyfin version before household hosts serve, and keeps trying. ' + (status.error ? 'Last error: ' + status.error : '');
+      byId('jellyfin-version-title').textContent = enforcing ? 'Household hosts are paused: the Jellyfin version cannot be read' : 'The Jellyfin version cannot be read';
+      byId('jellyfin-version-text').textContent = (enforcing ? 'JellyPass checks the Jellyfin version before household hosts serve, and keeps trying. ' : 'Household hosts keep serving while JellyPass keeps trying. ') + (status.error ? 'Last error: ' + status.error : '');
       return;
     }
-    if (status.householdHosts === 'serving') {
+    if (status.confirmation === 'confirmed') {
       panel.classList.add('confirmed');
       byId('jellyfin-version-title').textContent = 'Jellyfin ' + status.version + ' is not a tested version';
-      byId('jellyfin-version-text').textContent = 'Household hosts serve on it because ' + (status.confirmedVersion === status.version ? 'an administrator allowed it' : 'JELLYFIN_UNTESTED_VERSION_OK names it') + '. JellyPass is tested with Jellyfin ' + releases + '.';
+      byId('jellyfin-version-text').textContent = (enforcing ? 'Household hosts serve on it because ' : 'It is allowed because ') + (status.confirmedVersion === status.version ? 'an administrator allowed it' : 'JELLYFIN_UNTESTED_VERSION_OK names it') + '. JellyPass is tested with Jellyfin ' + releases + '.';
       if (status.confirmedVersion === status.version) {
         button.textContent = 'Withdraw';
         button.dataset.action = 'withdraw';
@@ -319,8 +327,10 @@ export const ADMIN_APP_JS = `
       }
       return;
     }
-    byId('jellyfin-version-title').textContent = 'Household hosts are paused: Jellyfin ' + status.version + ' is not a tested version';
-    byId('jellyfin-version-text').textContent = 'JellyPass is tested with Jellyfin ' + releases + '. Household hosts answer 503 until you allow this exact version; the household privacy checks were not tested against it.';
+    byId('jellyfin-version-title').textContent = (enforcing ? 'Household hosts are paused: Jellyfin ' : 'Jellyfin ') + status.version + ' is not a tested version';
+    byId('jellyfin-version-text').textContent = 'JellyPass is tested with Jellyfin ' + releases + '. ' + (enforcing
+      ? 'Household hosts answer 503 until you allow this exact version; the household privacy checks were not tested against it.'
+      : 'Household hosts keep serving, but the household privacy checks were not tested against it. Allow this exact version once you are satisfied it works; from JellyPass 4.0.0, household hosts answer 503 on a version that is not allowed.');
     button.textContent = 'Allow Jellyfin ' + status.version;
     button.dataset.action = 'confirm';
     button.hidden = false;
@@ -1033,9 +1043,13 @@ export const ADMIN_APP_JS = `
     const syncedAt = state.catalogSyncedAt ? Date.parse(state.catalogSyncedAt) : 0;
     const syncOverdue = !syncedAt || Date.now() - syncedAt > 2 * 60 * 60 * 1000;
     const version = state.jellyfinVersion;
-    if (version && version.householdHosts !== 'serving') setHealth('warning', 'Household hosts paused');
-    else if (attention) setHealth('warning', attention + ' polic' + (attention === 1 ? 'y' : 'ies') + ' need attention');
-    else if (syncOverdue) setHealth('warning', syncedAt ? 'Library sync overdue' : 'Library sync required');
+    const warnings = [];
+    if (version && version.householdHosts !== 'serving') warnings.push('Household hosts paused');
+    else if (version && version.confirmation === 'unconfirmed') warnings.push('Jellyfin version not confirmed');
+    if (state.lastRemovedFormAt && Date.now() - state.lastRemovedFormAt < 24 * 60 * 60 * 1000) warnings.push('Seerr webhook refused: update header and template');
+    if (attention) warnings.push(attention + ' polic' + (attention === 1 ? 'y' : 'ies') + ' need attention');
+    if (syncOverdue) warnings.push(syncedAt ? 'Library sync overdue' : 'Library sync required');
+    if (warnings.length) setHealth('warning', warnings.join(' · '));
     else setHealth('healthy', 'Sync healthy');
   }
 
@@ -1044,7 +1058,7 @@ export const ADMIN_APP_JS = `
     const status = state.jellyfinVersion;
     if (!status) return;
     const withdraw = button.dataset.action === 'withdraw';
-    if (!withdraw && !confirm('Allow household hosts to serve on Jellyfin ' + status.version + '? JellyPass has not been tested with it.')) return;
+    if (!withdraw && !confirm('Allow Jellyfin ' + status.version + ' for household hosts? JellyPass has not been tested with it.')) return;
     button.disabled = true;
     try {
       state.jellyfinVersion = withdraw
@@ -1052,7 +1066,9 @@ export const ADMIN_APP_JS = `
         : await api('/v1/jellyfin/version/confirmation', { method: 'PUT', body: JSON.stringify({ version: status.version }) });
       renderJellyfinVersion();
       updateHealth();
-      toast(withdraw ? 'Household hosts are paused again for this version' : 'Household hosts serve on Jellyfin ' + status.version);
+      toast(withdraw
+        ? (state.jellyfinVersion.householdHosts === 'serving' ? 'Jellyfin ' + status.version + ' is no longer allowed' : 'Household hosts are paused again for this version')
+        : 'Jellyfin ' + status.version + ' is allowed');
     } catch (error) {
       if (error.stale) return;
       toast(error.message, true);
@@ -1322,6 +1338,17 @@ export const ADMIN_APP_JS = `
     scrollToTop();
   }
 
+  byId('run-self-check').addEventListener('click', async () => {
+    const button = byId('run-self-check');
+    const output = byId('self-check-results');
+    button.disabled = true;
+    output.textContent = 'Checking configured services…';
+    try {
+      const answer = await api('/v1/self-check', { method: 'POST' });
+      output.replaceChildren(...answer.results.map((entry) => node('p', { text: entry.status.toUpperCase() + ' — ' + entry.check + ': ' + entry.explanation })));
+    } catch (error) { output.textContent = error.message; }
+    finally { button.disabled = false; }
+  });
   document.querySelectorAll('.tabs button').forEach((button) => button.addEventListener('click', () => activateTab(button.dataset.tab)));
 
   scrollToTop();

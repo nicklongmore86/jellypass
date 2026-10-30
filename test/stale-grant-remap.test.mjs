@@ -868,9 +868,9 @@ describe('admin grant remap', { timeout: 10_000 }, () => {
  */
 describe('removals across household library joins and grant moves', { timeout: 10_000 }, () => {
   /** TMDB movie 603 is linked in Seerr to `itemId`. */
-  function join(service, w, userId, itemId = 'item-new') {
+  function join(service, store, w, userId, itemId = 'item-new') {
     w.titles.set('movie/603', itemId);
-    return quietly(() => service.joinLibrary({ userId, isAdministrator: false, mediaType: 'movie', tmdbId: 603 }))
+    return quietly(() => seedJoin(service, store, userId, itemId))
       .then(({ value, error }) => {
         assert.equal(error, undefined, String(error));
         return value;
@@ -913,7 +913,7 @@ describe('removals across household library joins and grant moves', { timeout: 1
     // Bob joins Grove afterwards, so he has no mark of his own: only the household's mark stops his join.
     await store.upsertGroup({ id: 'grove', name: 'Grove', userIds: ['bob-id', 'carol-id'] });
 
-    assert.equal(await join(service, w, 'bob-id'), 'unchanged');
+    assert.equal(await join(service, store, w, 'bob-id'), 'unchanged');
     assert.deepEqual(store.get('item-new').groupIds, ['house-a']);
     // Nor does an administrator's move, previewed or not, nor recovery, from the stale copy that still lists Grove.
     assert.deepEqual((await service.remapGrant('item-old', 'item-new', true)).current.groupIds, ['house-a']);
@@ -921,7 +921,7 @@ describe('removals across household library joins and grant moves', { timeout: 1
     assert.equal(error, undefined, String(error));
     assert.equal(store.get('item-old'), undefined);
     assert.deepEqual(store.get('item-new').groupIds, ['house-a']);
-    assert.equal(await join(service, w, 'bob-id'), 'unchanged', 'nor after the move');
+    assert.equal(await join(service, store, w, 'bob-id'), 'unchanged', 'nor after the move');
     assert.deepEqual(store.get('item-new').groupIds, ['house-a']);
     assert.deepEqual(w.blockedFrom(NEW_TAG), ['bob-id', 'carol-id']);
   });
@@ -942,12 +942,12 @@ describe('removals across household library joins and grant moves', { timeout: 1
 
     // Carol, Dave (in no household) and Bob, who joins Grove only now, all try to add themselves.
     await store.upsertGroup({ id: 'grove', name: 'Grove', userIds: ['bob-id', 'carol-id'] });
-    assert.equal(await join(service, w, 'carol-id'), 'unchanged');
-    assert.equal(await join(service, w, 'dave-id'), 'unchanged');
-    assert.equal(await join(service, w, 'bob-id'), 'unchanged');
+    assert.equal(await join(service, store, w, 'carol-id'), 'unchanged');
+    assert.equal(await join(service, store, w, 'dave-id'), 'unchanged');
+    assert.equal(await join(service, store, w, 'bob-id'), 'unchanged');
     // Carol, now in a new household of her own too, still joins nothing.
     await store.upsertGroup({ id: 'cottage', name: 'Cottage', userIds: ['carol-id'] });
-    assert.equal(await join(service, w, 'carol-id'), 'unchanged');
+    assert.equal(await join(service, store, w, 'carol-id'), 'unchanged');
     const grant = store.get('item-new');
     assert.deepEqual([grant.manualUserIds, grant.groupIds, grant.joins], [[], ['house-a'], undefined]);
     assert.deepEqual(w.blockedFrom(NEW_TAG), ['bob-id', 'carol-id', 'dave-id']);
@@ -971,15 +971,15 @@ describe('removals across household library joins and grant moves', { timeout: 1
     assert.equal(leftover.sync.state, 'orphaned');
     assert.deepEqual([leftover.requests, leftover.manualUserIds, leftover.groupIds], [{ 8: 'bob-id' }, ['dave-id'], ['neighbours']]);
 
-    assert.equal(await join(service, w, 'carol-id'), 'joined');
+    assert.equal(await join(service, store, w, 'carol-id'), 'joined');
     const moved = store.get('item-new');
     assert.deepEqual([moved.requests, moved.manualUserIds, moved.groupIds], [{ 7: 'alice-id' }, [], ['grove', 'house-a']]);
     assert.deepEqual(moved.joins.map((entry) => [entry.userId, entry.groupIds]), [['carol-id', ['grove']]]);
     assert.deepEqual(w.blockedFrom(NEW_TAG), ['bob-id', 'dave-id'], 'only the caller\'s household gained access');
 
     // A title Seerr still links to the deleted item joins nobody to the leftover, whose audience waits for an administrator.
-    assert.equal(await join(service, w, 'alice-id', 'item-old'), 'unchanged');
-    assert.equal(await join(service, w, 'carol-id', 'item-old'), 'unchanged');
+    assert.equal(await join(service, store, w, 'alice-id', 'item-old'), 'unchanged');
+    assert.equal(await join(service, store, w, 'carol-id', 'item-old'), 'unchanged');
     assert.deepEqual(store.get('item-old'), leftover);
   });
 
@@ -987,7 +987,7 @@ describe('removals across household library joins and grant moves', { timeout: 1
     const { w, store, service } = await staleCopy(t);
     await quietly(() => service.setManualAccess({ itemId: 'item-new', userIds: [], groupIds: ['grove', 'house-a'] }));
     assert.ok(store.isAccessRemoved('item-new', 'userIds', 'dave-id'));
-    assert.equal(await join(service, w, 'dave-id'), 'unchanged', 'dave is marked');
+    assert.equal(await join(service, store, w, 'dave-id'), 'unchanged', 'dave is marked');
     assert.deepEqual((await service.remapGrant('item-old', 'item-new', true)).current.manualUserIds, []);
 
     // An administrator adds Neighbours, dave's household, by hand: that clears dave's mark.
@@ -1001,7 +1001,7 @@ describe('removals across household library joins and grant moves', { timeout: 1
     assert.equal(error, undefined, String(error));
     assert.deepEqual(store.get('item-new').manualUserIds, ['dave-id']);
     await store.upsertGroup({ id: 'cottage', name: 'Cottage', userIds: ['bob-id', 'dave-id'] });
-    assert.equal(await join(service, w, 'dave-id'), 'joined');
+    assert.equal(await join(service, store, w, 'dave-id'), 'joined');
     assert.deepEqual(store.get('item-new').groupIds, ['cottage', 'grove', 'house-a', 'neighbours']);
     assert.deepEqual(w.blockedFrom(NEW_TAG), []);
   });
@@ -1021,7 +1021,7 @@ describe('removals across household library joins and grant moves', { timeout: 1
     assert.equal(store.get('item-old'), undefined);
     assert.ok(store.isRequestRevoked('8', 'item-new'), 'the revocation moved with the grant');
     assert.ok(store.isAccessRemoved('item-new', 'userIds', 'carol-id'));
-    assert.equal(await join(service, w, 'carol-id'), 'unchanged');
+    assert.equal(await join(service, store, w, 'carol-id'), 'unchanged');
     // Nor does Seerr re-sending the request's MEDIA_AVAILABLE restore it.
     const event = parseWebhook({ notificationType: 'MEDIA_AVAILABLE', event: 'Movie Request Now Available', media: { jellyfinMediaId: 'item-new', mediaType: 'movie' }, request: { id: '8', requestedBy: { jellyfinUserId: 'carol-id' } } });
     assert.equal((await quietly(() => service.processWebhook(event))).value, null);
@@ -1039,7 +1039,7 @@ describe('removals across household library joins and grant moves', { timeout: 1
     w.request(8, { jellyfinMediaId: 'item-new' }, { requestedBy: { jellyfinUserId: 'carol-id' } });
     const revoked = await quietly(() => service.revokeRequest('item-new', '8'));
     assert.equal(revoked.error, undefined, String(revoked.error));
-    assert.equal(await join(service, w, 'carol-id'), 'unchanged');
+    assert.equal(await join(service, store, w, 'carol-id'), 'unchanged');
 
     assert.deepEqual((await service.remapGrant('item-old', 'item-new', true)).current.requests, { 7: 'alice-id' });
     const { error } = await quietly(() => service.reconcileAll());
@@ -1047,8 +1047,8 @@ describe('removals across household library joins and grant moves', { timeout: 1
     // The revoked request goes nowhere, so the rest of the stale copy stays behind, orphaned, without it.
     const leftover = store.get('item-old');
     assert.deepEqual([leftover.requests, leftover.sync.state], [{}, 'orphaned']);
-    assert.equal(await join(service, w, 'carol-id'), 'unchanged', 'nor after the move');
-    assert.equal(await join(service, w, 'carol-id', 'item-old'), 'unchanged');
+    assert.equal(await join(service, store, w, 'carol-id'), 'unchanged', 'nor after the move');
+    assert.equal(await join(service, store, w, 'carol-id', 'item-old'), 'unchanged');
     const grant = store.get('item-new');
     assert.deepEqual([grant.requests, grant.manualUserIds], [{ 7: 'alice-id' }, ['dave-id']]);
     assert.ok(store.isRequestRevoked('8', 'item-new'));
@@ -1123,9 +1123,9 @@ describe('removals across household library joins and grant moves', { timeout: 1
  */
 describe('library join history across grant moves', { timeout: 10_000 }, () => {
   /** TMDB movie 603 is linked in Seerr to `itemId`; `userId` joins it to their library. */
-  async function join(service, w, userId, itemId) {
+  async function join(service, store, w, userId, itemId) {
     w.titles.set('movie/603', itemId);
-    const { value, error } = await quietly(() => service.joinLibrary({ userId, isAdministrator: false, mediaType: 'movie', tmdbId: 603 }));
+    const { value, error } = await quietly(() => seedJoin(service, store, userId, itemId));
     assert.equal(error, undefined, String(error));
     assert.equal(value, 'joined', `${userId} joins ${itemId}`);
   }
@@ -1146,8 +1146,8 @@ describe('library join history across grant moves', { timeout: 10_000 }, () => {
     w.addItem('item-old');
     await store.grant({ itemId: 'item-old', requestId: '7', userId: 'alice-id', groupIds: ['house-a'] });
     await service.reconcileAll();
-    await join(service, w, 'carol-id', 'item-old');
-    await join(service, w, 'dave-id', 'item-old');
+    await join(service, store, w, 'carol-id', 'item-old');
+    await join(service, store, w, 'dave-id', 'item-old');
     const joins = store.get('item-old').joins;
     assert.deepEqual(joins.map((entry) => [entry.userId, entry.groupIds, entry.userAdded]), [
       ['carol-id', ['grove'], false],
@@ -1206,7 +1206,7 @@ describe('library join history across grant moves', { timeout: 10_000 }, () => {
     await store.grant({ itemId: 'item-old', requestId: '3', userId: 'carol-id' });
     await service.reconcileAll();
     // Each requester's household joins, then dave, in no household, joins himself.
-    for (const userId of ['alice-id', 'bob-id', 'carol-id', 'dave-id']) await join(service, w, userId, 'item-old');
+    for (const userId of ['alice-id', 'bob-id', 'carol-id', 'dave-id']) await join(service, store, w, userId, 'item-old');
     const joins = store.get('item-old').joins;
     const byUser = Object.fromEntries(joins.map((entry) => [entry.userId, entry]));
     assert.deepEqual(joins.map((entry) => [entry.userId, entry.groupIds]), [
@@ -1243,7 +1243,7 @@ describe('library join history across grant moves', { timeout: 10_000 }, () => {
     await store.upsertGroup({ id: 'cottage', name: 'Cottage', userIds: ['bob-id'] });
     await store.grant({ itemId: 'item-new', requestId: '9', userId: 'bob-id' });
     w.request(9, { jellyfinMediaId: 'item-new' }, { requestedBy: { jellyfinUserId: 'bob-id' } });
-    await join(service, w, 'bob-id', 'item-new');
+    await join(service, store, w, 'bob-id', 'item-new');
     const own = store.get('item-new').joins;
     assert.equal(own.length, 1);
 
@@ -1286,8 +1286,8 @@ describe('library join history across grant moves', { timeout: 10_000 }, () => {
     await store.grant({ itemId: 'item-old', requestId: '1', userId: 'alice-id' });
     await store.grant({ itemId: 'item-old', requestId: '3', userId: 'carol-id' });
     await service.reconcileAll();
-    await join(service, w, 'alice-id', 'item-old');
-    await join(service, w, 'carol-id', 'item-old');
+    await join(service, store, w, 'alice-id', 'item-old');
+    await join(service, store, w, 'carol-id', 'item-old');
     const joins = store.get('item-old').joins;
     w.items.delete('item-old');
     w.addItem('item-a');
@@ -1312,7 +1312,7 @@ describe('library join history across grant moves', { timeout: 10_000 }, () => {
     w.request(7, { jellyfinMediaId: 'item-old' });
     await store.upsertGroup({ id: 'cottage', name: 'Cottage', userIds: ['bob-id'] });
     await store.grant({ itemId: 'item-new', requestId: '9', userId: 'bob-id' });
-    await join(service, w, 'bob-id', 'item-new');
+    await join(service, store, w, 'bob-id', 'item-new');
     const own = store.get('item-new').joins;
     const before = store.list();
     const target = store.get('item-new');
@@ -1339,8 +1339,8 @@ describe('library join history across grant moves', { timeout: 10_000 }, () => {
     await store.grant({ itemId: 'item-old', requestId: '1', userId: 'alice-id' });
     await store.grant({ itemId: 'item-old', requestId: '3', userId: 'carol-id' });
     await service.reconcileAll();
-    await join(service, w, 'alice-id', 'item-old');
-    await join(service, w, 'carol-id', 'item-old');
+    await join(service, store, w, 'alice-id', 'item-old');
+    await join(service, store, w, 'carol-id', 'item-old');
     const joins = store.get('item-old').joins;
     w.items.delete('item-old');
     w.addItem('item-a');
@@ -1387,7 +1387,7 @@ describe('administrator dry runs plan exactly what the write stores', { timeout:
     await store.grant({ itemId: 'item-1', requestId: '8', userId: 'bob-id' });
     await service.reconcileAll();
     w.titles.set('movie/603', 'item-1');
-    const { value, error } = await quietly(() => service.joinLibrary({ userId: 'carol-id', isAdministrator: false, mediaType: 'movie', tmdbId: 603 }));
+    const { value, error } = await quietly(() => seedJoin(service, store, 'carol-id', 'item-1'));
     assert.equal(error, undefined, String(error));
     assert.equal(value, 'joined');
     await store.markSourceReappeared('item-1', ['item-x']);
@@ -1475,7 +1475,7 @@ async function administered(t) {
   await store.grant({ itemId: 'item-old', requestId: '11', userId: 'alice-id', groupIds: ['house-a'] });
   await service.reconcileAll();
   w.titles.set('movie/603', 'item-1');
-  const joined = await quietly(() => service.joinLibrary({ userId: 'carol-id', isAdministrator: false, mediaType: 'movie', tmdbId: 603 }));
+  const joined = await quietly(() => seedJoin(service, store, 'carol-id', 'item-1'));
   assert.equal(joined.error, undefined, String(joined.error));
   assert.equal(joined.value, 'joined', 'precondition: carol joined');
   const revoked = await quietly(() => service.revokeRequest('item-1', '9'));
@@ -1722,3 +1722,13 @@ describe('store writes that throw partway leave everything as it was', { timeout
     await assertFailsUntouched(w, store, file, () => store.markSyncErrorBatch(['item-1', null], 'boom'), /null/, 'sync error batch');
   });
 });
+
+// Seed historical joins directly: 4.0 no longer exposes the legacy per-user join endpoint.
+// Keep verifying that existing audit records and removal marks survive grant moves.
+async function seedJoin(service, store, userId, itemId) {
+  const input = { itemId, userId, groupIds: store.listGroupIdsForUser(userId) };
+  const joined = await store.joinGrant(input);
+  if (!joined) return 'unchanged';
+  await service.setGrantGroups(itemId, joined.current.groupIds);
+  return 'joined';
+}

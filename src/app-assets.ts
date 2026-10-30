@@ -3,6 +3,7 @@ import { readdirSync, readFileSync, statSync } from 'node:fs';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { extname, join, posix } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { writeWhole } from './html-response.js';
 
 /**
  * The household app's own files (the page, its styles and script modules, manifest, service worker, icons and TMDB's
@@ -156,8 +157,8 @@ export class AppAssets {
       response.end();
       return true;
     }
-    response.writeHead(200, { ...headers, 'Content-Length': asset.body.length });
-    response.end(request.method === 'HEAD' ? undefined : asset.body);
+    // The page is marked no-transform and compressed here (see html-response.ts); every other file is sent as it is.
+    writeWhole(request, response, 200, { ...headers, 'Content-Length': asset.body.length }, asset.body);
     return true;
   }
 }

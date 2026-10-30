@@ -198,7 +198,7 @@ describe('member listener', () => {
   });
 
   it('answers the Seerr webhook on the member listener only with LEGACY_WEBHOOK_ON_MEMBER_PORT, and never on a household host', async (t) => {
-    const test = { notificationType: 'TEST_NOTIFICATION', subject: 'Test Notification' };
+    const test = { notificationType: 'TEST_NOTIFICATION', subject: 'Test Notification', event: '', media: {}, request: { id: '', requestedBy: { jellyfinUserId: '', username: '' } } };
     const send = (port, host, token = 'webhook-secret') => get(port, '/webhooks/seerr', { Host: host, Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' }, { method: 'POST', body: JSON.stringify(test) });
     const off = await startApp(t, world(), { addresses: ADDRESSES });
     assert.deepEqual([(await send(off.adminPort, 'jellypass:8788')).status, (await send(off.adminPort, 'jellypass:8788')).text], [202, '{"status":"ignored"}']);
@@ -260,10 +260,10 @@ describe('one Host per request', () => {
       const answer = await raw(app.port, `GET ${target} HTTP/1.1`, [`Host: ${MEDIA}`]);
       assert.deepEqual([answer.status, answer.body], [400, INVALID_HOST], target);
     }
-    // One that agrees passes the Host check and is the gateway's to answer, which relays origin-form targets only.
+    // One that agrees passes the Host check and is the gateway's to answer, which relays origin-form targets only (its
+    // `//` is an empty path segment to the gateway).
     const agreeing = await raw(app.port, `GET http://${MEDIA.toUpperCase()}/Users/Public HTTP/1.1`, [`Host: ${MEDIA}`]);
-    assert.equal(agreeing.status, 400);
-    assert.notEqual(agreeing.body, INVALID_HOST);
+    assert.deepEqual([agreeing.status, agreeing.body], [404, '{"error":"not_found"}']);
     assert.deepEqual(relayed(app), [], 'nothing reached Jellyfin');
   });
 
@@ -314,8 +314,28 @@ describe('one Host per request', () => {
     assert.deepEqual(relayed(app), [], 'nothing reached Jellyfin');
   });
 
-  it('refuses two Hosts on the legacy member-port webhook too, and answers 421 for an unknown Host before parsing the target', async (t) => {
-    const test = JSON.stringify({ notificationType: 'TEST_NOTIFICATION', subject: 'Test Notification' });
+  it('refuses a Host port outside 1-65535 on either listener first, before //, 410, 421 or the webhook', async (t) => {
+    const app = await startApp(t, world(), { addresses: ADDRESSES, memberWebhook: true });
+    const answer = (port, request, host) => raw(port, request, [`Host: ${host}`]).then((reply) => [reply.status, reply.body]);
+    for (const [listener, port] of [['member', app.port], ['admin', app.adminPort]]) {
+      for (const host of ['jellypass:0', 'jellypass:00000', 'jellypass:65536', 'jellypass:99999', `${MEDIA}:0`, `${MEDIA}:65536`]) {
+        for (const request of ['GET /health HTTP/1.1', 'GET //[bad HTTP/1.1', 'GET /jellypass/add HTTP/1.1', 'POST /webhooks/seerr HTTP/1.1', `GET http://${host}/health HTTP/1.1`]) {
+          assert.deepEqual(await answer(port, request, host), [400, INVALID_HOST], `${listener}: ${host}: ${request}`);
+        }
+        assert.match(await upgrade(port, '/socket?api_key=token-alice', host), /^HTTP\/1\.1 400 [^]*\{"error":"invalid_host"\}$/, `${listener}: ${host}: upgrade`);
+      }
+    }
+    // 65535 (and 1) are ports: past the Host check, the member listener's 421 for no household and the admin site's health.
+    for (const host of ['jellypass:65535', 'jellypass:1']) {
+      assert.deepEqual(await answer(app.port, 'GET /health HTTP/1.1', host), [421, UNKNOWN_HOST], host);
+      assert.equal((await raw(app.adminPort, 'GET /health HTTP/1.1', [`Host: ${host}`])).status, 200, host);
+      assert.equal(await upgrade(app.port, '/socket?api_key=token-alice', host), '', host);
+    }
+    assert.deepEqual(relayed(app), [], 'nothing reached Jellyfin');
+  });
+
+  it('refuses two Hosts on the legacy member-port webhook too, refuses // and /\\ first, and answers 421 for an unknown Host before parsing the target', async (t) => {
+    const test = JSON.stringify({ notificationType: 'TEST_NOTIFICATION', subject: 'Test Notification', event: '', media: {}, request: { id: '', requestedBy: { jellyfinUserId: '', username: '' } } });
     const webhook = (port, target, hosts) => raw(port, `POST ${target} HTTP/1.1`, [...hosts, 'Authorization: Bearer webhook-secret', 'Content-Type: application/json'], test);
     const on = await startApp(t, world(), { addresses: ADDRESSES, memberWebhook: true });
     for (const hosts of [['Host: jellypass:8787', `Host: ${MEDIA}`], [`Host: ${MEDIA}`, 'Host: jellypass:8787'], ['Host: jellypass:8787', 'Host: jellypass:8787']]) {
@@ -324,13 +344,20 @@ describe('one Host per request', () => {
     }
     assert.equal((await webhook(on.port, 'http://other.example.com/webhooks/seerr', ['Host: jellypass:8787'])).status, 400);
     assert.deepEqual(await webhook(on.port, '/webhooks/seerr', ['Host: jellypass:8787']).then((answer) => [answer.status, answer.body]), [202, '{"status":"ignored"}']);
-    // A target that is no URL: with the legacy webhook on, a POST's is parsed, and that is a fixed 400; anything else is the 421.
-    assert.deepEqual(await webhook(on.port, '//[bad', ['Host: jellypass:8787']).then((answer) => [answer.status, answer.body]), [400, '{"error":"invalid_request_target"}']);
-    assert.deepEqual(await raw(on.port, 'GET //[bad HTTP/1.1', ['Host: jellypass:8787']).then((answer) => [answer.status, answer.body]), [421, UNKNOWN_HOST]);
+    // A port past 65535 is no valid Host, so it is the first-stage 400, before the target is parsed.
+    assert.deepEqual(await webhook(on.port, 'http://jellypass:99999/webhooks/seerr', ['Host: jellypass:99999']).then((answer) => [answer.status, answer.body]), [400, INVALID_HOST]);
+    // A target that is no URL with a valid Host (a dotted name the URL parser reads as an IPv4 address past 255): with the
+    // legacy webhook on, a POST's is parsed, and that is a fixed 400; anything else is the 421.
+    const unparsable = 'http://1.2.3.999/webhooks/seerr';
+    assert.deepEqual(await webhook(on.port, unparsable, ['Host: 1.2.3.999']).then((answer) => [answer.status, answer.body]), [400, '{"error":"invalid_request_target"}']);
+    assert.deepEqual(await raw(on.port, `GET ${unparsable} HTTP/1.1`, ['Host: 1.2.3.999']).then((answer) => [answer.status, answer.body]), [421, UNKNOWN_HOST]);
+    // A target the URL parser reads as a host is refused right after the Host check, before the 421 or any parsing.
     const off = await startApp(t, world(), { addresses: ADDRESSES });
-    for (const request of ['GET //[bad HTTP/1.1', 'POST //[bad HTTP/1.1']) {
-      assert.deepEqual(await raw(off.port, request, ['Host: unknown.example.com']).then((answer) => [answer.status, answer.body]), [421, UNKNOWN_HOST], request);
+    for (const [app, request] of [[on, 'POST //[bad HTTP/1.1'], [on, 'GET //[bad HTTP/1.1'], [off, 'GET //[bad HTTP/1.1'], [off, 'POST /\\[bad HTTP/1.1']]) {
+      assert.deepEqual(await raw(app.port, request, ['Host: unknown.example.com']).then((answer) => [answer.status, answer.body]), [404, '{"error":"not_found"}'], request);
     }
+    const unknown = await raw(off.port, 'GET /anything HTTP/1.1', ['Host: unknown.example.com']);
+    assert.deepEqual([unknown.status, unknown.body], [421, UNKNOWN_HOST]);
   });
 });
 
