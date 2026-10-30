@@ -29,10 +29,16 @@ pnpm build
 The normal test suite uses local mock HTTP services and does not require live
 Jellyfin or Seerr credentials.
 
-`pnpm test:real` runs `test/real-jellyfin.test.mjs` against a real Jellyfin. It
-needs Docker: it starts a throwaway `jellyfin/jellyfin` container (the same
-image as CI) on `127.0.0.1:18096` and removes it afterwards. To use another
-fresh, unconfigured Jellyfin instead, set `JELLYFIN_REAL_URL`. `pnpm test:all`
+`pnpm test:real` runs `test/real-jellyfin.test.mjs` against a real Jellyfin, once
+for each supported release. It needs Docker: it starts a throwaway container of
+each image `scripts/jellyfin-versions.json` pins (the same images as CI) on
+`127.0.0.1:18096`, one after the other, and removes it afterwards. Set
+`JELLYFIN_IMAGE` and `JELLYFIN_REAL_VERSION` to run one image only, or
+`JELLYFIN_REAL_URL` to use another fresh, unconfigured Jellyfin instead. When
+the supported releases change, update `SUPPORTED_JELLYFIN_RELEASES` in
+`src/jellyfin-version.ts`, `scripts/jellyfin-versions.json` and the
+`jellyfin-integration` matrices in both workflows together;
+`test/jellyfin-version.test.mjs` fails until they agree. `pnpm test:all`
 runs both suites. CI and the release workflow run both, so run `pnpm test:all`
 before opening a pull request that touches webhooks, grants, or the Jellyfin
 client.

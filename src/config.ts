@@ -57,6 +57,11 @@ export interface Config {
   webSocketUpstreamIdleTimeoutMs: number;
   /** Reverse proxies whose X-Forwarded-For entries are believed, as canonical addresses and CIDR ranges. */
   trustedProxies: string[];
+  /**
+   * JELLYFIN_UNTESTED_VERSION_OK: one exact Jellyfin version, outside the supported releases, that household hosts serve
+   * on without an administrator confirming it in the admin site (see JellyfinVersionGate).
+   */
+  jellyfinUntestedVersionOk?: string;
 }
 
 function required(name: string): string {
@@ -124,6 +129,10 @@ export function loadConfig(): Config {
   const webSocketIdleTimeoutMs = webSocketTimeout('WS_IDLE_TIMEOUT_MS', DEFAULT_WS_IDLE_TIMEOUT_MS);
   const webSocketUpstreamIdleTimeoutMs = webSocketTimeout('WS_UPSTREAM_IDLE_TIMEOUT_MS', DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS);
   const trustedProxies = parseTrustedProxies(process.env.TRUSTED_PROXIES);
+  const jellyfinUntestedVersionOk = process.env.JELLYFIN_UNTESTED_VERSION_OK?.trim() || undefined;
+  if (jellyfinUntestedVersionOk && !/^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/.test(jellyfinUntestedVersionOk)) {
+    throw new Error('JELLYFIN_UNTESTED_VERSION_OK must be one exact Jellyfin version, as the admin site shows it (for example 13.0.0)');
+  }
   const adminToken = process.env.ADMIN_TOKEN?.trim();
   if (!adminToken) {
     console.warn(JSON.stringify({
@@ -153,6 +162,7 @@ export function loadConfig(): Config {
     webSocketIdleTimeoutMs,
     webSocketUpstreamIdleTimeoutMs,
     trustedProxies,
+    ...(jellyfinUntestedVersionOk ? { jellyfinUntestedVersionOk } : {}),
   };
 }
 
