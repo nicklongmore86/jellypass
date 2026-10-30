@@ -118,6 +118,25 @@ upgrades** (steps below); with them, existing household addresses such as
   until then, older clients keep working (they ignore the new field) and a
   title hidden elsewhere simply no longer appears in their discovery lists.
   The Samsung TV app's cross-origin rules allow `DELETE` on the app API.
+- **Hidden titles on the household web app and the TV add-on.** Both clients
+  add the controls for the server's hidden titles (above), and show none of
+  it on a server before `apiVersion` 3. **Web app:** a title page has **Not
+  interested** (**Unhide** once hidden) with an **Undo** beside the
+  confirmation, and a poster's **More options** button (a sibling of its
+  link, a menu you can use with a keyboard, a touch or a pointer) offers the
+  same; a hidden title leaves the rows, See all, service and studio pages at
+  once and **Undo** brings it back to its place. Search keeps hidden titles,
+  marked "Hidden from Discover" with **Unhide** on the card. My requests gains
+  a separate **Hidden** view (**Requests | Hidden**, not a filter chip) that
+  lists the member's own hides, ten named at a time, with **Unhide**. The
+  session's changes are kept in memory only and forgotten on sign-out, a
+  member change and a refused sign-in. **TV add-on:** the title page has a
+  remote-friendly **Not interested** / **Unhide** button; Home's Discover row,
+  the Discover page, the service, studio and "see all" pages leave hidden
+  titles out from what they hold (no call); Search's Discover row keeps hidden
+  titles that can be had, marked; My requests has the same **Hidden** view.
+  Hiding, unhiding and the Hidden view's calls are pinned in
+  `docs/app-api/fetch-budget.json` (`hiding`); `409` shows a fixed message.
 - `HOUSEHOLD_GATEWAY_ENABLED` turns the gateway on without `HOUSEHOLD_DOMAIN`.
   `HOUSEHOLD_DOMAIN` and `HOUSEHOLD_HOST_PREFIX` keep working as the legacy
   rule: every household also keeps its generated address.

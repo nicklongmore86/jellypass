@@ -426,6 +426,60 @@ sign-in, even the same member with a new token, is ignored whole, failures inclu
 token shows nothing and clears nothing of the new session): the page is read again for the new session, or ended if it is
 another member's. The title page, My requests (list, names, Cancel), the Home row and the Search row all use it.
 
+### Hidden titles ("Not interested")
+
+Needs a server with `apiVersion` 3 (JellyPass 4.0.0). The server keeps each member's hidden titles, private to the member in
+their household, and leaves them out of every discovery list itself (docs/app-design.md, "Hidden titles"); this is the
+add-on's part, with the contract's decisions of 2026-10-30. The add-on never calls `/me`: a server has hiding when its cards and
+titles carry the boolean `hidden` flag (`tv/src/api.ts`, `hidingKnown`), which a server before it never sends, and then **none
+of this is drawn and nothing is asked**.
+
+- **The title page** has a button among the others, **Not interested** (**Unhide** once hidden), reached by the remote like
+  them (`mainDetailButtons` is a focus container), with "Only for you in this household. This does not cancel requests or
+  remove downloads." under the buttons. One press sends one `POST /hidden/{movie|tv}/{id}` (`DELETE` for Unhide) and the button
+  is disabled ("Sending…") while it is out. An accepted call changes the button's label **in place** (the page is not drawn
+  again, so focus stays on the button), says "Hidden from Discover. Choose Unhide to undo." (the button is the undo: it stays,
+  focused, for as long as the page is open, and the Hidden view below is the route that never goes away), and adds "Hidden
+  from Discover" to the facts line. A hidden title opens with **Unhide**. Hiding a title in the library or one the household
+  asked for is allowed and touches only Discover. A failure says its fixed words (`409` "You've hidden as many titles as you
+  can (2,000). Unhide some to hide more.", `429`, offline, anything else) and the button is offered again; a `401` forgets the
+  overlay and shows "Sign in to continue". Nothing is ever retried by itself and no answer's text is shown.
+- **Where hidden titles go.** `tv/src/asked.ts` also holds, in memory only and for the member signed in, what that member
+  hid or unhid on this TV (`hide`, `hiddenNow`; at most 500, forgotten with the "Get this" overlay: sign-out, another member,
+  a new token or a refused token). It is how an answer kept from before the change (Home's row for a minute, the Discover
+  data layer's cache for ten) leaves a title out, or has it back, with **no call**: Home's **Discover row** (`row.ts`), the
+  **Discover page's** rows and hero, the **service and studio pages** and the "see all" pages (`discover.ts`,
+  `discover-source.ts`) draw from what they hold without it. A list read after the change is the server's own word and leaves
+  the title out by itself; a title read again on its page settles the member's earlier change with the server's flag
+  (`hiddenNow(..., mark)`), so a title unhidden on a phone is not kept hidden here. Rows may therefore be shorter (nothing is
+  fetched to fill them): the Discover page keeps its 14-card rows from the cards it holds.
+- **Search** keeps a title the member hid, so it can be found again: the **Discover** row of the Search page still draws hidden
+  titles that can be had (Available to get), each with "Hidden from Discover" under its year (and in its accessible name), and
+  its page offers Unhide. A hidden title that is Requested, in the library or not requestable is not in that row (as for every
+  title), and is reached from the Hidden view.
+- **The Hidden view** (`tv/src/hidden-page.ts`): **My requests** has two buttons at the top, **Requests** and **Hidden** (a
+  separate screen at `#/jellypass/requests/hidden`, not a filter), drawn only once an answer has shown that the server has hiding.
+  The view lists the member's own hides, newest first, with the day each was hidden (`Hidden on …`, the day only) and **Unhide**
+  on each; choosing a title opens its page and Back returns with it focused (the page host's focus memory). The list is
+  `GET /hidden` (IDs only, 50 a page); the titles are named like My requests names them, ten at a time and four calls at once,
+  sharing My requests' names (kept ten minutes for the sign-in). **Load more** names the next ten, and reads the list's next page
+  (one call) only once the ones already read are all shown. Unhide is one `DELETE`, disabled while it is out; an accepted one
+  takes the entry off at once, writes the overlay (so rows and pages that hold the title have it back from what they hold),
+  says "Unhidden." and moves focus to the next entry's Unhide (else the one before, Load more, or the bar); a failure says its
+  fixed words under the entry. An empty list says "Nothing hidden. Titles you mark Not interested are listed here, so you can bring
+  them back." Late answers are checked against the session that sent them, as on every page.
+- **Rules kept.** No key is handled and no document listener is added; every control is a real button Jellyfin web's focus
+  manager reaches by place; the shared session check (`SessionWatch`) governs every call, so a sign-out leaves old controls inert
+  and a late answer touches nothing of the new session; a page's `cleanup` drops what is in flight; the stylesheet and the script stay within
+  the Chromium 63 gates.
+- **Call budget** (`hiding` in `docs/app-api/fetch-budget.json`, pinned by `test/tv-addon.test.mjs`): a hide is the `POST`, an
+  unhide the `DELETE` (an undo is the same), nothing more (no list is read to filter); the Hidden view opens with `GET /hidden`
+  and one title call per entry shown (at most ten); **Load more** names the next ten with no list call until the page is used up.
+  The title page's own two calls and every other screen's calls are unchanged: the flag arrives in answers already read.
+- **Privacy.** Only the caller's own flag, in the caller's own answers. `test/tv-addon.test.mjs` compares the calls and the page
+  of a member who hid titles with another member's and another household's, which see nothing of it, and checks that nothing is
+  stored.
+
 ### The Discover page
 
 `tv/src/discover.ts` (the data and words in `tv/src/discover-model.ts` and `tv/src/discover-data.ts`, "Discover data layer"; the

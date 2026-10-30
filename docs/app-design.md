@@ -1649,6 +1649,25 @@ Unhide; those controls come in each client's own release. This section is the se
   device no longer appears in their discovery lists. A client shows hiding only on `apiVersion >= 3`, decodes a missing
   `hidden` as `false`, and maps `409` to its own fixed wording. A client updates what it shows from its own answer and
   never reads `/hidden` to filter a list (see `fetch-budget.json`, `hiding`).
+- **The household web app** (`app/src`). Controls appear only when `/me` says `apiVersion >= 3`; on an older server nothing
+  of it is drawn, `#/requests/hidden` is My requests and `/hidden` is never called. A title page has **Not interested**
+  (**Unhide** once hidden, from the title's own `hidden` flag) with "Only for you in this household. This does not cancel
+  requests or remove downloads.", and after a hide a polite confirmation with **Undo**. A poster has a **More options**
+  button, a sibling of its link (never inside it), that opens a one-item menu (Not interested): it opens from a click, a tap or
+  Enter/Space, closes on Escape (focus back on the button), on choosing and on any click or focus outside, and needs no hover or
+  long press. On a row, See all, a service or a studio page the title leaves at once, focus goes to the next card (else the
+  previous, the row's heading, the screen's), and a line that stays until the member goes on says "Hidden … from Discover." with
+  **Undo** (one `DELETE`; the card returns to its place, and a failed Undo says why and keeps Undo). In Search the card stays,
+  marked "Hidden from Discover" with **Unhide** (one `DELETE`); cards drawn before `/me` answered get their controls when it does,
+  so results never wait for `/me`. Hero slides have no menu (the title page has the action). **My requests** has two links at the
+  top, **Requests** and **Hidden** (a separate screen, `#/requests/hidden`, not a filter chip): the Hidden view lists the member's
+  hides from `GET /hidden`, names ten at a time (four calls at once, as My requests does) and reads the next page only when the
+  50 read are all shown. Every failure is a fixed message (`409` is the limit, `429`, offline, anything else); nothing from a
+  response is shown, and no call is repeated by itself. **Session memory** (`app/src/hidden.ts`): what the member hid or unhid
+  is kept only in memory, never stored or sent, so a list read that began before the change is told over (a title hidden stays
+  out; a read that began after is the server's word and ends the entry), and it is forgotten on sign-out, a member change and a
+  refused sign-in, like the "Get this" overlay. The costs are the `hiding` entry of `fetch-budget.json`, pinned by
+  `test/app-pwa.test.mjs`.
 
 ## Administrators' Requests tab
 

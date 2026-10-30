@@ -159,7 +159,7 @@ export class SourcePage {
   public overlayChanged(): void {
     const open = this.#open;
     if (!open || !this.#current(open) || !open.grid) return;
-    if (this.#hide.held && this.#visibleKeys(open) !== open.drawn.map((one) => this.#cardKey(one.card)).join(' ')) this.#fillGrid(open);
+    if (this.#visibleKeys(open) !== open.drawn.map((one) => this.#cardKey(one.card)).join(' ')) this.#fillGrid(open);
     else for (const one of open.drawn) markCard(one, this.#stateOf(one.card));
   }
 
@@ -570,6 +570,7 @@ export class SourcePage {
     const cards: DiscoverCard[] = [];
     for (const page of open.pages) {
       for (const card of page.cards) {
+        if (this.#asked.hiddenNow(card.mediaType, card.tmdbId, card.hidden)) continue;
         if (this.#hide.held && isHeld({ state: this.#stateOf(card) })) continue;
         cards.push(card);
       }
@@ -622,6 +623,7 @@ export class SourcePage {
     if (empty) grid.removeChild(empty);
     const added: DiscoverCard[] = [];
     for (const card of page.cards) {
+      if (this.#asked.hiddenNow(card.mediaType, card.tmdbId, card.hidden)) continue;
       if (this.#hide.held && isHeld({ state: this.#stateOf(card) })) continue;
       added.push(card);
     }

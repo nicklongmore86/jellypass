@@ -16,6 +16,11 @@ export interface Card {
   year: number | null;
   posterUrl: string | null;
   state: HouseholdState;
+  /**
+   * Whether the caller hid the title ("Not interested"): sent by a server with `apiVersion` 3, undefined from one before
+   * it, which has no hiding (the add-on then offers none of it).
+   */
+  hidden?: boolean;
 }
 
 export interface SeasonSummary {
@@ -128,12 +133,12 @@ const REQUEST_ID = /^[A-Za-z0-9_-]{1,64}$/;
 type Fetch = (url: string, init: RequestInit) => Promise<Response>;
 
 /** One call: the response, or the failure. A `POST` sends `body` as JSON. */
-async function call(fetcher: Fetch, origin: string, token: string, path: string, body?: unknown, signal?: AbortSignal): Promise<{ ok: true; response: Response } | Failure> {
+async function call(fetcher: Fetch, origin: string, token: string, path: string, body?: unknown, signal?: AbortSignal, method?: 'DELETE'): Promise<{ ok: true; response: Response } | Failure> {
   const headers: Record<string, string> = {
     Accept: 'application/json',
     Authorization: `MediaBrowser Token="${encodeURIComponent(token).replace(/"/g, '%22')}"`,
   };
-  const init: RequestInit = { method: body === undefined ? 'GET' : 'POST', credentials: 'omit', headers };
+  const init: RequestInit = { method: method ?? (body === undefined ? 'GET' : 'POST'), credentials: 'omit', headers };
   if (signal) init.signal = signal;
   if (body !== undefined) {
     headers['Content-Type'] = 'application/json';
@@ -320,6 +325,59 @@ export async function cancelRequest(fetcher: Fetch, origin: string, token: strin
   return answer.ok ? { ok: true } : answer;
 }
 
+/** The largest TMDB id the API's paths take (a 32-bit signed integer). */
+const MAX_TMDB_ID = 2_147_483_647;
+const validTmdbId = (id: number): boolean => Number.isInteger(id) && id >= 1 && id <= MAX_TMDB_ID;
+
+/**
+ * `POST /hidden/{movie|tv}/{id}` ("Not interested") or, with `hidden` false, `DELETE` on the same address: one call, which
+ * the add-on never repeats by itself. Any `2xx` is accepted and its body is not read (it says the state asked for, the same
+ * whether or not the title already was so). A `409` is the member's limit of 2,000. An id the API would refuse is not sent.
+ */
+export async function setHidden(fetcher: Fetch, origin: string, token: string, mediaType: MediaType, tmdbId: number, hidden: boolean): Promise<{ ok: true } | Failure> {
+  if ((mediaType !== 'movie' && mediaType !== 'tv') || !validTmdbId(tmdbId)) return { ok: false, status: 400 };
+  const path = `/hidden/${mediaType}/${tmdbId}`;
+  const answer = hidden ? await call(fetcher, origin, token, path, {}) : await call(fetcher, origin, token, path, undefined, undefined, 'DELETE');
+  return answer.ok ? { ok: true } : answer;
+}
+
+/** One of the caller's own hidden titles (an entry of `GET /hidden`): its ID and when it was hidden; the title is named by its own call. */
+export interface HiddenEntry {
+  mediaType: MediaType;
+  tmdbId: number;
+  /** ISO 8601, UTC, as the API sends it (empty when it did not). */
+  hiddenAt: string;
+}
+/** The most entries a `GET /hidden` page keeps (the API sends 50). */
+export const MAX_HIDDEN_ENTRIES = 50;
+export type HiddenAnswer = { ok: true; entries: HiddenEntry[]; nextPage: number | null } | Failure;
+
+/** `GET /hidden?page=` (the caller's own list, newest first, IDs only): one call. */
+export async function hiddenList(fetcher: Fetch, origin: string, token: string, page = 1): Promise<HiddenAnswer> {
+  if (!validPage(page)) return { ok: false, status: 400 };
+  const answer = await read(fetcher, origin, token, `/hidden${pageQuery(page)}`);
+  if (!answer.ok) return answer;
+  const { results, nextPage } = answer.body;
+  if (!Array.isArray(results)) return { ok: false, status: 502 };
+  const entries: HiddenEntry[] = [];
+  for (const value of results.slice(0, MAX_HIDDEN_ENTRIES)) {
+    if (!value || typeof value !== 'object') continue;
+    const { mediaType, tmdbId, hiddenAt } = value as Record<string, unknown>;
+    if ((mediaType !== 'movie' && mediaType !== 'tv') || typeof tmdbId !== 'number' || !validTmdbId(tmdbId)) continue;
+    entries.push({ mediaType, tmdbId, hiddenAt: typeof hiddenAt === 'string' && hiddenAt.length <= 40 ? hiddenAt : '' });
+  }
+  return { ok: true, entries, nextPage: typeof nextPage === 'number' && validPage(nextPage) && nextPage > page ? nextPage : null };
+}
+
+/**
+ * Whether the server has hiding titles, as far as any answer has shown: a card or title with a `hidden` flag came from a
+ * server with `apiVersion` 3 (an older one sends none). Read from what the add-on fetches anyway, so no call asks.
+ */
+let hidingSeen = false;
+export function hidingKnown(): boolean {
+  return hidingSeen;
+}
+
 /**
  * `POST /movie/{id}/get` or `POST /tv/{id}/get` with the seasons asked for: one call, which the add-on never repeats by
  * itself. Any `2xx` is accepted and its body is not read: the API answers the same whatever it does.
@@ -368,9 +426,9 @@ function stateOf(value: unknown): HouseholdState {
 function cardOf(value: unknown): Card | undefined {
   if (!value || typeof value !== 'object') return undefined;
   const entry = value as Record<string, unknown>;
-  const { mediaType, tmdbId, title, year, posterUrl, state } = entry;
+  const { mediaType, tmdbId, title, year, posterUrl, state, hidden } = entry;
   if ((mediaType !== 'movie' && mediaType !== 'tv') || typeof tmdbId !== 'number' || typeof title !== 'string' || !title) return undefined;
-  return {
+  const card: Card = {
     mediaType,
     tmdbId,
     title: title.slice(0, 300),
@@ -378,6 +436,11 @@ function cardOf(value: unknown): Card | undefined {
     posterUrl: typeof posterUrl === 'string' && POSTER_URL.test(posterUrl) ? posterUrl : null,
     state: stateOf(state),
   };
+  if (typeof hidden === 'boolean') {
+    card.hidden = hidden;
+    hidingSeen = true;
+  }
+  return card;
 }
 
 /** A Card DTO's fields for the Discover page (see {@link DiscoverCard}), or undefined for an entry without a title to show. */
@@ -392,6 +455,7 @@ function discoverCardOf(value: unknown): DiscoverCard | undefined {
     year: card.year,
     posterUrl: card.posterUrl,
     state: card.state,
+    ...(card.hidden === undefined ? {} : { hidden: card.hidden }),
     overview: typeof overview === 'string' ? overview.slice(0, 2000) : '',
     backdropUrl: typeof backdropUrl === 'string' && BACKDROP_URL.test(backdropUrl) ? backdropUrl : null,
     rating: typeof rating === 'number' && rating >= 0 && rating <= 10 ? rating : null,
@@ -427,6 +491,7 @@ function titleOf(value: Record<string, unknown>, origin: string): Title | undefi
     year: card.year,
     posterUrl: card.posterUrl,
     state: card.state,
+    ...(card.hidden === undefined ? {} : { hidden: card.hidden }),
     overview: typeof overview === 'string' ? overview.slice(0, 2000) : '',
     backdropUrl: typeof backdropUrl === 'string' && BACKDROP_URL.test(backdropUrl) ? backdropUrl : null,
     rating: typeof rating === 'number' && rating >= 0 && rating <= 10 ? rating : null,

@@ -211,7 +211,7 @@ export class DiscoverPage {
     if (!open || !this.#current(open)) return;
     for (const row of open.rows) {
       if (!row.answered) continue;
-      if (this.#hide.held && this.#visibleKeys(row) !== row.drawn.map((one) => this.#cardKey(one.card)).join(' ')) this.#fill(row);
+      if (this.#visibleKeys(row) !== row.drawn.map((one) => this.#cardKey(one.card)).join(' ')) this.#fill(row);
       else for (const one of row.drawn) this.#mark(one);
     }
     this.#refreshHero(open);
@@ -395,13 +395,19 @@ export class DiscoverPage {
     return this.#asked.state(card.mediaType, card.tmdbId, card.state);
   }
 
+  /** Whether the member hid the card's title: their own change on this TV, else the answer's flag (a list leaves hidden titles out itself). */
+  #hiddenNow(card: DiscoverCard): boolean {
+    return this.#asked.hiddenNow(card.mediaType, card.tmdbId, card.hidden);
+  }
+
   #cardKey(card: DiscoverCard): string {
     return `${card.mediaType}:${card.tmdbId}`;
   }
 
   /** The cards a row shows now, as keys: what "New only" leaves, at most the row's 14. */
   #visible(row: RowView): DiscoverCard[] {
-    const states = (row.answered as DiscoverCard[]).map((card) => ({ card, state: this.#stateOf(card) }));
+    // A title the member hid leaves first, so the row keeps as many of the page's other cards as it can (no call is made to fill it).
+    const states = (row.answered as DiscoverCard[]).filter((card) => !this.#hiddenNow(card)).map((card) => ({ card, state: this.#stateOf(card) }));
     return rowCards(states, this.#hide.held).map((one) => one.card);
   }
 
@@ -667,7 +673,7 @@ export class DiscoverPage {
     const feeding = open.rows.filter((row) => row.feeds && row.answered)[0];
     if (!feeding) return [];
     const held = this.#hide.held;
-    return heroCards(feeding.answered as DiscoverCard[], held ? (card) => isHeld({ state: this.#stateOf(card) }) : undefined);
+    return heroCards(feeding.answered as DiscoverCard[], (card) => this.#hiddenNow(card) || (held && isHeld({ state: this.#stateOf(card) })));
   }
 
   /** The hero drawn again after "New only" or the overlay changed what it may show: no call, and focus never falls off the page. */

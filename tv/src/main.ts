@@ -4,6 +4,8 @@ import { DiscoverData } from './discover-data.js';
 import { DiscoverEntry } from './discover-entry.js';
 import { DISCOVER_HASH, DISCOVER_PATH, LIST_PATH, SERVICE_PATH, STUDIO_PATH } from './discover-model.js';
 import { HidePreference } from './discover-preference.js';
+import { HIDDEN_PATH } from './hidden-model.js';
+import { HiddenPage } from './hidden-page.js';
 import { SourcePage } from './discover-source.js';
 import { DiscoverPage } from './discover.js';
 import { HistoryTrail } from './history-trail.js';
@@ -13,6 +15,7 @@ import { RequestsPage } from './requests.js';
 import { REQUESTS_HASH, REQUESTS_PATH } from './requests-model.js';
 import { HomeRow } from './row.js';
 import { SearchRow } from './search.js';
+import { TitleCache } from './titles.js';
 import { SessionWatch } from './session-watch.js';
 import { TITLE_PATH, TitlePage, titleHash } from './title.js';
 
@@ -62,10 +65,24 @@ function start(): void {
   const navigate = (hash: string) => {
     location.hash = hash;
   };
-  const title = new TitlePage(document, api, base.origin, asked, { changed: () => { safely(() => row.update()); safely(() => discover.overlayChanged()); safely(() => sources.overlayChanged()); }, navigate });
+  // A member hiding or unhiding a title (from its page, or the Hidden view) changes what the row, the Discover and service pages and the Search row hold, from what they hold: no call.
+  const hiddenChanged = () => {
+    safely(() => row.hiddenChanged());
+    safely(() => search.overlayChanged());
+    safely(() => discover.overlayChanged());
+    safely(() => sources.overlayChanged());
+  };
+  const title = new TitlePage(document, api, base.origin, asked, { changed: () => { safely(() => row.update()); safely(() => discover.overlayChanged()); safely(() => sources.overlayChanged()); }, hiddenChanged, navigate });
   const row: HomeRow = new HomeRow(document, api, base.origin, asked, (card) => navigate(titleHash(card.mediaType, card.tmdbId)), () => navigate(REQUESTS_HASH));
   // A cancel in My requests puts the title back to Get this: Home's row and the Search row draw from the same overlay.
-  const requests = new RequestsPage(document, api, base.origin, asked, { changed: () => { safely(() => row.update()); safely(() => search.overlayChanged()); safely(() => discover.overlayChanged()); safely(() => sources.overlayChanged()); }, navigate }, () => performance.now(), () => Date.now());
+  // The names My requests and its Hidden view read from titles are kept for both (ten minutes, this sign-in).
+  const names = new TitleCache(() => performance.now(), () => Date.now());
+  const requests = new RequestsPage(document, api, base.origin, asked, { changed: () => { safely(() => row.update()); safely(() => search.overlayChanged()); safely(() => discover.overlayChanged()); safely(() => sources.overlayChanged()); }, navigate }, () => performance.now(), () => Date.now(), names);
+  const hiddenPage = new HiddenPage(document, api, base.origin, asked, names, {
+    hiddenChanged,
+    changed: () => { safely(() => row.update()); safely(() => search.overlayChanged()); safely(() => discover.overlayChanged()); safely(() => sources.overlayChanged()); },
+    navigate,
+  });
   // The Discover page's answers (kept ten minutes, in memory) are timed on the monotonic clock, and the wall clock catches a long sleep.
   const discoverWatch = new SessionWatch(api, base.origin);
   const discoverData = new DiscoverData(api.fetch, base.origin, discoverWatch, () => performance.now(), () => Date.now());
@@ -94,6 +111,7 @@ function start(): void {
   host.register(ABOUT_PATH, renderAbout);
   host.register(TITLE_PATH, (context) => title.render(context));
   host.register(REQUESTS_PATH, (context) => requests.render(context));
+  host.register(HIDDEN_PATH, (context) => hiddenPage.render(context));
   host.register(DISCOVER_PATH, (context) => discover.render(context));
   host.register(SERVICE_PATH, (context) => sources.renderService(context));
   host.register(STUDIO_PATH, (context) => sources.renderStudio(context));
@@ -107,6 +125,7 @@ function start(): void {
       safely(() => host.update());
       safely(() => title.update());
       safely(() => requests.update());
+      safely(() => hiddenPage.update());
       safely(() => discover.update());
       safely(() => sources.update());
       safely(() => discoverEntry.update());
