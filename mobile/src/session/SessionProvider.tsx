@@ -106,7 +106,8 @@ export interface Session {
   /**
    * Hides (`hidden` true) or unhides a title through the signed-in client. Once it is accepted in the same session as
    * when it was sent, it is marked in `hiddenTitles` (a hide also shows the toast). Rejects with the ApiError, or the
-   * caller's abort.
+   * caller's abort. One that settles (either way) after the sign-in changed is another member's: it marks nothing and
+   * rejects as aborted, so nothing anywhere says how it went.
    */
   setHidden: (target: HideTarget, hidden: boolean, signal?: AbortSignal) => Promise<void>;
   /**
@@ -136,6 +137,13 @@ function stalledKind(error: unknown): StalledKind {
   if (error.kind === 'too_many_requests') return 'rate_limited';
   if (error.kind === 'not_found' && error.householdNotFound) return 'not_found';
   return 'unavailable';
+}
+
+/** A call that settled after the sign-in changed, thrown as an abort: the session that asked is gone. */
+function movedOn(): Error {
+  const error = new Error('The sign-in changed');
+  error.name = 'AbortError';
+  return error;
 }
 
 function sessionOf(phase: Phase): StoredSession | undefined {
@@ -345,8 +353,15 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
     async (target: HideTarget, hidden: boolean, signal?: AbortSignal) => {
       const mine = generation.current;
       if (!api || phaseRef.current.kind !== 'signedIn') throw new ApiError('unauthorized');
-      await api.setHidden(target.mediaType, target.tmdbId, hidden, signal ? { signal } : undefined);
-      if (generation.current === mine && hiddenRef.current === hiddenTitles) hiddenTitles.mark(target, hidden);
+      const same = () => generation.current === mine && hiddenRef.current === hiddenTitles;
+      try {
+        await api.setHidden(target.mediaType, target.tmdbId, hidden, signal ? { signal } : undefined);
+      } catch (error) {
+        if (same()) throw error;
+        throw movedOn();
+      }
+      if (!same()) throw movedOn();
+      hiddenTitles.mark(target, hidden);
     },
     [api, hiddenTitles],
   );

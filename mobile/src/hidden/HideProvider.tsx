@@ -6,6 +6,9 @@
 //   is out and nothing is retried by itself. Once accepted, every list already on screen drops (or, after an unhide or
 //   Undo, shows again) the title at once, with no call (src/hidden/store.ts), and screen readers hear what happened.
 // - A failure is one fixed message (the 2,000-title limit has its own) where it was asked; a 401 signs the member out.
+// - A call that settles after the sign-in changed (SessionProvider's setHidden rejects it as aborted) belongs to a
+//   member who is gone: nothing is announced, marked, toasted or offered to undo, and the control that asked shows
+//   nothing, success or failure.
 // - The sheet (a card's long press) says what hiding does and offers Not interested or Unhide, and Close. Screen readers
 //   get the same command as a card's own action, with no sheet: the toast after it is the way back.
 // - The toast, over the tab bar, says what was hidden and offers Undo (one unhide) and Dismiss. It goes by itself after

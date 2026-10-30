@@ -34,11 +34,11 @@ import { Button } from '../ui';
 export const REQUESTS_MAX_WIDTH = 736;
 
 export function RequestsScreen() {
-  const { api, expire, titles, requestFilters, cancelRequest, canHide } = useSession();
+  const { api, expire, titles, requestFilters, cancelRequest, canHide, hiddenTitles } = useSession();
   const filter = useRequestFilter(requestFilters);
   const overlay = useAsked();
   const data = useRequests(api, expire, overlay, titles, cancelRequest);
-  const hiddenList = useHiddenList(api, expire, overlay, titles);
+  const hiddenList = useHiddenList(api, expire, overlay, titles, hiddenTitles);
   const { reload, stop, cancel } = data;
   const insets = useSafeAreaInsets();
   const [refreshing, setRefreshing] = useState(false);

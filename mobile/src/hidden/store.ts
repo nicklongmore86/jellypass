@@ -41,6 +41,8 @@ export interface HiddenTitles {
   /** Drops every mark, the sheet and the toast. */
   forget(): void;
   subscribe(listener: () => void): () => void;
+  /** Hears each title marked (its key, and hidden or not) as it is marked, before `subscribe`'s listeners. */
+  watch(listener: (key: string, hidden: boolean) => void): () => void;
   /** Changes with every change above. */
   version(): number;
 }
@@ -54,6 +56,7 @@ export function createHiddenTitles(): HiddenTitles {
   let toasts = 0;
   let count = 0;
   const listeners = new Set<() => void>();
+  const watchers = new Set<(key: string, hidden: boolean) => void>();
   const changed = () => {
     count += 1;
     for (const listener of [...listeners]) listener();
@@ -66,6 +69,7 @@ export function createHiddenTitles(): HiddenTitles {
       marks.set(key, hidden);
       if (hidden) toast = { target: { ...target, hidden: true }, id: ++toasts };
       else if (toast && hiddenKey(toast.target.mediaType, toast.target.tmdbId) === key) toast = undefined;
+      for (const watcher of [...watchers]) watcher(key, hidden);
       changed();
     },
     isHidden,
@@ -100,6 +104,10 @@ export function createHiddenTitles(): HiddenTitles {
     subscribe(listener) {
       listeners.add(listener);
       return () => void listeners.delete(listener);
+    },
+    watch(listener) {
+      watchers.add(listener);
+      return () => void watchers.delete(listener);
     },
     version: () => count,
   };

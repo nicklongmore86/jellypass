@@ -7,6 +7,13 @@
 // A title that cannot be read says "Title unavailable" and keeps its Unhide. Nothing is retried by itself; a 401
 // anywhere signs the member out. Every title answer read is seen by the session's overlay (src/title/asked.ts).
 //
+// The list is paged by place, newest first, so an unhide accepted while the tab is loaded (here or anywhere in this
+// session) moves every later title up by one, and a hide moves them down by one. The next page is read from where the
+// first title not yet listed is now: each unhide of a listed title counts one place back, so that page may be the one
+// already read (read again, its listed titles left out). A hide is never counted, as the server keeps the place of a
+// title hidden twice: the page read may then start a title or two early, which are listed already and left out, but
+// never late, so no title is ever skipped. A page that adds nothing new reads the next one at once.
+//
 // Everything is kept in memory only: no answer is ever written to the device.
 import { useCallback, useEffect, useRef, useState } from 'react';
 
@@ -18,10 +25,14 @@ import { REQUEST_TITLE_CALLS, REQUESTS_PER_PAGE, type RequestTitle } from '../re
 import type { TitleCache } from '../requests/titleCache';
 import type { MoreState } from '../search/useSearch';
 import type { Asked } from '../title/asked';
-import { hiddenKey } from './store';
+import { hiddenKey, type HiddenTitles } from './store';
 
 /** The hidden titles named at first and by each Load more (the budget's `titlesAtOnce`). */
 export const HIDDEN_PER_STEP = REQUESTS_PER_PAGE;
+/** The IDs in one page of GET /hidden, as the server sends them (src/app-api.ts, HIDDEN_PAGE_SIZE). */
+export const HIDDEN_PAGE_SIZE = 50;
+
+const keyOf = (entry: HiddenTitle) => hiddenKey(entry.mediaType, entry.tmdbId);
 
 export type HiddenLoad =
   | { status: 'loading' }
@@ -45,7 +56,13 @@ export interface HiddenListData {
   stop: () => void;
 }
 
-export function useHiddenList(api: ApiClient | undefined, expire: () => Promise<void>, overlay: Asked, cache: TitleCache): HiddenListData {
+export function useHiddenList(
+  api: ApiClient | undefined,
+  expire: () => Promise<void>,
+  overlay: Asked,
+  cache: TitleCache,
+  marks: HiddenTitles,
+): HiddenListData {
   const [load, setLoad] = useState<HiddenLoad>({ status: 'loading' });
   const [shown, setShown] = useState(0);
   const [titles, setTitles] = useState<Record<string, RequestTitle>>({});
@@ -59,6 +76,22 @@ export function useHiddenList(api: ApiClient | undefined, expire: () => Promise<
   const next = useRef<number | null>(null);
   const count = useRef(0);
   const busy = useRef(false);
+  // Where the list stood: the place just past the last page read, how far the titles after it have moved up since (by
+  // unhides), the hidden titles before that place, and what was unhidden while a page was being read.
+  const end = useRef(0);
+  const moved = useRef(0);
+  const ahead = useRef(new Set<string>());
+  const unhiding = useRef<Set<string> | undefined>(undefined);
+
+  useEffect(
+    () =>
+      marks.watch((key, hidden) => {
+        if (hidden) return;
+        unhiding.current?.add(key);
+        if (ahead.current.delete(key)) moved.current += 1;
+      }),
+    [marks],
+  );
 
   useEffect(() => {
     live.current = true;
@@ -69,6 +102,38 @@ export function useHiddenList(api: ApiClient | undefined, expire: () => Promise<
   }, []);
 
   const current = (mine: number) => live.current && reading.current === mine;
+
+  /**
+   * Reads page `page` of the list and adds the titles not yet listed after `before`. A title unhidden while it was out
+   * may or may not be on it: one listed or on it counts as moved up (a page read early is only read again, never late),
+   * and then there may be more even when the server says there is none.
+   */
+  const readPage = useCallback(
+    async (page: number, before: readonly HiddenTitle[], signal: AbortSignal, mine: number): Promise<{ added: number; nextPage: number | null } | undefined> => {
+      if (!api) return undefined;
+      const unhidden = new Set<string>();
+      unhiding.current = unhidden;
+      const answer = await api.hidden(page, { signal });
+      if (!current(mine)) return undefined;
+      unhiding.current = undefined;
+      const listed = new Set(before.map(keyOf));
+      const read = new Set(answer.results.map(keyOf));
+      const fresh = answer.results.filter((entry) => !listed.has(keyOf(entry)));
+      entries.current = [...before, ...fresh];
+      end.current = (page - 1) * HIDDEN_PAGE_SIZE + answer.results.length;
+      moved.current = 0;
+      for (const key of read) ahead.current.add(key);
+      for (const key of unhidden) {
+        if (!listed.has(key) && !read.has(key)) continue;
+        ahead.current.delete(key);
+        moved.current += 1;
+      }
+      // Even at the list's end, a title may have moved up into what this page held: it is read again.
+      next.current = answer.nextPage ?? (moved.current > 0 ? page : null);
+      return { added: fresh.length, nextPage: next.current };
+    },
+    [api],
+  );
 
   /** Signs out on a 401; true when the error is one to show (not an abort, a stale answer or a 401). */
   const shows = useCallback(
@@ -91,7 +156,6 @@ export function useHiddenList(api: ApiClient | undefined, expire: () => Promise<
       count.current += batch.length;
       setShown(count.current);
       if (batch.length === 0) return;
-      const keyOf = (entry: HiddenTitle) => hiddenKey(entry.mediaType, entry.tmdbId);
       const kept = new Map(batch.map((entry) => [keyOf(entry), cache.get(entry.mediaType, entry.tmdbId)]));
       const unread = batch.filter((entry) => !kept.get(keyOf(entry)));
       setTitles((now) => ({
@@ -143,14 +207,13 @@ export function useHiddenList(api: ApiClient | undefined, expire: () => Promise<
     setNaming(true);
     setMore({ status: 'idle' });
     try {
-      const page = await api.hidden(1, { signal: controller.signal });
-      if (!current(mine)) return;
-      entries.current = page.results;
-      next.current = page.nextPage;
+      ahead.current = new Set();
+      const page = await readPage(1, [], controller.signal, mine);
+      if (!page) return;
       count.current = 0;
-      const keys = new Set(page.results.map((entry) => hiddenKey(entry.mediaType, entry.tmdbId)));
+      const keys = new Set(entries.current.map(keyOf));
       setTitles((now) => Object.fromEntries(Object.entries(now).filter(([key]) => keys.has(key))));
-      setLoad({ status: 'loaded', entries: page.results, nextPage: page.nextPage });
+      setLoad({ status: 'loaded', entries: entries.current, nextPage: page.nextPage });
       await name(HIDDEN_PER_STEP, mine, controller.signal);
     } catch (error) {
       if (shows(error, mine)) setLoad({ status: 'failed', error: errorText(error instanceof ApiError ? error.kind : 'unavailable') });
@@ -160,7 +223,7 @@ export function useHiddenList(api: ApiClient | undefined, expire: () => Promise<
         setNaming(false);
       }
     }
-  }, [api, name, shows]);
+  }, [api, name, readPage, shows]);
 
   const loadMore = useCallback(() => {
     const signal = abort.current?.signal;
@@ -173,12 +236,13 @@ export function useHiddenList(api: ApiClient | undefined, expire: () => Promise<
       try {
         if (count.current >= entries.current.length && next.current !== null) {
           setMore({ status: 'loading' });
-          const page = await api.hidden(next.current, { signal });
-          if (!current(mine)) return;
-          // A title hidden meanwhile moves the list on by one: one already listed is not listed twice.
-          const listed = new Set(entries.current.map((entry) => hiddenKey(entry.mediaType, entry.tmdbId)));
-          entries.current = [...entries.current, ...page.results.filter((entry) => !listed.has(hiddenKey(entry.mediaType, entry.tmdbId)))];
-          next.current = page.nextPage;
+          let page: { added: number; nextPage: number | null } | undefined;
+          do {
+            // The first title not yet listed is now `moved` places before where the last page read ended.
+            const at = Math.max(0, end.current - moved.current);
+            page = await readPage(Math.floor(at / HIDDEN_PAGE_SIZE) + 1, entries.current, signal, mine);
+            if (!page) return;
+          } while (page.added === 0 && page.nextPage !== null);
           setMore({ status: 'idle' });
           setLoad({ status: 'loaded', entries: entries.current, nextPage: page.nextPage });
         }
@@ -192,7 +256,7 @@ export function useHiddenList(api: ApiClient | undefined, expire: () => Promise<
         }
       }
     })();
-  }, [api, load, name, shows]);
+  }, [api, load, name, readPage, shows]);
 
   const stop = useCallback(() => {
     reading.current += 1;

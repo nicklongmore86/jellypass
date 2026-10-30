@@ -19,6 +19,7 @@ import { budgetRoute } from './support/home';
 import { ORIGIN, TOKEN, answer, keepSession, settle, shows, store, storedSession, type Call } from './support/household';
 import { hideGateway, type HideHousehold } from './support/hide';
 import { requestEntry } from './support/search';
+import { held } from './support/source';
 import { buttonNamed, flat, linkNamed, pressNode } from './support/title';
 
 jest.setTimeout(30_000);
@@ -77,6 +78,28 @@ async function chooseView(name: string) {
 /** The Hidden tab's entries' names, in order. */
 const entries = () => screen.queryAllByTestId('hidden-item').map((node) => String(node.props.accessibilityLabel));
 const titleCalls = (calls: readonly string[]) => calls.filter((call) => /^GET \/(movie|tv)\/\d+$/.test(call));
+const names = () => entries().map((name) => name.split(', ')[0]!);
+
+/** Presses Load more until it is gone (or 20 times). */
+async function loadAll() {
+  for (let step = 0; step < 20 && screen.queryAllByRole('button', { name: MORE_TEXT.button }).length > 0; step += 1) {
+    await pressNode(buttonNamed(MORE_TEXT.button));
+  }
+  expect(screen.queryAllByRole('button', { name: MORE_TEXT.button })).toHaveLength(0);
+}
+
+/** The signed-in member's hidden titles on the fake server, newest first (a test may change them, as another device). */
+const serverList = () => [...gateway.hidden.values()][0]!;
+
+/** GET /hidden?page=`page` as the server would answer it now. */
+function hiddenAnswer(page: number) {
+  const list = serverList();
+  const results = list.slice((page - 1) * 50, page * 50).map((key) => {
+    const [mediaType, id] = key.split(':');
+    return { mediaType, tmdbId: Number(id), hiddenAt: '2026-10-30T12:00:00.000Z' };
+  });
+  return answer(200, { page, nextPage: list.length > page * 50 ? page + 1 : null, results });
+}
 
 describe('the Requests | Hidden tabs', () => {
   it('start on Requests, with its filters; Hidden shows no filters', async () => {
@@ -151,6 +174,51 @@ describe('the Hidden tab', () => {
     expect(screen.queryAllByTestId('hidden-notice').map((node) => [node.props.children].flat().join(''))).toEqual(['Series 102 is back in Discover']);
     // No toast: there is nothing to undo.
     expect(screen.queryAllByTestId('hide-toast')).toHaveLength(0);
+  });
+
+  it('skips no title after an Unhide moves the later ones up a place: 51 hidden, one unhidden from the first page', async () => {
+    useHousehold({ hidden: hiddenTitles(51) });
+    await openRequests();
+    await chooseView('Hidden');
+    await pressNode(buttonNamed('Unhide Series 102 (Series, 2023)'));
+    const calls = since();
+    await loadAll();
+    // Title 51 is now the first page's last: that page is read again from where it moved to, not page 2 (empty now).
+    expect(calls().filter((call) => call.startsWith('GET /hidden'))).toEqual(['GET /hidden']);
+    expect(names()).toEqual(hiddenTitles(51).map(nameOf).filter((name) => name !== 'Series 102'));
+  });
+
+  it('skips no title when titles are unhidden here and hidden on another device while the tab is shown', async () => {
+    useHousehold({ hidden: hiddenTitles(51) });
+    await openRequests();
+    await chooseView('Hidden');
+    await pressNode(buttonNamed('Unhide Series 102 (Series, 2023)'));
+    await pressNode(buttonNamed('Unhide Film 103 (Movie, 2024)'));
+    // Hidden elsewhere: the newest, so every title here moves down a place.
+    serverList().unshift('movie:901');
+    await loadAll();
+    const shown = names();
+    expect(new Set(shown).size).toBe(shown.length);
+    expect(shown.filter((name) => name !== 'Film 901')).toEqual(hiddenTitles(51).map(nameOf).filter((name) => name !== 'Series 102' && name !== 'Film 103'));
+  });
+
+  it('skips no title when an Unhide is accepted while the next page is being read', async () => {
+    let hold: ReturnType<typeof held> | undefined;
+    useHousehold({ hidden: hiddenTitles(51), list: (page) => (page === 2 && hold ? hold.promise : undefined) });
+    await openRequests();
+    await chooseView('Hidden');
+    for (let step = 0; step < 4; step += 1) await pressNode(buttonNamed(MORE_TEXT.button));
+    expect(entries()).toHaveLength(50);
+    hold = held();
+    const out = hold;
+    await pressNode(buttonNamed(MORE_TEXT.button));
+    await pressNode(buttonNamed('Unhide Series 102 (Series, 2023)'));
+    hold = undefined;
+    // The server read the list after the unhide: its page 2 is empty now.
+    out.release(hiddenAnswer(2));
+    await settle();
+    await loadAll();
+    expect(names()).toEqual(hiddenTitles(51).map(nameOf).filter((name) => name !== 'Series 102'));
   });
 
   it('says so in fixed words when Unhide fails, keeping the entry', async () => {
