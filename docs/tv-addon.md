@@ -696,7 +696,9 @@ heading link, which is not changed.
 Jellyfin 12.3's desktop toolbar has no Back in a browser, so outside the TV layout the page host puts a **Back** button at the top
 of every JellyPass page (Discover, the See all grids, service, studio, title, My requests): a focusable `button` (Jellyfin's
 `emby-button`, `aria-label` "Back", first in the page), never drawn twice (the host draws it once per page opened, and removes it
-with the page). The TV layout (`layout-tv`) has none: Jellyfin's header Back and the remote cover it.
+with the page). The TV layout (`layout-tv`) has none, by design and as since 3.9.0: Jellyfin's header Back and the remote cover
+it. That holds even while Jellyfin hides its header Back (when its router cannot go back): on a TV the remote's Back key is always
+there, so the host draws nothing and watches nothing in that layout.
 
 A page has **one** Back: the host's is hidden (`hidden` on its bar, so it is out of the focus order too) while Jellyfin's own
 header shows one (`headerBackShown` in `tv/src/jellyfin-web.ts`), and shown again when that one goes. Jellyfin draws one in two
@@ -704,7 +706,11 @@ places outside the TV layout: 12.x's React toolbar in Jellyfin's own apps (iOS, 
 toolbar's `ArrowBack` button, `svg[data-testid=ArrowBackIcon]`, is drawn when its router can go back), and 10.11's legacy header
 (`.skinHeader .headerBackButton` without `hide`) in every layout. Only a button that takes up room on the screen counts, since
 12.x's desktop layout keeps the legacy header in the page inside a `display: none` box. The host looks on every page change
-(`pageshow`, and Jellyfin's page changing, which also catches a toolbar drawn after the page). Where Jellyfin's Back is shown it
+(`pageshow`, and Jellyfin's page changing, which also catches a toolbar drawn after the page), and, while a page with its Back is
+shown, it watches Jellyfin's headers (`headerBackRoots`: their whole tree) and each of their ancestors (itself only) for a
+`class`, `hidden` or `style` change, so Jellyfin showing or hiding its Back with no page change and no new element is followed
+too. That is one `MutationObserver` per page, disconnected when the page is left; its records come in one batch per change and
+are read once. The host's own bar is in Jellyfin's page, never in or around a header, so showing or hiding it is not seen there. Where Jellyfin's Back is shown it
 is Jellyfin's router going back in history, as on its own pages; the host's own Back behaves like history back
 when the member came to the page from another page of Jellyfin web in this tab (`tv/src/history-trail.ts` keeps the addresses
 seen, in memory), and otherwise goes to Jellyfin's Home (`#/home`): a page opened by its own address, or after a reload, has no

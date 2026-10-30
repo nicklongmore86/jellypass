@@ -139,6 +139,17 @@ export function headerBackShown(document: Document): boolean {
   return false;
 }
 
+/**
+ * The headers `headerBackShown` reads (the legacy `.skinHeader` and 12.x's `header.MuiAppBar-root`, those in the page), for
+ * watching: Jellyfin can show or hide its Back by a class, `hidden` or a style on the button or around it, with no page change.
+ */
+export function headerBackRoots(document: Document): Element[] {
+  const roots: Element[] = [];
+  const found = document.querySelectorAll('.skinHeader, header.MuiAppBar-root');
+  for (let i = 0; i < found.length; i += 1) roots.push(found[i] as Element);
+  return roots;
+}
+
 function onScreen(element: Element): boolean {
   if (typeof element.getBoundingClientRect !== 'function') return false;
   const box = element.getBoundingClientRect();

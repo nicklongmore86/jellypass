@@ -2894,6 +2894,170 @@ describe('TV add-on: the page host\'s router', { timeout: 60_000 }, () => {
   });
 });
 
+describe('TV add-on: the page host\'s Back follows Jellyfin\'s header Back without a page change', { timeout: 60_000 }, () => {
+  const TV_SRC = path.join(import.meta.dirname, '..', 'tv', 'src');
+  const ENTRY = `
+    import { PageHost } from './page-host.ts';
+    const host = new PageHost(document, () => location.hash, () => {});
+    window.__host = host;
+    host.register('/jellypass/one', ({ document, container }) => {
+      container.appendChild(document.createElement('button'));
+      return { title: 'One' };
+    });
+  `;
+  // 10.11's legacy header (in a box of its own, as Jellyfin web draws it) and 12.x's toolbar in Jellyfin's apps, with its Back.
+  const HEADERS = '<div class="headerWrap">' + HEADER + '</div><div class="appBarWrap"><header class="MuiPaper-root MuiAppBar-root"><div class="MuiToolbar-root"><button class="MuiButtonBase-root MuiIconButton-root" type="button" aria-label="Back"><svg class="MuiSvgIcon-root" data-testid="ArrowBackIcon"><path d="M20 11H7.83z"></path></svg></button></div></header></div>';
+  let code;
+  /**
+   * The host alone in a page (no other observer, so nothing but the host's own watching can see a change), the desktop layout.
+   * linkedom lays nothing out: a box is 46 by 46 unless it or an ancestor is `hide`, `hidden` or `display: none`, as a browser would.
+   */
+  const sandbox = async (variant) => {
+    if (!code) {
+      const { build } = await import('esbuild');
+      const result = await build({ stdin: { contents: ENTRY, resolveDir: TV_SRC, loader: 'ts' }, bundle: true, format: 'iife', target: 'es2017', write: false, logLevel: 'silent' });
+      code = result.outputFiles[0].text;
+    }
+    const { document, MutationObserver: Native } = parseHTML('<html><body><div class="mainAnimatedPages"></div></body></html>');
+    document.body.insertAdjacentHTML('afterbegin', HEADERS);
+    // The other header is not drawn: 12.x keeps the legacy one in a `display: none` box; 10.11 has no toolbar.
+    if (variant === 'toolbar') document.querySelector('.headerWrap').setAttribute('style', 'display: none');
+    else document.querySelector('.appBarWrap').remove();
+    const laidOut = (element) => {
+      for (let up = element; up; up = up.parentElement) {
+        if (up.classList.contains('hide') || up.hasAttribute('hidden') || /display:\s*none/.test(up.getAttribute('style') ?? '')) return false;
+      }
+      return true;
+    };
+    // The header Backs' boxes (the only ones read).
+    for (const button of document.querySelectorAll('.headerBackButton, header.MuiAppBar-root button')) {
+      button.getBoundingClientRect = () => (laidOut(button) ? { width: 46, height: 46 } : { width: 0, height: 0 });
+    }
+    // Observers made, watching and let go, counted.
+    const count = { made: 0, live: 0, calls: 0 };
+    const Counted = class extends Native {
+      constructor(callback) {
+        // linkedom can deliver an empty batch, which a browser never does: only batches with records count.
+        super((records, observer) => { if (records.length) count.calls += 1; callback(records, observer); });
+        count.made += 1;
+        this.on = false;
+      }
+      observe(...args) {
+        if (!this.on) count.live += 1;
+        this.on = true;
+        super.observe(...args);
+      }
+      disconnect() {
+        if (this.on) count.live -= 1;
+        this.on = false;
+        super.disconnect();
+      }
+    };
+    // The host takes the observer from its document's window.
+    Object.defineProperty(document, 'defaultView', { value: { MutationObserver: Counted } });
+    const location = { hash: '#/home' };
+    const scope = { document, location, setTimeout, clearTimeout };
+    scope.window = scope;
+    vm.runInContext(code, vm.createContext(scope));
+    const sync = (hash) => {
+      location.hash = hash;
+      scope.__host.update();
+    };
+    const theirs = variant === 'toolbar' ? document.querySelector('header.MuiAppBar-root button') : document.querySelector('.skinHeader .headerBackButton');
+    return {
+      document,
+      count,
+      sync,
+      theirs,
+      /** Whether the host's Back is on show (drawn and not inside `hidden`). */
+      ours: () => {
+        const button = document.querySelector('[data-jellypass-tv-back]');
+        return button ? !button.closest('[hidden]') : null;
+      },
+    };
+  };
+  // Let the observers' records arrive (they are delivered after the change, in a later task in linkedom).
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+
+  for (const variant of ['legacy', 'toolbar']) {
+    const name = variant === 'legacy' ? '10.11 legacy header' : '12.x toolbar';
+    describe(name, () => {
+      // Each way Jellyfin can hide its Back with no page change and no new node, done and undone.
+      const toggles = {
+        'its `hide` class': (box, on) => box.theirs.classList.toggle('hide', on),
+        'its `hidden` attribute': (box, on) => { if (on) box.theirs.setAttribute('hidden', ''); else box.theirs.removeAttribute('hidden'); },
+        'an ancestor\'s `display: none`': (box, on) => {
+          const up = box.theirs.parentElement;
+          if (on) up.setAttribute('style', 'display: none'); else up.removeAttribute('style');
+        },
+        'an ancestor of the header\'s `hidden`': (box, on) => {
+          const up = box.document.querySelector(variant === 'legacy' ? '.headerWrap' : '.appBarWrap');
+          if (on) up.setAttribute('hidden', ''); else up.removeAttribute('hidden');
+        },
+      };
+      for (const [how, toggle] of Object.entries(toggles)) {
+        it(`shows ours when Jellyfin hides its Back by ${how}, and hides it again when Jellyfin shows its own: one Back each time`, async () => {
+          const box = await sandbox(variant);
+          showFallback(box.document);
+          box.sync('#/jellypass/one');
+          assert.equal(box.ours(), false, 'Jellyfin\'s Back is shown: ours is hidden');
+          toggle(box, true);
+          await tick();
+          assert.equal(box.ours(), true, 'Jellyfin\'s went: ours is shown, with no page change');
+          toggle(box, false);
+          await tick();
+          assert.equal(box.ours(), false, 'Jellyfin\'s is back: ours is hidden');
+        });
+      }
+
+      it('watches with one observer, stops when the page is left, and is not set off by its own showing or hiding', async () => {
+        const box = await sandbox(variant);
+        showFallback(box.document);
+        box.sync('#/jellypass/one');
+        assert.equal(box.count.live, 1, 'one observer on the page');
+        // Showing and hiding ours, many times over: one call each time Jellyfin's changes, none of its own making.
+        for (let i = 0; i < 3; i += 1) {
+          const before = box.count.calls;
+          box.theirs.classList.add('hide');
+          box.theirs.classList.add('hide');
+          await tick();
+          assert.equal(box.ours(), true);
+          await tick();
+          box.theirs.classList.remove('hide');
+          await tick();
+          await tick();
+          assert.equal(box.ours(), false);
+          assert.equal(box.count.calls - before <= 2, true, `a burst is read at most once per change (${box.count.calls - before})`);
+        }
+        const settledCalls = box.count.calls;
+        await tick();
+        await tick();
+        assert.equal(box.count.calls, settledCalls, 'no feedback: nothing more once Jellyfin stops');
+        // An update of the same page keeps the same observer.
+        box.sync('#/jellypass/one');
+        assert.equal(box.count.made, 1);
+        // Leaving: none left watching, and Jellyfin's changes reach nothing.
+        leaveFallback(box.document);
+        box.sync('#/home');
+        assert.equal(box.count.live, 0, 'let go when the page is left');
+        const after = box.count.calls;
+        box.theirs.classList.add('hide');
+        await tick();
+        assert.equal(box.count.calls, after, 'nothing is watched');
+      });
+    });
+  }
+
+  it('watches nothing in the TV layout, where the host draws no Back', async () => {
+    const box = await sandbox('legacy');
+    box.document.documentElement.classList.add('layout-tv');
+    showFallback(box.document);
+    box.sync('#/jellypass/one');
+    assert.equal(box.ours(), null);
+    assert.equal(box.count.made, 0);
+  });
+});
+
 describe('TV add-on: My requests', { timeout: 180_000 }, () => {
   const A = 'AAAAAAAAAAAAAAAAAAAAAA';
   const B = 'BBBBBBBBBBBBBBBBBBBBBB';

@@ -12,7 +12,7 @@
  * libraryMenu's `setTitle` does). If any of it is not as expected nothing is drawn and Jellyfin's page is left alone.
  */
 
-import { headerBackShown } from './jellyfin-web.js';
+import { headerBackRoots, headerBackShown } from './jellyfin-web.js';
 
 /** Hash paths the host serves are under this prefix. */
 export const HOST_PREFIX = '/jellypass/';
@@ -24,6 +24,8 @@ export const PAGE_ATTR = 'data-jellypass-tv-page';
 export const FOCUS_ATTR = 'data-jellypass-tv-focus';
 /** On the Back button the host puts at the top of a JellyPass page outside the TV layout, while Jellyfin's header has none. */
 export const BACK_ATTR = 'data-jellypass-tv-back';
+/** The attributes that show or hide Jellyfin's header Back, on it or around it, without a page change. */
+const BACK_ATTRIBUTES = ['class', 'hidden', 'style'];
 /** How many pages' last focus is remembered (in memory only). */
 const FOCUS_MEMORY = 20;
 
@@ -75,6 +77,9 @@ interface Active {
   /** The Back button's bar, with the sign-in generation it was drawn under: after a change it is replaced, and the old one is inert. */
   backBar?: HTMLElement | undefined;
   backGeneration?: number | undefined;
+  /** Watches Jellyfin's headers and their ancestors (`watched`) while the page has a Back button, so it follows theirs. */
+  headerWatch?: MutationObserver | undefined;
+  watched?: Element[] | undefined;
 }
 
 /** The path of a `#/jellypass/...` hash (without its query), or undefined. */
@@ -291,13 +296,54 @@ export class PageHost {
    */
   private showBack(active: Active): void {
     const bar = active.backBar;
-    if (!bar) return;
+    if (!bar) {
+      this.unwatch(active);
+      return;
+    }
+    this.watch(active);
     const hide = headerBackShown(this.document);
     if (bar.hidden === hide) return;
     const focused = bar.contains(this.document.activeElement);
     bar.hidden = hide;
     // Focus on a button that went is given to what the page focuses on its own.
     if (hide && focused) this.restoreFocus(active);
+  }
+
+  /**
+   * Jellyfin's headers (their whole tree) and each of their ancestors (itself only) are watched for a class, `hidden` or a
+   * style changing, which can show or hide its Back with no page change; again when the headers are drawn anew. One
+   * observer per page; its records arrive together, once per change of the page, and are read once. The Back button's bar
+   * is in Jellyfin's page, never in or around a header, so showing or hiding it is not seen here.
+   */
+  private watch(active: Active): void {
+    const view = this.document.defaultView as { MutationObserver?: typeof MutationObserver } | null;
+    const Observer = view ? view.MutationObserver : undefined;
+    if (typeof Observer !== 'function') return;
+    const roots = headerBackRoots(this.document);
+    const nodes: Element[] = roots.slice();
+    for (const root of roots) {
+      for (let up = root.parentElement; up; up = up.parentElement) if (nodes.indexOf(up) < 0) nodes.push(up);
+    }
+    const before = active.watched;
+    if (before && before.length === nodes.length && before.every((node, i) => node === nodes[i])) return;
+    this.unwatch(active);
+    if (!nodes.length) return;
+    const observer = new Observer(() => {
+      if (this.active === active) this.showBack(active);
+    });
+    for (const node of nodes) {
+      // `childList` with `subtree`: a header's parts drawn anew are seen too.
+      if (roots.indexOf(node) >= 0) observer.observe(node, { attributes: true, attributeFilter: BACK_ATTRIBUTES, childList: true, subtree: true });
+      else observer.observe(node, { attributes: true, attributeFilter: BACK_ATTRIBUTES });
+    }
+    active.headerWatch = observer;
+    active.watched = nodes;
+  }
+
+  private unwatch(active: Active): void {
+    if (active.headerWatch) active.headerWatch.disconnect();
+    active.headerWatch = undefined;
+    active.watched = undefined;
   }
 
   /** The session changed under the page on show: its Back button is taken away and drawn again for the new one. */
@@ -313,6 +359,7 @@ export class PageHost {
     const active = this.active;
     this.active = undefined;
     if (!active) return;
+    this.unwatch(active);
     try {
       if (active.cleanup) active.cleanup();
     } catch {
