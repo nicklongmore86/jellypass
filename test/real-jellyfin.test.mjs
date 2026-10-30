@@ -500,6 +500,8 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
       const answer = await getWithHeaders(port, pathname, member);
       assert.equal(answer.status, 200, `${pathname}: ${answer.text}`);
     }
+    const played = await postWithHeaders(port, `/UserPlayedItems/${clip.Id}`, member, {});
+    assert.equal(played.status, 200, played.text);
     const info = (await getWithHeaders(port, `/Items/${clip.Id}/PlaybackInfo`, member)).json();
     const source = info.MediaSources[0];
     const range = await getWithHeaders(port, `/Videos/${clip.Id}/stream?Static=true&MediaSourceId=${source.Id}`, { ...member, Range: 'bytes=0-31' });
@@ -518,6 +520,8 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
       const answer = await getWithHeaders(port, pathname, member);
       assert.deepEqual([answer.status, answer.text], [404, '{"error":"not_found"}'], pathname);
     }
+    const adminPost = await postWithHeaders(port, `/Items/${clip.Id}`, member, {});
+    assert.deepEqual([adminPost.status, adminPost.text], [404, '{"error":"not_found"}']);
     assert.deepEqual(upstream.seen, [], 'administrative routes must never reach Jellyfin');
     // Follow actual asset links from the installed jellyfin-web, beyond the injection fixture's shortened page.
     const page = await getWithHeaders(port, '/web/index.html', { Host: host });

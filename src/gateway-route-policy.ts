@@ -660,8 +660,9 @@ const elevatedMethods: Record<string, readonly string[]> = {
 const elevatedPatterns = Object.entries(elevatedMethods).map(([path, methods]) => ({ pattern: routePattern(path), namespace: new RegExp(routePattern(path).source.slice(0, -1) + '(?:/|$)'), methods }));
 // Library setup/options and external filesystem-update hooks are dashboard/integration operations,
 // even where Jellyfin uses ordinary authorization rather than an elevation policy.
-const adminNamespace = /^\/(?:plugins|auth|packages|repositories|scheduledtasks|devices|backup|startup|environment|libraries)(?:\/|$)|^\/(?:library\/(?:virtualfolders|refresh|physicalpaths|mediafolders|media|movies|series)|system\/(?:activitylog|logs|restart|shutdown|info\/storage)|livetv\/(?:tunerhosts|tuners|listingproviders|channelmapping)|web\/configurationpages?)(?:\/|$)|^\/users\/(?:new|[^/]+\/policy)$/;
+const adminNamespace = /^\/(?:plugins|auth|packages|repositories|scheduledtasks|devices|backup|startup|environment|libraries)(?:\/|$)|^\/(?:library\/(?:virtualfolders|refresh|physicalpaths|mediafolders|media|movies|series)|system\/(?:activitylog|logs|restart|shutdown|info\/storage)|livetv\/(?:tunerhosts|tuners|listingproviders|channelmapping)|web\/configurationpages?)(?:\/|$)|^\/users\/(?:new|[^/]+\/policy)$|^\/items\/(?:remotesearch|[^/]+\/remoteimages)(?:\/|$)/;
 export function householdRouteAllowed(route: string, additional: readonly string[] = [], method = 'GET'): boolean {
+  if (!['GET', 'HEAD', 'POST', 'DELETE', 'OPTIONS'].includes(method)) return false;
   if (adminNamespace.test(route) || elevatedPatterns.some(({ pattern, methods }) => pattern.test(route) && methods.includes(method === 'HEAD' ? 'GET' : method))) return false;
   if (route.startsWith('/system/configuration/') && route !== '/system/configuration/encoding') return false;
   return patterns.some((pattern) => pattern.test(route)) || additional.includes(route);

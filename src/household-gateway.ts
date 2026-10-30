@@ -415,6 +415,7 @@ export class HouseholdGateway {
 
   /** `tv`: the TV add-on is on for the household; without it, no route is decided otherwise than before it existed. */
   #decideRoute(method: string | undefined, route: string, query: URLSearchParams, tv: boolean): RouteDecision {
+    if (!['GET', 'HEAD', 'POST', 'DELETE', 'OPTIONS'].includes(method ?? 'GET')) return { kind: 'unknownRoute' };
     if (isAppRoute(route)) return { kind: 'app' };
     if (tv && (route === TV_PATH || route.startsWith(`${TV_PATH}/`))) return { kind: 'tvAsset' };
     if (tv && (method === 'GET' || method === 'HEAD') && WEB_PAGE_ROUTES.has(route)) return { kind: 'webPage' };

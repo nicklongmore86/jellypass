@@ -429,6 +429,22 @@ export function makeServer(
       return json(response, status, { error: message });
     }
   });
+  // Unknown method tokens fail in Node's parser before a request can reach the gateway.
+  server.on('clientError', (error, socket) => {
+    socket.on('error', () => socket.destroy());
+    if (!socket.writable) return;
+    if ('code' in error && error.code === 'HPE_INVALID_METHOD') {
+      const body = '{"error":"not_found"}';
+      socket.end(`HTTP/1.1 404 Not Found\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`);
+    } else socket.end(`HTTP/1.1 ${'code' in error && error.code === 'HPE_HEADER_OVERFLOW' ? '431 Request Header Fields Too Large' : '400 Bad Request'}\r\nConnection: close\r\n\r\n`);
+  });
+  // Node emits CONNECT separately from ordinary requests; never open a household tunnel.
+  server.on('connect', (request, socket) => {
+    socket.on('error', () => socket.destroy());
+    if (!householdGateway?.householdId(request.headers.host)) { socket.destroy(); return; }
+    const body = '{"error":"not_found"}';
+    socket.end(`HTTP/1.1 404 Not Found\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`);
+  });
   server.on('upgrade', (request, socket, head) => {
     const householdId = householdGateway?.householdId(request.headers.host);
     if (!householdGateway || !householdId) {

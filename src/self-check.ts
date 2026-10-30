@@ -137,12 +137,12 @@ export class SelfCheck {
       return result('proxy', passed === urls.length ? 'pass' : 'warn', `${passed} of ${urls.length} household addresses completed a self-request with preserved Host, valid X-Forwarded-For and matching X-Forwarded-Proto from a trusted proxy. This checks this server's route, not every external client path or spoofed-header sanitisation.`);
     };
     const seerr = async () => {
-      if (!this.options.seerrPublicUrl) return result('seerr', 'pass', 'No Seerr public URL is configured. Member reachability cannot be determined; Seerr must be admin-only.');
+      if (!this.options.seerrPublicUrl) return result('seerr', 'warn', 'No Seerr public URL is configured. Check from a member network that Seerr is admin-only; member reachability cannot be determined here.');
       try {
         const answer = await this.#probe(this.options.seerrPublicUrl, {}, undefined, false);
         if (answer.status >= 100) return result('seerr', 'warn', 'The configured Seerr public URL responds (possibly with a redirect). Members may reach it directly. Seerr must be admin-only; verify access controls from a member network.');
       } catch { /* Inconclusive from inside. */ }
-      return result('seerr', 'pass', 'Seerr did not respond successfully here. Verify from a member network that it is admin-only; an inside probe cannot prove this.');
+      return result('seerr', 'warn', 'Seerr did not respond successfully here. Verify from a member network that it is admin-only; an inside probe cannot prove this.');
     };
     const tmdb = async () => {
       const key = this.options.tmdbApiKey;

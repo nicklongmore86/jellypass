@@ -52,6 +52,9 @@ describe('admin self-check probes', () => {
     assert.deepEqual((await check.run()).filter((r) => ['quick_connect', 'version', 'tmdb'].includes(r.check)).map((r) => r.status), ['pass', 'pass', 'pass']);
     now = 60_000;
     assert.ok(await check.run());
+    const seerr = (await new SelfCheck({ ...options, fetch: async () => json(false) }).run()).find((r) => r.check === 'seerr');
+    assert.equal(seerr.status, 'warn');
+    assert.match(seerr.explanation, /member network/);
   });
   it('handles failed probes and unexpected large responses without exposing their error text', async () => {
     const check = new SelfCheck({ ...options, jellyfinPublicUrls: ['https://origin.example.com'], seerrPublicUrl: 'https://seerr.example.com', tmdbApiKey: 'secret-token', fetch: async (url) => {
@@ -59,15 +62,16 @@ describe('admin self-check probes', () => {
       throw new Error('secret-token');
     } });
     const results = await check.run();
-    assert.ok(results.every((r) => r.status === (r.check === 'seerr' ? 'pass' : 'warn')));
+    assert.ok(results.every((r) => r.status === 'warn'));
     assert.ok(!JSON.stringify(results).includes('secret-token'));
   });
   it('times out a stalled real upstream', async (t) => {
     const upstream = createServer(() => {});
     await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve));
     t.after(() => { upstream.closeAllConnections(); upstream.close(); });
-    const check = new SelfCheck({ ...options, jellyfinUrl: `http://127.0.0.1:${upstream.address().port}`, timeoutMs: 30 });
-    assert.equal((await check.run()).find((r) => r.check === 'quick_connect').status, 'warn');
+    const check = new SelfCheck({ ...options, jellyfinUrl: `http://127.0.0.1:${upstream.address().port}`, seerrPublicUrl: `http://127.0.0.1:${upstream.address().port}`, timeoutMs: 30 });
+    const results = await check.run();
+    for (const name of ['quick_connect', 'seerr']) assert.equal(results.find((r) => r.check === name).status, 'warn');
   });
   it('self-requests each household public address and checks Host, forwarding headers and trusted peer', async (t) => {
     let check;
@@ -144,6 +148,9 @@ it('preserves audited member routes from both pinned jellyfin-web bundles', asyn
   const { readFile } = await import('node:fs/promises');
   const fixture = JSON.parse(await readFile(new URL('./fixtures/jellyfin-web-member-routes.json', import.meta.url)));
   for (const route of fixture.memberRoutes) assert.ok(householdRouteAllowed(route), route);
+  for (const route of fixture.excludedRoutes) {
+    for (const method of ['GET', 'HEAD', 'POST', 'DELETE', 'OPTIONS']) assert.equal(householdRouteAllowed(route, [], method), false, `${method} ${route}`);
+  }
 });
 
 it('bounds concurrent household probes and the overall proxy duration', async () => {
@@ -197,10 +204,23 @@ it('logs every additional plugin template at startup and uses the live version g
   assert.equal(answer.status, 200);
   const results = (await answer.json()).results;
   assert.equal(results.find((r) => r.check === 'version').status, 'pass');
-  assert.equal(results.find((r) => r.check === 'seerr').status, 'pass');
+  assert.equal(results.find((r) => r.check === 'seerr').status, 'warn');
 });
 
 it('warns whenever public Seerr responds, including large non-JSON pages', async () => {
   const check = new SelfCheck({ ...options, seerrPublicUrl: 'https://seerr.example.com', fetch: async (url) => url.includes('seerr') ? new Response('<html>' + 'x'.repeat(100000)) : json(false) });
   assert.equal((await check.run()).find((r) => r.check === 'seerr').status, 'warn');
+});
+
+it('allows audited member write actions and refuses metadata-editor routes and unsupported methods', () => {
+  const writes = {
+    POST: ['/userplayeditems/abc', '/users/abc/playeditems/abc', '/userfavoriteitems/abc', '/users/abc/favoriteitems/abc', '/useritems/abc/rating', '/users/abc/items/abc/rating', '/useritems/abc/userdata', '/users/abc/items/abc/userdata', '/playlists', '/playlists/abc/items', '/playlists/abc/items/abc/move/0', '/displaypreferences/abc', '/sessions/playing', '/sessions/playing/progress', '/sessions/playing/stopped', '/videos/abc/subtitles', '/items/abc/remotesearch/subtitles/eng', ...['buffering', 'join', 'leave', 'moveplaylistitem', 'new', 'nextitem', 'pause', 'ping', 'previousitem', 'queue', 'ready', 'removefromplaylist', 'seek', 'setignorewait', 'setnewqueue', 'setplaylistitem', 'setrepeatmode', 'setshufflemode', 'stop', 'unpause'].map((action) => `/syncplay/${action}`)],
+    DELETE: ['/userplayeditems/abc', '/users/abc/playeditems/abc', '/userfavoriteitems/abc', '/users/abc/favoriteitems/abc', '/useritems/abc/rating', '/users/abc/items/abc/rating', '/playlists/abc/items'],
+  };
+  for (const [method, paths] of Object.entries(writes)) for (const path of paths) assert.ok(householdRouteAllowed(path, [], method), `${method} ${path}`);
+  for (const path of [...['movie', 'series', 'trailer', 'boxset', 'book', 'musicalbum', 'musicartist', 'musicvideo'].map((type) => `/items/remotesearch/${type}`), '/items/abc/remoteimages', '/items/abc/remoteimages/providers', '/items/abc/remoteimages/download']) {
+    for (const method of ['GET', 'HEAD', 'POST', 'DELETE', 'OPTIONS']) assert.equal(householdRouteAllowed(path, [], method), false, `${method} ${path}`);
+    assert.throws(() => parseAdditionalPluginRoutes(path));
+  }
+  for (const method of ['PUT', 'PATCH', 'TRACE', 'CONNECT', 'CUSTOM']) assert.equal(householdRouteAllowed('/items', [], method), false, method);
 });

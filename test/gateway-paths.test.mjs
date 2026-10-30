@@ -485,6 +485,23 @@ function upgrade(port, pathname, host) {
 
 
 describe('household deny-by-default routing', () => {
+  it('refuses unsupported methods before authentication or relay, including CONNECT', async (t) => {
+    const app = await startApp(t);
+    const before = app.jellyfin.requests.length;
+    for (const method of ['PUT', 'PATCH', 'TRACE', 'PROPFIND', 'CUSTOM', 'CONNECT']) {
+      const answer = await new Promise((resolve, reject) => {
+        const socket = connect(app.port, '127.0.0.1');
+        let text = '';
+        socket.on('connect', () => socket.write(`${method} /Items HTTP/1.1\r\nHost: ${HOST_A}\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`));
+        socket.on('data', (chunk) => { text += chunk; });
+        socket.on('end', () => resolve(text));
+        socket.on('error', reject);
+      });
+      assert.match(answer, /^HTTP\/1\.1 404 /, method);
+      assert.ok(answer.endsWith('{"error":"not_found"}'), method);
+    }
+    assert.equal(app.jellyfin.requests.length, before);
+  });
   it('refuses administrative routes with fixed 404 and no upstream request, even with a member token', async (t) => {
     const app = await startApp(t);
     const before = app.jellyfin.requests.length;
