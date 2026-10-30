@@ -16,6 +16,16 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * A change (hide or unhide) whose answer came after the sign-in it was made in had ended: signed out, another member,
+ * or a refused call. It changed nothing here, and is not the business of whoever is signed in now.
+ */
+export class SessionChangedError extends Error {
+  public constructor() {
+    super('session_changed');
+  }
+}
+
 export interface ApiOptions {
   fetch: typeof fetch;
   /** The Jellyfin access token, read for each call. */
@@ -65,6 +75,11 @@ export interface Api {
   hiddenList(page: number, signal?: AbortSignal): Promise<HiddenList>;
   /** Forgets what this member just asked for (sign-out). */
   forgetAsked(): void;
+  /**
+   * This sign-in's number: a new one after every sign-out, change of member or refused call. Something begun under one
+   * number and answered under another belongs to nobody now signed in.
+   */
+  session(): number;
 }
 
 function kindOf(status: number, hiding = false): ApiErrorKind {
@@ -79,13 +94,13 @@ export function createApi(options: ApiOptions): Api {
   const asked = options.asked ?? createAsked();
   const titles = options.titles ?? createTitleCache();
   const hidden = options.hidden ?? createHiddenOverlay();
-  // Bumped each time the titles are forgotten: a title read before is not kept for whoever is signed in after.
-  let titlesEpoch = 0;
+  // Bumped each time the overlay is forgotten: nothing begun before is kept for (or told to) whoever is signed in after.
+  let epoch = 0;
   function forget(): void {
     asked.forget();
     titles.forget();
     hidden.forget();
-    titlesEpoch += 1;
+    epoch += 1;
   }
   // The overlay belongs to whoever holds this token and this /me identity: any other (or none) starts it empty.
   let owner: string | undefined;
@@ -101,9 +116,17 @@ export function createApi(options: ApiOptions): Api {
     sync(options.token());
     return apply(value);
   };
-  async function call(path: string, init: { body?: unknown; method?: 'DELETE'; hiding?: boolean }, signal?: AbortSignal): Promise<Response> {
+  /** The session number now, after making sure the overlay still belongs to whoever holds the token. */
+  const session = (): number => {
+    sync(options.token());
+    return epoch;
+  };
+  /** With `guarded`, an answer that comes after the session ended (success or failure) is {@link SessionChangedError}. */
+  async function call(path: string, init: { body?: unknown; method?: 'DELETE'; hiding?: boolean; guarded?: boolean }, signal?: AbortSignal): Promise<Response> {
     const token = options.token();
     sync(token);
+    const at = epoch;
+    const ended = () => init.guarded === true && session() !== at;
     if (!token) throw new ApiError('unauthorized');
     let response: Response;
     try {
@@ -123,12 +146,18 @@ export function createApi(options: ApiOptions): Api {
       });
     } catch (error) {
       if (signal?.aborted) throw error;
+      if (ended()) throw new SessionChangedError();
       throw new ApiError('offline');
+    }
+    if (ended()) {
+      await response.body?.cancel().catch(() => undefined);
+      throw new SessionChangedError();
     }
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
-      // A refused sign-in is nobody's: whatever was shown as requested for it is dropped.
-      if (response.status === 401) {
+      // A refused sign-in is nobody's: whatever was shown as requested for it is dropped. A late refusal of a token
+      // no longer held says nothing about the one held now.
+      if (response.status === 401 && options.token() === token) {
         forget();
         identity = undefined;
       }
@@ -178,31 +207,30 @@ export function createApi(options: ApiOptions): Api {
     tv,
     season: (tmdbId, seasonNumber, signal) => get<Season>(`/tv/${tmdbId}/season/${seasonNumber}`, signal).then(seen(asked.season)),
     getThis: async (mediaType, tmdbId, seasons, signal) => {
-      const before = options.token();
+      const before = session();
       // A movie sends an empty object, a series the seasons asked for; the answer is the same fixed 202 either way.
       const response = await call(`/${mediaType}/${tmdbId}/get`, { body: mediaType === 'tv' ? { seasons } : {} }, signal);
       await response.body?.cancel().catch(() => undefined);
       // Only an accepted call (a 2xx; anything else threw above) is shown as requested while the server records it.
       // ... and only for the member who asked: not if the sign-in changed while the call was out.
-      sync(options.token());
-      if (before !== undefined && owner === before) asked.add(mediaType, tmdbId, seasons);
+      if (session() === before) asked.add(mediaType, tmdbId, seasons);
     },
     requests: (signal) => get<RequestList>('/requests', signal),
     cancelRequest: async (entry, signal) => {
-      const before = options.token();
+      const before = session();
       const response = await call(`/requests/${encodeURIComponent(entry.id)}/cancel`, { body: {} }, signal);
       await response.body?.cancel().catch(() => undefined);
       // Only an accepted call, and only for the member who made it: not if the sign-in changed while the call was out.
-      sync(options.token());
-      if (before !== undefined && owner === before) asked.withdraw(entry.mediaType, entry.tmdbId);
+      if (session() === before) asked.withdraw(entry.mediaType, entry.tmdbId);
     },
     setHidden: async (mediaType, tmdbId, value, signal) => {
-      const before = options.token();
-      const response = await call(`/hidden/${mediaType}/${tmdbId}`, value ? { body: {}, hiding: true } : { method: 'DELETE' }, signal);
+      const before = session();
+      const response = await call(`/hidden/${mediaType}/${tmdbId}`, value ? { body: {}, hiding: true, guarded: true } : { method: 'DELETE', guarded: true }, signal);
       await response.body?.cancel().catch(() => undefined);
-      // Only an accepted call, and only for the member who made it: not if the sign-in changed while the call was out.
-      sync(options.token());
-      if (before !== undefined && owner === before) hidden.set(mediaType, tmdbId, value);
+      // Only an accepted call, and only in the session that made it: not if the sign-in changed (or another call was
+      // refused) while the call was out.
+      if (session() !== before) throw new SessionChangedError();
+      hidden.set(mediaType, tmdbId, value);
     },
     hiddenList: (page, signal) => get<HiddenList>(`/hidden${page > 1 ? `?page=${page}` : ''}`, signal),
     requestTitle: async (mediaType, tmdbId, signal) => {
@@ -210,15 +238,15 @@ export function createApi(options: ApiOptions): Api {
       // A kept title is used as it is: its state is not handed to the overlay again.
       const kept = titles.get(mediaType, tmdbId);
       if (kept) return kept;
-      const epoch = titlesEpoch;
+      const began = epoch;
       const found = mediaType === 'tv' ? await tv(tmdbId, signal) : await movie(tmdbId, signal);
       const details: TitleDetails = { title: found.title, year: found.year, mediaType, posterUrl: found.posterUrl };
       // Kept only for the sign-in that read it: not if it changed (or was forgotten) while the call was out.
-      sync(options.token());
-      if (epoch === titlesEpoch) titles.set({ ...details, tmdbId });
+      if (session() === began) titles.set({ ...details, tmdbId });
       return details;
     },
     forgetAsked: () => forget(),
+    session,
   };
 }
 

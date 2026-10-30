@@ -1662,11 +1662,17 @@ Unhide; those controls come in each client's own release. This section is the se
   so results never wait for `/me`. Hero slides have no menu (the title page has the action). **My requests** has two links at the
   top, **Requests** and **Hidden** (a separate screen, `#/requests/hidden`, not a filter chip): the Hidden view lists the member's
   hides from `GET /hidden`, names ten at a time (four calls at once, as My requests does) and reads the next page only when the
-  50 read are all shown. Every failure is a fixed message (`409` is the limit, `429`, offline, anything else); nothing from a
+  50 read are all shown. The list is paged by place, so each accepted unhide moves every later title up one: the page read next
+  is the one the first title not yet listed is on (`HiddenPager` in `app/src/hidden.ts`), which may be a page read before (its
+  listed titles left out), and a page answered while an unhide was out is read from far enough back that a title moved past it
+  is not skipped; nothing is listed twice whatever the order of unhides, hides and page reads. Every failure is a fixed message (`409` is the limit, `429`, offline, anything else); nothing from a
   response is shown, and no call is repeated by itself. **Session memory** (`app/src/hidden.ts`): what the member hid or unhid
   is kept only in memory, never stored or sent, so a list read that began before the change is told over (a title hidden stays
-  out; a read that began after is the server's word and ends the entry), and it is forgotten on sign-out, a member change and a
-  refused sign-in, like the "Get this" overlay. The costs are the `hiding` entry of `fetch-budget.json`, pinned by
+  out; a read that began after is the server's word, and its flag is what an older read answering later is corrected to), and
+  it is forgotten on sign-out, a member change and a refused sign-in, like the "Get this" overlay. **Late answers:** a hide or
+  unhide answered after its sign-in ended (sign-out, another member, any refused call) is ignored whole, success or failure: it
+  writes nothing to the session memory, removes or marks no card, shows no line and no Undo, and a `401` for the old token
+  signs nobody out; an Undo offered in an earlier sign-in only goes away when pressed (`Api.session()`). The costs are the `hiding` entry of `fetch-budget.json`, pinned by
   `test/app-pwa.test.mjs`.
 
 ## Administrators' Requests tab

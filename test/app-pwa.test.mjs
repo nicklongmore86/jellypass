@@ -5734,6 +5734,260 @@ describe('household app page: running against the API', { timeout: 60_000 }, () 
       });
     });
 
+    describe('answers that come after the sign-in ended', () => {
+      const asAnn = (page) => page.store.set('jellyfin_credentials', JSON.stringify({ Servers: [{ ManualAddress: page.location.origin, AccessToken: TOKENS[ANN], UserId: ANN }] }));
+
+      for (const status of [200, 409, 401]) {
+        it(`a hide answered ${status} after another member signed in is silent: their screen, sign-in and hides stay as they are`, async (t) => {
+          const app = await startApp(t);
+          assert.equal((await app.post(`${HIDDEN}/movie/${T_TV}`, undefined, { user: ANN })).status, 200, 'Ann has a hide of her own');
+          let release;
+          const held = new Promise((resolve) => { release = resolve; });
+          const page = await openApp(t, app, { override: async (url, init) => {
+            if (url.startsWith(HIDDEN) && init.method === 'POST') {
+              await held;
+              return json({}, status);
+            }
+            return undefined;
+          } });
+          await homeReady(page);
+          await settledCalls(page);
+          const card = trending(page).querySelector('li.card');
+          click(page, card.querySelector('.card-more'));
+          click(page, card.querySelector('.card-menu-item'));
+          await page.until(() => page.requests.some((request) => request.url.startsWith(HIDDEN)), 'the POST sent');
+          asAnn(page);
+          page.go('#/');
+          await homeReady(page);
+          // Every call of Ann's Home answered: only Alice's hide is still out.
+          await page.until(() => page.pending() === 1, 'Ann\'s Home read');
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          const before = page.main().outerHTML;
+          const calls = page.requests.length;
+          release();
+          await settledCalls(page);
+          await new Promise((resolve) => setTimeout(resolve, 50));
+          assert.equal(page.main().outerHTML, before, 'Ann\'s Home is as it was');
+          assert.equal(Boolean(page.document.querySelector('.toast')), false, 'no line, no Undo');
+          assert.equal(page.document.getElementById('status').textContent, '');
+          assert.equal(page.requests.length, calls, 'nothing sent after it');
+          assert.ok(names(trending(page)).includes('Synthetic Movie One'));
+          assert.equal((await app.get(`${HIDDEN}`, { user: ANN })).text.includes(`"tmdbId":${T_TV}`), true, 'Ann\'s own hide is still there');
+        });
+      }
+
+      it('Undo offered to one member does nothing once another holds the sign-in: no DELETE in their name', async (t) => {
+        const app = await startApp(t);
+        assert.equal((await app.post(`${HIDDEN}/movie/${T_MOVIE}`, undefined, { user: ANN })).status, 200);
+        const page = await openApp(t, app);
+        await homeReady(page);
+        const card = trending(page).querySelector('li.card');
+        click(page, card.querySelector('.card-more'));
+        click(page, card.querySelector('.card-menu-item'));
+        await page.until(() => page.document.querySelector('.toast button'), 'the Undo');
+        await settledCalls(page);
+        const calls = page.requests.length;
+        // Ann signs in on this address; the page has not drawn anything for her yet.
+        asAnn(page);
+        click(page, page.document.querySelector('.toast button'));
+        await settledCalls(page);
+        assert.equal(page.requests.length, calls, 'no call');
+        assert.equal(Boolean(page.document.querySelector('.toast')), false, 'the line is gone');
+        assert.equal((await app.get(`${HIDDEN}`, { user: ANN })).text.includes(`"tmdbId":${T_MOVIE}`), true, 'Ann\'s hide is untouched');
+      });
+
+      it('the API keeps nothing of a change answered after its sign-in ended, or after another call was refused', async () => {
+        const { createApi, SessionChangedError } = await import(pathToFileURL(path.join(DIST_APP, BUILT('js/api.js'))).href);
+        const { createHiddenOverlay } = await import(pathToFileURL(path.join(DIST_APP, BUILT('js/hidden.js'))).href);
+        const card = { mediaType: 'movie', tmdbId: 5, title: 'T', year: null, overview: '', posterUrl: null, backdropUrl: null, rating: null, state: 'get_this', play: null, hidden: false };
+        const make = (answer) => {
+          const hidden = createHiddenOverlay();
+          const token = { value: 'token-a' };
+          let release;
+          const held = new Promise((resolve) => { release = resolve; });
+          const api = createApi({ hidden, token: () => token.value, fetch: async (url) => {
+            if (url.endsWith('/hidden/movie/5')) {
+              await held;
+              return new Response('{}', { status: answer });
+            }
+            if (url.endsWith('/hidden/movie/6')) return new Response('{}', { status: 200 });
+            return new Response('{}', { status: 401 });
+          } });
+          return { api, hidden, token, release };
+        };
+        for (const answer of [200, 409, 401, 500]) {
+          // Another call is refused while the hide is out (the same token).
+          {
+            const { api, hidden, release } = make(answer);
+            const pending = api.setHidden('movie', 5, true);
+            await assert.rejects(api.requests(), (error) => error.kind === 'unauthorized');
+            release();
+            await assert.rejects(pending, (error) => error instanceof SessionChangedError, `${answer} after a refused call`);
+            assert.equal(hidden.flagged(card, 0).hidden, false, 'nothing written');
+          }
+          // Another member signs in while it is out, and hides a title of their own: theirs is kept.
+          {
+            const { api, hidden, token, release } = make(answer);
+            const pending = api.setHidden('movie', 5, true);
+            token.value = 'token-b';
+            await api.setHidden('movie', 6, true);
+            release();
+            await assert.rejects(pending, (error) => error instanceof SessionChangedError, `${answer} after a member change`);
+            assert.equal(hidden.flagged(card, 0).hidden, false);
+            assert.equal(hidden.flagged({ ...card, tmdbId: 6 }, 0).hidden, true, 'the late answer forgot nothing of the new sign-in');
+          }
+        }
+      });
+    });
+
+    describe('paging the Hidden view while titles are unhidden', () => {
+      /**
+       * The server's list as GET /hidden pages it: newest first, 50 a page, read when the call is answered. `hold` holds
+       * the next call that `matches` until released; a held DELETE may change the list at once or when released.
+       */
+      const hiddenServer = (count) => {
+        const state = { all: Array.from({ length: count }, (_, index) => ({ mediaType: 'movie', tmdbId: 900_100 + index, hiddenAt: '2026-10-30T12:00:00.000Z' })), holds: [] };
+        state.pageOf = (number) => ({ page: number, nextPage: state.all.length > number * 50 ? number + 1 : null, results: state.all.slice((number - 1) * 50, number * 50) });
+        state.hold = (matches, { early = false } = {}) => {
+          let release;
+          const released = new Promise((resolve) => { release = resolve; });
+          const hold = { matches, early, released, release, reached: false };
+          state.holds.push(hold);
+          return hold;
+        };
+        state.override = async (url, init) => {
+          const method = init?.method ?? 'GET';
+          if (url.startsWith(HIDDEN)) {
+            const hold = state.holds.find((entry) => !entry.reached && entry.matches(method, url));
+            if (hold) hold.reached = true;
+            if (method === 'DELETE') {
+              const id = Number(url.split('/').pop());
+              const remove = () => { state.all = state.all.filter((entry) => entry.tmdbId !== id); };
+              if (hold?.early) remove();
+              if (hold) await hold.released;
+              if (!hold?.early) remove();
+              return json({});
+            }
+            const number = Number(new URL(url, 'https://x').searchParams.get('page') ?? 1);
+            if (hold?.early) {
+              const answer = state.pageOf(number);
+              await hold.released;
+              return json(answer);
+            }
+            if (hold) await hold.released;
+            return json(state.pageOf(number));
+          }
+          const title = /^\/jellypass\/app\/v1\/movie\/(9\d{5})$/.exec(url);
+          if (title) return json({ mediaType: 'movie', tmdbId: Number(title[1]), title: `T${title[1]}`, year: 2026, overview: '', posterUrl: null, backdropUrl: null, rating: null, state: 'get_this', play: null, hidden: true, genres: [], runtime: null });
+          return undefined;
+        };
+        return state;
+      };
+      const shownIds = (page) => [...page.main().querySelectorAll('.request .card-title')].map((title) => Number(title.textContent.slice(1)));
+      const moreShown = (page) => !page.main().querySelector('.load-more').hidden;
+      const loadMore = async (page) => {
+        click(page, page.main().querySelector('.load-more'));
+        await settledCalls(page);
+      };
+      const exhaust = async (page) => {
+        for (let round = 0; round < 20 && moreShown(page); round += 1) await loadMore(page);
+        assert.equal(moreShown(page), false, 'the list ends');
+      };
+      /** Every title still hidden on the server is shown, each once. */
+      const complete = (page, state) => {
+        const ids = shownIds(page);
+        assert.equal(new Set(ids).size, ids.length, 'none twice');
+        assert.deepEqual([...ids].sort(), state.all.map((entry) => entry.tmdbId).sort(), 'none skipped');
+      };
+      const unhide = (page, id) => click(page, [...page.main().querySelectorAll('.request')].find((item) => item.querySelector('.card-title').textContent === `T${id}`).querySelector('button.hidden-unhide'));
+      const toEnd = async (page) => {
+        for (let round = 2; round <= 5; round += 1) await loadMore(page);
+        assert.equal(shownIds(page).length, 50);
+      };
+
+      it('an unhide moves a title the view had not read onto the page it already read: it is read again, nothing skipped', async (t) => {
+        const app = await startApp(t);
+        const state = hiddenServer(53);
+        const page = await openApp(t, app, { hash: '#/requests/hidden', override: state.override });
+        await ready(page, 10);
+        await settledCalls(page);
+        unhide(page, 900_100);
+        await page.until(() => shownIds(page).length === 9, 'the entry gone');
+        await settledCalls(page);
+        await exhaust(page);
+        assert.equal(state.all.length, 52);
+        complete(page, state);
+        assert.ok(hiddenCalls(page).every((call) => /^GET \/hidden(\?page=\d+)?$|^DELETE /.test(call)));
+      });
+
+      it('an unhide accepted while the next page is being read skips nothing, whether the server read the page before or after it', async (t) => {
+        for (const early of [false, true]) {
+          const app = await startApp(t);
+          const state = hiddenServer(53);
+          const page = await openApp(t, app, { hash: '#/requests/hidden', override: state.override });
+          await ready(page, 10);
+          await toEnd(page);
+          await settledCalls(page);
+          // The page read is answered as the server had it when it was asked (early) or when it is let go.
+          const read = state.hold((method, url) => method === 'GET' && url.includes('page=2'), { early });
+          click(page, page.main().querySelector('.load-more'));
+          await page.until(() => read.reached, 'page 2 asked for');
+          unhide(page, 900_100);
+          await page.until(() => !state.all.some((entry) => entry.tmdbId === 900_100) && page.pending() === 1, 'the unhide accepted');
+          read.release();
+          await settledCalls(page);
+          await exhaust(page);
+          complete(page, state);
+        }
+      });
+
+      it('a page read while an unhide is out skips nothing, whether the server removed the title before or after the read', async (t) => {
+        for (const early of [false, true]) {
+          const app = await startApp(t);
+          const state = hiddenServer(53);
+          const page = await openApp(t, app, { hash: '#/requests/hidden', override: state.override });
+          await ready(page, 10);
+          await toEnd(page);
+          await settledCalls(page);
+          const gone = state.hold((method) => method === 'DELETE', { early });
+          unhide(page, 900_100);
+          await page.until(() => gone.reached, 'the DELETE sent');
+          click(page, page.main().querySelector('.load-more'));
+          await page.until(() => hiddenCalls(page).filter((call) => call.startsWith('GET')).length === 2 && page.pending() === 1, 'the page read');
+          gone.release();
+          await settledCalls(page);
+          await exhaust(page);
+          complete(page, state);
+        }
+      });
+
+      it('a title hidden elsewhere while the view pages moves the rest down: nothing is listed twice or skipped', async (t) => {
+        const app = await startApp(t);
+        const state = hiddenServer(53);
+        const page = await openApp(t, app, { hash: '#/requests/hidden', override: state.override });
+        await ready(page, 10);
+        await toEnd(page);
+        state.all.unshift({ mediaType: 'movie', tmdbId: 900_999, hiddenAt: '2026-10-30T13:00:00.000Z' });
+        await exhaust(page);
+        const ids = shownIds(page);
+        assert.equal(new Set(ids).size, ids.length, 'none twice');
+        assert.deepEqual(ids.filter((id) => id !== 900_999).sort(), state.all.map((entry) => entry.tmdbId).filter((id) => id !== 900_999).sort(), 'none skipped');
+      });
+    });
+
+    it('a read that began before a hide is still told over by it after a newer read gave the server\'s word', async () => {
+      const { createHiddenOverlay } = await import(pathToFileURL(path.join(DIST_APP, BUILT('js/hidden.js'))).href);
+      const overlay = createHiddenOverlay();
+      const card = { mediaType: 'movie', tmdbId: 5, title: 'T', year: null, overview: '', posterUrl: null, backdropUrl: null, rating: null, state: 'get_this', play: null };
+      const older = overlay.begin();
+      overlay.set('movie', 5, true);
+      // A title page read after the hide says it is hidden...
+      assert.equal(overlay.flagged({ ...card, hidden: true }, overlay.begin()).hidden, true);
+      // ... and a row read before it, answering only now, still leaves it out; a search page read then marks it.
+      assert.deepEqual(overlay.list({ page: 1, nextPage: null, results: [card] }, older).results, []);
+      assert.equal(overlay.flagged({ ...card, hidden: false }, older).hidden, true);
+    });
+
     describe('privacy', () => {
       it('keeps nothing: no storage written, nothing hidden in an address, a header or the page beyond the member\'s own screen', async (t) => {
         const app = await startApp(t);

@@ -54,6 +54,8 @@ export class Asked {
    */
   #hidden = new Map<string, { hidden: boolean; at: number }>();
   #tick = 0;
+  /** Bumped each time the overlay is forgotten, so a change sent before is not written for whoever is signed in after. */
+  #epoch = 0;
   #timer: ReturnType<typeof setTimeout> | undefined;
 
   public constructor(now: () => number, wall: () => number, expired: () => void = () => undefined) {
@@ -75,7 +77,16 @@ export class Asked {
     this.#ended = {};
     this.#hidden = new Map();
     this.#owner = undefined;
+    this.#epoch += 1;
     this.#schedule();
+  }
+
+  /**
+   * The overlay's number now: a new one after every forgetting (sign-out, another member, a refused token). A hide or
+   * unhide sent under one number and answered under another is nobody's now: it is neither written nor shown.
+   */
+  public epoch(): number {
+    return this.#epoch;
   }
 
   /** The member's accepted "Get this", if they are still the one signed in: a series also marks the seasons asked for. */
@@ -125,14 +136,16 @@ export class Asked {
   /**
    * Whether the member has the title hidden, given the answer's own `hidden` flag (undefined from a server without hiding)
    * or its absence from a list (nothing known). The member's own change on this TV wins over an answer kept from before
-   * it; with `mark` (taken when a read began), a change that was already accepted then is the answer's to correct, and ends.
+   * it; with `mark` (taken when a read began), a change that was already accepted then is the answer's to correct: the
+   * answer is the server's word, and is what answers kept from before it are corrected to. The change itself is kept,
+   * since those older answers (Home's row, the Discover page's cache) still carry the flag from before it.
    */
   public hiddenNow(mediaType: MediaType, tmdbId: number, server?: boolean, mark?: number): boolean {
     const key = `${mediaType}:${tmdbId}`;
     const change = this.#hidden.get(key);
     if (change === undefined) return server === true;
     if (mark !== undefined && change.at <= mark && server !== undefined) {
-      this.#hidden.delete(key);
+      change.hidden = server;
       return server;
     }
     return change.hidden;

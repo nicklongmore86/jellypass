@@ -609,12 +609,23 @@ export class TitlePage {
       message.textContent = '';
       const stamp = this.#watch.stamp(session);
       const load = open.load;
+      this.#asked.sync(session.userId);
+      const epoch = this.#asked.epoch();
       void setHidden(this.#scope.fetch, this.#origin, session.token, found.mediaType, found.tmdbId, next).then((answer) => {
         // Whatever the answer, it belongs to the session that sent it: after a sign-out or a new sign-in (even as the same
         // member, with a new token) it is ignored entirely, so it can't touch the new session's overlay or page.
         const now = this.#watch.holds(stamp);
         if (!now) {
           if (open.load === load) this.#stale(open, (current) => this.#load(open, current, false));
+          return;
+        }
+        // Nor after another call was refused while it was out (the overlay was forgotten): nothing is written or said,
+        // and the button is only offered again as it was.
+        if (this.#asked.epoch() !== epoch) {
+          if (this.#open !== open) return;
+          button.disabled = false;
+          button.removeAttribute('aria-busy');
+          label();
           return;
         }
         if (answer.ok) {

@@ -134,7 +134,12 @@ upgrades** (steps below); with them, existing household addresses such as
   remote-friendly **Not interested** / **Unhide** button; Home's Discover row,
   the Discover page, the service, studio and "see all" pages leave hidden
   titles out from what they hold (no call); Search's Discover row keeps hidden
-  titles that can be had, marked; My requests has the same **Hidden** view.
+  titles that can be had, marked; My requests has the same **Hidden** view,
+  offered only once an answer has shown the server has hiding (its address is
+  My requests until then, and `/hidden` is never asked of an older server).
+  On both, the Hidden view skips and repeats no title however unhides, hides
+  and Load more interleave, and a hide or unhide answered after the sign-in
+  ended (sign-out, another member, a refused call) changes and says nothing.
   Hiding, unhiding and the Hidden view's calls are pinned in
   `docs/app-api/fetch-budget.json` (`hiding`); `409` shows a fixed message.
 - `HOUSEHOLD_GATEWAY_ENABLED` turns the gateway on without `HOUSEHOLD_DOMAIN`.

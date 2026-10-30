@@ -1,4 +1,4 @@
-import { ApiError, createApi, createSignInApi, HIDING_API_VERSION, type Api, type ApiErrorKind, type SignInApi } from './api.js';
+import { ApiError, createApi, createSignInApi, HIDING_API_VERSION, SessionChangedError, type Api, type ApiErrorKind, type SignInApi } from './api.js';
 import {
   accountText,
   accountView,
@@ -59,10 +59,11 @@ import {
   type RowVariant,
   rowFocusShift,
 } from './render.js';
+import { HiddenPager } from './hidden.js';
 import { icon } from './icons.js';
 import { clearSignIn, deviceId, jellyfinToken } from './session.js';
 import { showSignIn } from './signin.js';
-import type { Card, DiscoverList, HiddenEntry, MediaType, Me, Network, Page, RequestEntry, Source, SourceKind, Sources } from './types.js';
+import type { Card, DiscoverList, HiddenEntry, HiddenList, MediaType, Me, Network, Page, RequestEntry, Source, SourceKind, Sources } from './types.js';
 
 /** One of Home's rows, fetched from a discover list; `eager` rows are asked for at once, the others as they near the screen. */
 interface HomeRow {
@@ -493,13 +494,16 @@ function supportsHiding(): boolean {
 /**
  * Hides or unhides one title: the call, once, and how it ended. A refused sign-in takes over the screen; every other
  * failure is returned for the caller to say in fixed words. Never rejects, and is never given the screen's abort
- * signal: a change the member asked for is sent whether or not they leave the screen.
+ * signal: a change the member asked for is sent whether or not they leave the screen. An answer that comes after the
+ * sign-in ended (signed out, another member, a refused call) is `stale`: the caller then does and says nothing.
  */
 async function changeHidden(mediaType: MediaType, id: number, hidden: boolean): Promise<HideOutcome> {
+  const session = api.session();
   try {
     await api.setHidden(mediaType, id, hidden);
-    return 'accepted';
+    return api.session() === session ? 'accepted' : 'stale';
   } catch (error) {
+    if (error instanceof SessionChangedError || api.session() !== session) return 'stale';
     const kind = kindOf(error);
     if (kind === 'unauthorized') {
       const mine = navigation;
@@ -517,12 +521,15 @@ function clearToast(): void {
 }
 function showToast(text: string, undo?: { label: string; run: () => Promise<void> }, failed = false): void {
   clearToast();
+  // Undo belongs to the sign-in it was offered in: pressed after that ended, it only goes away.
+  const session = api.session();
   const note = el(doc, 'p', { class: 'toast-text', text });
   const box = el(doc, 'div', { class: 'toast', attrs: { role: failed ? 'alert' : 'status' } }, [note]);
   if (undo) {
     const button = el(doc, 'button', { class: 'button button-small button-secondary', text: HIDE_TEXT.undo, attrs: { type: 'button', 'aria-label': undo.label } });
     button.addEventListener('click', () => {
       if (button.disabled) return;
+      if (api.session() !== session) return void (toast === box && clearToast());
       button.disabled = true;
       void undo.run().finally(() => { button.disabled = false; });
     });
@@ -597,7 +604,7 @@ function cardActionsFor(surface: 'discover' | 'search'): CardActions | undefined
     async hide(card, item) {
       const outcome = await changeHidden(card.mediaType, card.tmdbId, true);
       if (outcome !== 'accepted') {
-        if (outcome !== 'unauthorized') showToast(hideFailureText(outcome), undefined, true);
+        if (outcome !== 'unauthorized' && outcome !== 'stale') showToast(hideFailureText(outcome), undefined, true);
         return;
       }
       announce(HIDE_TEXT.hidden(card.title));
@@ -609,7 +616,7 @@ function cardActionsFor(surface: 'discover' | 'search'): CardActions | undefined
           label: HIDE_TEXT.undoLabel(card.title),
           run: async (): Promise<void> => {
             const undone = await changeHidden(card.mediaType, card.tmdbId, false);
-            if (undone !== 'accepted') return void (undone !== 'unauthorized' && showToast(hideFailureText(undone), undoMark, true));
+            if (undone !== 'accepted') return void (undone !== 'unauthorized' && undone !== 'stale' && showToast(hideFailureText(undone), undoMark, true));
             const back = cardItem(doc, { ...card, hidden: false }, actions);
             marked.replaceWith(back);
             back.querySelector<HTMLElement>('.card-more')?.focus({ preventScroll: true });
@@ -627,7 +634,7 @@ function cardActionsFor(surface: 'discover' | 'search'): CardActions | undefined
         run: async (): Promise<void> => {
           const undone = await changeHidden(card.mediaType, card.tmdbId, false);
           // A failed Undo says why and keeps Undo, so it can be tried again.
-          if (undone !== 'accepted') return void (undone !== 'unauthorized' && showToast(hideFailureText(undone), undo, true));
+          if (undone !== 'accepted') return void (undone !== 'unauthorized' && undone !== 'stale' && showToast(hideFailureText(undone), undo, true));
           const first = restoreCards(removals);
           clearToast();
           announce(HIDE_TEXT.unhidden(card.title));
@@ -638,6 +645,7 @@ function cardActionsFor(surface: 'discover' | 'search'): CardActions | undefined
     },
     async unhide(card, item) {
       const outcome = await changeHidden(card.mediaType, card.tmdbId, false);
+      if (outcome === 'stale') return;
       if (outcome !== 'accepted') {
         const button = item.querySelector<HTMLButtonElement>('.card-unhide');
         if (button) {
@@ -1636,7 +1644,9 @@ async function requestsScreen(signal: AbortSignal, current: () => boolean, again
  * My requests' Hidden view: the member's own hidden titles, newest first, each with Unhide. The list carries only IDs
  * (50 a page); the titles are named ten at a time (four calls at once), like My requests, and **Load more** names the next
  * ten, reading the list's next page only once the ones already read are all shown. Unhide drops the title from the view
- * at once. A server without hiding has no such view: the address is My requests.
+ * at once; as it moves every later title up a place, the page read next is the one the first title not yet listed is
+ * on, which may be one read before (see {@link HiddenPager}). A server without hiding has no such view: the address is
+ * My requests.
  */
 async function hiddenScreen(signal: AbortSignal, current: () => boolean): Promise<void> {
   setTitle(HIDE_TEXT.hiddenTitle);
@@ -1649,10 +1659,25 @@ async function hiddenScreen(signal: AbortSignal, current: () => boolean): Promis
     shownRoute = parse(location.hash);
     return requestsScreen(signal, current);
   }
-  const first = await api.hiddenList(1, signal);
+  const pager = new HiddenPager();
+  const entries = pager.entries;
+  /** Reads pages until one lists a title not yet listed, or the list ends (a page read again may add nothing). */
+  const readMore = async (): Promise<void> => {
+    while (pager.next() !== null) {
+      const read = pager.begin();
+      let page: HiddenList;
+      try {
+        page = await api.hiddenList(read.page, signal);
+      } catch (error) {
+        pager.dropped(read);
+        throw error;
+      }
+      if (!current()) return;
+      if (pager.answered(read, page.results, page.nextPage) > 0) return;
+    }
+  };
+  await readMore();
   if (!current()) return;
-  const entries: HiddenEntry[] = [...first.results];
-  let nextPage = first.nextPage;
   const views = requestViews(doc, 'hidden');
   const list = el(doc, 'ul', { class: 'request-list' });
   const empty = el(doc, 'p', { class: 'muted', text: HIDE_TEXT.empty, attrs: { hidden: '' } });
@@ -1660,8 +1685,8 @@ async function hiddenScreen(signal: AbortSignal, current: () => boolean): Promis
   const rows: Array<{ entry: HiddenEntry; item: HTMLElement }> = [];
   let shown = 0;
   const sync = (): void => {
-    empty.hidden = !(rows.length === 0 && entries.length === 0 && nextPage === null);
-    more.hidden = shown >= entries.length && nextPage === null;
+    empty.hidden = !(rows.length === 0 && entries.length === 0 && pager.next() === null);
+    more.hidden = shown >= entries.length && pager.next() === null;
     more.disabled = false;
     more.textContent = 'Load more';
   };
@@ -1669,8 +1694,10 @@ async function hiddenScreen(signal: AbortSignal, current: () => boolean): Promis
   async function onUnhide(entry: HiddenEntry, item: HTMLElement): Promise<void> {
     const button = item.querySelector<HTMLButtonElement>('button.hidden-unhide');
     const name = item.querySelector('.card-title')?.textContent ?? '';
+    const unhide = pager.unhiding();
     const outcome = await changeHidden(entry.mediaType, entry.tmdbId, false);
-    if (!current()) return;
+    unhide.done(outcome === 'accepted');
+    if (!current() || outcome === 'stale') return;
     if (outcome !== 'accepted') {
       if (outcome === 'unauthorized') return;
       if (button) {
@@ -1697,11 +1724,9 @@ async function hiddenScreen(signal: AbortSignal, current: () => boolean): Promis
   }
 
   async function showMore(): Promise<void> {
-    if (shown >= entries.length && nextPage !== null) {
-      const page = await api.hiddenList(nextPage, signal);
+    if (shown >= entries.length && pager.next() !== null) {
+      await readMore();
       if (!current()) return;
-      entries.push(...page.results);
-      nextPage = page.nextPage;
     }
     const batch = entries.slice(shown, shown + REQUESTS_PER_PAGE);
     shown += batch.length;

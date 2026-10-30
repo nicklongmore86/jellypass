@@ -1,4 +1,5 @@
 import { ABOUT_PATH, renderAbout } from './about.js';
+import { hidingKnown } from './api.js';
 import { Asked } from './asked.js';
 import { DiscoverData } from './discover-data.js';
 import { DiscoverEntry } from './discover-entry.js';
@@ -111,7 +112,9 @@ function start(): void {
   host.register(ABOUT_PATH, renderAbout);
   host.register(TITLE_PATH, (context) => title.render(context));
   host.register(REQUESTS_PATH, (context) => requests.render(context));
-  host.register(HIDDEN_PATH, (context) => hiddenPage.render(context));
+  // The Hidden view only once an answer has shown that the server has hiding (a card or title with its flag): before
+  // that (an older server, or nothing read yet) its address is My requests, and /hidden is never asked.
+  host.register(HIDDEN_PATH, (context) => (hidingKnown() ? hiddenPage.render(context) : requests.render(context)));
   host.register(DISCOVER_PATH, (context) => discover.render(context));
   host.register(SERVICE_PATH, (context) => sources.renderService(context));
   host.register(STUDIO_PATH, (context) => sources.renderStudio(context));

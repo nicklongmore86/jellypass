@@ -97,10 +97,13 @@ export const HIDE_TEXT = {
   hiddenOn: (day: string) => `Hidden on ${day}`,
 } as const;
 
-/** How a hide or unhide ended: accepted, or the kind of failure (each with fixed words, see {@link hideFailureText}). */
-export type HideOutcome = 'accepted' | ApiErrorKind;
+/**
+ * How a hide or unhide ended: accepted, the kind of failure (each with fixed words, see {@link hideFailureText}), or
+ * `stale`: answered after the sign-in it was made in had ended, so nothing is shown or said.
+ */
+export type HideOutcome = 'accepted' | 'stale' | ApiErrorKind;
 
-export function hideFailureText(outcome: Exclude<HideOutcome, 'accepted'>): string {
+export function hideFailureText(outcome: Exclude<HideOutcome, 'accepted' | 'stale'>): string {
   if (outcome === 'hidden_limit_reached') return HIDE_TEXT.limit;
   if (outcome === 'rate_limited') return HIDE_TEXT.rate_limited;
   if (outcome === 'offline') return HIDE_TEXT.offline;
@@ -931,6 +934,7 @@ function hideControl(doc: Document, title: Pick<Card, 'title'>, hiding: TitleHid
     message.className = 'get-message hide-message';
     message.replaceChildren();
     const outcome = await hiding.run(next);
+    if (outcome === 'stale') return;
     toggle.disabled = false;
     toggle.removeAttribute('aria-busy');
     if (outcome !== 'accepted') {

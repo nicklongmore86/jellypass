@@ -6509,6 +6509,39 @@ describe('TV add-on: hidden titles ("Not interested")', { timeout: 240_000 }, ()
       assert.equal(page.requests.filter((request) => request.init.method === 'POST').length, 1);
     });
 
+    it('a hide answered after another call was refused (401) writes nothing and says nothing: the rows keep what they hold', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      let release;
+      const held = new Promise((resolve) => { release = resolve; });
+      let refuse = false;
+      const page = await open(t, app, { override: async (pathname, init) => {
+        // The hide is held, then accepted without reaching the server, so only the TV's overlay could leave the title out.
+        if (pathname.startsWith(HIDDEN) && init.method === 'POST') {
+          await held;
+          return json({});
+        }
+        if (refuse && pathname === `${APP}/tv/${T_TV}`) return { status: 401, body: '{"error":"unauthorized"}' };
+        return undefined;
+      } });
+      assert.ok(rowTitles(page).includes('Synthetic Movie One'));
+      await toTitle(page, T_MOVIE);
+      const button = hideButton(page);
+      page.click(button);
+      assert.equal(button.textContent, 'Sending…');
+      // While it is out, another title's read is refused: the overlay is forgotten.
+      refuse = true;
+      page.route(`#/jellypass/title/tv/${T_TV}`);
+      await pause(200);
+      assert.equal(part(page.view(), '.jellypass-tv-title-error'), 'Sign in to continue');
+      refuse = false;
+      release();
+      await page.settled();
+      assert.equal(part(page.view(), '.jellypass-tv-title-error'), 'Sign in to continue', 'nothing said over it');
+      page.route('#/home');
+      await page.settled();
+      assert.ok(rowTitles(page).includes('Synthetic Movie One'), 'the late hide was not written');
+    });
+
     it('draws nothing of it for a server before apiVersion 3, and asks for nothing', async (t) => {
       const app = await startApp(t, webWorld(), tvOn());
       const seen = [];
@@ -6522,7 +6555,48 @@ describe('TV add-on: hidden titles ("Not interested")', { timeout: 240_000 }, ()
       assert.equal(page.document.querySelector('[data-jellypass-tv-views]'), null, 'no Requests | Hidden bar');
       page.route('#/jellypass/requests/hidden');
       await page.settled();
-      assert.deepEqual(seen.filter((call) => !call.startsWith('GET /jellypass/app/v1/hidden')), []);
+      // Its address shows My requests: no Hidden view, and /hidden is never asked.
+      assert.equal(Boolean(page.document.querySelector('[data-jellypass-tv-hidden]')), false);
+      assert.equal(page.document.querySelector('.jellypass-tv-requests-heading')?.textContent, 'My requests');
+      assert.equal(Boolean(page.document.querySelector('[data-jellypass-tv-views]')), false);
+      assert.deepEqual(seen, []);
+      assert.deepEqual(hiddenCalls(page), []);
+    });
+
+    it('a straight visit to the Hidden view\'s address before any answer showed hiding is My requests, with no call to /hidden', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const seen = [];
+      const page = await open(t, app, { startHash: '#/jellypass/requests/hidden', override: withoutHiding(app, seen) });
+      page.route('#/jellypass/requests/hidden');
+      await page.settled();
+      assert.equal(Boolean(page.document.querySelector('[data-jellypass-tv-hidden]')), false, 'no Hidden view');
+      assert.equal(page.document.querySelector('.jellypass-tv-requests-heading')?.textContent, 'My requests');
+      assert.deepEqual(seen, []);
+      assert.deepEqual(hiddenCalls(page), []);
+    });
+
+    it('on a server with hiding, the Hidden view waits for an answer that shows it (a flagged card or title); until then its address is My requests', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const seen = [];
+      const strip = withoutHiding(app, seen);
+      // Nothing read yet carries the flag; then a title page's answer does.
+      let flags = false;
+      const page = await open(t, app, { override: (pathname, init, target) => (flags ? undefined : strip(pathname, init, target)) });
+      page.route('#/jellypass/requests/hidden');
+      await page.settled();
+      assert.equal(Boolean(page.document.querySelector('[data-jellypass-tv-hidden]')), false);
+      assert.equal(page.document.querySelector('.jellypass-tv-requests-heading')?.textContent, 'My requests');
+      assert.equal(Boolean(page.document.querySelector('[data-jellypass-tv-views]')), false, 'no Hidden button yet');
+      assert.deepEqual(hiddenCalls(page), []);
+      flags = true;
+      await toTitle(page, T_MOVIE);
+      assert.ok(hideButton(page), 'the title showed the server has hiding');
+      page.route('#/home');
+      await page.settled();
+      page.route('#/jellypass/requests/hidden');
+      await page.settled();
+      assert.ok(page.document.querySelector('[data-jellypass-tv-hidden]'), 'the Hidden view now');
+      assert.deepEqual(hiddenCalls(page), ['GET /hidden']);
     });
   });
 
@@ -6584,6 +6658,27 @@ describe('TV add-on: hidden titles ("Not interested")', { timeout: 240_000 }, ()
       await page.settled();
       assert.equal(cards().filter((label) => label.startsWith('Synthetic Movie One')).length, 0, 'gone from every row');
       assert.equal(page.requests.length, calls, 'and nothing was read');
+    });
+
+    it('a title page read again after the hide (saying Unhide) leaves the Discover page\'s kept rows without it', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const page = await open(t, app, { scopeExtras: { IntersectionObserver: class { observe() {} unobserve() {} disconnect() {} } } });
+      page.route('#/jellypass/discover');
+      await page.settled();
+      const cards = () => [...page.document.querySelectorAll('[data-jellypass-tv-discover] .jellypass-tv-discover-row button.card')].map((card) => card.getAttribute('aria-label'));
+      assert.ok(cards().some((label) => label.startsWith('Synthetic Movie One')));
+      await toTitle(page, T_MOVIE);
+      page.click(hideButton(page));
+      await page.settled();
+      page.back();
+      await page.settled();
+      assert.equal(cards().filter((label) => label.startsWith('Synthetic Movie One')).length, 0);
+      // Its page again: read fresh, the server says hidden.
+      await toTitle(page, T_MOVIE);
+      assert.equal(hideButton(page).textContent, 'Unhide');
+      page.back();
+      await page.settled();
+      assert.equal(cards().filter((label) => label.startsWith('Synthetic Movie One')).length, 0, 'still gone from the rows kept from before the hide');
     });
   });
 
@@ -6761,6 +6856,149 @@ describe('TV add-on: hidden titles ("Not interested")', { timeout: 240_000 }, ()
       await page.settled();
       assert.equal(part(rows(page)[0], '.jellypass-tv-hidden-message'), "We couldn't change that just now. Try again in a moment.");
       assert.equal(named(page).length, 1, 'the entry stays');
+    });
+
+    describe('paging while titles are unhidden', () => {
+      const until = async (check, label) => {
+        for (let round = 0; round < 250; round += 1) {
+          if (check()) return;
+          await pause(20);
+        }
+        assert.fail(`timed out waiting for ${label}`);
+      };
+      /**
+       * The server's list as GET /hidden pages it: newest first, 50 a page, read when the call is answered. `hold` holds
+       * the next call that `matches` until released; a held DELETE may change the list at once or when released.
+       */
+      const hiddenServer = (count) => {
+        const state = { all: entries(900_100, count), holds: [], out: 0 };
+        state.pageOf = (number) => ({ page: number, nextPage: state.all.length > number * 50 ? number + 1 : null, results: state.all.slice((number - 1) * 50, number * 50) });
+        state.hold = (matches, { early = false } = {}) => {
+          let release;
+          const released = new Promise((resolve) => { release = resolve; });
+          const hold = { matches, early, released, release, reached: false };
+          state.holds.push(hold);
+          return hold;
+        };
+        state.override = async (pathname, init, target) => {
+          const method = init.method ?? 'GET';
+          if (pathname.startsWith(HIDDEN)) {
+            state.out += 1;
+            try {
+              const hold = state.holds.find((entry) => !entry.reached && entry.matches(method, `${pathname}${target.search}`));
+              if (hold) hold.reached = true;
+              if (method === 'DELETE') {
+                const id = Number(pathname.split('/').pop());
+                const remove = () => { state.all = state.all.filter((entry) => entry.tmdbId !== id); };
+                if (hold?.early) remove();
+                if (hold) await hold.released;
+                if (!hold?.early) remove();
+                return json({});
+              }
+              const number = Number(target.searchParams.get('page') ?? 1);
+              if (hold?.early) {
+                const answer = state.pageOf(number);
+                await hold.released;
+                return json(answer);
+              }
+              if (hold) await hold.released;
+              return json(state.pageOf(number));
+            } finally {
+              state.out -= 1;
+            }
+          }
+          const title = /^\/jellypass\/app\/v1\/movie\/(9\d{5})$/.exec(pathname);
+          if (title) return json({ mediaType: 'movie', tmdbId: Number(title[1]), title: `T${title[1]}`, year: 2026, overview: '', posterUrl: null, backdropUrl: null, rating: null, state: 'get_this', play: null, hidden: true, genres: [], runtime: null, seasons: [] });
+          return undefined;
+        };
+        return state;
+      };
+      const shownIds = (page) => named(page).map((name) => Number(name.slice(1)));
+      const more = (page) => page.document.querySelector('.jellypass-tv-requests-more');
+      const loadMore = async (page) => {
+        page.click(more(page));
+        await page.settled();
+      };
+      const exhaust = async (page) => {
+        for (let round = 0; round < 20 && !more(page).hidden; round += 1) await loadMore(page);
+        assert.equal(more(page).hidden, true, 'the list ends');
+      };
+      /** Every title still hidden on the server is shown, each once. */
+      const complete = (page, state) => {
+        const ids = shownIds(page);
+        assert.equal(new Set(ids).size, ids.length, 'none twice');
+        assert.deepEqual([...ids].sort(), state.all.map((entry) => entry.tmdbId).sort(), 'none skipped');
+      };
+      const unhide = (page, id) => page.click(rows(page).find((row) => row.querySelector('.jellypass-tv-request-name').textContent === `T${id}`).querySelector('.jellypass-tv-hidden-unhide'));
+      const toEnd = async (page) => {
+        for (let round = 2; round <= 5; round += 1) await loadMore(page);
+        assert.equal(rows(page).length, 50);
+      };
+      const opened = async (t, state) => {
+        const app = await startApp(t, webWorld(), tvOn());
+        const page = await open(t, app, { override: state.override });
+        await toHidden(page);
+        assert.equal(rows(page).length, 10);
+        return page;
+      };
+
+      it('an unhide moves a title the view had not read onto the page it already read: it is read again, nothing skipped', async (t) => {
+        const state = hiddenServer(53);
+        const page = await opened(t, state);
+        unhide(page, 900_100);
+        await page.settled();
+        assert.equal(rows(page).length, 9);
+        await exhaust(page);
+        assert.equal(state.all.length, 52);
+        complete(page, state);
+      });
+
+      it('an unhide accepted while the next page is being read skips nothing, whether the server read the page before or after it', async (t) => {
+        for (const early of [false, true]) {
+          const state = hiddenServer(53);
+          const page = await opened(t, state);
+          await toEnd(page);
+          const read = state.hold((method, url) => method === 'GET' && url.includes('page=2'), { early });
+          page.click(more(page));
+          await until(() => read.reached, 'page 2 asked for');
+          unhide(page, 900_100);
+          await until(() => !state.all.some((entry) => entry.tmdbId === 900_100) && state.out === 1, 'the unhide accepted');
+          await pause(50);
+          read.release();
+          await page.settled();
+          await exhaust(page);
+          complete(page, state);
+        }
+      });
+
+      it('a page read while an unhide is out skips nothing, whether the server removed the title before or after the read', async (t) => {
+        for (const early of [false, true]) {
+          const state = hiddenServer(53);
+          const page = await opened(t, state);
+          await toEnd(page);
+          const gone = state.hold((method) => method === 'DELETE', { early });
+          unhide(page, 900_100);
+          await until(() => gone.reached, 'the DELETE sent');
+          page.click(more(page));
+          await until(() => hiddenCalls(page).filter((call) => call.startsWith('GET')).length >= 2 && state.out === 1, 'the page read');
+          await pause(50);
+          gone.release();
+          await page.settled();
+          await exhaust(page);
+          complete(page, state);
+        }
+      });
+
+      it('a title hidden elsewhere while the view pages moves the rest down: nothing is listed twice or skipped', async (t) => {
+        const state = hiddenServer(53);
+        const page = await opened(t, state);
+        await toEnd(page);
+        state.all.unshift({ mediaType: 'movie', tmdbId: 900_999, hiddenAt: '2026-10-30T13:00:00.000Z' });
+        await exhaust(page);
+        const ids = shownIds(page);
+        assert.equal(new Set(ids).size, ids.length, 'none twice');
+        assert.deepEqual(ids.filter((id) => id !== 900_999).sort(), state.all.map((entry) => entry.tmdbId).filter((id) => id !== 900_999).sort(), 'none skipped');
+      });
     });
 
     it('is emptied and asks nothing more when the member signs out or another signs in', async (t) => {

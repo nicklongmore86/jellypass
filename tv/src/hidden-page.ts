@@ -1,6 +1,6 @@
 import { hiddenList, setHidden, title as readTitle, type Failure, type HiddenEntry } from './api.js';
 import type { Asked } from './asked.js';
-import { HIDDEN_HASH, HIDDEN_TEXT, hiddenFailureText, hiddenOnText } from './hidden-model.js';
+import { HIDDEN_HASH, HIDDEN_TEXT, HiddenPager, hiddenFailureText, hiddenOnText } from './hidden-model.js';
 import type { Session } from './jellyfin-web.js';
 import { FOCUS_ATTR, type PageContext, type PageView } from './page-host.js';
 import { REQUESTS_HASH, REQUESTS_TEXT } from './requests-model.js';
@@ -91,8 +91,8 @@ interface Open {
   /** Bumped by every read of the first page and by leaving, so an answer that comes late for a page since redrawn or left is dropped. */
   load: number;
   first: boolean;
-  entries: HiddenEntry[];
-  nextPage: number | null;
+  /** Which page is read next, and the titles listed (see HiddenPager). */
+  pager: HiddenPager;
   shown: number;
   rows: Row[];
   /** The parts Load more and the empty note change in place. */
@@ -162,7 +162,7 @@ export class HiddenPage {
     const body = this.#el('div', 'jellypass-tv-requests-body');
     view.appendChild(body);
     context.container.appendChild(view);
-    const open: Open = { userId: session.userId, context, view, body, load: 0, first: true, entries: [], nextPage: null, shown: 0, rows: [], list: undefined, more: undefined, note: undefined, announce: undefined };
+    const open: Open = { userId: session.userId, context, view, body, load: 0, first: true, pager: new HiddenPager(), shown: 0, rows: [], list: undefined, more: undefined, note: undefined, announce: undefined };
     this.#open = open;
     this.#load(open, session);
     return { title: REQUESTS_TEXT.title, cleanup };
@@ -243,7 +243,9 @@ export class HiddenPage {
     open.load = load;
     this.#fill(open, [this.#heading(), this.#views(), this.#el('p', 'jellypass-tv-requests-loading', REQUESTS_TEXT.loadingList)]);
     const stamp = this.#watch.stamp(session);
-    void hiddenList(this.#scope.fetch, this.#origin, session.token, 1).then((answer) => {
+    const pager = new HiddenPager();
+    open.pager = pager;
+    this.#read(open, session, (answer) => {
       if (open.load !== load || this.#open !== open) return;
       const now = this.#watch.holds(stamp);
       if (!now || now.userId !== open.userId) {
@@ -256,9 +258,26 @@ export class HiddenPage {
         return;
       }
       this.#asked.sync(now.userId);
-      open.entries = answer.entries;
-      open.nextPage = answer.nextPage;
       this.#draw(open);
+    });
+  }
+
+  /**
+   * Reads pages of the list (one call each) until one lists a title not yet listed or the list ends (a page read again
+   * after an unhide may add nothing), then calls `done` with the last answer.
+   */
+  #read(open: Open, session: Session, done: (answer: { ok: true } | Failure) => void): void {
+    const pager = open.pager;
+    const stamp = this.#watch.stamp(session);
+    const read = pager.begin();
+    void hiddenList(this.#scope.fetch, this.#origin, session.token, read.page).then((answer) => {
+      if (!answer.ok || this.#open !== open || open.pager !== pager || !this.#watch.holds(stamp)) {
+        pager.dropped(read);
+        done(answer.ok ? { ok: true } : answer);
+        return;
+      }
+      if (pager.answered(read, answer.entries, answer.nextPage) === 0 && pager.next() !== null) this.#read(open, session, done);
+      else done(answer);
     }).catch(() => undefined);
   }
 
@@ -317,11 +336,11 @@ export class HiddenPage {
     const more = open.more;
     const note = open.note;
     if (more) {
-      more.hidden = open.shown >= open.entries.length && open.nextPage === null;
+      more.hidden = open.shown >= open.pager.entries.length && open.pager.next() === null;
       more.disabled = false;
       more.textContent = REQUESTS_TEXT.loadMore;
     }
-    if (note) note.hidden = open.rows.length > 0 || open.nextPage !== null || open.entries.length > 0;
+    if (note) note.hidden = open.rows.length > 0 || open.pager.next() !== null || open.pager.entries.length > 0;
   }
 
   /**
@@ -329,12 +348,12 @@ export class HiddenPage {
    * then are its first ten named. `focus` moves focus to the first new entry.
    */
   #showMore(open: Open, focus: boolean): void {
-    if (open.shown >= open.entries.length && open.nextPage !== null) {
+    if (open.shown >= open.pager.entries.length && open.pager.next() !== null) {
       this.#nextPage(open, focus);
       return;
     }
     const list = open.list as HTMLElement;
-    const batch = open.entries.slice(open.shown, open.shown + HIDDEN_PER_PAGE);
+    const batch = open.pager.entries.slice(open.shown, open.shown + HIDDEN_PER_PAGE);
     open.shown += batch.length;
     const built = batch.map((entry) => this.#row(open, entry));
     for (const row of built) {
@@ -356,14 +375,13 @@ export class HiddenPage {
       this.#end(open);
       return;
     }
-    const page = open.nextPage as number;
     const load = open.load;
     const stamp = this.#watch.stamp(session);
-    void hiddenList(this.#scope.fetch, this.#origin, session.token, page).then((answer) => {
-      if (this.#open !== open) return;
+    this.#read(open, session, (answer) => {
+      if (this.#open !== open || open.load !== load) return;
       const now = this.#watch.holds(stamp);
       if (!now || now.userId !== open.userId) {
-        if (open.load === load) this.#stale(open);
+        this.#stale(open);
         return;
       }
       if (!answer.ok) {
@@ -382,10 +400,8 @@ export class HiddenPage {
         if (open.announce) open.announce.textContent = ERROR_TEXT[kindOf(answer)].body;
         return;
       }
-      open.entries.push.apply(open.entries, answer.entries);
-      open.nextPage = answer.nextPage;
       this.#showMore(open, focus);
-    }).catch(() => undefined);
+    });
   }
 
   /** One entry: the title to open, and its Unhide. */
@@ -441,10 +457,23 @@ export class HiddenPage {
     const { mediaType, tmdbId } = row.entry;
     const stamp = this.#watch.stamp(session);
     const load = open.load;
+    this.#asked.sync(session.userId);
+    const epoch = this.#asked.epoch();
+    const unhide = open.pager.unhiding();
     void setHidden(this.#scope.fetch, this.#origin, session.token, mediaType, tmdbId, false).then((answer) => {
       const now = this.#watch.holds(stamp);
+      unhide.done(answer.ok);
       if (!now) {
         if (open.load === load) this.#stale(open);
+        return;
+      }
+      // After another call was refused while this was out (the overlay was forgotten), nothing is written or said: the
+      // button is only offered again as it was.
+      if (this.#asked.epoch() !== epoch) {
+        if (this.#open !== open || open.load !== load) return;
+        row.unhide.disabled = false;
+        row.unhide.removeAttribute('aria-busy');
+        row.unhide.textContent = HIDDEN_TEXT.unhide;
         return;
       }
       if (answer.ok) {
@@ -479,8 +508,8 @@ export class HiddenPage {
     const at = open.rows.indexOf(row);
     const neighbour = open.rows[at + 1] || open.rows[at - 1];
     if (at >= 0) open.rows.splice(at, 1);
-    const index = open.entries.indexOf(row.entry);
-    if (index >= 0) open.entries.splice(index, 1);
+    const index = open.pager.entries.indexOf(row.entry);
+    if (index >= 0) open.pager.entries.splice(index, 1);
     if (open.shown > 0) open.shown -= 1;
     if (row.item.parentNode) row.item.parentNode.removeChild(row.item);
     if (open.announce) open.announce.textContent = HIDDEN_TEXT.unhidden;

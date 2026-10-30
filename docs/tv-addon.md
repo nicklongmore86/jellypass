@@ -451,7 +451,9 @@ of this is drawn and nothing is asked**.
   **Discover page's** rows and hero, the **service and studio pages** and the "see all" pages (`discover.ts`,
   `discover-source.ts`) draw from what they hold without it. A list read after the change is the server's own word and leaves
   the title out by itself; a title read again on its page settles the member's earlier change with the server's flag
-  (`hiddenNow(..., mark)`), so a title unhidden on a phone is not kept hidden here. Rows may therefore be shorter (nothing is
+  (`hiddenNow(..., mark)`), so a title unhidden on a phone is not kept hidden here, and the server's flag becomes what answers
+  kept from before are corrected to (the entry is kept, so a title page that says Unhide never brings the title back to the
+  Discover page's cached rows). Rows may therefore be shorter (nothing is
   fetched to fill them): the Discover page keeps its 14-card rows from the cards it holds.
 - **Search** keeps a title the member hid, so it can be found again: the **Discover** row of the Search page still draws hidden
   titles that can be had (Available to get), each with "Hidden from Discover" under its year (and in its accessible name), and
@@ -459,15 +461,21 @@ of this is drawn and nothing is asked**.
   title), and is reached from the Hidden view.
 - **The Hidden view** (`tv/src/hidden-page.ts`): **My requests** has two buttons at the top, **Requests** and **Hidden** (a
   separate screen at `#/jellypass/requests/hidden`, not a filter), drawn only once an answer has shown that the server has hiding.
+  Until such an answer (a flagged card or title) has been read in this page's life, the view's address shows My requests and
+  `/hidden` is never called: on an older server always, and on a new one only until the first flagged answer (Home's row usually
+  gives it at once; a straight visit to the address before it is My requests, without the bar).
   The view lists the member's own hides, newest first, with the day each was hidden (`Hidden on …`, the day only) and **Unhide**
   on each; choosing a title opens its page and Back returns with it focused (the page host's focus memory). The list is
   `GET /hidden` (IDs only, 50 a page); the titles are named like My requests names them, ten at a time and four calls at once,
   sharing My requests' names (kept ten minutes for the sign-in). **Load more** names the next ten, and reads the list's next page
-  (one call) only once the ones already read are all shown. Unhide is one `DELETE`, disabled while it is out; an accepted one
+  (one call) only once the ones already read are all shown. Each accepted unhide moves every later title up a place, so the page
+  read is the one the first title not yet listed is on (`HiddenPager` in `tv/src/hidden-model.ts`, the web app's), even one read
+  before, and a page answered while an unhide was out is read from far enough back: nothing skipped or listed twice. Unhide is one `DELETE`, disabled while it is out; an accepted one
   takes the entry off at once, writes the overlay (so rows and pages that hold the title have it back from what they hold),
   says "Unhidden." and moves focus to the next entry's Unhide (else the one before, Load more, or the bar); a failure says its
   fixed words under the entry. An empty list says "Nothing hidden. Titles you mark Not interested are listed here, so you can bring
-  them back." Late answers are checked against the session that sent them, as on every page.
+  them back." Late answers are checked against the session that sent them, as on every page; a hide or unhide answered after
+  another call was refused (the overlay forgotten, `Asked.epoch`) writes nothing and says nothing either.
 - **Rules kept.** No key is handled and no document listener is added; every control is a real button Jellyfin web's focus
   manager reaches by place; the shared session check (`SessionWatch`) governs every call, so a sign-out leaves old controls inert
   and a late answer touches nothing of the new session; a page's `cleanup` drops what is in flight; the stylesheet and the script stay within
