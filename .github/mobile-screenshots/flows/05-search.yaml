@@ -1,11 +1,17 @@
 # Search for a film the demo household has: Big Buck Bunny shows as In library.
 appId: com.rtc-services.jellypass
 ---
-- tapOn: "Search"
+- tapOn:
+    id: "tab-search"
+- extendedWaitUntil:
+    visible:
+      id: "search-field"
+    timeout: 30000
 - tapOn:
     id: "search-field"
 - inputText: "Big Buck Bunny"
-- hideKeyboard
+# Search sends it, and the field gives up the keyboard.
+- pressKey: Enter
 - extendedWaitUntil:
     visible: "Big Buck Bunny.*Ready to watch"
     timeout: 30000

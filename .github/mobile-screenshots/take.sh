@@ -45,6 +45,9 @@ xcrun simctl status_bar "$udid" override --time 9:41 --dataNetwork wifi --wifiMo
 xcrun simctl install "$udid" "$app"
 
 mkdir -p "$out"
+if [[ "$name" == iPad* ]]; then
+  maestro --device "$udid" test "${here}/flows/00-ipad-full-screen.yaml"
+fi
 for shot in "${shots[@]}"; do
   flow="${shot%%:*}"
   file="${out}/${shot#*:}.png"

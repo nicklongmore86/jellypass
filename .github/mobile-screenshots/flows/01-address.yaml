@@ -14,5 +14,6 @@ appId: com.rtc-services.jellypass
     text: "Household address"
     index: 1
 - inputText: "https://jelly-demo.jellypass.app"
-- hideKeyboard
+# A tap outside the field puts the keyboard away (Maestro's hideKeyboard is unreliable on the iPhone).
+- tapOn: "Connect to your household"
 - assertVisible: "https://jelly-demo.jellypass.app"

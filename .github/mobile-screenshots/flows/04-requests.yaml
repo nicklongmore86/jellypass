@@ -2,7 +2,8 @@
 appId: com.rtc-services.jellypass
 ---
 - tapOn: "Back"
-- tapOn: "My requests"
+- tapOn:
+    id: "tab-requests"
 - extendedWaitUntil:
     visible: "Requested.*"
     timeout: 30000

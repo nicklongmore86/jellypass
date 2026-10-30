@@ -3,7 +3,8 @@ appId: com.rtc-services.jellypass
 ---
 - tapOn: "Big Buck Bunny.*Ready to watch"
 - extendedWaitUntil:
-    visible: "Back"
+    visible:
+      id: "detail-facts"
     timeout: 30000
 - waitForAnimationToEnd:
     timeout: 10000
