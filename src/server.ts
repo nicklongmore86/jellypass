@@ -627,12 +627,13 @@ function refuseMethod(socket: Duplex): void {
   socket.end(`HTTP/1.1 404 Not Found\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`, () => socket.destroy());
 }
 
-const HOST_VALUE = /^(?:[A-Za-z0-9._-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$/;
+const HOST_VALUE = /^(?:[A-Za-z0-9._-]+|\[[0-9A-Fa-f:.]+\])(?::(\d{1,5}))?$/;
 const INVALID_HOST = JSON.stringify({ error: 'invalid_host' });
 
 /**
  * Whether the request names exactly one host: one Host header (none only from an HTTP/1.0 client), a plain host[:port]
- * with no userinfo, whitespace or other characters, and for an absolute-form target the same authority as the Host.
+ * with no userinfo, whitespace or other characters and a port, if any, from 1 to 65535, and for an absolute-form target
+ * the same authority as the Host.
  * Node keeps only the first of several Host headers in `request.headers.host` while a proxy in front may route on
  * another, so both listeners refuse anything else with a fixed 400 before the target is parsed or anything relayed.
  */
@@ -643,7 +644,12 @@ function singleHost(request: IncomingMessage): boolean {
   }
   if (hosts.length > 1 || (hosts.length === 0 && request.httpVersion !== '1.0')) return false;
   const [host] = hosts;
-  if (host !== undefined && !HOST_VALUE.test(host)) return false;
+  if (host !== undefined) {
+    const value = HOST_VALUE.exec(host);
+    if (!value) return false;
+    const port = value[1] === undefined ? undefined : Number(value[1]);
+    if (port !== undefined && (port < 1 || port > 65_535)) return false;
+  }
   const target = request.url ?? '';
   if (target.startsWith('/') || target === '*') return true;
   const authority = /^[A-Za-z][A-Za-z0-9+.-]*:\/\/([^/?#]*)/.exec(target)?.[1];
