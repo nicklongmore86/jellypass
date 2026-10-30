@@ -35,7 +35,7 @@ describe('Samsung app: cross-origin rules on a household host', { timeout: 30_00
     const app = await startApp(t, webWorld(), tvOn());
     const before = app.jellyfin.requests.length;
     for (const origin of APP_ORIGINS) {
-      for (const [method, asked] of [['POST', 'authorization,content-type'], ['GET', 'Authorization'], ['GET', undefined], ['POST', ' Content-Type , AUTHORIZATION ']]) {
+      for (const [method, asked] of [['POST', 'authorization,content-type'], ['GET', 'Authorization'], ['GET', undefined], ['POST', ' Content-Type , AUTHORIZATION '], ['DELETE', 'authorization']]) {
         const answer = await preflight(app, '/jellypass/app/v1/movie/550/get', {
           Origin: origin,
           'Access-Control-Request-Method': method,
@@ -44,7 +44,7 @@ describe('Samsung app: cross-origin rules on a household host', { timeout: 30_00
         assert.equal(answer.status, 204, `${origin} ${method} ${asked}`);
         assert.equal(answer.text, '');
         assert.equal(answer.headers['access-control-allow-origin'], origin);
-        assert.equal(answer.headers['access-control-allow-methods'], 'GET, POST');
+        assert.equal(answer.headers['access-control-allow-methods'], 'GET, POST, DELETE');
         assert.equal(answer.headers['access-control-allow-headers'], 'Authorization, Content-Type');
         assert.equal(answer.headers['access-control-max-age'], '600');
         assert.equal(answer.headers['access-control-allow-credentials'], undefined, 'credentials are never allowed');
@@ -93,7 +93,7 @@ describe('Samsung app: cross-origin rules on a household host', { timeout: 30_00
       // Whether an answer allows the app depends on Origin, so every one says so, whatever Origin it was asked with.
       assert.equal(read.headers.vary, 'Origin', origin);
     }
-    for (const [method, asked] of [['DELETE', undefined], ['PUT', 'authorization'], ['PATCH', undefined], ['post', undefined], ['GET', 'authorization, x-emby-token'], ['GET', 'cookie'], ['POST', 'content-type, x-requested-with']]) {
+    for (const [method, asked] of [['PUT', 'authorization'], ['PATCH', undefined], ['post', undefined], ['delete', undefined], ['GET', 'authorization, x-emby-token'], ['GET', 'cookie'], ['POST', 'content-type, x-requested-with']]) {
       const answer = await preflight(app, '/jellypass/app/v1/me', {
         Origin: 'null',
         'Access-Control-Request-Method': method,

@@ -32,5 +32,6 @@
       "episodeCount": 10,
       "state": "get_this"
     }
-  ]
+  ],
+  "hidden": true
 }

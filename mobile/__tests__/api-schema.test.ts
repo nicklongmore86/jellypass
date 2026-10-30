@@ -115,6 +115,7 @@ describe('the client against docs/app-api/v1.openapi.json', () => {
       [429, 'too_many_requests', 'too_many_requests', false],
       [502, 'unavailable', 'unavailable', false],
     ];
+    if (op.errors?.includes(409)) errors.push([409, 'hidden_limit_reached', 'hidden_limit_reached', false]);
     it.each(errors)('maps the documented %i {"error":"%s"} to %s, with one call', async (status, code, kind, householdNotFound) => {
       expect(validate({ error: code }, responseSchema(key, status), DOC)).toEqual([]);
       const { api, calls } = clientWith(() => answer(status, { error: code }));
@@ -129,7 +130,7 @@ describe('the client against docs/app-api/v1.openapi.json', () => {
     });
 
     it('declares exactly the error statuses the client maps', () => {
-      expect(Object.keys(operation(key).responses).sort()).toEqual([String(op.status), '400', '401', '404', '429', '502'].sort());
+      expect(Object.keys(operation(key).responses).sort()).toEqual([String(op.status), '400', '401', '404', '429', '502', ...(op.errors ?? []).map(String)].sort());
     });
   });
 });

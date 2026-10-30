@@ -142,6 +142,12 @@ export function makeServers(
             ...options.householdApp,
             householdName: (householdId) => service.getHouseholdName(householdId),
             householdTotal: () => service.getHouseholdTotal(),
+            hidden: {
+              keys: (householdId, userId) => service.hiddenTitleKeys(householdId, userId),
+              list: (householdId, userId) => service.listHiddenTitles(householdId, userId),
+              hide: (input) => service.hideTitle(input),
+              unhide: (input) => service.unhideTitle(input),
+            },
             record: (endpoint, outcome) => service.recordAppRequest(endpoint, outcome),
             ...(options.householdGateway.logLevel ? { logLevel: options.householdGateway.logLevel } : {}),
           }),

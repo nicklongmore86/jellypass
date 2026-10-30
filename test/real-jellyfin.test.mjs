@@ -181,7 +181,7 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     const adminHost = await getWithHeaders(gateway.address().port, '/jellypass/app/', { Host: 'jellypass.example.test' });
     assert.notEqual(adminHost.status, 200);
     const me = await getWithHeaders(gateway.address().port, '/jellypass/app/v1/me', { ...host, Authorization: `MediaBrowser Token="${bob.AccessToken}"` });
-    assert.deepEqual(me.json(), { name: 'Bob', household: 'App House', apiVersion: 2 });
+    assert.deepEqual(me.json(), { name: 'Bob', household: 'App House', apiVersion: 3 });
 
     const movie = async () => {
       const answer = await getWithHeaders(gateway.address().port, `/jellypass/app/v1/movie/${OWN_MOVIE}`, {
@@ -199,6 +199,8 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
       state: 'in_library',
       play: { itemId, url: `https://jelly-apphouse.example.test/web/#/details?id=${itemId}` },
     });
+    // Nobody hid it: a title page says so (apiVersion 3).
+    assert.equal((await movie()).hidden, false);
     // A tag Bob is blocked from hides it, as JellyPass grants do.
     await setBob({ BlockedTags: ['jp-app-hidden'] });
     assert.deepEqual([(await movie()).state, (await movie()).play], ['get_this', null]);
@@ -281,7 +283,7 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
 
     // The app then calls /me with that token, and nothing else, and is the household's member.
     const me = await getWithHeaders(port, '/jellypass/app/v1/me', { Host: host, Authorization: `MediaBrowser Token="${jellyfinToken(storage, origin)}"` });
-    assert.deepEqual(me.json(), { name: 'Bob', household: 'Sign-in House', apiVersion: 2 });
+    assert.deepEqual(me.json(), { name: 'Bob', household: 'Sign-in House', apiVersion: 3 });
 
     // Another household's user, and the administrator, cannot sign in on this host; Jellyfin is never asked to.
     for (const name of ['Alice', 'admin']) {
@@ -345,7 +347,7 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     const result = await api.signIn('hilda', 'hilda-pass');
     assert.equal(same(result.userId), same(hilda.Id));
     const me = await getWithHeaders(port, '/jellypass/app/v1/me', { Host: host, Authorization: `MediaBrowser Token="${result.token}"` });
-    assert.deepEqual(me.json(), { name: 'Hilda', household: 'Hidden House', apiVersion: 2 });
+    assert.deepEqual(me.json(), { name: 'Hilda', household: 'Hidden House', apiVersion: 3 });
     await api.signOut(result.token);
     assert.equal((await getWithHeaders(port, '/jellypass/app/v1/me', { Host: host, Authorization: `MediaBrowser Token="${result.token}"` })).status, 401);
 

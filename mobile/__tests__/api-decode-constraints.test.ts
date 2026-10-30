@@ -4,7 +4,19 @@
 // outside the limit. Decoding must accept exactly what the schema validator accepts, except where the contract says a
 // client is lenient (LENIENT below). A keyword the walker does not know fails the test, and so does a constrained
 // field no fixture reaches, so a limit added to the schema without the decoder (or this walker) knowing it fails here.
-import { decodeAccepted, decodeMe, decodeMovie, decodePage, DecodeError, decodeRequests, decodeSeason, decodeSeries, decodeSources } from '../src/api/decode';
+import {
+  decodeAccepted,
+  decodeHidden,
+  decodeHiddenPage,
+  decodeMe,
+  decodeMovie,
+  decodePage,
+  DecodeError,
+  decodeRequests,
+  decodeSeason,
+  decodeSeries,
+  decodeSources,
+} from '../src/api/decode';
 import { DOC, OPERATIONS, ORIGIN, fixture, type Json } from './support/app-api';
 import { ANNOTATIONS, resolve, validate } from './support/json-schema';
 
@@ -33,6 +45,9 @@ const DECODERS: Record<string, (value: unknown) => unknown> = {
   season: decodeSeason,
   requests: decodeRequests,
   accepted: decodeAccepted,
+  hidden: decodeHidden,
+  unhidden: decodeHidden,
+  'hidden-page': decodeHiddenPage,
 };
 
 /**
@@ -50,6 +65,8 @@ const LENIENT: Record<string, (decoded: unknown, path: Path) => void> = {
   // Request fields added in apiVersion 2: a server before it sends neither (and has no cancel).
   'Request required cancellable': (decoded, path) => expect(at(decoded, path)).toBe(false),
   'Request required requestedOn': (decoded, path) => expect(at(decoded, path)).toBeNull(),
+  // `hidden` on cards and titles, added in apiVersion 3: a server before it sends none (and hides nothing).
+  ...Object.fromEntries(['Card', 'Movie', 'Series'].map((where) => [`${where} required hidden`, (decoded: unknown, path: Path) => expect(at(decoded, path)).toBe(false)])),
   // Play.url: "a client ignores anything else"; the URL is built from itemId, so a bad itemId is ignored the same way.
   'Play.itemId pattern': (decoded, path) => expect(at(decoded, path.slice(0, -1))).toBeNull(),
   'Play.url pattern': (decoded, path) => expect(at(decoded, path.slice(0, -1))).toBeNull(),

@@ -30,6 +30,7 @@ const cards: Card[] = Array.from({ length: COUNT }, (_, at) => ({
   rating: null,
   state: 'get_this',
   play: null,
+  hidden: false,
 }));
 
 type Node = NonNullable<ReturnType<typeof screen.queryAllByTestId>[number]>;

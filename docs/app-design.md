@@ -339,7 +339,8 @@ DTOs (every key always present; missing values `null`, or `""` for text):
 
 - `Card`: `mediaType`, `tmdbId`, `title`, `year`, `overview`, `posterUrl`, `backdropUrl`, `rating` (TMDB vote average,
   `null` when 0), `state`, `play` (`{itemId, url}` only for `in_library`, the URL
-  `https://<household host>/web/#/details?id=<itemId>`). Images are `https://image.tmdb.org/t/p/{w342,w780,w1280}` plus a
+  `https://<household host>/web/#/details?id=<itemId>`), `hidden` (since 4.0.0, `apiVersion` 3: the caller hid the
+  title; see "Hidden titles"; always `false` in discovery lists, which leave hidden titles out). Images are `https://image.tmdb.org/t/p/{w342,w780,w1280}` plus a
   path matching `^/[A-Za-z0-9_-]{1,100}\.(jpg|jpeg|png|webp)$`.
 - `Page`: `page`, `nextPage` (`page + 1` only when TMDB returned a full page of 20 results, up to 500), `results`
   (cards for movies and series; people and collections dropped).
@@ -568,7 +569,8 @@ server by months still works.
   the token is deleted from the device. The gateway forgets the token at once (see "Identity chain").
 - **Answers.** `401` means the token is no longer good: drop it and show the profile picker. Errors are fixed bodies,
   the same for every endpoint and every title: `400 {"error":"invalid_request"}`, `401 {"error":"unauthorized"}`,
-  `404 {"error":"not_found"}`, `429 {"error":"too_many_requests"}`, `502 {"error":"unavailable"}`; and, before any
+  `404 {"error":"not_found"}`, `409 {"error":"hidden_limit_reached"}` (only from hiding a new title past the member's
+  2,000; see "Hidden titles"), `429 {"error":"too_many_requests"}`, `502 {"error":"unavailable"}`; and, before any
   token is checked, `404 {"error":"household_not_found"}` on a household address no household has (the household was
   removed, or the address is mistyped). The client shows fixed wording of its own for each and never shows a body, an
   upstream message or a status line; for sign-in, the PWA's: `401`/`403` "That didn't work", `429` "Too many
@@ -1597,6 +1599,56 @@ request from its grant (it is pruned at once). Or accept that those requesters g
   never lost and the gap above (waiting to notice the delete) disappears. Applying a hold is still asynchronous, though:
   a title that arrives can be public until the next webhook, catalog sync or reconciliation applies the hold, so even
   that path gives prompt protection, not a strict guarantee.
+
+## Hidden titles ("Not interested", 4.0.0)
+
+A member can hide a title they are not interested in. The decisions (2026-10-30): private to the member within the
+household; hidden titles leave the member's Discover lists, See all, service and studio pages (every tab), but stay in
+Search, flagged so the member can unhide them, and My requests is unchanged; lists are not refilled; it ships with
+4.0.0's state file; at most 2,000 per member, removed when the member leaves the household. My requests gains a
+separate **Hidden** tab on the phone, the household web app and the TV, each listing the member's hidden titles with
+Unhide; those controls come in each client's own release. This section is the server's part.
+
+- **Endpoints** (`apiVersion` 3; household listener only, the same authentication, membership check, budgets and fixed
+  errors as every app call): `POST /jellypass/app/v1/hidden/{movie|tv}/{tmdbId}` hides, `DELETE` on the same path
+  unhides (body empty or `{}`; the ID 1 to 2147483647, else `400`). Each answers `200 {"hidden":true}` or
+  `200 {"hidden":false}` once the change is written, the same whether or not the title was hidden; hiding again keeps
+  when it was first hidden. TMDB is never asked, so a well-formed ID is accepted whether or not TMDB knows it, and
+  nothing about the title is looked up. `GET /jellypass/app/v1/hidden?page=N` is the member's own list, newest first,
+  50 a page: `{page, nextPage, results: [{mediaType, tmdbId, hiddenAt}]}`, IDs only (no title text, no TMDB or Jellyfin
+  call); a client names each entry with the title endpoints, as My requests does. A page past the end is empty.
+  Seasons are not hidden one by one: hiding a series hides its cards.
+- **What changes, for the member only.** Discovery lists (`/discover/{list}`, `/discover/network/{id}`, `/films`,
+  `/all`, `/discover/studio/{id}`) leave out the member's hidden titles after the household's TMDB answer is read from
+  its cache, so the cache stays the household's and keyed only by the request (as before), and only the answer is the
+  member's. `nextPage` is decided from TMDB's own entries before anything is left out, so a page can be shorter, or
+  empty with a next page, and no other page is read to make up for it; a mixed network page leaves out both kinds and
+  keeps its continuation. Search keeps hidden titles, and every card and title page carries `hidden` (true only for the
+  member's own). My requests, a title's `state`, "Get this", cancelling, Play and the library are unchanged: hiding
+  writes no request, withdrawal, hold, blocklist entry or grant.
+- **Limits.** 2,000 per member per household (`MAX_HIDDEN_TITLES_PER_MEMBER`): one more new title is
+  `409 {"error":"hidden_limit_reached"}`, decided from the member's own count alone; one already hidden is still
+  accepted, nothing is ever forgotten to make room, and unhiding always works. There is deliberately no household or
+  server total: one would let a member's hides decide whether another member's (or household's) are accepted. The
+  bound is 2,000 per membership (about 100 KB of the state file at most per member).
+- **Storage.** `appHiddenTitles` in the state file (schema 8, additive: see `src/types.ts`): household (group) ID, then
+  the member's Jellyfin ID (lower case, no dashes), then `mediaType:tmdbId` with when it was first hidden. Written
+  through the store's queued, atomic writes. A member's entry is removed in the same write that removes them from the
+  household, and a household's with the household, so rejoining, or a household made again under the same ID, starts
+  with none; load also drops entries of members or households no longer there, and refuses a malformed field. A call
+  is refused (`401`) once its caller is no longer a member, though their session was verified before they left, and
+  writes nothing.
+- **Privacy.** Nothing about one member's hidden titles reaches anyone else: not another member of the household and
+  not another household, Carol in both included (`test/hidden-titles.test.mjs` compares every app answer, the
+  observer's own hiding, unhiding and list included, byte for byte against a world where nobody hid anything). Hiding
+  makes no upstream call, so it warms or cools no cache; filtering reads only the caller's own entry; there is no shared
+  limit; a hide or unhide is written whether or not it changed anything, so both take the same path; nothing is logged
+  or counted by title (`jfa_app_requests_total` counts `hide`, `unhide` and `hidden` by outcome only). The operator who
+  holds the state file and its backups can read it, as with everything else there.
+- **Older clients** ignore `hidden` and the new endpoints; they keep working, and a title the member hid on another
+  device no longer appears in their discovery lists. A client shows hiding only on `apiVersion >= 3`, decodes a missing
+  `hidden` as `false`, and maps `409` to its own fixed wording. A client updates what it shows from its own answer and
+  never reads `/hidden` to filter a list (see `fetch-budget.json`, `hiding`).
 
 ## Administrators' Requests tab
 

@@ -58,6 +58,7 @@ export function pageAnswer(list: string, count = 20) {
         rating: 6 + (index % 4) / 2,
         state: STATES[index % 4],
         play: null,
+        hidden: false,
       };
     }),
   };

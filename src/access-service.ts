@@ -3,7 +3,7 @@ import type { HouseholdAddressEntry } from './household-addresses.js';
 import type { JellyfinClient } from './jellyfin.js';
 import { Metrics } from './metrics.js';
 import { RECENT_REQUESTS_LIMIT, SeerrError, type SeerrClient } from './seerr.js';
-import { normalizeId, UNKNOWN_REQUESTER, type GrantMove, type GrantRemainder, type GrantStore } from './store.js';
+import { normalizeId, UNKNOWN_REQUESTER, type GrantMove, type GrantRemainder, type GrantStore, type HiddenTitle, type HideTitleResult } from './store.js';
 import type {
   AccessGroup,
   AccessRemovals,
@@ -209,6 +209,26 @@ export class AccessService {
 
   public getHouseholdMemberIds(groupId: string): string[] | undefined {
     return this.#store.getGroup(groupId)?.userIds;
+  }
+
+  /** A member's hidden titles in a household, as keys (see GrantStore.hiddenTitleKeys). */
+  public hiddenTitleKeys(householdId: string, userId: string): ReadonlySet<string> {
+    return this.#store.hiddenTitleKeys(householdId, userId);
+  }
+
+  /** A member's hidden titles in a household, newest first (see GrantStore.listHiddenTitles). */
+  public listHiddenTitles(householdId: string, userId: string): HiddenTitle[] {
+    return this.#store.listHiddenTitles(householdId, userId);
+  }
+
+  /** See GrantStore.hideTitle. */
+  public hideTitle(input: { householdId: string; userId: string; mediaType: 'movie' | 'tv'; tmdbId: number; at: string }): Promise<HideTitleResult> {
+    return this.#store.hideTitle(input);
+  }
+
+  /** See GrantStore.unhideTitle. */
+  public unhideTitle(input: { householdId: string; userId: string; mediaType: 'movie' | 'tv'; tmdbId: number }): Promise<'unhidden' | 'not_member'> {
+    return this.#store.unhideTitle(input);
   }
 
   public getHouseholdName(groupId: string): string | undefined {

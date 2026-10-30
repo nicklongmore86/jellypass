@@ -1055,13 +1055,18 @@ export async function startApp(t, state = world(), options = {}) {
       ...(user ? { Authorization: authorization(user) } : {}),
       ...headers,
     }),
-    /** POST `body` (a string or an object sent as JSON; undefined for none) to `pathname`, like {@link get}. */
-    post: (pathname, body, { host = HOST_A, user = ALICE, headers } = {}) => get(portFor(host), pathname, {
+    /**
+     * POST `body` (a string or an object sent as JSON; undefined for none) to `pathname`, like {@link get}; `method` sends
+     * it with another method (DELETE).
+     */
+    post: (pathname, body, { host = HOST_A, user = ALICE, headers, method = 'POST' } = {}) => get(portFor(host), pathname, {
       Host: host,
       ...(user ? { Authorization: authorization(user) } : {}),
       ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
+      // Node sends a DELETE's body neither chunked nor with a length unless told its length.
+      ...(body !== undefined && method !== 'POST' ? { 'Content-Length': Buffer.byteLength(typeof body === 'string' ? body : JSON.stringify(body)) } : {}),
       ...headers,
-    }, { method: 'POST', body: body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body) }),
+    }, { method, body: body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body) }),
     /** A Seerr MEDIA_AVAILABLE webhook for an HD request whose item Jellyfin now has. */
     webhook: (payload) => get(adminPort, '/webhooks/seerr', {
       Host: ADMIN_HOST,

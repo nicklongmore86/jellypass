@@ -17,6 +17,8 @@
 import type { HouseholdAddress } from './address';
 import { tokenAuthorization } from './auth';
 import {
+  decodeHidden,
+  decodeHiddenPage,
   decodeMe,
   decodeMovie,
   decodePage,
@@ -28,7 +30,21 @@ import {
 } from './decode';
 import { ApiError, errorForAnswer } from './errors';
 import { householdFetch, offHousehold } from './transport';
-import { DISCOVER_LISTS, type DiscoverList, type MediaType, type Me, type Movie, type Page, type Requests, type Season, type Series, type Sources } from './types';
+import {
+  DISCOVER_LISTS,
+  MEDIA_TYPES,
+  type DiscoverList,
+  type Hidden,
+  type HiddenPage,
+  type MediaType,
+  type Me,
+  type Movie,
+  type Page,
+  type Requests,
+  type Season,
+  type Series,
+  type Sources,
+} from './types';
 
 export const API_PREFIX = '/jellypass/app/v1';
 export const DEFAULT_TIMEOUT_MS = 20_000;
@@ -53,7 +69,7 @@ export interface ResponseLike {
 }
 
 export interface RequestInitLike {
-  method: 'GET' | 'POST';
+  method: 'GET' | 'POST' | 'DELETE';
   headers: Record<string, string>;
   body?: string;
   credentials: 'omit';
@@ -107,6 +123,14 @@ export interface ApiClient {
    * answers the same, so this says nothing about what follows; only `requests()` tells, later. Needs `apiVersion` 2.
    */
   cancelRequest(id: string, options?: CallOptions): Promise<void>;
+  /**
+   * "Not interested": hides a title from the caller's own discovery lists in this household, or (`hidden` false)
+   * unhides it. Resolves with the state asked for once the server has written it, the same whether or not it already
+   * was; hiding one more past the caller's 2,000 is `hidden_limit_reached`. Needs `apiVersion` 3.
+   */
+  setHidden(mediaType: MediaType, tmdbId: number, hidden: boolean, options?: CallOptions): Promise<Hidden>;
+  /** The caller's own hidden titles, newest first, 50 a page (My requests' Hidden tab). Needs `apiVersion` 3. */
+  hidden(page?: number, options?: CallOptions): Promise<HiddenPage>;
 }
 
 function isWhole(value: number, min: number, max: number): boolean {
@@ -142,7 +166,7 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
   const base = `${address.origin}${API_PREFIX}`;
 
   /** One call: the answer's body parsed as JSON on a 2xx (or undefined when `read` is false), else the ApiError. */
-  async function call(method: 'GET' | 'POST', path: string, body: unknown, read: boolean, callOptions?: CallOptions): Promise<unknown> {
+  async function call(method: RequestInitLike['method'], path: string, body: unknown, read: boolean, callOptions?: CallOptions): Promise<unknown> {
     const token = options.token();
     if (!token) throw new ApiError('unauthorized');
     const external = callOptions?.signal;
@@ -270,5 +294,16 @@ export function createApiClient(options: ApiClientOptions): ApiClient {
       check(typeof id === 'string' && /^[A-Za-z0-9_-]{22}$/.test(id));
       await call('POST', `/requests/${id}/cancel`, {}, false, callOptions);
     },
+    setHidden: async (mediaType, id, hidden, callOptions) => {
+      check(MEDIA_TYPES.includes(mediaType), typeof hidden === 'boolean');
+      tmdbId(id);
+      const answer = await call(hidden ? 'POST' : 'DELETE', `/hidden/${mediaType}/${id}`, undefined, true, callOptions);
+      try {
+        return decodeHidden(answer);
+      } catch {
+        throw new ApiError('unexpected', { status: 200 });
+      }
+    },
+    hidden: async (pageNumber = 1, callOptions) => get(`/hidden${pageQuery(pageNumber)}`, decodeHiddenPage, callOptions),
   };
 }

@@ -835,7 +835,7 @@ and nowhere else (on the administrator host they do not exist). The
 
 | Method | Path | Answer |
 | --- | --- | --- |
-| `GET` | `/jellypass/app/v1/me` | `{"name", "household", "apiVersion"}`: the caller's Jellyfin display name and household name, and the revision of the `v1` API the server speaks (an integer, `2` today; it goes up by one with each release that adds a field or endpoint, and never down). `v1` only ever gains fields and endpoints: a breaking change would be `/jellypass/app/v2`. |
+| `GET` | `/jellypass/app/v1/me` | `{"name", "household", "apiVersion"}`: the caller's Jellyfin display name and household name, and the revision of the `v1` API the server speaks (an integer, `3` today; it goes up by one with each release that adds a field or endpoint, and never down). `v1` only ever gains fields and endpoints: a breaking change would be `/jellypass/app/v2`. |
 | `GET` | `/jellypass/app/v1/search?q=...&page=N` | A page of title cards. `q` is 1 to 100 characters; `page` 1 to 500, default 1. |
 | `GET` | `/jellypass/app/v1/discover/{list}?page=N` | A page of title cards; `list` is `trending`, `trending-movies`, `trending-tv`, `popular-movies`, `popular-tv`, `new-movies` (films that opened in US theatres in the last 60 days), `upcoming` (upcoming movies), `upcoming-tv` (upcoming series), `top-movies` or `top-tv` (TMDB's top rated). |
 | `GET` | `/jellypass/app/v1/discover/sources` | The streaming services (networks) and studios the app offers, with their TMDB logos; no TMDB call. |
@@ -850,6 +850,11 @@ and nowhere else (on the administrator host they do not exist). The
 | `POST` | `/jellypass/app/v1/tv/{tmdbId}/get` | "Get this" for seasons of a series, `{"seasons": [1, 2]}` (1 to 100 seasons from 1 to 999): always `202 {"status":"accepted"}`. |
 | `GET` | `/jellypass/app/v1/requests` | The household's own titles from "Get this", with a coarse status: `{"results": [{"id", "mediaType", "tmdbId", "status", "seasons", "byYou", "cancellable", "requestedOn"}]}` (`requestedOn` is a day, `YYYY-MM-DD`). |
 | `POST` | `/jellypass/app/v1/requests/{id}/cancel` | Cancels one of the caller's own requests (an `id` from `/requests`, empty body or `{}`): always `202 {"status":"accepted"}`, whatever becomes of it; see [Cancelling](docs/app-design.md#cancelling-step-2c). |
+| `POST` | `/jellypass/app/v1/hidden/movie/{tmdbId}` | "Not interested" (since 4.0.0, `apiVersion` 3): hides a movie from the caller's own Discover lists, See all, service and studio pages, in this household only (empty body or `{}`). `200 {"hidden":true}` whether or not it was hidden already; `409 {"error":"hidden_limit_reached"}` for a new title once the caller hides 2,000. See [Hidden titles](docs/app-design.md#hidden-titles-not-interested-400). |
+| `POST` | `/jellypass/app/v1/hidden/tv/{tmdbId}` | The same for a series (the whole series; seasons are not hidden one by one). |
+| `DELETE` | `/jellypass/app/v1/hidden/movie/{tmdbId}` | Unhides a movie for the caller: `200 {"hidden":false}` whether or not it was hidden. |
+| `DELETE` | `/jellypass/app/v1/hidden/tv/{tmdbId}` | Unhides a series for the caller, the same way. |
+| `GET` | `/jellypass/app/v1/hidden?page=N` | The caller's own hidden titles in this household, newest first, 50 a page, for My requests' **Hidden** tab: `{"page", "nextPage", "results": [{"mediaType", "tmdbId", "hiddenAt"}]}`. IDs only (no TMDB call); a client names them as it names My requests' titles. |
 
 The machine-readable contract is [docs/app-api/v1.openapi.json](docs/app-api/v1.openapi.json)
 (OpenAPI 3.1). Native clients follow

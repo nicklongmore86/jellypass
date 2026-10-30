@@ -1,0 +1,16 @@
+{
+  "page": 2,
+  "nextPage": 3,
+  "results": [
+    {
+      "mediaType": "tv",
+      "tmdbId": 900002,
+      "hiddenAt": "2026-10-30T12:00:01.000Z"
+    },
+    {
+      "mediaType": "movie",
+      "tmdbId": 2147483647,
+      "hiddenAt": "2026-10-29T08:30:00.000Z"
+    }
+  ]
+}
