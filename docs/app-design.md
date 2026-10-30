@@ -1811,7 +1811,7 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
   `docs/app-api/v1.openapi.json` with a small validator in `test/support/json-schema.mjs` (no dependency; it knows
   only the keywords the document uses, and the test refuses any other so none is silently ignored). An undeclared
   field, a missing one, a wrong type or a value outside its enum fails. It also checks that the document lists exactly
-  the README's endpoints and that `info.version` is `APP_API_VERSION`.
+  the endpoints in `docs/household-hosts.md`'s API table and that `info.version` is `APP_API_VERSION`.
 - **App API.** `test/app-api.test.mjs` runs the app through the household gateway against a fake TMDB serving the
   TMDB fixtures (it refuses calls without JellyPass's key), a fake Seerr that enforces `X-API-User`, serves the
   blocklist and counts any title read as a violation (built from the Seerr fixtures), and a fake Jellyfin that applies

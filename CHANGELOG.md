@@ -26,7 +26,7 @@ changes are always listed at the top of the release notes.
   `400 webhook_query_token_removed_use_authorization_header`. Remove the query
   parameter and configure Seerr's authorization header as
   `Bearer YOUR_WEBHOOK_TOKEN` before upgrading.
-- Availability webhooks require the full current Seerr template in README
+- Availability webhooks require the full current Seerr template in docs/server-reference.md
   (event, media, request and requestedBy). Reduced older templates receive
   `400 webhook_payload_removed_use_current_seerr_template`; replace the template
   in Seerr's webhook UI. Empty Jellyfin IDs still resolve through the Seerr API.
@@ -45,6 +45,22 @@ Before upgrading, on **3.9.x or later 3.x**:
 5. After upgrading, watch `jfa_webhooks_total{result="removed_form"}` and the admin dashboard warning.
 
 Refused availability webhooks are not retried; missed titles rely on the request backfill.
+
+### Changed
+
+- README: shortened to an overview, quick start and links. Its reference
+  sections moved unchanged to `docs/server-reference.md` and
+  `docs/household-hosts.md`, and the guide is at https://jellypass.app/docs/.
+  Links to the README's old sections still land on it, in a "Moved sections"
+  list that points to their new place.
+  The quick start now gives the data folder to UID 1000
+  (`sudo chown 1000:1000 data`): created by root with `mkdir -m 700` alone,
+  the container could not write its state file and stopped with `EACCES`.
+- `compose.example.yaml` (the build-from-source Compose file): its service is
+  now named `jellypass`, as in `compose.yaml` and the webhook URL examples,
+  instead of `access-bridge`. If you started JellyPass from that file before,
+  run `docker compose -f compose.example.yaml up --build -d --remove-orphans`
+  once, so the old `access-bridge` container is removed and frees port 8787.
 
 ## [3.10.0] - 2026-10-30
 
