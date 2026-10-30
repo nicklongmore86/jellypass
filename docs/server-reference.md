@@ -189,11 +189,11 @@ as semantic-version tags. For predictable production upgrades, set
 `JELLYPASS_IMAGE` in `.env` to a versioned image such as:
 
 ```dotenv
-JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:3.9.0
+JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:3.10.0
 ```
 
-Each release is published as a semantic-version image tag, such as `3.9.0`,
-plus floating `3.9` and `3` tags that move to the newest release in that minor
+Each release is published as a semantic-version image tag, such as `3.10.0`,
+plus floating `3.10` and `3` tags that move to the newest release in that minor
 or major line; see [CHANGELOG.md](../CHANGELOG.md) for what each one contains. `latest` is rebuilt on
 every push to `main` and may include unreleased changes, so use it, or build
 from source, only to test ahead of a release.
@@ -734,6 +734,19 @@ Upgrading from 3.8.1 to 3.9.0 changes neither the state file nor any setting,
 needs no CDN purge, and changes nothing unless `TV_ADDON_ENABLED` is set; the
 TV add-on gains See all pages for the Discover rows and, in the desktop layout,
 a Back button on its pages; see the 3.9.0 notes.
+Upgrading from 3.9.0 to 3.10.0 keeps the state file at schema v7, changes no
+existing setting, and needs nothing configured on Jellyfin 12.x or 10.11.x; on
+any other Jellyfin version JellyPass warns, and household hostnames keep
+serving, until an administrator confirms it (4.0.0 will refuse them instead;
+see [Supported Jellyfin versions](#supported-jellyfin-versions)).
+Requests naming more or fewer than one host, and household paths with empty
+segments, are refused, and HTML pages are marked `no-transform` and
+compressed by JellyPass; see the 3.10.0 notes.
+If you build from source with `compose.example.yaml`, its service is now named
+`jellypass` instead of `access-bridge`: run
+`docker compose -f compose.example.yaml up --build -d --remove-orphans` once
+after updating, so the old `access-bridge` container is removed and frees port
+8787.
 Drain before rolling back to 2.3.x or 2.2.1: stop new "Get this" calls, wait
 until no request intents or deferred webhooks are left (at most 30 minutes plus
 one reconciliation interval, or restart JellyPass to reconcile at once), then
