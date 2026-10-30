@@ -74,8 +74,10 @@ upgrades** (steps below); with them, existing household addresses such as
   `Host` that is not a plain `host[:port]` (userinfo, whitespace, a path or
   other characters), and an absolute-form request target
   (`GET http://host/path`) whose authority is not the `Host`. WebSocket
-  upgrades get the same `400`. A reverse proxy that sets one `Host` (nginx's
-  `proxy_set_header Host $host`, for example) is unaffected.
+  upgrades get the same `400`, and a refused upgrade's connection is closed on
+  JellyPass's side even if the client keeps its own side open. A reverse proxy
+  that sets one `Host` (nginx's `proxy_set_header Host $host`, for example)
+  is unaffected.
 
 ### Added
 

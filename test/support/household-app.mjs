@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { gzipSync } from 'node:zlib';
 import { request as httpRequest, createServer } from 'node:http';
+import { connect } from 'node:net';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { AccessService } from '../../dist/access-service.js';
@@ -1033,6 +1034,9 @@ export async function startApp(t, state = world(), options = {}) {
     port,
     /** The admin listener's port. */
     adminPort,
+    /** The member and admin listeners themselves, to watch their own end of a connection. */
+    server,
+    adminServer,
     /** The port a request for `host` reaches: the admin listener for ADMIN_HOST, the member listener for any other. */
     portFor,
     seerr,
@@ -1127,4 +1131,30 @@ function listen(server) {
 function close(server) {
   server.closeAllConnections?.();
   return new Promise((resolve) => server.close(() => resolve()));
+}
+
+/**
+ * `request` written to `server` by a client that keeps its own end open after the server's answer (allowHalfOpen), and
+ * whether the server then closed its socket for the connection within a second.
+ */
+export function halfOpen(server, request) {
+  return new Promise((resolve, reject) => {
+    const serverClosed = new Promise((settle) => {
+      server.once('connection', (serverSocket) => {
+        const timer = setTimeout(() => settle(false), 1_000);
+        serverSocket.once('close', () => { clearTimeout(timer); settle(true); });
+      });
+    });
+    const client = connect({ port: server.address().port, host: '127.0.0.1', allowHalfOpen: true });
+    let answer = '';
+    client.once('connect', () => client.write(request));
+    client.on('data', (chunk) => { answer += chunk.toString('utf8'); });
+    client.once('error', (error) => (error.code === 'ECONNRESET' ? undefined : reject(error)));
+    // The answer is whole once the server has ended its side (or reset it); the client's side stays open until the verdict.
+    const ended = new Promise((settle) => { client.once('end', settle); client.once('close', settle); });
+    void Promise.all([serverClosed, ended]).then(([closed]) => {
+      client.destroy();
+      resolve({ answer, closed });
+    });
+  });
 }

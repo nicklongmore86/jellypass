@@ -19,7 +19,7 @@ import {
 import { makeServers } from '../dist/server.js';
 import { checkJellyfinMatrix, jellyfinMatrix } from '../scripts/jellyfin-matrix.mjs';
 import { GrantStore } from '../dist/store.js';
-import { get } from './support/household-app.mjs';
+import { get, halfOpen } from './support/household-app.mjs';
 import { makeTempDir } from './support/temp-dir.mjs';
 
 const HOST = 'jelly-grove.example.test';
@@ -304,6 +304,9 @@ describe('household hosts and the Jellyfin version', { timeout: 30_000 }, () => 
     // The same on the household's mapped address, HTTP and WebSocket alike.
     assert.equal((await get(app.port, '/web/index.html', { Host: MAPPED_HOST })).status, 503);
     assert.equal(await rawUpgrade(app.port, '/socket', MAPPED_HOST), refusalResponse(UNTESTED_VERSION_MESSAGE, '300'));
+    // A client that keeps its own end open still has the refused connection closed by the server.
+    const held = await halfOpen(app.server, `GET /socket HTTP/1.1\r\nHost: ${HOST}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n`);
+    assert.deepEqual([held.answer, held.closed], [refusalResponse(UNTESTED_VERSION_MESSAGE, '300'), true]);
 
     assert.equal((await get(app.adminPort, '/health')).status, 200);
     const status = (await get(app.adminPort, '/v1/jellyfin/version', ADMIN)).json();
@@ -432,7 +435,7 @@ async function startApp(t, { version, down = false, now, gate: withGate = true, 
     await Promise.all([server, admin].map((listener) => new Promise((resolve) => listener.close(resolve))));
     await store.close();
   });
-  return { port: server.address().port, adminPort: admin.address().port, jellyfin, gate, stateFile: file };
+  return { port: server.address().port, adminPort: admin.address().port, server, jellyfin, gate, stateFile: file };
 }
 
 /** A request to JellyPass, with the Host header given (household hosts are told apart by it). */

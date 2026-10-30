@@ -11,7 +11,7 @@ import { AccessService } from '../dist/access-service.js';
 import { HouseholdAddresses, HouseholdAddressError, hostKey, normalizeEntry, normalizeOrigin } from '../dist/household-addresses.js';
 import { makeServers } from '../dist/server.js';
 import { GrantStore } from '../dist/store.js';
-import { ADMIN_HOST, ALICE, ANN, BOB, HOST_A, HOST_B, ITEMS, OWN_MOVIE, get, startApp, world } from './support/household-app.mjs';
+import { ADMIN_HOST, ALICE, ANN, BOB, HOST_A, HOST_B, ITEMS, OWN_MOVIE, get, halfOpen, startApp, world } from './support/household-app.mjs';
 import { makeTempDir } from './support/temp-dir.mjs';
 
 const ENTRYPOINT = fileURLToPath(new URL('../dist/index.js', import.meta.url));
@@ -242,10 +242,9 @@ describe('one Host per request', () => {
     const app = await startApp(t, world(), { addresses: ADDRESSES });
     for (const [what, hosts] of malformed(MEDIA)) {
       const answer = await raw(app.port, 'GET /Users/Public HTTP/1.1', hosts);
-      assert.equal(answer.status, 400, what);
-      // Node answers a missing Host itself, before any handler; everything else is JellyPass's fixed answer.
-      if (hosts.length) assert.deepEqual([answer.body, answer.headers['cache-control']], [INVALID_HOST, 'no-store'], what);
-      if (hosts.length) assert.match(await upgrade(app.port, '/socket?api_key=token-alice', hosts), /^HTTP\/1\.1 400 [^]*\r\n\r\n\{"error":"invalid_host"\}$/, what);
+      // A missing Host too: JellyPass's fixed answer, not Node's own bare 400.
+      assert.deepEqual([answer.status, answer.body, answer.headers['cache-control'], answer.headers.connection], [400, INVALID_HOST, 'no-store', 'close'], what);
+      assert.match(await upgrade(app.port, '/socket?api_key=token-alice', hosts), /^HTTP\/1\.1 400 [^]*\r\nCache-Control: no-store\r\n[^]*\r\nConnection: close\r\n\r\n\{"error":"invalid_host"\}$/, what);
     }
     assert.deepEqual(relayed(app), [], 'nothing reached Jellyfin');
     // One Host still selects its household, in either listener's casing of the header name.
@@ -273,9 +272,8 @@ describe('one Host per request', () => {
     const admin = 'jellypass:8788';
     for (const [what, hosts] of malformed(admin)) {
       const answer = await raw(app.adminPort, 'GET /v1/groups HTTP/1.1', [...hosts, 'Authorization: Bearer admin-secret']);
-      assert.equal(answer.status, 400, what);
-      if (hosts.length) assert.equal(answer.body, INVALID_HOST, what);
-      if (hosts.length) assert.match(await upgrade(app.adminPort, '/socket', hosts), /^HTTP\/1\.1 400 [^]*\{"error":"invalid_host"\}$/, what);
+      assert.deepEqual([answer.status, answer.body, answer.headers['cache-control'], answer.headers.connection], [400, INVALID_HOST, 'no-store', 'close'], what);
+      assert.match(await upgrade(app.adminPort, '/socket', hosts), /^HTTP\/1\.1 400 [^]*\r\nCache-Control: no-store\r\n[^]*\r\nConnection: close\r\n\r\n\{"error":"invalid_host"\}$/, what);
     }
     const absolute = await raw(app.adminPort, `GET http://other.example.com/v1/groups HTTP/1.1`, [`Host: ${admin}`, 'Authorization: Bearer admin-secret']);
     assert.deepEqual([absolute.status, absolute.body], [400, INVALID_HOST]);
@@ -283,6 +281,37 @@ describe('one Host per request', () => {
     assert.equal((await raw(app.adminPort, 'GET /v1/groups HTTP/1.1', [`Host: ${admin}`, 'Authorization: Bearer admin-secret'])).status, 200);
     // A WebSocket upgrade with one Host is still dropped.
     assert.equal(await upgrade(app.adminPort, '/socket', admin), '');
+  });
+
+  it('answers HTTP/1.1 with no Host on /health with the whole fixed answer on either listener', async (t) => {
+    const app = await startApp(t, world(), { addresses: ADDRESSES });
+    for (const port of [app.port, app.adminPort]) {
+      const answer = await raw(port, 'GET /health HTTP/1.1', []);
+      assert.deepEqual([answer.status, answer.body], [400, INVALID_HOST]);
+      assert.equal(answer.headers['cache-control'], 'no-store');
+      assert.equal(answer.headers.connection, 'close');
+      assert.match(answer.headers['content-type'] ?? '', /^application\/json/);
+    }
+  });
+
+  it('closes its own end of a refused connection on either listener even when the client keeps its end open', async (t) => {
+    const app = await startApp(t, world(), { addresses: ADDRESSES });
+    const websocket = 'Connection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGVzdA==\r\nSec-WebSocket-Version: 13\r\n';
+    for (const [listener, server] of [['member', app.server], ['admin', app.adminServer]]) {
+      for (const [what, request, expected] of [
+        ['an upgrade with two Hosts', `GET /socket?api_key=token-alice HTTP/1.1\r\nHost: ${MEDIA}\r\nHost: ${HOST_B}\r\n${websocket}\r\n`, /^HTTP\/1\.1 400 [^]*\{"error":"invalid_host"\}$/],
+        ['an upgrade with no Host', `GET /socket?api_key=token-alice HTTP/1.1\r\n${websocket}\r\n`, /^HTTP\/1\.1 400 [^]*\{"error":"invalid_host"\}$/],
+        ['an upgrade on an unknown Host', `GET /socket?api_key=token-alice HTTP/1.1\r\nHost: unknown.example.com\r\n${websocket}\r\n`, /^$/],
+        ['a request with two Hosts', `GET /Users/Public HTTP/1.1\r\nHost: ${MEDIA}\r\nHost: ${HOST_B}\r\n\r\n`, /^HTTP\/1\.1 400 [^]*\{"error":"invalid_host"\}$/],
+        ['a request with no Host', 'GET /health HTTP/1.1\r\n\r\n', /^HTTP\/1\.1 400 [^]*\{"error":"invalid_host"\}$/],
+        ...(listener === 'member' ? [['an unknown Host, Connection: close', 'GET /health HTTP/1.1\r\nHost: unknown.example.com\r\nConnection: close\r\n\r\n', /^HTTP\/1\.1 421 [^]*\{"error":"unknown_host"\}$/]] : []),
+      ]) {
+        const { answer, closed } = await halfOpen(server, request);
+        assert.match(answer, expected, `${listener}: ${what}`);
+        assert.ok(closed, `${listener}: ${what}: the server socket is closed within a second`);
+      }
+    }
+    assert.deepEqual(relayed(app), [], 'nothing reached Jellyfin');
   });
 
   it('refuses two Hosts on the legacy member-port webhook too, and answers 421 for an unknown Host before parsing the target', async (t) => {
