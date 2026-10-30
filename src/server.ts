@@ -11,6 +11,7 @@ import { ClientIpResolver } from './client-ip.js';
 import type { LogLevel } from './config.js';
 import { HouseholdGateway } from './household-gateway.js';
 import type { HouseholdRequests } from './household-requests.js';
+import { writeWhole } from './html-response.js';
 import { UNKNOWN_VERSION_MESSAGE, UNTESTED_VERSION_MESSAGE, VersionConfirmationError, type HouseholdDecision, type JellyfinVersionGate } from './jellyfin-version.js';
 import { RECENT_REQUESTS_LIMIT } from './seerr.js';
 import { BackgroundTasks } from './shutdown.js';
@@ -18,6 +19,8 @@ import { TvAssets } from './tv-assets.js';
 import { parseWebhook } from './webhook.js';
 
 const BODY_LIMIT = 64 * 1024;
+/** The admin page's bytes, once, so its encoded copies are worked out once (see html-response.ts). */
+const ADMIN_HTML_BYTES = Buffer.from(ADMIN_HTML);
 const ID_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/;
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -160,16 +163,16 @@ export function makeServer(
         return redirect(response, '/admin/');
       }
       if (request.method === 'GET' && (url.pathname === '/admin' || url.pathname === '/admin/')) {
-        return asset(response, 200, ADMIN_HTML, 'text/html; charset=utf-8');
+        return asset(request, response, 200, ADMIN_HTML_BYTES, 'text/html; charset=utf-8');
       }
       if (request.method === 'GET' && url.pathname === '/admin/styles.css') {
-        return asset(response, 200, ADMIN_STYLES, 'text/css; charset=utf-8');
+        return asset(request, response, 200, Buffer.from(ADMIN_STYLES), 'text/css; charset=utf-8');
       }
       if (request.method === 'GET' && url.pathname === '/admin/app.js') {
-        return asset(response, 200, ADMIN_APP_JS, 'text/javascript; charset=utf-8');
+        return asset(request, response, 200, Buffer.from(ADMIN_APP_JS), 'text/javascript; charset=utf-8');
       }
       if (request.method === 'GET' && url.pathname === '/admin/favicon.svg') {
-        return asset(response, 200, ADMIN_FAVICON_SVG, 'image/svg+xml; charset=utf-8');
+        return asset(request, response, 200, Buffer.from(ADMIN_FAVICON_SVG), 'image/svg+xml; charset=utf-8');
       }
       if (request.method === 'POST' && url.pathname === '/auth/login') {
         if (!webAuth) return json(response, 404, { error: 'web_auth_not_configured' });
@@ -621,10 +624,11 @@ function text(response: ServerResponse, status: number, body: string, contentTyp
  * Headers for the admin UI's own files: the household app's set. The UI posts no forms (every form's submit is handled
  * by script with fetch), so form-action is 'none'.
  */
-function asset(response: ServerResponse, status: number, body: string, contentType: string): void {
-  response.writeHead(status, {
+function asset(request: IncomingMessage, response: ServerResponse, status: number, body: Buffer, contentType: string): void {
+  // The page is marked no-transform and compressed (see html-response.ts); its script, styles and icon are sent as they are.
+  writeWhole(request, response, status, {
     'Content-Type': contentType,
-    'Content-Length': Buffer.byteLength(body),
+    'Content-Length': body.length,
     'Cache-Control': 'no-store',
     'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     'Referrer-Policy': 'no-referrer',
@@ -633,8 +637,7 @@ function asset(response: ServerResponse, status: number, body: string, contentTy
     'Cross-Origin-Opener-Policy': 'same-origin',
     'Cross-Origin-Resource-Policy': 'same-origin',
     'Permissions-Policy': APP_PERMISSIONS_POLICY,
-  });
-  response.end(body);
+  }, body);
 }
 
 function image(response: ServerResponse, body: Uint8Array, upstreamContentType: string): void {

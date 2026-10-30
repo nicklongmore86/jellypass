@@ -93,6 +93,19 @@ upgrading:
 
 ### Changed
 
+- **No CDN adds scripts to JellyPass's pages.** Every HTML page JellyPass serves
+  or relays (the household app at `/jellypass/app/`, Jellyfin web under `/web/`
+  with or without the TV add-on, `/jellypass/add`, any other HTML Jellyfin
+  sends on a household hostname, and the admin site) now has `no-transform`
+  added to its `Cache-Control` (`no-store, no-transform`, `no-cache,
+  no-transform`, or `no-transform` alone where there was none), so a CDN such
+  as Cloudflare, whose Web Analytics automatic setup injects a
+  `static.cloudflareinsights.com` script, leaves it alone. Caching is
+  unchanged. Because such a CDN also stops compressing these pages, JellyPass
+  compresses them itself (br or gzip, as the client accepts, with
+  `Vary: Accept-Encoding`); a page Jellyfin already encoded is passed through
+  as it is. Scripts, styles, images, JSON, video and HLS are not touched, so
+  the CDN keeps compressing them. Nothing to configure.
 - **CI and the release workflow test every supported Jellyfin release:** the
   real-Jellyfin suite runs once against `jellyfin/jellyfin:12.4.20261026-211555`
   (12.4.0) and once against `jellyfin/jellyfin:10.11.11`, instead of 10.11.3
