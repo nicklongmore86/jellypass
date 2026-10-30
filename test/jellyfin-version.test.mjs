@@ -161,6 +161,7 @@ describe('supported Jellyfin versions', () => {
     refused(workflow().replace('      fail-fast: false', '      fail-fast : false'), /space before the ":"/);
     refused(workflow().replace('      fail-fast: false', '\tfail-fast: false'), /has a tab/);
     refused(workflow().replace(/\n/g, '\r\n'), /carriage return \(CRLF\)/);
+    refused(`\uFEFF${workflow()}`, /byte-order mark/);
     refused(`---\n${workflow()}`, /document markers/);
     refused(`${workflow()}---\njobs: {}\n`, /document markers/);
     refused(`${workflow()}...\n`, /document markers/);

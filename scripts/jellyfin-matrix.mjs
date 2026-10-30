@@ -121,9 +121,9 @@ const SEQUENCE_ITEM = /^-(\s|$)/;
 
 /** Parses the workflow YAML subset described above into plain objects, arrays and strings. */
 export function readWorkflow(text) {
-  const unsupported = /[\t\r﻿]/.exec(text);
+  const unsupported = /[\t\r\uFEFF]/.exec(text);
   if (unsupported) {
-    const name = { '\t': 'a tab', '\r': 'a carriage return (CRLF)', '﻿': 'a byte-order mark' }[unsupported[0]];
+    const name = { '\t': 'a tab', '\r': 'a carriage return (CRLF)', '\uFEFF': 'a byte-order mark' }[unsupported[0]];
     throw new Error(`workflow has ${name}, which this reader does not support`);
   }
   const lines = text.split('\n').map((raw, index) => ({ number: index + 1, raw, indent: raw.search(/\S/) }));
