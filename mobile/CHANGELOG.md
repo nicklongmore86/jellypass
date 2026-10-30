@@ -15,6 +15,37 @@ build.
 
 ## [Unreleased]
 
+**Not interested** (hiding titles) needs **JellyPass server 4.0.0 or later**
+(`apiVersion` 3 in `GET /jellypass/app/v1/me`); on an older server the app
+shows none of it, with no error, and everything else works as in 1.3.0.
+
+### Added
+
+- **Not interested.** A member can hide a title from their own Discover: from the title page's **Not interested**
+  button, or by pressing and holding any poster or backdrop card (Home's rows and hero, See all, a service's or
+  studio's page, Search), which opens a sheet with **Not interested** and **Close**. VoiceOver and TalkBack get the same
+  as an action on the card. Hiding is one call (`POST /hidden/{type}/{id}`); the title leaves every list on screen at
+  once, with no list read again, the title page stays open and says **Unhide**, and a toast over the tab bar says
+  "Hidden … from Discover" with **Undo** (one `DELETE`). The toast goes after eight seconds, but stays while a screen
+  reader is on. Hiding is only for that member in that household: it does not cancel requests or take anything out of
+  the library, and the other members never see it.
+- **Search keeps hidden titles**, marked **Hidden** (and "Hidden from Discover" for screen readers), with **Unhide**
+  under the card.
+- **My requests → Hidden.** Requests | Hidden tabs at the top of My requests; Hidden lists the member's hidden titles,
+  newest first, each with its poster, title, the day it was hidden and **Unhide**, named ten at a time like My requests
+  (`GET /hidden`, then `GET /movie` or `/tv` per title), with Load more. The filters stay on Requests.
+- Every failure has one fixed message, and hiding a 2,001st title says "You've hidden 2,000 titles, the most there can
+  be. Unhide some to hide more." Nothing is retried by itself; a 401 signs out.
+- What was hidden or unhidden in the app is kept in memory for the session only, never on the device, and forgotten on
+  sign-out, a refused sign-in or any change of household or member.
+
+### Changed
+
+- The API client knows the server's hidden titles (server 4.0.0, `apiVersion` 3): it reads each card's and title's
+  `hidden` (`false` from an earlier server), and can hide, unhide and list the member's hidden titles. Titles a member
+  hid with another client are already left out of this app's Discover lists and service pages by the server.
+- A See all, service or studio page whose page came back with no titles (every one hidden) still offers Load more.
+
 ## [1.3.0] - 2026-10-30
 
 A minor release, and the first build sent for App Store review: each list row
@@ -63,10 +94,6 @@ build, or the new APK over the old one.
   won't be added for your household."
 - The app icons are 1024 × 1024 (the App Store's size), the same drawing as before. The Android adaptive icon's
   foreground is scaled to sit inside the launcher's safe zone, so a round or squircle mask no longer clips the ticket.
-- The API client knows the server's hidden titles (server 4.0.0, `apiVersion` 3): it reads each card's and title's
-  `hidden` (`false` from an earlier server), and can hide, unhide and list the member's hidden titles. Nothing on
-  screen changes yet; the controls come in a later release. Titles a member hid with another client are already left
-  out of this app's Discover lists and service pages by the server.
 
 ## [1.2.1] - 2026-10-29
 

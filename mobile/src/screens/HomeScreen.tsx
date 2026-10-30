@@ -25,6 +25,9 @@
 // past `from`, as rows above it shrank and the end came up to the screen; and, once per drawing, the content fitting on
 // the screen whole after the eager rows have answered and a batch of layouts has arrived (a tall Android tablet whose
 // rows shrank at the top: the page can't scroll, and Android sends no scroll event to say where it is).
+//
+// A title the member hides ("Not interested", src/hidden/store.ts) leaves every row and the hero at once, with no call;
+// the server leaves it out of every row read after. A row may come back shorter for it: nothing fills it up.
 import { router } from 'expo-router';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import {
@@ -61,7 +64,7 @@ import { HERO_MAX, HOME_LAYOUT, LAZY_MARGIN, NETWORK_ACCENTS, networkKey, rowKey
 import { HOME_TEXT, SOURCE_TEXT, type HomeFilter } from '../home/text';
 import { listedNetworks, networkList, useHome, type RowState } from '../home/useHome';
 import { listPath, networkPath, studioPath, titlePath } from '../navigation/titles';
-import { useAsked, useSession } from '../session/SessionProvider';
+import { useAsked, useHiddenTitles, useSession } from '../session/SessionProvider';
 import { colors, layout, spacing } from '../theme';
 
 /** How wide each kind of card is: about 92% of the column on a phone (the next one peeks), 36% on a tablet. */
@@ -83,6 +86,7 @@ export function HomeScreen() {
   // What the member just asked for shows as Requested on every card at once, with no call, and a title's state read
   // since (its page opened again) wins over the row's older answer (src/title/asked.ts).
   const overlay = useAsked();
+  const hiddenTitles = useHiddenTitles();
   const home = useHome(api, expire, overlay);
   const { filter, rows, sources, started, near } = home;
   const insets = useSafeAreaInsets();
@@ -310,8 +314,9 @@ export function HomeScreen() {
 
   const first = parts[0] as HomeRow;
   const heroState = rows[rowKey(first)];
-  // New only: the hero skips what the member has and fills from the next titles of the same answer.
-  const heroCards = heroState?.status === 'loaded' ? heroSlides(heroState.page.results.map((card) => overlay.card(card)), hide, HERO_MAX) : [];
+  // New only: the hero skips what the member has and fills from the next titles of the same answer, as it does for
+  // what the member hid.
+  const heroCards = heroState?.status === 'loaded' ? heroSlides(hiddenTitles.visible(heroState.page.results.map((card) => overlay.card(card))), hide, HERO_MAX) : [];
 
   const titleRow = (part: HomeRow) => {
     const key = rowKey(part);
@@ -329,6 +334,7 @@ export function HomeScreen() {
           cardWidth={widths[part.variant]}
           viewport={columnWidth}
           overlay={overlay.card}
+          visible={hiddenTitles.visible}
           hide={hide}
           onOpen={open}
           onRetry={() => home.retry(key)}
@@ -354,6 +360,7 @@ export function HomeScreen() {
           cardWidth={widths.poster}
           viewport={columnWidth}
           overlay={overlay.card}
+          visible={hiddenTitles.visible}
           hide={hide}
           onOpen={open}
           onRetry={() => home.retry(key)}
@@ -432,6 +439,7 @@ function RowBody({
   cardWidth,
   viewport,
   overlay,
+  visible,
   hide,
   onOpen,
   onRetry,
@@ -445,6 +453,8 @@ function RowBody({
   viewport: number;
   /** The card as it is drawn: Requested if the member just asked for it. */
   overlay: (card: Card) => Card;
+  /** The cards without those the member hid. */
+  visible: (cards: readonly Card[]) => Card[];
   /** New only: the cards the member has are left out. */
   hide: boolean;
   onOpen: (card: Card) => void;
@@ -455,7 +465,7 @@ function RowBody({
   return (
     <View style={styles.row}>
       {heading}
-      <CardRow cards={visibleCards(state.page.results.map(overlay), hide)} variant={variant} cardWidth={cardWidth} viewport={viewport} onOpen={onOpen} />
+      <CardRow cards={visibleCards(visible(state.page.results.map(overlay)), hide)} variant={variant} cardWidth={cardWidth} viewport={viewport} onOpen={onOpen} />
     </View>
   );
 }

@@ -6,6 +6,8 @@
 // where-to-watch data. The tab chosen is put in the address (`?kind=`) in place, so the page keeps it under a title
 // opened from it and Back comes back to it. A card opens the title on Home's stack. Each card is drawn through the
 // overlay (src/title/asked.ts): Requested right after Get this, and a title's latest state from wherever it was read.
+// A title the member hides leaves the grid at once (src/hidden/store.ts); a page the server sends with every title
+// left out (all hidden) still has Load more.
 import { router, Stack } from 'expo-router';
 import { ScrollView, StyleSheet, Text, View, useWindowDimensions } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -17,7 +19,7 @@ import { EMPTY_ROW_TEXT, sourceHeading, type SourceList } from '../home/text';
 import { titlePath } from '../navigation/titles';
 import { LoadMore, ResultsGrid, SkeletonGrid } from '../search/components';
 import { gridCardWidth, gridColumns } from '../search/text';
-import { useAsked, useSession } from '../session/SessionProvider';
+import { useAsked, useHiddenTitles, useSession } from '../session/SessionProvider';
 import { SourceTabs } from '../source/components';
 import { useSource, type ListState, type SourceKind } from '../source/useSource';
 import { colors, layout, spacing, typography } from '../theme';
@@ -27,6 +29,7 @@ export function SourceScreen({ kind, id, list }: { kind: SourceKind; id: number;
   const { api, expire, hideHeld } = useSession();
   const hide = useHideHeld(hideHeld);
   const overlay = useAsked();
+  const hiddenTitles = useHiddenTitles();
   const { state, select, loadMore, retry } = useSource(api, expire, overlay, kind, id, list);
   const insets = useSafeAreaInsets();
   const window = useWindowDimensions();
@@ -58,7 +61,17 @@ export function SourceScreen({ kind, id, list }: { kind: SourceKind; id: number;
             <View style={styles.hideRow}>
               <HideChip testID="source-hide" value={hide} onToggle={() => hideHeld.set(!hide)} />
             </View>
-            <Results hide={hide} shown={state.shown} columns={columns} cardWidth={cardWidth} overlay={overlay.card} onOpen={open} onMore={loadMore} onRetry={retry} />
+            <Results
+              hide={hide}
+              shown={state.shown}
+              columns={columns}
+              cardWidth={cardWidth}
+              overlay={overlay.card}
+              visible={hiddenTitles.visible}
+              onOpen={open}
+              onMore={loadMore}
+              onRetry={retry}
+            />
             {kind === 'network' && state.list !== 'series' && state.shown.status === 'loaded' ? <JustWatchNote /> : null}
           </>
         ) : null}
@@ -74,6 +87,7 @@ export function Results({
   columns,
   cardWidth,
   overlay,
+  visible,
   onOpen,
   onMore,
   onRetry,
@@ -84,14 +98,15 @@ export function Results({
   columns: number;
   cardWidth: number;
   overlay: (card: Card) => Card;
+  /** The cards without those the member hid. */
+  visible: (cards: readonly Card[]) => Card[];
   onOpen: (card: Card) => void;
   onMore: () => void;
   onRetry: () => void;
 }) {
   if (shown.status === 'loading') return <SkeletonGrid columns={columns} cardWidth={cardWidth} />;
   if (shown.status === 'failed') return <ErrorNotice error={shown.error} onRetry={onRetry} secondary={false} />;
-  if (shown.cards.length === 0) return <Text style={styles.muted}>{EMPTY_ROW_TEXT}</Text>;
-  const cards = visibleCards(shown.cards.map(overlay), hide);
+  const cards = visibleCards(visible(shown.cards.map(overlay)), hide);
   return (
     <>
       {cards.length ? <ResultsGrid testID="source-grid" cards={cards} cardWidth={cardWidth} onOpen={onOpen} /> : <Text style={styles.muted}>{EMPTY_ROW_TEXT}</Text>}

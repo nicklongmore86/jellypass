@@ -4,6 +4,7 @@
 import { StyleSheet, TextInput, View } from 'react-native';
 
 import type { Card } from '../api/types';
+import { UnhideButton } from '../hidden/components';
 import { PosterCard } from '../home/components';
 import { Icon } from '../icons';
 import { colors, layout, radii, typography } from '../theme';
@@ -40,24 +41,36 @@ export function SearchField({ value, onChangeText, onSubmit }: { value: string; 
   );
 }
 
-/** Poster cards in `columns` columns, each `cardWidth` wide; each is one link, named once. */
+/**
+ * Poster cards in `columns` columns, each `cardWidth` wide; each is one link, named once. With `unhide` (Search), a title
+ * the member hid has an Unhide button of its own under its card.
+ */
 export function ResultsGrid({
   cards,
   cardWidth,
   onOpen,
+  unhide = false,
   testID = 'search-grid',
 }: {
   cards: readonly Card[];
   cardWidth: number;
   onOpen: (card: Card) => void;
+  unhide?: boolean;
   testID?: string;
 }) {
   return (
     <View testID={testID} style={styles.grid}>
-      {cards.map((card, index) => (
+      {cards.map((card, index) =>
         // A title can come back on two pages when TMDB's order moves between them: the place keeps the key unique.
-        <PosterCard key={`${index}-${card.mediaType}-${card.tmdbId}`} card={card} width={cardWidth} onOpen={onOpen} />
-      ))}
+        unhide && card.hidden ? (
+          <View key={`${index}-${card.mediaType}-${card.tmdbId}`} style={[styles.hiddenCard, { width: cardWidth }]}>
+            <PosterCard card={card} width={cardWidth} onOpen={onOpen} />
+            <UnhideButton target={card} />
+          </View>
+        ) : (
+          <PosterCard key={`${index}-${card.mediaType}-${card.tmdbId}`} card={card} width={cardWidth} onOpen={onOpen} />
+        ),
+      )}
     </View>
   );
 }
@@ -101,6 +114,7 @@ const styles = StyleSheet.create({
     color: colors.text,
   },
   grid: { flexDirection: 'row', flexWrap: 'wrap', columnGap: GRID_GAP.column, rowGap: GRID_GAP.row },
+  hiddenCard: { gap: 6 },
   skeletonPoster: { width: '100%', aspectRatio: 2 / 3, borderRadius: radii.poster, backgroundColor: colors.surface },
   skeletonLine: { width: '70%', height: 12, borderRadius: 6, backgroundColor: colors.surface },
   more: { alignItems: 'center' },
