@@ -10,7 +10,7 @@ import { renderRouter } from 'expo-router/testing-library';
 
 import type { FetchLike } from '../src/api/client';
 import { API, showAll } from './support/home';
-import { ORIGIN, OTHER_ORIGIN, TOKEN, answer, keepSession, press, settle, signedInAnswer, store, type, type Call } from './support/household';
+import { ORIGIN, OTHER_ORIGIN, TOKEN, answer, keepSession, press, settle, store, storedSession, type, type Call } from './support/household';
 import { listGateway, listPage } from './support/list';
 import { gridNames } from './support/source';
 import { buttonNamed, linkNamed, pressNode } from './support/title';
@@ -67,7 +67,9 @@ beforeEach(() => {
         const n = [...signIns.values()].filter((label) => label.startsWith(member)).length + 1;
         const token = `synthetic-${member}-token-000${n}`;
         signIns.set(token, `${member}${n}`);
-        return signedInAnswer(name, token);
+        // The member's own ID, as the kept session has it: a sign-in as the same member is the same user.
+        const user = MEMBERS.find((m) => m.Name === name)!;
+        return answer(200, { AccessToken: token, ServerId: 'server-1', User: { Id: user.Id, Name: user.Name } });
       },
     },
   );
@@ -125,16 +127,20 @@ const named = (who: string) => gridNames().filter((name) => name.startsWith(`${w
 
 describe("a Home row's handoff", () => {
   it.each([
-    ['a sign-out and the same member signing in again', 'Ana Lima', 'household ana2'],
-    ['a sign-out and another member of the household signing in', 'Cara Diaz', 'household cara1'],
-  ])('is forgotten on %s: the list asks for its own page', async (_what, member, who) => {
+    ['a sign-out and the same member signing in again', 'Ana Lima', 'u-ana', 'household ana2'],
+    ['a sign-out and another member of the household signing in', 'Cara Diaz', 'u-cara', 'household cara1'],
+  ])('is forgotten on %s: the list asks for its own page', async (_what, member, userId, who) => {
     const app = await start();
+    expect([storedSession()?.['userId'], storedSession()?.['token']]).toEqual(['u-ana', TOKEN]);
     await leaveHandoff();
     await openTab('Account');
     await press('Sign out');
     await settle();
     expect(app.getPathname()).toBe('/');
     await signInAs(member);
+    // Only the sign-in changed for the same member: the user is the one kept before, under a new token.
+    expect(storedSession()?.['userId']).toBe(userId);
+    expect(storedSession()?.['token']).not.toBe(TOKEN);
     const calls = since();
     await openTrending();
     expect(app.getPathname()).toBe('/home/list/trending');
@@ -146,14 +152,17 @@ describe("a Home row's handoff", () => {
 
   it('is forgotten on a change of household: the other household asks for its own page and never sees the first one', async () => {
     const app = await start();
+    expect(storedSession()?.['address']).toBe(ORIGIN);
     await leaveHandoff();
     await openTab('Account');
     await press('Change household');
     await settle();
-    await type('Household address', 'jelly-elsewhere.example.test');
+    // Typed as a person would, without the scheme: any HTTPS address, port and all.
+    await type('Household address', new URL(OTHER_ORIGIN).host);
     await press('Continue');
     await settle();
     await signInAs('Ana Lima');
+    expect(storedSession()?.['address']).toBe(OTHER_ORIGIN);
     const calls = since();
     await openTrending();
     expect(app.getPathname()).toBe('/home/list/trending');
