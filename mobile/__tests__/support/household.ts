@@ -1,4 +1,4 @@
-// The sign-in tests' household: a fake gateway on one synthetic address (example.test only), the credential store
+// The sign-in tests' household: a fake gateway on one synthetic address (reserved example domains only), the credential store
 // (the in-memory mock in __mocks__/expo-secure-store.ts), and small queries that never print the component tree when
 // they fail (a printed tree has run the test runner out of memory before).
 import * as SecureStore from 'expo-secure-store';
@@ -13,7 +13,7 @@ export { answer, fixture, ORIGIN, TOKEN, ADDRESS } from './app-api';
 /** A phone's safe areas (an iPhone's notch and home indicator), for the screens that read them. */
 export const METRICS = { frame: { x: 0, y: 0, width: 390, height: 844 }, insets: { top: 47, left: 0, right: 0, bottom: 34 } };
 
-export const OTHER_ORIGIN = 'https://jelly-elsewhere.example.test';
+export const OTHER_ORIGIN = 'https://films.example.net:8443';
 export const PASSWORD = 'synthetic-password-do-not-log';
 
 export const IDENTITY: ClientIdentity = { client: 'JellyPass iOS', device: 'Test Phone', deviceId: 'synthetic-device-0001', version: '1.0.0' };

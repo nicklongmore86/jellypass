@@ -27,6 +27,72 @@ changes are always listed at the top of the release notes.
 
 - Authenticated admin deployment self-check for direct Jellyfin origins, Quick Connect, household proxy headers, public Seerr, version support when the gate is available, and TMDB key validity. Public probes carry no service credentials, use timeouts and bounded reads, never follow redirects, and run at most once per minute. Inside probes explicitly warn about external-reachability limits.
 
+JellyPass now has a written Jellyfin support policy: **it supports the current
+Jellyfin release and the one before it, Jellyfin 12.x and 10.11.x**, and tests
+both against a real Jellyfin in CI and before every release. On any other
+Jellyfin version, household hostnames pause until an administrator confirms
+that exact version. On a supported version nothing changes. Read these before
+upgrading:
+
+- **Check your Jellyfin version first.** On Jellyfin 12.x or 10.11.x (every
+  version the README's "Jellyfin 10.11 or newer" covered until now) nothing
+  changes and nothing needs configuring. On any other version (an older 10.x,
+  a pre-release, or a future 13.0), **household hostnames answer `503` from
+  the moment you upgrade** until you confirm it: open the admin site and choose
+  **Allow Jellyfin X**, or set `JELLYFIN_UNTESTED_VERSION_OK` to that exact
+  version before upgrading. The admin site, webhooks and grants keep working
+  either way.
+- **Upgrading Jellyfin to an untested version later pauses household
+  hostnames again,** within five minutes, until that version is confirmed in
+  turn. A confirmation covers one exact version.
+- **Jellyfin unreachable when JellyPass starts:** JellyPass starts anyway, and
+  household hostnames answer `503` until Jellyfin reports its version (read
+  again every 30 seconds and on the next household request), instead of
+  relaying unchecked. They serve as soon as Jellyfin answers.
+- **On Jellyfin 12, clients that give their token only the legacy way**
+  (`X-Emby-Token`, `X-Emby-Authorization`, `X-MediaBrowser-Token`, the `Emby`
+  scheme or `api_key`) get `401` on household hostnames, as Jellyfin 12 itself
+  refuses them. JellyPass checks a client's credentials exactly as given and
+  never translates them into a form Jellyfin 12 reads. On 10.11 they work as
+  before.
+- **The state file keeps schema v7.** A confirmation is stored in a new
+  optional field, `jellyfinVersionConfirmed`, which 3.9.0 keeps as it is
+  without reading it, so rolling back needs no state change (3.9.0 does not
+  check the version at all).
+- **To roll back,** set `JELLYPASS_IMAGE` back to
+  `ghcr.io/nicklongmore86/jellypass:3.9.0` and recreate the container.
+
+### Added
+
+- **Supported Jellyfin versions.** JellyPass reads Jellyfin's version from
+  `/System/Info/Public` at startup and every five minutes, and logs a warning
+  on a version outside the supported releases (12.x and 10.11.x). Household
+  hostnames then refuse every request and WebSocket with a fixed `503` and a
+  plain-text message, never relaying it to Jellyfin, until an administrator
+  confirms that exact version. See README, "Supported Jellyfin versions".
+- **Admin site:** a banner shows an untested or unreadable Jellyfin version,
+  with **Allow Jellyfin X** (and **Withdraw** once allowed); the connection
+  status reads "Household hosts paused" while they are.
+- **Administrator API:** `GET /v1/jellyfin/version`,
+  `PUT /v1/jellyfin/version/confirmation` (`{"version": "..."}`, exactly the
+  version Jellyfin reports now) and `DELETE /v1/jellyfin/version/confirmation`.
+- **Setting:** `JELLYFIN_UNTESTED_VERSION_OK`, one exact untested version that
+  household hostnames serve on without confirming it in the admin site.
+- **Metrics:** `jfa_jellyfin_version_info{version,supported,confirmed}`,
+  `jfa_jellyfin_version_supported` and `jfa_household_hosts_refusing`.
+
+### Changed
+
+- **CI and the release workflow test every supported Jellyfin release:** the
+  real-Jellyfin suite runs once against `jellyfin/jellyfin:12.4.20261026-211555`
+  (12.4.0) and once against `jellyfin/jellyfin:10.11.11`, instead of 10.11.3
+  only; no image is published unless both pass. `pnpm test:real` runs both in
+  turn. The images are pinned in `scripts/jellyfin-versions.json`.
+- README: the requirement is now "Jellyfin 12.x (current) or 10.11.x
+  (previous)" instead of "Jellyfin 10.11 or newer".
+- `docs/tv-addon.md`: the TV add-on is matched to the supported Jellyfin
+  releases.
+
 ## [3.9.0] - 2026-10-29
 
 This is a minor release for the TV add-on, which is still experimental and off

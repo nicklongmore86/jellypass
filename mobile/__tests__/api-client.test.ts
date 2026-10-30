@@ -157,7 +157,7 @@ describe('decoding, lenient only where the contract says', () => {
     const [inLibrary, other, third] = page.results as [Json, Json, Json];
     inLibrary.posterUrl = 'https://evil.example.test/p.jpg';
     inLibrary.backdropUrl = 'https://image.tmdb.org/t/p/original/a.jpg';
-    inLibrary.play = { itemId: '0123456789abcdef0123456789abcdef', url: 'https://jelly-other.example.test/web/#/details?id=0123456789abcdef0123456789abcdef' };
+    inLibrary.play = { itemId: '0123456789abcdef0123456789abcdef', url: 'https://films.example.net/web/#/details?id=0123456789abcdef0123456789abcdef' };
     // A Play link for a title not in the library is dropped too.
     other.play = { itemId: 'abc', url: `${ORIGIN}/web/#/details?id=abc` };
     third.posterUrl = 'https://image.tmdb.org/t/p/w300/a.jpg';
@@ -370,7 +370,7 @@ describe('secrets', () => {
       const { api } = clientWith(respond);
       const error = await failure(api.search('secret-query'));
       const everything = [error.message, String(error), error.stack ?? '', JSON.stringify(error), JSON.stringify(Object.entries(error))].join('\n');
-      for (const secret of [TOKEN, ORIGIN, 'jelly-household', 'secret-detail', 'secret-query']) expect(everything).not.toContain(secret);
+      for (const secret of [TOKEN, ORIGIN, 'media.example', 'secret-detail', 'secret-query']) expect(everything).not.toContain(secret);
     }
   });
 

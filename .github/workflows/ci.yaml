@@ -24,13 +24,19 @@ jobs:
       - run: pnpm build
       - run: docker build .
 
+  # JellyPass supports the current and the previous Jellyfin release (src/jellyfin-version.ts); each is tested here
+  # against the exact image scripts/jellyfin-versions.json pins (test/jellyfin-version.test.mjs keeps the two in step).
   jellyfin-integration:
-    strategy:
-      matrix:
-        image: ['jellyfin/jellyfin:10.11.11', 'jellyfin/jellyfin:12.4.20261026-211555']
-    env:
-      JELLYFIN_IMAGE: ${{ matrix.image }}
+    name: jellyfin-integration (${{ matrix.jellyfin.version }})
     runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        jellyfin:
+          - image: jellyfin/jellyfin:12.4.20261026-211555
+            version: 12.4.0
+          - image: jellyfin/jellyfin:10.11.11
+            version: 10.11.11
     steps:
       - uses: actions/checkout@v7
       - uses: pnpm/action-setup@v6
@@ -39,9 +45,12 @@ jobs:
           node-version: 22
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      # Starts a throwaway supported Jellyfin container, runs
-      # test/real-jellyfin.test.mjs against it, and prints its logs on failure.
+      # Starts a throwaway container of this image, runs test/real-jellyfin.test.mjs
+      # against it, and prints its logs on failure.
       - run: pnpm test:real
+        env:
+          JELLYFIN_IMAGE: ${{ matrix.jellyfin.image }}
+          JELLYFIN_REAL_VERSION: ${{ matrix.jellyfin.version }}
 
   seerr-integration:
     runs-on: ubuntu-24.04
