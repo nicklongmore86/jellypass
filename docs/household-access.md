@@ -83,7 +83,7 @@ Filtering public discovery is a usability and privacy boundary. It is not author
 
 ### No scripts added on the way
 
-A household hostname is often reached through a CDN. Every HTML page JellyPass serves or relays on it (the household app, Jellyfin web's page with or without the TV add-on, `/jellypass/add` and any other HTML from Jellyfin) carries `Cache-Control: no-transform`, added to Jellyfin's or JellyPass's own directives, so a CDN that honours it (Cloudflare Web Analytics' automatic setup is one) adds no script to it. JellyPass compresses those pages itself (br or gzip, as the client accepts, unless Jellyfin already encoded them), because such a CDN no longer does; every other answer is left to the CDN. See README "CDNs and HTML pages".
+A household hostname is often reached through a CDN. Every HTML page JellyPass serves or relays on it (the household app, Jellyfin web's page with or without the TV add-on, `/jellypass/add` and any other HTML from Jellyfin) carries `Cache-Control: no-transform`, added to Jellyfin's or JellyPass's own directives, so a CDN that honours it (Cloudflare Web Analytics' automatic setup is one) adds no script to it. JellyPass compresses those pages itself (br or gzip, as the client accepts, unless Jellyfin already encoded them), because such a CDN no longer does; every other answer is left to the CDN. See "CDNs and HTML pages" in [the server reference](server-reference.md#cdns-and-html-pages).
 
 ## Boundary model
 

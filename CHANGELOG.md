@@ -18,6 +18,22 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Changed
+
+- README: shortened to an overview, quick start and links. Its reference
+  sections moved unchanged to `docs/server-reference.md` and
+  `docs/household-hosts.md`, and the guide is at https://jellypass.app/docs/.
+  Links to the README's old sections still land on it, in a "Moved sections"
+  list that points to their new place.
+  The quick start now gives the data folder to UID 1000
+  (`sudo chown 1000:1000 data`): created by root with `mkdir -m 700` alone,
+  the container could not write its state file and stopped with `EACCES`.
+- `compose.example.yaml` (the build-from-source Compose file): its service is
+  now named `jellypass`, as in `compose.yaml` and the webhook URL examples,
+  instead of `access-bridge`. If you started JellyPass from that file before,
+  run `docker compose -f compose.example.yaml up --build -d --remove-orphans`
+  once, so the old `access-bridge` container is removed and frees port 8787.
+
 ## [3.10.0] - 2026-10-30
 
 This is a minor release. JellyPass now has a written Jellyfin support policy:
