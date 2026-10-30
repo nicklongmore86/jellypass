@@ -120,33 +120,36 @@ releases, so every 12.x is supported, as is every 10.11.x. The pinned test
 images are listed in `scripts/jellyfin-versions.json`.
 
 JellyPass reads Jellyfin's version (`/System/Info/Public`) at startup and every
-five minutes. On a supported version nothing changes. On any other version
-(an older 10.x, or a future release JellyPass has not been tested with yet):
+five minutes. On a supported version nothing changes. Any other version is
+**unconfirmed** until an administrator confirms it: an older 10.x, a future
+release JellyPass has not been tested with yet, and **any build whose version
+has a suffix**, whether a pre-release (`12.5.0-rc1`), build metadata
+(`12.4.0+abc`) or any other non-numeric part, even when its numbers are a
+supported release's. On an unconfirmed version:
 
-- JellyPass logs a warning naming the version, and the admin site shows it
-  with an **Allow Jellyfin X** button. `GET /v1/jellyfin/version` and the
-  `jfa_jellyfin_version_info` and `jfa_household_hosts_refusing` metrics report
-  it too.
-- **Household hostnames refuse to serve**: every request (and WebSocket) there
-  gets a fixed `503` with a plain-text message, and nothing is relayed to
-  Jellyfin. The household privacy checks were written against the supported
-  versions, so they are not trusted on another one until an administrator says
-  so.
+- JellyPass logs a warning naming the version, once for each version it
+  reads, and the admin site shows it with an **Allow Jellyfin X** button.
+  `GET /v1/jellyfin/version` (`confirmation: "unconfirmed"`) and the
+  `jfa_jellyfin_version_info` metric (`confirmed="false"`) report it too.
+- **In JellyPass 3.x, household hostnames keep serving** as they did before
+  the check existed (`enforcement: "warn"`). The household privacy checks were
+  written against the supported versions, so confirm a version only once you
+  are satisfied they hold on it.
+- **From JellyPass 4.0.0, household hostnames will refuse to serve on an
+  unconfirmed version**: every request (and WebSocket) there will get a fixed
+  `503` with a plain-text message, with nothing relayed to Jellyfin, until
+  that exact version is confirmed; likewise while the version cannot be read.
 - The admin site, webhooks, grants and reconciliation keep working.
 - An administrator confirms one **exact** version, either in the admin site
-  (stored in the state file) or by setting `JELLYFIN_UNTESTED_VERSION_OK` to it.
-  Household hostnames then serve again. A later upgrade to another untested
-  version is refused again until it is confirmed in turn; the confirmation can
-  be withdrawn in the admin site.
+  (stored in the state file) or by setting `JELLYFIN_UNTESTED_VERSION_OK` to it,
+  which clears the warning. A later upgrade to another untested version is
+  unconfirmed again until it is confirmed in turn; the confirmation can be
+  withdrawn in the admin site.
 
 While the version is not known (Jellyfin unreachable when JellyPass starts, or
 its last read failed), JellyPass does not wait for it: it starts as usual, the
-admin site works, and household hostnames answer a fixed `503` ("cannot read
-the Jellyfin version yet") rather than relay unchecked. It reads the version
-again every 30 seconds, and whenever a household request arrives (at most every
-five seconds), so household hostnames serve as soon as Jellyfin answers. A
-read that fails after the version was known forgets it the same way, so a
-Jellyfin upgraded during a restart is never served unchecked.
+admin site shows that the version cannot be read, and household hostnames
+serve as before. It reads the version again every 30 seconds.
 
 ## Quick start with Docker Compose
 
@@ -235,7 +238,7 @@ JellyPass reads configuration from environment variables at startup.
 | `WS_IDLE_TIMEOUT_MS` | No | `300000` | Closes a proxied household WebSocket after this many milliseconds with no bytes in either direction; `0` disables. Jellyfin drops sockets after 60 s without a client KeepAlive (clients send one every 30 s), so values at or below `60000` log a startup warning. Maximum `86400000`. |
 | `WS_UPSTREAM_IDLE_TIMEOUT_MS` | No | `180000` | Closes a proxied household WebSocket after this many milliseconds with no bytes from Jellyfin, even while the client keeps sending; `0` disables. Jellyfin answers every client KeepAlive and pings quiet sockets, so a healthy server is never silent for much more than 60 s; values at or below `60000` log a startup warning. Maximum `86400000`. |
 | `LOG_LEVEL` | No | `info` | One of `debug`, `info`, `warn`, `error` (case-insensitive; aliases such as `trace`/`verbose`, `information`, and `warning` are accepted). Only `debug` changes output today: it also logs routine client disconnects (`ECONNRESET`, `EPIPE`, aborted streams, keepalive timeouts) and idle WebSocket closes on the household proxy. `info`, `warn`, and `error` are accepted but behave identically. Jellyfin-side resets and other unexpected proxy errors are always logged as warnings. An unrecognised value logs a startup warning and falls back to `info`. |
-| `JELLYFIN_UNTESTED_VERSION_OK` | No | — | One exact Jellyfin version outside the [supported releases](#supported-jellyfin-versions), such as `13.0.0`, that household hostnames serve on without confirming it in the admin site. Any other untested version is still refused. Must be a single version string; an invalid value stops startup. |
+| `JELLYFIN_UNTESTED_VERSION_OK` | No | — | One exact Jellyfin version outside the [supported releases](#supported-jellyfin-versions), such as `13.0.0` or `12.5.0-rc1`, that counts as confirmed without confirming it in the admin site. Any other untested version stays unconfirmed. Must be a single version string; an invalid value stops startup. |
 | `TRUSTED_PROXIES` | No | — | Comma-separated IP addresses and CIDR ranges (IPv4 or IPv6) of reverse proxies in front of JellyPass, such as `192.0.2.10, 2001:db8::/64`. When the connecting peer is listed, JellyPass reads the client address from `X-Forwarded-For` for login rate limits; otherwise it uses the peer and ignores the header. Empty trusts no proxy. An invalid entry stops startup. See [Running behind a reverse proxy](#running-behind-a-reverse-proxy). |
 | `JELLYPASS_IMAGE` | Compose only | `ghcr.io/nicklongmore86/jellypass:latest` | Container tag used by `compose.yaml`. |
 | `JELLYPASS_ENV_FILE` | Compose only | `.env` | Alternate environment-file path used by either Compose file. |
@@ -427,8 +430,8 @@ In **Settings → Notifications → Webhook**:
 2. Select only **Request Available**.
 3. Set the URL to `http://jellypass:8787/webhooks/seerr` for a shared Docker
    network, adjusting the host for your installation.
-4. Set the authorization header to `Bearer YOUR_WEBHOOK_TOKEN` when the
-   Seerr version supports it.
+4. Set the authorization header to `Bearer YOUR_WEBHOOK_TOKEN` (recommended;
+   the `?token=` URL form below is deprecated).
 5. Use the payload below.
 
 ```json
@@ -487,10 +490,11 @@ payload is sufficient because JellyPass resolves the request through the API:
 }
 ```
 
-If the notification UI cannot add an authorization header, append
-`?token=YOUR_WEBHOOK_TOKEN` to the webhook URL. Query strings can appear in
-proxy logs, browser history, and diagnostics, so keep this route private and
-prefer the bearer header whenever possible.
+Send the token as `Authorization: Bearer YOUR_WEBHOOK_TOKEN`; this is the
+recommended form. **Deprecated:** appending `?token=YOUR_WEBHOOK_TOKEN` to the
+webhook URL still works in JellyPass 3.x but will be removed in 4.0.0. Query
+strings can appear in proxy logs, browser history, and diagnostics, so if you
+use it, move the token to the header.
 
 After configuration, use Seerr's test function if available. Every event
 other than `MEDIA_AVAILABLE`, including Seerr's `TEST_NOTIFICATION`, returns
@@ -939,7 +943,7 @@ blocked-tag policy.
 | `POST` | `/v1/app/requests/{requestId}/decline` | Decline a pending request in Seerr; every household following it sees "We couldn't get this". |
 | `POST` | `/v1/app/requests/{requestId}/cancel` | Send every household following it back to "Get this", hold the title should it arrive, then delete the request in Seerr; `{"removeFromRadarr": true}` also removes a movie Jellyfin does not have from Radarr. |
 | `POST` | `/v1/app/held/{requestId}/release` | Give a held title to `{"householdIds": [...]}`. |
-| `GET` | `/v1/jellyfin/version` | The Jellyfin version last read, whether it is supported, any confirmation, and whether household hostnames serve (`householdHosts`: `serving`, `refused` or `waiting`). |
+| `GET` | `/v1/jellyfin/version` | The Jellyfin version last read, whether it is supported, any confirmation (`confirmation`: `not_needed`, `confirmed`, `unconfirmed`, or `null` while the version is not known), what an unconfirmed version does (`enforcement`: `warn` in 3.x, `refuse` from 4.0.0), and whether household hostnames serve (`householdHosts`: `serving`, `refused` or `waiting`; always `serving` in 3.x). |
 | `PUT` | `/v1/jellyfin/version/confirmation` | Allow the untested version Jellyfin runs now: `{"version": "..."}`, exactly as `GET /v1/jellyfin/version` reports it (`409 jellyfin_version_changed` otherwise). |
 | `DELETE` | `/v1/jellyfin/version/confirmation` | Withdraw that confirmation. |
 | `GET` | `/v1/grants` | List grants and synchronization state. |

@@ -52,8 +52,10 @@ authority. See [how access enforcement works](docs/server-reference.md#how-acces
 ## Requirements
 
 - Jellyfin **12.x or 10.11.x**, and a Jellyfin administrator API key. On any
-  other version, household addresses pause until an administrator allows that
-  exact version ([supported versions](docs/server-reference.md#supported-jellyfin-versions)).
+  other version, JellyPass 3.x keeps serving household addresses but warns (in
+  its log and the admin site) until an administrator confirms that exact
+  version; JellyPass 4.0.0 will refuse household requests until then
+  ([supported versions](docs/server-reference.md#supported-jellyfin-versions)).
 - Seerr (or Jellyseerr) with users imported from or linked to Jellyfin.
 - Docker with Compose v2 (images for `linux/amd64` and `linux/arm64`), or
   Node.js 22+ and pnpm.
@@ -100,8 +102,16 @@ host name that is not a household address gets the admin site: forward only
 household names to it from the internet, and keep the admin site on the LAN or
 behind an access gate ([security](https://jellypass.app/docs/security/)).
 
-To build from source instead: `cp .env.example .env`, edit it, and
-`docker compose -f compose.example.yaml up --build -d`.
+To build from source instead, run these inside a clone of this repository
+(the container runs as UID 1000, so it needs a data directory it can write):
+
+```sh
+git clone https://github.com/nicklongmore86/jellypass.git && cd jellypass
+mkdir -m 700 data
+sudo chown 1000:1000 data
+cp .env.example .env   # then edit it
+docker compose -f compose.example.yaml up --build -d
+```
 
 ## Configuration
 
@@ -128,7 +138,10 @@ detail, in the [server reference](docs/server-reference.md#configuration).
 ## Apps
 
 All the apps need `HOUSEHOLD_APP_ENABLED=true` (with `HOUSEHOLD_DOMAIN`, Seerr
-and `TMDB_API_KEY`) and talk only to the member's household address. See
+and `TMDB_API_KEY`). They send sign-ins, searches and requests only to the
+member's household address; artwork (posters, backdrops, logos) loads straight
+from TMDB's image server, `image.tmdb.org`, as the
+[privacy policy](https://jellypass.app/privacy/) explains. See
 [Phone, web and TV apps](https://jellypass.app/docs/apps/).
 
 - **iPhone, iPad and Android** ([`mobile/`](mobile/README.md)): iOS through
@@ -200,6 +213,49 @@ and against Seerr (`pnpm test:seerr`); see
 Report vulnerabilities privately through GitHub Security Advisories; see
 [SECURITY.md](SECURITY.md). The admin site is not gated by default: keep it on
 the LAN or behind an access gate.
+
+## Moved sections
+
+The reference that used to be in this README moved to
+[docs/server-reference.md](docs/server-reference.md) and
+[docs/household-hosts.md](docs/household-hosts.md). Links to its old sections
+land here:
+
+- <a name="what-it-does"></a>[What it does](docs/server-reference.md#what-it-does)
+- <a name="how-access-enforcement-works"></a>[How access enforcement works](docs/server-reference.md#how-access-enforcement-works)
+- <a name="catalog-items-are-not-grants"></a>[Catalog items are not grants](docs/server-reference.md#catalog-items-are-not-grants)
+- <a name="household-scoped-request-grants"></a>[Household-scoped request grants](docs/server-reference.md#household-scoped-request-grants)
+- <a name="supported-jellyfin-versions"></a>[Supported Jellyfin versions](docs/server-reference.md#supported-jellyfin-versions)
+- <a name="quick-start-with-docker-compose"></a>[Quick start with Docker Compose](docs/server-reference.md#quick-start-with-docker-compose)
+- <a name="build-locally-instead"></a>[Build locally instead](docs/server-reference.md#build-locally-instead)
+- <a name="request-backfill"></a>[Request backfill](docs/server-reference.md#request-backfill)
+- <a name="network-addresses"></a>[Network addresses](docs/server-reference.md#network-addresses)
+- <a name="running-behind-a-reverse-proxy"></a>[Running behind a reverse proxy](docs/server-reference.md#running-behind-a-reverse-proxy)
+- <a name="chains-of-proxies-and-cdns"></a>[Chains of proxies and CDNs](docs/server-reference.md#chains-of-proxies-and-cdns)
+- <a name="cdns-and-html-pages"></a>[CDNs and HTML pages](docs/server-reference.md#cdns-and-html-pages)
+- <a name="login-lockouts-are-best-effort"></a>[Login lockouts are best-effort](docs/server-reference.md#login-lockouts-are-best-effort)
+- <a name="forwarding-to-jellyfin"></a>[Forwarding to Jellyfin](docs/server-reference.md#forwarding-to-jellyfin)
+- <a name="configure-seerr"></a>[Configure Seerr](docs/server-reference.md#configure-seerr)
+- <a name="administrator-ui"></a>[Administrator UI](docs/server-reference.md#administrator-ui)
+- <a name="household-jellyfin-urls"></a>[Household Jellyfin URLs](docs/household-hosts.md#household-jellyfin-urls)
+- <a name="add-to-my-library"></a>[Add to my library](docs/household-hosts.md#add-to-my-library)
+- <a name="get-this"></a>[Get this](docs/household-hosts.md#get-this)
+- <a name="health-and-logs"></a>[Health and logs](docs/server-reference.md#health-and-logs)
+- <a name="administrative-api-examples"></a>[Administrative API examples](docs/server-reference.md#administrative-api-examples)
+- <a name="upgrade"></a>[Upgrade](docs/server-reference.md#upgrade)
+- <a name="troubleshooting"></a>[Troubleshooting](docs/server-reference.md#troubleshooting)
+- <a name="a-new-download-appears-in-library-but-not-grants"></a>[A new download appears in Library but not Grants](docs/server-reference.md#a-new-download-appears-in-library-but-not-grants)
+- <a name="webhooks-never-arrive"></a>[Webhooks never arrive](docs/server-reference.md#webhooks-never-arrive)
+- <a name="webhook-returns-401"></a>[Webhook returns `401`](docs/server-reference.md#webhook-returns-401)
+- <a name="webhook-reports-missing-jellyfin-ids"></a>[Webhook reports missing Jellyfin IDs](docs/server-reference.md#webhook-reports-missing-jellyfin-ids)
+- <a name="library-is-empty-or-stale"></a>[Library is empty or stale](docs/server-reference.md#library-is-empty-or-stale)
+- <a name="a-household-hostname-returns-404"></a>[A household hostname returns `404`](docs/server-reference.md#a-household-hostname-returns-404)
+- <a name="a-re-imported-title-is-public-or-a-grant-is-orphaned"></a>[A re-imported title is public or a grant is orphaned](docs/server-reference.md#a-re-imported-title-is-public-or-a-grant-is-orphaned)
+- <a name="changes-do-not-reach-every-user"></a>[Changes do not reach every user](docs/server-reference.md#changes-do-not-reach-every-user)
+- <a name="api-reference"></a>[API reference](docs/server-reference.md#api-reference)
+- <a name="security-and-privacy"></a>[Security and privacy](docs/server-reference.md#security-and-privacy)
+- <a name="limitations"></a>[Limitations](docs/server-reference.md#limitations)
+- <a name="releases-and-free-distribution"></a>[Releases and free distribution](docs/server-reference.md#releases-and-free-distribution)
 
 ## License
 
