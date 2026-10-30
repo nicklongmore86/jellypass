@@ -47,6 +47,7 @@ import {
   RETRY_TEXT,
   shortOverview,
   networkLinkName,
+  listLinkName,
   SOURCE_TEXT,
   BADGE_WORDS,
   badgeWord,
@@ -471,6 +472,29 @@ export function NetworkHeading({ prefix, network, onOpen }: { prefix: string; ne
         testID="row-heading-link"
         accessibilityRole="link"
         accessibilityLabel={networkLinkName(prefix, network.name)}
+        onPress={onOpen}
+        style={({ pressed }) => [styles.headingLink, pressed && styles.pressed]}
+      >
+        <Icon name="next" color={colors.text} size={20} />
+      </Pressable>
+    </View>
+  );
+}
+
+/**
+ * A list row's heading with the same chevron after it as a service row's, a link of its own to the row's full grid ("See
+ * all Trending"); the heading itself is not pressable, so a screen reader's headings still land on it alone.
+ */
+export function ListHeading({ title, onOpen }: { title: string; onOpen: () => void }) {
+  return (
+    <View style={styles.networkHeading}>
+      <Text accessibilityRole="header" style={styles.rowHeadingText}>
+        {title}
+      </Text>
+      <Pressable
+        testID="row-heading-link"
+        accessibilityRole="link"
+        accessibilityLabel={listLinkName(title)}
         onPress={onOpen}
         style={({ pressed }) => [styles.headingLink, pressed && styles.pressed]}
       >

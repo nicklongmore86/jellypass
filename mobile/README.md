@@ -171,7 +171,9 @@ The PWA's Home (`home()` in `app/src/main.ts`, its pieces in `app/src/render.ts`
   keeps its series under All and is left out under Movies. No all-time rows. Headings are heavy with the waterline: a
   cyan line and a purple cap (two segments, never a gradient), or one line in the service's brand colour; a service's
   heading is "Popular on" and its logo (a header, named "Popular on Netflix"), then a chevron, a 44 pt link of its own
-  to the service's page (on the list the row shows) named "See all Popular on Netflix". Each studio's logo is a link to its page named "Pixar, studio".
+  to the service's page (on the list the row shows) named "See all Popular on Netflix". Every other row (each
+  discover list) has the same chevron after its heading, a link to the list's full grid named "See all Trending" (see
+  "See all pages" below). Each studio's logo is a link to its page named "Pixar, studio".
 - **Hero.** The first five titles of the filter's first row, from that row's own answer (no extra call): a rounded
   card per slide, the backdrop with a solid navy panel **below** it (title, year, "★ 7.8 TMDB", the status, the start
   of the overview). Swipe, **Previous title** / **Next title** (wrapping) and one round dot per title (hollow, or larger
@@ -243,6 +245,29 @@ The PWA's `#/network/:id` and `#/studio/:id` (`sourceScreen()` in `app/src/main.
 failure, a 401, late answers, the overlay, every pressable named and 44 pt, every text free to grow, phone and iPad
 columns) and `source-budget.test.tsx` (the calls against `docs/app-api/fetch-budget.json`'s `network`,
 `network-series`, `network-films` and `studio`, which `test/app-pwa.test.mjs` pins for the PWA).
+
+## See all pages (`src/source/useList.ts`, `src/screens/ListScreen.tsx`)
+
+The TV add-on's `#/jellypass/list/<list>` (`tv/src/discover-source.ts`, its `list` kind), on Home's stack at
+`/home/list/<list>`, opened from the chevron after a list row's heading: Trending, Popular movies, Popular series, New
+movie releases, Upcoming movies and Upcoming series, and the Trending movies / Trending series rows of the Movies and TV
+filters. The PWA has no such page.
+
+- **Page.** The header says the row's heading, then **New only** (`list-hide`, the same choice as Home's) and the
+  network and studio pages' poster grid with **Load more**. No logo, no tabs, no JustWatch credit (every list is
+  TMDB's). A card opens its title on Home's stack and Back comes back to the same grid; the page's own Back (and the
+  swipe) comes back to Home with its filter as it was.
+- **The filter.** Each row's link opens the list that row shows, so Movies' Trending opens `trending-movies` and TV's
+  `trending-tv`. Only the lists Home's rows show have a page: any other name (`top-movies`, …) is Not found with no call.
+- **Calls.** Opened from its row, none: the row's page is handed to it in memory (`src/home/rowPages.ts`, taken once,
+  forgotten with the session). Opened by its address (a row not loaded yet), the list's first page alone,
+  `GET /discover/<list>`. One page per Load more (`?page=n`); Back none. These are `fetch-budget.json`'s
+  `tv-discover-list`. Failures, Try again and a 401 are as on the network and studio pages.
+
+**Tests.** `list.test.tsx` (each row's link under All, Movies and TV, its name and place after the heading, the route
+and the row's titles with no call, the filter and New only kept, Load more, Back to the grid, the address, Not found,
+each failure, a 401, every pressable named and 44 pt, every text free to grow, the badges, phone and iPad columns) and
+`row-pages.test.ts`.
 
 ## Title pages and Get this (`src/title`, `src/screens/TitleScreen.tsx`)
 
