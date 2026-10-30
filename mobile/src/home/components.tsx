@@ -455,23 +455,24 @@ export function LogoTile({ source, size }: { source: Source; size: 'small' | 'la
 /**
  * The whole heading row (title, logo and chevron) as one touch target, 44 pt tall with a pressed state. It is touch-only:
  * not an accessibility element, so a screen reader still gets the heading as a header and the chevron as the one
- * "See all <row>" link, never a third, duplicate stop. A press on the chevron is the chevron's own.
+ * `linkName` link, never a third, duplicate stop. A press on the chevron is the chevron's own, but either press dims the
+ * whole row: the chevron takes the responder from the row, so the two share one pressed state rather than each its own.
  */
-/** The tap target's style: the heading row's layout, 44 pt tall, dimmed while a finger is on it. */
-export function headingTapStyle(pressed: boolean) {
-  return [styles.networkHeading, styles.headingTap, pressed && styles.pressed];
-}
-
-function HeadingTap({ onOpen, children }: { onOpen: () => void; children: ReactNode }) {
+function HeadingTap({ onOpen, linkName, children }: { onOpen: () => void; linkName: string; children: ReactNode }) {
+  const [held, setHeld] = useState(false);
+  const press = { onPress: onOpen, onPressIn: () => setHeld(true), onPressOut: () => setHeld(false) };
   return (
     <Pressable
       testID="row-heading-tap"
       accessible={false}
       importantForAccessibility="no"
-      onPress={onOpen}
-      style={({ pressed }) => headingTapStyle(pressed)}
+      {...press}
+      style={[styles.networkHeading, styles.headingTap, held && styles.pressed]}
     >
       {children}
+      <Pressable testID="row-heading-link" accessibilityRole="link" accessibilityLabel={linkName} {...press} style={styles.headingLink}>
+        <Icon name="next" color={colors.text} size={20} />
+      </Pressable>
     </Pressable>
   );
 }
@@ -490,17 +491,8 @@ export function NetworkHeading({ prefix, network, onOpen }: { prefix: string; ne
   );
   if (!onOpen) return heading;
   return (
-    <HeadingTap onOpen={onOpen}>
+    <HeadingTap onOpen={onOpen} linkName={networkLinkName(prefix, network.name)}>
       {heading}
-      <Pressable
-        testID="row-heading-link"
-        accessibilityRole="link"
-        accessibilityLabel={networkLinkName(prefix, network.name)}
-        onPress={onOpen}
-        style={styles.headingLink}
-      >
-        <Icon name="next" color={colors.text} size={20} />
-      </Pressable>
     </HeadingTap>
   );
 }
@@ -511,19 +503,10 @@ export function NetworkHeading({ prefix, network, onOpen }: { prefix: string; ne
  */
 export function ListHeading({ title, onOpen }: { title: string; onOpen: () => void }) {
   return (
-    <HeadingTap onOpen={onOpen}>
+    <HeadingTap onOpen={onOpen} linkName={listLinkName(title)}>
       <Text accessibilityRole="header" style={styles.rowHeadingText}>
         {title}
       </Text>
-      <Pressable
-        testID="row-heading-link"
-        accessibilityRole="link"
-        accessibilityLabel={listLinkName(title)}
-        onPress={onOpen}
-        style={styles.headingLink}
-      >
-        <Icon name="next" color={colors.text} size={20} />
-      </Pressable>
     </HeadingTap>
   );
 }

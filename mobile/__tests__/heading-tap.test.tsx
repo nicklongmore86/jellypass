@@ -2,15 +2,15 @@
 // New only and row handoff as the chevron, with no call, 44 pt tall with a pressed state, and touch-only so a screen
 // reader still gets the heading as a header and the chevron as the one "See all <row>" link, never a duplicate. Queries
 // are queryAll* and assertions read single fields, so a failure never prints the component tree.
-import { screen } from '@testing-library/react-native';
+import { act, render, screen, waitFor } from '@testing-library/react-native';
+import { buildResponderGrantEvent, buildResponderReleaseEvent } from '@testing-library/react-native/dist/events';
 import { renderRouter } from 'expo-router/testing-library';
-import { StyleSheet } from 'react-native';
 
 import type { FetchLike } from '../src/api/client';
 import { API, choose, scrollToEnd, showAll } from './support/home';
 import { listGateway } from './support/list';
 import { ORIGIN, TOKEN, keepSession, settle, store } from './support/household';
-import { headingTapStyle } from '../src/home/components';
+import { ListHeading, NetworkHeading } from '../src/home/components';
 import { layout } from '../src/theme';
 import { gridNames } from './support/source';
 import { buttonNamed, flat, headings, linkNamed, only, pressNode } from './support/title';
@@ -117,7 +117,7 @@ describe('the heading row as a touch target', () => {
     expect(app.getPathname()).toBe('/home/list/trending-movies');
   });
 
-  it('gives every list row and service row one tap target, at least 44 pt tall, with a pressed state', async () => {
+  it('gives every list row and service row one tap target, at least 44 pt tall', async () => {
     await start({ scroll: true });
     expect(taps()).toHaveLength(6 + 8);
     const problems: string[] = [];
@@ -126,9 +126,6 @@ describe('the heading row as a touch target', () => {
       if (!(typeof size.minHeight === 'number' && size.minHeight >= layout.touchTarget)) problems.push('under 44 pt');
     }
     expect([...new Set(problems)]).toEqual([]);
-    // Dimmed while a finger is on the row, as every other press in the app, and plain at rest.
-    expect(StyleSheet.flatten(headingTapStyle(true) as never).opacity).toBe(0.75);
-    expect(StyleSheet.flatten(headingTapStyle(false) as never).opacity).toBeUndefined();
   });
 
   it('is touch-only: no role, no name, not an accessibility element, so no duplicate stop', async () => {
@@ -165,5 +162,37 @@ describe('the heading row as a touch target', () => {
     const app = await start();
     await pressNode(linkNamed('See all Trending'));
     expect(app.getPathname()).toBe('/home/list/trending');
+  });
+});
+
+// A finger on the title or on the chevron: the responder goes to whichever was touched (the chevron's own, inside the
+// row's), and either way the whole heading dims while it is held, as every other press in the app, then opens on release.
+describe('the pressed state', () => {
+  const headings = [
+    ['a list row', (onOpen: () => void) => <ListHeading title="Trending" onOpen={onOpen} />],
+    ['a service row', (onOpen: () => void) => <NetworkHeading prefix="Popular on" network={{ id: 213, name: 'Netflix', logoUrl: null }} onOpen={onOpen} />],
+  ] as const;
+  const targets = [
+    ['the title', 'row-heading-tap'],
+    ['the chevron', 'row-heading-link'],
+  ] as const;
+
+  /** How dim the whole heading row is drawn: the tap target's opacity, 1 when it sets none. */
+  const dim = () => flat(only(screen.queryAllByTestId('row-heading-tap'), 'tap target')).opacity ?? 1;
+
+  describe.each(headings)('on %s', (_, draw) => {
+    it.each(targets)('dims the whole heading while %s is held, and opens on release', async (_name, testID) => {
+      const onOpen = jest.fn();
+      await render(draw(onOpen));
+      const target = only(screen.queryAllByTestId(testID), testID);
+      expect(dim()).toBe(1);
+      await act(async () => target.props.onResponderGrant(buildResponderGrantEvent()));
+      expect(dim()).toBe(0.75);
+      expect(onOpen).not.toHaveBeenCalled();
+      await act(async () => target.props.onResponderRelease(buildResponderReleaseEvent()));
+      // A quick tap's press-out waits out Pressable's minimum press (130 ms), so the dim is seen even then.
+      await waitFor(() => expect(dim()).toBe(1));
+      expect(onOpen).toHaveBeenCalledTimes(1);
+    });
   });
 });
