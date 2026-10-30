@@ -198,7 +198,11 @@ The PWA's Home (`home()` in `app/src/main.ts`, its pieces in `app/src/render.ts`
   heading is "Popular on" and its logo (a header, named "Popular on Netflix"), then a chevron, a 44 pt link of its own
   to the service's page (on the list the row shows) named "See all Popular on Netflix". Every other row (each
   discover list) has the same chevron after its heading, a link to the list's full grid named "See all Trending" (see
-  "See all pages" below). Each studio's logo is a link to its page named "Pixar, studio".
+  "See all pages" below). The chevron is not the only way in: the whole heading line (title or logo, chevron and the
+  space beside them) is one touch target for the same page, 44 pt tall and dimmed while pressed (`HeadingTap`). It is
+  touch-only (`accessible={false}`, `importantForAccessibility="no"`, no role or name), so VoiceOver and TalkBack still
+  step heading, then the one "See all …" link, and rotor / heading navigation is unchanged; the Studios heading has
+  no page and is not pressable. Each studio's logo is a link to its page named "Pixar, studio".
 - **Hero.** The first five titles of the filter's first row, from that row's own answer (no extra call): a rounded
   card per slide, the backdrop with a solid navy panel **below** it (title, year, "★ 7.8 TMDB", the status, the start
   of the overview). Swipe, **Previous title** / **Next title** (wrapping) and one round dot per title (hollow, or larger

@@ -45,6 +45,11 @@ shows none of it, with no error, and everything else works as in 1.3.0.
   `hidden` (`false` from an earlier server), and can hide, unhide and list the member's hidden titles. Titles a member
   hid with another client are already left out of this app's Discover lists and service pages by the server.
 - A See all, service or studio page whose page came back with no titles (every one hidden) still offers Load more.
+- **Home: the whole row heading opens its See all page.** On a list row and on a service row, a tap anywhere on the
+  heading line (the title, the service's logo or the space beside them) opens the same page the chevron does, with the
+  same filter and New only choice and no extra call. The line is at least 44 pt tall, and a press on the title or on the chevron dims the whole line. Screen
+  readers are unchanged: the heading is still a heading, and the one "See all <heading>" link is still the chevron.
+  Rows without a See all page (Studios) stay plain headings.
 
 ## [1.3.0] - 2026-10-30
 

@@ -1,3 +1,4 @@
+import { SelfCheck, versionCheckResult } from './self-check.js';
 import { AccessService } from './access-service.js';
 import { AdminRequests } from './admin-requests.js';
 import { WebAuth } from './auth.js';
@@ -7,6 +8,7 @@ import { JellyfinVersionGate } from './jellyfin-version.js';
 import { makeServers } from './server.js';
 import { SeerrClient } from './seerr.js';
 import { SeerrUserMap } from './seerr-users.js';
+import { HouseholdAddresses } from './household-addresses.js';
 import { HouseholdRequests } from './household-requests.js';
 import { BackgroundTasks, createShutdown } from './shutdown.js';
 import { GrantStore } from './store.js';
@@ -39,6 +41,7 @@ async function main(): Promise<void> {
       }));
     }
   }
+  if (config.additionalPluginRoutes.length) console.warn(JSON.stringify({ level: 'warn', message: 'HOUSEHOLD_PLUGIN_ROUTES adds household relay routes; audit member privacy', templates: config.additionalPluginRoutes }));
   const service = new AccessService(jellyfin, store, undefined, seerr, { logLevel: config.logLevel });
   // Read now and on a slow interval; startup never waits for it (see JellyfinVersionGate).
   const jellyfinVersion = new JellyfinVersionGate({
@@ -64,12 +67,27 @@ async function main(): Promise<void> {
   }) : undefined;
   // Throws on an address map that conflicts with itself or with the legacy rule, so such a configuration never starts.
   const servers = makeServers(service, { webhook: config.webhookToken, admin: config.adminToken }, webAuth, {
+    selfCheck: new SelfCheck({
+      versionStatus: () => versionCheckResult(jellyfinVersion.status()),
+      jellyfinUrl: config.jellyfinUrl,
+      jellyfinPublicUrls: config.jellyfinPublicUrls,
+      ...(config.seerrPublicUrl ? { seerrPublicUrl: config.seerrPublicUrl } : {}),
+      ...(config.tmdbApiKey ? { tmdbApiKey: config.tmdbApiKey } : {}),
+      trustedProxies: config.trustedProxies,
+      // Each household's canonical address, mapped or legacy, as GET /v1/groups gives it.
+      householdUrls: () => {
+        if (!config.householdGatewayEnabled) return [];
+        const book = new HouseholdAddresses(service.getHouseholdAddresses(), config.householdDomain ? { domain: config.householdDomain, prefix: config.householdHostPrefix } : undefined);
+        return service.listGroups().flatMap((group) => book.householdUrl(group.id) ?? []);
+      },
+    }),
     trustedProxies: config.trustedProxies,
     background,
     jellyfinVersion,
     ...(config.legacyWebhookOnMemberPort ? { memberWebhook: true } : {}),
     ...(config.householdGatewayEnabled ? {
       householdGateway: {
+        additionalPluginRoutes: config.additionalPluginRoutes,
         jellyfinUrl: config.jellyfinUrl,
         ...(config.householdDomain ? { domain: config.householdDomain, hostPrefix: config.householdHostPrefix } : {}),
         webSocketIdleTimeoutMs: config.webSocketIdleTimeoutMs,
