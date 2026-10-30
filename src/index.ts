@@ -5,9 +5,10 @@ import { WebAuth } from './auth.js';
 import { loadConfig } from './config.js';
 import { JellyfinClient } from './jellyfin.js';
 import { JellyfinVersionGate } from './jellyfin-version.js';
-import { makeServer } from './server.js';
+import { makeServers } from './server.js';
 import { SeerrClient } from './seerr.js';
 import { SeerrUserMap } from './seerr-users.js';
+import { HouseholdAddresses } from './household-addresses.js';
 import { HouseholdRequests } from './household-requests.js';
 import { BackgroundTasks, createShutdown } from './shutdown.js';
 import { GrantStore } from './store.js';
@@ -64,7 +65,8 @@ async function main(): Promise<void> {
     record: (result) => service.recordGetThis(result),
     recordBranch: (branch) => service.recordGetThisBranch(branch),
   }) : undefined;
-  const server = makeServer(service, { webhook: config.webhookToken, admin: config.adminToken }, webAuth, {
+  // Throws on an address map that conflicts with itself or with the legacy rule, so such a configuration never starts.
+  const servers = makeServers(service, { webhook: config.webhookToken, admin: config.adminToken }, webAuth, {
     selfCheck: new SelfCheck({
       versionStatus: () => versionCheckResult(jellyfinVersion.status()),
       jellyfinUrl: config.jellyfinUrl,
@@ -72,17 +74,22 @@ async function main(): Promise<void> {
       ...(config.seerrPublicUrl ? { seerrPublicUrl: config.seerrPublicUrl } : {}),
       ...(config.tmdbApiKey ? { tmdbApiKey: config.tmdbApiKey } : {}),
       trustedProxies: config.trustedProxies,
-      householdUrls: () => config.householdDomain ? service.listGroups().map((group) => `https://${config.householdHostPrefix}${group.id}.${config.householdDomain}`) : [],
+      // Each household's canonical address, mapped or legacy, as GET /v1/groups gives it.
+      householdUrls: () => {
+        if (!config.householdGatewayEnabled) return [];
+        const book = new HouseholdAddresses(service.getHouseholdAddresses(), config.householdDomain ? { domain: config.householdDomain, prefix: config.householdHostPrefix } : undefined);
+        return service.listGroups().flatMap((group) => book.householdUrl(group.id) ?? []);
+      },
     }),
     trustedProxies: config.trustedProxies,
     background,
     jellyfinVersion,
-    ...(config.householdDomain ? {
+    ...(config.legacyWebhookOnMemberPort ? { memberWebhook: true } : {}),
+    ...(config.householdGatewayEnabled ? {
       householdGateway: {
         additionalPluginRoutes: config.additionalPluginRoutes,
         jellyfinUrl: config.jellyfinUrl,
-        domain: config.householdDomain,
-        hostPrefix: config.householdHostPrefix,
+        ...(config.householdDomain ? { domain: config.householdDomain, hostPrefix: config.householdHostPrefix } : {}),
         webSocketIdleTimeoutMs: config.webSocketIdleTimeoutMs,
         webSocketUpstreamIdleTimeoutMs: config.webSocketUpstreamIdleTimeoutMs,
         logLevel: config.logLevel,
@@ -149,12 +156,23 @@ async function main(): Promise<void> {
     : undefined;
   catalogSyncTimer?.unref();
   let backfillTimer: NodeJS.Timeout | undefined;
-  server.listen(config.port, config.host, () => {
+  if (config.legacyWebhookOnMemberPort) {
+    console.warn(JSON.stringify({
+      level: 'warn',
+      message: servers.member
+        ? 'LEGACY_WEBHOOK_ON_MEMBER_PORT is on: the member listener also answers POST /webhooks/seerr; point Seerr at the admin listener and turn it off'
+        : 'LEGACY_WEBHOOK_ON_MEMBER_PORT is ignored: there is no member listener while the household gateway is off',
+    }));
+  }
+  // Started once every listener is up; a listener that cannot bind stops startup.
+  let starting = servers.member ? 2 : 1;
+  const started = () => {
+    if (--starting > 0) return;
     console.log(JSON.stringify({
       level: 'info',
       message: 'server started',
-      host: config.host,
-      port: config.port,
+      admin: { host: config.adminHost, port: config.adminPort },
+      member: servers.member ? { host: config.host, port: config.port } : null,
       reconcileIntervalSeconds: config.reconcileIntervalSeconds,
       catalogSyncIntervalSeconds: config.catalogSyncIntervalSeconds,
       requestBackfillSince: backfillSince?.toISOString() ?? null,
@@ -166,10 +184,12 @@ async function main(): Promise<void> {
     if (backfillSince) backfillTimer = setTimeout(() => background.run(backfillRequests), 5_000).unref();
     // Requests "Get this" was making when JellyPass last stopped are reconciled now (see AppRequestIntent).
     if (requests) background.run((signal) => requests.refresh({ signal }));
-  });
+  };
+  servers.admin.listen(config.adminPort, config.adminHost, started);
+  servers.member?.listen(config.port, config.host, started);
 
   const shutdown = createShutdown({
-    servers: [server],
+    servers: servers.member ? [servers.member, servers.admin] : [servers.admin],
     closeStore: async () => {
       await seerr?.close();
       await store.close();

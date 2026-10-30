@@ -5,6 +5,7 @@ import { readFileSync } from 'node:fs';
 import { writeFile } from 'node:fs/promises';
 import { gzipSync } from 'node:zlib';
 import { request as httpRequest, createServer } from 'node:http';
+import { connect } from 'node:net';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
 import { AccessService } from '../../dist/access-service.js';
@@ -13,7 +14,7 @@ import { JellyfinClient } from '../../dist/jellyfin.js';
 import { SeerrClient } from '../../dist/seerr.js';
 import { HouseholdRequests } from '../../dist/household-requests.js';
 import { SeerrUserMap } from '../../dist/seerr-users.js';
-import { makeServer } from '../../dist/server.js';
+import { makeServers } from '../../dist/server.js';
 import { BackgroundTasks } from '../../dist/shutdown.js';
 import { GrantStore } from '../../dist/store.js';
 import { TmdbClient } from '../../dist/tmdb.js';
@@ -33,6 +34,8 @@ export const JELLYFIN_ADMIN = 'ad000000ad000000ad000000ad000000';
 export const TOKENS = { [ALICE]: 'token-alice', [ANN]: 'token-ann', [BOB]: 'token-bob', [CAROL]: 'token-carol', [OUTSIDER]: 'token-outsider' };
 export const HOST_A = 'jelly-grove.example.test';
 export const HOST_B = 'jelly-mill.example.test';
+/** The admin site's host in these tests: requests to it go to the admin listener (see startApp's `get`). */
+export const ADMIN_HOST = 'jellypass.example.test';
 /** The default households, and the same with Carol in both. */
 export const HOUSEHOLDS = [
   { id: 'grove', name: 'Grove', userIds: [ALICE, ANN] },
@@ -927,19 +930,23 @@ function sees(user, item) {
  * set its share of TMDB calls (by default high enough that tests not about it never wait for one), `reconcile` to apply
  * the world's grants to Jellyfin first, `recordDelayMs` to delay "Get this" records (none by default),
  * `requests: false` to serve no "Get this", `loginFailureDelayMs` for the least time a refused household sign-in
- * takes (default 0, so tests not about it never wait), and `loginTimeoutMs` for how long a sign-in waits for Jellyfin.
+ * takes (default 0, so tests not about it never wait), `loginTimeoutMs` for how long a sign-in waits for Jellyfin,
+ * `addresses` for the address map (household → `{ origin, aliases }`) and `memberWebhook` for
+ * LEGACY_WEBHOOK_ON_MEMBER_PORT. The member listener is at `port`, the admin listener at `adminPort`.
  */
 export async function startApp(t, state = world(), options = {}) {
   const seerr = options.seerr ? { ...options.seerr, close: async () => undefined } : await createFakeSeerr(state);
   const tmdb = await createFakeTmdb(state);
   const jellyfin = await createFakeJellyfinForApp(state);
   let server;
+  let adminServer;
   // Registered before the state file's directory is made, so it runs before that directory is removed (t.after hooks
   // run in the order they were registered; see makeTempDir): a branch still in flight when the test ends can reach the
   // fake Seerr until it is closed, and its request must find the state file there to be checked against.
   t.after(async () => {
     server?.closeAllConnections();
-    await Promise.all([server && close(server), seerr.close(), tmdb.close(), jellyfin.close()]);
+    adminServer?.closeAllConnections();
+    await Promise.all([server && close(server), adminServer && close(adminServer), seerr.close(), tmdb.close(), jellyfin.close()]);
     // Checked for every test: a request sent before its intent was on disk fails it (see intentOnDisk).
     if (seerr.violations?.includes(UNSAVED_INTENT)) throw new Error(UNSAVED_INTENT);
   });
@@ -949,6 +956,8 @@ export async function startApp(t, state = world(), options = {}) {
   const store = new GrantStore(stateFile, { limitHouseholds: options.app !== false });
   await store.load();
   for (const household of options.households ?? HOUSEHOLDS) await store.upsertGroup(household);
+  // The address map, by household: `{ origin, aliases }` (the legacy jelly-<household>.example.test addresses stay on).
+  for (const [householdId, entry] of Object.entries(options.addresses ?? {})) await store.setHouseholdAddresses(householdId, entry);
   for (const grant of state.grants ?? []) {
     if (grant.request) await store.grant(grant.request);
     if (grant.manual) await store.setManualAccess(grant.manual);
@@ -988,9 +997,10 @@ export async function startApp(t, state = world(), options = {}) {
     ...(options.now ? { now: options.now } : {}),
     recordDelayMs: options.recordDelayMs ?? 0,
   });
-  server = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' }, undefined, {
+  const servers = makeServers(service, { webhook: 'webhook-secret', admin: 'admin-secret' }, undefined, {
     background,
     ...(options.trustedProxies ? { trustedProxies: options.trustedProxies } : {}),
+    ...(options.memberWebhook ? { memberWebhook: true } : {}),
     householdGateway: { jellyfinUrl: jellyfin.url, domain: 'example.test', hostPrefix: 'jelly-', loginFailureDelayMs: options.loginFailureDelayMs ?? 0, ...(options.loginTimeoutMs ? { loginTimeoutMs: options.loginTimeoutMs } : {}), ...(options.signOutTimeoutMs ? { signOutTimeoutMs: options.signOutTimeoutMs } : {}), ...(options.tvAddon ? { tvAddon: options.tvAddon } : {}) },
     ...(options.requests === false ? {} : {
       titleHolds: requests,
@@ -1011,13 +1021,24 @@ export async function startApp(t, state = world(), options = {}) {
       },
     }),
   });
-  await listen(server);
+  server = servers.member;
+  adminServer = servers.admin;
+  await Promise.all([listen(server), listen(adminServer)]);
   const port = server.address().port;
+  const adminPort = adminServer.address().port;
+  // The admin host's requests reach the admin listener, every other host's the member listener, as behind a proxy that
+  // routes the admin site's own name to the admin port.
+  const portFor = (host) => (host === ADMIN_HOST ? adminPort : port);
   return {
-    server,
+    /** The member listener's port. */
     port,
-    /** The JellyPass server, to watch its own end of a connection. */
+    /** The admin listener's port. */
+    adminPort,
+    /** The member and admin listeners themselves, to watch their own end of a connection. */
     server,
+    adminServer,
+    /** The port a request for `host` reaches: the admin listener for ADMIN_HOST, the member listener for any other. */
+    portFor,
     seerr,
     tmdb,
     jellyfin,
@@ -1029,7 +1050,7 @@ export async function startApp(t, state = world(), options = {}) {
     requests,
     background,
     /** GET `pathname` on `host` as `user` (a Jellyfin ID, or null for no credentials, or a header object). */
-    get: (pathname, { host = HOST_A, user = ALICE, headers } = {}) => get(port, pathname, {
+    get: (pathname, { host = HOST_A, user = ALICE, headers } = {}) => get(portFor(host), pathname, {
       Host: host,
       ...(user ? { Authorization: authorization(user) } : {}),
       ...headers,
@@ -1041,15 +1062,15 @@ export async function startApp(t, state = world(), options = {}) {
       ...headers,
     }, { method: 'HEAD' }),
     /** POST `body` (a string or an object sent as JSON; undefined for none) to `pathname`, like {@link get}. */
-    post: (pathname, body, { host = HOST_A, user = ALICE, headers } = {}) => get(port, pathname, {
+    post: (pathname, body, { host = HOST_A, user = ALICE, headers } = {}) => get(portFor(host), pathname, {
       Host: host,
       ...(user ? { Authorization: authorization(user) } : {}),
       ...(body === undefined ? {} : { 'Content-Type': 'application/json' }),
       ...headers,
     }, { method: 'POST', body: body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body) }),
     /** A Seerr MEDIA_AVAILABLE webhook for an HD request whose item Jellyfin now has. */
-    webhook: (payload) => get(port, '/webhooks/seerr', {
-      Host: 'jellypass.example.test',
+    webhook: (payload) => get(adminPort, '/webhooks/seerr', {
+      Host: ADMIN_HOST,
       Authorization: 'Bearer webhook-secret',
       'Content-Type': 'application/json',
     }, { method: 'POST', body: JSON.stringify(payload) }),
@@ -1116,4 +1137,30 @@ function listen(server) {
 function close(server) {
   server.closeAllConnections?.();
   return new Promise((resolve) => server.close(() => resolve()));
+}
+
+/**
+ * `request` written to `server` by a client that keeps its own end open after the server's answer (allowHalfOpen), and
+ * whether the server then closed its socket for the connection within a second.
+ */
+export function halfOpen(server, request) {
+  return new Promise((resolve, reject) => {
+    const serverClosed = new Promise((settle) => {
+      server.once('connection', (serverSocket) => {
+        const timer = setTimeout(() => settle(false), 1_000);
+        serverSocket.once('close', () => { clearTimeout(timer); settle(true); });
+      });
+    });
+    const client = connect({ port: server.address().port, host: '127.0.0.1', allowHalfOpen: true });
+    let answer = '';
+    client.once('connect', () => client.write(request));
+    client.on('data', (chunk) => { answer += chunk.toString('utf8'); });
+    client.once('error', (error) => (error.code === 'ECONNRESET' ? undefined : reject(error)));
+    // The answer is whole once the server has ended its side (or reset it); the client's side stays open until the verdict.
+    const ended = new Promise((settle) => { client.once('end', settle); client.once('close', settle); });
+    void Promise.all([serverClosed, ended]).then(([closed]) => {
+      client.destroy();
+      resolve({ answer, closed });
+    });
+  });
 }

@@ -52,9 +52,8 @@ authority. See [how access enforcement works](docs/server-reference.md#how-acces
 ## Requirements
 
 - Jellyfin **12.x or 10.11.x**, and a Jellyfin administrator API key. On any
-  other version, JellyPass 3.x keeps serving household addresses but warns (in
-  its log and the admin site) until an administrator confirms that exact
-  version; JellyPass 4.0.0 will refuse household requests until then
+  other version, household addresses answer `503` until an administrator
+  confirms that exact version (3.x only warned)
   ([supported versions](docs/server-reference.md#supported-jellyfin-versions)).
 - Seerr (or Jellyseerr) with users imported from or linked to Jellyfin.
 - Docker with Compose v2 (images for `linux/amd64` and `linux/arm64`), or
@@ -87,20 +86,30 @@ Then:
 
 ```sh
 docker compose up -d
-curl http://127.0.0.1:8787/health
+curl http://127.0.0.1:8788/health
 ```
 
-Open `http://127.0.0.1:8787/admin/`, sign in with a Jellyfin administrator
+Open `http://127.0.0.1:8788/admin/`, sign in with a Jellyfin administrator
 account, and run **Sync library**. Then
 [connect Seerr's webhook](https://jellypass.app/docs/seerr-webhook/),
 [create households](https://jellypass.app/docs/households/) and
 [put household addresses behind your reverse proxy](https://jellypass.app/docs/reverse-proxy/).
 
-The Compose file publishes JellyPass on `127.0.0.1:8787` only. In 3.x that one
-port serves the admin site, the webhook and every household address, and any
-host name that is not a household address gets the admin site: forward only
-household names to it from the internet, and keep the admin site on the LAN or
-behind an access gate ([security](https://jellypass.app/docs/security/)).
+JellyPass has two listeners (see
+[Listeners](docs/server-reference.md#listeners)): the **admin listener** on
+port `8788` (admin site and API, metrics, the Seerr webhook and health) and the
+**member listener** on port `8787` (household addresses only; any other host
+name gets a fixed `421`). The default Compose file publishes both only on
+`127.0.0.1`. Route household names from the internet to `8787` only, and
+publish the admin port only on a private address, never routing a public
+hostname to it ([security](https://jellypass.app/docs/security/)). Seerr's
+webhook goes to the admin listener, for example
+`http://jellypass:8788/webhooks/seerr`, with the
+`Authorization: Bearer <WEBHOOK_TOKEN>` header (4.0 takes no `?token=`).
+
+Upgrading to 4.0 from 3.9.x or later 3.x changes the admin port, the health
+check and the Seerr webhook URL: follow the upgrade steps in the
+[changelog](CHANGELOG.md) before pulling it.
 
 To build from source instead, run these inside a clone of this repository
 (the container runs as UID 1000, so it needs a data directory it can write):
@@ -211,8 +220,9 @@ and against Seerr (`pnpm test:seerr`); see
 ## Security
 
 Report vulnerabilities privately through GitHub Security Advisories; see
-[SECURITY.md](SECURITY.md). The admin site is not gated by default: keep it on
-the LAN or behind an access gate.
+[SECURITY.md](SECURITY.md). The admin site is on its own listener, private by
+default (`127.0.0.1:8788`); it is not otherwise gated, so keep it on the LAN or
+behind an access gate.
 
 ## Moved sections
 
@@ -237,7 +247,7 @@ land here:
 - <a name="forwarding-to-jellyfin"></a>[Forwarding to Jellyfin](docs/server-reference.md#forwarding-to-jellyfin)
 - <a name="configure-seerr"></a>[Configure Seerr](docs/server-reference.md#configure-seerr)
 - <a name="administrator-ui"></a>[Administrator UI](docs/server-reference.md#administrator-ui)
-- <a name="household-jellyfin-urls"></a>[Household Jellyfin URLs](docs/household-hosts.md#household-jellyfin-urls)
+- <a name="household-jellyfin-urls"></a>[Household Jellyfin URLs](docs/household-hosts.md#household-addresses)
 - <a name="add-to-my-library"></a>Add to my library: removed in 4.0; use **Get this**. See [Upgrade](docs/server-reference.md#upgrade)
 - <a name="get-this"></a>[Get this](docs/household-hosts.md#get-this)
 - <a name="health-and-logs"></a>[Health and logs](docs/server-reference.md#health-and-logs)
@@ -249,7 +259,7 @@ land here:
 - <a name="webhook-returns-401"></a>[Webhook returns `401`](docs/server-reference.md#webhook-returns-401)
 - <a name="webhook-reports-missing-jellyfin-ids"></a>[Webhook reports missing Jellyfin IDs](docs/server-reference.md#webhook-reports-missing-jellyfin-ids)
 - <a name="library-is-empty-or-stale"></a>[Library is empty or stale](docs/server-reference.md#library-is-empty-or-stale)
-- <a name="a-household-hostname-returns-404"></a>[A household hostname returns `404`](docs/server-reference.md#a-household-hostname-returns-404)
+- <a name="a-household-hostname-returns-404"></a>[A household hostname returns `404`](docs/server-reference.md#a-household-address-returns-421-or-404)
 - <a name="a-re-imported-title-is-public-or-a-grant-is-orphaned"></a>[A re-imported title is public or a grant is orphaned](docs/server-reference.md#a-re-imported-title-is-public-or-a-grant-is-orphaned)
 - <a name="changes-do-not-reach-every-user"></a>[Changes do not reach every user](docs/server-reference.md#changes-do-not-reach-every-user)
 - <a name="api-reference"></a>[API reference](docs/server-reference.md#api-reference)

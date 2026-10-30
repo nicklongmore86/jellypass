@@ -4,7 +4,7 @@
 // the 2019 set's Chromium 63, as the add-on is (scripts/build-tv.mjs), with the trusted hosts written in. Run by
 // tv/samsung/build-wgt.sh as
 //
-//   node tv/samsung/build-loader.mjs --hosts 'jelly-*.example.org' --www <jellyfin-tizen>/www
+//   node tv/samsung/build-loader.mjs --hosts 'media.example.com,*.example.org' --www <jellyfin-tizen>/www
 //
 // which writes www/jellypass-loader.js and adds one <script> for it to www/index.html, before </head>. With --check
 // instead of --www it only checks the hosts.
@@ -21,7 +21,7 @@ const MARKER = 'data-jellypass-loader';
 /** A host name in lower case with at least two labels; one `*` is allowed, in the first label only. */
 const HOST_PATTERN = /^(?:[a-z0-9-]*\*[a-z0-9-]*|[a-z0-9-]+)(?:\.[a-z0-9-]+)+$/;
 
-/** The hosts option (`a.example.org,jelly-*.example.org`) as a list, or an error naming what is wrong with it. */
+/** The hosts option (`media.example.com,*.example.org`) as a list, or an error naming what is wrong with it. */
 export function parseHosts(input) {
   const hosts = String(input ?? '').split(',').map((host) => host.trim()).filter(Boolean);
   if (!hosts.length) throw new Error('--hosts is required: the household hosts the loader may load from, separated by commas');

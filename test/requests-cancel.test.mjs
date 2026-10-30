@@ -78,7 +78,7 @@ async function arrive(app, requestId = FIRST, requester = ALICE) {
 }
 
 const admin = (app, pathname, { method = 'GET', body, headers = { Authorization: 'Bearer admin-secret' }, host = 'jellypass.example.test' } = {}) =>
-  get(app.port, pathname, { Host: host, ...headers, ...(body ? { 'Content-Type': 'application/json' } : {}) }, { method, body: body && JSON.stringify(body) });
+  get(app.portFor(host), pathname, { Host: host, ...headers, ...(body ? { 'Content-Type': 'application/json' } : {}) }, { method, body: body && JSON.stringify(body) });
 
 /** A metric's value, 0 when absent. */
 function metric(app, name, labels) {

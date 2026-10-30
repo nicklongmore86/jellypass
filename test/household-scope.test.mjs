@@ -4,7 +4,7 @@
 import assert from 'node:assert/strict';
 import { connect } from 'node:net';
 import { describe, it } from 'node:test';
-import { HouseholdGateway } from '../dist/household-gateway.js';
+import { HouseholdAddresses } from '../dist/household-addresses.js';
 import { ALICE, ANN, BOB, CAROL, HOST_A, HOST_B, ITEMS, JELLYFIN_ADMIN, OUTSIDER, get, post, startApp, world } from './support/household-app.mjs';
 
 const WEB = 'MediaBrowser Client="Jellyfin Web", Device="Firefox", DeviceId="jellypass-scope-test", Version="10.11.3"';
@@ -323,10 +323,10 @@ describe('household host tokens', { timeout: 60_000 }, () => {
   });
 
   it('leaves the main Jellyfin hostname alone: it is no household\'s', () => {
-    const gateway = new HouseholdGateway({ jellyfinUrl: 'http://127.0.0.1:8096', domain: 'example.org', hostPrefix: 'jelly-', memberIds: () => [] });
-    assert.equal(gateway.householdId('jelly.example.org'), undefined);
-    assert.equal(gateway.householdId('jelly.example.org:443'), undefined);
-    assert.equal(gateway.householdId('jelly-grove.example.org'), 'grove');
+    const addresses = new HouseholdAddresses({}, { domain: 'example.org', prefix: 'jelly-' });
+    assert.equal(addresses.resolve('jelly.example.org'), undefined);
+    assert.equal(addresses.resolve('jelly.example.org:443'), undefined);
+    assert.equal(addresses.resolve('jelly-grove.example.org')?.householdId, 'grove');
   });
 });
 

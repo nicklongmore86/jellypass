@@ -1,3 +1,5 @@
+import type { HouseholdAddressEntry } from './household-addresses.js';
+
 export interface SeerrWebhook {
   notificationType: string;
   media?: {
@@ -151,13 +153,19 @@ export interface LibraryJoin {
 }
 
 export interface GrantState {
-  version: 7;
+  /** 8 since 4.0.0 (householdAddresses); 3.9.0 and earlier refuse to start on it (see the 4.0.0 rollback notes). */
+  version: 8;
   grants: Record<string, GrantRecord>;
   groups: Record<string, AccessGroup>;
   catalog: LibraryCatalog;
   passwordlessUserIds: string[];
   /** Seerr request IDs that already produced a grant; the backfill never re-imports them. */
   handledRequestIds?: string[];
+  /**
+   * The household address map, by household (group) ID: each household's canonical public origin and aliases (see
+   * household-addresses.ts). Removed with its group.
+   */
+  householdAddresses?: Record<string, HouseholdAddressEntry>;
   /**
    * The exact untested Jellyfin version an administrator allowed household hosts to serve on (see JellyfinVersionGate).
    * Additive: an earlier build keeps the field as it is without reading it.

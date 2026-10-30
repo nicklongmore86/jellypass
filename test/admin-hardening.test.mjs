@@ -7,7 +7,7 @@ import { AccessService } from '../dist/access-service.js';
 import { APP_PERMISSIONS_POLICY } from '../dist/app-assets.js';
 import { WebAuth } from '../dist/auth.js';
 import { JellyfinClient, JellyfinError } from '../dist/jellyfin.js';
-import { makeServer } from '../dist/server.js';
+import { makeServers } from '../dist/server.js';
 import { GrantStore } from '../dist/store.js';
 import { createFakeJellyfin } from './support/fake-jellyfin.mjs';
 import { makeTempDir } from './support/temp-dir.mjs';
@@ -30,6 +30,8 @@ const ENDPOINTS = [
   ['DELETE', '/v1/groups/grove'],
   ['PUT', '/v1/library/access', JSON.stringify({ itemIds: ['item-1'], userIds: ['bob-id'], groupIds: [] })],
   ['PUT', '/v1/users/alice-id/sign-in', JSON.stringify({ passwordless: true })],
+  ['PUT', '/v1/groups/grove/addresses', JSON.stringify({ origin: 'https://media.example.com', aliases: [] })],
+  ['DELETE', '/v1/groups/grove/addresses'],
   ['POST', '/v1/app/requests/7380001/approve'],
   ['POST', '/v1/app/requests/7380001/decline'],
   ['POST', '/v1/app/requests/7380001/cancel', JSON.stringify({ removeFromRadarr: true })],
@@ -68,10 +70,10 @@ describe('admin surface hardening', { timeout: 20_000 }, () => {
     const jellyfinClient = new JellyfinClient(jellyfin.url, 'test-key');
     const service = new AccessService(jellyfinClient, store, undefined, seerr);
     const webAuth = new WebAuth(jellyfinClient, { loginFailureDelayMs: 0, now: () => clock.now });
-    server = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' }, webAuth, {
+    server = makeServers(service, { webhook: 'webhook-secret', admin: 'admin-secret' }, webAuth, {
       trustedProxies: [LOCAL],
       householdGateway: { jellyfinUrl: jellyfin.url, domain: 'example.test', hostPrefix: 'jelly-' },
-    });
+    }).admin;
     port = await listen(server);
   });
 
@@ -170,7 +172,7 @@ describe('admin surface hardening', { timeout: 20_000 }, () => {
 
   it('ignores X-Forwarded-Host from a peer that is not a trusted proxy too', async () => {
     const webAuth = new WebAuth(new JellyfinClient(jellyfin.url, 'test-key'), { loginFailureDelayMs: 0 });
-    const untrusted = makeServer(stubService(), { webhook: 'webhook-secret', admin: 'admin-secret' }, webAuth);
+    const untrusted = makeServers(stubService(), { webhook: 'webhook-secret', admin: 'admin-secret' }, webAuth).admin;
     const untrustedPort = await listen(untrusted);
     try {
       const response = await send(untrustedPort, '/auth/login', {
@@ -569,7 +571,7 @@ describe('administrator sign-in hardening', { timeout: 20_000 }, () => {
     const upstreamPort = await listen(upstream);
     const DELAY = 300;
     const webAuth = new WebAuth(new JellyfinClient(`http://${LOCAL}:${upstreamPort}`, 'test-key'), { loginFailureDelayMs: DELAY });
-    const server = makeServer(stubService(), { webhook: 'webhook-secret', admin: 'admin-secret' }, webAuth, { trustedProxies: [LOCAL] });
+    const server = makeServers(stubService(), { webhook: 'webhook-secret', admin: 'admin-secret' }, webAuth, { trustedProxies: [LOCAL] }).admin;
     const port = await listen(server);
     try {
       const attempts = [
@@ -705,7 +707,7 @@ describe('administrator sign-in hardening', { timeout: 20_000 }, () => {
     const webAuth = new WebAuth({
       authenticateAdministrator: async (username, password) => (password === 'right' ? { Id: 'admin-id', Name: 'Admin', Policy: { IsAdministrator: true } } : null),
     }, { loginFailureDelayMs: DELAY, nameDelayMaxMs: 0 });
-    const server = makeServer(stubService(), TOKENS, webAuth, { trustedProxies: [LOCAL] });
+    const server = makeServers(stubService(), TOKENS, webAuth, { trustedProxies: [LOCAL] }).admin;
     const port = await listen(server);
     const attempt = (username, password) => send(port, '/auth/login', {
       'content-type': 'application/json',
@@ -785,7 +787,7 @@ describe('cross-origin refusal before the session check', { timeout: 20_000 }, (
       },
     }, { loginFailureDelayMs: 0, now: () => clock.now });
     // The service throws if it is used at all.
-    const server = makeServer(stubService(), TOKENS, webAuth);
+    const server = makeServers(stubService(), TOKENS, webAuth).admin;
     const port = await listen(server);
     try {
       const signIn = await send(port, '/auth/login', { 'content-type': 'application/json', 'sec-fetch-site': 'same-origin' }, {
@@ -829,7 +831,7 @@ describe('cross-origin refusal before the session check', { timeout: 20_000 }, (
         throw new Error('connect ECONNREFUSED');
       },
     }, { loginFailureDelayMs: 0, now: () => clock.now });
-    const server = makeServer(stubService(), TOKENS, webAuth);
+    const server = makeServers(stubService(), TOKENS, webAuth).admin;
     const port = await listen(server);
     try {
       const anonymous = await send(port, '/v1/library/sync', { 'sec-fetch-site': 'cross-site' }, { method: 'POST' });
@@ -851,7 +853,8 @@ describe('cross-origin refusal before the session check', { timeout: 20_000 }, (
 });
 
 function stubService() {
-  return new Proxy({}, { get: () => () => { throw new Error('the service must not be used'); } });
+  // The address map is read once when the listeners are made; nothing else may be used.
+  return new Proxy({}, { get: (_, name) => (name === 'getHouseholdAddresses' ? () => ({}) : () => { throw new Error('the service must not be used'); }) });
 }
 
 function listen(server) {

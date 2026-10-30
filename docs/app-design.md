@@ -23,7 +23,7 @@ reviewed against.
 ## Goal
 
 JellyPass becomes the backend of a household web app (a PWA first; native apps later, using the same API) served on
-each `jelly-<household>` host. It replaces the Seerr website for regular users: once the app is ready (step 4), the
+each household's address (for example `https://media.example.com`). It replaces the Seerr website for regular users: once the app is ready (step 4), the
 Seerr website is for administrators only.
 
 Household records are about privacy, not control. The app never shows one household what another has, has asked
@@ -316,9 +316,10 @@ Refinements made while implementing (see '"Get this" as implemented (step 2a)'):
 ## App API (step 1a)
 
 Served by `HouseholdApp` (`src/app-api.ts`) through the household gateway, only on household hosts and only with
-`HOUSEHOLD_APP_ENABLED=true` (which requires `HOUSEHOLD_DOMAIN`, Seerr and `TMDB_API_KEY`). Without it, every
+`HOUSEHOLD_APP_ENABLED=true` (which requires the household gateway, Seerr and `TMDB_API_KEY`). Without it, every
 `/jellypass/app` path answers a fixed `404 {"error":"not_found"}` on household hosts and is never proxied to Jellyfin.
-On the administrator host the paths do not exist (the admin API's own `401`/`404`).
+On the admin listener the paths do not exist (the admin API's own `401`/`404`), and on the member listener a host that
+is no household's answers a fixed `421 {"error":"unknown_host"}`.
 
 | Endpoint | Answer |
 |---|---|
@@ -530,9 +531,10 @@ A native client (an iPhone app first) uses the same `/jellypass/app/v1` API as t
 endpoint of its own. This is the contract it is built against; the server keeps it, and a store build that lags the
 server by months still works.
 
-- **One address, one household.** The household is the one whose address the client calls: `https://jelly-<id>.<domain>`
-  (from `HOUSEHOLD_DOMAIN` and the `jelly-` prefix), decided from the `Host` header the HTTP client sends, never from
-  anything in the request. Every call goes to an absolute URL on that address: `https://<household host>/jellypass/app/v1/...`
+- **One address, one household.** The household is the one whose address the client calls: any HTTPS origin the
+  administrator mapped to it (for example `https://media.example.com`, or `https://films.example.net:8443`; on installs
+  from before 4.0.0 also the legacy generated one), decided from the `Host` header the HTTP client sends (exact match,
+  case and default ports aside), never from anything in the request. Every call goes to an absolute URL on that address: `https://<household host>/jellypass/app/v1/...`
   for the API and `https://<household host>/Users/...` and `/Sessions/Logout` for sign-in and sign-out, through the
   household gateway. The member enters the address (or opens a setup link that carries only the address, never a
   token). The client takes it as given, any `https://` DNS name with an optional port, and never expects a form of
@@ -541,7 +543,7 @@ server by months still works.
   others exist. Someone in two households adds two addresses, each with its own sign-in, and the client never merges
   their answers. The administrator host has no app API.
 - **Checking an address.** `GET /jellypass/app/v1/me` with no token answers `401 {"error":"unauthorized"}` on a host
-  with the app on and `404` everywhere else; it counts one call against the address budget. There is no
+  with the app on, `421` on a JellyPass member listener for a host that is no household's, and `404` everywhere else; it counts one call against the address budget. There is no
   unauthenticated `v1` endpoint and none will be added: every `v1` path needs a token.
 - **Sign-in** is the PWA's (see "Sign-in" under "App page (step 1b)"): `GET /Users/Public` for the household's
   profiles, then `POST /Users/AuthenticateByName` with `{"Username", "Pw"}` and `Authorization: MediaBrowser

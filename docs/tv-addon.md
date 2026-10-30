@@ -34,7 +34,7 @@ The owner's decisions for it:
 
 ```mermaid
 flowchart LR
-  TV["Jellyfin web<br/>(LG app, browser)"] -->|"GET /web/"| G["household gateway<br/>(jelly-&lt;id&gt; host)"]
+  TV["Jellyfin web<br/>(LG app, browser)"] -->|"GET /web/"| G["household gateway<br/>(household address)"]
   G -->|"GET /web/, whole, identity"| J[Jellyfin]
   G -->|"page + one &lt;script&gt;"| TV
   TV -->|"GET /jellypass/tv/jellypass-tv.&lt;hash&gt;.js, .css"| G
@@ -84,9 +84,9 @@ flowchart LR
 
 The add-on is matched to the Jellyfin releases JellyPass supports (docs/server-reference.md, "Supported Jellyfin versions"): Jellyfin
 web **12.x** and **10.11.x**. It runs inside Jellyfin web's own page and relies on its markup, so it is checked against
-those releases only. On any other Jellyfin version, JellyPass 3.x warns until an administrator confirms that exact
-version, and household hosts keep serving the add-on unchanged, untested against that version's page; from JellyPass
-4.0.0, household hosts (and with them the add-on) are paused until it is confirmed.
+those releases only. On any other Jellyfin version, household hosts (and with them the add-on) are paused from JellyPass
+4.0.0 until an administrator confirms that exact version; JellyPass 3.x only warned, and kept serving the add-on
+unchanged, untested against that version's page.
 
 - **The gateway's injection:** the Jellyfin web page that each CI image serves (`jellyfin/jellyfin:12.4.20261026-211555`
   and `jellyfin/jellyfin:10.11.11`, pinned in `scripts/jellyfin-versions.json`; `test/real-jellyfin.test.mjs`), as
@@ -743,8 +743,8 @@ rather than sitting beside it.
 
 ```mermaid
 flowchart LR
-  T["Jellyfin app (Tizen)<br/>file:///www/index.html<br/>+ jellypass-loader.js"] -->|"GET /jellypass/tv/manifest.json<br/>Origin: file:// or null"| G["household gateway<br/>(jelly-&lt;id&gt; host)"]
-  T -->|"&lt;script src=https://jelly-&lt;id&gt;/jellypass/tv/jellypass-tv.&lt;hash&gt;.js&gt;"| G
+  T["Jellyfin app (Tizen)<br/>file:///www/index.html<br/>+ jellypass-loader.js"] -->|"GET /jellypass/tv/manifest.json<br/>Origin: file:// or null"| G["household gateway<br/>(household address)"]
+  T -->|"&lt;script src=https://&lt;household address&gt;/jellypass/tv/jellypass-tv.&lt;hash&gt;.js&gt;"| G
   T -->|"/jellypass/app/v1/... (CORS)<br/>Authorization: MediaBrowser Token"| G
 ```
 
@@ -794,7 +794,7 @@ web's page for anyone anyway). Only at that exact path; another spelling or meth
 
 - **Which host.** Once a second it reads `ApiClient.serverAddress()` (no call is made). It acts only when that is
   **HTTPS on the default port, with no user name, on a host the build lists** (`JELLYPASS_TV_HOSTS`, exact names or one
-  `*` for letters, digits and hyphens in the first label; for example `jelly-*.example.org`). So a server
+  `*` for letters, digits and hyphens in the first label; for example `media.example.com` or `*.example.org`). So a server
   named by its LAN address, the main host or any other server is left alone, and the loader never runs code from a host
   the build doesn't trust.
 - **What it asks.** `GET https://<host>/jellypass/tv/manifest.json` with `Accept` only: no token, no cookie
@@ -840,7 +840,7 @@ web's page for anyone anyway). Only at that exact path; another spelling or meth
 
 ```sh
 pnpm install --frozen-lockfile
-JELLYPASS_TV_HOSTS='jelly-*.example.org' tv/samsung/build-wgt.sh   # a few minutes; needs docker and network
+JELLYPASS_TV_HOSTS='media.example.com' tv/samsung/build-wgt.sh   # a few minutes; needs docker and network
 ```
 
 A **new Jellyfin web** (a server upgrade) means changing the pin, checking the add-on's coupling on it (see "Jellyfin
@@ -849,13 +849,13 @@ web coupling"), rebuilding and reinstalling. A **JellyPass release** needs nothi
 ### Install runbook
 
 The procedure, with example values: a deployment keeps its own (its household domain, the TVs' and the build machine's
-LAN addresses) in its operations notes, not in this repository. Here the household hosts are
-`jelly-<household>.example.org`, the machine running sdb is `192.0.2.10` and the TV is `192.0.2.20`. sdb talks to the
+LAN addresses) in its operations notes, not in this repository. Here the household's address is
+`https://media.example.com`, the machine running sdb is `192.0.2.10` and the TV is `192.0.2.20`. sdb talks to the
 TV over TCP 26101, unencrypted: LAN only.
 
 **Before.** On the TV: Apps, enter `12345`, Developer Mode on, host IP the sdb machine's address, restart the TV. Make
 sure the add-on is on for the household whose host the TV will use (`TV_ADDON_HOUSEHOLDS`), and that
-`https://jelly-<household>.example.org/jellypass/tv/manifest.json` answers `200`.
+`https://media.example.com/jellypass/tv/manifest.json` answers `200`.
 
 **Sign-in is lost.** The image's default run (how the stock app is usually put on) downloads
 jeppevinkel/jellyfin-tizen-builds' `.wgt` and installs it **as published**: it re-signs only with a certificate passed
@@ -863,7 +863,7 @@ to it, never with its `dev` profile. That `.wgt` is **signed by another author**
 `6ea90a25…9a83`, checked on release `2026-10-27-2002`) than this build (`CN=developer`). Tizen refuses to replace an app
 with one signed by a different author, so the stock app must be uninstalled first, and uninstalling clears its data:
 the server list and every sign-in. (The runbook tries the install first, so a set whose app happens to have the same
-author keeps its data.) Afterwards add the server as `https://jelly-<household>.example.org` (not the LAN address or the
+author keeps its data.) Afterwards add the server as `https://media.example.com` (not the LAN address or the
 main host, or the add-on won't load) and sign in again.
 
 ```sh

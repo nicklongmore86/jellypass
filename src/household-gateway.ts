@@ -89,8 +89,6 @@ const HOUSEHOLD_LOGIN_CSS = `
 export interface HouseholdGatewayOptions {
   jellyfinUrl: string;
   additionalPluginRoutes?: string[];
-  domain: string;
-  hostPrefix: string;
   memberIds: (householdId: string) => string[] | undefined;
   isPasswordless?: (userId: string) => boolean;
   /**
@@ -151,8 +149,6 @@ interface JellyfinCredentials {
 export class HouseholdGateway {
   readonly #additionalPluginRoutes: string[];
   readonly #target: URL;
-  readonly #domain: string;
-  readonly #hostPrefix: string;
   readonly #memberIds: HouseholdGatewayOptions['memberIds'];
   readonly #isPasswordless: NonNullable<HouseholdGatewayOptions['isPasswordless']>;
   readonly #users: HouseholdGatewayOptions['users'];
@@ -182,8 +178,6 @@ export class HouseholdGateway {
     if (this.#target.protocol !== 'http:' && this.#target.protocol !== 'https:') {
       throw new Error('household gateway requires an HTTP(S) Jellyfin URL');
     }
-    this.#domain = options.domain.toLowerCase();
-    this.#hostPrefix = options.hostPrefix.toLowerCase();
     this.#memberIds = options.memberIds;
     this.#isPasswordless = options.isPasswordless ?? (() => false);
     this.#users = options.users;
@@ -199,28 +193,11 @@ export class HouseholdGateway {
     this.#tvAddon = options.tvAddon;
   }
 
-  public householdId(hostHeader: string | undefined): string | undefined {
-    if (!hostHeader) return undefined;
-    let hostname: string;
-    try {
-      hostname = new URL(`http://${hostHeader}`).hostname.toLowerCase();
-    } catch {
-      return undefined;
-    }
-    const suffix = `.${this.#domain}`;
-    if (!hostname.endsWith(suffix)) return undefined;
-    const label = hostname.slice(0, -suffix.length);
-    if (!label.startsWith(this.#hostPrefix)) return undefined;
-    const householdId = label.slice(this.#hostPrefix.length);
-    return /^[a-z0-9_-]{1,128}$/.test(householdId) ? householdId : undefined;
-  }
-
-  public householdUrl(householdId: string): string | undefined {
-    if (!/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(householdId)) return undefined;
-    return `https://${this.#hostPrefix}${householdId}.${this.#domain}`;
-  }
-
-  public async handle(request: IncomingMessage, response: ServerResponse, householdId: string): Promise<void> {
+  /**
+   * Answers a request to a household's address. `origin` is the address it came in on, as the address map has it
+   * (HouseholdAddresses.resolve): the household app's links stay on it.
+   */
+  public async handle(request: IncomingMessage, response: ServerResponse, householdId: string, origin: string): Promise<void> {
     if (hasEmptyPathSegment(request.url ?? '/')) {
       writeJson(response, 404, { error: 'not_found' }, NEVER_STORE);
       return;
@@ -270,7 +247,7 @@ export class HouseholdGateway {
         if (this.#appAssets?.serve(request, response, (request.url ?? '/').split('?', 1)[0] as string)) return;
         // Every other answer here, whatever writes it (an unknown file, the API, its errors), is never stored by a CDN.
         for (const [name, value] of Object.entries(NEVER_STORE)) response.setHeader(name, value);
-        await this.#householdApp(request, response, requestUrl, householdId, memberIds);
+        await this.#householdApp(request, response, requestUrl, householdId, memberIds, origin);
         return;
       case 'tvAsset':
         if ((tv as TvAssets).serve(request, response, (request.url ?? '/').split('?', 1)[0] as string)) return;
@@ -599,6 +576,7 @@ export class HouseholdGateway {
     requestUrl: URL,
     householdId: string,
     memberIds: string[],
+    origin: string,
   ): Promise<void> {
     if (!this.#app) {
       writeJson(response, 404, { error: 'not_found' });
@@ -608,7 +586,7 @@ export class HouseholdGateway {
     await this.#app.handle(request, response, {
       householdId,
       memberIds,
-      origin: `https://${this.#hostPrefix}${householdId}.${this.#domain}`,
+      origin,
       clientId: this.#clientAddress(request),
       credentialKey: credentialKey(credentials),
       tokenKeys: tokenKeys(credentials),

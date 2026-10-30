@@ -99,9 +99,9 @@ describe('admin self-check probes', () => {
 });
 
 it('requires admin authentication and same-origin cookie POSTs before starting any self-check', async (t) => {
-  const { makeServer } = await import('../dist/server.js');
+  const { makeServers } = await import('../dist/server.js');
   let runs = 0;
-  const server = makeServer({}, { webhook: 'webhook', admin: 'admin' }, {
+  const { admin: server } = makeServers({ getHouseholdAddresses: () => ({}) }, { webhook: 'webhook', admin: 'admin' }, {
     session: async (request) => request.headers.cookie ? { status: 'active', username: 'Admin' } : { status: 'none' },
   }, { selfCheck: { run: async () => { runs++; return []; }, handleProxyRequest: () => false } });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -117,11 +117,11 @@ it('requires admin authentication and same-origin cookie POSTs before starting a
 });
 
 it('keeps Jellyfin Enhanced public-config byte-identical through the real HTTP relay', async (t) => {
-  const { makeServer } = await import('../dist/server.js');
+  const { makeServers } = await import('../dist/server.js');
   const body = '{\n  "custom": "unchanged", "enabled": true\n}\n';
   const upstream = createServer((req, res) => { res.writeHead(200, { 'Content-Type': 'application/json', 'X-Plugin-Test': 'kept' }); res.end(body); });
   await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve));
-  const gateway = makeServer({ canJoinLibrary: () => false, getHouseholdMemberIds: () => [] }, { webhook: 'w', admin: 'a' }, undefined, { householdGateway: { jellyfinUrl: `http://127.0.0.1:${upstream.address().port}`, domain: 'example.com', hostPrefix: 'media-' } });
+  const { member: gateway } = makeServers({ canJoinLibrary: () => false, getHouseholdMemberIds: () => [], getHouseholdAddresses: () => ({}) }, { webhook: 'w', admin: 'a' }, undefined, { householdGateway: { jellyfinUrl: `http://127.0.0.1:${upstream.address().port}`, domain: 'example.com', hostPrefix: 'media-' } });
   await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
   t.after(() => { gateway.closeAllConnections(); gateway.close(); upstream.closeAllConnections(); upstream.close(); });
   const { get } = await import('./support/household-app.mjs');
@@ -134,14 +134,14 @@ it('keeps Jellyfin Enhanced public-config byte-identical through the real HTTP r
 });
 
 it('refuses the 3.10.0 Jellyfin version administrator routes on household hosts without relaying them', async (t) => {
-  const { makeServer } = await import('../dist/server.js');
+  const { makeServers } = await import('../dist/server.js');
   for (const path of ['/v1/jellyfin/version', '/v1/jellyfin/version/confirmation']) {
     for (const method of ['GET', 'HEAD', 'POST', 'DELETE', 'OPTIONS', 'PUT']) assert.equal(householdRouteAllowed(path, [], method), false, `${method} ${path}`);
   }
   const relayed = [];
   const upstream = createServer((req, res) => { relayed.push(req.url); res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{}'); });
   await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve));
-  const gateway = makeServer({ canJoinLibrary: () => false, getHouseholdMemberIds: () => [] }, { webhook: 'w', admin: 'a' }, undefined, { householdGateway: { jellyfinUrl: `http://127.0.0.1:${upstream.address().port}`, domain: 'example.com', hostPrefix: 'media-' } });
+  const { member: gateway } = makeServers({ canJoinLibrary: () => false, getHouseholdMemberIds: () => [], getHouseholdAddresses: () => ({}) }, { webhook: 'w', admin: 'a' }, undefined, { householdGateway: { jellyfinUrl: `http://127.0.0.1:${upstream.address().port}`, domain: 'example.com', hostPrefix: 'media-' } });
   await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
   t.after(() => { gateway.closeAllConnections(); gateway.close(); upstream.closeAllConnections(); upstream.close(); });
   const { get } = await import('./support/household-app.mjs');
@@ -214,7 +214,7 @@ it('logs every additional plugin template at startup and uses the live version g
   await new Promise((resolve) => reservation.close(resolve));
   const directory = await makeTempDir(t, 'jfa-startup-policy-');
   const child = spawn(process.execPath, [new URL('../dist/index.js', import.meta.url).pathname], { env: {
-    PATH: process.env.PATH, HOST: '127.0.0.1', PORT: String(port),
+    PATH: process.env.PATH, ADMIN_HOST: '127.0.0.1', ADMIN_PORT: String(port),
     WEBHOOK_TOKEN: 'webhook', ADMIN_TOKEN: 'admin', JELLYFIN_API_KEY: 'key',
     JELLYFIN_URL: `http://127.0.0.1:${upstream.address().port}`, STATE_FILE: `${directory}/state.json`,
     HOUSEHOLD_PLUGIN_ROUTES: '/example/status,/example/config', RECONCILE_INTERVAL_SECONDS: '0',

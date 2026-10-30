@@ -149,9 +149,22 @@ describe('state migration', () => {
     });
   }
 
-  it('keeps 3.x schema v7 and its optional fields without rewriting', async (t) => {
+  it('migrates 3.x schema v7 to v8 keeping every field, a 3.10.0 version confirmation among them', async (t) => {
     const file = await stateFile(t);
-    const contents = JSON.stringify({ version: 7, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [], appWithdrawals: {} });
+    const v7 = {
+      version: 7, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [], appWithdrawals: {},
+      jellyfinVersionConfirmed: '13.0.0',
+    };
+    await writeFile(file, JSON.stringify(v7));
+    const store = new GrantStore(file);
+    await store.load();
+    assert.equal(store.getJellyfinVersionConfirmed(), '13.0.0');
+    assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), { ...v7, version: 8 });
+  });
+
+  it('keeps schema v8 without rewriting', async (t) => {
+    const file = await stateFile(t);
+    const contents = JSON.stringify({ version: 8, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [], jellyfinVersionConfirmed: '13.0.0' });
     await writeFile(file, contents);
     await new GrantStore(file).load();
     assert.equal(await readFile(file, 'utf8'), contents);
@@ -159,7 +172,7 @@ describe('state migration', () => {
 
   it('rejects a newer state schema and leaves the file untouched', async (t) => {
     const file = await stateFile(t);
-    const contents = JSON.stringify({ version: 8, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], future: true });
+    const contents = JSON.stringify({ version: 9, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], future: true });
     await writeFile(file, contents);
     await assert.rejects(new GrantStore(file).load(), /unsupported state schema version/);
     assert.equal(await readFile(file, 'utf8'), contents);

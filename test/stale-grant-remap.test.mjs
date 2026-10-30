@@ -3,7 +3,7 @@ import path from 'node:path';
 import { readFile, writeFile } from 'node:fs/promises';
 import { describe, it, mock } from 'node:test';
 import { AccessService, ConflictError, OperationCancelledError, accessTag } from '../dist/access-service.js';
-import { makeServer } from '../dist/server.js';
+import { makeServers } from '../dist/server.js';
 import { GrantStore } from '../dist/store.js';
 import { parseWebhook } from '../dist/webhook.js';
 import { makeTempDir } from './support/temp-dir.mjs';
@@ -827,7 +827,7 @@ describe('admin grant remap', { timeout: 10_000 }, () => {
 
   it('is served at POST /v1/grants/:itemId/remap', async (t) => {
     const { w, store, service } = await reimported(t);
-    const server = makeServer(service, { webhook: 'webhook-token', admin: 'admin-token' });
+    const { admin: server } = makeServers(service, { webhook: 'webhook-token', admin: 'admin-token' });
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     t.after(() => new Promise((resolve) => server.close(resolve)));
     const base = `http://127.0.0.1:${server.address().port}`;
@@ -1098,7 +1098,7 @@ describe('removals across household library joins and grant moves', { timeout: 1
         const store = new GrantStore(file);
         await store.load();
         const loaded = JSON.parse(await readFile(file, 'utf8'));
-        assert.equal(loaded.version, 7, `${name} ${pass}`);
+        assert.equal(loaded.version, 8, `${name} ${pass}`);
         assert.deepEqual(loaded.removedAccess ?? {}, expected[name], `${name} ${pass}: every removal mark is kept`);
         for (const [itemId, removals] of Object.entries(expected[name])) assert.deepEqual(store.getRemovals(itemId), removals);
         assert.equal(loaded.removedManualAccess, undefined, `${name} ${pass}`);

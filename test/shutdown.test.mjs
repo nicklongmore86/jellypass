@@ -8,7 +8,7 @@ import path from 'node:path';
 import { PassThrough } from 'node:stream';
 import { after, before, describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
-import { makeServer } from '../dist/server.js';
+import { makeServers } from '../dist/server.js';
 import { createShutdown } from '../dist/shutdown.js';
 import { GrantStore } from '../dist/store.js';
 import { createFakeJellyfin } from './support/fake-jellyfin.mjs';
@@ -64,16 +64,17 @@ describe('graceful shutdown', { timeout: 15_000 }, () => {
   });
 
   async function startServer() {
-    const server = makeServer(stubService(), { webhook: 'w', admin: 'a' }, undefined, {
+    // The member listener, with its admin listener as `server.admin` (both listening).
+    const { member: server, admin } = makeServers(stubService(), { webhook: 'w', admin: 'a' }, undefined, {
       householdGateway: {
         jellyfinUrl: `http://127.0.0.1:${upstream.address().port}`,
         domain: 'example.test',
         hostPrefix: 'jelly-',
       },
     });
-    servers.push(server);
-    await listen(server);
-    return server;
+    servers.push(server, admin);
+    await Promise.all([listen(server), listen(admin)]);
+    return Object.assign(server, { admin });
   }
 
   async function openWebSocket(port) {
@@ -94,7 +95,7 @@ describe('graceful shutdown', { timeout: 15_000 }, () => {
     const exits = [];
     const logs = [];
     const shutdown = createShutdown({
-      servers: [server],
+      servers: server.admin ? [server, server.admin] : [server],
       closeStore: () => store.close(),
       timers: () => [],
       exit: (code) => exits.push(code),
@@ -114,10 +115,11 @@ describe('graceful shutdown', { timeout: 15_000 }, () => {
     const upstreamClosed = once(upstreamSocket, 'close');
 
     const agent = new Agent({ keepAlive: true });
-    const health = await get({ port, path: '/health', agent });
+    const adminPort = server.admin.address().port;
+    const health = await get({ port: adminPort, path: '/health', agent });
     assert.equal(health.status, 200);
-    assert.equal(agent.freeSockets[`127.0.0.1:${port}:`]?.length, 1, 'expected an idle keep-alive socket');
-    const idleSocketClosed = once(agent.freeSockets[`127.0.0.1:${port}:`][0], 'close');
+    assert.equal(agent.freeSockets[`127.0.0.1:${adminPort}:`]?.length, 1, 'expected an idle keep-alive socket');
+    const idleSocketClosed = once(agent.freeSockets[`127.0.0.1:${adminPort}:`][0], 'close');
     const seenRequests = upstreamRequests;
     const inFlight = get({ port, path: '/web/slow', headers: { Host: HOUSEHOLD_HOST } });
     await waitFor(() => upstreamRequests > seenRequests);
@@ -161,7 +163,7 @@ describe('graceful shutdown', { timeout: 15_000 }, () => {
     });
     await listen(withholding);
     try {
-      const server = makeServer(stubService(), { webhook: 'w', admin: 'a' }, undefined, {
+      const { member: server } = makeServers(stubService(), { webhook: 'w', admin: 'a' }, undefined, {
         householdGateway: { jellyfinUrl: `http://127.0.0.1:${withholding.address().port}`, domain: 'example.test', hostPrefix: 'jelly-' },
       });
       servers.push(server);
@@ -357,19 +359,20 @@ describe('SIGTERM to the JellyPass process', { timeout: STARTUP_TIMEOUT_MS + 15_
     await seed.load();
     await seed.upsertGroup({ id: 'grove', name: 'Grove', userIds: ['alice-id'] });
     await seed.close();
-    const { child, port, output, exited } = await startJellyPass({
+    const { child, port, adminPort, output, exited } = await startJellyPass({
       WEBHOOK_TOKEN: 'webhook-secret',
       ADMIN_TOKEN: 'admin-secret',
       JELLYFIN_URL: jellyfin.url,
       JELLYFIN_API_KEY: 'test-key',
       STATE_FILE: stateFile,
       HOUSEHOLD_DOMAIN: 'example.test',
+      TRUSTED_PROXIES: '127.0.0.1',
     });
     try {
       const client = await openWebSocketClient(port, HOUSEHOLD_HOST);
       const clientClosed = once(client, 'close');
       const agent = new Agent({ keepAlive: true });
-      assert.equal((await get({ port, path: '/health', agent })).status, 200);
+      assert.equal((await get({ port: adminPort, path: '/health', agent })).status, 200);
 
       const startedAt = performance.now();
       child.kill('SIGTERM');
@@ -485,8 +488,8 @@ function fakeChild(children, behave) {
  * child's output.
  */
 function startJellyPass(env) {
-  return startUntilReady((port) => spawn(process.execPath, [ENTRYPOINT], {
-    env: { PATH: process.env.PATH, HOST: '127.0.0.1', PORT: String(port), ...env },
+  return startUntilReady((port, adminPort) => spawn(process.execPath, [ENTRYPOINT], {
+    env: { PATH: process.env.PATH, HOST: '127.0.0.1', PORT: String(port), ADMIN_HOST: '127.0.0.1', ADMIN_PORT: String(adminPort), ...env },
     stdio: ['ignore', 'pipe', 'pipe'],
   }), { timeoutMs: STARTUP_TIMEOUT_MS });
 }
@@ -496,7 +499,9 @@ async function startUntilReady(spawnOnPort, { timeoutMs, attempts = 5 }) {
   const deadline = performance.now() + timeoutMs;
   for (let attempt = 1; ; attempt += 1) {
     const port = await freePort();
-    const child = spawnOnPort(port);
+    let adminPort = await freePort();
+    while (adminPort === port) adminPort = await freePort();
+    const child = spawnOnPort(port, adminPort);
     let output = '';
     // 'close', not 'exit': stderr can still be draining after 'exit', and the retry decision reads the output.
     const exited = new Promise((resolve) => child.once('close', (code, signal) => resolve({ code, signal })));
@@ -514,7 +519,7 @@ async function startUntilReady(spawnOnPort, { timeoutMs, attempts = 5 }) {
     });
     const outcome = await Promise.race([started, exited, timedOut]);
     clearTimeout(timer);
-    if (outcome === 'started') return { child, port, output: () => output, exited };
+    if (outcome === 'started') return { child, port, adminPort, output: () => output, exited };
     if (outcome === 'timed out') {
       child.kill('SIGKILL');
       await exited;
@@ -560,6 +565,7 @@ function get(options) {
 
 function stubService() {
   return {
+    getHouseholdAddresses: () => ({}),
     getHouseholdMemberIds: (householdId) => (householdId === 'grove' ? ['alice-id'] : undefined),
     isPasswordless: () => false,
     canJoinLibrary: () => false,

@@ -6,26 +6,55 @@ website's [documentation](https://jellypass.app/docs/) is the shorter guide.
 Settings, Seerr, operations and the administrator API are in the
 [server reference](server-reference.md).
 
-## Household Jellyfin URLs
+## Household addresses
 
-Access groups can also act as households. With:
+Access groups can also act as households. With the household gateway on
+(`HOUSEHOLD_GATEWAY_ENABLED=true` and `TRUSTED_PROXIES` set), assign each
+household an HTTPS address and map it to the household in JellyPass. The
+hostname can be any name you control; there is no naming rule:
 
-```dotenv
-HOUSEHOLD_DOMAIN=example.com
-HOUSEHOLD_HOST_PREFIX=jelly-
+```sh
+curl -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
+  -d '{"origin": "https://media.example.com", "aliases": ["https://films.example.net:8443"]}' \
+  http://127.0.0.1:8788/v1/groups/grove/addresses
 ```
 
-the group ID `grove` receives the URL
-`https://jelly-grove.example.com`. On that hostname, JellyPass filters
-Jellyfin's public-user response to the group's members and proxies supported
-Jellyfin HTTP, streaming, byte-range, HLS, and WebSocket traffic.
+`origin` is the household's canonical address (its links and its URL in the
+admin site); `aliases` are more addresses for the same household. Each is
+`https://host` or `https://host:port` (`http` is accepted for a private
+network), with no path, query or credentials. Addresses are compared exactly,
+case and default ports aside: `https://media.example.com` is reached by
+`Host: media.example.com` (or `:443`), and nothing else, not a sub- or parent
+domain. An address another household has is refused with `409`
+(`address_conflict`) and takes effect at once otherwise; there is no restart.
+`GET` the same path to read a household's addresses and `DELETE` it to remove
+them. The map is kept in the state file and is removed with its group. Members
+enter the address supplied by their administrator, for example
+`https://media.example.com`, and sign in with their Jellyfin account.
+
+On a household's address, JellyPass filters Jellyfin's public-user response to
+the group's members and proxies supported Jellyfin HTTP, streaming,
+byte-range, HLS, and WebSocket traffic. Links JellyPass makes for the
+household (the app's Play links) stay on the address the request came in on.
+
+> [!NOTE]
+> **Legacy addresses.** Installs from before 4.0.0 named households by a rule:
+> with `HOUSEHOLD_DOMAIN=example.com` and `HOUSEHOLD_HOST_PREFIX` (default
+> `jelly-`), the group `grove` was `https://jelly-grove.example.com`. Those
+> addresses keep working unchanged in 4.0.0 as each household's legacy
+> address, alongside any you map. Mapping an address the rule already gives
+> (to the same household or another) is refused, and a stored map that
+> collides with the rule stops startup. The rule gives an address only to a
+> group ID of lowercase letters, numbers and hyphens, at most 63 characters,
+> and only without a port.
 
 Deployment requirements:
 
-- Point each hostname, or a suitable wildcard DNS record, at the reverse proxy.
-- Use a TLS certificate covering each hostname; `*.example.com` covers the
-  single-label format above.
-- Preserve the original `Host` header, and send exactly one. JellyPass refuses
+- Point each household address's hostname at the reverse proxy, and route it to
+  the member listener (`PORT`). No wildcard DNS record or certificate is
+  needed: a certificate per hostname, or one listing several, works.
+- Preserve the original `Host` header (the household is chosen from it), and
+  send exactly one. JellyPass refuses
   a request that does not name exactly one host (two `Host` headers, a `Host`
   with userinfo, whitespace or other characters, or an absolute-form target
   whose authority is not the `Host`) with a fixed `400`
@@ -34,12 +63,13 @@ Deployment requirements:
   answered as before, as no household's.
 - Forward WebSocket upgrades and byte-range requests.
 - Avoid proxy buffering for large media responses.
-- Do not expose the JellyPass listener directly to untrusted clients.
-- Set `TRUSTED_PROXIES` to the proxy and add JellyPass to Jellyfin's known
-  proxies; see [Running behind a reverse proxy](server-reference.md#running-behind-a-reverse-proxy).
+- Do not expose either JellyPass listener directly to untrusted clients, and
+  never route a household hostname to the admin listener.
+- Set `TRUSTED_PROXIES` to the proxy (required) and add JellyPass to Jellyfin's
+  known proxies; see [Running behind a reverse proxy](server-reference.md#running-behind-a-reverse-proxy).
 - Keep a separate normal Jellyfin administrator/recovery origin.
 
-Signing in on a household hostname (`POST /Users/AuthenticateByName`, from
+Signing in on a household address (`POST /Users/AuthenticateByName`, from
 Jellyfin web, the [household app](#household-app-pwa) or any Jellyfin client)
 works only for that household's members, hidden ones included (they use
 Jellyfin web's **Manual Login** and type their name). A malformed sign-in (no
@@ -119,9 +149,9 @@ answered a fixed `400` (`invalid_request`, `Cache-Control: no-store`) and never
 reaches Jellyfin. A name that is itself percent-encoded, such as
 `/Artists/100%2520%20Real`, is sent on as usual.
 
-Unknown household hostnames fail closed with `404`. Group IDs used as household
-IDs must contain lowercase letters, numbers, and hyphens and be no longer than
-63 characters.
+A `Host` that is no household's address fails closed with a fixed `421`
+(`unknown_host`); a legacy address whose group does not exist answers `404`
+(`household_not_found`).
 
 ### Household app API
 
@@ -367,7 +397,7 @@ About screen, as TMDB's API terms require.
 ### Household app (PWA)
 
 With `HOUSEHOLD_APP_ENABLED=true`, each household hostname also serves the
-app itself at `https://jelly-<household>.<HOUSEHOLD_DOMAIN>/jellypass/app/`: an
+app itself at its address, for example `https://media.example.com/jellypass/app/`: an
 installable web app (a PWA) to browse what is in the household's Jellyfin
 library and find more to watch. It shows each title's state (`Ready to watch`
 with a **Play** button, `Available to get`, `Requested` or `Can't request`) and offers

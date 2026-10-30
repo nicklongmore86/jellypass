@@ -4,7 +4,7 @@
 # with the JellyPass loader added to Jellyfin web's page, then packaged and signed in the pinned Tizen image with its
 # built-in 'dev' profile. It never talks to a TV.
 #
-#   JELLYPASS_TV_HOSTS='jelly-*.example.org' tv/samsung/build-wgt.sh
+#   JELLYPASS_TV_HOSTS='media.example.com' tv/samsung/build-wgt.sh
 #
 # JELLYPASS_TV_HOSTS: the household hosts the loader may load the add-on from (exact names, or one * in the first
 # label), separated by commas. Needs docker, git, python3 and the repository's dependencies (pnpm install).
@@ -16,7 +16,7 @@ here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="$(cd "${here}/../.." && pwd)"
 # shellcheck source=pins.env
 source "${here}/pins.env"
-hosts="${JELLYPASS_TV_HOSTS:?Set JELLYPASS_TV_HOSTS to the household hosts, e.g. jelly-*.example.org}"
+hosts="${JELLYPASS_TV_HOSTS:?Set JELLYPASS_TV_HOSTS to the household hosts, e.g. media.example.com}"
 cache="${JELLYPASS_SAMSUNG_CACHE:-${HOME}/.cache/jellypass-samsung}"
 out="${JELLYPASS_SAMSUNG_OUT:-${repo}/dist/samsung}"
 web="${cache}/jellyfin-web"

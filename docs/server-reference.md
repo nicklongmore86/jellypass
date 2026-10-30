@@ -130,25 +130,29 @@ supported release's. On an unconfirmed version:
   reads, and the admin site shows it with an **Allow Jellyfin X** button.
   `GET /v1/jellyfin/version` (`confirmation: "unconfirmed"`) and the
   `jfa_jellyfin_version_info` metric (`confirmed="false"`) report it too.
-- **In JellyPass 3.x, household hostnames keep serving** as they did before
-  the check existed (`enforcement: "warn"`). The household privacy checks were
-  written against the supported versions, so confirm a version only once you
-  are satisfied they hold on it.
-- **From JellyPass 4.0.0, household hostnames will refuse to serve on an
-  unconfirmed version**: every request (and WebSocket) there will get a fixed
-  `503` with a plain-text message, with nothing relayed to Jellyfin, until
-  that exact version is confirmed; likewise while the version cannot be read.
-- The admin site, webhooks, grants and reconciliation keep working.
+- **Household addresses refuse to serve** (`enforcement: "refuse"`, from
+  JellyPass 4.0.0; 3.x only warned): every request and WebSocket there gets a
+  fixed `503` with a plain-text message, with nothing relayed to Jellyfin,
+  until that exact version is confirmed. `jfa_household_hosts_refusing` is `1`
+  meanwhile. The household privacy checks were written against the supported
+  versions, so confirm a version only once you are satisfied they hold on it.
+- The admin listener (admin site, API, webhooks, health), grants and
+  reconciliation keep working.
 - An administrator confirms one **exact** version, either in the admin site
-  (stored in the state file) or by setting `JELLYFIN_UNTESTED_VERSION_OK` to it,
-  which clears the warning. A later upgrade to another untested version is
+  (stored in the state file) or by setting `JELLYFIN_UNTESTED_VERSION_OK` to it.
+  A confirmed version is logged once, when it is confirmed or first read, and
+  not on later reads. A later upgrade to another untested version is
   unconfirmed again until it is confirmed in turn; the confirmation can be
-  withdrawn in the admin site.
+  withdrawn in the admin site, which warns again. A confirmation made in
+  3.10.0 is kept by the upgrade to 4.0.0, so household addresses keep serving
+  on that version.
 
 While the version is not known (Jellyfin unreachable when JellyPass starts, or
 its last read failed), JellyPass does not wait for it: it starts as usual, the
-admin site shows that the version cannot be read, and household hostnames
-serve as before. It reads the version again every 30 seconds.
+admin site shows that the version cannot be read, and household addresses
+answer `503` until it is read. A household request reads it again (at most
+every five seconds, waiting up to five), and so does a retry every 30
+seconds.
 
 ## Quick start with Docker Compose
 
@@ -175,13 +179,17 @@ Start JellyPass:
 ```sh
 docker compose up -d
 docker compose ps
-curl http://127.0.0.1:8787/health
+curl http://127.0.0.1:8788/health
 ```
 
-The default Compose file binds JellyPass only to `127.0.0.1:8787`. Keep that
-default when a reverse proxy runs on the same machine. Change the published
-address deliberately if Seerr or a reverse proxy must reach it over a
-private network.
+JellyPass has two listeners (see [Listeners](#listeners)): the **admin
+listener** on port `8788` (admin site and API, metrics, the Seerr webhook and
+health) and the **member listener** on port `8787` (household addresses only).
+The default Compose file publishes both only on `127.0.0.1`. Keep that default
+when a reverse proxy runs on the same machine. Change a published address
+deliberately if a reverse proxy must reach the member port over a private
+network, and publish the admin port only on a private address, never route a
+public hostname to it.
 
 The container image is published from `main` as `latest` and from release tags
 as semantic-version tags. For predictable production upgrades, set
@@ -223,25 +231,29 @@ JellyPass reads configuration from environment variables at startup.
 | `SEERR_API_KEY` | Conditional | — | Seerr API key. Configure with `SEERR_URL`. |
 | `TMDB_API_KEY` | Conditional | — | TMDB API key (v3, 32 hexadecimal characters) or API read access token (v4) the [household app API](household-hosts.md#household-app-api) reads search, discover and title details with, straight from TMDB. Required when `HOUSEHOLD_APP_ENABLED` is true. Get one from your TMDB account's API settings. Startup stops if it is malformed or TMDB refuses it; it is never logged. See [docs/app-design.md](app-design.md#catalogue-source). |
 | `STATE_FILE` | No | `./data/grants.json` | Durable state-file path. The container uses `/app/data/grants.json`. |
-| `HOST` | No | `0.0.0.0` | HTTP listen address inside the process/container. |
-| `PORT` | No | `8787` | HTTP listen port. |
+| `HOST` | No | `0.0.0.0` | Member listener address (household addresses only). |
+| `PORT` | No | `8787` | Member listener port. It starts only with the household gateway on. |
+| `ADMIN_HOST` | No | `127.0.0.1` (`0.0.0.0` in the container image, published on `127.0.0.1` by Compose) | Admin listener address: the admin site and API, `/metrics`, `/webhooks/seerr` and `/health`. Keep it private. See [Listeners](#listeners). |
+| `ADMIN_PORT` | No | `8788` | Admin listener port. Must differ from `PORT` while the household gateway is on. |
 | `RECONCILE_INTERVAL_SECONDS` | No | `300` | Retry/reconciliation interval; `0` disables scheduling. Maximum `86400`. |
 | `CATALOG_SYNC_INTERVAL_SECONDS` | No | `3600` | Jellyfin catalog refresh interval; `0` disables scheduling. Maximum `604800`. |
-| `HOUSEHOLD_DOMAIN` | No | — | Enables household hostnames below this DNS domain. |
-| `HOUSEHOLD_HOST_PREFIX` | No | `jelly-` | Prefix placed before each DNS-safe group ID. |
+| `HOUSEHOLD_GATEWAY_ENABLED` | No | `true` when `HOUSEHOLD_DOMAIN` is set, otherwise `false` | Starts the member listener, which serves each household at the addresses mapped to it (see [Household addresses](household-hosts.md#household-addresses)). Requires `TRUSTED_PROXIES`. |
+| `HOUSEHOLD_DOMAIN` | No | — | Legacy addresses, kept for installs from before 4.0.0: every household also gets `https://<HOUSEHOLD_HOST_PREFIX><household>.<HOUSEHOLD_DOMAIN>`, alongside its mapped addresses. Turns the household gateway on. Leave it empty on a new install. |
+| `HOUSEHOLD_HOST_PREFIX` | No | `jelly-` | The legacy addresses' prefix (only with `HOUSEHOLD_DOMAIN`). |
+| `LEGACY_WEBHOOK_ON_MEMBER_PORT` | No | `false` | Upgrade aid: the member listener also answers `POST /webhooks/seerr` for a `Host` that is no household's, so a Seerr webhook URL from before 4.0.0 (on `PORT`) keeps working, with the same `Authorization: Bearer` check. Logs a warning at startup. Point Seerr at the admin listener and turn it off. |
 | `HOUSEHOLD_PLUGIN_ROUTES` | No | — | Comma-separated exact lowercase plugin paths added to the household relay allow-list. No wildcards; existing security refusals remain. Audit plugin privacy before using this option. |
 | `JELLYFIN_PUBLIC_URLS` | No | — | Comma-separated public Jellyfin URLs for the admin self-check's anonymous direct-origin probes. |
 | `SEERR_PUBLIC_URL` | No | — | Public Seerr URL for the admin self-check. Seerr must be admin-only. |
-| `HOUSEHOLD_APP_ENABLED` | No | `false` | Serves the [household app API](household-hosts.md#household-app-api) (titles, "Get this" and the household's requests) at `/jellypass/app/v1/*`, and the [app](household-hosts.md#household-app-pwa) at `/jellypass/app/`, on household hostnames. Requires `HOUSEHOLD_DOMAIN`, Seerr configuration and `TMDB_API_KEY`; startup stops if any is missing. While `false`, those paths answer `404` and are never proxied to Jellyfin. |
-| `TV_ADDON_ENABLED` | No | `false` | Adds the [TV add-on](tv-addon.md) (a JellyPass row on Jellyfin web's Home) to Jellyfin web's page on the household hostnames in `TV_ADDON_HOUSEHOLDS`, and serves its files at `/jellypass/tv/` there. Requires `HOUSEHOLD_APP_ENABLED`. While `false`, nothing on any host changes. |
-| `TV_ADDON_HOUSEHOLDS` | Conditional | — | Household (group) IDs separated by commas, or `*` for every household, that the TV add-on is on for. Required when `TV_ADDON_ENABLED` is true; startup stops on an empty or invalid list. Other households' hostnames are unchanged. |
+| `HOUSEHOLD_APP_ENABLED` | No | `false` | Serves the [household app API](household-hosts.md#household-app-api) (titles, "Get this" and the household's requests) at `/jellypass/app/v1/*`, and the [app](household-hosts.md#household-app-pwa) at `/jellypass/app/`, on household addresses. Requires the household gateway, Seerr configuration and `TMDB_API_KEY`; startup stops if any is missing. While `false`, those paths answer `404` and are never proxied to Jellyfin. |
+| `TV_ADDON_ENABLED` | No | `false` | Adds the [TV add-on](tv-addon.md) (a JellyPass row on Jellyfin web's Home) to Jellyfin web's page on the addresses of the households in `TV_ADDON_HOUSEHOLDS`, and serves its files at `/jellypass/tv/` there. Requires `HOUSEHOLD_APP_ENABLED`. While `false`, nothing on any host changes. |
+| `TV_ADDON_HOUSEHOLDS` | Conditional | — | Household (group) IDs separated by commas, or `*` for every household, that the TV add-on is on for. Required when `TV_ADDON_ENABLED` is true; startup stops on an empty or invalid list. Other households' addresses are unchanged. |
 | `REQUEST_BACKFILL_SINCE` | No | — | `YYYY-MM-DD` (UTC midnight) or an ISO 8601 date-time with `Z` or an offset, such as `2026-10-15T08:00:00+02:00`. Impossible dates are rejected. Requests created before it are never imported by the backfill. |
 | `REQUEST_BACKFILL_ENABLED` | No | `true` when `REQUEST_BACKFILL_SINCE` is set, otherwise `false` | Grants available Seerr requests that the webhook missed. Requires Seerr configuration and `REQUEST_BACKFILL_SINCE`. |
 | `WS_IDLE_TIMEOUT_MS` | No | `300000` | Closes a proxied household WebSocket after this many milliseconds with no bytes in either direction; `0` disables. Jellyfin drops sockets after 60 s without a client KeepAlive (clients send one every 30 s), so values at or below `60000` log a startup warning. Maximum `86400000`. |
 | `WS_UPSTREAM_IDLE_TIMEOUT_MS` | No | `180000` | Closes a proxied household WebSocket after this many milliseconds with no bytes from Jellyfin, even while the client keeps sending; `0` disables. Jellyfin answers every client KeepAlive and pings quiet sockets, so a healthy server is never silent for much more than 60 s; values at or below `60000` log a startup warning. Maximum `86400000`. |
 | `LOG_LEVEL` | No | `info` | One of `debug`, `info`, `warn`, `error` (case-insensitive; aliases such as `trace`/`verbose`, `information`, and `warning` are accepted). Only `debug` changes output today: it also logs routine client disconnects (`ECONNRESET`, `EPIPE`, aborted streams, keepalive timeouts) and idle WebSocket closes on the household proxy. `info`, `warn`, and `error` are accepted but behave identically. Jellyfin-side resets and other unexpected proxy errors are always logged as warnings. An unrecognised value logs a startup warning and falls back to `info`. |
 | `JELLYFIN_UNTESTED_VERSION_OK` | No | — | One exact Jellyfin version outside the [supported releases](#supported-jellyfin-versions), such as `13.0.0` or `12.5.0-rc1`, that counts as confirmed without confirming it in the admin site. Any other untested version stays unconfirmed. Must be a single version string; an invalid value stops startup. |
-| `TRUSTED_PROXIES` | No | — | Comma-separated IP addresses and CIDR ranges (IPv4 or IPv6) of reverse proxies in front of JellyPass, such as `192.0.2.10, 2001:db8::/64`. When the connecting peer is listed, JellyPass reads the client address from `X-Forwarded-For` for login rate limits; otherwise it uses the peer and ignores the header. Empty trusts no proxy. An invalid entry stops startup. See [Running behind a reverse proxy](#running-behind-a-reverse-proxy). |
+| `TRUSTED_PROXIES` | With the household gateway | — | Comma-separated IP addresses and CIDR ranges (IPv4 or IPv6) of reverse proxies in front of JellyPass, such as `192.0.2.10, 2001:db8::/64`. When the connecting peer is listed, JellyPass reads the client address from `X-Forwarded-For` for login rate limits; otherwise it uses the peer and ignores the header. Required while the household gateway is on: startup stops without it. Otherwise empty trusts no proxy. An invalid entry stops startup. It never decides which household a request is for: only `Host` does. See [Running behind a reverse proxy](#running-behind-a-reverse-proxy). |
 | `JELLYPASS_IMAGE` | Compose only | `ghcr.io/nicklongmore86/jellypass:latest` | Container tag used by `compose.yaml`. |
 | `JELLYPASS_ENV_FILE` | Compose only | `.env` | Alternate environment-file path used by either Compose file. |
 
@@ -308,9 +320,35 @@ LAN address, or `host.docker.internal` where your Docker setup supports it.
 JellyPass must be able to reach Jellyfin and, when configured, Seerr. Those
 services need to reach JellyPass only as follows:
 
-- Seerr needs `/webhooks/seerr`.
-- Administrators need `/admin/` and the administrative API.
-- Household clients need the full household origin.
+- Seerr needs `/webhooks/seerr` on the admin listener, for example
+  `http://jellypass:8788/webhooks/seerr` on a shared Docker network.
+- Administrators need `/admin/` and the administrative API on the admin
+  listener.
+- Household clients need their household's address, routed by the reverse
+  proxy to the member listener.
+
+### Listeners
+
+| Listener | Setting | Default | Serves | Who reaches it |
+| --- | --- | --- | --- | --- |
+| Admin | `ADMIN_HOST`:`ADMIN_PORT` | `127.0.0.1:8788` | `/admin/`, `/auth/*`, the `/v1/*` administrative API, `/metrics`, `/webhooks/seerr`, `/health` | Administrators, Seerr and container health checks, over this machine or a private network |
+| Member | `HOST`:`PORT` | `0.0.0.0:8787` | Household addresses only (Jellyfin through the gateway, the household app, the TV add-on) | The reverse proxy, for the household hostnames |
+
+The admin listener answers for any `Host` and never proxies to Jellyfin. The
+member listener selects a household from `Host` alone (exact match, case and
+default ports aside; `X-Forwarded-Host` is never read) and answers a `Host`
+that is no household's with a fixed `421` (`{"error":"unknown_host"}`) on
+every path, WebSocket upgrades dropped: it never falls back to the admin site.
+The member listener starts only while the household gateway is on. Both
+listeners refuse a request that does not name exactly one host (two `Host`
+headers, a `Host` with userinfo, whitespace or other characters, or an
+absolute-form target whose authority is not the `Host`) with a fixed `400`
+(`{"error":"invalid_host"}`), before anything else is read.
+
+Keep the admin listener private: publish it on `127.0.0.1` or a LAN address,
+and if you want it behind your reverse proxy (for HTTPS), use a host of its own
+that only your LAN, VPN or an identity-aware gate (such as Cloudflare Access)
+can reach. Never give the admin port a public household-style proxy rule.
 
 ### Running behind a reverse proxy
 
@@ -430,9 +468,12 @@ In **Settings → Notifications → Webhook**:
 
 1. Enable the webhook agent.
 2. Select only **Request Available**.
-3. Set the URL to `http://jellypass:8787/webhooks/seerr` for a shared Docker
-   network, adjusting the host for your installation.
-4. Set the authorization header to `Bearer YOUR_WEBHOOK_TOKEN`.
+3. Set the URL to `http://jellypass:8788/webhooks/seerr` for a shared Docker
+   network: the **admin listener** (`ADMIN_PORT`), adjusting the host for your
+   installation. Never point it at a household address. Upgrading from 3.x,
+   where it was `:8787`? See [Upgrade](#upgrade).
+4. Set the authorization header to `Bearer YOUR_WEBHOOK_TOKEN`. 4.0 reads the
+   token from this header only: a URL with `?token=` is refused.
 5. Use the payload below.
 
 ```json
@@ -506,8 +547,9 @@ unfilled `{{...}}` ID returns `400` and is counted as
 
 ## Administrator UI
 
-Open `http://127.0.0.1:8787/admin/` or the protected HTTPS URL exposed by your
-reverse proxy. Sign in with an enabled Jellyfin administrator account.
+Open `http://127.0.0.1:8788/admin/` (the admin listener) or the protected
+HTTPS URL your reverse proxy gives it on a private network. Sign in with an
+enabled Jellyfin administrator account.
 
 JellyPass sends credentials directly to Jellyfin, immediately closes the
 temporary Jellyfin session, and stores only an in-memory JellyPass session for
@@ -554,8 +596,8 @@ The UI contains five views:
 - **Grants** — active automated and manual grants, owners, groups, sync status,
   dry-run plans, revocation, and **Move** (remap a grant to another Jellyfin
   item; see [A re-imported title is public](#a-re-imported-title-is-public-or-a-grant-is-orphaned)).
-- **Groups** — reusable audiences, household URLs, and optional Jellyfin user
-  creation/import.
+- **Groups** — reusable audiences, each household's addresses, and optional
+  Jellyfin user creation/import.
 
 Run a catalog sync after first installation. Assigning access from the Library
 tab creates a manual grant; catalog synchronization alone does not.
@@ -565,11 +607,11 @@ tab creates a manual grant; catalog synchronization alone does not.
 ### Health and logs
 
 ```sh
-curl http://127.0.0.1:8787/health
+curl http://127.0.0.1:8788/health
 docker compose logs --tail=100 jellypass
 ```
 
-`/health` reports process liveness. It does not guarantee that Jellyfin or
+`/health` (on the admin listener only) reports process liveness. It does not guarantee that Jellyfin or
 Seerr is reachable; use the UI synchronization status and logs for that.
 
 ### Administrative API examples
@@ -579,23 +621,23 @@ All examples except health require `Authorization: Bearer $ADMIN_TOKEN`.
 ```sh
 # Inspect grants.
 curl -H "Authorization: Bearer $ADMIN_TOKEN" \
-  http://127.0.0.1:8787/v1/grants
+  http://127.0.0.1:8788/v1/grants
 
 # What household app "Get this" still protects or has in flight (check before a rollback).
 curl -H "Authorization: Bearer $ADMIN_TOKEN" \
-  http://127.0.0.1:8787/v1/app/outstanding
+  http://127.0.0.1:8788/v1/app/outstanding
 
 # Preview reconciliation without changing Jellyfin.
 curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
-  'http://127.0.0.1:8787/v1/reconcile?dryRun=true'
+  'http://127.0.0.1:8788/v1/reconcile?dryRun=true'
 
 # Reapply desired tags and policies.
 curl -X POST -H "Authorization: Bearer $ADMIN_TOKEN" \
-  http://127.0.0.1:8787/v1/reconcile
+  http://127.0.0.1:8788/v1/reconcile
 
 # Prometheus metrics.
 curl -H "Authorization: Bearer $ADMIN_TOKEN" \
-  http://127.0.0.1:8787/metrics
+  http://127.0.0.1:8788/metrics
 ```
 
 The removed-form counter, `jfa_webhooks_total{result="removed_form"}`, counts
@@ -646,16 +688,26 @@ For the prebuilt image:
 ```sh
 docker compose pull
 docker compose up -d
-curl http://127.0.0.1:8787/health
+curl http://127.0.0.1:8788/health
 ```
 
-Back up the state file first. Read the [changelog](../CHANGELOG.md) before
-changing between versioned tags. For 4.0, replace any webhook URL `?token=` with
-`Authorization: Bearer YOUR_WEBHOOK_TOKEN` in Seerr's webhook form and use the
-full template above. Use **Get this** in the household app to add a title.
+Back up the state file first. **4.0.0 is a breaking release:** the admin site,
+API, metrics, health and the Seerr webhook move to their own listener
+(`ADMIN_PORT`, default `8788`), `TRUSTED_PROXIES` becomes required with the
+household gateway on, household hostnames refuse an untested Jellyfin version
+until it is confirmed, and the state file moves to schema 8. Upgrade to 4.0.0
+from 3.9.x or later 3.x, following the 4.0.0 upgrade steps in the
+[changelog](../CHANGELOG.md) (Seerr webhook, admin port, health check, reverse
+proxy, rollback). Read the changelog before changing between versioned tags.
+For 4.0, the Seerr webhook authenticates with the
+`Authorization: Bearer YOUR_WEBHOOK_TOKEN` header only: remove any `?token=`
+from its URL, point it at the admin listener (for example
+`http://jellypass:8788/webhooks/seerr`) and use the full template above. Use
+**Get this** in the household app to add a title.
 Upgrade from 2.x (or older) via 3.9.x first. 1.x state (schema v1–v6) is refused;
-3.x schema v7 is retained. Schema v7 was also used by 2.x and has no release
-marker, so the server cannot detect that source version. Rollback to 2.x is
+3.x schema v7 is migrated to schema 8 on the first start, keeping every field
+(a Jellyfin version confirmation among them). Schema v7 was also used by 2.x
+and has no release marker, so the server cannot detect that source version. Rollback to 2.x is
 unsupported; restore a backup made with the release you intend to run.
 
 Pin the desired image before upgrading or rolling back:
@@ -807,11 +859,28 @@ Check Jellyfin reachability and API-key privileges, then run **Sync library** in
 the UI. Confirm that `CATALOG_SYNC_INTERVAL_SECONDS` is not `0` if automatic
 refreshes are expected.
 
-### A household hostname returns `404`
+### A household address returns `421` or `404`
 
-Confirm the group exists, its ID is DNS-safe, `HOUSEHOLD_DOMAIN` and
-`HOUSEHOLD_HOST_PREFIX` match the hostname, and the reverse proxy preserves the
-original `Host` header.
+`421 {"error":"unknown_host"}` comes from the member listener: the `Host` it
+received is no household's address. Check the household's addresses
+(`GET /v1/groups/<id>/addresses` on the admin listener) against the exact
+hostname and port in the browser, and that the reverse proxy passes the
+original `Host` on unchanged (with no port added, unless the address has that
+port). `404 household_not_found` means a legacy address
+(`HOUSEHOLD_DOMAIN`/`HOUSEHOLD_HOST_PREFIX`) whose group does not exist.
+
+### The admin site or the webhook is unreachable after upgrading to 4.0.0
+
+They moved to the admin listener (`ADMIN_PORT`, default `8788`); the member
+port answers them with `421`. Open `http://127.0.0.1:8788/admin/`, point
+Seerr's webhook at `http://<jellypass>:8788/webhooks/seerr` (or set
+`LEGACY_WEBHOOK_ON_MEMBER_PORT=true` while you change it), and move any
+container health check to port `8788`.
+
+### JellyPass stops at startup with `TRUSTED_PROXIES is required`
+
+With the household gateway on, set `TRUSTED_PROXIES` to the address (or CIDR
+range) your reverse proxy connects to JellyPass from.
 
 ### A re-imported title is public or a grant is orphaned
 
@@ -892,9 +961,9 @@ tries again. Move it yourself with **Move** in Grants, or:
 ```sh
 # Preview, then apply. The target item must exist; the old one must be gone.
 curl -fsS -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"toItemId":"NEW_ITEM_ID"}' 'http://127.0.0.1:8787/v1/grants/OLD_ITEM_ID/remap?dryRun=true'
+  -d '{"toItemId":"NEW_ITEM_ID"}' 'http://127.0.0.1:8788/v1/grants/OLD_ITEM_ID/remap?dryRun=true'
 curl -fsS -X POST -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \
-  -d '{"toItemId":"NEW_ITEM_ID"}' http://127.0.0.1:8787/v1/grants/OLD_ITEM_ID/remap
+  -d '{"toItemId":"NEW_ITEM_ID"}' http://127.0.0.1:8788/v1/grants/OLD_ITEM_ID/remap
 ```
 
 A move merges the grant's whole audience into the target, as an explicit
@@ -920,9 +989,11 @@ blocked-tag policy.
 
 ## API reference
 
+Everything in this table is served by the admin listener only (`ADMIN_PORT`).
+
 | Method | Path | Purpose |
 | --- | --- | --- |
-| `GET` | `/health` | Public process liveness. |
+| `GET` | `/health` | Process liveness, without credentials. |
 | `POST` | `/webhooks/seerr` | Authenticated Seerr availability webhook. |
 | `GET` | `/v1/webhooks/status` | Admin-only removed-form warning status: `lastRemovedFormAt` is Unix milliseconds or `null`; cleared by an accepted webhook or restart. |
 | `GET` | `/v1/app/outstanding` | What household app "Get this" still protects or has in flight: safety markers, request intents, deferred webhooks and cancels that still decide a grant (`withdrawals`), with `"clear": true` once all are 0. Check it before rolling back. |
@@ -941,7 +1012,10 @@ blocked-tag policy.
 | `PUT` | `/v1/grants/{itemId}/groups` | Replace assigned groups; supports `?dryRun=true`. |
 | `PUT` | `/v1/grants/{itemId}/manual` | Set manual users/groups; supports `?dryRun=true`. |
 | `POST` | `/v1/grants/{itemId}/remap` | Move a grant to another Jellyfin item (`{"toItemId": "..."}`), merging with any grant already there; supports `?dryRun=true`. |
-| `GET` | `/v1/groups` | List groups and generated household URLs. |
+| `GET` | `/v1/groups` | List groups with each household's canonical address (`householdUrl`) and every address that selects it (`householdAddresses`, canonical first, the legacy one last), while the household gateway is on. |
+| `GET` | `/v1/groups/{groupId}/addresses` | A household's mapped `origin` and `aliases`, its `legacy` address if any, and `householdUrl`. |
+| `PUT` | `/v1/groups/{groupId}/addresses` | Set a household's addresses: `{"origin": "https://media.example.com", "aliases": [...]}`. `409 address_conflict` for an address another household (or the legacy rule) has, `400 address_invalid` for one that is not an origin. Takes effect at once. |
+| `DELETE` | `/v1/groups/{groupId}/addresses` | Remove a household's mapped addresses (its legacy one stays). |
 | `PUT` | `/v1/groups/{groupId}` | Create or replace a group. With the household app enabled, creating a 101st is refused with `400`. |
 | `DELETE` | `/v1/groups/{groupId}` | Delete a group and reconcile affected grants. |
 | `GET` | `/v1/users` | List Jellyfin users. |
@@ -957,7 +1031,7 @@ blocked-tag policy.
 | `POST` | `/v1/reconcile` | Reconcile all grants; supports `?dryRun=true`. |
 | `GET` | `/metrics` | Prometheus metrics. |
 
-With `HOUSEHOLD_APP_ENABLED=true`, household hostnames also serve the
+With `HOUSEHOLD_APP_ENABLED=true`, household addresses also serve the
 [household app API](household-hosts.md#household-app-api) under `/jellypass/app/v1/`.
 
 Administrative routes accept `ADMIN_TOKEN` bearer authentication or a valid
@@ -975,14 +1049,18 @@ uses its own token and is not origin- or type-checked.
 - Put browser, household, and remote webhook traffic behind TLS.
 - Expose only the routes each network needs; the admin bearer token grants full
   administrative API access.
-- **The admin URL is not gated by default.** Anyone who can reach `/admin/` can
+- **The admin site is private by default.** It is served only on the admin
+  listener (`ADMIN_HOST`:`ADMIN_PORT`, `127.0.0.1:8788` by default), never on
+  the member listener your reverse proxy routes households to; an unknown
+  `Host` there gets a fixed `421`. Anyone who can reach the admin listener can
   try to sign in with a Jellyfin administrator's name and password, and the
-  administrative API answers anyone holding `ADMIN_TOKEN`. JellyPass limits
-  sign-in attempts, but put the admin host behind an identity-aware gate such as
-  Cloudflare Access, a VPN, or an IP allowlist at the proxy, or keep it on the
-  LAN only. Give it a host of its own, not a household host or Seerr's.
+  administrative API answers anyone holding `ADMIN_TOKEN`. Keep it on this
+  machine or the LAN; if you proxy it, give it a host of its own behind an
+  identity-aware gate (Cloudflare Access, a VPN or an IP allowlist), never a
+  household host or Seerr's.
 - Preserve `Host` only through a reverse proxy you control. Household routing
-  relies on the HTTP host authority.
+  relies on the HTTP host authority and the exact address map; JellyPass never
+  reads `X-Forwarded-Host` to choose a household.
 - Restrict state-file and backup permissions; they contain media names and
   Jellyfin user identifiers.
 - Maintain a separate Jellyfin administrator recovery origin.

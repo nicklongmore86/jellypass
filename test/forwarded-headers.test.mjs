@@ -3,7 +3,7 @@ import { createServer, request as httpRequest } from 'node:http';
 import { connect as connectSocket } from 'node:net';
 import { after, before, describe, it } from 'node:test';
 import { WebAuth } from '../dist/auth.js';
-import { makeServer } from '../dist/server.js';
+import { makeServers } from '../dist/server.js';
 
 const HOUSEHOLD_HOST = 'jelly-grove.example.test';
 const LOCAL = '127.0.0.1';
@@ -41,8 +41,9 @@ describe('forwarded client addresses', { timeout: 10_000 }, () => {
     }
   });
 
-  async function startGateway(trustedProxies, webAuth) {
-    const server = makeServer(stubService(), { webhook: 'w', admin: 'a' }, webAuth, {
+  /** Starts both listeners and returns the member listener's port, or the admin listener's for `listener` 'admin'. */
+  async function startGateway(trustedProxies, webAuth, listener = 'member') {
+    const { member: server, admin } = makeServers(stubService(), { webhook: 'w', admin: 'a' }, webAuth, {
       ...(trustedProxies ? { trustedProxies } : {}),
       householdGateway: {
         jellyfinUrl: `http://${LOCAL}:${upstream.address().port}`,
@@ -51,9 +52,9 @@ describe('forwarded client addresses', { timeout: 10_000 }, () => {
         loginFailureDelayMs: 0,
       },
     });
-    servers.push(server);
-    await listen(server);
-    return server.address().port;
+    servers.push(server, admin);
+    await Promise.all([listen(server), listen(admin)]);
+    return (listener === 'admin' ? admin : server).address().port;
   }
 
   async function upstreamHeaders(port, path, headers, options = {}) {
@@ -174,7 +175,7 @@ describe('forwarded client addresses', { timeout: 10_000 }, () => {
 
   it('rate-limits administrator logins per client behind a trusted proxy', async () => {
     const webAuth = new WebAuth({ authenticateAdministrator: async () => null }, { loginFailureDelayMs: 0, nameDelayMaxMs: 0 });
-    const port = await startGateway([LOCAL], webAuth);
+    const port = await startGateway([LOCAL], webAuth, 'admin');
     const attempt = (client) => send(port, '/auth/login', {
       host: `${LOCAL}:${port}`,
       origin: `http://${LOCAL}:${port}`,
@@ -188,7 +189,7 @@ describe('forwarded client addresses', { timeout: 10_000 }, () => {
 
   it('shares one administrator login bucket across IPv4-mapped spellings', async () => {
     const webAuth = new WebAuth({ authenticateAdministrator: async () => null }, { loginFailureDelayMs: 0, nameDelayMaxMs: 0 });
-    const port = await startGateway([LOCAL], webAuth);
+    const port = await startGateway([LOCAL], webAuth, 'admin');
     const attempt = (client) => send(port, '/auth/login', {
       host: `${LOCAL}:${port}`,
       origin: `http://${LOCAL}:${port}`,
@@ -215,6 +216,7 @@ function send(port, path, headers, { method = 'GET', body } = {}) {
 
 function stubService() {
   return {
+    getHouseholdAddresses: () => ({}),
     getHouseholdMemberIds: (householdId) => (householdId === 'grove' ? ['alice-id'] : undefined),
     listJellyfinUsers: async () => [{ Id: 'alice-id', Name: 'Alice', Policy: {} }],
     isPasswordless: () => false,

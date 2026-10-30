@@ -209,16 +209,21 @@ describe('household app page: serving', { timeout: 30_000 }, () => {
       assert.deepEqual(shape(await off.get(file, { user: null })), unknownOff, file);
     }
     assert.equal(off.jellyfin.requests.length, 0);
-    // Admin host (and an address that is no household's): the app's paths do not exist, whatever the app setting.
+    // The admin listener, whatever the host: the app's paths do not exist, whatever the app setting. On the member
+    // listener an address that is no household's gets the fixed 421 for them as for any path.
     const admin = { Authorization: 'Bearer admin-secret' };
+    const atAdmin = (app, file, host, headers) => get(app.adminPort, file, { Host: host, ...headers });
     for (const host of ['jellypass.example.test', '127.0.0.1', 'localhost']) {
       for (const headers of [undefined, admin]) {
-        const baseline = shape(await on.get('/jellypass/app-no-such-path', { host, user: null, ...(headers ? { headers } : {}) }));
+        const baseline = shape(await atAdmin(on, '/jellypass/app-no-such-path', host, headers));
         assert.equal(baseline.status, headers ? 404 : 401);
         for (const file of [PAGE, `${PAGE}sw.js`, `${PAGE}${BUILT('manifest.webmanifest')}`, `${PAGE}${BUILT('js/main.js')}`, '/jellypass/app']) {
-          const options = { host, user: null, ...(headers ? { headers } : {}) };
-          assert.deepEqual(shape(await on.get(file, options)), baseline, `${host} ${file}`);
-          assert.deepEqual(shape(await off.get(file, options)), baseline, `${host} ${file} (app off)`);
+          assert.deepEqual(shape(await atAdmin(on, file, host, headers)), baseline, `${host} ${file}`);
+          assert.deepEqual(shape(await atAdmin(off, file, host, headers)), baseline, `${host} ${file} (app off)`);
+          for (const app of [on, off]) {
+            const member = await get(app.port, file, { Host: host, ...headers });
+            assert.deepEqual([member.status, member.text], [421, '{"error":"unknown_host"}'], `${host} ${file} (member listener)`);
+          }
         }
       }
     }

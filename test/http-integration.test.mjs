@@ -6,7 +6,7 @@ import { after, before, describe, it } from 'node:test';
 import { AccessService } from '../dist/access-service.js';
 import { WebAuth } from '../dist/auth.js';
 import { JellyfinClient } from '../dist/jellyfin.js';
-import { makeServer } from '../dist/server.js';
+import { makeServers } from '../dist/server.js';
 import { GrantStore } from '../dist/store.js';
 import { createFakeJellyfin } from './support/fake-jellyfin.mjs';
 import { makeTempDir } from './support/temp-dir.mjs';
@@ -14,7 +14,9 @@ import { makeTempDir } from './support/temp-dir.mjs';
 describe('HTTP integration', { timeout: 5_000 }, () => {
   let jellyfin;
   let bridge;
+  let member;
   let bridgeUrl;
+  let memberUrl;
   let importedUserIds;
   let service;
 
@@ -44,18 +46,21 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     };
     service = new AccessService(jellyfinClient, store, undefined, seerr);
     const webAuth = new WebAuth(jellyfinClient, { loginFailureDelayMs: 0 });
-    bridge = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' }, webAuth, {
+    // The admin listener (bridgeUrl) and the member listener (memberUrl, household hosts).
+    ({ admin: bridge, member } = makeServers(service, { webhook: 'webhook-secret', admin: 'admin-secret' }, webAuth, {
       householdGateway: { jellyfinUrl: jellyfin.url, domain: 'example.test', hostPrefix: 'jelly-' },
-    });
-    await new Promise((resolve) => bridge.listen(0, '127.0.0.1', resolve));
-    const address = bridge.address();
-    bridgeUrl = `http://127.0.0.1:${address.port}`;
+    }));
+    await Promise.all([bridge, member].map((server) => new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))));
+    bridgeUrl = `http://127.0.0.1:${bridge.address().port}`;
+    memberUrl = `http://127.0.0.1:${member.address().port}`;
   });
 
   after(async () => {
     bridge.closeAllConnections();
+    member.closeAllConnections();
     await Promise.all([
       new Promise((resolve) => bridge.close(resolve)),
+      new Promise((resolve) => member.close(resolve)),
       jellyfin.close(),
     ]);
   });
@@ -65,15 +70,15 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.equal(root.status, 302);
     assert.equal(root.headers.get('location'), '/admin/');
 
-    const householdUsers = await fetchWithHost(bridgeUrl, '/Users/Public', 'jelly-grove.example.test');
+    const householdUsers = await fetchWithHost(memberUrl, '/Users/Public', 'jelly-grove.example.test');
     assert.equal(householdUsers.status, 200);
     const householdUsersBody = await householdUsers.json();
     assert.deepEqual(householdUsersBody.map((user) => user.Name), ['Alice', 'Bob']);
     assert.deepEqual(householdUsersBody.map((user) => user.HasPassword), [true, true]);
-    const householdInfo = await fetchWithHost(bridgeUrl, '/System/Info/Public', 'jelly-grove.example.test');
+    const householdInfo = await fetchWithHost(memberUrl, '/System/Info/Public', 'jelly-grove.example.test');
     assert.equal(householdInfo.status, 200);
     assert.equal((await householdInfo.json()).ServerName, 'Test Jellyfin');
-    const householdBranding = await fetchWithHost(bridgeUrl, '/Branding/Configuration', 'jelly-grove.example.test');
+    const householdBranding = await fetchWithHost(memberUrl, '/Branding/Configuration', 'jelly-grove.example.test');
     assert.equal(householdBranding.status, 200);
     const householdBrandingBody = await householdBranding.json();
     assert.match(householdBrandingBody.CustomCss, /existing-branding/);
@@ -86,11 +91,11 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.match(householdBrandingBody.LoginDisclaimer, /<style id="jellypass-household-profile-picker">/);
     assert.doesNotMatch(householdBrandingBody.LoginDisclaimer, /#loginPage \.manualLoginForm|\.btnManual|\.readOnlyContent/);
     assert.match(householdBrandingBody.LoginDisclaimer, /#loginPage \.btnQuick/);
-    const householdQuickConnect = await fetchWithHost(bridgeUrl, '/QuickConnect/Enabled', 'jelly-grove.example.test');
+    const householdQuickConnect = await fetchWithHost(memberUrl, '/QuickConnect/Enabled', 'jelly-grove.example.test');
     assert.equal(householdQuickConnect.status, 200);
     assert.equal(await householdQuickConnect.json(), false);
     assert.equal(householdQuickConnect.headers.get('cache-control'), 'no-store');
-    const householdLogin = await fetchWithHost(bridgeUrl, '/Users/AuthenticateByName', 'jelly-grove.example.test', {
+    const householdLogin = await fetchWithHost(memberUrl, '/Users/AuthenticateByName', 'jelly-grove.example.test', {
       method: 'POST',
       headers: { Authorization: jellyfinAuthorization(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ Username: 'Alice', Pw: 'user-password' }),
@@ -98,28 +103,28 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.equal(householdLogin.status, 200);
     const householdAuthentication = await householdLogin.json();
     assert.equal(householdAuthentication.User.Name, 'Alice');
-    const forgotPassword = await fetchWithHost(bridgeUrl, '/Users/ForgotPassword', 'jelly-grove.example.test', {
+    const forgotPassword = await fetchWithHost(memberUrl, '/Users/ForgotPassword', 'jelly-grove.example.test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ EnteredUsername: 'Alice' }),
     });
     assert.equal(forgotPassword.status, 403);
     assert.equal((await forgotPassword.json()).error, 'household_password_recovery_disabled');
-    const forgotPasswordPin = await fetchWithHost(bridgeUrl, '/Users/ForgotPassword/Pin', 'jelly-grove.example.test', {
+    const forgotPasswordPin = await fetchWithHost(memberUrl, '/Users/ForgotPassword/Pin', 'jelly-grove.example.test', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ Pin: '000000' }),
     });
     assert.equal(forgotPasswordPin.status, 403);
-    const nonHouseholdLogin = await fetchWithHost(bridgeUrl, '/Users/AuthenticateByName', 'jelly-grove.example.test', {
+    const nonHouseholdLogin = await fetchWithHost(memberUrl, '/Users/AuthenticateByName', 'jelly-grove.example.test', {
       method: 'POST',
       headers: { Authorization: jellyfinAuthorization(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ Username: 'Admin', Pw: 'admin-password' }),
     });
     assert.equal(nonHouseholdLogin.status, 401, 'a household hostname must not proxy logins for users outside that household');
     assert.equal((await nonHouseholdLogin.json()).error, 'invalid_credentials');
-    assert.match(await upgradeWithHost(bridgeUrl, '/socket', 'jelly-grove.example.test'), /^HTTP\/1\.1 101/);
-    const missingHousehold = await fetchWithHost(bridgeUrl, '/Users/Public', 'jelly-missing.example.test');
+    assert.match(await upgradeWithHost(memberUrl, '/socket', 'jelly-grove.example.test'), /^HTTP\/1\.1 101/);
+    const missingHousehold = await fetchWithHost(memberUrl, '/Users/Public', 'jelly-missing.example.test');
     assert.equal(missingHousehold.status, 404);
     assert.equal((await missingHousehold.json()).error, 'household_not_found');
 
@@ -290,7 +295,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     const importedBody = await importedUser.json();
     assert.deepEqual(importedBody.jellyseerr, { status: 'imported', userId: 44 });
     assert.deepEqual(importedUserIds, ['dana-id']);
-    const protectedUserLogin = await fetchWithHost(bridgeUrl, '/Users/AuthenticateByName', 'jelly-grove.example.test', {
+    const protectedUserLogin = await fetchWithHost(memberUrl, '/Users/AuthenticateByName', 'jelly-grove.example.test', {
       method: 'POST',
       headers: { Authorization: jellyfinAuthorization(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ Username: 'Dana', Pw: 'dana-password' }),
@@ -310,7 +315,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.equal(failedImportBody.group.id, 'grove');
     assert.match(failedImportBody.error, /created and assigned.*Seerr import failed/);
     assert.doesNotMatch(failedImportBody.error, /Jellyseerr/i);
-    const updatedHouseholdUsers = await fetchWithHost(bridgeUrl, '/Users/Public', 'jelly-grove.example.test');
+    const updatedHouseholdUsers = await fetchWithHost(memberUrl, '/Users/Public', 'jelly-grove.example.test');
     const updatedHouseholdUsersBody = await updatedHouseholdUsers.json();
     assert.deepEqual(updatedHouseholdUsersBody.map((user) => user.Name), ['Alice', 'Bob', 'Charlie', 'Dana', 'Import Failure']);
     assert.deepEqual(updatedHouseholdUsersBody.map((user) => user.HasPassword), [true, true, false, true, true]);
@@ -328,7 +333,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
       (await markedUsers.json()).users.filter((user) => user.passwordless).map((user) => user.name),
       ['Alice', 'Charlie'],
     );
-    const markedHouseholdUsers = await fetchWithHost(bridgeUrl, '/Users/Public', 'jelly-grove.example.test');
+    const markedHouseholdUsers = await fetchWithHost(memberUrl, '/Users/Public', 'jelly-grove.example.test');
     assert.deepEqual((await markedHouseholdUsers.json()).map((user) => user.HasPassword), [false, true, false, true, true]);
     const directPublicUsers = await fetch(`${jellyfin.url}/Users/Public`);
     assert.ok((await directPublicUsers.json()).every((user) => user.HasPassword === true));
@@ -338,7 +343,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
       body: JSON.stringify({ passwordless: false }),
     });
     assert.equal(unmarkAlice.status, 200);
-    const unmarkedHouseholdUsers = await fetchWithHost(bridgeUrl, '/Users/Public', 'jelly-grove.example.test');
+    const unmarkedHouseholdUsers = await fetchWithHost(memberUrl, '/Users/Public', 'jelly-grove.example.test');
     assert.deepEqual((await unmarkedHouseholdUsers.json()).map((user) => user.HasPassword), [true, true, false, true, true]);
     const markAdmin = await fetch(`${bridgeUrl}/v1/users/admin-id/sign-in`, {
       method: 'PUT',
@@ -358,7 +363,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
       body: JSON.stringify({ passwordless: 'yes' }),
     });
     assert.equal(invalidMark.status, 400);
-    const newUserLogin = await fetchWithHost(bridgeUrl, '/Users/AuthenticateByName', 'jelly-grove.example.test', {
+    const newUserLogin = await fetchWithHost(memberUrl, '/Users/AuthenticateByName', 'jelly-grove.example.test', {
       method: 'POST',
       headers: { Authorization: jellyfinAuthorization(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ Username: 'Charlie', Pw: '' }),
@@ -520,23 +525,23 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     // Bob shares Alice's household, so Alice's request is visible to him too.
     assert.deepEqual(jellyfin.user('bob-id').Policy.BlockedTags, []);
 
-    const ownerStream = await fetchWithHost(bridgeUrl, '/Videos/trailer-1/stream?Static=true', 'jelly-grove.example.test', {
+    const ownerStream = await fetchWithHost(memberUrl, '/Videos/trailer-1/stream?Static=true', 'jelly-grove.example.test', {
       headers: { Authorization: jellyfinAuthorization(householdAuthentication.AccessToken), Range: 'bytes=0-0' },
     });
     assert.equal(ownerStream.status, 206, await ownerStream.text());
     const ownerPlaylist = await fetchWithHost(
-      bridgeUrl,
+      memberUrl,
       `/Videos/trailer-1/master.m3u8?ApiKey=${encodeURIComponent(householdAuthentication.AccessToken)}`,
       'jelly-grove.example.test',
     );
     assert.equal(ownerPlaylist.status, 200, await ownerPlaylist.text());
-    const memberLogin = await fetchWithHost(bridgeUrl, '/Users/AuthenticateByName', 'jelly-grove.example.test', {
+    const memberLogin = await fetchWithHost(memberUrl, '/Users/AuthenticateByName', 'jelly-grove.example.test', {
       method: 'POST',
       headers: { Authorization: jellyfinAuthorization(), 'Content-Type': 'application/json' },
       body: JSON.stringify({ Username: 'Bob', Pw: 'user-password' }),
     });
     const memberAuthentication = await memberLogin.json();
-    const memberStream = await fetchWithHost(bridgeUrl, '/Videos/trailer-1/stream?Static=true', 'jelly-grove.example.test', {
+    const memberStream = await fetchWithHost(memberUrl, '/Videos/trailer-1/stream?Static=true', 'jelly-grove.example.test', {
       headers: { Authorization: jellyfinAuthorization(memberAuthentication.AccessToken), Range: 'bytes=0-0' },
     });
     assert.equal(memberStream.status, 206, await memberStream.text());
@@ -607,7 +612,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
   });
 
   it('refuses removed bridge paths on household hostnames', async () => {
-    const response = await fetchWithHost(bridgeUrl, '/jellyquest-bridge/health', 'jelly-grove.example.test');
+    const response = await fetchWithHost(memberUrl, '/jellyquest-bridge/health', 'jelly-grove.example.test');
     assert.equal(response.status, 404);
     assert.deepEqual(await response.json(), { error: 'not_found' });
     assert.notEqual(jellyfin.requestedPaths.at(-1), '/jellyquest-bridge/health');
@@ -655,7 +660,7 @@ describe('webhook resolution errors over HTTP', { timeout: 5_000 }, () => {
     const store = new GrantStore(path.join(await makeTempDir(null, 'jfa-http-webhook-'), 'grants.json'));
     await store.load();
     const service = new AccessService(new JellyfinClient('http://127.0.0.1:9', 'test-key'), store, undefined, seerr);
-    const server = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' });
+    const server = makeServers(service, { webhook: 'webhook-secret', admin: 'admin-secret' }).admin;
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     servers.push(server);
     const send = async (body) => {
@@ -723,7 +728,7 @@ describe('webhook resolution errors over HTTP', { timeout: 5_000 }, () => {
     const store = new GrantStore(path.join(await makeTempDir(null, 'jfa-http-replay-'), 'grants.json'));
     await store.load();
     const service = new AccessService(jellyfin, store);
-    const server = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' });
+    const server = makeServers(service, { webhook: 'webhook-secret', admin: 'admin-secret' }).admin;
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     servers.push(server);
     const send = async () => {
@@ -762,7 +767,7 @@ describe('webhook resolution errors over HTTP', { timeout: 5_000 }, () => {
     const store = new GrantStore(path.join(await makeTempDir(null, 'jfa-http-retry-'), 'grants.json'));
     await store.load();
     const service = new AccessService(jellyfin, store);
-    const server = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' });
+    const server = makeServers(service, { webhook: 'webhook-secret', admin: 'admin-secret' }).admin;
     await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
     servers.push(server);
     const send = async () => {

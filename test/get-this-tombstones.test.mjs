@@ -395,7 +395,7 @@ describe('"Get this": the administrator\'s readout of what is outstanding', { ti
     deferredWebhooks: [{ notificationType: 'MEDIA_AVAILABLE', request: { id: '7400006' } }],
   };
   const admin = (app, pathname, headers = { Authorization: 'Bearer admin-secret' }, host = 'jellypass.example.test') =>
-    get(app.port, pathname, { Host: host, ...headers });
+    get(app.portFor(host), pathname, { Host: host, ...headers });
 
   it('counts the safety markers that still decide a grant and the unsettled requests, by kind, with their oldest age', async (t) => {
     const app = await start(t, world(), { stateFile: OUTSTANDING });

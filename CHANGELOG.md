@@ -18,6 +18,14 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+**BREAKING.** This is 4.0.0: the admin site becomes private by default, on a
+listener of its own, households can be served at any hostname, household
+hostnames refuse an untested Jellyfin version until it is confirmed, and the
+legacy entry points are removed. **An existing install must change its
+configuration before it upgrades** (see "Upgrade from 3.9.x or later 3.x"
+below); with those changes, existing household addresses such as
+`https://jelly-<household>.<HOUSEHOLD_DOMAIN>` keep working unchanged.
+
 ### BREAKING — 4.0 cuts
 
 - Removed the legacy add-to-library page. Use **Get this** in the household app.
@@ -46,19 +54,93 @@ Before upgrading, on **3.9.x or later 3.x**:
 
 Refused availability webhooks are not retried; missed titles rely on the request backfill.
 
+### BREAKING — admin listener, household addresses and Jellyfin versions
+
+- **Two listeners.** The admin site (`/admin/`, `/auth/*`), the administrative
+  API (`/v1/*`), `/metrics`, the Seerr webhook (`/webhooks/seerr`) and
+  `/health` move to the new **admin listener**, `ADMIN_HOST`:`ADMIN_PORT`
+  (default `127.0.0.1:8788`; the container image sets `ADMIN_HOST=0.0.0.0` and
+  the Compose files publish `127.0.0.1:8788`). `HOST`:`PORT` (default
+  `0.0.0.0:8787`) is now the **member listener**: household addresses only, and
+  it starts only with the household gateway on. On it a `Host` that is no
+  household's gets a fixed `421 {"error":"unknown_host"}` on every path
+  (WebSocket upgrades are dropped) instead of the admin site: before 4.0.0 any
+  host that was not a household's reached the admin site, the API, the webhook
+  and health. `ADMIN_PORT` must differ from `PORT` while the gateway is on.
+- **`TRUSTED_PROXIES` is required with the household gateway on.** Startup
+  stops with `TRUSTED_PROXIES is required when the household gateway is on`
+  without it. Its meaning is unchanged (whose `X-Forwarded-For` is believed for
+  rate limits); `X-Forwarded-Host` still never selects a household.
+- **Health checks** must use the admin port: `/health` is no longer answered on
+  `PORT`. The image's built-in `HEALTHCHECK` and the Compose files are updated;
+  a health check of your own on `:8787/health` now fails.
+- **The Seerr webhook URL** moves to the admin port, for example
+  `http://jellypass:8788/webhooks/seerr`, and authenticates with the
+  `Authorization: Bearer <WEBHOOK_TOKEN>` header only (see 4.0 cuts).
+  `LEGACY_WEBHOOK_ON_MEMBER_PORT=true` keeps the old URL on `PORT` working
+  while you change it (it answers `POST /webhooks/seerr` there for a `Host`
+  that is no household's, never on a household address, with the same Bearer
+  check, and logs a warning at startup).
+- **Untested Jellyfin versions are refused.** 3.10.0 only warned: on a
+  Jellyfin version outside the supported releases (12.x and 10.11.x, plain
+  numeric versions only), household hostnames now answer every request and
+  WebSocket with a fixed `503` until an administrator confirms that exact
+  version (**Allow Jellyfin X** in the admin site, or
+  `JELLYFIN_UNTESTED_VERSION_OK`), and also while the version cannot be read.
+  The admin listener is never refused. A version confirmed under 3.10.0 is
+  kept by the upgrade, so a household already running on a confirmed version
+  keeps serving. On a supported version nothing changes.
+- **State file schema 8.** 4.0.0 migrates a schema 7 file on its first start
+  (only the version changes, and a stored Jellyfin version confirmation is
+  kept; the new `householdAddresses` map is added when an address is first
+  saved). **3.x refuses to start on a schema 8 file**
+  (`unsupported state schema version`): see Rollback.
+- **`HOUSEHOLD_APP_ENABLED` requires the household gateway** (on by
+  `HOUSEHOLD_GATEWAY_ENABLED=true` or by `HOUSEHOLD_DOMAIN`) rather than
+  `HOUSEHOLD_DOMAIN` itself; the startup error names both.
+- **Legacy addresses match exactly.** A legacy generated address is matched
+  only without a port (or with `:443`/`:80`); before 4.0.0 any port was
+  ignored. Map an address with another port explicitly.
+- **`GET /v1/groups`** gains `householdAddresses`, and `householdUrl` is a
+  household's mapped canonical address when it has one, else its legacy one.
+
 ### Security
 
 - Household gateway routes now deny by default: explicit Jellyfin 10.11.11/12.4 OpenAPI templates, legacy client routes and vetted plugin compatibility entries replace open-ended relay. Unknown plugin namespaces return fixed JSON 404 over HTTP and WebSocket; only the session socket can upgrade. Existing refusals and household scope checks remain. Jellyfin Enhanced public-config is preserved byte-identically.
 - Additional plugin endpoints require deliberate exact-path `HOUSEHOLD_PLUGIN_ROUTES` configuration and a privacy audit; see "Deployment self-check and plugin routes" in docs/server-reference.md. Previously unrecognised paths (including inactive TV and removed bridge paths) no longer relay.
 
-- Household hosts read a backslash (`\` or `%5C`) as a slash when refusing paths with empty segments, so `/\` and `/\evil.example` get `404 not_found` as `//` does, instead of `502 Invalid URL`. The admin host refuses a path starting with two slashes or backslashes (`//`, `/\`, `/\evil.example`) with the same `404`; it answered `502 Invalid URL` or read the rest as a host name. Neither reaches Jellyfin.
+- Household hosts read a backslash (`\` or `%5C`) as a slash when refusing paths with empty segments, so `/\` and `/\evil.example` get `404 not_found` as `//` does, instead of `502 Invalid URL`. The admin listener refuses a path starting with two slashes or backslashes (`//`, `/\`, `/\evil.example`) with the same `404`; it answered `502 Invalid URL` or read the rest as a host name. Neither reaches Jellyfin.
+- 3.10.0's one-`Host` check (`400 {"error":"invalid_host"}`, connection
+  closed) and the `//` / `/\` refusal run first on both listeners, before the
+  member listener's `421`, the version check or any other routing.
 
 ### Added
 
+- **Household address map.** Each household (group) can be given a canonical
+  HTTPS origin and aliases, any hostname and an optional port (for example
+  `https://media.example.com` and `https://films.example.net:8443`), with
+  `GET`/`PUT`/`DELETE /v1/groups/{id}/addresses` on the admin API (bearer or
+  same-origin session, JSON bodies only). Changes take effect at once. Matching
+  is exact (case and default ports aside), the same for HTTP and WebSocket
+  requests; an address another household or the legacy rule already has is
+  refused (`409 address_conflict`), and a stored map that conflicts stops
+  startup. The household app's Play links stay on the address the request came
+  in on. The map is kept in the state file and removed with its group. The
+  admin UI's Groups tab lists each household's addresses.
+- `HOUSEHOLD_GATEWAY_ENABLED` turns the gateway on without `HOUSEHOLD_DOMAIN`.
+  `HOUSEHOLD_DOMAIN` and `HOUSEHOLD_HOST_PREFIX` keep working as the legacy
+  rule: every household also keeps its generated address.
 - Authenticated admin deployment self-check for direct Jellyfin origins, Quick Connect, household proxy headers, public Seerr, version-gate support, and TMDB key validity. Public probes carry no service credentials, use timeouts and bounded reads, never follow redirects, and run at most once per minute. Inside probes explicitly warn about external-reachability limits.
 
 ### Changed
 
+- **A confirmed Jellyfin version is logged once.** An untested version an
+  administrator confirms is logged at the confirmation and not again on later
+  reads; one confirmed before startup (stored, or named by
+  `JELLYFIN_UNTESTED_VERSION_OK`) is logged once, as information rather than a
+  warning, when it is first read. 3.10.0 logged the warning again on the
+  next read after an administrator confirmed the version. Withdrawing a
+  confirmation warns once again.
 - README: shortened to an overview, quick start and links. Its reference
   sections moved unchanged to `docs/server-reference.md` and
   `docs/household-hosts.md`, and the guide is at https://jellypass.app/docs/.
@@ -72,6 +154,60 @@ Refused availability webhooks are not retried; missed titles rely on the request
   instead of `access-bridge`. If you started JellyPass from that file before,
   run `docker compose -f compose.example.yaml up --build -d --remove-orphans`
   once, so the old `access-bridge` container is removed and frees port 8787.
+
+### Upgrade from 3.9.x or later 3.x
+
+For an install like the documented one (Compose, a reverse proxy routing the
+household hostnames to `:8787`, Seerr calling `:8787/webhooks/seerr`). Nothing
+needs to change at the reverse proxy for household hostnames: they stay on
+port `8787`. From 2.x, upgrade to 3.9.x or later 3.x first.
+
+1. Back up the state file, `.env` and the Compose file (`cp -p`).
+2. On the running 3.x, do the Seerr steps under "BREAKING — 4.0 cuts": the
+   `Authorization: Bearer <WEBHOOK_TOKEN>` header, no `?token=` in the URL,
+   the full template. On Jellyfin outside 12.x and 10.11.x, confirm its exact
+   version in the admin site (**Allow Jellyfin X**) or set
+   `JELLYFIN_UNTESTED_VERSION_OK`, or household hostnames answer `503` after
+   the upgrade.
+3. In the JellyPass `.env`, set `TRUSTED_PROXIES` to the reverse proxy's
+   address if it is empty (`HOUSEHOLD_DOMAIN` set means the gateway is on), and
+   add `LEGACY_WEBHOOK_ON_MEMBER_PORT=true` for the switch-over.
+4. In the Compose file, add the admin listener: `ADMIN_HOST: 0.0.0.0` and
+   `ADMIN_PORT: 8788` under `environment`, a port mapping that publishes `8788`
+   on a private address only (for example `127.0.0.1:8788:8788`, or the LAN
+   address you reached the admin site at), and change any `healthcheck` URL to
+   `http://127.0.0.1:8788/health`.
+5. If administrators reached the admin site through the reverse proxy, point
+   that proxy host at port `8788` instead of `8787` (keep it gated); if they
+   used `http://<lan address>:8787/admin/`, they now use `:8788`.
+6. Pull 4.0.0 and recreate the container. Check `curl http://127.0.0.1:8788/health`,
+   the startup log's `admin` and `member` listeners, and a household address
+   (its sign-in page and a WebSocket). The member port answers anything else
+   with `421`.
+7. In Seerr (**Settings → Notifications → Webhook**), change the URL's port to
+   the admin listener's `8788` (for example
+   `http://jellypass:8788/webhooks/seerr`, with no query string), keep the
+   Bearer header, save, and use **Test** (`202 {"status":"ignored"}`). Then
+   remove `LEGACY_WEBHOOK_ON_MEMBER_PORT` and recreate the container once more.
+8. Optional: map new addresses with `PUT /v1/groups/{id}/addresses`. The
+   legacy addresses stay as long as `HOUSEHOLD_DOMAIN` is set.
+
+### Rollback to 3.x
+
+3.x cannot read a schema 8 state file. Either restore the state-file backup
+from step 1 (losing changes made since), or stop 4.0.0 and downgrade the file
+in place, which drops only the address map (3.x serves the legacy addresses
+alone; a Jellyfin version confirmation is kept, and 3.10.0 reads it):
+
+```sh
+node -e "const f=process.argv[1],fs=require('fs'),s=JSON.parse(fs.readFileSync(f,'utf8'));if(s.version!==8)throw new Error('not schema 8');s.version=7;delete s.householdAddresses;fs.writeFileSync(f,JSON.stringify(s,null,2)+'\n')" data/grants.json
+```
+
+Then restore the 3.x Compose file and `.env` (the admin site, webhook and
+health back on `:8787`; 3.x ignores `ADMIN_HOST`, `ADMIN_PORT`,
+`HOUSEHOLD_GATEWAY_ENABLED` and `LEGACY_WEBHOOK_ON_MEMBER_PORT`), point Seerr's
+webhook and any admin proxy host back at `:8787` (the Bearer header keeps
+working on 3.x), and start the 3.x image you upgraded from.
 
 ## [3.10.0] - 2026-10-30
 
