@@ -48,12 +48,15 @@ describe('supported Jellyfin versions', () => {
       assert.ok(pinned.some(({ version }) => version === release || version.startsWith(`${release}.`)), `no CI image for ${release}`);
     }
     checkJellyfinMatrix(await readFile('.github/workflows/ci.yaml', 'utf8'), pinned);
-    checkJellyfinMatrix(await readFile('.github/workflows/release.yaml', 'utf8'), pinned, { publishJobs: ['container'] });
+    checkJellyfinMatrix(await readFile('.github/workflows/release.yaml', 'utf8'), pinned, { publishJobs: ['container', 'release'] });
   });
 
   it('refuses a workflow matrix that differs from the pinned images in any way', () => {
     const pinned = [{ image: 'jellyfin/jellyfin:12.4.0', version: '12.4.0' }, { image: 'jellyfin/jellyfin:10.11.11', version: '10.11.11' }];
     const workflow = ({ entries = pinned, needs = '[validate, jellyfin-integration]', extraJob = '' } = {}) => [
+      'on:',
+      '  push:',
+      "    tags: ['v*.*.*']",
       'jobs:',
       extraJob,
       '  jellyfin-integration:',
@@ -74,14 +77,21 @@ describe('supported Jellyfin versions', () => {
       '    steps:',
       '      - run: |',
       '          echo "# not a comment"',
+      '  release:',
+      "    if: startsWith(github.ref, 'refs/tags/v')",
+      '    needs: container',
+      '    steps:',
+      '      - run: gh release create',
       '',
     ].join('\n');
-    const options = { publishJobs: ['container'] };
+    const options = { publishJobs: ['container', 'release'] };
     checkJellyfinMatrix(workflow(), pinned, options);
     checkJellyfinMatrix(workflow({ entries: [...pinned].reverse() }), pinned, options);
     assert.deepEqual(jellyfinMatrix(workflow()), pinned);
 
     const refused = (text, pattern) => assert.throws(() => checkJellyfinMatrix(text, pinned, options), pattern);
+    const step = (text) => workflow().replace('        env:\n', `${text}\n        env:\n`);
+    const job = (name, text) => workflow().replace(`  ${name}:\n`, `  ${name}:\n${text}\n`);
     refused(workflow({ entries: [...pinned, { image: 'jellyfin/jellyfin:10.10.7', version: '10.10.7' }] }), /extra \[jellyfin\/jellyfin:10\.10\.7 @ 10\.10\.7\]/);
     refused(workflow({ entries: pinned.slice(0, 1) }), /missing \[jellyfin\/jellyfin:10\.11\.11 @ 10\.11\.11\]/);
     refused(workflow({ entries: [{ ...pinned[0], version: '10.11.11' }, { ...pinned[1], version: '12.4.0' }] }), /missing .*extra /);
@@ -89,14 +99,84 @@ describe('supported Jellyfin versions', () => {
     // The pinned pair written elsewhere in the workflow does not count: only the matrix does.
     const outside = '  other:\n    env:\n      image: jellyfin/jellyfin:10.11.11\n      version: 10.11.11';
     refused(workflow({ entries: pinned.slice(0, 1), extraJob: outside }), /missing \[jellyfin\/jellyfin:10\.11\.11 @ 10\.11\.11\]/);
-    refused(workflow({ needs: 'validate' }), /container does not need jellyfin-integration/);
-    refused(workflow({ needs: '[validate]' }), /container does not need jellyfin-integration/);
-    checkJellyfinMatrix(workflow({ needs: 'jellyfin-integration' }), pinned, options);
     refused(workflow().replace('${{ matrix.jellyfin.image }}', 'jellyfin/jellyfin:10.11.11'), /no "pnpm test:real" step on the matrix image/);
     refused(workflow().replace('        jellyfin:\n', '        include:\n'), /must have only a "jellyfin" list/);
     refused(workflow().replace('            version: 12.4.0\n', ''), /entry 1 must be exactly \{ image, version \}/);
+
+    // needs: every form the workflows use passes; anything that does not name the job, as YAML reads it, is refused.
+    for (const needs of ['jellyfin-integration', '"jellyfin-integration"', '[validate, jellyfin-integration]', "[validate, 'jellyfin-integration']",
+      '\n      - validate\n      - jellyfin-integration', '\n    - validate\n    - jellyfin-integration']) {
+      checkJellyfinMatrix(workflow({ needs }), pinned, options);
+    }
+    refused(workflow({ needs: 'validate' }), /container does not need jellyfin-integration/);
+    refused(workflow({ needs: '[validate]' }), /container does not need jellyfin-integration/);
+    refused(workflow({ needs: '["validate, jellyfin-integration"]' }), /container does not need jellyfin-integration/);
+    refused(workflow({ needs: "['validate, jellyfin-integration, release']" }), /container does not need jellyfin-integration/);
+    refused(workflow({ needs: '[validate, [jellyfin-integration]]' }), /unsupported flow sequence/);
+    refused(workflow({ needs: '[[validate, jellyfin-integration]]' }), /unsupported flow sequence/);
+    refused(workflow({ needs: '[validate, {jellyfin-integration: x}]' }), /unsupported flow sequence/);
+    refused(workflow({ needs: '[validate, jellyfin-integration,]' }), /unsupported flow sequence/);
+    refused(workflow({ needs: '[validate, jellyfin-integration' }), /unsupported flow sequence/);
+    refused(workflow({ needs: '["jellyfin-integration" x]' }), /unsupported quoted value/);
+
+    // The test step and its job must always run, and a failure must fail the run.
+    refused(step('        if: false'), /"pnpm test:real" step must not have an "if"/);
+    refused(step("        if: github.event_name == 'push'"), /"pnpm test:real" step must not have an "if"/);
+    refused(step('        continue-on-error: true'), /step must not have "continue-on-error: true"/);
+    checkJellyfinMatrix(step('        continue-on-error: false'), pinned, options);
+    refused(step('        shell: true {0}'), /step has unexpected "shell"/);
+    refused(step('        working-directory: elsewhere'), /step has unexpected "working-directory"/);
+    refused(workflow().replace('          JELLYFIN_REAL_VERSION', '          JELLYFIN_REAL_SKIP: 1\n          JELLYFIN_REAL_VERSION'), /no "pnpm test:real" step on the matrix image/);
+    refused(workflow().replace('      - uses: actions/checkout@v7\n', '      - run: pnpm test:real\n'), /more than one "pnpm test:real" step/);
+    refused(job('jellyfin-integration', '    if: false'), /^Error: jellyfin-integration must not have an "if"/);
+    refused(job('jellyfin-integration', '    continue-on-error: true'), /jellyfin-integration must not have "continue-on-error: true"/);
+    refused(job('jellyfin-integration', '    continue-on-error: ${{ matrix.jellyfin.version == \'12.4.0\' }}'), /must not have "continue-on-error/);
+    checkJellyfinMatrix(job('jellyfin-integration', '    continue-on-error: false'), pinned, options);
+    refused(job('jellyfin-integration', '    needs: validate'), /jellyfin-integration has unexpected "needs"/);
+    refused(job('jellyfin-integration', '    defaults:\n      run:\n        shell: true {0}'), /jellyfin-integration has unexpected "defaults"/);
+    refused(`defaults:\n  run:\n    shell: true {0}\n${workflow()}`, /workflow must not set defaults/);
+    refused(workflow().replace('fail-fast: false', 'fail-fast: ${{ github.ref == \'x\' }}'), /fail-fast must be true or false/);
+    checkJellyfinMatrix(workflow().replace('fail-fast: false', 'fail-fast: true'), pinned, options);
+    refused(workflow().replace('      fail-fast: false\n', '      fail-fast: false\n      max-parallel: 1\n'), /strategy has unexpected "max-parallel"/);
+
+    // Publishing waits for the matrix: no status function in its if, directly or through the job it needs.
+    refused(job('container', '    if: always()'), /container has "if: always\(\)", which could run it after jellyfin-integration fails/);
+    refused(job('container', '    if: ${{ !cancelled() }}'), /container has "if: \$\{\{ !cancelled\(\) \}\}"/);
+    refused(job('container', '    if: success() || true'), /container has "if: success\(\) \|\| true"/);
+    refused(job('container', '    if: Failure()'), /container has "if: Failure\(\)"/);
+    checkJellyfinMatrix(job('container', "    if: github.event_name == 'push'"), pinned, options);
+    refused(workflow().replace("    if: startsWith(github.ref, 'refs/tags/v')", "    if: always() && startsWith(github.ref, 'refs/tags/v')"), /release has "if: always\(\) && /);
+    refused(workflow().replace('    needs: container', '    needs: [container, validate]').replace(/ {2}container:\n {4}needs: .*\n/, '  container:\n    if: always()\n    needs: [validate, jellyfin-integration]\n'), /container has "if: always\(\)"/);
+    refused(workflow().replace('    needs: container', '    needs: validate'), /release does not need jellyfin-integration/);
+    assert.throws(() => checkJellyfinMatrix(workflow(), pinned, { publishJobs: ['publish'] }), /no publish job/);
+
+    // Anything the reader does not fully support is refused rather than guessed at.
     refused(workflow().replace('fail-fast: false', 'fail-fast: &x false'), /unsupported YAML/);
+    refused(workflow().replace('fail-fast: false', 'fail-fast: !!str false'), /unsupported YAML/);
     refused(workflow().replace('    steps:\n      - uses', '    strategy: {}\n    steps:\n      - uses'), /duplicate key "strategy"/);
+    refused(workflow().replace('          JELLYFIN_REAL_VERSION', '          JELLYFIN_IMAGE: x\n          JELLYFIN_REAL_VERSION'), /duplicate key "JELLYFIN_IMAGE"/);
+    refused(workflow().replace('  release:', '  "container":\n    needs: validate\n  release:'), /duplicate key "container"/);
+    refused(workflow().replace('  release:', '  <<: {}\n  release:'), /merge keys are not supported/);
+    refused(workflow().replace('      fail-fast: false', '      ? fail-fast\n      : false'), /expected "key: value"/);
+    refused(workflow().replace('      fail-fast: false', '      fail-fast : false'), /space before the ":"/);
+    refused(workflow().replace('      fail-fast: false', '\tfail-fast: false'), /has a tab/);
+    refused(workflow().replace(/\n/g, '\r\n'), /carriage return \(CRLF\)/);
+    refused(`---\n${workflow()}`, /document markers/);
+    refused(`${workflow()}---\njobs: {}\n`, /document markers/);
+    refused(`${workflow()}...\n`, /document markers/);
+    refused(`%YAML 1.2\n${workflow()}`, /document markers and directives/);
+    refused(step('        if: >\n          false'), /unsupported YAML ">"/);
+    refused(workflow().replace('      - run: |\n', '      - run: |-\n'), /unsupported YAML "\|-"/);
+    refused(workflow().replace('- run: pnpm test:real # against the matrix image', '- run: "pnpm test:real" x'), /unsupported quoted value/);
+    refused(workflow().replace('- run: pnpm test:real # against the matrix image', '- run: "pnpm test:real\\x00"'), /unsupported escape/);
+    refused(workflow().replace('- run: pnpm test:real # against the matrix image', '- run: pnpm test:real: x'), /cannot contain ": "/);
+    refused(workflow().replace('- run: pnpm test:real # against the matrix image', '- run: pnpm test:real\n          && exit 0'), /unexpected indentation/);
+    refused(workflow().replace('      - run: pnpm test:real # against', '      - - run: pnpm test:real # against'), /unsupported YAML "- run/);
+    // Comments and quoting that YAML reads the same way still pass, and so does the literal block form.
+    checkJellyfinMatrix(workflow().replace('- run: pnpm test:real # against the matrix image', "- run: 'pnpm test:real' # a # comment"), pinned, options);
+    checkJellyfinMatrix(workflow().replace('- run: pnpm test:real # against the matrix image', '- run: |\n          pnpm test:real'), pinned, options);
+    checkJellyfinMatrix(workflow().replace('- run: pnpm test:real # against the matrix image', '- run: pnpm test:real #x\n          #y'), pinned, options);
+    refused(workflow().replace('- run: pnpm test:real # against the matrix image', '- run: "pnpm test:real # quoted"'), /no "pnpm test:real" step/);
   });
 });
 
