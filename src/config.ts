@@ -1,4 +1,6 @@
 import path from 'node:path';
+import { publicProbeUrls } from './self-check.js';
+import { parseAdditionalPluginRoutes } from './gateway-route-policy.js';
 import { parseTrustedProxies } from './client-ip.js';
 import { isTmdbCredential } from './tmdb.js';
 
@@ -28,6 +30,9 @@ const MAX_WS_IDLE_TIMEOUT_MS = 86_400_000;
 const JELLYFIN_WEBSOCKET_LOST_TIMEOUT_MS = 60_000;
 
 export interface Config {
+  jellyfinPublicUrls: string[];
+  seerrPublicUrl?: string;
+  additionalPluginRoutes: string[];
   host: string;
   port: number;
   webhookToken: string;
@@ -141,6 +146,9 @@ export function loadConfig(): Config {
     }));
   }
   return {
+    jellyfinPublicUrls: publicProbeUrls(process.env.JELLYFIN_PUBLIC_URLS),
+    ...(process.env.SEERR_PUBLIC_URL ? { seerrPublicUrl: publicProbeUrls(process.env.SEERR_PUBLIC_URL)[0] } : {}),
+    additionalPluginRoutes: parseAdditionalPluginRoutes(process.env.HOUSEHOLD_PLUGIN_ROUTES),
     host: process.env.HOST?.trim() || '0.0.0.0',
     port,
     webhookToken,

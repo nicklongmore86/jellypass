@@ -229,6 +229,9 @@ JellyPass reads configuration from environment variables at startup.
 | `CATALOG_SYNC_INTERVAL_SECONDS` | No | `3600` | Jellyfin catalog refresh interval; `0` disables scheduling. Maximum `604800`. |
 | `HOUSEHOLD_DOMAIN` | No | — | Enables household hostnames below this DNS domain. |
 | `HOUSEHOLD_HOST_PREFIX` | No | `jelly-` | Prefix placed before each DNS-safe group ID. |
+| `HOUSEHOLD_PLUGIN_ROUTES` | No | — | Comma-separated exact lowercase plugin paths added to the household relay allow-list. No wildcards; existing security refusals remain. Audit plugin privacy before using this option. |
+| `JELLYFIN_PUBLIC_URLS` | No | — | Comma-separated public Jellyfin URLs for the admin self-check's anonymous direct-origin probes. |
+| `SEERR_PUBLIC_URL` | No | — | Public Seerr URL for the admin self-check. Seerr must be admin-only. |
 | `HOUSEHOLD_APP_ENABLED` | No | `false` | Serves the [household app API](household-hosts.md#household-app-api) (titles, "Get this" and the household's requests) at `/jellypass/app/v1/*`, and the [app](household-hosts.md#household-app-pwa) at `/jellypass/app/`, on household hostnames. Requires `HOUSEHOLD_DOMAIN`, Seerr configuration and `TMDB_API_KEY`; startup stops if any is missing. While `false`, those paths answer `404` and are never proxied to Jellyfin. |
 | `TV_ADDON_ENABLED` | No | `false` | Adds the [TV add-on](tv-addon.md) (a JellyPass row on Jellyfin web's Home) to Jellyfin web's page on the household hostnames in `TV_ADDON_HOUSEHOLDS`, and serves its files at `/jellypass/tv/` there. Requires `HOUSEHOLD_APP_ENABLED`. While `false`, nothing on any host changes. |
 | `TV_ADDON_HOUSEHOLDS` | Conditional | — | Household (group) IDs separated by commas, or `*` for every household, that the TV add-on is on for. Required when `TV_ADDON_ENABLED` is true; startup stops on an empty or invalid list. Other households' hostnames are unchanged. |
@@ -598,6 +601,22 @@ curl -H "Authorization: Bearer $ADMIN_TOKEN" \
 The removed-form counter, `jfa_webhooks_total{result="removed_form"}`, counts
 refused query-token calls only when the token matches, and authenticated
 reduced templates. Inspect `GET /v1/webhooks/status` for the admin warning.
+
+### Deployment self-check and plugin routes
+
+After signing in to `/admin/`, choose **Run self-check**. It checks direct Jellyfin bypass risks, Quick Connect, household proxy headers, public Seerr access, Jellyfin version-gate support, and TMDB key validity. The authenticated API is `POST /v1/self-check`; cookie requests must come from the admin origin. Runs are limited to one per minute, with four-second probe timeouts and no redirect following.
+
+Set `JELLYFIN_PUBLIC_URLS=https://origin.example.com` (comma-separated if there are several) and `SEERR_PUBLIC_URL=https://requests.example.com` to probe those public URLs without sending service API keys. Household addresses are self-requested through the public proxy; configure `TRUSTED_PROXIES` correctly. A direct Jellyfin answer is a bypass risk; public Seerr access is a warning because Seerr must be admin-only. A server-side probe cannot prove what outside users can reach: repeat access checks from a member network. See [household access](household-access.md#admin-deployment-self-check) for the limits.
+
+Household hosts are for non-admin members. Manage Jellyfin through its own separate administrator address. Elevated and startup APIs are refused, so the Jellyfin dashboard will not work on household hosts.
+
+Household hosts now refuse routes outside the explicit Jellyfin core and vetted-plugin allow-list in `src/gateway-route-policy.ts`. To expose a reviewed additional plugin endpoint, set, for example:
+
+```dotenv
+HOUSEHOLD_PLUGIN_ROUTES=/exampleplugin/status,/exampleplugin/config
+```
+
+Only exact lowercase paths are accepted, without wildcards, query strings, encodings, dot segments or legacy prefixes. Restart after changing configuration. Existing explicit gateway refusals and household scope checks still apply. Elevated/admin namespaces and historically refused plugin endpoints cannot be re-enabled by this option. Added paths are logged as a warning at startup. **Warning:** plugin endpoints can disclose other households' names, requests, media or API keys. Audit each response and its authorization before exposing it; allowing a plugin route accepts responsibility for its privacy behavior. Prefer adding a reviewed, tested entry to the table for wider support. Jellyfin Enhanced's existing `public-config` remains byte-identical.
 
 ### Backup and restore
 

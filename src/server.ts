@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
+import type { SelfCheck } from './self-check.js';
 import { ConflictError, UserProvisioningError, type AccessService } from './access-service.js';
 import { HouseholdApp, type HouseholdAppOptions } from './app-api.js';
 import { AdminActionLimitError, AdminSeerrError, type AdminRequests } from './admin-requests.js';
@@ -33,9 +34,11 @@ export interface ServerTokens {
 }
 
 export interface ServerOptions {
+  selfCheck?: SelfCheck;
   /** Reverse proxies trusted to report the client address in X-Forwarded-For; empty uses the TCP peer. */
   trustedProxies?: string[];
   householdGateway?: {
+    additionalPluginRoutes?: string[];
     jellyfinUrl: string;
     domain: string;
     hostPrefix: string;
@@ -134,11 +137,16 @@ export function makeServer(
   const server = createServer({ requireHostHeader: false }, async (request, response) => {
     try {
       if (!singleHost(request)) return invalidHost(response);
-      // A household path such as // is no valid URL input; the gateway refuses it below.
+      // The URL parser reads a target that starts with two slashes or backslashes (`//`, `/\evil.example`) as a host, not
+      // a path, so such a target is refused before anything parses or routes it, on every host (the household gateway
+      // refuses its other empty segments itself).
+      if (/^[/\\]{2}/.test(request.url ?? '/')) return json(response, 404, { error: 'not_found' });
+      // Another household path with an empty segment is refused by the gateway below.
       if (['/jellypass/add', '/jellypass/add.js', '/jellypass/add.css'].includes(URL.parse(request.url ?? '/', 'http://localhost')?.pathname ?? '')) {
         return json(response, 410, { error: 'library_add_removed_use_household_app' });
       }
       const householdId = householdGateway?.householdId(request.headers.host);
+      if (options?.selfCheck?.handleProxyRequest(request, response)) return;
       if (householdId) {
         const decision = jellyfinVersion ? await jellyfinVersion.householdDecision() : 'serve';
         if (decision !== 'serve') return versionRefused(response, decision);
@@ -241,6 +249,15 @@ export function makeServer(
         const session = webAuth ? await webAuth.session(request) : { status: 'none' as const };
         if (session.status === 'unavailable') return json(response, 503, { error: 'session_check_unavailable' });
         if (session.status !== 'active') return json(response, 401, { error: 'unauthorized' });
+      }
+
+      if (request.method === 'POST' && url.pathname === '/v1/self-check') {
+        requireJsonIfBody(request);
+        const results = await options?.selfCheck?.run();
+        if (!options?.selfCheck) return json(response, 404, { error: 'self_check_not_configured' });
+        if (!results) { response.setHeader('Retry-After', '60'); return json(response, 429, { error: 'too_many_requests' }); }
+        response.setHeader('Cache-Control', 'no-store');
+        return json(response, 200, { results });
       }
 
       if (request.method === 'GET' && url.pathname === '/v1/webhooks/status') return json(response, 200, service.webhookStatus());
@@ -431,6 +448,31 @@ export function makeServer(
       const status = message.includes('not found') ? 404 : isClientError(message) ? 400 : 502;
       return json(response, status, { error: message });
     }
+  });
+  // Return false for other client errors so Node retains its own timeout, parser-error,
+  // and in-flight-response handling. Only invalid method tokens need a custom reply.
+  const emit = server.emit;
+  server.emit = function (event: string | symbol, ...args: unknown[]): boolean {
+    if (event === 'clientError' && (args[0] as NodeJS.ErrnoException).code !== 'HPE_INVALID_METHOD') return false;
+    return Reflect.apply(emit, this, [event, ...args]);
+  };
+  const refuseMethod = (socket: Duplex) => {
+    socket.on('error', () => socket.destroy());
+    const responseStarted = (socket as Duplex & { _httpMessage?: ServerResponse })._httpMessage?.headersSent;
+    if (!socket.writable || responseStarted) { socket.destroy(); return; }
+    // Parser errors and CONNECT detach from the HTTP timeouts. Bound even a stalled write.
+    const timer = setTimeout(() => socket.destroy(), 500);
+    timer.unref();
+    socket.once('close', () => clearTimeout(timer));
+    const body = '{"error":"not_found"}';
+    socket.end(`HTTP/1.1 404 Not Found\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`, () => socket.destroy());
+  };
+  server.on('clientError', (_error, socket) => refuseMethod(socket));
+  // Node emits CONNECT separately from ordinary requests; never open a household tunnel.
+  server.on('connect', (request, socket) => {
+    socket.on('error', () => socket.destroy());
+    if (!householdGateway?.householdId(request.headers.host)) { socket.destroy(); return; }
+    refuseMethod(socket);
   });
   server.on('upgrade', (request, socket, head) => {
     if (!singleHost(request)) return invalidHostUpgrade(socket);

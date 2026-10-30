@@ -187,7 +187,7 @@ The state file is the only data JellyPass must keep. Stop JellyPass, copy
 | Topic | Where |
 | --- | --- |
 | Guide: installation, reverse proxy, Seerr, households, apps, upgrading, troubleshooting, security | [jellypass.app/docs](https://jellypass.app/docs/) |
-| Server reference: every setting, Seerr payloads, admin UI, operations, troubleshooting, admin API, limitations | [docs/server-reference.md](docs/server-reference.md) |
+| Server reference: every setting, Seerr payloads, admin UI, operations (including the deployment self-check and household plugin routes), troubleshooting, admin API, limitations | [docs/server-reference.md](docs/server-reference.md) |
 | Household hostnames, household app API and PWA | [docs/household-hosts.md](docs/household-hosts.md) |
 | Design notes | [household access](docs/household-access.md), [household app](docs/app-design.md), [TV add-on](docs/tv-addon.md) |
 | Release notes | [CHANGELOG.md](CHANGELOG.md), [mobile/CHANGELOG.md](mobile/CHANGELOG.md) |

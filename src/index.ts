@@ -1,3 +1,4 @@
+import { SelfCheck, versionCheckResult } from './self-check.js';
 import { AccessService } from './access-service.js';
 import { AdminRequests } from './admin-requests.js';
 import { WebAuth } from './auth.js';
@@ -39,6 +40,7 @@ async function main(): Promise<void> {
       }));
     }
   }
+  if (config.additionalPluginRoutes.length) console.warn(JSON.stringify({ level: 'warn', message: 'HOUSEHOLD_PLUGIN_ROUTES adds household relay routes; audit member privacy', templates: config.additionalPluginRoutes }));
   const service = new AccessService(jellyfin, store, undefined, seerr, { logLevel: config.logLevel });
   // Read now and on a slow interval; startup never waits for it (see JellyfinVersionGate).
   const jellyfinVersion = new JellyfinVersionGate({
@@ -63,11 +65,21 @@ async function main(): Promise<void> {
     recordBranch: (branch) => service.recordGetThisBranch(branch),
   }) : undefined;
   const server = makeServer(service, { webhook: config.webhookToken, admin: config.adminToken }, webAuth, {
+    selfCheck: new SelfCheck({
+      versionStatus: () => versionCheckResult(jellyfinVersion.status()),
+      jellyfinUrl: config.jellyfinUrl,
+      jellyfinPublicUrls: config.jellyfinPublicUrls,
+      ...(config.seerrPublicUrl ? { seerrPublicUrl: config.seerrPublicUrl } : {}),
+      ...(config.tmdbApiKey ? { tmdbApiKey: config.tmdbApiKey } : {}),
+      trustedProxies: config.trustedProxies,
+      householdUrls: () => config.householdDomain ? service.listGroups().map((group) => `https://${config.householdHostPrefix}${group.id}.${config.householdDomain}`) : [],
+    }),
     trustedProxies: config.trustedProxies,
     background,
     jellyfinVersion,
     ...(config.householdDomain ? {
       householdGateway: {
+        additionalPluginRoutes: config.additionalPluginRoutes,
         jellyfinUrl: config.jellyfinUrl,
         domain: config.householdDomain,
         hostPrefix: config.householdHostPrefix,
