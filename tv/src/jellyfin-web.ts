@@ -119,6 +119,33 @@ export function headerSearch(document: Document): HeaderSearch | undefined {
 }
 
 /**
+ * Whether Jellyfin web's own header shows a Back button, in whichever header is drawn (checked against 12.3 and 10.11.3):
+ * - the legacy header (`scripts/libraryMenu.js`, the TV layout's, and 10.11's in every layout): `.skinHeader .headerBackButton`,
+ *   which `libraryMenu` un-hides (`hide`) on each page when its router can go back;
+ * - the React/MUI toolbar of 12.x's desktop layout (`header.MuiAppBar-root`): a button holding MUI's `ArrowBack` icon
+ *   (`svg[data-testid=ArrowBackIcon]`), drawn only in Jellyfin's own apps (`window.NativeShell`, the iOS and Android apps),
+ *   not in a browser.
+ * A button counts only while it takes up room on the screen: 12.x's desktop layout keeps the legacy header in the page, not
+ * hidden by class but inside a `display: none` box. Anything not as that reads as no Back, so the add-on keeps its own.
+ */
+export function headerBackShown(document: Document): boolean {
+  const legacy = document.querySelector('.skinHeader .headerBackButton');
+  if (legacy && !legacy.classList.contains('hide') && onScreen(legacy)) return true;
+  const icons = document.querySelectorAll('header.MuiAppBar-root button svg[data-testid="ArrowBackIcon"]');
+  for (let i = 0; i < icons.length; i += 1) {
+    const button = (icons[i] as Element).closest('button');
+    if (button && onScreen(button)) return true;
+  }
+  return false;
+}
+
+function onScreen(element: Element): boolean {
+  if (typeof element.getBoundingClientRect !== 'function') return false;
+  const box = element.getBoundingClientRect();
+  return box.width > 0 && box.height > 0;
+}
+
+/**
  * Class names Jellyfin web's focus manager and layout read, used on the row so its d-pad navigation drives it: a
  * section (`verticalSection`, with its heading classes, so the row lines up with Home's own), and `focuscontainer-x` on
  * the list, so Left and Right stay in the row and Up and Down leave it, as in Home's own rows. The cards are plain

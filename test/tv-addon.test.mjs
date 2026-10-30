@@ -6262,6 +6262,121 @@ assert.equal(connected(page), tab(page, 'films'), 'the Films tab has focus');
       assert.equal(page.location.hash, now);
     });
 
+    describe('with a Back of Jellyfin\'s own in its header', () => {
+      // A button laid out on the screen (linkedom lays nothing out: every box is 0 by 0, as in a `display: none` header).
+      const onScreen = (element) => {
+        element.getBoundingClientRect = () => ({ x: 0, y: 0, top: 0, left: 0, right: 46, bottom: 46, width: 46, height: 46 });
+        return element;
+      };
+      // 12.x's toolbar in Jellyfin's apps (`window.NativeShell`): its Back is an icon button with MUI's ArrowBack icon, first in the toolbar.
+      const TOOLBAR_BACK = '<button class="MuiButtonBase-root MuiIconButton-root MuiIconButton-colorInherit MuiIconButton-sizeLarge css-i2hxb6" tabindex="0" type="button" aria-label="Back"><svg class="MuiSvgIcon-root MuiSvgIcon-fontSizeMedium css-vubbuv" focusable="false" aria-hidden="true" viewBox="0 0 24 24" data-testid="ArrowBackIcon"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20z"></path></svg></button>';
+      const DESKTOP_12 = LEGACY_HEADER + TOOLBAR;
+      const toolbarBack = (page) => {
+        page.document.querySelector('header.MuiAppBar-root .MuiToolbar-root').insertAdjacentHTML('afterbegin', TOOLBAR_BACK);
+        return onScreen(page.document.querySelector('header.MuiAppBar-root button[aria-label="Back"]'));
+      };
+      const legacyBack = (page) => page.document.querySelector('.skinHeader .headerBackButton');
+      // The host's Back is in the page (drawn once) and on show or not.
+      const shown = (page) => backs(page).filter((button) => !button.closest('[hidden]')).length;
+
+      it('12.x desktop layout in Jellyfin\'s apps: the toolbar\'s Back only, on every JellyPass page; in a browser (no toolbar Back) the host\'s', async (t) => {
+        const page = await openScripted(t, { cards: 20, pages: { '/discover/trending': 2 } }, { hide: 'off', tv: false, header: DESKTOP_12 });
+        // The legacy header is in the page, its Back without `hide` but 0 by 0 (12.x keeps it in a `display: none` box): not a Back.
+        assert.equal(legacyBack(page).classList.contains('hide'), false);
+        await toHash(page, PAGES[0]);
+        assert.equal(shown(page), 1, 'a browser: the host\'s Back');
+        toolbarBack(page);
+        for (const hash of PAGES) {
+          await toHash(page, hash);
+          assert.equal(backs(page).length, 1, `${hash}: drawn once`);
+          assert.equal(shown(page), 0, `${hash}: hidden under the toolbar's Back`);
+          assert.equal(backs(page)[0].closest('.jellypass-tv-back-bar').hidden, true, hash);
+          assert.ok(hosted(page), `${hash} is drawn`);
+        }
+      });
+
+      it('10.11 legacy header outside the TV layout: hidden while its Back is shown (no `hide`, on the screen), shown when Jellyfin hides its Back', async (t) => {
+        const page = await openScripted(t, { cards: 20 }, { hide: 'off', tv: false });
+        onScreen(legacyBack(page));
+        for (const hash of PAGES) {
+          await toHash(page, hash);
+          assert.equal(backs(page).length, 1, hash);
+          assert.equal(shown(page), 0, `${hash}: Jellyfin's Back only`);
+        }
+        // Jellyfin's libraryMenu hides its Back (a page opened with nowhere to go back to) on the page change: only a class
+        // changes, which the host sees on Jellyfin's `pageshow`.
+        legacyBack(page).classList.add('hide');
+        page.document.getElementById('fallbackPage').dispatchEvent(new page.Event('pageshow', { bubbles: true }));
+        await page.settled();
+        assert.equal(shown(page), 1, 'the host\'s Back, as Jellyfin has none');
+        legacyBack(page).classList.remove('hide');
+        await toHash(page, PAGES[1]);
+        assert.equal(shown(page), 0, 'and hidden again with Jellyfin\'s');
+      });
+
+      it('follows a toolbar drawn after the page: hidden when its Back comes, shown again when it goes, never two at once once settled', async (t) => {
+        const page = await openScripted(t, {}, { hide: 'off', tv: false, header: DESKTOP_12 });
+        await toHash(page, '#/jellypass/discover');
+        assert.equal(shown(page), 1);
+        // React re-renders the toolbar after the route change, now with its Back.
+        const theirs = toolbarBack(page);
+        await page.settled();
+        assert.equal(shown(page), 0, 'the toolbar\'s Back came late');
+        assert.equal(backs(page).length, 1, 'still drawn once');
+        theirs.remove();
+        await page.settled();
+        assert.equal(shown(page), 1, 'shown again when the toolbar has none');
+      });
+
+      it('gives focus to the page\'s own when the host\'s Back is hidden under the member, and does not return focus to it hidden', async (t) => {
+        const page = await openScripted(t, { cards: 20 }, { hide: 'off', tv: false, header: DESKTOP_12 });
+        await toHash(page, '#/jellypass/list/trending');
+        const ours = backs(page)[0];
+        // The member moves to it (a key first, so the focus is theirs and remembered).
+        page.press('keydown');
+        ours.focus();
+        assert.equal(page.focused() === ours, true);
+        toolbarBack(page);
+        await page.settled();
+        assert.equal(shown(page), 0);
+        const now = page.focused();
+        assert.equal(Boolean(now) && hosted(page).contains(now) && !now.closest('[hidden]'), true, 'focus is on the page, on something shown');
+        // Coming back to the page, whose focus was last on the host's Back: not focused hidden.
+        await toHash(page, '#/jellypass/discover');
+        page.back();
+        await page.settled();
+        const back = page.focused();
+        assert.equal(Boolean(back) && !back.closest('[hidden]'), true, 'not the hidden button');
+      });
+
+      it('goes back through Jellyfin\'s own Back exactly as the host\'s did: one step back in history', async (t) => {
+        const page = await openScripted(t, {}, { hide: 'off', tv: false, header: DESKTOP_12 });
+        toolbarBack(page);
+        await goTo(page);
+        await toHash(page, '#/jellypass/list/trending');
+        assert.equal(shown(page), 0);
+        // Jellyfin's toolbar Back is its router's back: history's last address shown again.
+        page.back();
+        await page.settled();
+        assert.equal(page.location.hash, '#/jellypass/discover');
+        assert.ok(root(page), 'the Discover page is drawn again');
+        assert.equal(shown(page), 0);
+      });
+
+      it('TV layout: still none of the host\'s, with or without Jellyfin\'s header Back on the screen', async (t) => {
+        const page = await openScripted(t, { cards: 20 }, { hide: 'off', tv: true });
+        for (const hash of PAGES) {
+          legacyBack(page).classList.add('hide');
+          await toHash(page, hash);
+          assert.equal(backs(page).length, 0, `${hash}: Jellyfin's Back hidden`);
+          onScreen(legacyBack(page)).classList.remove('hide');
+          page.document.body.appendChild(page.document.createElement('div'));
+          await page.settled();
+          assert.equal(backs(page).length, 0, `${hash}: Jellyfin's Back shown`);
+        }
+      });
+    });
+
     describe('when the session changes under the page (same route)', () => {
       const changes = {
         'a sign-out': (page) => { page.session.token = null; },
