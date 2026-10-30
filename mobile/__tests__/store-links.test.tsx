@@ -102,7 +102,7 @@ describe('the configured links', () => {
     for (const bad of [
       'http://example.org/privacy',
       'javascript:alert(1)',
-      'jellypass://connect?address=https://jelly-x.example.org',
+      'jellypass://connect?address=https://media.example.com',
       'file:///etc/passwd',
       'https://user:secret@example.org/',
       'https://example.org/a b',

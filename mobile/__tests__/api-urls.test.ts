@@ -3,6 +3,7 @@
 import {
   backdropSources,
   parseHouseholdAddress,
+  readHouseholdAddress,
   safeImageUrl,
   safeLogoUrl,
   safePlayUrl,
@@ -10,50 +11,103 @@ import {
   tokenAuthorization,
 } from '../src/api';
 
-const origin = 'https://jelly-household.example.test';
+const origin = 'https://media.example.com';
 const itemId = '0123456789abcdef0123456789abcdef';
 
 describe('a household address', () => {
   it.each([
+    ['https://media.example.com', 'media.example.com'],
+    ['https://media.example.com/', 'media.example.com'],
+    ['  HTTPS://Media.Example.COM  ', 'media.example.com'],
+    ['https://films.example.net:8443', 'films.example.net:8443'],
+    ['https://films.example.net:8443/', 'films.example.net:8443'],
+    ['https://media.example.com:443', 'media.example.com'],
+    ['https://media.example.com:0443/', 'media.example.com'],
+    ['https://media.example.com:1', 'media.example.com:1'],
+    ['https://media.example.com:65535', 'media.example.com:65535'],
+    ['https://example.com', 'example.com'],
+    ['https://a.b.c.example.co.uk', 'a.b.c.example.co.uk'],
+    ['https://my-house-2.example.com', 'my-house-2.example.com'],
+    ['https://xn--bcher-kva.example', 'xn--bcher-kva.example'],
+    [`https://${'a'.repeat(63)}.example.com`, `${'a'.repeat(63)}.example.com`],
+    // The demo household App Review signs in to, and every address older app versions took.
+    ['https://jelly-demo.jellypass.app', 'jelly-demo.jellypass.app'],
     ['https://jelly-household.example.test', 'jelly-household.example.test'],
-    ['https://jelly-household.example.test/', 'jelly-household.example.test'],
-    ['  HTTPS://Jelly-Farm-House.Example.Test  ', 'jelly-farm-house.example.test'],
-    ['https://jelly-a.home.example.test', 'jelly-a.home.example.test'],
-    ['https://jelly-0.example.test', 'jelly-0.example.test'],
   ])('takes %j as %s', (input, host) => {
     expect(parseHouseholdAddress(input)).toEqual({ origin: `https://${host}`, host });
+    expect(readHouseholdAddress(input)).toEqual({ address: { origin: `https://${host}`, host } });
   });
 
   it.each([
-    'http://jelly-household.example.test',
-    'jelly-household.example.test',
-    'https://household.example.test',
-    'https://jelly-.example.test',
-    'https://jelly--x.example.test',
-    'https://jelly-x-.example.test',
-    'https://jelly-household.test',
-    'https://jelly-household',
-    'https://jelly-household.example.test:8443',
-    'https://user:pw@jelly-household.example.test',
-    'https://jelly-household.example.test/jellypass/app/',
-    'https://jelly-household.example.test/?households=all',
-    'https://jelly-household.example.test#x',
-    'https://jelly-house_hold.example.test',
-    'https://jelly-household.example.test.',
-    'https://jelly-household..example.test',
-    'https://192.168.1.10',
-    'https://[::1]',
-    `https://jelly-${'a'.repeat(58)}.example.test`,
+    ['http://media.example.com', 'http'],
+    ['HTTP://media.example.com:8080/', 'http'],
+    ['media.example.com', 'invalid'],
+    ['//media.example.com', 'invalid'],
+    ['ftp://media.example.com', 'invalid'],
+    ['jellypass://connect?address=https://media.example.com', 'invalid'],
+    ['https:media.example.com', 'invalid'],
+    ['https:/media.example.com', 'invalid'],
+    ['https://user:pw@media.example.com', 'extra'],
+    ['https://user@media.example.com', 'extra'],
+    ['https://media.example.com@evil.example.net', 'extra'],
+    ['https://media.example.com/jellypass/app/', 'extra'],
+    ['https://media.example.com//', 'extra'],
+    ['https://media.example.com/?households=all', 'extra'],
+    ['https://media.example.com?', 'extra'],
+    ['https://media.example.com#x', 'extra'],
+    ['https://media.example.com\\evil.example.net', 'extra'],
+    ['https://films.example.net:8443/web', 'extra'],
+    ['https://media.example.com:', 'invalid'],
+    ['https://media.example.com:0', 'invalid'],
+    ['https://media.example.com:65536', 'invalid'],
+    ['https://media.example.com:100000', 'invalid'],
+    ['https://media.example.com:+80', 'invalid'],
+    ['https://media.example.com:http', 'invalid'],
+    ['https://media.example.com:8443:8443', 'invalid'],
+    ['https://media', 'invalid'],
+    ['https://localhost', 'invalid'],
+    ['https://-media.example.com', 'invalid'],
+    ['https://media-.example.com', 'invalid'],
+    ['https://me_dia.example.com', 'invalid'],
+    ['https://media.example.com.', 'invalid'],
+    ['https://media..example.com', 'invalid'],
+    ['https://.example.com', 'invalid'],
+    ['https://*.example.com', 'invalid'],
+    ['https://med ia.example.com', 'invalid'],
+    ['https://media\t.example.com', 'invalid'],
+    ['https://media.example\u0000.com', 'invalid'],
+    ['https://media.example.com\n/', 'invalid'],
+    ['https://media.exam\u00adple.com', 'unicode'],
+    ['https://bücher.example', 'unicode'],
+    ['https://BÜCHER.example', 'unicode'],
+    ['https://192.168.1.10', 'local'],
+    ['https://192.168.1.10:8920', 'local'],
+    ['https://10.0.0.1/', 'local'],
+    ['https://0x7f.1', 'local'],
+    ['https://2130706433', 'local'],
+    ['https://[::1]', 'local'],
+    ['https://[2001:db8::1]:8443', 'local'],
+    ['https://::1', 'local'],
+    ['https://nas.local', 'local'],
+    [`https://${'a'.repeat(64)}.example.com`, 'invalid'],
     // Over 253 characters in all.
-    `https://jelly-household.${'a'.repeat(63)}.${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(63)}.test`,
-    '',
-    'https://',
-  ])('refuses %j', (input) => {
+    [`https://media.${'a'.repeat(63)}.${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(63)}.test`, 'invalid'],
+    ['', 'invalid'],
+    ['https://', 'invalid'],
+  ])('refuses %j (%s)', (input, problem) => {
     expect(parseHouseholdAddress(input)).toBeUndefined();
+    expect(readHouseholdAddress(input)).toEqual({ problem });
   });
 
   it('is frozen', () => {
     expect(Object.isFrozen(parseHouseholdAddress(origin))).toBe(true);
+  });
+
+  it('gives an origin that reads back as itself', () => {
+    for (const input of ['HTTPS://Films.Example.NET:8443/', 'https://media.example.com:443', 'https://jelly-demo.jellypass.app/']) {
+      const { origin: canonical } = parseHouseholdAddress(input)!;
+      expect(parseHouseholdAddress(canonical)?.origin).toBe(canonical);
+    }
   });
 });
 
@@ -115,14 +169,25 @@ describe('Play', () => {
       { itemId, url: `${origin}/web/#/details?id=other` },
       { itemId, url: 'javascript:alert(1)' },
       { itemId: '../x', url: `${origin}/web/#/details?id=../x` },
-      { itemId, url: `http://jelly-household.example.test/web/#/details?id=${itemId}` },
-      { itemId, url: `https://jelly-other.example.test/web/#/details?id=${itemId}` },
+      { itemId, url: `http://media.example.com/web/#/details?id=${itemId}` },
+      { itemId, url: `https://media.example.com:8443/web/#/details?id=${itemId}` },
+      { itemId, url: `https://media.example.com.evil.example.net/web/#/details?id=${itemId}` },
+      { itemId, url: `https://films.example.net:8443/web/#/details?id=${itemId}` },
       { itemId, url: `${origin}/web/#/details?id=${itemId}&x=1` },
       { itemId: 7, url: 'x' },
       null,
       'x',
     ]) {
       expect([bad, safePlayUrl(bad, origin)]).toEqual([bad, undefined]);
+    }
+  });
+
+  it('keeps a household port, and only that one', () => {
+    const withPort = 'https://films.example.net:8443';
+    const play = { itemId, url: `${withPort}/web/#/details?id=${itemId}` };
+    expect(safePlayUrl(play, withPort)).toBe(play.url);
+    for (const url of [`https://films.example.net/web/#/details?id=${itemId}`, `https://films.example.net:8444/web/#/details?id=${itemId}`]) {
+      expect(safePlayUrl({ itemId, url }, withPort)).toBeUndefined();
     }
   });
 });

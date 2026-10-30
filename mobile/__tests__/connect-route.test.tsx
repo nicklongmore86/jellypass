@@ -37,15 +37,28 @@ describe('the connect link', () => {
     mockParams.address = ORIGIN;
     const gateway = await open();
     expect(shows('Connect to this household?')).toBe(true);
-    expect(shows('jelly-household.example.test')).toBe(true);
+    expect(shows('media.example.com')).toBe(true);
     expect(mockReplace).toHaveBeenCalledWith('/');
     expect(gateway.calls).toEqual([]);
     expect(storedSession()).toBeUndefined();
   });
 
   it('without a household address says it cannot be used', async () => {
-    mockParams.address = 'https://jelly-household.example.test/web';
-    await open();
-    expect(shows("Can't use this link")).toBe(true);
+    for (const address of ['https://media.example.com/web', 'http://media.example.com', 'https://token@media.example.com', 'https://media.example.com/?token=x']) {
+      mockParams.address = address;
+      const gateway = await open();
+      expect([address, shows("Can't use this link")]).toEqual([address, true]);
+      expect(gateway.calls).toEqual([]);
+      expect(storedSession()).toBeUndefined();
+    }
+  });
+
+  it('offers any HTTPS household address, with its port, for confirmation', async () => {
+    mockParams.address = 'https://films.example.net:8443';
+    const gateway = await open();
+    expect(shows('Connect to this household?')).toBe(true);
+    expect(shows('films.example.net:8443')).toBe(true);
+    expect(gateway.calls).toEqual([]);
+    expect(storedSession()).toBeUndefined();
   });
 });

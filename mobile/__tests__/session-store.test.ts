@@ -29,6 +29,18 @@ describe('the session', () => {
     expect(store.getItemAsync).toHaveBeenCalledWith(SESSION_KEY, THIS_DEVICE);
   });
 
+  it.each([
+    // Kept by app versions that took only `jelly-` addresses: an upgrade keeps the member signed in.
+    ['an older app version', 'https://jelly-farmhouse.example.org', 'jelly-farmhouse.example.org'],
+    ['a household with a port', 'https://films.example.net:8443', 'films.example.net:8443'],
+  ])('reads back a session kept by %s', async (_what, origin, host) => {
+    store.__items.set(SESSION_KEY, { value: JSON.stringify({ address: origin, token: TOKEN, userId: 'u-ana', name: 'Ana Lima' }), options: THIS_DEVICE });
+    const session = await readSession();
+    expect(session?.address).toEqual({ origin, host });
+    expect(session?.token).toBe(TOKEN);
+    expect(store.__items.has(SESSION_KEY)).toBe(true);
+  });
+
   it('is none when nothing is stored', async () => {
     expect(await readSession()).toBeUndefined();
   });
@@ -36,10 +48,14 @@ describe('the session', () => {
   it.each([
     ['not json', '{'],
     ['a list', '[]'],
-    ['no token', JSON.stringify({ address: 'https://jelly-home.example.test', userId: 'u', name: 'n' })],
-    ['a foreign address', JSON.stringify({ address: 'https://evil.example.test', token: 't', userId: 'u', name: 'n' })],
-    ['an address with a path', JSON.stringify({ address: 'https://jelly-home.example.test/x', token: 't', userId: 'u', name: 'n' })],
-    ['a number for a name', JSON.stringify({ address: 'https://jelly-home.example.test', token: 't', userId: 'u', name: 1 })],
+    ['no token', JSON.stringify({ address: 'https://media.example.com', userId: 'u', name: 'n' })],
+    ['an http address', JSON.stringify({ address: 'http://media.example.com', token: 't', userId: 'u', name: 'n' })],
+    ['an address with a path', JSON.stringify({ address: 'https://media.example.com/x', token: 't', userId: 'u', name: 'n' })],
+    ['an address with credentials', JSON.stringify({ address: 'https://u:p@media.example.com', token: 't', userId: 'u', name: 'n' })],
+    ['an IP address', JSON.stringify({ address: 'https://192.168.1.10', token: 't', userId: 'u', name: 'n' })],
+    // Never written that way: the origin kept is always the parser's own.
+    ['an address not in its own form', JSON.stringify({ address: 'https://Media.Example.com:443/', token: 't', userId: 'u', name: 'n' })],
+    ['a number for a name', JSON.stringify({ address: 'https://media.example.com', token: 't', userId: 'u', name: 1 })],
   ])('drops %s', async (_what, value) => {
     store.__items.set(SESSION_KEY, { value, options: THIS_DEVICE });
     expect(await readSession()).toBeUndefined();
