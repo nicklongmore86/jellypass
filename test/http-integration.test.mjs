@@ -16,6 +16,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
   let bridge;
   let bridgeUrl;
   let importedUserIds;
+  let service;
 
   before(async () => {
     jellyfin = await createFakeJellyfin();
@@ -41,7 +42,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
         return { status: 'imported', user: { id: 44, jellyfinUserId } };
       },
     };
-    const service = new AccessService(jellyfinClient, store, undefined, seerr);
+    service = new AccessService(jellyfinClient, store, undefined, seerr);
     const webAuth = new WebAuth(jellyfinClient, { loginFailureDelayMs: 0 });
     bridge = makeServer(service, { webhook: 'webhook-secret', admin: 'admin-secret' }, webAuth, {
       householdGateway: { jellyfinUrl: jellyfin.url, domain: 'example.test', hostPrefix: 'jelly-' },
@@ -412,21 +413,55 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.equal(unauthorized.status, 401);
     await unauthorized.json();
 
+    const adminHeaders = { Authorization: 'Bearer admin-secret' };
+    const readMetrics = async () => (await fetch(bridgeUrl + '/metrics', { headers: adminHeaders })).text();
+    const status = async () => (await fetch(bridgeUrl + '/v1/webhooks/status', { headers: adminHeaders })).json();
+    const metricsBefore = await readMetrics();
+    const statusBefore = await status();
+    for (const token of ['wrong', 'wrong-secret!!']) {
+      const wrongQuery = await fetch(bridgeUrl + '/webhooks/seerr?token=' + token, { method: 'POST', body: '{}' });
+      assert.equal(wrongQuery.status, 400);
+      await wrongQuery.json();
+      assert.equal(await readMetrics(), metricsBefore);
+      assert.deepEqual(await status(), statusBefore);
+    }
+
     const queryAuthenticated = await fetch(`${bridgeUrl}/webhooks/seerr?token=webhook-secret`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ notificationType: 'TEST_NOTIFICATION', request: { id: '1' } }),
     });
-    assert.equal(queryAuthenticated.status, 202);
-    await queryAuthenticated.json();
+    assert.equal(queryAuthenticated.status, 400);
+    assert.deepEqual(await queryAuthenticated.json(), { error: 'webhook_query_token_removed_use_authorization_header' });
+
+    assert.match(await readMetrics(), /jfa_webhooks_total\{result="removed_form"\} 1/);
+    assert.deepEqual((await readMetrics()).match(/^jfa_last_webhook_received_timestamp_seconds .+$/m)?.[0], metricsBefore.match(/^jfa_last_webhook_received_timestamp_seconds .+$/m)?.[0]);
+    assert.equal(typeof (await status()).lastRemovedFormAt, 'number');
+    let receipts = 0;
+    const recordReceipt = service.recordWebhookReceived.bind(service);
+    service.recordWebhookReceived = () => { receipts++; recordReceipt(); };
+    try {
+      const reduced = await fetch(bridgeUrl + '/webhooks/seerr', {
+        method: 'POST',
+        headers: { Authorization: 'Bearer webhook-secret', 'Content-Type': 'application/json' },
+        body: JSON.stringify({ notificationType: 'MEDIA_AVAILABLE', request: { id: '1' } }),
+      });
+      assert.equal(reduced.status, 400);
+      assert.deepEqual(await reduced.json(), { error: 'webhook_payload_removed_use_current_seerr_template' });
+      assert.equal(receipts, 1);
+      assert.match(await readMetrics(), /jfa_webhooks_total\{result="removed_form"\} 2/);
+    } finally {
+      service.recordWebhookReceived = recordReceipt;
+    }
 
     const seerrTest = await fetch(`${bridgeUrl}/webhooks/seerr`, {
       method: 'POST',
       headers: { Authorization: 'Bearer webhook-secret', 'Content-Type': 'application/json' },
-      body: JSON.stringify({ notificationType: 'TEST_NOTIFICATION', request: { id: '' } }),
+      body: JSON.stringify({ notificationType: 'TEST_NOTIFICATION', event: '', media: {}, request: { id: '', requestedBy: { jellyfinUserId: '', username: '' } } }),
     });
     assert.equal(seerrTest.status, 202);
     assert.deepEqual(await seerrTest.json(), { status: 'ignored' });
+    assert.deepEqual(await status(), { lastRemovedFormAt: null });
 
     const unknownType = await fetch(`${bridgeUrl}/webhooks/seerr`, {
       method: 'POST',
@@ -510,7 +545,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.equal(metrics.status, 200);
     const metricsText = await metrics.text();
     assert.match(metricsText, /jfa_webhooks_total\{result="granted"\} 1/);
-    assert.match(metricsText, /jfa_webhooks_total\{result="ignored"\} 3/);
+    assert.match(metricsText, /jfa_webhooks_total\{result="ignored"\} 2/);
     assert.match(metricsText, /jfa_webhooks_total\{result="invalid"\} 3/);
     assert.match(metricsText, /jfa_last_webhook_received_timestamp_seconds \d{10}/);
 
@@ -762,7 +797,7 @@ describe('webhook resolution errors over HTTP', { timeout: 5_000 }, () => {
 
   it('returns 502 for an event that does not name an HD request when Seerr lookup is not configured', async () => {
     const send = await webhookServer(undefined);
-    for (const [id, event] of [['7', undefined], ['8', ''], ['9', '{{event}}'], ['10', 'Something Else']]) {
+    for (const [id, event] of [['8', ''], ['9', '{{event}}'], ['10', 'Something Else']]) {
       assert.deepEqual(await send(available(id, event)), {
         status: 502, body: { error: 'webhook event does not name an HD request and Seerr lookup is not configured' },
       }, String(event));

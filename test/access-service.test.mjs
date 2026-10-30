@@ -36,14 +36,11 @@ describe('access tags and webhook validation', () => {
     withTmdb.media.tmdbId = 'not-a-number';
     assert.deepEqual(parseWebhook(withTmdb).media, { jellyfinMediaId: 'item-1', mediaType: 'movie' });
     assert.throws(() => parseWebhook(webhook({ mediaId: '{{media_jellyfinMediaId}}' })), /invalid/);
-    assert.deepEqual(parseWebhook({ notificationType: 'MEDIA_AVAILABLE', request: { id: '136' } }), {
-      notificationType: 'MEDIA_AVAILABLE',
-      request: { id: '136' },
-    });
+    assert.throws(() => parseWebhook({ notificationType: 'MEDIA_AVAILABLE', request: { id: '136' } }), /webhook_payload_removed_use_current_seerr_template/);
   });
 
   it('ignores non-availability events without validating their IDs', async (t) => {
-    assert.deepEqual(parseWebhook({ notificationType: 'TEST_NOTIFICATION', request: { id: '' } }), { notificationType: 'TEST_NOTIFICATION' });
+    assert.deepEqual(parseWebhook({ notificationType: 'TEST_NOTIFICATION', event: '', media: {}, request: { id: '', requestedBy: { jellyfinUserId: '', username: '' } } }), { notificationType: 'TEST_NOTIFICATION' });
     assert.deepEqual(parseWebhook({ notificationType: 'MEDIA_PENDING' }), { notificationType: 'MEDIA_PENDING' });
     assert.throws(() => parseWebhook({ notificationType: 'MEDIA_AVAILABLE', request: { id: '' } }), /id must be a non-empty string/);
     assert.throws(() => parseWebhook({ notificationType: 'MEDIA_AVAILABLE' }), /request must be an object/);
@@ -56,7 +53,7 @@ describe('access tags and webhook validation', () => {
     const store = new GrantStore(await stateFile(t));
     await store.load();
     const service = new AccessService(fakeJellyfin(), store);
-    assert.equal(await service.processWebhook(parseWebhook({ notificationType: 'TEST_NOTIFICATION', request: { id: '' } })), null);
+    assert.equal(await service.processWebhook(parseWebhook({ notificationType: 'TEST_NOTIFICATION', event: '', media: {}, request: { id: '', requestedBy: { jellyfinUserId: '', username: '' } } })), null);
     assert.equal(store.list().length, 0);
     assert.match(service.renderMetrics(), /jfa_webhooks_total\{result="ignored"\} 1/);
   });
@@ -142,122 +139,22 @@ describe('state file persistence', () => {
 });
 
 describe('state migration', () => {
-  it('migrates v1 grants to active, pending v6 records', async (t) => {
-    const file = await stateFile(t);
-    await writeFile(file, JSON.stringify({
-      version: 1,
-      grants: {
-        'item-1': {
-          itemId: 'item-1',
-          owners: ['alice-id'],
-          requests: { '17': 'alice-id' },
-          updatedAt: '2026-01-01T00:00:00.000Z',
-        },
-      },
-    }));
-    const store = new GrantStore(file);
-    await store.load();
-    const grant = store.get('item-1');
-    assert.equal(grant.active, true);
-    assert.deepEqual(grant.groupIds, []);
-    assert.equal(grant.sync.state, 'pending');
-    assert.deepEqual(grant.manualUserIds, []);
-    assert.equal(JSON.parse(await readFile(file, 'utf8')).version, 7);
-  });
-
-  it('adds manual audiences and catalog while migrating v2 state to v7', async (t) => {
-    const file = await stateFile(t);
-    await writeFile(file, JSON.stringify({
-      version: 2,
-      grants: {
-        'item-1': {
-          itemId: 'item-1', active: true, owners: ['alice-id'], requests: { '17': 'alice-id' },
-          groupIds: [], sync: { state: 'synced', attempts: 0 }, updatedAt: '2026-01-01T00:00:00.000Z',
-        },
-      },
-      groups: {},
-    }));
-    const store = new GrantStore(file);
-    await store.load();
-    assert.deepEqual(store.get('item-1').manualUserIds, []);
-    const migrated = JSON.parse(await readFile(file, 'utf8'));
-    assert.equal(migrated.version, 7);
-    assert.deepEqual(migrated.catalog.items, {});
-    assert.equal('claims' in migrated, false);
-  });
-
-  it('preserves v3 grants while adding the v7 catalog and passwordless list', async (t) => {
-    const file = await stateFile(t);
-    await writeFile(file, JSON.stringify({
-      version: 3,
-      grants: {
-        'item-1': {
-          itemId: 'item-1', active: true, owners: ['bob-id'], requests: {}, manualUserIds: ['bob-id'],
-          groupIds: [], sync: { state: 'synced', attempts: 0 }, updatedAt: '2026-01-01T00:00:00.000Z',
-        },
-      },
-      groups: {},
-    }));
-    const store = new GrantStore(file);
-    await store.load();
-    assert.deepEqual(store.get('item-1').manualUserIds, ['bob-id']);
-    const migrated = JSON.parse(await readFile(file, 'utf8'));
-    assert.equal(migrated.version, 7);
-    assert.deepEqual(migrated.catalog, { items: {} });
-    assert.equal('claims' in migrated, false);
-    assert.deepEqual(migrated.passwordlessUserIds, []);
-  });
-
-  it('preserves v4 state while adding an empty passwordless user list', async (t) => {
-    const file = await stateFile(t);
-    await writeFile(file, JSON.stringify({ version: 4, grants: {}, groups: {}, catalog: { items: {} } }));
-    const store = new GrantStore(file);
-    await store.load();
-    const migrated = JSON.parse(await readFile(file, 'utf8'));
-    assert.equal(migrated.version, 7);
-    assert.equal('claims' in migrated, false);
-    assert.deepEqual(migrated.passwordlessUserIds, []);
-  });
-
-  it('migrates v5 state to v7, dropping claims and adding an empty passwordless user list', async (t) => {
-    const file = await stateFile(t);
-    const claims = { 'movie:1': { mediaType: 'movie', tmdbId: 1, userIds: ['alice-id'], updatedAt: '2026-01-01T00:00:00.000Z' } };
-    await writeFile(file, JSON.stringify({ version: 5, grants: {}, groups: {}, catalog: { items: {} }, claims }));
-    const store = new GrantStore(file);
-    await store.load();
-    const migrated = JSON.parse(await readFile(file, 'utf8'));
-    assert.equal(migrated.version, 7);
-    assert.equal('claims' in migrated, false);
-    assert.deepEqual(migrated.passwordlessUserIds, []);
-    await store.setUserPasswordless('Alice-ID', true);
-    await store.setUserPasswordless('bob-id', true);
-    await store.setUserPasswordless('bob-id', false);
-    assert.deepEqual(store.listPasswordlessUserIds(), ['alice-id']);
-    const reloaded = new GrantStore(file);
-    await reloaded.load();
-    assert.deepEqual(reloaded.listPasswordlessUserIds(), ['alice-id']);
-  });
-
-  it('loads v5 and v6 state that has no claim registry', async (t) => {
-    for (const version of [5, 6]) {
+  for (const version of [1, 2, 3, 4, 5, 6]) {
+    it(`rejects pre-3.0 schema v${version} without rewriting it`, async (t) => {
       const file = await stateFile(t);
-      await writeFile(file, JSON.stringify({
-        version,
-        grants: {
-          'item-1': {
-            itemId: 'item-1', active: true, owners: ['alice-id'], requests: { '17': 'alice-id' }, manualUserIds: [],
-            groupIds: [], sync: { state: 'synced', attempts: 0 }, updatedAt: '2026-01-01T00:00:00.000Z',
-          },
-        },
-        groups: {},
-        catalog: { items: {} },
-        ...(version === 6 ? { passwordlessUserIds: [] } : {}),
-      }));
-      const store = new GrantStore(file);
-      await store.load();
-      assert.deepEqual(store.get('item-1').owners, ['alice-id'], `v${version}`);
-      assert.equal(JSON.parse(await readFile(file, 'utf8')).version, 7);
-    }
+      const contents = JSON.stringify({ version, grants: {}, groups: {}, catalog: { items: {} } });
+      await writeFile(file, contents);
+      await assert.rejects(new GrantStore(file).load(), /upgrade via 3\.9\.x first/);
+      assert.equal(await readFile(file, 'utf8'), contents);
+    });
+  }
+
+  it('keeps 3.x schema v7 and its optional fields without rewriting', async (t) => {
+    const file = await stateFile(t);
+    const contents = JSON.stringify({ version: 7, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [], appWithdrawals: {} });
+    await writeFile(file, contents);
+    await new GrantStore(file).load();
+    assert.equal(await readFile(file, 'utf8'), contents);
   });
 
   it('rejects a newer state schema and leaves the file untouched', async (t) => {
@@ -268,46 +165,6 @@ describe('state migration', () => {
     assert.equal(await readFile(file, 'utf8'), contents);
   });
 
-  it('migrates v6 state to v7 by dropping claims and keeping grants that came from claims', async (t) => {
-    const file = await stateFile(t);
-    // Bob claimed item-1 before it became available, so 1.1.0 added him as a manual user.
-    const grants = {
-      'item-1': {
-        itemId: 'item-1', active: true, mediaType: 'movie', owners: ['alice-id', 'bob-id'], requests: { '17': 'alice-id' },
-        manualUserIds: ['bob-id'], groupIds: [], sync: { state: 'synced', attempts: 0 }, updatedAt: '2026-01-01T00:00:00.000Z',
-      },
-    };
-    const claims = {
-      'movie:101': {
-        mediaType: 'movie', tmdbId: 101, userIds: ['bob-id'], claimedAt: { 'bob-id': '2026-01-01T00:00:00.000Z' },
-        jellyfinItemId: 'item-1', updatedAt: '2026-01-01T00:00:00.000Z',
-      },
-      'tv:1399': { mediaType: 'tv', tmdbId: 1399, userIds: ['carol-id'], updatedAt: '2026-01-02T00:00:00.000Z' },
-    };
-    await writeFile(file, JSON.stringify({
-      version: 6, grants, groups: {}, catalog: { items: {} }, claims, passwordlessUserIds: ['carol-id'], handledRequestIds: ['17'],
-    }));
-    const store = new GrantStore(file);
-    await store.load();
-
-    const migrated = JSON.parse(await readFile(file, 'utf8'));
-    assert.equal(migrated.version, 7);
-    assert.equal('claims' in migrated, false);
-    assert.deepEqual(migrated.grants, grants);
-    assert.deepEqual(migrated.passwordlessUserIds, ['carol-id']);
-    assert.deepEqual(migrated.handledRequestIds, ['17']);
-    assert.doesNotMatch(JSON.stringify(migrated), /tmdbId|claimedAt|1399/);
-
-    // The claimant stays an ordinary manual user when another request lands on the title.
-    const service = new AccessService(fakeJellyfin(), store);
-    const grant = await service.processWebhook(parseWebhook(webhook({ requestId: '18' })));
-    assert.deepEqual(grant.manualUserIds, ['bob-id']);
-    assert.deepEqual(grant.owners, ['alice-id', 'bob-id']);
-
-    const reloaded = new GrantStore(file);
-    await reloaded.load();
-    assert.deepEqual(reloaded.get('item-1').owners, ['alice-id', 'bob-id']);
-  });
 });
 
 describe('grant lifecycle', () => {
@@ -435,7 +292,7 @@ describe('grant lifecycle', () => {
     };
     const service = new AccessService(fake, store, undefined, seerr);
 
-    const grant = await service.processWebhook(parseWebhook({ notificationType: 'MEDIA_AVAILABLE', request: { id: '136' } }));
+    const grant = await service.processWebhook(parseWebhook({ notificationType: 'MEDIA_AVAILABLE', event: 'Movie Request Now Available', media: { jellyfinMediaId: '', mediaType: 'movie' }, request: { id: '136', requestedBy: { jellyfinUserId: '', username: '' } } }));
     assert.equal(grant.requests['136'], 'alice-id');
     assert.deepEqual(grant.owners, ['alice-id']);
     assert.deepEqual(fake.item.Tags, ['keep-me', 'jfa:private:item-1']);
@@ -466,7 +323,7 @@ describe('webhooks without Seerr lookup', () => {
   it('counts a webhook missing Jellyfin IDs as an error', async () => {
     const { store, service } = await serviceWithoutSeerr();
     await assert.rejects(
-      () => service.processWebhook(parseWebhook({ notificationType: 'MEDIA_AVAILABLE', request: { id: '136' } })),
+      () => service.processWebhook(parseWebhook({ notificationType: 'MEDIA_AVAILABLE', event: 'Movie Request Now Available', media: { jellyfinMediaId: '', mediaType: 'movie' }, request: { id: '136', requestedBy: { jellyfinUserId: '', username: '' } } })),
       /missing Jellyfin IDs and Seerr lookup is not configured/,
     );
     assert.equal(store.list().length, 0);
@@ -727,233 +584,6 @@ describe('replayed webhooks', () => {
   });
 });
 
-describe('household library joins', () => {
-  // TMDB movie 603 is item-1, TV 1396 is item-2, movie 404 is not in the library and movie 500 fails to resolve.
-  function fakeSeerr() {
-    const lookups = [];
-    return {
-      lookups,
-      async getJellyfinItemId(mediaType, tmdbId) {
-        lookups.push(`${mediaType}/${tmdbId}`);
-        if (tmdbId === 500) throw new Error('Seerr GET /api/v1/movie/500 returned 500');
-        return { 'movie/603': 'item-1', 'tv/1396': 'item-2' }[`${mediaType}/${tmdbId}`];
-      },
-    };
-  }
-
-  async function households(t) {
-    const store = new GrantStore(await stateFile(t));
-    await store.load();
-    const fake = fakeJellyfin({ extraUsers: [{ Id: 'carol-id', Name: 'Carol' }, { Id: 'dave-id', Name: 'Dave' }] });
-    const seerr = fakeSeerr();
-    const service = new AccessService(fake, store, undefined, seerr);
-    await service.upsertGroup({ id: 'house-a', name: 'House A', userIds: ['alice-id', 'bob-id'] });
-    await service.upsertGroup({ id: 'house-b', name: 'House B', userIds: ['carol-id'] });
-    const join = (userId, tmdbId = 603, mediaType = 'movie', isAdministrator = false) =>
-      service.joinLibrary({ userId, isAdministrator, mediaType, tmdbId });
-    return { store, fake, seerr, service, join };
-  }
-
-  it('adds the caller\'s households to a request grant and records the join', async (t) => {
-    const { store, fake, service, join } = await households(t);
-    await service.processWebhook(parseWebhook(webhook()));
-    assert.deepEqual(fake.user('carol-id').Policy.BlockedTags, ['jfa:private:item-1']);
-
-    assert.equal(await join('carol-id'), 'joined');
-    const grant = store.get('item-1');
-    assert.deepEqual(grant.requests, { '17': 'alice-id' });
-    assert.deepEqual(grant.groupIds, ['house-a', 'house-b']);
-    assert.deepEqual(grant.manualUserIds, []);
-    assert.deepEqual(grant.owners, ['alice-id', 'bob-id', 'carol-id']);
-    assert.equal(grant.joins.length, 1);
-    assert.deepEqual({ ...grant.joins[0], joinedAt: undefined }, { userId: 'carol-id', groupIds: ['house-b'], userAdded: false, joinedAt: undefined });
-    assert.ok(Date.parse(grant.joins[0].joinedAt) > 0);
-    assert.equal(grant.sync.state, 'synced');
-    assert.deepEqual(fake.user('carol-id').Policy.BlockedTags, []);
-    assert.deepEqual(fake.user('dave-id').Policy.BlockedTags, ['jfa:private:item-1']);
-    assert.match(service.renderMetrics(), /jfa_library_joins_total\{result="joined"\} 1\n/);
-  });
-
-  it('adds a caller who belongs to no household as a user', async (t) => {
-    const { store, fake, service, join } = await households(t);
-    await service.processWebhook(parseWebhook(webhook({ mediaId: 'item-2', mediaType: 'tv' })));
-
-    assert.equal(await join('dave-id', 1396, 'tv'), 'joined');
-    const grant = store.get('item-2');
-    assert.deepEqual(grant.groupIds, ['house-a']);
-    assert.deepEqual(grant.manualUserIds, ['dave-id']);
-    assert.equal(grant.joins[0].userAdded, true);
-    assert.deepEqual(grant.joins[0].groupIds, []);
-    assert.deepEqual(fake.user('dave-id').Policy.BlockedTags, []);
-    assert.deepEqual(fake.user('carol-id').Policy.BlockedTags, ['jfa:private:item-2']);
-  });
-
-  it('is idempotent: repeating a join changes and writes nothing', async (t) => {
-    const { store, service, join } = await households(t);
-    await service.processWebhook(parseWebhook(webhook()));
-    assert.equal(await join('carol-id'), 'joined');
-    const joined = store.get('item-1');
-
-    for (const userId of ['carol-id', 'alice-id', 'bob-id']) assert.equal(await join(userId), 'unchanged', userId);
-    assert.deepEqual(store.get('item-1'), joined);
-    const metrics = service.renderMetrics();
-    assert.match(metrics, /jfa_library_joins_total\{result="joined"\} 1\n/);
-    assert.match(metrics, /jfa_library_joins_total\{result="unchanged"\} 3\n/);
-  });
-
-  it('leaves manual-only grants, public titles and titles outside the library untouched', async (t) => {
-    const { store, fake, seerr, service, join } = await households(t);
-    await service.setManualAccess({ itemId: 'item-1', mediaType: 'movie', userIds: [], groupIds: ['house-a'] });
-    const manual = store.get('item-1');
-
-    assert.equal(await join('carol-id'), 'unchanged');
-    assert.equal(await join('dave-id'), 'unchanged');
-    assert.equal(await join('carol-id', 1396, 'tv'), 'unchanged', 'item-2 has no grant, so it is public');
-    assert.equal(await join('carol-id', 404), 'unchanged', 'not in the library');
-    assert.deepEqual(store.get('item-1'), manual);
-    assert.equal(store.get('item-2'), undefined);
-    assert.deepEqual(fake.user('carol-id').Policy.BlockedTags, ['jfa:private:item-1']);
-    assert.deepEqual(seerr.lookups, ['movie/603', 'movie/603', 'tv/1396', 'movie/404']);
-  });
-
-  it('ignores administrators, who already see every title', async (t) => {
-    const { store, service, join } = await households(t);
-    await service.processWebhook(parseWebhook(webhook()));
-    const before = store.get('item-1');
-    assert.equal(await join('admin-id', 603, 'movie', true), 'unchanged');
-    assert.deepEqual(store.get('item-1'), before);
-  });
-
-  it('does not add back a household or user an administrator removed', async (t) => {
-    const { store, fake, service, join } = await households(t);
-    await service.processWebhook(parseWebhook(webhook()));
-    await service.processWebhook(parseWebhook(webhook({ requestId: '18', userId: 'dave-id' })));
-    await join('carol-id');
-    await service.setGrantGroups('item-1', ['house-a']);
-    await service.revokeRequest('item-1', '18');
-    let grant = store.get('item-1');
-    assert.deepEqual(store.getRemovals('item-1').groupIds, ['house-b']);
-    assert.deepEqual(store.getRemovals('item-1').userIds, ['carol-id', 'dave-id'], 'Carol lost access with her household');
-    assert.deepEqual(fake.user('carol-id').Policy.BlockedTags, ['jfa:private:item-1']);
-
-    assert.equal(await join('carol-id'), 'unchanged');
-    assert.equal(await join('dave-id'), 'unchanged');
-    grant = store.get('item-1');
-    assert.deepEqual(grant.groupIds, ['house-a']);
-    assert.deepEqual(grant.manualUserIds, []);
-    assert.deepEqual(fake.user('carol-id').Policy.BlockedTags, ['jfa:private:item-1']);
-    assert.deepEqual(fake.user('dave-id').Policy.BlockedTags, ['jfa:private:item-1']);
-
-    // Assigning them again is the administrator's call, and clears the marks.
-    await service.setManualAccess({ itemId: 'item-1', userIds: ['dave-id'], groupIds: ['house-a', 'house-b'] });
-    grant = store.get('item-1');
-    assert.equal(store.getRemovals('item-1').groupIds, undefined);
-    assert.equal(store.getRemovals('item-1').userIds, undefined);
-    assert.equal(grant.joins.length, 1, 'the audit trail survives administrator edits');
-  });
-
-  it('forgets a removal mark when its group is deleted, but not the marks of the members who lost access', async (t) => {
-    const { store, service, join } = await households(t);
-    await service.processWebhook(parseWebhook(webhook()));
-    await join('carol-id');
-    await service.setGrantGroups('item-1', ['house-a']);
-    await service.deleteGroup('house-b');
-    assert.equal(store.getRemovals('item-1').groupIds, undefined);
-    await service.upsertGroup({ id: 'house-b', name: 'New House B', userIds: ['carol-id', 'dave-id'] });
-    assert.equal(await join('carol-id'), 'unchanged', 'Carol herself is still marked');
-    assert.equal(await join('dave-id'), 'joined');
-    assert.deepEqual(store.get('item-1').groupIds, ['house-a', 'house-b']);
-  });
-
-  it('does not let a user an administrator removed regain access by joining through a household', async (t) => {
-    const { store, fake, service, join } = await households(t);
-    await service.processWebhook(parseWebhook(webhook()));
-    // Dave, in no household, joins as a user, and an administrator takes him off.
-    assert.equal(await join('dave-id'), 'joined');
-    await service.setManualAccess({ itemId: 'item-1', userIds: [], groupIds: ['house-a'] });
-    assert.deepEqual(store.getRemovals('item-1').userIds, ['dave-id']);
-    assert.deepEqual(fake.user('dave-id').Policy.BlockedTags, ['jfa:private:item-1']);
-
-    // He moves into House B, which nobody removed, and joins again: nothing happens.
-    await service.upsertGroup({ id: 'house-b', name: 'House B', userIds: ['carol-id', 'dave-id'] });
-    assert.equal(await join('dave-id'), 'unchanged');
-    assert.deepEqual(store.get('item-1').groupIds, ['house-a']);
-    assert.equal(store.get('item-1').joins.length, 1);
-    assert.deepEqual(fake.user('dave-id').Policy.BlockedTags, ['jfa:private:item-1']);
-
-    // The mark is Dave's own: another member can still join House B, which then includes him.
-    assert.equal(await join('carol-id'), 'joined');
-    assert.deepEqual(store.get('item-1').groupIds, ['house-a', 'house-b']);
-    assert.deepEqual(store.getRemovals('item-1').userIds, ['dave-id']);
-    assert.deepEqual(fake.user('dave-id').Policy.BlockedTags, []);
-  });
-
-  it('does not let a member of a removed household regain access by joining after leaving it', async (t) => {
-    const { store, fake, service, join } = await households(t);
-    await service.processWebhook(parseWebhook(webhook()));
-    assert.equal(await join('carol-id'), 'joined');
-    await service.setGrantGroups('item-1', ['house-a']);
-    assert.deepEqual(store.getRemovals('item-1').userIds, ['carol-id']);
-
-    // Carol leaves House B, so she belongs to no household and would be added directly.
-    await service.upsertGroup({ id: 'house-b', name: 'House B', userIds: [] });
-    assert.equal(await join('carol-id'), 'unchanged');
-    // Nor through a new household.
-    await service.upsertGroup({ id: 'house-c', name: 'House C', userIds: ['carol-id'] });
-    assert.equal(await join('carol-id'), 'unchanged');
-    const grant = store.get('item-1');
-    assert.deepEqual(grant.groupIds, ['house-a']);
-    assert.deepEqual(grant.manualUserIds, []);
-    assert.deepEqual(fake.user('carol-id').Policy.BlockedTags, ['jfa:private:item-1']);
-  });
-
-  it('skips a caller\'s removed household but adds their others', async (t) => {
-    const { store, service, join } = await households(t);
-    await service.processWebhook(parseWebhook(webhook()));
-    await join('carol-id');
-    await service.setGrantGroups('item-1', ['house-a']);
-    // Dave never had access, so he is not marked; he belongs to the removed House B and to House C.
-    await service.upsertGroup({ id: 'house-b', name: 'House B', userIds: ['carol-id', 'dave-id'] });
-    await service.upsertGroup({ id: 'house-c', name: 'House C', userIds: ['dave-id'] });
-    assert.equal(await join('dave-id'), 'joined');
-    const grant = store.get('item-1');
-    assert.deepEqual(grant.groupIds, ['house-a', 'house-c']);
-    assert.deepEqual(grant.joins.at(-1).groupIds, ['house-c']);
-  });
-
-  it('keeps a member\'s mark when their household stays on the grant, and clears it when an administrator adds the household', async (t) => {
-    const { store, service, join } = await households(t);
-    await service.processWebhook(parseWebhook(webhook()));
-    await join('carol-id');
-    await service.setGrantGroups('item-1', ['house-a']);
-    await service.setGrantGroups('item-1', ['house-a']);
-    assert.deepEqual(store.getRemovals('item-1').userIds, ['carol-id']);
-    await service.setGrantGroups('item-1', ['house-a', 'house-b']);
-    assert.equal(store.getRemovals('item-1').userIds, undefined);
-    assert.equal(store.getRemovals('item-1').groupIds, undefined);
-  });
-
-  it('reports a failed lookup or write as an error without throwing or changing anything', async (t) => {
-    const { store, service, join } = await households(t);
-    await service.processWebhook(parseWebhook(webhook()));
-    const before = store.get('item-1');
-    const errors = [];
-    const originalError = console.error;
-    console.error = (line) => errors.push(JSON.parse(line));
-    try {
-      assert.equal(await join('carol-id', 500), 'error');
-      await store.close();
-      assert.equal(await join('carol-id'), 'error');
-    } finally {
-      console.error = originalError;
-    }
-    assert.deepEqual(store.get('item-1'), before, 'a closed store refuses the join and memory stays unchanged');
-    assert.deepEqual(errors.map((entry) => entry.message), ['library join failed', 'library join failed']);
-    assert.match(errors[1].detail, /state store is closed/);
-    assert.match(service.renderMetrics(), /jfa_library_joins_total\{result="error"\} 2\n/);
-  });
-});
-
 describe('Seerr request backfill', () => {
   const since = new Date('2026-10-01T00:00:00.000Z');
 
@@ -1153,7 +783,7 @@ describe('Seerr request backfill', () => {
     it('asks Seerr when the payload lacks the item or user ID', async () => {
       const detail = seerrRequest(17, { requestedBy: { jellyfinUserId: 'carol-id' }, media: { mediaType: 'tv', status: 5, jellyfinMediaId: 'item-2' } });
       const noUser = webhook();
-      delete noUser.request.requestedBy;
+      noUser.request.requestedBy = { jellyfinUserId: '', username: '' };
       const noItem = webhook({ requestId: '18' });
       delete noItem.media.jellyfinMediaId;
       await withSeerr([], { 17: detail, 18: { ...detail, id: 18 } }, async ({ store, service, calls }) => {
@@ -1215,7 +845,7 @@ describe('Seerr request backfill', () => {
 
     it('fails a needed lookup when Seerr is unreachable and leaves the request to the backfill', async () => {
       const noUser = webhook();
-      delete noUser.request.requestedBy;
+      noUser.request.requestedBy = { jellyfinUserId: '', username: '' };
       await withSeerr([seerrRequest(17)], {}, async ({ store, service, calls }) => {
         await assert.rejects(() => service.processWebhook(parseWebhook(noUser)), /500/);
         assert.deepEqual(calls, ['/api/v1/request/17']);
@@ -1359,7 +989,7 @@ function webhook(overrides = {}) {
   const event = overrides.event === undefined ? 'Movie Request Now Available' : overrides.event;
   return {
     notificationType: 'MEDIA_AVAILABLE',
-    ...(event === null ? {} : { event }),
+    event: event ?? '',
     media: {
       jellyfinMediaId: overrides.mediaId ?? 'item-1',
       mediaType: overrides.mediaType ?? 'movie',
@@ -1508,4 +1138,22 @@ describe('Seerr recent requests cache', () => {
       assert.equal(calls.list, 2);
     });
   });
+});
+
+it('logs each removed-form error once per minute while counting every refusal', async (t) => {
+  const store = new GrantStore(await stateFile(t));
+  await store.load();
+  const service = new AccessService(fakeJellyfin(), store);
+  const warnings = [];
+  const previous = console.warn;
+  console.warn = (line) => warnings.push(JSON.parse(line));
+  try {
+    for (const error of ['webhook_query_token_removed_use_authorization_header', 'webhook_payload_removed_use_current_seerr_template']) {
+      service.recordRemovedWebhook(error);
+      service.recordRemovedWebhook(error);
+    }
+  } finally { console.warn = previous; }
+  assert.equal(warnings.length, 2);
+  assert.ok(warnings.every((entry) => entry.level === 'warn' && entry.error.startsWith('webhook_')));
+  assert.match(service.renderMetrics(), /jfa_webhooks_total\{result="removed_form"\} 4/);
 });

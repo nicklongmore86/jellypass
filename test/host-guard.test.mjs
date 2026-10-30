@@ -129,7 +129,8 @@ describe('one Host per request', { timeout: 60_000 }, () => {
       assert.deepEqual([answer.status, answer.body], [400, INVALID_HOST], what);
       assert.equal((await raw(app.port, 'GET /health HTTP/1.1', hosts)).body, INVALID_HOST, what);
     }
-    const test = JSON.stringify({ notificationType: 'TEST_NOTIFICATION', subject: 'Test Notification' });
+    // Seerr's Test button with the current template (4.0 refuses the reduced older ones).
+    const test = JSON.stringify({ notificationType: 'TEST_NOTIFICATION', subject: 'Test Notification', event: '', media: {}, request: { id: '', requestedBy: { jellyfinUserId: '', username: '' } } });
     const webhook = (hosts) => raw(app.port, 'POST /webhooks/seerr HTTP/1.1', [...hosts, 'Authorization: Bearer webhook-secret', 'Content-Type: application/json'], test);
     for (const hosts of [[`Host: ${ADMIN_HOST}`, `Host: ${HOST_A}`], [`Host: ${HOST_A}`, `Host: ${ADMIN_HOST}`], [`Host: ${ADMIN_HOST}`, `host: ${ADMIN_HOST}`]]) {
       assert.deepEqual(await webhook(hosts).then((answer) => [answer.status, answer.body]), [400, INVALID_HOST], hosts.join(', '));

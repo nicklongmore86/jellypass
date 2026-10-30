@@ -18,6 +18,34 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+### BREAKING — 4.0 cuts
+
+- Removed the legacy add-to-library page. Use **Get this** in the household app.
+- Removed webhook query-token authentication. **Production impact:** earlier docs
+  explicitly offered `?token=`; installations using it will receive
+  `400 webhook_query_token_removed_use_authorization_header`. Remove the query
+  parameter and configure Seerr's authorization header as
+  `Bearer YOUR_WEBHOOK_TOKEN` before upgrading.
+- Availability webhooks require the full current Seerr template in docs/server-reference.md
+  (event, media, request and requestedBy). Reduced older templates receive
+  `400 webhook_payload_removed_use_current_seerr_template`; replace the template
+  in Seerr's webhook UI. Empty Jellyfin IDs still resolve through the Seerr API.
+- Upgrade from **2.x via 3.9.x first**, with a state backup.
+  1.x state (schema v1–v6) files fail startup with that instruction.
+  Schema v7 is retained for 3.x;
+  2.x also wrote v7 without a release marker, so that provenance cannot be
+  detected. Rollback to 2.x is unsupported; use a matching pre-upgrade backup.
+
+Before upgrading, on **3.9.x or later 3.x**:
+
+1. In Seerr → Settings → Notifications → Webhook, set Authorization Header to `Bearer <WEBHOOK_TOKEN>`.
+2. Remove `?token=…` from the URL.
+3. Check the payload has `request.requestedBy` with `jellyfinUserId` and `username`.
+4. Press Test and expect `202 ignored` (`401` means the header is wrong).
+5. After upgrading, watch `jfa_webhooks_total{result="removed_form"}` and the admin dashboard warning.
+
+Refused availability webhooks are not retried; missed titles rely on the request backfill.
+
 ### Security
 
 - Household gateway routes now deny by default: explicit Jellyfin 10.11.11/12.4 OpenAPI templates, legacy client routes and vetted plugin compatibility entries replace open-ended relay. Unknown plugin namespaces return fixed JSON 404 over HTTP and WebSocket; only the session socket can upgrade. Existing refusals and household scope checks remain. Jellyfin Enhanced public-config is preserved byte-identically.

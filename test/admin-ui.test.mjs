@@ -7,6 +7,7 @@ import { ADMIN_APP_JS, ADMIN_HTML } from '../dist/admin-ui.js';
 const UNAVAILABLE = { status: 503, body: { error: 'session_check_unavailable' } };
 const UNAUTHORIZED = { status: 401, body: { error: 'unauthorized' } };
 const DATA = {
+  '/v1/webhooks/status': { status: 200, body: { lastRemovedFormAt: null } },
   '/auth/session': { status: 200, body: { authenticated: true, username: 'admin' } },
   '/v1/grants': { status: 200, body: { grants: [] } },
   '/v1/groups': { status: 200, body: { groups: [] } },
@@ -651,4 +652,12 @@ describe('admin deployment self-check UI', () => {
     assert.equal(output.textContent, 'WARN — origin: <script>untrusted</script>');
     assert.equal(output.querySelector('script'), null);
   });
+});
+
+it('warns administrators about recent refused removed-form webhooks', async () => {
+  const page = adminPage((path) => path === '/v1/webhooks/status'
+    ? { status: 200, body: { lastRemovedFormAt: Date.now() } } : DATA[path]);
+  await page.settle();
+  assert.match(page.document.querySelector('#connection').textContent, /Seerr webhook refused/);
+  assert.match(page.document.querySelector('#connection').textContent, /Library sync required/);
 });

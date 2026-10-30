@@ -58,8 +58,8 @@ export interface ServerOptions {
     tvAddon?: { households: string[] | 'all' };
   };
   /**
-   * Runs household "Add to my library" joins after their answer. Pass the BackgroundTasks shutdown stops, so it can
-   * abort them and wait for them before closing the store; without it, joins run untracked.
+   * Runs title-hold checks in the background. Pass the BackgroundTasks shutdown stops, so it can
+   * abort them and wait for them before closing the store.
    */
   background?: Pick<BackgroundTasks, 'run'>;
   /**
@@ -126,12 +126,6 @@ export function makeServer(
             ...(options.householdGateway.logLevel ? { logLevel: options.householdGateway.logLevel } : {}),
           }),
         } : {}),
-        ...(service.canJoinLibrary() ? {
-          libraryJoin: {
-            start: (input) => background.run((signal) => service.joinLibrary(input, { signal })),
-            dropped: () => service.recordLibraryJoinDropped(),
-          },
-        } : {}),
       })
     : undefined;
   const jellyfinVersion = options?.jellyfinVersion;
@@ -143,6 +137,10 @@ export function makeServer(
   const server = createServer({ requireHostHeader: false }, async (request, response) => {
     try {
       if (!singleHost(request)) return invalidHost(response);
+      // A household path such as // is no valid URL input; the gateway refuses it below.
+      if (['/jellypass/add', '/jellypass/add.js', '/jellypass/add.css'].includes(URL.parse(request.url ?? '/', 'http://localhost')?.pathname ?? '')) {
+        return json(response, 410, { error: 'library_add_removed_use_household_app' });
+      }
       const householdId = householdGateway?.householdId(request.headers.host);
       if (options?.selfCheck?.handleProxyRequest(request, response)) return;
       if (householdId) {
@@ -215,7 +213,13 @@ export function makeServer(
         return json(response, 200, { status: 'logged_out' });
       }
       if (request.method === 'POST' && url.pathname === '/webhooks/seerr') {
-        if (!authorized(request, tokens.webhook) && !sameToken(url.searchParams.get('token') ?? '', tokens.webhook)) {
+        if (url.searchParams.has('token')) {
+          if (sameToken(url.searchParams.get('token') ?? '', tokens.webhook)) {
+            service.recordRemovedWebhook('webhook_query_token_removed_use_authorization_header');
+          }
+          return json(response, 400, { error: 'webhook_query_token_removed_use_authorization_header' });
+        }
+        if (!authorized(request, tokens.webhook)) {
           return json(response, 401, { error: 'unauthorized' });
         }
         service.recordWebhookReceived();
@@ -223,6 +227,10 @@ export function makeServer(
         try {
           event = parseWebhook(await readJson(request, { requireJsonType: false }));
         } catch (error) {
+          if (error instanceof Error && error.message === 'webhook_payload_removed_use_current_seerr_template') {
+            service.recordRemovedWebhook(error.message);
+            return json(response, 400, { error: error.message });
+          }
           service.recordInvalidWebhook();
           throw error;
         }
@@ -248,6 +256,7 @@ export function makeServer(
         return json(response, 200, { results });
       }
 
+      if (request.method === 'GET' && url.pathname === '/v1/webhooks/status') return json(response, 200, service.webhookStatus());
       if (request.method === 'GET' && url.pathname === '/metrics') {
         return text(response, 200, service.renderMetrics() + (jellyfinVersion?.renderMetrics() ?? ''), 'text/plain; version=0.0.4; charset=utf-8');
       }

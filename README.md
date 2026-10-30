@@ -188,7 +188,7 @@ The state file is the only data JellyPass must keep. Stop JellyPass, copy
 | --- | --- |
 | Guide: installation, reverse proxy, Seerr, households, apps, upgrading, troubleshooting, security | [jellypass.app/docs](https://jellypass.app/docs/) |
 | Server reference: every setting, Seerr payloads, admin UI, operations (including the deployment self-check and household plugin routes), troubleshooting, admin API, limitations | [docs/server-reference.md](docs/server-reference.md) |
-| Household hostnames, Add to my library, household app API and PWA | [docs/household-hosts.md](docs/household-hosts.md) |
+| Household hostnames, household app API and PWA | [docs/household-hosts.md](docs/household-hosts.md) |
 | Design notes | [household access](docs/household-access.md), [household app](docs/app-design.md), [TV add-on](docs/tv-addon.md) |
 | Release notes | [CHANGELOG.md](CHANGELOG.md), [mobile/CHANGELOG.md](mobile/CHANGELOG.md) |
 
@@ -238,7 +238,7 @@ land here:
 - <a name="configure-seerr"></a>[Configure Seerr](docs/server-reference.md#configure-seerr)
 - <a name="administrator-ui"></a>[Administrator UI](docs/server-reference.md#administrator-ui)
 - <a name="household-jellyfin-urls"></a>[Household Jellyfin URLs](docs/household-hosts.md#household-jellyfin-urls)
-- <a name="add-to-my-library"></a>[Add to my library](docs/household-hosts.md#add-to-my-library)
+- <a name="add-to-my-library"></a>Add to my library: removed in 4.0; use **Get this**. See [Upgrade](docs/server-reference.md#upgrade)
 - <a name="get-this"></a>[Get this](docs/household-hosts.md#get-this)
 - <a name="health-and-logs"></a>[Health and logs](docs/server-reference.md#health-and-logs)
 - <a name="administrative-api-examples"></a>[Administrative API examples](docs/server-reference.md#administrative-api-examples)

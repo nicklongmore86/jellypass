@@ -586,12 +586,30 @@ export class AccessService {
     this.#metrics.gauge('jfa_last_webhook_received_timestamp_seconds', Math.floor(Date.now() / 1000));
   }
 
+  #lastRemovedWebhookAt: number | null = null;
+  #removedWebhookWarnings = new Map<string, number>();
+
+  public webhookStatus(): { lastRemovedFormAt: number | null } {
+    return { lastRemovedFormAt: this.#lastRemovedWebhookAt };
+  }
+
+  public recordRemovedWebhook(error: string): void {
+    const now = Date.now();
+    this.#lastRemovedWebhookAt = now;
+    this.#metrics.increment('jfa_webhooks_total', { result: 'removed_form' });
+    if (now - (this.#removedWebhookWarnings.get(error) ?? -Infinity) >= 60_000) {
+      this.#removedWebhookWarnings.set(error, now);
+      console.warn(JSON.stringify({ level: 'warn', message: 'Seerr webhook refused: update authorization header and template', error }));
+    }
+  }
+
   public recordInvalidWebhook(): void {
     this.#metrics.increment('jfa_webhooks_total', { result: 'invalid' });
   }
 
   public processWebhook(event: SeerrWebhook | IgnoredWebhook): Promise<GrantRecord | null> {
     return this.#exclusive(async () => {
+      this.#lastRemovedWebhookAt = null;
       if (event.notificationType !== 'MEDIA_AVAILABLE' || !('request' in event)) {
         this.#metrics.increment('jfa_webhooks_total', { result: 'ignored' });
         return null;
@@ -766,102 +784,6 @@ export class AccessService {
     };
   }
 
-  /** Whether household "Add to my library" can resolve titles; it needs Seerr lookup. */
-  public canJoinLibrary(): boolean {
-    return Boolean(this.#seerr);
-  }
-
-  /**
-   * Household "Add to my library" for a Jellyfin-authenticated user: resolves a TMDB title to its HD Jellyfin item
-   * through Seerr, joins that item's request grant (see GrantStore.joinGrant) and applies the join to Jellyfin. It runs
-   * as background work after the caller has had their answer. The result is for metrics and tests only; callers must
-   * not reveal it, since it tells whether another household holds the title. Every failure is logged and reported as
-   * `error`, never thrown; a join that was stored but could not be applied is retried by reconciliation like any other
-   * grant. Once `signal` is aborted (shutdown), no further Seerr, Jellyfin or store call is started and the run resolves
-   * `cancelled`, logging and counting nothing more: a join stored by then stays pending and is applied after restart.
-   */
-  public async joinLibrary(input: {
-    userId: string;
-    isAdministrator: boolean;
-    mediaType: 'movie' | 'tv';
-    tmdbId: number;
-  }, options: { signal?: AbortSignal } = {}): Promise<'joined' | 'unchanged' | 'error' | 'cancelled'> {
-    const { signal } = options;
-    const fields = { userId: input.userId, mediaType: input.mediaType, tmdbId: input.tmdbId };
-    const finish = (result: 'joined' | 'unchanged' | 'error') => {
-      this.#metrics.increment('jfa_library_joins_total', { result });
-      return result;
-    };
-    try {
-      throwIfAborted(signal);
-      if (!this.#seerr) throw new Error('Seerr lookup is not configured');
-      // Administrators already see every title, and a grant never lists them.
-      if (input.isAdministrator) {
-        this.#logDebug('library join ignored for an administrator', fields);
-        return finish('unchanged');
-      }
-      const itemId = await this.#seerr.getJellyfinItemId(input.mediaType, input.tmdbId);
-      throwIfAborted(signal);
-      if (!itemId) {
-        this.#logDebug('library join found no Jellyfin item', fields);
-        return finish('unchanged');
-      }
-      // Classified without the shared write queue, so a join that changes nothing never waits on it or holds it up.
-      if (!this.#store.wouldJoin({ itemId, userId: input.userId, groupIds: this.#store.listGroupIdsForUser(input.userId) })) {
-        this.#logDebug('library join changed nothing', { ...fields, itemId });
-        return finish('unchanged');
-      }
-      return await this.#exclusive(async () => {
-        throwIfAborted(signal);
-        // Checked again in the queue: the grant may have changed while this join waited.
-        const joined = await this.#store.joinGrant({
-          itemId,
-          userId: input.userId,
-          groupIds: this.#store.listGroupIdsForUser(input.userId),
-        });
-        if (!joined) {
-          throwIfAborted(signal);
-          this.#logDebug('library join changed nothing', { ...fields, itemId });
-          return finish('unchanged');
-        }
-        // The join is stored from here on, so it counts even if shutdown stops it being applied now.
-        const join = joined.current.joins?.at(-1);
-        console.log(JSON.stringify({
-          level: 'info',
-          message: 'household library join',
-          ...fields,
-          itemId: joined.current.itemId,
-          groupIds: join?.groupIds ?? [],
-          userAdded: join?.userAdded ?? false,
-        }));
-        finish('joined');
-        throwIfAborted(signal);
-        try {
-          await this.#reconcileGrant(joined.current, signal);
-        } catch (error) {
-          rethrowIfCancelled(error, signal);
-          console.error(JSON.stringify({
-            level: 'error',
-            message: 'library join reconciliation failed',
-            itemId: joined.current.itemId,
-            detail: error instanceof Error ? error.message : String(error),
-          }));
-        }
-        return 'joined';
-      });
-    } catch (error) {
-      // Includes a store write refused because shutdown closed the store after its grace period.
-      if (error instanceof OperationCancelledError || signal?.aborted) return 'cancelled';
-      console.error(JSON.stringify({
-        level: 'error',
-        message: 'library join failed',
-        ...fields,
-        detail: error instanceof Error ? error.message : String(error),
-      }));
-      return finish('error');
-    }
-  }
-
   /**
    * The household app's join branch of "Get this": adds `householdId` (only the household whose host the call was made
    * on, never the caller's other households, and only while it is the household the call was made for: the same
@@ -870,8 +792,7 @@ export class AccessService {
    * GrantStore.joinGrant: only an active grant with a request is joined, an administrator's removal of the household or
    * of the caller sticks, manual-only grants and items without a grant are left alone) and applies each join. Resolves
    * `joined` when a grant changed, `already` when the household was already on one, `ungranted` when none of the items
-   * has a grant at all, and `refused` otherwise. Like
-   * joinLibrary, it runs in the background, its result must never reach the caller's answer, failures are logged and
+   * has a grant at all, and `refused` otherwise. It runs in the background, its result must never reach the caller's answer, failures are logged and
    * reported as `error`, and an aborted `signal` (shutdown) stops it before its next step (`cancelled`).
    */
   public async joinHousehold(
@@ -1076,11 +997,6 @@ export class AccessService {
   /** Household app "Get this" records (see GrantStore.listAppRequests). */
   public listAppRequests(): Array<[string, AppRequestRecord]> {
     return this.#store.listAppRequests();
-  }
-
-  /** Counts a household "Add to my library" call that was not started because its budget was used up. */
-  public recordLibraryJoinDropped(): void {
-    this.#metrics.increment('jfa_library_joins_total', { result: 'dropped' });
   }
 
   /**
