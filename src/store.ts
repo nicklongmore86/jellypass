@@ -150,6 +150,17 @@ export class GrantStore {
     return [...this.#state.passwordlessUserIds];
   }
 
+  public getJellyfinVersionConfirmed(): string | undefined {
+    return this.#state.jellyfinVersionConfirmed;
+  }
+
+  public async setJellyfinVersionConfirmed(version: string | undefined): Promise<void> {
+    this.#assertOpen();
+    if (version === undefined) delete this.#state.jellyfinVersionConfirmed;
+    else this.#state.jellyfinVersionConfirmed = version;
+    await this.#save();
+  }
+
   public getCatalog(): { lastSyncedAt?: string; items: LibraryCatalogItem[] } {
     return {
       ...(this.#state.catalog.lastSyncedAt ? { lastSyncedAt: this.#state.catalog.lastSyncedAt } : {}),

@@ -14,7 +14,7 @@
       "state": "in_library",
       "play": {
         "itemId": "0123456789abcdef0123456789abcdef",
-        "url": "https://jelly-household.example.test/web/#/details?id=0123456789abcdef0123456789abcdef"
+        "url": "https://media.example.com/web/#/details?id=0123456789abcdef0123456789abcdef"
       }
     },
     {

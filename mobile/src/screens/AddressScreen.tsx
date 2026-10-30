@@ -4,10 +4,10 @@ import { useState } from 'react';
 import { Linking, Pressable, StyleSheet, Text } from 'react-native';
 
 import { useSession } from '../session/SessionProvider';
-import { parseTypedAddress } from '../signin/address-input';
+import { readTypedAddress } from '../signin/address-input';
 import { allowedUrls } from '../credits';
 import { storeLink } from '../links';
-import { ADDRESS_TEXT } from '../signin/wording';
+import { ADDRESS_PROBLEM_TEXT, ADDRESS_TEXT } from '../signin/wording';
 import { colors, layout, radii, typography } from '../theme';
 import { Button, Field, Heading, Message, Page } from '../ui';
 
@@ -25,22 +25,19 @@ export function AddressScreen() {
   const [message, setMessage] = useState('');
 
   const submit = () => {
-    const address = parseTypedAddress(typed);
-    if (!address) {
-      setMessage(ADDRESS_TEXT.invalid);
+    const reading = readTypedAddress(typed);
+    if ('problem' in reading) {
+      setMessage(ADDRESS_PROBLEM_TEXT[reading.problem]);
       return;
     }
     setMessage('');
-    chooseAddress(address);
+    chooseAddress(reading.address);
   };
 
   const aboutUrl = storeLink('aboutUrl');
   return (
     <Page>
-      <Heading
-        title="Connect to your household"
-        intro="Enter your household's JellyPass address, or open the setup link your household sent you."
-      />
+      <Heading title="Connect to your household" intro={ADDRESS_TEXT.intro} />
       <Field
         label="Household address"
         value={typed}

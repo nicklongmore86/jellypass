@@ -535,7 +535,9 @@ server by months still works.
   anything in the request. Every call goes to an absolute URL on that address: `https://<household host>/jellypass/app/v1/...`
   for the API and `https://<household host>/Users/...` and `/Sessions/Logout` for sign-in and sign-out, through the
   household gateway. The member enters the address (or opens a setup link that carries only the address, never a
-  token). **A client never ships, fetches or shows a list of households**: a list would tell each household that the
+  token). The client takes it as given, any `https://` DNS name with an optional port, and never expects a form of
+  its own (the mobile app took only `https://jelly-<household>.<domain>` up to 1.2.1): the server alone decides which
+  names are household addresses. **A client never ships, fetches or shows a list of households**: a list would tell each household that the
   others exist. Someone in two households adds two addresses, each with its own sign-in, and the client never merges
   their answers. The administrator host has no app API.
 - **Checking an address.** `GET /jellypass/app/v1/me` with no token answers `401 {"error":"unauthorized"}` on a host
