@@ -309,15 +309,16 @@ export const ADMIN_APP_JS = `
     panel.classList.remove('confirmed');
     if (!status || status.supported === true) return;
     panel.hidden = false;
+    const enforcing = status.enforcement === 'refuse';
     if (status.version === null) {
-      byId('jellyfin-version-title').textContent = 'Household hosts are paused: the Jellyfin version cannot be read';
-      byId('jellyfin-version-text').textContent = 'JellyPass checks the Jellyfin version before household hosts serve, and keeps trying. ' + (status.error ? 'Last error: ' + status.error : '');
+      byId('jellyfin-version-title').textContent = enforcing ? 'Household hosts are paused: the Jellyfin version cannot be read' : 'The Jellyfin version cannot be read';
+      byId('jellyfin-version-text').textContent = (enforcing ? 'JellyPass checks the Jellyfin version before household hosts serve, and keeps trying. ' : 'Household hosts keep serving while JellyPass keeps trying. ') + (status.error ? 'Last error: ' + status.error : '');
       return;
     }
-    if (status.householdHosts === 'serving') {
+    if (status.confirmation === 'confirmed') {
       panel.classList.add('confirmed');
       byId('jellyfin-version-title').textContent = 'Jellyfin ' + status.version + ' is not a tested version';
-      byId('jellyfin-version-text').textContent = 'Household hosts serve on it because ' + (status.confirmedVersion === status.version ? 'an administrator allowed it' : 'JELLYFIN_UNTESTED_VERSION_OK names it') + '. JellyPass is tested with Jellyfin ' + releases + '.';
+      byId('jellyfin-version-text').textContent = (enforcing ? 'Household hosts serve on it because ' : 'It is allowed because ') + (status.confirmedVersion === status.version ? 'an administrator allowed it' : 'JELLYFIN_UNTESTED_VERSION_OK names it') + '. JellyPass is tested with Jellyfin ' + releases + '.';
       if (status.confirmedVersion === status.version) {
         button.textContent = 'Withdraw';
         button.dataset.action = 'withdraw';
@@ -325,8 +326,10 @@ export const ADMIN_APP_JS = `
       }
       return;
     }
-    byId('jellyfin-version-title').textContent = 'Household hosts are paused: Jellyfin ' + status.version + ' is not a tested version';
-    byId('jellyfin-version-text').textContent = 'JellyPass is tested with Jellyfin ' + releases + '. Household hosts answer 503 until you allow this exact version; the household privacy checks were not tested against it.';
+    byId('jellyfin-version-title').textContent = (enforcing ? 'Household hosts are paused: Jellyfin ' : 'Jellyfin ') + status.version + ' is not a tested version';
+    byId('jellyfin-version-text').textContent = 'JellyPass is tested with Jellyfin ' + releases + '. ' + (enforcing
+      ? 'Household hosts answer 503 until you allow this exact version; the household privacy checks were not tested against it.'
+      : 'Household hosts keep serving, but the household privacy checks were not tested against it. Allow this exact version once you are satisfied it works; from JellyPass 4.0.0, household hosts answer 503 on a version that is not allowed.');
     button.textContent = 'Allow Jellyfin ' + status.version;
     button.dataset.action = 'confirm';
     button.hidden = false;
@@ -1038,6 +1041,7 @@ export const ADMIN_APP_JS = `
     const syncOverdue = !syncedAt || Date.now() - syncedAt > 2 * 60 * 60 * 1000;
     const version = state.jellyfinVersion;
     if (version && version.householdHosts !== 'serving') setHealth('warning', 'Household hosts paused');
+    else if (version && version.confirmation === 'unconfirmed') setHealth('warning', 'Jellyfin version not confirmed');
     else if (attention) setHealth('warning', attention + ' polic' + (attention === 1 ? 'y' : 'ies') + ' need attention');
     else if (syncOverdue) setHealth('warning', syncedAt ? 'Library sync overdue' : 'Library sync required');
     else setHealth('healthy', 'Sync healthy');
@@ -1048,7 +1052,7 @@ export const ADMIN_APP_JS = `
     const status = state.jellyfinVersion;
     if (!status) return;
     const withdraw = button.dataset.action === 'withdraw';
-    if (!withdraw && !confirm('Allow household hosts to serve on Jellyfin ' + status.version + '? JellyPass has not been tested with it.')) return;
+    if (!withdraw && !confirm('Allow Jellyfin ' + status.version + ' for household hosts? JellyPass has not been tested with it.')) return;
     button.disabled = true;
     try {
       state.jellyfinVersion = withdraw
@@ -1056,7 +1060,9 @@ export const ADMIN_APP_JS = `
         : await api('/v1/jellyfin/version/confirmation', { method: 'PUT', body: JSON.stringify({ version: status.version }) });
       renderJellyfinVersion();
       updateHealth();
-      toast(withdraw ? 'Household hosts are paused again for this version' : 'Household hosts serve on Jellyfin ' + status.version);
+      toast(withdraw
+        ? (state.jellyfinVersion.householdHosts === 'serving' ? 'Jellyfin ' + status.version + ' is no longer allowed' : 'Household hosts are paused again for this version')
+        : 'Jellyfin ' + status.version + ' is allowed');
     } catch (error) {
       if (error.stale) return;
       toast(error.message, true);

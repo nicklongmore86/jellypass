@@ -27,62 +27,136 @@ changes are always listed at the top of the release notes.
 
 - Authenticated admin deployment self-check for direct Jellyfin origins, Quick Connect, household proxy headers, public Seerr, version-gate support, and TMDB key validity. Public probes carry no service credentials, use timeouts and bounded reads, never follow redirects, and run at most once per minute. Inside probes explicitly warn about external-reachability limits.
 
-JellyPass now has a written Jellyfin support policy: **it supports the current
-Jellyfin release and the one before it, Jellyfin 12.x and 10.11.x**, and tests
-both against a real Jellyfin in CI and before every release. On any other
-Jellyfin version, household hostnames pause until an administrator confirms
-that exact version. On a supported version nothing changes. Read these before
-upgrading:
+## [3.10.0] - 2026-10-30
 
-- **Check your Jellyfin version first.** On Jellyfin 12.x or 10.11.x (every
-  version the README's "Jellyfin 10.11 or newer" covered until now) nothing
+This is a minor release. JellyPass now has a written Jellyfin support policy:
+**it supports the current Jellyfin release and the one before it, Jellyfin
+12.x and 10.11.x**, and tests both against a real Jellyfin in CI and before
+every release; on any other Jellyfin version, JellyPass warns until an
+administrator confirms that exact version, and household hostnames keep
+serving as before. Requests that name more or fewer than one host, and
+household paths with empty segments, are now refused (see Security), and
+every HTML page is marked `no-transform` so a CDN that honours it adds no
+scripts. The state file (schema v7, plus one optional field), the app API
+(`v1`, `apiVersion` 2), webhook payloads, and every existing setting and
+administrator API endpoint are as in 3.9.0. This is a minor release because a
+setting, administrator API endpoints and metrics are added; the refusals fall
+under the rule at the top of this file. On a supported Jellyfin, nothing needs
+doing. Read these before upgrading:
+
+- **Check your Jellyfin version first.** On Jellyfin 12.x or 10.11.x nothing
   changes and nothing needs configuring. On any other version (an older 10.x,
-  a pre-release, or a future 13.0), **household hostnames answer `503` from
-  the moment you upgrade** until you confirm it: open the admin site and choose
-  **Allow Jellyfin X**, or set `JELLYFIN_UNTESTED_VERSION_OK` to that exact
-  version before upgrading. The admin site, webhooks and grants keep working
-  either way.
-- **Upgrading Jellyfin to an untested version later pauses household
-  hostnames again,** within five minutes, until that version is confirmed in
-  turn. A confirmation covers one exact version.
-- **Jellyfin unreachable when JellyPass starts:** JellyPass starts anyway, and
-  household hostnames answer `503` until Jellyfin reports its version (read
-  again every 30 seconds and on the next household request), instead of
-  relaying unchecked. They serve as soon as Jellyfin answers.
+  a future 13.0 or later, or **any build whose version has a suffix**: a
+  pre-release such as `12.5.0-rc1`, build metadata such as `12.4.0+abc`, or
+  any other non-numeric part), the version is **unconfirmed**: JellyPass logs
+  a warning (once per version), the admin site shows it with **Allow
+  Jellyfin X**, and **household hostnames keep serving exactly as in 3.9.0**.
+  Confirm that exact version in the admin site, or set
+  `JELLYFIN_UNTESTED_VERSION_OK` to it, to clear the warning.
+- **JellyPass 4.0.0 will refuse household requests on an unconfirmed
+  version:** household hostnames will answer `503` until that exact version is
+  confirmed, and also while the version cannot be read. 3.10.0 only warns,
+  because refusing requests that worked in 3.9.0 is not a security or privacy
+  fix.
+- **Upgrading Jellyfin to an untested version later warns again,** within
+  five minutes, until that version is confirmed in turn. A confirmation
+  covers one exact version.
+- **Jellyfin unreachable when JellyPass starts:** JellyPass starts anyway,
+  household hostnames serve as before, and the admin site shows that the
+  version cannot be read until Jellyfin reports it (read again every 30
+  seconds).
 - **On Jellyfin 12, clients that give their token only the legacy way**
   (`X-Emby-Token`, `X-Emby-Authorization`, `X-MediaBrowser-Token`, the `Emby`
   scheme or `api_key`) get `401` on household hostnames, as Jellyfin 12 itself
   refuses them. JellyPass checks a client's credentials exactly as given and
   never translates them into a form Jellyfin 12 reads. On 10.11 they work as
   before.
+- **A reverse proxy that sends one `Host` is unaffected** by the new Host
+  checks; only requests that name more or fewer than one host, or a malformed
+  one, get `400 invalid_host`. See Security.
+- **Behind a CDN:** HTML pages now carry `no-transform`, so a CDN that honours
+  it (Cloudflare, for example) no longer injects its Web Analytics script into
+  them, and Web Analytics' automatic setup stops reporting visits to these
+  pages. JellyPass compresses the pages itself instead. No CDN purge is needed
+  unless your CDN caches HTML pages (Cloudflare does not by default); a cached
+  copy keeps any injected script until it expires or is purged.
 - **The state file keeps schema v7.** A confirmation is stored in a new
   optional field, `jellyfinVersionConfirmed`, which 3.9.0 keeps as it is
   without reading it, so rolling back needs no state change (3.9.0 does not
   check the version at all).
 - **To roll back,** set `JELLYPASS_IMAGE` back to
-  `ghcr.io/nicklongmore86/jellypass:3.9.0` and recreate the container.
+  `ghcr.io/nicklongmore86/jellypass:3.9.0` and recreate the container. No
+  state-file or setting change is needed (`JELLYFIN_UNTESTED_VERSION_OK` is
+  ignored by 3.9.0).
+- **The iPhone, iPad and Android app ships separately;** its changes (mobile
+  1.3.0) and its App Store screenshot workflow are described in
+  `mobile/CHANGELOG.md`.
+
+### Security
+
+- **A request must name exactly one host.** Until now, a request with two
+  `Host` headers was answered for the first of them, so a client reaching the
+  JellyPass port directly could have it read a different host from a proxy
+  that routed on another one: another household's hostname, or the admin
+  site, API and webhook. JellyPass now refuses, with a fixed
+  `400 {"error":"invalid_host"}` and the connection closed, before a household
+  is chosen or anything is relayed: more or fewer than one `Host` header, a
+  `Host` that is not a plain `host[:port]` (userinfo, whitespace, a path or
+  other characters, or empty), and an absolute-form request target
+  (`GET http://host/path`) whose authority is not the `Host`. WebSocket
+  upgrades get the same `400`, and the connection is closed on JellyPass's
+  side even if the client keeps its own side open. A reverse proxy that sets
+  one `Host` (Nginx Proxy Manager's `proxy_set_header Host $host`, for
+  example) is unaffected. An HTTP/1.0 request may still leave `Host` out: with
+  an ordinary path it is answered as no household's, as before; with an
+  absolute-form target it is refused.
+- **Household hosts refuse paths with empty segments.** HTTP requests and
+  WebSocket upgrades whose raw or once-decoded path contains `//` receive a
+  fixed `404 not_found` before any relay. This is precautionary hardening; no
+  disclosure was observed against a real Jellyfin.
 
 ### Added
 
 - **Supported Jellyfin versions.** JellyPass reads Jellyfin's version from
-  `/System/Info/Public` at startup and every five minutes, and logs a warning
-  on a version outside the supported releases (12.x and 10.11.x). Household
-  hostnames then refuse every request and WebSocket with a fixed `503` and a
-  plain-text message, never relaying it to Jellyfin, until an administrator
-  confirms that exact version. See README, "Supported Jellyfin versions".
-- **Admin site:** a banner shows an untested or unreadable Jellyfin version,
-  with **Allow Jellyfin X** (and **Withdraw** once allowed); the connection
-  status reads "Household hosts paused" while they are.
-- **Administrator API:** `GET /v1/jellyfin/version`,
-  `PUT /v1/jellyfin/version/confirmation` (`{"version": "..."}`, exactly the
-  version Jellyfin reports now) and `DELETE /v1/jellyfin/version/confirmation`.
+  `/System/Info/Public` at startup and every five minutes, and logs a warning,
+  once per version, on a version outside the supported releases (12.x and
+  10.11.x, with plain numeric versions only; a suffixed build is outside
+  them) until an administrator confirms that exact version. Household
+  hostnames keep serving on it. See README, "Supported Jellyfin versions".
+- **Admin site:** a banner shows an unconfirmed or unreadable Jellyfin
+  version, with **Allow Jellyfin X** (and **Withdraw** once allowed); the
+  connection status reads "Jellyfin version not confirmed" until it is.
+- **Administrator API:** `GET /v1/jellyfin/version` (with `confirmation`:
+  `not_needed`, `confirmed` or `unconfirmed`, and `enforcement`: `warn` in
+  3.x), `PUT /v1/jellyfin/version/confirmation` (`{"version": "..."}`,
+  exactly the version Jellyfin reports now) and
+  `DELETE /v1/jellyfin/version/confirmation`.
 - **Setting:** `JELLYFIN_UNTESTED_VERSION_OK`, one exact untested version that
-  household hostnames serve on without confirming it in the admin site.
+  counts as confirmed without confirming it in the admin site.
 - **Metrics:** `jfa_jellyfin_version_info{version,supported,confirmed}`,
-  `jfa_jellyfin_version_supported` and `jfa_household_hosts_refusing`.
+  `jfa_jellyfin_version_supported` and `jfa_household_hosts_refusing` (always
+  `0` in 3.x).
 
 ### Changed
 
+- **No CDN adds scripts to JellyPass's pages.** Every HTML page JellyPass serves
+  or relays (the household app at `/jellypass/app/`, Jellyfin web under `/web/`
+  with or without the TV add-on, `/jellypass/add`, any other HTML Jellyfin
+  sends on a household hostname, and the admin site) now has `no-transform`
+  added to its `Cache-Control` (`no-store, no-transform`, `no-cache,
+  no-transform`, or `no-transform` alone where there was none), so a CDN such
+  as Cloudflare, whose Web Analytics automatic setup injects a
+  `static.cloudflareinsights.com` script, leaves it alone. Caching is
+  unchanged. Because such a CDN also stops compressing these pages, JellyPass
+  compresses them itself (br or gzip, as the client accepts, with
+  `Vary: Accept-Encoding`); a page Jellyfin already encoded is passed through
+  as it is. A `HEAD` gets the same headers as the `GET`. A page JellyPass
+  compresses carries Jellyfin's `ETag` made weak (`W/"…"`), and still
+  revalidates: JellyPass asks Jellyfin with the strong tag, and the `304`
+  carries the weak one back. A client that accepts no coding of a page at all,
+  not even unencoded (`Accept-Encoding: *;q=0`, for example), gets a `406`.
+  Scripts, styles, images, JSON, video and HLS are not touched, so the CDN
+  keeps compressing them. Nothing to configure.
 - **CI and the release workflow test every supported Jellyfin release:** the
   real-Jellyfin suite runs once against `jellyfin/jellyfin:12.4.20261026-211555`
   (12.4.0) and once against `jellyfin/jellyfin:10.11.11`, instead of 10.11.3
@@ -3230,7 +3304,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.9.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.10.0...HEAD
+[3.10.0]: https://github.com/nicklongmore86/jellypass/compare/v3.9.0...v3.10.0
 [3.9.0]: https://github.com/nicklongmore86/jellypass/compare/v3.8.1...v3.9.0
 [3.8.1]: https://github.com/nicklongmore86/jellypass/compare/v3.8.0...v3.8.1
 [3.8.0]: https://github.com/nicklongmore86/jellypass/compare/v3.7.0...v3.8.0

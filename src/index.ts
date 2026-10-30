@@ -1,4 +1,4 @@
-import { SelfCheck } from './self-check.js';
+import { SelfCheck, versionCheckResult } from './self-check.js';
 import { AccessService } from './access-service.js';
 import { AdminRequests } from './admin-requests.js';
 import { WebAuth } from './auth.js';
@@ -66,10 +66,7 @@ async function main(): Promise<void> {
   }) : undefined;
   const server = makeServer(service, { webhook: config.webhookToken, admin: config.adminToken }, webAuth, {
     selfCheck: new SelfCheck({
-      versionStatus: () => {
-        const status = jellyfinVersion.status();
-        return { check: 'version', status: status.supported ? 'pass' : status.householdHosts === 'serving' ? 'warn' : 'fail', explanation: status.supported ? 'Jellyfin is on a supported release.' : status.householdHosts === 'serving' ? 'An administrator confirmed this untested Jellyfin version.' : 'Household hosts are paused by the Jellyfin version gate.' };
-      },
+      versionStatus: () => versionCheckResult(jellyfinVersion.status()),
       jellyfinUrl: config.jellyfinUrl,
       jellyfinPublicUrls: config.jellyfinPublicUrls,
       ...(config.seerrPublicUrl ? { seerrPublicUrl: config.seerrPublicUrl } : {}),

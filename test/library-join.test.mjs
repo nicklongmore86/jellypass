@@ -399,8 +399,14 @@ describe('household "Add to my library"', { timeout: 10_000 }, () => {
     assert.match(page.headers['content-security-policy'], /default-src 'none'; script-src 'self'/);
     assert.match(page.body, /Add to my library/);
     assert.match(page.body, /src="\/jellypass\/add\.js"/);
+    // The page is no-transform, so no CDN adds a script to it, and compressed by JellyPass; its files are left alone.
+    assert.equal(page.headers['cache-control'], 'no-store, no-transform');
+    assert.equal(page.headers['content-encoding'], undefined);
+    const gzipped = await send(baseUrl, JOIN_PATH, { headers: { 'Accept-Encoding': 'gzip' } });
+    assert.deepEqual([gzipped.headers['content-encoding'], gzipped.headers.vary], ['gzip', 'Accept-Encoding']);
     for (const asset of ['/jellypass/add.js', '/jellypass/add.css']) {
-      assert.equal((await send(baseUrl, asset, {})).status, 200, asset);
+      const file = await send(baseUrl, asset, { headers: { 'Accept-Encoding': 'gzip' } });
+      assert.deepEqual([file.status, file.headers['cache-control'], file.headers['content-encoding']], [200, 'no-store', undefined], asset);
     }
     assert.doesNotMatch((await send(baseUrl, '/jellypass/add.js', {})).body, /innerHTML/);
   });

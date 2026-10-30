@@ -63,8 +63,8 @@ export interface Config {
   /** Reverse proxies whose X-Forwarded-For entries are believed, as canonical addresses and CIDR ranges. */
   trustedProxies: string[];
   /**
-   * JELLYFIN_UNTESTED_VERSION_OK: one exact Jellyfin version, outside the supported releases, that household hosts serve
-   * on without an administrator confirming it in the admin site (see JellyfinVersionGate).
+   * JELLYFIN_UNTESTED_VERSION_OK: one exact Jellyfin version, outside the supported releases, that counts as confirmed
+   * without an administrator confirming it in the admin site (see JellyfinVersionGate).
    */
   jellyfinUntestedVersionOk?: string;
 }

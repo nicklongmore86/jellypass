@@ -3,6 +3,7 @@ import { createServer } from 'node:http';
 import { describe, it } from 'node:test';
 import { SelfCheck, PROXY_CHECK_PATH, publicProbeUrls } from '../dist/self-check.js';
 import { householdRouteAllowed, parseAdditionalPluginRoutes, HOUSEHOLD_RELAY_ROUTES } from '../dist/gateway-route-policy.js';
+import { versionCheckResult } from '../dist/self-check.js';
 
 const json = (value, status = 200) => new Response(JSON.stringify(value), { status });
 const options = { jellyfinUrl: 'http://jellyfin.internal', householdUrls: () => [] };
@@ -130,6 +131,37 @@ it('keeps Jellyfin Enhanced public-config byte-identical through the real HTTP r
     assert.equal(answer.text, body);
     assert.equal(answer.headers['x-plugin-test'], 'kept');
   }
+});
+
+it('refuses the 3.10.0 Jellyfin version administrator routes on household hosts without relaying them', async (t) => {
+  const { makeServer } = await import('../dist/server.js');
+  for (const path of ['/v1/jellyfin/version', '/v1/jellyfin/version/confirmation']) {
+    for (const method of ['GET', 'HEAD', 'POST', 'DELETE', 'OPTIONS', 'PUT']) assert.equal(householdRouteAllowed(path, [], method), false, `${method} ${path}`);
+  }
+  const relayed = [];
+  const upstream = createServer((req, res) => { relayed.push(req.url); res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('{}'); });
+  await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve));
+  const gateway = makeServer({ canJoinLibrary: () => false, getHouseholdMemberIds: () => [] }, { webhook: 'w', admin: 'a' }, undefined, { householdGateway: { jellyfinUrl: `http://127.0.0.1:${upstream.address().port}`, domain: 'example.com', hostPrefix: 'media-' } });
+  await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
+  t.after(() => { gateway.closeAllConnections(); gateway.close(); upstream.closeAllConnections(); upstream.close(); });
+  const { get } = await import('./support/household-app.mjs');
+  const household = { Host: 'media-home.example.com', Authorization: 'Bearer a' };
+  for (const [method, path] of [['GET', '/v1/jellyfin/version'], ['DELETE', '/v1/jellyfin/version/confirmation'], ['GET', '/V1/Jellyfin/Version']]) {
+    const answer = await get(gateway.address().port, path, household, { method });
+    assert.equal(answer.status, 404, `${method} ${path}`);
+    assert.deepEqual(JSON.parse(answer.text), { error: 'not_found' }, `${method} ${path}`);
+  }
+  const put = await get(gateway.address().port, '/v1/jellyfin/version/confirmation', { ...household, 'Content-Type': 'application/json' }, { method: 'PUT', body: '{"version":"13.0.0"}' });
+  assert.equal(put.status, 404);
+  assert.deepEqual(relayed, []);
+});
+
+it('reports the version check as JELLYFIN_VERSION_ENFORCEMENT warn leaves household hosts', () => {
+  assert.equal(versionCheckResult({ supported: true, confirmation: 'not_needed', householdHosts: 'serving' }).status, 'pass');
+  assert.deepEqual(versionCheckResult({ supported: false, confirmation: 'unconfirmed', householdHosts: 'serving' }), { check: 'version', status: 'warn', explanation: 'This untested Jellyfin version is not confirmed; household hosts still serve.' });
+  assert.equal(versionCheckResult({ supported: false, confirmation: 'confirmed', householdHosts: 'serving' }).explanation, 'An administrator confirmed this untested Jellyfin version.');
+  assert.deepEqual([versionCheckResult({ supported: null, confirmation: null, householdHosts: 'serving' }).status, versionCheckResult({ supported: null, confirmation: null, householdHosts: 'serving' }).explanation], ['warn', 'The Jellyfin version cannot be read; household hosts still serve.']);
+  assert.equal(versionCheckResult({ supported: false, confirmation: 'unconfirmed', householdHosts: 'refused' }).status, 'fail');
 });
 
 it('never relays elevated methods, including paths shared with member reads', async () => {

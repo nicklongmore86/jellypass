@@ -334,7 +334,9 @@ describe('household app page: headers', { timeout: 30_000 }, () => {
     // carry no validator, so nothing can revalidate a stale copy into use.
     for (const served of [PAGE, `${PAGE}index.html`, `${PAGE}sw.js`, '/jellypass/app']) {
       const { headers } = await app.get(served, { user: null });
-      for (const [name, value] of Object.entries(NEVER_STORED)) assert.equal(headers[name], value, `${served} ${name}`);
+      // The page is also no-transform, so no CDN adds a script to it (see html-response.ts); the worker and redirect are not.
+      const neverStored = { ...NEVER_STORED, ...(served.startsWith(PAGE) && !served.endsWith('sw.js') ? { 'cache-control': 'no-store, no-transform' } : {}) };
+      for (const [name, value] of Object.entries(neverStored)) assert.equal(headers[name], value, `${served} ${name}`);
       assert.equal(headers.etag, undefined, served);
       assert.equal(headers['set-cookie'], undefined, served);
       assert.equal(headers.expires, undefined, served);

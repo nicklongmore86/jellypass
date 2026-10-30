@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { ClientIpResolver, normaliseIp } from './client-ip.js';
+import type { JellyfinVersionStatus } from './jellyfin-version.js';
 
 export interface SelfCheckResult { check: string; status: 'pass' | 'warn' | 'fail'; explanation: string }
 export interface SelfCheckOptions {
@@ -14,6 +15,15 @@ export interface SelfCheckOptions {
   fetch?: typeof fetch;
   timeoutMs?: number;
   now?: () => number;
+}
+/** The version check: household hosts keep serving on an unconfirmed or unread version while JELLYFIN_VERSION_ENFORCEMENT is 'warn'. */
+export function versionCheckResult(status: Pick<JellyfinVersionStatus, 'supported' | 'confirmation' | 'householdHosts'>): SelfCheckResult {
+  if (status.supported) return { check: 'version', status: 'pass', explanation: 'Jellyfin is on a supported release.' };
+  if (status.householdHosts !== 'serving') return { check: 'version', status: 'fail', explanation: 'Household hosts are paused by the Jellyfin version gate.' };
+  const explanation = status.confirmation === 'confirmed' ? 'An administrator confirmed this untested Jellyfin version.'
+    : status.confirmation === 'unconfirmed' ? 'This untested Jellyfin version is not confirmed; household hosts still serve.'
+    : 'The Jellyfin version cannot be read; household hosts still serve.';
+  return { check: 'version', status: 'warn', explanation };
 }
 export const PROXY_CHECK_PATH = '/jellypass/self-check/proxy';
 const LIMIT_BYTES = 64 * 1024;
