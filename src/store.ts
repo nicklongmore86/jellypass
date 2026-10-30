@@ -457,7 +457,7 @@ export class GrantStore {
   }
 
   /**
-   * Household "Add to my library": adds the caller's households (`groupIds`), or the caller as a manual user when they
+   * Historical library join: adds the caller's households (`groupIds`), or the caller as a manual user when they
    * belong to none, to the grant of `itemId`. Only an active grant that records at least one request is joined, the
    * same grants the request backfill adds requests to; manual-only grants and items without a grant are left alone, and
    * so is a grant left behind on a deleted item (orphaned, or carrying a `remap` note) for an administrator to resolve.
@@ -487,11 +487,6 @@ export class GrantStore {
     );
     await this.#save();
     return result;
-  }
-
-  /** Whether joinGrant would change the grant now; it reads only, so it needs no turn in the write queue. */
-  public wouldJoin(input: { itemId: string; userId: string; groupIds: string[] }): boolean {
-    return Boolean(this.#planJoin(input));
   }
 
   #planJoin(input: { itemId: string; userId: string; groupIds: string[] }): { previous: GrantRecord; join: LibraryJoin } | undefined {
@@ -1356,87 +1351,19 @@ function migrateState(value: unknown): { state: GrantState; changed: boolean } {
     handledRequestIds?: unknown;
   };
   if (!candidate.grants || typeof candidate.grants !== 'object') throw new Error('state file is missing grants');
-  const handled = Array.isArray(candidate.handledRequestIds)
-    ? { handledRequestIds: candidate.handledRequestIds as string[] }
-    : {};
-  if (candidate.version === 8 || candidate.version === 7 || candidate.version === 6 || candidate.version === 5) {
-    if (!candidate.groups || typeof candidate.groups !== 'object') throw new Error('state file is missing groups');
-    if (!candidate.catalog || typeof candidate.catalog !== 'object') throw new Error('state file is missing catalog');
-    if (candidate.version === 8 || candidate.version === 7) {
-      if (!Array.isArray(candidate.passwordlessUserIds)) throw new Error('state file is missing passwordlessUserIds');
-      const addresses = (value as { householdAddresses?: unknown }).householdAddresses;
-      if (addresses !== undefined && (!addresses || typeof addresses !== 'object' || Array.isArray(addresses))) {
-        throw new Error('state file has an invalid householdAddresses');
-      }
-      // 8 (4.0.0) adds only the optional address map, so a 7 file is an 8 one without it. Every field is kept.
-      if (candidate.version === 7) return { state: { ...(value as Omit<GrantState, 'version'>), version: 8 }, changed: true };
-      return { state: value as GrantState, changed: false };
-    }
-    if (candidate.version === 6 && !Array.isArray(candidate.passwordlessUserIds)) {
-      throw new Error('state file is missing passwordlessUserIds');
-    }
-    // v5/v6 held per-user media claims (a missing registry is fine, it is discarded). Claimants
-    // that already received access are ordinary manual users on their grants, so dropping the
-    // claim registry keeps every grant intact.
-    return {
-      state: {
-        version: 8,
-        grants: candidate.grants as Record<string, GrantRecord>,
-        groups: candidate.groups as Record<string, AccessGroup>,
-        catalog: candidate.catalog as GrantState['catalog'],
-        passwordlessUserIds: candidate.version === 6 ? candidate.passwordlessUserIds as string[] : [],
-        ...handled,
-      },
-      changed: true,
-    };
+  if (typeof candidate.version === 'number' && candidate.version >= 1 && candidate.version < 7) {
+    throw new Error('1.x state (schema v1–v6) is unsupported: upgrade via 3.9.x first');
   }
-  if (candidate.version === 4) {
-    if (!candidate.groups || typeof candidate.groups !== 'object') throw new Error('state file is missing groups');
-    if (!candidate.catalog || typeof candidate.catalog !== 'object') throw new Error('state file is missing catalog');
-    return {
-      state: {
-        version: 8,
-        grants: candidate.grants as Record<string, GrantRecord>,
-        groups: candidate.groups as Record<string, AccessGroup>,
-        catalog: candidate.catalog as GrantState['catalog'],
-        passwordlessUserIds: [],
-      },
-      changed: true,
-    };
+  if (candidate.version !== 8 && candidate.version !== 7) throw new Error('unsupported state schema version');
+  if (!candidate.groups || typeof candidate.groups !== 'object') throw new Error('state file is missing groups');
+  if (!candidate.catalog || typeof candidate.catalog !== 'object') throw new Error('state file is missing catalog');
+  if (!Array.isArray(candidate.passwordlessUserIds)) throw new Error('state file is missing passwordlessUserIds');
+  const addresses = (value as { householdAddresses?: unknown }).householdAddresses;
+  if (addresses !== undefined && (!addresses || typeof addresses !== 'object' || Array.isArray(addresses))) {
+    throw new Error('state file has an invalid householdAddresses');
   }
-  if (candidate.version === 3) {
-    if (!candidate.groups || typeof candidate.groups !== 'object') throw new Error('state file is missing groups');
-    return {
-      state: {
-        version: 8,
-        grants: candidate.grants as Record<string, GrantRecord>,
-        groups: candidate.groups as Record<string, AccessGroup>,
-        catalog: { items: {} },
-        passwordlessUserIds: [],
-      },
-      changed: true,
-    };
-  }
-  if (candidate.version === 2) {
-    if (!candidate.groups || typeof candidate.groups !== 'object') throw new Error('state file is missing groups');
-    const grants = Object.fromEntries(Object.entries(candidate.grants as Record<string, GrantRecord>).map(([itemId, grant]) => [
-      itemId,
-      { ...grant, manualUserIds: [] },
-    ]));
-    return { state: { version: 8, grants, groups: candidate.groups as Record<string, AccessGroup>, catalog: { items: {} }, passwordlessUserIds: [] }, changed: true };
-  }
-  if (candidate.version !== 1) throw new Error('unsupported state schema version');
-  const now = new Date().toISOString();
-  const grants: Record<string, GrantRecord> = {};
-  for (const [itemId, raw] of Object.entries(candidate.grants as Record<string, Omit<GrantRecord, 'groupIds' | 'sync'>>)) {
-    grants[itemId] = {
-      ...raw,
-      active: true,
-      manualUserIds: [],
-      groupIds: [],
-      sync: { state: 'pending', attempts: 0 },
-      updatedAt: raw.updatedAt || now,
-    };
-  }
-  return { state: { version: 8, grants, groups: {}, catalog: { items: {} }, passwordlessUserIds: [] }, changed: true };
+  // 8 (4.0.0) adds only the optional address map, so a 7 file is an 8 one without it. Every field is kept, among them
+  // a Jellyfin version confirmation 3.10.0 stored.
+  if (candidate.version === 7) return { state: { ...(value as Omit<GrantState, 'version'>), version: 8 }, changed: true };
+  return { state: value as GrantState, changed: false };
 }

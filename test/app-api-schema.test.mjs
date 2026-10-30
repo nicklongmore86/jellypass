@@ -214,8 +214,8 @@ describe('household app API: the OpenAPI document', { timeout: 60_000 }, () => {
     await app.background.settled();
   });
 
-  it('lists the same endpoints as the README\'s API table', () => {
-    const readme = readFileSync(path.join(ROOT, 'README.md'), 'utf8');
+  it('lists the same endpoints as the API table in docs/household-hosts.md', () => {
+    const readme = readFileSync(path.join(ROOT, 'docs/household-hosts.md'), 'utf8');
     const rows = [...readme.matchAll(/^\| `(GET|POST)` \| `\/jellypass\/app\/v1([^`?]+)(?:\?[^`]*)?` \|/gm)].map((row) => `${row[1]} ${row[2]}`);
     assert.ok(rows.length > 0, 'the table was found');
     assert.deepEqual(rows.sort(), OPERATIONS.map((operation) => operation.key).sort());

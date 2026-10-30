@@ -1,4 +1,6 @@
 import path from 'node:path';
+import { publicProbeUrls } from './self-check.js';
+import { parseAdditionalPluginRoutes } from './gateway-route-policy.js';
 import { parseTrustedProxies } from './client-ip.js';
 import { isTmdbCredential } from './tmdb.js';
 
@@ -28,6 +30,9 @@ const MAX_WS_IDLE_TIMEOUT_MS = 86_400_000;
 const JELLYFIN_WEBSOCKET_LOST_TIMEOUT_MS = 60_000;
 
 export interface Config {
+  jellyfinPublicUrls: string[];
+  seerrPublicUrl?: string;
+  additionalPluginRoutes: string[];
   /** The member listener (household addresses only), HOST and PORT; started only with the household gateway on. */
   host: string;
   port: number;
@@ -73,8 +78,8 @@ export interface Config {
   /** Reverse proxies whose X-Forwarded-For entries are believed, as canonical addresses and CIDR ranges. */
   trustedProxies: string[];
   /**
-   * JELLYFIN_UNTESTED_VERSION_OK: one exact Jellyfin version, outside the supported releases, that household hosts serve
-   * on without an administrator confirming it in the admin site (see JellyfinVersionGate).
+   * JELLYFIN_UNTESTED_VERSION_OK: one exact Jellyfin version, outside the supported releases, that counts as confirmed
+   * without an administrator confirming it in the admin site (see JellyfinVersionGate).
    */
   jellyfinUntestedVersionOk?: string;
 }
@@ -167,6 +172,9 @@ export function loadConfig(): Config {
     }));
   }
   return {
+    jellyfinPublicUrls: publicProbeUrls(process.env.JELLYFIN_PUBLIC_URLS),
+    ...(process.env.SEERR_PUBLIC_URL ? { seerrPublicUrl: publicProbeUrls(process.env.SEERR_PUBLIC_URL)[0] } : {}),
+    additionalPluginRoutes: parseAdditionalPluginRoutes(process.env.HOUSEHOLD_PLUGIN_ROUTES),
     host,
     port,
     adminHost,

@@ -1,0 +1,12 @@
+appId: com.rtc-services.jellypass
+---
+- tapOn: "Continue"
+- extendedWaitUntil:
+    visible: "${PROFILE}"
+    timeout: 60000
+- tapOn: "${PROFILE}"
+- extendedWaitUntil:
+    visible: "See all Trending"
+    timeout: 60000
+- waitForAnimationToEnd:
+    timeout: 10000

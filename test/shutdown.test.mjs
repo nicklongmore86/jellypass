@@ -31,14 +31,14 @@ describe('graceful shutdown', { timeout: 15_000 }, () => {
     // A Jellyfin stand-in whose WebSockets never close on their own, like an idle browser tab's.
     upstream = createServer((request, response) => {
       upstreamRequests += 1;
-      if (request.url === '/slow') {
+      if (request.url === '/web/slow') {
         setTimeout(() => {
           response.writeHead(200, { 'Content-Type': 'text/plain' });
           response.end('slow done');
         }, 300);
         return;
       }
-      if (request.url === '/hang') return;
+      if (request.url === '/web/hang') return;
       response.writeHead(404);
       response.end();
     });
@@ -121,7 +121,7 @@ describe('graceful shutdown', { timeout: 15_000 }, () => {
     assert.equal(agent.freeSockets[`127.0.0.1:${adminPort}:`]?.length, 1, 'expected an idle keep-alive socket');
     const idleSocketClosed = once(agent.freeSockets[`127.0.0.1:${adminPort}:`][0], 'close');
     const seenRequests = upstreamRequests;
-    const inFlight = get({ port, path: '/slow', headers: { Host: HOUSEHOLD_HOST } });
+    const inFlight = get({ port, path: '/web/slow', headers: { Host: HOUSEHOLD_HOST } });
     await waitFor(() => upstreamRequests > seenRequests);
 
     let ticks = 0;
@@ -201,7 +201,7 @@ describe('graceful shutdown', { timeout: 15_000 }, () => {
     const server = await startServer();
     const { store } = await newStore(t);
     const seenRequests = upstreamRequests;
-    const hanging = get({ port: server.address().port, path: '/hang', headers: { Host: HOUSEHOLD_HOST } }).catch((error) => error);
+    const hanging = get({ port: server.address().port, path: '/web/hang', headers: { Host: HOUSEHOLD_HOST } }).catch((error) => error);
     await waitFor(() => upstreamRequests > seenRequests);
     const { shutdown, exits } = harness(server, store, { graceMs: 200 });
     const startedAt = performance.now();

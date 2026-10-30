@@ -1,6 +1,7 @@
-// JellyPass supports the current and the previous Jellyfin release. On any other version, household hosts answer a
-// fixed 503 until an administrator confirms that exact version; supported versions are served as before. The admin site
-// keeps working throughout, so the administrator can see the version and confirm it.
+// JellyPass supports the current and the previous Jellyfin release. On any other version, 3.x warns (the log, the admin
+// site, the admin API and metrics) and household hosts keep serving until an administrator confirms that exact version;
+// when enforcing (4.0.0), they answer a fixed 503 instead. Supported versions are served as before. The admin site keeps
+// working throughout, so the administrator can see the version and confirm it.
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { createServer } from 'node:http';
@@ -10,6 +11,7 @@ import { describe, it } from 'node:test';
 import { AccessService } from '../dist/access-service.js';
 import { JellyfinClient } from '../dist/jellyfin.js';
 import {
+  JELLYFIN_VERSION_ENFORCEMENT,
   JellyfinVersionGate,
   SUPPORTED_JELLYFIN_RELEASES,
   UNKNOWN_VERSION_MESSAGE,
@@ -217,9 +219,9 @@ describe('supported Jellyfin versions', () => {
   });
 });
 
-describe('Jellyfin version gate', () => {
+describe('Jellyfin version gate, enforcing', () => {
   it('serves on a supported version and logs no warning', async () => {
-    const { gate, logs } = gateFor({ version: '12.3.0' });
+    const { gate, logs } = gateFor({ version: '12.3.0', enforcement: 'refuse' });
     await gate.check();
     assert.equal(gate.decision(), 'serve');
     assert.equal(gate.status().householdHosts, 'serving');
@@ -228,7 +230,7 @@ describe('Jellyfin version gate', () => {
   });
 
   it('refuses an untested version until that exact version is confirmed, and warns once', async () => {
-    const { gate, logs, jellyfin, stored } = gateFor({ version: '13.0.0' });
+    const { gate, logs, jellyfin, stored } = gateFor({ version: '13.0.0', enforcement: 'refuse' });
     await gate.check();
     await gate.check();
     assert.equal(gate.decision(), 'refuse');
@@ -251,7 +253,7 @@ describe('Jellyfin version gate', () => {
   });
 
   it('serves the exact version JELLYFIN_UNTESTED_VERSION_OK names, and no other', async () => {
-    const { gate, jellyfin } = gateFor({ version: '13.0.0', environmentConfirmed: '13.0.0' });
+    const { gate, jellyfin } = gateFor({ version: '13.0.0', environmentConfirmed: '13.0.0', enforcement: 'refuse' });
     await gate.check();
     assert.equal(gate.decision(), 'serve');
     jellyfin.version = '13.0.1';
@@ -262,7 +264,7 @@ describe('Jellyfin version gate', () => {
 
   it('does not wait for an unreachable Jellyfin: refuses while the version is unknown, and reads it again on demand', async () => {
     let now = 0;
-    const { gate, jellyfin } = gateFor({ version: '12.4.0', down: true, now: () => now });
+    const { gate, jellyfin } = gateFor({ version: '12.4.0', down: true, now: () => now, enforcement: 'refuse' });
     await gate.check();
     assert.equal(gate.decision(), 'unknown');
     assert.match(gate.status().error, /unreachable/);
@@ -282,16 +284,16 @@ describe('Jellyfin version gate', () => {
   });
 });
 
-describe('household hosts and the Jellyfin version', { timeout: 30_000 }, () => {
+describe('household hosts and the Jellyfin version, enforcing', { timeout: 30_000 }, () => {
   it('relays household requests on a supported version, as before', async (t) => {
-    const app = await startApp(t, { version: '10.11.11' });
+    const app = await startApp(t, { version: '10.11.11', enforcement: 'refuse' });
     const answer = await get(app.port, '/web/index.html', { Host: HOST });
     assert.deepEqual([answer.status, answer.text], [200, RELAYED]);
     assert.equal((await get(app.adminPort, '/v1/jellyfin/version', ADMIN)).json().householdHosts, 'serving');
   });
 
   it('answers a fixed 503 on an untested version and never relays it, while the admin site keeps working', async (t) => {
-    const app = await startApp(t, { version: '13.0.0' });
+    const app = await startApp(t, { version: '13.0.0', enforcement: 'refuse' });
     for (const pathname of ['/web/index.html', '/Users/AuthenticateByName', '/System/Info/Public', '/jellypass/app/v1/me']) {
       const answer = await get(app.port, pathname, { Host: HOST });
       assert.deepEqual([answer.status, answer.text], [503, UNTESTED_VERSION_MESSAGE], pathname);
@@ -311,8 +313,8 @@ describe('household hosts and the Jellyfin version', { timeout: 30_000 }, () => 
     assert.equal((await get(app.adminPort, '/health')).status, 200);
     const status = (await get(app.adminPort, '/v1/jellyfin/version', ADMIN)).json();
     assert.deepEqual(
-      [status.version, status.supported, status.householdHosts, status.confirmedVersion, status.supportedReleases],
-      ['13.0.0', false, 'refused', null, ['10.11', '12']],
+      [status.version, status.supported, status.confirmation, status.enforcement, status.householdHosts, status.confirmedVersion, status.supportedReleases],
+      ['13.0.0', false, 'unconfirmed', 'refuse', 'refused', null, ['10.11', '12']],
     );
     const metrics = (await get(app.adminPort, '/metrics', ADMIN)).text;
     assert.match(metrics, /^jfa_jellyfin_version_info\{confirmed="false",supported="false",version="13\.0\.0"\} 1$/m);
@@ -320,7 +322,7 @@ describe('household hosts and the Jellyfin version', { timeout: 30_000 }, () => 
   });
 
   it('serves once an administrator confirms the exact version, keeps it across a restart, and asks again after an upgrade', async (t) => {
-    const app = await startApp(t, { version: '13.0.0' });
+    const app = await startApp(t, { version: '13.0.0', enforcement: 'refuse' });
     const wrong = await put(app.adminPort, '/v1/jellyfin/version/confirmation', { version: '13.0.1' });
     assert.deepEqual([wrong.status, wrong.json().error], [409, 'jellyfin_version_changed']);
     const confirmed = await put(app.adminPort, '/v1/jellyfin/version/confirmation', { version: '13.0.0' });
@@ -331,7 +333,7 @@ describe('household hosts and the Jellyfin version', { timeout: 30_000 }, () => 
 
     // Stored in the state file, so a restarted JellyPass serves at once.
     assert.equal(JSON.parse(await readFile(app.stateFile, 'utf8')).jellyfinVersionConfirmed, '13.0.0');
-    const restarted = await startApp(t, { version: '13.0.0', stateFile: app.stateFile });
+    const restarted = await startApp(t, { version: '13.0.0', stateFile: app.stateFile, enforcement: 'refuse' });
     assert.equal((await get(restarted.port, '/web/index.html', { Host: HOST })).text, RELAYED);
 
     app.jellyfin.version = '13.1.0';
@@ -348,7 +350,7 @@ describe('household hosts and the Jellyfin version', { timeout: 30_000 }, () => 
 
   it('answers a fixed 503 while Jellyfin is unreachable at start, and serves once it answers', async (t) => {
     let now = 0;
-    const app = await startApp(t, { version: '12.4.0', down: true, now: () => now });
+    const app = await startApp(t, { version: '12.4.0', down: true, now: () => now, enforcement: 'refuse' });
     const waiting = await get(app.port, '/web/index.html', { Host: HOST });
     assert.deepEqual([waiting.status, waiting.text], [503, UNKNOWN_VERSION_MESSAGE]);
     assert.equal(waiting.headers['retry-after'], '5');
@@ -361,13 +363,134 @@ describe('household hosts and the Jellyfin version', { timeout: 30_000 }, () => 
   });
 
   it('keeps household hosts as they were when no version check is configured', async (t) => {
-    const app = await startApp(t, { version: '13.0.0', gate: false });
+    const app = await startApp(t, { version: '13.0.0', gate: false, enforcement: 'refuse' });
     assert.equal((await get(app.port, '/web/index.html', { Host: HOST })).text, RELAYED);
     assert.equal((await get(app.adminPort, '/v1/jellyfin/version', ADMIN)).status, 404);
   });
 });
 
-function gateFor({ version, down = false, environmentConfirmed, now }) {
+describe('Jellyfin version gate, warning only (3.x)', () => {
+  it('warns by default: 4.0.0 flips this one switch to refuse', () => {
+    assert.equal(JELLYFIN_VERSION_ENFORCEMENT, 'warn');
+    const { gate } = gateFor({ version: '13.0.0' });
+    assert.equal(gate.status().enforcement, 'warn');
+    gate.stop();
+  });
+
+  it('serves an untested version, reports it unconfirmed, and warns once per version until it is confirmed', async () => {
+    const { gate, logs, jellyfin, stored } = gateFor({ version: '13.0.0' });
+    await gate.check();
+    await gate.check();
+    assert.equal(gate.decision(), 'serve');
+    assert.equal(await gate.householdDecision(), 'serve');
+    assert.deepEqual(
+      [gate.status().confirmation, gate.status().householdHosts, gate.status().enforcement],
+      ['unconfirmed', 'serving', 'warn'],
+    );
+    const warnings = () => logs.filter((entry) => entry.level === 'warn');
+    assert.equal(warnings().length, 1);
+    assert.match(warnings()[0].message, /keep serving/);
+    assert.match(warnings()[0].message, /JELLYFIN_UNTESTED_VERSION_OK/);
+    assert.match(warnings()[0].message, /4\.0\.0/);
+    assert.equal(warnings()[0].version, '13.0.0');
+
+    // Confirming clears the warning; a changed version warns again, once.
+    await gate.confirm('13.0.0');
+    assert.equal(stored.value, '13.0.0');
+    assert.equal(gate.status().confirmation, 'confirmed');
+    jellyfin.version = '13.1.0';
+    await gate.check();
+    await gate.check();
+    assert.deepEqual([gate.decision(), gate.status().confirmation], ['serve', 'unconfirmed']);
+    assert.equal(warnings().filter((entry) => entry.version === '13.1.0').length, 1);
+    jellyfin.version = '12.4.0';
+    await gate.check();
+    assert.deepEqual([gate.decision(), gate.status().confirmation], ['serve', 'not_needed']);
+    gate.stop();
+  });
+
+  it('treats any suffixed build as unconfirmed until that exact version is confirmed', async () => {
+    for (const version of ['12.4.0-rc1', '12.4.0+build.7', '10.11.11-beta', '12.4.0.20261026-211555x']) {
+      const { gate, logs } = gateFor({ version });
+      await gate.check();
+      assert.deepEqual([gate.decision(), gate.status().supported, gate.status().confirmation], ['serve', false, 'unconfirmed'], version);
+      assert.equal(logs.filter((entry) => entry.level === 'warn').length, 1, version);
+      await gate.confirm(version);
+      assert.equal(gate.status().confirmation, 'confirmed', version);
+      gate.stop();
+    }
+    const { gate } = gateFor({ version: '12.4.0-rc1', environmentConfirmed: '12.4.0-rc1' });
+    await gate.check();
+    assert.equal(gate.status().confirmation, 'confirmed');
+    gate.stop();
+  });
+
+  it('serves without waiting while the version is not known', async () => {
+    let now = 0;
+    const { gate, jellyfin } = gateFor({ version: '13.0.0', down: true, now: () => now });
+    await gate.check();
+    now = 10_000;
+    assert.equal(await gate.householdDecision(), 'serve');
+    assert.equal(jellyfin.reads, 1, 'a household request does not read the version');
+    assert.deepEqual([gate.status().confirmation, gate.status().householdHosts], [null, 'serving']);
+    gate.stop();
+  });
+});
+
+describe('household hosts and the Jellyfin version, warning only (3.x)', { timeout: 30_000 }, () => {
+  it('relays household requests and WebSockets on an unconfirmed version, as 3.9.0 did, and reports it to the admin', async (t) => {
+    const logs = [];
+    const app = await startApp(t, { version: '13.0.0', logs });
+    for (const pathname of ['/web/index.html', '/Users/AuthenticateByName', '/System/Info/Public']) {
+      const answer = await get(app.port, pathname, { Host: HOST });
+      assert.deepEqual([answer.status, answer.text], [200, RELAYED], pathname);
+    }
+    assert.deepEqual(app.jellyfin.relayed, ['/web/index.html', '/Users/AuthenticateByName', '/System/Info/Public']);
+    assert.match(await rawUpgrade(app.port, '/socket', HOST), /^HTTP\/1\.1 404 /, 'Jellyfin\'s own answer');
+    assert.equal(app.jellyfin.relayed.at(-1), 'upgrade /socket');
+    assert.equal(logs.filter((entry) => entry.level === 'warn').length, 1, 'warned once, not per request');
+
+    const status = (await get(app.adminPort, '/v1/jellyfin/version', ADMIN)).json();
+    assert.deepEqual(
+      [status.version, status.supported, status.confirmation, status.enforcement, status.householdHosts, status.confirmedVersion],
+      ['13.0.0', false, 'unconfirmed', 'warn', 'serving', null],
+    );
+    const metrics = (await get(app.adminPort, '/metrics', ADMIN)).text;
+    assert.match(metrics, /^jfa_jellyfin_version_info\{confirmed="false",supported="false",version="13\.0\.0"\} 1$/m);
+    assert.match(metrics, /^jfa_household_hosts_refusing 0$/m);
+
+    // Confirming still works and clears the warning; withdrawing brings it back.
+    const confirmed = await put(app.adminPort, '/v1/jellyfin/version/confirmation', { version: '13.0.0' });
+    assert.deepEqual([confirmed.status, confirmed.json().confirmation, confirmed.json().householdHosts], [200, 'confirmed', 'serving']);
+    assert.match((await get(app.adminPort, '/metrics', ADMIN)).text, /^jfa_jellyfin_version_info\{confirmed="true",supported="false",version="13\.0\.0"\} 1$/m);
+    const withdrawn = await request(app.adminPort, '/v1/jellyfin/version/confirmation', { method: 'DELETE', headers: ADMIN });
+    assert.deepEqual([withdrawn.status, withdrawn.json().confirmation, withdrawn.json().householdHosts], [200, 'unconfirmed', 'serving']);
+    assert.equal((await get(app.port, '/web/index.html', { Host: HOST })).text, RELAYED);
+  });
+
+  it('reports a version JELLYFIN_UNTESTED_VERSION_OK names as confirmed', async (t) => {
+    const app = await startApp(t, { version: '12.4.0+build.7', environmentConfirmed: '12.4.0+build.7' });
+    const status = (await get(app.adminPort, '/v1/jellyfin/version', ADMIN)).json();
+    assert.deepEqual([status.confirmation, status.environmentConfirmedVersion], ['confirmed', '12.4.0+build.7']);
+    assert.equal((await get(app.port, '/web/index.html', { Host: HOST })).text, RELAYED);
+  });
+
+  it('relays household requests while Jellyfin is unreachable at start', async (t) => {
+    const app = await startApp(t, { version: '12.4.0', down: true });
+    assert.equal((await get(app.port, '/web/index.html', { Host: HOST })).text, RELAYED);
+    const status = (await get(app.adminPort, '/v1/jellyfin/version', ADMIN)).json();
+    assert.deepEqual([status.version, status.confirmation, status.householdHosts], [null, null, 'serving']);
+  });
+
+  it('changes nothing on a supported version', async (t) => {
+    const app = await startApp(t, { version: '12.4.0' });
+    assert.equal((await get(app.port, '/web/index.html', { Host: HOST })).text, RELAYED);
+    const status = (await get(app.adminPort, '/v1/jellyfin/version', ADMIN)).json();
+    assert.deepEqual([status.supported, status.confirmation, status.householdHosts], [true, 'not_needed', 'serving']);
+  });
+});
+
+function gateFor({ version, down = false, environmentConfirmed, now, enforcement }) {
   const jellyfin = { version, down, reads: 0 };
   const stored = { value: undefined };
   const logs = [];
@@ -379,6 +502,7 @@ function gateFor({ version, down = false, environmentConfirmed, now }) {
     },
     ...(environmentConfirmed ? { environmentConfirmed } : {}),
     confirmation: { get: () => stored.value, set: async (value) => { stored.value = value; } },
+    ...(enforcement ? { enforcement } : {}),
     ...(now ? { now } : {}),
     log: (entry) => logs.push(entry),
   });
@@ -400,13 +524,17 @@ async function startJellyfin(t, { version, down }) {
     jellyfin.relayed.push(request.url);
     response.writeHead(200, { 'Content-Type': 'text/html' }).end(RELAYED);
   });
+  server.on('upgrade', (request, socket) => {
+    jellyfin.relayed.push(`upgrade ${request.url}`);
+    socket.end('HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n');
+  });
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   t.after(() => new Promise((resolve) => { server.closeAllConnections(); server.close(resolve); }));
   jellyfin.url = `http://127.0.0.1:${server.address().port}`;
   return jellyfin;
 }
 
-async function startApp(t, { version, down = false, now, gate: withGate = true, stateFile }) {
+async function startApp(t, { version, down = false, now, gate: withGate = true, stateFile, enforcement, environmentConfirmed, logs }) {
   const jellyfin = await startJellyfin(t, { version, down });
   const file = stateFile ?? path.join(await makeTempDir(t, 'jfa-version-'), 'grants.json');
   const store = new GrantStore(file);
@@ -419,9 +547,11 @@ async function startApp(t, { version, down = false, now, gate: withGate = true, 
   const client = new JellyfinClient(jellyfin.url, 'jellyfin-key');
   const gate = new JellyfinVersionGate({
     read: () => client.getServerVersion(),
+    ...(environmentConfirmed ? { environmentConfirmed } : {}),
     confirmation: { get: () => store.getJellyfinVersionConfirmed(), set: (value) => store.setJellyfinVersionConfirmed(value) },
+    ...(enforcement ? { enforcement } : {}),
     ...(now ? { now } : {}),
-    log: () => undefined,
+    log: logs ? (entry) => logs.push(entry) : () => undefined,
   });
   if (withGate) await gate.check();
   const { member: server, admin } = makeServers(new AccessService(client, store), { webhook: 'webhook-secret', admin: 'admin-secret' }, undefined, {

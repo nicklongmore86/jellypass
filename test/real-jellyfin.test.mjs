@@ -4,6 +4,7 @@ import { createServer, request as httpRequest } from 'node:http';
 import { connect } from 'node:net';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
+import { brotliDecompressSync, gunzipSync } from 'node:zlib';
 import { AccessService, accessTag } from '../dist/access-service.js';
 import { JellyfinClient } from '../dist/jellyfin.js';
 import { makeServers } from '../dist/server.js';
@@ -49,8 +50,10 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
   it('rejects a Seerr-less webhook without a recognised HD event and grants nothing', async () => {
     for (const [requestId, event] of [['real-16', undefined], ['real-16b', 'Something Else']]) {
       assert.deepEqual(await sendWebhook(server, available(requestId, event)), {
-        status: 502,
-        body: { error: 'webhook event does not name an HD request and Seerr lookup is not configured' },
+        status: event === undefined ? 400 : 502,
+        body: { error: event === undefined
+          ? 'webhook_payload_removed_use_current_seerr_template'
+          : 'webhook event does not name an HD request and Seerr lookup is not configured' },
       }, String(event));
     }
 
@@ -95,41 +98,6 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     const cleanedUsers = await client.getUsers();
     assert.ok(!cleanedItem.Tags.includes(accessTag(fixture.itemId)));
     assert.ok(!user(cleanedUsers, fixture.bobId).Policy.BlockedTags.includes(accessTag(fixture.itemId)));
-  });
-
-  it('lets a signed-in user add a household title to their library, checking their token with Jellyfin', async (t) => {
-    // Alice's household requested the movie; Bob belongs to no household and signs in on Jellyfin itself.
-    const joinStore = new GrantStore(path.join(await makeTempDir(t, 'jfa-real-join-'), 'grants.json'));
-    await joinStore.load();
-    await joinStore.upsertGroup({ id: 'realhouse', name: 'Real House', userIds: [fixture.aliceId] });
-    const seerr = { getJellyfinItemId: async (mediaType, tmdbId) => (mediaType === 'movie' && tmdbId === 603 ? fixture.itemId : undefined) };
-    const service = new AccessService(client, joinStore, undefined, seerr);
-    const gateway = await startGateway(t, service, {
-      householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-' },
-    });
-    const granted = await sendWebhook(gateway.admin, available('real-18', 'Movie Request Now Available'));
-    assert.equal(granted.status, 200, JSON.stringify(granted.body));
-    assert.ok(user(await client.getUsers(), fixture.bobId).Policy.BlockedTags.includes(accessTag(fixture.itemId)));
-
-    const join = (authorization) => postWithHost(gateway, '/jellypass/add', 'jelly-realhouse.example.test', authorization, { mediaType: 'movie', tmdbId: 603 });
-    assert.equal((await join(undefined)).status, 401);
-    assert.equal((await join('MediaBrowser Client="jfa-test", Device="ci", DeviceId="jfa-real-join", Version="1.0", Token="not-a-token"')).status, 401);
-    assert.equal(joinStore.get(fixture.itemId).joins, undefined);
-
-    const bob = await request(baseUrl, '/Users/AuthenticateByName', {
-      method: 'POST',
-      authorization: 'MediaBrowser Client="jfa-test", Device="ci", DeviceId="jfa-real-bob", Version="1.0"',
-      body: { Username: 'Bob', Pw: '' },
-    });
-    // The page sends only the token, as Jellyfin web stored it, so Jellyfin does not rename the user's web session.
-    const accepted = await join(`MediaBrowser Token="${bob.AccessToken}"`);
-    assert.deepEqual(accepted, { status: 202, body: { status: 'accepted' } });
-    // The join runs after the answer.
-    await waitFor(async () => joinStore.get(fixture.itemId).manualUserIds.includes(fixture.bobId.toLowerCase()));
-    assert.deepEqual(joinStore.get(fixture.itemId).manualUserIds, [fixture.bobId.toLowerCase()]);
-    await waitFor(async () => !user(await client.getUsers(), fixture.bobId).Policy.BlockedTags.includes(accessTag(fixture.itemId)));
-    const item = await request(baseUrl, `/Users/${fixture.bobId}/Items/${fixture.itemId}`, { token: bob.AccessToken });
-    assert.equal(item.Id, fixture.itemId);
   });
 
   it('shows a household app title in_library only when the caller\'s own Jellyfin view has it', async (t) => {
@@ -442,6 +410,82 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     assert.notEqual(script.text, '{"error":"not_found"}');
   });
 
+  it('refuses unknown plugins over HTTP and WebSocket while preserving client and jellyfin-web routes', async (t) => {
+    const householdStore = new GrantStore(path.join(await makeTempDir(t, 'jfa-real-policy-'), 'grants.json'));
+    await householdStore.load();
+    await householdStore.upsertGroup({ id: 'policyhouse', name: 'Policy House', userIds: [fixture.bobId] });
+    const upstream = await recordedJellyfin(t);
+    const gateway = await startGateway(t, new AccessService(client, householdStore), {
+      householdGateway: { jellyfinUrl: upstream.url, domain: 'example.test', hostPrefix: 'media-' },
+    });
+    const port = gateway.address().port;
+    const host = 'media-policyhouse.example.test';
+    for (const path of ['/UnknownPlugin/config', '/emby/%55nknownPlugin/config', '//UNKNOWNPLUGIN//config/']) {
+      const answer = await getWithHeaders(port, path, { Host: host });
+      assert.deepEqual([answer.status, answer.text], [404, '{"error":"not_found"}']);
+      const upgrade = await new Promise((resolve, reject) => {
+        const socket = connect(port, '127.0.0.1');
+        let text = '';
+        socket.on('connect', () => socket.write(`GET ${path} HTTP/1.1\r\nHost: ${host}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n`));
+        socket.on('data', (chunk) => { text += chunk; });
+        socket.on('end', () => { socket.destroy(); resolve(text); });
+        socket.on('error', reject);
+      });
+      assert.match(upgrade, /^HTTP\/1\.1 404 /);
+      assert.ok(upgrade.endsWith('{"error":"not_found"}'));
+    }
+    assert.deepEqual(upstream.seen, [], 'unknown plugin routes must not reach the real Jellyfin');
+    // PWA and mobile sign-in; TV uses these plus /jellypass/app/v1 (covered by the app integration above).
+    for (const path of ['/Users/Public', '/System/Info/Public', '/Branding/Configuration', '/QuickConnect/Enabled', '/web/index.html']) {
+      const answer = await getWithHeaders(port, path, { Host: host });
+      assert.equal(answer.status, 200, path);
+      assert.notEqual(answer.text, '{"error":"not_found"}', path);
+    }
+    const WEB = 'MediaBrowser Client="Jellyfin Web", Device="Browser", DeviceId="jp-member-policy", Version="12.4.0"';
+    const login = await postWithHeaders(port, '/Users/AuthenticateByName', { Host: host, Authorization: WEB }, { Username: 'Bob', Pw: '' });
+    assert.equal(login.status, 200, login.text);
+    const token = login.json().AccessToken;
+    const member = { Host: host, Authorization: `${WEB}, Token="${token}"` };
+    assert.equal(login.json().User.Policy.IsAdministrator, false, 'exercise a MEMBER token');
+    let clip;
+    await waitFor(async () => {
+      clip = (await request(baseUrl, '/Items?Recursive=true&SearchTerm=Gateway%20Clip&IncludeItemTypes=Movie', { token: fixture.token })).Items?.[0];
+      return !!clip;
+    });
+    for (const pathname of ['/Users/Me', '/UserViews', '/Items', `/Items/${clip.Id}/PlaybackInfo`, `/Users/${fixture.bobId}/Items/${clip.Id}/SpecialFeatures`]) {
+      const answer = await getWithHeaders(port, pathname, member);
+      assert.equal(answer.status, 200, `${pathname}: ${answer.text}`);
+    }
+    const played = await postWithHeaders(port, `/UserPlayedItems/${clip.Id}`, member, {});
+    assert.equal(played.status, 200, played.text);
+    const info = (await getWithHeaders(port, `/Items/${clip.Id}/PlaybackInfo`, member)).json();
+    const source = info.MediaSources[0];
+    const range = await getWithHeaders(port, `/Videos/${clip.Id}/stream?Static=true&MediaSourceId=${source.Id}`, { ...member, Range: 'bytes=0-31' });
+    assert.equal(range.status, 206, range.text);
+    assert.match(range.headers['content-range'], /^bytes 0-31\//);
+    const master = await getWithHeaders(port, `/Videos/${clip.Id}/master.m3u8?MediaSourceId=${source.Id}&VideoCodec=h264&AudioCodec=aac&SegmentContainer=ts&ApiKey=${token}`, member);
+    assert.equal(master.status, 200, master.text);
+    assert.match(master.text, /^#EXTM3U/);
+    for (const action of ['', '/Progress', '/Stopped']) {
+      const answer = await postWithHeaders(port, `/Sessions/Playing${action}`, member, { ItemId: clip.Id, MediaSourceId: source.Id, PositionTicks: 0, PlayMethod: 'DirectPlay', PlaySessionId: 'jp-member-policy' });
+      assert.equal(answer.status, 204, `${action}: ${answer.text}`);
+    }
+    assert.match(await rawUpgrade(port, `/socket?ApiKey=${token}&deviceId=jp-member-policy`, host), /^HTTP\/1\.1 101 /);
+    upstream.seen.length = 0;
+    for (const pathname of ['/Plugins', '/Plugins/abc/configuration', '/Auth/Keys', '/System/Logs', '/Startup/Configuration']) {
+      const answer = await getWithHeaders(port, pathname, member);
+      assert.deepEqual([answer.status, answer.text], [404, '{"error":"not_found"}'], pathname);
+    }
+    const adminPost = await postWithHeaders(port, `/Items/${clip.Id}`, member, {});
+    assert.deepEqual([adminPost.status, adminPost.text], [404, '{"error":"not_found"}']);
+    assert.deepEqual(upstream.seen, [], 'administrative routes must never reach Jellyfin');
+    // Follow actual asset links from the installed jellyfin-web, beyond the injection fixture's shortened page.
+    const page = await getWithHeaders(port, '/web/index.html', { Host: host });
+    const assets = [...page.text.matchAll(/(?:src|href)="([^"#]+\.(?:js|css)(?:\?[^" ]*)?)"/g)].map((m) => new URL(m[1], 'http://localhost/web/index.html'));
+    assert.ok(assets.length > 0);
+    for (const asset of assets) assert.equal((await getWithHeaders(port, asset.pathname + asset.search, { Host: host })).status, 200, asset.pathname);
+  });
+
   it('adds the TV add-on to Jellyfin web\'s real page exactly once, on the household it is on for only', async (t) => {
     const householdStore = new GrantStore(path.join(await makeTempDir(t, 'jfa-real-tv-'), 'grants.json'));
     await householdStore.load();
@@ -462,12 +506,14 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     assert.ok(/<\/head>/i.test(direct.text), 'Jellyfin web\'s page has a </head>');
     const tag = /<script defer src="(\/jellypass\/tv\/jellypass-tv\.[0-9a-f]{12}\.js)" data-jellypass-tv><\/script>/;
     for (const pathname of ['/web/index.html', '/web/']) {
-      // Whatever encodings and validators the browser offers, the page comes back whole, with the tag.
-      const page = await getWithHeaders(port, pathname, { Host: 'jelly-tvhouse.example.test', 'Accept-Encoding': 'gzip, br', 'If-Modified-Since': new Date().toUTCString() });
-      assert.equal(page.status, 200, pathname);
-      assert.equal(page.headers['content-encoding'], undefined, pathname);
-      assert.equal(page.headers['cache-control'], 'no-store', pathname);
-      assert.equal(page.headers.etag, undefined, pathname);
+      // Whatever encodings and validators the browser offers, the page comes back whole, with the tag; Jellyfin is asked
+      // for it unencoded, and JellyPass encodes it (in the coding the browser prefers) and marks it no-transform.
+      const answer = await getWithHeaders(port, pathname, { Host: 'jelly-tvhouse.example.test', 'Accept-Encoding': 'gzip, br', 'If-Modified-Since': new Date().toUTCString() });
+      assert.equal(answer.status, 200, pathname);
+      assert.equal(answer.headers['content-encoding'], 'br', pathname);
+      assert.equal(answer.headers['cache-control'], 'no-store, no-transform', pathname);
+      assert.equal(answer.headers.etag, undefined, pathname);
+      const page = { text: brotliDecompressSync(answer.body).toString('utf8') };
       assert.equal(page.text.split('data-jellypass-tv').length - 1, 1, pathname);
       assert.equal(page.text.replace(tag, ''), direct.text, `${pathname}: Jellyfin's page with the tag and nothing else`);
       assert.ok(page.text.indexOf('data-jellypass-tv') < page.text.search(/<\/head>/i), `${pathname}: in the head`);
@@ -476,6 +522,63 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     }
     const other = await getWithHeaders(port, '/web/index.html', { Host: 'jelly-otherhouse.example.test', 'Accept-Encoding': 'identity' });
     assert.deepEqual([other.status, other.text], [200, direct.text]);
+    // Relayed without the add-on, the page is still marked no-transform, and comes back whole in the coding the client
+    // asked for: Jellyfin's own (br or gzip, passed through with its strong tag), or JellyPass's when Jellyfin sends it
+    // unencoded (it does not know x-gzip), with the tag weakened. A HEAD gets the GET's headers.
+    assert.match(other.headers['cache-control'] ?? '', /(?:^|,\s*)no-transform$/);
+    const otherHost = { Host: 'jelly-otherhouse.example.test' };
+    let weak;
+    for (const [accept, coding, by] of [['gzip', 'gzip', 'jellyfin'], ['br', 'br', 'jellyfin'], ['gzip, br', 'br', 'jellyfin'], ['x-gzip', 'gzip', 'jellypass']]) {
+      const relayed = await getWithHeaders(port, '/web/index.html', { ...otherHost, 'Accept-Encoding': accept });
+      assert.equal(relayed.status, 200, accept);
+      assert.match(relayed.headers['cache-control'] ?? '', /(?:^|,\s*)no-transform$/, accept);
+      assert.match(relayed.headers.vary ?? '', /accept-encoding/i, accept);
+      assert.equal(relayed.headers['content-encoding'], coding, accept);
+      assert.match(relayed.headers.etag ?? '', by === 'jellypass' ? /^W\/"/ : /^"/, accept);
+      assert.equal((coding === 'br' ? brotliDecompressSync : gunzipSync)(relayed.body).toString('utf8'), direct.text, accept);
+      const head = await getWithHeaders(port, '/web/index.html', { ...otherHost, 'Accept-Encoding': accept }, { method: 'HEAD' });
+      assert.deepEqual([head.status, head.body.length], [200, 0], `HEAD ${accept}`);
+      for (const name of ['content-encoding', 'etag', 'vary', 'cache-control']) assert.equal(head.headers[name], relayed.headers[name], `HEAD ${accept}: ${name}`);
+      if (by === 'jellypass') {
+        assert.deepEqual([head.headers['content-length'], head.headers['accept-ranges']], [undefined, undefined], `HEAD ${accept}`);
+        weak = relayed.headers.etag;
+      }
+      // Revalidated with the tag it was given, the page is not modified, and the 304 carries that tag back.
+      for (const method of ['GET', 'HEAD']) {
+        const again = await getWithHeaders(port, '/web/index.html', { ...otherHost, 'Accept-Encoding': accept, 'If-None-Match': relayed.headers.etag }, { method });
+        assert.deepEqual([again.status, again.headers.etag, again.body.length], [304, relayed.headers.etag, 0], `${method} ${accept} revalidated`);
+        // Jellyfin's own 304 to a HEAD names the coding it would use, passed through; JellyPass's coding is never named on one.
+        assert.ok(again.headers['content-encoding'] === undefined || (by === 'jellyfin' && again.headers['content-encoding'] === coding), `${method} ${accept} revalidated: ${again.headers['content-encoding']}`);
+        assert.match(again.headers.vary ?? '', /accept-encoding/i, `${method} ${accept} revalidated`);
+        if (again.headers['cache-control'] !== undefined) assert.match(again.headers['cache-control'], /(?:^|,\s*)no-transform$/, `${method} ${accept} revalidated`);
+      }
+    }
+    // Jellyfin itself does not match the weak form: JellyPass asks it with the strong one.
+    const directWeak = await new Promise((resolve, reject) => {
+      httpRequest(`${baseUrl}/web/index.html`, { headers: { 'If-None-Match': weak } }, (response) => {
+        response.resume();
+        response.on('end', () => resolve(response.statusCode));
+      }).on('error', reject).end();
+    });
+    assert.equal(directWeak, 200, `Jellyfin compares ${weak} exactly`);
+    // A client that accepts no coding of the page, not even unencoded, is refused, on either household; one that accepts
+    // it unencoded gets it so.
+    for (const host of ['jelly-tvhouse.example.test', 'jelly-otherhouse.example.test']) {
+      for (const accept of ['*;q=0', 'br;q=0, gzip;q=0, identity;q=0']) {
+        for (const method of ['GET', 'HEAD']) {
+          const refused = await getWithHeaders(port, '/web/index.html', { Host: host, 'Accept-Encoding': accept }, { method });
+          assert.deepEqual([refused.status, refused.headers['cache-control'], refused.headers['content-encoding']], [406, 'no-store', undefined], `${host} ${method} ${accept}`);
+        }
+      }
+      const identity = await getWithHeaders(port, '/web/index.html', { Host: host, 'Accept-Encoding': 'br;q=0, gzip;q=0' });
+      assert.deepEqual([identity.status, identity.headers['content-encoding']], [200, undefined], host);
+    }
+    // The page with the add-on: a HEAD is encoded as its GET is, with the GET's exact length.
+    for (const accept of ['gzip', 'br']) {
+      const get = await getWithHeaders(port, '/web/index.html', { Host: 'jelly-tvhouse.example.test', 'Accept-Encoding': accept });
+      const head = await getWithHeaders(port, '/web/index.html', { Host: 'jelly-tvhouse.example.test', 'Accept-Encoding': accept }, { method: 'HEAD' });
+      assert.deepEqual([head.status, head.headers['content-encoding'], head.headers['content-length'], head.body.length], [200, accept, String(get.body.length), 0], `tv HEAD ${accept}`);
+    }
   });
 
   it('checks a household sign-in, profile list and protected media in every spelling Jellyfin routes', async (t) => {
@@ -507,6 +610,14 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     });
     const port = gateway.address().port;
     const host = { Host: 'jelly-pathhouse.example.test', Authorization: WEB };
+    jellyfin.seen.length = 0;
+    // Real Jellyfin already refuses repeated-slash discovery paths, so trailing-slash server bases cannot work.
+    assert.equal((await fetch(`${baseUrl}//System/Info/Public`)).status, 404);
+    assert.equal((await fetch(`${baseUrl}/System//Info/Public`)).status, 404);
+    const emptySegment = await getWithHeaders(port, '//x/Users/Public', host);
+    assert.deepEqual([emptySegment.status, emptySegment.text], [404, '{"error":"not_found"}']);
+    assert.deepEqual(jellyfin.seen, [], 'empty-segment path reached real Jellyfin');
+
     // Alice is no member here: refused in every spelling, by name or by ID, as on the plain path.
     for (const pathname of ['/Users/AuthenticateByName', ...spellings]) {
       const answer = await postWithHeaders(port, pathname, host, { Username: 'Alice', Pw: 'alice-paths' });

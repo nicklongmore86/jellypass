@@ -1,6 +1,7 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import type { Duplex } from 'node:stream';
+import type { SelfCheck } from './self-check.js';
 import { ConflictError, UserProvisioningError, type AccessService } from './access-service.js';
 import { HouseholdApp, type HouseholdAppOptions } from './app-api.js';
 import { AdminActionLimitError, AdminSeerrError, type AdminRequests } from './admin-requests.js';
@@ -12,6 +13,7 @@ import type { LogLevel } from './config.js';
 import { HouseholdAddresses, HouseholdAddressError, normalizeEntry } from './household-addresses.js';
 import { HouseholdGateway } from './household-gateway.js';
 import type { HouseholdRequests } from './household-requests.js';
+import { writeWhole } from './html-response.js';
 import { UNKNOWN_VERSION_MESSAGE, UNTESTED_VERSION_MESSAGE, VersionConfirmationError, type HouseholdDecision, type JellyfinVersionGate } from './jellyfin-version.js';
 import { RECENT_REQUESTS_LIMIT } from './seerr.js';
 import { BackgroundTasks } from './shutdown.js';
@@ -19,6 +21,8 @@ import { TvAssets } from './tv-assets.js';
 import { parseWebhook } from './webhook.js';
 
 const BODY_LIMIT = 64 * 1024;
+/** The admin page's bytes, once, so its encoded copies are worked out once (see html-response.ts). */
+const ADMIN_HTML_BYTES = Buffer.from(ADMIN_HTML);
 const ID_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/;
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -31,6 +35,7 @@ export interface ServerTokens {
 }
 
 export interface ServerOptions {
+  selfCheck?: SelfCheck;
   /** Reverse proxies trusted to report the client address in X-Forwarded-For; empty uses the TCP peer. */
   trustedProxies?: string[];
   /**
@@ -38,6 +43,7 @@ export interface ServerOptions {
    * are that household's. Without it there is no member listener.
    */
   householdGateway?: {
+    additionalPluginRoutes?: string[];
     jellyfinUrl: string;
     /**
      * The legacy address rule, `https://<hostPrefix><household>.<domain>` (HOUSEHOLD_DOMAIN, HOUSEHOLD_HOST_PREFIX),
@@ -61,8 +67,8 @@ export interface ServerOptions {
     tvAddon?: { households: string[] | 'all' };
   };
   /**
-   * Runs household "Add to my library" joins after their answer. Pass the BackgroundTasks shutdown stops, so it can
-   * abort them and wait for them before closing the store; without it, joins run untracked.
+   * Runs title-hold checks in the background. Pass the BackgroundTasks shutdown stops, so it can
+   * abort them and wait for them before closing the store.
    */
   background?: Pick<BackgroundTasks, 'run'>;
   /**
@@ -87,9 +93,9 @@ export interface ServerOptions {
    */
   memberWebhook?: boolean;
   /**
-   * The Jellyfin version check (docs: README, "Supported Jellyfin versions"): household hosts answer a fixed 503 unless
-   * it decides they serve, and the admin API reads and confirms it at /v1/jellyfin/version. Without it household hosts
-   * serve whatever the version.
+   * The Jellyfin version check (docs/server-reference.md, "Supported Jellyfin versions"): household hosts answer a fixed 503 unless
+   * it decides they serve (always, unless it enforces: see JELLYFIN_VERSION_ENFORCEMENT), and the admin API reads and
+   * confirms it at /v1/jellyfin/version. Without it household hosts serve whatever the version.
    */
   jellyfinVersion?: Pick<JellyfinVersionGate, 'decision' | 'householdDecision' | 'status' | 'confirm' | 'clearConfirmation' | 'renderMetrics'>;
 }
@@ -146,12 +152,6 @@ export function makeServers(
             ...(options.householdGateway.logLevel ? { logLevel: options.householdGateway.logLevel } : {}),
           }),
         } : {}),
-        ...(service.canJoinLibrary() ? {
-          libraryJoin: {
-            start: (input) => background.run((signal) => service.joinLibrary(input, { signal })),
-            dropped: () => service.recordLibraryJoinDropped(),
-          },
-        } : {}),
       })
     : undefined;
   const jellyfinVersion = options?.jellyfinVersion;
@@ -184,7 +184,14 @@ export function makeServers(
   };
 
   const handleWebhook = async (request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> => {
-    if (!authorized(request, tokens.webhook) && !sameToken(url.searchParams.get('token') ?? '', tokens.webhook)) {
+    // 4.0.0 takes the token from the Authorization header only; a query token is refused whatever it is.
+    if (url.searchParams.has('token')) {
+      if (sameToken(url.searchParams.get('token') ?? '', tokens.webhook)) {
+        service.recordRemovedWebhook('webhook_query_token_removed_use_authorization_header');
+      }
+      return json(response, 400, { error: 'webhook_query_token_removed_use_authorization_header' });
+    }
+    if (!authorized(request, tokens.webhook)) {
       return json(response, 401, { error: 'unauthorized' });
     }
     service.recordWebhookReceived();
@@ -192,6 +199,10 @@ export function makeServers(
     try {
       event = parseWebhook(await readJson(request, { requireJsonType: false }));
     } catch (error) {
+      if (error instanceof Error && error.message === 'webhook_payload_removed_use_current_seerr_template') {
+        service.recordRemovedWebhook(error.message);
+        return json(response, 400, { error: error.message });
+      }
       service.recordInvalidWebhook();
       throw error;
     }
@@ -205,6 +216,8 @@ export function makeServers(
   const admin = createServer({ requireHostHeader: false }, async (request, response) => {
     try {
       if (!singleHost(request)) return invalidHost(response);
+      if (emptyFirstSegment(request)) return json(response, 404, { error: 'not_found' });
+      if (removedPage(request)) return json(response, 410, { error: 'library_add_removed_use_household_app' });
       const url = new URL(request.url ?? '/', 'http://localhost');
       const segments = url.pathname.split('/').filter(Boolean).map(decodeURIComponent);
       // Cross-site request forgery: a state-changing request a browser sends with the session cookie must come from the
@@ -221,16 +234,16 @@ export function makeServers(
         return redirect(response, '/admin/');
       }
       if (request.method === 'GET' && (url.pathname === '/admin' || url.pathname === '/admin/')) {
-        return asset(response, 200, ADMIN_HTML, 'text/html; charset=utf-8');
+        return asset(request, response, 200, ADMIN_HTML_BYTES, 'text/html; charset=utf-8');
       }
       if (request.method === 'GET' && url.pathname === '/admin/styles.css') {
-        return asset(response, 200, ADMIN_STYLES, 'text/css; charset=utf-8');
+        return asset(request, response, 200, Buffer.from(ADMIN_STYLES), 'text/css; charset=utf-8');
       }
       if (request.method === 'GET' && url.pathname === '/admin/app.js') {
-        return asset(response, 200, ADMIN_APP_JS, 'text/javascript; charset=utf-8');
+        return asset(request, response, 200, Buffer.from(ADMIN_APP_JS), 'text/javascript; charset=utf-8');
       }
       if (request.method === 'GET' && url.pathname === '/admin/favicon.svg') {
-        return asset(response, 200, ADMIN_FAVICON_SVG, 'image/svg+xml; charset=utf-8');
+        return asset(request, response, 200, Buffer.from(ADMIN_FAVICON_SVG), 'image/svg+xml; charset=utf-8');
       }
       if (request.method === 'POST' && url.pathname === '/auth/login') {
         if (!webAuth) return json(response, 404, { error: 'web_auth_not_configured' });
@@ -278,6 +291,16 @@ export function makeServers(
         if (session.status !== 'active') return json(response, 401, { error: 'unauthorized' });
       }
 
+      if (request.method === 'POST' && url.pathname === '/v1/self-check') {
+        requireJsonIfBody(request);
+        const results = await options?.selfCheck?.run();
+        if (!options?.selfCheck) return json(response, 404, { error: 'self_check_not_configured' });
+        if (!results) { response.setHeader('Retry-After', '60'); return json(response, 429, { error: 'too_many_requests' }); }
+        response.setHeader('Cache-Control', 'no-store');
+        return json(response, 200, { results });
+      }
+
+      if (request.method === 'GET' && url.pathname === '/v1/webhooks/status') return json(response, 200, service.webhookStatus());
       if (request.method === 'GET' && url.pathname === '/metrics') {
         return text(response, 200, service.renderMetrics() + (jellyfinVersion?.renderMetrics() ?? ''), 'text/plain; version=0.0.4; charset=utf-8');
       }
@@ -480,11 +503,13 @@ export function makeServers(
       answerError(response, error);
     }
   });
-  // The admin listener proxies nothing, so it upgrades nothing.
+  // The admin listener proxies nothing, so it upgrades nothing and opens no tunnel.
   admin.on('upgrade', (request, socket) => {
     if (!singleHost(request)) return invalidHostUpgrade(socket);
     socket.destroy();
   });
+  refuseInvalidMethods(admin);
+  admin.on('connect', (_request, socket) => socket.destroy());
 
   if (!householdGateway) {
     return { admin: Object.assign(admin, { closeWebSockets: async () => 0 }) };
@@ -492,8 +517,12 @@ export function makeServers(
   const member = createServer({ requireHostHeader: false }, async (request, response) => {
     try {
       if (!singleHost(request)) return invalidHost(response);
+      if (emptyFirstSegment(request)) return json(response, 404, { error: 'not_found' });
       const household = addresses().resolve(request.headers.host);
       if (household) {
+        if (removedPage(request)) return json(response, 410, { error: 'library_add_removed_use_household_app' });
+        // The deployment self-check's own request back through the reverse proxy (see self-check.ts).
+        if (options?.selfCheck?.handleProxyRequest(request, response)) return;
         // Every household address, whichever source gave it, waits on the Jellyfin version check.
         const decision = jellyfinVersion ? await jellyfinVersion.householdDecision() : 'serve';
         if (decision !== 'serve') return versionRefused(response, decision);
@@ -515,6 +544,13 @@ export function makeServers(
     } catch (error) {
       answerError(response, error);
     }
+  });
+  refuseInvalidMethods(member);
+  // Node emits CONNECT separately from ordinary requests; never open a household tunnel.
+  member.on('connect', (request, socket) => {
+    socket.on('error', () => socket.destroy());
+    if (!addresses().resolve(request.headers.host)) { socket.destroy(); return; }
+    refuseMethod(socket);
   });
   member.on('upgrade', (request, socket, head) => {
     if (!singleHost(request)) return invalidHostUpgrade(socket);
@@ -549,6 +585,46 @@ export function makeServers(
     admin: Object.assign(admin, { closeWebSockets: async () => 0 }),
     member: Object.assign(member, { closeWebSockets: () => householdGateway.closeWebSockets() }),
   };
+}
+
+/**
+ * A target that starts with two slashes or backslashes (`//`, `/\evil.example`): the URL parser reads it as a host,
+ * not a path, so both listeners refuse it with a fixed 404 right after the Host check, before anything parses or routes
+ * it (the household gateway refuses its other empty segments itself).
+ */
+function emptyFirstSegment(request: IncomingMessage): boolean {
+  return /^[/\\]{2}/.test(request.url ?? '/');
+}
+
+/** The add-to-library page, removed in 4.0.0; answered 410. URL.parse, as `new URL` throws on some targets. */
+function removedPage(request: IncomingMessage): boolean {
+  return ['/jellypass/add', '/jellypass/add.js', '/jellypass/add.css'].includes(URL.parse(request.url ?? '/', 'http://localhost')?.pathname ?? '');
+}
+
+/**
+ * Answers a request whose method token is invalid with a fixed 404. Other client errors are left to Node, so it keeps
+ * its own timeout, parser-error and in-flight-response handling.
+ */
+function refuseInvalidMethods(server: Server): void {
+  const emit = server.emit;
+  server.emit = function (event: string | symbol, ...args: unknown[]): boolean {
+    if (event === 'clientError' && (args[0] as NodeJS.ErrnoException).code !== 'HPE_INVALID_METHOD') return false;
+    return Reflect.apply(emit, this, [event, ...args]);
+  };
+  server.on('clientError', (_error, socket) => refuseMethod(socket));
+}
+
+/** The fixed 404 for an invalid method or a household CONNECT, written to the raw socket. */
+function refuseMethod(socket: Duplex): void {
+  socket.on('error', () => socket.destroy());
+  const responseStarted = (socket as Duplex & { _httpMessage?: ServerResponse })._httpMessage?.headersSent;
+  if (!socket.writable || responseStarted) { socket.destroy(); return; }
+  // Parser errors and CONNECT detach from the HTTP timeouts. Bound even a stalled write.
+  const timer = setTimeout(() => socket.destroy(), 500);
+  timer.unref();
+  socket.once('close', () => clearTimeout(timer));
+  const body = '{"error":"not_found"}';
+  socket.end(`HTTP/1.1 404 Not Found\r\nContent-Type: application/json; charset=utf-8\r\nCache-Control: no-store\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`, () => socket.destroy());
 }
 
 const HOST_VALUE = /^(?:[A-Za-z0-9._-]+|\[[0-9A-Fa-f:.]+\])(?::\d{1,5})?$/;
@@ -744,10 +820,11 @@ function text(response: ServerResponse, status: number, body: string, contentTyp
  * Headers for the admin UI's own files: the household app's set. The UI posts no forms (every form's submit is handled
  * by script with fetch), so form-action is 'none'.
  */
-function asset(response: ServerResponse, status: number, body: string, contentType: string): void {
-  response.writeHead(status, {
+function asset(request: IncomingMessage, response: ServerResponse, status: number, body: Buffer, contentType: string): void {
+  // The page is marked no-transform and compressed (see html-response.ts); its script, styles and icon are sent as they are.
+  writeWhole(request, response, status, {
     'Content-Type': contentType,
-    'Content-Length': Buffer.byteLength(body),
+    'Content-Length': body.length,
     'Cache-Control': 'no-store',
     'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
     'Referrer-Policy': 'no-referrer',
@@ -756,8 +833,7 @@ function asset(response: ServerResponse, status: number, body: string, contentTy
     'Cross-Origin-Opener-Policy': 'same-origin',
     'Cross-Origin-Resource-Policy': 'same-origin',
     'Permissions-Policy': APP_PERMISSIONS_POLICY,
-  });
-  response.end(body);
+  }, body);
 }
 
 function image(response: ServerResponse, body: Uint8Array, upstreamContentType: string): void {
@@ -776,8 +852,9 @@ function image(response: ServerResponse, body: Uint8Array, upstreamContentType: 
 }
 
 /**
- * A household host's fixed 503 while the Jellyfin version is untested and not confirmed, or not known: never relayed
- * to Jellyfin, and the same for every path and for a WebSocket upgrade, so it tells a caller nothing but that.
+ * A household host's fixed 503, when enforcing, while the Jellyfin version is untested and not confirmed, or not known:
+ * never relayed to Jellyfin, and the same for every path and for a WebSocket upgrade, so it tells a caller nothing but
+ * that.
  */
 function versionRefusal(decision: Exclude<HouseholdDecision, 'serve'>): { headers: Record<string, string>; body: string } {
   const body = decision === 'refuse' ? UNTESTED_VERSION_MESSAGE : UNKNOWN_VERSION_MESSAGE;

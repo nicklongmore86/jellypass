@@ -10,7 +10,7 @@ const BASE = {
   SEERR_URL: 'http://seerr.test',
   SEERR_API_KEY: 'seerr-key',
 };
-const KEYS = [...Object.keys(BASE), 'REQUEST_BACKFILL_SINCE', 'REQUEST_BACKFILL_ENABLED', 'LOG_LEVEL', 'WS_IDLE_TIMEOUT_MS', 'WS_UPSTREAM_IDLE_TIMEOUT_MS', 'JELLYQUEST_BRIDGE_ENABLED', 'TRUSTED_PROXIES', 'TMDB_API_KEY', 'HOUSEHOLD_APP_ENABLED', 'HOUSEHOLD_DOMAIN', 'HOUSEHOLD_HOST_PREFIX', 'HOUSEHOLD_GATEWAY_ENABLED', 'TV_ADDON_ENABLED', 'TV_ADDON_HOUSEHOLDS', 'HOST', 'PORT', 'ADMIN_HOST', 'ADMIN_PORT', 'LEGACY_WEBHOOK_ON_MEMBER_PORT', 'JELLYFIN_UNTESTED_VERSION_OK'];
+const KEYS = [...Object.keys(BASE), 'REQUEST_BACKFILL_SINCE', 'REQUEST_BACKFILL_ENABLED', 'LOG_LEVEL', 'WS_IDLE_TIMEOUT_MS', 'WS_UPSTREAM_IDLE_TIMEOUT_MS', 'JELLYQUEST_BRIDGE_ENABLED', 'TRUSTED_PROXIES', 'TMDB_API_KEY', 'HOUSEHOLD_APP_ENABLED', 'HOUSEHOLD_DOMAIN', 'HOUSEHOLD_HOST_PREFIX', 'HOUSEHOLD_GATEWAY_ENABLED', 'TV_ADDON_ENABLED', 'TV_ADDON_HOUSEHOLDS', 'HOST', 'PORT', 'ADMIN_HOST', 'ADMIN_PORT', 'LEGACY_WEBHOOK_ON_MEMBER_PORT', 'JELLYFIN_UNTESTED_VERSION_OK', 'HOUSEHOLD_PLUGIN_ROUTES', 'JELLYFIN_PUBLIC_URLS', 'SEERR_PUBLIC_URL'];
 const saved = Object.fromEntries(KEYS.map((key) => [key, process.env[key]]));
 
 function load(overrides = {}) {
@@ -322,6 +322,15 @@ describe('removed configuration', () => {
       const warnings = removedWarnings();
       assert.equal(warnings.length, 1, value);
       assert.equal(warnings[0].level, 'warn');
+    }
+  });
+});
+
+describe('additional household plugin configuration', () => {
+  afterEach(restoreEnvironment);
+  it('fails config loading for elevated namespaces and historical refusals', () => {
+    for (const route of ['/plugins/abc/configuration', '/auth/keys', '/system/configuration', '/startup/user', '/users/abc/policy', '/scheduledtasks', '/items/abc/refresh', '/libraries/availableoptions', '/library/media/updated', '/jellyfinenhanced/reviews']) {
+      assert.throws(() => load({ HOUSEHOLD_PLUGIN_ROUTES: route }), /HOUSEHOLD_PLUGIN_ROUTES.*elevated\/admin.*historically refused/, route);
     }
   });
 });

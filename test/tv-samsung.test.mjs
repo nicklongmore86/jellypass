@@ -121,9 +121,9 @@ describe('Samsung app: cross-origin rules on a household host', { timeout: 30_00
         assert.equal(read.headers.vary, undefined, `${host} ${pathname}`);
       }
     }
-    // The admin host never serves the manifest; an unlisted household relays the path to Jellyfin, as before.
+    // The admin host never serves the manifest; a household without the add-on refuses the inactive path.
     assert.equal((await get(on.adminPort, MANIFEST, { Host: ADMIN_HOST })).status, 401);
-    assert.equal((await get(on.port, MANIFEST, { Host: HOST_B })).text, '{}');
+    assert.equal((await get(on.port, MANIFEST, { Host: HOST_B })).text, '{"error":"not_found"}');
   });
 
   it('gives the add-on\'s files and manifest to the app\'s origin, and the household app\'s own pages to no one', async (t) => {

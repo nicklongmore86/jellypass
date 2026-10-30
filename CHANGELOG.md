@@ -18,13 +18,43 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
-**BREAKING.** This is the 4.0.0 core: the admin site becomes private by
-default, on a listener of its own, and households can be served at any
-hostname. **An existing install must change its configuration before it
-upgrades** (steps below); with them, existing household addresses such as
+**BREAKING.** This is 4.0.0: the admin site becomes private by default, on a
+listener of its own, households can be served at any hostname, household
+hostnames refuse an untested Jellyfin version until it is confirmed, and the
+legacy entry points are removed. **An existing install must change its
+configuration before it upgrades** (see "Upgrade from 3.9.x or later 3.x"
+below); with those changes, existing household addresses such as
 `https://jelly-<household>.<HOUSEHOLD_DOMAIN>` keep working unchanged.
 
-### Breaking changes
+### BREAKING — 4.0 cuts
+
+- Removed the legacy add-to-library page. Use **Get this** in the household app.
+- Removed webhook query-token authentication. **Production impact:** earlier docs
+  explicitly offered `?token=`; installations using it will receive
+  `400 webhook_query_token_removed_use_authorization_header`. Remove the query
+  parameter and configure Seerr's authorization header as
+  `Bearer YOUR_WEBHOOK_TOKEN` before upgrading.
+- Availability webhooks require the full current Seerr template in docs/server-reference.md
+  (event, media, request and requestedBy). Reduced older templates receive
+  `400 webhook_payload_removed_use_current_seerr_template`; replace the template
+  in Seerr's webhook UI. Empty Jellyfin IDs still resolve through the Seerr API.
+- Upgrade from **2.x via 3.9.x first**, with a state backup.
+  1.x state (schema v1–v6) files fail startup with that instruction.
+  Schema v7 is retained for 3.x;
+  2.x also wrote v7 without a release marker, so that provenance cannot be
+  detected. Rollback to 2.x is unsupported; use a matching pre-upgrade backup.
+
+Before upgrading, on **3.9.x or later 3.x**:
+
+1. In Seerr → Settings → Notifications → Webhook, set Authorization Header to `Bearer <WEBHOOK_TOKEN>`.
+2. Remove `?token=…` from the URL.
+3. Check the payload has `request.requestedBy` with `jellyfinUserId` and `username`.
+4. Press Test and expect `202 ignored` (`401` means the header is wrong).
+5. After upgrading, watch `jfa_webhooks_total{result="removed_form"}` and the admin dashboard warning.
+
+Refused availability webhooks are not retried; missed titles rely on the request backfill.
+
+### BREAKING — admin listener, household addresses and Jellyfin versions
 
 - **Two listeners.** The admin site (`/admin/`, `/auth/*`), the administrative
   API (`/v1/*`), `/metrics`, the Seerr webhook (`/webhooks/seerr`) and
@@ -45,13 +75,25 @@ upgrades** (steps below); with them, existing household addresses such as
   `PORT`. The image's built-in `HEALTHCHECK` and the Compose files are updated;
   a health check of your own on `:8787/health` now fails.
 - **The Seerr webhook URL** moves to the admin port, for example
-  `http://jellypass:8788/webhooks/seerr`. `LEGACY_WEBHOOK_ON_MEMBER_PORT=true`
-  keeps the old URL on `PORT` working while you change it (it answers
-  `POST /webhooks/seerr` there for a `Host` that is no household's, never on a
-  household address, and logs a warning at startup).
+  `http://jellypass:8788/webhooks/seerr`, and authenticates with the
+  `Authorization: Bearer <WEBHOOK_TOKEN>` header only (see 4.0 cuts).
+  `LEGACY_WEBHOOK_ON_MEMBER_PORT=true` keeps the old URL on `PORT` working
+  while you change it (it answers `POST /webhooks/seerr` there for a `Host`
+  that is no household's, never on a household address, with the same Bearer
+  check, and logs a warning at startup).
+- **Untested Jellyfin versions are refused.** 3.10.0 only warned: on a
+  Jellyfin version outside the supported releases (12.x and 10.11.x, plain
+  numeric versions only), household hostnames now answer every request and
+  WebSocket with a fixed `503` until an administrator confirms that exact
+  version (**Allow Jellyfin X** in the admin site, or
+  `JELLYFIN_UNTESTED_VERSION_OK`), and also while the version cannot be read.
+  The admin listener is never refused. A version confirmed under 3.10.0 is
+  kept by the upgrade, so a household already running on a confirmed version
+  keeps serving. On a supported version nothing changes.
 - **State file schema 8.** 4.0.0 migrates a schema 7 file on its first start
-  (only the version changes; the new `householdAddresses` map is added when an
-  address is first saved). **3.9.0 refuses to start on a schema 8 file**
+  (only the version changes, and a stored Jellyfin version confirmation is
+  kept; the new `householdAddresses` map is added when an address is first
+  saved). **3.x refuses to start on a schema 8 file**
   (`unsupported state schema version`): see Rollback.
 - **`HOUSEHOLD_APP_ENABLED` requires the household gateway** (on by
   `HOUSEHOLD_GATEWAY_ENABLED=true` or by `HOUSEHOLD_DOMAIN`) rather than
@@ -64,20 +106,13 @@ upgrades** (steps below); with them, existing household addresses such as
 
 ### Security
 
-- **A request must name exactly one host.** Before 4.0.0, a request with two
-  `Host` headers was answered for the first of them, so a proxy that routed on
-  another one could reach a different household's hostname (its users list,
-  for example) or, with an unknown first `Host`, the admin site, API and
-  webhook. Both listeners now refuse, with a fixed
-  `400 {"error":"invalid_host"}` and the connection closed, before anything is
-  relayed: more or fewer than one `Host` header (HTTP/1.0 may send none), a
-  `Host` that is not a plain `host[:port]` (userinfo, whitespace, a path or
-  other characters), and an absolute-form request target
-  (`GET http://host/path`) whose authority is not the `Host`. WebSocket
-  upgrades get the same `400`, and a refused upgrade's connection is closed on
-  JellyPass's side even if the client keeps its own side open. A reverse proxy
-  that sets one `Host` (nginx's `proxy_set_header Host $host`, for example)
-  is unaffected.
+- Household gateway routes now deny by default: explicit Jellyfin 10.11.11/12.4 OpenAPI templates, legacy client routes and vetted plugin compatibility entries replace open-ended relay. Unknown plugin namespaces return fixed JSON 404 over HTTP and WebSocket; only the session socket can upgrade. Existing refusals and household scope checks remain. Jellyfin Enhanced public-config is preserved byte-identically.
+- Additional plugin endpoints require deliberate exact-path `HOUSEHOLD_PLUGIN_ROUTES` configuration and a privacy audit; see "Deployment self-check and plugin routes" in docs/server-reference.md. Previously unrecognised paths (including inactive TV and removed bridge paths) no longer relay.
+
+- Household hosts read a backslash (`\` or `%5C`) as a slash when refusing paths with empty segments, so `/\` and `/\evil.example` get `404 not_found` as `//` does, instead of `502 Invalid URL`. The admin listener refuses a path starting with two slashes or backslashes (`//`, `/\`, `/\evil.example`) with the same `404`; it answered `502 Invalid URL` or read the rest as a host name. Neither reaches Jellyfin.
+- 3.10.0's one-`Host` check (`400 {"error":"invalid_host"}`, connection
+  closed) and the `//` / `/\` refusal run first on both listeners, before the
+  member listener's `421`, the version check or any other routing.
 
 ### Added
 
@@ -95,115 +130,212 @@ upgrades** (steps below); with them, existing household addresses such as
 - `HOUSEHOLD_GATEWAY_ENABLED` turns the gateway on without `HOUSEHOLD_DOMAIN`.
   `HOUSEHOLD_DOMAIN` and `HOUSEHOLD_HOST_PREFIX` keep working as the legacy
   rule: every household also keeps its generated address.
+- Authenticated admin deployment self-check for direct Jellyfin origins, Quick Connect, household proxy headers, public Seerr, version-gate support, and TMDB key validity. Public probes carry no service credentials, use timeouts and bounded reads, never follow redirects, and run at most once per minute. Inside probes explicitly warn about external-reachability limits.
 
-### Upgrade from 3.9.0
+### Changed
+
+- An unconfirmed Jellyfin version is logged once when it is first read, and
+  not again after an administrator confirms it or while
+  `JELLYFIN_UNTESTED_VERSION_OK` names it; 3.10.0 could repeat the warning
+  on later reads.
+- README: shortened to an overview, quick start and links. Its reference
+  sections moved unchanged to `docs/server-reference.md` and
+  `docs/household-hosts.md`, and the guide is at https://jellypass.app/docs/.
+  Links to the README's old sections still land on it, in a "Moved sections"
+  list that points to their new place.
+  The quick start now gives the data folder to UID 1000
+  (`sudo chown 1000:1000 data`): created by root with `mkdir -m 700` alone,
+  the container could not write its state file and stopped with `EACCES`.
+- `compose.example.yaml` (the build-from-source Compose file): its service is
+  now named `jellypass`, as in `compose.yaml` and the webhook URL examples,
+  instead of `access-bridge`. If you started JellyPass from that file before,
+  run `docker compose -f compose.example.yaml up --build -d --remove-orphans`
+  once, so the old `access-bridge` container is removed and frees port 8787.
+
+### Upgrade from 3.9.x or later 3.x
 
 For an install like the documented one (Compose, a reverse proxy routing the
 household hostnames to `:8787`, Seerr calling `:8787/webhooks/seerr`). Nothing
 needs to change at the reverse proxy for household hostnames: they stay on
-port `8787`.
+port `8787`. From 2.x, upgrade to 3.9.x or later 3.x first.
 
 1. Back up the state file, `.env` and the Compose file (`cp -p`).
-2. In the JellyPass `.env`, set `TRUSTED_PROXIES` to the reverse proxy's
+2. On the running 3.x, do the Seerr steps under "BREAKING — 4.0 cuts": the
+   `Authorization: Bearer <WEBHOOK_TOKEN>` header, no `?token=` in the URL,
+   the full template. On Jellyfin outside 12.x and 10.11.x, confirm its exact
+   version in the admin site (**Allow Jellyfin X**) or set
+   `JELLYFIN_UNTESTED_VERSION_OK`, or household hostnames answer `503` after
+   the upgrade.
+3. In the JellyPass `.env`, set `TRUSTED_PROXIES` to the reverse proxy's
    address if it is empty (`HOUSEHOLD_DOMAIN` set means the gateway is on), and
    add `LEGACY_WEBHOOK_ON_MEMBER_PORT=true` for the switch-over.
-3. In the Compose file, add the admin listener: `ADMIN_HOST: 0.0.0.0` and
+4. In the Compose file, add the admin listener: `ADMIN_HOST: 0.0.0.0` and
    `ADMIN_PORT: 8788` under `environment`, a port mapping that publishes `8788`
    on a private address only (for example `127.0.0.1:8788:8788`, or the LAN
    address you reached the admin site at), and change any `healthcheck` URL to
    `http://127.0.0.1:8788/health`.
-4. If administrators reached the admin site through the reverse proxy, point
+5. If administrators reached the admin site through the reverse proxy, point
    that proxy host at port `8788` instead of `8787` (keep it gated); if they
    used `http://<lan address>:8787/admin/`, they now use `:8788`.
-5. Pull 4.0.0 and recreate the container. Check `curl http://127.0.0.1:8788/health`,
+6. Pull 4.0.0 and recreate the container. Check `curl http://127.0.0.1:8788/health`,
    the startup log's `admin` and `member` listeners, and a household address
    (its sign-in page and a WebSocket). The member port answers anything else
    with `421`.
-6. In Seerr (**Settings → Notifications → Webhook**), change the URL's port to
-   `8788` (for example `http://jellypass:8788/webhooks/seerr`), save, and use
-   **Test** (`202 {"status":"ignored"}`). Then remove
-   `LEGACY_WEBHOOK_ON_MEMBER_PORT` and recreate the container once more.
-7. Optional: map new addresses with `PUT /v1/groups/{id}/addresses`. The
+7. In Seerr (**Settings → Notifications → Webhook**), change the URL's port to
+   the admin listener's `8788` (for example
+   `http://jellypass:8788/webhooks/seerr`, with no query string), keep the
+   Bearer header, save, and use **Test** (`202 {"status":"ignored"}`). Then
+   remove `LEGACY_WEBHOOK_ON_MEMBER_PORT` and recreate the container once more.
+8. Optional: map new addresses with `PUT /v1/groups/{id}/addresses`. The
    legacy addresses stay as long as `HOUSEHOLD_DOMAIN` is set.
 
-### Rollback to 3.9.0
+### Rollback to 3.x
 
-3.9.0 cannot read a schema 8 state file. Either restore the state-file backup
+3.x cannot read a schema 8 state file. Either restore the state-file backup
 from step 1 (losing changes made since), or stop 4.0.0 and downgrade the file
-in place, which drops only the address map (3.9.0 serves the legacy addresses
-alone):
+in place, which drops only the address map (3.x serves the legacy addresses
+alone; a Jellyfin version confirmation is kept, and 3.10.0 reads it):
 
 ```sh
 node -e "const f=process.argv[1],fs=require('fs'),s=JSON.parse(fs.readFileSync(f,'utf8'));if(s.version!==8)throw new Error('not schema 8');s.version=7;delete s.householdAddresses;fs.writeFileSync(f,JSON.stringify(s,null,2)+'\n')" data/grants.json
 ```
 
-Then restore the 3.9.0 Compose file and `.env` (the admin site, webhook and
-health back on `:8787`; 3.9.0 ignores `ADMIN_HOST`, `ADMIN_PORT`,
+Then restore the 3.x Compose file and `.env` (the admin site, webhook and
+health back on `:8787`; 3.x ignores `ADMIN_HOST`, `ADMIN_PORT`,
 `HOUSEHOLD_GATEWAY_ENABLED` and `LEGACY_WEBHOOK_ON_MEMBER_PORT`), point Seerr's
-webhook and any admin proxy host back at `:8787`, and start 3.9.0.
+webhook and any admin proxy host back at `:8787` (the Bearer header keeps
+working on 3.x), and start the 3.x image you upgraded from.
 
-### Supported Jellyfin versions
+## [3.10.0] - 2026-10-30
 
-The version check below applies on the member listener to every household
-address, mapped or legacy, for HTTP and WebSocket requests alike; the admin
-listener (admin site, API, webhook, health) is never paused by it.
+This is a minor release. JellyPass now has a written Jellyfin support policy:
+**it supports the current Jellyfin release and the one before it, Jellyfin
+12.x and 10.11.x**, and tests both against a real Jellyfin in CI and before
+every release; on any other Jellyfin version, JellyPass warns until an
+administrator confirms that exact version, and household hostnames keep
+serving as before. Requests that name more or fewer than one host, and
+household paths with empty segments, are now refused (see Security), and
+every HTML page is marked `no-transform` so a CDN that honours it adds no
+scripts. The state file (schema v7, plus one optional field), the app API
+(`v1`, `apiVersion` 2), webhook payloads, and every existing setting and
+administrator API endpoint are as in 3.9.0. This is a minor release because a
+setting, administrator API endpoints and metrics are added; the refusals fall
+under the rule at the top of this file. On a supported Jellyfin, nothing needs
+doing. Read these before upgrading:
 
-JellyPass now has a written Jellyfin support policy: **it supports the current
-Jellyfin release and the one before it, Jellyfin 12.x and 10.11.x**, and tests
-both against a real Jellyfin in CI and before every release. On any other
-Jellyfin version, household hostnames pause until an administrator confirms
-that exact version. On a supported version nothing changes. Read these before
-upgrading:
-
-- **Check your Jellyfin version first.** On Jellyfin 12.x or 10.11.x (every
-  version the README's "Jellyfin 10.11 or newer" covered until now) nothing
+- **Check your Jellyfin version first.** On Jellyfin 12.x or 10.11.x nothing
   changes and nothing needs configuring. On any other version (an older 10.x,
-  a pre-release, or a future 13.0), **household hostnames answer `503` from
-  the moment you upgrade** until you confirm it: open the admin site and choose
-  **Allow Jellyfin X**, or set `JELLYFIN_UNTESTED_VERSION_OK` to that exact
-  version before upgrading. The admin site, webhooks and grants keep working
-  either way.
-- **Upgrading Jellyfin to an untested version later pauses household
-  hostnames again,** within five minutes, until that version is confirmed in
-  turn. A confirmation covers one exact version.
-- **Jellyfin unreachable when JellyPass starts:** JellyPass starts anyway, and
-  household hostnames answer `503` until Jellyfin reports its version (read
-  again every 30 seconds and on the next household request), instead of
-  relaying unchecked. They serve as soon as Jellyfin answers.
+  a future 13.0 or later, or **any build whose version has a suffix**: a
+  pre-release such as `12.5.0-rc1`, build metadata such as `12.4.0+abc`, or
+  any other non-numeric part), the version is **unconfirmed**: JellyPass logs
+  a warning (once per version), the admin site shows it with **Allow
+  Jellyfin X**, and **household hostnames keep serving exactly as in 3.9.0**.
+  Confirm that exact version in the admin site, or set
+  `JELLYFIN_UNTESTED_VERSION_OK` to it, to clear the warning.
+- **JellyPass 4.0.0 will refuse household requests on an unconfirmed
+  version:** household hostnames will answer `503` until that exact version is
+  confirmed, and also while the version cannot be read. 3.10.0 only warns,
+  because refusing requests that worked in 3.9.0 is not a security or privacy
+  fix.
+- **Upgrading Jellyfin to an untested version later warns again,** within
+  five minutes, until that version is confirmed in turn. A confirmation
+  covers one exact version.
+- **Jellyfin unreachable when JellyPass starts:** JellyPass starts anyway,
+  household hostnames serve as before, and the admin site shows that the
+  version cannot be read until Jellyfin reports it (read again every 30
+  seconds).
 - **On Jellyfin 12, clients that give their token only the legacy way**
   (`X-Emby-Token`, `X-Emby-Authorization`, `X-MediaBrowser-Token`, the `Emby`
   scheme or `api_key`) get `401` on household hostnames, as Jellyfin 12 itself
   refuses them. JellyPass checks a client's credentials exactly as given and
   never translates them into a form Jellyfin 12 reads. On 10.11 they work as
   before.
+- **A reverse proxy that sends one `Host` is unaffected** by the new Host
+  checks; only requests that name more or fewer than one host, or a malformed
+  one, get `400 invalid_host`. See Security.
+- **Behind a CDN:** HTML pages now carry `no-transform`, so a CDN that honours
+  it (Cloudflare, for example) no longer injects its Web Analytics script into
+  them, and Web Analytics' automatic setup stops reporting visits to these
+  pages. JellyPass compresses the pages itself instead. No CDN purge is needed
+  unless your CDN caches HTML pages (Cloudflare does not by default); a cached
+  copy keeps any injected script until it expires or is purged.
 - **The state file keeps schema v7.** A confirmation is stored in a new
   optional field, `jellyfinVersionConfirmed`, which 3.9.0 keeps as it is
   without reading it, so rolling back needs no state change (3.9.0 does not
   check the version at all).
 - **To roll back,** set `JELLYPASS_IMAGE` back to
-  `ghcr.io/nicklongmore86/jellypass:3.9.0` and recreate the container.
+  `ghcr.io/nicklongmore86/jellypass:3.9.0` and recreate the container. No
+  state-file or setting change is needed (`JELLYFIN_UNTESTED_VERSION_OK` is
+  ignored by 3.9.0).
+- **The iPhone, iPad and Android app ships separately;** its changes (mobile
+  1.3.0) and its App Store screenshot workflow are described in
+  `mobile/CHANGELOG.md`.
+
+### Security
+
+- **A request must name exactly one host.** Until now, a request with two
+  `Host` headers was answered for the first of them, so a client reaching the
+  JellyPass port directly could have it read a different host from a proxy
+  that routed on another one: another household's hostname, or the admin
+  site, API and webhook. JellyPass now refuses, with a fixed
+  `400 {"error":"invalid_host"}` and the connection closed, before a household
+  is chosen or anything is relayed: more or fewer than one `Host` header, a
+  `Host` that is not a plain `host[:port]` (userinfo, whitespace, a path or
+  other characters, or empty), and an absolute-form request target
+  (`GET http://host/path`) whose authority is not the `Host`. WebSocket
+  upgrades get the same `400`, and the connection is closed on JellyPass's
+  side even if the client keeps its own side open. A reverse proxy that sets
+  one `Host` (Nginx Proxy Manager's `proxy_set_header Host $host`, for
+  example) is unaffected. An HTTP/1.0 request may still leave `Host` out: with
+  an ordinary path it is answered as no household's, as before; with an
+  absolute-form target it is refused.
+- **Household hosts refuse paths with empty segments.** HTTP requests and
+  WebSocket upgrades whose raw or once-decoded path contains `//` receive a
+  fixed `404 not_found` before any relay. This is precautionary hardening; no
+  disclosure was observed against a real Jellyfin.
 
 ### Added
 
 - **Supported Jellyfin versions.** JellyPass reads Jellyfin's version from
-  `/System/Info/Public` at startup and every five minutes, and logs a warning
-  on a version outside the supported releases (12.x and 10.11.x). Household
-  hostnames then refuse every request and WebSocket with a fixed `503` and a
-  plain-text message, never relaying it to Jellyfin, until an administrator
-  confirms that exact version. See README, "Supported Jellyfin versions".
-- **Admin site:** a banner shows an untested or unreadable Jellyfin version,
-  with **Allow Jellyfin X** (and **Withdraw** once allowed); the connection
-  status reads "Household hosts paused" while they are.
-- **Administrator API:** `GET /v1/jellyfin/version`,
-  `PUT /v1/jellyfin/version/confirmation` (`{"version": "..."}`, exactly the
-  version Jellyfin reports now) and `DELETE /v1/jellyfin/version/confirmation`.
+  `/System/Info/Public` at startup and every five minutes, and logs a warning,
+  once per version, on a version outside the supported releases (12.x and
+  10.11.x, with plain numeric versions only; a suffixed build is outside
+  them) until an administrator confirms that exact version. Household
+  hostnames keep serving on it. See README, "Supported Jellyfin versions".
+- **Admin site:** a banner shows an unconfirmed or unreadable Jellyfin
+  version, with **Allow Jellyfin X** (and **Withdraw** once allowed); the
+  connection status reads "Jellyfin version not confirmed" until it is.
+- **Administrator API:** `GET /v1/jellyfin/version` (with `confirmation`:
+  `not_needed`, `confirmed` or `unconfirmed`, and `enforcement`: `warn` in
+  3.x), `PUT /v1/jellyfin/version/confirmation` (`{"version": "..."}`,
+  exactly the version Jellyfin reports now) and
+  `DELETE /v1/jellyfin/version/confirmation`.
 - **Setting:** `JELLYFIN_UNTESTED_VERSION_OK`, one exact untested version that
-  household hostnames serve on without confirming it in the admin site.
+  counts as confirmed without confirming it in the admin site.
 - **Metrics:** `jfa_jellyfin_version_info{version,supported,confirmed}`,
-  `jfa_jellyfin_version_supported` and `jfa_household_hosts_refusing`.
+  `jfa_jellyfin_version_supported` and `jfa_household_hosts_refusing` (always
+  `0` in 3.x).
 
 ### Changed
 
+- **No CDN adds scripts to JellyPass's pages.** Every HTML page JellyPass serves
+  or relays (the household app at `/jellypass/app/`, Jellyfin web under `/web/`
+  with or without the TV add-on, `/jellypass/add`, any other HTML Jellyfin
+  sends on a household hostname, and the admin site) now has `no-transform`
+  added to its `Cache-Control` (`no-store, no-transform`, `no-cache,
+  no-transform`, or `no-transform` alone where there was none), so a CDN such
+  as Cloudflare, whose Web Analytics automatic setup injects a
+  `static.cloudflareinsights.com` script, leaves it alone. Caching is
+  unchanged. Because such a CDN also stops compressing these pages, JellyPass
+  compresses them itself (br or gzip, as the client accepts, with
+  `Vary: Accept-Encoding`); a page Jellyfin already encoded is passed through
+  as it is. A `HEAD` gets the same headers as the `GET`. A page JellyPass
+  compresses carries Jellyfin's `ETag` made weak (`W/"…"`), and still
+  revalidates: JellyPass asks Jellyfin with the strong tag, and the `304`
+  carries the weak one back. A client that accepts no coding of a page at all,
+  not even unencoded (`Accept-Encoding: *;q=0`, for example), gets a `406`.
+  Scripts, styles, images, JSON, video and HLS are not touched, so the CDN
+  keeps compressing them. Nothing to configure.
 - **CI and the release workflow test every supported Jellyfin release:** the
   real-Jellyfin suite runs once against `jellyfin/jellyfin:12.4.20261026-211555`
   (12.4.0) and once against `jellyfin/jellyfin:10.11.11`, instead of 10.11.3
@@ -3351,7 +3483,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.9.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.10.0...HEAD
+[3.10.0]: https://github.com/nicklongmore86/jellypass/compare/v3.9.0...v3.10.0
 [3.9.0]: https://github.com/nicklongmore86/jellypass/compare/v3.8.1...v3.9.0
 [3.8.1]: https://github.com/nicklongmore86/jellypass/compare/v3.8.0...v3.8.1
 [3.8.0]: https://github.com/nicklongmore86/jellypass/compare/v3.7.0...v3.8.0

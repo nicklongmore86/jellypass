@@ -39,8 +39,8 @@ describe('a household address', () => {
     ['https://my-house-2.example.com', 'my-house-2.example.com'],
     ['https://xn--bcher-kva.example', 'xn--bcher-kva.example'],
     [`https://${'a'.repeat(63)}.example.com`, `${'a'.repeat(63)}.example.com`],
-    // The demo household App Review signs in to, and every address older app versions took.
-    ['https://jelly-demo.jellypass.app', 'jelly-demo.jellypass.app'],
+    // Neutral example addresses with a household subdomain and the legacy jelly- prefix.
+    ['https://grove.example.org', 'grove.example.org'],
     ['https://jelly-household.example.test', 'jelly-household.example.test'],
     // A paste from notes or chat: ASCII space, tab, CR and LF at the ends only.
     ['https://media.example.com\n', 'media.example.com'],
@@ -161,7 +161,7 @@ describe('a household address', () => {
   });
 
   it('gives an origin that reads back as itself', () => {
-    for (const input of ['HTTPS://Films.Example.NET:8443/', 'https://media.example.com:443', 'https://jelly-demo.jellypass.app/']) {
+    for (const input of ['HTTPS://Films.Example.NET:8443/', 'https://media.example.com:443', 'https://grove.example.org/']) {
       const { origin: canonical } = parseHouseholdAddress(input)!;
       expect(parseHouseholdAddress(canonical)?.origin).toBe(canonical);
     }

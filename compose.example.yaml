@@ -1,5 +1,5 @@
 services:
-  access-bridge:
+  jellypass:
     build: .
     restart: unless-stopped
     env_file:
