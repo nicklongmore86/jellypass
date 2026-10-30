@@ -1,10 +1,7 @@
 name: Mobile screenshots
 
-# App Store screenshots of the household app (mobile/), taken from a Release build in the iOS simulator against the
-# public demo household: iPhone 6.9" (1320x2868) and iPad 13" (2064x2752), both portrait, which App Store Connect takes
-# as they are. The flows and the script that drives them are in .github/mobile-screenshots/; the demo address is only
-# there, never in the app. The screenshots are this run's `screenshots` artifact. No secrets: a simulator build is not
-# signed with an Apple certificate and nothing is published.
+# App Store screenshots use a simulator build and a configured demo household.
+# Set MOBILE_SCREENSHOT_ADDRESS and MOBILE_SCREENSHOT_PROFILE repository secrets.
 #
 # Run by hand (Actions → Mobile screenshots → Run workflow) on any ref, or push a `screenshots/**` branch to take them
 # from a release branch before it is merged.
@@ -27,6 +24,8 @@ jobs:
     runs-on: macos-latest
     timeout-minutes: 90
     env:
+      ADDRESS: ${{ secrets.MOBILE_SCREENSHOT_ADDRESS }}
+      PROFILE: ${{ secrets.MOBILE_SCREENSHOT_PROFILE }}
       EXPO_NO_TELEMETRY: 1
       # Maestro's install script reads this; pinned like the actions.
       MAESTRO_VERSION: 2.11.0
@@ -47,6 +46,8 @@ jobs:
           node-version: 22
           cache: pnpm
           cache-dependency-path: mobile/pnpm-lock.yaml
+      - name: Require screenshot configuration
+        run: test -n "$ADDRESS" && test -n "$PROFILE"
       - name: Show the toolchain
         run: |
           xcodebuild -version

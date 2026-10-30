@@ -77,3 +77,20 @@ Maintainers create releases from a clean, tested `main` branch:
 6. Keep the previous image tag available for rollback.
 
 Do not move or overwrite published version tags.
+
+## Private identifier guard
+
+`pnpm test` scans all tracked files when a private deny-list is available. Set
+`JELLYPASS_PRIVATE_DENYLIST` to an external UTF-8 file, or use the gitignored
+`.private-denylist.txt` at the repository root. Use one literal identifier per
+line; blank lines and lines beginning with `#` are ignored. Matching is case
+insensitive. Never commit the list or include its values in reports.
+
+```sh
+JELLYPASS_PRIVATE_DENYLIST=/path/to/private-list.txt pnpm test
+```
+
+Without a list, the guard and private release-note sub-check visibly skip;
+generic release-note checks still run. CI maintainers should supply the file
+through private runner configuration and set the environment variable to its
+path. An explicitly configured unreadable or empty list fails the tests.

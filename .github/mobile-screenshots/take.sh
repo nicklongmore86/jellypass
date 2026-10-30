@@ -51,7 +51,7 @@ fi
 for shot in "${shots[@]}"; do
   flow="${shot%%:*}"
   file="${out}/${shot#*:}.png"
-  if ! maestro --device "$udid" test "${here}/flows/${flow}.yaml"; then
+  if ! maestro --device "$udid" test -e ADDRESS="$ADDRESS" -e PROFILE="$PROFILE" "${here}/flows/${flow}.yaml"; then
     # What the screen showed when the flow gave up, for the run's maestro-debug artifact.
     xcrun simctl io "$udid" screenshot --type=png "${out}/failed-${flow}.png" || true
     echo "::error::The ${flow} flow failed on ${name}"

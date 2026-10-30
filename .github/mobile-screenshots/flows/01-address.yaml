@@ -1,6 +1,3 @@
-# A fresh install: the address screen, with the public demo household's address typed in. The demo is the App Store
-# review household (only Blender open movies and public-domain titles); its address lives here, in the flows, and never
-# in the app.
 appId: com.rtc-services.jellypass
 ---
 - launchApp:
@@ -9,11 +6,9 @@ appId: com.rtc-services.jellypass
 - extendedWaitUntil:
     visible: "Connect to your household"
     timeout: 120000
-# The label's Text comes first in the tree, the field (named by the same words) second.
 - tapOn:
     text: "Household address"
     index: 1
-- inputText: "https://jelly-demo.jellypass.app"
-# A tap outside the field puts the keyboard away (Maestro's hideKeyboard is unreliable on the iPhone).
+- inputText: "${ADDRESS}"
 - tapOn: "Connect to your household"
-- assertVisible: "https://jelly-demo.jellypass.app"
+- assertVisible: "${ADDRESS}"
