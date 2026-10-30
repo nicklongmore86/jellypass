@@ -18,8 +18,12 @@ export function parseWebhook(value: unknown): SeerrWebhook | IgnoredWebhook {
   // acknowledged without validating IDs that Seerr leaves empty for them.
   if (notificationType !== 'MEDIA_AVAILABLE') return { notificationType };
   const request = objectAt(body, 'request');
-  const media = optionalObjectAt(body, 'media');
-  const requestedBy = optionalObjectAt(request, 'requestedBy');
+  idAt(request, 'id');
+  if (!('event' in body) || !('media' in body) || !('requestedBy' in request)) {
+    throw new Error('webhook_payload_removed_use_current_seerr_template');
+  }
+  const media = objectAt(body, 'media');
+  const requestedBy = objectAt(request, 'requestedBy');
   const mediaType = media ? optionalStringAt(media, 'mediaType') : undefined;
   const mediaId = media ? optionalIdAt(media, 'jellyfinMediaId') : undefined;
   const availableEvent = optionalStringAt(body, 'event');
@@ -41,11 +45,6 @@ export function parseWebhook(value: unknown): SeerrWebhook | IgnoredWebhook {
     },
   };
   return event;
-}
-
-function optionalObjectAt(parent: Record<string, unknown>, key: string): Record<string, unknown> | undefined {
-  if (parent[key] === undefined || parent[key] === null) return undefined;
-  return objectAt(parent, key);
 }
 
 function objectAt(parent: Record<string, unknown>, key: string): Record<string, unknown> {

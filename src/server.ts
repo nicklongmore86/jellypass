@@ -50,8 +50,8 @@ export interface ServerOptions {
     tvAddon?: { households: string[] | 'all' };
   };
   /**
-   * Runs household "Add to my library" joins after their answer. Pass the BackgroundTasks shutdown stops, so it can
-   * abort them and wait for them before closing the store; without it, joins run untracked.
+   * Runs title-hold checks in the background. Pass the BackgroundTasks shutdown stops, so it can
+   * abort them and wait for them before closing the store.
    */
   background?: Pick<BackgroundTasks, 'run'>;
   /**
@@ -112,12 +112,6 @@ export function makeServer(
             ...(options.householdGateway.logLevel ? { logLevel: options.householdGateway.logLevel } : {}),
           }),
         } : {}),
-        ...(service.canJoinLibrary() ? {
-          libraryJoin: {
-            start: (input) => background.run((signal) => service.joinLibrary(input, { signal })),
-            dropped: () => service.recordLibraryJoinDropped(),
-          },
-        } : {}),
       })
     : undefined;
   const titleHolds = options?.titleHolds;
@@ -126,6 +120,9 @@ export function makeServer(
   const server = createServer(async (request, response) => {
     try {
       const url = new URL(request.url ?? '/', 'http://localhost');
+      if (['/jellypass/add', '/jellypass/add.js', '/jellypass/add.css'].includes(url.pathname)) {
+        return json(response, 410, { error: 'library_add_removed_use_household_app' });
+      }
       const householdId = householdGateway?.householdId(request.headers.host);
       if (householdId) {
         await householdGateway?.handle(request, response, householdId);
@@ -194,7 +191,10 @@ export function makeServer(
         return json(response, 200, { status: 'logged_out' });
       }
       if (request.method === 'POST' && url.pathname === '/webhooks/seerr') {
-        if (!authorized(request, tokens.webhook) && !sameToken(url.searchParams.get('token') ?? '', tokens.webhook)) {
+        if (url.searchParams.has('token')) {
+          return json(response, 400, { error: 'webhook_query_token_removed_use_authorization_header' });
+        }
+        if (!authorized(request, tokens.webhook)) {
           return json(response, 401, { error: 'unauthorized' });
         }
         service.recordWebhookReceived();
@@ -203,6 +203,9 @@ export function makeServer(
           event = parseWebhook(await readJson(request, { requireJsonType: false }));
         } catch (error) {
           service.recordInvalidWebhook();
+          if (error instanceof Error && error.message === 'webhook_payload_removed_use_current_seerr_template') {
+            return json(response, 400, { error: error.message });
+          }
           throw error;
         }
         const result = await service.processWebhook(event);

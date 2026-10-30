@@ -1077,27 +1077,3 @@ describe('changelog-section command line', () => {
     assert.equal(result.stderr, '::error title=Release notes::CHANGELOG.md has no "## [9.9.9]" section\n');
   });
 });
-
-describe('rollback notes for household app "Get this"', () => {
-  const README = readFileSync(fileURLToPath(new URL('../README.md', import.meta.url)), 'utf8');
-  const DESIGN = readFileSync(fileURLToPath(new URL('../docs/app-design.md', import.meta.url)), 'utf8');
-  const released = changelogSection(CHANGELOG, '2.4.0');
-  const drain = DESIGN.slice(DESIGN.indexOf('**Drain before rolling back.**'), DESIGN.indexOf('A state file written by an unreleased build'));
-  const readme = README.slice(README.indexOf('Drain before rolling back'), README.indexOf('Rolling back from\n2.2.0'));
-
-  it('send the operator to the admin readout and roll back only once it is clear', () => {
-    for (const [name, text] of [['CHANGELOG 2.4.0', released], ['README', readme], ['design doc', drain]]) {
-      const flat = text.replace(/\s+/g, ' ');
-      assert.match(flat, /GET \/v1\/app\/outstanding/, name);
-      assert.match(flat, /"clear": true/, name);
-      assert.match(flat, /2\.3\.x or 2\.2\.1/, name);
-    }
-  });
-
-  it('never say a safety marker lasts only 30 days: one naming an unhandled request lasts up to 400', () => {
-    for (const [name, text] of [['CHANGELOG 2.4.0', released], ['README', readme], ['design doc', drain]]) {
-      assert.match(text.replace(/\s+/g, ' '), /up to 400 days/, name);
-      assert.doesNotMatch(text.replace(/\s+/g, ' '), /\(they last 30 days\)/, name);
-    }
-  });
-});

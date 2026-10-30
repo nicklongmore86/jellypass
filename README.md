@@ -105,8 +105,7 @@ requester's household can see the title; members of other households cannot.
 - Joining a household later does not change older grants. Add the group to
   those grants, or add the user to a household that is already assigned.
 - A member of another household can add the title to their own library with
-  [Add to my library](#add-to-my-library), which adds their households to the
-  grant.
+  **Get this**, which adds the household whose address they used to the grant.
 
 ## Requirements
 
@@ -375,8 +374,7 @@ In **Settings → Notifications → Webhook**:
 2. Select only **Request Available**.
 3. Set the URL to `http://jellypass:8787/webhooks/seerr` for a shared Docker
    network, adjusting the host for your installation.
-4. Set the authorization header to `Bearer YOUR_WEBHOOK_TOKEN` when the
-   Seerr version supports it.
+4. Set the authorization header to `Bearer YOUR_WEBHOOK_TOKEN`.
 5. Use the payload below.
 
 ```json
@@ -407,13 +405,16 @@ and no template variable carries the 4K item. So when `event` names a 4K
 request, or the payload has no recognizable `event`, JellyPass asks Seerr for
 the request and grants the 4K item. Without `SEERR_URL` and `SEERR_API_KEY`,
 JellyPass can only use the payload IDs, so it does so only for a recognized HD
-`event`. A 4K event, or a payload whose `event` is missing, empty, unfilled
+`event`. A 4K event, or a payload whose `event` is empty, unfilled
 (`{{event}}`) or unrecognized, is rejected with `502` and counted as an error
 rather than granted on what may be the HD item. A payload without both Jellyfin
 IDs still returns `400` ("missing Jellyfin IDs"). A repeated webhook for a
 request JellyPass has already handled skips this check, because it only
 reapplies the recorded grant or is ignored (see below). Keep
-`"event": "{{event}}"` in the payload when Seerr lookup is not configured.
+`"event": "{{event}}"` in the payload. The full structure above is required,
+including `event`, `media` and `request.requestedBy`; reduced templates return
+`400 webhook_payload_removed_use_current_seerr_template`. Empty Jellyfin ID
+strings remain valid when Seerr API lookup is configured.
 
 Seerr may deliver the same webhook more than once. A request is handled once
 its grant has been stored, and a handled request is never granted again. If a
@@ -423,22 +424,6 @@ administrator revoked the request, the webhook returns `202` with
 `{"status":"ignored"}` and counts as `jfa_webhooks_total{result="ignored"}`. A
 webhook that failed before its grant was stored, for example because Seerr was
 unreachable, is handled normally when it is retried.
-
-Some Jellyseerr releases do not expose Jellyfin IDs as webhook template
-variables. When `SEERR_URL` and `SEERR_API_KEY` are configured, this smaller
-payload is sufficient because JellyPass resolves the request through the API:
-
-```json
-{
-  "notificationType": "{{notification_type}}",
-  "request": { "id": "{{request_id}}" }
-}
-```
-
-If the notification UI cannot add an authorization header, append
-`?token=YOUR_WEBHOOK_TOKEN` to the webhook URL. Query strings can appear in
-proxy logs, browser history, and diagnostics, so keep this route private and
-prefer the bearer header whenever possible.
 
 After configuration, use Seerr's test function if available. Every event
 other than `MEDIA_AVAILABLE`, including Seerr's `TEST_NOTIFICATION`, returns
@@ -526,7 +511,7 @@ HOUSEHOLD_HOST_PREFIX=jelly-
 ```
 
 the group ID `grove` receives the URL
-`https://jelly-grove.example.com`. On that hostname, JellyPass filters
+`https://media.example.com`. On that hostname, JellyPass filters
 Jellyfin's public-user response to the group's members and proxies supported
 Jellyfin HTTP, streaming, byte-range, HLS, and WebSocket traffic.
 
@@ -626,96 +611,6 @@ reaches Jellyfin. A name that is itself percent-encoded, such as
 Unknown household hostnames fail closed with `404`. Group IDs used as household
 IDs must contain lowercase letters, numbers, and hyphens and be no longer than
 63 characters.
-
-### Add to my library
-
-Seerr hides **Request** for a movie that is already available and rejects a
-duplicate request while it downloads, so a second household cannot get a movie
-another household requested through Seerr. Household records exist for
-privacy, not control: any household may watch a title another household has,
-but must never learn who requested it or which household holds it.
-
-With Seerr configured (`SEERR_URL` and `SEERR_API_KEY`), every household
-hostname serves a small page at `/jellypass/add`, for example
-`https://jelly-grove.example.com/jellypass/add`. A member who is signed in
-to Jellyfin on that hostname pastes a Seerr or TMDB link to a movie or series
-(or a bare TMDB ID) and selects **Add to my library**. Share the link with
-households. The page reuses the Jellyfin web client's sign-in on the same
-hostname and has no sign-in of its own.
-
-JellyPass looks the title up in Seerr, takes the HD Jellyfin item Seerr has
-linked to it (4K items are never joined) and, when that item has a grant that
-came from at least one request, adds the caller's households to it. A caller in
-no household is added as a user instead. It applies the change to Jellyfin in
-the background, normally within seconds.
-
-- **Nothing is removed**, and manual-only grants (no requests) are left exactly
-  as an administrator set them, the same rule as the request backfill. Public
-  titles need no join.
-- **Administrator removals stick.** A household an administrator took off a
-  grant (in the grant's groups, the manual-access dialog, or bulk access) is
-  remembered for that item, and so is every user that change, or revoking a
-  request, took access from (a removed manual user, the requester, each member
-  of a removed household with no other access). Both are kept in the state
-  file's per-item removal record (`removedAccess`), shown as `removed`
-  (`groupIds`, `userIds`) on the grant in `GET /v1/grants`; grant moves use the
-  same record (see
-  [A re-imported title is public](#a-re-imported-title-is-public-or-a-grant-is-orphaned)),
-  and the marks follow a grant moved to a re-imported item. A join never adds a marked household, and a marked user's
-  own joins change nothing at all, whichever household they belong to later
-  and even once they belong to none. A caller's unmarked households are still
-  added. A mark is personal: it does not stop another, unmarked member of the
-  caller's household from joining that household, which then includes the
-  marked user; remove the household itself to prevent that. Assigning a
-  household again clears its mark, and assigning a user as a manual user, or
-  adding a household they belong to, clears theirs; deleting a group clears
-  its own mark from every item but not its former members'. Changing a
-  household's membership marks nobody. A new Seerr request still adds its
-  requester's households as before. Joins never touch a grant left behind on a
-  deleted item (orphaned, or split by a move) while it waits for an
-  administrator.
-- **Joins are audited.** Each join that changed a grant is recorded in the
-  grant's `joins` (user, households added, whether the user was added, time),
-  visible only to administrators through `GET /v1/grants`, and logged as
-  `household library join`.
-- **The answer never tells what happened.** Once the caller is signed in and
-  the input is valid, the response is always `202 {"status":"accepted"}`, sent
-  at once, before the title is looked up: the Seerr lookup, the join and
-  applying it to Jellyfin all run in the background afterwards, so neither the
-  answer nor how long it takes depends on whether the title was joined,
-  already visible, public, held by another household, manual-only, not in the
-  library, or could not be looked up. Requester IDs, household names, counts, timestamps and item IDs
-  are never returned. The caller can only tell whether the title appears in
-  their library afterwards. Details are logged server-side
-  (`library join changed nothing` and similar at `LOG_LEVEL=debug`).
-- **Identity comes from Jellyfin only.** `POST /jellypass/add` takes
-  `{"mediaType": "movie" | "tv", "tmdbId": <number>}` and the caller's Jellyfin
-  token in the usual `Authorization` header; JellyPass checks it with
-  Jellyfin's `GET /Users/Me`, exactly as it does for protected media, and
-  ignores any user ID in the body. A missing, invalid or disabled user's token
-  gets `401`, malformed input `400`, and administrators (who see everything
-  already) change nothing.
-- **Rate limited.** Each client address (after `TRUSTED_PROXIES`) may call it
-  30 times in 10 minutes, signed in or not; further calls get `429`. Each
-  user may start 10 joins in 10 minutes, and all users together 200; a signed-in,
-  valid call past either budget gets the same `202` but its join is not
-  started, so try again later. A call past a user's own budget does not use up
-  the shared one. These budgets count calls and are never given back when a
-  join finishes, so whether a call is started depends only on how many calls
-  were made and when, not on any title. They are submission-rate limits over
-  fixed 10-minute windows, each starting at the first call counted in it: at
-  most 200 joins are started per window, but this is not a bound on joins in
-  flight, since joins still waiting on Seerr or Jellyfin from one window add
-  to those started in the next. A join that
-  would change nothing (public, already visible, manual-only, missing) is
-  decided without waiting behind other writes.
-  During shutdown it answers `503`; joins already running are stopped before
-  their next step and given the usual grace period, and a join that was saved
-  but not yet applied to Jellyfin is applied after restart.
-- `jfa_library_joins_total{result="joined"|"unchanged"|"error"|"dropped"}`
-  counts calls. `unchanged` deliberately covers every no-op reason, `dropped`
-  counts calls not started because a budget was used up, and no label names a
-  title.
 
 ### Household app API
 
@@ -828,7 +723,7 @@ the background and is never part of any answer:
   by the title's name and year, so an item without TMDB metadata counts too;
   a different title of the same name and year held that way makes the call a
   join or nothing rather than a request): the household joins the title's grant by the same rules as
-  [Add to my library](#add-to-my-library): only a grant made from a request,
+  **Get this**: only a grant made from a request,
   never a manual-only one, and never if an administrator removed the household
   or the caller. **A title Jellyfin has is never requested in Seerr**, so a
   late request can no longer make a public title private or undo an
@@ -956,13 +851,12 @@ otherwise approved by [TMDB](https://www.themoviedb.org/). Titles, overviews
 and images come from TMDB. The app shows this notice with TMDB's logo on its
 About screen, as TMDB's API terms require.
 
-Without Seerr, `/jellypass/add` paths are proxied to Jellyfin like any other.
 `/jellypass/app` paths never are: without the app they answer `404`.
 
 ### Household app (PWA)
 
 With `HOUSEHOLD_APP_ENABLED=true`, each household hostname also serves the
-app itself at `https://jelly-<household>.<HOUSEHOLD_DOMAIN>/jellypass/app/`: an
+app itself at `https://media.example.com/jellypass/app/`: an
 installable web app (a PWA) to browse what is in the household's Jellyfin
 library and find more to watch. It shows each title's state (`Ready to watch`
 with a **Play** button, `Available to get`, `Requested` or `Can't request`) and offers
@@ -1137,40 +1031,14 @@ curl http://127.0.0.1:8787/health
 ```
 
 Back up the state file first. Read the [changelog](CHANGELOG.md) before
-changing between versioned tags. Upgrading from 1.1.0 to 2.0.0 is a breaking
-upgrade; follow [Upgrading from 1.1.0](CHANGELOG.md#upgrading-from-110) in the
-2.0.0 notes. Upgrading from 2.0.0 to 2.1.0 does not change the state file;
-check [Upgrading from 2.0.0](CHANGELOG.md#upgrading-from-200) in the 2.1.0
-notes if Seerr lookup is not configured or JellyPass runs behind a reverse
-proxy. Upgrading from 2.1.0 to 2.1.1 changes neither the state file nor any
-setting. Upgrading from 2.1.1 to 2.2.0 changes no setting and keeps the state
-file at schema v7, adding new records to it; see
-[Upgrading from 2.1.1](CHANGELOG.md#upgrading-from-211). Upgrading from 2.2.0
-to 2.2.1 changes neither the state file nor any setting. Upgrading from 2.2.1
-to 2.3.0 keeps the state file at schema v7, adds optional settings for the
-household app (off by default), which limits households to 100 while it is
-enabled; see [Upgrading from 2.2.1](CHANGELOG.md#upgrading-from-221).
-Rolling back from 2.3.0 to 2.2.1 needs no state-file change. Upgrading from
-2.3.0 to 2.4.0 changes no setting, changes how sign-in on household hostnames
-answers, and needs one CDN purge of `/jellypass/app/*`; see
-[Upgrading from 2.3.0](CHANGELOG.md#upgrading-from-230). It keeps the state
-file at schema v7, and the household app's "Get this" adds `appRequests`,
-`appIdKey`, `appRequestIntents`, `deferredWebhooks`, `appSafetyTombstones`,
-`householdEpochs` and `nextHouseholdEpoch`; 2.3.0 and 2.2.1 load and keep them
-without reading them (see
-[Rolling back to 2.3.0](CHANGELOG.md#rolling-back-to-230)).
-Upgrading from 2.4.0 to 2.4.1 changes neither the state file nor any setting.
-Upgrading from 2.4.1 to 2.5.0 changes neither the state file nor any setting,
-and needs no CDN purge; with the household app enabled, it changes how some
-failed sign-outs on household hostnames answer (see the 2.5.0 notes).
-Upgrading from 2.5.0 to 2.6.0 changes neither the state file nor any setting,
-and needs no CDN purge.
-Upgrading from 2.6.0 to 2.7.0 changes neither the state file nor any setting,
-and needs no CDN purge.
-Upgrading from 2.7.0 to 3.0.0 changes neither the state file nor any setting,
-but every administrator signs in again, and admin API clients may need changes
-(a matching `Origin` for session-cookie scripts, JSON request bodies, `Host`
-passed unchanged by the proxy); see the 3.0.0 notes.
+changing between versioned tags. For 4.0, replace any webhook URL `?token=` with
+`Authorization: Bearer YOUR_WEBHOOK_TOKEN` in Seerr's webhook form and use the
+full template above. Use **Get this** in the household app to add a title.
+Upgrade from 2.x (or older) via 3.9.x first. State schemas v1–v6 are refused;
+3.x schema v7 is retained. Schema v7 was also used by 2.x and has no release
+marker, so the server cannot detect that source version. Rollback to 2.x is
+unsupported; restore a backup made with the release you intend to run.
+
 Upgrading from 3.0.0 to 3.0.1 changes neither the state file nor any setting;
 admin requests to routes that read no body are now `415` if they carry a
 non-JSON body; see the 3.0.1 notes.
@@ -1229,16 +1097,6 @@ Upgrading from 3.8.1 to 3.9.0 changes neither the state file nor any setting,
 needs no CDN purge, and changes nothing unless `TV_ADDON_ENABLED` is set; the
 TV add-on gains See all pages for the Discover rows and, in the desktop layout,
 a Back button on its pages; see the 3.9.0 notes.
-Drain before rolling back to 2.3.x or 2.2.1: stop new "Get this" calls, wait
-until no request intents or deferred webhooks are left (at most 30 minutes plus
-one reconciliation interval, or restart JellyPass to reconcile at once), then
-check the admin-only `GET /v1/app/outstanding` and roll back only once it
-answers `"clear": true`. Requests an outstanding safety marker
-(`appSafetyTombstones`) covers are granted as ordinary requests while rolled
-back, and a marker is not limited to 30 days: one naming a request not handled
-yet (pending, declined or never available) lasts until it is, up to 400 days;
-see
-[Store, bounds and rollback](docs/app-design.md#get-this-as-implemented-step-2a).
 Request cancelling keeps the state file at schema v7, adding `appWithdrawals`
 and a `withdrawn` mark on cancelled records. Before rolling back to 3.4.0 or
 earlier, `GET /v1/app/outstanding` must show no `withdrawals` either: those
@@ -1246,22 +1104,6 @@ versions grant a cancelled request to its requester's households, and give a
 requester who cancelled access to a title they cancelled that has arrived
 (held or followed); see
 [Cancelling](docs/app-design.md#cancelling-step-2c) for how to clear them.
-Rolling back from
-2.2.0 to 2.1.1, 2.1.0 or 2.0.0 keeps the state file readable, but those
-versions retry grants marked `orphaned` (see
-[A re-imported title is public](#a-re-imported-title-is-public-or-a-grant-is-orphaned))
-and count them in `jfa_sync_errors`, drop a grant's join audit history and
-`remap` note whenever they rewrite it, keep administrator removal records
-without enforcing them, and their request backfill grants unapproved requests
-again. Remap or revoke orphaned grants first, and see
-[Rolling back to 2.1.1](CHANGELOG.md#rolling-back-to-211). Upgrades can migrate the state file to a newer schema that older
-versions cannot read, so rolling back requires the backup taken before the
-upgrade. Pinning `JELLYPASS_IMAGE` makes rollback explicit:
-
-```sh
-JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:PREVIOUS_VERSION docker compose up -d
-```
-
 For a source build, fast-forward the repository and rebuild:
 
 ```sh
@@ -1370,7 +1212,7 @@ from an item (in **Grants**, a bulk change, `PUT /v1/grants/{itemId}/manual`
 or `PUT /v1/grants/{itemId}/groups`) is remembered for that item only, in the
 same per-item removal record household library joins use (`removedAccess` in
 the state file, `removed` in `GET /v1/grants`; see
-[Add to my library](#add-to-my-library)), together with each user the change
+**Get this**), together with each user the change
 took access from: no later recovery or **Move**, previews included, adds that
 user or group to that item again, so a copy left on the old grant cannot
 restore it. Removing one from the old grant does not take it off the new one.
@@ -1381,7 +1223,7 @@ it everywhere.
 When a grant moves to another item, what an administrator removed from the old
 item follows it: its removal marks and revoked requests are recorded for the
 new item too, so nobody removed before the move can add themselves back with
-**Add to my library**, and no later move restores them. Marks only restrict:
+**Get this**, and no later move restores them. Marks only restrict:
 they never give anyone access. A user, group or request the new item's grant
 already had on its own (for example from an unfinished earlier move) keeps its
 access there. The old grant's library joins (an audit trail) move with the
@@ -1459,13 +1301,6 @@ blocked-tag policy.
 | `PUT` | `/v1/library/access` | Assign one audience to up to 500 items; supports `?dryRun=true`. |
 | `POST` | `/v1/reconcile` | Reconcile all grants; supports `?dryRun=true`. |
 | `GET` | `/metrics` | Prometheus metrics. |
-
-On household hostnames, with Seerr configured:
-
-| Method | Path | Purpose |
-| --- | --- | --- |
-| `GET` | `/jellypass/add` | The [Add to my library](#add-to-my-library) page. |
-| `POST` | `/jellypass/add` | Add a title to the signed-in Jellyfin user's library; always `202` once authenticated and valid. |
 
 With `HOUSEHOLD_APP_ENABLED=true`, household hostnames also serve the
 [household app API](#household-app-api) under `/jellypass/app/v1/`.

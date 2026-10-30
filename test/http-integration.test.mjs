@@ -417,8 +417,8 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ notificationType: 'TEST_NOTIFICATION', request: { id: '1' } }),
     });
-    assert.equal(queryAuthenticated.status, 202);
-    await queryAuthenticated.json();
+    assert.equal(queryAuthenticated.status, 400);
+    assert.deepEqual(await queryAuthenticated.json(), { error: 'webhook_query_token_removed_use_authorization_header' });
 
     const seerrTest = await fetch(`${bridgeUrl}/webhooks/seerr`, {
       method: 'POST',
@@ -510,7 +510,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.equal(metrics.status, 200);
     const metricsText = await metrics.text();
     assert.match(metricsText, /jfa_webhooks_total\{result="granted"\} 1/);
-    assert.match(metricsText, /jfa_webhooks_total\{result="ignored"\} 3/);
+    assert.match(metricsText, /jfa_webhooks_total\{result="ignored"\} 2/);
     assert.match(metricsText, /jfa_webhooks_total\{result="invalid"\} 3/);
     assert.match(metricsText, /jfa_last_webhook_received_timestamp_seconds \d{10}/);
 
@@ -763,7 +763,7 @@ describe('webhook resolution errors over HTTP', { timeout: 5_000 }, () => {
 
   it('returns 502 for an event that does not name an HD request when Seerr lookup is not configured', async () => {
     const send = await webhookServer(undefined);
-    for (const [id, event] of [['7', undefined], ['8', ''], ['9', '{{event}}'], ['10', 'Something Else']]) {
+    for (const [id, event] of [['8', ''], ['9', '{{event}}'], ['10', 'Something Else']]) {
       assert.deepEqual(await send(available(id, event)), {
         status: 502, body: { error: 'webhook event does not name an HD request and Seerr lookup is not configured' },
       }, String(event));

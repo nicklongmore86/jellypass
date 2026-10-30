@@ -97,43 +97,6 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     assert.ok(!user(cleanedUsers, fixture.bobId).Policy.BlockedTags.includes(accessTag(fixture.itemId)));
   });
 
-  it('lets a signed-in user add a household title to their library, checking their token with Jellyfin', async (t) => {
-    // Alice's household requested the movie; Bob belongs to no household and signs in on Jellyfin itself.
-    const joinStore = new GrantStore(path.join(await makeTempDir(t, 'jfa-real-join-'), 'grants.json'));
-    await joinStore.load();
-    await joinStore.upsertGroup({ id: 'realhouse', name: 'Real House', userIds: [fixture.aliceId] });
-    const seerr = { getJellyfinItemId: async (mediaType, tmdbId) => (mediaType === 'movie' && tmdbId === 603 ? fixture.itemId : undefined) };
-    const service = new AccessService(client, joinStore, undefined, seerr);
-    const gateway = makeServer(service, { webhook: webhookToken, admin: 'real-admin-secret' }, undefined, {
-      householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-' },
-    });
-    await new Promise((resolve) => gateway.listen(0, '127.0.0.1', resolve));
-    t.after(() => new Promise((resolve) => gateway.close(resolve)));
-    const granted = await sendWebhook(gateway, available('real-18', 'Movie Request Now Available'));
-    assert.equal(granted.status, 200, JSON.stringify(granted.body));
-    assert.ok(user(await client.getUsers(), fixture.bobId).Policy.BlockedTags.includes(accessTag(fixture.itemId)));
-
-    const join = (authorization) => postWithHost(gateway, '/jellypass/add', 'jelly-realhouse.example.test', authorization, { mediaType: 'movie', tmdbId: 603 });
-    assert.equal((await join(undefined)).status, 401);
-    assert.equal((await join('MediaBrowser Client="jfa-test", Device="ci", DeviceId="jfa-real-join", Version="1.0", Token="not-a-token"')).status, 401);
-    assert.equal(joinStore.get(fixture.itemId).joins, undefined);
-
-    const bob = await request(baseUrl, '/Users/AuthenticateByName', {
-      method: 'POST',
-      authorization: 'MediaBrowser Client="jfa-test", Device="ci", DeviceId="jfa-real-bob", Version="1.0"',
-      body: { Username: 'Bob', Pw: '' },
-    });
-    // The page sends only the token, as Jellyfin web stored it, so Jellyfin does not rename the user's web session.
-    const accepted = await join(`MediaBrowser Token="${bob.AccessToken}"`);
-    assert.deepEqual(accepted, { status: 202, body: { status: 'accepted' } });
-    // The join runs after the answer.
-    await waitFor(async () => joinStore.get(fixture.itemId).manualUserIds.includes(fixture.bobId.toLowerCase()));
-    assert.deepEqual(joinStore.get(fixture.itemId).manualUserIds, [fixture.bobId.toLowerCase()]);
-    await waitFor(async () => !user(await client.getUsers(), fixture.bobId).Policy.BlockedTags.includes(accessTag(fixture.itemId)));
-    const item = await request(baseUrl, `/Users/${fixture.bobId}/Items/${fixture.itemId}`, { token: bob.AccessToken });
-    assert.equal(item.Id, fixture.itemId);
-  });
-
   it('shows a household app title in_library only when the caller\'s own Jellyfin view has it', async (t) => {
     // The movie gets a TMDB ID the fake TMDB knows; Bob's household is the only one here.
     const original = await client.getItem(fixture.itemId);

@@ -120,7 +120,7 @@ export interface GrantRecord {
   requests: Record<string, string>;
   manualUserIds: string[];
   groupIds: string[];
-  /** Household "Add to my library" joins that changed this grant, oldest first, for administrators to audit. */
+  /** Historical household library joins that changed this grant, oldest first, for administrators to audit. */
   joins?: LibraryJoin[];
   sync: SyncStatus;
   updatedAt: string;

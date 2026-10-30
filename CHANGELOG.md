@@ -18,6 +18,24 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+### BREAKING — 4.0 cuts
+
+- Removed the legacy add-to-library page. Use **Get this** in the household app.
+- Removed webhook query-token authentication. **Production impact:** earlier docs
+  explicitly offered `?token=`; installations using it will receive
+  `400 webhook_query_token_removed_use_authorization_header`. Remove the query
+  parameter and configure Seerr's authorization header as
+  `Bearer YOUR_WEBHOOK_TOKEN` before upgrading.
+- Availability webhooks require the full current Seerr template in README
+  (event, media, request and requestedBy). Reduced older templates receive
+  `400 webhook_payload_removed_use_current_seerr_template`; replace the template
+  in Seerr's webhook UI. Empty Jellyfin IDs still resolve through the Seerr API.
+- Upgrade from **2.x via 3.9.x first**, with a state backup. Pre-3.0 schemas
+  v1–v6 fail startup with that instruction. Schema v7 is retained for 3.x;
+  2.x also wrote v7 without a release marker, so that provenance cannot be
+  detected. Rollback to 2.x is unsupported; use a matching pre-upgrade backup.
+
+
 ## [3.9.0] - 2026-10-29
 
 This is a minor release for the TV add-on, which is still experimental and off
