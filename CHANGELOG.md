@@ -18,21 +18,29 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
-JellyPass now has a written Jellyfin support policy: **it supports the current
-Jellyfin release and the one before it, Jellyfin 12.x and 10.11.x**, and tests
-both against a real Jellyfin in CI and before every release. On any other
-Jellyfin version, household hostnames pause until an administrator confirms
-that exact version. On a supported version nothing changes. Read these before
-upgrading:
+## [3.10.0] - 2026-10-30
 
-- **Check your Jellyfin version first.** On Jellyfin 12.x or 10.11.x (every
-  version the README's "Jellyfin 10.11 or newer" covered until now) nothing
+This is a minor release. JellyPass now has a written Jellyfin support policy:
+**it supports the current Jellyfin release and the one before it, Jellyfin
+12.x and 10.11.x**, and tests both against a real Jellyfin in CI and before
+every release; on any other Jellyfin version, household hostnames pause until
+an administrator confirms that exact version. Requests that name more or fewer
+than one host, and household paths with empty segments, are now refused (see
+Security), and every HTML page is marked `no-transform` so a CDN that
+honours it adds no scripts. The state file (schema v7, plus one optional field), the app
+API (`v1`, `apiVersion` 2), webhook payloads, and every existing setting and
+administrator API endpoint are as in 3.9.0. This is a minor release because a
+setting, administrator API endpoints and metrics are added; the refusals fall
+under the rule at the top of this file. On a supported Jellyfin, nothing needs
+doing. Read these before upgrading:
+
+- **Check your Jellyfin version first.** On Jellyfin 12.x or 10.11.x nothing
   changes and nothing needs configuring. On any other version (an older 10.x,
-  a pre-release, or a future 13.0), **household hostnames answer `503` from
-  the moment you upgrade** until you confirm it: open the admin site and choose
-  **Allow Jellyfin X**, or set `JELLYFIN_UNTESTED_VERSION_OK` to that exact
-  version before upgrading. The admin site, webhooks and grants keep working
-  either way.
+  a pre-release, or a future 13.0 or later), **household hostnames answer
+  `503` from the moment you upgrade** until you confirm it: open the admin
+  site and choose **Allow Jellyfin X**, or set `JELLYFIN_UNTESTED_VERSION_OK`
+  to that exact version before upgrading. The admin site, webhooks and grants
+  keep working either way.
 - **Upgrading Jellyfin to an untested version later pauses household
   hostnames again,** within five minutes, until that version is confirmed in
   turn. A confirmation covers one exact version.
@@ -46,19 +54,29 @@ upgrading:
   refuses them. JellyPass checks a client's credentials exactly as given and
   never translates them into a form Jellyfin 12 reads. On 10.11 they work as
   before.
+- **A reverse proxy that sends one `Host` is unaffected** by the new Host
+  checks; only requests that name more or fewer than one host, or a malformed
+  one, get `400 invalid_host`. See Security.
+- **Behind a CDN:** HTML pages now carry `no-transform`, so a CDN that honours
+  it (Cloudflare, for example) no longer injects its Web Analytics script into
+  them, and Web Analytics' automatic setup stops reporting visits to these
+  pages. JellyPass compresses the pages itself instead. No CDN purge is needed
+  unless your CDN caches HTML pages (Cloudflare does not by default); a cached
+  copy keeps any injected script until it expires or is purged.
 - **The state file keeps schema v7.** A confirmation is stored in a new
   optional field, `jellyfinVersionConfirmed`, which 3.9.0 keeps as it is
   without reading it, so rolling back needs no state change (3.9.0 does not
   check the version at all).
 - **To roll back,** set `JELLYPASS_IMAGE` back to
-  `ghcr.io/nicklongmore86/jellypass:3.9.0` and recreate the container.
+  `ghcr.io/nicklongmore86/jellypass:3.9.0` and recreate the container. No
+  state-file or setting change is needed (`JELLYFIN_UNTESTED_VERSION_OK` is
+  ignored by 3.9.0).
+- **The iPhone, iPad and Android app ships separately;** its changes (mobile
+  1.3.0) and its App Store screenshot workflow are described in
+  `mobile/CHANGELOG.md`.
 
 ### Security
 
-- **Household hosts refuse paths with empty segments.** HTTP requests and
-  WebSocket upgrades whose raw or once-decoded path contains `//` receive a
-  fixed `404 not_found` before any relay. This is precautionary hardening;
-  no disclosure was observed on real Jellyfin or production.
 - **A request must name exactly one host.** Until now, a request with two
   `Host` headers was answered for the first of them, so a client reaching the
   JellyPass port directly could have it read a different host from a proxy
@@ -70,11 +88,15 @@ upgrading:
   other characters, or empty), and an absolute-form request target
   (`GET http://host/path`) whose authority is not the `Host`. WebSocket
   upgrades get the same `400`, and the connection is closed on JellyPass's
-  side even if the client keeps its own side open. A reverse proxy that sets one `Host` (Nginx
-  Proxy Manager's `proxy_set_header Host $host`, for example) is unaffected.
-  An HTTP/1.0 request may still leave `Host` out: with an ordinary path it is
-  answered as no household's, as before; with an absolute-form target it is
-  refused.
+  side even if the client keeps its own side open. A reverse proxy that sets
+  one `Host` (Nginx Proxy Manager's `proxy_set_header Host $host`, for
+  example) is unaffected. An HTTP/1.0 request may still leave `Host` out: with
+  an ordinary path it is answered as no household's, as before; with an
+  absolute-form target it is refused.
+- **Household hosts refuse paths with empty segments.** HTTP requests and
+  WebSocket upgrades whose raw or once-decoded path contains `//` receive a
+  fixed `404 not_found` before any relay. This is precautionary hardening; no
+  disclosure was observed against a real Jellyfin.
 
 ### Added
 
@@ -3262,7 +3284,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.9.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.10.0...HEAD
+[3.10.0]: https://github.com/nicklongmore86/jellypass/compare/v3.9.0...v3.10.0
 [3.9.0]: https://github.com/nicklongmore86/jellypass/compare/v3.8.1...v3.9.0
 [3.8.1]: https://github.com/nicklongmore86/jellypass/compare/v3.8.0...v3.8.1
 [3.8.0]: https://github.com/nicklongmore86/jellypass/compare/v3.7.0...v3.8.0
