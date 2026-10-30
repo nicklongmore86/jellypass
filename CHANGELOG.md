@@ -124,6 +124,12 @@ upgrading:
   (previous)" instead of "Jellyfin 10.11 or newer".
 - `docs/tv-addon.md`: the TV add-on is matched to the supported Jellyfin
   releases.
+- README: shortened to an overview, quick start and links. Its reference
+  sections moved unchanged to `docs/server-reference.md` and
+  `docs/household-hosts.md`, and the guide is at https://jellypass.app/docs/.
+  The quick start now gives the data folder to UID 1000
+  (`sudo chown 1000:1000 data`): created by root with `mkdir -m 700` alone,
+  the container could not write its state file and stopped with `EACCES`.
 
 ## [3.9.0] - 2026-10-29
 

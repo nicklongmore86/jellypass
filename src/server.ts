@@ -76,7 +76,7 @@ export interface ServerOptions {
    */
   adminRequests?: Pick<AdminRequests, 'list' | 'approve' | 'decline' | 'cancel' | 'release'>;
   /**
-   * The Jellyfin version check (docs: README, "Supported Jellyfin versions"): household hosts answer a fixed 503 unless
+   * The Jellyfin version check (docs/server-reference.md, "Supported Jellyfin versions"): household hosts answer a fixed 503 unless
    * it decides they serve, and the admin API reads and confirms it at /v1/jellyfin/version. Without it household hosts
    * serve whatever the version.
    */

@@ -54,7 +54,7 @@ flowchart LR
   - **Never twice:** a page that already has a `data-jellypass-tv` tag is sent as it is.
   - **Headers:** Jellyfin's own (`Content-Type`, any `Content-Security-Policy`, `X-Frame-Options`, `Vary`, …) are kept
     as Jellyfin sent them. `Content-Length` is the new length (of the br or gzip body when JellyPass compresses the
-    page for a client that accepts it, see README "CDNs and HTML pages"). `ETag`, `Last-Modified`, `Accept-Ranges`, `Expires`,
+    page for a client that accepts it, see docs/server-reference.md, "CDNs and HTML pages"). `ETag`, `Last-Modified`, `Accept-Ranges`, `Expires`,
     `Age`, `Pragma` and Jellyfin's `Cache-Control` are dropped, because they described the page without the tag. The
     page is sent `Cache-Control: no-store, no-transform` (no-transform as on every HTML page, so no CDN adds a script
     to it), `CDN-Cache-Control` and `Cloudflare-CDN-Cache-Control: no-store` (as the PWA's page is), so neither a browser nor Cloudflare stores the page from now on. These headers can't remove a copy
@@ -81,7 +81,7 @@ flowchart LR
 
 ### Tested against
 
-The add-on is matched to the Jellyfin releases JellyPass supports (README, "Supported Jellyfin versions"): Jellyfin
+The add-on is matched to the Jellyfin releases JellyPass supports (docs/server-reference.md, "Supported Jellyfin versions"): Jellyfin
 web **12.x** and **10.11.x**. It runs inside Jellyfin web's own page and relies on its markup, so it is checked against
 those releases only. On any other Jellyfin version, household hosts (and with them the add-on) are paused until an
 administrator confirms that exact version; once confirmed, the add-on is served unchanged, untested against that
