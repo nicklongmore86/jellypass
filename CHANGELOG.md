@@ -79,6 +79,10 @@ upgrades** (steps below); with them, existing household addresses such as
   JellyPass's side even if the client keeps its own side open. A reverse proxy
   that sets one `Host` (nginx's `proxy_set_header Host $host`, for example)
   is unaffected.
+- **Household hosts refuse paths with empty segments.** HTTP requests and
+  WebSocket upgrades whose raw or once-decoded path contains `//` receive a
+  fixed `404 not_found` before any relay. This is precautionary hardening;
+  no disclosure was observed on real Jellyfin or production.
 
 ### Added
 

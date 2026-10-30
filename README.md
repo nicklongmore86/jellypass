@@ -640,7 +640,12 @@ Deployment requirements:
 - Point each household address's hostname at the reverse proxy, and route it to
   the member listener (`PORT`). No wildcard DNS record or certificate is
   needed: a certificate per hostname, or one listing several, works.
-- Preserve the original `Host` header (the household is chosen from it).
+- Preserve the original `Host` header (the household is chosen from it), and
+  send exactly one. JellyPass refuses a request that does not name exactly one
+  host (two `Host` headers, none, a `Host` with userinfo, whitespace or other
+  characters, or an absolute-form target whose authority is not the `Host`)
+  with a fixed `400` (`{"error":"invalid_host"}`), WebSocket upgrades
+  included, before a household is chosen.
 - Forward WebSocket upgrades and byte-range requests.
 - Avoid proxy buffering for large media responses.
 - Do not expose either JellyPass listener directly to untrusted clients, and
