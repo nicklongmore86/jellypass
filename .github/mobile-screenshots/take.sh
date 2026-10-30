@@ -47,7 +47,12 @@ mkdir -p "$out"
 for shot in "${shots[@]}"; do
   flow="${shot%%:*}"
   file="${out}/${shot#*:}.png"
-  maestro --device "$udid" test "${here}/flows/${flow}.yaml"
+  if ! maestro --device "$udid" test "${here}/flows/${flow}.yaml"; then
+    # What the screen showed when the flow gave up, for the run's maestro-debug artifact.
+    xcrun simctl io "$udid" screenshot --type=png "${out}/failed-${flow}.png" || true
+    echo "::error::The ${flow} flow failed on ${name}"
+    exit 1
+  fi
   # Posters arrive after the screen settles; give them a moment.
   sleep 4
   xcrun simctl io "$udid" screenshot --type=png "$file"

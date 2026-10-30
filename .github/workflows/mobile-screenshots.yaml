@@ -32,6 +32,9 @@ jobs:
       MAESTRO_VERSION: 2.11.0
       MAESTRO_CLI_NO_ANALYTICS: 1
       MAESTRO_CLI_ANALYSIS_NOTIFICATION_DISABLED: true
+      # Maestro's XCTest driver is built and started on each fresh simulator, which on a hosted runner takes longer
+      # than its default allowance (milliseconds).
+      MAESTRO_DRIVER_STARTUP_TIMEOUT: 900000
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -58,6 +61,7 @@ jobs:
       - run: pod install
         working-directory: mobile/ios
       - name: Build the app for the simulator (Release)
+        id: build
         working-directory: mobile/ios
         run: |
           set -o pipefail
@@ -76,7 +80,9 @@ jobs:
       # The iPhone with Apple's largest (6.9") screen, then the 13" iPad, newest model first.
       - name: iPhone 6.9"
         run: .github/mobile-screenshots/take.sh "$APP" screenshots/iphone-6.9 1320x2868 'iPhone 17 Pro Max' 'iPhone 16 Pro Max'
+      # Taken even when the iPhone's fail, so one run shows what is wrong with both.
       - name: iPad 13"
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: .github/mobile-screenshots/take.sh "$APP" screenshots/ipad-13 2064x2752 'iPad Pro 13-inch (M5)' 'iPad Pro 13-inch (M4)'
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
