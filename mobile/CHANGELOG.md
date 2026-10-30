@@ -15,7 +15,20 @@ build.
 
 ## [Unreleased]
 
-Store-readiness changes and See all pages for Home's rows; none needs a server change.
+## [1.3.0] - 2026-10-30
+
+A minor release, and the first build sent for App Store review: each list row
+on Home gains a **See all** page, the app takes **any HTTPS household
+address** (not only `https://jelly-<household>.<domain>`), and Account →
+About & credits links to the privacy policy and support pages on
+jellypass.app. It still works with **JellyPass server 3.2.0 or later** (app API
+`v1`), as 1.0.0 to 1.2.1 do; none of these changes needs a server change. See
+all uses the list addresses Home already reads (`GET /discover/<list>?page=n`),
+which every supported server answers. As in 1.1.0, **Cancel request and the
+day each title was requested need JellyPass server 3.5.0 or later**
+(`apiVersion` 2 in `GET /jellypass/app/v1/me`); on an older server the app
+shows neither, with no error. Members update by installing the new TestFlight
+build, or the new APK over the old one.
 
 ### Added
 
@@ -34,16 +47,17 @@ Store-readiness changes and See all pages for Home's rows; none needs a server c
   hidden. They open in the system browser, are allow-listed, and carry no member data.
 - The address screen says what the app is: a companion for a JellyPass household server, whose address comes from
   whoever runs your Jellyfin.
-- A `production-aab` EAS profile that builds an Android App Bundle for Google Play. The APK profiles, the release
-  workflow and the signing key are unchanged.
+- A `production-aab` EAS profile that builds an Android App Bundle for Google Play. The APK builds and their
+  signing key are unchanged, so the new APK still installs over the old one.
 
 ### Changed
 
 - **Any HTTPS household address works.** The app no longer requires `https://jelly-<household>.<domain>`: it takes
   whatever HTTPS address the household's administrator gives out, such as `https://media.example.com` or
   `https://films.example.net:8443` (a port is kept, `:443` is dropped), typed or in a setup link. It still refuses
-  `http://`, IP addresses, and anything around the address (a name or password, a path, a query or a fragment), and
-  says which when a typed address is refused. A sign-in kept on a `jelly-` address keeps working. App versions up to
+  `http://`, IP addresses, `.local` names, and anything around the address (a name or password, a path, a query or a
+  fragment), and says which when a typed address is refused. A name with non-ASCII letters must be entered in its
+  `xn--` form. A sign-in kept on a `jelly-` address keeps working. App versions up to
   1.2.1 take only the `jelly-` form, so a household on any other address needs this version or later.
 - Cancelling a request no longer mentions a "download": an approved title "may still be added to the server, but it
   won't be added for your household."
@@ -224,7 +238,8 @@ is not supported.
 - **iPhone, iPad and Android.** Portrait on phones; iPad and Android tablets
   turn. iOS is distributed through TestFlight and Android as an APK.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/mobile-v1.2.1...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/mobile-v1.3.0...HEAD
+[1.3.0]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.3.0
 [1.2.1]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.2.1
 [1.2.0]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.2.0
 [1.1.0]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.1.0
