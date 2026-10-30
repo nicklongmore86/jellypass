@@ -4,7 +4,7 @@ name: Mobile screenshots
 # public demo household: iPhone 6.9" (1320x2868) and iPad 13" (2064x2752), both portrait, which App Store Connect takes
 # as they are. The flows and the script that drives them are in .github/mobile-screenshots/; the demo address is only
 # there, never in the app. The screenshots are this run's `screenshots` artifact. No secrets: a simulator build is not
-# signed and nothing is published.
+# signed with an Apple certificate and nothing is published.
 #
 # Run by hand (Actions → Mobile screenshots → Run workflow) on any ref, or push a `screenshots/**` branch to take them
 # from a release branch before it is merged.
@@ -55,7 +55,9 @@ jobs:
       - run: pnpm install --frozen-lockfile
         working-directory: mobile
       # The native project, generated from app.config.ts as EAS does, and built for the simulator in the Release
-      # configuration: the JavaScript bundled into the app, no dev server, no dev menu, and no signing.
+      # configuration: the JavaScript bundled into the app, no dev server and no dev menu. It is signed ad hoc ("Sign to
+      # Run Locally", no Apple team or certificate): unsigned, it would have no entitlements, and the Keychain, where
+      # the app keeps its sign-in, refuses an app without them.
       - run: pnpm exec expo prebuild --platform ios --no-install
         working-directory: mobile
       - run: pod install
@@ -67,7 +69,8 @@ jobs:
           set -o pipefail
           xcodebuild -workspace JellyPass.xcworkspace -scheme JellyPass -configuration Release \
             -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' -derivedDataPath build \
-            CODE_SIGNING_ALLOWED=NO COMPILER_INDEX_STORE_ENABLE=NO build | tail -n 200
+            CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= PROVISIONING_PROFILE_SPECIFIER= \
+            COMPILER_INDEX_STORE_ENABLE=NO build | tail -n 200
           app="$(pwd)/build/Build/Products/Release-iphonesimulator/JellyPass.app"
           test -d "$app"
           echo "APP=$app" >> "$GITHUB_ENV"
