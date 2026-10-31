@@ -13,6 +13,8 @@ import { createSignInApi, SignInError } from '../dist/app-js/api.js';
 import { clearSignIn, deviceId, jellyfinToken, storeSignIn } from '../dist/app-js/session.js';
 import { OWN_MOVIE, REQUEST, TMDB_KEY, createFakeSeerr, createFakeTmdb, get as getWithHeaders, post as postWithHeaders, world } from './support/household-app.mjs';
 import { SeerrClient } from '../dist/seerr.js';
+import { SettingsStore } from '../dist/settings.js';
+import { SetupWizard } from '../dist/setup.js';
 import { SeerrUserMap } from '../dist/seerr-users.js';
 import { TmdbClient } from '../dist/tmdb.js';
 import { makeTempDir } from './support/temp-dir.mjs';
@@ -45,6 +47,28 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     ...(event === undefined ? {} : { event }),
     media: { jellyfinMediaId: fixture.itemId, mediaType: 'movie' },
     request: { id: requestId, requestedBy: { jellyfinUserId: fixture.aliceId } },
+  });
+
+  it('creates JellyPass\'s own API key in the setup wizard with an administrator\'s sign-in, and keeps it on a re-run', async () => {
+    const settings = await SettingsStore.load(path.join(await makeTempDir(null, 'jfa-real-setup-'), 'settings.json'));
+    const wizard = new SetupWizard({ settings, environment: {}, mode: 'setup', adminTokenSource: 'file', apply: () => {}, log: () => {} });
+    await assert.rejects(wizard.jellyfin({ url: baseUrl, username: 'admin', password: 'wrong-password' }), (error) => error.code === 'jellyfin_sign_in_refused');
+    await assert.rejects(wizard.jellyfin({ url: baseUrl, username: 'Alice', password: '' }), (error) => error.code === 'jellyfin_not_administrator');
+    const created = await wizard.jellyfin({ url: baseUrl, username: 'admin', password: 'test-password' });
+    assert.equal(created.status, 'created');
+    const apiKey = settings.current.jellyfinApiKey;
+    assert.match(apiKey, /^[0-9a-f]{32}$/);
+    const keys = await request(baseUrl, '/Auth/Keys', { token: fixture.token });
+    assert.deepEqual(keys.Items.filter((key) => key.AccessToken === apiKey).map((key) => key.AppName), ['JellyPass']);
+    // The key does what JellyPass needs: read users and the version, as a running JellyPass does.
+    const keyed = new JellyfinClient(baseUrl, apiKey);
+    assert.ok((await keyed.getUsers()).some((user) => user.Id === fixture.aliceId));
+    assert.equal(await keyed.getServerVersion(), (await request(baseUrl, '/System/Info/Public')).Version ?? (await request(baseUrl, '/System/Info/Public')).version);
+    // The sign-in's own session was signed out: Jellyfin lists no session for the setup device.
+    const sessions = await request(baseUrl, '/Sessions', { token: fixture.token });
+    assert.equal(sessions.some((session) => String(session.DeviceId ?? '').startsWith('jellypass-setup-')), false);
+    assert.equal((await wizard.jellyfin({ url: baseUrl })).status, 'kept');
+    assert.equal((await request(baseUrl, '/Auth/Keys', { token: fixture.token })).Items.filter((key) => key.AppName === 'JellyPass').length, 1);
   });
 
   it('rejects a Seerr-less webhook without a recognised HD event and grants nothing', async () => {

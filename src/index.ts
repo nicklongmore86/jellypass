@@ -2,20 +2,102 @@ import { SelfCheck, versionCheckResult } from './self-check.js';
 import { AccessService } from './access-service.js';
 import { AdminRequests } from './admin-requests.js';
 import { WebAuth } from './auth.js';
-import { loadConfig } from './config.js';
+import { loadConfig, type Config } from './config.js';
 import { JellyfinClient } from './jellyfin.js';
 import { JellyfinVersionGate } from './jellyfin-version.js';
-import { makeServers } from './server.js';
+import { makeServers, makeSetupServer } from './server.js';
 import { SeerrClient } from './seerr.js';
 import { SeerrUserMap } from './seerr-users.js';
 import { HouseholdAddresses } from './household-addresses.js';
 import { HouseholdRequests } from './household-requests.js';
 import { BackgroundTasks, createShutdown } from './shutdown.js';
+import { mergedEnvironment, missingRequired, readAdminTokenFile, setInEnvironment, settingsPaths, SettingsStore } from './settings.js';
+import { SetupWizard } from './setup.js';
 import { GrantStore } from './store.js';
 import { TmdbClient, TmdbError } from './tmdb.js';
 
+/** What stops the current phase (setup mode, or JellyPass running) on SIGINT or SIGTERM, and exits. */
+let stopCurrent: ((signal: string) => Promise<void>) | undefined;
+let stopping = false;
+
+/**
+ * Starts in setup mode while the required settings (Jellyfin's address and API key, the webhook token) are in neither
+ * the environment nor the settings file, and otherwise as configured. Finishing the setup wizard, or applying its
+ * changes later, stops what runs and starts it again with the new settings, in this process.
+ */
 async function main(): Promise<void> {
-  const config = loadConfig();
+  // `on`, not `once`: a second signal must reach the idempotent handler rather than Node's default, which kills at once.
+  const onSignal = (signal: string) => {
+    stopping = true;
+    if (stopCurrent) void stopCurrent(signal);
+    else process.exit(0);
+  };
+  process.on('SIGINT', onSignal);
+  process.on('SIGTERM', onSignal);
+  const environment = { ...process.env };
+  const paths = settingsPaths(environment);
+  for (;;) {
+    const settings = await SettingsStore.load(paths.settingsFile);
+    const fileToken = setInEnvironment(environment, 'ADMIN_TOKEN') ? undefined : await readAdminTokenFile(paths.adminTokenFile, { create: false });
+    const merged = mergedEnvironment(environment, settings.current, fileToken);
+    const missing = missingRequired(merged);
+    if (missing.length) {
+      await runSetup(environment, settings, paths.adminTokenFile, missing);
+    } else {
+      const adminTokenSource = setInEnvironment(environment, 'ADMIN_TOKEN') ? 'environment' : fileToken ? 'file' : 'webhook_token';
+      await run(loadConfig(merged), (apply) => new SetupWizard({ settings, environment, mode: 'running', adminTokenSource, apply }));
+    }
+    // Between phases a signal exits at once (see onSignal).
+    stopCurrent = undefined;
+    if (stopping) return;
+  }
+}
+
+/** Setup mode: the admin listener serves the setup wizard only, until it finishes. */
+async function runSetup(environment: Record<string, string | undefined>, settings: SettingsStore, adminTokenFile: string, missing: string[]): Promise<void> {
+  const adminToken = environment.ADMIN_TOKEN?.trim() || await readAdminTokenFile(adminTokenFile, { create: true }) as string;
+  const adminHost = environment.ADMIN_HOST?.trim() || '127.0.0.1';
+  const adminPort = Number.parseInt(environment.ADMIN_PORT ?? '8788', 10);
+  if (!Number.isInteger(adminPort) || adminPort < 1 || adminPort > 65535) throw new Error('ADMIN_PORT must be an integer between 1 and 65535');
+  let finished!: () => void;
+  const done = new Promise<void>((resolve) => { finished = resolve; });
+  const wizard = new SetupWizard({
+    settings,
+    environment,
+    mode: 'setup',
+    adminTokenSource: setInEnvironment(environment, 'ADMIN_TOKEN') ? 'environment' : 'file',
+    apply: () => void close().then(finished),
+  });
+  const server = makeSetupServer({ setup: wizard, adminToken });
+  let closing: Promise<void> | undefined;
+  const close = () => closing ??= new Promise<void>((resolve) => {
+    server.close(() => resolve());
+    server.closeAllConnections();
+  });
+  stopCurrent = async () => { await close(); process.exit(0); };
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(adminPort, adminHost, () => { server.off('error', reject); resolve(); });
+  });
+  console.warn(JSON.stringify({
+    level: 'warn',
+    message: 'JellyPass is not configured yet: open the admin site on the admin listener and follow the setup wizard',
+    admin: { host: adminHost, port: adminPort, path: '/admin/setup/' },
+    missing,
+    // Where the token is, never the token.
+    adminToken: setInEnvironment(environment, 'ADMIN_TOKEN') ? 'ADMIN_TOKEN' : adminTokenFile,
+  }));
+  await done;
+}
+
+async function run(config: Config, setupWizard: (apply: () => void) => SetupWizard): Promise<void> {
+  let restart!: () => void;
+  const restarted = new Promise<void>((resolve) => { restart = resolve; });
+  let restarting = false;
+  const setup = setupWizard(() => {
+    restarting = true;
+    void shutdown('settings applied');
+  });
   const store = new GrantStore(config.stateFile, { limitHouseholds: config.householdAppEnabled });
   await store.load();
 
@@ -67,6 +149,7 @@ async function main(): Promise<void> {
   }) : undefined;
   // Throws on an address map that conflicts with itself or with the legacy rule, so such a configuration never starts.
   const servers = makeServers(service, { webhook: config.webhookToken, admin: config.adminToken }, webAuth, {
+    setup,
     selfCheck: new SelfCheck({
       versionStatus: () => versionCheckResult(jellyfinVersion.status()),
       jellyfinUrl: config.jellyfinUrl,
@@ -200,10 +283,14 @@ async function main(): Promise<void> {
       return [reconcileTimer, catalogSyncTimer, backfillTimer];
     },
     background,
+    // Applying the wizard's settings ends here instead of exiting; main starts JellyPass again with them.
+    exit: (code) => {
+      if (restarting && code === 0 && !stopping) restart();
+      else process.exit(code);
+    },
   });
-  // `on`, not `once`: a second signal must reach the idempotent handler rather than Node's default, which kills at once.
-  process.on('SIGINT', (signal) => void shutdown(signal));
-  process.on('SIGTERM', (signal) => void shutdown(signal));
+  stopCurrent = shutdown;
+  await restarted;
 }
 
 main().catch((error: unknown) => {

@@ -25,7 +25,9 @@ fail() {
 }
 
 # The image runs as node (uid 1000); the config, database included, lives only in memory.
+# host.docker.internal lets Seerr's webhook test reach the setup wizard's listener on this machine.
 docker run -d --name "$container" -p "127.0.0.1:${SEERR_PORT}:5055" \
+  --add-host=host.docker.internal:host-gateway \
   --tmpfs /app/config:uid=1000,gid=1000 \
   "$SEERR_IMAGE" > /dev/null
 
@@ -78,6 +80,6 @@ docker exec "$container" node -e '
   db.close((error) => { if (error) { console.error(error); process.exit(1); } });
 ' || fail 'could not seed Seerr users'
 
-if ! SEERR_REAL_URL="$url" SEERR_REAL_API_KEY="$api_key" node --test test/real-seerr.test.mjs; then
+if ! SEERR_REAL_URL="$url" SEERR_REAL_API_KEY="$api_key" SEERR_REAL_HOST=host.docker.internal node --test test/real-seerr.test.mjs; then
   fail 'real Seerr tests failed'
 fi

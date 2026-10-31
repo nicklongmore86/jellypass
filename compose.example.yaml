@@ -2,8 +2,10 @@ services:
   jellypass:
     build: .
     restart: unless-stopped
+    # Optional: without it (or without the required settings in it), JellyPass starts its setup wizard.
     env_file:
-      - ${JELLYPASS_ENV_FILE:-.env}
+      - path: ${JELLYPASS_ENV_FILE:-.env}
+        required: false
     environment:
       STATE_FILE: /app/data/grants.json
       # Member listener: household addresses only. Point the reverse proxy's household hosts here.
