@@ -1,0 +1,24 @@
+# A locally-managed tunnel (`cloudflared tunnel create`), instead of the dashboard and TUNNEL_TOKEN in compose.yaml.
+# Mount this file and the tunnel's credentials file into the cloudflared container, for example:
+#
+#   volumes:
+#     - ./config.yml:/etc/cloudflared/config.yml:ro
+#     - ./credentials.json:/etc/cloudflared/credentials.json:ro   # a secret: keep it out of version control
+#   command: tunnel --no-autoupdate --config /etc/cloudflared/config.yml run
+#
+# drop TUNNEL_TOKEN from the cloudflared service, and route each hostname to the tunnel: `cloudflared tunnel route dns <tunnel> grove.example.com`.
+tunnel: replace-with-your-tunnel-id
+credentials-file: /etc/cloudflared/credentials.json
+
+ingress:
+  # Every household address goes to the member listener, with its own Host (no httpHostHeader).
+  - hostname: grove.example.com
+    service: http://jellypass:8787
+  - hostname: heath.example.com
+    service: http://jellypass:8787
+  # Optional: the admin site, ONLY with a Cloudflare Access application on this hostname (Zero Trust → Access →
+  # Applications) that admits your administrators alone. Without one, leave it out.
+  # - hostname: admin.example.com
+  #   service: http://jellypass:8788
+  # Anything else: refused at the tunnel.
+  - service: http_status:404

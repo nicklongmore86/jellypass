@@ -1,0 +1,33 @@
+# Traefik static configuration (mounted at /etc/traefik/traefik.yml). DNS-01 through Cloudflare; Traefik reads the
+# token from CF_DNS_API_TOKEN (other providers: https://doc.traefik.io/traefik/https/acme/#providers).
+entryPoints:
+  web:
+    address: ":80"
+    http:
+      redirections:
+        entryPoint:
+          to: websecure
+          scheme: https
+  websecure:
+    address: ":443"
+    # No forwardedHeaders.trustedIPs: Traefik then replaces any X-Forwarded-* a client sent with its own.
+
+certificatesResolvers:
+  letsencrypt:
+    acme:
+      email: admin@example.com
+      storage: /letsencrypt/acme.json
+      dnsChallenge:
+        provider: cloudflare
+
+providers:
+  file:
+    filename: /etc/traefik/dynamic.yml
+    watch: true
+  # Docker labels instead of the file: see the commented labels in compose.yaml. Use one or the other, not both
+  # for the same hostnames.
+  # docker:
+  #   exposedByDefault: false
+
+log:
+  level: INFO

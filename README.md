@@ -110,7 +110,9 @@ port `8788` (admin site and API, metrics, the Seerr webhook and health) and the
 name gets a fixed `421`). The default Compose file publishes both only on
 `127.0.0.1`. Route household names from the internet to `8787` only, and
 publish the admin port only on a private address, never routing a public
-hostname to it ([security](https://jellypass.app/docs/security/)). Seerr's
+hostname to it ([security](https://jellypass.app/docs/security/)).
+Ready-made Caddy, Cloudflare Tunnel, Nginx Proxy Manager and Traefik setups are
+in [docs/reverse-proxy.md](docs/reverse-proxy.md). Seerr's
 webhook goes to the admin listener, for example
 `http://jellypass:8788/webhooks/seerr`, with the
 `Authorization: Bearer <WEBHOOK_TOKEN>` header (4.0 takes no `?token=`).
@@ -211,6 +213,7 @@ The state file is the only data JellyPass must keep. Stop JellyPass, copy
 | Guide: installation, reverse proxy, Seerr, households, apps, upgrading, troubleshooting, security | [jellypass.app/docs](https://jellypass.app/docs/) |
 | Server reference: every setting, Seerr payloads, admin UI, operations (including the deployment self-check and household plugin routes), troubleshooting, admin API, limitations | [docs/server-reference.md](docs/server-reference.md) |
 | Household hostnames, household app API and PWA | [docs/household-hosts.md](docs/household-hosts.md) |
+| Reverse proxy recipes: Caddy (DNS-01), Cloudflare Tunnel, Nginx Proxy Manager, Traefik, and how to check them | [docs/reverse-proxy.md](docs/reverse-proxy.md), [examples/proxy/](examples/proxy/) |
 | Design notes | [household access](docs/household-access.md), [household app](docs/app-design.md), [TV add-on](docs/tv-addon.md) |
 | Release notes | [CHANGELOG.md](CHANGELOG.md), [mobile/CHANGELOG.md](mobile/CHANGELOG.md) |
 

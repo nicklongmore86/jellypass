@@ -1,0 +1,81 @@
+# JellyPass + Caddy (DNS-01). Setup and checks: docs/reverse-proxy.md#caddy
+#
+#   cp env.example .env                     # Cloudflare token and ACME e-mail, for Caddy
+#   cp ../../../.env.example jellypass.env  # optional: JellyPass settings (otherwise the setup wizard)
+#   mkdir -m 700 data && sudo chown 1000:1000 data
+#   docker compose up -d --build
+#
+# Then open http://127.0.0.1:8788/admin/ on this machine, map each household's address (Groups → Addresses) and run
+# the self-check.
+services:
+  caddy:
+    build: .
+    restart: unless-stopped
+    environment:
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in .env}
+      CLOUDFLARE_API_TOKEN: ${CLOUDFLARE_API_TOKEN:?set CLOUDFLARE_API_TOKEN in .env}
+    ports:
+      - 80:80
+      - 443:443
+      - 443:443/udp
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    networks:
+      proxy:
+        # A fixed address, so TRUSTED_PROXIES can name exactly this container.
+        ipv4_address: 172.30.87.10
+        # JellyPass's self-check requests each household address through the proxy; these names make that request
+        # reach Caddy directly inside Docker. List every household address here too.
+        aliases:
+          - grove.example.com
+          - heath.example.com
+
+  jellypass:
+    image: ${JELLYPASS_IMAGE:-ghcr.io/nicklongmore86/jellypass:latest}
+    restart: unless-stopped
+    env_file:
+      - path: ${JELLYPASS_ENV_FILE:-jellypass.env}
+        required: false
+    environment:
+      STATE_FILE: /app/data/grants.json
+      HOST: 0.0.0.0
+      PORT: 8787
+      ADMIN_HOST: 0.0.0.0
+      ADMIN_PORT: 8788
+      HOUSEHOLD_GATEWAY_ENABLED: "true"
+      # Caddy's address above, and nothing else: only its X-Forwarded-For is believed.
+      TRUSTED_PROXIES: 172.30.87.10
+    volumes:
+      - ./data:/app/data
+    ports:
+      # The member listener (8787) is not published: only Caddy reaches it, over the proxy network.
+      # The admin listener on this machine only. For your LAN, use a private address instead (for example
+      # 192.168.1.10:8788:8788), never a public one.
+      - 127.0.0.1:8788:8788
+    networks:
+      - proxy
+      # JELLYFIN_URL must be reachable from this container. If Jellyfin runs in another Compose project, join its
+      # network here (and declare it under networks: as external: true), or use an address on your LAN.
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:8788/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+networks:
+  proxy:
+    ipam:
+      config:
+        # Change it if Docker reports the pool overlaps another network; change ipv4_address and TRUSTED_PROXIES too.
+        - subnet: 172.30.87.0/24
+
+volumes:
+  caddy-data:
+  caddy-config:
