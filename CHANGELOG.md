@@ -23,6 +23,8 @@ changes are always listed at the top of the release notes.
 - Admin household cards now have independent mobile app access and TV add-on injection switches. New households
   default to app on, TV off. App API revision 4 returns `403 {"error":"app_access_disabled"}` to authenticated members
   when app access is off; mobile screens explain how to contact the administrator.
+- TV discovery never caches 403 refusals, so the next fetch can recover immediately when app access is restored.
+- Household feature updates accept only the changed boolean flag, preserving concurrent changes from other tabs.
 
 ### Upgrade
 
@@ -31,6 +33,10 @@ changes are always listed at the top of the release notes.
   (comma-separated household IDs or `*`); without it TV switches start off. After migration the stored switches are
   authoritative: changing the environment list has no effect. Remove the deprecated variable after upgrading;
   its presence emits one warning per process without logging its value. `TV_ADDON_ENABLED` remains the global gate.
+- Before the first v9 write, JellyPass saves the exact original state next to it as `<state-file>.v8.bak` (or `.v7.bak`),
+  with private permissions; an existing backup is never overwritten. To roll back to 4.0.0, stop JellyPass, restore
+  the v8 backup to the state path, then start 4.0.0. A v7 backup is also readable by 4.0.0. Later changes are not in that backup.
+- `*` seeds only households present during migration; it no longer covers households created later, which default TV off.
 
 ## [4.0.0] - 2026-10-31
 

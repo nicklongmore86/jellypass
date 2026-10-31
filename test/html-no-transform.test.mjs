@@ -12,7 +12,7 @@ import { JELLYFIN_WEB_PAGE, startApp, world } from './support/household-app.mjs'
 const DIST_APP = path.join(import.meta.dirname, '..', 'dist', 'app');
 const PAGE = '/jellypass/app/';
 const webWorld = (webPage = {}) => Object.assign(world(), { webPage });
-const tvOn = { tvAddon: { households: ['grove'] } };
+const tvOn = { tvAddon: true, tvHouseholds: ['grove'] };
 const request = (acceptEncoding, method = 'GET') => ({ method, headers: acceptEncoding === undefined ? {} : { 'accept-encoding': acceptEncoding } });
 const decoded = (answer) => {
   const coding = answer.headers['content-encoding'];

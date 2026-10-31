@@ -1013,7 +1013,7 @@ Everything in this table is served by the admin listener only (`ADMIN_PORT`).
 | `POST` | `/v1/app/requests/{requestId}/cancel` | Send every household following it back to "Get this", hold the title should it arrive, then delete the request in Seerr; `{"removeFromRadarr": true}` also removes a movie Jellyfin does not have from Radarr. |
 | `POST` | `/v1/app/held/{requestId}/release` | Give a held title to `{"householdIds": [...]}`. |
 | `GET` | `/v1/jellyfin/version` | The Jellyfin version last read, whether it is supported, any confirmation (`confirmation`: `not_needed`, `confirmed`, `unconfirmed`, or `null` while the version is not known), what an unconfirmed version does (`enforcement`: `warn` in 3.x, `refuse` from 4.0.0), and whether household hostnames serve (`householdHosts`: `serving`, `refused` or `waiting`; always `serving` in 3.x). |
-| `PUT` | `/v1/groups/{id}/features` | Save both boolean household switches: `appEnabled` and `tvAddonEnabled`. Admin authentication required. New households default app on, TV off. |
+| `PUT` | `/v1/groups/{id}/features` | Update one or both boolean household switches: `appEnabled` and `tvAddonEnabled`. Admin authentication required. New households default app on, TV off. |
 | `PUT` | `/v1/jellyfin/version/confirmation` | Allow the untested version Jellyfin runs now: `{"version": "..."}`, exactly as `GET /v1/jellyfin/version` reports it (`409 jellyfin_version_changed` otherwise). |
 | `DELETE` | `/v1/jellyfin/version/confirmation` | Withdraw that confirmation. |
 | `GET` | `/v1/grants` | List grants and synchronization state. |
@@ -1140,3 +1140,7 @@ Images target `linux/amd64` and `linux/arm64`.
 Maintainers must make the GHCR package public after its first publication:
 **GitHub profile → Packages → jellypass → Package settings → Change visibility
 → Public**. Public GHCR images can then be pulled without authentication.
+
+Before its first v9 save, migration writes the original state to `<state-file>.v8.bak` (or `.v7.bak`) next to it,
+without overwriting an existing backup. To roll back to 4.0.0, stop JellyPass and restore that backup to the state path;
+changes made after migration are not in the backup. `*` no longer covers households created later: new households default TV off.

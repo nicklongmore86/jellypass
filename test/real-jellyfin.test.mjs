@@ -495,7 +495,7 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     await householdStore.setHouseholdFeatures('tvhouse', { appEnabled: true, tvAddonEnabled: true });
     await householdStore.upsertGroup({ id: 'otherhouse', name: 'Other House', userIds: [] });
     const gateway = await startGateway(t, new AccessService(client, householdStore), {
-      householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-', tvAddon: { households: ['tvhouse'] } },
+      householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-', tvAddon: true },
     });
     const port = gateway.address().port;
     const direct = await new Promise((resolve, reject) => {

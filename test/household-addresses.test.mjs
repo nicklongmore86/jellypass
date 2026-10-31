@@ -513,7 +513,7 @@ function raw(port, requestLine, headers, body = '') {
 
 describe('household feature switches', () => {
   it('requires admin auth, refuses household routes, and changes only the selected household live', async (t) => {
-    const app = await startApp(t, Object.assign(world(), { webPage: {} }), { tvAddon: { households: [] } });
+    const app = await startApp(t, Object.assign(world(), { webPage: {} }), { tvAddon: true, tvHouseholds: [] });
     const route = '/v1/groups/grove/features';
     const features = (appEnabled, tvAddonEnabled) => JSON.stringify({ appEnabled, tvAddonEnabled });
     const put = (port, host, body, auth = BEARER) => get(port, route, { Host: host, 'Content-Type': 'application/json', ...auth }, { method: 'PUT', body });
@@ -523,7 +523,13 @@ describe('household feature switches', () => {
       assert.equal((await put(app.port, host, features(false, true))).status, 404);
     }
     assert.equal(app.store.getGroup('grove').appEnabled, true);
-    assert.equal((await put(app.adminPort, ADMIN_HOST, '{"appEnabled":false}')).status, 400);
+    assert.equal((await put(app.adminPort, ADMIN_HOST, '{}')).status, 400);
+    assert.equal((await put(app.adminPort, ADMIN_HOST, '{"appEnabled":"false"}')).status, 400);
+    assert.equal((await put(app.adminPort, ADMIN_HOST, '{"other":true}')).status, 400);
+    assert.equal((await put(app.adminPort, ADMIN_HOST, '{"tvAddonEnabled":true}')).status, 200);
+    assert.equal((await put(app.adminPort, ADMIN_HOST, '{"appEnabled":false}')).status, 200);
+    assert.deepEqual(app.service.getHouseholdFeatures('grove'), { appEnabled: false, tvAddonEnabled: true });
+    assert.equal((await put(app.adminPort, ADMIN_HOST, features(true, false))).status, 200);
     const web = () => app.get('/web/index.html', { user: null });
     assert.doesNotMatch((await web()).text, /data-jellypass-tv/);
     assert.equal((await put(app.adminPort, ADMIN_HOST, features(true, true))).status, 200);

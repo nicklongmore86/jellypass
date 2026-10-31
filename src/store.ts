@@ -107,7 +107,15 @@ export class GrantStore {
     }
     // close() may have been called while the file was being read; state must not change after it.
     this.#assertOpen();
-    const migrated = migrateState(JSON.parse(text) as unknown);
+    const original = JSON.parse(text) as { version?: unknown };
+    const originalVersion = original.version;
+    const migrated = migrateState(original);
+    if (migrated.changed) {
+      // Preserve the exact pre-migration file before the first v9 write; never replace an earlier backup.
+      try { await writeFile(`${this.#file}.v${originalVersion}.bak`, text, { flag: 'wx', mode: 0o600 }); }
+      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+      this.#assertOpen();
+    }
     this.#state = migrated.state;
     this.#addressesSnapshot = undefined;
     this.#durableIntents = new Set(Object.keys(this.#state.appRequestIntents ?? {}));
@@ -124,6 +132,10 @@ export class GrantStore {
     const seeded = this.#state.handledRequestIds === undefined || handled.size !== before;
     if (seeded) this.#state.handledRequestIds = [...handled];
     if (migrated.changed || lifted || seeded || prunedHidden) await this.#save();
+    if (migrated.seedCounts) {
+      const { on, total, unmatched } = migrated.seedCounts;
+      console.info(JSON.stringify({ level: 'info', message: `seeded TV on for ${on} of ${total} households, ${unmatched} entries unmatched` }));
+    }
     if (this.#limitHouseholds && this.countGroups() > MAX_HOUSEHOLDS) {
       console.warn(JSON.stringify({
         level: 'warn',
@@ -146,7 +158,7 @@ export class GrantStore {
     return Object.values(this.#state.groups).map(clone);
   }
 
-  public async setHouseholdFeatures(groupId: string, features: { appEnabled: boolean; tvAddonEnabled: boolean }): Promise<AccessGroup> {
+  public async setHouseholdFeatures(groupId: string, features: { appEnabled?: boolean; tvAddonEnabled?: boolean }): Promise<AccessGroup> {
     this.#assertOpen();
     const group = this.#state.groups[normalizeId(groupId)];
     if (!group) throw new Error('group not found');
@@ -1497,7 +1509,7 @@ function liftRemovals(state: GrantState): boolean {
   return true;
 }
 
-function migrateState(value: unknown): { state: GrantState; changed: boolean } {
+function migrateState(value: unknown): { state: GrantState; changed: boolean; seedCounts?: { on: number; total: number; unmatched: number } } {
   if (!value || typeof value !== 'object') throw new Error('state file must be a JSON object');
   const candidate = value as {
     version?: unknown;
@@ -1525,13 +1537,19 @@ function migrateState(value: unknown): { state: GrantState; changed: boolean } {
   if (candidate.version !== 9) {
     const state = value as GrantState;
     const legacy = process.env.TV_ADDON_HOUSEHOLDS?.trim().toLowerCase();
-    const selected = new Set(legacy?.split(',').map((id) => id.trim()));
+    const selected = new Set(legacy?.split(',').map((id) => id.trim()).filter(Boolean));
     for (const group of Object.values(state.groups)) {
       group.appEnabled = true;
       group.tvAddonEnabled = legacy === '*' || selected.has(group.id.toLowerCase());
     }
     state.version = 9;
-    return { state, changed: true };
+    const groups = Object.values(state.groups);
+    const ids = new Set(groups.map((group) => group.id.toLowerCase()));
+    return { state, changed: true, ...(legacy !== undefined ? { seedCounts: {
+      on: groups.filter((group) => group.tvAddonEnabled).length,
+      total: groups.length,
+      unmatched: legacy === '*' ? 0 : [...selected].filter((id) => !ids.has(id)).length,
+    } } : {}) };
   }
   for (const group of Object.values((value as GrantState).groups)) {
     if (typeof group.appEnabled !== 'boolean' || typeof group.tvAddonEnabled !== 'boolean') throw new Error('state file has invalid household features');

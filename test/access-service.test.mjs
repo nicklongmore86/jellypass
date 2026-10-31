@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import { AccessService, accessTag, sameStringSet } from '../dist/access-service.js';
@@ -193,6 +193,35 @@ describe('state migration', () => {
       const created = await reloaded.upsertGroup({ id: 'new', name: 'New', userIds: [] });
       assert.equal(created.appEnabled, true);
       assert.equal(created.tvAddonEnabled, false);
+    });
+  }
+
+  for (const version of [7, 8]) {
+    it(`backs up v${version} once and logs only seed counts for a normalized env list`, async (t) => {
+      const before = process.env.TV_ADDON_HOUSEHOLDS;
+      t.after(() => { if (before === undefined) delete process.env.TV_ADDON_HOUSEHOLDS; else process.env.TV_ADDON_HOUSEHOLDS = before; });
+      process.env.TV_ADDON_HOUSEHOLDS = ' GrOvE , unmatched-canary , grove , ';
+      const logs = [];
+      t.mock.method(console, 'info', (value) => logs.push(value));
+      const file = await stateFile(t);
+      const group = { id: 'grove', name: 'private-name-canary', userIds: [], createdAt: 'old', updatedAt: 'old' };
+      const original = JSON.stringify({ version, grants: {}, groups: { grove: group }, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [] });
+      await writeFile(file, original);
+      const store = new GrantStore(file);
+      await store.load();
+      assert.equal(store.getGroup('grove').tvAddonEnabled, true);
+      const backup = `${file}.v${version}.bak`;
+      assert.equal(await readFile(backup, 'utf8'), original);
+      assert.equal((await stat(backup)).mode & 0o777, 0o600);
+      assert.deepEqual(logs.map((line) => JSON.parse(line)), [{ level: 'info', message: 'seeded TV on for 1 of 1 households, 1 entries unmatched' }]);
+      assert.ok(!logs.join('').includes('grove') && !logs.join('').includes('canary'));
+      // A repeated migration must preserve the original backup, even when the source has since changed.
+      await writeFile(file, original.replace('private-name-canary', 'updated-name-canary'));
+      await new GrantStore(file).load();
+      assert.equal(await readFile(backup, 'utf8'), original);
+      assert.equal((await stat(backup)).mode & 0o777, 0o600);
+      await new GrantStore(file).load();
+      assert.equal(logs.length, 2, 'v9 reload does not seed or log again');
     });
   }
 

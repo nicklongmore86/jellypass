@@ -202,7 +202,7 @@ export class AccessService {
     return { appEnabled: group?.appEnabled === true, tvAddonEnabled: group?.tvAddonEnabled === true };
   }
 
-  public setHouseholdFeatures(groupId: string, features: { appEnabled: boolean; tvAddonEnabled: boolean }) {
+  public setHouseholdFeatures(groupId: string, features: { appEnabled?: boolean; tvAddonEnabled?: boolean }) {
     return this.#store.setHouseholdFeatures(groupId, features);
   }
 

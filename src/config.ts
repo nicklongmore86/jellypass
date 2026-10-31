@@ -66,10 +66,9 @@ export interface Config {
   /** Serves the household app API on household addresses; needs Seerr, TMDB_API_KEY and the household gateway. */
   householdAppEnabled: boolean;
   /**
-   * The TV add-on (docs/tv-addon.md): the households whose hosts add it to Jellyfin web's page, or 'all'. Undefined
-   * while TV_ADDON_ENABLED is off, and then nothing on any host changes.
+   * The global TV add-on service gate (docs/tv-addon.md); stored household switches select hosts.
    */
-  tvAddonHouseholds?: string[] | 'all';
+  tvAddonEnabled: boolean;
   requestBackfillEnabled: boolean;
   requestBackfillSince?: Date;
   logLevel: LogLevel;
@@ -145,7 +144,7 @@ export function loadConfig(): Config {
     throw new Error('the household gateway (HOUSEHOLD_GATEWAY_ENABLED, or HOUSEHOLD_DOMAIN), SEERR_URL, SEERR_API_KEY and TMDB_API_KEY are required when HOUSEHOLD_APP_ENABLED is true');
   }
   const legacyWebhookOnMemberPort = booleanEnvironment('LEGACY_WEBHOOK_ON_MEMBER_PORT', false);
-  const tvAddonHouseholds = parseTvAddon(householdAppEnabled);
+  const tvAddonEnabled = parseTvAddon(householdAppEnabled);
   const logLevel = parseLogLevel(process.env.LOG_LEVEL);
   const webSocketIdleTimeoutMs = webSocketTimeout('WS_IDLE_TIMEOUT_MS', DEFAULT_WS_IDLE_TIMEOUT_MS);
   const webSocketUpstreamIdleTimeoutMs = webSocketTimeout('WS_UPSTREAM_IDLE_TIMEOUT_MS', DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS);
@@ -193,7 +192,7 @@ export function loadConfig(): Config {
     householdHostPrefix,
     legacyWebhookOnMemberPort,
     householdAppEnabled,
-    ...(tvAddonHouseholds ? { tvAddonHouseholds } : {}),
+    tvAddonEnabled,
     requestBackfillEnabled,
     ...(requestBackfillSince ? { requestBackfillSince } : {}),
     logLevel,
@@ -230,14 +229,14 @@ function parseBackfillSince(value: string): Date {
  * read only by the migration. The add-on calls the household app API, so it needs HOUSEHOLD_APP_ENABLED.
  */
 let warnedTvHouseholds = false;
-function parseTvAddon(householdAppEnabled: boolean): string[] | 'all' | undefined {
+function parseTvAddon(householdAppEnabled: boolean): boolean {
   if (process.env.TV_ADDON_HOUSEHOLDS !== undefined && !warnedTvHouseholds) {
     warnedTvHouseholds = true;
     console.warn(JSON.stringify({ level: 'warn', message: 'TV_ADDON_HOUSEHOLDS is deprecated; used only when migrating state to v9. Manage TV access in the admin UI.' }));
   }
-  if (!booleanEnvironment('TV_ADDON_ENABLED', false)) return undefined;
+  if (!booleanEnvironment('TV_ADDON_ENABLED', false)) return false;
   if (!householdAppEnabled) throw new Error('HOUSEHOLD_APP_ENABLED is required when TV_ADDON_ENABLED is true');
-  return 'all';
+  return true;
 }
 
 /** Unknown values fall back to `info` with a warning rather than blocking startup over a logging setting. */

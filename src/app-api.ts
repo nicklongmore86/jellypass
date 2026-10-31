@@ -457,7 +457,7 @@ interface Route {
 export class HouseholdApp implements HouseholdAppHandler {
   readonly #catalogue: HouseholdAppOptions['catalogue'];
   readonly #blocklistSource: HouseholdAppOptions['blocklist'];
-  readonly #enabled: HouseholdAppOptions['enabled'];
+  readonly #enabled: NonNullable<HouseholdAppOptions['enabled']>;
   readonly #members: HouseholdAppOptions['members'];
   readonly #requests: HouseholdAppOptions['requests'];
   readonly #hidden: HouseholdAppOptions['hidden'];
@@ -495,7 +495,7 @@ export class HouseholdApp implements HouseholdAppHandler {
     this.#catalogue = options.catalogue;
     this.#blocklistSource = options.blocklist;
     this.#members = options.members;
-    this.#enabled = options.enabled;
+    this.#enabled = options.enabled ?? (() => false);
     this.#requests = options.requests;
     this.#hidden = options.hidden;
     this.#householdName = options.householdName;
@@ -679,7 +679,7 @@ export class HouseholdApp implements HouseholdAppHandler {
       return answer('unavailable');
     }
     if (!caller) return answer('unauthorized');
-    if (this.#enabled && !this.#enabled(context.householdId)) return answer('app_disabled');
+    if (!this.#enabled(context.householdId)) return answer('app_disabled');
     if (this.#byUser.increment(normalizedUserId(caller.id)) > MAX_APP_REQUESTS_PER_USER) return answer('rate_limited');
     // Counted only for the household's own members, so no one else can use up its burst.
     if (this.#byHousehold.increment(context.householdId) > MAX_APP_REQUESTS_PER_HOUSEHOLD_BURST) return answer('rate_limited');

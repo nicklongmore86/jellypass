@@ -671,7 +671,7 @@ describe('household feature controls', () => {
       if (path === '/v1/groups') return { status: 200, body: { groups: [group] } };
       if (path === '/v1/groups/grove/features') {
         writes.push(JSON.parse(init.body));
-        return refuse ? { status: 400, body: { error: 'refused' } } : { status: 200, body: { group: { ...group, ...writes.at(-1) } } };
+        return refuse ? { status: 400, body: { error: 'refused' } } : { status: 200, body: { group: { ...group, appEnabled: false, ...writes.at(-1) } } };
       }
       return DATA[path];
     });
@@ -683,12 +683,13 @@ describe('household feature controls', () => {
     tv.checked = true;
     tv.dispatchEvent(new page.window.Event('change'));
     await page.settle();
-    assert.deepEqual(writes[0], { appEnabled: true, tvAddonEnabled: true });
+    assert.deepEqual(writes[0], { tvAddonEnabled: true });
+    assert.equal(app.checked, false, 'refreshes the other flag changed in another tab');
     refuse = true;
-    app.checked = false;
+    app.checked = true;
     app.dispatchEvent(new page.window.Event('change'));
     await page.settle();
-    assert.equal(app.checked, true);
+    assert.equal(app.checked, false);
     assert.equal(tv.checked, true);
   });
 });

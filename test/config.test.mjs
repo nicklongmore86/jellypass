@@ -114,25 +114,40 @@ describe('listeners and the household gateway', () => {
   });
 });
 
+it('warns about the deprecated list once per process without logging its value', async (t) => {
+  t.after(restoreEnvironment);
+  const warnings = [];
+  t.mock.method(console, 'warn', (message) => warnings.push(message));
+  const { loadConfig: fresh } = await import('../dist/config.js?deprecation-once');
+  load({ TV_ADDON_HOUSEHOLDS: 'private-selection-canary' });
+  warnings.length = 0;
+  fresh();
+  fresh();
+  const matching = warnings.filter((message) => message.includes('TV_ADDON_HOUSEHOLDS is deprecated'));
+  assert.equal(matching.length, 1);
+  assert.ok(!warnings.join('').includes('private-selection-canary'), 'the value must not appear in a warning');
+  restoreEnvironment();
+});
+
 describe('TV add-on configuration', () => {
   afterEach(restoreEnvironment);
   const app = { HOUSEHOLD_APP_ENABLED: 'true', HOUSEHOLD_DOMAIN: 'example.test', TRUSTED_PROXIES: '192.0.2.1', TMDB_API_KEY: TMDB_V3_KEY };
 
   it('is off by default, even with households listed', () => {
-    assert.equal(load(app).tvAddonHouseholds, undefined);
-    assert.equal(load({ ...app, TV_ADDON_HOUSEHOLDS: 'grove' }).tvAddonHouseholds, undefined);
-    assert.equal(load({ ...app, TV_ADDON_ENABLED: 'false', TV_ADDON_HOUSEHOLDS: '*' }).tvAddonHouseholds, undefined);
+    assert.equal(load(app).tvAddonEnabled, false);
+    assert.equal(load({ ...app, TV_ADDON_HOUSEHOLDS: 'grove' }).tvAddonEnabled, false);
+    assert.equal(load({ ...app, TV_ADDON_ENABLED: 'false', TV_ADDON_HOUSEHOLDS: '*' }).tvAddonEnabled, false);
   });
 
   it('enables the service independently of the deprecated household selection', () => {
-    assert.deepEqual(load({ ...app, TV_ADDON_ENABLED: 'true', TV_ADDON_HOUSEHOLDS: 'grove' }).tvAddonHouseholds, 'all');
-    assert.deepEqual(load({ ...app, TV_ADDON_ENABLED: '1', TV_ADDON_HOUSEHOLDS: ' Grove, mill,,grove ' }).tvAddonHouseholds, 'all');
-    assert.equal(load({ ...app, TV_ADDON_ENABLED: 'true', TV_ADDON_HOUSEHOLDS: '*' }).tvAddonHouseholds, 'all');
+    assert.deepEqual(load({ ...app, TV_ADDON_ENABLED: 'true', TV_ADDON_HOUSEHOLDS: 'grove' }).tvAddonEnabled, true);
+    assert.deepEqual(load({ ...app, TV_ADDON_ENABLED: '1', TV_ADDON_HOUSEHOLDS: ' Grove, mill,,grove ' }).tvAddonEnabled, true);
+    assert.equal(load({ ...app, TV_ADDON_ENABLED: 'true', TV_ADDON_HOUSEHOLDS: '*' }).tvAddonEnabled, true);
   });
 
   it('needs the household app but no environment household list', () => {
     assert.throws(() => load({ TV_ADDON_ENABLED: 'true', TV_ADDON_HOUSEHOLDS: 'grove' }), /HOUSEHOLD_APP_ENABLED is required when TV_ADDON_ENABLED is true/);
-    assert.equal(load({ ...app, TV_ADDON_ENABLED: 'true' }).tvAddonHouseholds, 'all');
+    assert.equal(load({ ...app, TV_ADDON_ENABLED: 'true' }).tvAddonEnabled, true);
     assert.throws(() => load({ ...app, TV_ADDON_ENABLED: 'yes', TV_ADDON_HOUSEHOLDS: 'grove' }), /TV_ADDON_ENABLED must be true, false, 1, or 0/);
   });
 });

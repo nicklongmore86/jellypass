@@ -61,10 +61,10 @@ export interface ServerOptions {
     /** How long a sign-out through a household host may take at Jellyfin, in milliseconds (default 15 seconds). */
     signOutTimeoutMs?: number;
     /**
-     * The TV add-on (docs/tv-addon.md) on these households' hosts (by household ID), or on every household's. Without
+     * The TV add-on service (docs/tv-addon.md); stored household switches select hosts. Without
      * it, no household host changes.
      */
-    tvAddon?: { households: string[] | 'all' };
+    tvAddon?: boolean;
   };
   /**
    * Runs title-hold checks in the background. Pass the BackgroundTasks shutdown stops, so it can
@@ -127,12 +127,11 @@ export function makeServers(
 ): JellyPassServers {
   const background = options?.background ?? new BackgroundTasks();
   const { tvAddon: tvOption, domain, hostPrefix, ...gatewayOptions } = options?.householdGateway ?? {};
-  const tvHouseholds = tvOption?.households;
   const householdGateway = options?.householdGateway
     ? new HouseholdGateway({
         ...gatewayOptions,
         jellyfinUrl: options.householdGateway.jellyfinUrl,
-        ...(tvHouseholds ? {
+        ...(tvOption ? {
           tvAddon: {
             enabled: (householdId: string) => service.getHouseholdFeatures(householdId).tvAddonEnabled,
             assets: TvAssets.load(),
@@ -375,8 +374,8 @@ export function makeServers(
       }
       if (request.method === 'PUT' && segments.length === 4 && segments[0] === 'v1' && segments[1] === 'groups' && segments[3] === 'features') {
         const body = recordBody(await readJson(request));
-        if (Object.keys(body).some((key) => key !== 'appEnabled' && key !== 'tvAddonEnabled') || typeof body.appEnabled !== 'boolean' || typeof body.tvAddonEnabled !== 'boolean') throw new Error('appEnabled and tvAddonEnabled must be booleans');
-        const group = await service.setHouseholdFeatures(validId(segments[2], 'groupId'), { appEnabled: body.appEnabled, tvAddonEnabled: body.tvAddonEnabled });
+        if (!Object.keys(body).length || Object.entries(body).some(([key, value]) => (key !== 'appEnabled' && key !== 'tvAddonEnabled') || typeof value !== 'boolean')) throw new Error('body must contain appEnabled and/or tvAddonEnabled booleans');
+        const group = await service.setHouseholdFeatures(validId(segments[2], 'groupId'), { ...(typeof body.appEnabled === 'boolean' ? { appEnabled: body.appEnabled } : {}), ...(typeof body.tvAddonEnabled === 'boolean' ? { tvAddonEnabled: body.tvAddonEnabled } : {}) });
         return json(response, 200, { status: 'saved', group });
       }
       if (segments.length === 4 && segments[0] === 'v1' && segments[1] === 'groups' && segments[3] === 'addresses') {

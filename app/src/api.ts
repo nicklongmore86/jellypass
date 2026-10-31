@@ -83,7 +83,6 @@ export interface Api {
 }
 
 function kindOf(status: number, hiding = false): ApiErrorKind {
-  if (status === 403) return 'app_access_disabled';
   if (status === 401) return 'unauthorized';
   if (status === 409 && hiding) return 'hidden_limit_reached';
   if (status === 429) return 'rate_limited';
@@ -155,7 +154,10 @@ export function createApi(options: ApiOptions): Api {
       throw new SessionChangedError();
     }
     if (!response.ok) {
-      await response.body?.cancel().catch(() => undefined);
+      let appDisabled = false;
+      if (response.status === 403) {
+        try { appDisabled = (await response.json() as { error?: unknown } | null)?.error === 'app_access_disabled'; } catch { /* An unknown refusal uses generic wording. */ }
+      } else await response.body?.cancel().catch(() => undefined);
       // The sign-in may have ended while the body was let go: then this answer is nobody's, whatever it says.
       if (ended()) throw new SessionChangedError();
       // A refused sign-in is nobody's: whatever was shown as requested for it is dropped. A late refusal of a token
@@ -164,7 +166,7 @@ export function createApi(options: ApiOptions): Api {
         forget();
         identity = undefined;
       }
-      throw new ApiError(kindOf(response.status, init.hiding));
+      throw new ApiError(appDisabled ? 'app_access_disabled' : kindOf(response.status, init.hiding));
     }
     return response;
   }

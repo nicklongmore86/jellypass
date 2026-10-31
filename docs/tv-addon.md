@@ -1099,3 +1099,7 @@ check.
 For Chromium 63 itself (Samsung 2019): check that the bundle runs (the ES2017 gate covers syntax, not behaviour), focus
 is visible, the cards' and the title page's layout measures right by geometry (as JellyQuest measured its own), and
 Tizen's Back (`10009`) returns from the title page to Home.
+
+A `403` refusal is never cached by the Discover data layer. The household switches remain independent: with TV on
+and app access off, injection stays enabled but data calls are refused. After app access is restored, the next
+Discover fetch checks the server again immediately, without a cached 403 delaying it; no automatic retry is added.

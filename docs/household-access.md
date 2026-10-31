@@ -167,7 +167,7 @@ Turning app access off refuses authenticated household members' API requests wit
 `{"error":"app_access_disabled"}`; other households are unaffected. Invalid tokens and non-members still get 401.
 This does not disable ordinary Jellyfin playback or revoke an in-flight request.
 
-Admin automation can `PUT /v1/groups/{id}/features` with both boolean fields `appEnabled` and `tvAddonEnabled`.
+Admin automation can `PUT /v1/groups/{id}/features` with one or both boolean fields `appEnabled` and `tvAddonEnabled` (send only the changed flag).
 `GET /v1/groups` includes both fields. These routes require admin authentication on the admin listener;
 household hosts refuse them. Membership edits preserve both switches.
 
@@ -175,3 +175,7 @@ State schema v9 stores the switches. On upgrade from v8 or v7, app access starts
 `TV_ADDON_HOUSEHOLDS` if present (`*` or comma-separated household IDs), otherwise off. This happens only once.
 Remove that deprecated variable after upgrade; stored switches are authoritative and a remaining variable produces
 one warning per process. Back up state before upgrading; older builds cannot read schema v9.
+
+Before its first v9 save, migration writes the original state to `<state-file>.v8.bak` (or `.v7.bak`) next to it,
+without overwriting an existing backup. To roll back to 4.0.0, stop JellyPass and restore that backup to the state path;
+changes made after migration are not in the backup. `*` no longer covers households created later: new households default TV off.
