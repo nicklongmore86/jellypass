@@ -31,14 +31,17 @@ addresses are described in [Household addresses](household-hosts.md#household-ad
 ### Request sizes and timeouts
 
 JellyPass reads only a few request bodies itself, each with a small limit of
-its own: a household sign-in, sign-out or SyncPlay join at most 8 KiB (`413`
-`request_too_large` above it), a household app "Get this" request 1 KiB, an
+its own: a household sign-in, sign-out or SyncPlay join at most 8 KiB (a
+sign-in over it is answered `400` `invalid_request`, a sign-out or SyncPlay
+join `413` `request_too_large`), a household app "Get this" request 1 KiB, an
 administrator API body 64 KiB. Every other request on a household address,
 uploads included, is streamed on to Jellyfin as it arrives, with no size limit
-from JellyPass; what limits it is the proxy (nginx's and NPM's
-`client_max_body_size` defaults to 1 MB and answers `413` itself; Caddy and
-Traefik set no size limit; Cloudflare limits uploads per plan, 100 MB on the
-Free plan) and Jellyfin.
+from JellyPass; what limits it is the proxy and Jellyfin. Stock nginx's
+`client_max_body_size` defaults to 1 MB and answers `413` itself; Nginx Proxy
+Manager sets it to 2000 MB for every proxy host
+([v2.12.6 `nginx.conf`](https://github.com/NginxProxyManager/nginx-proxy-manager/blob/v2.12.6/docker/rootfs/etc/nginx/nginx.conf)),
+so lower it there only if you want a smaller cap. Caddy and Traefik set no
+size limit; Cloudflare limits uploads per plan, 100 MB on the Free plan.
 
 Timeouts that apply on the way:
 
@@ -46,10 +49,11 @@ Timeouts that apply on the way:
 | --- | --- |
 | JellyPass, both listeners (Node's HTTP server defaults) | A request's headers must arrive within 60 s, and the whole request, body included, within 5 minutes (`408` otherwise), so one upload that takes longer fails whatever the proxy allows. An idle keep-alive connection from the proxy is closed after 5 s. Responses (video, downloads, HLS) have no time limit. |
 | JellyPass, household WebSockets | Closed after `WS_IDLE_TIMEOUT_MS` (default 5 minutes) with no bytes either way, or `WS_UPSTREAM_IDLE_TIMEOUT_MS` (default 3 minutes) with none from Jellyfin. Jellyfin's keepalives (every 30 s or so) keep a healthy socket from ever reaching either. |
-| nginx / NPM | `proxy_read_timeout` and `proxy_send_timeout` default to 60 s between two reads or writes, about Jellyfin's keepalive window and short for a stream that pauses while transcoding. The examples set both to 1 hour, so nginx is never the first to close a quiet WebSocket or a paused stream. |
+| nginx | `proxy_read_timeout` and `proxy_send_timeout` default to 60 s between two reads or writes, about Jellyfin's keepalive window and short for a stream that pauses while transcoding. The example sets both to 1 hour, so nginx is never the first to close a quiet WebSocket or a paused stream. |
+| Nginx Proxy Manager | Sets both to 90 s for every proxy host (v2.12.6); still short for a paused stream, so the example's **Advanced** snippet raises both to 1 hour as well. |
 | Traefik | Traefik 3 reads a whole request within 60 s by default (`respondingTimeouts.readTimeout`); the example raises it to 5 minutes to match JellyPass for uploads. |
 | Caddy | No read, write or stream limit by default. |
-| Cloudflare | `524` if the origin sends no response headers within 100 s; once a response has started, it may stream for as long as it lasts. WebSockets stay open. |
+| Cloudflare | `524` if the origin sends nothing for 125 s, the proxy read timeout in Cloudflare's [connection limits](https://developers.cloudflare.com/fundamentals/reference/connection-limits/) (Enterprise zones can change it). A stream or WebSocket that keeps sending stays open in practice, but Cloudflare does not promise that a long one is never cut (it restarts its edge servers from time to time), so clients should be ready to reconnect. |
 
 Keep Jellyfin's own address, if it has a public one, separate from the
 household addresses and give it to administrators only: household addresses
@@ -165,13 +169,15 @@ certificate covers one level of subdomain, such as `grove.example.com`).
 5. **Check it from outside your network:**
 
    ```sh
-   curl -sI http://grove.example.com/web/ | head -n 3
+   curl -sI http://grove.example.com/web/
    ```
 
-   It must answer `301` (or `308`) with `Location: https://grove.example.com/web/`,
-   and `Server: cloudflare` with no JellyPass or Jellyfin headers (no
-   `Cache-Control: no-transform`): the redirect came from Cloudflare, not from
-   behind the tunnel. Repeat it for each household hostname.
+   It must answer `301` (or `308`) with `Location: https://grove.example.com/web/`.
+   As a sanity check that the redirect came from Cloudflare and not from
+   behind the tunnel, look for no JellyPass or Jellyfin headers (no
+   `Cache-Control: no-transform`); `Server: cloudflare` alone proves nothing,
+   since Cloudflare sets it on every proxied response. Repeat it for each
+   household hostname.
 
 A locally-managed tunnel (`cloudflared tunnel create`, a credentials file and
 ingress rules) works as well: [`config.yml`](../examples/proxy/cloudflare-tunnel/config.yml)
