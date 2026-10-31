@@ -42,7 +42,7 @@ export const REQUESTS_TEXT = {
 export const CANCEL_TEXT = {
   button: 'Cancel request',
   heading: 'Cancel this request?',
-  body: "This withdraws your household's request. If it has already been approved, the download may still finish, but it won't be added for your household.",
+  body: "This withdraws your household's request. If it has already been approved, it may still be added to the server, but it won't be added for your household.",
   confirm: 'Cancel request',
   keep: 'Keep request',
   sending: 'Cancelling…',

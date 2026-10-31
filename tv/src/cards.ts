@@ -1,4 +1,5 @@
 import type { Card, HouseholdState } from './api.js';
+import { HIDDEN_TEXT } from './hidden-model.js';
 import { JELLYFIN_CLASSES, listClasses } from './jellyfin-web.js';
 
 /**
@@ -35,6 +36,8 @@ export interface DrawOptions {
   attribute: string;
   /** A card's status, as the "Get this" overlay has it. */
   state: (card: Card) => HouseholdState;
+  /** Whether a card is one the member hid: it says so, in words, under its title (Search keeps such titles). */
+  hidden?: (card: Card) => boolean;
   /** A card was chosen. */
   choose: (card: Card) => void;
   /** A last card in the strip that is a link, not a title (Home's "My requests"): not one of the drawn cards. */
@@ -42,8 +45,8 @@ export interface DrawOptions {
 }
 
 /** A card's accessible name: the title, the year and the status, said once. */
-export function cardLabel(card: Card, state: HouseholdState): string {
-  const label = STATE_LABELS[state];
+export function cardLabel(card: Card, state: HouseholdState, hidden = false): string {
+  const label = hidden ? `${STATE_LABELS[state]}, ${HIDDEN_TEXT.tag}` : STATE_LABELS[state];
   return card.year === null ? `${card.title}, ${label}` : `${card.title}, ${card.year}, ${label}`;
 }
 
@@ -72,7 +75,8 @@ export function drawCards(document: Document, cards: Card[], options: DrawOption
     button.type = 'button';
     button.setAttribute('data-media-type', card.mediaType);
     button.setAttribute('data-tmdb-id', String(card.tmdbId));
-    button.setAttribute('aria-label', cardLabel(card, options.state(card)));
+    const hidden = options.hidden !== undefined && options.hidden(card);
+    button.setAttribute('aria-label', cardLabel(card, options.state(card), hidden));
     const box = element('div', 'cardBox cardBox-bottompadded');
     const frame = element('div', 'cardScalable');
     frame.appendChild(element('div', 'cardPadder cardPadder-overflowPortrait'));
@@ -89,6 +93,7 @@ export function drawCards(document: Document, cards: Card[], options: DrawOption
     box.appendChild(frame);
     box.appendChild(element('div', 'cardText cardTextCentered cardText-first jellypass-tv-card-title', card.title));
     if (card.year !== null) box.appendChild(element('div', 'cardText cardText-secondary cardTextCentered jellypass-tv-card-year', String(card.year)));
+    if (hidden) box.appendChild(element('div', 'cardText cardText-secondary cardTextCentered jellypass-tv-card-hidden', HIDDEN_TEXT.tag));
     button.appendChild(box);
     button.addEventListener('click', () => options.choose(card));
     drawn.push({ card, button });

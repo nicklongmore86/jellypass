@@ -1,6 +1,6 @@
 import type { ApiErrorKind, Profile, SignInErrorKind } from './api.js';
 import { icon } from './icons.js';
-import type { Card, CoarseStatus, HouseholdState, Movie, Page, RequestEntry, Season, SeasonSummary, Series, Source, SourceKind } from './types.js';
+import type { Card, CoarseStatus, HiddenEntry, HouseholdState, Movie, Page, RequestEntry, Season, SeasonSummary, Series, Source, SourceKind } from './types.js';
 
 /**
  * Rendering: DTOs in, DOM out. Everything shown is a fixed string or a DTO field set with `textContent`; nothing is
@@ -49,7 +49,7 @@ export const GET_THIS_TEXT = {
 export const CANCEL_TEXT = {
   button: 'Cancel request',
   heading: 'Cancel this request?',
-  body: "This withdraws your household's request. If it has already been approved, the download may still finish, but it won't be added for your household.",
+  body: "This withdraws your household's request. If it has already been approved, it may still be added to the server, but it won't be added for your household.",
   confirm: 'Cancel request',
   keep: 'Keep request',
   sending: 'Cancelling…',
@@ -63,12 +63,66 @@ export const CANCEL_TEXT = {
 /** Cancels an entry: resolves to `accepted` (after `onAccepted`, the moment the call was), `refresh_failed`, or the kind of failure. Never rejects. */
 export type CancelHandler = (entry: RequestEntry, onAccepted: () => void) => Promise<'accepted' | 'refresh_failed' | ApiErrorKind>;
 
+const HIDE_LIMIT = "You've hidden as many titles as you can (2,000). Unhide some to hide more.";
+
+/**
+ * Hiding a title ("Not interested"). Only for the member, in their household, and only from Discover: every sentence
+ * here is fixed, and nothing from a response (or another member's name) is ever shown.
+ */
+export const HIDE_TEXT = {
+  button: 'Not interested',
+  unhide: 'Unhide',
+  undo: 'Undo',
+  sending: 'Sending…',
+  note: 'Only for you in this household. It does not cancel requests or take anything out of your library.',
+  tag: 'Hidden from Discover',
+  dismiss: 'Dismiss',
+  hideLabel: (title: string) => `Hide ${title} from Discover`,
+  unhideLabel: (title: string) => `Unhide ${title}`,
+  undoLabel: (title: string) => `Undo hiding ${title}`,
+  moreLabel: (title: string) => `More options for ${title}`,
+  hidden: (title: string) => `Hidden ${title} from Discover.`,
+  unhidden: (title: string) => `Unhid ${title}.`,
+  limit: HIDE_LIMIT,
+  rate_limited: 'Too many tries, try again in a few minutes.',
+  offline: "You're offline. Check your connection, then try again.",
+  unavailable: "We couldn't change that just now. Try again in a moment.",
+  /** My requests' two views. */
+  viewsLabel: 'My requests views',
+  requestsTab: 'Requests',
+  hiddenTab: 'Hidden',
+  hiddenTitle: 'Hidden titles',
+  empty: 'Nothing hidden. Titles you mark Not interested are listed here, so you can bring them back.',
+  loading: 'Loading title…',
+  hiddenOn: (day: string) => `Hidden on ${day}`,
+} as const;
+
+/**
+ * How a hide or unhide ended: accepted, the kind of failure (each with fixed words, see {@link hideFailureText}), or
+ * `stale`: answered after the sign-in it was made in had ended, so nothing is shown or said.
+ */
+export type HideOutcome = 'accepted' | 'stale' | ApiErrorKind;
+
+export function hideFailureText(outcome: Exclude<HideOutcome, 'accepted' | 'stale'>): string {
+  if (outcome === 'hidden_limit_reached') return HIDE_TEXT.limit;
+  if (outcome === 'rate_limited') return HIDE_TEXT.rate_limited;
+  if (outcome === 'offline') return HIDE_TEXT.offline;
+  return HIDE_TEXT.unavailable;
+}
+
+/** What a card's controls ask of the screen: it does the call and what follows (the card leaves, or is marked). Never rejects. */
+export interface CardActions {
+  hide(card: Card, item: HTMLElement): void;
+  unhide(card: Card, item: HTMLElement): void;
+}
+
 export const ERROR_TEXT: Record<ApiErrorKind, { title: string; body: string }> = {
   unauthorized: { title: 'Sign in to continue', body: 'Your Jellyfin sign-in is missing or has expired.' },
   rate_limited: { title: 'Too many requests', body: 'Wait a minute, then try again.' },
   unavailable: { title: "Can't load this right now", body: 'Something went wrong. Try again in a moment.' },
   not_found: { title: 'Not found', body: "We couldn't find that title." },
   offline: { title: "You're offline", body: 'Check your connection, then try again.' },
+  hidden_limit_reached: { title: "Can't hide more titles", body: HIDE_LIMIT },
 };
 
 export const SIGNIN_ERROR_TEXT: Record<SignInErrorKind, string> = {
@@ -204,18 +258,78 @@ export function playButton(doc: Document, card: Pick<Card, 'play' | 'title'>, or
 export type RowVariant = 'poster' | 'backdrop';
 
 /** A poster card: poster with its status chip at the top-left, then the title and "year · Movie/Series". Play lives on the detail page. */
-export function cardItem(doc: Document, card: Card): HTMLElement {
+export function cardItem(doc: Document, card: Card, actions?: CardActions): HTMLElement {
   const facts = [card.year ?? '', card.mediaType === 'tv' ? 'Series' : 'Movie'].filter(Boolean).join(' · ');
   const link = el(doc, 'a', { class: 'card-link', attrs: { href: href(card), 'aria-label': cardName(card, facts) } }, [
     poster(doc, card.posterUrl, '', 'card'),
     el(doc, 'span', { class: 'card-title', text: card.title }),
     el(doc, 'span', { class: 'card-meta', text: facts }),
   ]);
-  return el(doc, 'li', { class: 'card' }, [link, cardStatusBadge(doc, card.state)]);
+  const item = el(doc, 'li', { class: 'card' }, [link, cardStatusBadge(doc, card.state)]);
+  if (actions) item.append(...cardControls(doc, item, card, actions));
+  return item;
 }
 
-export function cardList(doc: Document, cards: readonly Card[], className: string, variant: RowVariant = 'poster'): HTMLElement {
-  return el(doc, 'ul', { class: className }, cards.map((card) => (variant === 'backdrop' ? backdropCardItem(doc, card) : cardItem(doc, card))));
+export function cardList(doc: Document, cards: readonly Card[], className: string, variant: RowVariant = 'poster', actions?: CardActions): HTMLElement {
+  return el(doc, 'ul', { class: className }, cards.map((card) => (variant === 'backdrop' ? backdropCardItem(doc, card, actions) : cardItem(doc, card, actions))));
+}
+
+/**
+ * A card's hiding controls, siblings of its link (never inside it): a hidden title (only ever in search) says so in words
+ * and offers Unhide; any other has a "More options" button that opens a one-item menu, Not interested. The menu opens
+ * from the button (Enter, Space, a tap or a click), closes on Escape (focus back on the button), on choosing and on
+ * any click or focus outside it, and needs no hover or long press.
+ */
+export function addCardControls(doc: Document, item: HTMLElement, card: Card, actions: CardActions): void {
+  if (!item.querySelector('.card-more-box, .card-unhide')) item.append(...cardControls(doc, item, card, actions));
+}
+
+function cardControls(doc: Document, item: HTMLElement, card: Card, actions: CardActions): HTMLElement[] {
+  if (card.hidden === true) {
+    const unhide = el(doc, 'button', { class: 'button button-small button-secondary card-unhide', text: HIDE_TEXT.unhide, attrs: { type: 'button', 'aria-label': HIDE_TEXT.unhideLabel(card.title) } });
+    unhide.addEventListener('click', () => {
+      if (unhide.disabled) return;
+      unhide.disabled = true;
+      unhide.textContent = HIDE_TEXT.sending;
+      actions.unhide(card, item);
+    });
+    return [el(doc, 'p', { class: 'hidden-tag', text: HIDE_TEXT.tag }), unhide];
+  }
+  const more = el(doc, 'button', { class: 'card-more', attrs: { type: 'button', 'aria-label': HIDE_TEXT.moreLabel(card.title), 'aria-haspopup': 'menu', 'aria-expanded': 'false' } }, [icon(doc, 'more')]);
+  const choose = el(doc, 'button', { class: 'card-menu-item', text: HIDE_TEXT.button, attrs: { type: 'button', role: 'menuitem', 'aria-label': HIDE_TEXT.hideLabel(card.title) } });
+  const menu = el(doc, 'div', { class: 'card-menu', attrs: { role: 'menu', 'aria-label': HIDE_TEXT.moreLabel(card.title), hidden: '' } }, [choose]);
+  const outside = (event: Event): void => {
+    const target = event.target as Node | null;
+    if (!target || (!menu.contains(target) && !more.contains(target))) close(false);
+  };
+  const close = (refocus: boolean): void => {
+    if (menu.hidden) return;
+    menu.hidden = true;
+    more.setAttribute('aria-expanded', 'false');
+    doc.removeEventListener('click', outside);
+    doc.removeEventListener('focusin', outside);
+    if (refocus) more.focus({ preventScroll: true });
+  };
+  more.addEventListener('click', () => {
+    if (!menu.hidden) return close(true);
+    menu.hidden = false;
+    more.setAttribute('aria-expanded', 'true');
+    choose.focus({ preventScroll: true });
+    // (The click that opened the menu is on its button, which `outside` leaves alone.)
+    doc.addEventListener('click', outside);
+    doc.addEventListener('focusin', outside);
+  });
+  item.addEventListener('keydown', (event) => {
+    if ((event as KeyboardEvent).key === 'Escape' && !menu.hidden) {
+      event.stopPropagation();
+      close(true);
+    }
+  });
+  choose.addEventListener('click', () => {
+    close(false);
+    actions.hide(card, item);
+  });
+  return [el(doc, 'div', { class: 'card-more-box' }, [more, menu])];
 }
 
 /** The same TMDB backdrop file at the two widths the app uses; a phone's browser picks one by its own width and density. */
@@ -276,7 +390,7 @@ function backdropMeta(card: Card): string {
  * own colour: no text is ever drawn over a picture. The whole card is the link. Every image is lazy: these rows start
  * below the hero.
  */
-export function backdropCardItem(doc: Document, card: Card): HTMLElement {
+export function backdropCardItem(doc: Document, card: Card, actions?: CardActions): HTMLElement {
   const backdrop = backdropImage(doc, card.backdropUrl, 'backdrop-img', 'lazy', BACKDROP_CARD_SIZES);
   const image = backdrop ?? posterImage(doc, card.posterUrl, '', 'lazy');
   if (!backdrop && image) image.classList.add('backdrop-img');
@@ -288,7 +402,9 @@ export function backdropCardItem(doc: Document, card: Card): HTMLElement {
       meta ? el(doc, 'span', { class: 'card-meta', text: meta }) : undefined,
     ]),
   ]);
-  return el(doc, 'li', { class: 'card card-backdrop' }, [link, cardStatusBadge(doc, card.state)]);
+  const item = el(doc, 'li', { class: 'card card-backdrop' }, [link, cardStatusBadge(doc, card.state)]);
+  if (actions) item.append(...cardControls(doc, item, card, actions));
+  return item;
 }
 
 /** The hero card's image: the whole card is 4:5 on a phone, so a phone asks for what fits its width less the page's gutters. */
@@ -441,8 +557,8 @@ export function homeSwitch(doc: Document, selected: HomeFilter, panelId: string)
 }
 
 /** A discover row: a heading and a horizontally scrolling list, reachable and scrollable from the keyboard. */
-export function titleRow(doc: Document, id: string, heading: string, page: Page, variant: RowVariant = 'poster', accent?: RowAccent): HTMLElement {
-  const list = cardList(doc, page.results, variant === 'backdrop' ? 'row-list row-list-backdrop' : 'row-list', variant);
+export function titleRow(doc: Document, id: string, heading: string, page: Page, variant: RowVariant = 'poster', accent?: RowAccent, actions?: CardActions): HTMLElement {
+  const list = cardList(doc, page.results, variant === 'backdrop' ? 'row-list row-list-backdrop' : 'row-list', variant, actions);
   list.setAttribute('tabindex', '0');
   list.setAttribute('aria-labelledby', `${id}-heading`);
   const section = el(doc, 'section', { class: 'row' }, [el(doc, 'h2', { class: `row-heading${accentClass(accent)}`, text: heading, attrs: { id: `${id}-heading` } })]);
@@ -508,6 +624,7 @@ export function sourceRow(
   page: Page,
   list: SourceList = 'all',
   accent?: RowAccent,
+  actions?: CardActions,
 ): HTMLElement {
   const link = el(doc, 'a', { class: 'row-heading-link', attrs: { href: sourceHref(kind, source, list) } }, [
     kind === 'network' ? el(doc, 'span', { text: SOURCE_TEXT.networkPrefix[list] }) : undefined,
@@ -515,7 +632,7 @@ export function sourceRow(
     kind === 'studio' ? el(doc, 'span', { text: 'movies' }) : undefined,
     icon(doc, 'next'),
   ]);
-  const section = titleRow(doc, id, '', page, 'poster', accent);
+  const section = titleRow(doc, id, '', page, 'poster', accent, actions);
   const heading = section.querySelector('h2') as HTMLElement;
   heading.classList.add('row-heading-source');
   heading.replaceChildren(link);
@@ -648,8 +765,16 @@ export function stateNote(doc: Document, state: HouseholdState): HTMLElement | u
  */
 export type GetThisHandler = (seasons: number[], onAccepted: () => void) => Promise<'accepted' | 'refresh_failed' | ApiErrorKind>;
 
+/** A title page's "Not interested" / Unhide: whether the member hid the title, and the call (resolving to its outcome, never rejecting). */
+export interface TitleHiding {
+  hidden: boolean;
+  run(hidden: boolean): Promise<HideOutcome>;
+}
+
 /** What a "Get this" control needs from the screen that shows it. */
 export interface GetThisExtras {
+  /** Offered only by a server that has hiding (`apiVersion` 3). */
+  hiding?: TitleHiding;
   /** Asks for the given seasons (empty for a movie). Never rejects: it resolves to `accepted` or the kind of failure. */
   onGet?: GetThisHandler;
   /** The confirmation to show at once, after a screen was redrawn for a title that was just asked for. */
@@ -785,6 +910,53 @@ function detailHero(doc: Document, backdropUrl: string | null | undefined): HTML
 }
 const DETAIL_SIZES = '(min-width: 64rem) 960px, calc(100vw - 2rem)';
 
+/**
+ * "Not interested" (Unhide, once hidden) on a title's page, with what it does in words. The button keeps focus as its
+ * label changes; hiding says so politely, with an Undo beside it, and a failure says why in fixed words. Nothing is
+ * sent twice: the button is disabled while its call is out.
+ */
+function hideControl(doc: Document, title: Pick<Card, 'title'>, hiding: TitleHiding): HTMLElement {
+  let hidden = hiding.hidden;
+  const toggle = el(doc, 'button', { class: 'button button-small button-secondary hide-button', attrs: { type: 'button' } });
+  const tag = el(doc, 'p', { class: 'hidden-tag' });
+  const message = el(doc, 'p', { class: 'get-message hide-message', attrs: { role: 'status' } });
+  const sync = (): void => {
+    toggle.textContent = hidden ? HIDE_TEXT.unhide : HIDE_TEXT.button;
+    toggle.setAttribute('aria-label', hidden ? HIDE_TEXT.unhideLabel(title.title) : HIDE_TEXT.hideLabel(title.title));
+    tag.textContent = hidden ? HIDE_TEXT.tag : '';
+    tag.hidden = !hidden;
+  };
+  sync();
+  const run = async (next: boolean): Promise<void> => {
+    if (toggle.disabled) return;
+    toggle.disabled = true;
+    toggle.setAttribute('aria-busy', 'true');
+    message.className = 'get-message hide-message';
+    message.replaceChildren();
+    const outcome = await hiding.run(next);
+    if (outcome === 'stale') return;
+    toggle.disabled = false;
+    toggle.removeAttribute('aria-busy');
+    if (outcome !== 'accepted') {
+      message.className = 'get-message get-error hide-message';
+      message.textContent = hideFailureText(outcome);
+      return;
+    }
+    hidden = next;
+    sync();
+    message.textContent = next ? HIDE_TEXT.hidden(title.title) : HIDE_TEXT.unhidden(title.title);
+    if (next) {
+      const undo = el(doc, 'button', { class: 'button button-small button-secondary hide-undo', text: HIDE_TEXT.undo, attrs: { type: 'button', 'aria-label': HIDE_TEXT.undoLabel(title.title) } });
+      undo.addEventListener('click', () => void run(false));
+      message.append(' ', undo);
+    }
+    // The label changed under the member's finger (and a disabled button drops focus in some browsers): focus is on the one control to press.
+    toggle.focus({ preventScroll: true });
+  };
+  toggle.addEventListener('click', () => void run(!hidden));
+  return el(doc, 'div', { class: 'hide-box' }, [tag, toggle, el(doc, 'p', { class: 'muted hide-note', text: HIDE_TEXT.note }), message]);
+}
+
 /** The status pill, its note, and the one action: Play (in the library) or Get this (available to get), never both as primaries. */
 function detailAction(doc: Document, play: HTMLElement | undefined, parts: GetThisParts | undefined): HTMLElement | undefined {
   // A series partly held can still ask for the rest: then Play is the primary and Get this steps back to the outlined style.
@@ -817,6 +989,7 @@ export function titleDetail(doc: Document, title: Movie | Series, origin: string
       stateNote(doc, title.state),
       failedAny ? failedNote(doc) : undefined,
       detailAction(doc, play, parts),
+      extras.hiding ? hideControl(doc, title, extras.hiding) : undefined,
     ]),
   ]);
   const main = el(doc, 'div', { class: 'detail-main' }, [
@@ -1050,6 +1223,58 @@ export function requestItem(doc: Document, entry: RequestEntry, onCancel?: Cance
   ]);
 }
 
+/**
+ * My requests' two views, Requests and Hidden: a short navigation of two real links (a separate screen each, not a
+ * filter), the current one marked. The Hidden link exists only on a server that has hiding.
+ */
+export function requestViews(doc: Document, current: 'requests' | 'hidden'): HTMLElement {
+  const link = (view: 'requests' | 'hidden', label: string, address: string) => {
+    const a = el(doc, 'a', { class: 'segment', text: label, attrs: { href: address } });
+    if (current === view) a.setAttribute('aria-current', 'page');
+    return a;
+  };
+  return el(doc, 'nav', { class: 'segmented request-views', attrs: { 'aria-label': HIDE_TEXT.viewsLabel } }, [
+    link('requests', HIDE_TEXT.requestsTab, '#/requests'),
+    link('hidden', HIDE_TEXT.hiddenTab, '#/requests/hidden'),
+  ]);
+}
+
+/** The day a title was hidden as the member's locale writes it (the API sends an ISO time; only the day is shown). */
+export function hiddenOnText(at: string | undefined): string | undefined {
+  if (typeof at !== 'string' || !/^\d{4}-\d{2}-\d{2}T/.test(at)) return undefined;
+  const date = new Date(at);
+  if (Number.isNaN(date.getTime())) return undefined;
+  return HIDE_TEXT.hiddenOn(date.toLocaleDateString(undefined, { dateStyle: 'medium', timeZone: 'UTC' }));
+}
+
+/**
+ * One title the member hid, in the Hidden view: the list carries only an ID, so its name is filled in afterwards with
+ * {@link setRequestTitle}. Unhide is a real button; `onUnhide` does the call and what follows.
+ */
+export function hiddenItem(doc: Document, entry: HiddenEntry, onUnhide: (entry: HiddenEntry, item: HTMLElement) => void): HTMLElement {
+  const kind = entry.mediaType === 'tv' ? 'Series' : 'Movie';
+  const thumb = poster(doc, null, '', 'thumb');
+  thumb.classList.add('request-thumb');
+  const on = hiddenOnText(entry.hiddenAt);
+  const unhide = el(doc, 'button', { class: 'button button-small button-secondary hidden-unhide', text: HIDE_TEXT.unhide, attrs: { type: 'button' } });
+  const item = el(doc, 'li', { class: 'request request-hidden' }, [
+    thumb,
+    el(doc, 'a', { class: 'request-link', attrs: { href: href(entry) } }, [
+      el(doc, 'span', { class: 'card-title', text: HIDE_TEXT.loading }),
+      el(doc, 'span', { class: 'card-meta', text: kind, attrs: { 'data-kind': kind } }),
+    ]),
+    on ? el(doc, 'p', { class: 'muted request-on', text: on }) : undefined,
+    unhide,
+  ]);
+  unhide.addEventListener('click', () => {
+    if (unhide.disabled) return;
+    unhide.disabled = true;
+    unhide.textContent = HIDE_TEXT.sending;
+    onUnhide(entry, item);
+  });
+  return item;
+}
+
 /** A request's day as the member's locale writes it, no time: the API sends a UTC day, so it is read and written as one. */
 export function requestedOnText(day: string | undefined): string | undefined {
   if (typeof day !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(day)) return undefined;
@@ -1139,6 +1364,7 @@ export function setRequestTitle(
   name.textContent = title?.title || REQUESTS_TEXT.titleMissing;
   // The Cancel button names its request for a screen reader once the request is named.
   if (title?.title) item.querySelector('.request-cancel')?.setAttribute('aria-label', `${CANCEL_TEXT.button}: ${title.title}`);
+  if (title?.title) item.querySelector('.hidden-unhide')?.setAttribute('aria-label', HIDE_TEXT.unhideLabel(title.title));
   // "2024 · Movie", or "2027 · Series · Season 1" with the seasons the entry put there.
   if (title) meta.textContent = [title.year ?? '', meta.getAttribute('data-kind') || (title.mediaType === 'tv' ? 'Series' : 'Movie')].filter(Boolean).join(' · ');
   // The thumbnail is the same TMDB poster (w342) the title page uses, only if it is an allowlisted URL.

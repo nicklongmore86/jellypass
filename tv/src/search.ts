@@ -77,6 +77,8 @@ export class SearchRow {
   #row: Element | undefined;
   #drawn: Kept | undefined;
   #cards: Drawn[] = [];
+  /** The cards drawn as keys, with which of them were marked hidden when they were drawn. */
+  #shown = '';
   /** The title whose page was opened from a card, and the words it was found by (see the class comment). */
   #returning: { query: string; mediaType: MediaType; tmdbId: number; shownAt: number | undefined } | undefined;
 
@@ -227,7 +229,7 @@ export class SearchRow {
   /** Draws the row for `kept` after Jellyfin web's results, or leaves it be if it is already there as it should be. */
   #show(page: Element, kept: Kept): void {
     const cards = kept.answer.ok ? this.#belongs(kept.answer.cards) : [];
-    if (this.#row && this.#drawn === kept && this.#row.parentNode === page && key(cards) === key(this.#cards.map((drawn) => drawn.card))) {
+    if (this.#row && this.#drawn === kept && this.#row.parentNode === page && key(cards, this.#asked) === this.#shown) {
       // Jellyfin web adds its results as the page's last child: the row is put back below them.
       if (page.lastElementChild !== this.#row) page.appendChild(this.#row);
       this.#applyReturn();
@@ -239,12 +241,15 @@ export class SearchRow {
     const { section, drawn } = drawCards(this.#document, cards, {
       attribute: SEARCH_ROW_ATTRIBUTE,
       state: (card) => this.#asked.state(card.mediaType, card.tmdbId, card.state),
+      // A title the member hid stays in Search (the way back to it), marked, with Unhide on its page.
+      hidden: (card) => this.#asked.hiddenNow(card.mediaType, card.tmdbId, card.hidden),
       choose: (card) => this.#open(card, kept.query),
     });
     page.appendChild(section);
     this.#row = section;
     this.#drawn = kept;
     this.#cards = drawn;
+    this.#shown = key(cards, this.#asked);
     if (focus) {
       const same = drawn.find((one) => one.card.mediaType === focus.mediaType && one.card.tmdbId === focus.tmdbId);
       (same ?? drawn[Math.min(focus.index, drawn.length - 1)])?.button.focus();
@@ -252,7 +257,7 @@ export class SearchRow {
     this.#applyReturn();
   }
 
-  /** The cards of an answer that belong in the row: only those Available to get, as the overlay has them. */
+  /** The cards of an answer that belong in the row: only those Available to get, as the overlay has them (hidden ones included, marked). */
   #belongs(cards: Card[]): Card[] {
     return cards.filter((card) => this.#asked.state(card.mediaType, card.tmdbId, card.state) === 'get_this');
   }
@@ -316,6 +321,7 @@ export class SearchRow {
     this.#row = undefined;
     this.#drawn = undefined;
     this.#cards = [];
+    this.#shown = '';
   }
 }
 
@@ -323,6 +329,7 @@ function cacheKey(userId: string, query: string): string {
   return `${userId}\u0000${query}`;
 }
 
-function key(cards: Card[]): string {
-  return cards.map((card) => `${card.mediaType}:${card.tmdbId}`).join(',');
+/** The cards as keys, with whether each is marked hidden (so a hide or unhide on the title's page redraws the row). */
+function key(cards: Card[], asked: Asked): string {
+  return cards.map((card) => `${card.mediaType}:${card.tmdbId}${asked.hiddenNow(card.mediaType, card.tmdbId, card.hidden) ? ':hidden' : ''}`).join(',');
 }

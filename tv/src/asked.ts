@@ -6,6 +6,9 @@ export const ASKED_TTL_MS = 2 * 60 * 1000;
 /** How often, at most, a running Requested looks at the wall clock again while the screen is left alone. */
 export const ASKED_CHECK_MS = 15 * 1000;
 
+/** At most this many of the member's own hides and unhides are remembered; the oldest go first (the server allows 2,000 hides). */
+export const HIDDEN_CHANGES_MAX = 500;
+
 /** When a key was added, on each clock. */
 interface At {
   mono: number;
@@ -44,6 +47,15 @@ export class Asked {
   #withdrawn: { [title: string]: At } = {};
   /** Keys (the title's or a season's) whose withdrawal ended: the server said something but `requested` for them. */
   #ended: { [key: string]: true } = {};
+  /**
+   * What the member hid or unhid on this TV in this sign-in (`movie:<id>`, `tv:<id>`), with a count taken when it was
+   * accepted. The server leaves a member's hidden titles out of every list itself, so this only covers answers kept from
+   * before (Home's row, the Discover page's cache) and reads that began before the change. See {@link hiddenNow}.
+   */
+  #hidden = new Map<string, { hidden: boolean; at: number }>();
+  #tick = 0;
+  /** Bumped each time the overlay is forgotten, so a change sent before is not written for whoever is signed in after. */
+  #epoch = 0;
   #timer: ReturnType<typeof setTimeout> | undefined;
 
   public constructor(now: () => number, wall: () => number, expired: () => void = () => undefined) {
@@ -63,8 +75,18 @@ export class Asked {
     this.#at = {};
     this.#withdrawn = {};
     this.#ended = {};
+    this.#hidden = new Map();
     this.#owner = undefined;
+    this.#epoch += 1;
     this.#schedule();
+  }
+
+  /**
+   * The overlay's number now: a new one after every forgetting (sign-out, another member, a refused token). A hide or
+   * unhide sent under one number and answered under another is nobody's now: it is neither written nor shown.
+   */
+  public epoch(): number {
+    return this.#epoch;
   }
 
   /** The member's accepted "Get this", if they are still the one signed in: a series also marks the seasons asked for. */
@@ -90,6 +112,43 @@ export class Asked {
     this.#endTitle(title);
     this.#withdrawn[title] = { mono: this.#now(), wall: this.#wall() };
     this.#schedule();
+  }
+
+  /** The member's accepted hide (`hidden` true) or unhide of a title, if they are still the one signed in. */
+  public hide(userId: string, mediaType: MediaType, tmdbId: number, hidden: boolean): void {
+    if (userId !== this.#owner) return;
+    const key = `${mediaType}:${tmdbId}`;
+    this.#hidden.delete(key);
+    this.#tick += 1;
+    this.#hidden.set(key, { hidden, at: this.#tick });
+    while (this.#hidden.size > HIDDEN_CHANGES_MAX) {
+      const oldest = this.#hidden.keys().next();
+      if (oldest.done) break;
+      this.#hidden.delete(oldest.value);
+    }
+  }
+
+  /** A mark taken when a read begins, for {@link hiddenNow}: a change accepted after it is newer than that read's answer. */
+  public hiddenMark(): number {
+    return this.#tick;
+  }
+
+  /**
+   * Whether the member has the title hidden, given the answer's own `hidden` flag (undefined from a server without hiding)
+   * or its absence from a list (nothing known). The member's own change on this TV wins over an answer kept from before
+   * it; with `mark` (taken when a read began), a change that was already accepted then is the answer's to correct: the
+   * answer is the server's word, and is what answers kept from before it are corrected to. The change itself is kept,
+   * since those older answers (Home's row, the Discover page's cache) still carry the flag from before it.
+   */
+  public hiddenNow(mediaType: MediaType, tmdbId: number, server?: boolean, mark?: number): boolean {
+    const key = `${mediaType}:${tmdbId}`;
+    const change = this.#hidden.get(key);
+    if (change === undefined) return server === true;
+    if (mark !== undefined && change.at <= mark && server !== undefined) {
+      change.hidden = server;
+      return server;
+    }
+    return change.hidden;
   }
 
   /** The state to show for a title (`season` undefined) or one of a series' seasons, given the server's. */

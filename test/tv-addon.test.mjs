@@ -1418,7 +1418,8 @@ describe('TV add-on: the Search row', { timeout: 120_000 }, () => {
 describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () => {
   const CONFIRMATION = "Thanks — we'll get this for your household.";
   const text = (page, selector) => page.view()?.querySelector(selector)?.textContent ?? null;
-  const buttons = (page) => [...page.view().querySelectorAll('button')].map((button) => `${button.textContent}${button.disabled ? ' (disabled)' : ''}`);
+  // (Not interested is the title page's one more button on a server with hiding; the hiding tests are their own.)
+  const buttons = (page) => [...page.view().querySelectorAll('button:not(.jellypass-tv-title-hide)')].map((button) => `${button.textContent}${button.disabled ? ' (disabled)' : ''}`);
   /** Home laid out with the row drawn, under Jellyfin web's header, and every call answered. */
   const atHome = async (t, app, options) => {
     const page = await openJellyfinWeb(t, app, options);
@@ -1505,7 +1506,7 @@ describe('TV add-on: the title page and "Get this"', { timeout: 120_000 }, () =>
     const isRow = (name) => /^jellypass-tv-(?:row|card)(?:-|$)/.test(name);
     const isView = (name) => name.startsWith('jellypass-tv-title-');
     // The My requests page's own (tv/src/requests.ts): it is neither the title page nor the row.
-    const isRequests = (name) => /^jellypass-tv-requests?(?:-|$)/.test(name);
+    const isRequests = (name) => /^jellypass-tv-(?:requests?|hidden|views?)(?:-|$)/.test(name);
     // The service and studio pages (tv/src/discover-source.ts) are the Discover page's family: they share its classes.
     const isDiscover = (name) => /^jellypass-tv-(?:discover|source)(?:-|$)/.test(name);
     assert.ok(rowClasses.includes('jellypass-tv-card-title'));
@@ -3499,7 +3500,8 @@ describe('TV add-on: My requests', { timeout: 180_000 }, () => {
       assert.equal(cancelOpen(item).hidden, true);
       assert.equal(panel(item).getAttribute('role'), 'group');
       assert.equal(part(panel(item), '.jellypass-tv-requests-cancel-heading'), 'Cancel this request?');
-      assert.equal(part(panel(item), '.jellypass-tv-requests-note'), "This withdraws your household's request. If it has already been approved, the download may still finish, but it won't be added for your household.");
+      assert.equal(part(panel(item), '.jellypass-tv-requests-note'), "This withdraws your household's request. If it has already been approved, it may still be added to the server, but it won't be added for your household.");
+      assert.doesNotMatch(panel(item).textContent, /download/i, 'store wording: never "download"');
       assert.deepEqual(panelButtons(item).map((button) => button.textContent), ['Keep request', 'Cancel request']);
       assert.ok(page.focused() === panelButtons(item)[0], 'the safe answer has focus');
       page.click(panelButtons(item)[0]);
@@ -3577,7 +3579,7 @@ describe('TV add-on: My requests', { timeout: 180_000 }, () => {
       page.route(`#/jellypass/title/movie/${T_MOVIE}`);
       await page.settled();
       assert.equal(part(page.view(), '.jellypass-tv-title-status'), 'Available to get');
-      assert.deepEqual([...page.view().querySelectorAll('button')].map((button) => button.textContent), ['Get this']);
+      assert.deepEqual([...page.view().querySelectorAll('button:not(.jellypass-tv-title-hide)')].map((button) => button.textContent), ['Get this']);
       // After two minutes the server's word stands again.
       page.advance(120_000);
       assert.equal(part(page.view(), '.jellypass-tv-title-status'), 'Requested');
@@ -3816,7 +3818,7 @@ describe('TV add-on: My requests', { timeout: 180_000 }, () => {
       };
       for (const [state, linked] of [['requested', true], ['get_this', false], ['in_library', false], ['unavailable', false]]) {
         const page = await of(state, T_MOVIE);
-        const texts = [...page.view().querySelectorAll('button')].map((button) => button.textContent);
+        const texts = [...page.view().querySelectorAll('button:not(.jellypass-tv-title-hide)')].map((button) => button.textContent);
         assert.equal(texts.includes('My requests'), linked, state);
         if (state === 'requested') {
           assert.equal(part(page.view(), '.jellypass-tv-title-note'), 'Follow it in My requests.');
@@ -3842,10 +3844,10 @@ describe('TV add-on: My requests', { timeout: 180_000 }, () => {
       await page.settled();
       page.route(`#/jellypass/title/movie/${T_MOVIE}`);
       await page.settled();
-      assert.deepEqual([...page.view().querySelectorAll('button')].map((button) => button.textContent), ['Get this']);
+      assert.deepEqual([...page.view().querySelectorAll('button:not(.jellypass-tv-title-hide)')].map((button) => button.textContent), ['Get this']);
       page.click(page.view().querySelector('.jellypass-tv-title-get'));
       await page.settled();
-      assert.deepEqual([...page.view().querySelectorAll('button')].map((button) => button.textContent), ['My requests']);
+      assert.deepEqual([...page.view().querySelectorAll('button:not(.jellypass-tv-title-hide)')].map((button) => button.textContent), ['My requests']);
     });
   });
 
@@ -6608,6 +6610,745 @@ assert.equal(connected(page), tab(page, 'films'), 'the Films tab has focus');
         if (classes.some((name) => name.startsWith('jellypass-tv-discover'))) assert.equal(classes.every((name) => name.startsWith('jellypass-tv-discover')), true, selector);
         if (classes.some((name) => name.startsWith('jellypass-tv-source'))) assert.equal(classes.every((name) => name.startsWith('jellypass-tv-source') || name.startsWith('jellypass-tv-discover') || name === 'jellypass-tv-card'), true, selector);
       }
+    });
+  });
+});
+
+describe('TV add-on: hidden titles ("Not interested")', { timeout: 240_000 }, () => {
+  const APP = '/jellypass/app/v1';
+  const HIDDEN = `${APP}/hidden`;
+  const COST = BUDGET.hiding;
+  const json = (body, status = 200) => ({ status, body: JSON.stringify(body) });
+  const part = (node, selector) => node.querySelector(selector)?.textContent ?? null;
+  const generic = (call) => call.replace(/\/hidden\/(movie|tv)\/[0-9]+$/, '/hidden/{mediaType}/{tmdbId}').replace(/^(GET|POST|DELETE) \/(movie|tv)\/[0-9]+/, '$1 /$2/{tmdbId}');
+  const open = async (t, app, options) => {
+    const page = await openJellyfinWeb(t, app, options);
+    page.document.documentElement.classList.add('layout-tv');
+    page.document.body.insertAdjacentHTML('afterbegin', HEADER);
+    page.home();
+    await page.settled();
+    return page;
+  };
+  const toTitle = async (page, tmdbId, mediaType = 'movie') => {
+    page.route(`#/jellypass/title/${mediaType}/${tmdbId}`);
+    await page.settled();
+    assert.ok(page.view(), 'the title page');
+  };
+  const hideButton = (page) => page.view().querySelector('.jellypass-tv-title-hide');
+  const hideMessage = (page) => page.view().querySelector('.jellypass-tv-title-hide-message').textContent;
+  const hiddenCalls = (page, from = 0) => page.requests.slice(from).filter((request) => new URL(request.url).pathname.startsWith(HIDDEN)).map((request) => `${request.init.method ?? 'GET'} ${new URL(request.url).pathname.replace(APP, '')}${new URL(request.url).search}`);
+  const rowTitles = (page) => page.cards().map((card) => card.querySelector('.jellypass-tv-card-title').textContent);
+  /** A server before apiVersion 3: no card or title carries `hidden`, and the hiding endpoints are not there (their calls are recorded). */
+  const withoutHiding = (app, seen = []) => async (pathname, init, target) => {
+    if (!pathname.startsWith(`${APP}/`)) return undefined;
+    if (pathname.startsWith(HIDDEN)) {
+      seen.push(`${init.method ?? 'GET'} ${pathname}`);
+      return { status: 404, body: '{"error":"not_found"}' };
+    }
+    const answer = await get(app.port, `${pathname}${target.search}`, { Host: target.host, ...init.headers }, { method: init.method ?? 'GET', body: init.body });
+    const strip = (value) => (Array.isArray(value) ? value.map(strip) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).filter(([key]) => key !== 'hidden').map(([key, inner]) => [key, strip(inner)])) : value);
+    return { status: answer.status, body: JSON.stringify(strip(answer.json())) };
+  };
+
+  it('is written in the budget file: a hide is one POST, an unhide (and an undo) one DELETE, the Hidden view a list and ten titles', () => {
+    assert.deepEqual(COST.hide, ['POST /hidden/{mediaType}/{tmdbId}']);
+    assert.deepEqual(COST.unhide, ['DELETE /hidden/{mediaType}/{tmdbId}']);
+    assert.deepEqual(COST.undo, COST.unhide);
+    assert.equal(COST.hiddenTab.titlesAtOnce, BUDGET.screens['tv-requests'].titlesAtOnce);
+  });
+
+  describe('the title page', () => {
+    it('offers Not interested among the page\'s buttons with what it does; one press is one POST, then Unhide stays focused, and Home\'s row leaves the title with no call', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const page = await open(t, app);
+      assert.ok(rowTitles(page).includes('Synthetic Movie One'));
+      const rowCalls = page.requests.length;
+      const origin = page.location.hash;
+      page.click(page.card(T_MOVIE));
+      page.follow(origin);
+      await page.settled();
+      const button = hideButton(page);
+      assert.equal(button.textContent, 'Not interested');
+      assert.equal(button.getAttribute('aria-label'), 'Not interested: Synthetic Movie One');
+      assert.ok(button.closest('.mainDetailButtons.focuscontainer-x'), 'in the focus container with the other buttons');
+      assert.ok(button.classList.contains('emby-button') && button.classList.contains('show-focus'));
+      assert.equal(button.getAttribute('data-jellypass-tv-focus'), 'hide');
+      assert.equal(part(page.view(), '.jellypass-tv-title-hide-box .jellypass-tv-title-note'), 'Only for you in this household. It does not cancel requests or take anything out of your library.');
+      assert.doesNotMatch(page.view().querySelector('.jellypass-tv-title-hide-box').textContent, /download/i, 'store wording: never "download"');
+      assert.equal(page.view().querySelector('.jellypass-tv-title-hidden-fact'), null);
+      const before = page.requests.length;
+      page.click(button);
+      assert.equal(button.disabled, true, 'while the call is out');
+      assert.equal(button.textContent, 'Sending…');
+      page.click(button);
+      await page.settled();
+      assert.deepEqual(page.requests.slice(before).map((request) => `${request.init.method} ${new URL(request.url).pathname}`), [`POST ${HIDDEN}/movie/${T_MOVIE}`]);
+      assert.deepEqual(page.requests.slice(before).map((request) => generic(`${request.init.method} ${new URL(request.url).pathname.replace(APP, '')}`)), COST.hide);
+      assert.equal(page.requests[before].init.body, '{}');
+      assert.equal(button.textContent, 'Unhide');
+      assert.equal(button.getAttribute('aria-label'), 'Unhide Synthetic Movie One');
+      assert.equal(button.disabled, false);
+      assert.equal(page.focused(), button, 'focus stays on the button as its label changes');
+      assert.equal(hideMessage(page), 'Hidden from Discover. Choose Unhide to undo.');
+      assert.equal(part(page.view(), '.jellypass-tv-title-hidden-fact'), 'Hidden from Discover');
+      assert.equal(page.view().querySelector('.jellypass-tv-title-hide-message').getAttribute('role'), 'status');
+      // Back to Home: the row is drawn from the answer it holds, without the title and without a call.
+      page.back();
+      await page.settled();
+      assert.ok(!rowTitles(page).includes('Synthetic Movie One'));
+      assert.equal(page.requests.length, before + 1, 'nothing was read to leave it out');
+      assert.ok(page.requests.length > rowCalls);
+      // Unhide: one DELETE, the label comes back, and the row has the title again.
+      await toTitle(page, T_MOVIE);
+      const after = page.requests.length;
+      assert.equal(hideButton(page).textContent, 'Unhide', 'a hidden title opens with Unhide');
+      assert.equal(part(page.view(), '.jellypass-tv-title-hidden-fact'), 'Hidden from Discover');
+      const readCalls = page.requests.length;
+      page.click(hideButton(page));
+      await page.settled();
+      assert.deepEqual(hiddenCalls(page, readCalls), [`DELETE /hidden/movie/${T_MOVIE}`]);
+      assert.equal(hideButton(page).textContent, 'Not interested');
+      assert.equal(hideMessage(page), 'Unhidden.');
+      assert.equal(page.view().querySelector('.jellypass-tv-title-hidden-fact'), null);
+      assert.ok(after > 0);
+      page.back();
+      await page.settled();
+      assert.ok(rowTitles(page).includes('Synthetic Movie One'), 'the row has it again');
+      assert.equal(page.logged.length, 0);
+    });
+
+    it('draws a title the server says is hidden with Unhide, in the library or asked for too, and hiding touches no request', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      assert.equal((await app.post(`${HIDDEN}/movie/${OWN_MOVIE}`)).status, 200);
+      const page = await open(t, app);
+      await toTitle(page, OWN_MOVIE);
+      assert.ok(page.view().querySelector('.jellypass-tv-title-play'), 'Play is still the primary');
+      assert.equal(hideButton(page).textContent, 'Unhide');
+      assert.deepEqual(app.seerr.calls.filter((call) => /request/i.test(JSON.stringify(call))).length, 0);
+    });
+
+    it('says each failure in fixed words, offers the button again with focus on it, and never repeats a call or shows upstream text', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const cases = [
+        [409, "You've hidden as many titles as you can (2,000). Unhide some to hide more."],
+        [429, 'Too many tries, try again in a few minutes.'],
+        [502, "We couldn't change that just now. Try again in a moment."],
+        [500, "We couldn't change that just now. Try again in a moment."],
+      ];
+      for (const [status, words] of cases) {
+        const seen = [];
+        const page = await open(t, app, { override: (pathname, init) => {
+          if (!pathname.startsWith(HIDDEN)) return undefined;
+          seen.push(`${init.method} ${pathname}`);
+          return { status, body: '{"error":"upstream said something private"}' };
+        } });
+        await toTitle(page, T_MOVIE);
+        page.click(hideButton(page));
+        await page.settled();
+        assert.equal(hideMessage(page), words, String(status));
+        assert.ok(page.view().querySelector('.jellypass-tv-title-hide-message').classList.contains('jellypass-tv-title-error'));
+        assert.equal(hideButton(page).textContent, 'Not interested', 'nothing was hidden');
+        assert.equal(hideButton(page).disabled, false);
+        assert.equal(page.focused(), hideButton(page));
+        assert.deepEqual(seen, [`POST ${HIDDEN}/movie/${T_MOVIE}`], 'sent once');
+        lacks(page.document.documentElement.outerHTML, /private/);
+        // Nothing left the row, because nothing was hidden.
+        page.back();
+        await page.settled();
+        assert.ok(rowTitles(page).includes('Synthetic Movie One'));
+      }
+      const offline = await open(t, app, { override: (pathname) => { if (pathname.startsWith(HIDDEN)) throw new TypeError('Failed to fetch'); return undefined; } });
+      await toTitle(offline, T_MOVIE);
+      offline.click(hideButton(offline));
+      await offline.settled();
+      assert.equal(hideMessage(offline), "You're offline. Check your connection, then try again.");
+    });
+
+    it('a refused token (401) forgets what it knew and says sign in; the late answer of an old sign-in touches nothing of the new one', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const refuse = await open(t, app, { override: (pathname) => (pathname.startsWith(HIDDEN) ? { status: 401, body: '{"error":"unauthorized"}' } : undefined) });
+      await toTitle(refuse, T_MOVIE);
+      refuse.click(hideButton(refuse));
+      await refuse.settled();
+      assert.equal(part(refuse.view(), '.jellypass-tv-title-error'), 'Sign in to continue');
+      assert.equal(refuse.view().querySelector('.jellypass-tv-title-hide'), null);
+
+      // A POST held while the member signs in again (as the same member, with a new token): its answer is dropped whole.
+      let release;
+      const held = new Promise((resolve) => { release = resolve; });
+      const page = await open(t, app, { override: async (pathname, init) => {
+        if (pathname.startsWith(HIDDEN) && init.method === 'POST') await held;
+        return undefined;
+      } });
+      await toTitle(page, T_MOVIE);
+      const button = hideButton(page);
+      page.click(button);
+      page.session.token = TOKENS[ANN];
+      page.session.user = ANN;
+      page.document.dispatchEvent(new page.Event('pageshow'));
+      release();
+      await page.settled();
+      // The old answer is ignored; the page is ended (another member) and the Home row still holds every title.
+      assert.equal(page.view(), null);
+      assert.equal(page.requests.filter((request) => request.init.method === 'POST').length, 1);
+    });
+
+    it('a hide answered after another call was refused (401) writes nothing and says nothing: the rows keep what they hold', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      let release;
+      const held = new Promise((resolve) => { release = resolve; });
+      let refuse = false;
+      const page = await open(t, app, { override: async (pathname, init) => {
+        // The hide is held, then accepted without reaching the server, so only the TV's overlay could leave the title out.
+        if (pathname.startsWith(HIDDEN) && init.method === 'POST') {
+          await held;
+          return json({});
+        }
+        if (refuse && pathname === `${APP}/tv/${T_TV}`) return { status: 401, body: '{"error":"unauthorized"}' };
+        return undefined;
+      } });
+      assert.ok(rowTitles(page).includes('Synthetic Movie One'));
+      await toTitle(page, T_MOVIE);
+      const button = hideButton(page);
+      page.click(button);
+      assert.equal(button.textContent, 'Sending…');
+      // While it is out, another title's read is refused: the overlay is forgotten.
+      refuse = true;
+      page.route(`#/jellypass/title/tv/${T_TV}`);
+      await pause(200);
+      assert.equal(part(page.view(), '.jellypass-tv-title-error'), 'Sign in to continue');
+      refuse = false;
+      release();
+      await page.settled();
+      assert.equal(part(page.view(), '.jellypass-tv-title-error'), 'Sign in to continue', 'nothing said over it');
+      page.route('#/home');
+      await page.settled();
+      assert.ok(rowTitles(page).includes('Synthetic Movie One'), 'the late hide was not written');
+    });
+
+    it('draws nothing of it for a server before apiVersion 3, and asks for nothing', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const seen = [];
+      const page = await open(t, app, { override: withoutHiding(app, seen) });
+      await toTitle(page, T_MOVIE);
+      assert.equal(hideButton(page), null);
+      assert.equal(page.view().querySelector('.jellypass-tv-title-hide-box'), null);
+      assert.equal(page.view().querySelector('.jellypass-tv-title-hidden-fact'), null);
+      page.route('#/jellypass/requests');
+      await page.settled();
+      assert.equal(page.document.querySelector('[data-jellypass-tv-views]'), null, 'no Requests | Hidden bar');
+      page.route('#/jellypass/requests/hidden');
+      await page.settled();
+      // Its address shows My requests: no Hidden view, and /hidden is never asked.
+      assert.equal(Boolean(page.document.querySelector('[data-jellypass-tv-hidden]')), false);
+      assert.equal(page.document.querySelector('.jellypass-tv-requests-heading')?.textContent, 'My requests');
+      assert.equal(Boolean(page.document.querySelector('[data-jellypass-tv-views]')), false);
+      assert.deepEqual(seen, []);
+      assert.deepEqual(hiddenCalls(page), []);
+    });
+
+    it('a straight visit to the Hidden view\'s address before any answer showed hiding is My requests, with no call to /hidden', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const seen = [];
+      const page = await open(t, app, { startHash: '#/jellypass/requests/hidden', override: withoutHiding(app, seen) });
+      page.route('#/jellypass/requests/hidden');
+      await page.settled();
+      assert.equal(Boolean(page.document.querySelector('[data-jellypass-tv-hidden]')), false, 'no Hidden view');
+      assert.equal(page.document.querySelector('.jellypass-tv-requests-heading')?.textContent, 'My requests');
+      assert.deepEqual(seen, []);
+      assert.deepEqual(hiddenCalls(page), []);
+    });
+
+    it('on a server with hiding, the Hidden view waits for an answer that shows it (a flagged card or title); until then its address is My requests', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const seen = [];
+      const strip = withoutHiding(app, seen);
+      // Nothing read yet carries the flag; then a title page's answer does.
+      let flags = false;
+      const page = await open(t, app, { override: (pathname, init, target) => (flags ? undefined : strip(pathname, init, target)) });
+      page.route('#/jellypass/requests/hidden');
+      await page.settled();
+      assert.equal(Boolean(page.document.querySelector('[data-jellypass-tv-hidden]')), false);
+      assert.equal(page.document.querySelector('.jellypass-tv-requests-heading')?.textContent, 'My requests');
+      assert.equal(Boolean(page.document.querySelector('[data-jellypass-tv-views]')), false, 'no Hidden button yet');
+      assert.deepEqual(hiddenCalls(page), []);
+      flags = true;
+      await toTitle(page, T_MOVIE);
+      assert.ok(hideButton(page), 'the title showed the server has hiding');
+      page.route('#/home');
+      await page.settled();
+      page.route('#/jellypass/requests/hidden');
+      await page.settled();
+      assert.ok(page.document.querySelector('[data-jellypass-tv-hidden]'), 'the Hidden view now');
+      assert.deepEqual(hiddenCalls(page), ['GET /hidden']);
+    });
+  });
+
+  describe('where hidden titles go', () => {
+    it('Home\'s row leaves out a title the server says is hidden, and Search keeps it, marked, with Unhide on its page', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      assert.equal((await app.post(`${HIDDEN}/movie/${T_MOVIE}`)).status, 200);
+      const page = await open(t, app);
+      assert.ok(!rowTitles(page).includes('Synthetic Movie One'));
+      assert.equal(hiddenCalls(page).length, 0, 'no list is read to filter');
+      // Search: the same title is found again, marked.
+      const mount = () => {
+        const { document } = page;
+        document.getElementById('indexPage').classList.add('hide');
+        document.querySelector('.mainAnimatedPages').insertAdjacentHTML('beforeend', '<div id="searchPage" data-role="page" class="page mainAnimatedPage libraryPage"><div class="padded-left padded-right searchFields"><div class="inputContainer"><input id="searchTextInput" type="text" value=""></div></div></div>');
+        const input = document.getElementById('searchTextInput');
+        input.value = 'synthetic';
+        input.focus();
+        document.getElementById('searchPage').dispatchEvent(new page.Event('viewshow', { bubbles: true }));
+        input.dispatchEvent(new page.Event('input', { bubbles: true }));
+      };
+      mount();
+      await pause(600 + 120);
+      await page.settled();
+      const searchTitles = () => [...page.document.querySelectorAll('[data-jellypass-tv-search-row] button')].map((card) => [card.querySelector('.jellypass-tv-card-title').textContent, card.querySelector('.jellypass-tv-card-hidden')?.textContent ?? null, card.getAttribute('aria-label')]);
+      const found = searchTitles().find(([title]) => title === 'Synthetic Movie One');
+      assert.deepEqual(found.slice(0, 2), ['Synthetic Movie One', 'Hidden from Discover']);
+      assert.match(found[2], /, Available to get, Hidden from Discover$/);
+      assert.equal(searchTitles().filter(([, tag]) => tag).length, 1, 'only the hidden one is marked');
+      // Its page offers Unhide; unhiding there marks it no more when Search is shown again, with no new search call.
+      const searchHash = page.location.hash;
+      page.click(page.document.querySelector(`[data-jellypass-tv-search-row] button[data-tmdb-id="${T_MOVIE}"]`));
+      page.follow(searchHash);
+      await page.settled();
+      assert.equal(hideButton(page).textContent, 'Unhide');
+      page.click(hideButton(page));
+      await page.settled();
+      const searchCalls = page.requests.filter((request) => new URL(request.url).pathname === `${APP}/search`).length;
+      page.document.getElementById('searchPage').remove();
+      page.back();
+      await page.settled();
+      assert.ok(page.requests.filter((request) => new URL(request.url).pathname === `${APP}/search`).length === searchCalls);
+    });
+
+    it('the Discover page and the service page leave a title out from what they hold when it is hidden, with no call', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const page = await open(t, app, { scopeExtras: { IntersectionObserver: class { observe() {} unobserve() {} disconnect() {} } } });
+      page.route('#/jellypass/discover');
+      await page.settled();
+      const cards = () => [...page.document.querySelectorAll('[data-jellypass-tv-discover] .jellypass-tv-discover-row button.card')].map((card) => card.getAttribute('aria-label'));
+      const named = cards().filter((label) => label.startsWith('Synthetic Movie One'));
+      assert.ok(named.length > 0, 'the title is on the Discover page');
+      // Hidden from its page: Back shows the Discover page again, without the title, from the answers it holds.
+      await toTitle(page, T_MOVIE);
+      page.click(hideButton(page));
+      await page.settled();
+      const calls = page.requests.length;
+      page.back();
+      await page.settled();
+      assert.equal(cards().filter((label) => label.startsWith('Synthetic Movie One')).length, 0, 'gone from every row');
+      assert.equal(page.requests.length, calls, 'and nothing was read');
+    });
+
+    it('a title page read again after the hide (saying Unhide) leaves the Discover page\'s kept rows without it', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const page = await open(t, app, { scopeExtras: { IntersectionObserver: class { observe() {} unobserve() {} disconnect() {} } } });
+      page.route('#/jellypass/discover');
+      await page.settled();
+      const cards = () => [...page.document.querySelectorAll('[data-jellypass-tv-discover] .jellypass-tv-discover-row button.card')].map((card) => card.getAttribute('aria-label'));
+      assert.ok(cards().some((label) => label.startsWith('Synthetic Movie One')));
+      await toTitle(page, T_MOVIE);
+      page.click(hideButton(page));
+      await page.settled();
+      page.back();
+      await page.settled();
+      assert.equal(cards().filter((label) => label.startsWith('Synthetic Movie One')).length, 0);
+      // Its page again: read fresh, the server says hidden.
+      await toTitle(page, T_MOVIE);
+      assert.equal(hideButton(page).textContent, 'Unhide');
+      page.back();
+      await page.settled();
+      assert.equal(cards().filter((label) => label.startsWith('Synthetic Movie One')).length, 0, 'still gone from the rows kept from before the hide');
+    });
+  });
+
+  describe('the Hidden view', () => {
+    const entries = (from, count, type = 'movie') => Array.from({ length: count }, (_, index) => ({ mediaType: type, tmdbId: from + index, hiddenAt: '2026-10-30T12:00:00.000Z' }));
+    const view = (page) => page.document.querySelector('[data-jellypass-tv-hidden]');
+    const rows = (page) => [...page.document.querySelectorAll('[data-jellypass-tv-hidden] .jellypass-tv-request')];
+    const named = (page) => rows(page).map((row) => row.querySelector('.jellypass-tv-request-name').textContent);
+    const toHidden = async (page) => {
+      page.route('#/jellypass/requests/hidden');
+      await page.settled();
+    };
+
+    it('is a separate view beside Requests, reached by a button once an answer showed the server has hiding, and not a filter', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const page = await open(t, app);
+      page.route('#/jellypass/requests');
+      await page.settled();
+      const bar = page.document.querySelector('[data-jellypass-tv-views]');
+      assert.ok(bar, 'the bar is drawn (the Home row already showed hiding)');
+      assert.equal(bar.getAttribute('aria-label'), 'My requests views');
+      assert.ok(bar.classList.contains('focuscontainer-x'));
+      const buttons = [...bar.querySelectorAll('button')];
+      assert.deepEqual(buttons.map((button) => [button.textContent, button.getAttribute('aria-pressed'), button.getAttribute('data-jellypass-tv-focus')]), [['Requests', 'true', 'view-requests'], ['Hidden', 'false', 'view-hidden']]);
+      assert.equal(bar.querySelectorAll('[data-filter-group]').length, 0, 'the bar holds no filter chip');
+      const from = page.location.hash;
+      page.click(buttons[1]);
+      assert.equal(page.location.hash, '#/jellypass/requests/hidden');
+      page.follow(from);
+      await page.settled();
+      assert.ok(view(page));
+      assert.equal(page.document.querySelector('.jellypass-tv-views button[aria-pressed="true"]').textContent, 'Hidden');
+      assert.equal(part(page.document, '.jellypass-tv-requests-heading'), 'My requests');
+      // The Hidden button of the view shown does nothing; Requests goes back.
+      const before = page.requests.length;
+      page.click(page.document.querySelector('.jellypass-tv-views button[aria-pressed="true"]'));
+      assert.equal(page.requests.length, before);
+      assert.equal(page.location.hash, '#/jellypass/requests/hidden');
+    });
+
+    it('says nothing is hidden, with one call', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const page = await open(t, app);
+      await toHidden(page);
+      assert.equal(part(page.document, '[data-jellypass-tv-hidden] .jellypass-tv-requests-note:not([hidden])'), 'Nothing hidden. Titles you mark Not interested are listed here, so you can bring them back.');
+      assert.deepEqual(hiddenCalls(page), ['GET /hidden']);
+      assert.equal(page.document.querySelector('.jellypass-tv-requests-more').hidden, true);
+    });
+
+    it('lists the member\'s own hides, names each from its title, and Unhide drops one with one DELETE, focus on the next', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      await app.post(`${HIDDEN}/movie/${T_MOVIE}`);
+      await app.post(`${HIDDEN}/tv/${T_TV}`);
+      const page = await open(t, app);
+      const before = page.requests.length;
+      await toHidden(page);
+      assert.deepEqual([...named(page)].sort(), ['Synthetic Movie One', 'Synthetic Series Two']);
+      assert.match(part(rows(page)[0], '.jellypass-tv-request-on'), /^Hidden on /);
+      assert.deepEqual(page.calls(before).filter((call) => !/^GET \/discover/.test(call)), COST.hiddenTab.atOnce);
+      const buttons = rows(page).map((row) => row.querySelector('.jellypass-tv-hidden-unhide'));
+      assert.deepEqual(buttons.map((button) => button.getAttribute('aria-label')).sort(), ['Unhide Synthetic Movie One', 'Unhide Synthetic Series Two']);
+      const dropped = rows(page)[0].querySelector('.jellypass-tv-request-name').textContent;
+      const kept = rows(page)[1].querySelector('.jellypass-tv-request-name').textContent;
+      const calls = page.requests.length;
+      page.click(buttons[0]);
+      assert.equal(buttons[0].disabled, true);
+      await page.settled();
+      assert.deepEqual(page.requests.slice(calls).map((request) => generic(`${request.init.method} ${new URL(request.url).pathname.replace(APP, '')}`)), COST.unhide);
+      assert.deepEqual(named(page), [kept]);
+      assert.notEqual(dropped, kept);
+      assert.equal(page.focused(), buttons[1], 'focus moves to the next entry\'s Unhide');
+      assert.equal(part(page.document, '[data-jellypass-tv-hidden] .jellypass-tv-requests-announce'), 'Unhidden.');
+      page.click(buttons[1]);
+      await page.settled();
+      assert.deepEqual(named(page), []);
+      assert.equal(page.document.querySelector('.jellypass-tv-requests-note:not([hidden])').textContent.slice(0, 14), 'Nothing hidden');
+      assert.equal(page.focused()?.classList.contains('jellypass-tv-view'), true, 'focus is never lost');
+      // Home\'s row was read while they were hidden: nothing is fetched to put them back (rows may be shorter) until it is read again.
+      const trendingCalls = () => page.requests.filter((request) => new URL(request.url).pathname === `${APP}/discover/trending`).length;
+      const reads = trendingCalls();
+      page.route('#/home');
+      await page.settled();
+      assert.ok(!rowTitles(page).includes('Synthetic Movie One'));
+      assert.equal(trendingCalls(), reads);
+      page.advance(61_000);
+      page.shown();
+      await page.settled();
+      assert.equal(trendingCalls(), reads + 1);
+      assert.ok(rowTitles(page).includes('Synthetic Movie One'), 'the row read again has it');
+    });
+
+    it('names ten at a time, four calls at once, and reads the next page only when the 50 read are all shown (the pinned budget)', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const pages = { 1: { page: 1, nextPage: 2, results: entries(900_100, 50) }, 2: { page: 2, nextPage: null, results: entries(900_200, 3) } };
+      let atOnce = 0;
+      let most = 0;
+      const page = await open(t, app, { override: async (pathname, init, target) => {
+        if (pathname === HIDDEN) return json(pages[target.searchParams.get('page') ?? 1]);
+        const title = /^\/jellypass\/app\/v1\/movie\/(9\d{5})$/.exec(pathname);
+        if (title) {
+          atOnce += 1;
+          most = Math.max(most, atOnce);
+          await pause(5);
+          atOnce -= 1;
+          return json({ mediaType: 'movie', tmdbId: Number(title[1]), title: `T${title[1]}`, year: 2026, overview: '', posterUrl: null, backdropUrl: null, rating: null, state: 'get_this', play: null, hidden: true, genres: [], runtime: null, seasons: [] });
+        }
+        return undefined;
+      } });
+      await toHidden(page);
+      const titleCalls = () => page.requests.filter((request) => /\/movie\/9\d{5}$/.test(request.url)).length;
+      assert.equal(rows(page).length, 10);
+      assert.equal(titleCalls(), 10);
+      assert.ok(most <= 4, `at most four at once (${most})`);
+      assert.deepEqual(hiddenCalls(page), ['GET /hidden']);
+      for (let round = 2; round <= 5; round += 1) {
+        page.click(page.document.querySelector('.jellypass-tv-requests-more'));
+        await page.settled();
+        assert.equal(rows(page).length, round * 10);
+        assert.equal(page.focused()?.classList.contains('jellypass-tv-request-open'), true, 'focus on the first new entry');
+      }
+      assert.deepEqual(hiddenCalls(page), ['GET /hidden'], 'no second page while the first still has titles to show');
+      page.click(page.document.querySelector('.jellypass-tv-requests-more'));
+      await page.settled();
+      assert.deepEqual(hiddenCalls(page), ['GET /hidden', 'GET /hidden?page=2']);
+      assert.deepEqual(hiddenCalls(page).slice(1).map((call) => call.replace(/page=\d+/, 'page={page}')), COST.hiddenTab.loadMore);
+      assert.equal(rows(page).length, 53);
+      assert.equal(page.document.querySelector('.jellypass-tv-requests-more').hidden, true);
+      assert.equal(most <= 4, true);
+    });
+
+    it('opens a title and Back returns with the same entry focused, with the names kept (no title call again)', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      await app.post(`${HIDDEN}/movie/${T_MOVIE}`);
+      const page = await open(t, app);
+      await toHidden(page);
+      const entry = rows(page)[0].querySelector('.jellypass-tv-request-open');
+      entry.focus();
+      const from = page.location.hash;
+      page.click(entry);
+      assert.equal(page.location.hash, `#/jellypass/title/movie/${T_MOVIE}`);
+      page.follow(from);
+      await page.settled();
+      assert.equal(hideButton(page).textContent, 'Unhide');
+      const calls = page.requests.length;
+      page.back();
+      await page.settled();
+      assert.equal(page.focused()?.getAttribute('data-jellypass-tv-focus'), `entry-movie-${T_MOVIE}`);
+      assert.deepEqual(page.calls(calls).filter((call) => /\/(movie|tv)\//.test(call)), [], 'the name was kept');
+    });
+
+    it('says a failed Unhide in fixed words under the entry, offers it again and sends once; a late answer after a new sign-in touches nothing', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      await app.post(`${HIDDEN}/movie/${T_MOVIE}`);
+      const seen = [];
+      let status = 429;
+      const page = await open(t, app, { override: (pathname, init) => {
+        if (pathname.startsWith(HIDDEN) && init.method === 'DELETE') {
+          seen.push(pathname);
+          return { status, body: '{"error":"upstream said something private"}' };
+        }
+        return undefined;
+      } });
+      await toHidden(page);
+      const button = rows(page)[0].querySelector('.jellypass-tv-hidden-unhide');
+      page.click(button);
+      await page.settled();
+      assert.equal(part(rows(page)[0], '.jellypass-tv-hidden-message'), 'Too many tries, try again in a few minutes.');
+      assert.equal(button.disabled, false);
+      assert.equal(button.textContent, 'Unhide');
+      assert.equal(page.focused(), button);
+      assert.equal(seen.length, 1);
+      lacks(page.document.documentElement.outerHTML, /private/);
+      status = 502;
+      page.click(button);
+      await page.settled();
+      assert.equal(part(rows(page)[0], '.jellypass-tv-hidden-message'), "We couldn't change that just now. Try again in a moment.");
+      assert.equal(named(page).length, 1, 'the entry stays');
+    });
+
+    it('a refused token (401) on Unhide says sign in, with nothing left sending', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      await app.post(`${HIDDEN}/movie/${T_MOVIE}`);
+      const page = await open(t, app, { override: (pathname, init) => (pathname.startsWith(HIDDEN) && init.method === 'DELETE' ? { status: 401, body: '{"error":"unauthorized"}' } : undefined) });
+      await toHidden(page);
+      page.click(rows(page)[0].querySelector('.jellypass-tv-hidden-unhide'));
+      await page.settled();
+      assert.equal(part(page.document, '[data-jellypass-tv-hidden] .jellypass-tv-requests-error'), 'Sign in to continue');
+      assert.equal(page.document.documentElement.textContent.includes('Sending…'), false);
+      assert.equal(rows(page).length, 0);
+    });
+
+    describe('paging while titles are unhidden', () => {
+      const until = async (check, label) => {
+        for (let round = 0; round < 250; round += 1) {
+          if (check()) return;
+          await pause(20);
+        }
+        assert.fail(`timed out waiting for ${label}`);
+      };
+      /**
+       * The server's list as GET /hidden pages it: newest first, 50 a page, read when the call is answered. `hold` holds
+       * the next call that `matches` until released; a held DELETE may change the list at once or when released.
+       */
+      const hiddenServer = (count) => {
+        const state = { all: entries(900_100, count), holds: [], out: 0 };
+        state.pageOf = (number) => ({ page: number, nextPage: state.all.length > number * 50 ? number + 1 : null, results: state.all.slice((number - 1) * 50, number * 50) });
+        state.hold = (matches, { early = false } = {}) => {
+          let release;
+          const released = new Promise((resolve) => { release = resolve; });
+          const hold = { matches, early, released, release, reached: false };
+          state.holds.push(hold);
+          return hold;
+        };
+        state.override = async (pathname, init, target) => {
+          const method = init.method ?? 'GET';
+          if (pathname.startsWith(HIDDEN)) {
+            state.out += 1;
+            try {
+              const hold = state.holds.find((entry) => !entry.reached && entry.matches(method, `${pathname}${target.search}`));
+              if (hold) hold.reached = true;
+              if (method === 'DELETE') {
+                const id = Number(pathname.split('/').pop());
+                const remove = () => { state.all = state.all.filter((entry) => entry.tmdbId !== id); };
+                if (hold?.early) remove();
+                if (hold) await hold.released;
+                if (!hold?.early) remove();
+                return json({});
+              }
+              const number = Number(target.searchParams.get('page') ?? 1);
+              if (hold?.early) {
+                const answer = state.pageOf(number);
+                await hold.released;
+                return json(answer);
+              }
+              if (hold) await hold.released;
+              return json(state.pageOf(number));
+            } finally {
+              state.out -= 1;
+            }
+          }
+          const title = /^\/jellypass\/app\/v1\/movie\/(9\d{5})$/.exec(pathname);
+          if (title) return json({ mediaType: 'movie', tmdbId: Number(title[1]), title: `T${title[1]}`, year: 2026, overview: '', posterUrl: null, backdropUrl: null, rating: null, state: 'get_this', play: null, hidden: true, genres: [], runtime: null, seasons: [] });
+          return undefined;
+        };
+        return state;
+      };
+      const shownIds = (page) => named(page).map((name) => Number(name.slice(1)));
+      const more = (page) => page.document.querySelector('.jellypass-tv-requests-more');
+      const loadMore = async (page) => {
+        page.click(more(page));
+        await page.settled();
+      };
+      const exhaust = async (page) => {
+        for (let round = 0; round < 20 && !more(page).hidden; round += 1) await loadMore(page);
+        assert.equal(more(page).hidden, true, 'the list ends');
+      };
+      /** Every title still hidden on the server is shown, each once. */
+      const complete = (page, state) => {
+        const ids = shownIds(page);
+        assert.equal(new Set(ids).size, ids.length, 'none twice');
+        assert.deepEqual([...ids].sort(), state.all.map((entry) => entry.tmdbId).sort(), 'none skipped');
+      };
+      const unhide = (page, id) => page.click(rows(page).find((row) => row.querySelector('.jellypass-tv-request-name').textContent === `T${id}`).querySelector('.jellypass-tv-hidden-unhide'));
+      const toEnd = async (page) => {
+        for (let round = 2; round <= 5; round += 1) await loadMore(page);
+        assert.equal(rows(page).length, 50);
+      };
+      const opened = async (t, state) => {
+        const app = await startApp(t, webWorld(), tvOn());
+        const page = await open(t, app, { override: state.override });
+        await toHidden(page);
+        assert.equal(rows(page).length, 10);
+        return page;
+      };
+
+      it('an unhide moves a title the view had not read onto the page it already read: it is read again, nothing skipped', async (t) => {
+        const state = hiddenServer(53);
+        const page = await opened(t, state);
+        unhide(page, 900_100);
+        await page.settled();
+        assert.equal(rows(page).length, 9);
+        await exhaust(page);
+        assert.equal(state.all.length, 52);
+        complete(page, state);
+      });
+
+      it('an unhide accepted while the next page is being read skips nothing, whether the server read the page before or after it', async (t) => {
+        for (const early of [false, true]) {
+          const state = hiddenServer(53);
+          const page = await opened(t, state);
+          await toEnd(page);
+          const read = state.hold((method, url) => method === 'GET' && url.includes('page=2'), { early });
+          page.click(more(page));
+          await until(() => read.reached, 'page 2 asked for');
+          unhide(page, 900_100);
+          await until(() => !state.all.some((entry) => entry.tmdbId === 900_100) && state.out === 1, 'the unhide accepted');
+          await pause(50);
+          read.release();
+          await page.settled();
+          await exhaust(page);
+          complete(page, state);
+        }
+      });
+
+      it('a page read while an unhide is out skips nothing, whether the server removed the title before or after the read', async (t) => {
+        for (const early of [false, true]) {
+          const state = hiddenServer(53);
+          const page = await opened(t, state);
+          await toEnd(page);
+          const gone = state.hold((method) => method === 'DELETE', { early });
+          unhide(page, 900_100);
+          await until(() => gone.reached, 'the DELETE sent');
+          page.click(more(page));
+          await until(() => hiddenCalls(page).filter((call) => call.startsWith('GET')).length >= 2 && state.out === 1, 'the page read');
+          await pause(50);
+          gone.release();
+          await page.settled();
+          await exhaust(page);
+          complete(page, state);
+        }
+      });
+
+      it('a title hidden elsewhere while the view pages moves the rest down: nothing is listed twice or skipped', async (t) => {
+        const state = hiddenServer(53);
+        const page = await opened(t, state);
+        await toEnd(page);
+        state.all.unshift({ mediaType: 'movie', tmdbId: 900_999, hiddenAt: '2026-10-30T13:00:00.000Z' });
+        await exhaust(page);
+        const ids = shownIds(page);
+        assert.equal(new Set(ids).size, ids.length, 'none twice');
+        assert.deepEqual(ids.filter((id) => id !== 900_999).sort(), state.all.map((entry) => entry.tmdbId).filter((id) => id !== 900_999).sort(), 'none skipped');
+      });
+    });
+
+    it('is emptied and asks nothing more when the member signs out or another signs in', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      await app.post(`${HIDDEN}/movie/${T_MOVIE}`);
+      const page = await open(t, app);
+      await toHidden(page);
+      assert.equal(rows(page).length, 1);
+      const calls = page.requests.length;
+      page.session.token = null;
+      page.session.user = null;
+      page.document.body.appendChild(page.document.createElement('span'));
+      await page.settled();
+      assert.equal(view(page), null);
+      assert.equal(page.requests.length, calls);
+    });
+  });
+
+  describe('privacy', () => {
+    it('another member\'s or household\'s hides change nothing the member sees: the same calls, rows, title page and Hidden view', async (t) => {
+      const run = async (hides) => {
+        const app = await startApp(t, webWorld(), tvOn());
+        for (const [user, mediaType, id, host] of hides) await app.post(`${HIDDEN}/${mediaType}/${id}`, undefined, { user, ...(host ? { host } : {}) });
+        const page = await open(t, app);
+        const rowsNow = rowTitles(page);
+        await toTitle(page, T_MOVIE);
+        const title = page.view().outerHTML;
+        page.route('#/jellypass/requests/hidden');
+        await page.settled();
+        return { calls: page.trace(), rows: rowsNow, title, hidden: page.document.querySelector('[data-jellypass-tv-hidden]').outerHTML, cleaned: assertNoCanaries(page.document.documentElement.outerHTML, 'canary') };
+      };
+      const baseline = await run([]);
+      // Ann, in Alice's household, and Carol in another one, hid titles: Alice sees exactly what she saw with nobody hiding.
+      const others = await run([[ANN, 'movie', T_MOVIE], [ANN, 'tv', T_TV]]);
+      assert.deepEqual(others.rows, baseline.rows);
+      assert.equal(others.title, baseline.title);
+      assert.equal(others.hidden, baseline.hidden);
+      assert.deepEqual(others.calls, baseline.calls);
+    });
+
+    it('keeps nothing: no storage, no address or header beyond the member\'s own call, and the token is never in the page', async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const page = await open(t, app);
+      await toTitle(page, T_MOVIE);
+      page.click(hideButton(page));
+      await page.settled();
+      page.route('#/jellypass/requests/hidden');
+      await page.settled();
+      for (const request of page.requests) {
+        assert.equal(request.init.credentials, 'omit');
+        assert.deepEqual(Object.keys(request.init.headers).filter((name) => !['Accept', 'Authorization', 'Content-Type'].includes(name)), []);
+        assert.doesNotMatch(request.url, /hidden=|hide=/);
+      }
+      assert.deepEqual(page.stored, []);
     });
   });
 });

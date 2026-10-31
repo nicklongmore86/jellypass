@@ -1,5 +1,6 @@
-import { cancelRequest, requests as readRequests, title as readTitle, type Failure, type RequestEntry } from './api.js';
+import { cancelRequest, hidingKnown, requests as readRequests, title as readTitle, type Failure, type RequestEntry } from './api.js';
 import type { Asked } from './asked.js';
+import { VIEWS_ATTRIBUTE, viewsBar } from './hidden-page.js';
 import type { Session } from './jellyfin-web.js';
 import { FOCUS_ATTR, type PageContext, type PageView } from './page-host.js';
 import {
@@ -102,14 +103,14 @@ export class RequestsPage {
   /** Who is signed in, by member, token and generation: a late answer (a cancel's, a read's) is acted on only by the session that sent it. */
   readonly #watch: SessionWatch;
 
-  public constructor(document: Document, scope: Scope, origin: string, asked: Asked, host: RequestsHost, now: () => number, wall: () => number) {
+  public constructor(document: Document, scope: Scope, origin: string, asked: Asked, host: RequestsHost, now: () => number, wall: () => number, titles?: TitleCache) {
     this.#document = document;
     this.#scope = scope;
     this.#watch = new SessionWatch(scope, origin);
     this.#origin = origin;
     this.#asked = asked;
     this.#host = host;
-    this.#titles = new TitleCache(now, wall);
+    this.#titles = titles ?? new TitleCache(now, wall);
   }
 
   public get isOpen(): boolean {
@@ -220,6 +221,18 @@ export class RequestsPage {
     return this.#el('h1', 'sectionTitle jellypass-tv-requests-heading', REQUESTS_TEXT.title);
   }
 
+  /** The Requests | Hidden bar, only once an answer has shown that the server has hiding (an older one has no Hidden view). */
+  #views(): HTMLElement[] {
+    return hidingKnown() ? [viewsBar(this.#document, 'requests', (hash) => this.#host.navigate(hash))] : [];
+  }
+
+  /** The bar added in place when a title's answer shows the server has hiding after the page was drawn without it. */
+  #ensureViews(open: Open): void {
+    if (this.#open !== open || !hidingKnown() || open.body.querySelector(`[${VIEWS_ATTRIBUTE}]`)) return;
+    const heading = open.body.querySelector('.jellypass-tv-requests-heading');
+    if (heading && heading.parentNode) heading.parentNode.insertBefore(this.#views()[0] as HTMLElement, heading.nextSibling);
+  }
+
   /** Focus for what a read draws: through the page host the first time (Back's remembered element wins), then straight. */
   #place(open: Open, element: HTMLElement | null): void {
     if (this.#open !== open) return;
@@ -310,7 +323,7 @@ export class RequestsPage {
     open.rows = [];
     open.shown = 0;
     const heading = this.#heading();
-    const parts: HTMLElement[] = [heading];
+    const parts: HTMLElement[] = [heading, ...this.#views()];
     let message: HTMLElement | undefined;
     if (notice !== undefined) {
       message = this.#el('p', 'jellypass-tv-requests-message', notice);
@@ -519,6 +532,7 @@ export class RequestsPage {
             const details = { title: answer.title.title, year: answer.title.year, posterUrl: answer.title.posterUrl };
             this.#titles.set(mediaType, tmdbId, details);
             this.#named(row, details);
+            this.#ensureViews(open);
           } else if (answer.status === 401) {
             this.#forget();
             this.#failed(open, answer, undefined);

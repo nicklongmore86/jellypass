@@ -1,5 +1,6 @@
-import { failedSeasons, getThis, title as readTitle, type Failure, type HouseholdState, type MediaType, type SeasonSummary, type Title } from './api.js';
+import { failedSeasons, getThis, setHidden, title as readTitle, type Failure, type HouseholdState, type MediaType, type SeasonSummary, type Title } from './api.js';
 import type { Asked } from './asked.js';
+import { HIDDEN_TEXT, hiddenFailureText } from './hidden-model.js';
 import { detailsHash, type Session } from './jellyfin-web.js';
 import { FOCUS_ATTR, type PageContext, type PageView } from './page-host.js';
 import { REQUESTS_HASH, REQUESTS_TEXT } from './requests-model.js';
@@ -94,6 +95,8 @@ interface Scope {
 export interface TitleHost {
   /** The overlay changed (a "Get this" was accepted, or it was forgotten): the Home row redraws its statuses. */
   changed(): void;
+  /** The member hid or unhid this title (accepted): every row, page and cached list leaves it out, or has it back, from what it holds (no call). */
+  hiddenChanged(): void;
   /** Opens Jellyfin web's own page at `hash` (Play). */
   navigate(hash: string): void;
 }
@@ -142,7 +145,7 @@ interface Kept {
 }
 
 /** The classes that name a button (or the message) on the page, for finding its new self after a redraw. */
-const FOCUS_CLASSES = ['jellypass-tv-title-play', 'jellypass-tv-title-get', 'jellypass-tv-title-requests', 'jellypass-tv-title-select-all', 'jellypass-tv-title-retry', 'jellypass-tv-title-message'];
+const FOCUS_CLASSES = ['jellypass-tv-title-play', 'jellypass-tv-title-get', 'jellypass-tv-title-requests', 'jellypass-tv-title-hide', 'jellypass-tv-title-select-all', 'jellypass-tv-title-retry', 'jellypass-tv-title-message'];
 
 export class TitlePage {
   readonly #document: Document;
@@ -297,6 +300,8 @@ export class TitlePage {
     if (!confirmed) this.#fill(open, [this.#state(this.#el('p', 'jellypass-tv-title-loading', TITLE_TEXT.loading))]);
     const fetcher = this.#scope.fetch;
     const stamp = this.#watch.stamp(session);
+    // A hide or unhide accepted after this read began is newer than its answer; one accepted before it is the answer's to confirm.
+    const mark = this.#asked.hiddenMark();
     void Promise.all([
       readTitle(fetcher, this.#origin, session.token, mediaType, tmdbId),
       failedSeasons(fetcher, this.#origin, session.token, mediaType, tmdbId),
@@ -317,6 +322,8 @@ export class TitlePage {
         return;
       }
       this.#asked.sync(now.userId);
+      // The server's word on the flag settles the member's own earlier change on this TV (see Asked.hiddenNow).
+      if (answer.title.hidden !== undefined) this.#asked.hiddenNow(answer.title.mediaType, answer.title.tmdbId, answer.title.hidden, mark);
       open.context.setTitle(answer.title.title);
       this.#draw(open, answer.title, failed.ok ? failed.failed : [], confirmed);
     }).catch(() => undefined);
@@ -441,6 +448,9 @@ export class TitlePage {
     facts.appendChild(failedMovie
       ? this.#el('div', 'mediaInfoItem jellypass-tv-title-status jellypass-tv-title-status-failed', TITLE_TEXT.failed)
       : this.#el('div', `mediaInfoItem jellypass-tv-title-status jellypass-tv-title-status-${state}`, STATE_LABELS[state]));
+    if (found.hidden !== undefined && this.#asked.hiddenNow(found.mediaType, found.tmdbId, found.hidden)) {
+      facts.appendChild(this.#el('div', 'mediaInfoItem jellypass-tv-title-hidden-fact', HIDDEN_TEXT.tag));
+    }
     text.appendChild(facts);
 
     const actions = this.#el('div', 'mainDetailButtons focuscontainer-x jellypass-tv-title-actions');
@@ -476,6 +486,9 @@ export class TitlePage {
       });
       actions.appendChild(requests);
     }
+    // "Not interested" / Unhide, on a server that has hiding (it sends the flag); not while a refresh failed, as nothing here sends then.
+    const hide = !refreshFailed && found.hidden !== undefined ? this.#hideControl(open, found) : undefined;
+    if (hide) actions.appendChild(hide.button);
     const actionBox = this.#el('div', 'jellypass-tv-title-action');
     if (actions.firstChild) actionBox.appendChild(actions);
     if (hint) actionBox.appendChild(hint);
@@ -484,6 +497,7 @@ export class TitlePage {
     text.appendChild(actionBox);
     if (state === 'unavailable' || state === 'requested') text.appendChild(this.#el('p', 'jellypass-tv-title-note', STATE_NOTES[state]));
     if (failedAny) text.appendChild(this.#el('p', 'jellypass-tv-title-note', TITLE_TEXT.failedNote));
+    if (hide) text.appendChild(hide.note);
     if (found.overview) text.appendChild(this.#el('p', 'overview jellypass-tv-title-overview', found.overview));
     if (found.genres.length) {
       const group = this.#el('div', 'itemDetailsGroup jellypass-tv-title-details');
@@ -558,6 +572,105 @@ export class TitlePage {
     image.setAttribute('referrerpolicy', 'no-referrer');
     image.setAttribute('src', url);
     return image;
+  }
+
+  /**
+   * "Not interested" (Unhide, once hidden): a button among the title's others, so Jellyfin's focus manager and the remote
+   * reach it like them, with what it does in words under the buttons. Its one call is sent once (the button is disabled
+   * while it is out); an accepted one is written to the overlay (so Home's row, the Discover and service pages and the
+   * Search row leave the title out, or have it back, at once from what they hold) and the label changes in place, with
+   * focus staying on the button. A failure says its fixed words and the button is offered again. A `401` forgets the overlay.
+   */
+  #hideControl(open: Open, found: Title): { button: HTMLButtonElement; note: HTMLElement } {
+    let hidden = this.#asked.hiddenNow(found.mediaType, found.tmdbId, found.hidden);
+    const button = this.#button('jellypass-tv-title-hide jellypass-tv-title-secondary', '', 'hide');
+    const note = this.#el('div', 'jellypass-tv-title-hide-box');
+    note.appendChild(this.#el('p', 'jellypass-tv-title-note', HIDDEN_TEXT.note));
+    const message = this.#el('p', 'jellypass-tv-title-message jellypass-tv-title-hide-message');
+    message.setAttribute('role', 'status');
+    note.appendChild(message);
+    const label = (): void => {
+      button.textContent = hidden ? HIDDEN_TEXT.unhide : HIDDEN_TEXT.hide;
+      button.setAttribute('aria-label', hidden ? HIDDEN_TEXT.unhideLabel(found.title) : HIDDEN_TEXT.hideLabel(found.title));
+    };
+    label();
+    button.addEventListener('click', () => {
+      if (button.disabled || this.#open !== open) return;
+      const session = this.#session();
+      if (!session || session.userId !== open.userId) {
+        this.#end(open);
+        return;
+      }
+      const next = !hidden;
+      button.disabled = true;
+      button.textContent = HIDDEN_TEXT.sending;
+      button.setAttribute('aria-busy', 'true');
+      message.className = 'jellypass-tv-title-message jellypass-tv-title-hide-message';
+      message.textContent = '';
+      const stamp = this.#watch.stamp(session);
+      const load = open.load;
+      this.#asked.sync(session.userId);
+      const epoch = this.#asked.epoch();
+      void setHidden(this.#scope.fetch, this.#origin, session.token, found.mediaType, found.tmdbId, next).then((answer) => {
+        // Whatever the answer, it belongs to the session that sent it: after a sign-out or a new sign-in (even as the same
+        // member, with a new token) it is ignored entirely, so it can't touch the new session's overlay or page.
+        const now = this.#watch.holds(stamp);
+        if (!now) {
+          if (open.load === load) this.#stale(open, (current) => this.#load(open, current, false));
+          return;
+        }
+        // Nor after another call was refused while it was out (the overlay was forgotten): nothing is written or said,
+        // and the button is only offered again as it was.
+        if (this.#asked.epoch() !== epoch) {
+          if (this.#open !== open) return;
+          button.disabled = false;
+          button.removeAttribute('aria-busy');
+          label();
+          return;
+        }
+        if (answer.ok) {
+          this.#asked.sync(now.userId);
+          this.#asked.hide(now.userId, found.mediaType, found.tmdbId, next);
+          this.#host.hiddenChanged();
+          if (this.#open !== open) return;
+          if (now.userId !== open.userId) {
+            this.#end(open);
+            return;
+          }
+          hidden = next;
+          label();
+          button.disabled = false;
+          button.removeAttribute('aria-busy');
+          message.textContent = hidden ? HIDDEN_TEXT.hidden : HIDDEN_TEXT.unhidden;
+          // The tag in the facts line follows, in place: the page is not drawn again, so focus stays on the button.
+          this.#hiddenFact(open, hidden);
+          this.#focus(open, button);
+          return;
+        }
+        if (this.#open !== open) return;
+        if (answer.status === 401) {
+          this.#forget();
+          this.#error(open, 'unauthorized', true);
+          return;
+        }
+        button.disabled = false;
+        button.removeAttribute('aria-busy');
+        label();
+        message.className = 'jellypass-tv-title-message jellypass-tv-title-hide-message jellypass-tv-title-error';
+        message.textContent = hiddenFailureText(answer);
+        this.#focus(open, button);
+      }).catch(() => undefined);
+    });
+    return { button, note };
+  }
+
+  /** The "Hidden from Discover" fact in the facts line, added or taken away in place. */
+  #hiddenFact(open: Open, hidden: boolean): void {
+    const facts = open.body.querySelector('.jellypass-tv-title-facts');
+    if (!facts) return;
+    const had = facts.querySelector('.jellypass-tv-title-hidden-fact');
+    if (hidden && !had) facts.appendChild(this.#el('div', 'mediaInfoItem jellypass-tv-title-hidden-fact', HIDDEN_TEXT.tag));
+    else if (!hidden && had && had.parentNode) had.parentNode.removeChild(had);
   }
 
   /**

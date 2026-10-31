@@ -1056,7 +1056,7 @@ export async function startApp(t, state = world(), options = {}) {
       ...headers,
     }),
     /** HEAD `pathname`, like {@link get}. */
-    head: (pathname, { host = HOST_A, user = ALICE, headers } = {}) => get(port, pathname, {
+    head: (pathname, { host = HOST_A, user = ALICE, headers } = {}) => get(portFor(host), pathname, {
       Host: host,
       ...(user ? { Authorization: authorization(user) } : {}),
       ...headers,

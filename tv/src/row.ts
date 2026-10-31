@@ -207,9 +207,14 @@ export class HomeRow {
     this.update();
   }
 
-  /** The cards of an answer that belong in the row: only those Available to get, as the overlay has them. */
+  /** The cards of an answer that belong in the row: only those Available to get, as the overlay has them, and none the member hid. */
   #belongs(cards: Card[]): Card[] {
-    return cards.filter((card) => this.#asked.state(card.mediaType, card.tmdbId, card.state) === 'get_this');
+    return cards.filter((card) => this.#asked.state(card.mediaType, card.tmdbId, card.state) === 'get_this' && !this.#asked.hiddenNow(card.mediaType, card.tmdbId, card.hidden));
+  }
+
+  /** The member hid or unhid a title: the row is drawn again from the answer it holds (no call) if that changes the cards. */
+  public hiddenChanged(): void {
+    this.update();
   }
 
   /** Home is being shown again: an answer older than REUSE_MS is read again (the row stays until the new one comes). */
