@@ -53,7 +53,7 @@ Timeouts that apply on the way:
 | Nginx Proxy Manager | Sets both to 90 s for every proxy host (v2.12.6); still short for a paused stream, so the example's **Advanced** snippet raises both to 1 hour as well. |
 | Traefik | Traefik 3 reads a whole request within 60 s by default (`respondingTimeouts.readTimeout`); the example raises it to 5 minutes to match JellyPass for uploads. |
 | Caddy | No read, write or stream limit by default. |
-| Cloudflare | `524` if the origin sends nothing for 125 s, the proxy read timeout in Cloudflare's [connection limits](https://developers.cloudflare.com/fundamentals/reference/connection-limits/) (Enterprise zones can change it). A stream or WebSocket that keeps sending stays open in practice, but Cloudflare does not promise that a long one is never cut (it restarts its edge servers from time to time), so clients should be ready to reconnect. |
+| Cloudflare | `524` if the origin sends nothing for 125 s, the proxy read timeout in Cloudflare's [connection limits](https://developers.cloudflare.com/fundamentals/reference/connection-limits/) (Enterprise zones can change it). A stream or WebSocket that keeps sending stays open in practice, but Cloudflare does not promise that a long one is never cut: its [WebSocket documentation](https://developers.cloudflare.com/network/websockets/) notes that its deployments can end WebSocket connections, so clients should be ready to reconnect. |
 
 Keep Jellyfin's own address, if it has a public one, separate from the
 household addresses and give it to administrators only: household addresses
