@@ -927,7 +927,7 @@ elsewhere; the files are never proxied to Jellyfin.
 ## "Get this" (step 2)
 
 "Get this" always answers the same way, at once, whatever the title's real situation; the work happens in the
-background, as the existing household "Add to my library" does:
+background:
 
 - held by another household: the household joins the existing grant, as library joins do today;
 - already requested or downloading for someone else: the household's interest is recorded, so it is granted when the
@@ -1239,34 +1239,10 @@ the entries listed. `Cache-Control: no-store`, like every answer.
 **Store, bounds and rollback.** The schema stays v7; seven fields are added, and a state file without them loads and
 stays unchanged until the first "Get this".
 
-| Field | What 2.2.1 and 2.3.0 do with it | After rolling back to 2.3.0 or 2.2.1 |
-|---|---|---|
-| `appRequests` | Keeps it as it is (loaded and written back unread) | Nothing is `requested` and `GET /requests` does not exist (2.2.1 has no app writes); statuses stop being refreshed, and interests are not joined when their grant is created; a household deleted meanwhile does not detach its records. Upgrading again picks them up: refresh catches statuses up, but an interest whose grant was created while rolled back joins only on a later refresh (once its request reads as completed). |
-| `appIdKey` | Keeps it as it is | Unused; upgrading again keeps every opaque ID the same. |
-| `appRequestIntents` | Keeps it as it is | Unused: webhooks and the backfill grant a request whose intent was not resolved as an ordinary request (roll back with no "Get this" in flight); upgrading again reconciles what is left. |
-| `deferredWebhooks` | Keeps it as it is | Unused: the backfill (if enabled) grants those requests; upgrading again grants what is left. |
-| `appSafetyTombstones` | Keeps it as it is | Unused: a request a tombstone covers is granted as an ordinary (private) request by a webhook or the backfill (see the drain below: a tombstone naming a request not handled yet lasts up to 400 days); upgrading again applies them to what is not handled yet. |
-| `householdEpochs`, `nextHouseholdEpoch` | Keeps them as they are | Unused; a household deleted while rolled back keeps its entry, so one created again under its ID then shares its epoch after upgrading again. |
-| `appWithdrawals` (step 2c), and `withdrawn` on a record | Keep them as they are (a withdrawn record is `deleted` to them) | See "Cancelling (step 2c)", "Rolling back": a cancelled request is granted as an ordinary request, and a request its requester cancelled gives that requester access again. |
-
-**Drain before rolling back.** Intents, deferred webhooks and tombstones are what makes a late request a join; 2.3.x
-and 2.2.1 do not read them. Before rolling back to 2.3.x or 2.2.1:
-
-1. Stop new "Get this" calls: block `POST /jellypass/app/v1/movie/*/get` and `/tv/*/get` at the reverse proxy (or pick
-   a time no one uses the app), and leave this version running with `RECONCILE_INTERVAL_SECONDS` above 0.
-2. Wait until no intents and no deferred webhooks are left (`requestIntents.total` and `deferredWebhooks.total` 0 in
-   `GET /v1/app/outstanding`, see "What is outstanding"). Each intent is resolved within 30 minutes of being written,
-   at the scheduled reconciliation after that (or at once by a restart, which reconciles and replays at startup);
-   deferred webhooks are granted once no intent names their title. A deferred webhook that keeps failing (Seerr
-   unreachable) stays: the backfill, if enabled, grants it after the rollback.
-3. **Check, then roll back only when clear:** `GET /v1/app/outstanding` answers `"clear": true` (no safety marker that
-   still decides a grant, no intent, no deferred webhook; `jfa_app_safety_markers`, `jfa_app_request_intents` and
-   `jfa_app_deferred_webhooks` all 0). A safety marker is not a fixed 30 days: a member-wide one covers the member's
-   new requests for 30 days, but **any marker naming a request not handled yet (pending, declined, never available)
-   lasts until that request is handled, up to 400 days.** There is no way to drain them early. Requests an
-   outstanding marker covers are granted as ordinary (private) requests while rolled back; with
-   `REQUEST_BACKFILL_ENABLED=false` only a webhook for one of them can, and a public title it makes private can be made
-   public again by revoking that request in the admin UI. If that is not acceptable, wait until the readout is clear.
+Rollback to 2.x is unsupported. Upgrade from 2.x via 3.9.x first. Schema v7 and
+its optional 3.x fields remain supported. For a rollback within 3.x, stop new
+"Get this" calls and wait for `GET /v1/app/outstanding` to answer `"clear": true`;
+older releases do not enforce every safety marker. See "Cancelling" for withdrawals.
 
 A state file written by an unreleased build of this branch may also hold `appQuotaLedger` (the dropped quota ledger):
 it loads, is never read, and is dropped with the next write.
@@ -1303,7 +1279,7 @@ waiting for the next write to prune it and is not counted. `requestIntents` are 
 `total`, `byKind` (`request`/`member`; `submitting`/`settling`), `oldestAgeSeconds` (`null` when there are none) and
 up to 200 `entries`, oldest first, naming the title (`mediaType`, `tmdbId`), the times and, for an intent, the
 household: never a member or a Seerr ID. `deferredWebhooks` has only `total` (they are kept without a time). `clear` is
-true when all of them are 0: what a rollback waits for (see "Drain before rolling back"). The metrics carry the counts
+true when all of them are 0: what a rollback waits for (see "Store, bounds and rollback"). The metrics carry the counts
 only: `jfa_app_safety_markers{kind}`, `jfa_app_request_intents{status}` and `jfa_app_deferred_webhooks` (gauges).
 
 #### Leak channels in step 2a
@@ -1332,8 +1308,7 @@ only: `jfa_app_safety_markers{kind}`, `jfa_app_request_intents{status}` and `jfa
   join branch: the server already had it under a request grant), `requested` (the request and interest branches,
   which look the same: the title state and `GET /requests` are byte-for-byte the same, tested), or nothing at all (the
   title is held under an administrator's rule, such as a removal, a manual-only grant or a library the household is
-  not given; or Seerr refused it). So a caller can tell that the server already holds a title, as "Add to my library"
-  already lets them; never which household holds or asked for it, or how.
+  not given; or Seerr refused it). So a caller can tell that the server already holds a title; never which household holds or asked for it, or how.
 - **Later outcomes of an interest** follow someone else's request: it may complete, be declined or fail sooner or
   later than a new request would have. Each outcome is one the caller's own request could have had.
 - **Outside the app, until step 4.** Seerr's own website lists the caller's own requests and Seerr sends its own
@@ -1913,7 +1888,7 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
   `docs/app-api/v1.openapi.json` with a small validator in `test/support/json-schema.mjs` (no dependency; it knows
   only the keywords the document uses, and the test refuses any other so none is silently ignored). An undeclared
   field, a missing one, a wrong type or a value outside its enum fails. It also checks that the document lists exactly
-  the README's endpoints and that `info.version` is `APP_API_VERSION`.
+  the endpoints in `docs/household-hosts.md`'s API table and that `info.version` is `APP_API_VERSION`.
 - **App API.** `test/app-api.test.mjs` runs the app through the household gateway against a fake TMDB serving the
   TMDB fixtures (it refuses calls without JellyPass's key), a fake Seerr that enforces `X-API-User`, serves the
   blocklist and counts any title read as a violation (built from the Seerr fixtures), and a fake Jellyfin that applies

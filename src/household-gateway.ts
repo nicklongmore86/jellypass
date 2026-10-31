@@ -4,11 +4,11 @@ import http, { type IncomingHttpHeaders, type IncomingMessage, type RequestOptio
 import https from 'node:https';
 import type { Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
+import { householdRouteAllowed, parseAdditionalPluginRoutes, historicallyRefusedPluginRoute } from './gateway-route-policy.js';
 import type { HouseholdAppHandler, JellyfinCaller } from './app-api.js';
 import { NEVER_STORE, type AppAssets } from './app-assets.js';
 import { ClientIpResolver, normaliseIp } from './client-ip.js';
 import { DEFAULT_WS_IDLE_TIMEOUT_MS, DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS, type LogLevel } from './config.js';
-import { LIBRARY_JOIN_HTML, LIBRARY_JOIN_JS, LIBRARY_JOIN_STYLES } from './household-ui.js';
 import { strongIfNoneMatch, writeStreamedHead, writeWhole } from './html-response.js';
 import { AttemptCounter } from './rate-limit.js';
 import type { TvAssets } from './tv-assets.js';
@@ -20,31 +20,6 @@ const QUICK_CONNECT_ENABLED_PATH = '/quickconnect/enabled';
 /** Quick Connect: every route under it, and the sign-in it ends in, which Jellyfin does not scope to a household. */
 const QUICK_CONNECT_PATH = '/quickconnect';
 const AUTHENTICATE_WITH_QUICK_CONNECT_PATH = '/users/authenticatewithquickconnect';
-/** The Streamyfin plugin's routes, which hand its settings (Seerr's keys among them) to any signed-in user. */
-const STREAMYFIN_PATH = '/streamyfin';
-/**
- * The Jellyfin Enhanced plugin's routes (12.13) that a household host answers itself, each with every path below it:
- * - those that relay Seerr (or Sonarr and Radarr, which Seerr's requests feed): their answers carry other users'
- *   requests and their requesters, and they take requests past the household app's own checks. Of its `tmdb` routes
- *   only these four go to Seerr (its search and genre lists); `tmdb/validate` and the rest of `tmdb/...` go to TMDB
- *   with the plugin's own key, carry nothing from Seerr and are relayed.
- * - `reviews`, read and write: they hand out other users' reviews and names without checking that the caller may see
- *   the item.
- * - `items/by-providers`: it looks a provider ID up across the whole library without checking that the caller may see
- *   what it finds.
- * Its other routes (its scripts and settings among them) are relayed.
- */
-const JELLYFIN_ENHANCED_REFUSED_PATHS = [
-  '/jellyfinenhanced/jellyseerr',
-  '/jellyfinenhanced/arr',
-  '/jellyfinenhanced/proxy',
-  '/jellyfinenhanced/tmdb/search/person',
-  '/jellyfinenhanced/tmdb/search/keyword',
-  '/jellyfinenhanced/tmdb/genres/movie',
-  '/jellyfinenhanced/tmdb/genres/tv',
-  '/jellyfinenhanced/reviews',
-  '/jellyfinenhanced/items/by-providers',
-];
 const AUTHENTICATE_BY_NAME_PATH = '/users/authenticatebyname';
 /** Jellyfin's obsolete sign-in by user ID and password, still routed in 10.11 and, like AuthenticateByName, not scoped to a household. */
 const AUTHENTICATE_BY_ID_ROUTE = /^\/users\/([^/]+)\/authenticate$/;
@@ -73,7 +48,6 @@ const DEFAULT_LOGIN_TIMEOUT_MS = 15_000;
 const DEFAULT_SIGN_OUT_TIMEOUT_MS = 15_000;
 /** The client metadata Jellyfin requires of every sign-in: without any of it Jellyfin refuses with a 400. */
 const LOGIN_CLIENT_FIELDS = ['client', 'device', 'deviceid', 'version'];
-const LIBRARY_JOIN_PATH = '/jellypass/add';
 const APP_PATH = '/jellypass/app';
 /** The TV add-on's files, on a household host it is on for (see docs/tv-addon.md). */
 const TV_PATH = '/jellypass/tv';
@@ -90,31 +64,6 @@ const WEB_PAGE_DROPPED_REQUEST_HEADERS = ['accept-encoding', 'range', 'if-range'
 const WEB_PAGE_DROPPED_RESPONSE_HEADERS = ['content-length', 'transfer-encoding', 'etag', 'last-modified', 'content-md5', 'digest', 'accept-ranges', 'cache-control', 'expires', 'pragma', 'age'];
 /** Largest Jellyfin answer read for the household app with the caller's own credentials, in bytes. */
 const MAX_CALLER_JSON_BYTES = 16 * 1024 * 1024;
-const LIBRARY_JOIN_ASSETS: Record<string, { body: string; contentType: string }> = {
-  '/jellypass/add': { body: LIBRARY_JOIN_HTML, contentType: 'text/html; charset=utf-8' },
-  '/jellypass/add.js': { body: LIBRARY_JOIN_JS, contentType: 'text/javascript; charset=utf-8' },
-  '/jellypass/add.css': { body: LIBRARY_JOIN_STYLES, contentType: 'text/css; charset=utf-8' },
-};
-const MAX_LIBRARY_JOIN_BODY_BYTES = 1024;
-const LIBRARY_JOIN_WINDOW_MS = 10 * 60 * 1000;
-const MAX_LIBRARY_JOINS = 30;
-/**
- * Joins started per signed-in user, and in all, in each window of LIBRARY_JOIN_WINDOW_MS (the per-address budget is the
- * MAX_LIBRARY_JOINS rate limit). These count submissions and are never given back when a join finishes, so whether a
- * call is started depends only on how many calls were made and when, never on how long any title's work took. A signed-
- * in, valid call past either budget is answered exactly like any other but not started; a call past the user's own
- * budget is not counted against the shared one. Both are fixed windows that start at the first counted call. At most
- * MAX_LIBRARY_JOINS_STARTED joins are therefore started per window: this limits the rate work is submitted to Seerr and
- * the shared write queue, not how much is in flight, since joins still queued from one window add to the next.
- */
-const MAX_LIBRARY_JOINS_STARTED_PER_USER = 10;
-const MAX_LIBRARY_JOINS_STARTED = 200;
-/**
- * The only answer to an accepted join, sent as soon as the caller is authenticated and the input is valid, before the
- * title is looked up. It is the same, and takes the same time, whether the title was joined, already visible to the
- * caller, public, held by another household, admin-managed, missing, or could not be looked up.
- */
-const LIBRARY_JOIN_ACCEPTED = { status: 'accepted' };
 const TCP_KEEPALIVE_INITIAL_DELAY_MS = 60_000;
 /** How long a WebSocket peer gets to answer our FIN during shutdown before its socket is destroyed. */
 const WS_SHUTDOWN_GRACE_MS = 250;
@@ -139,6 +88,7 @@ const HOUSEHOLD_LOGIN_CSS = `
 
 export interface HouseholdGatewayOptions {
   jellyfinUrl: string;
+  additionalPluginRoutes?: string[];
   memberIds: (householdId: string) => string[] | undefined;
   isPasswordless?: (userId: string) => boolean;
   /**
@@ -159,16 +109,6 @@ export interface HouseholdGatewayOptions {
   logLevel?: LogLevel;
   /** Reverse proxies trusted to report the client address in X-Forwarded-For; empty uses the TCP peer. */
   trustedProxies?: string[];
-  /**
-   * Household "Add to my library" at /jellypass/add. Without it those paths are proxied to Jellyfin like any other.
-   * `start` begins the join as tracked background work and returns at once: a promise that settles when the work has,
-   * and must not reject, or undefined when shutdown refused it. Its outcome is never shown to the caller. `dropped` is
-   * called for a join not started because its user, or all users together, had used up their budget.
-   */
-  libraryJoin?: {
-    start: (input: { userId: string; isAdministrator: boolean; mediaType: 'movie' | 'tv'; tmdbId: number }) => Promise<void> | undefined;
-    dropped?: () => void;
-  };
   /**
    * The household app API at /jellypass/app/v1/*. Without it every /jellypass/app path answers a fixed 404 and is never
    * proxied to Jellyfin.
@@ -207,6 +147,7 @@ interface JellyfinCredentials {
 }
 
 export class HouseholdGateway {
+  readonly #additionalPluginRoutes: string[];
   readonly #target: URL;
   readonly #memberIds: HouseholdGatewayOptions['memberIds'];
   readonly #isPasswordless: NonNullable<HouseholdGatewayOptions['isPasswordless']>;
@@ -220,13 +161,9 @@ export class HouseholdGateway {
   /** The app's verifications at Jellyfin now, with the tokens (hashes) each holds: a sign-out with one of them spoils it. */
   readonly #ownerLookups = new Set<{ tokenKeys: readonly string[]; spoiled: boolean }>();
   readonly #loginAttempts = new AttemptCounter({ windowMs: LOGIN_ATTEMPT_WINDOW_MS, maxKeys: MAX_LOGIN_CLIENTS });
-  readonly #libraryJoinAttempts = new AttemptCounter({ windowMs: LIBRARY_JOIN_WINDOW_MS, maxKeys: MAX_LOGIN_CLIENTS });
-  readonly #libraryJoin: HouseholdGatewayOptions['libraryJoin'];
   readonly #app: HouseholdGatewayOptions['app'];
   readonly #appAssets: HouseholdGatewayOptions['appAssets'];
   readonly #tvAddon: HouseholdGatewayOptions['tvAddon'];
-  readonly #libraryJoinsByUser = new AttemptCounter({ windowMs: LIBRARY_JOIN_WINDOW_MS, maxKeys: MAX_LOGIN_CLIENTS });
-  readonly #libraryJoinsInAll = new AttemptCounter({ windowMs: LIBRARY_JOIN_WINDOW_MS, maxKeys: 1 });
   readonly #webSocketIdleTimeoutMs: number;
   readonly #webSocketUpstreamIdleTimeoutMs: number;
   readonly #debug: boolean;
@@ -236,6 +173,7 @@ export class HouseholdGateway {
   #closing = false;
 
   public constructor(options: HouseholdGatewayOptions) {
+    this.#additionalPluginRoutes = parseAdditionalPluginRoutes(options.additionalPluginRoutes?.join(','));
     this.#target = new URL(options.jellyfinUrl);
     if (this.#target.protocol !== 'http:' && this.#target.protocol !== 'https:') {
       throw new Error('household gateway requires an HTTP(S) Jellyfin URL');
@@ -250,7 +188,6 @@ export class HouseholdGateway {
     this.#webSocketUpstreamIdleTimeoutMs = options.webSocketUpstreamIdleTimeoutMs ?? DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS;
     this.#debug = options.logLevel === 'debug';
     this.#clientIp = new ClientIpResolver(options.trustedProxies);
-    this.#libraryJoin = options.libraryJoin;
     this.#app = options.app;
     this.#appAssets = options.app ? options.appAssets : undefined;
     this.#tvAddon = options.tvAddon;
@@ -333,8 +270,7 @@ export class HouseholdGateway {
       case 'quickConnect':
         writeJson(response, 403, { error: 'household_quick_connect_disabled' });
         return;
-      case 'streamyfin':
-      case 'jellyfinEnhanced':
+      case 'unknownRoute':
         writeJson(response, 404, { error: 'not_found' });
         return;
       case 'forgotPassword':
@@ -348,12 +284,6 @@ export class HouseholdGateway {
         return;
       case 'signInById':
         await this.#refuseSignInById(request, response);
-        return;
-      case 'libraryJoinAsset':
-        writeAsset(request, response, decision.asset.body, decision.asset.contentType);
-        return;
-      case 'libraryJoin':
-        await this.#joinLibrary(request, response, requestUrl, this.#libraryJoin as NonNullable<HouseholdGatewayOptions['libraryJoin']>);
         return;
       case 'notFound':
         writeJson(response, 404, { error: 'item_not_found' });
@@ -403,6 +333,15 @@ export class HouseholdGateway {
   #decide(method: string | undefined, route: string, query: URLSearchParams, tv: boolean): RouteDecision | undefined {
     const decision = this.#decideRoute(method, route, query, tv);
     if (!/%[0-9a-f]{2}/i.test(route)) return decision;
+    // Unknown routes with another encoded interpretation are never forwarded or accepted as plugin overrides.
+    if (decision.kind === 'unknownRoute') {
+      const further = furtherDecodedRoute(route);
+      if (further === undefined && route.startsWith('/users/')) return undefined;
+      // Preserve existing 400s for ambiguous app/sign-in/Quick Connect paths. Unknown relay paths stay fixed 404s.
+      if (further && historicallyRefusedPluginRoute(further)) return undefined;
+      if (further && ['app', 'signIn', 'signInById', 'publicUsers', 'quickConnect', 'quickConnectEnabled'].includes(this.#decideRoute(method, further, query, tv).kind)) return undefined;
+      return decision;
+    }
     const further = furtherDecodedRoute(route);
     if (further === undefined) return undefined;
     return JSON.stringify(this.#decideRoute(method, further, query, tv)) === JSON.stringify(decision) ? decision : undefined;
@@ -410,6 +349,7 @@ export class HouseholdGateway {
 
   /** `tv`: the TV add-on is on for the household; without it, no route is decided otherwise than before it existed. */
   #decideRoute(method: string | undefined, route: string, query: URLSearchParams, tv: boolean): RouteDecision {
+    if (!['GET', 'HEAD', 'POST', 'DELETE', 'OPTIONS'].includes(method ?? 'GET')) return { kind: 'unknownRoute' };
     if (isAppRoute(route)) return { kind: 'app' };
     if (tv && (route === TV_PATH || route.startsWith(`${TV_PATH}/`))) return { kind: 'tvAsset' };
     if (tv && (method === 'GET' || method === 'HEAD') && WEB_PAGE_ROUTES.has(route)) return { kind: 'webPage' };
@@ -417,18 +357,13 @@ export class HouseholdGateway {
     if (method === 'GET' && route === BRANDING_CONFIGURATION_PATH) return { kind: 'branding' };
     if (method === 'GET' && route === QUICK_CONNECT_ENABLED_PATH) return { kind: 'quickConnectEnabled' };
     if (isQuickConnectRoute(route)) return { kind: 'quickConnect' };
-    if (isStreamyfinRoute(route)) return { kind: 'streamyfin' };
-    if (isRefusedJellyfinEnhancedRoute(route)) return { kind: 'jellyfinEnhanced' };
     if (method === 'POST' && FORGOT_PASSWORD_PATHS.has(route)) return { kind: 'forgotPassword' };
     if (this.#app && method === 'POST' && route === LOGOUT_PATH) return { kind: 'signOut' };
     if (method === 'POST' && route === AUTHENTICATE_BY_NAME_PATH) return { kind: 'signIn' };
     if (method === 'POST' && AUTHENTICATE_BY_ID_ROUTE.test(route)) return { kind: 'signInById' };
-    if (this.#libraryJoin) {
-      const asset = LIBRARY_JOIN_ASSETS[route];
-      if (method === 'GET' && asset) return { kind: 'libraryJoinAsset', asset };
-      if (method === 'POST' && route === LIBRARY_JOIN_PATH) return { kind: 'libraryJoin' };
-    }
+
     if (isServerInternalStreamRoute(route)) return { kind: 'notFound' };
+    if (!householdRouteAllowed(route, this.#additionalPluginRoutes, method ?? 'GET')) return { kind: 'unknownRoute' };
     const userIds = userScopedIds(route, query);
     if (userIds.length && (method === 'GET' || method === 'HEAD') && isUserImageRoute(route)) return { kind: 'userImage', userIds };
     const list = method === 'GET' ? userListOf(route) : undefined;
@@ -468,12 +403,12 @@ export class HouseholdGateway {
       socket.end(`HTTP/1.1 400 Bad Request\r\n${neverStoreHeaders()}Connection: close\r\n\r\n`);
       return;
     }
-    const appPath = decision.kind === 'app';
     // Jellyfin's only WebSocket is an ordinary route: anything a household host checks or answers itself (the app API,
-    // which has none, Quick Connect, Streamyfin, Jellyfin Enhanced's refused routes, a route that names an item or a user) is never proxied as an upgrade.
+    // which has none, Quick Connect, a route that names an item or a user) is never proxied as an upgrade.
     const memberIds = this.#memberIds(householdId);
-    if (!memberIds || decision.kind !== 'proxy') {
-      socket.end(`HTTP/1.1 404 Not Found\r\n${appPath ? neverStoreHeaders() : ''}Connection: close\r\n\r\n`);
+    if (!memberIds || decision.kind !== 'proxy' || route !== '/socket') {
+      const body = JSON.stringify({ error: 'not_found' });
+      socket.end(`HTTP/1.1 404 Not Found\r\n${neverStoreHeaders()}Content-Type: application/json; charset=utf-8\r\nContent-Length: ${Buffer.byteLength(body)}\r\nConnection: close\r\n\r\n${body}`);
       return;
     }
     const credentials = this.#credentials(request, new URL(request.url ?? '/', 'http://localhost'));
@@ -671,64 +606,6 @@ export class HouseholdGateway {
       },
       getAsCaller: (pathname, query) => this.#callerJson(credentials, pathname, query),
     });
-  }
-
-  /**
-   * Household "Add to my library". Identity comes only from Jellyfin: the caller's own token is checked with
-   * GET /Users/Me, exactly as for protected media. Rate limiting, authentication and input validation answer the same
-   * for every title. Past them the join is started in the background and every case gets the same 202 at once: nothing
-   * that depends on the title (Seerr, the write queue, Jellyfin) is awaited before answering.
-   */
-  async #joinLibrary(
-    request: IncomingMessage,
-    response: ServerResponse,
-    requestUrl: URL,
-    libraryJoin: NonNullable<HouseholdGatewayOptions['libraryJoin']>,
-  ): Promise<void> {
-    if (this.#closing) {
-      writeJson(response, 503, { error: 'shutting_down' });
-      return;
-    }
-    const clientId = this.#clientAddress(request);
-    if (this.#libraryJoinAttempts.attempts(clientId) >= MAX_LIBRARY_JOINS) {
-      writeJson(response, 429, { error: 'too_many_requests' });
-      return;
-    }
-    this.#libraryJoinAttempts.increment(clientId);
-    let user: CurrentUser | undefined;
-    try {
-      user = (await this.#currentUser(request, requestUrl))?.user;
-    } catch {
-      writeJson(response, 502, { error: 'jellyfin_unavailable' });
-      return;
-    }
-    if (!user || user.Policy?.IsDisabled === true) {
-      writeJson(response, 401, { error: 'unauthorized' });
-      return;
-    }
-    let media: { mediaType: 'movie' | 'tv'; tmdbId: number };
-    try {
-      media = libraryJoinInput(JSON.parse((await readLimitedBody(request, MAX_LIBRARY_JOIN_BODY_BYTES)).toString('utf8')) as unknown);
-    } catch {
-      writeJson(response, 400, { error: 'invalid_request' });
-      return;
-    }
-    if (this.#closing) {
-      writeJson(response, 503, { error: 'shutting_down' });
-      return;
-    }
-    // Every such call is counted against its user, started or not; only a call the user's budget admits is counted
-    // against the shared one, so one user cannot use up more of it than their own budget.
-    const overBudget = this.#libraryJoinsByUser.increment(user.Id.toLowerCase()) > MAX_LIBRARY_JOINS_STARTED_PER_USER
-      || this.#libraryJoinsInAll.increment('all') > MAX_LIBRARY_JOINS_STARTED;
-    if (overBudget) {
-      this.#logDebug('household library join dropped: over budget', { clientId });
-      libraryJoin.dropped?.();
-    } else if (!libraryJoin.start({ userId: user.Id, isAdministrator: user.Policy?.IsAdministrator === true, ...media })) {
-      writeJson(response, 503, { error: 'shutting_down' });
-      return;
-    }
-    writeJson(response, 202, LIBRARY_JOIN_ACCEPTED);
   }
 
   /**
@@ -1615,16 +1492,6 @@ async function readLimitedBody(request: IncomingMessage, limit: number): Promise
   return Buffer.concat(chunks);
 }
 
-function libraryJoinInput(value: unknown): { mediaType: 'movie' | 'tv'; tmdbId: number } {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('body must be a JSON object');
-  const { mediaType, tmdbId } = value as Record<string, unknown>;
-  if (mediaType !== 'movie' && mediaType !== 'tv') throw new Error('mediaType must be movie or tv');
-  if (typeof tmdbId !== 'number' || !Number.isSafeInteger(tmdbId) || tmdbId < 1 || tmdbId > 2_147_483_647) {
-    throw new Error('tmdbId must be a positive integer');
-  }
-  return { mediaType, tmdbId };
-}
-
 /**
  * Route roots under which Jellyfin 10.11 reads the next segment as an item's ID (`/Videos/{itemId}/...`), each with the
  * fixed names it routes there instead (`/Videos/MergeVersions`): lists and searches, which Jellyfin scopes to the caller
@@ -1783,9 +1650,8 @@ function isServerInternalStreamRoute(route: string): boolean {
 
 /** What a household host does with a request; see HouseholdGateway.#decide. */
 type RouteDecision =
-  | { kind: 'app' | 'publicUsers' | 'branding' | 'quickConnectEnabled' | 'quickConnect' | 'streamyfin' | 'jellyfinEnhanced' | 'forgotPassword' }
-  | { kind: 'signOut' | 'signIn' | 'signInById' | 'libraryJoin' | 'notFound' | 'proxy' | 'tvAsset' | 'webPage' }
-  | { kind: 'libraryJoinAsset'; asset: { body: string; contentType: string } }
+  | { kind: 'app' | 'publicUsers' | 'branding' | 'quickConnectEnabled' | 'quickConnect' | 'forgotPassword' }
+  | { kind: 'signOut' | 'signIn' | 'signInById' | 'unknownRoute' | 'notFound' | 'proxy' | 'tvAsset' | 'webPage' }
   | { kind: 'userImage'; userIds: string[] }
   | { kind: 'userList'; list: UserList; userIds: string[] }
   | { kind: 'syncPlayJoin'; userIds: string[] }
@@ -1876,12 +1742,12 @@ function carriesToken(credentials: JellyfinCredentials): boolean {
 const LEGACY_PREFIXES = new Set(['emby', 'mediabrowser']);
 
 function hasEmptyPathSegment(target: string): boolean {
-  // An absolute-form target (`http://host/path`) is not relayed at all: jellyfinRoute refuses it.
-  if (!target.startsWith('/')) return false;
   const path = target.split('?', 1)[0] as string;
   // Only %2F can introduce a slash in one percent-decode. Checking it directly also
   // catches empty segments alongside malformed escapes, which routing refuses separately.
-  return path.includes('//') || path.replace(/%2f/gi, '/').includes('//');
+  // The URL parser reads a backslash as a slash (`/\` is `//`, which it cannot parse), so a
+  // backslash, raw or encoded once, counts as one here too.
+  return path.replace(/%2f|%5c|\\/gi, '/').includes('//');
 }
 
 /**
@@ -1956,14 +1822,6 @@ function isAppRoute(route: string): boolean {
 
 function isQuickConnectRoute(route: string): boolean {
   return route === QUICK_CONNECT_PATH || route.startsWith(`${QUICK_CONNECT_PATH}/`) || route === AUTHENTICATE_WITH_QUICK_CONNECT_PATH;
-}
-
-function isStreamyfinRoute(route: string): boolean {
-  return route === STREAMYFIN_PATH || route.startsWith(`${STREAMYFIN_PATH}/`);
-}
-
-function isRefusedJellyfinEnhancedRoute(route: string): boolean {
-  return JELLYFIN_ENHANCED_REFUSED_PATHS.some((path) => route === path || route.startsWith(`${path}/`));
 }
 
 /**
@@ -2105,18 +1963,6 @@ function sanitizedHeaders(headers: IncomingHttpHeaders, contentLength: number): 
   result['cache-control'] = 'no-store';
   result['x-content-type-options'] = 'nosniff';
   return result;
-}
-
-function writeAsset(request: IncomingMessage, response: ServerResponse, body: string, contentType: string): void {
-  writeWhole(request, response, 200, {
-    'Content-Type': contentType,
-    'Content-Length': Buffer.byteLength(body),
-    'Cache-Control': 'no-store',
-    'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
-    'Referrer-Policy': 'no-referrer',
-    'X-Content-Type-Options': 'nosniff',
-    'X-Frame-Options': 'DENY',
-  }, Buffer.from(body));
 }
 
 function writeJson(response: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {

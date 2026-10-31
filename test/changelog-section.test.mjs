@@ -1,3 +1,4 @@
+import { loadPrivateDenylist, privateMatchCount } from '../scripts/private-identifiers.mjs';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -53,6 +54,55 @@ function assertSection(notes, { version, nextVersion, subheadings }) {
 }
 
 describe('changelogSection with the real CHANGELOG.md', () => {
+  it('extracts 3.10.0 without its heading, up to the 3.9.0 section', () => {
+    const notes = changelogSection(CHANGELOG, '3.10.0');
+    assertSection(notes, {
+      version: '3.10.0',
+      nextVersion: '3.9.0',
+      subheadings: ['Security', 'Added', 'Changed'],
+    });
+    assert.match(notes, /^This is a minor release\. JellyPass now has a written Jellyfin support policy/);
+    const flat = notes.replace(/\s+/g, ' ');
+    assert.match(flat, /\*\*it supports the current Jellyfin release and the one before it, Jellyfin 12\.x and 10\.11\.x\*\*/);
+    assert.match(flat, /This is a minor release because a setting, administrator API endpoints and metrics are added/);
+    assert.match(flat, /the app API \(`v1`, `apiVersion` 2\)/);
+    assert.match(flat, /On Jellyfin 12\.x or 10\.11\.x nothing changes and nothing needs configuring/);
+    assert.match(flat, /\*\*household hostnames keep serving exactly as in 3\.9\.0\*\*/);
+    assert.match(flat, /\*\*any build whose version has a suffix\*\*: a pre-release such as `12\.5\.0-rc1`, build metadata such as `12\.4\.0\+abc`/);
+    assert.match(flat, /\*\*JellyPass 4\.0\.0 will refuse household requests on an unconfirmed version:\*\* household hostnames will answer `503`/);
+    assert.match(flat, /`JELLYFIN_UNTESTED_VERSION_OK`/);
+    assert.doesNotMatch(flat, /answer `503` from the moment you upgrade|pauses? household hostnames/, 'a minor release does not refuse on an untested version');
+    assert.match(flat, /\*\*The state file keeps schema v7\.\*\* A confirmation is stored in a new optional field, `jellyfinVersionConfirmed`, which 3\.9\.0 keeps as it is/);
+    assert.match(flat, /No CDN purge is needed unless your CDN caches HTML pages/);
+    assert.match(flat, /`ghcr\.io\/nicklongmore86\/jellypass:3\.9\.0`/);
+    assert.match(flat, /`mobile\/CHANGELOG\.md`/);
+    assert.match(flat, /`400 \{"error":"invalid_host"\}`/);
+    assert.match(flat, /fixed `404 not_found` before any relay/);
+    assert.match(flat, /`no-transform`/);
+    const security = notes.indexOf('### Security');
+    for (const note of [
+      '**Check your Jellyfin version first.**',
+      '**JellyPass 4.0.0 will refuse household requests on an unconfirmed',
+      '**Upgrading Jellyfin to an untested version later warns again,**',
+      '**Jellyfin unreachable when JellyPass starts:**',
+      '**On Jellyfin 12, clients that give their token only the legacy way**',
+      '**A reverse proxy that sends one `Host` is unaffected**',
+      '**Behind a CDN:**',
+      '**The state file keeps schema v7.**',
+      '**To roll back,**',
+      '**The iPhone, iPad and Android app ships separately;**',
+    ]) {
+      assert.ok(notes.indexOf(note) >= 0 && notes.indexOf(note) < security, `upgrade note ${note} comes first`);
+    }
+    assert.ok(security < notes.indexOf('### Added') && notes.indexOf('### Added') < notes.indexOf('### Changed'));
+    assert.equal(notes.match(/^### Security$/gm)?.length, 1, 'one Security heading');
+    assert.doesNotMatch(notes, /### (?:Fixed|Removed|TV add-on)/);
+    assert.doesNotMatch(notes, /### Upgrading from/);
+    assert.doesNotMatch(notes, /hidden titles|\/hidden|apiVersion` 3|invalid_household|:8788|schema v8/i, 'no 4.0.0 changes');
+    assertNoServerDetails(notes);
+    assert.deepEqual(split(notes).definitions, []);
+  });
+
   it('extracts 3.9.0 without its heading, up to the 3.8.1 section', () => {
     const notes = changelogSection(CHANGELOG, '3.9.0');
     assertSection(notes, {
@@ -93,7 +143,7 @@ describe('changelogSection with the real CHANGELOG.md', () => {
     assert.doesNotMatch(notes, /### (?:Security|Changed|Fixed|TV add-on)/);
     assert.doesNotMatch(notes, /### Upgrading from/);
     assert.doesNotMatch(notes, /eas-cli|workflow|\btests?\b|Jest/i, 'no tests or CI');
-    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref|farmhouse|TU7000|sdb\b/i, 'no server-specific details');
+    assertNoServerDetails(notes);
     assert.deepEqual(split(notes).definitions, []);
   });
 
@@ -132,7 +182,7 @@ describe('changelogSection with the real CHANGELOG.md', () => {
     assert.doesNotMatch(notes, /### (?:Security|Added|Fixed)/);
     assert.doesNotMatch(notes, /### Upgrading from/);
     assert.doesNotMatch(notes, /eas-cli|workflow|\btests?\b|Jest/i, 'no tests or CI');
-    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref|farmhouse|TU7000|sdb\b/i, 'no server-specific details');
+    assertNoServerDetails(notes);
     assert.deepEqual(split(notes).definitions, []);
   });
 
@@ -180,7 +230,7 @@ describe('changelogSection with the real CHANGELOG.md', () => {
     assert.doesNotMatch(notes, /### (?:Security|Fixed)/);
     assert.doesNotMatch(notes, /### Upgrading from/);
     assert.doesNotMatch(notes, /eas-cli|workflow|\btests?\b|Jest/i, 'no tests or CI');
-    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref|farmhouse|TU7000|sdb\b/i, 'no server-specific details');
+    assertNoServerDetails(notes);
     assert.deepEqual(split(notes).definitions, []);
   });
 
@@ -226,7 +276,7 @@ describe('changelogSection with the real CHANGELOG.md', () => {
     assert.doesNotMatch(notes, /groundwork|nothing of it is visible/i, 'the groundwork entry is folded into the page');
     assert.doesNotMatch(notes, /Mobile app|mobile\/CHANGELOG/, 'mobile/ is unchanged since 3.6.1');
     assert.doesNotMatch(notes, /eas-cli|workflow|\btests?\b/i, 'no tests or CI');
-    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref|farmhouse/i, 'no server-specific details');
+    assertNoServerDetails(notes);
     assert.deepEqual(split(notes).definitions, []);
   });
 
@@ -264,7 +314,7 @@ describe('changelogSection with the real CHANGELOG.md', () => {
     assert.doesNotMatch(notes, /### Upgrading from/);
     assert.doesNotMatch(notes, /Mobile app|mobile\/CHANGELOG/, 'mobile/ is unchanged since 3.6.0');
     assert.doesNotMatch(notes, /eas-cli|workflow|\btests?\b/i, 'no tests or CI');
-    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref|farmhouse/i, 'no server-specific details');
+    assertNoServerDetails(notes);
     assert.deepEqual(split(notes).definitions, []);
   });
 
@@ -305,7 +355,7 @@ describe('changelogSection with the real CHANGELOG.md', () => {
     assert.doesNotMatch(notes, /### (?:Security|Changed)/);
     assert.doesNotMatch(notes, /### Upgrading from/);
     assert.doesNotMatch(notes, /eas-cli|workflow|\btests?\b/i, 'no tests or CI');
-    assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref|farmhouse/i, 'no server-specific details');
+    assertNoServerDetails(notes);
     assert.deepEqual(split(notes).definitions, []);
   });
 
@@ -1078,26 +1128,9 @@ describe('changelog-section command line', () => {
   });
 });
 
-describe('rollback notes for household app "Get this"', () => {
-  const README = readFileSync(fileURLToPath(new URL('../README.md', import.meta.url)), 'utf8');
-  const DESIGN = readFileSync(fileURLToPath(new URL('../docs/app-design.md', import.meta.url)), 'utf8');
-  const released = changelogSection(CHANGELOG, '2.4.0');
-  const drain = DESIGN.slice(DESIGN.indexOf('**Drain before rolling back.**'), DESIGN.indexOf('A state file written by an unreleased build'));
-  const readme = README.slice(README.indexOf('Drain before rolling back'), README.indexOf('Rolling back from\n2.2.0'));
-
-  it('send the operator to the admin readout and roll back only once it is clear', () => {
-    for (const [name, text] of [['CHANGELOG 2.4.0', released], ['README', readme], ['design doc', drain]]) {
-      const flat = text.replace(/\s+/g, ' ');
-      assert.match(flat, /GET \/v1\/app\/outstanding/, name);
-      assert.match(flat, /"clear": true/, name);
-      assert.match(flat, /2\.3\.x or 2\.2\.1/, name);
-    }
-  });
-
-  it('never say a safety marker lasts only 30 days: one naming an unhandled request lasts up to 400', () => {
-    for (const [name, text] of [['CHANGELOG 2.4.0', released], ['README', readme], ['design doc', drain]]) {
-      assert.match(text.replace(/\s+/g, ' '), /up to 400 days/, name);
-      assert.doesNotMatch(text.replace(/\s+/g, ' '), /\(they last 30 days\)/, name);
-    }
-  });
-});
+const privateTerms = loadPrivateDenylist();
+if (!privateTerms) console.log('NOTICE: private release-note checks skipped; no private deny-list configured.');
+function assertNoServerDetails(notes) {
+  assert.doesNotMatch(notes, /\b(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref|production|TU7000|sdb\b/i, 'no server-specific details');
+  if (privateTerms) assert.equal(privateMatchCount(notes, privateTerms), 0, 'no private deployment details');
+}

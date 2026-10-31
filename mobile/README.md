@@ -198,7 +198,11 @@ The PWA's Home (`home()` in `app/src/main.ts`, its pieces in `app/src/render.ts`
   heading is "Popular on" and its logo (a header, named "Popular on Netflix"), then a chevron, a 44 pt link of its own
   to the service's page (on the list the row shows) named "See all Popular on Netflix". Every other row (each
   discover list) has the same chevron after its heading, a link to the list's full grid named "See all Trending" (see
-  "See all pages" below). Each studio's logo is a link to its page named "Pixar, studio".
+  "See all pages" below). The chevron is not the only way in: the whole heading line (title or logo, chevron and the
+  space beside them) is one touch target for the same page, 44 pt tall and dimmed while pressed (`HeadingTap`). It is
+  touch-only (`accessible={false}`, `importantForAccessibility="no"`, no role or name), so VoiceOver and TalkBack still
+  step heading, then the one "See all …" link, and rotor / heading navigation is unchanged; the Studios heading has
+  no page and is not pressable. Each studio's logo is a link to its page named "Pixar, studio".
 - **Hero.** The first five titles of the filter's first row, from that row's own answer (no extra call): a rounded
   card per slide, the backdrop with a solid navy panel **below** it (title, year, "★ 7.8 TMDB", the status, the start
   of the overview). Swipe, **Previous title** / **Next title** (wrapping) and one round dot per title (hollow, or larger
@@ -423,6 +427,49 @@ cancellable and never from an older server, the sheet and Keep, one POST, "Reque
 read again, Get this in the overlay, each failure's words, no retry, 401),
 `search-requests-budget.test.tsx` (above) and `search-requests-text.test.ts` (the words and sizes against the PWA's
 files).
+
+## Not interested (`src/hidden`)
+
+A member can hide a title from their own Discover, as `docs/app-design.md` and the hide-titles design ask. Only where
+the household's server can (`apiVersion` 3 in `GET /me`, JellyPass server 4.0.0): below it there is no button, no long
+press, no card action and no Hidden tab, and nothing else changes.
+
+- **Where.** The title page's **Not interested** (Unhide once hidden; movies and series, never a season) with "Only for
+  you in this household. It does not cancel requests or take anything out of your library." under it. Pressing and
+  holding any poster or backdrop card (Home's rows and hero, See all, a service's or studio's page, Search) opens a sheet
+  with the same and Close; VoiceOver and TalkBack get it as the card's own action ("Not interested" or "Unhide"),
+  which hides at once with no sheet. The page stays open after a hide.
+- **Calls** (`HideProvider.tsx`, `SessionProvider`'s `setHidden`). A hide is one `POST /hidden/{type}/{id}`, an unhide
+  or Undo one `DELETE`; nothing is read again, polled or retried. While it is out its control is disabled; a failure is
+  one fixed message where it was asked (429, offline, anything else, and 409 `hidden_limit_reached`: "You've hidden
+  2,000 titles, the most there can be. Unhide some to hide more."), and a 401 signs out.
+- **The lists on screen** (`store.ts`). Once the server accepts a hide (in the same session as when it was sent), the
+  title leaves Home's rows and hero, See all, and the service and studio pages at once, with no call; Undo or Unhide
+  brings it back to any list still showing it. The server leaves it out of every list read after, so a row may be
+  shorter: nothing fills it up, and a grid page with every title left out still has Load more. New only applies on top.
+  What the member hid or unhid is kept in memory for the session (`hiddenTitles`, one store per sign-in, with the sheet
+  and toast), never written to the device, and forgotten on sign-out, a 401 and any change of household or member.
+- **The toast**, just over the tab bar: "Hidden … from Discover" with **Undo** and **Dismiss** (44 pt), announced. It
+  goes after eight seconds, but never while a screen reader is on, while Undo is out or after Undo failed.
+- **Search** keeps hidden titles, marked **Hidden** under the card (words, not colour; "Hidden from Discover" in the
+  card's name), with **Unhide** under it.
+- **My requests → Hidden** (`useHiddenList.ts`). Where hiding is on, **Requests | Hidden** tabs (a tab list, each 44
+  pt) come first; the filters belong to Requests. Hidden is read each time it is shown: `GET /hidden` (the newest 50),
+  the first ten named from their title's answer (four at a time, reusing the session's title cache, as My requests
+  does), Load more naming ten more and, once all are named, reading `GET /hidden?page=n`. Each entry is a link to the
+  title on My requests' stack (thumbnail, title, "year · Movie/Series", "Hidden on …"), with Unhide under it; an
+  unhidden entry leaves at once ("… is back in Discover"). With nothing hidden it says how to hide a title.
+- **Labels** name the title with its kind and year: "Hide Dune (Movie, 2021) from Discover", "Unhide …", "Undo hiding
+  …". Text grows with the system font size; the sheet scrolls and stops widening on iPad.
+
+**Calls against the budget.** `docs/app-api/fetch-budget.json`'s `hiding` (hide, unhide, undo, and the Hidden tab's
+calls and Load more) is pinned by `__tests__/hidden-tab.test.tsx`.
+
+**Tests.** `hide.test.tsx` (the title page, the sheet, the card action, Home's rows and hero, See all, a network's page,
+Search, the toast and Undo, every failure, 401, an all-hidden page, an `apiVersion` 2 server, names and targets),
+`hidden-tab.test.tsx` (the tabs, the list, Load more and page 2, Unhide, empty, failures, 401, reading again, the budget),
+`hide-session.test.tsx` (forgotten on sign-out, another member, a 401 and another household; a late hide marks
+nothing) and `hidden-store.test.ts` (the store and the words).
 
 ## The API client (`src/api`)
 

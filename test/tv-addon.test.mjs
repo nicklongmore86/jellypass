@@ -249,7 +249,7 @@ describe('TV add-on: the build', () => {
 });
 
 describe('TV add-on: the gateway', { timeout: 30_000 }, () => {
-  it('changes nothing while it is off: Jellyfin web\'s page and /jellypass/tv are relayed to Jellyfin as before', async (t) => {
+  it('preserves Jellyfin web while off and refuses inactive TV assets', async (t) => {
     const app = await startApp(t, webWorld());
     const page = await app.get('/web/index.html', { user: null, headers: { 'Accept-Encoding': 'identity' } });
     assert.equal(page.status, 200);
@@ -260,22 +260,22 @@ describe('TV add-on: the gateway', { timeout: 30_000 }, () => {
     const conditional = await app.get('/web/', { user: null, headers: { 'If-None-Match': '"jellyfin-web-etag"' } });
     assert.equal(conditional.status, 304);
     const tv = await app.get(SCRIPT_PATH, { user: null });
-    assert.deepEqual([tv.status, tv.text], [401, '{}'], 'answered by Jellyfin (which asks this fake\'s unknown paths for a token)');
-    assert.deepEqual(webCalls(app), ['GET /web/index.html', 'GET /web/', `GET ${SCRIPT_PATH}`]);
+    assert.deepEqual([tv.status, tv.text], [404, '{"error":"not_found"}']);
+    assert.deepEqual(webCalls(app), ['GET /web/index.html', 'GET /web/']);
   });
 
   it('changes nothing on a household it is not on for, nor on the admin host', async (t) => {
     const app = await startApp(t, webWorld(), tvOn());
     const mill = await app.get('/web/index.html', { host: HOST_B, user: null, headers: { 'Accept-Encoding': 'identity' } });
     assert.deepEqual([mill.status, mill.text, mill.headers.etag], [200, JELLYFIN_WEB_PAGE, '"jellyfin-web-etag"']);
-    assert.deepEqual([(await app.get(SCRIPT_PATH, { host: HOST_B, user: null })).text], ['{}']);
+    assert.deepEqual([(await app.get(SCRIPT_PATH, { host: HOST_B, user: null })).text], ['{"error":"not_found"}']);
     // The admin host never relays anything to Jellyfin, and never serves the add-on.
     for (const pathname of ['/web/index.html', '/web/', SCRIPT_PATH]) {
       const admin = await app.get(pathname, { host: ADMIN_HOST, user: null });
       assert.equal(admin.status, 401, pathname);
       lacks(admin.text, /jellypass-tv/);
     }
-    assert.deepEqual(webCalls(app), ['GET /web/index.html', `GET ${SCRIPT_PATH}`]);
+    assert.deepEqual(webCalls(app), ['GET /web/index.html']);
   });
 
   it('adds exactly one script tag, before </head>, to Jellyfin web\'s page in every spelling Jellyfin serves it at', async (t) => {
@@ -2892,6 +2892,170 @@ describe('TV add-on: the page host\'s router', { timeout: 60_000 }, () => {
     assert.ok(box.document.querySelector('[data-jellypass-tv-page]'));
     box.sync('#/jellypass/item/movie/3');
     assert.deepEqual(box.log, ['render movie/3']);
+  });
+});
+
+describe('TV add-on: the page host\'s Back follows Jellyfin\'s header Back without a page change', { timeout: 60_000 }, () => {
+  const TV_SRC = path.join(import.meta.dirname, '..', 'tv', 'src');
+  const ENTRY = `
+    import { PageHost } from './page-host.ts';
+    const host = new PageHost(document, () => location.hash, () => {});
+    window.__host = host;
+    host.register('/jellypass/one', ({ document, container }) => {
+      container.appendChild(document.createElement('button'));
+      return { title: 'One' };
+    });
+  `;
+  // 10.11's legacy header (in a box of its own, as Jellyfin web draws it) and 12.x's toolbar in Jellyfin's apps, with its Back.
+  const HEADERS = '<div class="headerWrap">' + HEADER + '</div><div class="appBarWrap"><header class="MuiPaper-root MuiAppBar-root"><div class="MuiToolbar-root"><button class="MuiButtonBase-root MuiIconButton-root" type="button" aria-label="Back"><svg class="MuiSvgIcon-root" data-testid="ArrowBackIcon"><path d="M20 11H7.83z"></path></svg></button></div></header></div>';
+  let code;
+  /**
+   * The host alone in a page (no other observer, so nothing but the host's own watching can see a change), the desktop layout.
+   * linkedom lays nothing out: a box is 46 by 46 unless it or an ancestor is `hide`, `hidden` or `display: none`, as a browser would.
+   */
+  const sandbox = async (variant) => {
+    if (!code) {
+      const { build } = await import('esbuild');
+      const result = await build({ stdin: { contents: ENTRY, resolveDir: TV_SRC, loader: 'ts' }, bundle: true, format: 'iife', target: 'es2017', write: false, logLevel: 'silent' });
+      code = result.outputFiles[0].text;
+    }
+    const { document, MutationObserver: Native } = parseHTML('<html><body><div class="mainAnimatedPages"></div></body></html>');
+    document.body.insertAdjacentHTML('afterbegin', HEADERS);
+    // The other header is not drawn: 12.x keeps the legacy one in a `display: none` box; 10.11 has no toolbar.
+    if (variant === 'toolbar') document.querySelector('.headerWrap').setAttribute('style', 'display: none');
+    else document.querySelector('.appBarWrap').remove();
+    const laidOut = (element) => {
+      for (let up = element; up; up = up.parentElement) {
+        if (up.classList.contains('hide') || up.hasAttribute('hidden') || /display:\s*none/.test(up.getAttribute('style') ?? '')) return false;
+      }
+      return true;
+    };
+    // The header Backs' boxes (the only ones read).
+    for (const button of document.querySelectorAll('.headerBackButton, header.MuiAppBar-root button')) {
+      button.getBoundingClientRect = () => (laidOut(button) ? { width: 46, height: 46 } : { width: 0, height: 0 });
+    }
+    // Observers made, watching and let go, counted.
+    const count = { made: 0, live: 0, calls: 0 };
+    const Counted = class extends Native {
+      constructor(callback) {
+        // linkedom can deliver an empty batch, which a browser never does: only batches with records count.
+        super((records, observer) => { if (records.length) count.calls += 1; callback(records, observer); });
+        count.made += 1;
+        this.on = false;
+      }
+      observe(...args) {
+        if (!this.on) count.live += 1;
+        this.on = true;
+        super.observe(...args);
+      }
+      disconnect() {
+        if (this.on) count.live -= 1;
+        this.on = false;
+        super.disconnect();
+      }
+    };
+    // The host takes the observer from its document's window.
+    Object.defineProperty(document, 'defaultView', { value: { MutationObserver: Counted } });
+    const location = { hash: '#/home' };
+    const scope = { document, location, setTimeout, clearTimeout };
+    scope.window = scope;
+    vm.runInContext(code, vm.createContext(scope));
+    const sync = (hash) => {
+      location.hash = hash;
+      scope.__host.update();
+    };
+    const theirs = variant === 'toolbar' ? document.querySelector('header.MuiAppBar-root button') : document.querySelector('.skinHeader .headerBackButton');
+    return {
+      document,
+      count,
+      sync,
+      theirs,
+      /** Whether the host's Back is on show (drawn and not inside `hidden`). */
+      ours: () => {
+        const button = document.querySelector('[data-jellypass-tv-back]');
+        return button ? !button.closest('[hidden]') : null;
+      },
+    };
+  };
+  // Let the observers' records arrive (they are delivered after the change, in a later task in linkedom).
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 5));
+
+  for (const variant of ['legacy', 'toolbar']) {
+    const name = variant === 'legacy' ? '10.11 legacy header' : '12.x toolbar';
+    describe(name, () => {
+      // Each way Jellyfin can hide its Back with no page change and no new node, done and undone.
+      const toggles = {
+        'its `hide` class': (box, on) => box.theirs.classList.toggle('hide', on),
+        'its `hidden` attribute': (box, on) => { if (on) box.theirs.setAttribute('hidden', ''); else box.theirs.removeAttribute('hidden'); },
+        'an ancestor\'s `display: none`': (box, on) => {
+          const up = box.theirs.parentElement;
+          if (on) up.setAttribute('style', 'display: none'); else up.removeAttribute('style');
+        },
+        'an ancestor of the header\'s `hidden`': (box, on) => {
+          const up = box.document.querySelector(variant === 'legacy' ? '.headerWrap' : '.appBarWrap');
+          if (on) up.setAttribute('hidden', ''); else up.removeAttribute('hidden');
+        },
+      };
+      for (const [how, toggle] of Object.entries(toggles)) {
+        it(`shows ours when Jellyfin hides its Back by ${how}, and hides it again when Jellyfin shows its own: one Back each time`, async () => {
+          const box = await sandbox(variant);
+          showFallback(box.document);
+          box.sync('#/jellypass/one');
+          assert.equal(box.ours(), false, 'Jellyfin\'s Back is shown: ours is hidden');
+          toggle(box, true);
+          await tick();
+          assert.equal(box.ours(), true, 'Jellyfin\'s went: ours is shown, with no page change');
+          toggle(box, false);
+          await tick();
+          assert.equal(box.ours(), false, 'Jellyfin\'s is back: ours is hidden');
+        });
+      }
+
+      it('watches with one observer, stops when the page is left, and is not set off by its own showing or hiding', async () => {
+        const box = await sandbox(variant);
+        showFallback(box.document);
+        box.sync('#/jellypass/one');
+        assert.equal(box.count.live, 1, 'one observer on the page');
+        // Showing and hiding ours, many times over: one call each time Jellyfin's changes, none of its own making.
+        for (let i = 0; i < 3; i += 1) {
+          const before = box.count.calls;
+          box.theirs.classList.add('hide');
+          box.theirs.classList.add('hide');
+          await tick();
+          assert.equal(box.ours(), true);
+          await tick();
+          box.theirs.classList.remove('hide');
+          await tick();
+          await tick();
+          assert.equal(box.ours(), false);
+          assert.equal(box.count.calls - before <= 2, true, `a burst is read at most once per change (${box.count.calls - before})`);
+        }
+        const settledCalls = box.count.calls;
+        await tick();
+        await tick();
+        assert.equal(box.count.calls, settledCalls, 'no feedback: nothing more once Jellyfin stops');
+        // An update of the same page keeps the same observer.
+        box.sync('#/jellypass/one');
+        assert.equal(box.count.made, 1);
+        // Leaving: none left watching, and Jellyfin's changes reach nothing.
+        leaveFallback(box.document);
+        box.sync('#/home');
+        assert.equal(box.count.live, 0, 'let go when the page is left');
+        const after = box.count.calls;
+        box.theirs.classList.add('hide');
+        await tick();
+        assert.equal(box.count.calls, after, 'nothing is watched');
+      });
+    });
+  }
+
+  it('watches nothing in the TV layout, where the host draws no Back', async () => {
+    const box = await sandbox('legacy');
+    box.document.documentElement.classList.add('layout-tv');
+    showFallback(box.document);
+    box.sync('#/jellypass/one');
+    assert.equal(box.ours(), null);
+    assert.equal(box.count.made, 0);
   });
 });
 
@@ -6262,6 +6426,121 @@ assert.equal(connected(page), tab(page, 'films'), 'the Films tab has focus');
       const now = page.location.hash;
       page.click(stale);
       assert.equal(page.location.hash, now);
+    });
+
+    describe('with a Back of Jellyfin\'s own in its header', () => {
+      // A button laid out on the screen (linkedom lays nothing out: every box is 0 by 0, as in a `display: none` header).
+      const onScreen = (element) => {
+        element.getBoundingClientRect = () => ({ x: 0, y: 0, top: 0, left: 0, right: 46, bottom: 46, width: 46, height: 46 });
+        return element;
+      };
+      // 12.x's toolbar in Jellyfin's apps (`window.NativeShell`): its Back is an icon button with MUI's ArrowBack icon, first in the toolbar.
+      const TOOLBAR_BACK = '<button class="MuiButtonBase-root MuiIconButton-root MuiIconButton-colorInherit MuiIconButton-sizeLarge css-i2hxb6" tabindex="0" type="button" aria-label="Back"><svg class="MuiSvgIcon-root MuiSvgIcon-fontSizeMedium css-vubbuv" focusable="false" aria-hidden="true" viewBox="0 0 24 24" data-testid="ArrowBackIcon"><path d="M20 11H7.83l5.59-5.59L12 4l-8 8 8 8 1.41-1.41L7.83 13H20z"></path></svg></button>';
+      const DESKTOP_12 = LEGACY_HEADER + TOOLBAR;
+      const toolbarBack = (page) => {
+        page.document.querySelector('header.MuiAppBar-root .MuiToolbar-root').insertAdjacentHTML('afterbegin', TOOLBAR_BACK);
+        return onScreen(page.document.querySelector('header.MuiAppBar-root button[aria-label="Back"]'));
+      };
+      const legacyBack = (page) => page.document.querySelector('.skinHeader .headerBackButton');
+      // The host's Back is in the page (drawn once) and on show or not.
+      const shown = (page) => backs(page).filter((button) => !button.closest('[hidden]')).length;
+
+      it('12.x desktop layout in Jellyfin\'s apps: the toolbar\'s Back only, on every JellyPass page; in a browser (no toolbar Back) the host\'s', async (t) => {
+        const page = await openScripted(t, { cards: 20, pages: { '/discover/trending': 2 } }, { hide: 'off', tv: false, header: DESKTOP_12 });
+        // The legacy header is in the page, its Back without `hide` but 0 by 0 (12.x keeps it in a `display: none` box): not a Back.
+        assert.equal(legacyBack(page).classList.contains('hide'), false);
+        await toHash(page, PAGES[0]);
+        assert.equal(shown(page), 1, 'a browser: the host\'s Back');
+        toolbarBack(page);
+        for (const hash of PAGES) {
+          await toHash(page, hash);
+          assert.equal(backs(page).length, 1, `${hash}: drawn once`);
+          assert.equal(shown(page), 0, `${hash}: hidden under the toolbar's Back`);
+          assert.equal(backs(page)[0].closest('.jellypass-tv-back-bar').hidden, true, hash);
+          assert.ok(hosted(page), `${hash} is drawn`);
+        }
+      });
+
+      it('10.11 legacy header outside the TV layout: hidden while its Back is shown (no `hide`, on the screen), shown when Jellyfin hides its Back', async (t) => {
+        const page = await openScripted(t, { cards: 20 }, { hide: 'off', tv: false });
+        onScreen(legacyBack(page));
+        for (const hash of PAGES) {
+          await toHash(page, hash);
+          assert.equal(backs(page).length, 1, hash);
+          assert.equal(shown(page), 0, `${hash}: Jellyfin's Back only`);
+        }
+        // Jellyfin's libraryMenu hides its Back (a page opened with nowhere to go back to) on the page change: only a class
+        // changes, which the host sees on Jellyfin's `pageshow`.
+        legacyBack(page).classList.add('hide');
+        page.document.getElementById('fallbackPage').dispatchEvent(new page.Event('pageshow', { bubbles: true }));
+        await page.settled();
+        assert.equal(shown(page), 1, 'the host\'s Back, as Jellyfin has none');
+        legacyBack(page).classList.remove('hide');
+        await toHash(page, PAGES[1]);
+        assert.equal(shown(page), 0, 'and hidden again with Jellyfin\'s');
+      });
+
+      it('follows a toolbar drawn after the page: hidden when its Back comes, shown again when it goes, never two at once once settled', async (t) => {
+        const page = await openScripted(t, {}, { hide: 'off', tv: false, header: DESKTOP_12 });
+        await toHash(page, '#/jellypass/discover');
+        assert.equal(shown(page), 1);
+        // React re-renders the toolbar after the route change, now with its Back.
+        const theirs = toolbarBack(page);
+        await page.settled();
+        assert.equal(shown(page), 0, 'the toolbar\'s Back came late');
+        assert.equal(backs(page).length, 1, 'still drawn once');
+        theirs.remove();
+        await page.settled();
+        assert.equal(shown(page), 1, 'shown again when the toolbar has none');
+      });
+
+      it('gives focus to the page\'s own when the host\'s Back is hidden under the member, and does not return focus to it hidden', async (t) => {
+        const page = await openScripted(t, { cards: 20 }, { hide: 'off', tv: false, header: DESKTOP_12 });
+        await toHash(page, '#/jellypass/list/trending');
+        const ours = backs(page)[0];
+        // The member moves to it (a key first, so the focus is theirs and remembered).
+        page.press('keydown');
+        ours.focus();
+        assert.equal(page.focused() === ours, true);
+        toolbarBack(page);
+        await page.settled();
+        assert.equal(shown(page), 0);
+        const now = page.focused();
+        assert.equal(Boolean(now) && hosted(page).contains(now) && !now.closest('[hidden]'), true, 'focus is on the page, on something shown');
+        // Coming back to the page, whose focus was last on the host's Back: not focused hidden.
+        await toHash(page, '#/jellypass/discover');
+        page.back();
+        await page.settled();
+        const back = page.focused();
+        assert.equal(Boolean(back) && !back.closest('[hidden]'), true, 'not the hidden button');
+      });
+
+      it('goes back through Jellyfin\'s own Back exactly as the host\'s did: one step back in history', async (t) => {
+        const page = await openScripted(t, {}, { hide: 'off', tv: false, header: DESKTOP_12 });
+        toolbarBack(page);
+        await goTo(page);
+        await toHash(page, '#/jellypass/list/trending');
+        assert.equal(shown(page), 0);
+        // Jellyfin's toolbar Back is its router's back: history's last address shown again.
+        page.back();
+        await page.settled();
+        assert.equal(page.location.hash, '#/jellypass/discover');
+        assert.ok(root(page), 'the Discover page is drawn again');
+        assert.equal(shown(page), 0);
+      });
+
+      it('TV layout: still none of the host\'s, with or without Jellyfin\'s header Back on the screen', async (t) => {
+        const page = await openScripted(t, { cards: 20 }, { hide: 'off', tv: true });
+        for (const hash of PAGES) {
+          legacyBack(page).classList.add('hide');
+          await toHash(page, hash);
+          assert.equal(backs(page).length, 0, `${hash}: Jellyfin's Back hidden`);
+          onScreen(legacyBack(page)).classList.remove('hide');
+          page.document.body.appendChild(page.document.createElement('div'));
+          await page.settled();
+          assert.equal(backs(page).length, 0, `${hash}: Jellyfin's Back shown`);
+        }
+      });
     });
 
     describe('when the session changes under the page (same route)', () => {

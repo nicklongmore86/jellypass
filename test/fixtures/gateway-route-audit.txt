@@ -1,0 +1,31 @@
+Gateway route audit, 2026-10-30
+
+Images: jellyfin/jellyfin:10.11.11 and jellyfin/jellyfin:12.4.20261026-211555.
+Read Jellyfin.Api controller authorization attributes in v10.11.11 source and
+current source, then cross-check the actual Jellyfin.Api.dll CustomAttribute
+metadata from BOTH pinned images (controller inheritance + method attributes).
+RequiresElevation, FirstTimeSetupOrElevated and LocalAccessOrRequiresElevation
+produce 85 unique path templates with their elevated methods, recorded in
+gateway-elevated-routes.json. The image metadata additionally contains
+/Startup/FirstUser and the historical /LiveTv/Tuners/Discvover alias.
+
+Removed 87 administrative templates from the original 356, and replaced the
+arbitrary /System/Configuration/{key} template with /System/Configuration/Encoding.
+Retained GET /System/Configuration for jellyfin-web member UI/playback settings;
+its elevated POST is refused. Other paths shared by member reads and elevated
+mutations (items, images, users) retain member operations only.
+Also refuse library setup/options and external update hooks: these dashboard or
+integration operations lack elevated authorization in Jellyfin.
+Added six legacy member templates. Final table: 275 distinct templates.
+
+Web audit: docker cp IMAGE:/jellyfin/jellyfin-web DIRECTORY (using a temporary
+container), then node scripts/extract-jellyfin-web-routes.mjs DIRECTORY.
+The reviewer-provided getUrl extractor finds 194 unique strings in 10.11.11
+and 192 in 12.4. The fixture explicitly separates member URLs from dashboard,
+retired SDK, Quick Connect, and incomplete/overcaptured dynamic expressions.
+122 member examples include completed dynamic strings and explicit UserData,
+legacy playback start/stop and encoding configuration checks. They are a
+regression inventory, not a promise that every SDK compatibility URL is still
+implemented by both servers. Both real-server runs exercise member discovery,
+item playback, stream ranges, HLS, playback reports, socket upgrades and the
+legacy SpecialFeatures URL, plus refusals without upstream traffic.

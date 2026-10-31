@@ -457,7 +457,7 @@ describe('at start', () => {
   });
 
   it('keeps a sign-in an older app version made on a jelly- address, and signs out there', async () => {
-    const legacy = 'https://jelly-farmhouse.example.org';
+    const legacy = 'https://jelly-grove.example.org';
     keepSession(TOKEN, legacy);
     const gateway = await start(HOUSEHOLD);
     expect(shows('Synthetic Member · Synthetic Household')).toBe(true);

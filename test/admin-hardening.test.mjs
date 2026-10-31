@@ -322,10 +322,117 @@ describe('admin surface hardening', { timeout: 20_000 }, () => {
     assert.equal((await send(port, '/v1/groups', { authorization: 'Bearer admin-secret' })).body, groupsBefore);
   });
 
+  it('refuses a target the URL parser reads as a host (//, /\\) on admin and household hosts, without parsing it', async () => {
+    const requestsBefore = jellyfin.requestedPaths.length;
+    // Raw requests: HTTP clients turn a backslash into a slash before sending.
+    for (const host of ['media.example.com', 'jelly-grove.example.test']) {
+      for (const target of ['//', '/\\', '/\\/', '//\\', '/\\?x=1', '/\\evil.example', '/\\evil.example/v1/groups', '//evil.example/v1/groups']) {
+        const answer = await sendHeadersOnly(port, `GET ${target} HTTP/1.1\r\nHost: ${host}\r\nAuthorization: Bearer admin-secret\r\n\r\n`);
+        assert.deepEqual([answer.status, answer.body], [404, '{"error":"not_found"}'], `${host} ${target}`);
+      }
+    }
+    assert.equal(jellyfin.requestedPaths.length, requestsBefore, 'no Jellyfin call was made');
+  });
+
+  it('refuses the removed add page and assets behind // or /\\ with 404, not 410: the host-like target is never parsed', async () => {
+    const requestsBefore = jellyfin.requestedPaths.length;
+    for (const host of ['media.example.com', 'jelly-grove.example.test']) {
+      for (const prefix of ['/', '/\\', '//evil.example', '/\\evil.example']) {
+        for (const route of ['/jellypass/add', '/jellypass/add.js', '/jellypass/add.css']) {
+          for (const method of ['GET', 'POST']) {
+            const answer = await sendHeadersOnly(port, `${method} ${prefix}${route} HTTP/1.1\r\nHost: ${host}\r\nContent-Length: 0\r\n\r\n`);
+            assert.deepEqual([answer.status, answer.body], [404, '{"error":"not_found"}'], `${host} ${method} ${prefix}${route}`);
+          }
+        }
+      }
+    }
+    assert.equal(jellyfin.requestedPaths.length, requestsBefore, 'no Jellyfin call was made');
+  });
+
+  // A target that does not start with / is no origin-form target. Node's HTTP parser answers it with its own bare 400 and
+  // closes the connection before any JellyPass handler runs. That fails closed; these cases pin it.
+  it('leaves a target not starting with / to Node\'s bare 400, which closes the connection and forwards nothing', async () => {
+    const requestsBefore = jellyfin.requestedPaths.length;
+    for (const host of ['media.example.com', 'jelly-grove.example.test']) {
+      for (const target of ['\\/evil.example', '\\\\evil.example', '\\jellypass/add', '\\evil.example/Users/Public']) {
+        const answer = await sendUntilClosed(port, `GET ${target} HTTP/1.1\r\nHost: ${host}\r\n\r\n`);
+        assert.match(answer, /^HTTP\/1.1 400 Bad Request\r\n/, `${host} ${target}`);
+        assert.match(answer, /\r\nConnection: close\r\n/i, `${host} ${target}`);
+        assert.doesNotMatch(answer, /not_found|library_add_removed/, `${host} ${target}`);
+      }
+    }
+    assert.equal(jellyfin.requestedPaths.length, requestsBefore, 'no Jellyfin call was made');
+  });
+
+  it('refuses the removed add page and assets on admin and household hosts', async () => {
+    const requestsBefore = jellyfin.requestedPaths.length;
+    for (const host of ['media.example.com', 'jelly-grove.example.test']) {
+      for (const route of ['/jellypass/add', '/jellypass/add.js', '/jellypass/add.css']) {
+        for (const method of ['GET', 'POST']) {
+          const answer = await send(port, route, { host }, { method });
+          assert.equal(answer.status, 410);
+          assert.deepEqual(JSON.parse(answer.body), { error: 'library_add_removed_use_household_app' });
+        }
+      }
+    }
+    assert.equal(jellyfin.requestedPaths.length, requestsBefore, 'no Jellyfin call was made');
+  });
+
+  it('refuses query auth even with a valid header and gives the upgrade step', async () => {
+    for (const authorization of [undefined, 'Bearer webhook-secret']) {
+      const answer = await send(port, '/webhooks/seerr?token=webhook-secret', authorization ? { authorization } : {}, { method: 'POST', body: '{}' });
+      assert.equal(answer.status, 400);
+      assert.deepEqual(JSON.parse(answer.body), { error: 'webhook_query_token_removed_use_authorization_header' });
+    }
+  });
+
+  it('refuses reduced availability payloads with an actionable code', async () => {
+    const current = {
+      notificationType: 'MEDIA_AVAILABLE', event: 'Movie Request Now Available',
+      media: { jellyfinMediaId: 'item-1', mediaType: 'movie' },
+      request: { id: '17', requestedBy: { jellyfinUserId: 'alice-id', username: 'Alice' } },
+    };
+    for (const removed of ['event', 'media', 'requestedBy']) {
+      const body = structuredClone(current);
+      if (removed === 'requestedBy') delete body.request.requestedBy;
+      else delete body[removed];
+      const answer = await send(port, '/webhooks/seerr', { authorization: 'Bearer webhook-secret' }, { method: 'POST', body: JSON.stringify(body) });
+      assert.equal(answer.status, 400);
+      assert.deepEqual(JSON.parse(answer.body), { error: 'webhook_payload_removed_use_current_seerr_template' });
+    }
+  });
+
+  it('reports removed forms, checks Test templates and rate limits structured warnings', async () => {
+    const warnings = [];
+    const previous = console.warn;
+    console.warn = (line) => warnings.push(JSON.parse(line));
+    try {
+      // Each error was already warned above; repeats must not flood the log.
+      for (let i = 0; i < 3; i++) {
+        const answer = await send(port, '/webhooks/seerr?token=webhook-secret', {}, { method: 'POST', body: '{}' });
+        assert.equal(answer.status, 400);
+      }
+      for (const requestedBy of [undefined, {}, { jellyfinUserId: '' }, { username: '' }]) {
+        const answer = await send(port, '/webhooks/seerr', { authorization: 'Bearer webhook-secret' }, {
+          method: 'POST', body: JSON.stringify({ notificationType: 'TEST_NOTIFICATION', event: '', media: {}, request: { id: '', requestedBy } }),
+        });
+        assert.equal(answer.status, 400);
+        assert.equal(JSON.parse(answer.body).error, 'webhook_payload_removed_use_current_seerr_template');
+      }
+      assert.equal(warnings.length, 0);
+    } finally { console.warn = previous; }
+    const status = await send(port, '/v1/webhooks/status', { authorization: 'Bearer admin-secret' });
+    assert.ok(Date.now() - JSON.parse(status.body).lastRemovedFormAt < 5000);
+    assert.equal((await send(port, '/v1/webhooks/status', {})).status, 401);
+    const metrics = await send(port, '/metrics', { authorization: 'Bearer admin-secret' });
+    assert.match(metrics.body, /jfa_webhooks_total\{result="removed_form"\} 12/);
+    assert.match(metrics.body, /jfa_last_webhook_received_timestamp_seconds [1-9]/);
+  });
+
   it('keeps the Seerr webhook, /health and /metrics as they were', async () => {
-    const webhook = await send(port, '/webhooks/seerr?token=webhook-secret', { 'content-type': 'text/plain', 'sec-fetch-site': 'cross-site' }, {
+    const webhook = await send(port, '/webhooks/seerr', { authorization: 'Bearer webhook-secret', 'content-type': 'text/plain', 'sec-fetch-site': 'cross-site' }, {
       method: 'POST',
-      body: JSON.stringify({ notificationType: 'TEST_NOTIFICATION', request: { id: '1' } }),
+      body: JSON.stringify({ notificationType: 'TEST_NOTIFICATION', event: '', media: {}, request: { id: '', requestedBy: { jellyfinUserId: '', username: '' } } }),
     });
     assert.equal(webhook.status, 202);
     assert.equal((await send(port, '/health', {})).status, 200);
@@ -775,6 +882,28 @@ function send(port, pathname, headers, { method = 'GET', body } = {}) {
 }
 
 /** Writes a request's head and never its body, then reads the response; fails after two seconds without one. */
+/** Writes `head` to a raw socket and resolves with everything the server sent once it closed the connection. */
+function sendUntilClosed(port, head) {
+  return new Promise((resolve, reject) => {
+    const socket = connect(port, LOCAL, () => socket.write(head));
+    let received = '';
+    const timer = setTimeout(() => {
+      socket.destroy();
+      reject(new Error('the server kept the connection open'));
+    }, 2_000);
+    socket.setEncoding('utf8');
+    socket.on('data', (chunk) => { received += chunk; });
+    socket.on('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    socket.on('close', () => {
+      clearTimeout(timer);
+      resolve(received);
+    });
+  });
+}
+
 function sendHeadersOnly(port, head) {
   return new Promise((resolve, reject) => {
     const socket = connect(port, LOCAL, () => socket.write(head));

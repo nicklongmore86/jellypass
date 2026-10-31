@@ -31,7 +31,7 @@ describe('the session', () => {
 
   it.each([
     // Kept by app versions that took only `jelly-` addresses: an upgrade keeps the member signed in.
-    ['an older app version', 'https://jelly-farmhouse.example.org', 'jelly-farmhouse.example.org'],
+    ['an older app version', 'https://jelly-grove.example.org', 'jelly-grove.example.org'],
     ['a household with a port', 'https://films.example.net:8443', 'films.example.net:8443'],
   ])('reads back a session kept by %s', async (_what, origin, host) => {
     store.__items.set(SESSION_KEY, { value: JSON.stringify({ address: origin, token: TOKEN, userId: 'u-ana', name: 'Ana Lima' }), options: THIS_DEVICE });

@@ -8,6 +8,9 @@
 //
 // Each answer is drawn through the overlay (src/title/asked.ts), so a title just asked for shows Requested at once,
 // here, on Home and on any other page that shows it. The header carries only Back: the page's title is its one heading.
+//
+// Where the household can hide titles, a movie's or series' page has Not interested (Unhide once hidden) under its
+// actions (src/hidden/components.tsx): the page stays open, and the toast offers Undo. A season is never hidden alone.
 import { router, Stack } from 'expo-router';
 import { useState } from 'react';
 import { StyleSheet, Text, View, useWindowDimensions } from 'react-native';
@@ -16,7 +19,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import type { Movie, Season, Series } from '../api/types';
 import { safePlayUrl } from '../api/urls';
 import { seasonPath, type TitleTab } from '../navigation/titles';
-import { useAsked, useSession } from '../session/SessionProvider';
+import { HideTitleButton } from '../hidden/components';
+import { useAsked, useHiddenTitles, useSession } from '../session/SessionProvider';
 import { colors, spacing, typography } from '../theme';
 import {
   DETAIL_MAX_WIDTH,
@@ -80,6 +84,7 @@ interface DetailProps {
 
 function TitleDetail({ title, failed, get, send, reload, tab }: DetailProps & { title: Movie | Series; tab: TitleTab }) {
   const { api } = useSession();
+  const hiddenTitles = useHiddenTitles();
   const column = useColumn();
   const [chosen, setChosen] = useState<ReadonlySet<number>>(new Set());
   const series = title.mediaType === 'tv' ? title : undefined;
@@ -140,6 +145,7 @@ function TitleDetail({ title, failed, get, send, reload, tab }: DetailProps & { 
               />
             </View>
           ) : null}
+          <HideTitleButton target={title} hidden={hiddenTitles.isHidden(title)} />
         </View>
       </View>
       {title.overview ? <Text style={styles.overview}>{title.overview}</Text> : null}

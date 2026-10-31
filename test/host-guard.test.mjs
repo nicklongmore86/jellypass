@@ -1,8 +1,6 @@
 // One Host per request: the server refuses, with a fixed 400 and before a household is chosen or anything relayed, a
 // request that does not name exactly one host, so a proxy in front and JellyPass can never read different hosts.
-// Requests are written to the socket as they are, since Node's HTTP client would not send two Host headers. Since
-// 4.0.0 the admin site, API, health and webhook are on the admin listener (app.adminPort), household hosts on the
-// member listener (app.port); both refuse the same.
+// Requests are written to the socket as they are, since Node's HTTP client would not send two Host headers.
 import assert from 'node:assert/strict';
 import { connect } from 'node:net';
 import { describe, it } from 'node:test';
@@ -105,7 +103,7 @@ describe('one Host per request', { timeout: 60_000 }, () => {
       const answer = await raw(app.port, `GET ${target} HTTP/1.1`, [`Host: ${HOST_A}`]);
       assert.deepEqual([answer.status, answer.body], [400, INVALID_HOST], target);
     }
-    // The admin side: an absolute-form target naming a household, with the admin Host, is refused too.
+    // The admin listener: an absolute-form target naming a household, with the admin Host, is refused too.
     const absolute = await raw(app.adminPort, `GET http://${HOST_A}/v1/groups HTTP/1.1`, [`Host: ${ADMIN_HOST}`, BEARER]);
     assert.deepEqual([absolute.status, absolute.body], [400, INVALID_HOST]);
     assert.equal((await raw(app.adminPort, `GET http://${ADMIN_HOST}/v1/groups HTTP/1.1`, [`Host: ${ADMIN_HOST}`, BEARER])).status, 200);
@@ -115,12 +113,15 @@ describe('one Host per request', { timeout: 60_000 }, () => {
     assert.deepEqual([noHost.status, noHost.body], [400, INVALID_HOST]);
   });
 
-  it('keeps HTTP/1.0 with no Host as before: no household on the member listener, and the admin listener answers', async (t) => {
+  it('keeps HTTP/1.0 with no Host as no household\'s: the admin listener answers it, the member listener a fixed 421', async (t) => {
     const app = await startApp(t);
     assert.deepEqual(await raw(app.adminPort, 'GET /health HTTP/1.0', []).then((answer) => [answer.status, answer.body]), [200, '{"status":"ok"}']);
     assert.equal((await raw(app.adminPort, 'GET /v1/groups HTTP/1.0', [BEARER])).status, 200);
     assert.equal((await raw(app.adminPort, 'GET /v1/groups HTTP/1.0', [])).status, 401);
-    assert.notEqual((await raw(app.port, 'GET /Users/Public HTTP/1.0', [])).status, 200, 'no household listing');
+    for (const target of ['/Users/Public', '/health', '/v1/groups']) {
+      const answer = await raw(app.port, `GET ${target} HTTP/1.0`, [BEARER]);
+      assert.deepEqual([answer.status, answer.body], [421, '{"error":"unknown_host"}'], target);
+    }
     assert.deepEqual(relayed(app), [], 'nothing reached Jellyfin');
   });
 
@@ -131,7 +132,8 @@ describe('one Host per request', { timeout: 60_000 }, () => {
       assert.deepEqual([answer.status, answer.body], [400, INVALID_HOST], what);
       assert.equal((await raw(app.adminPort, 'GET /health HTTP/1.1', hosts)).body, INVALID_HOST, what);
     }
-    const test = JSON.stringify({ notificationType: 'TEST_NOTIFICATION', subject: 'Test Notification' });
+    // Seerr's Test button with the current template (4.0 refuses the reduced older ones).
+    const test = JSON.stringify({ notificationType: 'TEST_NOTIFICATION', subject: 'Test Notification', event: '', media: {}, request: { id: '', requestedBy: { jellyfinUserId: '', username: '' } } });
     const webhook = (hosts) => raw(app.adminPort, 'POST /webhooks/seerr HTTP/1.1', [...hosts, 'Authorization: Bearer webhook-secret', 'Content-Type: application/json'], test);
     for (const hosts of [[`Host: ${ADMIN_HOST}`, `Host: ${HOST_A}`], [`Host: ${HOST_A}`, `Host: ${ADMIN_HOST}`], [`Host: ${ADMIN_HOST}`, `host: ${ADMIN_HOST}`]]) {
       assert.deepEqual(await webhook(hosts).then((answer) => [answer.status, answer.body]), [400, INVALID_HOST], hosts.join(', '));
@@ -144,6 +146,10 @@ describe('one Host per request', { timeout: 60_000 }, () => {
     assert.equal((await raw(app.adminPort, 'GET / HTTP/1.1', [`Host: 127.0.0.1:${app.adminPort}`])).status, 302);
     assert.equal((await raw(app.adminPort, 'GET /health HTTP/1.1', ['Host: [::1]:8788'])).status, 200);
     assert.equal(await upgrade(app.adminPort, '/socket', [`Host: ${ADMIN_HOST}`]), '');
+    // The member listener refuses the same before its 421.
+    for (const [what, hosts] of malformed(ADMIN_HOST)) {
+      assert.deepEqual(await raw(app.port, 'GET /health HTTP/1.1', hosts).then((answer) => [answer.status, answer.body]), [400, INVALID_HOST], what);
+    }
     assert.deepEqual(relayed(app), [], 'nothing reached Jellyfin');
   });
 

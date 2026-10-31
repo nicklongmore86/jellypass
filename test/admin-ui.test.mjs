@@ -7,6 +7,7 @@ import { ADMIN_APP_JS, ADMIN_HTML } from '../dist/admin-ui.js';
 const UNAVAILABLE = { status: 503, body: { error: 'session_check_unavailable' } };
 const UNAUTHORIZED = { status: 401, body: { error: 'unauthorized' } };
 const DATA = {
+  '/v1/webhooks/status': { status: 200, body: { lastRemovedFormAt: null } },
   '/auth/session': { status: 200, body: { authenticated: true, username: 'admin' } },
   '/v1/grants': { status: 200, body: { grants: [] } },
   '/v1/groups': { status: 200, body: { groups: [] } },
@@ -637,4 +638,26 @@ describe('admin UI Requests tab', () => {
     assert.equal(page.document.querySelectorAll('#requests-dialog .request-row').length, 1);
     assert.equal(page.document.querySelectorAll('#household-requests-list .request-row').length, 3);
   });
+});
+
+describe('admin deployment self-check UI', () => {
+  it('runs only on demand and renders upstream explanations as text', async () => {
+    const page = adminPage((path) => path === '/v1/self-check' ? { status: 200, body: { results: [{ check: 'origin', status: 'warn', explanation: '<script>untrusted</script>' }] } } : DATA[path]);
+    await page.settle();
+    assert.ok(!page.requests.includes('POST /v1/self-check'));
+    page.click('run-self-check');
+    await page.settle();
+    assert.ok(page.requests.includes('POST /v1/self-check'));
+    const output = page.document.getElementById('self-check-results');
+    assert.equal(output.textContent, 'WARN — origin: <script>untrusted</script>');
+    assert.equal(output.querySelector('script'), null);
+  });
+});
+
+it('warns administrators about recent refused removed-form webhooks', async () => {
+  const page = adminPage((path) => path === '/v1/webhooks/status'
+    ? { status: 200, body: { lastRemovedFormAt: Date.now() } } : DATA[path]);
+  await page.settle();
+  assert.match(page.document.querySelector('#connection').textContent, /Seerr webhook refused/);
+  assert.match(page.document.querySelector('#connection').textContent, /Library sync required/);
 });

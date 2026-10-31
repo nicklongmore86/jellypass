@@ -6,6 +6,8 @@
 // - A card is one link whose name is its title, year and rating, then its status, said once; the status chip drawn on
 //   the image is hidden from screen readers.
 // - Text grows with the system font size with no line limit, cap or fixed height: titles wrap, the chips scroll.
+// - Where the household can hide titles, a card's long press opens the "Not interested" sheet and screen readers get the
+//   same as the card's own action (src/hidden/HideProvider.tsx); a card the member hid (Search only) says Hidden.
 import { Children, createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   AccessibilityInfo,
@@ -27,6 +29,8 @@ import {
 } from 'react-native';
 
 import type { Card, HouseholdState, Source } from '../api/types';
+import { useCardHideProps } from '../hidden/HideProvider';
+import { HIDE_TEXT } from '../hidden/text';
 import { backdropSources, safeImageUrl, safeLogoUrl } from '../api/urls';
 import { Icon } from '../icons';
 import { colors, layout, radii, spacing, status as statusColors, typography, water } from '../theme';
@@ -348,15 +352,32 @@ export function backdropUri(url: string | null, width: number, scale = PixelRati
   return width * scale > 780 ? sources.large : sources.small;
 }
 
+/** A card's accessible name, with "Hidden from Discover" after it when the member hid it. */
+function hiddenCardName(card: Card, kind = false): string {
+  const name = cardName(card, kind);
+  return card.hidden ? `${name}, ${HIDE_TEXT.state}` : name;
+}
+
+/** "Hidden" under a card the member hid, in words (never colour alone); its card's name already says it. */
+function HiddenMark() {
+  return (
+    <View testID="hidden-mark" style={styles.hiddenMark} {...hidden}>
+      <Text style={styles.hiddenMarkText}>{HIDE_TEXT.badge}</Text>
+    </View>
+  );
+}
+
 /** A poster card: poster with its status chip at the top-left, then the title and "year · Movie/Series". */
 export function PosterCard({ card, width, onOpen }: { card: Card; width: number; onOpen: (card: Card) => void }) {
   const onFocus = useContext(CardFocus);
   const badge = useBadgePlacement(width);
+  const hide = useCardHideProps(card);
   return (
     <Pressable
       accessibilityRole="link"
-      accessibilityLabel={cardName(card, true)}
+      accessibilityLabel={hiddenCardName(card, true)}
       onPress={() => onOpen(card)}
+      {...hide}
       onFocus={onFocus}
       style={({ pressed }) => [styles.card, { width }, pressed && styles.pressed]}
     >
@@ -366,6 +387,7 @@ export function PosterCard({ card, width, onOpen }: { card: Card; width: number;
       <StatusChip state={card.state} overlay={badge === 'overlay'} below={badge === 'below'} />
       <Text style={styles.cardTitle}>{card.title}</Text>
       <Text style={styles.cardMeta}>{posterMeta(card)}</Text>
+      {card.hidden ? <HiddenMark /> : null}
     </Pressable>
   );
 }
@@ -380,11 +402,13 @@ export function BackdropCard({ card, width, onOpen }: { card: Card; width: numbe
   const badge = useBadgePlacement(width);
   const backdrop = backdropUri(card.backdropUrl, width);
   const meta = backdropMeta(card);
+  const hide = useCardHideProps(card);
   return (
     <Pressable
       accessibilityRole="link"
-      accessibilityLabel={cardName(card)}
+      accessibilityLabel={hiddenCardName(card)}
       onPress={() => onOpen(card)}
+      {...hide}
       onFocus={onFocus}
       style={({ pressed }) => [styles.card, styles.backdropCard, { width }, pressed && styles.pressed]}
     >
@@ -395,6 +419,7 @@ export function BackdropCard({ card, width, onOpen }: { card: Card; width: numbe
       <View style={styles.backdropText}>
         <Text style={styles.backdropTitle}>{card.title}</Text>
         {meta ? <Text style={styles.backdropMeta}>{meta}</Text> : null}
+        {card.hidden ? <HiddenMark /> : null}
       </View>
     </Pressable>
   );
@@ -453,9 +478,34 @@ export function LogoTile({ source, size }: { source: Source; size: 'small' | 'la
 }
 
 /**
+ * The whole heading row (title, logo and chevron) as one touch target, 44 pt tall with a pressed state. It is touch-only:
+ * not an accessibility element, so a screen reader still gets the heading as a header and the chevron as the one
+ * `linkName` link, never a third, duplicate stop. A press on the chevron is the chevron's own, but either press dims the
+ * whole row: the chevron takes the responder from the row, so the two share one pressed state rather than each its own.
+ */
+function HeadingTap({ onOpen, linkName, children }: { onOpen: () => void; linkName: string; children: ReactNode }) {
+  const [held, setHeld] = useState(false);
+  const press = { onPress: onOpen, onPressIn: () => setHeld(true), onPressOut: () => setHeld(false) };
+  return (
+    <Pressable
+      testID="row-heading-tap"
+      accessible={false}
+      importantForAccessibility="no"
+      {...press}
+      style={[styles.networkHeading, styles.headingTap, held && styles.pressed]}
+    >
+      {children}
+      <Pressable testID="row-heading-link" accessibilityRole="link" accessibilityLabel={linkName} {...press} style={styles.headingLink}>
+        <Icon name="next" color={colors.text} size={20} />
+      </Pressable>
+    </Pressable>
+  );
+}
+
+/**
  * "Popular on" and the network's logo: one heading, named in words, so a screen reader's headings still land on it.
  * With `onOpen`, the PWA's chevron after the logo is a link of its own to the network's page ("See all Popular on
- * Netflix"); the heading itself is not pressable.
+ * Netflix"); the heading row as a whole is a touch-only target for the same page.
  */
 export function NetworkHeading({ prefix, network, onOpen }: { prefix: string; network: Source; onOpen?: () => void }) {
   const heading = (
@@ -466,41 +516,23 @@ export function NetworkHeading({ prefix, network, onOpen }: { prefix: string; ne
   );
   if (!onOpen) return heading;
   return (
-    <View style={styles.networkHeading}>
+    <HeadingTap onOpen={onOpen} linkName={networkLinkName(prefix, network.name)}>
       {heading}
-      <Pressable
-        testID="row-heading-link"
-        accessibilityRole="link"
-        accessibilityLabel={networkLinkName(prefix, network.name)}
-        onPress={onOpen}
-        style={({ pressed }) => [styles.headingLink, pressed && styles.pressed]}
-      >
-        <Icon name="next" color={colors.text} size={20} />
-      </Pressable>
-    </View>
+    </HeadingTap>
   );
 }
 
 /**
  * A list row's heading with the same chevron after it as a service row's, a link of its own to the row's full grid ("See
- * all Trending"); the heading itself is not pressable, so a screen reader's headings still land on it alone.
+ * all Trending"); the whole heading row is a touch-only target for the same page, so a screen reader's headings still land on it alone.
  */
 export function ListHeading({ title, onOpen }: { title: string; onOpen: () => void }) {
   return (
-    <View style={styles.networkHeading}>
+    <HeadingTap onOpen={onOpen} linkName={listLinkName(title)}>
       <Text accessibilityRole="header" style={styles.rowHeadingText}>
         {title}
       </Text>
-      <Pressable
-        testID="row-heading-link"
-        accessibilityRole="link"
-        accessibilityLabel={listLinkName(title)}
-        onPress={onOpen}
-        style={({ pressed }) => [styles.headingLink, pressed && styles.pressed]}
-      >
-        <Icon name="next" color={colors.text} size={20} />
-      </Pressable>
-    </View>
+    </HeadingTap>
   );
 }
 
@@ -824,12 +856,14 @@ function HeroButton({ icon, label, onPress }: { icon: 'prev' | 'next'; label: st
 
 function HeroSlide({ card, width, tablet, first, onOpen }: { card: Card; width: number; tablet: boolean; first: boolean; onOpen: (card: Card) => void }) {
   const overview = shortOverview(card.overview);
+  const hide = useCardHideProps(card);
   return (
     <View testID={first ? 'hero-slide-first' : 'hero-slide'} style={{ width }}>
       <Pressable
         accessibilityRole="link"
-        accessibilityLabel={cardName(card)}
+        accessibilityLabel={hiddenCardName(card)}
         onPress={() => onOpen(card)}
+        {...hide}
         style={({ pressed }) => [styles.heroCard, pressed && styles.pressed]}
       >
         <View style={[styles.heroImage, tablet && styles.heroImageWide]}>
@@ -855,6 +889,8 @@ function HeroSlide({ card, width, tablet, first, onOpen }: { card: Card; width: 
 
 const styles = StyleSheet.create({
   pressed: { opacity: 0.75 },
+  hiddenMark: { alignSelf: 'flex-start', paddingHorizontal: spacing.xs, paddingVertical: 1, borderRadius: radii.chip, borderWidth: 1, borderColor: colors.muted },
+  hiddenMarkText: { ...typography.chip, color: colors.text },
   pressedButton: { backgroundColor: colors.surfaceRaised },
   muted: { ...typography.body, color: colors.muted },
   fillImage: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: radii.poster },
@@ -914,6 +950,7 @@ const styles = StyleSheet.create({
   rowHeading: { gap: spacing.sm, alignSelf: 'flex-start' },
   rowHeadingText: { ...typography.rowHeading, color: colors.text },
   networkHeading: { flexDirection: 'row', flexWrap: 'wrap', alignItems: 'center', gap: spacing.sm },
+  headingTap: { minHeight: layout.touchTarget },
   headingLink: { minHeight: layout.touchTarget, minWidth: layout.touchTarget, alignItems: 'center', justifyContent: 'center' },
   studioLink: { width: STUDIO_TILE_WIDTH, minHeight: layout.touchTarget, borderRadius: radii.card },
   waterline: { flexDirection: 'row', height: layout.waterline.height },

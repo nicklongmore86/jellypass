@@ -10,10 +10,11 @@ JellyPass title page, a page of Jellyfin web's own at `#/jellypass/title/<movie|
 this**. On Jellyfin web's own **Search** page the same script adds a **Discover** row of what was searched for and can be
 had ("The Search row"). The **Samsung app** (step 5) is built: a JellyPass build of Jellyfin's Tizen app whose loader adds
 the same script from the household host, and the household host's cross-origin rules for it (see "The Samsung app"); it
-has not been installed on a TV. **My requests** (step 6) is a JellyPass page of Jellyfin web's own at `#/jellypass/requests`
+has been installed in place over an existing developer-signed Jellyfin app on real Samsung TVs (Tizen 5.0 and 5.5),
+keeping their sign-ins. **My requests** (step 6) is a JellyPass page of Jellyfin web's own at `#/jellypass/requests`
 ("My requests"), reached from a card at the end of the Discover row and from a title the household is following; it lists
-the household's requests with their statuses and can cancel the ones the server says the member may. Nothing has been run
-on a real TV yet (see "What must be checked on a real TV"). The **Discover page** (PR B of the 2026-10-28 study) is a JellyPass
+the household's requests with their statuses and can cancel the ones the server says the member may. The checks in "What must be checked on a
+real TV" have not been run on a TV yet. The **Discover page** (PR B of the 2026-10-28 study) is a JellyPass
 page at `#/jellypass/discover`, mirroring the app's Home, reached only from a compass button in Jellyfin's header
 ("The Discover page"); a service row's heading and a studio's logo there open the **service and studio pages**
 (`#/jellypass/service/<id>`, `#/jellypass/studio/<id>`, "Service and studio pages").
@@ -54,7 +55,7 @@ flowchart LR
   - **Never twice:** a page that already has a `data-jellypass-tv` tag is sent as it is.
   - **Headers:** Jellyfin's own (`Content-Type`, any `Content-Security-Policy`, `X-Frame-Options`, `Vary`, …) are kept
     as Jellyfin sent them. `Content-Length` is the new length (of the br or gzip body when JellyPass compresses the
-    page for a client that accepts it, see README "CDNs and HTML pages"). `ETag`, `Last-Modified`, `Accept-Ranges`, `Expires`,
+    page for a client that accepts it, see docs/server-reference.md, "CDNs and HTML pages"). `ETag`, `Last-Modified`, `Accept-Ranges`, `Expires`,
     `Age`, `Pragma` and Jellyfin's `Cache-Control` are dropped, because they described the page without the tag. The
     page is sent `Cache-Control: no-store, no-transform` (no-transform as on every HTML page, so no CDN adds a script
     to it), `CDN-Cache-Control` and `Cloudflare-CDN-Cache-Control: no-store` (as the PWA's page is), so neither a browser nor Cloudflare stores the page from now on. These headers can't remove a copy
@@ -81,11 +82,11 @@ flowchart LR
 
 ### Tested against
 
-The add-on is matched to the Jellyfin releases JellyPass supports (README, "Supported Jellyfin versions"): Jellyfin
+The add-on is matched to the Jellyfin releases JellyPass supports (docs/server-reference.md, "Supported Jellyfin versions"): Jellyfin
 web **12.x** and **10.11.x**. It runs inside Jellyfin web's own page and relies on its markup, so it is checked against
-those releases only. On any other Jellyfin version, household hosts (and with them the add-on) are paused until an
-administrator confirms that exact version; once confirmed, the add-on is served unchanged, untested against that
-version's page.
+those releases only. On any other Jellyfin version, household hosts (and with them the add-on) are paused from JellyPass
+4.0.0 until an administrator confirms that exact version; JellyPass 3.x only warned, and kept serving the add-on
+unchanged, untested against that version's page.
 
 - **The gateway's injection:** the Jellyfin web page that each CI image serves (`jellyfin/jellyfin:12.4.20261026-211555`
   and `jellyfin/jellyfin:10.11.11`, pinned in `scripts/jellyfin-versions.json`; `test/real-jellyfin.test.mjs`), as
@@ -241,8 +242,8 @@ web's history, and leaves the page as it leaves any other.
   is shown again if the page is left for another unknown address.
 - **The title.** `data-title` on Jellyfin's page (read by `scripts/libraryMenu.js` on `pageshow`), the header's
   `.skinHeader .pageTitle` (as `libraryMenu.setTitle` sets it) and `document.title`. In the **desktop** (modern) layout
-  Jellyfin web hides that header and has its own toolbar with no page title and no Back button, so there the title is
-  the browser tab's and Back is the browser's history.
+  Jellyfin web hides that header and has its own toolbar with no page title, so there the title is the browser tab's. That
+  toolbar has a Back button only in Jellyfin's own apps (see "The Back button (outside the TV layout)").
 - **Fails safe.** If `#fallbackPage` is not there, is not a `[data-role=page].page`, or is `hide`, or the address has
   no registered page, nothing is drawn, the class is not set (the rule also checks the page's shape), and Jellyfin's
   page is untouched. A page whose `render` throws is removed, not retried at that address, and Jellyfin's page shows.
@@ -751,12 +752,27 @@ heading link, which is not changed.
   old card, Load more or See all does nothing), one clean-up routine for every way the page goes, posters set only within about a
   screen and a half, and a household-only view (a test compares the page and its calls in every "other household" world).
 
-### The Back button (desktop layout)
+### The Back button (outside the TV layout)
 
-Jellyfin 12.3's desktop toolbar has no Back, so in the **desktop layout only** the page host puts a **Back** button at the top of
-every JellyPass page (Discover, the See all grids, service, studio, title, My requests): a focusable `button` (Jellyfin's
+Jellyfin 12.3's desktop toolbar has no Back in a browser, so outside the TV layout the page host puts a **Back** button at the top
+of every JellyPass page (Discover, the See all grids, service, studio, title, My requests): a focusable `button` (Jellyfin's
 `emby-button`, `aria-label` "Back", first in the page), never drawn twice (the host draws it once per page opened, and removes it
-with the page). The TV layout (`layout-tv`) has none: Jellyfin's header Back and the remote cover it. It behaves like history back
+with the page). The TV layout (`layout-tv`) has none, by design and as since 3.9.0: Jellyfin's header Back and the remote cover
+it. That holds even while Jellyfin hides its header Back (when its router cannot go back): on a TV the remote's Back key is always
+there, so the host draws nothing and watches nothing in that layout.
+
+A page has **one** Back: the host's is hidden (`hidden` on its bar, so it is out of the focus order too) while Jellyfin's own
+header shows one (`headerBackShown` in `tv/src/jellyfin-web.ts`), and shown again when that one goes. Jellyfin draws one in two
+places outside the TV layout: 12.x's React toolbar in Jellyfin's own apps (iOS, Android: `window.NativeShell` is set, and the
+toolbar's `ArrowBack` button, `svg[data-testid=ArrowBackIcon]`, is drawn when its router can go back), and 10.11's legacy header
+(`.skinHeader .headerBackButton` without `hide`) in every layout. Only a button that takes up room on the screen counts, since
+12.x's desktop layout keeps the legacy header in the page inside a `display: none` box. The host looks on every page change
+(`pageshow`, and Jellyfin's page changing, which also catches a toolbar drawn after the page), and, while a page with its Back is
+shown, it watches Jellyfin's headers (`headerBackRoots`: their whole tree) and each of their ancestors (itself only) for a
+`class`, `hidden` or `style` change, so Jellyfin showing or hiding its Back with no page change and no new element is followed
+too. That is one `MutationObserver` per page, disconnected when the page is left; its records come in one batch per change and
+are read once. The host's own bar is in Jellyfin's page, never in or around a header, so showing or hiding it is not seen there. Where Jellyfin's Back is shown it
+is Jellyfin's router going back in history, as on its own pages; the host's own Back behaves like history back
 when the member came to the page from another page of Jellyfin web in this tab (`tv/src/history-trail.ts` keeps the addresses
 seen, in memory), and otherwise goes to Jellyfin's Home (`#/home`): a page opened by its own address, or after a reload, has no
 trail. A button of a page since left does nothing. The trail belongs to the session: a sign-out, another member or a new token
@@ -997,7 +1013,7 @@ Each step is its own pull request, behind the same settings:
 4. **My requests (done, redesign step 6).** The household's requests with their coarse statuses, named ten at a time, with
    the filters and **Cancel request**, as the PWA does: a page of Jellyfin web's at `#/jellypass/requests`, reached from a
    card at the end of the Discover row and a button on a followed title's page. See "My requests".
-5. **Samsung loader app (Tizen) (built; not installed).** See "The Samsung app".
+5. **Samsung loader app (Tizen) (built; installed on real Samsung TVs, Tizen 5.0 and 5.5).** See "The Samsung app".
    - CORS on `/jellypass/app/v1/*` and `/jellypass/tv/*` for the app's origin only (`file://` or `null`, not `*`), no
      credentials; preflight `204` before any token check; the native-client contract updated, since it makes the one
      exception to "CORS stays off". (`Cross-Origin-Resource-Policy` is not needed: the add-on's files are sent without

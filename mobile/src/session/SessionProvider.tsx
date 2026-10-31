@@ -14,7 +14,8 @@
 //   other sign-in (household, member or token) starts it empty. Coming back to the foreground reads its clocks again
 //   (a timer may have slept with the app), and leaving the provider stops its timer. The titles My requests has named
 //   (src/requests/titleCache.ts) belong to the same session and are forgotten with it, as is the page a Home row hands
-//   its See all page (src/home/rowPages.ts).
+//   its See all page (src/home/rowPages.ts), and what the member hid or unhid here (src/hidden/store.ts) with its sheet
+//   and toast.
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react';
 import { AppState } from 'react-native';
@@ -24,6 +25,8 @@ import type { ClientIdentity } from '../api/auth';
 import { createApiClient, type ApiClient, type FetchLike } from '../api/client';
 import { ApiError } from '../api/errors';
 import type { MediaType, Me, Request } from '../api/types';
+import { createHiddenTitles, type HiddenTitles, type HideTarget } from '../hidden/store';
+import { HIDE_API_VERSION } from '../hidden/text';
 import { parseLinkAddress } from '../signin/address-input';
 import { createSignInApi, SignInError, type SignInApi, type SignInResult } from '../signin/signin-api';
 import type { StalledKind } from '../signin/wording';
@@ -96,6 +99,17 @@ export interface Session {
   hideHeld: HideStore;
   /** The page a Home row hands its See all page as it opens (in memory only). */
   rowPages: RowPages;
+  /** Whether the signed-in household can hide titles (`apiVersion` 3 or later): below it nothing of hiding is shown. */
+  canHide: boolean;
+  /** What the member hid or unhid in this session, and the sheet and toast (in memory only). */
+  hiddenTitles: HiddenTitles;
+  /**
+   * Hides (`hidden` true) or unhides a title through the signed-in client. Once it is accepted in the same session as
+   * when it was sent, it is marked in `hiddenTitles` (a hide also shows the toast). Rejects with the ApiError, or the
+   * caller's abort. One that settles (either way) after the sign-in changed is another member's: it marks nothing and
+   * rejects as aborted, so nothing anywhere says how it went.
+   */
+  setHidden: (target: HideTarget, hidden: boolean, signal?: AbortSignal) => Promise<void>;
   /**
    * Get this through the signed-in client. Once it is accepted (a 2xx) in the same session as when it was sent (no move
    * since), the title (and the seasons asked for) is added to `asked`. Rejects with the ApiError, or the caller's abort.
@@ -125,6 +139,13 @@ function stalledKind(error: unknown): StalledKind {
   return 'unavailable';
 }
 
+/** A call that settled after the sign-in changed, thrown as an abort: the session that asked is gone. */
+function movedOn(): Error {
+  const error = new Error('The sign-in changed');
+  error.name = 'AbortError';
+  return error;
+}
+
 function sessionOf(phase: Phase): StoredSession | undefined {
   return phase.kind === 'checking' || phase.kind === 'signedIn' || phase.kind === 'stalled' ? phase.session : undefined;
 }
@@ -150,6 +171,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
   const filtersRef = useRef<RequestFilterStore | undefined>(undefined);
   const hideRef = useRef<HideStore | undefined>(undefined);
   const rowPagesRef = useRef<RowPages | undefined>(undefined);
+  const hiddenRef = useRef<HiddenTitles | undefined>(undefined);
 
   const move = useCallback((next: Phase) => {
     generation.current += 1;
@@ -215,6 +237,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
       filtersRef.current?.reset();
       hideRef.current?.reset();
       rowPagesRef.current?.forget();
+      hiddenRef.current?.forget();
       const session = sessionOf(phase);
       if (session) {
         const mine = move({ kind: 'signingOut' });
@@ -240,7 +263,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
   const signedIn = signedPhase?.session;
   // A new client, overlay and titles for each sign-in (household, member or token); the old ones are forgotten as soon
   // as they are replaced.
-  const { api, asked, titles, requestFilters, hideHeld, rowPages } = useMemo(
+  const { api, asked, titles, requestFilters, hideHeld, rowPages, hiddenTitles } = useMemo(
     () => ({
       api: signedIn
         ? createApiClient({ address: signedIn.address, token: () => signedIn.token, ...(fetch ? { fetch } : {}), ...(now ? { now } : {}) })
@@ -250,6 +273,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
       requestFilters: createRequestFilterStore(),
       hideHeld: createHideStore(),
       rowPages: createRowPages(),
+      hiddenTitles: createHiddenTitles(),
     }),
     [signedIn, fetch, now],
   );
@@ -294,6 +318,14 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
     };
   }, [rowPages]);
 
+  useEffect(() => {
+    hiddenRef.current = hiddenTitles;
+    return () => {
+      if (hiddenRef.current === hiddenTitles) hiddenRef.current = undefined;
+      hiddenTitles.forget();
+    };
+  }, [hiddenTitles]);
+
   const getThis = useCallback(
     async (mediaType: MediaType, tmdbId: number, seasons: readonly number[], signal?: AbortSignal) => {
       // The sign-in this call belongs to: any move since (a sign-out, a 401, any other sign-in, even with the same
@@ -317,6 +349,23 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
     [api, asked],
   );
 
+  const setHidden = useCallback(
+    async (target: HideTarget, hidden: boolean, signal?: AbortSignal) => {
+      const mine = generation.current;
+      if (!api || phaseRef.current.kind !== 'signedIn') throw new ApiError('unauthorized');
+      const same = () => generation.current === mine && hiddenRef.current === hiddenTitles;
+      try {
+        await api.setHidden(target.mediaType, target.tmdbId, hidden, signal ? { signal } : undefined);
+      } catch (error) {
+        if (same()) throw error;
+        throw movedOn();
+      }
+      if (!same()) throw movedOn();
+      hiddenTitles.mark(target, hidden);
+    },
+    [api, hiddenTitles],
+  );
+
   // The 401 callback belongs to the sign-in (the signedIn phase) it was made for. One that fires after the app moved on
   // (a sign-out, another sign-in, even the same token checked again) is another session's: it does nothing, before
   // anything is reset, deleted or moved.
@@ -328,6 +377,7 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
     filtersRef.current?.reset();
     hideRef.current?.reset();
     rowPagesRef.current?.forget();
+    hiddenRef.current?.forget();
     const session = mine.session;
     const gen = move({ kind: 'signingOut' });
     try {
@@ -336,6 +386,8 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
       if (generation.current === gen) move({ kind: 'signin', address: session.address, expired: true });
     }
   }, [signedPhase, move, forget]);
+
+  const canHide = signedPhase !== undefined && signedPhase.me.apiVersion >= HIDE_API_VERSION;
 
   // A link to the household the app is already on needs nothing.
   const offer = link?.address && household && link.address.origin === household.origin ? undefined : link;
@@ -398,10 +450,13 @@ export function SessionProvider({ children, deps = {} }: { children: ReactNode; 
       requestFilters,
       hideHeld,
       rowPages,
+      canHide,
+      hiddenTitles,
       getThis,
       cancelRequest,
+      setHidden,
     }),
-    [phase, offer, household, offerLink, leave, move, check, signInApi, clock, api, expire, asked, titles, requestFilters, hideHeld, rowPages, getThis, cancelRequest],
+    [phase, offer, household, offerLink, leave, move, check, signInApi, clock, api, expire, asked, titles, requestFilters, hideHeld, rowPages, canHide, hiddenTitles, getThis, cancelRequest, setHidden],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;
@@ -412,4 +467,11 @@ export function useAsked(): Asked {
   const { asked } = useSession();
   useSyncExternalStore(asked.subscribe, asked.version, asked.version);
   return asked;
+}
+
+/** The member's hidden titles in this session, drawn again whenever one is hidden or unhidden, or the sheet or toast changes. */
+export function useHiddenTitles(): HiddenTitles {
+  const { hiddenTitles } = useSession();
+  useSyncExternalStore(hiddenTitles.subscribe, hiddenTitles.version, hiddenTitles.version);
+  return hiddenTitles;
 }

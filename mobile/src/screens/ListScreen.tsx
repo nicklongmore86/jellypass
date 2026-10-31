@@ -3,7 +3,7 @@
 // pages' poster grid (src/screens/SourceScreen.tsx) with Load more by the API's nextPage. No logo, no tabs and no
 // JustWatch credit: every list is TMDB's own. Opened from its row it draws the row's page at once, with no call
 // (src/home/rowPages.ts). A card opens the title on Home's stack, and Back from it comes back to the same grid. Each
-// card is drawn through the overlay (src/title/asked.ts).
+// card is drawn through the overlay (src/title/asked.ts), and a title the member hides leaves the grid at once.
 import { router, Stack } from 'expo-router';
 import { useState } from 'react';
 import { ScrollView, StyleSheet, View, useWindowDimensions } from 'react-native';
@@ -15,7 +15,7 @@ import { useHideHeld } from '../home/hide';
 import type { HomeRow } from '../home/layout';
 import { titlePath } from '../navigation/titles';
 import { gridCardWidth, gridColumns } from '../search/text';
-import { useAsked, useSession } from '../session/SessionProvider';
+import { useAsked, useHiddenTitles, useSession } from '../session/SessionProvider';
 import { useList } from '../source/useList';
 import { colors, layout, spacing } from '../theme';
 import { Results } from './SourceScreen';
@@ -24,6 +24,7 @@ export function ListScreen({ row }: { row: HomeRow }) {
   const { api, expire, hideHeld, rowPages } = useSession();
   const hide = useHideHeld(hideHeld);
   const overlay = useAsked();
+  const hiddenTitles = useHiddenTitles();
   // The row's page, taken once as the page opens: it is the grid's first page.
   const [kept] = useState(() => rowPages.take(row.list));
   const { shown, loadMore, retry } = useList(api, expire, overlay, row.list, kept);
@@ -43,7 +44,17 @@ export function ListScreen({ row }: { row: HomeRow }) {
         <View style={styles.hideRow}>
           <HideChip testID="list-hide" value={hide} onToggle={() => hideHeld.set(!hide)} />
         </View>
-        <Results hide={hide} shown={shown} columns={columns} cardWidth={cardWidth} overlay={overlay.card} onOpen={open} onMore={loadMore} onRetry={retry} />
+        <Results
+          hide={hide}
+          shown={shown}
+          columns={columns}
+          cardWidth={cardWidth}
+          overlay={overlay.card}
+          visible={hiddenTitles.visible}
+          onOpen={open}
+          onMore={loadMore}
+          onRetry={retry}
+        />
       </View>
     </ScrollView>
   );
