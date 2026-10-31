@@ -1,4 +1,6 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
+import { syncBuiltinESMExports } from 'node:module';
 import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, it } from 'node:test';
@@ -245,7 +247,8 @@ describe('state migration', () => {
         const backup = saved[0].path;
         assert.ok(backup.startsWith(`${file}.v${version}.`) && backup.endsWith('.bak'));
         assert.notEqual(backup, primary);
-        assert.match(path.basename(backup), /\.v[78]\.\d{4}-\d{2}-\d{2}T/);
+        assert.ok(!path.basename(backup).includes(':'));
+        assert.match(path.basename(backup), /\.v[78]\.\d{8}T\d{6}Z\./);
         assert.equal(await readFile(primary, 'utf8'), existing, 'never overwrite the earlier backup');
         assert.equal(await readFile(backup, 'utf8'), original, 'the latest backup matches the source of this upgrade');
         assert.equal((await stat(backup)).mode & 0o777, 0o600);
@@ -253,6 +256,51 @@ describe('state migration', () => {
         assert.ok(!(await readdir(path.dirname(file))).some((name) => name.endsWith('.tmp')));
       });
     }
+  }
+
+  for (const failure of ['cleanup', 'EINVAL', 'EPERM', 'ENOTSUP', 'EIO', 'file-sync']) {
+    it(`handles pre-v9 backup ${failure} failures without weakening file durability`, async (t) => {
+      const file = await stateFile(t);
+      const original = JSON.stringify({ version: 8, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [] });
+      await writeFile(file, original);
+      const realOpen = fs.open;
+      const realRm = fs.rm;
+      let injected = false;
+      t.after(() => {
+        t.mock.restoreAll();
+        syncBuiltinESMExports();
+      });
+      if (failure === 'cleanup') {
+        t.mock.method(fs, 'rm', async (target, options) => {
+          if (String(target).startsWith(`${file}.v8.bak.`)) {
+            injected = true;
+            throw Object.assign(new Error('cleanup denied'), { code: 'EPERM' });
+          }
+          return realRm(target, options);
+        });
+      } else {
+        t.mock.method(fs, 'open', async (...args) => {
+          const handle = await realOpen(...args);
+          if (args[0] === path.dirname(file) || failure === 'file-sync') {
+            t.mock.method(handle, 'sync', async () => {
+              injected = true;
+              throw Object.assign(new Error('sync failed'), { code: failure === 'file-sync' ? 'EINVAL' : failure });
+            });
+          }
+          return handle;
+        });
+      }
+      syncBuiltinESMExports();
+      if (failure === 'EIO' || failure === 'file-sync') {
+        await assert.rejects(new GrantStore(file).load(), /could not write pre-v9 state backup.*sync failed/);
+        assert.equal(await readFile(file, 'utf8'), original);
+      } else {
+        await new GrantStore(file).load();
+        assert.equal(JSON.parse(await readFile(file, 'utf8')).version, 9);
+        assert.equal(await readFile(`${file}.v8.bak`, 'utf8'), original);
+      }
+      assert.ok(injected, 'the intended filesystem failure was exercised');
+    });
   }
 
   it('refuses migration with a contextual error if its backup cannot be completed and cleans its temporary file', async (t) => {
