@@ -10,8 +10,9 @@ Settings, Seerr, operations and the administrator API are in the
 
 Access groups can also act as households. With the household gateway on
 (`HOUSEHOLD_GATEWAY_ENABLED=true` and `TRUSTED_PROXIES` set), assign each
-household an HTTPS address and map it to the household in JellyPass. The
-hostname can be any name you control; there is no naming rule:
+household an HTTPS address and map it to the household in JellyPass: in the
+admin site's **Groups** tab, **Addresses** on the household's card, or with the
+admin API. The hostname can be any name you control; there is no naming rule:
 
 ```sh
 curl -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: application/json' \

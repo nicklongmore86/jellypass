@@ -4,6 +4,11 @@ import { SeerrClient, SeerrError, SeerrMemberClient, SeerrUnmappedUserError, see
 import { SeerrUserMap } from '../dist/seerr-users.js';
 import { assertNoCanaries } from './support/seerr-fixtures.mjs';
 import { startApp, world } from './support/household-app.mjs';
+import path from 'node:path';
+import { makeSetupServer } from '../dist/server.js';
+import { SettingsStore } from '../dist/settings.js';
+import { SEERR_MEDIA_AVAILABLE, SetupWizard } from '../dist/setup.js';
+import { makeTempDir } from './support/temp-dir.mjs';
 
 // Set by scripts/test-real-seerr.sh: a fresh Seerr whose user 1 is the owner and user 2 a member with no permissions.
 const baseUrl = process.env.SEERR_REAL_URL;
@@ -420,6 +425,38 @@ describe('real Seerr', { timeout: 60_000, skip: !baseUrl || !apiKey }, () => {
     for (const path of ['/api/v1/user/99/quota', '/api/v1/discover/watchlist']) {
       const response = await originalFetch(`${baseUrl}${path}`, { headers: { 'X-Api-Key': apiKey, 'X-API-User': '99' } });
       assert.equal(response.status, 403, path);
+    }
+  });
+});
+
+describe('real Seerr: the setup wizard', { timeout: 60_000, skip: !baseUrl || !apiKey || !process.env.SEERR_REAL_HOST }, () => {
+  it('connects Seerr, points its webhook at JellyPass with the generated token, and Seerr\'s own test reaches the setup listener', async () => {
+    const settings = await SettingsStore.load(path.join(await makeTempDir(null, 'jfa-real-seerr-setup-'), 'settings.json'));
+    const wizard = new SetupWizard({ settings, environment: {}, mode: 'setup', adminTokenSource: 'file', apply: () => {}, log: () => {} });
+    const server = makeSetupServer({ setup: wizard, adminToken: 'real-seerr-setup-admin-token' });
+    // Seerr runs in a container: it reaches this listener through the Docker host.
+    await new Promise((resolve) => server.listen(0, '0.0.0.0', resolve));
+    try {
+      await assert.rejects(wizard.seerr({ url: baseUrl, apiKey: 'not-the-key' }), (error) => error.code === 'seerr_key_refused');
+      assert.equal((await wizard.seerr({ url: baseUrl, apiKey })).status, 'connected');
+      const jellypassUrl = `http://${process.env.SEERR_REAL_HOST}:${server.address().port}`;
+      const configured = await wizard.webhook({ jellypassUrl });
+      assert.deepEqual([configured.status, configured.url, configured.tested], ['configured', `${jellypassUrl}/webhooks/seerr`, true]);
+      const response = await fetch(`${baseUrl}/api/v1/settings/notifications/webhook`, { headers: { 'X-Api-Key': apiKey } });
+      const webhook = await response.json();
+      assert.equal(webhook.enabled, true);
+      assert.equal(webhook.types, SEERR_MEDIA_AVAILABLE);
+      assert.equal(webhook.options.webhookUrl, `${jellypassUrl}/webhooks/seerr`);
+      assert.equal(webhook.options.authHeader, `Bearer ${settings.current.webhookToken}`);
+      // Seerr stored the payload in its own encoding and gives back the template as the wizard sent it.
+      assert.equal(JSON.parse(webhook.options.jsonPayload).request.requestedBy.jellyfinUserId, '{{requestedBy_jellyfinUserId}}');
+      // Run again: the same address is not "another webhook", and the token stays.
+      const token = settings.current.webhookToken;
+      assert.equal((await wizard.webhook({ jellypassUrl })).tested, true);
+      assert.equal(settings.current.webhookToken, token);
+    } finally {
+      server.closeAllConnections();
+      await new Promise((resolve) => server.close(resolve));
     }
   });
 });

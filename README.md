@@ -67,33 +67,41 @@ authority. See [how access enforcement works](docs/server-reference.md#how-acces
 ```sh
 mkdir jellypass && cd jellypass
 curl -LO https://raw.githubusercontent.com/nicklongmore86/jellypass/main/compose.yaml
-curl -Lo .env https://raw.githubusercontent.com/nicklongmore86/jellypass/main/.env.example
 mkdir -m 700 data
 sudo chown 1000:1000 data   # the container runs as UID 1000
+docker compose up -d
+sudo cat data/admin-token   # the setup token
 ```
 
-Edit `.env`: set `JELLYFIN_URL`, `JELLYFIN_API_KEY`, `SEERR_URL`,
-`SEERR_API_KEY`, and two different long random secrets for `WEBHOOK_TOKEN` and
-`ADMIN_TOKEN` (`openssl rand -hex 32`). Pin a release from the
+Open `http://127.0.0.1:8788/admin/`, enter the setup token, and follow the
+[setup wizard](docs/server-reference.md#setup-wizard): it signs in to Jellyfin
+once to create JellyPass's own API key, checks Seerr's key and points Seerr's
+webhook at JellyPass with a token it generates, checks your TMDB key, and sets
+the request backfill to the install date. Nothing to write by hand. Without
+`ADMIN_TOKEN`, the setup token stays the admin token after setup: keep it
+private (to rotate it, see [Setup wizard](docs/server-reference.md#setup-wizard)).
+
+Then sign in to the admin site with a Jellyfin administrator account, run
+**Sync library**,
+[create households](https://jellypass.app/docs/households/), give each its
+address (Groups → **Addresses**, for example `https://media.example.com`) and
+[put household addresses behind your reverse proxy](https://jellypass.app/docs/reverse-proxy/).
+
+Pin a release from the
 [releases page](https://github.com/nicklongmore86/jellypass/releases) rather
-than `latest`, which follows `main`:
+than `latest`, which follows `main`, in a `.env` next to `compose.yaml`:
 
 ```dotenv
 JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:X.Y.Z
 ```
 
-Then:
-
-```sh
-docker compose up -d
-curl http://127.0.0.1:8788/health
-```
-
-Open `http://127.0.0.1:8788/admin/`, sign in with a Jellyfin administrator
-account, and run **Sync library**. Then
-[connect Seerr's webhook](https://jellypass.app/docs/seerr-webhook/),
-[create households](https://jellypass.app/docs/households/) and
-[put household addresses behind your reverse proxy](https://jellypass.app/docs/reverse-proxy/).
+Prefer environment variables? Every setting can still be set in `.env`
+(`curl -Lo .env https://raw.githubusercontent.com/nicklongmore86/jellypass/main/.env.example`):
+set `JELLYFIN_URL`, `JELLYFIN_API_KEY`, `SEERR_URL`, `SEERR_API_KEY`, and two
+different long random secrets for `WEBHOOK_TOKEN` and `ADMIN_TOKEN`
+(`openssl rand -hex 32`). A variable set there always wins over the wizard,
+which shows it as locked; with all the required ones set the wizard is never
+shown.
 
 JellyPass has two listeners (see
 [Listeners](docs/server-reference.md#listeners)): the **admin listener** on
@@ -126,7 +134,10 @@ docker compose -f compose.example.yaml up --build -d
 
 ## Configuration
 
-A minimal `.env` for households and the apps (plus `JELLYPASS_IMAGE`):
+The [setup wizard](docs/server-reference.md#setup-wizard) stores what it
+configures in `data/settings.json`; environment variables override it. A
+minimal `.env` for households and the apps without the wizard (plus
+`JELLYPASS_IMAGE`):
 
 ```dotenv
 JELLYFIN_URL=http://jellyfin:8096

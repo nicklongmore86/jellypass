@@ -662,6 +662,76 @@ it('warns administrators about recent refused removed-form webhooks', async () =
   assert.match(page.document.querySelector('#connection').textContent, /Library sync required/);
 });
 
+describe('admin UI household address editor', () => {
+  const GROUP = { id: 'grove', name: 'Grove', userIds: [], householdUrl: 'https://media.example.com', householdAddresses: ['https://media.example.com'] };
+  async function addressPage(answers) {
+    const sent = [];
+    const page = adminPage((path, init) => {
+      if (init?.method === 'PUT' || init?.method === 'DELETE') {
+        sent.push([init.method, path, init.body ? JSON.parse(init.body) : undefined]);
+        return answers.write?.(init.method, path, init.body ? JSON.parse(init.body) : undefined) ?? { status: 200, body: { status: 'saved' } };
+      }
+      if (path === '/v1/groups/grove/addresses') return { status: 200, body: answers.current };
+      if (path === '/v1/groups') return { status: 200, body: { groups: [GROUP] } };
+      return DATA[path];
+    });
+    page.window.HTMLElement.prototype.showModal = function showModal() { this.setAttribute('open', ''); };
+    page.window.HTMLElement.prototype.close = function close() { this.removeAttribute('open'); };
+    await page.settle();
+    const open = [...page.document.querySelectorAll('#groups-list button')].find((button) => button.textContent === 'Addresses');
+    open.dispatchEvent(new page.window.Event('click'));
+    await page.settle();
+    return { page, sent, byId: (id) => page.document.getElementById(id) };
+  }
+
+  it('opens with the household\'s addresses, saves the main one and the others, and reloads', async () => {
+    const { page, sent, byId } = await addressPage({ current: { groupId: 'grove', gateway: true, origin: 'https://media.example.com', aliases: ['https://films.example.net:8443'], legacy: 'https://jelly-grove.example.test' } });
+    assert.equal(byId('address-dialog').hasAttribute('open'), true);
+    assert.equal(byId('address-origin').value, 'https://media.example.com');
+    assert.equal(byId('address-aliases').value, 'https://films.example.net:8443');
+    assert.match(byId('address-legacy').textContent, /jelly-grove\.example\.test.*HOUSEHOLD_DOMAIN/);
+    assert.equal(byId('address-gateway-off').hidden, true);
+    byId('address-origin').value = ' https://watch.example.com ';
+    byId('address-aliases').value = 'https://films.example.net:8443\n\nhttps://tv.example.org, ';
+    byId('address-form').dispatchEvent(new page.window.Event('submit'));
+    await page.settle();
+    assert.deepEqual(sent, [['PUT', '/v1/groups/grove/addresses', { origin: 'https://watch.example.com', aliases: ['https://films.example.net:8443', 'https://tv.example.org'] }]]);
+    assert.equal(byId('address-dialog').hasAttribute('open'), false);
+    assert.equal(page.toast(), 'Addresses saved');
+  });
+
+  it('shows the server\'s refusal of an invalid or conflicting address in the dialog and keeps it open', async () => {
+    const { page, byId } = await addressPage({
+      current: { groupId: 'grove', gateway: false, aliases: [] },
+      write: () => ({ status: 409, body: { error: 'https://media.example.com is an address of both household heath and household grove', code: 'address_conflict' } }),
+    });
+    assert.equal(byId('address-gateway-off').hidden, false);
+    assert.equal(byId('address-remove').hidden, true);
+    byId('address-form').dispatchEvent(new page.window.Event('submit'));
+    await page.settle();
+    assert.equal(byId('address-error').textContent, 'Enter an address, or use Remove addresses.');
+    byId('address-origin').value = 'https://media.example.com';
+    byId('address-form').dispatchEvent(new page.window.Event('submit'));
+    await page.settle();
+    assert.equal(byId('address-error').textContent, 'https://media.example.com is an address of both household heath and household grove');
+    assert.equal(byId('address-dialog').hasAttribute('open'), true);
+  });
+
+  it('removes the mapped addresses after confirming', async () => {
+    const { page, sent, byId } = await addressPage({ current: { groupId: 'grove', gateway: true, origin: 'https://media.example.com', aliases: [] } });
+    page.click('address-remove');
+    await page.settle();
+    assert.deepEqual(sent, [['DELETE', '/v1/groups/grove/addresses', undefined]]);
+    assert.equal(page.toast(), 'Addresses removed');
+  });
+
+  it('links to the setup wizard once signed in', async () => {
+    const { byId } = await addressPage({ current: { groupId: 'grove', gateway: true, aliases: [] } });
+    assert.equal(byId('setup-link').hidden, false);
+    assert.equal(byId('setup-link').getAttribute('href'), '/admin/setup/');
+  });
+});
+
 describe('household feature controls', () => {
   it('saves both switches and restores the last saved value on refusal', async () => {
     const group = { id: 'grove', name: 'Grove', userIds: [], appEnabled: true, tvAddonEnabled: false };

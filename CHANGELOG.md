@@ -20,6 +20,30 @@ changes are always listed at the top of the release notes.
 
 ### Added
 
+- **First-run setup wizard** at `/admin/setup/` on the admin listener. With no
+  configuration, `docker compose up` now starts JellyPass in setup mode instead
+  of stopping: the wizard signs in to Jellyfin once to create JellyPass's own
+  API key, checks Seerr's API key and points Seerr's webhook at JellyPass with
+  a webhook token it generates (then has Seerr send a test), checks the TMDB
+  key, sets the request backfill cutoff to the install date, and can turn on
+  household addresses and the household app. Every call needs the admin token
+  as a bearer token: `ADMIN_TOKEN`, or the setup token written to
+  `admin-token` next to the state file (mode `0600`, never logged). Steps are
+  stored as they are made, so a wizard left half done resumes (in setup mode:
+  nothing starts until Finish); finishing starts JellyPass in place. A variable
+  set in the environment locks only its own field (for example `JELLYFIN_URL`
+  without `JELLYFIN_API_KEY`). Without `ADMIN_TOKEN`, the setup token remains
+  the admin token after setup; delete `admin-token` and restart to rotate it.
+  Settings live in `settings.json` next to the state file (`SETTINGS_FILE`,
+  mode `0600`), not in the state file. Environment variables keep winning over stored settings, and the
+  wizard shows them as locked: an install configured only by environment
+  variables works unchanged and never sees the wizard.
+- **Address editor** in the admin site: Groups → **Addresses** sets a
+  household's main address and its other addresses (any HTTPS hostname, such
+  as `https://media.example.com`), with the same checks as
+  `PUT /v1/groups/{groupId}/addresses`.
+- `compose.yaml` no longer needs a `.env` file (`required: false`, Docker
+  Compose 2.24 or newer).
 - Admin household cards now have independent mobile app access and TV add-on injection switches. New households
   default to app on, TV off. App API revision 4 returns `403 {"error":"app_access_disabled"}` to authenticated members
   when app access is off; mobile screens explain how to contact the administrator.

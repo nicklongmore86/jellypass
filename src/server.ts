@@ -16,6 +16,8 @@ import type { HouseholdRequests } from './household-requests.js';
 import { writeWhole } from './html-response.js';
 import { UNKNOWN_VERSION_MESSAGE, UNTESTED_VERSION_MESSAGE, VersionConfirmationError, type HouseholdDecision, type JellyfinVersionGate } from './jellyfin-version.js';
 import { RECENT_REQUESTS_LIMIT } from './seerr.js';
+import { SetupError, type SetupWizard } from './setup.js';
+import { SETUP_APP_JS, SETUP_HTML } from './setup-ui.js';
 import { BackgroundTasks } from './shutdown.js';
 import { TvAssets } from './tv-assets.js';
 import { parseWebhook } from './webhook.js';
@@ -23,6 +25,7 @@ import { parseWebhook } from './webhook.js';
 const BODY_LIMIT = 64 * 1024;
 /** The admin page's bytes, once, so its encoded copies are worked out once (see html-response.ts). */
 const ADMIN_HTML_BYTES = Buffer.from(ADMIN_HTML);
+const SETUP_HTML_BYTES = Buffer.from(SETUP_HTML);
 const ID_PATTERN = /^[a-zA-Z0-9_-]{1,128}$/;
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 
@@ -98,6 +101,11 @@ export interface ServerOptions {
    * confirms it at /v1/jellyfin/version. Without it household hosts serve whatever the version.
    */
   jellyfinVersion?: Pick<JellyfinVersionGate, 'decision' | 'householdDecision' | 'status' | 'confirm' | 'clearConfirmation' | 'renderMetrics'>;
+  /**
+   * The setup wizard (setup.ts) at /admin/setup/ and /v1/setup on the admin listener, for ADMIN_TOKEN as a bearer token
+   * only. Never on the member listener. Without it those paths are 404.
+   */
+  setup?: SetupWizard;
 }
 
 export interface JellyPassServer extends Server {
@@ -236,6 +244,7 @@ export function makeServers(
       if (request.method === 'GET' && url.pathname === '/health') {
         return json(response, 200, { status: 'ok' });
       }
+      if (options?.setup && await setupRoute(request, response, url, options.setup, tokens.admin)) return;
       if (request.method === 'GET' && url.pathname === '/') {
         return redirect(response, '/admin/');
       }
@@ -597,6 +606,105 @@ export function makeServers(
     admin: Object.assign(admin, { closeWebSockets: async () => 0 }),
     member: Object.assign(member, { closeWebSockets: () => householdGateway.closeWebSockets() }),
   };
+}
+
+const SETUP_STEPS = new Set(['jellyfin', 'seerr', 'secrets', 'webhook', 'tmdb', 'backfill', 'household', 'finish']);
+
+/**
+ * The setup wizard's page and API, on the admin listener only (both modes). The page holds nothing secret and is served
+ * to anyone who reaches the admin listener; every /v1/setup call needs ADMIN_TOKEN as a bearer token, and a session
+ * cookie does not count, so the API has no ambient credential a cross-site page could use. Answers whether it handled
+ * the request.
+ */
+async function setupRoute(request: IncomingMessage, response: ServerResponse, url: URL, setup: SetupWizard, adminToken: string): Promise<boolean> {
+  if (request.method === 'GET' && (url.pathname === '/admin/setup' || url.pathname === '/admin/setup/')) {
+    asset(request, response, 200, SETUP_HTML_BYTES, 'text/html; charset=utf-8');
+    return true;
+  }
+  if (request.method === 'GET' && url.pathname === '/admin/setup.js') {
+    asset(request, response, 200, Buffer.from(SETUP_APP_JS), 'text/javascript; charset=utf-8');
+    return true;
+  }
+  if (url.pathname !== '/v1/setup' && !url.pathname.startsWith('/v1/setup/')) return false;
+  try {
+    if (!authorized(request, adminToken)) {
+      json(response, 401, { error: 'unauthorized' });
+      return true;
+    }
+    if (request.method === 'GET' && url.pathname === '/v1/setup') {
+      json(response, 200, setup.status());
+      return true;
+    }
+    const step = url.pathname.slice('/v1/setup/'.length);
+    if (request.method === 'POST' && SETUP_STEPS.has(step)) {
+      const body = await optionalBody(request);
+      const run = setup[step as 'jellyfin'] as (body: Record<string, unknown>) => Promise<Record<string, unknown>>;
+      const result = await run.call(setup, body);
+      json(response, 200, { ...result, setup: setup.status() });
+      return true;
+    }
+    json(response, 404, { error: 'not_found' });
+  } catch (error) {
+    if (error instanceof SetupError) {
+      json(response, error.status, { error: error.code, message: error.message, ...error.details });
+    } else if (error instanceof UnsupportedMediaTypeError) {
+      json(response, 415, { error: 'unsupported_media_type' });
+    } else {
+      // Body parsing (setup.ts throws SetupError for everything it checks itself).
+      const message = error instanceof Error ? error.message : 'unknown error';
+      const client = isClientError(message);
+      if (!client) console.error(JSON.stringify({ level: 'error', message: 'setup step failed', detail: message }));
+      json(response, client ? 400 : 500, { error: client ? message : 'setup_failed' });
+    }
+  }
+  return true;
+}
+
+export interface SetupServerOptions {
+  setup: SetupWizard;
+  adminToken: string;
+}
+
+/**
+ * The admin listener while JellyPass waits for its first configuration (setup mode): the setup wizard, the admin site's
+ * styles, /health, and the Seerr webhook's test notification (so the wizard can check the webhook end to end). Every
+ * other request is a fixed 503 setup_required. There is no member listener in setup mode, so no household address is
+ * served until setup has finished.
+ */
+export function makeSetupServer(options: SetupServerOptions): JellyPassServer {
+  const server = createServer({ requireHostHeader: false }, async (request, response) => {
+    try {
+      if (!singleHost(request)) return invalidHost(response);
+      if (emptyFirstSegment(request)) return json(response, 404, { error: 'not_found' });
+      const url = new URL(request.url ?? '/', 'http://localhost');
+      if (request.method === 'GET' && url.pathname === '/health') return json(response, 200, { status: 'ok', setup: 'required' });
+      if (request.method === 'GET' && (url.pathname === '/' || url.pathname === '/admin' || url.pathname === '/admin/')) return redirect(response, '/admin/setup/');
+      if (request.method === 'GET' && url.pathname === '/admin/styles.css') return asset(request, response, 200, Buffer.from(ADMIN_STYLES), 'text/css; charset=utf-8');
+      if (request.method === 'GET' && url.pathname === '/admin/favicon.svg') return asset(request, response, 200, Buffer.from(ADMIN_FAVICON_SVG), 'image/svg+xml; charset=utf-8');
+      if (await setupRoute(request, response, url, options.setup, options.adminToken)) return;
+      if (request.method === 'POST' && url.pathname === '/webhooks/seerr') {
+        if (url.searchParams.has('token')) return json(response, 400, { error: 'webhook_query_token_removed_use_authorization_header' });
+        const token = options.setup.webhookToken();
+        if (!token || !authorized(request, token)) return json(response, 401, { error: 'unauthorized' });
+        const event = parseWebhook(await readJson(request, { requireJsonType: false }));
+        // Only Seerr's test is answered. A real event is refused: nothing is granted before setup has finished (the request
+        // backfill, from the install date, catches it up afterwards).
+        if (event.notificationType !== 'TEST_NOTIFICATION') return json(response, 503, { error: 'setup_required' });
+        options.setup.recordWebhookTest();
+        return json(response, 202, { status: 'ignored' });
+      }
+      return json(response, 503, { error: 'setup_required' });
+    } catch (error) {
+      answerError(response, error);
+    }
+  });
+  server.on('upgrade', (request, socket) => {
+    if (!singleHost(request)) return invalidHostUpgrade(socket);
+    socket.destroy();
+  });
+  refuseInvalidMethods(server);
+  server.on('connect', (_request, socket) => socket.destroy());
+  return Object.assign(server, { closeWebSockets: async () => 0 });
 }
 
 /**
