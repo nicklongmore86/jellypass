@@ -196,11 +196,11 @@ as semantic-version tags. For predictable production upgrades, set
 `JELLYPASS_IMAGE` in `.env` to a versioned image such as:
 
 ```dotenv
-JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:3.10.0
+JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:4.0.0
 ```
 
-Each release is published as a semantic-version image tag, such as `3.10.0`,
-plus floating `3.10` and `3` tags that move to the newest release in that minor
+Each release is published as a semantic-version image tag, such as `4.0.0`,
+plus floating `4.0` and `4` tags that move to the newest release in that minor
 or major line; see [CHANGELOG.md](../CHANGELOG.md) for what each one contains. `latest` is rebuilt on
 every push to `main` and may include unreleased changes, so use it, or build
 from source, only to test ahead of a release.
@@ -696,8 +696,8 @@ API, metrics, health and the Seerr webhook move to their own listener
 (`ADMIN_PORT`, default `8788`), `TRUSTED_PROXIES` becomes required with the
 household gateway on, household hostnames refuse an untested Jellyfin version
 until it is confirmed, and the state file moves to schema 8. Upgrade to 4.0.0
-from 3.9.x or later 3.x, following the 4.0.0 upgrade steps in the
-[changelog](../CHANGELOG.md) (Seerr webhook, admin port, health check, reverse
+from 3.9.x or later 3.x, following the [4.0.0 upgrade steps](../CHANGELOG.md#400---2026-10-31) in the
+changelog (Seerr webhook, admin port, health check, reverse
 proxy, rollback). Read the changelog before changing between versioned tags.
 For 4.0, the Seerr webhook authenticates with the
 `Authorization: Bearer YOUR_WEBHOOK_TOKEN` header only: remove any `?token=`
@@ -785,6 +785,12 @@ see [Supported Jellyfin versions](#supported-jellyfin-versions)).
 Requests naming more or fewer than one host, and household paths with empty
 segments, are refused, and HTML pages are marked `no-transform` and
 compressed by JellyPass; see the 3.10.0 notes.
+Upgrading from 3.10.0 (or 3.9.x) to 4.0.0 is breaking: it moves the admin
+site, API, metrics, health and the Seerr webhook to the admin listener
+(`8788`), requires `TRUSTED_PROXIES`, migrates the state file to schema 8 (3.x
+cannot read it), takes the Seerr webhook token from the `Authorization: Bearer`
+header only, and refuses household requests on an unconfirmed Jellyfin
+version; follow the [4.0.0 upgrade steps](../CHANGELOG.md#400---2026-10-31).
 If you build from source with `compose.example.yaml`, its service is now named
 `jellypass` instead of `access-bridge`: run
 `docker compose -f compose.example.yaml up --build -d --remove-orphans` once
