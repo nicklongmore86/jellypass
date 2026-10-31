@@ -84,44 +84,59 @@ export interface Config {
   jellyfinUntestedVersionOk?: string;
 }
 
+/**
+ * The environment loadConfig reads: process.env, or the one it was given (process.env with the setup wizard's stored
+ * settings under it, see settings.ts). Set only while loadConfig runs, which is synchronous.
+ */
+let env: Record<string, string | undefined> = process.env;
+
 function required(name: string): string {
-  const value = process.env[name]?.trim();
+  const value = env[name]?.trim();
   if (!value) {
     throw new Error(`${name} is required`);
   }
   return value;
 }
 
-export function loadConfig(): Config {
+export function loadConfig(environment: Record<string, string | undefined> = process.env): Config {
+  env = environment;
+  try {
+    return readConfig();
+  } finally {
+    env = process.env;
+  }
+}
+
+function readConfig(): Config {
   const port = portEnvironment('PORT', 8787);
   const adminPort = portEnvironment('ADMIN_PORT', 8788);
-  const reconcileIntervalSeconds = Number.parseInt(process.env.RECONCILE_INTERVAL_SECONDS ?? '300', 10);
+  const reconcileIntervalSeconds = Number.parseInt(env.RECONCILE_INTERVAL_SECONDS ?? '300', 10);
   if (!Number.isInteger(reconcileIntervalSeconds) || reconcileIntervalSeconds < 0 || reconcileIntervalSeconds > 86_400) {
     throw new Error('RECONCILE_INTERVAL_SECONDS must be an integer between 0 and 86400');
   }
-  const catalogSyncIntervalSeconds = Number.parseInt(process.env.CATALOG_SYNC_INTERVAL_SECONDS ?? '3600', 10);
+  const catalogSyncIntervalSeconds = Number.parseInt(env.CATALOG_SYNC_INTERVAL_SECONDS ?? '3600', 10);
   if (!Number.isInteger(catalogSyncIntervalSeconds) || catalogSyncIntervalSeconds < 0 || catalogSyncIntervalSeconds > 604_800) {
     throw new Error('CATALOG_SYNC_INTERVAL_SECONDS must be an integer between 0 and 604800');
   }
 
   const webhookToken = required('WEBHOOK_TOKEN');
-  const seerrUrl = process.env.SEERR_URL?.trim().replace(/\/+$/, '');
-  const seerrApiKey = process.env.SEERR_API_KEY?.trim();
+  const seerrUrl = env.SEERR_URL?.trim().replace(/\/+$/, '');
+  const seerrApiKey = env.SEERR_API_KEY?.trim();
   if (!!seerrUrl !== !!seerrApiKey) {
     throw new Error('SEERR_URL and SEERR_API_KEY must be configured together');
   }
-  const tmdbApiKey = process.env.TMDB_API_KEY?.trim() || undefined;
+  const tmdbApiKey = env.TMDB_API_KEY?.trim() || undefined;
   // The message never quotes the value.
   if (tmdbApiKey && !isTmdbCredential(tmdbApiKey)) {
     throw new Error('TMDB_API_KEY must be a TMDB API key (32 hexadecimal characters) or an API read access token');
   }
-  if (process.env.JELLYQUEST_BRIDGE_ENABLED?.trim()) {
+  if (env.JELLYQUEST_BRIDGE_ENABLED?.trim()) {
     console.warn(JSON.stringify({
       level: 'warn',
       message: 'JELLYQUEST_BRIDGE_ENABLED is no longer supported and is ignored; JellyQuest support was removed',
     }));
   }
-  const backfillSinceInput = process.env.REQUEST_BACKFILL_SINCE?.trim();
+  const backfillSinceInput = env.REQUEST_BACKFILL_SINCE?.trim();
   const requestBackfillSince = backfillSinceInput ? parseBackfillSince(backfillSinceInput) : undefined;
   const requestBackfillEnabled = booleanEnvironment('REQUEST_BACKFILL_ENABLED', Boolean(requestBackfillSince));
   if (requestBackfillEnabled && !requestBackfillSince) {
@@ -130,12 +145,12 @@ export function loadConfig(): Config {
   if (requestBackfillEnabled && !seerrUrl) {
     throw new Error('SEERR_URL and SEERR_API_KEY are required when REQUEST_BACKFILL_ENABLED is true');
   }
-  const householdDomain = process.env.HOUSEHOLD_DOMAIN?.trim().toLowerCase().replace(/^\.+|\.+$/g, '');
+  const householdDomain = env.HOUSEHOLD_DOMAIN?.trim().toLowerCase().replace(/^\.+|\.+$/g, '');
   if (householdDomain && !/^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(householdDomain)) {
     throw new Error('HOUSEHOLD_DOMAIN must be a valid DNS domain');
   }
   // The legacy rule's own default, so an install from before 4.0.0 that never set a prefix keeps its addresses.
-  const householdHostPrefix = process.env.HOUSEHOLD_HOST_PREFIX?.trim().toLowerCase() || 'jelly-';
+  const householdHostPrefix = env.HOUSEHOLD_HOST_PREFIX?.trim().toLowerCase() || 'jelly-';
   if (!/^[a-z0-9-]{1,32}$/.test(householdHostPrefix)) {
     throw new Error('HOUSEHOLD_HOST_PREFIX must contain only lowercase letters, numbers, and hyphens');
   }
@@ -146,25 +161,25 @@ export function loadConfig(): Config {
   }
   const legacyWebhookOnMemberPort = booleanEnvironment('LEGACY_WEBHOOK_ON_MEMBER_PORT', false);
   const tvAddonHouseholds = parseTvAddon(householdAppEnabled);
-  const logLevel = parseLogLevel(process.env.LOG_LEVEL);
+  const logLevel = parseLogLevel(env.LOG_LEVEL);
   const webSocketIdleTimeoutMs = webSocketTimeout('WS_IDLE_TIMEOUT_MS', DEFAULT_WS_IDLE_TIMEOUT_MS);
   const webSocketUpstreamIdleTimeoutMs = webSocketTimeout('WS_UPSTREAM_IDLE_TIMEOUT_MS', DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS);
-  const trustedProxies = parseTrustedProxies(process.env.TRUSTED_PROXIES);
+  const trustedProxies = parseTrustedProxies(env.TRUSTED_PROXIES);
   // Household addresses are only ever served behind a reverse proxy (it terminates HTTPS); naming it is required, so
   // sign-in rate limits apply per client rather than to the proxy as a whole.
   if (householdGatewayEnabled && trustedProxies.length === 0) {
     throw new Error('TRUSTED_PROXIES is required when the household gateway is on (HOUSEHOLD_GATEWAY_ENABLED, or HOUSEHOLD_DOMAIN): set it to the IP address or CIDR range of the reverse proxy in front of JellyPass');
   }
-  const host = process.env.HOST?.trim() || '0.0.0.0';
-  const adminHost = process.env.ADMIN_HOST?.trim() || '127.0.0.1';
+  const host = env.HOST?.trim() || '0.0.0.0';
+  const adminHost = env.ADMIN_HOST?.trim() || '127.0.0.1';
   if (householdGatewayEnabled && adminPort === port) {
     throw new Error('ADMIN_PORT must differ from PORT: the admin site is never served on the member (household) listener');
   }
-  const jellyfinUntestedVersionOk = process.env.JELLYFIN_UNTESTED_VERSION_OK?.trim() || undefined;
+  const jellyfinUntestedVersionOk = env.JELLYFIN_UNTESTED_VERSION_OK?.trim() || undefined;
   if (jellyfinUntestedVersionOk && !/^[0-9A-Za-z][0-9A-Za-z.+-]{0,63}$/.test(jellyfinUntestedVersionOk)) {
     throw new Error('JELLYFIN_UNTESTED_VERSION_OK must be one exact Jellyfin version, as the admin site shows it (for example 13.0.0)');
   }
-  const adminToken = process.env.ADMIN_TOKEN?.trim();
+  const adminToken = env.ADMIN_TOKEN?.trim();
   if (!adminToken) {
     console.warn(JSON.stringify({
       level: 'warn',
@@ -172,9 +187,9 @@ export function loadConfig(): Config {
     }));
   }
   return {
-    jellyfinPublicUrls: publicProbeUrls(process.env.JELLYFIN_PUBLIC_URLS),
-    ...(process.env.SEERR_PUBLIC_URL ? { seerrPublicUrl: publicProbeUrls(process.env.SEERR_PUBLIC_URL)[0] } : {}),
-    additionalPluginRoutes: parseAdditionalPluginRoutes(process.env.HOUSEHOLD_PLUGIN_ROUTES),
+    jellyfinPublicUrls: publicProbeUrls(env.JELLYFIN_PUBLIC_URLS),
+    ...(env.SEERR_PUBLIC_URL ? { seerrPublicUrl: publicProbeUrls(env.SEERR_PUBLIC_URL)[0] } : {}),
+    additionalPluginRoutes: parseAdditionalPluginRoutes(env.HOUSEHOLD_PLUGIN_ROUTES),
     host,
     port,
     adminHost,
@@ -185,7 +200,7 @@ export function loadConfig(): Config {
     jellyfinApiKey: required('JELLYFIN_API_KEY'),
     ...(seerrUrl && seerrApiKey ? { seerrUrl, seerrApiKey } : {}),
     ...(tmdbApiKey ? { tmdbApiKey } : {}),
-    stateFile: path.resolve(process.env.STATE_FILE?.trim() || './data/grants.json'),
+    stateFile: path.resolve(env.STATE_FILE?.trim() || './data/grants.json'),
     reconcileIntervalSeconds,
     catalogSyncIntervalSeconds,
     householdGatewayEnabled,
@@ -208,7 +223,7 @@ export function loadConfig(): Config {
  * Accepts `YYYY-MM-DD` (UTC midnight) or an ISO 8601 date-time with seconds optional and an
  * explicit `Z` or `±HH:MM` offset. Impossible calendar dates such as 2026-02-30 are rejected.
  */
-function parseBackfillSince(value: string): Date {
+export function parseBackfillSince(value: string): Date {
   const match = /^(\d{4})-(\d{2})-(\d{2})(?:T(\d{2}):(\d{2})(?::(\d{2})(?:\.\d{1,3})?)?(Z|[+-](\d{2}):(\d{2})))?$/.exec(value);
   const invalid = () => new Error('REQUEST_BACKFILL_SINCE must be YYYY-MM-DD or an ISO 8601 date-time with Z or an offset');
   if (!match) throw invalid();
@@ -233,7 +248,7 @@ function parseBackfillSince(value: string): Date {
 function parseTvAddon(householdAppEnabled: boolean): string[] | 'all' | undefined {
   if (!booleanEnvironment('TV_ADDON_ENABLED', false)) return undefined;
   if (!householdAppEnabled) throw new Error('HOUSEHOLD_APP_ENABLED is required when TV_ADDON_ENABLED is true');
-  const input = process.env.TV_ADDON_HOUSEHOLDS?.trim() ?? '';
+  const input = env.TV_ADDON_HOUSEHOLDS?.trim() ?? '';
   if (input === '*') return 'all';
   const households = [...new Set(input.split(',').map((id) => id.trim().toLowerCase()).filter(Boolean))];
   if (!households.length) throw new Error('TV_ADDON_HOUSEHOLDS is required when TV_ADDON_ENABLED is true: household IDs separated by commas, or *');
@@ -259,7 +274,7 @@ function parseLogLevel(input: string | undefined): LogLevel {
 }
 
 function webSocketTimeout(name: string, fallback: number): number {
-  const input = process.env[name]?.trim() || String(fallback);
+  const input = env[name]?.trim() || String(fallback);
   const value = Number(input);
   if (!/^\d+$/.test(input) || value > MAX_WS_IDLE_TIMEOUT_MS) {
     throw new Error(`${name} must be an integer between 0 and ${MAX_WS_IDLE_TIMEOUT_MS}`);
@@ -275,7 +290,7 @@ function webSocketTimeout(name: string, fallback: number): number {
 }
 
 function portEnvironment(name: string, fallback: number): number {
-  const port = Number.parseInt(process.env[name] ?? String(fallback), 10);
+  const port = Number.parseInt(env[name] ?? String(fallback), 10);
   if (!Number.isInteger(port) || port < 1 || port > 65535) {
     throw new Error(`${name} must be an integer between 1 and 65535`);
   }
@@ -283,7 +298,7 @@ function portEnvironment(name: string, fallback: number): number {
 }
 
 function booleanEnvironment(name: string, fallback: boolean): boolean {
-  const value = process.env[name]?.trim().toLowerCase();
+  const value = env[name]?.trim().toLowerCase();
   if (!value) return fallback;
   if (value === 'true' || value === '1') return true;
   if (value === 'false' || value === '0') return false;
