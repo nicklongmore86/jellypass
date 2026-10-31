@@ -177,6 +177,15 @@ Refused availability webhooks are not retried; missed titles rely on the request
   run `docker compose -f compose.example.yaml up --build -d --remove-orphans`
   once, so the old `access-bridge` container is removed and frees port 8787.
 
+### Fixed
+
+- TV add-on: JellyPass pages (Discover, See all, service, studio, title, My
+  requests) no longer show two Back buttons outside the TV layout. The add-on's
+  own **Back** is now hidden while Jellyfin's header shows its own: the 12.x
+  toolbar's Back in Jellyfin's iOS and Android apps, and 10.11's header Back.
+  In a browser on 12.x, where the toolbar has none, it is still shown, and the
+  TV layout is unchanged.
+
 ### Upgrade from 3.9.x or later 3.x
 
 For an install like the documented one (Compose, a reverse proxy routing the

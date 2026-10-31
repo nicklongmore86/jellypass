@@ -12,6 +12,8 @@
  * libraryMenu's `setTitle` does). If any of it is not as expected nothing is drawn and Jellyfin's page is left alone.
  */
 
+import { headerBackRoots, headerBackShown } from './jellyfin-web.js';
+
 /** Hash paths the host serves are under this prefix. */
 export const HOST_PREFIX = '/jellypass/';
 /** On `<html>` while a registered route is current: the stylesheet hides Jellyfin's "Page not found" under it. */
@@ -20,8 +22,10 @@ export const HOSTING_CLASS = 'jellypass-tv-hosting';
 export const PAGE_ATTR = 'data-jellypass-tv-page';
 /** On an element of a page that focus returns to on Back, with a key unique within the page. */
 export const FOCUS_ATTR = 'data-jellypass-tv-focus';
-/** On the Back button the host puts at the top of a JellyPass page in the desktop layout. */
+/** On the Back button the host puts at the top of a JellyPass page outside the TV layout, while Jellyfin's header has none. */
 export const BACK_ATTR = 'data-jellypass-tv-back';
+/** The attributes that show or hide Jellyfin's header Back, on it or around it, without a page change. */
+const BACK_ATTRIBUTES = ['class', 'hidden', 'style'];
 /** How many pages' last focus is remembered (in memory only). */
 const FOCUS_MEMORY = 20;
 
@@ -73,6 +77,9 @@ interface Active {
   /** The Back button's bar, with the sign-in generation it was drawn under: after a change it is replaced, and the old one is inert. */
   backBar?: HTMLElement | undefined;
   backGeneration?: number | undefined;
+  /** Watches Jellyfin's headers and their ancestors (`watched`) while the page has a Back button, so it follows theirs. */
+  headerWatch?: MutationObserver | undefined;
+  watched?: Element[] | undefined;
 }
 
 /** The path of a `#/jellypass/...` hash (without its query), or undefined. */
@@ -113,9 +120,10 @@ export class PageHost {
 
   /**
    * `back` is what the Back button does (history back, or Home when the member has come from nowhere in Jellyfin); without
-   * it no page has the button. The button is only for the desktop layout, whose toolbar has no Back (the TV layout has
-   * Jellyfin's own header Back and the remote). `generation` is the sign-in generation (SessionWatch.snapshot): a Back
-   * button works only under the one it was drawn under.
+   * it no page has the button. The button is never drawn in the TV layout (Jellyfin's own header Back and the remote), and
+   * elsewhere it is hidden while Jellyfin's header shows a Back of its own (12.x's toolbar in Jellyfin's apps, 10.11's
+   * legacy header), so a page has one Back, not two; in a browser on 12.x the toolbar has none. `generation` is the
+   * sign-in generation (SessionWatch.snapshot): a Back button works only under the one it was drawn under.
    */
   constructor(private readonly document: Document, private readonly currentHash: () => string, private readonly back?: () => void, private readonly generation: () => number = () => 0) {}
 
@@ -156,7 +164,10 @@ export class PageHost {
     // Set before Jellyfin's page exists, so its "Page not found" is never drawn; not while that page is not as expected
     // (the stylesheet checks its shape too), so then Jellyfin's page is shown as it is.
     this.hosting(Boolean(page) || !this.document.getElementById('fallbackPage'));
-    if (this.active) this.refreshBack(this.active);
+    if (this.active) {
+      this.refreshBack(this.active);
+      this.showBack(this.active);
+    }
     if (!page || this.active) return;
     this.open(page, hash, route, params);
   }
@@ -192,8 +203,10 @@ export class PageHost {
   /** Jellyfin web's `pageshow` on its page (its own work, auto-focus included, is done after this): focus is put right. */
   pageShown(event: Event): void {
     const active = this.active;
-    if (!active || event.target !== active.page || !active.focusPending) return;
+    if (!active || event.target !== active.page) return;
+    // Jellyfin's header sets its Back on the same page change: looked at once that work is done too.
     setTimeout(() => {
+      if (this.active === active) this.showBack(active);
       if (this.active === active && active.focusPending) {
         active.focusPending = false;
         this.restoreFocus(active);
@@ -274,6 +287,63 @@ export class PageHost {
     active.container.insertBefore(bar, active.container.firstChild);
     active.backBar = bar;
     active.backGeneration = generation;
+    this.showBack(active);
+  }
+
+  /**
+   * The Back button is hidden (out of the focus order too) while Jellyfin's header shows its own, and shown again when that
+   * one goes: looked at on every page change, as Jellyfin's header may be drawn after the page.
+   */
+  private showBack(active: Active): void {
+    const bar = active.backBar;
+    if (!bar) {
+      this.unwatch(active);
+      return;
+    }
+    this.watch(active);
+    const hide = headerBackShown(this.document);
+    if (bar.hidden === hide) return;
+    const focused = bar.contains(this.document.activeElement);
+    bar.hidden = hide;
+    // Focus on a button that went is given to what the page focuses on its own.
+    if (hide && focused) this.restoreFocus(active);
+  }
+
+  /**
+   * Jellyfin's headers (their whole tree) and each of their ancestors (itself only) are watched for a class, `hidden` or a
+   * style changing, which can show or hide its Back with no page change; again when the headers are drawn anew. One
+   * observer per page; its records arrive together, once per change of the page, and are read once. The Back button's bar
+   * is in Jellyfin's page, never in or around a header, so showing or hiding it is not seen here.
+   */
+  private watch(active: Active): void {
+    const view = this.document.defaultView as { MutationObserver?: typeof MutationObserver } | null;
+    const Observer = view ? view.MutationObserver : undefined;
+    if (typeof Observer !== 'function') return;
+    const roots = headerBackRoots(this.document);
+    const nodes: Element[] = roots.slice();
+    for (const root of roots) {
+      for (let up = root.parentElement; up; up = up.parentElement) if (nodes.indexOf(up) < 0) nodes.push(up);
+    }
+    const before = active.watched;
+    if (before && before.length === nodes.length && before.every((node, i) => node === nodes[i])) return;
+    this.unwatch(active);
+    if (!nodes.length) return;
+    const observer = new Observer(() => {
+      if (this.active === active) this.showBack(active);
+    });
+    for (const node of nodes) {
+      // `childList` with `subtree`: a header's parts drawn anew are seen too.
+      if (roots.indexOf(node) >= 0) observer.observe(node, { attributes: true, attributeFilter: BACK_ATTRIBUTES, childList: true, subtree: true });
+      else observer.observe(node, { attributes: true, attributeFilter: BACK_ATTRIBUTES });
+    }
+    active.headerWatch = observer;
+    active.watched = nodes;
+  }
+
+  private unwatch(active: Active): void {
+    if (active.headerWatch) active.headerWatch.disconnect();
+    active.headerWatch = undefined;
+    active.watched = undefined;
   }
 
   /** The session changed under the page on show: its Back button is taken away and drawn again for the new one. */
@@ -289,6 +359,7 @@ export class PageHost {
     const active = this.active;
     this.active = undefined;
     if (!active) return;
+    this.unwatch(active);
     try {
       if (active.cleanup) active.cleanup();
     } catch {
@@ -312,6 +383,8 @@ export class PageHost {
     if (wanted !== undefined) {
       const keyed = active.container.querySelectorAll(`[${FOCUS_ATTR}]`);
       for (let i = 0; i < keyed.length; i += 1) {
+        // A hidden Back button is not focusable: the page's own focus is used instead.
+        if (active.backBar && active.backBar.hidden && active.backBar.contains(keyed[i] as Element)) continue;
         if ((keyed[i] as Element).getAttribute(FOCUS_ATTR) === wanted) {
           target = keyed[i] as HTMLElement;
           break;

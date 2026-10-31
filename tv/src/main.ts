@@ -76,7 +76,7 @@ function start(): void {
   const discoverEntry = new DiscoverEntry(document, discoverWatch, () => navigate(DISCOVER_HASH));
   const search: SearchRow = new SearchRow(document, api, base.origin, asked, (card) => navigate(titleHash(card.mediaType, card.tmdbId)));
   // JellyPass pages at #/jellypass/..., in Jellyfin web's own "page not found" page (tv/src/page-host.ts).
-  // Back on a JellyPass page (the desktop layout has none of its own): history when the member came from another page of Jellyfin web, else Home.
+  // Back on a JellyPass page (shown only where Jellyfin's header has none of its own): history when the member came from another page of Jellyfin web, else Home.
   // The trail is the session's: a sign-out, another member or a new token starts it again, so no one inherits Back destinations.
   const trail = new HistoryTrail(location.hash);
   let trailGeneration = discoverWatch.snapshot();
