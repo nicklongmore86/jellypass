@@ -8,6 +8,8 @@
 # In the tunnel's Public Hostnames, add one per household address, each with service type HTTP and URL
 # jellypass:8787 (leave "HTTP Host Header" empty, so the household's own name reaches JellyPass). Never add a
 # public hostname for jellypass:8788 unless a Cloudflare Access application protects it.
+# Turn on SSL/TLS → Edge Certificates → Always Use HTTPS for the zone (a tunnel passes plain-HTTP visitors on), then
+# check from outside that `curl -sI http://grove.example.com/web/` answers 301 from Cloudflare.
 # Locally-managed tunnel instead of a token: see config.yml in this directory.
 services:
   cloudflared:

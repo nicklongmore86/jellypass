@@ -4,7 +4,8 @@
 {
 	email {$ACME_EMAIL}
 	# DNS-01: Caddy proves each name through a DNS record, so ports 80/443 need not be reachable from the internet
-	# for certificates. Token: a Cloudflare API token with Zone → DNS → Edit on the zone (nothing else).
+	# for certificates. Token: a Cloudflare API token with two permissions, Zone → Zone → Read and
+	# Zone → DNS → Edit, limited (Zone Resources) to the zone the household names are in.
 	acme_dns cloudflare {$CLOUDFLARE_API_TOKEN}
 }
 

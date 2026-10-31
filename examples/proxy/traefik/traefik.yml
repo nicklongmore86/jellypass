@@ -11,6 +11,11 @@ entryPoints:
   websecure:
     address: ":443"
     # No forwardedHeaders.trustedIPs: Traefik then replaces any X-Forwarded-* a client sent with its own.
+    transport:
+      respondingTimeouts:
+        # Traefik 3 reads a whole request (an upload's body included) within 60 s by default. JellyPass allows
+        # 5 minutes; match it. This does not limit responses or WebSockets.
+        readTimeout: 300s
 
 certificatesResolvers:
   letsencrypt:

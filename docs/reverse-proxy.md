@@ -20,6 +20,7 @@ addresses are described in [Household addresses](household-hosts.md#household-ad
 | --- | --- |
 | Route each household address to the **member listener** (`PORT`, default `8787`). Never route a public name to the **admin listener** (`ADMIN_PORT`, default `8788`). | The member listener serves household addresses only. The admin listener serves the admin site, the administrator API, the Seerr webhook and `/metrics`, and is not gated by itself. |
 | Pass the client's `Host` on unchanged, exactly once, with no port added (or with the port, if the address has one). | JellyPass picks the household from `Host` alone. A `Host` that is no household's address gets `421` (`unknown_host`); a request that does not name exactly one host gets `400` (`invalid_host`). `X-Forwarded-Host` is never read. |
+| Serve household addresses over HTTPS only: redirect plain `http://` to `https://` at the proxy, before anything reaches JellyPass. | Members' passwords and tokens travel in sign-ins and requests. JellyPass cannot tell a plain-HTTP visitor from an HTTPS one except by what the proxy reports. Caddy redirects by itself; the Traefik and nginx examples include the redirect; in NPM turn on **Force SSL**; behind Cloudflare turn on **Always Use HTTPS** (see [Cloudflare Tunnel](#cloudflare-tunnel)). |
 | Set `X-Forwarded-For` (append the client's address, or replace the header with it) and `X-Forwarded-Proto: https`. Don't pass on a client's own values as if they were yours. | JellyPass takes the client address from `X-Forwarded-For` only when the connecting peer is in `TRUSTED_PROXIES`; it is used for the sign-in rate limits and passed on to Jellyfin. |
 | Set `TRUSTED_PROXIES` to the address the proxy connects to JellyPass **from**. | Required while the household gateway is on (startup stops without it). Wrong, and every client looks like the proxy. |
 | Pass WebSocket upgrades (Jellyfin's `/socket`). | Remote control, SyncPlay, live updates. |
@@ -27,9 +28,28 @@ addresses are described in [Household addresses](household-hosts.md#household-ad
 | Leave `Cache-Control: no-transform` alone; compression is optional. | JellyPass compresses its HTML pages itself and marks them `no-transform`, so a CDN adds no scripts to them. A proxy may compress other responses, as long as it leaves responses that already have a `Content-Encoding` alone (Caddy's `encode`, Traefik's `compress` and nginx's `gzip` all do). |
 | Map each address to its household in JellyPass. | Admin site: **Groups** → **Addresses**, or `PUT /v1/groups/<id>/addresses` on the admin listener. The proxy alone does not make an address a household's. |
 
-Body sizes need no tuning for JellyPass: its own limits are small (a sign-in
-body is at most 8 KiB, an administrator API body 64 KiB) and below every
-proxy's default.
+### Request sizes and timeouts
+
+JellyPass reads only a few request bodies itself, each with a small limit of
+its own: a household sign-in, sign-out or SyncPlay join at most 8 KiB (`413`
+`request_too_large` above it), a household app "Get this" request 1 KiB, an
+administrator API body 64 KiB. Every other request on a household address,
+uploads included, is streamed on to Jellyfin as it arrives, with no size limit
+from JellyPass; what limits it is the proxy (nginx's and NPM's
+`client_max_body_size` defaults to 1 MB and answers `413` itself; Caddy and
+Traefik set no size limit; Cloudflare limits uploads per plan, 100 MB on the
+Free plan) and Jellyfin.
+
+Timeouts that apply on the way:
+
+| Where | Limit |
+| --- | --- |
+| JellyPass, both listeners (Node's HTTP server defaults) | A request's headers must arrive within 60 s, and the whole request, body included, within 5 minutes (`408` otherwise), so one upload that takes longer fails whatever the proxy allows. An idle keep-alive connection from the proxy is closed after 5 s. Responses (video, downloads, HLS) have no time limit. |
+| JellyPass, household WebSockets | Closed after `WS_IDLE_TIMEOUT_MS` (default 5 minutes) with no bytes either way, or `WS_UPSTREAM_IDLE_TIMEOUT_MS` (default 3 minutes) with none from Jellyfin. Jellyfin's keepalives (every 30 s or so) keep a healthy socket from ever reaching either. |
+| nginx / NPM | `proxy_read_timeout` and `proxy_send_timeout` default to 60 s between two reads or writes, about Jellyfin's keepalive window and short for a stream that pauses while transcoding. The examples set both to 1 hour, so nginx is never the first to close a quiet WebSocket or a paused stream. |
+| Traefik | Traefik 3 reads a whole request within 60 s by default (`respondingTimeouts.readTimeout`); the example raises it to 5 minutes to match JellyPass for uploads. |
+| Caddy | No read, write or stream limit by default. |
+| Cloudflare | `524` if the origin sends no response headers within 100 s; once a response has started, it may stream for as long as it lasts. WebSockets stay open. |
 
 Keep Jellyfin's own address, if it has a public one, separate from the
 household addresses and give it to administrators only: household addresses
@@ -74,8 +94,8 @@ address's scheme, and from a peer in `TRUSTED_PROXIES`.
   Cloudflare Tunnel the request goes out to Cloudflare and back.
 
 The check does not prove that the proxy strips forged headers on every path a
-client could take; repeat a sign-in from outside (see
-[Common failures](#common-failures)) when you change the proxy.
+client could take; run the [checks from outside](#checking-client-addresses-from-outside)
+when you set the proxy up and whenever you change it.
 
 ## Caddy
 
@@ -97,7 +117,10 @@ docker compose up -d --build
   Caddy images have no DNS providers). `Caddyfile` has one site block per
   household address, each `reverse_proxy jellypass:8787`; optional blocks for
   Jellyfin's own address and a LAN-only admin site are commented out.
-- **DNS token.** A Cloudflare API token with *Zone → DNS → Edit* on the zone.
+- **DNS token.** A Cloudflare API token (**My Profile → API Tokens → Create
+  Token**) with two permissions, *Zone → Zone → Read* and *Zone → DNS → Edit*,
+  and **Zone Resources** limited to the zone the household names are in. The
+  Traefik example takes the same token.
   Another DNS provider: build with its module from
   [caddy-dns](https://github.com/caddy-dns) instead and change the `acme_dns`
   line to it (the module's README gives its options).
@@ -132,6 +155,23 @@ certificate covers one level of subdomain, such as `grove.example.com`).
    **HTTP Host Header** empty, so the household's own name reaches JellyPass.
 3. `docker compose up -d`, then map each address in JellyPass and run the
    self-check.
+4. **Make Cloudflare redirect plain HTTP.** A tunnel passes on whatever
+   protocol the visitor used: without a redirect, `http://grove.example.com/`
+   reaches JellyPass unencrypted between the visitor and Cloudflare, sign-ins
+   included. In the zone's **SSL/TLS → Edge Certificates**, turn on **Always
+   Use HTTPS** (it covers every hostname in the zone). If you can't turn it on
+   for the whole zone, add a redirect rule (**Rules → Redirect Rules**) that
+   sends `http` requests for every household hostname to `https`.
+5. **Check it from outside your network:**
+
+   ```sh
+   curl -sI http://grove.example.com/web/ | head -n 3
+   ```
+
+   It must answer `301` (or `308`) with `Location: https://grove.example.com/web/`,
+   and `Server: cloudflare` with no JellyPass or Jellyfin headers (no
+   `Cache-Control: no-transform`): the redirect came from Cloudflare, not from
+   behind the tunnel. Repeat it for each household hostname.
 
 A locally-managed tunnel (`cloudflared tunnel create`, a credentials file and
 ingress rules) works as well: [`config.yml`](../examples/proxy/cloudflare-tunnel/config.yml)
@@ -140,7 +180,9 @@ has the same routes.
 - **`TRUSTED_PROXIES`.** The `cloudflared` container's fixed address
   (`172.30.88.10`) alone. Cloudflare's edge puts the visitor's address at the
   end of `X-Forwarded-For` and `cloudflared` passes it on; no Cloudflare ranges
-  are needed. `X-Forwarded-Proto` is `https`.
+  are needed. `X-Forwarded-Proto` is the protocol the visitor used to reach
+  Cloudflare (`http` or `https`), which is why step 4 matters: with **Always Use
+  HTTPS** on, only `https` requests get through to the tunnel.
 - **The admin listener.** Don't give `jellypass:8788` a public hostname unless
   a Cloudflare Access application covers that hostname and admits your
   administrators only. Even then, keep Seerr's webhook on the private network.
@@ -167,7 +209,7 @@ of the same JellyPass):
 | --- | --- |
 | Details | **Domain Names** `grove.example.com`; **Scheme** `http`; **Forward Hostname / IP** `jellypass` (or the Docker host's address); **Forward Port** `8787`; **Websockets Support** on; **Cache Assets** off |
 | SSL | A Let's Encrypt certificate (**Use a DNS Challenge** if the host is not reachable on port 80); **Force SSL** on |
-| Advanced | The contents of [`advanced.conf`](../examples/proxy/nginx-proxy-manager/advanced.conf): `proxy_buffering off;` and `proxy_request_buffering off;` |
+| Advanced | The contents of [`advanced.conf`](../examples/proxy/nginx-proxy-manager/advanced.conf): buffering off (`proxy_buffering`, `proxy_request_buffering`) and 1-hour `proxy_read_timeout`/`proxy_send_timeout` (see [Request sizes and timeouts](#request-sizes-and-timeouts)) |
 
 NPM's proxy hosts already send `Host $host`, `X-Forwarded-For` with the client
 appended, `X-Forwarded-Proto $scheme` and, with **Websockets Support** on, the
@@ -205,7 +247,9 @@ sure the Docker host's DNS and hairpin NAT send them back to NPM.
 **Plain nginx or SWAG.** [`nginx.conf`](../examples/proxy/nginx-proxy-manager/nginx.conf)
 is the same proxy as a server block: `proxy_set_header Host $host`,
 `X-Forwarded-For $proxy_add_x_forwarded_for`, `X-Forwarded-Proto $scheme`, the
-`Upgrade`/`Connection` pair with `proxy_http_version 1.1`, and buffering off.
+`Upgrade`/`Connection` pair with `proxy_http_version 1.1`, buffering off,
+1-hour read and send timeouts, and a port-80 server that redirects to HTTPS.
+Uncomment `client_max_body_size` if members upload files over 1 MB.
 `$host` has no port: on a port other than 443, for an address that carries
 that port, use `$http_host`. nginx stops at startup with
 `host not found in upstream "jellypass"` when that name does not resolve yet;
@@ -215,7 +259,8 @@ start it after JellyPass.
 
 [`examples/proxy/traefik/`](../examples/proxy/traefik/): JellyPass and Traefik
 in one Compose project, certificates by DNS-01 through Cloudflare
-(`CF_DNS_API_TOKEN` in `.env`; other providers in Traefik's
+(`CF_DNS_API_TOKEN` in `.env`: the token described under [Caddy](#caddy),
+*Zone → Zone → Read* and *Zone → DNS → Edit* on the zone; other providers in Traefik's
 [ACME provider list](https://doc.traefik.io/traefik/https/acme/#providers)).
 
 - `traefik.yml` (static): the `web` and `websecure` entry points and the
@@ -242,6 +287,7 @@ in one Compose project, certificates by DNS-01 through Cloudflare
 | --- | --- |
 | `421 {"error":"unknown_host"}` on a household address | The address is not mapped to a household in JellyPass, or not exactly as the browser sends it (another subdomain, a port). Or the proxy changed `Host`: NPM's forward host used as `Host`, cloudflared's **HTTP Host Header** set, Traefik's `passHostHeader: false`, Caddy's `header_up Host`, nginx's `$host` dropping a non-default port. Also the answer to any request sent straight to `:8787` by IP. See [A household address returns `421` or `404`](server-reference.md#a-household-address-returns-421-or-404). |
 | `400 {"error":"invalid_host"}` | The request named more than one host: two `Host` headers (a middleware or custom header rule adding one), a `Host` with a path or userinfo, or an absolute-form target (`GET http://other/…`) whose authority is not the `Host`. |
+| `http://` on a household address loads a page (or reaches JellyPass) instead of redirecting | The proxy or Cloudflare does not redirect plain HTTP: Caddy's automatic redirect turned off, no `web` → `websecure` redirect in Traefik, no port-80 redirect server in nginx, NPM's **Force SSL** off, Cloudflare's **Always Use HTTPS** off. Sign-ins over it are unencrypted. |
 | `421` for the admin site or the Seerr webhook | They were pointed at the member listener (`8787`); they are on the admin listener (`8788`). |
 | JellyPass stops at startup with `TRUSTED_PROXIES is required` | The household gateway is on and `TRUSTED_PROXIES` is empty. Set it to the proxy's address. |
 | Self-check **proxy** warns `0 of N` | `TRUSTED_PROXIES` is not the address the proxy connects from; the proxy does not send `X-Forwarded-Proto: https` (for example a plain-HTTP hop that reports `http`); the proxy changes `Host`; or JellyPass cannot reach its own public names (missing network aliases, no hairpin NAT, split DNS). |
@@ -252,6 +298,43 @@ in one Compose project, certificates by DNS-01 through Cloudflare
 | `502` from the proxy | The upstream is wrong (`jellypass:8787` from the proxy's network) or JellyPass is not running; nginx's `host not found in upstream`. |
 | An analytics script appears in household pages, or they arrive uncompressed | Something between JellyPass and the browser removed `no-transform` from `Cache-Control`. |
 
-To check `X-Forwarded-For` handling from outside, sign in to a household
-address with a wrong password from one network and check that a member on
-another network can still sign in at once.
+## Checking client addresses from outside
+
+The self-check runs from inside; these two checks run from outside and show
+that JellyPass sees each client's real address and that a client cannot choose
+its own. They use the household sign-in limit: 20 sign-in attempts from one
+client address within 5 minutes, after which that address gets
+`429 {"error":"too_many_login_attempts"}` (on every household address) until
+the 5 minutes since its first attempt are up. Use two networks you control,
+such as your home connection (network A) and a phone on mobile data
+(network B), and a household address you can afford to lock for 5 minutes.
+The sign-in request:
+
+```sh
+signin() {
+  curl -s -o /dev/null -w '%{http_code}\n' "$@" \
+    -H 'Authorization: MediaBrowser Client="check", Device="curl", DeviceId="proxy-check", Version="1"' \
+    -H 'Content-Type: application/json' \
+    -d '{"Username":"nobody","Pw":"wrong"}' \
+    https://grove.example.com/Users/AuthenticateByName
+}
+```
+
+**1. One network's failures don't lock another network out.** On network A,
+run `for i in $(seq 21); do signin; done`: the answers are `401` (each after
+about a second) and then `429`. Within the next 5 minutes, on network B, run
+`signin` once: it must answer `401`, not `429`, and a member signing in there
+works. A `429` on network B means JellyPass counts both networks as one
+address, the proxy's: `TRUSTED_PROXIES` does not name the proxy, or a CDN in
+front is not accounted for (see [Chains of proxies and CDNs](server-reference.md#chains-of-proxies-and-cdns)).
+
+**2. A forged `X-Forwarded-For` is not believed.** After the first check's
+5 minutes have passed, on network B, send the 21 attempts with a different
+forged address each time:
+`for i in $(seq 21); do signin -H "X-Forwarded-For: 198.51.100.$i"; done`.
+The last must answer `429`, and a plain `signin` from network B afterwards
+must too: every attempt was counted against network B's real address. If they
+keep answering `401`, the proxy hands the client's own `X-Forwarded-For` on as
+if it were the client's address (a proxy, or a proxy in front of it, listed in
+`TRUSTED_PROXIES` that passes the header through instead of appending to it or
+replacing it). Wait 5 minutes afterwards before members on network B sign in.
