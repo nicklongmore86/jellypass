@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { link, mkdir, open, readFile, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { HouseholdAddressEntry } from './household-addresses.js';
 import type {
@@ -108,12 +108,10 @@ export class GrantStore {
     // close() may have been called while the file was being read; state must not change after it.
     this.#assertOpen();
     const original = JSON.parse(text) as { version?: unknown };
-    const originalVersion = original.version;
+    const originalVersion = original?.version;
     const migrated = migrateState(original);
     if (migrated.changed) {
-      // Preserve the exact pre-migration file before the first v9 write; never replace an earlier backup.
-      try { await writeFile(`${this.#file}.v${originalVersion}.bak`, text, { flag: 'wx', mode: 0o600 }); }
-      catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
+      await writePreV9Backup(this.#file, `${this.#file}.v${originalVersion}.bak`, text);
       this.#assertOpen();
     }
     this.#state = migrated.state;
@@ -1368,6 +1366,44 @@ export class GrantStore {
       await rm(temporary, { force: true }).catch(() => undefined);
       throw error;
     }
+  }
+}
+
+/** Publish only complete, synced backups; a rollback followed by another upgrade must preserve its new source too. */
+async function writePreV9Backup(file: string, primary: string, contents: string): Promise<void> {
+  const temporary = `${primary}.${randomUUID()}.tmp`;
+  let backup = primary;
+  let createdTemporary = false;
+  try {
+    try {
+      const handle = await open(temporary, 'wx', 0o600);
+      createdTemporary = true;
+      try {
+        await handle.writeFile(contents, 'utf8');
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      for (;;) {
+        try {
+          // link publishes atomically without replacing any existing backup.
+          await link(temporary, backup);
+          break;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+          if (await readFile(backup, 'utf8') === contents) break;
+          backup = `${primary.slice(0, -4)}.${new Date().toISOString()}.${randomUUID()}.bak`;
+        }
+      }
+      // Make the published directory entry durable before the state file can advance to v9.
+      const directory = await open(path.dirname(file), 'r');
+      try { await directory.sync(); } finally { await directory.close(); }
+      if (backup !== primary) console.info(JSON.stringify({ level: 'info', message: 'pre-v9 state backup saved', path: backup }));
+    } finally {
+      if (createdTemporary) await unlink(temporary);
+    }
+  } catch (error) {
+    throw new Error(`could not write pre-v9 state backup ${backup}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
   }
 }
 

@@ -177,7 +177,7 @@ async function main(): Promise<void> {
       catalogSyncIntervalSeconds: config.catalogSyncIntervalSeconds,
       requestBackfillSince: backfillSince?.toISOString() ?? null,
       householdApp: config.householdAppEnabled,
-      tvAddon: service.listGroups().filter((group) => group.tvAddonEnabled).length,
+      tvAddon: config.tvAddonEnabled ? service.listGroups().filter((group) => group.tvAddonEnabled).length : 'off',
     }));
     if (service.getLibraryCatalog().items.length === 0) syncCatalog();
     // Catch up on missed webhooks now rather than one reconcile interval after startup.

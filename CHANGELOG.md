@@ -33,9 +33,12 @@ changes are always listed at the top of the release notes.
   (comma-separated household IDs or `*`); without it TV switches start off. After migration the stored switches are
   authoritative: changing the environment list has no effect. Remove the deprecated variable after upgrading;
   its presence emits one warning per process without logging its value. `TV_ADDON_ENABLED` remains the global gate.
-- Before the first v9 write, JellyPass saves the exact original state next to it as `<state-file>.v8.bak` (or `.v7.bak`),
-  with private permissions; an existing backup is never overwritten. To roll back to 4.0.0, stop JellyPass, restore
-  the v8 backup to the state path, then start 4.0.0. A v7 backup is also readable by 4.0.0. Later changes are not in that backup.
+- Before the first v9 write, JellyPass writes and fsyncs a private temporary backup, then publishes it atomically as
+  `<state-file>.v8.bak` (or `.v7.bak`), without overwriting an existing file. An identical backup is reused; a partial
+  or different backup causes a fresh timestamped `<state-file>.v8.<ISO timestamp>.<unique ID>.bak` (or `.v7.…`) to be
+  created and its path logged. Backup errors stop migration before v9 is saved. To roll back to 4.0.0, stop JellyPass
+  and restore the **latest backup for that upgrade**, using the logged timestamped path when present. Older backups
+  may be stale after a rollback and re-upgrade. Changes made after the selected backup are not included.
 - `*` seeds only households present during migration; it no longer covers households created later, which default TV off.
 
 ## [4.0.0] - 2026-10-31

@@ -176,6 +176,10 @@ State schema v9 stores the switches. On upgrade from v8 or v7, app access starts
 Remove that deprecated variable after upgrade; stored switches are authoritative and a remaining variable produces
 one warning per process. Back up state before upgrading; older builds cannot read schema v9.
 
-Before its first v9 save, migration writes the original state to `<state-file>.v8.bak` (or `.v7.bak`) next to it,
-without overwriting an existing backup. To roll back to 4.0.0, stop JellyPass and restore that backup to the state path;
-changes made after migration are not in the backup. `*` no longer covers households created later: new households default TV off.
+Before its first v9 save, migration writes and fsyncs a private temporary copy, then publishes it atomically as
+`<state-file>.v8.bak` (or `.v7.bak`) without replacing an existing file. An identical backup is reused. If an existing
+backup is partial or has different content (for example after running 4.0.0 again following a rollback), migration
+creates a new `<state-file>.v8.<ISO timestamp>.<unique ID>.bak` (or `.v7.…`) and logs its full path. A backup failure
+stops migration before v9 is saved. To roll back to 4.0.0, stop JellyPass and restore the **latest backup for the
+upgrade being rolled back** (the logged timestamped file, if created) to the state path. Earlier backups may be stale;
+changes made after the selected backup are not included. `*` no longer covers households created later: new households default TV off.
