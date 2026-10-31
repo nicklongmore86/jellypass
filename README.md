@@ -108,8 +108,9 @@ webhook goes to the admin listener, for example
 `Authorization: Bearer <WEBHOOK_TOKEN>` header (4.0 takes no `?token=`).
 
 Upgrading to 4.0 from 3.9.x or later 3.x changes the admin port, the health
-check and the Seerr webhook URL: follow the upgrade steps in the
-[changelog](CHANGELOG.md) before pulling it.
+check, the Seerr webhook URL and the state file (schema 8, which 3.x cannot
+read): follow the [4.0.0 upgrade steps](CHANGELOG.md#400---2026-10-31) before
+pulling it.
 
 To build from source instead, run these inside a clone of this repository
 (the container runs as UID 1000, so it needs a data directory it can write):
