@@ -18,15 +18,45 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
-**BREAKING.** This is 4.0.0: the admin site becomes private by default, on a
-listener of its own, households can be served at any hostname, household
-hostnames refuse an untested Jellyfin version until it is confirmed, and the
-legacy entry points are removed. **An existing install must change its
-configuration before it upgrades** (see "Upgrade from 3.9.x or later 3.x"
-below); with those changes, existing household addresses such as
-`https://jelly-<household>.<HOUSEHOLD_DOMAIN>` keep working unchanged.
+## [4.0.0] - 2026-10-31
 
-### BREAKING — 4.0 cuts
+**BREAKING.** This is a major release: the admin site becomes private by
+default, on a listener of its own, households can be served at any hostname,
+household hostnames refuse an untested Jellyfin version until it is confirmed,
+and the legacy entry points are removed. **An existing install must change its
+configuration before it upgrades:** follow "Upgrade from 3.9.x or later 3.x"
+below, in order. With those changes, existing household addresses such as
+`https://jelly-<household>.<HOUSEHOLD_DOMAIN>` keep working unchanged.
+Breaking changes at a glance:
+
+- **Admin listener `:8788`, household listener `:8787`.** The admin site, the
+  administrator API, `/metrics`, `/health` and the Seerr webhook move to
+  `ADMIN_HOST`:`ADMIN_PORT` (default `127.0.0.1:8788`; the image sets
+  `ADMIN_HOST=0.0.0.0`). `HOST`:`PORT` (`:8787`) serves household addresses
+  only and answers any other host with `421`. Health checks, the Seerr webhook
+  URL and any admin proxy host move to `:8788`.
+- **`TRUSTED_PROXIES` is required** with the household gateway on; JellyPass
+  does not start without it.
+- **State file schema 8.** A schema 7 file is migrated on the first start, and
+  3.x refuses to start on the result: back up the state file first (see
+  "Rollback to 3.x").
+- **Seerr webhook: `Authorization: Bearer` header only.** `?token=` and the
+  reduced older payload templates are refused with `400`; set the header and
+  the full template on 3.x before upgrading.
+- **Untested Jellyfin versions are refused.** The version gate's enforcement
+  (`JELLYFIN_VERSION_ENFORCEMENT`) is now `'refuse'`: on a Jellyfin other than
+  12.x or 10.11.x, household hostnames answer `503` until that exact version is
+  confirmed (3.10.0 only warned). A confirmation made under 3.10.0 is kept.
+- **Legacy paths removed:** the add-to-library page, webhook query-token
+  authentication and reduced webhook templates, direct upgrades from 2.x, and
+  the open-ended relay of household paths (household routes now deny by
+  default; see Security).
+
+The household app API stays `v1` and gains hidden titles (`apiVersion` 3);
+older clients keep working. The iPhone, iPad and Android app ships separately;
+its changes are in `mobile/CHANGELOG.md`.
+
+### Removed
 
 - Removed the legacy add-to-library page. Use **Get this** in the household app.
 - Removed webhook query-token authentication. **Production impact:** earlier docs
@@ -54,7 +84,7 @@ Before upgrading, on **3.9.x or later 3.x**:
 
 Refused availability webhooks are not retried; missed titles rely on the request backfill.
 
-### BREAKING — admin listener, household addresses and Jellyfin versions
+### Changed (breaking): listeners, household addresses and Jellyfin versions
 
 - **Two listeners.** The admin site (`/admin/`, `/auth/*`), the administrative
   API (`/v1/*`), `/metrics`, the Seerr webhook (`/webhooks/seerr`) and
@@ -76,7 +106,7 @@ Refused availability webhooks are not retried; missed titles rely on the request
   a health check of your own on `:8787/health` now fails.
 - **The Seerr webhook URL** moves to the admin port, for example
   `http://jellypass:8788/webhooks/seerr`, and authenticates with the
-  `Authorization: Bearer <WEBHOOK_TOKEN>` header only (see 4.0 cuts).
+  `Authorization: Bearer <WEBHOOK_TOKEN>` header only (see Removed).
   `LEGACY_WEBHOOK_ON_MEMBER_PORT=true` keeps the old URL on `PORT` working
   while you change it (it answers `POST /webhooks/seerr` there for a `Host`
   that is no household's, never on a household address, with the same Bearer
@@ -109,7 +139,6 @@ Refused availability webhooks are not retried; missed titles rely on the request
 
 - Household gateway routes now deny by default: explicit Jellyfin 10.11.11/12.4 OpenAPI templates, legacy client routes and vetted plugin compatibility entries replace open-ended relay. Unknown plugin namespaces return fixed JSON 404 over HTTP and WebSocket; only the session socket can upgrade. Existing refusals and household scope checks remain. Jellyfin Enhanced public-config is preserved byte-identically.
 - Additional plugin endpoints require deliberate exact-path `HOUSEHOLD_PLUGIN_ROUTES` configuration and a privacy audit; see "Deployment self-check and plugin routes" in docs/server-reference.md. Previously unrecognised paths (including inactive TV and removed bridge paths) no longer relay.
-
 - Household hosts read a backslash (`\` or `%5C`) as a slash when refusing paths with empty segments, so `/\` and `/\evil.example` get `404 not_found` as `//` does, instead of `502 Invalid URL`. The admin listener refuses a path starting with two slashes or backslashes (`//`, `/\`, `/\evil.example`) with the same `404`; it answered `502 Invalid URL` or read the rest as a host name. Neither reaches Jellyfin.
 - 3.10.0's one-`Host` check (`400 {"error":"invalid_host"}`, connection
   closed) and the `//` / `/\` refusal run first on both listeners, before the
@@ -218,7 +247,7 @@ needs to change at the reverse proxy for household hostnames: they stay on
 port `8787`. From 2.x, upgrade to 3.9.x or later 3.x first.
 
 1. Back up the state file, `.env` and the Compose file (`cp -p`).
-2. On the running 3.x, do the Seerr steps under "BREAKING — 4.0 cuts": the
+2. On the running 3.x, do the Seerr steps under "Removed": the
    `Authorization: Bearer <WEBHOOK_TOKEN>` header, no `?token=` in the URL,
    the full template. On Jellyfin outside 12.x and 10.11.x, confirm its exact
    version in the admin site (**Allow Jellyfin X**) or set
@@ -3547,7 +3576,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v3.10.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v4.0.0...HEAD
+[4.0.0]: https://github.com/nicklongmore86/jellypass/compare/v3.10.0...v4.0.0
 [3.10.0]: https://github.com/nicklongmore86/jellypass/compare/v3.9.0...v3.10.0
 [3.9.0]: https://github.com/nicklongmore86/jellypass/compare/v3.8.1...v3.9.0
 [3.8.1]: https://github.com/nicklongmore86/jellypass/compare/v3.8.0...v3.8.1

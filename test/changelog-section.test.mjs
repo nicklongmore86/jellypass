@@ -54,6 +54,35 @@ function assertSection(notes, { version, nextVersion, subheadings }) {
 }
 
 describe('changelogSection with the real CHANGELOG.md', () => {
+  it('extracts 4.0.0 without its heading, up to the 3.10.0 section', () => {
+    const notes = changelogSection(CHANGELOG, '4.0.0');
+    assertSection(notes, {
+      version: '4.0.0',
+      nextVersion: '3.10.0',
+      subheadings: ['Removed', 'Security', 'Added', 'Changed', 'Fixed', 'Upgrade from 3\\.9\\.x or later 3\\.x', 'Rollback to 3\\.x'],
+    });
+    assert.match(notes, /^\*\*BREAKING\.\*\* This is a major release/);
+    const flat = notes.replace(/\s+/g, ' ');
+    assert.match(flat, /\*\*An existing install must change its configuration before it upgrades:\*\*/);
+    assert.match(flat, /`JELLYFIN_VERSION_ENFORCEMENT`\) is now `'refuse'`/);
+    assert.match(flat, /`mobile\/CHANGELOG\.md`/);
+    const removed = notes.indexOf('### Removed');
+    for (const note of [
+      '**Admin listener `:8788`, household listener `:8787`.**',
+      '**`TRUSTED_PROXIES` is required**',
+      '**State file schema 8.**',
+      '**Seerr webhook: `Authorization: Bearer` header only.**',
+      '**Untested Jellyfin versions are refused.**',
+      '**Legacy paths removed:**',
+    ]) {
+      assert.ok(notes.indexOf(note) >= 0 && notes.indexOf(note) < removed, `breaking change ${note} is summarised first`);
+    }
+    assert.equal(notes.match(/^### Security$/gm)?.length, 1, 'one Security heading');
+    assert.ok(notes.indexOf('### Upgrade from') < notes.indexOf('### Rollback to 3.x'));
+    assert.doesNotMatch(notes, /BREAKING — 4\.0 cuts/, 'no reference to a renamed heading');
+    assert.doesNotMatch(notes, /\b(?!127\.0\.0\.1\b|0\.0\.0\.0\b)(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref|farmhouse|starrgroup|TU7000|sdb\b/i, 'no server-specific details');
+  });
+
   it('extracts 3.10.0 without its heading, up to the 3.9.0 section', () => {
     const notes = changelogSection(CHANGELOG, '3.10.0');
     assertSection(notes, {
