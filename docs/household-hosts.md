@@ -27,9 +27,9 @@ network), with no path, query or credentials. The JellyPass mobile app only
 connects over HTTPS: members cannot sign in to the app with an `http://`
 address. The admin address editor warns while entering or editing an HTTP
 address, and household cards mark saved HTTP addresses. These warnings do
-not prevent saving addresses for private networks or proxy setups. Addresses are compared exactly,
-case and default ports aside: `https://media.example.com` is reached by
-`Host: media.example.com` (or `:443`), and nothing else, not a sub- or parent
+not prevent saving addresses for private networks or proxy setups. Addresses
+are compared exactly, case and default ports aside:
+`https://media.example.com` is reached by `Host: media.example.com` (or `:443`), and nothing else, not a sub- or parent
 domain. An address another household has is refused with `409`
 (`address_conflict`) and takes effect at once otherwise; there is no restart.
 `GET` the same path to read a household's addresses and `DELETE` it to remove

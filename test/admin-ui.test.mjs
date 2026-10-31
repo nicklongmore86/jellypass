@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { parseHTML } from 'linkedom';
-import { ADMIN_APP_JS, ADMIN_HTML } from '../dist/admin-ui.js';
+import { ADMIN_APP_JS, ADMIN_HTML, ADMIN_STYLES } from '../dist/admin-ui.js';
 
 const UNAVAILABLE = { status: 503, body: { error: 'session_check_unavailable' } };
 const UNAUTHORIZED = { status: 401, body: { error: 'unauthorized' } };
@@ -724,10 +724,13 @@ describe('admin UI household address editor', () => {
       group: { ...GROUP, householdUrl: origin, householdAddresses: [origin, 'https://films.example.net'] },
     });
     const warning = byId('address-warning');
-    assert.equal(warning.hidden, false);
+    assert.equal(warning.hasAttribute('hidden'), false);
+    assert.match(warning.textContent, /This address uses http:/);
     assert.match(warning.textContent, /mobile app only connects over HTTPS/);
     assert.equal(page.document.querySelectorAll('#groups-list .address-warning').length, 1);
     assert.match(page.document.querySelector('#groups-list .address-warning').textContent, /mobile app unavailable/);
+    assert.ok(page.document.querySelector('.household-route .address-warning'));
+    assert.match(ADMIN_STYLES, /\.household-route \.address-warning\{color:var\(--amber\);font-size:11px;text-transform:none\}/);
     byId('address-form').dispatchEvent(new page.window.Event('submit'));
     await page.settle();
     assert.equal(sent[0][2].origin, origin);
@@ -735,18 +738,25 @@ describe('admin UI household address editor', () => {
     assert.equal(page.document.querySelectorAll('#groups-list .address-warning').length, 1);
     byId('address-origin').value = 'https://media.example.com';
     byId('address-origin').dispatchEvent(new page.window.Event('input'));
-    assert.equal(warning.hidden, true);
+    assert.equal(warning.textContent, '');
+    assert.equal(warning.hasAttribute('hidden'), false);
     byId('address-aliases').value = 'https://films.example.net\n HTTP://tv.example.org';
     byId('address-aliases').dispatchEvent(new page.window.Event('input'));
-    assert.equal(warning.hidden, false);
+    assert.equal(warning.hasAttribute('hidden'), false);
+    assert.match(warning.textContent, /This address uses http:/);
     byId('address-aliases').value = 'https://films.example.net';
     byId('address-aliases').dispatchEvent(new page.window.Event('input'));
-    assert.equal(warning.hidden, true);
+    assert.equal(warning.textContent, '');
+    assert.equal(warning.hasAttribute('hidden'), false);
   });
 
   it('does not warn for saved HTTPS addresses', async () => {
     const { page, byId } = await addressPage({ current: { origin: GROUP.householdUrl, aliases: ['https://films.example.net'] } });
-    assert.equal(byId('address-warning').hidden, true);
+    assert.equal(byId('address-warning').textContent, '');
+    assert.equal(byId('address-warning').hasAttribute('hidden'), false);
+    assert.equal(byId('address-warning').getAttribute('role'), 'status');
+    assert.equal(byId('address-origin').getAttribute('aria-describedby'), 'address-warning');
+    assert.equal(byId('address-aliases').getAttribute('aria-describedby'), 'address-warning');
     assert.equal(page.document.querySelectorAll('#groups-list .address-warning').length, 0);
   });
 
