@@ -8,7 +8,7 @@ export const API_PREFIX = '/jellypass/app/v1';
 export const HIDING_API_VERSION = 3;
 
 /** The only failures the app tells apart, each with a fixed message (see render.ts); upstream text is never shown. */
-export type ApiErrorKind = 'unauthorized' | 'rate_limited' | 'not_found' | 'unavailable' | 'offline' | 'hidden_limit_reached';
+export type ApiErrorKind = 'app_access_disabled' | 'unauthorized' | 'rate_limited' | 'not_found' | 'unavailable' | 'offline' | 'hidden_limit_reached';
 
 export class ApiError extends Error {
   public constructor(public readonly kind: ApiErrorKind) {
@@ -154,7 +154,10 @@ export function createApi(options: ApiOptions): Api {
       throw new SessionChangedError();
     }
     if (!response.ok) {
-      await response.body?.cancel().catch(() => undefined);
+      let appDisabled = false;
+      if (response.status === 403) {
+        try { appDisabled = (await response.json() as { error?: unknown } | null)?.error === 'app_access_disabled'; } catch { /* An unknown refusal uses generic wording. */ }
+      } else await response.body?.cancel().catch(() => undefined);
       // The sign-in may have ended while the body was let go: then this answer is nobody's, whatever it says.
       if (ended()) throw new SessionChangedError();
       // A refused sign-in is nobody's: whatever was shown as requested for it is dropped. A late refusal of a token
@@ -163,7 +166,7 @@ export function createApi(options: ApiOptions): Api {
         forget();
         identity = undefined;
       }
-      throw new ApiError(kindOf(response.status, init.hiding));
+      throw new ApiError(appDisabled ? 'app_access_disabled' : kindOf(response.status, init.hiding));
     }
     return response;
   }

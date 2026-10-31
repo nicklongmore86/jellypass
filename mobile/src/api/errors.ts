@@ -3,6 +3,8 @@
 // one (or crashing with one) can leak nothing.
 
 export type ApiErrorKind =
+  /** 403 app_access_disabled: the administrator turned off this household's app access. */
+  | 'app_access_disabled'
   /** 400: the call was not one the API takes. */
   | 'invalid_request'
   /** 401: the token is no longer good; drop it and show the profile picker. */
@@ -89,7 +91,7 @@ export function retryAfterSeconds(header: string | null | undefined, now: number
 export function errorForAnswer(status: number, body: unknown, retryAfter: string | null, now: number): ApiError {
   const kind = kindOfStatus(status);
   const code = typeof body === 'object' && body !== null && Object.hasOwn(body, 'error') ? (body as { error: unknown }).error : undefined;
-  return new ApiError(kind, {
+  return new ApiError(status === 403 && code === 'app_access_disabled' ? 'app_access_disabled' : kind, {
     status,
     householdNotFound: kind === 'not_found' && code === 'household_not_found',
     ...(kind === 'too_many_requests' ? { retryAfterSeconds: retryAfterSeconds(retryAfter, now) } : {}),

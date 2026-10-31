@@ -570,7 +570,26 @@ export const ADMIN_APP_JS = `
       const route = addresses.length
         ? node('div', { class: 'household-route' }, [node('small', { text: addresses.length === 1 ? 'Household address' : 'Household addresses' })].concat(addresses.map((address) => node('a', { text: address, href: address, target: '_blank', rel: 'noreferrer' }))))
         : node('div', { class: 'household-route unavailable' }, [node('small', { text: 'Household address' }), node('span', { class: 'meta', text: 'No address yet: map one with PUT /v1/groups/' + group.id + '/addresses.' })]);
-      list.append(node('article', { class: 'group-card' }, [node('div', { class: 'mono', text: group.id }), node('h3', { text: group.name }), node('p', { text: group.userIds.map(userName).join(', ') || 'No users in this group' }), route, node('footer', {}, [node('span', { text: group.userIds.length + ' member' + (group.userIds.length === 1 ? '' : 's') }), node('div', { class: 'card-actions' }, [addUser, edit, remove])])]));
+      const switches = node('div', { class: 'check-list' });
+      [['appEnabled', 'Mobile app access'], ['tvAddonEnabled', 'TV add-on injection']].forEach(([key, label]) => {
+        const input = node('input', { type: 'checkbox' });
+        input.dataset.feature = key;
+        input.setAttribute('role', 'switch');
+        input.setAttribute('aria-label', label);
+        input.checked = group[key] === true;
+        input.addEventListener('change', async () => {
+          switches.querySelectorAll('input').forEach((control) => { control.disabled = true; });
+          try {
+            const features = { [key]: input.checked };
+            const result = await api('/v1/groups/' + encodeURIComponent(group.id) + '/features', { method: 'PUT', body: JSON.stringify(features) });
+            Object.assign(group, result.group);
+            switches.querySelectorAll('input').forEach((control) => { control.checked = group[control.dataset.feature] === true; });
+          } catch (error) { input.checked = group[key] === true; toast(error.message); }
+          finally { switches.querySelectorAll('input').forEach((control) => { control.disabled = false; }); }
+        });
+        switches.append(node('label', {}, [input, node('span', { text: label })]));
+      });
+      list.append(node('article', { class: 'group-card' }, [node('div', { class: 'mono', text: group.id }), node('h3', { text: group.name }), node('p', { text: group.userIds.map(userName).join(', ') || 'No users in this group' }), route, switches, node('footer', {}, [node('span', { text: group.userIds.length + ' member' + (group.userIds.length === 1 ? '' : 's') }), node('div', { class: 'card-actions' }, [addUser, edit, remove])])]));
     });
   }
 

@@ -661,3 +661,35 @@ it('warns administrators about recent refused removed-form webhooks', async () =
   assert.match(page.document.querySelector('#connection').textContent, /Seerr webhook refused/);
   assert.match(page.document.querySelector('#connection').textContent, /Library sync required/);
 });
+
+describe('household feature controls', () => {
+  it('saves both switches and restores the last saved value on refusal', async () => {
+    const group = { id: 'grove', name: 'Grove', userIds: [], appEnabled: true, tvAddonEnabled: false };
+    const writes = [];
+    let refuse = false;
+    const page = adminPage((path, init) => {
+      if (path === '/v1/groups') return { status: 200, body: { groups: [group] } };
+      if (path === '/v1/groups/grove/features') {
+        writes.push(JSON.parse(init.body));
+        return refuse ? { status: 400, body: { error: 'refused' } } : { status: 200, body: { group: { ...group, appEnabled: false, ...writes.at(-1) } } };
+      }
+      return DATA[path];
+    });
+    await page.settle();
+    const app = page.document.querySelector('input[aria-label="Mobile app access"]');
+    const tv = page.document.querySelector('input[aria-label="TV add-on injection"]');
+    assert.equal(app.checked, true);
+    assert.equal(tv.checked, false);
+    tv.checked = true;
+    tv.dispatchEvent(new page.window.Event('change'));
+    await page.settle();
+    assert.deepEqual(writes[0], { tvAddonEnabled: true });
+    assert.equal(app.checked, false, 'refreshes the other flag changed in another tab');
+    refuse = true;
+    app.checked = true;
+    app.dispatchEvent(new page.window.Event('change'));
+    await page.settle();
+    assert.equal(app.checked, false);
+    assert.equal(tv.checked, true);
+  });
+});

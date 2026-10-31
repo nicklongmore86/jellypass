@@ -21,7 +21,7 @@ const APP_ORIGINS = ['null', 'file://'];
 const OTHER_ORIGINS = ['https://evil.example', `https://${HOST_A}`, 'http://localhost', 'File://', 'FILE://', 'file:///www', 'null, null', 'NULL', 'tizen-app://AprZAARz4r.Jellyfin', 'app://AprZAARz4r'];
 
 const webWorld = (options) => Object.assign(world(options), { webPage: {} });
-const tvOn = (households = ['grove']) => ({ tvAddon: { households } });
+const tvOn = (households = ['grove']) => ({ tvAddon: true, tvHouseholds: households });
 const preflight = (app, pathname, headers, host = HOST_A) => get(app.port, pathname, { Host: host, ...headers }, { method: 'OPTIONS' });
 const corsHeaders = (answer) => Object.keys(answer.headers).filter((name) => name.startsWith('access-control-')).sort();
 /** What a request's answer is made of, apart from its date: the same for two requests means the Origin changed nothing. */

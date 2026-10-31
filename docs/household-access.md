@@ -156,3 +156,30 @@ Sign in to `/admin/` and select **Run self-check**. `POST /v1/self-check` uses t
 Configure `JELLYFIN_PUBLIC_URLS` with comma-separated public Jellyfin origins (including an upstream base path if configured), and `SEERR_PUBLIC_URL` with Seerr's public URL. Public probes send no Jellyfin/Seerr keys, browser cookies or member tokens. The self-request uses each household's configured/generated HTTPS origin, a short-lived random challenge, and requires Host preservation, syntactically valid X-Forwarded-For, matching X-Forwarded-Proto and a TCP peer in TRUSTED_PROXIES. It does not prove the proxy strips forged headers on every external path.
 
 The six results cover direct-origin bypass, Jellyfin's real Quick Connect setting, proxy headers, direct Seerr reachability, Jellyfin version-gate support, and TMDB key validity. A reachable direct Jellyfin origin fails; a reachable public Seerr URL warns because Seerr must be admin-only. An unsuccessful inside probe is inconclusive, not proof of outside isolation. Test from a member network too, including LAN IPs, alternate names, split DNS and firewall rules. TMDB's credential is sent only to `api.themoviedb.org`. No public Seerr URL or an unreachable Seerr URL passes that probe; a response, including a redirect, warns. Other missing configuration and inconclusive probes produce warnings.
+
+## Household app and TV switches
+
+On the private admin listener (default port 8788), open Groups and use each household's **Mobile app access** and
+**TV add-on injection** switches. New households have app access on and TV injection off. These are independent;
+the TV row uses the app API, so keep app access on for a working TV row. Global `HOUSEHOLD_APP_ENABLED` and
+`TV_ADDON_ENABLED` still gate those services. Turning TV injection off restores the ordinary Jellyfin page.
+Turning app access off refuses authenticated household members' API requests with HTTP 403 and the fixed body
+`{"error":"app_access_disabled"}`; other households are unaffected. Invalid tokens and non-members still get 401.
+This does not disable ordinary Jellyfin playback or revoke an in-flight request.
+
+Admin automation can `PUT /v1/groups/{id}/features` with one or both boolean fields `appEnabled` and `tvAddonEnabled` (send only the changed flag).
+`GET /v1/groups` includes both fields. These routes require admin authentication on the admin listener;
+household hosts refuse them. Membership edits preserve both switches.
+
+State schema v9 stores the switches. On upgrade from v8 or v7, app access starts on and TV injection is seeded from
+`TV_ADDON_HOUSEHOLDS` if present (`*` or comma-separated household IDs), otherwise off. This happens only once.
+Remove that deprecated variable after upgrade; stored switches are authoritative and a remaining variable produces
+one warning per process. Back up state before upgrading; older builds cannot read schema v9.
+
+Before its first v9 save, migration writes and fsyncs a private temporary copy, then publishes it atomically as
+`<state-file>.v8.bak` (or `.v7.bak`) without replacing an existing file. An identical backup is reused. If an existing
+backup is partial or has different content (for example after running 4.0.0 again following a rollback), migration
+creates a new `<state-file>.v8.<ISO timestamp>.<unique ID>.bak` (or `.v7.…`) and logs its full path. A backup failure
+stops migration before v9 is saved. To roll back to 4.0.0, stop JellyPass and restore the **latest backup for the
+upgrade being rolled back** (the logged timestamped file, if created) to the state path. Earlier backups may be stale;
+changes made after the selected backup are not included. `*` no longer covers households created later: new households default TV off.

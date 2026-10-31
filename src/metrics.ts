@@ -29,7 +29,7 @@ export class Metrics {
       '# TYPE jfa_request_backfill_total counter',
       '# HELP jfa_request_backfill_last_run_timestamp_seconds Unix time the Seerr request backfill last completed a scan.',
       '# TYPE jfa_request_backfill_last_run_timestamp_seconds gauge',
-      '# HELP jfa_app_requests_total Household app API answers by endpoint (me, search, discover, movie, tv, season, get, requests, cancel, hide, unhide, hidden, unknown) and outcome (ok, unauthorized, rate_limited, invalid, not_found, hidden_limit, unavailable).',
+      '# HELP jfa_app_requests_total Household app API answers by endpoint (me, search, discover, movie, tv, season, get, requests, cancel, hide, unhide, hidden, unknown) and outcome (ok, app_disabled, unauthorized, rate_limited, invalid, not_found, hidden_limit, unavailable).',
       '# TYPE jfa_app_requests_total counter',
       '# HELP jfa_app_safety_markers Household app "Get this" safety tombstones that still decide a grant, by kind (request, member).',
       '# TYPE jfa_app_safety_markers gauge',

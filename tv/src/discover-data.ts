@@ -199,9 +199,9 @@ export class DiscoverData {
     if (!this.#watch.holds(stamp)) return { ok: false, stale: true };
     if (!result.ok && result.status === 401) this.forget();
     if (!result.ok && result.status === 429) this.#blockedUntil = Math.max(this.#blockedUntil, this.#now() + (result.retryAfterMs ?? DISCOVER_BACKOFF_MS));
-    // A refused token (401: the cache is emptied above), an address the reader would not send (400) and a rate limit (the
+    // A refused token (401: the cache is emptied above), disabled app access (403), an address the reader would not send (400) and a rate limit (the
     // block above holds it, to its deadline, not for the failure's 30 seconds) are not remembered.
-    if (result.ok || (result.status !== 401 && result.status !== 400 && result.status !== 429)) {
+    if (result.ok || (result.status !== 401 && result.status !== 403 && result.status !== 400 && result.status !== 429)) {
       this.#entries.delete(key);
       this.#entries.set(key, { result, mono: this.#now(), wall: this.#wall() });
       while (this.#entries.size > DISCOVER_CACHE_SIZE) {

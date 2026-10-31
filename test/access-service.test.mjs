@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { describe, it } from 'node:test';
 import { AccessService, accessTag, sameStringSet } from '../dist/access-service.js';
@@ -149,7 +149,7 @@ describe('state migration', () => {
     });
   }
 
-  it('migrates 3.x schema v7 to v8 keeping every field, a 3.10.0 version confirmation among them', async (t) => {
+  it('migrates 3.x schema v7 to v9 keeping every field, a 3.10.0 version confirmation among them', async (t) => {
     const file = await stateFile(t);
     const v7 = {
       version: 7, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [], appWithdrawals: {},
@@ -159,20 +159,116 @@ describe('state migration', () => {
     const store = new GrantStore(file);
     await store.load();
     assert.equal(store.getJellyfinVersionConfirmed(), '13.0.0');
-    assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), { ...v7, version: 8 });
+    assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), { ...v7, version: 9 });
   });
 
-  it('keeps schema v8 without rewriting', async (t) => {
+  it('keeps schema v9 without rewriting', async (t) => {
     const file = await stateFile(t);
-    const contents = JSON.stringify({ version: 8, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [], jellyfinVersionConfirmed: '13.0.0' });
+    const contents = JSON.stringify({ version: 9, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [], jellyfinVersionConfirmed: '13.0.0' });
     await writeFile(file, contents);
     await new GrantStore(file).load();
     assert.equal(await readFile(file, 'utf8'), contents);
   });
 
+  for (const legacy of [undefined, 'grove', '*']) {
+    it(`migrates v8 feature switches once with legacy selection ${legacy ?? 'absent'}`, async (t) => {
+      const before = process.env.TV_ADDON_HOUSEHOLDS;
+      t.after(() => { if (before === undefined) delete process.env.TV_ADDON_HOUSEHOLDS; else process.env.TV_ADDON_HOUSEHOLDS = before; });
+      if (legacy === undefined) delete process.env.TV_ADDON_HOUSEHOLDS; else process.env.TV_ADDON_HOUSEHOLDS = legacy;
+      const file = await stateFile(t);
+      const groups = Object.fromEntries(['grove', 'mill'].map((id) => [id, { id, name: id, userIds: [], createdAt: 'old', updatedAt: 'old' }]));
+      await writeFile(file, JSON.stringify({ version: 8, grants: {}, groups, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [] }));
+      const store = new GrantStore(file);
+      await store.load();
+      assert.equal(store.getGroup('grove').appEnabled, true);
+      assert.equal(store.getGroup('grove').tvAddonEnabled, legacy !== undefined);
+      assert.equal(store.getGroup('mill').tvAddonEnabled, legacy === '*');
+      await store.setHouseholdFeatures('grove', { appEnabled: false, tvAddonEnabled: false });
+      await store.upsertGroup({ id: 'grove', name: 'Edited', userIds: [] });
+      process.env.TV_ADDON_HOUSEHOLDS = '*';
+      const reloaded = new GrantStore(file);
+      await reloaded.load();
+      assert.equal(reloaded.getGroup('grove').appEnabled, false);
+      assert.equal(reloaded.getGroup('grove').tvAddonEnabled, false);
+      const created = await reloaded.upsertGroup({ id: 'new', name: 'New', userIds: [] });
+      assert.equal(created.appEnabled, true);
+      assert.equal(created.tvAddonEnabled, false);
+    });
+  }
+
+  for (const version of [7, 8]) {
+    it(`reuses an identical v${version} backup and logs only seed counts for a normalized env list`, async (t) => {
+      const before = process.env.TV_ADDON_HOUSEHOLDS;
+      t.after(() => { if (before === undefined) delete process.env.TV_ADDON_HOUSEHOLDS; else process.env.TV_ADDON_HOUSEHOLDS = before; });
+      process.env.TV_ADDON_HOUSEHOLDS = ' GrOvE , unmatched-canary , grove , ';
+      const logs = [];
+      t.mock.method(console, 'info', (value) => logs.push(value));
+      const file = await stateFile(t);
+      const group = { id: 'grove', name: 'private-name-canary', userIds: [], createdAt: 'old', updatedAt: 'old' };
+      const original = JSON.stringify({ version, grants: {}, groups: { grove: group }, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [] });
+      await writeFile(file, original);
+      const store = new GrantStore(file);
+      await store.load();
+      assert.equal(store.getGroup('grove').tvAddonEnabled, true);
+      const backup = `${file}.v${version}.bak`;
+      assert.equal(await readFile(backup, 'utf8'), original);
+      assert.equal((await stat(backup)).mode & 0o777, 0o600);
+      assert.deepEqual(logs.map((line) => JSON.parse(line)), [{ level: 'info', message: 'seeded TV on for 1 of 1 households, 1 entries unmatched' }]);
+      assert.ok(!logs.join('').includes('grove') && !logs.join('').includes('canary'));
+      // Repeating an upgrade with the same source reuses its complete backup.
+      await writeFile(file, original);
+      await new GrantStore(file).load();
+      assert.equal(await readFile(backup, 'utf8'), original);
+      assert.equal((await stat(backup)).mode & 0o777, 0o600);
+      assert.deepEqual((await readdir(path.dirname(file))).sort(), ['grants.json', `grants.json.v${version}.bak`]);
+      await new GrantStore(file).load();
+      assert.equal(logs.length, 2, 'v9 reload does not seed or log again');
+    });
+  }
+
+  for (const version of [7, 8]) {
+    for (const previous of ['partial', 'different']) {
+      it(`publishes a fresh v${version} backup when the existing one is ${previous}`, async (t) => {
+        const file = await stateFile(t);
+        const earlier = JSON.stringify({ version, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [] });
+        // A rollback may add data before the next upgrade: the new backup must include those changes.
+        const original = previous === 'different' ? earlier.replace('"groups":{}', '"groups":{},"rollbackChange":true') : earlier;
+        const existing = previous === 'partial' ? earlier.slice(0, 20) : earlier;
+        const primary = `${file}.v${version}.bak`;
+        await writeFile(file, original);
+        await writeFile(primary, existing);
+        const logs = [];
+        t.mock.method(console, 'info', (value) => logs.push(JSON.parse(value)));
+        await new GrantStore(file).load();
+        const saved = logs.filter((entry) => entry.message === 'pre-v9 state backup saved');
+        assert.equal(saved.length, 1);
+        const backup = saved[0].path;
+        assert.ok(backup.startsWith(`${file}.v${version}.`) && backup.endsWith('.bak'));
+        assert.notEqual(backup, primary);
+        assert.match(path.basename(backup), /\.v[78]\.\d{4}-\d{2}-\d{2}T/);
+        assert.equal(await readFile(primary, 'utf8'), existing, 'never overwrite the earlier backup');
+        assert.equal(await readFile(backup, 'utf8'), original, 'the latest backup matches the source of this upgrade');
+        assert.equal((await stat(backup)).mode & 0o777, 0o600);
+        assert.equal(JSON.parse(await readFile(file, 'utf8')).version, 9);
+        assert.ok(!(await readdir(path.dirname(file))).some((name) => name.endsWith('.tmp')));
+      });
+    }
+  }
+
+  it('refuses migration with a contextual error if its backup cannot be completed and cleans its temporary file', async (t) => {
+    const file = await stateFile(t);
+    const original = JSON.stringify({ version: 8, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [] });
+    await writeFile(file, original);
+    const backup = `${file}.v8.bak`;
+    await mkdir(backup);
+    await assert.rejects(new GrantStore(file).load(), (error) => error.message.startsWith(`could not write pre-v9 state backup ${backup}: `));
+    assert.equal(await readFile(file, 'utf8'), original, 'no v9 save is allowed without a usable backup');
+    assert.ok(!(await readdir(path.dirname(file))).some((name) => name.endsWith('.tmp')));
+  });
+
   it('rejects a newer state schema and leaves the file untouched', async (t) => {
     const file = await stateFile(t);
-    const contents = JSON.stringify({ version: 9, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], future: true });
+    const contents = JSON.stringify({ version: 10, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], future: true });
     await writeFile(file, contents);
     await assert.rejects(new GrantStore(file).load(), /unsupported state schema version/);
     assert.equal(await readFile(file, 'utf8'), contents);

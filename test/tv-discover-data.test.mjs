@@ -776,3 +776,15 @@ async function until(check) {
   for (let turn = 0; turn < 200 && !check(); turn += 1) await new Promise((resolve) => setImmediate(resolve));
   assert.ok(check(), 'the awaited state was reached');
 }
+
+
+it('does not cache a 403: app access restored is visible on the next call without waiting', async () => {
+  let disabled = true;
+  const { data, api } = discover(() => disabled ? json({ error: 'app_access_disabled' }, 403) : json(page([card(1)])));
+  const request = { kind: 'list', list: 'trending' };
+  assert.equal((await data.get(request)).status, 403);
+  assert.equal(data.peek(request), undefined);
+  disabled = false;
+  assert.equal((await data.get(request)).ok, true);
+  assert.equal(api.calls.length, 2);
+});

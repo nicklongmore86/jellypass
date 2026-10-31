@@ -63,6 +63,8 @@ describe("Home's words", () => {
   });
 
   it('maps every failure to the PWA\'s wording', () => {
+    expect(errorText('app_access_disabled')).toBe('app_access_disabled');
+    expect(ERROR_TEXT.app_access_disabled.body).toContain('administrator');
     expect(['too_many_requests', 'network', 'not_found', 'unavailable', 'unexpected', 'invalid_request'].map((kind) => errorText(kind as never))).toEqual([
       'rate_limited',
       'offline',

@@ -133,6 +133,7 @@ export function useSession(): Session {
 
 function stalledKind(error: unknown): StalledKind {
   if (!(error instanceof ApiError)) return 'unavailable';
+  if (error.kind === 'app_access_disabled') return 'app_access_disabled';
   if (error.kind === 'network') return 'offline';
   if (error.kind === 'too_many_requests') return 'rate_limited';
   if (error.kind === 'not_found' && error.householdNotFound) return 'not_found';

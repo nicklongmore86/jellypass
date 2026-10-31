@@ -404,7 +404,7 @@ describe('household hosts and the Jellyfin version, enforcing (the 4.0.0 default
     assert.deepEqual([status.confirmation, status.confirmedVersion, status.enforcement, status.householdHosts], ['confirmed', '13.0.0', 'refuse', 'serving']);
     assert.deepEqual([(await get(app.port, '/web/index.html', { Host: HOST })).text], [RELAYED]);
     const migrated = JSON.parse(await readFile(stateFile, 'utf8'));
-    assert.deepEqual([migrated.version, migrated.jellyfinVersionConfirmed], [8, '13.0.0']);
+    assert.deepEqual([migrated.version, migrated.jellyfinVersionConfirmed], [9, '13.0.0']);
     // A version 3.10.0 had not confirmed is refused.
     app.jellyfin.version = '13.0.1';
     await app.gate.check();

@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { link, mkdir, open, readFile, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { HouseholdAddressEntry } from './household-addresses.js';
 import type {
@@ -62,7 +62,7 @@ export interface HiddenTitle {
 /** The most deferred webhooks remembered (see GrantStore.deferWebhook); beyond it the oldest are left to the backfill. */
 export const MAX_DEFERRED_REQUESTS = 1000;
 
-const EMPTY_STATE: GrantState = { version: 8, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [] };
+const EMPTY_STATE: GrantState = { version: 9, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [] };
 
 export class GrantStore {
   readonly #file: string;
@@ -107,7 +107,13 @@ export class GrantStore {
     }
     // close() may have been called while the file was being read; state must not change after it.
     this.#assertOpen();
-    const migrated = migrateState(JSON.parse(text) as unknown);
+    const original = JSON.parse(text) as { version?: unknown };
+    const originalVersion = original?.version;
+    const migrated = migrateState(original);
+    if (migrated.changed) {
+      await writePreV9Backup(this.#file, `${this.#file}.v${originalVersion}.bak`, text);
+      this.#assertOpen();
+    }
     this.#state = migrated.state;
     this.#addressesSnapshot = undefined;
     this.#durableIntents = new Set(Object.keys(this.#state.appRequestIntents ?? {}));
@@ -124,6 +130,10 @@ export class GrantStore {
     const seeded = this.#state.handledRequestIds === undefined || handled.size !== before;
     if (seeded) this.#state.handledRequestIds = [...handled];
     if (migrated.changed || lifted || seeded || prunedHidden) await this.#save();
+    if (migrated.seedCounts) {
+      const { on, total, unmatched } = migrated.seedCounts;
+      console.info(JSON.stringify({ level: 'info', message: `seeded TV on for ${on} of ${total} households, ${unmatched} entries unmatched` }));
+    }
     if (this.#limitHouseholds && this.countGroups() > MAX_HOUSEHOLDS) {
       console.warn(JSON.stringify({
         level: 'warn',
@@ -144,6 +154,15 @@ export class GrantStore {
 
   public listGroups(): AccessGroup[] {
     return Object.values(this.#state.groups).map(clone);
+  }
+
+  public async setHouseholdFeatures(groupId: string, features: { appEnabled?: boolean; tvAddonEnabled?: boolean }): Promise<AccessGroup> {
+    this.#assertOpen();
+    const group = this.#state.groups[normalizeId(groupId)];
+    if (!group) throw new Error('group not found');
+    Object.assign(group, features, { updatedAt: new Date().toISOString() });
+    await this.#save();
+    return clone(group);
   }
 
   public countGroups(): number {
@@ -506,6 +525,8 @@ export class GrantStore {
     if (this.#limitHouseholds && !previous && this.countGroups() >= MAX_HOUSEHOLDS) throw new Error(`groups must be at most ${MAX_HOUSEHOLDS}`);
     const group: AccessGroup = {
       id,
+      appEnabled: previous?.appEnabled ?? true,
+      tvAddonEnabled: previous?.tvAddonEnabled ?? false,
       name: input.name.trim(),
       userIds: [...new Set(input.userIds.map(normalizeId))].sort(),
       createdAt: previous?.createdAt ?? now,
@@ -1348,6 +1369,44 @@ export class GrantStore {
   }
 }
 
+/** Publish only complete, synced backups; a rollback followed by another upgrade must preserve its new source too. */
+async function writePreV9Backup(file: string, primary: string, contents: string): Promise<void> {
+  const temporary = `${primary}.${randomUUID()}.tmp`;
+  let backup = primary;
+  let createdTemporary = false;
+  try {
+    try {
+      const handle = await open(temporary, 'wx', 0o600);
+      createdTemporary = true;
+      try {
+        await handle.writeFile(contents, 'utf8');
+        await handle.sync();
+      } finally {
+        await handle.close();
+      }
+      for (;;) {
+        try {
+          // link publishes atomically without replacing any existing backup.
+          await link(temporary, backup);
+          break;
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+          if (await readFile(backup, 'utf8') === contents) break;
+          backup = `${primary.slice(0, -4)}.${new Date().toISOString()}.${randomUUID()}.bak`;
+        }
+      }
+      // Make the published directory entry durable before the state file can advance to v9.
+      const directory = await open(path.dirname(file), 'r');
+      try { await directory.sync(); } finally { await directory.close(); }
+      if (backup !== primary) console.info(JSON.stringify({ level: 'info', message: 'pre-v9 state backup saved', path: backup }));
+    } finally {
+      if (createdTemporary) await unlink(temporary);
+    }
+  } catch (error) {
+    throw new Error(`could not write pre-v9 state backup ${backup}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
+  }
+}
+
 /** Part of a grant moved to another item: merged into that item's grant by GrantStore.mergeGrants. */
 export interface GrantMove {
   itemId: string;
@@ -1486,7 +1545,7 @@ function liftRemovals(state: GrantState): boolean {
   return true;
 }
 
-function migrateState(value: unknown): { state: GrantState; changed: boolean } {
+function migrateState(value: unknown): { state: GrantState; changed: boolean; seedCounts?: { on: number; total: number; unmatched: number } } {
   if (!value || typeof value !== 'object') throw new Error('state file must be a JSON object');
   const candidate = value as {
     version?: unknown;
@@ -1501,7 +1560,7 @@ function migrateState(value: unknown): { state: GrantState; changed: boolean } {
   if (typeof candidate.version === 'number' && candidate.version >= 1 && candidate.version < 7) {
     throw new Error('1.x state (schema v1–v6) is unsupported: upgrade via 3.9.x first');
   }
-  if (candidate.version !== 8 && candidate.version !== 7) throw new Error('unsupported state schema version');
+  if (candidate.version !== 9 && candidate.version !== 8 && candidate.version !== 7) throw new Error('unsupported state schema version');
   if (!candidate.groups || typeof candidate.groups !== 'object') throw new Error('state file is missing groups');
   if (!candidate.catalog || typeof candidate.catalog !== 'object') throw new Error('state file is missing catalog');
   if (!Array.isArray(candidate.passwordlessUserIds)) throw new Error('state file is missing passwordlessUserIds');
@@ -1511,8 +1570,25 @@ function migrateState(value: unknown): { state: GrantState; changed: boolean } {
   }
   const hidden = (value as { appHiddenTitles?: unknown }).appHiddenTitles;
   if (hidden !== undefined && !validHiddenTitles(hidden)) throw new Error('state file has an invalid appHiddenTitles');
-  // 8 (4.0.0) adds only the optional address map and hidden titles, so a 7 file is an 8 one without them. Every field is
-  // kept, among them a Jellyfin version confirmation 3.10.0 stored.
-  if (candidate.version === 7) return { state: { ...(value as Omit<GrantState, 'version'>), version: 8 }, changed: true };
+  if (candidate.version !== 9) {
+    const state = value as GrantState;
+    const legacy = process.env.TV_ADDON_HOUSEHOLDS?.trim().toLowerCase();
+    const selected = new Set(legacy?.split(',').map((id) => id.trim()).filter(Boolean));
+    for (const group of Object.values(state.groups)) {
+      group.appEnabled = true;
+      group.tvAddonEnabled = legacy === '*' || selected.has(group.id.toLowerCase());
+    }
+    state.version = 9;
+    const groups = Object.values(state.groups);
+    const ids = new Set(groups.map((group) => group.id.toLowerCase()));
+    return { state, changed: true, ...(legacy !== undefined ? { seedCounts: {
+      on: groups.filter((group) => group.tvAddonEnabled).length,
+      total: groups.length,
+      unmatched: legacy === '*' ? 0 : [...selected].filter((id) => !ids.has(id)).length,
+    } } : {}) };
+  }
+  for (const group of Object.values((value as GrantState).groups)) {
+    if (typeof group.appEnabled !== 'boolean' || typeof group.tvAddonEnabled !== 'boolean') throw new Error('state file has invalid household features');
+  }
   return { state: value as GrantState, changed: false };
 }

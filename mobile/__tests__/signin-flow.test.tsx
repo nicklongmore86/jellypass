@@ -483,6 +483,7 @@ describe('at start', () => {
   it.each([
     ['no answer', offline, STALLED_TEXT.offline],
     ['502', () => answer(502, { error: 'unavailable' }), STALLED_TEXT.unavailable],
+    ['403', () => answer(403, { error: 'app_access_disabled' }), STALLED_TEXT.app_access_disabled],
     ['429', () => answer(429, { error: 'too_many_requests' }), STALLED_TEXT.rate_limited],
     ['household_not_found', () => answer(404, { error: 'household_not_found' }), STALLED_TEXT.not_found],
   ])('keeps the sign-in when /me cannot answer (%s), and offers a retry', async (_what, respond, text) => {

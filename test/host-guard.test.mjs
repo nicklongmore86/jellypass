@@ -154,7 +154,7 @@ describe('one Host per request', { timeout: 60_000 }, () => {
   });
 
   it('answers the Samsung app\'s CORS preflight on a household host as before', async (t) => {
-    const app = await startApp(t, Object.assign(world(), { webPage: {} }), { tvAddon: { households: ['grove'] } });
+    const app = await startApp(t, Object.assign(world(), { webPage: {} }), { tvAddon: true, tvHouseholds: ['grove'] });
     const before = app.jellyfin.requests.length;
     for (const origin of ['null', 'file://']) {
       const answer = await get(app.port, '/jellypass/app/v1/me', { Host: HOST_A, Origin: origin, 'Access-Control-Request-Method': 'GET', 'Access-Control-Request-Headers': 'Authorization' }, { method: 'OPTIONS' });

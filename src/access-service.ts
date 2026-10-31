@@ -197,6 +197,15 @@ export class AccessService {
     return this.#store.listGroups();
   }
 
+  public getHouseholdFeatures(groupId: string) {
+    const group = this.#store.getGroup(groupId);
+    return { appEnabled: group?.appEnabled === true, tvAddonEnabled: group?.tvAddonEnabled === true };
+  }
+
+  public setHouseholdFeatures(groupId: string, features: { appEnabled?: boolean; tvAddonEnabled?: boolean }) {
+    return this.#store.setHouseholdFeatures(groupId, features);
+  }
+
   /** The household address map as stored (see GrantStore.getHouseholdAddresses). */
   public getHouseholdAddresses(): Readonly<Record<string, Readonly<HouseholdAddressEntry>>> {
     return this.#store.getHouseholdAddresses();

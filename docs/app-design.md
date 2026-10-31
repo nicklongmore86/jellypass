@@ -569,6 +569,7 @@ server by months still works.
   the token is deleted from the device. The gateway forgets the token at once (see "Identity chain").
 - **Answers.** `401` means the token is no longer good: drop it and show the profile picker. Errors are fixed bodies,
   the same for every endpoint and every title: `400 {"error":"invalid_request"}`, `401 {"error":"unauthorized"}`,
+  `403 {"error":"app_access_disabled"}` (authenticated member; household app access off),
   `404 {"error":"not_found"}`, `409 {"error":"hidden_limit_reached"}` (only from hiding a new title past the member's
   2,000; see "Hidden titles"), `429 {"error":"too_many_requests"}`, `502 {"error":"unavailable"}`; and, before any
   token is checked, `404 {"error":"household_not_found"}` on a household address no household has (the household was
@@ -2095,3 +2096,11 @@ method; there is no generic pass-through. Titles come from TMDB (`TmdbClient`), 
   webhooks in arrival order fails a test only together with completing a join that found no grant: each closes that
   order on its own. Parsing title answers on the main thread, and listing every
   household's records for one household's answer, fail none: they are timing-only (documented above).
+
+### App API revision 4: administrator access control
+
+`GET /me` advertises `apiVersion: 4`. Every app API endpoint can return HTTP 403 with the fixed body
+`{"error":"app_access_disabled"}` after authenticating a member of the selected household whose app switch is off.
+Clients should show “App access is off” and ask the member to contact their administrator. No upstream messages or
+household settings are returned. Invalid tokens and members of other households retain the same 401 response.
+The per-household admin controls and v9 migration are described in [Household access](household-access.md#household-app-and-tv-switches).
