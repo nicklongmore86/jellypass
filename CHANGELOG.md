@@ -29,8 +29,11 @@ changes are always listed at the top of the release notes.
   household addresses and the household app. Every call needs the admin token
   as a bearer token: `ADMIN_TOKEN`, or the setup token written to
   `admin-token` next to the state file (mode `0600`, never logged). Steps are
-  stored as they are made, so a wizard left half done resumes; finishing starts
-  JellyPass in place. Settings live in `settings.json` next to the state file
+  stored as they are made, so a wizard left half done resumes (in setup mode:
+  nothing starts until Finish); finishing starts JellyPass in place. A variable
+  set in the environment locks only its own field (for example `JELLYFIN_URL`
+  without `JELLYFIN_API_KEY`). Without `ADMIN_TOKEN`, the setup token remains
+  the admin token after setup; delete `admin-token` and restart to rotate it. Settings live in `settings.json` next to the state file
   (`SETTINGS_FILE`, mode `0600`), not in the state file, whose schema is
   unchanged. Environment variables keep winning over stored settings, and the
   wizard shows them as locked: an install configured only by environment

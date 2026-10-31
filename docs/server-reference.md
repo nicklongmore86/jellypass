@@ -289,14 +289,40 @@ setup token JellyPass writes to `admin-token` next to the state file (mode
 administrator's admin-site session does not open the wizard. The token is never
 logged: the log names the file only.
 
-While the required settings are missing, JellyPass runs in **setup mode**: the
+**The setup token stays the admin token after Finish.** Without `ADMIN_TOKEN`
+it is the bearer token for the admin API, `/metrics` and the wizard for as long
+as JellyPass runs, so keep `admin-token` as private as `settings.json`. To
+rotate it, either:
+
+- stop JellyPass, delete `admin-token`, and start it again: an install the
+  wizard configured writes a new random token to the file at startup (read it
+  as above; the old one stops working), or
+- set `ADMIN_TOKEN` in the environment (`openssl rand -hex 32`), which wins
+  over the file from the next start; delete `admin-token` afterwards.
+
+An install whose environment sets every required variable never gets the file
+and keeps its admin token (`ADMIN_TOKEN`, else `WEBHOOK_TOKEN`) as before.
+
+While the required settings are missing, or the wizard has stored some of them
+but has not been finished, JellyPass runs in **setup mode**: the
 admin listener serves the wizard, `/health` (`{"status":"ok","setup":"required"}`)
 and the Seerr webhook's test notification, and answers everything else
 `503 setup_required`. There is no member listener, so no household address is
 served, until setup has finished.
 
 Each step checks what it is given and stores the result at once, so a wizard
-left half done resumes where it stopped and a step can be run again:
+left half done resumes where it stopped and a step can be run again. Nothing
+starts until **Finish**: a restart part way through comes back in setup mode
+with the steps already made. (An install whose environment alone sets
+`JELLYFIN_URL`, `JELLYFIN_API_KEY` and `WEBHOOK_TOKEN` starts directly, as
+before, whatever the settings file holds.)
+
+A variable set in the environment locks that field only. With `JELLYFIN_URL`
+set, the Jellyfin step creates the key at that address and stores only the
+key; with `JELLYFIN_API_KEY` set, it checks that key at the address you give
+and stores only the address (no sign-in, no new key). `SEERR_URL` and
+`SEERR_API_KEY` work the same way for the Seerr step. A step whose every field
+the environment sets is shown as locked. The steps:
 
 1. **Jellyfin**: its address and a Jellyfin administrator's name and password.
    JellyPass signs in once, creates an API key of its own named `JellyPass`
@@ -309,8 +335,8 @@ left half done resumes where it stopped and a step can be run again:
    webhook (Request Available only, the [payload](#configure-seerr) JellyPass
    reads, `Authorization: Bearer` with the token) to call the admin listener at
    the address you give, for example `http://jellypass:8788`. Seerr has one
-   webhook: one that is on and calls another address is replaced only after you
-   confirm. Then Seerr sends its test notification and the wizard says whether
+   webhook: one set to call another address, whether it is on or off, is
+   replaced only after you confirm. Then Seerr sends its test notification and the wizard says whether
    it reached JellyPass.
 4. **TMDB key** for the household apps, checked with TMDB.
 5. **Request backfill**: the cutoff is the install date (when the wizard first
@@ -322,7 +348,9 @@ left half done resumes where it stopped and a step can be run again:
    [Household addresses](household-hosts.md#household-addresses)).
 
 **Finish** checks the whole configuration as JellyPass would start with it and
-then starts JellyPass with it, in place. On a running JellyPass the wizard
+then starts JellyPass with it, in place. From the moment Finish begins, every
+other step (from another tab, say) is refused with `409 setup_applying`, and
+the steps already running complete before JellyPass restarts. On a running JellyPass the wizard
 changes stored settings only: they take effect when you **apply** them, which
 restarts JellyPass's services in place (and signs administrators out of the
 admin site).

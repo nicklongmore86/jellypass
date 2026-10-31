@@ -77,7 +77,9 @@ Open `http://127.0.0.1:8788/admin/`, enter the setup token, and follow the
 [setup wizard](docs/server-reference.md#setup-wizard): it signs in to Jellyfin
 once to create JellyPass's own API key, checks Seerr's key and points Seerr's
 webhook at JellyPass with a token it generates, checks your TMDB key, and sets
-the request backfill to the install date. Nothing to write by hand.
+the request backfill to the install date. Nothing to write by hand. Without
+`ADMIN_TOKEN`, the setup token stays the admin token after setup: keep it
+private (to rotate it, see [Setup wizard](docs/server-reference.md#setup-wizard)).
 
 Then sign in to the admin site with a Jellyfin administrator account, run
 **Sync library**,
