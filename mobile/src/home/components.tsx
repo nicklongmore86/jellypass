@@ -6,6 +6,8 @@
 // - A card is one link whose name is its title, year and rating, then its status, said once; the status chip drawn on
 //   the image is hidden from screen readers.
 // - Text grows with the system font size with no line limit, cap or fixed height: titles wrap, the chips scroll.
+// - Where the household can hide titles, a card's long press opens the "Not interested" sheet and screen readers get the
+//   same as the card's own action (src/hidden/HideProvider.tsx); a card the member hid (Search only) says Hidden.
 import { Children, createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import {
   AccessibilityInfo,
@@ -27,6 +29,8 @@ import {
 } from 'react-native';
 
 import type { Card, HouseholdState, Source } from '../api/types';
+import { useCardHideProps } from '../hidden/HideProvider';
+import { HIDE_TEXT } from '../hidden/text';
 import { backdropSources, safeImageUrl, safeLogoUrl } from '../api/urls';
 import { Icon } from '../icons';
 import { colors, layout, radii, spacing, status as statusColors, typography, water } from '../theme';
@@ -348,15 +352,32 @@ export function backdropUri(url: string | null, width: number, scale = PixelRati
   return width * scale > 780 ? sources.large : sources.small;
 }
 
+/** A card's accessible name, with "Hidden from Discover" after it when the member hid it. */
+function hiddenCardName(card: Card, kind = false): string {
+  const name = cardName(card, kind);
+  return card.hidden ? `${name}, ${HIDE_TEXT.state}` : name;
+}
+
+/** "Hidden" under a card the member hid, in words (never colour alone); its card's name already says it. */
+function HiddenMark() {
+  return (
+    <View testID="hidden-mark" style={styles.hiddenMark} {...hidden}>
+      <Text style={styles.hiddenMarkText}>{HIDE_TEXT.badge}</Text>
+    </View>
+  );
+}
+
 /** A poster card: poster with its status chip at the top-left, then the title and "year · Movie/Series". */
 export function PosterCard({ card, width, onOpen }: { card: Card; width: number; onOpen: (card: Card) => void }) {
   const onFocus = useContext(CardFocus);
   const badge = useBadgePlacement(width);
+  const hide = useCardHideProps(card);
   return (
     <Pressable
       accessibilityRole="link"
-      accessibilityLabel={cardName(card, true)}
+      accessibilityLabel={hiddenCardName(card, true)}
       onPress={() => onOpen(card)}
+      {...hide}
       onFocus={onFocus}
       style={({ pressed }) => [styles.card, { width }, pressed && styles.pressed]}
     >
@@ -366,6 +387,7 @@ export function PosterCard({ card, width, onOpen }: { card: Card; width: number;
       <StatusChip state={card.state} overlay={badge === 'overlay'} below={badge === 'below'} />
       <Text style={styles.cardTitle}>{card.title}</Text>
       <Text style={styles.cardMeta}>{posterMeta(card)}</Text>
+      {card.hidden ? <HiddenMark /> : null}
     </Pressable>
   );
 }
@@ -380,11 +402,13 @@ export function BackdropCard({ card, width, onOpen }: { card: Card; width: numbe
   const badge = useBadgePlacement(width);
   const backdrop = backdropUri(card.backdropUrl, width);
   const meta = backdropMeta(card);
+  const hide = useCardHideProps(card);
   return (
     <Pressable
       accessibilityRole="link"
-      accessibilityLabel={cardName(card)}
+      accessibilityLabel={hiddenCardName(card)}
       onPress={() => onOpen(card)}
+      {...hide}
       onFocus={onFocus}
       style={({ pressed }) => [styles.card, styles.backdropCard, { width }, pressed && styles.pressed]}
     >
@@ -395,6 +419,7 @@ export function BackdropCard({ card, width, onOpen }: { card: Card; width: numbe
       <View style={styles.backdropText}>
         <Text style={styles.backdropTitle}>{card.title}</Text>
         {meta ? <Text style={styles.backdropMeta}>{meta}</Text> : null}
+        {card.hidden ? <HiddenMark /> : null}
       </View>
     </Pressable>
   );
@@ -831,12 +856,14 @@ function HeroButton({ icon, label, onPress }: { icon: 'prev' | 'next'; label: st
 
 function HeroSlide({ card, width, tablet, first, onOpen }: { card: Card; width: number; tablet: boolean; first: boolean; onOpen: (card: Card) => void }) {
   const overview = shortOverview(card.overview);
+  const hide = useCardHideProps(card);
   return (
     <View testID={first ? 'hero-slide-first' : 'hero-slide'} style={{ width }}>
       <Pressable
         accessibilityRole="link"
-        accessibilityLabel={cardName(card)}
+        accessibilityLabel={hiddenCardName(card)}
         onPress={() => onOpen(card)}
+        {...hide}
         style={({ pressed }) => [styles.heroCard, pressed && styles.pressed]}
       >
         <View style={[styles.heroImage, tablet && styles.heroImageWide]}>
@@ -862,6 +889,8 @@ function HeroSlide({ card, width, tablet, first, onOpen }: { card: Card; width: 
 
 const styles = StyleSheet.create({
   pressed: { opacity: 0.75 },
+  hiddenMark: { alignSelf: 'flex-start', paddingHorizontal: spacing.xs, paddingVertical: 1, borderRadius: radii.chip, borderWidth: 1, borderColor: colors.muted },
+  hiddenMarkText: { ...typography.chip, color: colors.text },
   pressedButton: { backgroundColor: colors.surfaceRaised },
   muted: { ...typography.body, color: colors.muted },
   fillImage: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, borderRadius: radii.poster },
