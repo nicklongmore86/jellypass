@@ -34,6 +34,8 @@ export const SEERR_MEDIA_AVAILABLE = 8;
 /** The name the wizard gives the API key it creates in Jellyfin (Dashboard → API Keys). */
 export const JELLYFIN_KEY_NAME = 'JellyPass';
 const CALL_TIMEOUT_MS = 15_000;
+/** The most the wizard reads of any answer: Jellyfin's key list and Seerr's settings are a few kilobytes. */
+export const MAX_RESPONSE_BYTES = 1024 * 1024;
 
 export interface SetupWizardOptions {
   settings: SettingsStore;
@@ -111,14 +113,17 @@ export class SetupWizard {
           apiKey: setInEnvironment(merged, 'JELLYFIN_API_KEY') ? 'set' : 'unset',
           source: source('JELLYFIN_API_KEY', 'jellyfinApiKey'),
           createdByJellyPass: !lock('JELLYFIN_API_KEY') && Boolean(stored?.jellyfinApiKeyCreatedAt),
-          locked: lock('JELLYFIN_URL', 'JELLYFIN_API_KEY'),
+          // The step is locked once the environment sets both; each field on its own below.
+          locked: lock('JELLYFIN_URL') && lock('JELLYFIN_API_KEY'),
+          fields: { url: lock('JELLYFIN_URL'), apiKey: lock('JELLYFIN_API_KEY') },
           lockedBy: lockedBy(this.#environment, 'JELLYFIN_URL', 'JELLYFIN_API_KEY'),
         },
         seerr: {
           url: merged.SEERR_URL?.trim() || null,
           apiKey: setInEnvironment(merged, 'SEERR_API_KEY') ? 'set' : 'unset',
           source: source('SEERR_API_KEY', 'seerrApiKey'),
-          locked: lock('SEERR_URL', 'SEERR_API_KEY'),
+          locked: lock('SEERR_URL') && lock('SEERR_API_KEY'),
+          fields: { url: lock('SEERR_URL'), apiKey: lock('SEERR_API_KEY') },
           lockedBy: lockedBy(this.#environment, 'SEERR_URL', 'SEERR_API_KEY'),
           webhook: stored?.seerrWebhook ? { ...stored.seerrWebhook } : null,
         },
@@ -161,15 +166,30 @@ export class SetupWizard {
    * Connects Jellyfin: signs in as the administrator given (once; the password is never stored), creates an API key
    * named JellyPass for JellyPass alone, checks it, and signs that session out again. Run again for the same Jellyfin
    * while the stored key still works, it keeps that key and needs no sign-in, so a re-run never piles up keys.
+   *
+   * Each field the environment sets is locked on its own: with JELLYFIN_URL set the step works against that address
+   * and stores only the key; with JELLYFIN_API_KEY set it checks that key at the address given and stores only the
+   * address (no sign-in, no new key). With both set there is nothing to do.
    */
   public jellyfin(body: Body): Promise<Record<string, unknown>> {
     return this.#step(async () => {
-      this.#refuseLocked('JELLYFIN_URL', 'JELLYFIN_API_KEY');
+      this.#refuseAllLocked('JELLYFIN_URL', 'JELLYFIN_API_KEY');
       only(body, ['url', 'username', 'password']);
-      const url = serviceUrl(body.url, 'Jellyfin');
+      const urlLocked = setInEnvironment(this.#environment, 'JELLYFIN_URL');
+      const keyLocked = setInEnvironment(this.#environment, 'JELLYFIN_API_KEY');
+      const url = this.#lockedOrGiven('JELLYFIN_URL', body.url, 'Jellyfin');
       const stored = this.#settings.current;
       const version = await jellyfinVersion(url);
-      if (stored?.jellyfinApiKey && stored.jellyfinUrl === url && await jellyfinKeyWorks(url, stored.jellyfinApiKey)) {
+      if (keyLocked) {
+        if (nonEmpty(body.username) || nonEmpty(body.password)) this.#refuseLocked('JELLYFIN_API_KEY');
+        if (!await jellyfinKeyWorks(url, this.#environment.JELLYFIN_API_KEY!.trim())) {
+          throw new SetupError(400, 'jellyfin_key_refused', 'Jellyfin at that address refused the API key set in the environment (JELLYFIN_API_KEY).');
+        }
+        await this.#settings.update(() => ({ jellyfinUrl: url }));
+        this.#log('setup: Jellyfin connected with the environment\'s API key', { url });
+        return { status: 'connected', url, version };
+      }
+      if (stored?.jellyfinApiKey && (urlLocked || stored.jellyfinUrl === url) && await jellyfinKeyWorks(url, stored.jellyfinApiKey)) {
         this.#log('setup: Jellyfin API key kept', { url });
         return { status: 'kept', url, version };
       }
@@ -179,30 +199,40 @@ export class SetupWizard {
         throw new SetupError(400, 'jellyfin_credentials_required', 'Enter the name and password of a Jellyfin administrator.');
       }
       const apiKey = await createJellyfinKey(url, username, password);
-      await this.#settings.update(() => ({ jellyfinUrl: url, jellyfinApiKey: apiKey, jellyfinApiKeyCreatedAt: new Date(this.#now()).toISOString() }));
+      await this.#settings.update(() => ({
+        ...(urlLocked ? {} : { jellyfinUrl: url }),
+        jellyfinApiKey: apiKey,
+        jellyfinApiKeyCreatedAt: new Date(this.#now()).toISOString(),
+      }));
       this.#log('setup: Jellyfin API key created', { url, name: JELLYFIN_KEY_NAME });
       return { status: 'created', url, version, keyName: JELLYFIN_KEY_NAME };
     });
   }
 
-  /** Connects Seerr: checks the URL and that the API key is an administrator's (it can read the webhook settings). */
+  /**
+   * Connects Seerr: checks the URL and that the API key is an administrator's (it can read the webhook settings). As
+   * for Jellyfin, SEERR_URL or SEERR_API_KEY set in the environment is used as it is and only the other is stored.
+   */
   public seerr(body: Body): Promise<Record<string, unknown>> {
     return this.#step(async () => {
-      this.#refuseLocked('SEERR_URL', 'SEERR_API_KEY');
+      this.#refuseAllLocked('SEERR_URL', 'SEERR_API_KEY');
       only(body, ['url', 'apiKey']);
-      const url = serviceUrl(body.url, 'Seerr');
+      const urlLocked = setInEnvironment(this.#environment, 'SEERR_URL');
+      const keyLocked = setInEnvironment(this.#environment, 'SEERR_API_KEY');
+      const url = this.#lockedOrGiven('SEERR_URL', body.url, 'Seerr');
       const stored = this.#settings.current;
       const given = typeof body.apiKey === 'string' ? body.apiKey.trim() : '';
+      if (keyLocked && given) this.#refuseLocked('SEERR_API_KEY');
       // A re-run for the same Seerr may leave the key out: the stored one is checked again.
-      const apiKey = given || (stored?.seerrUrl === url ? stored.seerrApiKey : undefined);
+      const apiKey = keyLocked ? this.#environment.SEERR_API_KEY!.trim() : given || (urlLocked || stored?.seerrUrl === url ? stored?.seerrApiKey : undefined);
       if (!apiKey || apiKey.length > 1024 || /\s/.test(apiKey)) throw new SetupError(400, 'seerr_key_required', 'Enter Seerr\'s API key (Settings → General).');
       const version = await seerrVersion(url);
       await seerrWebhookSettings(url, apiKey);
       await this.#settings.update((settings) => ({
-        seerrUrl: url,
-        seerrApiKey: apiKey,
+        ...(urlLocked ? {} : { seerrUrl: url }),
+        ...(keyLocked ? {} : { seerrApiKey: apiKey }),
         // A webhook configured in another Seerr is not this one's.
-        ...(settings.seerrUrl !== url ? { seerrWebhook: undefined } : {}),
+        ...(!urlLocked && settings.seerrUrl !== undefined && settings.seerrUrl !== url ? { seerrWebhook: undefined } : {}),
       }));
       this.#log('setup: Seerr connected', { url });
       return { status: 'connected', url, version };
@@ -236,8 +266,10 @@ export class SetupWizard {
       const token = this.webhookToken() as string;
       const current = await seerrWebhookSettings(seerrUrl, seerrKey);
       const currentUrl = typeof current.options?.webhookUrl === 'string' ? current.options.webhookUrl : '';
-      if (current.enabled === true && currentUrl && currentUrl !== webhookUrl && body.replace !== true) {
-        throw new SetupError(409, 'seerr_webhook_in_use', 'Seerr\'s webhook is already on and calls another address. Replace it?', { currentHost: hostOf(currentUrl) });
+      // Seerr has one webhook: one that calls somewhere else, on or off, is someone's, and is replaced only when asked.
+      if (currentUrl.trim() && currentUrl !== webhookUrl && body.replace !== true) {
+        const enabled = current.enabled === true;
+        throw new SetupError(409, 'seerr_webhook_in_use', `Seerr's webhook is ${enabled ? 'on' : 'off'} and set to call another address. Replace it?`, { currentHost: hostOf(currentUrl), currentEnabled: enabled });
       }
       const settings = {
         enabled: true,
@@ -357,7 +389,6 @@ export class SetupWizard {
   public finish(body: Body): Promise<Record<string, unknown>> {
     return this.#step(async () => {
       only(body, []);
-      if (this.#applying) return { status: 'restarting' };
       const merged = this.#merged();
       const missing = missingRequired(merged);
       if (missing.length) throw new SetupError(409, 'setup_incomplete', `Still needed: ${missing.map(describeRequired).join(', ')}.`, { missing: missing.map(describeRequired) });
@@ -368,13 +399,32 @@ export class SetupWizard {
         // loadConfig's messages name settings, never their values.
         throw new SetupError(409, 'configuration_invalid', (error as Error).message);
       }
-      await this.#settings.update((settings) => ({ setupCompletedAt: settings.setupCompletedAt ?? new Date(this.#now()).toISOString() }));
+      // From here on every step is refused, queued ones included, so nothing changes the settings after this check.
       this.#applying = true;
+      try {
+        await this.#settings.update((settings) => ({ setupCompletedAt: settings.setupCompletedAt ?? new Date(this.#now()).toISOString() }));
+      } catch (error) {
+        this.#applying = false;
+        throw error;
+      }
       this.#log(this.#mode === 'setup' ? 'setup: finished; starting JellyPass' : 'setup: settings applied; restarting JellyPass services');
-      // After the answer has gone out.
-      setTimeout(this.#apply, 50).unref?.();
+      // After the answer has gone out, and after every step still queued has been refused.
+      setTimeout(() => void this.#drainAndApply(), 50).unref?.();
       return { status: 'restarting' };
-    });
+    }, { whileApplying: { status: 'restarting' } });
+  }
+
+  /**
+   * Waits for the step queue to empty and closes the settings store (so no change from this wizard can reach the file
+   * the next phase reads), then applies. Resolves once `apply` has been called.
+   */
+  async #drainAndApply(): Promise<void> {
+    for (let queue = this.#steps; ; queue = this.#steps) {
+      await queue;
+      if (queue === this.#steps) break;
+    }
+    await this.#settings.close();
+    this.#apply();
   }
 
   #merged(): Record<string, string | undefined> {
@@ -386,6 +436,18 @@ export class SetupWizard {
     if (environment) return environment;
     const stored = this.#settings.current?.[key];
     return typeof stored === 'string' ? stored : undefined;
+  }
+
+  /**
+   * The address a step works against: the environment's when it sets `name` (an address given that differs from it is
+   * refused as locked), else the one given.
+   */
+  #lockedOrGiven(name: string, given: unknown, service: string): string {
+    const locked = this.#environment[name]?.trim();
+    if (!locked) return serviceUrl(given, service);
+    const url = URL.canParse(locked) ? serviceUrl(locked, service) : locked.replace(/\/+$/, '');
+    if (given !== undefined && given !== null && given !== '' && serviceUrl(given, service) !== url) this.#refuseLocked(name);
+    return url;
   }
 
   async #ensureWebhookToken(): Promise<'environment' | 'kept' | 'generated'> {
@@ -403,9 +465,24 @@ export class SetupWizard {
     }
   }
 
-  /** Runs one step at a time, so two never read and write the settings together. */
-  #step<T>(run: () => Promise<T>): Promise<T> {
-    const next = this.#steps.then(run, run);
+  /** Refuses a step whose every field the environment sets: it has nothing left to change. */
+  #refuseAllLocked(...names: string[]): void {
+    if (lockedBy(this.#environment, ...names).length === names.length) this.#refuseLocked(...names);
+  }
+
+  /**
+   * Runs one step at a time, so two never read and write the settings together. Once `finish` has begun applying the
+   * settings, every step is refused before it does anything (or, for `finish`, answers `whileApplying`).
+   */
+  #step<T>(run: () => Promise<T>, { whileApplying }: { whileApplying?: T } = {}): Promise<T> {
+    const guarded = async (): Promise<T> => {
+      if (this.#applying) {
+        if (whileApplying !== undefined) return whileApplying;
+        throw new SetupError(409, 'setup_applying', 'JellyPass is restarting with the saved settings. Reload this page in a moment.');
+      }
+      return run();
+    };
+    const next = this.#steps.then(guarded, guarded);
     this.#steps = next.catch(() => undefined);
     return next;
   }
@@ -424,6 +501,10 @@ function booleanValue(value: string | undefined): boolean | undefined {
   if (text === 'true' || text === '1') return true;
   if (text === 'false' || text === '0') return false;
   return undefined;
+}
+
+function nonEmpty(value: unknown): boolean {
+  return typeof value === 'string' ? value.length > 0 : value !== undefined && value !== null;
 }
 
 function only(body: Body, keys: string[]): void {
@@ -466,7 +547,7 @@ async function call(service: string, url: string, init: RequestInit, { allowFail
     const code = (error as { cause?: { code?: string } }).cause?.code ?? (error as Error).name;
     throw new SetupError(502, `${service.toLowerCase()}_unreachable`, `Could not reach ${service} at ${new URL(url).origin} (${code}).`);
   }
-  const text = await response.text().catch(() => '');
+  const text = await limitedText(service, response);
   if (response.status >= 300 && response.status < 400) {
     throw new SetupError(502, `${service.toLowerCase()}_redirected`, `${service} answered with a redirect. Enter the address it redirects to.`);
   }
@@ -476,6 +557,37 @@ async function call(service: string, url: string, init: RequestInit, { allowFail
   let body: unknown;
   try { body = text ? JSON.parse(text) : undefined; } catch { body = undefined; }
   return { status: response.status, body };
+}
+
+/** An answer's body, refused (and the connection dropped) once it passes MAX_RESPONSE_BYTES. */
+async function limitedText(service: string, response: Response): Promise<string> {
+  const tooLarge = () => new SetupError(502, `${service.toLowerCase()}_response_too_large`, `${service} sent a larger answer than JellyPass reads (${MAX_RESPONSE_BYTES} bytes).`);
+  const declared = Number(response.headers.get('content-length'));
+  if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
+    await response.body?.cancel().catch(() => undefined);
+    throw tooLarge();
+  }
+  if (!response.body) return '';
+  const reader = response.body.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.byteLength;
+      if (size > MAX_RESPONSE_BYTES) {
+        await reader.cancel().catch(() => undefined);
+        throw tooLarge();
+      }
+      chunks.push(value);
+    }
+  } catch (error) {
+    if (error instanceof SetupError) throw error;
+    // A body cut off part way is an empty answer, as before.
+    return '';
+  }
+  return Buffer.concat(chunks).toString('utf8');
 }
 
 function jellyfinAuthorization(deviceId: string, token?: string): string {

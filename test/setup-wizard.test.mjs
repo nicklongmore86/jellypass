@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { readFile, stat, writeFile } from 'node:fs/promises';
+import { createServer as createHttpServer } from 'node:http';
 import { connect } from 'node:net';
 import path from 'node:path';
 import { after, before, describe, it } from 'node:test';
@@ -11,8 +12,8 @@ import { AccessService } from '../dist/access-service.js';
 import { loadConfig } from '../dist/config.js';
 import { JellyfinClient } from '../dist/jellyfin.js';
 import { makeServers, makeSetupServer } from '../dist/server.js';
-import { mergedEnvironment, missingRequired, readAdminTokenFile, settingsPaths, SettingsStore } from '../dist/settings.js';
-import { SEERR_MEDIA_AVAILABLE, SetupWizard } from '../dist/setup.js';
+import { mergedEnvironment, missingRequired, readAdminTokenFile, settingsPaths, SettingsStore, setupRequired } from '../dist/settings.js';
+import { MAX_RESPONSE_BYTES, SEERR_MEDIA_AVAILABLE, SetupWizard } from '../dist/setup.js';
 import { SETUP_APP_JS, SETUP_HTML } from '../dist/setup-ui.js';
 import { GrantStore } from '../dist/store.js';
 import { createSetupJellyfin, createSetupSeerr, createSetupTmdb, SECRETS } from './support/setup-fakes.mjs';
@@ -195,7 +196,7 @@ describe('setup wizard: steps', () => {
     assert.equal(stored.jellyfinApiKey, key);
     assert.equal(stored.jellyfinUrl, jellyfin.url);
     assert.ok(!JSON.stringify(stored).includes(SECRETS.adminPassword));
-    assert.deepEqual(created.body.setup.steps.jellyfin, { url: jellyfin.url, apiKey: 'set', source: 'settings', createdByJellyPass: true, locked: false, lockedBy: [] });
+    assert.deepEqual(created.body.setup.steps.jellyfin, { url: jellyfin.url, apiKey: 'set', source: 'settings', createdByJellyPass: true, locked: false, fields: { url: false, apiKey: false }, lockedBy: [] });
 
     // Run again: the stored key still works, so no sign-in and no second key.
     const before = jellyfin.requests.length;
@@ -334,20 +335,163 @@ describe('setup wizard: steps', () => {
   });
 
   it('refuses to change a setting the environment sets, and shows it as locked', async (t) => {
-    const { call } = await setupMode(t, { environment: { JELLYFIN_URL: 'http://env-jellyfin:8096', TMDB_API_KEY: SECRETS.tmdbKey, TRUSTED_PROXIES: '192.168.1.5', HOUSEHOLD_DOMAIN: 'example.com' } });
+    const { call } = await setupMode(t, { environment: { JELLYFIN_URL: 'http://env-jellyfin:8096', JELLYFIN_API_KEY: 'env-jellyfin-key', TMDB_API_KEY: SECRETS.tmdbKey, TRUSTED_PROXIES: '192.168.1.5', HOUSEHOLD_DOMAIN: 'example.com' } });
     const calls = jellyfin.requests.length;
     const locked = await call('/v1/setup/jellyfin', { body: { url: jellyfin.url, username: 'admin', password: SECRETS.adminPassword } });
-    assert.deepEqual([locked.status, locked.body.error, locked.body.variables], [409, 'locked_by_environment', ['JELLYFIN_URL']]);
+    assert.deepEqual([locked.status, locked.body.error, locked.body.variables], [409, 'locked_by_environment', ['JELLYFIN_URL', 'JELLYFIN_API_KEY']]);
     assert.equal(jellyfin.requests.length, calls, 'a locked step never reaches Jellyfin');
     assert.equal((await call('/v1/setup/tmdb', { body: { apiKey: SECRETS.tmdbKey } })).body.error, 'locked_by_environment');
     assert.equal((await call('/v1/setup/household', { body: { trustedProxies: '10.0.0.1' } })).body.error, 'locked_by_environment');
     assert.equal((await call('/v1/setup/household', { body: { gatewayEnabled: false } })).body.error, 'locked_by_environment');
     const status = (await call('/v1/setup', { method: 'GET' })).body;
-    assert.deepEqual([status.steps.jellyfin.locked, status.steps.jellyfin.lockedBy, status.steps.jellyfin.url], [true, ['JELLYFIN_URL'], 'http://env-jellyfin:8096']);
+    assert.deepEqual([status.steps.jellyfin.locked, status.steps.jellyfin.lockedBy, status.steps.jellyfin.url, status.steps.jellyfin.fields], [true, ['JELLYFIN_URL', 'JELLYFIN_API_KEY'], 'http://env-jellyfin:8096', { url: true, apiKey: true }]);
     assert.deepEqual([status.steps.tmdb.locked, status.steps.tmdb.apiKey, status.steps.tmdb.source], [true, 'set', 'environment']);
     assert.deepEqual(status.steps.household.locked, { gatewayEnabled: true, appEnabled: false, trustedProxies: true });
     assert.equal(status.steps.household.gatewayEnabled, true);
-    assertNoSecret(JSON.stringify(status));
+    assertNoSecret(JSON.stringify(status), ['env-jellyfin-key']);
+  });
+
+  it('with only JELLYFIN_URL in the environment, creates the key at that address and stores the key alone', async (t) => {
+    const { call, file, wizard } = await setupMode(t, { environment: { JELLYFIN_URL: `${jellyfin.url}/` } });
+    const status = (await call('/v1/setup', { method: 'GET' })).body.steps.jellyfin;
+    assert.deepEqual([status.locked, status.fields, status.lockedBy, status.url], [false, { url: true, apiKey: false }, ['JELLYFIN_URL'], `${jellyfin.url}/`]);
+    const other = await call('/v1/setup/jellyfin', { body: { url: 'http://elsewhere:8096', username: 'admin', password: SECRETS.adminPassword } });
+    assert.deepEqual([other.status, other.body.error, other.body.variables], [409, 'locked_by_environment', ['JELLYFIN_URL']]);
+    const created = await call('/v1/setup/jellyfin', { body: { username: 'admin', password: SECRETS.adminPassword } });
+    assert.deepEqual([created.status, created.body.status, created.body.url], [200, 'created', jellyfin.url], JSON.stringify(created.body));
+    const stored = JSON.parse(await readFile(file, 'utf8'));
+    assert.equal('jellyfinUrl' in stored, false, 'the locked address is not stored');
+    assert.equal(stored.jellyfinApiKey, jellyfin.keys.at(-1).AccessToken);
+    // The same address given again is not a change; the stored key is kept.
+    assert.equal((await call('/v1/setup/jellyfin', { body: { url: jellyfin.url } })).body.status, 'kept');
+    await wizard.secrets({});
+    assert.deepEqual(wizard.status().missing, []);
+  });
+
+  it('with only JELLYFIN_API_KEY in the environment, checks that key at the address given and stores the address alone', async (t) => {
+    jellyfin.addKey('env-only-jellyfin-key-000000000000');
+    const { call, file, answers, logs } = await setupMode(t, { environment: { JELLYFIN_API_KEY: 'env-only-jellyfin-key-000000000000' } });
+    assert.deepEqual((await call('/v1/setup', { method: 'GET' })).body.steps.jellyfin.fields, { url: false, apiKey: true });
+    const keys = jellyfin.keys.length;
+    const credentials = await call('/v1/setup/jellyfin', { body: { url: jellyfin.url, username: 'admin', password: SECRETS.adminPassword } });
+    assert.deepEqual([credentials.status, credentials.body.error, credentials.body.variables], [409, 'locked_by_environment', ['JELLYFIN_API_KEY']]);
+    const connected = await call('/v1/setup/jellyfin', { body: { url: jellyfin.url } });
+    assert.deepEqual([connected.status, connected.body.status, connected.body.url], [200, 'connected', jellyfin.url], JSON.stringify(connected.body));
+    assert.equal(jellyfin.keys.length, keys, 'no key is created');
+    assert.equal(jellyfin.requests.slice(-3).some((entry) => entry.path === '/Users/AuthenticateByName'), false);
+    const stored = JSON.parse(await readFile(file, 'utf8'));
+    assert.deepEqual([stored.jellyfinUrl, 'jellyfinApiKey' in stored], [jellyfin.url, false]);
+    const refused = await setupMode(t, { environment: { JELLYFIN_API_KEY: 'not-a-jellyfin-key' } });
+    assert.deepEqual((await refused.call('/v1/setup/jellyfin', { body: { url: jellyfin.url } })).body.error, 'jellyfin_key_refused');
+    assert.equal(refused.settings.current, undefined);
+    assertNoSecret(answers.join('\n') + logs.join('\n') + refused.answers.join('\n'), ['env-only-jellyfin-key-000000000000', 'not-a-jellyfin-key']);
+  });
+
+  it('with only SEERR_URL or only SEERR_API_KEY in the environment, uses it and stores the other', async (t) => {
+    const urlOnly = await setupMode(t, { environment: { SEERR_URL: seerr.url } });
+    assert.deepEqual((await urlOnly.call('/v1/setup', { method: 'GET' })).body.steps.seerr.fields, { url: true, apiKey: false });
+    assert.equal((await urlOnly.call('/v1/setup/seerr', { body: { url: 'http://elsewhere:5055', apiKey: SECRETS.seerrKey } })).body.error, 'locked_by_environment');
+    const connected = await urlOnly.call('/v1/setup/seerr', { body: { apiKey: SECRETS.seerrKey } });
+    assert.deepEqual([connected.status, connected.body.status], [200, 'connected'], JSON.stringify(connected.body));
+    let stored = JSON.parse(await readFile(urlOnly.file, 'utf8'));
+    assert.deepEqual(['seerrUrl' in stored, stored.seerrApiKey], [false, SECRETS.seerrKey]);
+    // The stored key is reused for the environment's address.
+    assert.equal((await urlOnly.call('/v1/setup/seerr', { body: {} })).body.status, 'connected');
+
+    const keyOnly = await setupMode(t, { environment: { SEERR_API_KEY: SECRETS.seerrKey } });
+    assert.deepEqual((await keyOnly.call('/v1/setup', { method: 'GET' })).body.steps.seerr.fields, { url: false, apiKey: true });
+    assert.equal((await keyOnly.call('/v1/setup/seerr', { body: { url: seerr.url, apiKey: 'another-key' } })).body.error, 'locked_by_environment');
+    assert.equal((await keyOnly.call('/v1/setup/seerr', { body: { url: seerr.url } })).body.status, 'connected');
+    stored = JSON.parse(await readFile(keyOnly.file, 'utf8'));
+    assert.deepEqual([stored.seerrUrl, 'seerrApiKey' in stored], [seerr.url, false]);
+    // Seerr is now complete from both sources, so the webhook step can run (an earlier test left this Seerr's webhook calling another listener).
+    assert.equal((await keyOnly.call('/v1/setup/webhook', { body: { jellypassUrl: keyOnly.base, replace: true } })).body.status, 'configured');
+    const both = await setupMode(t, { environment: { SEERR_URL: seerr.url, SEERR_API_KEY: SECRETS.seerrKey } });
+    assert.deepEqual((await both.call('/v1/setup/seerr', { body: {} })).body.variables, ['SEERR_URL', 'SEERR_API_KEY']);
+    assertNoSecret(urlOnly.answers.join('\n') + keyOnly.answers.join('\n'));
+  });
+
+  it('asks before replacing a Seerr webhook that is off but set to call another address', async (t) => {
+    const other = await createSetupSeerr({ webhook: { enabled: false, types: 8, options: { webhookUrl: 'https://hooks.example.net/kept', jsonPayload: '{}', customHeaders: [] } } });
+    t.after(() => other.close());
+    const { call, base } = await setupMode(t);
+    await call('/v1/setup/seerr', { body: { url: other.url, apiKey: SECRETS.seerrKey } });
+    const refused = await call('/v1/setup/webhook', { body: { jellypassUrl: base } });
+    assert.deepEqual([refused.status, refused.body.error, refused.body.currentHost, refused.body.currentEnabled], [409, 'seerr_webhook_in_use', 'hooks.example.net', false]);
+    assert.equal(other.state.webhook.options.webhookUrl, 'https://hooks.example.net/kept');
+    assert.equal(other.requests.filter((entry) => entry.method === 'POST').length, 0, 'nothing was written to Seerr');
+    const replaced = await call('/v1/setup/webhook', { body: { jellypassUrl: base, replace: true } });
+    assert.deepEqual([replaced.status, replaced.body.tested], [200, true]);
+    assert.equal(other.state.webhook.options.webhookUrl, `${base}/webhooks/seerr`);
+    // Ours already: a re-run needs no confirmation.
+    assert.equal((await call('/v1/setup/webhook', { body: { jellypassUrl: base } })).status, 200);
+  });
+
+  it('refuses an answer larger than it reads, with or without a Content-Length', async (t) => {
+    const big = 'x'.repeat(MAX_RESPONSE_BYTES + 1);
+    const server = createHttpServer((request, response) => {
+      if (request.url.startsWith('/declared')) {
+        response.writeHead(200, { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(big) });
+      } else {
+        response.writeHead(200, { 'Content-Type': 'application/json' });
+      }
+      // Streamed in pieces, so the chunked answer is read part way before it is refused.
+      for (let offset = 0; offset < big.length; offset += 65_536) response.write(big.slice(offset, offset + 65_536));
+      response.end();
+    });
+    const url = await listen(server);
+    t.after(() => closeServer(server));
+    const { call } = await setupMode(t);
+    for (const pathname of ['/declared', '/chunked']) {
+      const answer = await call('/v1/setup/jellyfin', { body: { url: `${url}${pathname}`, username: 'admin', password: SECRETS.adminPassword } });
+      assert.deepEqual([answer.status, answer.body.error], [502, 'jellyfin_response_too_large'], pathname);
+    }
+  });
+});
+
+describe('setup wizard: finishing', () => {
+  let jellyfin;
+  before(async () => { jellyfin = await createSetupJellyfin(); });
+  after(() => jellyfin.close());
+
+  it('refuses every step once finish has begun, lets the steps before it complete, and closes the settings before applying', async (t) => {
+    const slowSeerr = await createSetupSeerr({ delayMs: 300 });
+    t.after(() => slowSeerr.close());
+    const { settings, wizard, applied, file } = await setupMode(t);
+    await wizard.jellyfin({ url: jellyfin.url, username: 'admin', password: SECRETS.adminPassword });
+    await wizard.secrets({});
+    // A slow step in flight when finish is asked for: finish waits for it, and it is stored.
+    const inFlight = wizard.seerr({ url: slowSeerr.url, apiKey: SECRETS.seerrKey });
+    const finished = wizard.finish({});
+    // Another tab's steps, queued behind finish: refused before they reach any service or the settings.
+    const queued = [wizard.seerr({ url: slowSeerr.url, apiKey: SECRETS.seerrKey }), wizard.tmdb({ apiKey: SECRETS.tmdbKey }), wizard.backfill({ since: null })];
+    assert.equal((await inFlight).status, 'connected');
+    const probesBefore = slowSeerr.requests.length;
+    assert.deepEqual(await finished, { status: 'restarting' });
+    for (const step of queued) await assert.rejects(step, (error) => error.status === 409 && error.code === 'setup_applying');
+    assert.equal(slowSeerr.requests.length, probesBefore, 'a refused step made no call');
+    assert.deepEqual(await wizard.finish({}), { status: 'restarting' });
+    await waitUntil(() => applied.length === 1);
+    // The store the next phase replaces is closed: nothing from this wizard can write the file again.
+    await assert.rejects(settings.update(() => ({ tmdbApiKey: SECRETS.tmdbKey })), /closed/);
+    await assert.rejects(wizard.household({ trustedProxies: '10.0.0.1' }), (error) => error.code === 'setup_applying');
+    const stored = JSON.parse(await readFile(file, 'utf8'));
+    assert.deepEqual([stored.seerrUrl, 'tmdbApiKey' in stored, Boolean(stored.setupCompletedAt)], [slowSeerr.url, false, true]);
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(applied.length, 1);
+  });
+
+  it('starts JellyPass only once the wizard is finished, unless the environment alone is complete', () => {
+    const complete = { JELLYFIN_URL: 'http://jellyfin:8096', JELLYFIN_API_KEY: 'key', WEBHOOK_TOKEN: 'token' };
+    const stored = { version: 1, createdAt: '2026-10-31T00:00:00.000Z', jellyfinUrl: 'http://jellyfin:8096', jellyfinApiKey: 'key', webhookToken: 'token' };
+    const required = (environment, settings) => setupRequired(environment, settings, mergedEnvironment(environment, settings));
+    assert.equal(required({}, undefined), true);
+    assert.equal(required({}, stored), true, 'complete from the wizard, not finished');
+    assert.equal(required({ JELLYFIN_URL: 'http://jellyfin:8096' }, stored), true, 'partly from the environment, not finished');
+    assert.equal(required({}, { ...stored, setupCompletedAt: '2026-10-31T01:00:00.000Z' }), false);
+    assert.equal(required(complete, undefined), false, 'environment only');
+    assert.equal(required(complete, { version: 1, createdAt: stored.createdAt, requestBackfillSince: stored.createdAt }), false, 'environment only, a wizard change never applied');
+    assert.equal(required({}, { ...stored, setupCompletedAt: '2026-10-31T01:00:00.000Z', webhookToken: undefined }), true, 'finished, then a required setting went missing');
   });
 });
 
@@ -459,6 +603,31 @@ describe('setup wizard page', () => {
     assert.deepEqual(page.storage, []);
     assertNoSecret(page.document.documentElement.outerHTML);
   });
+
+  it('turns off only the fields the environment sets, and leaves them out of what it sends', async () => {
+    const partial = {
+      ...STATUS,
+      steps: {
+        ...STATUS.steps,
+        jellyfin: { url: 'http://env-jellyfin:8096', apiKey: 'unset', locked: false, fields: { url: true, apiKey: false }, lockedBy: ['JELLYFIN_URL'] },
+        seerr: { url: null, apiKey: 'set', locked: false, fields: { url: false, apiKey: true }, lockedBy: ['SEERR_API_KEY'], webhook: null },
+      },
+    };
+    const page = setupPage(() => ({ status: 200, body: { status: 'created', setup: partial, ...partial } }));
+    const byId = (id) => page.document.getElementById(id);
+    byId('setup-token').value = SECRETS.adminToken;
+    await page.submit('setup-token-form');
+    assert.deepEqual([byId('jellyfin-url').disabled, byId('jellyfin-url').value, byId('jellyfin-username').disabled, byId('jellyfin-password').disabled], [true, 'http://env-jellyfin:8096', false, false]);
+    assert.deepEqual([byId('seerr-url').disabled, byId('seerr-key').disabled], [false, true]);
+    assert.match(page.document.querySelector('[data-state="jellyfin"]').textContent, /JELLYFIN_URL/);
+    byId('jellyfin-username').value = 'admin';
+    byId('jellyfin-password').value = SECRETS.adminPassword;
+    await page.submit('jellyfin-form');
+    assert.deepEqual(JSON.parse(page.requests.find((entry) => entry.pathname === '/v1/setup/jellyfin').init.body), { username: 'admin', password: SECRETS.adminPassword });
+    byId('seerr-url').value = 'http://seerr:5055';
+    await page.submit('seerr-form');
+    assert.deepEqual(JSON.parse(page.requests.find((entry) => entry.pathname === '/v1/setup/seerr').init.body), { url: 'http://seerr:5055' });
+  });
 });
 
 describe('setup mode and the configured start, as a process', () => {
@@ -541,7 +710,7 @@ describe('setup mode and the configured start, as a process', () => {
     const jellyfin = await createSetupJellyfin();
     t.after(() => jellyfin.close());
     const directory = await makeTempDir(t, 'jfa-setup-precedence-');
-    await writeFile(path.join(directory, 'settings.json'), JSON.stringify({ version: 1, createdAt: '2026-10-31T00:00:00.000Z', jellyfinUrl: 'http://127.0.0.1:1', jellyfinApiKey: 'stored-key', webhookToken: 'stored-webhook-token-0000000000000000000' }), { mode: 0o600 });
+    await writeFile(path.join(directory, 'settings.json'), JSON.stringify({ version: 1, createdAt: '2026-10-31T00:00:00.000Z', setupCompletedAt: '2026-10-31T00:01:00.000Z', jellyfinUrl: 'http://127.0.0.1:1', jellyfinApiKey: 'stored-key', webhookToken: 'stored-webhook-token-0000000000000000000' }), { mode: 0o600 });
     const [adminPort] = await freePorts(1);
     const child = startProcess(t, { STATE_FILE: path.join(directory, 'grants.json'), ADMIN_PORT: String(adminPort), ADMIN_TOKEN: SECRETS.adminToken, JELLYFIN_URL: jellyfin.url, RECONCILE_INTERVAL_SECONDS: '0', CATALOG_SYNC_INTERVAL_SECONDS: '0' });
     await child.waitFor(/"message":"server started"/);
@@ -549,6 +718,42 @@ describe('setup mode and the configured start, as a process', () => {
     assert.deepEqual([status.steps.jellyfin.url, status.steps.jellyfin.lockedBy, status.steps.jellyfin.source], [jellyfin.url, ['JELLYFIN_URL'], 'settings']);
     // The version check reached the environment's Jellyfin, not the stored address.
     await waitUntil(() => jellyfin.requests.some((entry) => entry.path === '/System/Info/Public'));
+  });
+
+  it('stays in setup mode while the wizard has every required setting but was never finished, and serves no household', async (t) => {
+    const jellyfin = await createSetupJellyfin();
+    t.after(() => jellyfin.close());
+    const directory = await makeTempDir(t, 'jfa-setup-unfinished-');
+    await writeFile(path.join(directory, 'settings.json'), JSON.stringify({ version: 1, createdAt: '2026-10-31T00:00:00.000Z', jellyfinUrl: jellyfin.url, jellyfinApiKey: 'stored-key', webhookToken: 'stored-webhook-token-0000000000000000000' }), { mode: 0o600 });
+    const [adminPort, memberPort] = await freePorts(2);
+    const child = startProcess(t, { STATE_FILE: path.join(directory, 'grants.json'), ADMIN_PORT: String(adminPort), PORT: String(memberPort), ADMIN_TOKEN: SECRETS.adminToken, HOUSEHOLD_GATEWAY_ENABLED: 'true', TRUSTED_PROXIES: '127.0.0.1' });
+    await child.waitFor(/setup is not finished yet/);
+    assert.doesNotMatch(child.output(), /"message":"server started"/);
+    assert.deepEqual(await (await fetch(`http://127.0.0.1:${adminPort}/health`)).json(), { status: 'ok', setup: 'required' });
+    assert.equal((await fetch(`http://127.0.0.1:${adminPort}/v1/groups`, { headers: BEARER })).status, 503);
+    assert.equal(await portOpen(memberPort), false);
+    const status = await (await fetch(`http://127.0.0.1:${adminPort}/v1/setup`, { headers: BEARER })).json();
+    assert.deepEqual([status.mode, status.missing, status.completedAt], ['setup', [], null]);
+    assertNoSecret(child.output(), ['stored-key', 'stored-webhook-token-0000000000000000000']);
+  });
+
+  it('starts a finished wizard install directly, its admin token in the setup token file (made again once deleted)', async (t) => {
+    const jellyfin = await createSetupJellyfin();
+    t.after(() => jellyfin.close());
+    jellyfin.addKey('stored-jellyfin-key-0000000000000000');
+    const directory = await makeTempDir(t, 'jfa-setup-finished-');
+    await writeFile(path.join(directory, 'settings.json'), JSON.stringify({ version: 1, createdAt: '2026-10-31T00:00:00.000Z', setupCompletedAt: '2026-10-31T00:05:00.000Z', jellyfinUrl: jellyfin.url, jellyfinApiKey: 'stored-jellyfin-key-0000000000000000', webhookToken: 'stored-webhook-token-0000000000000000000' }), { mode: 0o600 });
+    const [adminPort] = await freePorts(1);
+    const child = startProcess(t, { STATE_FILE: path.join(directory, 'grants.json'), ADMIN_PORT: String(adminPort), RECONCILE_INTERVAL_SECONDS: '0', CATALOG_SYNC_INTERVAL_SECONDS: '0' });
+    await child.waitFor(/"message":"server started"/);
+    assert.doesNotMatch(child.output(), /not (configured|finished) yet/);
+    const token = (await readFile(path.join(directory, 'admin-token'), 'utf8')).trim();
+    assert.equal((await stat(path.join(directory, 'admin-token'))).mode & 0o777, 0o600);
+    assert.equal((await fetch(`http://127.0.0.1:${adminPort}/v1/groups`, { headers: { Authorization: `Bearer ${token}` } })).status, 200);
+    assert.equal((await fetch(`http://127.0.0.1:${adminPort}/v1/groups`, { headers: { Authorization: 'Bearer stored-webhook-token-0000000000000000000' } })).status, 401);
+    const status = await (await fetch(`http://127.0.0.1:${adminPort}/v1/setup`, { headers: { Authorization: `Bearer ${token}` } })).json();
+    assert.deepEqual([status.mode, status.adminToken], ['running', 'file']);
+    assertNoSecret(child.output(), [token, 'stored-jellyfin-key-0000000000000000', 'stored-webhook-token-0000000000000000000']);
   });
 });
 

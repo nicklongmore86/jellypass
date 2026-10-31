@@ -87,7 +87,7 @@ export async function createSetupJellyfin({ version = '10.11.3' } = {}) {
     return send(response, 401, undefined);
   });
   const url = await listen(server);
-  return { url, requests, keys, loggedOut, revoke: (accessToken) => keys.splice(keys.findIndex((entry) => entry.AccessToken === accessToken), 1), close: () => close(server) };
+  return { url, requests, keys, loggedOut, addKey: (accessToken, appName = 'Elsewhere') => keys.push({ Id: 0, AccessToken: accessToken, AppName: appName, DateCreated: new Date().toISOString() }), revoke: (accessToken) => keys.splice(keys.findIndex((entry) => entry.AccessToken === accessToken), 1), close: () => close(server) };
 }
 
 /**
@@ -95,7 +95,7 @@ export async function createSetupJellyfin({ version = '10.11.3' } = {}) {
  * webhook test, which sends a TEST_NOTIFICATION to the configured URL with the configured Authorization header and the
  * configured payload (its {{...}} filled as Seerr fills them for a test) and answers 204 only for a 2xx.
  */
-export async function createSetupSeerr({ apiKey = SECRETS.seerrKey, webhook } = {}) {
+export async function createSetupSeerr({ apiKey = SECRETS.seerrKey, webhook, delayMs = 0 } = {}) {
   const requests = [];
   const deliveries = [];
   const state = {
@@ -105,6 +105,7 @@ export async function createSetupSeerr({ apiKey = SECRETS.seerrKey, webhook } = 
     const url = new URL(request.url, 'http://localhost');
     const body = request.method === 'POST' ? await readBody(request).catch(() => undefined) : undefined;
     requests.push({ method: request.method, path: url.pathname, headers: request.headers, body });
+    if (delayMs) await new Promise((resolve) => setTimeout(resolve, delayMs));
     if (url.pathname === '/api/v1/status') return send(response, 200, { version: '3.5.1', commitTag: 'synthetic' });
     if (request.headers['x-api-key'] !== apiKey) return send(response, 403, { message: 'You do not have permission to access this endpoint.' });
     if (url.pathname === '/api/v1/settings/notifications/webhook' && request.method === 'GET') return send(response, 200, state.webhook);

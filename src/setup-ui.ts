@@ -42,7 +42,7 @@ export const SETUP_HTML = `<!doctype html>
           <label>Jellyfin address<input id="jellyfin-url" type="url" placeholder="http://jellyfin:8096" required></label>
           <label>Administrator name<input id="jellyfin-username" autocomplete="off"></label>
           <label>Password<input id="jellyfin-password" type="password" autocomplete="off"></label>
-          <button class="button primary" type="submit">Connect and create API key</button>
+          <button id="jellyfin-submit" class="button primary" type="submit">Connect and create API key</button>
           <p class="form-error" role="alert"></p>
         </form>
       </article>
@@ -158,6 +158,13 @@ export const SETUP_APP_JS = `
     return locked;
   }
 
+  // A step the environment partly sets: each field it sets is off (and left out of what is sent); all of them, the form.
+  function lockFields(form, allLocked, fields) {
+    form.querySelectorAll('input, button').forEach((input) => { input.disabled = Boolean(allLocked); });
+    if (allLocked) return;
+    fields.forEach(([id, locked]) => { byId(id).disabled = Boolean(locked); });
+  }
+
   function lockedText(lockedBy) {
     return 'Set in the environment (' + lockedBy.join(', ') + '), which wins over the wizard.';
   }
@@ -173,17 +180,21 @@ export const SETUP_APP_JS = `
         : 'Everything required is in place. Finish to start JellyPass.';
 
     const jellyfin = steps.jellyfin;
-    if (!lockForm(byId('jellyfin-form'), jellyfin.lockedBy)) {
-      if (!byId('jellyfin-url').value && jellyfin.url) byId('jellyfin-url').value = jellyfin.url;
-    }
-    setState('jellyfin', jellyfin.locked ? lockedText(jellyfin.lockedBy) : jellyfin.apiKey === 'set'
+    const jellyfinFields = jellyfin.fields || {};
+    lockFields(byId('jellyfin-form'), jellyfin.locked, [['jellyfin-url', jellyfinFields.url], ['jellyfin-username', jellyfinFields.apiKey], ['jellyfin-password', jellyfinFields.apiKey]]);
+    if (jellyfin.url && (jellyfinFields.url || !byId('jellyfin-url').value)) byId('jellyfin-url').value = jellyfin.url;
+    byId('jellyfin-submit').textContent = jellyfinFields.apiKey ? 'Check and save' : 'Connect and create API key';
+    setState('jellyfin', (jellyfin.locked ? '' : jellyfin.apiKey === 'set'
       ? 'Connected to ' + jellyfin.url + (jellyfin.createdByJellyPass ? ' with JellyPass\\'s own API key.' : '.')
-      : 'Not connected yet.', jellyfin.apiKey === 'set');
+      : 'Not connected yet.') + (jellyfin.lockedBy.length ? ' ' + lockedText(jellyfin.lockedBy) : ''), jellyfin.apiKey === 'set');
 
     const seerr = steps.seerr;
-    if (!lockForm(byId('seerr-form'), seerr.lockedBy) && !byId('seerr-url').value && seerr.url) byId('seerr-url').value = seerr.url;
-    byId('seerr-key').placeholder = seerr.apiKey === 'set' ? 'Stored: leave empty to keep it' : '';
-    setState('seerr', seerr.locked ? lockedText(seerr.lockedBy) : seerr.apiKey === 'set' ? 'Connected to ' + seerr.url + '.' : 'Not connected (requests and the household app need it).', seerr.apiKey === 'set');
+    const seerrFields = seerr.fields || {};
+    lockFields(byId('seerr-form'), seerr.locked, [['seerr-url', seerrFields.url], ['seerr-key', seerrFields.apiKey]]);
+    if (seerr.url && (seerrFields.url || !byId('seerr-url').value)) byId('seerr-url').value = seerr.url;
+    byId('seerr-key').placeholder = seerrFields.apiKey ? 'Set in the environment' : seerr.apiKey === 'set' ? 'Stored: leave empty to keep it' : '';
+    setState('seerr', (seerr.locked ? '' : seerr.apiKey === 'set' ? 'Connected to ' + seerr.url + '.' : 'Not connected (requests and the household app need it).')
+      + (seerr.lockedBy.length ? ' ' + lockedText(seerr.lockedBy) : ''), seerr.apiKey === 'set');
 
     const webhook = seerr.webhook;
     byId('webhook-form').querySelectorAll('input, button').forEach((input) => { input.disabled = seerr.apiKey !== 'set'; });
@@ -254,8 +265,11 @@ export const SETUP_APP_JS = `
   step('jellyfin-form', async () => {
     const password = byId('jellyfin-password');
     try {
-      const answer = await api('/v1/setup/jellyfin', { url: byId('jellyfin-url').value, username: byId('jellyfin-username').value, password: password.value });
-      return answer.status === 'kept' ? 'Jellyfin connected; JellyPass kept its API key.' : 'Jellyfin connected; API key created.';
+      const body = {};
+      if (!byId('jellyfin-url').disabled) body.url = byId('jellyfin-url').value;
+      if (!password.disabled) { body.username = byId('jellyfin-username').value; body.password = password.value; }
+      const answer = await api('/v1/setup/jellyfin', body);
+      return answer.status === 'kept' ? 'Jellyfin connected; JellyPass kept its API key.' : answer.status === 'connected' ? 'Jellyfin connected with the environment\\'s API key.' : 'Jellyfin connected; API key created.';
     } finally {
       password.value = '';
     }
@@ -263,7 +277,10 @@ export const SETUP_APP_JS = `
   step('seerr-form', async () => {
     const key = byId('seerr-key');
     try {
-      await api('/v1/setup/seerr', { url: byId('seerr-url').value, apiKey: key.value });
+      const body = {};
+      if (!byId('seerr-url').disabled) body.url = byId('seerr-url').value;
+      if (!key.disabled) body.apiKey = key.value;
+      await api('/v1/setup/seerr', body);
       return 'Seerr connected.';
     } finally {
       key.value = '';
@@ -276,7 +293,7 @@ export const SETUP_APP_JS = `
       answer = await api('/v1/setup/webhook', body);
     } catch (error) {
       if (error.code !== 'seerr_webhook_in_use') throw error;
-      if (!confirm('Seerr\\'s webhook is on and calls ' + (error.body.currentHost || 'another address') + '. Seerr has one webhook: replace it with JellyPass\\'s?')) return '';
+      if (!confirm('Seerr\\'s webhook is ' + (error.body.currentEnabled ? 'on' : 'off') + ' and set to call ' + (error.body.currentHost || 'another address') + '. Seerr has one webhook: replace it with JellyPass\\'s?')) return '';
       answer = await api('/v1/setup/webhook', Object.assign({ replace: true }, body));
     }
     return answer.tested ? 'Webhook configured; Seerr\\'s test reached JellyPass.' : 'Webhook configured, but Seerr\\'s test did not reach JellyPass.';

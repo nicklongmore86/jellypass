@@ -11,7 +11,7 @@ import { SeerrUserMap } from './seerr-users.js';
 import { HouseholdAddresses } from './household-addresses.js';
 import { HouseholdRequests } from './household-requests.js';
 import { BackgroundTasks, createShutdown } from './shutdown.js';
-import { mergedEnvironment, missingRequired, readAdminTokenFile, setInEnvironment, settingsPaths, SettingsStore } from './settings.js';
+import { mergedEnvironment, missingRequired, readAdminTokenFile, setInEnvironment, settingsPaths, SettingsStore, setupRequired } from './settings.js';
 import { SetupWizard } from './setup.js';
 import { GrantStore } from './store.js';
 import { TmdbClient, TmdbError } from './tmdb.js';
@@ -22,7 +22,8 @@ let stopping = false;
 
 /**
  * Starts in setup mode while the required settings (Jellyfin's address and API key, the webhook token) are in neither
- * the environment nor the settings file, and otherwise as configured. Finishing the setup wizard, or applying its
+ * the environment nor the settings file, or come partly from the wizard and it has not been finished (setupRequired),
+ * and otherwise as configured. Finishing the setup wizard, or applying its
  * changes later, stops what runs and starts it again with the new settings, in this process.
  */
 async function main(): Promise<void> {
@@ -38,11 +39,14 @@ async function main(): Promise<void> {
   const paths = settingsPaths(environment);
   for (;;) {
     const settings = await SettingsStore.load(paths.settingsFile);
-    const fileToken = setInEnvironment(environment, 'ADMIN_TOKEN') ? undefined : await readAdminTokenFile(paths.adminTokenFile, { create: false });
+    // An install the wizard configured (the environment alone lacks a required setting) keeps its admin token in the
+    // setup token file, made again if it was deleted to rotate the token. One whose environment has every required
+    // setting never gets the file, so its admin token stays what it was.
+    const wizardInstall = settings.current !== undefined && missingRequired(environment).length > 0;
+    const fileToken = setInEnvironment(environment, 'ADMIN_TOKEN') ? undefined : await readAdminTokenFile(paths.adminTokenFile, { create: wizardInstall });
     const merged = mergedEnvironment(environment, settings.current, fileToken);
-    const missing = missingRequired(merged);
-    if (missing.length) {
-      await runSetup(environment, settings, paths.adminTokenFile, missing);
+    if (setupRequired(environment, settings.current, merged)) {
+      await runSetup(environment, settings, paths.adminTokenFile, missingRequired(merged));
     } else {
       const adminTokenSource = setInEnvironment(environment, 'ADMIN_TOKEN') ? 'environment' : fileToken ? 'file' : 'webhook_token';
       await run(loadConfig(merged), (apply) => new SetupWizard({ settings, environment, mode: 'running', adminTokenSource, apply }));
@@ -81,7 +85,9 @@ async function runSetup(environment: Record<string, string | undefined>, setting
   });
   console.warn(JSON.stringify({
     level: 'warn',
-    message: 'JellyPass is not configured yet: open the admin site on the admin listener and follow the setup wizard',
+    message: missing.length
+      ? 'JellyPass is not configured yet: open the admin site on the admin listener and follow the setup wizard'
+      : 'JellyPass setup is not finished yet: open the setup wizard on the admin listener and finish it',
     admin: { host: adminHost, port: adminPort, path: '/admin/setup/' },
     missing,
     // Where the token is, never the token.

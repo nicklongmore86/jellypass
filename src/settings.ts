@@ -90,6 +90,18 @@ export function missingRequired(merged: Record<string, string | undefined>): str
   return REQUIRED_VARIABLES.filter((name) => !setInEnvironment(merged, name));
 }
 
+/**
+ * Whether JellyPass starts in setup mode: while a required setting is in neither source, and also while the wizard's
+ * settings make up what the environment lacks but the wizard has not been finished (a half-done wizard never starts
+ * JellyPass's services). An install whose environment alone gives every required setting starts as configured, as it
+ * always has, whatever the settings file holds.
+ */
+export function setupRequired(environment: Record<string, string | undefined>, settings: StoredSettings | undefined, merged: Record<string, string | undefined>): boolean {
+  if (missingRequired(merged).length) return true;
+  if (missingRequired(environment).length === 0) return false;
+  return !settings?.setupCompletedAt;
+}
+
 /** Where the settings file and the setup token file live: next to the state file, unless SETTINGS_FILE names another. */
 export function settingsPaths(environment: Record<string, string | undefined>): { settingsFile: string; adminTokenFile: string } {
   const stateFile = path.resolve(environment.STATE_FILE?.trim() || './data/grants.json');
@@ -127,6 +139,7 @@ export class SettingsStore {
   #settings: StoredSettings | undefined;
   #writes: Promise<unknown> = Promise.resolve();
   #revision = 0;
+  #closed = false;
 
   private constructor(file: string, settings: StoredSettings | undefined) {
     this.#file = file;
@@ -170,6 +183,7 @@ export class SettingsStore {
    * undefined is removed. Changes run one at a time, so each sees the one before it; `change` may throw to make none.
    */
   public update(change: (settings: StoredSettings) => SettingsChange | Promise<SettingsChange>): Promise<StoredSettings> {
+    if (this.#closed) return Promise.reject(new Error('the settings store is closed: JellyPass is restarting with the saved settings'));
     const run = async () => {
       const base: StoredSettings = this.#settings ? { ...this.#settings } : { version: 1, createdAt: new Date().toISOString() };
       const next = { ...base, ...(await change({ ...base })) } as StoredSettings;
@@ -182,6 +196,15 @@ export class SettingsStore {
     const result = this.#writes.then(run, run);
     this.#writes = result.catch(() => undefined);
     return result;
+  }
+
+  /**
+   * Refuses every later change and waits for the ones already made to be written, so the next phase of JellyPass can
+   * read the file knowing nothing from this one writes it again.
+   */
+  public async close(): Promise<void> {
+    this.#closed = true;
+    await this.#writes;
   }
 
   async #write(settings: StoredSettings): Promise<void> {
