@@ -1293,7 +1293,7 @@ describe('household app page: rendering', () => {
 
   it('shows only fixed text for each error, with a sign-in link for 401 and no upstream text', async () => {
     const { document, Event, errorState, ERROR_TEXT } = await renderer();
-    assert.deepEqual(Object.keys(ERROR_TEXT).sort(), ['hidden_limit_reached', 'not_found', 'offline', 'rate_limited', 'unauthorized', 'unavailable']);
+    assert.deepEqual(Object.keys(ERROR_TEXT).sort(), ['app_access_disabled', 'hidden_limit_reached', 'not_found', 'offline', 'rate_limited', 'unauthorized', 'unavailable']);
     for (const [kind, text] of Object.entries(ERROR_TEXT)) {
       let retried = 0;
       const box = errorState(document, kind, () => { retried += 1; });
@@ -1315,6 +1315,8 @@ describe('household app page: rendering', () => {
     assert.equal(errorState(document, 'canary-upstream-text').querySelector('h1').textContent, ERROR_TEXT.unavailable.title);
     assert.equal(ERROR_TEXT.rate_limited.title, 'Too many requests');
     assert.equal(ERROR_TEXT.unavailable.body, 'Something went wrong. Try again in a moment.');
+    assert.equal(ERROR_TEXT.app_access_disabled.title, 'App access is off');
+    assert.equal(ERROR_TEXT.app_access_disabled.body, 'Your administrator has turned off app access for this household. Contact them for help.');
   });
 
   describe('backdrop cards', () => {
@@ -6390,6 +6392,13 @@ describe('household app: what this member just asked for', { timeout: 30_000 }, 
       return api;
     }
     const sample = (state) => ({ ...movieCard(state), genres: [], runtime: null });
+
+    it('maps only the documented app-access 403 to its fixed error kind', async () => {
+      for (const [body, expected] of [[{ error: 'app_access_disabled' }, 'app_access_disabled'], [{ error: 'other' }, 'unavailable'], ['not JSON', 'unavailable']]) {
+        const api = await client(() => typeof body === 'string' ? new Response(body, { status: 403 }) : json(body, 403));
+        await assert.rejects(api.me(), (error) => error.kind === expected);
+      }
+    });
 
     it('adds a key only for an accepted call, and never for a refusal or an error', async () => {
       for (const status of [400, 401, 404, 429, 500]) {

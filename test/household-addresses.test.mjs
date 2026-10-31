@@ -112,8 +112,13 @@ describe('household address map', () => {
     };
     const app = await startApp(t, world(), { stateFile, households: [] });
     const migrated = JSON.parse(await readFile(app.stateFile, 'utf8'));
-    assert.equal(migrated.version, 8);
-    assert.deepEqual({ ...migrated, version: 7 }, stateFile, 'nothing but the version changed');
+    assert.equal(migrated.version, 9);
+    const originalGroups = Object.fromEntries(Object.entries(migrated.groups).map(([id, { appEnabled, tvAddonEnabled, ...group }]) => {
+      assert.equal(appEnabled, true);
+      assert.equal(tvAddonEnabled, false);
+      return [id, group];
+    }));
+    assert.deepEqual({ ...migrated, version: 7, groups: originalGroups }, stateFile, 'existing fields preserved');
     const users = await get(app.port, '/Users/Public', { Host: HOST_A });
     assert.deepEqual(users.json().map((user) => user.Name), ['Alice', 'Ann']);
     const groups = (await get(app.adminPort, '/v1/groups', { Host: ADMIN_HOST, ...BEARER })).json().groups;
@@ -504,3 +509,47 @@ function raw(port, requestLine, headers, body = '') {
     });
   });
 }
+
+
+describe('household feature switches', () => {
+  it('requires admin auth, refuses household routes, and changes only the selected household live', async (t) => {
+    const app = await startApp(t, Object.assign(world(), { webPage: {} }), { tvAddon: true, tvHouseholds: [] });
+    const route = '/v1/groups/grove/features';
+    const features = (appEnabled, tvAddonEnabled) => JSON.stringify({ appEnabled, tvAddonEnabled });
+    const put = (port, host, body, auth = BEARER) => get(port, route, { Host: host, 'Content-Type': 'application/json', ...auth }, { method: 'PUT', body });
+    assert.equal((await put(app.adminPort, ADMIN_HOST, features(false, true), {})).status, 401);
+    assert.equal((await put(app.adminPort, ADMIN_HOST, features(false, true), { Authorization: 'Bearer invalid' })).status, 401);
+    for (const host of [HOST_A, HOST_B]) {
+      assert.equal((await put(app.port, host, features(false, true))).status, 404);
+    }
+    assert.equal(app.store.getGroup('grove').appEnabled, true);
+    assert.equal((await put(app.adminPort, ADMIN_HOST, '{}')).status, 400);
+    assert.equal((await put(app.adminPort, ADMIN_HOST, '{"appEnabled":"false"}')).status, 400);
+    assert.equal((await put(app.adminPort, ADMIN_HOST, '{"other":true}')).status, 400);
+    assert.equal((await put(app.adminPort, ADMIN_HOST, '{"tvAddonEnabled":true}')).status, 200);
+    assert.equal((await put(app.adminPort, ADMIN_HOST, '{"appEnabled":false}')).status, 200);
+    assert.deepEqual(app.service.getHouseholdFeatures('grove'), { appEnabled: false, tvAddonEnabled: true });
+    assert.equal((await put(app.adminPort, ADMIN_HOST, features(true, false))).status, 200);
+    const web = () => app.get('/web/index.html', { user: null });
+    assert.doesNotMatch((await web()).text, /data-jellypass-tv/);
+    assert.equal((await put(app.adminPort, ADMIN_HOST, features(true, true))).status, 200);
+    assert.match((await web()).text, /data-jellypass-tv/);
+    assert.equal((await put(app.adminPort, ADMIN_HOST, features(false, false))).status, 200);
+    assert.doesNotMatch((await web()).text, /data-jellypass-tv/);
+    for (const path of ['/me', '/home', '/discover/sources', '/search?q=film', '/requests', '/hidden']) {
+      const answer = await app.get('/jellypass/app/v1' + path);
+      assert.equal(answer.status, 403, path);
+      assert.deepEqual(answer.json(), { error: 'app_access_disabled' });
+    }
+    for (const path of ['/movie/900001/get', '/hidden/movie/900001']) {
+      const answer = await app.post('/jellypass/app/v1' + path, {});
+      assert.equal(answer.status, 403);
+      assert.deepEqual(answer.json(), { error: 'app_access_disabled' });
+    }
+    assert.equal((await app.get('/jellypass/app/v1/me', { user: null })).status, 401);
+    assert.equal((await app.get('/jellypass/app/v1/me', { user: BOB })).status, 401);
+    assert.equal((await app.get('/jellypass/app/v1/me', { host: HOST_B, user: BOB })).status, 200);
+    assert.equal((await put(app.adminPort, ADMIN_HOST, features(true, false))).status, 200);
+    assert.equal((await app.get('/jellypass/app/v1/me')).status, 200);
+  });
+});

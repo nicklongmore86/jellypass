@@ -31,6 +31,7 @@ export const ADDRESS_TEXT = {
 
 /** Why a signed-in app could not check its sign-in at start (the sign-in is kept). */
 export const STALLED_TEXT = {
+  app_access_disabled: 'App access is off for this household. Contact your administrator for help.',
   offline: 'Check your connection, then try again.',
   rate_limited: 'Too many requests. Wait a few minutes, then try again.',
   not_found: "There's no JellyPass household at this address any more.",

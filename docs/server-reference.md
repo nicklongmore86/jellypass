@@ -262,8 +262,8 @@ from either source: without `JELLYFIN_URL`, `JELLYFIN_API_KEY` and
 | `JELLYFIN_PUBLIC_URLS` | No | — | Comma-separated public Jellyfin URLs for the admin self-check's anonymous direct-origin probes. |
 | `SEERR_PUBLIC_URL` | No | — | Public Seerr URL for the admin self-check. Seerr must be admin-only. |
 | `HOUSEHOLD_APP_ENABLED` | No | `false` | Serves the [household app API](household-hosts.md#household-app-api) (titles, "Get this" and the household's requests) at `/jellypass/app/v1/*`, and the [app](household-hosts.md#household-app-pwa) at `/jellypass/app/`, on household addresses. Requires the household gateway, Seerr configuration and `TMDB_API_KEY`; startup stops if any is missing. While `false`, those paths answer `404` and are never proxied to Jellyfin. |
-| `TV_ADDON_ENABLED` | No | `false` | Adds the [TV add-on](tv-addon.md) (a JellyPass row on Jellyfin web's Home) to Jellyfin web's page on the addresses of the households in `TV_ADDON_HOUSEHOLDS`, and serves its files at `/jellypass/tv/` there. Requires `HOUSEHOLD_APP_ENABLED`. While `false`, nothing on any host changes. |
-| `TV_ADDON_HOUSEHOLDS` | Conditional | — | Household (group) IDs separated by commas, or `*` for every household, that the TV add-on is on for. Required when `TV_ADDON_ENABLED` is true; startup stops on an empty or invalid list. Other households' addresses are unchanged. |
+| `TV_ADDON_ENABLED` | No | `false` | Adds the [TV add-on](tv-addon.md) (a JellyPass row on Jellyfin web's Home) to Jellyfin web's page on household addresses whose stored TV switch is on, and serves its files at `/jellypass/tv/` there. Requires `HOUSEHOLD_APP_ENABLED`. While `false`, nothing on any host changes. |
+| `TV_ADDON_HOUSEHOLDS` | Deprecated | — | Used only during state v7/v8 to v9 migration: comma-separated household IDs or `*` seed TV switches. Remove after upgrade. Stored admin switches are authoritative thereafter; presence logs one warning per process. |
 | `REQUEST_BACKFILL_SINCE` | No | — | `YYYY-MM-DD` (UTC midnight) or an ISO 8601 date-time with `Z` or an offset, such as `2026-10-15T08:00:00+02:00`. Impossible dates are rejected. Requests created before it are never imported by the backfill. |
 | `REQUEST_BACKFILL_ENABLED` | No | `true` when `REQUEST_BACKFILL_SINCE` is set, otherwise `false` | Grants available Seerr requests that the webhook missed. Requires Seerr configuration and `REQUEST_BACKFILL_SINCE`. |
 | `WS_IDLE_TIMEOUT_MS` | No | `300000` | Closes a proxied household WebSocket after this many milliseconds with no bytes in either direction; `0` disables. Jellyfin drops sockets after 60 s without a client KeepAlive (clients send one every 30 s), so values at or below `60000` log a startup warning. Maximum `86400000`. |
@@ -807,6 +807,9 @@ docker compose up -d
 curl http://127.0.0.1:8788/health
 ```
 
+Current builds migrate state v7/v8 to v9 for the [household switches](household-access.md#household-app-and-tv-switches).
+Back up state first; older builds cannot read v9. `TV_ADDON_HOUSEHOLDS` seeds TV switches only during migration.
+
 Back up the state file first. **4.0.0 is a breaking release:** the admin site,
 API, metrics, health and the Seerr webhook move to their own listener
 (`ADMIN_PORT`, default `8788`), `TRUSTED_PROXIES` becomes required with the
@@ -1128,6 +1131,7 @@ Everything in this table is served by the admin listener only (`ADMIN_PORT`).
 | `POST` | `/v1/app/requests/{requestId}/cancel` | Send every household following it back to "Get this", hold the title should it arrive, then delete the request in Seerr; `{"removeFromRadarr": true}` also removes a movie Jellyfin does not have from Radarr. |
 | `POST` | `/v1/app/held/{requestId}/release` | Give a held title to `{"householdIds": [...]}`. |
 | `GET` | `/v1/jellyfin/version` | The Jellyfin version last read, whether it is supported, any confirmation (`confirmation`: `not_needed`, `confirmed`, `unconfirmed`, or `null` while the version is not known), what an unconfirmed version does (`enforcement`: `warn` in 3.x, `refuse` from 4.0.0), and whether household hostnames serve (`householdHosts`: `serving`, `refused` or `waiting`; always `serving` in 3.x). |
+| `PUT` | `/v1/groups/{id}/features` | Update one or both boolean household switches: `appEnabled` and `tvAddonEnabled`. Admin authentication required. New households default app on, TV off. |
 | `PUT` | `/v1/jellyfin/version/confirmation` | Allow the untested version Jellyfin runs now: `{"version": "..."}`, exactly as `GET /v1/jellyfin/version` reports it (`409 jellyfin_version_changed` otherwise). |
 | `DELETE` | `/v1/jellyfin/version/confirmation` | Withdraw that confirmation. |
 | `GET` | `/v1/grants` | List grants and synchronization state. |
@@ -1254,3 +1258,11 @@ Images target `linux/amd64` and `linux/arm64`.
 Maintainers must make the GHCR package public after its first publication:
 **GitHub profile → Packages → jellypass → Package settings → Change visibility
 → Public**. Public GHCR images can then be pulled without authentication.
+
+Before its first v9 save, migration writes and fsyncs a private temporary copy, then publishes it atomically as
+`<state-file>.v8.bak` (or `.v7.bak`) without replacing an existing file. An identical backup is reused. If an existing
+backup is partial or has different content (for example after running 4.0.0 again following a rollback), migration
+creates a new `<state-file>.v8.<ISO timestamp>.<unique ID>.bak` (or `.v7.…`) and logs its full path. A backup failure
+stops migration before v9 is saved. To roll back to 4.0.0, stop JellyPass and restore the **latest backup for the
+upgrade being rolled back** (the logged timestamped file, if created) to the state path. Earlier backups may be stale;
+changes made after the selected backup are not included. `*` no longer covers households created later: new households default TV off.

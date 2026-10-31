@@ -118,7 +118,8 @@ webhook goes to the admin listener, for example
 Upgrading to 4.0 from 3.9.x or later 3.x changes the admin port, the health
 check, the Seerr webhook URL and the state file (schema 8, which 3.x cannot
 read): follow the [4.0.0 upgrade steps](CHANGELOG.md#400---2026-10-31) before
-pulling it.
+pulling it. Current builds additionally migrate to schema 9 for [household app and TV switches](docs/household-access.md#household-app-and-tv-switches);
+back up state and remove `TV_ADDON_HOUSEHOLDS` after migration.
 
 To build from source instead, run these inside a clone of this repository
 (the container runs as UID 1000, so it needs a data directory it can write):
@@ -168,7 +169,7 @@ from TMDB's image server, `image.tmdb.org`, as the
 - **iPhone, iPad and Android** ([`mobile/`](mobile/README.md)): iOS through
   TestFlight for now, Android as a sideloaded APK. Needs JellyPass 3.2.0 or
   later; Cancel request needs 3.5.0 or later.
-- **TV add-on** (`TV_ADDON_ENABLED`, `TV_ADDON_HOUSEHOLDS`): Discover rows,
+- **TV add-on** (`TV_ADDON_ENABLED`, per-household admin switches): Discover rows,
   title pages and My requests inside Jellyfin web on the listed households'
   addresses ([design](docs/tv-addon.md)). A Samsung (Tizen) build is in
   `tv/samsung/` for advanced users.

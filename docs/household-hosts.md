@@ -166,7 +166,7 @@ and nowhere else (on the administrator host they do not exist). The
 
 | Method | Path | Answer |
 | --- | --- | --- |
-| `GET` | `/jellypass/app/v1/me` | `{"name", "household", "apiVersion"}`: the caller's Jellyfin display name and household name, and the revision of the `v1` API the server speaks (an integer, `3` today; it goes up by one with each release that adds a field or endpoint, and never down). `v1` only ever gains fields and endpoints: a breaking change would be `/jellypass/app/v2`. |
+| `GET` | `/jellypass/app/v1/me` | `{"name", "household", "apiVersion"}`: the caller's Jellyfin display name and household name, and the revision of the `v1` API the server speaks (an integer, `4` today; it goes up by one with each release that adds a field or endpoint, and never down). `v1` only ever gains fields and endpoints: a breaking change would be `/jellypass/app/v2`. |
 | `GET` | `/jellypass/app/v1/search?q=...&page=N` | A page of title cards. `q` is 1 to 100 characters; `page` 1 to 500, default 1. |
 | `GET` | `/jellypass/app/v1/discover/{list}?page=N` | A page of title cards; `list` is `trending`, `trending-movies`, `trending-tv`, `popular-movies`, `popular-tv`, `new-movies` (films that opened in US theatres in the last 60 days), `upcoming` (upcoming movies), `upcoming-tv` (upcoming series), `top-movies` or `top-tv` (TMDB's top rated). |
 | `GET` | `/jellypass/app/v1/discover/sources` | The streaming services (networks) and studios the app offers, with their TMDB logos; no TMDB call. |
@@ -186,6 +186,10 @@ and nowhere else (on the administrator host they do not exist). The
 | `DELETE` | `/jellypass/app/v1/hidden/movie/{tmdbId}` | Unhides a movie for the caller: `200 {"hidden":false}` whether or not it was hidden. |
 | `DELETE` | `/jellypass/app/v1/hidden/tv/{tmdbId}` | Unhides a series for the caller, the same way. |
 | `GET` | `/jellypass/app/v1/hidden?page=N` | The caller's own hidden titles in this household, newest first, 50 a page, for My requests' **Hidden** tab: `{"page", "nextPage", "results": [{"mediaType", "tmdbId", "hiddenAt"}]}`. IDs only (no TMDB call); a client names them as it names My requests' titles. |
+
+The administrator can turn off app access for one household from its card on the private admin listener.
+Authenticated members then receive `403 {"error":"app_access_disabled"}` on all app API endpoints; invalid tokens
+and other households' members still receive 401. See [household switches and upgrade notes](household-access.md#household-app-and-tv-switches).
 
 The machine-readable contract is [docs/app-api/v1.openapi.json](app-api/v1.openapi.json)
 (OpenAPI 3.1). Native clients follow

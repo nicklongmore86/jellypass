@@ -863,3 +863,7 @@ key's contents or the Expo token in one. `EXPO_DEBUG` stays off in CI: it dumps 
 included. EAS CLI's output is printed with workflow commands switched off (`::stop-commands::` and a random marker), so
 a message containing `::error::` or the like shows as text and doesn't act on the run. **Report the builds** only runs after a
 successful build, and says so if the build list isn't valid JSON.
+
+App API revision 4 adds `403 app_access_disabled` when an administrator turns off the household's app access.
+The app shows “App access is off” and asks the member to contact their administrator. Household addresses remain
+ordinary origins such as `https://media.example.com`.

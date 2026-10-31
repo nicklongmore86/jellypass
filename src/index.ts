@@ -182,7 +182,7 @@ async function run(config: Config, setupWizard: (apply: () => void) => SetupWiza
         webSocketIdleTimeoutMs: config.webSocketIdleTimeoutMs,
         webSocketUpstreamIdleTimeoutMs: config.webSocketUpstreamIdleTimeoutMs,
         logLevel: config.logLevel,
-        ...(config.tvAddonHouseholds ? { tvAddon: { households: config.tvAddonHouseholds } } : {}),
+        tvAddon: config.tvAddonEnabled,
       },
     } : {}),
     ...(config.householdAppEnabled && seerr && members && catalogue ? {
@@ -266,7 +266,7 @@ async function run(config: Config, setupWizard: (apply: () => void) => SetupWiza
       catalogSyncIntervalSeconds: config.catalogSyncIntervalSeconds,
       requestBackfillSince: backfillSince?.toISOString() ?? null,
       householdApp: config.householdAppEnabled,
-      tvAddon: config.tvAddonHouseholds === 'all' ? 'all' : config.tvAddonHouseholds?.length ?? 0,
+      tvAddon: config.tvAddonEnabled ? service.listGroups().filter((group) => group.tvAddonEnabled).length : 'off',
     }));
     if (service.getLibraryCatalog().items.length === 0) syncCatalog();
     // Catch up on missed webhooks now rather than one reconcile interval after startup.

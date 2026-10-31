@@ -1098,7 +1098,7 @@ describe('removals across household library joins and grant moves', { timeout: 1
         const store = new GrantStore(file);
         await store.load();
         const loaded = JSON.parse(await readFile(file, 'utf8'));
-        assert.equal(loaded.version, 8, `${name} ${pass}`);
+        assert.equal(loaded.version, 9, `${name} ${pass}`);
         assert.deepEqual(loaded.removedAccess ?? {}, expected[name], `${name} ${pass}: every removal mark is kept`);
         for (const [itemId, removals] of Object.entries(expected[name])) assert.deepEqual(store.getRemovals(itemId), removals);
         assert.equal(loaded.removedManualAccess, undefined, `${name} ${pass}`);

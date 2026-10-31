@@ -110,6 +110,7 @@ describe('the client against docs/app-api/v1.openapi.json', () => {
     const errors: [number, string, ApiErrorKind, boolean][] = [
       [400, 'invalid_request', 'invalid_request', false],
       [401, 'unauthorized', 'unauthorized', false],
+      [403, 'app_access_disabled', 'app_access_disabled', false],
       [404, 'not_found', 'not_found', false],
       [404, 'household_not_found', 'not_found', true],
       [429, 'too_many_requests', 'too_many_requests', false],
@@ -130,7 +131,7 @@ describe('the client against docs/app-api/v1.openapi.json', () => {
     });
 
     it('declares exactly the error statuses the client maps', () => {
-      expect(Object.keys(operation(key).responses).sort()).toEqual([String(op.status), '400', '401', '404', '429', '502', ...(op.errors ?? []).map(String)].sort());
+      expect(Object.keys(operation(key).responses).sort()).toEqual([String(op.status), '400', '401', '403', '404', '429', '502', ...(op.errors ?? []).map(String)].sort());
     });
   });
 });

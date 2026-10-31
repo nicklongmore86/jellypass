@@ -35,7 +35,7 @@ const count = (text, part) => text.split(part).length - 1;
 const pause = (ms = 20) => new Promise((resolve) => setTimeout(resolve, ms));
 /** A world whose Jellyfin serves Jellyfin web's page (see createFakeJellyfinForApp). */
 const webWorld = (options) => Object.assign(world(options), { webPage: {} });
-const tvOn = (households = ['grove']) => ({ tvAddon: { households } });
+const tvOn = (households = ['grove']) => ({ tvAddon: true, tvHouseholds: households });
 /** What Jellyfin was asked for under /web or /jellypass/tv, as `METHOD path`. */
 /**
  * linkedom keeps no focus: the element focus() was last called on, per document, stands in for `activeElement`, and
@@ -398,7 +398,7 @@ describe('TV add-on: the gateway', { timeout: 30_000 }, () => {
   });
 
   it('is on for every household with `all`', async (t) => {
-    const app = await startApp(t, webWorld(), tvOn('all'));
+    const app = await startApp(t, webWorld(), tvOn(['grove', 'mill']));
     for (const host of [HOST_A, HOST_B]) assert.equal(count((await app.get('/web/', { host, user: null })).text, TAG), 1, host);
   });
 });

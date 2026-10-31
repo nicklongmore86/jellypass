@@ -154,10 +154,11 @@ export interface LibraryJoin {
 
 export interface GrantState {
   /**
-   * 8 since 4.0.0 (householdAddresses, appHiddenTitles); 3.9.0 and earlier refuse to start on it (see the 4.0.0 rollback
+   * 9 adds per-household app and TV switches; 8 added householdAddresses and appHiddenTitles. Older builds refuse
+   * schema 9; restore a pre-upgrade state backup to roll back (see the 4.0.0 rollback
    * notes).
    */
-  version: 8;
+  version: 9;
   grants: Record<string, GrantRecord>;
   groups: Record<string, AccessGroup>;
   catalog: LibraryCatalog;
@@ -419,6 +420,8 @@ export interface AccessRemovals {
 }
 
 export interface AccessGroup {
+  appEnabled: boolean;
+  tvAddonEnabled: boolean;
   id: string;
   name: string;
   userIds: string[];

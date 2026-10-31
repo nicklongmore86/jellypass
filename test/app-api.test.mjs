@@ -7,7 +7,7 @@ import { readdirSync } from 'node:fs';
 import { pathToFileURL } from 'node:url';
 import { parseHTML } from 'linkedom';
 import { setTimeout as delay } from 'node:timers/promises';
-import { APP_API_VERSION } from '../dist/app-api.js';
+import { APP_API_VERSION, HouseholdApp } from '../dist/app-api.js';
 import { GrantStore } from '../dist/store.js';
 import { assertNoCanaries } from './support/seerr-fixtures.mjs';
 import {
@@ -93,11 +93,11 @@ describe('household app API: answers', { timeout: 20_000 }, () => {
     const app = await startApp(t);
     const answer = await app.get(`${APP}/me`);
     assert.equal(answer.status, 200);
-    assert.deepEqual(answer.json(), { name: 'Alice', household: 'Grove', apiVersion: 3 });
+    assert.deepEqual(answer.json(), { name: 'Alice', household: 'Grove', apiVersion: 4 });
     assert.equal(app.seerr.calls.length, 0);
     assert.equal(app.tmdb.calls.length, 0);
     // The version is the server's, the same for every household and every member.
-    assert.equal(APP_API_VERSION, 3);
+    assert.equal(APP_API_VERSION, 4);
     assert.deepEqual((await app.get(`${APP}/me`, { host: HOST_B, user: BOB })).json(), { name: 'Bob', household: 'Mill', apiVersion: APP_API_VERSION });
   });
 
@@ -1270,7 +1270,7 @@ describe('household app API: sessions', { timeout: 20_000 }, () => {
       [`${APP}/me?api_key=token-alice`, {}],
     ]) {
       const answer = await app.get(pathname, { user: null, headers });
-      assert.deepEqual(answer.json(), { name: 'Alice', household: 'Grove', apiVersion: 3 }, JSON.stringify(headers));
+      assert.deepEqual(answer.json(), { name: 'Alice', household: 'Grove', apiVersion: 4 }, JSON.stringify(headers));
     }
   });
 
@@ -1532,4 +1532,21 @@ describe('household app API: Home\'s per-kind trending, new releases and all-tim
     const times = app.tmdb.calls.map((call) => call.at);
     for (const first of times) assert.ok(times.filter((time) => time >= first && time < first + 1000).length <= 30);
   });
+});
+
+
+it('defaults app access to denied when an embedder omits the enabled callback', async () => {
+  const app = new HouseholdApp({ catalogue: {}, blocklist: {}, members: {}, householdName: () => 'Household', householdTotal: () => 1 });
+  let status;
+  let body;
+  let verified = 0;
+  const response = { writeHead(code) { status = code; }, end(value) { body = JSON.parse(value.toString()); } };
+  await app.handle({ method: 'GET', url: '/jellypass/app/v1/me' }, response, {
+    householdId: 'grove', memberIds: ['member'], origin: 'https://media.example.com', clientId: 'client', credentialKey: 'key', tokenKeys: ['key'],
+    async currentUser() { verified += 1; return { id: 'member', name: 'Member', disabled: false }; },
+    async getAsCaller() { throw new Error('must not fetch data'); },
+  });
+  assert.equal(verified, 1);
+  assert.equal(status, 403);
+  assert.deepEqual(body, { error: 'app_access_disabled' });
 });
