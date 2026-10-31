@@ -17,7 +17,7 @@ export const ADMIN_HTML = `<!doctype html>
         <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 48 48"><defs><linearGradient id="jellypass-mark" x1="5" y1="7" x2="43" y2="41" gradientUnits="userSpaceOnUse"><stop stop-color="#AA5CC3"/><stop offset="1" stop-color="#00A4DC"/></linearGradient></defs><path fill="url(#jellypass-mark)" d="M8 6h32a5 5 0 0 1 5 5v7.1a6.5 6.5 0 0 0 0 11.8V37a5 5 0 0 1-5 5H8a5 5 0 0 1-5-5v-7.1a6.5 6.5 0 0 0 0-11.8V11a5 5 0 0 1 5-5Z"/><circle cx="15" cy="19" r="4" fill="#000B25" fill-opacity=".82"/><path d="M10 32c1.4-4 8.6-4 10 0M27 17h10M27 24h10M27 31h7" stroke="#000B25" stroke-opacity=".82" stroke-width="2.6" stroke-linecap="round"/></svg></span>
         <span><strong>JellyPass</strong><small>Library access for Jellyfin</small></span>
       </a>
-      <div class="topbar-actions"><div id="connection" class="connection disconnected" role="status"><span></span><b>Disconnected</b></div><button id="logout" class="button quiet compact" hidden>Sign out</button></div>
+      <div class="topbar-actions"><div id="connection" class="connection disconnected" role="status"><span></span><b>Disconnected</b></div><a id="setup-link" class="button quiet compact" href="/admin/setup/" hidden>Setup</a><button id="logout" class="button quiet compact" hidden>Sign out</button></div>
     </header>
     <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
 
@@ -88,6 +88,7 @@ export const ADMIN_HTML = `<!doctype html>
 
   <dialog id="plan-dialog"><div class="dialog-head"><div><div class="eyebrow">Dry-run</div><h2 id="plan-title">Change plan</h2></div><button class="dialog-close icon button" aria-label="Close">×</button></div><div id="plan-content" class="plan-content"></div></dialog>
   <dialog id="group-dialog"><form id="group-form"><div class="dialog-head"><div><div class="eyebrow">Shared access</div><h2 id="group-title">New group</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><label>Group ID<input id="group-id" required pattern="[a-zA-Z0-9_-]{1,128}" placeholder="household"></label><label>Display name<input id="group-name" required placeholder="Household"></label><fieldset><legend>Jellyfin users</legend><div id="user-options" class="check-list"></div></fieldset><fieldset><legend>One-tap sign-in</legend><p class="hint">Mark users whose Jellyfin account has no password. Their household login skips the password prompt. A marked user who does have a password will be unable to sign in from the household URL.</p><div id="passwordless-options" class="check-list"></div></fieldset><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button class="button primary" type="submit">Save group</button></div></form></dialog>
+  <dialog id="address-dialog" aria-labelledby="address-title"><form id="address-form" class="address-form"><div class="dialog-head"><div><div class="eyebrow">Household address</div><h2 id="address-title">Addresses</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><p id="address-gateway-off" class="hint" hidden>Household addresses are off: they are saved, and served once household addresses are turned on.</p><label>Address<input id="address-origin" type="url" placeholder="https://media.example.com" autocomplete="off" spellcheck="false"></label><label>Other addresses for the same household · one per line<textarea id="address-aliases" placeholder="https://films.example.net:8443" spellcheck="false"></textarea></label><p id="address-legacy" class="legacy" hidden></p><p class="hint">Any HTTPS hostname works, with an optional port: no path, query or user name. Each address belongs to one household only. Your reverse proxy must send these addresses to JellyPass's member listener with their original Host.</p><p id="address-error" class="form-error" role="alert"></p><div class="dialog-actions"><button id="address-remove" type="button" class="button danger">Remove addresses</button><button type="button" class="dialog-close button quiet">Cancel</button><button class="button primary" type="submit">Save addresses</button></div></form></dialog>
   <dialog id="user-dialog"><form id="user-form"><div class="dialog-head"><div><div class="eyebrow">Household member</div><h2>Create Jellyfin user</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><label>Username<input id="new-username" name="new-username" maxlength="128" autocomplete="off" required></label><label>Password · optional<input id="new-password" name="new-password" type="password" maxlength="256" autocomplete="new-password"></label><label>Confirm password<input id="confirm-password" name="confirm-password" type="password" maxlength="256" autocomplete="new-password"></label><p class="hint">Leave both password fields blank to create a passwordless Jellyfin account. Until household SSO is implemented, anyone who can reach Jellyfin and knows the username can sign in to that account.</p><label>Household or access group<select id="new-user-group" required></select></label><label class="check"><input id="import-to-seerr" type="checkbox"><span><strong>Import into Seerr</strong><small id="seerr-import-help">Link this Jellyfin identity so the user can own requests.</small></span></label><p class="hint">This creates a real non-administrator Jellyfin account and adds it to the selected group. Seerr applies its configured default permissions to imported users.</p><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button class="button primary" type="submit">Create user</button></div></form></dialog>
   <dialog id="access-dialog"><form id="access-form"><div class="dialog-head"><div><div class="eyebrow">Grant access</div><h2>Shared groups</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><p id="access-item" class="mono"></p><fieldset><legend>Groups with access</legend><div id="group-options" class="check-list"></div></fieldset><input id="access-item-id" type="hidden"><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button class="button primary" type="submit">Preview changes</button></div></form></dialog>
   <dialog id="requests-dialog"><div class="dialog-head"><div><div class="eyebrow">Direct access</div><h2>Seerr requests</h2></div><button class="dialog-close icon button" aria-label="Close">×</button></div><p id="requests-item" class="mono"></p><div id="requests-list" class="request-list"></div></dialog>
@@ -129,12 +130,15 @@ body{background:radial-gradient(circle at 14% 4%,rgba(170,92,195,.2) 0,transpare
 @media(max-width:620px){.requests-toolbar,.request-row{grid-template-columns:1fr}}
 .version-alert{display:flex;align-items:center;justify-content:space-between;gap:16px;margin:0 0 18px;padding:13px 16px;border:1px solid rgba(255,109,118,.5);border-radius:11px;background:rgba(255,109,118,.09);color:#ffc7cb;font-size:13px}.version-alert strong{display:block;color:#ffdfe1;margin-bottom:3px}.version-alert p{margin:0}.version-alert.confirmed{border-color:rgba(246,185,77,.45);background:rgba(246,185,77,.09);color:#ffe0a7}.version-alert.confirmed strong{color:#ffe9c2}
 .notice{margin:0 0 18px;padding:11px 15px;border:1px solid rgba(246,185,77,.45);border-radius:10px;background:rgba(246,185,77,.09);color:#ffe0a7;font-size:13px}
+.setup-shell{max-width:820px}.setup-card{padding:30px;margin:24px 0}.setup-card h1{font-size:40px;line-height:1.05;margin:0 0 12px}.setup-card h2{margin:0 0 8px;font-size:22px}.setup-card p{color:var(--muted)}.setup-card code{font:12px ui-monospace,SFMono-Regular,monospace;color:#c6d1dd;overflow-wrap:anywhere}.setup-form{display:grid;gap:14px;max-width:560px}.setup-form label{display:grid;gap:8px;color:#c6d1dd;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.08em}.setup-form label.check{display:flex;text-transform:none;letter-spacing:0}.setup-state{font-size:13px}.setup-state.done{color:var(--green)!important}.setup-summary{margin:28px 0 0;color:var(--muted)}
+.address-form textarea{width:100%;min-height:96px;color:var(--text);background:#080e17;border:1px solid var(--line);border-radius:10px;padding:12px 14px;font:13px ui-monospace,SFMono-Regular,monospace;resize:vertical}.address-form .legacy{color:var(--muted);font-size:12px}
+@media(max-width:620px){.setup-card{padding:22px 18px}.setup-card h1{font-size:32px}}
 `;
 
 export const ADMIN_APP_JS = `
 (() => {
   'use strict';
-  const state = { lastRemovedFormAt: null, jellyfinVersion: null, grants: [], groups: [], users: [], seerrImportAvailable: false, catalog: [], catalogSyncedAt: null, recentRequests: [], recentRequestsUnavailable: false, selectedItems: new Set(), catalogPage: 1, catalogPageSize: 25, activeTab: 'dashboard', appRequests: [], heldTitles: [], requestsLoaded: false, requestsUnavailable: '', pendingAction: null, pendingRelease: null };
+  const state = { lastRemovedFormAt: null, jellyfinVersion: null, grants: [], groups: [], users: [], seerrImportAvailable: false, catalog: [], catalogSyncedAt: null, recentRequests: [], recentRequestsUnavailable: false, selectedItems: new Set(), catalogPage: 1, catalogPageSize: 25, activeTab: 'dashboard', appRequests: [], heldTitles: [], requestsLoaded: false, requestsUnavailable: '', pendingAction: null, pendingRelease: null, addressGroup: null };
   const byId = (id) => document.getElementById(id);
   const loginView = byId('login-view');
   const appView = byId('app-view');
@@ -565,12 +569,69 @@ export const ADMIN_APP_JS = `
       edit.addEventListener('click', () => openGroup(group));
       const remove = node('button', { class: 'button danger', text: 'Delete' });
       remove.addEventListener('click', () => deleteGroup(group));
+      const editAddresses = node('button', { class: 'button quiet', text: 'Addresses' });
+      editAddresses.addEventListener('click', () => openAddresses(group));
       // Every address the household is reached at, the canonical one first (GET /v1/groups householdAddresses).
       const addresses = group.householdAddresses && group.householdAddresses.length ? group.householdAddresses : group.householdUrl ? [group.householdUrl] : [];
       const route = addresses.length
         ? node('div', { class: 'household-route' }, [node('small', { text: addresses.length === 1 ? 'Household address' : 'Household addresses' })].concat(addresses.map((address) => node('a', { text: address, href: address, target: '_blank', rel: 'noreferrer' }))))
-        : node('div', { class: 'household-route unavailable' }, [node('small', { text: 'Household address' }), node('span', { class: 'meta', text: 'No address yet: map one with PUT /v1/groups/' + group.id + '/addresses.' })]);
-      list.append(node('article', { class: 'group-card' }, [node('div', { class: 'mono', text: group.id }), node('h3', { text: group.name }), node('p', { text: group.userIds.map(userName).join(', ') || 'No users in this group' }), route, node('footer', {}, [node('span', { text: group.userIds.length + ' member' + (group.userIds.length === 1 ? '' : 's') }), node('div', { class: 'card-actions' }, [addUser, edit, remove])])]));
+        : node('div', { class: 'household-route unavailable' }, [node('small', { text: 'Household address' }), node('span', { class: 'meta', text: 'No address yet: add one with Addresses.' })]);
+      list.append(node('article', { class: 'group-card' }, [node('div', { class: 'mono', text: group.id }), node('h3', { text: group.name }), node('p', { text: group.userIds.map(userName).join(', ') || 'No users in this group' }), route, node('footer', {}, [node('span', { text: group.userIds.length + ' member' + (group.userIds.length === 1 ? '' : 's') }), node('div', { class: 'card-actions' }, [addUser, editAddresses, edit, remove])])]));
+    });
+  }
+
+  // The address editor: GET/PUT/DELETE /v1/groups/<id>/addresses, which check each address and refuse one that another
+  // household (or the legacy HOUSEHOLD_DOMAIN rule) already has; the server's sentence is shown as it is.
+  async function openAddresses(group) {
+    await busy(async (live) => {
+      const current = await api('/v1/groups/' + encodeURIComponent(group.id) + '/addresses');
+      live();
+      state.addressGroup = group.id;
+      byId('address-title').textContent = group.name + ' addresses';
+      byId('address-origin').value = current.origin || '';
+      byId('address-aliases').value = (current.aliases || []).join('\\n');
+      byId('address-gateway-off').hidden = current.gateway !== false;
+      byId('address-legacy').hidden = !current.legacy;
+      byId('address-legacy').textContent = current.legacy ? 'Also reached at ' + current.legacy + ' (HOUSEHOLD_DOMAIN).' : '';
+      byId('address-remove').hidden = !current.origin;
+      byId('address-error').textContent = '';
+      byId('address-dialog').showModal();
+    });
+  }
+
+  async function saveAddresses(event) {
+    event.preventDefault();
+    const groupId = state.addressGroup;
+    const origin = byId('address-origin').value.trim();
+    const aliases = byId('address-aliases').value.split(/[\\s,]+/).map((entry) => entry.trim()).filter(Boolean);
+    byId('address-error').textContent = '';
+    if (!origin) { byId('address-error').textContent = aliases.length ? 'Enter the main address first.' : 'Enter an address, or use Remove addresses.'; return; }
+    await busy(async (live) => {
+      try {
+        await api('/v1/groups/' + encodeURIComponent(groupId) + '/addresses', { method: 'PUT', body: JSON.stringify({ origin, aliases }) });
+      } catch (error) {
+        if (error.stale) throw error;
+        byId('address-error').textContent = error.message;
+        return;
+      }
+      live();
+      byId('address-dialog').close();
+      await load();
+      live();
+      toast('Addresses saved');
+    });
+  }
+
+  async function removeAddresses() {
+    const groupId = state.addressGroup;
+    if (!confirm('Remove every mapped address of this household? Members using them can no longer reach it there.')) return;
+    await busy(async (live) => {
+      await api('/v1/groups/' + encodeURIComponent(groupId) + '/addresses', { method: 'DELETE' });
+      live();
+      byId('address-dialog').close();
+      await load();
+      live();
+      toast('Addresses removed');
     });
   }
 
@@ -1024,6 +1085,7 @@ export const ADMIN_APP_JS = `
     loginView.hidden = connected;
     appView.hidden = !connected;
     byId('logout').hidden = !connected;
+    byId('setup-link').hidden = !connected;
     if (connected) updateHealth();
     else setHealth('disconnected', 'Disconnected');
     scrollToTop();
@@ -1117,6 +1179,8 @@ export const ADMIN_APP_JS = `
   byId('new-user').addEventListener('click', () => openCreateUser());
   byId('new-group').addEventListener('click', () => openGroup(null));
   byId('group-form').addEventListener('submit', saveGroup);
+  byId('address-form').addEventListener('submit', saveAddresses);
+  byId('address-remove').addEventListener('click', removeAddresses);
   byId('user-form').addEventListener('submit', createUser);
   byId('access-form').addEventListener('submit', previewAccess);
   byId('request-action-form').addEventListener('submit', confirmRequestAction);
