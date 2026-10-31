@@ -18,6 +18,20 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Added
+
+- Admin household cards now have independent mobile app access and TV add-on injection switches. New households
+  default to app on, TV off. App API revision 4 returns `403 {"error":"app_access_disabled"}` to authenticated members
+  when app access is off; mobile screens explain how to contact the administrator.
+
+### Upgrade
+
+- State schema v8 (and v7) migrates forward to v9, preserving existing fields. Back up the state before upgrading;
+  older server builds cannot read v9. Migration sets app access on and seeds TV switches from `TV_ADDON_HOUSEHOLDS`
+  (comma-separated household IDs or `*`); without it TV switches start off. After migration the stored switches are
+  authoritative: changing the environment list has no effect. Remove the deprecated variable after upgrading;
+  its presence emits one warning per process without logging its value. `TV_ADDON_ENABLED` remains the global gate.
+
 ## [4.0.0] - 2026-10-31
 
 **BREAKING.** This is a major release: the admin site becomes private by

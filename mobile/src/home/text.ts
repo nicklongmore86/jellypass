@@ -33,6 +33,7 @@ export const REQUEST_LABELS: Record<CoarseStatus, string> = {
 
 /** The PWA's ERROR_TEXT. The message depends only on the kind of failure, never on anything in an answer. */
 export const ERROR_TEXT = {
+  app_access_disabled: { title: 'App access is off', body: 'Your administrator has turned off app access for this household. Contact them for help.' },
   rate_limited: { title: 'Too many requests', body: 'Wait a minute, then try again.' },
   unavailable: { title: "Can't load this right now", body: 'Something went wrong. Try again in a moment.' },
   not_found: { title: 'Not found', body: "We couldn't find that title." },
@@ -42,6 +43,7 @@ export type ErrorText = keyof typeof ERROR_TEXT;
 
 /** The PWA's wording for an API client failure (`unauthorized` never gets here: it signs the member out). */
 export function errorText(kind: ApiErrorKind): ErrorText {
+  if (kind === 'app_access_disabled') return 'app_access_disabled';
   if (kind === 'too_many_requests') return 'rate_limited';
   if (kind === 'network') return 'offline';
   if (kind === 'not_found') return 'not_found';

@@ -93,11 +93,11 @@ describe('household app API: answers', { timeout: 20_000 }, () => {
     const app = await startApp(t);
     const answer = await app.get(`${APP}/me`);
     assert.equal(answer.status, 200);
-    assert.deepEqual(answer.json(), { name: 'Alice', household: 'Grove', apiVersion: 3 });
+    assert.deepEqual(answer.json(), { name: 'Alice', household: 'Grove', apiVersion: 4 });
     assert.equal(app.seerr.calls.length, 0);
     assert.equal(app.tmdb.calls.length, 0);
     // The version is the server's, the same for every household and every member.
-    assert.equal(APP_API_VERSION, 3);
+    assert.equal(APP_API_VERSION, 4);
     assert.deepEqual((await app.get(`${APP}/me`, { host: HOST_B, user: BOB })).json(), { name: 'Bob', household: 'Mill', apiVersion: APP_API_VERSION });
   });
 
@@ -1270,7 +1270,7 @@ describe('household app API: sessions', { timeout: 20_000 }, () => {
       [`${APP}/me?api_key=token-alice`, {}],
     ]) {
       const answer = await app.get(pathname, { user: null, headers });
-      assert.deepEqual(answer.json(), { name: 'Alice', household: 'Grove', apiVersion: 3 }, JSON.stringify(headers));
+      assert.deepEqual(answer.json(), { name: 'Alice', household: 'Grove', apiVersion: 4 }, JSON.stringify(headers));
     }
   });
 

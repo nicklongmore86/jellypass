@@ -149,7 +149,7 @@ describe('state migration', () => {
     });
   }
 
-  it('migrates 3.x schema v7 to v8 keeping every field, a 3.10.0 version confirmation among them', async (t) => {
+  it('migrates 3.x schema v7 to v9 keeping every field, a 3.10.0 version confirmation among them', async (t) => {
     const file = await stateFile(t);
     const v7 = {
       version: 7, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [], appWithdrawals: {},
@@ -159,20 +159,46 @@ describe('state migration', () => {
     const store = new GrantStore(file);
     await store.load();
     assert.equal(store.getJellyfinVersionConfirmed(), '13.0.0');
-    assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), { ...v7, version: 8 });
+    assert.deepEqual(JSON.parse(await readFile(file, 'utf8')), { ...v7, version: 9 });
   });
 
-  it('keeps schema v8 without rewriting', async (t) => {
+  it('keeps schema v9 without rewriting', async (t) => {
     const file = await stateFile(t);
-    const contents = JSON.stringify({ version: 8, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [], jellyfinVersionConfirmed: '13.0.0' });
+    const contents = JSON.stringify({ version: 9, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [], jellyfinVersionConfirmed: '13.0.0' });
     await writeFile(file, contents);
     await new GrantStore(file).load();
     assert.equal(await readFile(file, 'utf8'), contents);
   });
 
+  for (const legacy of [undefined, 'grove', '*']) {
+    it(`migrates v8 feature switches once with legacy selection ${legacy ?? 'absent'}`, async (t) => {
+      const before = process.env.TV_ADDON_HOUSEHOLDS;
+      t.after(() => { if (before === undefined) delete process.env.TV_ADDON_HOUSEHOLDS; else process.env.TV_ADDON_HOUSEHOLDS = before; });
+      if (legacy === undefined) delete process.env.TV_ADDON_HOUSEHOLDS; else process.env.TV_ADDON_HOUSEHOLDS = legacy;
+      const file = await stateFile(t);
+      const groups = Object.fromEntries(['grove', 'mill'].map((id) => [id, { id, name: id, userIds: [], createdAt: 'old', updatedAt: 'old' }]));
+      await writeFile(file, JSON.stringify({ version: 8, grants: {}, groups, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [] }));
+      const store = new GrantStore(file);
+      await store.load();
+      assert.equal(store.getGroup('grove').appEnabled, true);
+      assert.equal(store.getGroup('grove').tvAddonEnabled, legacy !== undefined);
+      assert.equal(store.getGroup('mill').tvAddonEnabled, legacy === '*');
+      await store.setHouseholdFeatures('grove', { appEnabled: false, tvAddonEnabled: false });
+      await store.upsertGroup({ id: 'grove', name: 'Edited', userIds: [] });
+      process.env.TV_ADDON_HOUSEHOLDS = '*';
+      const reloaded = new GrantStore(file);
+      await reloaded.load();
+      assert.equal(reloaded.getGroup('grove').appEnabled, false);
+      assert.equal(reloaded.getGroup('grove').tvAddonEnabled, false);
+      const created = await reloaded.upsertGroup({ id: 'new', name: 'New', userIds: [] });
+      assert.equal(created.appEnabled, true);
+      assert.equal(created.tvAddonEnabled, false);
+    });
+  }
+
   it('rejects a newer state schema and leaves the file untouched', async (t) => {
     const file = await stateFile(t);
-    const contents = JSON.stringify({ version: 9, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], future: true });
+    const contents = JSON.stringify({ version: 10, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], future: true });
     await writeFile(file, contents);
     await assert.rejects(new GrantStore(file).load(), /unsupported state schema version/);
     assert.equal(await readFile(file, 'utf8'), contents);

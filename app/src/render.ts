@@ -117,6 +117,7 @@ export interface CardActions {
 }
 
 export const ERROR_TEXT: Record<ApiErrorKind, { title: string; body: string }> = {
+  app_access_disabled: { title: 'App access is off', body: 'Your administrator has turned off app access for this household. Contact them for help.' },
   unauthorized: { title: 'Sign in to continue', body: 'Your Jellyfin sign-in is missing or has expired.' },
   rate_limited: { title: 'Too many requests', body: 'Wait a minute, then try again.' },
   unavailable: { title: "Can't load this right now", body: 'Something went wrong. Try again in a moment.' },

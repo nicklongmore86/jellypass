@@ -149,7 +149,7 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     const adminHost = await getWithHeaders(gateway.address().port, '/jellypass/app/', { Host: 'jellypass.example.test' });
     assert.notEqual(adminHost.status, 200);
     const me = await getWithHeaders(gateway.address().port, '/jellypass/app/v1/me', { ...host, Authorization: `MediaBrowser Token="${bob.AccessToken}"` });
-    assert.deepEqual(me.json(), { name: 'Bob', household: 'App House', apiVersion: 3 });
+    assert.deepEqual(me.json(), { name: 'Bob', household: 'App House', apiVersion: 4 });
 
     const movie = async () => {
       const answer = await getWithHeaders(gateway.address().port, `/jellypass/app/v1/movie/${OWN_MOVIE}`, {
@@ -251,7 +251,7 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
 
     // The app then calls /me with that token, and nothing else, and is the household's member.
     const me = await getWithHeaders(port, '/jellypass/app/v1/me', { Host: host, Authorization: `MediaBrowser Token="${jellyfinToken(storage, origin)}"` });
-    assert.deepEqual(me.json(), { name: 'Bob', household: 'Sign-in House', apiVersion: 3 });
+    assert.deepEqual(me.json(), { name: 'Bob', household: 'Sign-in House', apiVersion: 4 });
 
     // Another household's user, and the administrator, cannot sign in on this host; Jellyfin is never asked to.
     for (const name of ['Alice', 'admin']) {
@@ -315,7 +315,7 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     const result = await api.signIn('hilda', 'hilda-pass');
     assert.equal(same(result.userId), same(hilda.Id));
     const me = await getWithHeaders(port, '/jellypass/app/v1/me', { Host: host, Authorization: `MediaBrowser Token="${result.token}"` });
-    assert.deepEqual(me.json(), { name: 'Hilda', household: 'Hidden House', apiVersion: 3 });
+    assert.deepEqual(me.json(), { name: 'Hilda', household: 'Hidden House', apiVersion: 4 });
     await api.signOut(result.token);
     assert.equal((await getWithHeaders(port, '/jellypass/app/v1/me', { Host: host, Authorization: `MediaBrowser Token="${result.token}"` })).status, 401);
 
@@ -492,6 +492,7 @@ describe('real Jellyfin integration', { timeout: 150_000, skip: !baseUrl }, () =
     const householdStore = new GrantStore(path.join(await makeTempDir(t, 'jfa-real-tv-'), 'grants.json'));
     await householdStore.load();
     await householdStore.upsertGroup({ id: 'tvhouse', name: 'TV House', userIds: [fixture.bobId] });
+    await householdStore.setHouseholdFeatures('tvhouse', { appEnabled: true, tvAddonEnabled: true });
     await householdStore.upsertGroup({ id: 'otherhouse', name: 'Other House', userIds: [] });
     const gateway = await startGateway(t, new AccessService(client, householdStore), {
       householdGateway: { jellyfinUrl: baseUrl, domain: 'example.test', hostPrefix: 'jelly-', tvAddon: { households: ['tvhouse'] } },

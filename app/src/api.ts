@@ -8,7 +8,7 @@ export const API_PREFIX = '/jellypass/app/v1';
 export const HIDING_API_VERSION = 3;
 
 /** The only failures the app tells apart, each with a fixed message (see render.ts); upstream text is never shown. */
-export type ApiErrorKind = 'unauthorized' | 'rate_limited' | 'not_found' | 'unavailable' | 'offline' | 'hidden_limit_reached';
+export type ApiErrorKind = 'app_access_disabled' | 'unauthorized' | 'rate_limited' | 'not_found' | 'unavailable' | 'offline' | 'hidden_limit_reached';
 
 export class ApiError extends Error {
   public constructor(public readonly kind: ApiErrorKind) {
@@ -83,6 +83,7 @@ export interface Api {
 }
 
 function kindOf(status: number, hiding = false): ApiErrorKind {
+  if (status === 403) return 'app_access_disabled';
   if (status === 401) return 'unauthorized';
   if (status === 409 && hiding) return 'hidden_limit_reached';
   if (status === 429) return 'rate_limited';

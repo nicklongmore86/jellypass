@@ -1293,7 +1293,7 @@ describe('household app page: rendering', () => {
 
   it('shows only fixed text for each error, with a sign-in link for 401 and no upstream text', async () => {
     const { document, Event, errorState, ERROR_TEXT } = await renderer();
-    assert.deepEqual(Object.keys(ERROR_TEXT).sort(), ['hidden_limit_reached', 'not_found', 'offline', 'rate_limited', 'unauthorized', 'unavailable']);
+    assert.deepEqual(Object.keys(ERROR_TEXT).sort(), ['app_access_disabled', 'hidden_limit_reached', 'not_found', 'offline', 'rate_limited', 'unauthorized', 'unavailable']);
     for (const [kind, text] of Object.entries(ERROR_TEXT)) {
       let retried = 0;
       const box = errorState(document, kind, () => { retried += 1; });

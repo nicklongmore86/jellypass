@@ -4,8 +4,8 @@
 
 Steps 1 and 2 of 5 are done, and so are the first three steps of the redesign (direction A of the 2026-10-27 study): the
 Discover **row** (below, "The row"), the **page host** ("The page host") and the **title page** ("The title page"). Behind
-`TV_ADDON_ENABLED`, off by default, the household gateway adds one script to Jellyfin web's page on the households listed
-in `TV_ADDON_HOUSEHOLDS`, and that script adds one **Discover** row to Jellyfin web's Home. Choosing a card opens a
+`TV_ADDON_ENABLED`, off by default, the household gateway adds one script to Jellyfin web's page on households
+with their stored TV add-on switch on, and that script adds one **Discover** row to Jellyfin web's Home. Choosing a card opens a
 JellyPass title page, a page of Jellyfin web's own at `#/jellypass/title/<movie|tv>/<tmdbId>`, with **Play** or **Get
 this**. On Jellyfin web's own **Search** page the same script adds a **Discover** row of what was searched for and can be
 had ("The Search row"). The **Samsung app** (step 5) is built: a JellyPass build of Jellyfin's Tizen app whose loader adds
@@ -41,11 +41,10 @@ flowchart LR
   TV -->|"GET /jellypass/app/v1/discover/trending, /movie/:id, /tv/:id, /requests<br/>POST /jellypass/app/v1/movie|tv/:id/get<br/>Authorization: MediaBrowser Token"| G
 ```
 
-- **Settings.** `TV_ADDON_ENABLED` (default `false`) and `TV_ADDON_HOUSEHOLDS`, a comma-separated list of household
-  (group) IDs or `*` for every household. The list is required when the add-on is on, so it is switched on for one
-  household first. It needs `HOUSEHOLD_APP_ENABLED=true`, because the row reads the app API. Startup stops on an
-  invalid value. With the add-on off, or on a household not listed, every path on every host is decided and answered
-  exactly as before (`src/household-gateway.ts`: no route decision changes unless the add-on is on for that household).
+- **Settings.** `TV_ADDON_ENABLED` (default `false`) enables the service; the private admin UI's household TV
+  switches select which households receive injection (new households default off). Keep `HOUSEHOLD_APP_ENABLED=true`
+  and that household's app access on for the row to work. `TV_ADDON_HOUSEHOLDS` is deprecated: only the v9 state
+  migration reads it to seed switches, then stored switches are authoritative. Remove it after upgrade.
 - **The page.** On a listed household's host only, a `GET` or `HEAD` of Jellyfin web's page (`/web/`,
   `/web/index.html`, in every spelling Jellyfin routes, the `/emby` prefix included) is asked of Jellyfin as a `GET`,
   with `Accept-Encoding: identity` and without `Range`, `If-Range` or any conditional header, so it comes back whole
@@ -833,7 +832,7 @@ flowchart LR
   some no `Origin` at all), so the rules accept exactly those two values. A request with no `Origin` needs no CORS and
   is answered as always. If a set sends something else, the manifest can't be read and the add-on simply doesn't
   appear (see "Check on each Samsung").
-- **Where.** Only on a household host the add-on is on for (`TV_ADDON_ENABLED` and `TV_ADDON_HOUSEHOLDS`), and only for
+- **Where.** Only on a household host the add-on is on for (`TV_ADDON_ENABLED` and the stored household TV switch), and only for
   `/jellypass/app/v1/*` (the app API) and `/jellypass/tv/*` (the add-on's files and manifest). The household app's own
   pages (`/jellypass/app/` and its files), every other path, every other household and the administrator host answer
   exactly as before, and so does any other origin (every web page has an `https://` origin) apart from `Vary: Origin`
@@ -930,7 +929,7 @@ LAN addresses) in its operations notes, not in this repository. Here the househo
 TV over TCP 26101, unencrypted: LAN only.
 
 **Before.** On the TV: Apps, enter `12345`, Developer Mode on, host IP the sdb machine's address, restart the TV. Make
-sure the add-on is on for the household whose host the TV will use (`TV_ADDON_HOUSEHOLDS`), and that
+sure the add-on is on for the household whose host the TV will use (the admin household TV switch), and that
 `https://media.example.com/jellypass/tv/manifest.json` answers `200`.
 
 **Sign-in is lost.** The image's default run (how the stock app is usually put on) downloads

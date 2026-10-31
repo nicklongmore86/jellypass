@@ -957,6 +957,9 @@ export async function startApp(t, state = world(), options = {}) {
   await store.load();
   for (const household of options.households ?? HOUSEHOLDS) await store.upsertGroup(household);
   // The address map, by household: `{ origin, aliases }` (the legacy jelly-<household>.example.test addresses stay on).
+  if (options.tvAddon) {
+    for (const group of store.listGroups()) await store.setHouseholdFeatures(group.id, { appEnabled: true, tvAddonEnabled: options.tvAddon.households === 'all' || options.tvAddon.households.includes(group.id) });
+  }
   for (const [householdId, entry] of Object.entries(options.addresses ?? {})) await store.setHouseholdAddresses(householdId, entry);
   for (const grant of state.grants ?? []) {
     if (grant.request) await store.grant(grant.request);

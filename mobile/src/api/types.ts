@@ -29,7 +29,7 @@ export const DISCOVER_LISTS = [
 export type DiscoverList = (typeof DISCOVER_LISTS)[number];
 
 /** The error codes the API sends, each always with its own status. */
-export const ERROR_CODES = ['invalid_request', 'unauthorized', 'not_found', 'household_not_found', 'hidden_limit_reached', 'too_many_requests', 'unavailable'] as const;
+export const ERROR_CODES = ['app_access_disabled', 'invalid_request', 'unauthorized', 'not_found', 'household_not_found', 'hidden_limit_reached', 'too_many_requests', 'unavailable'] as const;
 export type ErrorCode = (typeof ERROR_CODES)[number];
 
 export interface Me {

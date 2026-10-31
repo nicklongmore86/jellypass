@@ -62,7 +62,7 @@ export interface HiddenTitle {
 /** The most deferred webhooks remembered (see GrantStore.deferWebhook); beyond it the oldest are left to the backfill. */
 export const MAX_DEFERRED_REQUESTS = 1000;
 
-const EMPTY_STATE: GrantState = { version: 8, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [] };
+const EMPTY_STATE: GrantState = { version: 9, grants: {}, groups: {}, catalog: { items: {} }, passwordlessUserIds: [], handledRequestIds: [] };
 
 export class GrantStore {
   readonly #file: string;
@@ -144,6 +144,15 @@ export class GrantStore {
 
   public listGroups(): AccessGroup[] {
     return Object.values(this.#state.groups).map(clone);
+  }
+
+  public async setHouseholdFeatures(groupId: string, features: { appEnabled: boolean; tvAddonEnabled: boolean }): Promise<AccessGroup> {
+    this.#assertOpen();
+    const group = this.#state.groups[normalizeId(groupId)];
+    if (!group) throw new Error('group not found');
+    Object.assign(group, features, { updatedAt: new Date().toISOString() });
+    await this.#save();
+    return clone(group);
   }
 
   public countGroups(): number {
@@ -506,6 +515,8 @@ export class GrantStore {
     if (this.#limitHouseholds && !previous && this.countGroups() >= MAX_HOUSEHOLDS) throw new Error(`groups must be at most ${MAX_HOUSEHOLDS}`);
     const group: AccessGroup = {
       id,
+      appEnabled: previous?.appEnabled ?? true,
+      tvAddonEnabled: previous?.tvAddonEnabled ?? false,
       name: input.name.trim(),
       userIds: [...new Set(input.userIds.map(normalizeId))].sort(),
       createdAt: previous?.createdAt ?? now,
@@ -1501,7 +1512,7 @@ function migrateState(value: unknown): { state: GrantState; changed: boolean } {
   if (typeof candidate.version === 'number' && candidate.version >= 1 && candidate.version < 7) {
     throw new Error('1.x state (schema v1–v6) is unsupported: upgrade via 3.9.x first');
   }
-  if (candidate.version !== 8 && candidate.version !== 7) throw new Error('unsupported state schema version');
+  if (candidate.version !== 9 && candidate.version !== 8 && candidate.version !== 7) throw new Error('unsupported state schema version');
   if (!candidate.groups || typeof candidate.groups !== 'object') throw new Error('state file is missing groups');
   if (!candidate.catalog || typeof candidate.catalog !== 'object') throw new Error('state file is missing catalog');
   if (!Array.isArray(candidate.passwordlessUserIds)) throw new Error('state file is missing passwordlessUserIds');
@@ -1511,8 +1522,19 @@ function migrateState(value: unknown): { state: GrantState; changed: boolean } {
   }
   const hidden = (value as { appHiddenTitles?: unknown }).appHiddenTitles;
   if (hidden !== undefined && !validHiddenTitles(hidden)) throw new Error('state file has an invalid appHiddenTitles');
-  // 8 (4.0.0) adds only the optional address map and hidden titles, so a 7 file is an 8 one without them. Every field is
-  // kept, among them a Jellyfin version confirmation 3.10.0 stored.
-  if (candidate.version === 7) return { state: { ...(value as Omit<GrantState, 'version'>), version: 8 }, changed: true };
+  if (candidate.version !== 9) {
+    const state = value as GrantState;
+    const legacy = process.env.TV_ADDON_HOUSEHOLDS?.trim().toLowerCase();
+    const selected = new Set(legacy?.split(',').map((id) => id.trim()));
+    for (const group of Object.values(state.groups)) {
+      group.appEnabled = true;
+      group.tvAddonEnabled = legacy === '*' || selected.has(group.id.toLowerCase());
+    }
+    state.version = 9;
+    return { state, changed: true };
+  }
+  for (const group of Object.values((value as GrantState).groups)) {
+    if (typeof group.appEnabled !== 'boolean' || typeof group.tvAddonEnabled !== 'boolean') throw new Error('state file has invalid household features');
+  }
   return { state: value as GrantState, changed: false };
 }

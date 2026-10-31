@@ -52,7 +52,7 @@ export const APP_API_PREFIX = '/jellypass/app/v1';
  * an endpoint to v1, never lowered. v1 only ever gains (see docs/app-design.md, "Native clients (contract)"); anything
  * else is a new path, `/jellypass/app/v2`.
  */
-export const APP_API_VERSION = 3;
+export const APP_API_VERSION = 4;
 /** How long a verified Jellyfin token is trusted without asking Jellyfin again (at most 5 minutes). */
 export const APP_SESSION_TTL_MS = 5 * 60 * 1000;
 /** How long after a sign-out through the household host its tokens are still never kept as verified. */
@@ -138,13 +138,14 @@ const SEERR_REQUEST_MOVIE = 262_144;
 const SEERR_REQUEST_TV = 524_288;
 
 export type AppEndpoint = 'me' | 'search' | 'discover' | 'movie' | 'tv' | 'season' | 'get' | 'requests' | 'cancel' | 'hide' | 'unhide' | 'hidden' | 'unknown';
-export type AppOutcome = 'ok' | 'unauthorized' | 'rate_limited' | 'invalid' | 'not_found' | 'hidden_limit' | 'unavailable';
+export type AppOutcome = 'ok' | 'app_disabled' | 'unauthorized' | 'rate_limited' | 'invalid' | 'not_found' | 'hidden_limit' | 'unavailable';
 
 /**
  * The only error answers, the same for every endpoint and every title. `unauthorized` covers a missing, invalid or
  * disabled token and a caller from another household alike.
  */
 const APP_ERRORS: Record<Exclude<AppOutcome, 'ok'>, { status: number; body: { error: string } }> = {
+  app_disabled: { status: 403, body: { error: 'app_access_disabled' } },
   unauthorized: { status: 401, body: { error: 'unauthorized' } },
   rate_limited: { status: 429, body: { error: 'too_many_requests' } },
   invalid: { status: 400, body: { error: 'invalid_request' } },
@@ -230,6 +231,7 @@ interface SignOutLimits {
 }
 
 export interface HouseholdAppOptions {
+  enabled?: (householdId: string) => boolean;
   /** Titles, from TMDB. */
   catalogue: Pick<TmdbClient, 'search' | 'discover' | 'network' | 'networkFilms' | 'studio' | 'movie' | 'tv' | 'season'>;
   /** Seerr's administrator blocklist, read with the admin key. */
@@ -455,6 +457,7 @@ interface Route {
 export class HouseholdApp implements HouseholdAppHandler {
   readonly #catalogue: HouseholdAppOptions['catalogue'];
   readonly #blocklistSource: HouseholdAppOptions['blocklist'];
+  readonly #enabled: HouseholdAppOptions['enabled'];
   readonly #members: HouseholdAppOptions['members'];
   readonly #requests: HouseholdAppOptions['requests'];
   readonly #hidden: HouseholdAppOptions['hidden'];
@@ -492,6 +495,7 @@ export class HouseholdApp implements HouseholdAppHandler {
     this.#catalogue = options.catalogue;
     this.#blocklistSource = options.blocklist;
     this.#members = options.members;
+    this.#enabled = options.enabled;
     this.#requests = options.requests;
     this.#hidden = options.hidden;
     this.#householdName = options.householdName;
@@ -675,6 +679,7 @@ export class HouseholdApp implements HouseholdAppHandler {
       return answer('unavailable');
     }
     if (!caller) return answer('unauthorized');
+    if (this.#enabled && !this.#enabled(context.householdId)) return answer('app_disabled');
     if (this.#byUser.increment(normalizedUserId(caller.id)) > MAX_APP_REQUESTS_PER_USER) return answer('rate_limited');
     // Counted only for the household's own members, so no one else can use up its burst.
     if (this.#byHousehold.increment(context.householdId) > MAX_APP_REQUESTS_PER_HOUSEHOLD_BURST) return answer('rate_limited');

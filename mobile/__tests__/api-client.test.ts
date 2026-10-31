@@ -242,6 +242,7 @@ describe('error answers', () => {
     [429, { error: 'too_many_login_attempts' }, 'too_many_requests'],
     [401, { error: 'unavailable' }, 'unauthorized'],
     [403, { error: 'forbidden' }, 'unavailable'],
+    [403, { error: 'app_access_disabled' }, 'app_access_disabled'],
     [500, 'Internal Server Error', 'unavailable'],
     [503, { error: 'unavailable' }, 'unavailable'],
     [504, '', 'unavailable'],

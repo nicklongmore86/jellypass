@@ -226,21 +226,18 @@ function parseBackfillSince(value: string): Date {
 }
 
 /**
- * TV_ADDON_ENABLED (default false) and TV_ADDON_HOUSEHOLDS: a comma-separated list of household (group) IDs, or `*` for
- * every household, required when the add-on is on so it is switched on deliberately, one household first. The add-on
- * calls the household app API, so it needs HOUSEHOLD_APP_ENABLED.
+ * TV_ADDON_ENABLED is the global gate. Household selection is stored in state v9; the old environment list is
+ * read only by the migration. The add-on calls the household app API, so it needs HOUSEHOLD_APP_ENABLED.
  */
+let warnedTvHouseholds = false;
 function parseTvAddon(householdAppEnabled: boolean): string[] | 'all' | undefined {
+  if (process.env.TV_ADDON_HOUSEHOLDS !== undefined && !warnedTvHouseholds) {
+    warnedTvHouseholds = true;
+    console.warn(JSON.stringify({ level: 'warn', message: 'TV_ADDON_HOUSEHOLDS is deprecated; used only when migrating state to v9. Manage TV access in the admin UI.' }));
+  }
   if (!booleanEnvironment('TV_ADDON_ENABLED', false)) return undefined;
   if (!householdAppEnabled) throw new Error('HOUSEHOLD_APP_ENABLED is required when TV_ADDON_ENABLED is true');
-  const input = process.env.TV_ADDON_HOUSEHOLDS?.trim() ?? '';
-  if (input === '*') return 'all';
-  const households = [...new Set(input.split(',').map((id) => id.trim().toLowerCase()).filter(Boolean))];
-  if (!households.length) throw new Error('TV_ADDON_HOUSEHOLDS is required when TV_ADDON_ENABLED is true: household IDs separated by commas, or *');
-  if (households.some((id) => !/^[a-z0-9_-]{1,128}$/.test(id))) {
-    throw new Error('TV_ADDON_HOUSEHOLDS must list household IDs (letters, numbers, hyphens and underscores) separated by commas, or *');
-  }
-  return households;
+  return 'all';
 }
 
 /** Unknown values fall back to `info` with a warning rather than blocking startup over a logging setting. */

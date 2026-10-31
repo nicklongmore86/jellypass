@@ -134,7 +134,7 @@ export function makeServers(
         jellyfinUrl: options.householdGateway.jellyfinUrl,
         ...(tvHouseholds ? {
           tvAddon: {
-            enabled: (householdId: string) => tvHouseholds === 'all' || tvHouseholds.includes(householdId.toLowerCase()),
+            enabled: (householdId: string) => service.getHouseholdFeatures(householdId).tvAddonEnabled,
             assets: TvAssets.load(),
           },
         } : {}),
@@ -146,6 +146,7 @@ export function makeServers(
           appAssets: AppAssets.load(),
           app: new HouseholdApp({
             ...options.householdApp,
+            enabled: (householdId) => service.getHouseholdFeatures(householdId).appEnabled,
             householdName: (householdId) => service.getHouseholdName(householdId),
             householdTotal: () => service.getHouseholdTotal(),
             hidden: {
@@ -371,6 +372,12 @@ export function makeServers(
             ...(householdGateway ? { householdAddresses: [origin, ...aliases, legacy].filter((address) => address !== undefined) } : {}),
           };
         }) });
+      }
+      if (request.method === 'PUT' && segments.length === 4 && segments[0] === 'v1' && segments[1] === 'groups' && segments[3] === 'features') {
+        const body = recordBody(await readJson(request));
+        if (Object.keys(body).some((key) => key !== 'appEnabled' && key !== 'tvAddonEnabled') || typeof body.appEnabled !== 'boolean' || typeof body.tvAddonEnabled !== 'boolean') throw new Error('appEnabled and tvAddonEnabled must be booleans');
+        const group = await service.setHouseholdFeatures(validId(segments[2], 'groupId'), { appEnabled: body.appEnabled, tvAddonEnabled: body.tvAddonEnabled });
+        return json(response, 200, { status: 'saved', group });
       }
       if (segments.length === 4 && segments[0] === 'v1' && segments[1] === 'groups' && segments[3] === 'addresses') {
         if (request.method === 'GET') {

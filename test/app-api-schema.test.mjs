@@ -62,13 +62,14 @@ function unknownKeywords(doc) {
 const ERROR_CODES = {
   400: ['invalid_request'],
   401: ['unauthorized'],
+  403: ['app_access_disabled'],
   404: ['not_found', 'household_not_found'],
   409: ['hidden_limit_reached'],
   429: ['too_many_requests'],
   502: ['unavailable'],
 };
 /** The error statuses every operation declares; 409 only hiding does. */
-const COMMON_ERRORS = ['400', '401', '404', '429', '502'];
+const COMMON_ERRORS = ['400', '401', '403', '404', '429', '502'];
 /** The operations that hide a title, the only ones that can answer 409. */
 const HIDING = ['POST /hidden/movie/{tmdbId}', 'POST /hidden/tv/{tmdbId}'];
 
@@ -323,6 +324,9 @@ describe('household app API: the OpenAPI document', { timeout: 60_000 }, () => {
     // Another household and member: the same document.
     check(covered, 'GET', `${APP}/me`, await app.get(`${APP}/me`, { host: HOST_B, user: BOB }));
 
+    await hiding.store.setHouseholdFeatures('grove', { appEnabled: false, tvAddonEnabled: false });
+    check(covered, 'GET', `${APP}/me`, await hiding.get(`${APP}/me`));
+    await hiding.store.setHouseholdFeatures('grove', { appEnabled: true, tvAddonEnabled: false });
     // The fixed errors.
     const errors = [
       ['GET', `${APP}/movie/abc`, 400],

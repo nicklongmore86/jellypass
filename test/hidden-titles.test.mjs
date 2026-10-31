@@ -127,7 +127,7 @@ describe('hidden titles: the store', () => {
     await grants.hideTitle(input(CAROL, 2, { householdId: 'mill', mediaType: 'tv' }));
     await grants.close();
     const saved = JSON.parse(await readFile(file, 'utf8'));
-    assert.equal(saved.version, 8);
+    assert.equal(saved.version, 9);
     assert.deepEqual(saved.appHiddenTitles, { grove: { [ALICE]: { 'movie:1': AT } }, mill: { [CAROL]: { 'tv:2': AT } } });
     const again = new GrantStore(file);
     await again.load();
@@ -141,7 +141,7 @@ describe('hidden titles: the store', () => {
       assert.deepEqual(loaded.listHiddenTitles('grove', ALICE), [], `v${version}`);
       assert.equal(await loaded.hideTitle(input(ALICE, 9)), 'hidden', `v${version}`);
       await loaded.close();
-      assert.equal(JSON.parse(await readFile(file, 'utf8')).version, 8);
+      assert.equal(JSON.parse(await readFile(file, 'utf8')).version, 9);
     }
   });
 
