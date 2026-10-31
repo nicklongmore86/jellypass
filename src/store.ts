@@ -1,5 +1,5 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { link, mkdir, open, readFile, rename, rm, unlink, writeFile } from 'node:fs/promises';
+import { link, mkdir, open, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import type { HouseholdAddressEntry } from './household-addresses.js';
 import type {
@@ -1392,15 +1392,21 @@ async function writePreV9Backup(file: string, primary: string, contents: string)
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
           if (await readFile(backup, 'utf8') === contents) break;
-          backup = `${primary.slice(0, -4)}.${new Date().toISOString()}.${randomUUID()}.bak`;
+          backup = `${primary.slice(0, -4)}.${new Date().toISOString().replace(/[-:]|\.\d{3}/g, '')}.${randomUUID()}.bak`;
         }
       }
       // Make the published directory entry durable before the state file can advance to v9.
       const directory = await open(path.dirname(file), 'r');
-      try { await directory.sync(); } finally { await directory.close(); }
+      try {
+        await directory.sync();
+      } catch (error) {
+        if (!['EINVAL', 'EPERM', 'ENOTSUP'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+      } finally {
+        await directory.close();
+      }
       if (backup !== primary) console.info(JSON.stringify({ level: 'info', message: 'pre-v9 state backup saved', path: backup }));
     } finally {
-      if (createdTemporary) await unlink(temporary);
+      if (createdTemporary) await rm(temporary, { force: true }).catch(() => undefined);
     }
   } catch (error) {
     throw new Error(`could not write pre-v9 state backup ${backup}: ${error instanceof Error ? error.message : String(error)}`, { cause: error });

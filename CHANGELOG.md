@@ -50,6 +50,11 @@ changes are always listed at the top of the release notes.
 - TV discovery never caches 403 refusals, so the next fetch can recover immediately when app access is restored.
 - Household feature updates accept only the changed boolean flag, preserving concurrent changes from other tabs.
 
+### Fixed
+
+- Pre-v9 backup cleanup failures no longer block migration or mask backup errors. Unsupported directory fsync
+  is tolerated, while file fsync remains required; timestamped backup names use compact UTC without colons.
+
 ### Upgrade
 
 - State schema v8 (and v7) migrates forward to v9, preserving existing fields. Back up the state before upgrading;
@@ -59,7 +64,7 @@ changes are always listed at the top of the release notes.
   its presence emits one warning per process without logging its value. `TV_ADDON_ENABLED` remains the global gate.
 - Before the first v9 write, JellyPass writes and fsyncs a private temporary backup, then publishes it atomically as
   `<state-file>.v8.bak` (or `.v7.bak`), without overwriting an existing file. An identical backup is reused; a partial
-  or different backup causes a fresh timestamped `<state-file>.v8.<ISO timestamp>.<unique ID>.bak` (or `.v7.…`) to be
+  or different backup causes a fresh timestamped `<state-file>.v8.<UTC timestamp YYYYMMDDTHHMMSSZ>.<unique ID>.bak` (or `.v7.…`) to be
   created and its path logged. Backup errors stop migration before v9 is saved. To roll back to 4.0.0, stop JellyPass
   and restore the **latest backup for that upgrade**, using the logged timestamped path when present. Older backups
   may be stale after a rollback and re-upgrade. Changes made after the selected backup are not included.

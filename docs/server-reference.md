@@ -1262,7 +1262,7 @@ Maintainers must make the GHCR package public after its first publication:
 Before its first v9 save, migration writes and fsyncs a private temporary copy, then publishes it atomically as
 `<state-file>.v8.bak` (or `.v7.bak`) without replacing an existing file. An identical backup is reused. If an existing
 backup is partial or has different content (for example after running 4.0.0 again following a rollback), migration
-creates a new `<state-file>.v8.<ISO timestamp>.<unique ID>.bak` (or `.v7.…`) and logs its full path. A backup failure
+creates a new `<state-file>.v8.<UTC timestamp YYYYMMDDTHHMMSSZ>.<unique ID>.bak` (or `.v7.…`) and logs its full path. A backup failure
 stops migration before v9 is saved. To roll back to 4.0.0, stop JellyPass and restore the **latest backup for the
 upgrade being rolled back** (the logged timestamped file, if created) to the state path. Earlier backups may be stale;
 changes made after the selected backup are not included. `*` no longer covers households created later: new households default TV off.
