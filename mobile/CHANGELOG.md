@@ -15,9 +15,18 @@ build.
 
 ## [Unreleased]
 
+## [1.4.0] - 2026-10-31
+
+A minor release: a member can mark a title **Not interested** to hide it from
+their own Discover, with Undo and a new **Hidden** tab in My requests, and a
+tap anywhere on a Home row's heading opens its See all page. It still works
+with **JellyPass server 3.2.0 or later** (app API `v1`), as 1.0.0 to 1.3.0 do.
 **Not interested** (hiding titles) needs **JellyPass server 4.0.0 or later**
 (`apiVersion` 3 in `GET /jellypass/app/v1/me`); on an older server the app
-shows none of it, with no error, and everything else works as in 1.3.0.
+shows none of it, with no error, and everything else works as in 1.3.0. As in
+1.1.0, Cancel request and the day each title was requested need JellyPass
+server 3.5.0 or later (`apiVersion` 2). Members update by installing the new
+TestFlight build, or the new APK over the old one.
 
 ### Added
 
@@ -274,7 +283,8 @@ is not supported.
 - **iPhone, iPad and Android.** Portrait on phones; iPad and Android tablets
   turn. iOS is distributed through TestFlight and Android as an APK.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/mobile-v1.3.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/mobile-v1.4.0...HEAD
+[1.4.0]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.4.0
 [1.3.0]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.3.0
 [1.2.1]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.2.1
 [1.2.0]: https://github.com/nicklongmore86/jellypass/releases/tag/mobile-v1.2.0
