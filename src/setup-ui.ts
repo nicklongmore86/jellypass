@@ -94,7 +94,7 @@ export const SETUP_HTML = `<!doctype html>
 
       <article class="setup-card panel" id="step-household">
         <div class="eyebrow">Step 6 · optional</div><h2>Household addresses</h2>
-        <p>Serve households at their own HTTPS addresses (such as https://media.example.com) through your reverse proxy. Map each household's address in the admin site's Groups tab afterwards.</p>
+        <p>Serve households at their own HTTPS addresses (such as https://media.example.com) through your reverse proxy. Map each household's address in the admin site's Groups tab afterwards. HTTP addresses are accepted, but the JellyPass mobile app only connects over HTTPS; members cannot sign in to the app with an HTTP address.</p>
         <p class="setup-state" data-state="household"></p>
         <form id="household-form" class="setup-form">
           <label class="check"><input id="household-gateway" type="checkbox"><span><strong>Serve household addresses</strong><small>On the member listener (port 8787).</small></span></label>

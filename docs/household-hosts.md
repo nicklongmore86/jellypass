@@ -23,7 +23,11 @@ curl -X PUT -H "Authorization: Bearer $ADMIN_TOKEN" -H 'Content-Type: applicatio
 `origin` is the household's canonical address (its links and its URL in the
 admin site); `aliases` are more addresses for the same household. Each is
 `https://host` or `https://host:port` (`http` is accepted for a private
-network), with no path, query or credentials. Addresses are compared exactly,
+network), with no path, query or credentials. The JellyPass mobile app only
+connects over HTTPS: members cannot sign in to the app with an `http://`
+address. The admin address editor warns while entering or editing an HTTP
+address, and household cards mark saved HTTP addresses. These warnings do
+not prevent saving addresses for private networks or proxy setups. Addresses are compared exactly,
 case and default ports aside: `https://media.example.com` is reached by
 `Host: media.example.com` (or `:443`), and nothing else, not a sub- or parent
 domain. An address another household has is refused with `409`

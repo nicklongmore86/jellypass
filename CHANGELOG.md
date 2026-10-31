@@ -20,6 +20,10 @@ changes are always listed at the top of the release notes.
 
 ### Added
 
+- Warn admins about HTTP household addresses in the address editor, household
+  cards, and setup guidance: the JellyPass mobile app requires HTTPS. HTTP
+  addresses remain accepted.
+
 - **First-run setup wizard** at `/admin/setup/` on the admin listener. With no
   configuration, `docker compose up` now starts JellyPass in setup mode instead
   of stopping: the wizard signs in to Jellyfin once to create JellyPass's own
