@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { readFile, stat, writeFile } from 'node:fs/promises';
+import { readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { createServer as createHttpServer } from 'node:http';
 import { connect } from 'node:net';
 import path from 'node:path';
@@ -535,6 +535,44 @@ describe('setup wizard on a running JellyPass', () => {
     assert.equal(applied.length, 0);
     assert.equal(settings.current, undefined, 'nothing on the member listener wrote settings');
   });
+
+  it('serves the address editor\'s API over state v9: saves, refuses a conflict, removes, and keeps the household switches', async (t) => {
+    const jellyfin = await createSetupJellyfin();
+    const directory = await makeTempDir(t, 'jfa-setup-addresses-');
+    const stateFile = path.join(directory, 'grants.json');
+    const store = new GrantStore(stateFile);
+    await store.load();
+    await store.upsertGroup({ id: 'grove', name: 'Grove', userIds: [] });
+    await store.upsertGroup({ id: 'heath', name: 'Heath', userIds: [] });
+    await store.setHouseholdFeatures('grove', { appEnabled: false, tvAddonEnabled: true });
+    await store.setHouseholdAddresses('heath', { origin: 'https://films.example.net', aliases: [] });
+    const servers = makeServers(new AccessService(new JellyfinClient(jellyfin.url, 'k'), store), { webhook: 'webhook-secret', admin: SECRETS.adminToken }, undefined, {
+      trustedProxies: ['127.0.0.1'],
+      householdGateway: { jellyfinUrl: jellyfin.url },
+    });
+    const admin = await listen(servers.admin);
+    t.after(async () => { await closeServer(servers.admin); await closeServer(servers.member); await store.close(); await jellyfin.close(); });
+    const send = async (method, groupId, body) => {
+      const response = await fetch(`${admin}/v1/groups/${groupId}/addresses`, { method, headers: { ...BEARER, ...(body ? { 'Content-Type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+      return { status: response.status, body: await response.json() };
+    };
+    const saved = await send('PUT', 'grove', { origin: 'https://media.example.com', aliases: ['https://watch.example.org:8443'] });
+    assert.deepEqual([saved.status, saved.body.origin, saved.body.aliases], [200, 'https://media.example.com', ['https://watch.example.org:8443']], JSON.stringify(saved.body));
+    assert.deepEqual((await send('GET', 'grove')).body.aliases, ['https://watch.example.org:8443']);
+    const conflict = await send('PUT', 'grove', { origin: 'https://media.example.com', aliases: ['https://FILMS.example.net:443'] });
+    assert.ok(conflict.status >= 400 && conflict.status < 500, JSON.stringify(conflict.body));
+    assert.match(JSON.stringify(conflict.body), /films\.example\.net/);
+    assert.equal((await send('PUT', 'grove', { origin: 'https://media.example.com/path', aliases: [] })).status, 400, 'a path is refused');
+    let state = JSON.parse(await readFile(stateFile, 'utf8'));
+    assert.equal(state.version, 9);
+    assert.deepEqual([state.groups.grove.appEnabled, state.groups.grove.tvAddonEnabled], [false, true], 'the switches survive address edits');
+    assert.deepEqual(state.householdAddresses.grove, { origin: 'https://media.example.com', aliases: ['https://watch.example.org:8443'] }, 'a refused change stored nothing');
+    const removed = await send('DELETE', 'grove');
+    assert.deepEqual([removed.status, removed.body.status, removed.body.origin], [200, 'deleted', undefined]);
+    state = JSON.parse(await readFile(stateFile, 'utf8'));
+    assert.deepEqual([state.version, state.groups.grove.appEnabled, state.groups.grove.tvAddonEnabled], [9, false, true]);
+    assert.equal((await send('GET', 'heath')).body.origin, 'https://films.example.net');
+  });
 });
 
 describe('setup wizard page', () => {
@@ -737,7 +775,7 @@ describe('setup mode and the configured start, as a process', () => {
     assertNoSecret(child.output(), ['stored-key', 'stored-webhook-token-0000000000000000000']);
   });
 
-  it('starts a finished wizard install directly, its admin token in the setup token file (made again once deleted)', async (t) => {
+  it('starts a finished wizard install directly with the setup token file as its admin token, and rotates it when the file is deleted', async (t) => {
     const jellyfin = await createSetupJellyfin();
     t.after(() => jellyfin.close());
     jellyfin.addKey('stored-jellyfin-key-0000000000000000');
@@ -754,6 +792,23 @@ describe('setup mode and the configured start, as a process', () => {
     const status = await (await fetch(`http://127.0.0.1:${adminPort}/v1/setup`, { headers: { Authorization: `Bearer ${token}` } })).json();
     assert.deepEqual([status.mode, status.adminToken], ['running', 'file']);
     assertNoSecret(child.output(), [token, 'stored-jellyfin-key-0000000000000000', 'stored-webhook-token-0000000000000000000']);
+
+    // Rotation as documented: stop, delete admin-token, start again.
+    await child.stop();
+    await rm(path.join(directory, 'admin-token'));
+    const restarted = startProcess(t, { STATE_FILE: path.join(directory, 'grants.json'), ADMIN_PORT: String(adminPort), RECONCILE_INTERVAL_SECONDS: '0', CATALOG_SYNC_INTERVAL_SECONDS: '0' });
+    await restarted.waitFor(/"message":"server started"/);
+    const rotated = (await readFile(path.join(directory, 'admin-token'), 'utf8')).trim();
+    assert.match(rotated, /^[A-Za-z0-9_-]{43}$/);
+    assert.notEqual(rotated, token);
+    assert.equal((await stat(path.join(directory, 'admin-token'))).mode & 0o777, 0o600);
+    for (const pathname of ['/v1/groups', '/v1/setup', '/metrics']) {
+      assert.equal((await fetch(`http://127.0.0.1:${adminPort}${pathname}`, { headers: { Authorization: `Bearer ${token}` } })).status, 401, `old token, ${pathname}`);
+      assert.equal((await fetch(`http://127.0.0.1:${adminPort}${pathname}`, { headers: { Authorization: `Bearer ${rotated}` } })).status, 200, `new token, ${pathname}`);
+    }
+    // The settings file is untouched by the rotation, and neither token is logged.
+    assert.equal(JSON.parse(await readFile(path.join(directory, 'settings.json'), 'utf8')).jellyfinApiKey, 'stored-jellyfin-key-0000000000000000');
+    assertNoSecret(restarted.output(), [token, rotated]);
   });
 });
 
@@ -770,6 +825,11 @@ function startProcess(t, environment) {
   });
   return {
     output: () => output,
+    /** Stops it now (SIGTERM) and waits for it to exit; the test's own cleanup is then a no-op. */
+    stop: async () => {
+      child.kill('SIGTERM');
+      await exited;
+    },
     waitFor: async (pattern) => {
       await waitUntil(() => pattern.test(output) || child.exitCode !== null, 15_000);
       assert.match(output, pattern);
