@@ -156,31 +156,41 @@ seconds.
 
 ## Quick start with Docker Compose
 
-Create a directory and download the public deployment files:
+Create a directory and download the Compose file:
 
 ```sh
 mkdir jellypass && cd jellypass
 curl -LO https://raw.githubusercontent.com/nicklongmore86/jellypass/main/compose.yaml
-curl -Lo .env https://raw.githubusercontent.com/nicklongmore86/jellypass/main/.env.example
 mkdir -m 700 data
 sudo chown 1000:1000 data   # the container runs as UID 1000
-```
-
-Edit `.env` and replace every placeholder. Generate two different secrets, for
-example:
-
-```sh
-openssl rand -hex 32
-openssl rand -hex 32
-```
-
-Start JellyPass:
-
-```sh
 docker compose up -d
+```
+
+With no configuration JellyPass starts in setup mode: open
+`http://127.0.0.1:8788/admin/` and follow the [setup wizard](#setup-wizard). It
+asks for the setup token JellyPass wrote to `data/admin-token`:
+
+```sh
+sudo cat data/admin-token
+```
+
+Configuring by environment variables instead, as before? Download the example
+environment file too, then edit `.env` and replace every placeholder (generate
+the secrets with `openssl rand -hex 32`, a different one for each):
+
+```sh
+curl -Lo .env https://raw.githubusercontent.com/nicklongmore86/jellypass/main/.env.example
+```
+
+Either way, check it is up:
+
+```sh
 docker compose ps
 curl http://127.0.0.1:8788/health
 ```
+
+The Compose file reads `.env` only if it is there (`required: false`, Docker
+Compose 2.24 or newer).
 
 JellyPass has two listeners (see [Listeners](#listeners)): the **admin
 listener** on port `8788` (admin site and API, metrics, the Seerr webhook and
@@ -219,18 +229,25 @@ docker compose -f compose.example.yaml up --build -d
 
 ## Configuration
 
-JellyPass reads configuration from environment variables at startup.
+JellyPass reads its configuration at startup from environment variables and
+from the settings the [setup wizard](#setup-wizard) stores. A variable set in
+the environment always wins over a stored setting (the wizard shows that
+setting as locked and will not change it), so an install configured only by
+environment variables works exactly as before. "Required" below means required
+from either source: without `JELLYFIN_URL`, `JELLYFIN_API_KEY` and
+`WEBHOOK_TOKEN`, JellyPass starts in setup mode instead.
 
 | Variable | Required | Default | Description |
 | --- | --- | --- | --- |
 | `JELLYFIN_URL` | Yes | — | Base URL reachable from JellyPass, without a trailing slash. |
 | `JELLYFIN_API_KEY` | Yes | — | Jellyfin administrator API key used for catalog, tag, and policy operations. |
 | `WEBHOOK_TOKEN` | Yes | — | Secret accepted by `/webhooks/seerr`. Use a long random value. |
-| `ADMIN_TOKEN` | Recommended | `WEBHOOK_TOKEN` | Separate bearer token for administrative APIs and metrics. |
+| `ADMIN_TOKEN` | Recommended | the setup token in `admin-token`, else `WEBHOOK_TOKEN` | Separate bearer token for administrative APIs, metrics and the setup wizard. Without it, setup mode writes a random setup token to `admin-token` and that token is the admin token from then on. |
 | `SEERR_URL` | Conditional | — | Seerr base URL reachable from JellyPass. Configure with `SEERR_API_KEY`. |
 | `SEERR_API_KEY` | Conditional | — | Seerr API key. Configure with `SEERR_URL`. |
 | `TMDB_API_KEY` | Conditional | — | TMDB API key (v3, 32 hexadecimal characters) or API read access token (v4) the [household app API](household-hosts.md#household-app-api) reads search, discover and title details with, straight from TMDB. Required when `HOUSEHOLD_APP_ENABLED` is true. Get one from your TMDB account's API settings. Startup stops if it is malformed or TMDB refuses it; it is never logged. See [docs/app-design.md](app-design.md#catalogue-source). |
 | `STATE_FILE` | No | `./data/grants.json` | Durable state-file path. The container uses `/app/data/grants.json`. |
+| `SETTINGS_FILE` | No | `settings.json` next to `STATE_FILE` | Where the setup wizard stores its settings (mode `0600`; it holds the keys and the webhook token). The setup token file, `admin-token`, is kept in the same directory. Never created on an install the wizard has not been used on. |
 | `HOST` | No | `0.0.0.0` | Member listener address (household addresses only). |
 | `PORT` | No | `8787` | Member listener port. It starts only with the household gateway on. |
 | `ADMIN_HOST` | No | `127.0.0.1` (`0.0.0.0` in the container image, published on `127.0.0.1` by Compose) | Admin listener address: the admin site and API, `/metrics`, `/webhooks/seerr` and `/health`. Keep it private. See [Listeners](#listeners). |
@@ -260,6 +277,62 @@ JellyPass reads configuration from environment variables at startup.
 `SEERR_URL` and `SEERR_API_KEY` must be set together. `ADMIN_TOKEN` falls back
 to `WEBHOOK_TOKEN` for backward compatibility, but using different values limits
 the impact of a leaked webhook URL or notification configuration.
+
+### Setup wizard
+
+The setup wizard is at `/admin/setup/` on the **admin listener** only; household
+addresses and the member listener never serve it. Every call it makes needs
+the admin token as a bearer token: `ADMIN_TOKEN`, or, when that is not set, the
+setup token JellyPass writes to `admin-token` next to the state file (mode
+`0600`) the first time it starts without a configuration. With Docker Compose:
+`docker compose exec jellypass cat /app/data/admin-token`. A Jellyfin
+administrator's admin-site session does not open the wizard. The token is never
+logged: the log names the file only.
+
+While the required settings are missing, JellyPass runs in **setup mode**: the
+admin listener serves the wizard, `/health` (`{"status":"ok","setup":"required"}`)
+and the Seerr webhook's test notification, and answers everything else
+`503 setup_required`. There is no member listener, so no household address is
+served, until setup has finished.
+
+Each step checks what it is given and stores the result at once, so a wizard
+left half done resumes where it stopped and a step can be run again:
+
+1. **Jellyfin**: its address and a Jellyfin administrator's name and password.
+   JellyPass signs in once, creates an API key of its own named `JellyPass`
+   (Dashboard → API Keys), checks it, and signs that session out. The password
+   is never stored. Run again for the same Jellyfin while that key still works,
+   the step keeps it and needs no password.
+2. **Seerr**: its address and API key (Settings → General), checked as an
+   administrator's key.
+3. **Seerr webhook**: JellyPass generates its webhook token and sets Seerr's
+   webhook (Request Available only, the [payload](#configure-seerr) JellyPass
+   reads, `Authorization: Bearer` with the token) to call the admin listener at
+   the address you give, for example `http://jellypass:8788`. Seerr has one
+   webhook: one that is on and calls another address is replaced only after you
+   confirm. Then Seerr sends its test notification and the wizard says whether
+   it reached JellyPass.
+4. **TMDB key** for the household apps, checked with TMDB.
+5. **Request backfill**: the cutoff is the install date (when the wizard first
+   stored a setting), so no request made before JellyPass was installed is
+   imported.
+6. **Household addresses** (optional): the household gateway, the household
+   app and `TRUSTED_PROXIES`. Each household's addresses are then mapped in the
+   admin site (Groups → **Addresses**; see
+   [Household addresses](household-hosts.md#household-addresses)).
+
+**Finish** checks the whole configuration as JellyPass would start with it and
+then starts JellyPass with it, in place. On a running JellyPass the wizard
+changes stored settings only: they take effect when you **apply** them, which
+restarts JellyPass's services in place (and signs administrators out of the
+admin site).
+
+The settings are stored in `settings.json` next to the state file
+(`SETTINGS_FILE`), mode `0600`, and are part of a backup: it holds the Jellyfin
+API key, the Seerr and TMDB keys and the webhook token. No answer from the
+wizard, and no log line, carries a secret's value; they only say whether one is
+set. `GET /v1/setup` returns where each step stands, which settings the
+environment locks, and whether a restart is needed.
 
 ### Request backfill
 
@@ -464,7 +537,9 @@ work with JellyPass.
 The requesting Seerr account must be imported from or linked to Jellyfin.
 A local-only account without a Jellyfin user ID cannot receive a Jellyfin grant.
 
-In **Settings → Notifications → Webhook**:
+The [setup wizard](#setup-wizard)'s Seerr webhook step makes these settings
+for you, with a webhook token it generates. To make them by hand instead, in
+**Settings → Notifications → Webhook**:
 
 1. Enable the webhook agent.
 2. Select only **Request Available**.
@@ -549,7 +624,13 @@ unfilled `{{...}}` ID returns `400` and is counted as
 
 Open `http://127.0.0.1:8788/admin/` (the admin listener) or the protected
 HTTPS URL your reverse proxy gives it on a private network. Sign in with an
-enabled Jellyfin administrator account.
+enabled Jellyfin administrator account. Before setup has finished, it opens the
+[setup wizard](#setup-wizard) instead; afterwards **Setup** in the top bar opens
+it again.
+
+In **Groups**, **Addresses** edits a household's addresses: its main address
+and any others, checked and saved as `PUT /v1/groups/{groupId}/addresses` does
+(an address another household has is refused).
 
 JellyPass sends credentials directly to Jellyfin, immediately closes the
 temporary Jellyfin session, and stores only an in-memory JellyPass session for
@@ -665,12 +746,19 @@ Only exact lowercase paths are accepted, without wildcards, query strings, encod
 The state file is the only JellyPass application data that must persist. It
 contains grants, access groups, synchronization status, Jellyfin user
 IDs, and a catalog containing media names and IDs. Protect it as private data.
+An install set up with the [setup wizard](#setup-wizard) also keeps its
+settings in `data/settings.json` and its admin token in `data/admin-token`:
+back them up too, and keep them secret (they hold the Jellyfin API key, the
+Seerr and TMDB keys and the tokens).
 
 For a consistent filesystem backup:
 
 ```sh
 docker compose stop jellypass
 cp -p data/grants.json data/grants.json.backup
+# With the setup wizard:
+cp -p data/settings.json data/settings.json.backup
+cp -p data/admin-token data/admin-token.backup
 docker compose start jellypass
 ```
 
@@ -1000,6 +1088,8 @@ Everything in this table is served by the admin listener only (`ADMIN_PORT`).
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `GET` | `/health` | Process liveness, without credentials. |
+| `GET` | `/v1/setup` | The [setup wizard](#setup-wizard)'s state: each step, which settings the environment locks, what is still missing, and whether a restart is needed. Secrets are only `set` or `unset`. Bearer `ADMIN_TOKEN` (or the setup token) only. |
+| `POST` | `/v1/setup/{step}` | Run one wizard step: `jellyfin`, `seerr`, `secrets`, `webhook`, `tmdb`, `backfill`, `household`, or `finish` (check everything and start or restart with it). `409 locked_by_environment` for a setting the environment sets. Bearer token only. |
 | `POST` | `/webhooks/seerr` | Authenticated Seerr availability webhook. |
 | `GET` | `/v1/webhooks/status` | Admin-only removed-form warning status: `lastRemovedFormAt` is Unix milliseconds or `null`; cleared by an accepted webhook or restart. |
 | `GET` | `/v1/app/outstanding` | What household app "Get this" still protects or has in flight: safety markers, request intents, deferred webhooks and cancels that still decide a grant (`withdrawals`), with `"clear": true` once all are 0. Check it before rolling back. |
