@@ -7504,7 +7504,7 @@ describe('TV add-on: the search cap (Jellyfin web\'s own search asks for less on
     assert.deepEqual(xhrOpen(xhr, `${SEARCH_ITEMS}#frag`), ['GET', `${CAPPED[SEARCH_ITEMS]}#frag`, true]);
   });
 
-  it('on a TV, caps a search sent with fetch too, and passes the add-on\'s own calls through it unchanged', async (t) => {
+  it('on a TV, caps a search sent with fetch(url) too, and passes any fetch with an init, and the add-on\'s own calls, through unchanged', async (t) => {
     const app = await startApp(t, webWorld(), tvOn());
     const { page } = await openOn(t, app, { userAgent: TIZEN_UA, extras: { tizen: {} } });
     const from = page.requests.length;
@@ -7513,7 +7513,8 @@ describe('TV add-on: the search cap (Jellyfin web\'s own search asks for less on
     await page.window.fetch(SEARCH_ITEMS, { method: 'POST', body: '{}' });
     await page.window.fetch(UNTOUCHED[0]);
     const sent = page.requests.slice(from);
-    assert.deepEqual(sent.map((request) => request.url), [CAPPED[SEARCH_ITEMS], CAPPED[SEARCH_PERSONS], SEARCH_ITEMS, UNTOUCHED[0]]);
+    // An init object is never read, so even a plain `{ method: 'GET' }` is sent as it was (the fetch wrap is a backup).
+    assert.deepEqual(sent.map((request) => request.url), [CAPPED[SEARCH_ITEMS], SEARCH_PERSONS, SEARCH_ITEMS, UNTOUCHED[0]]);
     assert.deepEqual(sent[1].init, { method: 'GET', headers: { Accept: 'application/json' } }, 'init is passed on as it was');
     // The Home row on a TV: its call is the same as anywhere.
     page.home();
@@ -7667,18 +7668,55 @@ describe('TV add-on: the search cap (Jellyfin web\'s own search asks for less on
     assert.deepEqual(fetched.at(-1).args, [SEARCH_ITEMS, hostile]);
     await page.window.fetch(SEARCH_ITEMS, 'GET');
     assert.deepEqual(fetched.at(-1).args, [SEARCH_ITEMS, 'GET']);
-    // Plain data: own, inherited, lower case, missing, undefined, null, no init at all; and a POST is left alone.
+    // Plain data, any method: an init object is the caller's and is never read, so the search is sent as it was. Only no
+    // init, `undefined` or `null` (a GET by definition) gets the cap; one argument stays one, two stay two.
     const lowered = CAPPED[SEARCH_ITEMS];
     for (const [init, sent] of [
-      [{ method: 'GET' }, lowered], [{ method: 'get' }, lowered], [Object.create({ method: 'GET' }), lowered], [{}, lowered],
-      [{ method: undefined }, lowered], [null, lowered], [undefined, lowered],
-      [{ method: 'POST' }, SEARCH_ITEMS], [Object.create({ method: 'POST' }), SEARCH_ITEMS], [{ method: 1 }, SEARCH_ITEMS],
+      [{ method: 'GET' }, SEARCH_ITEMS], [{ method: 'get' }, SEARCH_ITEMS], [Object.create({ method: 'GET' }), SEARCH_ITEMS], [{}, SEARCH_ITEMS],
+      [{ method: undefined }, SEARCH_ITEMS], [{ method: 'POST' }, SEARCH_ITEMS], [Object.create({ method: 'POST' }), SEARCH_ITEMS], [{ method: 1 }, SEARCH_ITEMS],
+      [null, lowered], [undefined, lowered],
     ]) {
       await page.window.fetch(SEARCH_ITEMS, init);
       assert.deepEqual(fetched.at(-1).args, [sent, init], JSON.stringify(init ?? String(init)));
     }
     await page.window.fetch(SEARCH_ITEMS);
     assert.deepEqual(fetched.at(-1).args, [lowered], 'one argument stays one');
+    // A non-search address with no init: unchanged.
+    await page.window.fetch(UNTOUCHED[0], undefined);
+    assert.deepEqual(fetched.at(-1).args, [UNTOUCHED[0], undefined]);
+  });
+
+  it('on a TV, never inspects a fetch init: a Proxy whose descriptor says GET and whose get says POST runs no trap and is sent as it was', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const { page, fetched } = await withRecordingFetch(t, app);
+    const traps = [];
+    // Non-throwing traps that disagree: the descriptor trap reports a data `method` of GET, the get trap answers POST.
+    const lying = new Proxy({}, {
+      getOwnPropertyDescriptor(_target, key) { traps.push(`getOwnPropertyDescriptor ${String(key)}`); return key === 'method' ? { value: 'GET', writable: true, enumerable: true, configurable: true } : undefined; },
+      get(_target, key) { traps.push(`get ${String(key)}`); return key === 'method' ? 'POST' : undefined; },
+      has(_target, key) { traps.push(`has ${String(key)}`); return key === 'method'; },
+      getPrototypeOf() { traps.push('getPrototypeOf'); return Object.prototype; },
+      ownKeys() { traps.push('ownKeys'); return []; },
+    });
+    assert.equal(await page.window.fetch(SEARCH_ITEMS, lying), 'answered');
+    assert.equal(fetched.at(-1).args[0], SEARCH_ITEMS, 'the address is not lowered');
+    assert.equal(fetched.at(-1).args[1], lying, 'the same init');
+    assert.equal(fetched.at(-1).args.length, 2);
+    assert.deepEqual(traps, [], 'no trap of the init ran');
+  });
+
+  it('on a TV, a fetch init whose prototype is itself (a cyclic Proxy) is sent as it was, without hanging', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const { page, fetched } = await withRecordingFetch(t, app);
+    let traps = 0;
+    const cyclic = new Proxy({}, {
+      getPrototypeOf() { traps += 1; return cyclic; },
+      getOwnPropertyDescriptor() { traps += 1; return undefined; },
+      get() { traps += 1; return undefined; },
+    });
+    assert.equal(await page.window.fetch(SEARCH_ITEMS, cyclic), 'answered');
+    assert.deepEqual(fetched.at(-1).args, [SEARCH_ITEMS, cyclic]);
+    assert.equal(traps, 0, 'no trap of the init ran');
   });
 
   it('on a TV, hands fetch the receiver it was called with: detached, null, the window, or any other object', async (t) => {

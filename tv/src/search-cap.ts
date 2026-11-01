@@ -8,12 +8,13 @@
  * to 0, so a search that found something still finds something.
  *
  * Jellyfin web makes these calls through `@jellyfin/sdk` and axios, whose browser adapter is XMLHttpRequest, so the hook
- * is `XMLHttpRequest.prototype.open`; `window.fetch` gets the same rewrite in case a later Jellyfin web moves axios to its
- * fetch adapter. A request is a search request only when it is a GET of a path ending `/Items`, `/Persons`, `/Studios` or
- * `/Artists` with a non-empty `searchTerm`: only the Search page sends `searchTerm`. Everything else (the add-on's own
- * calls included) is passed to the browser exactly as it came, with the same receiver and arguments. The address is
- * checked first; a fetch `init` is looked at only for a search request's address, and only through its property
- * descriptors, so no getter of the caller's runs. Any surprise in the rewrite sends the original request.
+ * is `XMLHttpRequest.prototype.open`. `window.fetch` is wrapped too, as a best-effort backup only: it lowers a search
+ * address only for `fetch(url)` with a string `url` and no `init` (or an `init` of `undefined` or `null`), since any
+ * other `init` is the caller's object and is never read (no property, descriptor or prototype of it). axios's own fetch
+ * adapter passes a `Request` (or an `init` object), so it would not reach the cap. A request is a search request only
+ * when it is a GET of a path ending `/Items`, `/Persons`, `/Studios` or `/Artists` with a non-empty `searchTerm`: only
+ * the Search page sends `searchTerm`. Everything else (the add-on's own calls included) is passed to the browser
+ * exactly as it came, with the same receiver and arguments. Any surprise in the rewrite sends the original request.
  *
  * Only on a TV (isTvClient): never a phone, tablet or watch by its user agent, then Jellyfin web's own rule for its TV
  * layout (`scripts/browser.js`: "tv", "viera", "titanos", "netcast" or "web0s" in the user agent), or the Tizen or webOS
@@ -168,9 +169,13 @@ export function installSearchCap(scope: Scope): void {
     const fetch = scope.fetch;
     if (typeof fetch === 'function') {
       scope.fetch = function capFetch(this: unknown, ...args: unknown[]): unknown {
-        // The address first: init is looked at only for a search request's, and then without running any of its code.
-        const lowered = args.length >= 1 ? capped(args[0]) : undefined;
-        if (lowered !== undefined && isGet(plainMethod(args.length >= 2 ? args[1] : undefined))) args[0] = lowered;
+        // Only `fetch(url)` or `fetch(url, undefined | null)`, a GET by definition. Any other init is the caller's, and is
+        // passed on without a single read: no property, descriptor or prototype of it is looked at.
+        const init = args.length >= 2 ? args[1] : undefined;
+        if (args.length >= 1 && (init === undefined || init === null)) {
+          const lowered = capped(args[0]);
+          if (lowered !== undefined) args[0] = lowered;
+        }
         // The receiver as given: native fetch treats `undefined` and `null` as the window (Web IDL, [Global] interfaces),
         // and refuses any other object as it would have without this wrap.
         return (fetch as Open).apply(this, args);
@@ -178,26 +183,5 @@ export function installSearchCap(scope: Scope): void {
     }
   } catch {
     // fetch is left as it is.
-  }
-}
-
-/**
- * The method a fetch `init` asks for, read without running code of the caller's: `'GET'` for no init (or `null`,
- * `undefined` or no `method`), the value of a plain data property `method` (its own or a prototype's), and `undefined`
- * (the request is sent as it was) for a getter, a Proxy that throws, or anything that isn't an object.
- */
-function plainMethod(init: unknown): unknown {
-  if (init === undefined || init === null) return 'GET';
-  if (typeof init !== 'object') return undefined;
-  try {
-    for (let object: object | null = init as object; object !== null; object = Object.getPrototypeOf(object) as object | null) {
-      const property = Object.getOwnPropertyDescriptor(object, 'method');
-      if (!property) continue;
-      if (!('value' in property)) return undefined;
-      return property.value === undefined ? 'GET' : property.value;
-    }
-    return 'GET';
-  } catch {
-    return undefined;
   }
 }

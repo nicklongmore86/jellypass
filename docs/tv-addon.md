@@ -382,15 +382,19 @@ TV only**, the add-on lowers the `limit` of those requests before they are sent:
   is passed on untouched.
 - **The hook.** Jellyfin web sends these through `@jellyfin/sdk` and axios (1.18), whose browser adapter is
   `XMLHttpRequest`, so the add-on wraps `XMLHttpRequest.prototype.open`, with the same number of arguments it was given
-  (an `async` of `undefined` would make the request synchronous). `window.fetch` gets the same rewrite, in case a later
-  Jellyfin web moves axios to its fetch adapter. `scripts/capture-jellyfin-web-search.mjs` records what 12.3's own SDK
+  (an `async` of `undefined` would make the request synchronous). `window.fetch` is wrapped too, as a best-effort
+  backup only: it lowers a search address only for `fetch(url)` with a string `url` and no `init` (or an `init` of
+  `undefined` or `null`). axios's own fetch adapter (1.18) calls `fetch(request, options)` with a `Request`, or
+  `fetch(url, options)` with an options object, so if a later Jellyfin web moved axios to fetch, the cap would not
+  apply and the XHR hook would need a fetch counterpart. `scripts/capture-jellyfin-web-search.mjs` records what 12.3's own SDK
   and axios hand `XMLHttpRequest.open` (axios left to choose its adapter), pinned in
   `test/fixtures/jellyfin-web-search-requests.json`, and the tests run those calls. The wraps are made first thing,
   each on its own; one that can't be made (a missing or read-only `open`) is skipped, and any surprise in a rewrite
   sends the original request. Nothing throws.
-- **What a wrap never does.** The address is checked first: a fetch `init` is looked at only when the address is a
-  search's to lower, and then only through property descriptors, so no getter of the caller's runs (a getter or Proxy
-  `method` sends the request as it was). The endpoint is matched by a `switch`, so `/constructor` or `/__proto__` is
+- **What a wrap never does.** A fetch `init` is never inspected: any `init` other than `undefined` or `null` (a plain
+  object, a getter, a Proxy, a primitive) is passed on as it came, with no property, descriptor or prototype read, so
+  no code of the caller's runs and a plain `{ method: 'GET' }` search is sent uncapped (the trade-off for never reading
+  it). The endpoint is matched by a `switch`, so `/constructor` or `/__proto__` is
   no endpoint. fetch is called with the receiver it was given: `undefined` and `null` are the window to native fetch
   (Web IDL, for an operation of the global object), so a detached `fetch(url)` works as before, and any other receiver
   is refused by native fetch as it would be unwrapped.
