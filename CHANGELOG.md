@@ -30,6 +30,9 @@ changes are always listed at the top of the release notes.
   internet, says what `TRUSTED_PROXIES` must be, and how to check it with the
   deployment self-check; a table of common failures (`421 unknown_host`,
   `400 invalid_host`, shared sign-in limits, WebSockets) closes the page.
+- Warn admins about HTTP household addresses in the address editor, household
+  cards, and setup guidance: the JellyPass mobile app requires HTTPS. HTTP
+  addresses remain accepted.
 - **First-run setup wizard** at `/admin/setup/` on the admin listener. With no
   configuration, `docker compose up` now starts JellyPass in setup mode instead
   of stopping: the wizard signs in to Jellyfin once to create JellyPass's own

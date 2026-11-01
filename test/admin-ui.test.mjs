@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { describe, it } from 'node:test';
 import { runInNewContext } from 'node:vm';
 import { parseHTML } from 'linkedom';
-import { ADMIN_APP_JS, ADMIN_HTML } from '../dist/admin-ui.js';
+import { ADMIN_APP_JS, ADMIN_HTML, ADMIN_STYLES } from '../dist/admin-ui.js';
 
 const UNAVAILABLE = { status: 503, body: { error: 'session_check_unavailable' } };
 const UNAUTHORIZED = { status: 401, body: { error: 'unauthorized' } };
@@ -672,7 +672,7 @@ describe('admin UI household address editor', () => {
         return answers.write?.(init.method, path, init.body ? JSON.parse(init.body) : undefined) ?? { status: 200, body: { status: 'saved' } };
       }
       if (path === '/v1/groups/grove/addresses') return { status: 200, body: answers.current };
-      if (path === '/v1/groups') return { status: 200, body: { groups: [GROUP] } };
+      if (path === '/v1/groups') return { status: 200, body: { groups: [answers.group ?? GROUP] } };
       return DATA[path];
     });
     page.window.HTMLElement.prototype.showModal = function showModal() { this.setAttribute('open', ''); };
@@ -715,6 +715,49 @@ describe('admin UI household address editor', () => {
     await page.settle();
     assert.equal(byId('address-error').textContent, 'https://media.example.com is an address of both household heath and household grove');
     assert.equal(byId('address-dialog').hasAttribute('open'), true);
+  });
+
+  it('warns for saved HTTP addresses and aliases, updates while typing, and permits saving', async () => {
+    const origin = 'http://media.example.com';
+    const { page, sent, byId } = await addressPage({
+      current: { origin, aliases: [] },
+      group: { ...GROUP, householdUrl: origin, householdAddresses: [origin, 'https://films.example.net'] },
+    });
+    const warning = byId('address-warning');
+    assert.equal(warning.hasAttribute('hidden'), false);
+    assert.match(warning.textContent, /This address uses http:/);
+    assert.match(warning.textContent, /mobile app only connects over HTTPS/);
+    assert.equal(page.document.querySelectorAll('#groups-list .address-warning').length, 1);
+    assert.match(page.document.querySelector('#groups-list .address-warning').textContent, /mobile app unavailable/);
+    assert.ok(page.document.querySelector('.household-route .address-warning'));
+    assert.match(ADMIN_STYLES, /\.household-route \.address-warning\{color:var\(--amber\);font-size:11px;text-transform:none\}/);
+    byId('address-form').dispatchEvent(new page.window.Event('submit'));
+    await page.settle();
+    assert.equal(sent[0][2].origin, origin);
+    assert.equal(byId('address-dialog').hasAttribute('open'), false);
+    assert.equal(page.document.querySelectorAll('#groups-list .address-warning').length, 1);
+    byId('address-origin').value = 'https://media.example.com';
+    byId('address-origin').dispatchEvent(new page.window.Event('input'));
+    assert.equal(warning.textContent, '');
+    assert.equal(warning.hasAttribute('hidden'), false);
+    byId('address-aliases').value = 'https://films.example.net\n HTTP://tv.example.org';
+    byId('address-aliases').dispatchEvent(new page.window.Event('input'));
+    assert.equal(warning.hasAttribute('hidden'), false);
+    assert.match(warning.textContent, /This address uses http:/);
+    byId('address-aliases').value = 'https://films.example.net';
+    byId('address-aliases').dispatchEvent(new page.window.Event('input'));
+    assert.equal(warning.textContent, '');
+    assert.equal(warning.hasAttribute('hidden'), false);
+  });
+
+  it('does not warn for saved HTTPS addresses', async () => {
+    const { page, byId } = await addressPage({ current: { origin: GROUP.householdUrl, aliases: ['https://films.example.net'] } });
+    assert.equal(byId('address-warning').textContent, '');
+    assert.equal(byId('address-warning').hasAttribute('hidden'), false);
+    assert.equal(byId('address-warning').getAttribute('role'), 'status');
+    assert.equal(byId('address-origin').getAttribute('aria-describedby'), 'address-warning');
+    assert.equal(byId('address-aliases').getAttribute('aria-describedby'), 'address-warning');
+    assert.equal(page.document.querySelectorAll('#groups-list .address-warning').length, 0);
   });
 
   it('removes the mapped addresses after confirming', async () => {
