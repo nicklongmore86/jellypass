@@ -20,10 +20,19 @@ changes are always listed at the top of the release notes.
 
 ### Added
 
+- **Reverse proxy recipes** ([docs/reverse-proxy.md](docs/reverse-proxy.md),
+  [`examples/proxy/`](examples/proxy/)): a JellyPass + Caddy Compose project
+  with DNS-01 certificates through Cloudflare's DNS API, a JellyPass +
+  Cloudflare Tunnel project (dashboard token or locally-managed `config.yml`),
+  the Nginx Proxy Manager settings and **Advanced** snippet with the same proxy
+  as a plain nginx server block, and a JellyPass + Traefik project (file
+  provider, labels as an alternative). Each keeps the admin listener off the
+  internet, says what `TRUSTED_PROXIES` must be, and how to check it with the
+  deployment self-check; a table of common failures (`421 unknown_host`,
+  `400 invalid_host`, shared sign-in limits, WebSockets) closes the page.
 - Warn admins about HTTP household addresses in the address editor, household
   cards, and setup guidance: the JellyPass mobile app requires HTTPS. HTTP
   addresses remain accepted.
-
 - **First-run setup wizard** at `/admin/setup/` on the admin listener. With no
   configuration, `docker compose up` now starts JellyPass in setup mode instead
   of stopping: the wizard signs in to Jellyfin once to create JellyPass's own
