@@ -16,6 +16,7 @@ import { RequestsPage } from './requests.js';
 import { REQUESTS_HASH, REQUESTS_PATH } from './requests-model.js';
 import { HomeRow } from './row.js';
 import { SearchRow } from './search.js';
+import { installSearchCap } from './search-cap.js';
 import { TitleCache } from './titles.js';
 import { SessionWatch } from './session-watch.js';
 import { TITLE_PATH, TitlePage, titleHash } from './title.js';
@@ -24,7 +25,7 @@ import { TITLE_PATH, TitlePage, titleHash } from './title.js';
  * The JellyPass TV add-on's entry (docs/tv-addon.md): one classic script that the household gateway adds to Jellyfin
  * web's page, built by scripts/build-tv.mjs to ES2017 for the TVs' Chromium 63. It waits for Jellyfin web's Home and adds
  * the JellyPass row to it, and one to Jellyfin web's Search page when something is searched for; a card opens the
- * JellyPass title page, a page of Jellyfin web's own (page-host.ts); a compass button in Jellyfin's header opens the Discover page. It handles no key. It calls only the household app API, on the origin this script was loaded from.
+ * JellyPass title page, a page of Jellyfin web's own (page-host.ts); a compass button in Jellyfin's header opens the Discover page. It handles no key. It calls only the household app API, on the origin this script was loaded from. On a TV it also lowers the limits of Jellyfin web's own search requests (search-cap.ts).
  */
 
 /** The stylesheet's built (fingerprinted) name, next to this script; written in by scripts/build-tv.mjs. */
@@ -39,6 +40,8 @@ function start(): void {
   // One add-on per page, whatever loaded it twice.
   if (scope.__jellypassTv) return;
   scope.__jellypassTv = true;
+  // On a TV, Jellyfin web's own search asks for fewer items, people and studios (search-cap.ts), before anything else here can fail.
+  safely(() => installSearchCap(window as unknown as Parameters<typeof installSearchCap>[0]));
   const script = (document.currentScript ?? document.querySelector(`script[${MARKER}]`)) as HTMLScriptElement | null;
   const source = script?.getAttribute('src');
   if (!source) return;

@@ -134,7 +134,8 @@ unchanged, untested against that version's page.
   - the stylesheet uses no flex or grid `gap` (it measures 0 px on M63, which caused JellyQuest's skipping bug), no
     `:focus-visible` (the whole rule would be dropped), `aspect-ratio`, `inset`, logical properties, `:has()` or
     `min()`/`max()`/`clamp()`. Spacing is margins, a poster is a `padding-top: 150%` box, and focus is `:focus`.
-- **Jellyfin web coupling** is all in `tv/src/jellyfin-web.ts`, which is the file to check on a Jellyfin web upgrade:
+- **Jellyfin web coupling** is all in `tv/src/jellyfin-web.ts`, which is the file to check on a Jellyfin web upgrade,
+  apart from the search requests' addresses and limits, in `tv/src/search-cap.ts` ("The search cap"):
   - `window.ApiClient` (`accessToken()`, `serverAddress()`, `getCurrentUserId()`);
   - Home as `#indexPage` (with `hide` while it is not shown) › `#homeTab` › `.sections.homeSectionsContainer` and its
     `.verticalSection.section0` placeholder, which Jellyfin web writes for every section at once when it loads them;
@@ -361,6 +362,34 @@ left out. It is the same component as Home's row (`tv/src/cards.ts`: same headin
   and its `state`; the other-household worlds of the app tests give byte-for-byte the same calls and the same row. Text is
   set with `textContent`, images are only the API's `w342` TMDB URLs, and nothing is stored (the words are kept in memory
   for a minute and not sent anywhere but this API).
+
+### The search cap
+
+`tv/src/search-cap.ts`. Jellyfin web's own Search page (12.3 and 12.4, and 10.11.11: `apps/legacy/features/search/api`)
+asks Jellyfin for up to **800 items** in one `/Items` call and up to **100 each** of people, studios and artists
+(`/Persons`, `/Studios`, `/Artists`), and draws every card at once, with no virtual list. On a 2019 Samsung (RU7100,
+Tizen 5.0, about 1.2 GB) a broad word such as "the" drew 1,038 cards (800 items, 100 people, 45 studios and the
+Discover row's 15) and took free memory down to 16–18 MB, where Tizen's low-memory killer closes the app. So, **on a
+TV only**, the add-on lowers the `limit` of those requests before they are sent:
+
+- **Limits.** At most **100 items** (`/Items`, `/Users/<id>/Items`) and **24 people, studios or artists**. A limit is
+  only ever lowered: one within the cap, `0`, missing, repeated or not a plain number is sent as it is, so a search
+  that finds something on a desktop still finds something on a TV (the first 100 by Jellyfin's own order).
+- **Which requests.** A `GET` of a path whose last segment is `Items`, `Persons`, `Studios` or `Artists` with a
+  non-empty `searchTerm`. Only the Search page sends `searchTerm` (Jellyfin web 12.3's source has no other caller).
+  Only the one `limit=` pair is rewritten; the rest of the address, the method and every other argument are kept as
+  they were. Every other request, the add-on's own calls and the Discover row's `/jellypass/app/v1/search` included,
+  is passed on untouched.
+- **The hook.** Jellyfin web sends these through `@jellyfin/sdk` and axios (1.18), whose browser adapter is
+  `XMLHttpRequest`, so the add-on wraps `XMLHttpRequest.prototype.open`, with the same number of arguments it was given
+  (an `async` of `undefined` would make the request synchronous). `window.fetch` gets the same rewrite, in case a later
+  Jellyfin web moves axios to its fetch adapter. The wraps are made first thing, each on its own; one that can't be made
+  (a missing or read-only `open`) is skipped, and any surprise in a rewrite sends the original request. Nothing throws.
+- **Only on a TV.** By Jellyfin web's own rule for its TV layout (`scripts/browser.js`, `isTv`: "tv", "viera",
+  "titanos", "netcast" or "web0s" in the user agent, not the Oculus browser), or the `tizen`, `webOS` or `PalmSystem`
+  globals. Desktop and phone browsers on a household host get Jellyfin web's own requests (a desktop set to the TV
+  layout too). It is not gated on memory: Chromium 56–63 has no `navigator.deviceMemory`, `tizen.systeminfo` is
+  Samsung's only, and a remote doesn't page through 800 cards on any TV.
 
 ### My requests
 
@@ -1067,6 +1096,8 @@ that household:
    quickly asks once; clearing the field takes the row away; the remote moves down from Jellyfin's last row into the row
    and Left/Right between its cards; OK opens the title page and Back returns to the Search page with the query still in
    the field and the card focused. Check it with the TV's voice search and its keyboard.
+   Search a broad word ("the"): Jellyfin's own results stop at 100 items and 24 people and studios, and the app stays
+   open.
 13. **My requests.** From Home's Discover row, Right to the last card **My requests** and OK opens the page: Jellyfin's header
    with Back and Home, the filter chips, then the requests with their pills, who asked and the day. The d-pad moves
    between chips, requests and **Cancel request**, and the page scrolls to the focused one. **Load more** names ten more.
