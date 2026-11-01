@@ -63,7 +63,8 @@ changes are always listed at the top of the release notes.
   killer closed the app. On a TV (Samsung, LG and others, by Jellyfin web's
   own TV rule), the TV add-on now lowers those requests to at most 100 items
   and 24 people, studios or artists. Only Jellyfin web's search requests
-  change; desktop and phone browsers are unchanged, and the JellyPass
+  change; desktop and phone browsers (Tizen and webOS phones and watches
+  included) are unchanged, and the JellyPass
   Discover row on the Search page works as before. The add-on's script is
   named for a hash of its content, so its name changes in this release (the
   stylesheet's does not); the `/web/` page and the Samsung app's manifest are

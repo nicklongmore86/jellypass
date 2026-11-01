@@ -478,6 +478,8 @@ async function openJellyfinWeb(t, app, { user = ALICE, host = HOST_A, serverAddr
   };
   scope.window = scope;
   Object.assign(scope, scopeExtras);
+  // The page's own fetch, before the add-on runs (it is what any wrap of the add-on's must hand on to).
+  const ownFetch = scope.fetch;
   const context = vm.createContext(scope);
   const source = (await app.get(document.querySelector('script[data-jellypass-tv]').getAttribute('src'), { host, user: null })).text;
   const run = () => vm.runInContext(source, context);
@@ -489,6 +491,8 @@ async function openJellyfinWeb(t, app, { user = ALICE, host = HOST_A, serverAddr
     location,
     /** The page's window (the VM context's global), as the add-on left it. */
     window: scope,
+    /** `window.fetch` as the page had it before the add-on ran. */
+    ownFetch,
     session,
     requests,
     logged,
@@ -7364,7 +7368,9 @@ describe('TV add-on: the search cap (Jellyfin web\'s own search asks for less on
   const IPHONE_UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 18_6 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.6 Mobile/15E148 Safari/604.1';
   const ANDROID_UA = 'Mozilla/5.0 (Linux; Android 15; Pixel 9) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36';
   // Jellyfin web 12.3's Search page for "the", exactly as @jellyfin/sdk 1.0.1 and axios 1.18.1 build the addresses
-  // (apps/legacy/features/search/api: useSearchItems' limit 800, QUERY_OPTIONS' limit 100 for the rest).
+  // (apps/legacy/features/search/api: useSearchItems' limit 800, QUERY_OPTIONS' limit 100 for the rest). The pinned
+  // fixture is what that SDK and axios handed XMLHttpRequest.open (scripts/capture-jellyfin-web-search.mjs).
+  const CAPTURED = JSON.parse(readFileSync(path.join(import.meta.dirname, 'fixtures', 'jellyfin-web-search-requests.json'), 'utf8'));
   const TYPES = ['Movie', 'Series', 'Episode', 'Playlist', 'MusicAlbum', 'Audio', 'TvChannel', 'PhotoAlbum', 'Photo', 'AudioBook', 'Book', 'BoxSet'].map((type) => `includeItemTypes=${type}`).join('&');
   const FIELDS = 'fields=PrimaryImageAspectRatio&fields=CanDelete&fields=MediaSourceCount';
   const SEARCH_ITEMS = `${ORIGIN}/Items?userId=u1&isMissing=false&limit=800&recursive=true&searchTerm=the&${FIELDS}&${TYPES}&imageTypeLimit=1&enableTotalRecordCount=false`;
@@ -7402,6 +7408,14 @@ describe('TV add-on: the search cap (Jellyfin web\'s own search asks for less on
     // The add-on's own Search row, and its other calls.
     `${ORIGIN}/jellypass/app/v1/search?q=the&page=1`,
     `${ORIGIN}/jellypass/app/v1/discover/trending?limit=800&searchTerm=the`,
+    // Names an object has whatever it is (Object.prototype's): no endpoint.
+    `${ORIGIN}/constructor?searchTerm=the&limit=800`,
+    `${ORIGIN}/__proto__?searchTerm=the&limit=800`,
+    `${ORIGIN}/Constructor?searchTerm=the&limit=800`,
+    `${ORIGIN}/toString?searchTerm=the&limit=800`,
+    `${ORIGIN}/hasOwnProperty?searchTerm=the&limit=800`,
+    `${ORIGIN}/valueOf?searchTerm=the&limit=800`,
+    `${ORIGIN}/__defineGetter__?searchTerm=the&limit=800`,
     // A malformed escape and an address that does not parse: sent as they are.
     `${ORIGIN}/Items?limit=800&searchTerm=%E0%A4%A`,
     'http://[/Items?limit=800&searchTerm=the',
@@ -7435,6 +7449,19 @@ describe('TV add-on: the search cap (Jellyfin web\'s own search asks for less on
     return sent.args;
   };
 
+  it('is checked against what Jellyfin web 12.3\'s own SDK and axios hand XMLHttpRequest.open (the pinned fixture)', () => {
+    assert.deepEqual({ jellyfinWeb: CAPTURED.jellyfinWeb, sdk: CAPTURED.sdk, axios: CAPTURED.axios }, { jellyfinWeb: '12.3.0', sdk: '1.0.1', axios: '1.18.1' });
+    // axios takes the first adapter the browser has: XMLHttpRequest, which every TV has.
+    assert.equal(CAPTURED.axiosAdapters[0], 'xhr');
+    assert.deepEqual(CAPTURED.xhrOpen, {
+      items: ['GET', SEARCH_ITEMS, true],
+      people: ['GET', SEARCH_PERSONS, true],
+      studios: ['GET', SEARCH_STUDIOS, true],
+      artists: ['GET', SEARCH_ARTISTS, true],
+      videos: ['GET', SEARCH_VIDEOS, true],
+    });
+  });
+
   for (const [device, userAgent, extras] of [['a Samsung TV (Tizen 5.0)', TIZEN_UA, { tizen: {} }], ['a Samsung TV by its user agent only', TIZEN_UA, {}], ['an LG TV (webOS)', WEBOS_UA, { webOS: {} }], ['a TV with only the tizen global', DESKTOP_UA, { tizen: {} }]]) {
     it(`on ${device}, lowers the limits of Jellyfin web 12.3's search requests and changes nothing else in them`, async (t) => {
       const app = await startApp(t, webWorld(), tvOn());
@@ -7442,6 +7469,11 @@ describe('TV add-on: the search cap (Jellyfin web\'s own search asks for less on
       assert.notEqual(xhr.FakeXMLHttpRequest.prototype.open, xhr.original, 'open is wrapped');
       for (const [url, capped] of Object.entries(CAPPED)) {
         assert.deepEqual(xhrOpen(xhr, url), ['GET', capped, true], new URL(url).pathname);
+      }
+      // As axios calls it, from the fixture.
+      for (const args of Object.values(CAPTURED.xhrOpen)) {
+        new xhr.FakeXMLHttpRequest().open(...args);
+        assert.deepEqual(xhr.opened.at(-1).args, ['GET', CAPPED[args[1]], true]);
       }
       const limits = Object.values(CAPPED).map((url) => `${new URL(url).pathname} ${new URL(url).searchParams.get('limit')}`);
       assert.deepEqual(limits, ['/Items 100', '/Persons 24', '/Studios 24', '/Artists 24', '/Items 100']);
@@ -7517,7 +7549,7 @@ describe('TV add-on: the search cap (Jellyfin web\'s own search asks for less on
       const xhr = fakeXhr();
       const { page } = await openOn(t, app, { userAgent, xhr });
       assert.equal(xhr.FakeXMLHttpRequest.prototype.open, xhr.original);
-      assert.equal(page.window.fetch.name, 'fetch', 'fetch is the page\'s own');
+      assert.equal(page.window.fetch, page.ownFetch, 'fetch is the page\'s own');
       assert.deepEqual(xhrOpen(xhr, SEARCH_ITEMS), ['GET', SEARCH_ITEMS, true]);
       const from = page.requests.length;
       await page.window.fetch(SEARCH_ITEMS);
@@ -7572,6 +7604,102 @@ describe('TV add-on: the search cap (Jellyfin web\'s own search asks for less on
     const request = { url: SEARCH_ITEMS };
     await page.window.fetch(request).catch(() => undefined);
     assert.equal(page.requests.at(-1).url, request);
+  });
+
+  // Phones, tablets and watches that have a Tizen or webOS global: Samsung's Tizen phones and watch, Palm's and HP's webOS.
+  const TIZEN_PHONE_UA = 'Mozilla/5.0 (Linux; Tizen 2.4; SAMSUNG SM-Z300H) AppleWebKit/537.3 (KHTML, like Gecko) SamsungBrowser/1.1 Mobile Safari/537.3';
+  const TIZEN_WATCH_UA = 'Mozilla/5.0 (Linux; Tizen 4.0; SAMSUNG SM-R800) AppleWebKit/537.36 (KHTML, like Gecko) SamsungBrowser/1.0 Chrome/56.0.2924.0 Mobile Safari/537.36';
+  const PALM_PRE_UA = 'Mozilla/5.0 (webOS/1.4.5; U; en-US) AppleWebKit/532.2 (KHTML, like Gecko) Version/1.0 Safari/532.2 Pre/1.1';
+  const PALM_PIXI_UA = 'Mozilla/5.0 (webOS/1.4.0; U; en-US) AppleWebKit/532.2 (KHTML, like Gecko) Version/1.0 Safari/532.2 Pixi/1.1';
+  const TOUCHPAD_UA = 'Mozilla/5.0 (hp-tablet; Linux; hpwOS/3.0.5; U; en-US) AppleWebKit/534.6 (KHTML, like Gecko) wOSBrowser/234.83 Safari/534.6 TouchPad/1.0';
+  for (const [device, userAgent, extras] of [
+    ['a Tizen phone with the tizen global', TIZEN_PHONE_UA, { tizen: {} }],
+    ['a Tizen watch with the tizen global', TIZEN_WATCH_UA, { tizen: {} }],
+    ['a Palm Pre with PalmSystem', PALM_PRE_UA, { PalmSystem: {} }],
+    ['a Palm Pixi with PalmSystem and webOS', PALM_PIXI_UA, { PalmSystem: {}, webOS: {} }],
+    ['an HP TouchPad with PalmSystem', TOUCHPAD_UA, { PalmSystem: {} }],
+    ['an iPhone with every TV global', IPHONE_UA, { tizen: {}, webOS: {}, PalmSystem: {} }],
+    ['an Android phone with the tizen global', ANDROID_UA, { tizen: {} }],
+  ]) {
+    it(`on ${device}, wraps nothing: a platform global is no TV on a mobile device`, async (t) => {
+      const app = await startApp(t, webWorld(), tvOn());
+      const { page, xhr } = await openOn(t, app, { userAgent, extras });
+      assert.equal(xhr.FakeXMLHttpRequest.prototype.open, xhr.original);
+      assert.equal(page.window.fetch, page.ownFetch);
+      assert.deepEqual(xhrOpen(xhr, SEARCH_ITEMS), ['GET', SEARCH_ITEMS, true]);
+    });
+  }
+
+  /** Jellyfin web's page on a Samsung TV whose fetch records what it was called with (`this` and every argument), and answers nothing. */
+  const withRecordingFetch = async (t, app) => {
+    const fetched = [];
+    const xhr = fakeXhr();
+    const page = await openJellyfinWeb(t, app, {
+      scopeExtras: { navigator: { userAgent: TIZEN_UA }, tizen: {}, XMLHttpRequest: xhr.FakeXMLHttpRequest, fetch: function fetch(...args) { fetched.push({ self: this, args }); return Promise.resolve('answered'); } },
+    });
+    assert.notEqual(page.window.fetch, page.ownFetch, 'fetch is wrapped');
+    return { page, fetched };
+  };
+
+  it('on a TV, reads no getter of a fetch init: none for any other address, and a getter method sends a search as it was', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const { page, fetched } = await withRecordingFetch(t, app);
+    let reads = 0;
+    const counting = () => ({ get method() { reads += 1; return 'GET'; } });
+    const throwing = () => ({ get method() { reads += 1; throw new Error('no'); } });
+    for (const url of [UNTOUCHED[0], `${ORIGIN}/jellypass/app/v1/search?q=the&page=1`, UNTOUCHED[4]]) {
+      for (const init of [counting(), throwing(), Object.create(counting()), Object.create(throwing())]) {
+        assert.equal(await page.window.fetch(url, init), 'answered');
+        assert.equal(fetched.at(-1).args[0], url);
+        assert.equal(fetched.at(-1).args[1], init, 'the same init');
+      }
+    }
+    assert.equal(reads, 0, 'no getter ran for an address that is no search to lower');
+    // A search request with a getter method (own or inherited, returning or throwing): sent as it was, the getter not run.
+    for (const init of [counting(), throwing(), Object.create(counting()), Object.create(throwing())]) {
+      await page.window.fetch(SEARCH_ITEMS, init);
+      assert.deepEqual(fetched.at(-1).args, [SEARCH_ITEMS, init]);
+    }
+    assert.equal(reads, 0, 'no getter ran for a search either');
+    // A Proxy whose traps throw, and a primitive: sent as they were.
+    const hostile = new Proxy({}, { getOwnPropertyDescriptor() { throw new Error('no'); }, get() { throw new Error('no'); }, getPrototypeOf() { throw new Error('no'); } });
+    await page.window.fetch(SEARCH_ITEMS, hostile);
+    assert.deepEqual(fetched.at(-1).args, [SEARCH_ITEMS, hostile]);
+    await page.window.fetch(SEARCH_ITEMS, 'GET');
+    assert.deepEqual(fetched.at(-1).args, [SEARCH_ITEMS, 'GET']);
+    // Plain data: own, inherited, lower case, missing, undefined, null, no init at all; and a POST is left alone.
+    const lowered = CAPPED[SEARCH_ITEMS];
+    for (const [init, sent] of [
+      [{ method: 'GET' }, lowered], [{ method: 'get' }, lowered], [Object.create({ method: 'GET' }), lowered], [{}, lowered],
+      [{ method: undefined }, lowered], [null, lowered], [undefined, lowered],
+      [{ method: 'POST' }, SEARCH_ITEMS], [Object.create({ method: 'POST' }), SEARCH_ITEMS], [{ method: 1 }, SEARCH_ITEMS],
+    ]) {
+      await page.window.fetch(SEARCH_ITEMS, init);
+      assert.deepEqual(fetched.at(-1).args, [sent, init], JSON.stringify(init ?? String(init)));
+    }
+    await page.window.fetch(SEARCH_ITEMS);
+    assert.deepEqual(fetched.at(-1).args, [lowered], 'one argument stays one');
+  });
+
+  it('on a TV, hands fetch the receiver it was called with: detached, null, the window, or any other object', async (t) => {
+    const app = await startApp(t, webWorld(), tvOn());
+    const { page, fetched } = await withRecordingFetch(t, app);
+    const wrapped = page.window.fetch;
+    // `fetch(url)` from a strict caller: `this` is undefined, which native fetch takes as the window (Web IDL, [Global]).
+    await wrapped(SEARCH_ITEMS);
+    assert.equal(fetched.at(-1).self, undefined);
+    assert.deepEqual(fetched.at(-1).args, [CAPPED[SEARCH_ITEMS]]);
+    await wrapped.call(null, UNTOUCHED[0]);
+    assert.equal(fetched.at(-1).self, null);
+    await page.window.fetch(UNTOUCHED[0]);
+    assert.equal(fetched.at(-1).self, page.window);
+    // Another object: native fetch refuses it ("Illegal invocation"), and gets it to refuse, as it would unwrapped.
+    const other = {};
+    await wrapped.call(other, SEARCH_PERSONS);
+    assert.equal(fetched.at(-1).self, other);
+    assert.deepEqual(fetched.at(-1).args, [CAPPED[SEARCH_PERSONS]]);
+    await wrapped.apply(other, [UNTOUCHED[0], { method: 'GET' }]);
+    assert.equal(fetched.at(-1).self, other);
   });
 
   it('is in the built script, and the build gates still hold (ES2017, no later API)', () => {

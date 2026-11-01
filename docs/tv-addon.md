@@ -383,12 +383,23 @@ TV only**, the add-on lowers the `limit` of those requests before they are sent:
 - **The hook.** Jellyfin web sends these through `@jellyfin/sdk` and axios (1.18), whose browser adapter is
   `XMLHttpRequest`, so the add-on wraps `XMLHttpRequest.prototype.open`, with the same number of arguments it was given
   (an `async` of `undefined` would make the request synchronous). `window.fetch` gets the same rewrite, in case a later
-  Jellyfin web moves axios to its fetch adapter. The wraps are made first thing, each on its own; one that can't be made
-  (a missing or read-only `open`) is skipped, and any surprise in a rewrite sends the original request. Nothing throws.
-- **Only on a TV.** By Jellyfin web's own rule for its TV layout (`scripts/browser.js`, `isTv`: "tv", "viera",
-  "titanos", "netcast" or "web0s" in the user agent, not the Oculus browser), or the `tizen`, `webOS` or `PalmSystem`
-  globals. Desktop and phone browsers on a household host get Jellyfin web's own requests (a desktop set to the TV
-  layout too). It is not gated on memory: Chromium 56–63 has no `navigator.deviceMemory`, `tizen.systeminfo` is
+  Jellyfin web moves axios to its fetch adapter. `scripts/capture-jellyfin-web-search.mjs` records what 12.3's own SDK
+  and axios hand `XMLHttpRequest.open` (axios left to choose its adapter), pinned in
+  `test/fixtures/jellyfin-web-search-requests.json`, and the tests run those calls. The wraps are made first thing,
+  each on its own; one that can't be made (a missing or read-only `open`) is skipped, and any surprise in a rewrite
+  sends the original request. Nothing throws.
+- **What a wrap never does.** The address is checked first: a fetch `init` is looked at only when the address is a
+  search's to lower, and then only through property descriptors, so no getter of the caller's runs (a getter or Proxy
+  `method` sends the request as it was). The endpoint is matched by a `switch`, so `/constructor` or `/__proto__` is
+  no endpoint. fetch is called with the receiver it was given: `undefined` and `null` are the window to native fetch
+  (Web IDL, for an operation of the global object), so a detached `fetch(url)` works as before, and any other receiver
+  is refused by native fetch as it would be unwrapped.
+- **Only on a TV.** Never a phone, tablet or watch by its user agent: Jellyfin web's own `isMobile` words (`mobi`,
+  `iphone`, `ipad`, …) and the legacy webOS phones and tablet (`webOS/`, `Pre/`, `Pixi/`, `hpwOS`, `TouchPad`), or the
+  Oculus browser. Then Jellyfin web's own rule for its TV layout (`scripts/browser.js`, `isTv`: "tv", "viera",
+  "titanos", "netcast" or "web0s" in the user agent), or else the `tizen`, `webOS` or `PalmSystem` globals: a global
+  counts only on a device that isn't mobile, since Tizen phones and watches and the webOS phones have them too.
+  Desktop and phone browsers on a household host get Jellyfin web's own requests (a desktop set to the TV layout too). It is not gated on memory: Chromium 56–63 has no `navigator.deviceMemory`, `tizen.systeminfo` is
   Samsung's only, and a remote doesn't page through 800 cards on any TV.
 
 ### My requests
