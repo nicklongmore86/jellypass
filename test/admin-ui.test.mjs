@@ -832,3 +832,71 @@ describe('household feature controls', () => {
     assert.equal(app.disabled, false);
   });
 });
+
+describe('admin UI layout', () => {
+  it('keeps the tab row, dialogs, group grid and card actions inside the viewport', () => {
+    assert.match(ADMIN_STYLES, /\.tabs\{overflow-x:auto;/);
+    assert.match(ADMIN_STYLES, /\.tabs button\{flex:0 0 auto;white-space:nowrap\}/);
+    assert.match(ADMIN_STYLES, /\.dialog-actions\{flex-wrap:wrap;position:sticky;bottom:-26px;/);
+    assert.match(ADMIN_STYLES, /\.dialog-actions \.button\{white-space:normal\}/);
+    assert.match(ADMIN_STYLES, /\.group-grid\{grid-template-columns:repeat\(auto-fill,minmax\(min\(100%,340px\),1fr\)\)\}/);
+    assert.match(ADMIN_STYLES, /\.grant-card \.card-actions,\.group-card \.card-actions\{flex-wrap:wrap\}/);
+  });
+
+  it('switches grant cards to the stacked layout below 1100px and scopes its column rules to grant cards', () => {
+    assert.match(ADMIN_STYLES, /@media\(max-width:1100px\)\{\.grant-card\{grid-template-columns:56px minmax\(0,1fr\) minmax\(0,1fr\)\}/);
+    // A bare .grant-main column rule would also move the Requests tab's rows (which reuse .grant-main).
+    assert.doesNotMatch(ADMIN_STYLES, /[}{]\.grant-main\{grid-column/);
+    assert.doesNotMatch(ADMIN_STYLES, /[}{,]\.grant-(?:poster|owners|access)\{grid-column/);
+  });
+
+  it('gives Requests-tab rows fixed columns and readable household text, and keeps the dialog rows as a flex list', () => {
+    assert.match(ADMIN_STYLES, /@media\(min-width:901px\)\{\.request-rows>\.request-row\{grid-template-columns:minmax\(0,1\.5fr\) minmax\(0,1fr\) minmax\(0,\.9fr\) 300px\}\}/);
+    assert.match(ADMIN_STYLES, /\.request-rows \.request-row small\{font-family:inherit;font-size:12px;/);
+    assert.match(ADMIN_STYLES, /\.request-list>\.request-row\{display:flex;/);
+  });
+
+  it('shows a short health word on phones and keeps the full label for screen readers', async () => {
+    assert.match(ADMIN_STYLES, /\.connection:after\{content:attr\(data-short\)\}/);
+    const page = adminPage((path) => DATA[path]);
+    await page.settle();
+    const connection = page.document.getElementById('connection');
+    assert.equal(connection.dataset.short, 'Attention', 'a never-synced library is a warning');
+    assert.equal(connection.title, connection.querySelector('b').textContent);
+  });
+
+  it('renders household feature switches as .check labels with the lock note under the label', async () => {
+    const group = { id: 'grove', name: 'Grove', userIds: [], appEnabled: true, tvAddonEnabled: true, tvAddonLockedBy: ['TV_ADDON_HOUSEHOLDS'] };
+    const page = adminPage((path) => (path === '/v1/groups' ? { status: 200, body: { groups: [group] } } : DATA[path]));
+    await page.settle();
+    for (const name of ['Mobile app access', 'TV add-on injection']) {
+      const label = page.document.querySelector('input[aria-label="' + name + '"]').closest('label');
+      assert.ok(label.classList.contains('check'), name);
+      assert.equal(label.firstElementChild.tagName, 'INPUT');
+      assert.equal(label.querySelector('span > strong').textContent, name);
+    }
+    const note = page.document.querySelector('input[aria-label="TV add-on injection"]').closest('label').querySelector('span > small');
+    assert.match(note.textContent, /Set in the environment/);
+  });
+
+  it('names the title in the grant dialogs and shows a missing title\'s item ID once', async () => {
+    const known = 'a0000000000000000000000000000001';
+    const missing = 'dead0000000000000000000000000002';
+    const grant = (itemId) => ({ itemId, mediaType: 'movie', active: true, owners: [], groupIds: [], manualUserIds: [], requests: {}, sync: { state: 'synced' }, updatedAt: '2026-11-01T00:00:00Z' });
+    const page = adminPage((path) => {
+      if (path === '/v1/grants') return { status: 200, body: { grants: [grant(known), grant(missing)] } };
+      if (path === '/v1/library') return { status: 200, body: { items: [{ id: known, name: 'Amber Road', mediaType: 'movie' }], lastSyncedAt: null } };
+      return DATA[path];
+    });
+    page.window.HTMLElement.prototype.showModal = function showModal() { this.setAttribute('open', ''); };
+    await page.settle();
+    const cards = [...page.document.querySelectorAll('.grant-card')];
+    const missingCard = cards.find((card) => card.textContent.includes(missing));
+    assert.equal(missingCard.textContent.split(missing).length - 1, 1);
+    const knownCard = cards.find((card) => card.textContent.includes('Amber Road'));
+    [...knownCard.querySelectorAll('button')].find((button) => button.textContent === 'Access').dispatchEvent(new page.window.Event('click'));
+    const heading = page.document.getElementById('access-item');
+    assert.equal(heading.querySelector('strong').textContent, 'Amber Road');
+    assert.equal(heading.querySelector('span').textContent, known);
+  });
+});
