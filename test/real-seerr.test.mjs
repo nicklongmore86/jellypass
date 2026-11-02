@@ -452,7 +452,8 @@ describe('real Seerr: the setup wizard', { timeout: 60_000, skip: !baseUrl || !a
       assert.equal(JSON.parse(webhook.options.jsonPayload).request.requestedBy.jellyfinUserId, '{{requestedBy_jellyfinUserId}}');
       // Run again: the same address is not "another webhook", and the token stays.
       const token = settings.current.webhookToken;
-      assert.equal((await wizard.webhook({ jellypassUrl })).tested, true);
+      // A matching live configuration is kept without rewriting it or sending another test.
+      assert.deepEqual(await wizard.webhook({ jellypassUrl }), { status: 'kept', url: `${jellypassUrl}/webhooks/seerr` });
       assert.equal(settings.current.webhookToken, token);
     } finally {
       server.closeAllConnections();

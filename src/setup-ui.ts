@@ -64,8 +64,9 @@ export const SETUP_HTML = `<!doctype html>
         <p>JellyPass generates its webhook token and points Seerr's webhook at its admin listener (Request Available only, with the token as a bearer header), then asks Seerr to send a test.</p>
         <p class="setup-state" data-state="webhook"></p>
         <form id="webhook-form" class="setup-form">
-          <label>JellyPass admin address, as Seerr reaches it<input id="webhook-base" type="url" value="http://jellypass:8788" required></label>
+          <label>JellyPass admin address, as Seerr reaches it<input id="webhook-base" type="url" required></label>
           <button class="button primary" type="submit">Configure Seerr's webhook</button>
+          <div id="webhook-review" hidden><p id="webhook-change"></p><label><input id="webhook-confirm" type="checkbox"> Replace this existing webhook</label></div>
           <p class="form-error" role="alert"></p>
         </form>
       </article>
@@ -110,6 +111,7 @@ export const SETUP_HTML = `<!doctype html>
         <p id="finish-text">JellyPass checks the whole configuration, then starts with it. Settings set in the environment always win over these.</p>
         <p class="setup-state" data-state="finish"></p>
         <form id="finish-form" class="setup-form">
+          <div id="finish-review" hidden><p id="finish-changes"></p><label><input id="finish-confirm" type="checkbox"> Restart the service and apply these changes</label></div>
           <button id="finish-button" class="button primary" type="submit">Finish and start JellyPass</button>
           <p class="form-error" role="alert"></p>
         </form>
@@ -128,6 +130,8 @@ export const SETUP_APP_JS = `
   // The token lives in this variable only: never in storage, never in the address.
   let token = '';
   let status = null;
+  let suggestedWebhookBase = '';
+  let webhookReview = null;
 
   async function api(path, body) {
     const init = { method: body === undefined ? 'GET' : 'POST', headers: { Authorization: 'Bearer ' + token, Accept: 'application/json' } };
@@ -142,7 +146,14 @@ export const SETUP_APP_JS = `
       error.body = answer;
       throw error;
     }
-    if (answer.setup) status = answer.setup;
+    if (answer.setup || (body === undefined && path === '/v1/setup')) {
+      status = answer.setup || answer;
+      byId('webhook-confirm').checked = false;
+      byId('webhook-review').hidden = true;
+      webhookReview = null;
+      byId('finish-confirm').checked = false;
+      byId('finish-review').hidden = true;
+    }
     return answer;
   }
 
@@ -166,7 +177,7 @@ export const SETUP_APP_JS = `
   }
 
   function lockedText(lockedBy) {
-    return 'Set in the environment (' + lockedBy.join(', ') + '), which wins over the wizard.';
+    return 'Set by environment (' + lockedBy.join(', ') + '), which wins over the wizard.';
   }
 
   function render() {
@@ -197,10 +208,17 @@ export const SETUP_APP_JS = `
       + (seerr.lockedBy.length ? ' ' + lockedText(seerr.lockedBy) : ''), seerr.apiKey === 'set');
 
     const webhook = seerr.webhook;
-    byId('webhook-form').querySelectorAll('input, button').forEach((input) => { input.disabled = seerr.apiKey !== 'set'; });
-    setState('webhook', webhook
-      ? 'Seerr calls ' + webhook.url + (webhook.tested ? '; its test reached JellyPass.' : '; its test did not reach JellyPass yet. Check the address and try again.')
-      : seerr.apiKey === 'set' ? 'Not configured yet.' : 'Connect Seerr first.', Boolean(webhook && webhook.tested));
+    byId('webhook-form').querySelectorAll('input, button').forEach((input) => { input.disabled = seerr.apiKey !== 'set' || seerr.webhookChecked === false; });
+    if (!webhookReview && (!byId('webhook-base').value || byId('webhook-base').value === suggestedWebhookBase)) {
+      const usable = webhook && /^https?:/.test(webhook.url) && webhook.url.endsWith('/webhooks/seerr');
+      suggestedWebhookBase = usable
+      ? webhook.url.replace(/\\/webhooks\\/seerr\\/?$/, '') : window.location.origin;
+      if (byId('webhook-base').value !== suggestedWebhookBase) byId('webhook-confirm').checked = false;
+      byId('webhook-base').value = suggestedWebhookBase;
+    }
+    setState('webhook', seerr.webhookChecked === false ? 'Could not read Seerr webhook settings. Reload to retry.'
+      : webhook ? 'Already configured: ' + webhook.url + (webhook.enabled === false ? ' (disabled).' : '.')
+      : seerr.apiKey === 'set' ? 'Not configured yet.' : 'Connect Seerr first.', Boolean(webhook));
 
     const tmdb = steps.tmdb;
     lockForm(byId('tmdb-form'), tmdb.lockedBy);
@@ -288,16 +306,37 @@ export const SETUP_APP_JS = `
   });
   step('webhook-form', async () => {
     const body = { jellypassUrl: byId('webhook-base').value };
-    let answer;
-    try {
-      answer = await api('/v1/setup/webhook', body);
-    } catch (error) {
-      if (error.code !== 'seerr_webhook_in_use') throw error;
-      if (!confirm('Seerr\\'s webhook is ' + (error.body.currentEnabled ? 'on' : 'off') + ' and set to call ' + (error.body.currentHost || 'another address') + '. Seerr has one webhook: replace it with JellyPass\\'s?')) return '';
-      answer = await api('/v1/setup/webhook', Object.assign({ replace: true }, body));
+    const address = new URL(body.jellypassUrl.trim());
+    const target = address.origin + address.pathname.replace(/\\/+$/, '') + '/webhooks/seerr';
+    const existing = status.steps.seerr.webhook;
+    const needsReview = existing && !(existing.matches && existing.url === target);
+    if (needsReview && (!webhookReview || webhookReview.target !== target || !byId('webhook-confirm').checked)) {
+      byId('webhook-confirm').checked = false;
+      webhookReview = { target, url: existing.url, state: existing.currentState };
+      byId('webhook-review').hidden = false;
+      byId('webhook-change').textContent = existing.url + ' → ' + target + '. This updates Seerr’s webhook URL, authorization and notification types/payload.';
+      return '';
     }
-    return answer.tested ? 'Webhook configured; Seerr\\'s test reached JellyPass.' : 'Webhook configured, but Seerr\\'s test did not reach JellyPass.';
+    if (needsReview) Object.assign(body, { replace: true, expectedCurrentUrl: webhookReview.url,
+      expectedState: webhookReview.state, expectedTargetUrl: webhookReview.target });
+    let answer;
+    try { answer = await api('/v1/setup/webhook', body); }
+    catch (error) {
+      if (error.code !== 'seerr_webhook_in_use') throw error;
+      status.steps.seerr.webhook = { url: error.body.currentUrl, currentState: error.body.currentState };
+      webhookReview = { target, url: error.body.currentUrl, state: error.body.currentState };
+      byId('webhook-confirm').checked = false;
+      byId('webhook-review').hidden = false;
+      byId('webhook-change').textContent = error.body.currentUrl + ' → ' + error.body.newUrl;
+      return '';
+    }
+    webhookReview = null;
+    byId('webhook-review').hidden = true;
+    byId('webhook-confirm').checked = false;
+    return answer.status === 'kept' ? 'Existing webhook kept.' : answer.tested ? 'Webhook configured; test reached JellyPass.' : 'Webhook configured; test did not reach JellyPass.';
   });
+  byId('webhook-base').addEventListener('input', () => { byId('webhook-confirm').checked = false; webhookReview = null; byId('webhook-review').hidden = true; });
+
   step('tmdb-form', async () => {
     const key = byId('tmdb-key');
     try {
@@ -323,6 +362,12 @@ export const SETUP_APP_JS = `
     return 'Saved.';
   });
   step('finish-form', async () => {
+    if (status.mode === 'running' && !byId('finish-confirm').checked) {
+      byId('finish-review').hidden = false;
+      byId('finish-changes').textContent = 'This restarts JellyPass services and signs administrators out. Changes: '
+        + ((status.changedSettings || []).join(', ') || 'No saved settings changes; restart the current configuration.');
+      return '';
+    }
     await api('/v1/setup/secrets', {});
     await api('/v1/setup/finish', {});
     setState('finish', 'Starting JellyPass…', false);

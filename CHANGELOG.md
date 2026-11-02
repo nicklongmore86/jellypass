@@ -81,6 +81,12 @@ changes are always listed at the top of the release notes.
   colour. The Access and Request grants dialogs name the title, with its
   Jellyfin item ID muted underneath, and a grant whose title is missing no
   longer shows its item ID twice.
+- **Setup protects existing webhooks and service restarts.** Discover Seerr's live
+  webhook, require confirmation bound to its reviewed state and target before
+  replacement, mask foreign webhook paths, label environment settings, and
+  review saved changes before restarting. `POST /v1/setup/webhook` with
+  `replace: true` now requires `expectedState`, `expectedCurrentUrl`, and
+  `expectedTargetUrl` review fields.
 
 ## [4.1.0] - 2026-11-02
 
