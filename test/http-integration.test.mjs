@@ -163,7 +163,7 @@ describe('HTTP integration', { timeout: 5_000 }, () => {
     assert.doesNotMatch(adminMarkup, /id="import-to-seerr"[^>]*checked/);
     assert.match(adminMarkup, /Import into Seerr/);
     assert.match(adminMarkup, /Seerr applies its configured default permissions/);
-    assert.match(adminMarkup, /<div class="eyebrow">Activity<\/div><h2>Recent requests<\/h2>/);
+    assert.match(adminMarkup, /<div class="eyebrow">Activity<\/div><h2>Recent Seerr activity<\/h2>/);
     assert.doesNotMatch(adminMarkup, /Jellyseerr/i);
 
     const adminScript = await fetch(`${bridgeUrl}/admin/app.js`);
