@@ -69,6 +69,12 @@ export interface Config {
    * The global TV add-on service gate (docs/tv-addon.md); stored household switches select hosts.
    */
   tvAddonEnabled: boolean;
+  /**
+   * The deprecated TV_ADDON_HOUSEHOLDS list, read on every start while it is set and the add-on is on: it decides which
+   * households get the add-on exactly as in 4.0.0 (`all` for `*`, households created later included), and the stored
+   * switches follow it and are locked. Absent when the variable is unset or empty: the stored switches decide.
+   */
+  tvAddonHouseholds?: string[] | 'all';
   requestBackfillEnabled: boolean;
   requestBackfillSince?: Date;
   logLevel: LogLevel;
@@ -159,7 +165,7 @@ function readConfig(): Config {
     throw new Error('the household gateway (HOUSEHOLD_GATEWAY_ENABLED, or HOUSEHOLD_DOMAIN), SEERR_URL, SEERR_API_KEY and TMDB_API_KEY are required when HOUSEHOLD_APP_ENABLED is true');
   }
   const legacyWebhookOnMemberPort = booleanEnvironment('LEGACY_WEBHOOK_ON_MEMBER_PORT', false);
-  const tvAddonEnabled = parseTvAddon(householdAppEnabled);
+  const { enabled: tvAddonEnabled, households: tvAddonHouseholds } = parseTvAddon(householdAppEnabled);
   const logLevel = parseLogLevel(env.LOG_LEVEL);
   const webSocketIdleTimeoutMs = webSocketTimeout('WS_IDLE_TIMEOUT_MS', DEFAULT_WS_IDLE_TIMEOUT_MS);
   const webSocketUpstreamIdleTimeoutMs = webSocketTimeout('WS_UPSTREAM_IDLE_TIMEOUT_MS', DEFAULT_WS_UPSTREAM_IDLE_TIMEOUT_MS);
@@ -208,6 +214,7 @@ function readConfig(): Config {
     legacyWebhookOnMemberPort,
     householdAppEnabled,
     tvAddonEnabled,
+    ...(tvAddonHouseholds ? { tvAddonHouseholds } : {}),
     requestBackfillEnabled,
     ...(requestBackfillSince ? { requestBackfillSince } : {}),
     logLevel,
@@ -240,18 +247,27 @@ export function parseBackfillSince(value: string): Date {
 }
 
 /**
- * TV_ADDON_ENABLED is the global gate. Household selection is stored in state v9; the old environment list is
- * read only by the migration. The add-on calls the household app API, so it needs HOUSEHOLD_APP_ENABLED.
+ * TV_ADDON_ENABLED is the global gate; the add-on calls the household app API, so it needs HOUSEHOLD_APP_ENABLED.
+ * TV_ADDON_HOUSEHOLDS is deprecated but, while it is set (not empty), keeps its 4.0.0 meaning: a comma-separated list of
+ * household (group) IDs, or `*` for every household, read on every start, and it wins over the stored switches (as
+ * an environment setting wins over the setup wizard). Unset, the stored per-household switches decide.
  */
 let warnedTvHouseholds = false;
-function parseTvAddon(householdAppEnabled: boolean): boolean {
-  if (env.TV_ADDON_HOUSEHOLDS !== undefined && !warnedTvHouseholds) {
+function parseTvAddon(householdAppEnabled: boolean): { enabled: boolean; households?: string[] | 'all' } {
+  const input = env.TV_ADDON_HOUSEHOLDS?.trim() ?? '';
+  if (input && !warnedTvHouseholds) {
     warnedTvHouseholds = true;
-    console.warn(JSON.stringify({ level: 'warn', message: 'TV_ADDON_HOUSEHOLDS is deprecated; used only when migrating state to v9. Manage TV access in the admin UI.' }));
+    console.warn(JSON.stringify({ level: 'warn', message: 'TV_ADDON_HOUSEHOLDS is deprecated; while it is set it decides which households get the TV add-on and the admin switches are locked. Remove it to manage TV access in the admin UI.' }));
   }
-  if (!booleanEnvironment('TV_ADDON_ENABLED', false)) return false;
+  if (!booleanEnvironment('TV_ADDON_ENABLED', false)) return { enabled: false };
   if (!householdAppEnabled) throw new Error('HOUSEHOLD_APP_ENABLED is required when TV_ADDON_ENABLED is true');
-  return true;
+  if (!input) return { enabled: true };
+  if (input === '*') return { enabled: true, households: 'all' };
+  const households = [...new Set(input.split(',').map((id) => id.trim().toLowerCase()).filter(Boolean))];
+  if (!households.length || households.some((id) => !/^[a-z0-9_-]{1,128}$/.test(id))) {
+    throw new Error('TV_ADDON_HOUSEHOLDS must list household IDs (letters, numbers, hyphens and underscores) separated by commas, or *; remove it to use the per-household switches');
+  }
+  return { enabled: true, households };
 }
 
 /** Unknown values fall back to `info` with a warning rather than blocking startup over a logging setting. */

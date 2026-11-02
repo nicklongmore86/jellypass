@@ -189,6 +189,11 @@ describe('setup wizard: steps', () => {
     assert.deepEqual([created.body.status, created.body.url, created.body.keyName, created.body.version], ['created', jellyfin.url, 'JellyPass', '10.11.3']);
     assert.equal(jellyfin.keys.length, 1);
     assert.equal(jellyfin.keys[0].AppName, 'JellyPass');
+    // The sign-in names this build's version (package.json), so a release bump cannot leave it behind.
+    const { version: packageVersion } = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'));
+    const signIn = jellyfin.requests.find((entry) => entry.path === '/Users/AuthenticateByName');
+    assert.match(signIn.headers.authorization, /^MediaBrowser /);
+    assert.ok(signIn.headers.authorization.includes(`Version="${packageVersion}"`), signIn.headers.authorization);
     const key = jellyfin.keys[0].AccessToken;
     // Every session the wizard opened was signed out again, the refused member's included.
     assert.equal(jellyfin.requests.filter((entry) => entry.path === '/Sessions/Logout').length, 2);

@@ -932,7 +932,7 @@ function sees(user, item) {
  * `requests: false` to serve no "Get this", `loginFailureDelayMs` for the least time a refused household sign-in
  * takes (default 0, so tests not about it never wait), `loginTimeoutMs` for how long a sign-in waits for Jellyfin,
  * `addresses` for the address map (household → `{ origin, aliases }`) and `memberWebhook` for
- * LEGACY_WEBHOOK_ON_MEMBER_PORT. The member listener is at `port`, the admin listener at `adminPort`.
+ * LEGACY_WEBHOOK_ON_MEMBER_PORT, `tvEnvHouseholds` for TV_ADDON_HOUSEHOLDS. The member listener is at `port`, the admin listener at `adminPort`.
  */
 export async function startApp(t, state = world(), options = {}) {
   const seerr = options.seerr ? { ...options.seerr, close: async () => undefined } : await createFakeSeerr(state);
@@ -953,11 +953,12 @@ export async function startApp(t, state = world(), options = {}) {
   const stateFile = path.join(await makeTempDir(t, 'jfa-app-'), 'grants.json');
   if (options.stateFile) await writeFile(stateFile, JSON.stringify(options.stateFile));
   if (!options.seerr) seerr.onRequest = intentOnDisk(stateFile);
-  const store = new GrantStore(stateFile, { limitHouseholds: options.app !== false });
+  const store = new GrantStore(stateFile, { limitHouseholds: options.app !== false, ...(options.tvEnvHouseholds ? { tvAddonHouseholds: options.tvEnvHouseholds } : {}) });
   await store.load();
   for (const household of options.households ?? HOUSEHOLDS) await store.upsertGroup(household);
   // The address map, by household: `{ origin, aliases }` (the legacy jelly-<household>.example.test addresses stay on).
-  if (options.tvAddon) {
+  // `tvEnvHouseholds` (the deprecated TV_ADDON_HOUSEHOLDS, `all` for `*`) decides the TV switches instead of `tvHouseholds`; `tvHouseholds: null` keeps the stored switches.
+  if (options.tvAddon && !options.tvEnvHouseholds && options.tvHouseholds !== null) {
     const selected = new Set(options.tvHouseholds ?? ['grove']);
     for (const group of store.listGroups()) await store.setHouseholdFeatures(group.id, { appEnabled: true, tvAddonEnabled: selected.has(group.id) });
   }

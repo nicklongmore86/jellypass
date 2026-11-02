@@ -43,8 +43,9 @@ flowchart LR
 
 - **Settings.** `TV_ADDON_ENABLED` (default `false`) enables the service; the private admin UI's household TV
   switches select which households receive injection (new households default off). Keep `HOUSEHOLD_APP_ENABLED=true`
-  and that household's app access on for the row to work. `TV_ADDON_HOUSEHOLDS` is deprecated: only the v9 state
-  migration reads it to seed switches, then stored switches are authoritative. Remove it after upgrade.
+  and that household's app access on for the row to work. `TV_ADDON_HOUSEHOLDS` is deprecated but, while it is set,
+  decides as in 4.0.0 (household IDs or `*`, read at every start) and the switches are locked to it; remove it and
+  restart to manage TV access with the switches, which keep what it last selected.
 - **The page.** On a listed household's host only, a `GET` or `HEAD` of Jellyfin web's page (`/web/`,
   `/web/index.html`, in every spelling Jellyfin routes, the `/emby` prefix included) is asked of Jellyfin as a `GET`,
   with `Accept-Encoding: identity` and without `Range`, `If-Range` or any conditional header, so it comes back whole

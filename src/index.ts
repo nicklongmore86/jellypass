@@ -104,7 +104,7 @@ async function run(config: Config, setupWizard: (apply: () => void) => SetupWiza
     restarting = true;
     void shutdown('settings applied');
   });
-  const store = new GrantStore(config.stateFile, { limitHouseholds: config.householdAppEnabled });
+  const store = new GrantStore(config.stateFile, { limitHouseholds: config.householdAppEnabled, ...(config.tvAddonHouseholds ? { tvAddonHouseholds: config.tvAddonHouseholds } : {}) });
   await store.load();
 
   const jellyfin = new JellyfinClient(config.jellyfinUrl, config.jellyfinApiKey);
@@ -267,6 +267,7 @@ async function run(config: Config, setupWizard: (apply: () => void) => SetupWiza
       requestBackfillSince: backfillSince?.toISOString() ?? null,
       householdApp: config.householdAppEnabled,
       tvAddon: config.tvAddonEnabled ? service.listGroups().filter((group) => group.tvAddonEnabled).length : 'off',
+      ...(config.tvAddonHouseholds ? { tvAddonSource: 'TV_ADDON_HOUSEHOLDS' } : {}),
     }));
     if (service.getLibraryCatalog().items.length === 0) syncCatalog();
     // Catch up on missed webhooks now rather than one reconcile interval after startup.

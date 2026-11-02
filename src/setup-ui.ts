@@ -23,7 +23,7 @@ export const SETUP_HTML = `<!doctype html>
     <section id="setup-token-view" class="setup-card panel">
       <div class="eyebrow">First-run setup</div>
       <h1>Set up JellyPass</h1>
-      <p>Sign in with the admin token: <code>ADMIN_TOKEN</code> if you set one, otherwise the setup token JellyPass wrote to <code>admin-token</code> in its data directory (with Docker Compose: <code>docker compose exec jellypass cat /app/data/admin-token</code>).</p>
+      <p>Sign in with the admin token: <code>ADMIN_TOKEN</code> if you set one, otherwise the setup token JellyPass wrote to <code>admin-token</code> next to <code>settings.json</code>, in its data directory by default (with Docker Compose: <code>docker compose exec jellypass cat /app/data/admin-token</code>).</p>
       <form id="setup-token-form">
         <label for="setup-token">Admin token<input id="setup-token" type="password" autocomplete="off" spellcheck="false" required></label>
         <button class="button primary" type="submit">Continue</button>

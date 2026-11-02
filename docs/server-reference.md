@@ -262,8 +262,8 @@ from either source: without `JELLYFIN_URL`, `JELLYFIN_API_KEY` and
 | `JELLYFIN_PUBLIC_URLS` | No | — | Comma-separated public Jellyfin URLs for the admin self-check's anonymous direct-origin probes. |
 | `SEERR_PUBLIC_URL` | No | — | Public Seerr URL for the admin self-check. Seerr must be admin-only. |
 | `HOUSEHOLD_APP_ENABLED` | No | `false` | Serves the [household app API](household-hosts.md#household-app-api) (titles, "Get this" and the household's requests) at `/jellypass/app/v1/*`, and the [app](household-hosts.md#household-app-pwa) at `/jellypass/app/`, on household addresses. Requires the household gateway, Seerr configuration and `TMDB_API_KEY`; startup stops if any is missing. While `false`, those paths answer `404` and are never proxied to Jellyfin. |
-| `TV_ADDON_ENABLED` | No | `false` | Adds the [TV add-on](tv-addon.md) (a JellyPass row on Jellyfin web's Home) to Jellyfin web's page on household addresses whose stored TV switch is on, and serves its files at `/jellypass/tv/` there. Requires `HOUSEHOLD_APP_ENABLED`. While `false`, nothing on any host changes. |
-| `TV_ADDON_HOUSEHOLDS` | Deprecated | — | Used only during state v7/v8 to v9 migration: comma-separated household IDs or `*` seed TV switches. Remove after upgrade. Stored admin switches are authoritative thereafter; presence logs one warning per process. |
+| `TV_ADDON_ENABLED` | No | `false` | Adds the [TV add-on](tv-addon.md) (a JellyPass row on Jellyfin web's Home) to Jellyfin web's page on household addresses whose TV switch is on (or that `TV_ADDON_HOUSEHOLDS` selects while it is set), and serves its files at `/jellypass/tv/` there. Requires `HOUSEHOLD_APP_ENABLED`. While `false`, nothing on any host changes. |
+| `TV_ADDON_HOUSEHOLDS` | Deprecated | — | Comma-separated household IDs, or `*` for every household (ones created later included). While it is set and `TV_ADDON_ENABLED` is true it decides which households get the TV add-on, as in 4.0.0: it is read at every start, wins over the admin site's TV switches (which follow it and are shown locked) and must list valid IDs or startup stops. The v9 migration also seeds the switches from it. Remove it and restart to manage TV access with the switches; they keep what it last selected. Presence logs one warning per process. |
 | `REQUEST_BACKFILL_SINCE` | No | — | `YYYY-MM-DD` (UTC midnight) or an ISO 8601 date-time with `Z` or an offset, such as `2026-10-15T08:00:00+02:00`. Impossible dates are rejected. Requests created before it are never imported by the backfill. |
 | `REQUEST_BACKFILL_ENABLED` | No | `true` when `REQUEST_BACKFILL_SINCE` is set, otherwise `false` | Grants available Seerr requests that the webhook missed. Requires Seerr configuration and `REQUEST_BACKFILL_SINCE`. |
 | `WS_IDLE_TIMEOUT_MS` | No | `300000` | Closes a proxied household WebSocket after this many milliseconds with no bytes in either direction; `0` disables. Jellyfin drops sockets after 60 s without a client KeepAlive (clients send one every 30 s), so values at or below `60000` log a startup warning. Maximum `86400000`. |
@@ -283,8 +283,8 @@ the impact of a leaked webhook URL or notification configuration.
 The setup wizard is at `/admin/setup/` on the **admin listener** only; household
 addresses and the member listener never serve it. Every call it makes needs
 the admin token as a bearer token: `ADMIN_TOKEN`, or, when that is not set, the
-setup token JellyPass writes to `admin-token` next to the state file (mode
-`0600`) the first time it starts without a configuration. With Docker Compose:
+setup token JellyPass writes to `admin-token` next to `settings.json` (by
+default the state file's directory; see `SETTINGS_FILE`; mode `0600`) the first time it starts without a configuration. With Docker Compose:
 `docker compose exec jellypass cat /app/data/admin-token`. A Jellyfin
 administrator's admin-site session does not open the wizard. The token is never
 logged: the log names the file only.
@@ -355,8 +355,8 @@ changes stored settings only: they take effect when you **apply** them, which
 restarts JellyPass's services in place (and signs administrators out of the
 admin site).
 
-The settings are stored in `settings.json` next to the state file
-(`SETTINGS_FILE`), mode `0600`, and are part of a backup: it holds the Jellyfin
+The settings are stored in `settings.json` next to the state file, or at
+`SETTINGS_FILE` (with `admin-token` in the same directory), mode `0600`, and are part of a backup: it holds the Jellyfin
 API key, the Seerr and TMDB keys and the webhook token. No answer from the
 wizard, and no log line, carries a secret's value; they only say whether one is
 set. `GET /v1/setup` returns where each step stands, which settings the
@@ -775,7 +775,8 @@ The state file is the only JellyPass application data that must persist. It
 contains grants, access groups, synchronization status, Jellyfin user
 IDs, and a catalog containing media names and IDs. Protect it as private data.
 An install set up with the [setup wizard](#setup-wizard) also keeps its
-settings in `data/settings.json` and its admin token in `data/admin-token`:
+settings in `data/settings.json` and its admin token in `data/admin-token`
+(by default; both are in the directory of `SETTINGS_FILE` when that is set):
 back them up too, and keep them secret (they hold the Jellyfin API key, the
 Seerr and TMDB keys and the tokens).
 
@@ -808,7 +809,7 @@ curl http://127.0.0.1:8788/health
 ```
 
 4.1.0 migrates state v7/v8 to v9 for the [household switches](household-access.md#household-app-and-tv-switches).
-Back up state first; 4.0.0 and older cannot read v9 (see [Rollback to 4.0.0](../CHANGELOG.md#rollback-to-400)). `TV_ADDON_HOUSEHOLDS` seeds TV switches only during migration.
+Back up state first; 4.0.0 and older cannot read v9 (see [Rollback to 4.0.0](../CHANGELOG.md#rollback-to-400)). `TV_ADDON_HOUSEHOLDS` seeds the TV switches during migration and, while it stays set, keeps deciding TV access as in 4.0.0 (the switches are locked); remove it to hand over to the switches.
 
 Back up the state file first. **4.0.0 is a breaking release:** the admin site,
 API, metrics, health and the Seerr webhook move to their own listener
@@ -912,8 +913,8 @@ header only, and refuses household requests on an unconfirmed Jellyfin
 version; follow the [4.0.0 upgrade steps](../CHANGELOG.md#400---2026-10-31).
 Upgrading from 4.0.0 to 4.1.0 changes no setting and needs no CDN purge: it
 migrates the state file to schema 9 (4.0.0 cannot read it; the upgrade writes a
-backup first), copies `TV_ADDON_HOUSEHOLDS` into the new per-household TV
-switches once, and renames the TV add-on's script; see the
+backup first), seeds the new per-household TV switches from
+`TV_ADDON_HOUSEHOLDS` (which keeps working as before while it is set), and renames the TV add-on's script; see the
 [4.1.0 notes](../CHANGELOG.md#410---2026-11-02).
 If you build from source with `compose.example.yaml`, its service is now named
 `jellypass` instead of `access-bridge`: run

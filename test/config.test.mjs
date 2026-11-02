@@ -145,6 +145,17 @@ describe('TV add-on configuration', () => {
     assert.equal(load({ ...app, TV_ADDON_ENABLED: 'true', TV_ADDON_HOUSEHOLDS: '*' }).tvAddonEnabled, true);
   });
 
+  it('keeps a set TV_ADDON_HOUSEHOLDS as the 4.0.0 selection, and hands over to the switches when unset', () => {
+    const on = { ...app, TV_ADDON_ENABLED: 'true' };
+    assert.equal(load({ ...on, TV_ADDON_HOUSEHOLDS: ' * ' }).tvAddonHouseholds, 'all');
+    assert.deepEqual(load({ ...on, TV_ADDON_HOUSEHOLDS: ' Grove, mill,,grove ' }).tvAddonHouseholds, ['grove', 'mill']);
+    assert.equal('tvAddonHouseholds' in load(on), false);
+    assert.equal('tvAddonHouseholds' in load({ ...on, TV_ADDON_HOUSEHOLDS: '  ' }), false);
+    assert.equal('tvAddonHouseholds' in load({ ...app, TV_ADDON_HOUSEHOLDS: '*' }), false, 'ignored while the add-on is off, as in 4.0.0');
+    assert.throws(() => load({ ...on, TV_ADDON_HOUSEHOLDS: 'grove,bad id' }), /TV_ADDON_HOUSEHOLDS must list household IDs/);
+    assert.throws(() => load({ ...on, TV_ADDON_HOUSEHOLDS: ',' }), /TV_ADDON_HOUSEHOLDS must list household IDs/);
+  });
+
   it('needs the household app but no environment household list', () => {
     assert.throws(() => load({ TV_ADDON_ENABLED: 'true', TV_ADDON_HOUSEHOLDS: 'grove' }), /HOUSEHOLD_APP_ENABLED is required when TV_ADDON_ENABLED is true/);
     assert.equal(load({ ...app, TV_ADDON_ENABLED: 'true' }).tvAddonEnabled, true);

@@ -26,6 +26,8 @@ import type {
  * upstreams"). With the app off there is no limit, as before 2.3.0.
  */
 export const MAX_HOUSEHOLDS = 100;
+/** Refusing a TV switch change while the deprecated TV_ADDON_HOUSEHOLDS decides them (see GrantStore's constructor). */
+export const TV_ADDON_LOCKED = 'TV add-on access is set by TV_ADDON_HOUSEHOLDS, which wins over this switch; remove it from the environment and restart to manage TV access here';
 /**
  * Settled household app "Get this" records (completed, declined, deleted or failed) are kept for this long after they
  * were made (see GrantStore.writeAppRequests); pending records are never pruned.
@@ -80,13 +82,33 @@ export class GrantStore {
   /** "Get this" record IDs by household, rebuilt after each change (see #appIndex). */
   #appIndexCache: Map<string, string[]> | undefined;
   readonly #limitHouseholds: boolean;
+  /** The deprecated TV_ADDON_HOUSEHOLDS selection while it is set (see Config.tvAddonHouseholds). */
+  readonly #tvAddonHouseholds: readonly string[] | 'all' | undefined;
   /** See getHouseholdAddresses; dropped whenever the map changes. */
   #addressesSnapshot: Readonly<Record<string, Readonly<HouseholdAddressEntry>>> | undefined;
 
-  /** `limitHouseholds` (set when the household app is enabled) refuses new groups beyond {@link MAX_HOUSEHOLDS}. */
-  public constructor(file: string, options: { limitHouseholds?: boolean } = {}) {
+  /**
+   * `limitHouseholds` (set when the household app is enabled) refuses new groups beyond {@link MAX_HOUSEHOLDS}.
+   * `tvAddonHouseholds`, the deprecated TV_ADDON_HOUSEHOLDS selection while it is set, decides every household's TV
+   * switch: load() and upsertGroup() store what it selects (so removing it later keeps the access it gave), and
+   * setHouseholdFeatures() refuses to change a TV switch.
+   */
+  public constructor(file: string, options: { limitHouseholds?: boolean; tvAddonHouseholds?: readonly string[] | 'all' } = {}) {
     this.#file = file;
     this.#limitHouseholds = options.limitHouseholds ?? false;
+    this.#tvAddonHouseholds = options.tvAddonHouseholds === 'all' ? 'all' : options.tvAddonHouseholds?.map((id) => id.toLowerCase());
+  }
+
+  /** True while TV_ADDON_HOUSEHOLDS decides the TV switches (see the constructor). */
+  public get tvAddonFromEnvironment(): boolean {
+    return this.#tvAddonHouseholds !== undefined;
+  }
+
+  /** The TV switch TV_ADDON_HOUSEHOLDS gives a household, or undefined when it is not set. */
+  #tvAddonSelected(groupId: string): boolean | undefined {
+    const selection = this.#tvAddonHouseholds;
+    if (selection === undefined) return undefined;
+    return selection === 'all' || selection.includes(groupId.toLowerCase());
   }
 
   /** True once close() was called; every later change is refused. */
@@ -122,6 +144,13 @@ export class GrantStore {
     this.#appIndexCache = undefined;
     const lifted = liftRemovals(this.#state);
     const prunedHidden = this.#pruneHiddenTitles();
+    let tvSynced = false;
+    for (const group of Object.values(this.#state.groups)) {
+      const selected = this.#tvAddonSelected(group.id);
+      if (selected === undefined || group.tvAddonEnabled === selected) continue;
+      group.tvAddonEnabled = selected;
+      tvSynced = true;
+    }
     // Requests already on grants (including ones recorded before handledRequestIds existed)
     // count as handled, so the backfill never re-imports one an administrator later removed.
     const handled = new Set(this.#state.handledRequestIds ?? []);
@@ -129,7 +158,7 @@ export class GrantStore {
     for (const grant of Object.values(this.#state.grants)) Object.keys(grant.requests).forEach((id) => handled.add(id));
     const seeded = this.#state.handledRequestIds === undefined || handled.size !== before;
     if (seeded) this.#state.handledRequestIds = [...handled];
-    if (migrated.changed || lifted || seeded || prunedHidden) await this.#save();
+    if (migrated.changed || lifted || seeded || prunedHidden || tvSynced) await this.#save();
     if (migrated.seedCounts) {
       const { on, total, unmatched } = migrated.seedCounts;
       console.info(JSON.stringify({ level: 'info', message: `seeded TV on for ${on} of ${total} households, ${unmatched} entries unmatched` }));
@@ -160,6 +189,9 @@ export class GrantStore {
     this.#assertOpen();
     const group = this.#state.groups[normalizeId(groupId)];
     if (!group) throw new Error('group not found');
+    if (features.tvAddonEnabled !== undefined && this.#tvAddonHouseholds !== undefined && features.tvAddonEnabled !== group.tvAddonEnabled) {
+      throw new Error(TV_ADDON_LOCKED);
+    }
     Object.assign(group, features, { updatedAt: new Date().toISOString() });
     await this.#save();
     return clone(group);
@@ -526,7 +558,7 @@ export class GrantStore {
     const group: AccessGroup = {
       id,
       appEnabled: previous?.appEnabled ?? true,
-      tvAddonEnabled: previous?.tvAddonEnabled ?? false,
+      tvAddonEnabled: this.#tvAddonSelected(id) ?? previous?.tvAddonEnabled ?? false,
       name: input.name.trim(),
       userIds: [...new Set(input.userIds.map(normalizeId))].sort(),
       createdAt: previous?.createdAt ?? now,
