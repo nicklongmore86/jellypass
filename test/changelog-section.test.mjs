@@ -54,6 +54,28 @@ function assertSection(notes, { version, nextVersion, subheadings }) {
 }
 
 describe('changelogSection with the real CHANGELOG.md', () => {
+  it('extracts 4.2.0 without its heading, up to the 4.1.0 section', () => {
+    const notes = changelogSection(CHANGELOG, '4.2.0');
+    assertSection(notes, {
+      version: '4.2.0',
+      nextVersion: '4.1.0',
+      subheadings: ['Added', 'Changed', 'Fixed'],
+    });
+    assert.match(notes, /^This is a minor release\./);
+    const flat = notes.replace(/\s+/g, ' ');
+    assert.match(flat, /\*\*An existing install upgrades without any change to its configuration:\*\*/);
+    assert.match(flat, /`expectedState`, `expectedCurrentUrl` and `expectedTargetUrl`/);
+    for (const heading of ['Added', 'Changed', 'Fixed']) {
+      assert.equal(notes.split('\n').filter((line) => line === `### ${heading}`).length, 1, `one ### ${heading}`);
+    }
+    const added = notes.indexOf('### Added');
+    for (const note of ['**The setup wizard\'s Seerr webhook step asks before replacing a webhook.**', '**`TV_ADDON_HOUSEHOLDS` is still honoured but deprecated,**']) {
+      assert.ok(notes.indexOf(note) >= 0 && notes.indexOf(note) < added, `${note} is summarised first`);
+    }
+    assert.doesNotMatch(notes, /\b(?!127\.0\.0\.1\b|0\.0\.0\.0\b)(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref|TU7000|sdb\b/i, 'no server-specific details');
+    if (privateTerms) assert.equal(privateMatchCount(notes, privateTerms), 0, 'no private deployment details');
+  });
+
   it('extracts 4.1.0 without its heading, up to the 4.0.0 section', () => {
     const notes = changelogSection(CHANGELOG, '4.1.0');
     assertSection(notes, {
@@ -73,7 +95,8 @@ describe('changelogSection with the real CHANGELOG.md', () => {
       assert.ok(notes.indexOf(note) >= 0 && notes.indexOf(note) < added, `${note} is summarised first`);
     }
     assert.ok(notes.indexOf('### Upgrade from 4.0.0') < notes.indexOf('### Rollback to 4.0.0'));
-    assert.doesNotMatch(notes, /\b(?!127\.0\.0\.1\b|0\.0\.0\.0\b)(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref|farmhouse|starrgroup|TU7000|sdb\b/i, 'no server-specific details');
+    assert.doesNotMatch(notes, /\b(?!127\.0\.0\.1\b|0\.0\.0\.0\b)(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref|TU7000|sdb\b/i, 'no server-specific details');
+    if (privateTerms) assert.equal(privateMatchCount(notes, privateTerms), 0, 'no private deployment details');
   });
 
   it('extracts 4.0.0 without its heading, up to the 3.10.0 section', () => {
@@ -102,7 +125,8 @@ describe('changelogSection with the real CHANGELOG.md', () => {
     assert.equal(notes.match(/^### Security$/gm)?.length, 1, 'one Security heading');
     assert.ok(notes.indexOf('### Upgrade from') < notes.indexOf('### Rollback to 3.x'));
     assert.doesNotMatch(notes, /BREAKING — 4\.0 cuts/, 'no reference to a renamed heading');
-    assert.doesNotMatch(notes, /\b(?!127\.0\.0\.1\b|0\.0\.0\.0\b)(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref|farmhouse|starrgroup|TU7000|sdb\b/i, 'no server-specific details');
+    assert.doesNotMatch(notes, /\b(?!127\.0\.0\.1\b|0\.0\.0\.0\b)(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref|TU7000|sdb\b/i, 'no server-specific details');
+    if (privateTerms) assert.equal(privateMatchCount(notes, privateTerms), 0, 'no private deployment details');
   });
 
   it('extracts 3.10.0 without its heading, up to the 3.9.0 section', () => {

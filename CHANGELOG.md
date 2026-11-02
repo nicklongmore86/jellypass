@@ -18,6 +18,32 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+## [4.2.0] - 2026-11-02
+
+This is a minor release. It reworks the admin site (confirmations in the
+page, a Move picker, clearer names and errors, a layout that fits phones and
+tablets), makes the setup wizard protect an existing Seerr webhook, and adds
+reverse proxy recipes. **An existing install upgrades without any change to
+its configuration:** no setting is added or removed, the state file stays at
+schema 9 (4.1.0 reads it, so rolling back is only a matter of the image tag),
+the household app API is unchanged, webhook payloads are unchanged, and the TV
+add-on's files keep their names. Read these before upgrading:
+
+- **The setup wizard's Seerr webhook step asks before replacing a webhook.**
+  The wizard reads Seerr's live webhook. One that is already JellyPass's,
+  with the same address, token and notification settings, is kept as it is;
+  any other (a different address, authorization or notification settings, on
+  or off) is shown, with a path that is not JellyPass's masked, and is
+  replaced only after you review and confirm it. `POST /v1/setup/webhook`
+  with `replace: true` now also needs the reviewed `expectedState`,
+  `expectedCurrentUrl` and `expectedTargetUrl` (`400 review_required`
+  without them), and refuses with `409 seerr_webhook_in_use` if Seerr's
+  webhook or the target changed since the review. Only the setup wizard (in
+  setup mode, with the setup token) calls this endpoint.
+- **`TV_ADDON_HOUSEHOLDS` is still honoured but deprecated,** as in 4.1.0:
+  while it is set it decides TV access and the admin site's TV switches stay
+  locked. Remove it and restart to manage TV access per household.
+
 ### Added
 
 - **Reverse proxy recipes** ([docs/reverse-proxy.md](docs/reverse-proxy.md),
@@ -3795,7 +3821,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v4.1.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v4.2.0...HEAD
+[4.2.0]: https://github.com/nicklongmore86/jellypass/compare/v4.1.0...v4.2.0
 [4.1.0]: https://github.com/nicklongmore86/jellypass/compare/v4.0.0...v4.1.0
 [4.0.0]: https://github.com/nicklongmore86/jellypass/compare/v3.10.0...v4.0.0
 [3.10.0]: https://github.com/nicklongmore86/jellypass/compare/v3.9.0...v3.10.0
