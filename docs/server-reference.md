@@ -311,22 +311,42 @@ and the Seerr webhook's test notification, and answers everything else
 served, until setup has finished.
 
 The wizard reads Seerr's current webhook before offering configuration, including
-on installations configured entirely by environment variables. Existing URLs are
-shown even when disabled (credentials, query strings and fragments are omitted); a failed read disables the webhook form. The suggested
-admin address uses that existing webhook URL (without `/webhooks/seerr`), otherwise
-the browser's current origin (request Host and scheme). Verify that Seerr can
-reach it; reverse proxy addresses may differ from container addresses.
+on installations configured entirely by environment variables.
+`steps.seerr.webhook` reflects Seerr's live state, not just wizard history;
+`webhookChecked: false` means the read failed and disables the webhook form.
+URLs omit credentials, query strings and fragments. Only paths ending in
+`/webhooks/seerr` are displayed in full; all other paths are shown as
+`/[masked]` to protect Discord/Slack-style secrets embedded in paths.
+The suggested admin address uses a valid HTTP(S) JellyPass webhook URL without
+`/webhooks/seerr`, otherwise the browser's current origin (request Host and
+scheme). Foreign and invalid webhook URLs are never used as defaults.
+Verify that Seerr can reach the suggestion; proxy and container addresses differ.
 
 Replacing a webhook requires an in-page review of the old and new URLs.
-`POST /v1/setup/webhook` retains its `replace: true` contract and 409
-`seerr_webhook_in_use` response; the guard now also covers changing authorization
-at the same URL. Error details add `currentUrl` and `newUrl` while retaining
-`currentHost` and `currentEnabled`. An enabled webhook with matching URL and
-authorization returns `status: "kept"` without writing to Seerr.
-Setup status adds `webhookChecked` on the Seerr step and `changedSettings`
-(setting names only, never values). Environment-controlled fields are labeled
-“Set by environment”. Applying in running mode requires an in-page confirmation
-listing saved settings changes and explaining the service restart and admin sign-out.
+`POST /v1/setup/webhook` still uses `replace: true`, but replacement now
+also requires `expectedCurrentUrl` (the displayed, masked URL),
+`expectedState` (the opaque `currentState` from live status or a 409),
+and `expectedTargetUrl` (the reviewed full target, including `/webhooks/seerr`).
+The server re-reads Seerr and returns 409 `seerr_webhook_in_use` if the live
+URL, authorization, notification settings, or requested target changed.
+Old callers sending only `replace: true` must review and supply these fields;
+they can no longer overwrite unconditionally. The keyed state fingerprint
+exposes no authorization secret and becomes invalid after a JellyPass restart.
+Error details include `currentState`, `currentUrl`, `newUrl`,
+`currentHost`, and `currentEnabled`.
+
+An enabled webhook matching JellyPass's URL, authorization, event types,
+payload, poster setting and variable-support setting returns `status: "kept"`
+without writing when replacement was not explicitly requested. Changes to these
+settings require review even at the same URL. A disabled matching webhook also
+requires review before it is re-enabled. Explicit, valid replacement always
+writes and tests the configuration. Live status includes `matches` so the page
+can skip review for a no-op.
+
+Setup status also includes `changedSettings` (setting names only, never values).
+Environment-controlled fields are labeled “Set by environment”. Applying in
+running mode requires an in-page confirmation listing saved settings changes
+and explaining the service restart and admin sign-out.
 
 Each step checks what it is given and stores the result at once, so a wizard
 left half done resumes where it stopped and a step can be run again. Nothing

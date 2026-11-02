@@ -131,6 +131,7 @@ export const SETUP_APP_JS = `
   let token = '';
   let status = null;
   let suggestedWebhookBase = '';
+  let webhookReview = null;
 
   async function api(path, body) {
     const init = { method: body === undefined ? 'GET' : 'POST', headers: { Authorization: 'Bearer ' + token, Accept: 'application/json' } };
@@ -145,8 +146,11 @@ export const SETUP_APP_JS = `
       error.body = answer;
       throw error;
     }
-    if (answer.setup) {
-      status = answer.setup;
+    if (answer.setup || (body === undefined && path === '/v1/setup')) {
+      status = answer.setup || answer;
+      byId('webhook-confirm').checked = false;
+      byId('webhook-review').hidden = true;
+      webhookReview = null;
       byId('finish-confirm').checked = false;
       byId('finish-review').hidden = true;
     }
@@ -205,9 +209,11 @@ export const SETUP_APP_JS = `
 
     const webhook = seerr.webhook;
     byId('webhook-form').querySelectorAll('input, button').forEach((input) => { input.disabled = seerr.apiKey !== 'set' || seerr.webhookChecked === false; });
-    if (!byId('webhook-base').value || byId('webhook-base').value === suggestedWebhookBase) {
-      suggestedWebhookBase = webhook
+    if (!webhookReview && (!byId('webhook-base').value || byId('webhook-base').value === suggestedWebhookBase)) {
+      const usable = webhook && /^https?:/.test(webhook.url) && webhook.url.endsWith('/webhooks/seerr');
+      suggestedWebhookBase = usable
       ? webhook.url.replace(/\\/webhooks\\/seerr\\/?$/, '') : window.location.origin;
+      if (byId('webhook-base').value !== suggestedWebhookBase) byId('webhook-confirm').checked = false;
       byId('webhook-base').value = suggestedWebhookBase;
     }
     setState('webhook', seerr.webhookChecked === false ? 'Could not read Seerr webhook settings. Reload to retry.'
@@ -302,27 +308,33 @@ export const SETUP_APP_JS = `
     const body = { jellypassUrl: byId('webhook-base').value };
     const target = body.jellypassUrl.replace(/\\/+$/, '') + '/webhooks/seerr';
     const existing = status.steps.seerr.webhook;
-    if (existing && !byId('webhook-confirm').checked) {
+    const needsReview = existing && !(existing.matches && existing.url === target);
+    if (needsReview && (!webhookReview || webhookReview.target !== target || !byId('webhook-confirm').checked)) {
+      byId('webhook-confirm').checked = false;
+      webhookReview = { target, url: existing.url, state: existing.currentState };
       byId('webhook-review').hidden = false;
       byId('webhook-change').textContent = existing.url + ' → ' + target + '. This replaces Seerr’s webhook URL and authorization.';
       return '';
     }
-    if (existing) body.replace = true;
+    if (needsReview) Object.assign(body, { replace: true, expectedCurrentUrl: webhookReview.url,
+      expectedState: webhookReview.state, expectedTargetUrl: webhookReview.target });
     let answer;
     try { answer = await api('/v1/setup/webhook', body); }
     catch (error) {
       if (error.code !== 'seerr_webhook_in_use') throw error;
-      status.steps.seerr.webhook = { url: error.body.currentUrl };
+      status.steps.seerr.webhook = { url: error.body.currentUrl, currentState: error.body.currentState };
+      webhookReview = { target, url: error.body.currentUrl, state: error.body.currentState };
       byId('webhook-confirm').checked = false;
       byId('webhook-review').hidden = false;
       byId('webhook-change').textContent = error.body.currentUrl + ' → ' + error.body.newUrl;
       return '';
     }
+    webhookReview = null;
     byId('webhook-review').hidden = true;
     byId('webhook-confirm').checked = false;
     return answer.status === 'kept' ? 'Existing webhook kept.' : answer.tested ? 'Webhook configured; test reached JellyPass.' : 'Webhook configured; test did not reach JellyPass.';
   });
-  byId('webhook-base').addEventListener('input', () => { byId('webhook-confirm').checked = false; });
+  byId('webhook-base').addEventListener('input', () => { byId('webhook-confirm').checked = false; webhookReview = null; byId('webhook-review').hidden = true; });
 
   step('tmdb-form', async () => {
     const key = byId('tmdb-key');

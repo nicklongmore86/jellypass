@@ -13,7 +13,7 @@ import { loadConfig } from '../dist/config.js';
 import { JellyfinClient } from '../dist/jellyfin.js';
 import { makeServers, makeSetupServer } from '../dist/server.js';
 import { mergedEnvironment, missingRequired, readAdminTokenFile, settingsPaths, SettingsStore, setupRequired } from '../dist/settings.js';
-import { MAX_RESPONSE_BYTES, SEERR_MEDIA_AVAILABLE, SetupWizard } from '../dist/setup.js';
+import { MAX_RESPONSE_BYTES, SEERR_MEDIA_AVAILABLE, SEERR_WEBHOOK_TEMPLATE, SetupWizard } from '../dist/setup.js';
 import { SETUP_APP_JS, SETUP_HTML } from '../dist/setup-ui.js';
 import { GrantStore } from '../dist/store.js';
 import { createSetupJellyfin, createSetupSeerr, createSetupTmdb, SECRETS } from './support/setup-fakes.mjs';
@@ -71,6 +71,12 @@ async function setupMode(t, { environment = {}, mode = 'setup' } = {}) {
     return { status: response.status, body: text ? JSON.parse(text) : undefined, headers: response.headers };
   };
   return { base, file, settings, wizard, applied, logs, answers, call, tmdb };
+}
+
+async function reviewedReplacement(call, base) {
+  const webhook = (await call('/v1/setup', { method: 'GET' })).body.steps.seerr.webhook;
+  return { jellypassUrl: base, ...(webhook ? { replace: true, expectedCurrentUrl: webhook.url,
+    expectedState: webhook.currentState, expectedTargetUrl: base + '/webhooks/seerr' } : {}) };
 }
 
 describe('setup settings: stored settings under the environment', () => {
@@ -269,7 +275,7 @@ describe('setup wizard: steps', () => {
     const refused = await call('/v1/setup/webhook', { body: { jellypassUrl: base } });
     assert.deepEqual([refused.status, refused.body.error, refused.body.currentHost], [409, 'seerr_webhook_in_use', 'hooks.example.net']);
     assert.equal(other.state.webhook.options.webhookUrl, 'https://hooks.example.net/path?token=leak-me-not');
-    const unreachable = await call('/v1/setup/webhook', { body: { jellypassUrl: 'http://127.0.0.1:1', replace: true } });
+    const unreachable = await call('/v1/setup/webhook', { body: await reviewedReplacement(call, 'http://127.0.0.1:1') });
     assert.deepEqual([unreachable.status, unreachable.body.tested], [200, false]);
     assert.deepEqual(other.state.webhook.options.customHeaders, [{ key: 'X-Kept', value: 'kept' }]);
     assert.equal(unreachable.body.setup.steps.seerr.webhook.tested, false);
@@ -410,7 +416,7 @@ describe('setup wizard: steps', () => {
     stored = JSON.parse(await readFile(keyOnly.file, 'utf8'));
     assert.deepEqual([stored.seerrUrl, 'seerrApiKey' in stored], [seerr.url, false]);
     // Seerr is now complete from both sources, so the webhook step can run (an earlier test left this Seerr's webhook calling another listener).
-    assert.equal((await keyOnly.call('/v1/setup/webhook', { body: { jellypassUrl: keyOnly.base, replace: true } })).body.status, 'configured');
+    assert.equal((await keyOnly.call('/v1/setup/webhook', { body: await reviewedReplacement(keyOnly.call, keyOnly.base) })).body.status, 'configured');
     const both = await setupMode(t, { environment: { SEERR_URL: seerr.url, SEERR_API_KEY: SECRETS.seerrKey } });
     assert.deepEqual((await both.call('/v1/setup/seerr', { body: {} })).body.variables, ['SEERR_URL', 'SEERR_API_KEY']);
     assertNoSecret(urlOnly.answers.join('\n') + keyOnly.answers.join('\n'));
@@ -438,11 +444,61 @@ describe('setup wizard: steps', () => {
     const refused = await call('/v1/setup/webhook', { body: { jellypassUrl: base } });
     assert.equal(refused.status, 409);
     assert.equal(refused.body.currentUrl, url);
+    assert.match(refused.body.message, /different authorization/);
     assert.equal(seerr.requests.filter((r) => r.method === 'POST').length, 0);
-    assert.equal((await call('/v1/setup/webhook', { body: { jellypassUrl: base, replace: true } })).status, 200);
+    assert.equal((await call('/v1/setup/webhook', { body: await reviewedReplacement(call, base) })).status, 200);
     const writes = seerr.requests.filter((r) => r.method === 'POST').length;
     assert.equal((await call('/v1/setup/webhook', { body: { jellypassUrl: base } })).body.status, 'kept');
     assert.equal(seerr.requests.filter((r) => r.method === 'POST').length, writes);
+  });
+
+  it('binds replacement to live URL, authorization, settings and reviewed target; masks foreign paths', async (t) => {
+    const seerr = await createSetupSeerr({ webhook: { enabled: true, options: {
+      webhookUrl: 'https://discord.com/api/webhooks/private-id/private-token', authHeader: 'Bearer private-auth' } } });
+    t.after(() => seerr.close());
+    const { call, base, answers } = await setupMode(t, { environment: { SEERR_URL: seerr.url, SEERR_API_KEY: SECRETS.seerrKey } });
+    const review = await reviewedReplacement(call, base);
+    assert.equal(review.expectedCurrentUrl, 'https://discord.com/[masked]');
+    seerr.state.webhook.options.webhookUrl = 'https://hooks.slack.com/services/private-path';
+    assert.equal((await call('/v1/setup/webhook', { body: review })).status, 409);
+    assert.match((await call('/v1/setup/webhook', { body: { jellypassUrl: base } })).body.message, /different address/);
+    const authReview = await reviewedReplacement(call, base);
+    seerr.state.webhook.options.authHeader = 'Bearer changed-auth';
+    assert.equal((await call('/v1/setup/webhook', { body: authReview })).status, 409);
+    const targetReview = await reviewedReplacement(call, base);
+    assert.equal((await call('/v1/setup/webhook', { body: { ...targetReview, jellypassUrl: 'http://changed:8788' } })).status, 409);
+    assert.equal((await call('/v1/setup/webhook', { body: { jellypassUrl: base, replace: true } })).status, 409);
+    assert.equal(seerr.requests.filter((r) => r.method === 'POST').length, 0);
+    assertNoSecret(answers.join('\n'), ['private-id', 'private-token', 'private-auth', 'private-path', 'changed-auth']);
+  });
+
+  it('keeps an independently configured exact webhook, reviews config differences and disabled webhooks', async (t) => {
+    const seerr = await createSetupSeerr();
+    t.after(() => seerr.close());
+    const { call, base } = await setupMode(t, { mode: 'running', environment: {
+      SEERR_URL: seerr.url, SEERR_API_KEY: SECRETS.seerrKey, WEBHOOK_TOKEN: 'synthetic-webhook-token' } });
+    seerr.state.webhook = { enabled: true, embedPoster: false, types: SEERR_MEDIA_AVAILABLE, options: {
+      webhookUrl: base + '/webhooks/seerr', authHeader: 'Bearer synthetic-webhook-token',
+      jsonPayload: SEERR_WEBHOOK_TEMPLATE, supportVariables: false, customHeaders: [] } };
+    assert.equal((await call('/v1/setup/webhook', { body: { jellypassUrl: base } })).body.status, 'kept');
+    assert.equal(seerr.requests.filter((r) => r.method === 'POST').length, 0);
+    assert.equal((await call('/v1/setup/webhook', { body: await reviewedReplacement(call, base) })).body.status, 'configured');
+    for (const change of [{ types: 0 }, { options: { ...seerr.state.webhook.options, jsonPayload: '{}' } },
+      { options: { ...seerr.state.webhook.options, supportVariables: true } }, { enabled: false }]) {
+      Object.assign(seerr.state.webhook, change);
+      const refused = await call('/v1/setup/webhook', { body: { jellypassUrl: base } });
+      assert.equal(refused.status, 409);
+      assert.equal((await call('/v1/setup/webhook', { body: await reviewedReplacement(call, base) })).body.status, 'configured');
+    }
+  });
+
+  it('reports failed live webhook reads without trusting wizard history', async (t) => {
+    const seerr = await createSetupSeerr();
+    const { call } = await setupMode(t, { environment: { SEERR_URL: seerr.url, SEERR_API_KEY: SECRETS.seerrKey } });
+    await seerr.close();
+    const status = (await call('/v1/setup', { method: 'GET' })).body;
+    assert.equal(status.steps.seerr.webhookChecked, false);
+    assert.equal(status.steps.seerr.webhook, null);
   });
 
   it('asks before replacing a Seerr webhook that is off but set to call another address', async (t) => {
@@ -454,7 +510,7 @@ describe('setup wizard: steps', () => {
     assert.deepEqual([refused.status, refused.body.error, refused.body.currentHost, refused.body.currentEnabled], [409, 'seerr_webhook_in_use', 'hooks.example.net', false]);
     assert.equal(other.state.webhook.options.webhookUrl, 'https://hooks.example.net/kept');
     assert.equal(other.requests.filter((entry) => entry.method === 'POST').length, 0, 'nothing was written to Seerr');
-    const replaced = await call('/v1/setup/webhook', { body: { jellypassUrl: base, replace: true } });
+    const replaced = await call('/v1/setup/webhook', { body: await reviewedReplacement(call, base) });
     assert.deepEqual([replaced.status, replaced.body.tested], [200, true]);
     assert.equal(other.state.webhook.options.webhookUrl, `${base}/webhooks/seerr`);
     // Ours already: a re-run needs no confirmation.
@@ -670,6 +726,41 @@ describe('setup wizard page', () => {
     assert.equal(page.requests.length, 2);
     assert.equal(byId('finish-review').hidden, false);
     assert.match(byId('finish-changes').textContent, /restarts JellyPass.*trustedProxies/);
+  });
+
+  it('clears a pending confirmation on refresh and uses safe defaults for foreign URLs', async () => {
+    const current = structuredClone(STATUS);
+    current.steps.seerr = { ...current.steps.seerr, apiKey: 'set', webhookChecked: true,
+      webhook: { url: 'https://discord.com/[masked]', currentState: 'review-state' } };
+    const page = setupPage((path) => ({ status: 200, body: path === '/v1/setup' ? current : { setup: current } }));
+    const byId = (id) => page.document.getElementById(id);
+    byId('setup-token').value = SECRETS.adminToken;
+    await page.submit('setup-token-form');
+    assert.equal(byId('webhook-base').value, 'http://setup.example:8788');
+    await page.submit('webhook-form');
+    byId('webhook-confirm').checked = true;
+    await page.submit('backfill-form');
+    assert.equal(byId('webhook-confirm').checked, false);
+    await page.submit('webhook-form');
+    assert.equal(page.requests.filter((r) => r.pathname === '/v1/setup/webhook').length, 0);
+    current.steps.seerr.webhookChecked = false;
+    await page.submit('backfill-form');
+    assert.equal(byId('webhook-base').disabled, true);
+    assert.equal(byId('webhook-form').querySelector('button').disabled, true);
+    assert.match(page.document.querySelector('[data-state="tmdb"]').textContent, /Set by environment/);
+  });
+
+  it('skips review for an unchanged matching webhook', async () => {
+    const current = structuredClone(STATUS);
+    current.steps.seerr = { ...current.steps.seerr, apiKey: 'set', webhookChecked: true,
+      webhook: { url: 'http://access-bridge:8788/webhooks/seerr', matches: true } };
+    const page = setupPage((path) => ({ status: 200, body: path === '/v1/setup' ? current : { status: 'kept', setup: current } }));
+    page.document.getElementById('setup-token').value = SECRETS.adminToken;
+    await page.submit('setup-token-form');
+    await page.submit('webhook-form');
+    assert.equal(page.requests[1].pathname, '/v1/setup/webhook');
+    assert.equal(JSON.parse(page.requests[1].init.body).replace, undefined);
+    assert.equal(page.document.getElementById('webhook-review').hidden, true);
   });
 
   it('keeps the token in memory only, sends it as a bearer token, clears the password once sent, and greys out locked steps', async () => {

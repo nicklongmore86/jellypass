@@ -18,6 +18,13 @@ changes are always listed at the top of the release notes.
 
 ## [Unreleased]
 
+### Fixed
+
+- **Setup protects existing webhooks and service restarts.** Discover Seerr's live
+  webhook, require confirmation bound to its reviewed state and target before
+  replacement, mask foreign webhook paths, label environment settings, and
+  review saved changes before restarting.
+
 ### Added
 
 - **Reverse proxy recipes** ([docs/reverse-proxy.md](docs/reverse-proxy.md),
@@ -114,10 +121,6 @@ upgrading:
 - Household feature updates accept only the changed boolean flag, preserving concurrent changes from other tabs.
 
 ### Fixed
-
-- Setup discovers existing Seerr webhooks, requires confirmation before URL or
-  authorization replacement, labels environment settings, and reviews service
-  restarts before applying changes.
 
 - **A broad search no longer closes Jellyfin on low-memory TVs.** Jellyfin
   web's Search page asks for up to 800 items and 100 each of people, studios
