@@ -67,6 +67,21 @@ changes are always listed at the top of the release notes.
   wording (household hosts always pause on an untested version since 4.0.0),
   and the refused Seerr webhook warning marked as an upgrade step.
 
+### Fixed
+
+- **Admin site layout on phones, tablets and narrow desktops.** No page or
+  dialog is wider than the screen any more at 390, 1024 or 1440 px. The tab
+  row scrolls sideways inside the screen on phones. Dialog buttons wrap and
+  stay pinned to the bottom of a long dialog (the bulk-access buttons were cut
+  off). Groups and Grants cards no longer run off the page. Requests rows line
+  up in columns, without a blank second column on phones or the tiny
+  monospace household text. The household Mobile app and TV add-on switches
+  look like the other checkboxes, with the environment-lock note on its own
+  line. On phones the health indicator shows a short word next to its
+  colour. The Access and Request grants dialogs name the title, with its
+  Jellyfin item ID muted underneath, and a grant whose title is missing no
+  longer shows its item ID twice.
+
 ## [4.1.0] - 2026-11-02
 
 This is a minor release. It adds a first-run setup wizard, per-household
