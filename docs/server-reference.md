@@ -691,8 +691,10 @@ requests are not origin-checked. Over HTTPS the session cookie is
 
 The UI contains five views:
 
-- **Dashboard** — grant counts, synchronization health, and up to 12 recent
-  Seerr requests linked to the synchronized catalog.
+- **Dashboard** — grant counts, synchronization health, **Recent Seerr
+  activity** (up to 12 recent Seerr requests, whatever their status, for
+  titles in the synchronized catalog), and the
+  [deployment self-check](#deployment-self-check-and-plugin-routes).
 - **Requests** — with the household app enabled, every household's requests
   from the app, filtered by household, status, type, title or requester, with
   **Approve**, **Decline** and **Cancel request** (for every household
@@ -700,11 +702,16 @@ The UI contains five views:
   from Radarr** through Seerr), and the **Held titles** a cancel left with
   nobody, which **Release** gives to chosen households. See
   [`docs/app-design.md`](app-design.md), "Administrators' Requests tab".
+  With the household app off, the tab says **Household app is turned off**.
 - **Library** — catalog search, filters, sorting, pagination, and bulk access
   assignment for up to 500 selected items.
 - **Grants** — active automated and manual grants, owners, groups, sync status,
-  dry-run plans, revocation, and **Move** (remap a grant to another Jellyfin
-  item; see [A re-imported title is public](#a-re-imported-title-is-public-or-a-grant-is-orphaned)).
+  dry-run plans, **Request grants** (the Seerr requests that give access to a
+  title, each with **Revoke**), and **More → Move to another item…** (remap a
+  grant to another Jellyfin item, picked from a Jellyfin search or by item ID;
+  see [A re-imported title is public](#a-re-imported-title-is-public-or-a-grant-is-orphaned)).
+  Every change is shown as a dry-run plan first and applied with the plan's
+  own **Apply** button.
 - **Groups** — reusable audiences, each household's addresses, and optional
   Jellyfin user creation/import.
 
@@ -755,7 +762,7 @@ reduced templates. Inspect `GET /v1/webhooks/status` for the admin warning.
 
 ### Deployment self-check and plugin routes
 
-After signing in to `/admin/`, choose **Run self-check**. It checks direct Jellyfin bypass risks, Quick Connect, household proxy headers, public Seerr access, Jellyfin version-gate support, and TMDB key validity. The authenticated API is `POST /v1/self-check`; cookie requests must come from the admin origin. Runs are limited to one per minute, with four-second probe timeouts and no redirect following.
+After signing in to `/admin/`, choose **Run self-check** on the Dashboard. It checks direct Jellyfin bypass risks, Quick Connect, household proxy headers, public Seerr access, Jellyfin version-gate support, and TMDB key validity. The authenticated API is `POST /v1/self-check`; cookie requests must come from the admin origin. Runs are limited to one per minute, with four-second probe timeouts and no redirect following.
 
 Set `JELLYFIN_PUBLIC_URLS=https://origin.example.com` (comma-separated if there are several) and `SEERR_PUBLIC_URL=https://requests.example.com` to probe those public URLs without sending service API keys. Household addresses are self-requested through the public proxy; configure `TRUSTED_PROXIES` correctly. A direct Jellyfin answer is a bypass risk; public Seerr access is a warning because Seerr must be admin-only. A server-side probe cannot prove what outside users can reach: repeat access checks from a member network. See [household access](household-access.md#admin-deployment-self-check) for the limits.
 
@@ -1049,7 +1056,7 @@ grants stay applied. Revoke whichever grant is no longer needed.
 Requests stay handled, so the backfill does not import them again.
 
 Until a move finishes (for example when applying the new item failed), a
-request can be on both the old and the new grant. Revoking it in **Requests**
+request can be on both the old and the new grant. Revoking it in **Request grants**
 revokes it from that item only, and is remembered: no later recovery or
 **Move** adds that request to that item again, so a copy left on the old
 grant cannot restore it (the copy is dropped instead). A new Seerr request for
@@ -1087,7 +1094,7 @@ configured), or part of a grant stays behind as above, it is marked `orphaned`: 
 `sync.state: "orphaned"` in `GET /v1/grants`, and counted by the
 `jfa_orphaned_grants` gauge rather than `jfa_sync_errors`. Scheduled
 reconciliation no longer retries it; a full reconcile (`POST /v1/reconcile`)
-tries again. Move it yourself with **Move** in Grants, or:
+tries again. Move it yourself with **More → Move to another item…** in Grants, or:
 
 ```sh
 # Preview, then apply. The target item must exist; the old one must be gone.

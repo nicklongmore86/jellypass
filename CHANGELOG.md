@@ -31,6 +31,39 @@ changes are always listed at the top of the release notes.
   deployment self-check; a table of common failures (`421 unknown_host`,
   `400 invalid_host`, shared sign-in limits, WebSockets) closes the page.
 
+### Changed
+
+- **Admin site: confirmations in the page.** Applying a previewed change
+  (reconcile, shared access, bulk access, revoking a request grant, moving a
+  grant) is done with an **Apply** button in the plan dialog, and deleting a
+  group, removing a household's addresses and allowing an untested Jellyfin
+  version ask in the page's own dialog, instead of the browser's
+  `confirm()`.
+- **Admin site: Move picks the new item from a Jellyfin search** (or a pasted
+  item ID) and previews the move, instead of asking for a raw item ID. It is
+  under **More** on each grant card.
+- **Admin site: names that no longer collide.** The Dashboard's "Recent
+  requests" is **Recent Seerr activity** (its copy no longer says "successfully
+  linked": pending and declined requests show too); a grant card's
+  **Requests** button is **Request grants**; the **Requests** tab stays the
+  household app's requests.
+- **Admin site: the Requests tab says "Household app is turned off"** when the
+  household app is off, instead of an error.
+- **Admin site: the deployment self-check is on the Dashboard only**, and is
+  styled again (its inline style was blocked by the page's Content Security
+  Policy).
+- **Admin site: errors are sentences.** A raw error code or an upstream
+  failure ("Jellyfin GET … returned 404") is shown as a sentence with the code
+  or message as smaller detail, in toasts and in the self-check.
+- **Admin site: grant cards no longer show an "updated" time**, and are sorted
+  by title. The stored `updatedAt` is unchanged; it is rewritten on every grant
+  of a group whenever the group is saved, so it did not say when that grant
+  changed.
+- **Admin site copy:** a shorter sign-in page, the create-user hint without
+  the pre-SSO wording, the Jellyfin version alert without the 3.x warn-only
+  wording (household hosts always pause on an untested version since 4.0.0),
+  and the refused Seerr webhook warning marked as an upgrade step.
+
 ## [4.1.0] - 2026-11-02
 
 This is a minor release. It adds a first-run setup wizard, per-household

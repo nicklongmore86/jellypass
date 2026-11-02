@@ -1410,15 +1410,16 @@ export const ADMIN_APP_JS = `
   byId('access-form').addEventListener('submit', previewAccess);
   byId('move-form').addEventListener('submit', submitMove);
   byId('move-search').addEventListener('input', scheduleMoveSearch);
-  ['plan', 'confirm'].forEach((name) => {
-    byId(name + '-form').addEventListener('submit', (event) => {
-      event.preventDefault();
-      answer(name + '-dialog', true);
-      byId(name + '-dialog').close();
-    });
-    // Cancel, ×, Escape: any other close is a no.
-    byId(name + '-dialog').addEventListener('close', () => answer(name + '-dialog', false));
-  });
+  // The confirmations' Apply/confirm buttons submit their form; any other close (Cancel, ×, Escape) is a no.
+  const accepted = (dialogId) => (event) => {
+    event.preventDefault();
+    answer(dialogId, true);
+    byId(dialogId).close();
+  };
+  byId('plan-form').addEventListener('submit', accepted('plan-dialog'));
+  byId('confirm-form').addEventListener('submit', accepted('confirm-dialog'));
+  byId('plan-dialog').addEventListener('close', () => answer('plan-dialog', false));
+  byId('confirm-dialog').addEventListener('close', () => answer('confirm-dialog', false));
   byId('request-action-form').addEventListener('submit', confirmRequestAction);
   byId('release-form').addEventListener('submit', confirmRelease);
   byId('refresh-requests').addEventListener('click', loadRequests);
