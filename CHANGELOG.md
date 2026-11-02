@@ -13,10 +13,43 @@ interface: they may change in a minor or patch release to close a security or
 privacy leak. Requests on a household hostname that would get around a
 household check (signing in without the membership check, for example, or
 reaching an item the caller may not see) may likewise be refused in a minor or
-patch release, even where Jellyfin used to answer them with a success. Such
-changes are always listed at the top of the release notes.
+patch release, even where Jellyfin used to answer them with a success. A
+minor release may also make an administrator API request require more fields
+when that is needed to stop it overwriting existing external configuration
+or data without an explicit review or confirmation. Such changes are always
+listed at the top of the release notes.
 
 ## [Unreleased]
+
+## [4.2.0] - 2026-11-02
+
+This is a minor release. It reworks the admin site (confirmations in the
+page, a Move picker, clearer names and errors, a layout that fits phones and
+tablets), makes the setup wizard protect an existing Seerr webhook, and adds
+reverse proxy recipes. **An existing install upgrades without any change to
+its configuration:** no setting is added or removed, the state file stays at
+schema 9 (4.1.0 reads it, so rolling back is only a matter of the image tag),
+the household app API is unchanged, webhook payloads are unchanged, and the TV
+add-on's files keep their names. Read these before upgrading:
+
+- **Replacing Seerr's webhook needs a review first.** The Setup page reads
+  Seerr's live webhook. One that is already JellyPass's, with the same
+  address, token and notification settings, is kept as it is. Any other
+  webhook, whether on or off and whether it differs in address,
+  authorization or notification settings, is shown (with a path that is not
+  JellyPass's masked) and replaced only after you review and confirm it.
+  `POST /v1/setup/webhook` is an administrator API: it works in setup mode
+  with the setup token and on a running install with `ADMIN_TOKEN`. Scripts
+  or tools that call it with `replace: true` must now first read
+  `GET /v1/setup` and send the reviewed `expectedState`,
+  `expectedCurrentUrl` and `expectedTargetUrl`. Without them they get
+  `400 review_required`; if Seerr's live webhook or the target changed since
+  the review they get `409 seerr_webhook_in_use`. The Setup page already does
+  this. This change uses the review exception in the compatibility policy
+  above.
+- **`TV_ADDON_HOUSEHOLDS` is still honoured but deprecated,** as in 4.1.0:
+  while it is set it decides TV access and the admin site's TV switches stay
+  locked. Remove it and restart to manage TV access per household.
 
 ### Added
 
@@ -3795,7 +3828,8 @@ This release has three breaking changes. Read
 
 First versioned release.
 
-[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v4.1.0...HEAD
+[Unreleased]: https://github.com/nicklongmore86/jellypass/compare/v4.2.0...HEAD
+[4.2.0]: https://github.com/nicklongmore86/jellypass/compare/v4.1.0...v4.2.0
 [4.1.0]: https://github.com/nicklongmore86/jellypass/compare/v4.0.0...v4.1.0
 [4.0.0]: https://github.com/nicklongmore86/jellypass/compare/v3.10.0...v4.0.0
 [3.10.0]: https://github.com/nicklongmore86/jellypass/compare/v3.9.0...v3.10.0

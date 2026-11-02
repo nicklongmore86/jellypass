@@ -206,11 +206,11 @@ as semantic-version tags. For predictable production upgrades, set
 `JELLYPASS_IMAGE` in `.env` to a versioned image such as:
 
 ```dotenv
-JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:4.1.0
+JELLYPASS_IMAGE=ghcr.io/nicklongmore86/jellypass:4.2.0
 ```
 
-Each release is published as a semantic-version image tag, such as `4.1.0`,
-plus floating `4.1` and `4` tags that move to the newest release in that minor
+Each release is published as a semantic-version image tag, such as `4.2.0`,
+plus floating `4.2` and `4` tags that move to the newest release in that minor
 or major line; see [CHANGELOG.md](../CHANGELOG.md) for what each one contains. `latest` is rebuilt on
 every push to `main` and may include unreleased changes, so use it, or build
 from source, only to test ahead of a release.
@@ -323,14 +323,17 @@ scheme). Foreign and invalid webhook URLs are never used as defaults.
 Verify that Seerr can reach the suggestion; proxy and container addresses differ.
 
 Replacing a webhook requires an in-page review of the old and new URLs.
-`POST /v1/setup/webhook` still uses `replace: true`, but replacement now
+`POST /v1/setup/webhook` works in setup mode (setup token) and on a running
+install (`ADMIN_TOKEN`). It still uses `replace: true`, but since 4.2.0 replacement
 also requires `expectedCurrentUrl` (the displayed, masked URL),
 `expectedState` (the opaque `currentState` from live status or a 409),
 and `expectedTargetUrl` (the reviewed full target, including `/webhooks/seerr`).
 The server re-reads Seerr and returns 409 `seerr_webhook_in_use` if the live
 URL, authorization, notification settings, or requested target changed.
-Old callers sending only `replace: true` must review and supply these fields;
-they receive 400 `review_required` when review fields are missing and can no
+Scripts calling it must first read `GET /v1/setup` (or take the details of a
+409) and supply these fields, as the Setup page does. Old callers sending only
+`replace: true` receive
+400 `review_required` when review fields are missing and can no
 longer overwrite unconditionally. Empty current webhook addresses are reported
 as `currentUrl: null` in conflict details. The keyed state fingerprint
 exposes no authorization secret and becomes invalid after a JellyPass restart.
@@ -963,6 +966,10 @@ migrates the state file to schema 9 (4.0.0 cannot read it; the upgrade writes a
 backup first), seeds the new per-household TV switches from
 `TV_ADDON_HOUSEHOLDS` (which keeps working as before while it is set), and renames the TV add-on's script; see the
 [4.1.0 notes](../CHANGELOG.md#410---2026-11-02).
+Upgrading from 4.1.0 to 4.2.0 changes no setting, keeps the state file at
+schema 9 (4.1.0 can run on it again) and keeps the TV add-on's file names; the
+setup wizard now asks for a review before it replaces an existing Seerr webhook.
+See the [4.2.0 notes](../CHANGELOG.md#420---2026-11-02).
 If you build from source with `compose.example.yaml`, its service is now named
 `jellypass` instead of `access-bridge`: run
 `docker compose -f compose.example.yaml up --build -d --remove-orphans` once
