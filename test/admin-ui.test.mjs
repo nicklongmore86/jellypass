@@ -58,13 +58,22 @@ function adminPage(answer) {
     fetch,
     Headers,
     URLSearchParams,
-    confirm: () => true,
+    // Destructive actions ask in the page's own dialogs, never with the browser's.
+    confirm: () => { throw new Error('window.confirm is not used'); },
+    prompt: () => { throw new Error('window.prompt is not used'); },
     // A real Date (a grant card formats its time), with the manual clock's now.
     Date: class extends Date { static now() { return now; } },
     setTimeout: (callback, ms) => { const id = nextTimer++; timers.set(id, { at: now + (ms ?? 0), callback }); return id; },
     clearTimeout: (id) => { timers.delete(id); },
   };
   window.scrollTo = () => {};
+  // linkedom has no <dialog> methods: close() fires "close" as a browser's does.
+  window.HTMLElement.prototype.showModal = function showModal() { this.setAttribute('open', ''); };
+  window.HTMLElement.prototype.close = function close() {
+    if (!this.hasAttribute('open')) return;
+    this.removeAttribute('open');
+    this.dispatchEvent(new window.Event('close'));
+  };
   runInNewContext(ADMIN_APP_JS, context);
   const byId = (id) => document.getElementById(id);
   const settle = () => new Promise((resolve) => setImmediate(resolve));
@@ -98,8 +107,17 @@ function adminPage(answer) {
     },
     window,
     document,
-    toast: () => byId('toast').textContent,
+    toast: () => byId('toast').querySelector('.toast-text')?.textContent ?? '',
+    toastDetail: () => byId('toast').querySelector('.toast-detail')?.textContent ?? '',
     click: (id) => byId(id).dispatchEvent(new window.Event('click')),
+    /** Whether the dialog is open. */
+    open: (id) => byId(id).hasAttribute('open'),
+    /** Submits the form of an open in-page confirmation (confirm-dialog, or the plan dialog's Apply step). */
+    async accept(id) {
+      assert.ok(byId(id).hasAttribute('open'), id + ' is open');
+      byId(id).querySelector('form').dispatchEvent(new window.Event('submit'));
+      await this.settle();
+    },
   };
 }
 
@@ -370,6 +388,7 @@ describe('admin UI answers that arrive after the session changed', () => {
     const remove = [...page.document.querySelectorAll('#groups-list button')].find((button) => button.textContent === 'Delete');
     remove.dispatchEvent(new page.window.Event('click'));
     await page.settle();
+    await page.accept('confirm-dialog');
     assert.ok(deleted);
     page.click('logout');
     await page.settle();
@@ -494,9 +513,6 @@ describe('admin UI Requests tab', () => {
       if (path === '/v1/groups') return GROUPS;
       return DATA[path];
     });
-    // linkedom has no <dialog> methods.
-    page.window.HTMLElement.prototype.showModal = function showModal() { this.setAttribute('open', ''); };
-    page.window.HTMLElement.prototype.close = function close() { this.removeAttribute('open'); };
     await page.settle();
     page.document.querySelector('.tabs button[data-tab="requests"]').dispatchEvent(new page.window.Event('click'));
     await page.settle();
@@ -600,10 +616,24 @@ describe('admin UI Requests tab', () => {
     assert.equal(page.toast(), 'Released to Heath.');
   });
 
-  it('says so when the server has no requests to show, and puts no secret in the page', async () => {
+  it('says the household app is turned off when the server has no requests to list, and hides the rest of the tab', async () => {
     const page = await requestsPage([], { '/v1/app/requests': { status: 404, body: { error: 'requests_not_configured' } } });
-    assert.match(page.document.getElementById('household-requests-list').textContent, /Requests unavailable.*Requests need the household app and Seerr\./);
+    const list = page.document.getElementById('household-requests-list');
+    assert.match(list.textContent, /^Household app is turned off/);
+    assert.match(list.textContent, /Turn the household app on in Setup \(HOUSEHOLD_APP_ENABLED\)/);
+    assert.match(list.textContent, /Grants → Request grants/);
+    assert.doesNotMatch(list.textContent, /requests_not_configured|unavailable/);
+    for (const id of ['requests-toolbar', 'refresh-requests', 'held-head', 'held-list']) assert.equal(page.document.getElementById(id).hidden, true, id);
+    assert.equal(page.document.getElementById('requests-summary').textContent, '');
+    assert.equal(page.document.getElementById('requests-count').textContent, 'off');
     assert.doesNotMatch(page.document.documentElement.outerHTML, /apiKey|admin-secret|X-Api-Key/i);
+  });
+
+  it('says requests are unavailable, with the reason, when Seerr cannot be read', async () => {
+    const page = await requestsPage([], { '/v1/app/requests': { status: 503, body: { error: 'session_check_unavailable' } } });
+    assert.match(page.document.getElementById('household-requests-list').textContent, /^Requests unavailable.*Jellyfin is temporarily unavailable/);
+    assert.equal(page.document.getElementById('requests-toolbar').hidden, false);
+    assert.equal(page.document.getElementById('held-list').hidden, false);
   });
 
   it('gives every element of the page its own ID', () => {
@@ -625,14 +655,12 @@ describe('admin UI Requests tab', () => {
       if (path === '/v1/grants') return { status: 200, body: { grants: [grant] } };
       return DATA[path];
     });
-    page.window.HTMLElement.prototype.showModal = function showModal() { this.setAttribute('open', ''); };
-    page.window.HTMLElement.prototype.close = function close() { this.removeAttribute('open'); };
     await page.settle();
     page.document.querySelector('.tabs button[data-tab="requests"]').dispatchEvent(new page.window.Event('click'));
     await page.settle();
     page.document.querySelector('.tabs button[data-tab="grants"]').dispatchEvent(new page.window.Event('click'));
     await page.settle();
-    [...page.document.querySelectorAll('#grants-list button')].find((entry) => entry.textContent === 'Requests').dispatchEvent(new page.window.Event('click'));
+    [...page.document.querySelectorAll('#grants-list button')].find((entry) => entry.textContent === 'Request grants').dispatchEvent(new page.window.Event('click'));
     assert.equal(page.document.getElementById('requests-dialog').hasAttribute('open'), true);
     assert.match(page.document.getElementById('requests-list').textContent, /Request 7380001/);
     assert.equal(page.document.querySelectorAll('#requests-dialog .request-row').length, 1);
@@ -675,8 +703,6 @@ describe('admin UI household address editor', () => {
       if (path === '/v1/groups') return { status: 200, body: { groups: [answers.group ?? GROUP] } };
       return DATA[path];
     });
-    page.window.HTMLElement.prototype.showModal = function showModal() { this.setAttribute('open', ''); };
-    page.window.HTMLElement.prototype.close = function close() { this.removeAttribute('open'); };
     await page.settle();
     const open = [...page.document.querySelectorAll('#groups-list button')].find((button) => button.textContent === 'Addresses');
     open.dispatchEvent(new page.window.Event('click'));
@@ -760,11 +786,21 @@ describe('admin UI household address editor', () => {
     assert.equal(page.document.querySelectorAll('#groups-list .address-warning').length, 0);
   });
 
-  it('removes the mapped addresses after confirming', async () => {
-    const { page, sent, byId } = await addressPage({ current: { groupId: 'grove', gateway: true, origin: 'https://media.example.com', aliases: [] } });
+  it('removes the mapped addresses after confirming in the page', async () => {
+    const { page, sent } = await addressPage({ current: { groupId: 'grove', gateway: true, origin: 'https://media.example.com', aliases: [] } });
     page.click('address-remove');
     await page.settle();
+    assert.equal(page.open('confirm-dialog'), true);
+    assert.equal(page.document.getElementById('confirm-title').textContent, 'Remove addresses?');
+    page.document.querySelector('#confirm-dialog .dialog-actions .dialog-close').dispatchEvent(new page.window.Event('click'));
+    await page.settle();
+    assert.deepEqual(sent, [], 'Cancel removes nothing');
+    assert.equal(page.open('address-dialog'), true);
+    page.click('address-remove');
+    await page.settle();
+    await page.accept('confirm-dialog');
     assert.deepEqual(sent, [['DELETE', '/v1/groups/grove/addresses', undefined]]);
+    assert.equal(page.open('address-dialog'), false);
     assert.equal(page.toast(), 'Addresses removed');
   });
 
@@ -830,5 +866,341 @@ describe('household feature controls', () => {
     assert.deepEqual(writes, [{ appEnabled: false }]);
     assert.equal(tv.disabled, true, 'still locked after a save');
     assert.equal(app.disabled, false);
+  });
+});
+
+describe('admin UI dashboard and copy', () => {
+  it('shows the deployment self-check on the Dashboard tab only, styled by the stylesheet (the CSP allows no inline style)', async () => {
+    const { document } = parseHTML(ADMIN_HTML);
+    assert.doesNotMatch(ADMIN_HTML, /\sstyle=/, 'style-src \'self\' blocks inline styles');
+    const panel = document.getElementById('self-check-title').closest('section');
+    assert.equal(panel.className, 'panel self-check');
+    assert.equal(panel.closest('#dashboard-panel'), document.getElementById('dashboard-panel'));
+    assert.match(ADMIN_STYLES, /\.self-check\{padding:24px;margin-top:36px\}/);
+
+    const page = adminPage((path) => DATA[path]);
+    await page.settle();
+    const visible = () => !page.document.getElementById('self-check-title').closest('.tab-panel').hidden;
+    assert.equal(visible(), true);
+    page.document.querySelector('.tabs button[data-tab="grants"]').dispatchEvent(new page.window.Event('click'));
+    assert.equal(visible(), false);
+  });
+
+  it('shows a sentence, with the code as detail, when the self-check is not available', async () => {
+    const page = adminPage((path) => path === '/v1/self-check' ? { status: 404, body: { error: 'self_check_not_configured' } } : DATA[path]);
+    await page.settle();
+    page.click('run-self-check');
+    await page.settle();
+    const output = page.document.getElementById('self-check-results');
+    assert.equal(output.querySelector('.self-check-error').textContent, 'The deployment self-check is not available on this JellyPass.');
+    assert.equal(output.querySelector('.self-check-detail').textContent, 'self_check_not_configured');
+  });
+
+  it('names the Dashboard\'s Seerr activity for what it is, and keeps the sign-in copy short', () => {
+    const { document } = parseHTML(ADMIN_HTML);
+    assert.equal(document.querySelector('#dashboard-panel .recent-head h2').textContent, 'Recent Seerr activity');
+    assert.doesNotMatch(ADMIN_HTML, /successfully linked|Until household SSO|login-note|The right library/);
+    assert.equal(document.querySelector('#login-view h1').textContent, 'Sign in to JellyPass');
+    assert.doesNotMatch(ADMIN_STYLES, /\.token-row|\.brand-mark span|\.connection\.online|\.login-note/);
+    assert.doesNotMatch(ADMIN_APP_JS, /'online'/);
+  });
+
+  it('labels the refused Seerr webhook warning as an upgrade step', async () => {
+    const page = adminPage((path) => path === '/v1/webhooks/status' ? { status: 200, body: { lastRemovedFormAt: Date.now() } } : DATA[path]);
+    await page.settle();
+    assert.match(page.view().connection, /^Upgrade needed: Seerr webhook refused, update its header and template/);
+  });
+});
+
+describe('admin UI error toasts', () => {
+  const failing = (reply) => adminPage((path) => (path.startsWith('/v1/reconcile') ? reply : DATA[path]));
+
+  it('shows a known code as its sentence with the code as detail', async () => {
+    const page = failing({ status: 403, body: { error: 'cross_origin_request_refused' } });
+    await page.settle();
+    page.click('reconcile-policies');
+    await page.settle();
+    assert.equal(page.toast(), 'This request was refused because it did not come from the admin page. Reload the page and try again.');
+    assert.equal(page.toastDetail(), 'cross_origin_request_refused');
+  });
+
+  it('shows an unknown code as a sentence, never as the message itself', async () => {
+    const page = failing({ status: 404, body: { error: 'some_new_code' } });
+    await page.settle();
+    page.click('reconcile-policies');
+    await page.settle();
+    assert.equal(page.toast(), 'That is not available on this JellyPass.');
+    assert.equal(page.toastDetail(), 'some_new_code');
+  });
+
+  it('turns an upstream failure into a sentence and keeps what it said as detail', async () => {
+    const raw = 'Jellyfin GET /Users/ad00/Items/0dead returned 404: {}';
+    const page = failing({ status: 502, body: { error: raw } });
+    await page.settle();
+    page.click('reconcile-policies');
+    await page.settle();
+    assert.equal(page.toast(), 'Jellyfin no longer has what JellyPass asked it for. Sync the library, then try again.');
+    assert.equal(page.toastDetail(), raw);
+  });
+
+  it('shows a server sentence as it is, with no detail', async () => {
+    const page = failing({ status: 400, body: { error: 'groupIds must be an array' } });
+    await page.settle();
+    page.click('reconcile-policies');
+    await page.settle();
+    assert.equal(page.toast(), 'groupIds must be an array');
+    assert.equal(page.toastDetail(), '');
+  });
+});
+
+describe('admin UI Jellyfin version alert', () => {
+  const STATUS = { version: '13.0.0', supported: false, confirmation: 'unconfirmed', confirmedVersion: null, enforcement: 'refuse', householdHosts: 'refused', supportedReleases: ['10.11', '12'] };
+  function versionPage(status, writes = []) {
+    let current = status;
+    return adminPage((path, init) => {
+      if (path === '/v1/jellyfin/version') return { status: 200, body: current };
+      if (path === '/v1/jellyfin/version/confirmation') {
+        writes.push([init.method, init.body ? JSON.parse(init.body) : undefined]);
+        current = init.method === 'PUT'
+          ? { ...status, confirmation: 'confirmed', confirmedVersion: '13.0.0', householdHosts: 'serving' }
+          : status;
+        return { status: 200, body: current };
+      }
+      return DATA[path];
+    });
+  }
+
+  it('always describes the enforced (refuse) behaviour: there is no warn-only copy', async () => {
+    assert.doesNotMatch(ADMIN_APP_JS, /from JellyPass 4\.0\.0|keep serving/);
+    // Even a status that reported warn (no JellyPass 4 does) reads as enforced.
+    const page = versionPage({ ...STATUS, enforcement: 'warn' });
+    await page.settle();
+    assert.equal(page.document.getElementById('jellyfin-version-title').textContent, 'Household hosts are paused: Jellyfin 13.0.0 is not a tested version');
+    assert.equal(page.document.getElementById('jellyfin-version-text').textContent, 'JellyPass is tested with Jellyfin 10.11.x and 12.x. Household hosts answer 503 until you allow this exact version; the household privacy checks were not tested against it.');
+    assert.equal(page.document.getElementById('jellyfin-version-confirm').textContent, 'Allow Jellyfin 13.0.0');
+  });
+
+  it('allows the version only once the administrator confirms in the page, then offers Withdraw', async () => {
+    const writes = [];
+    const page = versionPage(STATUS, writes);
+    await page.settle();
+    page.click('jellyfin-version-confirm');
+    await page.settle();
+    assert.equal(page.open('confirm-dialog'), true);
+    assert.equal(page.document.getElementById('confirm-accept').textContent, 'Allow Jellyfin 13.0.0');
+    page.document.getElementById('confirm-dialog').close();
+    await page.settle();
+    assert.deepEqual(writes, [], 'closing the dialog allows nothing');
+
+    page.click('jellyfin-version-confirm');
+    await page.settle();
+    await page.accept('confirm-dialog');
+    assert.deepEqual(writes, [['PUT', { version: '13.0.0' }]]);
+    assert.equal(page.toast(), 'Jellyfin 13.0.0 is allowed');
+    assert.equal(page.document.getElementById('jellyfin-version-text').textContent, 'Household hosts serve on it because an administrator allowed it. JellyPass is tested with Jellyfin 10.11.x and 12.x.');
+    assert.equal(page.document.getElementById('jellyfin-version-confirm').textContent, 'Withdraw');
+    page.click('jellyfin-version-confirm');
+    await page.settle();
+    assert.deepEqual(writes.at(-1), ['DELETE', undefined]);
+  });
+});
+
+describe('admin UI grants and in-page confirmations', () => {
+  const GRANT_ID = '22220000222200002222000022220000';
+  const NEW_ID = '33330000333300003333000033330000';
+  const grant = (itemId, overrides = {}) => ({
+    itemId, mediaType: 'movie', requests: { 7380001: 'a11ce000a11ce000a11ce000a11ce000' }, manualUserIds: [], groupIds: [],
+    owners: ['a11ce000a11ce000a11ce000a11ce000'], sync: { state: 'synced', attempts: 0 }, updatedAt: '2026-10-20T10:00:00.000Z', active: true, ...overrides,
+  });
+  const PLAN = (itemId) => ({ itemId, itemName: 'Synthetic', item: { action: 'add-tag' }, users: [{ action: 'block', userName: 'Bob' }] });
+  const ITEMS = [
+    { id: GRANT_ID, name: 'Zebra Film', mediaType: 'movie', libraryId: 'lib', libraryName: 'Films' },
+    { id: '44440000444400004444000044440000', name: 'Apple Film', mediaType: 'movie', libraryId: 'lib', libraryName: 'Films' },
+  ];
+
+  /** A signed-in page with grants; `sent` gets every write as [method, path, body]. */
+  async function grantsPage(answers = {}, grants = [grant(GRANT_ID, { updatedAt: '2026-10-21T10:00:00.000Z' }), grant(ITEMS[1].id)]) {
+    const sent = [];
+    const page = adminPage((path, init) => {
+      const method = init?.method ?? 'GET';
+      if (method !== 'GET') sent.push([method, path, init.body ? JSON.parse(init.body) : undefined]);
+      const key = method + ' ' + path;
+      if (answers[key]) return typeof answers[key] === 'function' ? answers[key](init) : answers[key];
+      if (path === '/v1/grants') return { status: 200, body: { grants } };
+      if (path === '/v1/library') return { status: 200, body: { items: ITEMS, lastSyncedAt: null } };
+      if (path === '/v1/groups') return { status: 200, body: { groups: [{ id: 'grove', name: 'Grove', userIds: [] }] } };
+      if (path.startsWith('/v1/library/poster')) return { status: 404, body: {} };
+      return DATA[path] ?? (method === 'GET' ? { status: 404, body: { error: 'not_found' } } : { status: 200, body: {} });
+    });
+    await page.settle();
+    page.document.querySelector('.tabs button[data-tab="grants"]').dispatchEvent(new page.window.Event('click'));
+    return { page, sent, byId: (id) => page.document.getElementById(id) };
+  }
+  const cardButton = (page, title, label) => [...page.document.querySelectorAll('#grants-list .grant-card')]
+    .find((card) => card.querySelector('h3').textContent === title)
+    .querySelectorAll('button, summary')
+    .values().find((entry) => entry.textContent === label);
+
+  it('sorts grants by title and shows no "updated" time (a group save rewrites it on every grant)', async () => {
+    const { page } = await grantsPage();
+    assert.deepEqual([...page.document.querySelectorAll('#grants-list h3')].map((heading) => heading.textContent), ['Apple Film', 'Zebra Film']);
+    assert.doesNotMatch(page.document.getElementById('grants-list').textContent, /updated/i);
+    assert.match(page.document.getElementById('grants-list').textContent, /1 request grant(?!s)/);
+  });
+
+  it('labels the grant actions Plan, Request grants and Access, with Move behind More', async () => {
+    const { page } = await grantsPage();
+    const card = page.document.querySelector('#grants-list .grant-card');
+    assert.deepEqual([...card.querySelectorAll('.card-actions > button')].map((entry) => entry.textContent), ['Plan', 'Request grants', 'Access']);
+    const more = card.querySelector('.card-actions > details.card-more');
+    assert.equal(more.querySelector('summary').textContent, 'More');
+    assert.deepEqual([...more.querySelectorAll('.card-more-menu button')].map((entry) => entry.textContent), ['Move to another item…']);
+  });
+
+  it('applies a reconciliation only from the plan dialog\'s Apply step, and not when it is cancelled', async () => {
+    const { page, sent, byId } = await grantsPage({ 'POST /v1/reconcile?dryRun=true': { status: 200, body: { plans: [PLAN(GRANT_ID)] } }, 'POST /v1/reconcile': { status: 200, body: { plans: [] } } });
+    page.click('reconcile-policies');
+    await page.settle();
+    assert.equal(page.open('plan-dialog'), true);
+    assert.equal(byId('plan-form').hidden, false);
+    assert.equal(byId('plan-question').textContent, 'Apply 2 previewed reconciliation changes?');
+    assert.equal(byId('plan-apply').textContent, 'Apply 2 changes');
+    assert.equal(byId('plan-apply').disabled, false, 'its own button is not disabled by the preview');
+    page.document.querySelector('#plan-dialog .dialog-head .dialog-close').dispatchEvent(new page.window.Event('click'));
+    await page.settle();
+    assert.deepEqual(sent.map(([method, path]) => method + ' ' + path), ['POST /v1/reconcile?dryRun=true']);
+
+    page.click('reconcile-policies');
+    await page.settle();
+    await page.accept('plan-dialog');
+    assert.deepEqual(sent.map(([method, path]) => method + ' ' + path), ['POST /v1/reconcile?dryRun=true', 'POST /v1/reconcile?dryRun=true', 'POST /v1/reconcile']);
+    assert.equal(page.open('plan-dialog'), false);
+    assert.equal(page.toast(), 'Policies reconciled');
+  });
+
+  it('only shows a reconciliation plan with nothing to apply', async () => {
+    const { page, sent, byId } = await grantsPage({ 'POST /v1/reconcile?dryRun=true': { status: 200, body: { plans: [{ itemId: GRANT_ID, item: { action: 'none' }, users: [] }] } } });
+    page.click('reconcile-policies');
+    await page.settle();
+    assert.equal(page.open('plan-dialog'), true);
+    assert.equal(byId('plan-form').hidden, true);
+    assert.equal(sent.length, 1);
+  });
+
+  it('revokes a request grant after its plan is applied', async () => {
+    const path = '/v1/grants/' + GRANT_ID + '/requests/7380001';
+    const { page, sent, byId } = await grantsPage({ ['DELETE ' + path + '?dryRun=true']: { status: 200, body: { result: { plan: PLAN(GRANT_ID) } } }, ['DELETE ' + path]: { status: 200, body: {} } });
+    cardButton(page, 'Zebra Film', 'Request grants').dispatchEvent(new page.window.Event('click'));
+    assert.equal(byId('requests-dialog-title').textContent, 'Request grants');
+    page.document.querySelector('#requests-list button').dispatchEvent(new page.window.Event('click'));
+    await page.settle();
+    assert.equal(page.open('requests-dialog'), false);
+    assert.equal(byId('plan-apply').textContent, 'Revoke');
+    assert.equal(byId('plan-apply').className, 'button danger');
+    assert.deepEqual(sent.map(([method, path]) => method + ' ' + path), ['DELETE ' + path + '?dryRun=true']);
+    await page.accept('plan-dialog');
+    assert.deepEqual(sent.map(([method, path]) => method + ' ' + path), ['DELETE ' + path + '?dryRun=true', 'DELETE ' + path]);
+    assert.equal(page.toast(), 'Request grant revoked');
+  });
+
+  it('applies a shared-access change from the plan dialog', async () => {
+    const { page, sent, byId } = await grantsPage({
+      ['PUT /v1/grants/' + GRANT_ID + '/groups?dryRun=true']: { status: 200, body: { result: { plan: PLAN(GRANT_ID) } } },
+      ['PUT /v1/grants/' + GRANT_ID + '/groups']: { status: 200, body: {} },
+    });
+    cardButton(page, 'Zebra Film', 'Access').dispatchEvent(new page.window.Event('click'));
+    byId('access-form').dispatchEvent(new page.window.Event('submit'));
+    await page.settle();
+    assert.equal(byId('plan-apply').textContent, 'Apply changes');
+    await page.accept('plan-dialog');
+    assert.deepEqual(sent.map(([method, path]) => method + ' ' + path), ['PUT /v1/grants/' + GRANT_ID + '/groups?dryRun=true', 'PUT /v1/grants/' + GRANT_ID + '/groups']);
+    assert.equal(page.toast(), 'Shared access updated');
+  });
+
+  it('deletes a group only after confirming in the page', async () => {
+    const { page, sent, byId } = await grantsPage();
+    const remove = () => [...page.document.querySelectorAll('#groups-list button')].find((entry) => entry.textContent === 'Delete').dispatchEvent(new page.window.Event('click'));
+    remove();
+    await page.settle();
+    assert.equal(byId('confirm-title').textContent, 'Delete Grove?');
+    assert.equal(byId('confirm-accept').textContent, 'Delete group');
+    byId('confirm-dialog').close();
+    await page.settle();
+    assert.deepEqual(sent, []);
+    remove();
+    await page.settle();
+    await page.accept('confirm-dialog');
+    assert.deepEqual(sent, [['DELETE', '/v1/groups/grove', undefined]]);
+    assert.equal(page.toast(), 'Group deleted');
+  });
+
+  describe('Move', () => {
+    const REMAP = '/v1/grants/' + GRANT_ID + '/remap';
+    const preview = { status: 200, body: { result: { sourcePlan: PLAN(GRANT_ID), plan: PLAN(NEW_ID) } } };
+    async function openMove(answers) {
+      const context = await grantsPage({
+        'GET /v1/library/search?q=zeb': { status: 200, body: { items: [{ id: GRANT_ID, name: 'Zebra Film', mediaType: 'movie' }, { id: NEW_ID, name: 'Zebra Film', mediaType: 'movie', productionYear: 2021 }] } },
+        ...answers,
+      });
+      cardButton(context.page, 'Zebra Film', 'Move to another item…').dispatchEvent(new context.page.window.Event('click'));
+      return context;
+    }
+    async function search(page, value) {
+      page.document.getElementById('move-search').value = value;
+      page.document.getElementById('move-search').dispatchEvent(new page.window.Event('input'));
+      await page.advance(250);
+    }
+    function pick(page, id) {
+      const input = page.document.querySelector('#move-results input[value="' + id + '"]');
+      input.checked = true;
+      input.dispatchEvent(new page.window.Event('change'));
+    }
+
+    it('picks the new item from a Jellyfin search, previews the move, and moves it once applied', async () => {
+      const { page, sent, byId } = await openMove({ ['POST ' + REMAP + '?dryRun=true']: preview, ['POST ' + REMAP]: { status: 200, body: {} } });
+      assert.equal(page.open('move-dialog'), true);
+      assert.equal(byId('move-source').textContent, 'From Zebra Film · ' + GRANT_ID);
+      assert.equal(byId('move-preview').disabled, true);
+      await search(page, 'z');
+      assert.ok(!page.requests.some((request) => request.startsWith('GET /v1/library/search')), 'one character searches nothing');
+      await search(page, 'zeb');
+      assert.ok(page.requests.includes('GET /v1/library/search?q=zeb'));
+      const options = [...page.document.querySelectorAll('#move-results input')].map((input) => input.value);
+      assert.deepEqual(options, [NEW_ID], 'the grant\'s own item is not offered');
+      assert.match(byId('move-results').textContent, /Zebra Film \(2021\)/);
+      pick(page, NEW_ID);
+      assert.equal(byId('move-preview').disabled, false);
+      byId('move-form').dispatchEvent(new page.window.Event('submit'));
+      await page.settle();
+      assert.deepEqual(sent, [['POST', REMAP + '?dryRun=true', { toItemId: NEW_ID }]]);
+      assert.equal(page.open('move-dialog'), false);
+      assert.equal(byId('plan-title').textContent, 'Move plan');
+      assert.equal(byId('plan-apply').textContent, 'Move grant');
+      await page.accept('plan-dialog');
+      assert.deepEqual(sent.at(-1), ['POST', REMAP, { toItemId: NEW_ID }]);
+      assert.equal(page.toast(), 'Grant moved');
+    });
+
+    it('takes a pasted Jellyfin item ID without searching', async () => {
+      const { page, sent, byId } = await openMove({ ['POST ' + REMAP + '?dryRun=true']: preview });
+      await search(page, NEW_ID);
+      assert.ok(!page.requests.some((request) => request.startsWith('GET /v1/library/search')));
+      pick(page, NEW_ID);
+      byId('move-form').dispatchEvent(new page.window.Event('submit'));
+      await page.settle();
+      assert.deepEqual(sent, [['POST', REMAP + '?dryRun=true', { toItemId: NEW_ID }]]);
+    });
+
+    it('keeps the dialog open with the reason when the move is refused', async () => {
+      const { page, sent, byId } = await openMove({ ['POST ' + REMAP + '?dryRun=true']: { status: 409, body: { error: 'source exists', code: 'source_item_exists' } } });
+      await search(page, 'zeb');
+      pick(page, NEW_ID);
+      byId('move-form').dispatchEvent(new page.window.Event('submit'));
+      await page.settle();
+      assert.equal(page.open('move-dialog'), true);
+      assert.match(byId('move-error').textContent, /^Not moved: 2222.* still exists in Jellyfin/);
+      assert.equal(page.open('plan-dialog'), false);
+      assert.equal(sent.length, 1);
+    });
   });
 });

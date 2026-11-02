@@ -24,8 +24,8 @@ export const ADMIN_HTML = `<!doctype html>
     <section id="login-view" class="login-wrap">
       <div class="login-card panel">
         <div class="eyebrow">Administration</div>
-        <h1>The right library<br><em>for every viewer.</em></h1>
-        <p>Control who can watch what with request-based grants, shared groups, and Jellyfin-native access policies.</p>
+        <h1>Sign in to JellyPass</h1>
+        <p>Manage who can watch which titles in Jellyfin.</p>
         <form id="login-form">
           <div class="credentials"><label for="username">Username<input id="username" name="username" autocomplete="username" required autofocus></label><label for="password">Password<input id="password" name="password" type="password" autocomplete="current-password" required></label></div>
           <button class="button primary login-button" type="submit">Sign in with Jellyfin</button>
@@ -33,7 +33,6 @@ export const ADMIN_HTML = `<!doctype html>
           <p id="login-error" class="form-error" role="alert"></p>
         </form>
       </div>
-      <aside class="login-note"><span>JP</span><p>JellyPass uses Jellyfin's native tag policies. Every change can be previewed before it is applied.</p></aside>
     </section>
 
     <section id="app-view" hidden>
@@ -44,12 +43,6 @@ export const ADMIN_HTML = `<!doctype html>
       <div id="jellyfin-version" class="version-alert" role="alert" hidden><div><strong id="jellyfin-version-title"></strong><p id="jellyfin-version-text"></p></div><button id="jellyfin-version-confirm" class="button primary compact" type="button" hidden></button></div>
 
       <nav class="tabs" aria-label="Admin sections"><button class="active" data-tab="dashboard">Dashboard</button><button data-tab="requests">Requests <span id="requests-count"></span></button><button data-tab="library">Library <span id="library-count"></span></button><button data-tab="grants">Grants <span id="grant-count"></span></button><button data-tab="groups">Groups <span id="group-count"></span></button></nav>
-      <section class="panel" aria-labelledby="self-check-title" style="padding:24px;margin-top:24px">
-        <h2 id="self-check-title">Deployment self-check</h2>
-        <p>Check gateway bypass risks, Quick Connect, proxy headers, Seerr, Jellyfin support and TMDB. Inside probes cannot prove outside access is blocked.</p>
-        <button id="run-self-check" class="button quiet" type="button">Run self-check</button>
-        <div id="self-check-results" role="status" aria-live="polite"></div>
-      </section>
       <section id="dashboard-panel" class="tab-panel">
         <div class="section-tools"><div><h2>Access overview</h2><p>A compact view of JellyPass activity and policy health.</p></div></div>
         <div class="stats" aria-label="Access summary">
@@ -57,19 +50,25 @@ export const ADMIN_HTML = `<!doctype html>
           <article><span>Request owners</span><strong id="stat-owners">—</strong><small>unique Jellyfin users</small></article>
           <article><span>Access groups</span><strong id="stat-groups">—</strong><small>shared audiences</small></article>
         </div>
-        <div class="recent-head"><div><div class="eyebrow">Activity</div><h2>Recent requests</h2></div><p>The latest requests successfully linked to your Jellyfin library.</p></div>
+        <div class="recent-head"><div><div class="eyebrow">Activity</div><h2>Recent Seerr activity</h2></div><p>The latest Seerr requests for titles in your Jellyfin library, whatever their status.</p></div>
         <div id="recent-requests" class="recent-grid"></div>
+        <section class="panel self-check" aria-labelledby="self-check-title">
+          <h2 id="self-check-title">Deployment self-check</h2>
+          <p>Check gateway bypass risks, Quick Connect, proxy headers, Seerr, Jellyfin support and TMDB. Inside probes cannot prove outside access is blocked.</p>
+          <button id="run-self-check" class="button quiet" type="button">Run self-check</button>
+          <div id="self-check-results" class="self-check-results" role="status" aria-live="polite"></div>
+        </section>
       </section>
       <section id="requests-panel" class="tab-panel" hidden>
         <div class="section-tools"><div><h2>Household requests</h2><p>What households asked for in the app. Approve, decline or cancel a request for every household following it.</p></div><button id="refresh-requests" class="button quiet" type="button">Refresh</button></div>
-        <div class="requests-toolbar"><label class="search"><span aria-hidden="true">⌕</span><input id="requests-search" type="search" placeholder="Search title or requester" aria-label="Search by title or requester"></label><select id="requests-household" aria-label="Filter by household"><option value="">All households</option></select><select id="requests-status" aria-label="Filter by status"><option value="">All statuses</option><option value="waiting">Waiting (pending or approved)</option><option value="pending">Pending in Seerr</option><option value="approved">Approved in Seerr</option><option value="ready">Ready</option><option value="failed">Declined or failed</option><option value="cancelled">Cancelled or deleted</option><option value="held">Held for no household</option></select><select id="requests-type" aria-label="Filter by type"><option value="">Films and series</option><option value="movie">Films</option><option value="tv">Series</option></select></div>
+        <div id="requests-toolbar" class="requests-toolbar"><label class="search"><span aria-hidden="true">⌕</span><input id="requests-search" type="search" placeholder="Search title or requester" aria-label="Search by title or requester"></label><select id="requests-household" aria-label="Filter by household"><option value="">All households</option></select><select id="requests-status" aria-label="Filter by status"><option value="">All statuses</option><option value="waiting">Waiting (pending or approved)</option><option value="pending">Pending in Seerr</option><option value="approved">Approved in Seerr</option><option value="ready">Ready</option><option value="failed">Declined or failed</option><option value="cancelled">Cancelled or deleted</option><option value="held">Held for no household</option></select><select id="requests-type" aria-label="Filter by type"><option value="">Films and series</option><option value="movie">Films</option><option value="tv">Series</option></select></div>
         <p id="requests-summary" class="requests-summary" role="status" aria-live="polite"></p>
         <div id="household-requests-list" class="request-rows"></div>
-        <div class="recent-head"><div><div class="eyebrow">Cancelled, then arrived</div><h2>Held titles</h2></div><p>Titles nobody follows any more. They are hidden from every household until you release them.</p></div>
+        <div id="held-head" class="recent-head"><div><div class="eyebrow">Cancelled, then arrived</div><h2>Held titles</h2></div><p>Titles nobody follows any more. They are hidden from every household until you release them.</p></div>
         <div id="held-list" class="request-rows"></div>
       </section>
       <section id="grants-panel" class="tab-panel" hidden>
-        <div class="section-tools"><div><h2>Protected titles</h2><p>Requests and shared groups currently controlling access.</p></div><div class="grant-tools"><label class="search"><span>⌕</span><input id="grant-search" type="search" placeholder="Search item, owner, or request"></label><button id="reconcile-policies" class="button quiet">Reconcile policies</button></div></div>
+        <div class="section-tools"><div><h2>Protected titles</h2><p>Seerr request grants, manual access and shared groups controlling who can watch each title.</p></div><div class="grant-tools"><label class="search"><span>⌕</span><input id="grant-search" type="search" placeholder="Search title, owner or ID" aria-label="Search by title, owner, item ID or request ID"></label><button id="reconcile-policies" class="button quiet">Reconcile policies</button></div></div>
         <div id="grants-list" class="grant-list"></div>
       </section>
       <section id="groups-panel" class="tab-panel" hidden>
@@ -86,15 +85,17 @@ export const ADMIN_HTML = `<!doctype html>
     </section>
   </main>
 
-  <dialog id="plan-dialog"><div class="dialog-head"><div><div class="eyebrow">Dry-run</div><h2 id="plan-title">Change plan</h2></div><button class="dialog-close icon button" aria-label="Close">×</button></div><div id="plan-content" class="plan-content"></div></dialog>
+  <dialog id="plan-dialog"><div class="dialog-head"><div><div class="eyebrow">Dry-run</div><h2 id="plan-title">Change plan</h2></div><button class="dialog-close icon button" aria-label="Close">×</button></div><div id="plan-content" class="plan-content"></div><form id="plan-form" class="plan-actions" hidden><p id="plan-question"></p><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button id="plan-apply" class="button primary" type="submit">Apply</button></div></form></dialog>
   <dialog id="group-dialog"><form id="group-form"><div class="dialog-head"><div><div class="eyebrow">Shared access</div><h2 id="group-title">New group</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><label>Group ID<input id="group-id" required pattern="[a-zA-Z0-9_-]{1,128}" placeholder="household"></label><label>Display name<input id="group-name" required placeholder="Household"></label><fieldset><legend>Jellyfin users</legend><div id="user-options" class="check-list"></div></fieldset><fieldset><legend>One-tap sign-in</legend><p class="hint">Mark users whose Jellyfin account has no password. Their household login skips the password prompt. A marked user who does have a password will be unable to sign in from the household URL.</p><div id="passwordless-options" class="check-list"></div></fieldset><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button class="button primary" type="submit">Save group</button></div></form></dialog>
   <dialog id="address-dialog" aria-labelledby="address-title"><form id="address-form" class="address-form"><div class="dialog-head"><div><div class="eyebrow">Household address</div><h2 id="address-title">Addresses</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><p id="address-gateway-off" class="hint" hidden>Household addresses are off: they are saved, and served once household addresses are turned on.</p><label>Address<input id="address-origin" type="url" placeholder="https://media.example.com" autocomplete="off" spellcheck="false" aria-describedby="address-warning"></label><label>Other addresses for the same household · one per line<textarea id="address-aliases" aria-describedby="address-warning" placeholder="https://films.example.net:8443" spellcheck="false"></textarea></label><p id="address-legacy" class="legacy" hidden></p><p class="hint">Any HTTPS hostname works, with an optional port: no path, query or user name. Each address belongs to one household only. Your reverse proxy must send these addresses to JellyPass's member listener with their original Host.</p><p id="address-warning" class="address-warning" role="status"></p><p id="address-error" class="form-error" role="alert"></p><div class="dialog-actions"><button id="address-remove" type="button" class="button danger">Remove addresses</button><button type="button" class="dialog-close button quiet">Cancel</button><button class="button primary" type="submit">Save addresses</button></div></form></dialog>
-  <dialog id="user-dialog"><form id="user-form"><div class="dialog-head"><div><div class="eyebrow">Household member</div><h2>Create Jellyfin user</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><label>Username<input id="new-username" name="new-username" maxlength="128" autocomplete="off" required></label><label>Password · optional<input id="new-password" name="new-password" type="password" maxlength="256" autocomplete="new-password"></label><label>Confirm password<input id="confirm-password" name="confirm-password" type="password" maxlength="256" autocomplete="new-password"></label><p class="hint">Leave both password fields blank to create a passwordless Jellyfin account. Until household SSO is implemented, anyone who can reach Jellyfin and knows the username can sign in to that account.</p><label>Household or access group<select id="new-user-group" required></select></label><label class="check"><input id="import-to-seerr" type="checkbox"><span><strong>Import into Seerr</strong><small id="seerr-import-help">Link this Jellyfin identity so the user can own requests.</small></span></label><p class="hint">This creates a real non-administrator Jellyfin account and adds it to the selected group. Seerr applies its configured default permissions to imported users.</p><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button class="button primary" type="submit">Create user</button></div></form></dialog>
+  <dialog id="user-dialog"><form id="user-form"><div class="dialog-head"><div><div class="eyebrow">Household member</div><h2>Create Jellyfin user</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><label>Username<input id="new-username" name="new-username" maxlength="128" autocomplete="off" required></label><label>Password · optional<input id="new-password" name="new-password" type="password" maxlength="256" autocomplete="new-password"></label><label>Confirm password<input id="confirm-password" name="confirm-password" type="password" maxlength="256" autocomplete="new-password"></label><p class="hint">Leave both password fields blank to create a passwordless Jellyfin account. Anyone who can reach Jellyfin and knows the username can sign in to it.</p><label>Household or access group<select id="new-user-group" required></select></label><label class="check"><input id="import-to-seerr" type="checkbox"><span><strong>Import into Seerr</strong><small id="seerr-import-help">Link this Jellyfin identity so the user can own requests.</small></span></label><p class="hint">This creates a real non-administrator Jellyfin account and adds it to the selected group. Seerr applies its configured default permissions to imported users.</p><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button class="button primary" type="submit">Create user</button></div></form></dialog>
   <dialog id="access-dialog"><form id="access-form"><div class="dialog-head"><div><div class="eyebrow">Grant access</div><h2>Shared groups</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><p id="access-item" class="mono"></p><fieldset><legend>Groups with access</legend><div id="group-options" class="check-list"></div></fieldset><input id="access-item-id" type="hidden"><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button class="button primary" type="submit">Preview changes</button></div></form></dialog>
-  <dialog id="requests-dialog"><div class="dialog-head"><div><div class="eyebrow">Direct access</div><h2>Seerr requests</h2></div><button class="dialog-close icon button" aria-label="Close">×</button></div><p id="requests-item" class="mono"></p><div id="requests-list" class="request-list"></div></dialog>
+  <dialog id="requests-dialog" aria-labelledby="requests-dialog-title"><div class="dialog-head"><div><div class="eyebrow">Direct access</div><h2 id="requests-dialog-title">Request grants</h2></div><button class="dialog-close icon button" aria-label="Close">×</button></div><p class="hint">Seerr requests that give their requester access to this title. Revoking one takes that access away; other requests, manual users and groups keep theirs.</p><p id="requests-item" class="mono"></p><div id="requests-list" class="request-list"></div></dialog>
   <dialog id="bulk-dialog"><form id="bulk-form"><div class="dialog-head"><div><div class="eyebrow">Bulk access</div><h2>Assign selected media</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><p id="bulk-summary" class="hint"></p><fieldset><legend>Individual Jellyfin users</legend><div id="bulk-user-options" class="check-list"></div></fieldset><fieldset><legend>Access groups</legend><div id="bulk-group-options" class="check-list"></div></fieldset><p class="hint">This replaces existing manual users and groups for every selected title. Seerr request owners are preserved.</p><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button class="button primary" type="submit">Preview bulk changes</button></div></form></dialog>
   <dialog id="request-action-dialog" aria-labelledby="request-action-title"><form id="request-action-form"><div class="dialog-head"><div><div class="eyebrow">Household request</div><h2 id="request-action-title">Confirm</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><p id="request-action-text"></p><p id="request-action-warning" class="hint" hidden></p><label id="request-radarr-option" class="check" hidden><input id="request-radarr" type="checkbox"><span><strong>Also remove from Radarr</strong><small>Radarr stops downloading this movie and deletes any files it has for it.</small></span></label><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Keep it</button><button id="request-action-confirm" class="button primary" type="submit">Confirm</button></div></form></dialog>
   <dialog id="release-dialog" aria-labelledby="release-title"><form id="release-form"><div class="dialog-head"><div><div class="eyebrow">Held title</div><h2 id="release-title">Release</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><p id="release-text" class="hint"></p><fieldset><legend>Households to give it to</legend><div id="release-options" class="check-list"></div></fieldset><p id="release-error" class="form-error" role="alert"></p><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button class="button primary" type="submit">Release</button></div></form></dialog>
+  <dialog id="confirm-dialog" aria-labelledby="confirm-title"><form id="confirm-form"><div class="dialog-head"><div><div id="confirm-eyebrow" class="eyebrow">Confirm</div><h2 id="confirm-title">Are you sure?</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><p id="confirm-text"></p><p id="confirm-detail" class="hint" hidden></p><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button id="confirm-accept" class="button danger" type="submit">Confirm</button></div></form></dialog>
+  <dialog id="move-dialog" aria-labelledby="move-title"><form id="move-form"><div class="dialog-head"><div><div class="eyebrow">Maintenance</div><h2 id="move-title">Move grant</h2></div><button type="button" class="dialog-close icon button" aria-label="Close">×</button></div><p id="move-source" class="mono"></p><p class="hint">For a title Jellyfin re-imported under a new item ID. Only a grant whose item was deleted can be moved; its audience is merged with any grant already on the new item. You see the plan before anything changes.</p><label class="search move-search"><span aria-hidden="true">⌕</span><input id="move-search" type="search" placeholder="Search Jellyfin for the new item" autocomplete="off" aria-label="Search Jellyfin for the new item"></label><p id="move-status" class="hint" role="status" aria-live="polite"></p><fieldset><legend>Move to</legend><div id="move-results" class="move-results"></div></fieldset><p id="move-error" class="form-error" role="alert"></p><div class="dialog-actions"><button type="button" class="dialog-close button quiet">Cancel</button><button id="move-preview" class="button primary" type="submit" disabled>Preview move</button></div></form></dialog>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
   <script src="/admin/app.js" defer></script>
 </body>
@@ -133,12 +134,18 @@ body{background:radial-gradient(circle at 14% 4%,rgba(170,92,195,.2) 0,transpare
 .setup-shell{max-width:820px}.setup-card{padding:30px;margin:24px 0}.setup-card h1{font-size:40px;line-height:1.05;margin:0 0 12px}.setup-card h2{margin:0 0 8px;font-size:22px}.setup-card p{color:var(--muted)}.setup-card code{font:12px ui-monospace,SFMono-Regular,monospace;color:#c6d1dd;overflow-wrap:anywhere}.setup-form{display:grid;gap:14px;max-width:560px}.setup-form label{display:grid;gap:8px;color:#c6d1dd;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.08em}.setup-form label.check{display:flex;text-transform:none;letter-spacing:0}.setup-state{font-size:13px}.setup-state.done{color:var(--green)!important}.setup-summary{margin:28px 0 0;color:var(--muted)}
 .address-warning{color:var(--amber);font-size:13px}.household-route .address-warning{color:var(--amber);font-size:11px;text-transform:none}.address-form textarea{width:100%;min-height:96px;color:var(--text);background:#080e17;border:1px solid var(--line);border-radius:10px;padding:12px 14px;font:13px ui-monospace,SFMono-Regular,monospace;resize:vertical}.address-form .legacy{color:var(--muted);font-size:12px}
 @media(max-width:620px){.setup-card{padding:22px 18px}.setup-card h1{font-size:32px}}
+.login-wrap{grid-template-columns:minmax(0,600px)}.login-card h1{font-size:clamp(34px,5vw,48px)}
+.self-check{padding:24px;margin-top:36px}.self-check h2{margin:0 0 8px;font-size:22px}.self-check>p{color:var(--muted);font-size:13px;margin:0 0 16px}.self-check-results p{margin:12px 0 0;font-size:13px}.self-check-results .self-check-error{color:#ffc7cb}.self-check-detail,.toast-detail{display:block;margin-top:4px;color:var(--muted);font:11px ui-monospace,SFMono-Regular,monospace;overflow-wrap:anywhere}.toast-text{display:block}
+.plan-actions{display:block;border-top:1px solid var(--line);margin-top:8px;padding-top:16px}.plan-actions p{margin:0;color:#c6d1dd}.plan-actions .dialog-actions{margin-top:16px}
+.card-more{position:relative}.card-more>summary{list-style:none;font-size:12px;padding:8px 10px}.card-more>summary::-webkit-details-marker{display:none}.card-more-menu{position:absolute;right:0;top:calc(100% + 6px);z-index:5;min-width:200px;padding:6px;background:#101d38;border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow)}.card-more-menu .button{width:100%;text-align:left}
+.move-search input{width:100%}.move-results{display:grid;gap:7px;max-height:300px;overflow:auto}.move-results:empty{display:none}
+.requests-off{padding:40px 32px}.requests-off span{display:block;max-width:620px;margin:0 auto}
 `;
 
 export const ADMIN_APP_JS = `
 (() => {
   'use strict';
-  const state = { lastRemovedFormAt: null, jellyfinVersion: null, grants: [], groups: [], users: [], seerrImportAvailable: false, catalog: [], catalogSyncedAt: null, recentRequests: [], recentRequestsUnavailable: false, selectedItems: new Set(), catalogPage: 1, catalogPageSize: 25, activeTab: 'dashboard', appRequests: [], heldTitles: [], requestsLoaded: false, requestsUnavailable: '', pendingAction: null, pendingRelease: null, addressGroup: null };
+  const state = { lastRemovedFormAt: null, jellyfinVersion: null, grants: [], groups: [], users: [], seerrImportAvailable: false, catalog: [], catalogSyncedAt: null, recentRequests: [], recentRequestsUnavailable: false, selectedItems: new Set(), catalogPage: 1, catalogPageSize: 25, activeTab: 'dashboard', appRequests: [], heldTitles: [], requestsLoaded: false, requestsUnavailable: '', requestsOff: false, pendingAction: null, pendingRelease: null, addressGroup: null };
   const byId = (id) => document.getElementById(id);
   const loginView = byId('login-view');
   const appView = byId('app-view');
@@ -170,7 +177,32 @@ export const ADMIN_APP_JS = `
     jellyfin_version_changed: 'Jellyfin now reports another version. Check it again before allowing it.',
     jellyfin_version_unknown: 'JellyPass cannot read the Jellyfin version yet. Try again in a moment.',
     jellyfin_version_supported: 'This Jellyfin version is supported and needs no confirmation.',
+    jellyfin_version_not_checked: 'This JellyPass does not check the Jellyfin version.',
+    self_check_not_configured: 'The deployment self-check is not available on this JellyPass.',
+    setup_required: 'Finish setting up JellyPass first.',
+    jellyfin_refused: 'Jellyfin refused this.',
   };
+  // An error that is a code (lower case words joined by underscores) rather than a sentence.
+  const ERROR_CODE = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)+$/;
+  // An upstream failure passed on as it is, such as "Jellyfin GET /Users/<id>/Items/<id> returned 404: {}".
+  const UPSTREAM_ERROR = /^(Jellyfin|Seerr|TMDB)\\b.*\\breturned (\\d{3})/;
+
+  // The sentence shown for an error answer, and the raw code or upstream message as its secondary detail.
+  function describeError(status, body) {
+    const raw = typeof body.error === 'string' ? body.error : '';
+    const known = Object.prototype.hasOwnProperty.call(errorText, raw);
+    if (known) return { message: errorText[raw], detail: raw, code: raw };
+    if (ERROR_CODE.test(raw)) {
+      return { message: status >= 500 ? 'JellyPass could not do that right now. Try again in a moment.' : status === 404 ? 'That is not available on this JellyPass.' : 'JellyPass refused that request.', detail: raw, code: raw };
+    }
+    const upstream = UPSTREAM_ERROR.exec(raw);
+    if (upstream) {
+      const service = upstream[1];
+      const message = upstream[2] === '404' ? service + ' no longer has what JellyPass asked it for. Sync the library, then try again.' : service + ' could not do that (it answered ' + upstream[2] + '). Try again in a moment.';
+      return { message, detail: raw };
+    }
+    return { message: raw || 'Request failed (' + status + ')' };
+  }
   // While Jellyfin cannot answer the server's session check, the server keeps the session and allows another check
   // 30 seconds later: the UI keeps its view and asks again, backing off to two minutes, never while the tab is hidden.
   // Time spent hidden does not count towards the wait: remaining holds what was left of it when the tab was hidden.
@@ -229,10 +261,11 @@ export const ADMIN_APP_JS = `
     if (!response.ok) {
       // A session that ended at the server (signed out elsewhere, or the administrator was demoted or disabled).
       if (response.status === 401 && path.indexOf('/auth/') !== 0) setConnected(false);
-      const known = typeof body.error === 'string' && Object.prototype.hasOwnProperty.call(errorText, body.error);
       if (response.status === 503 && body.error === 'session_check_unavailable') sessionUnavailable();
-      const error = new Error(known ? errorText[body.error] : body.error || ('Request failed (' + response.status + ')'));
-      error.code = body.code || (known ? body.error : undefined);
+      const described = describeError(response.status, body);
+      const error = new Error(described.message);
+      error.code = body.code || described.code;
+      error.detail = described.detail;
       error.status = response.status;
       error.body = body;
       throw error;
@@ -314,16 +347,16 @@ export const ADMIN_APP_JS = `
     panel.classList.remove('confirmed');
     if (!status || status.supported === true) return;
     panel.hidden = false;
-    const enforcing = status.enforcement === 'refuse';
+    // Household hosts refuse (503) a version that is neither supported nor allowed: JellyPass 4 always enforces it.
     if (status.version === null) {
-      byId('jellyfin-version-title').textContent = enforcing ? 'Household hosts are paused: the Jellyfin version cannot be read' : 'The Jellyfin version cannot be read';
-      byId('jellyfin-version-text').textContent = (enforcing ? 'JellyPass checks the Jellyfin version before household hosts serve, and keeps trying. ' : 'Household hosts keep serving while JellyPass keeps trying. ') + (status.error ? 'Last error: ' + status.error : '');
+      byId('jellyfin-version-title').textContent = 'Household hosts are paused: the Jellyfin version cannot be read';
+      byId('jellyfin-version-text').textContent = 'JellyPass checks the Jellyfin version before household hosts serve, and keeps trying. ' + (status.error ? 'Last error: ' + status.error : '');
       return;
     }
     if (status.confirmation === 'confirmed') {
       panel.classList.add('confirmed');
       byId('jellyfin-version-title').textContent = 'Jellyfin ' + status.version + ' is not a tested version';
-      byId('jellyfin-version-text').textContent = (enforcing ? 'Household hosts serve on it because ' : 'It is allowed because ') + (status.confirmedVersion === status.version ? 'an administrator allowed it' : 'JELLYFIN_UNTESTED_VERSION_OK names it') + '. JellyPass is tested with Jellyfin ' + releases + '.';
+      byId('jellyfin-version-text').textContent = 'Household hosts serve on it because ' + (status.confirmedVersion === status.version ? 'an administrator allowed it' : 'JELLYFIN_UNTESTED_VERSION_OK names it') + '. JellyPass is tested with Jellyfin ' + releases + '.';
       if (status.confirmedVersion === status.version) {
         button.textContent = 'Withdraw';
         button.dataset.action = 'withdraw';
@@ -331,10 +364,8 @@ export const ADMIN_APP_JS = `
       }
       return;
     }
-    byId('jellyfin-version-title').textContent = (enforcing ? 'Household hosts are paused: Jellyfin ' : 'Jellyfin ') + status.version + ' is not a tested version';
-    byId('jellyfin-version-text').textContent = 'JellyPass is tested with Jellyfin ' + releases + '. ' + (enforcing
-      ? 'Household hosts answer 503 until you allow this exact version; the household privacy checks were not tested against it.'
-      : 'Household hosts keep serving, but the household privacy checks were not tested against it. Allow this exact version once you are satisfied it works; from JellyPass 4.0.0, household hosts answer 503 on a version that is not allowed.');
+    byId('jellyfin-version-title').textContent = 'Household hosts are paused: Jellyfin ' + status.version + ' is not a tested version';
+    byId('jellyfin-version-text').textContent = 'JellyPass is tested with Jellyfin ' + releases + '. Household hosts answer 503 until you allow this exact version; the household privacy checks were not tested against it.';
     button.textContent = 'Allow Jellyfin ' + status.version;
     button.dataset.action = 'confirm';
     button.hidden = false;
@@ -344,8 +375,8 @@ export const ADMIN_APP_JS = `
     const container = byId('recent-requests');
     if (!state.recentRequests.length) {
       container.replaceChildren(node('div', { class: 'empty' }, [
-        node('strong', { text: state.recentRequestsUnavailable ? 'Activity unavailable' : 'No linked requests yet' }),
-        node('span', { text: state.recentRequestsUnavailable ? 'JellyPass could not load recent requests right now.' : 'Requests appear here after their media is linked to the synchronized Jellyfin library.' }),
+        node('strong', { text: state.recentRequestsUnavailable ? 'Activity unavailable' : 'No Seerr activity yet' }),
+        node('span', { text: state.recentRequestsUnavailable ? 'JellyPass could not load recent Seerr activity right now.' : 'Seerr requests appear here once their title is in the synchronized Jellyfin library.' }),
       ]));
       return;
     }
@@ -523,9 +554,12 @@ export const ADMIN_APP_JS = `
       list.append(node('div', { class: 'empty' }, [node('strong', { text: query ? 'No matching grants' : 'No protected titles yet' }), node('span', { text: query ? 'Try a different search.' : 'New Seerr requests will appear here after their media becomes available.' })]));
       return;
     }
-    grants.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)).forEach((grant) => {
+    // By title: a grant's stored updatedAt is rewritten whenever a group it names is saved (its owners are resolved
+    // again), so it says little about the grant itself and is not shown.
+    const titleOf = (grant) => { const item = catalogItem(grant.itemId); return item ? item.name : grant.itemId; };
+    grants.sort((a, b) => titleOf(a).localeCompare(titleOf(b), undefined, { numeric: true }) || a.itemId.localeCompare(b.itemId)).forEach((grant) => {
       const item = catalogItem(grant.itemId);
-      const displayTitle = item ? item.name : grant.itemId;
+      const displayTitle = titleOf(grant);
       const poster = node('div', { class: 'grant-poster' });
       if (item) {
         const image = node('img', { alt: displayTitle + ' poster', loading: 'lazy', src: '/v1/library/poster?itemId=' + encodeURIComponent(grant.itemId) });
@@ -538,19 +572,24 @@ export const ADMIN_APP_JS = `
       const title = node('div', { class: 'grant-title' }, [node('h3', { text: displayTitle, title: displayTitle }), node('span', { class: 'type', text: grant.mediaType || (item && item.mediaType) || 'media' })]);
       const requestCount = Object.keys(grant.requests).length;
       const manualCount = (grant.manualUserIds || []).length;
-      const sourceText = requestCount + ' request' + (requestCount === 1 ? '' : 's') + (manualCount ? ' · ' + manualCount + ' manual' : '');
-      const main = node('div', { class: 'grant-main' }, [title, node('div', { class: 'meta mono', text: grant.itemId }), node('div', { class: 'meta', text: sourceText + ' · updated ' + new Date(grant.updatedAt).toLocaleString() })]);
+      const sourceText = requestCount + ' request grant' + (requestCount === 1 ? '' : 's') + (manualCount ? ' · ' + manualCount + ' manual' : '');
+      const main = node('div', { class: 'grant-main' }, [title, node('div', { class: 'meta mono', text: grant.itemId }), node('div', { class: 'meta', text: sourceText })]);
       const ownerSection = node('div', { class: 'grant-section grant-owners' }, [node('strong', { text: 'Access owners' }), node('div', { class: 'pill-row' }, ownerPills.length ? ownerPills : [node('span', { class: 'meta', text: 'No direct owners' })])]);
       const accessSection = node('div', { class: 'grant-section grant-access' }, [node('strong', { text: groupNames.length ? groupNames.join(', ') : 'Direct requests only' }), node('div', { class: 'pill-row' }, [node('span', { class: 'pill sync-' + grant.sync.state, text: grant.sync.state })].concat(grant.remap && grant.remap.sourceReappeared ? [node('span', { class: 'pill sync-orphaned', text: 'source reappeared', title: 'This item exists again in Jellyfin after its grant was moved to ' + grant.remap.sourceReappeared.movedTo.join(', ') + '. Its restrictions were kept; revoke the grant explicitly if it is no longer needed.' })] : [], [node('span', { class: 'meta', text: groupNames.length + ' shared group' + (groupNames.length === 1 ? '' : 's') })]))]);
       const planButton = node('button', { class: 'button quiet', text: 'Plan' });
       planButton.addEventListener('click', () => showGrantPlan(grant));
       const accessButton = node('button', { class: 'button quiet', text: 'Access' });
       accessButton.addEventListener('click', () => openAccess(grant));
-      const requestsButton = node('button', { class: 'button quiet', text: 'Requests' });
+      const requestsButton = node('button', { class: 'button quiet', text: 'Request grants', title: 'Seerr requests that give their requester access to this title' });
       requestsButton.addEventListener('click', () => openRequests(grant));
-      const moveButton = node('button', { class: 'button quiet', text: 'Move', title: 'Move this grant to another Jellyfin item, for example after a title was re-imported under a new ID' });
-      moveButton.addEventListener('click', () => remapGrant(grant));
-      const actions = node('div', { class: 'card-actions' }, [planButton, requestsButton, accessButton, moveButton]);
+      // Maintenance, rarely needed: behind More.
+      const more = node('details', { class: 'card-more' });
+      const moveButton = node('button', { class: 'button quiet', type: 'button', text: 'Move to another item…', title: 'Move this grant to another Jellyfin item, for example after a title was re-imported under a new ID' });
+      moveButton.addEventListener('click', () => { more.open = false; openMove(grant); });
+      const summaryNode = node('summary', { class: 'button quiet', text: 'More' });
+      summaryNode.setAttribute('aria-label', 'More actions for ' + displayTitle);
+      more.append(summaryNode, node('div', { class: 'card-more-menu' }, [moveButton]));
+      const actions = node('div', { class: 'card-actions' }, [planButton, requestsButton, accessButton, more]);
       list.append(node('article', { class: 'grant-card' }, [poster, main, ownerSection, accessSection, actions]));
     });
   }
@@ -596,7 +635,7 @@ export const ADMIN_APP_JS = `
             const result = await api('/v1/groups/' + encodeURIComponent(group.id) + '/features', { method: 'PUT', body: JSON.stringify(features) });
             Object.assign(group, result.group);
             switches.querySelectorAll('input').forEach((control) => { control.checked = group[control.dataset.feature] === true; });
-          } catch (error) { input.checked = group[key] === true; toast(error.message); }
+          } catch (error) { input.checked = group[key] === true; if (!error.stale) toast(error.message, true, error.detail); }
           finally { switches.querySelectorAll('input').forEach((control) => { control.disabled = control.dataset.locked === 'true'; }); }
         });
         switches.append(node('label', lockedBy ? { title: lockedText } : {}, [input, node('span', { text: label })].concat(lockedBy ? [node('small', { class: 'meta', text: lockedText })] : [])));
@@ -658,7 +697,9 @@ export const ADMIN_APP_JS = `
 
   async function removeAddresses() {
     const groupId = state.addressGroup;
-    if (!confirm('Remove every mapped address of this household? Members using them can no longer reach it there.')) return;
+    const epoch = sessionEpoch;
+    const confirmed = await confirmAction({ eyebrow: 'Household address', title: 'Remove addresses?', text: 'Remove every mapped address of this household? Members using them can no longer reach it there.', confirm: 'Remove addresses' });
+    if (!confirmed || epoch !== sessionEpoch) return;
     await busy(async (live) => {
       await api('/v1/groups/' + encodeURIComponent(groupId) + '/addresses', { method: 'DELETE' });
       live();
@@ -669,7 +710,9 @@ export const ADMIN_APP_JS = `
     });
   }
 
-  function showPlan(title, plans) {
+  // Shows a dry-run plan. With a confirmation ({question, confirm, danger}) the dialog also has an Apply step, and the
+  // answer resolves true once the administrator applies it (false when cancelled or closed); without one it is false.
+  function showPlan(title, plans, confirmation) {
     byId('plan-title').textContent = title;
     const content = byId('plan-content');
     content.replaceChildren();
@@ -685,7 +728,57 @@ export const ADMIN_APP_JS = `
       const relatedText = related.length ? ' · Related: ' + related.map((entry) => entry.action + ' ' + entry.itemName).join(', ') : '';
       content.append(node('div', { class: 'plan-item' }, [node('strong', { text: plan.itemName || plan.itemId }), node('span', { text: plan.itemId }), node('span', { class: 'change', text: 'Item: ' + plan.item.action + relatedText + ' · Policies: ' + (affected.map((entry) => entry.action + ' ' + entry.userName).join(', ') || 'none') })]));
     });
-    byId('plan-dialog').showModal();
+    byId('plan-form').hidden = !confirmation;
+    if (!confirmation) {
+      answer('plan-dialog', false);
+      byId('plan-dialog').showModal();
+      return Promise.resolve(false);
+    }
+    byId('plan-question').textContent = confirmation.question;
+    byId('plan-apply').textContent = confirmation.confirm;
+    byId('plan-apply').className = 'button ' + (confirmation.danger ? 'danger' : 'primary');
+    return ask('plan-dialog');
+  }
+
+  // The in-page confirmations (the plan dialog's Apply step and confirm-dialog): ask resolves true when the dialog's form
+  // is submitted, and false when it is cancelled or closed any other way (Cancel, ×, Escape).
+  const answers = new Map();
+  function ask(dialogId) {
+    answer(dialogId, false);
+    return new Promise((resolve) => {
+      answers.set(dialogId, resolve);
+      byId(dialogId).showModal();
+    });
+  }
+
+  function answer(dialogId, value) {
+    const resolve = answers.get(dialogId);
+    answers.delete(dialogId);
+    if (resolve) resolve(value);
+  }
+
+  // options: {eyebrow, title, text, detail, confirm, danger (default true)}.
+  function confirmAction(options) {
+    byId('confirm-eyebrow').textContent = options.eyebrow || 'Confirm';
+    byId('confirm-title').textContent = options.title;
+    byId('confirm-text').textContent = options.text;
+    byId('confirm-detail').textContent = options.detail || '';
+    byId('confirm-detail').hidden = !options.detail;
+    byId('confirm-accept').textContent = options.confirm;
+    byId('confirm-accept').className = 'button ' + (options.danger === false ? 'primary' : 'danger');
+    return ask('confirm-dialog');
+  }
+
+  // Previews a change in one busy step, asks for it in the plan dialog outside busy (its own buttons must stay enabled),
+  // then applies it in another. preview(live) answers {title, plans, confirmation} (no confirmation: the plan is only
+  // shown), or nothing to stop; apply(live) makes the change. A session that ended meanwhile applies nothing.
+  async function previewThenApply(preview, apply) {
+    const epoch = sessionEpoch;
+    const plan = await busy(preview);
+    if (!plan || epoch !== sessionEpoch) return;
+    const applied = await showPlan(plan.title, plan.plans, plan.confirmation);
+    if (!applied || epoch !== sessionEpoch) return;
+    await busy(apply);
   }
 
   function summary(label, value) { return node('article', {}, [node('span', { text: label }), node('strong', { text: String(value) })]); }
@@ -835,74 +928,159 @@ export const ADMIN_APP_JS = `
       toast('Select at least one user or group', true);
       return;
     }
-    await busy(async (live) => {
+    const titles = body.itemIds.length + ' selected title' + (body.itemIds.length === 1 ? '' : 's');
+    await previewThenApply(async (live) => {
       const preview = await api('/v1/library/access?dryRun=true', { method: 'PUT', body: JSON.stringify(body) });
       live();
       byId('bulk-dialog').close();
-      showPlan('Bulk library access plan', preview.result.plans);
-      if (confirm('Apply this audience to ' + body.itemIds.length + ' selected title' + (body.itemIds.length === 1 ? '' : 's') + '?')) {
-        await api('/v1/library/access', { method: 'PUT', body: JSON.stringify(body) });
-        live();
-        byId('plan-dialog').close();
-        state.selectedItems.clear();
-        await load();
-        live();
-        toast('Bulk library access updated');
-      }
+      return { title: 'Bulk library access plan', plans: preview.result.plans, confirmation: { question: 'Apply this audience to ' + titles + '?', confirm: 'Apply to ' + titles } };
+    }, async (live) => {
+      await api('/v1/library/access', { method: 'PUT', body: JSON.stringify(body) });
+      live();
+      state.selectedItems.clear();
+      await load();
+      live();
+      toast('Bulk library access updated');
     });
   }
 
-  async function remapGrant(grant) {
-    const toItemId = (prompt('Move this grant to Jellyfin item ID. Only a grant whose item was deleted can be moved; its audience is merged with any grant already on that item:') || '').trim();
-    if (!toItemId) return;
-    await busy(async (live) => {
-      const path = '/v1/grants/' + encodeURIComponent(grant.itemId) + '/remap';
-      const body = JSON.stringify({ toItemId });
+  // Move (remap) a grant: the target is picked from a Jellyfin search (GET /v1/library/search) or pasted as an item ID,
+  // previewed with POST /v1/grants/<id>/remap?dryRun=true, and applied from the plan dialog.
+  const JELLYFIN_ITEM_ID = /^(?:[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i;
+  const MOVE_SEARCH_DELAY_MS = 250;
+  const move = { grant: null, target: null, timer: null, searches: 0 };
+
+  function openMove(grant) {
+    const item = catalogItem(grant.itemId);
+    move.grant = grant;
+    clearTimeout(move.timer);
+    move.timer = null;
+    move.searches += 1;
+    byId('move-source').textContent = 'From ' + (item ? item.name + ' · ' : '') + grant.itemId;
+    byId('move-search').value = '';
+    byId('move-error').textContent = '';
+    showMoveTargets([], 'Type at least 2 characters of the new item’s title, or paste its Jellyfin item ID.');
+    byId('move-dialog').showModal();
+    byId('move-search').focus();
+  }
+
+  function scheduleMoveSearch() {
+    clearTimeout(move.timer);
+    move.timer = setTimeout(searchMoveTargets, MOVE_SEARCH_DELAY_MS);
+  }
+
+  async function searchMoveTargets() {
+    move.timer = null;
+    const search = ++move.searches;
+    const epoch = sessionEpoch;
+    const query = byId('move-search').value.trim();
+    byId('move-error').textContent = '';
+    if (JELLYFIN_ITEM_ID.test(query)) {
+      showMoveTargets([{ id: query, name: 'Jellyfin item ' + query, mediaType: 'item ID' }], 'Move to this item ID, or search by title instead.');
+      return;
+    }
+    if (query.length < 2) {
+      showMoveTargets([], 'Type at least 2 characters of the new item’s title, or paste its Jellyfin item ID.');
+      return;
+    }
+    showMoveTargets([], 'Searching Jellyfin…');
+    try {
+      const body = await api('/v1/library/search?q=' + encodeURIComponent(query));
+      if (search !== move.searches || epoch !== sessionEpoch) return;
+      const source = move.grant ? move.grant.itemId.toLowerCase() : '';
+      const items = (body.items || []).filter((item) => item.id.toLowerCase() !== source);
+      showMoveTargets(items, items.length ? items.length + ' match' + (items.length === 1 ? '' : 'es') + ' in Jellyfin.' : 'Nothing else in Jellyfin matches “' + query + '”.');
+    } catch (error) {
+      if (error.stale || search !== move.searches || epoch !== sessionEpoch) return;
+      showMoveTargets([], '');
+      byId('move-error').textContent = error.message;
+    }
+  }
+
+  function showMoveTargets(items, status) {
+    move.target = null;
+    byId('move-preview').disabled = true;
+    byId('move-status').textContent = status;
+    byId('move-results').replaceChildren(...items.map((item) => {
+      const input = node('input', { type: 'radio', name: 'move-target', value: item.id });
+      input.addEventListener('change', () => {
+        if (!input.checked) return;
+        move.target = item;
+        byId('move-preview').disabled = false;
+      });
+      return node('label', { class: 'check' }, [input, node('span', {}, [
+        node('strong', { text: item.name + (item.productionYear ? ' (' + item.productionYear + ')' : '') }),
+        node('small', { text: item.mediaType + ' · ' + item.id }),
+      ])]);
+    }));
+  }
+
+  async function submitMove(event) {
+    event.preventDefault();
+    const grant = move.grant;
+    const target = move.target;
+    if (!grant || !target) {
+      byId('move-error').textContent = 'Choose the item to move this grant to.';
+      return;
+    }
+    const toItemId = target.id;
+    const path = '/v1/grants/' + encodeURIComponent(grant.itemId) + '/remap';
+    const body = JSON.stringify({ toItemId });
+    // The sentence for a refused move; a source that reappeared was granted anyway, so the grants are read again.
+    const refusal = async (error, live) => {
+      if (error.stale) throw error;
+      live();
+      if (error.code === 'source_item_exists') return 'Not moved: ' + grant.itemId + ' still exists in Jellyfin, and moving its grant would make it visible to every household. Revoke its access explicitly first.';
+      if (error.code === 'quality_mismatch') return 'Not moved: ' + error.message;
+      if (error.code === 'source_reappeared') {
+        await load();
+        live();
+        return grant.itemId + ' exists again in Jellyfin: ' + toItemId + ' was granted, but the original grant was kept with its restrictions. Revoke it explicitly if it is no longer needed.';
+      }
+      return error.message;
+    };
+    await previewThenApply(async (live) => {
       try {
         const preview = await api(path + '?dryRun=true', { method: 'POST', body });
         live();
-        showPlan('Move plan', [preview.result.sourcePlan, preview.result.plan]);
-        if (confirm('Move this grant from ' + grant.itemId + ' to ' + toItemId + '?')) {
-          await api(path, { method: 'POST', body });
-          live();
-          byId('plan-dialog').close();
-          await load();
-          live();
-          toast('Grant moved');
-        }
+        byId('move-dialog').close();
+        return {
+          title: 'Move plan',
+          plans: [preview.result.sourcePlan, preview.result.plan],
+          confirmation: { question: 'Move this grant from ' + grant.itemId + ' to ' + target.name + ' (' + toItemId + ')?', confirm: 'Move grant', danger: true },
+        };
       } catch (error) {
-        if (error.stale) throw error;
+        // Shown in the dialog, which stays open: another item can be chosen.
+        byId('move-error').textContent = await refusal(error, live);
+        return undefined;
+      }
+    }, async (live) => {
+      try {
+        await api(path, { method: 'POST', body });
         live();
-        if (error.code === 'source_item_exists') {
-          throw new Error('Not moved: ' + grant.itemId + ' still exists in Jellyfin, and moving its grant would make it visible to every household. Revoke its access explicitly first.');
-        }
-        if (error.code === 'quality_mismatch') throw new Error('Not moved: ' + error.message);
-        if (error.code === 'source_reappeared') {
-          byId('plan-dialog').close();
-          await load();
-          live();
-          throw new Error(grant.itemId + ' exists again in Jellyfin: ' + toItemId + ' was granted, but the original grant was kept with its restrictions. Revoke it explicitly if it is no longer needed.');
-        }
-        throw error;
+        await load();
+        live();
+        toast('Grant moved');
+      } catch (error) {
+        const message = await refusal(error, live);
+        throw Object.assign(new Error(message), { detail: error.detail });
       }
     });
   }
 
   async function revokeRequest(grant, requestId, userId) {
-    await busy(async (live) => {
-      const path = '/v1/grants/' + encodeURIComponent(grant.itemId) + '/requests/' + encodeURIComponent(requestId);
+    const path = '/v1/grants/' + encodeURIComponent(grant.itemId) + '/requests/' + encodeURIComponent(requestId);
+    await previewThenApply(async (live) => {
       const preview = await api(path + '?dryRun=true', { method: 'DELETE' });
       live();
       byId('requests-dialog').close();
-      showPlan('Revocation plan', preview.result.plan);
-      if (confirm('Revoke request ' + requestId + ' for ' + userName(userId) + '?')) {
-        await api(path, { method: 'DELETE' });
-        live();
-        byId('plan-dialog').close();
-        await load();
-        live();
-        toast('Request revoked');
-      }
+      return { title: 'Revocation plan', plans: preview.result.plan, confirmation: { question: 'Revoke the grant from Seerr request ' + requestId + ' for ' + userName(userId) + '?', confirm: 'Revoke', danger: true } };
+    }, async (live) => {
+      await api(path, { method: 'DELETE' });
+      live();
+      await load();
+      live();
+      toast('Request grant revoked');
     });
   }
 
@@ -974,7 +1152,9 @@ export const ADMIN_APP_JS = `
   }
 
   async function deleteGroup(group) {
-    if (!confirm('Delete "' + group.name + '"? It will be removed from every linked title and those policies will be reconciled.')) return;
+    const epoch = sessionEpoch;
+    const confirmed = await confirmAction({ eyebrow: 'Access group', title: 'Delete ' + group.name + '?', text: 'It is removed from every title it gives access to, and those titles’ Jellyfin policies are reconciled. Its household addresses go with it.', confirm: 'Delete group' });
+    if (!confirmed || epoch !== sessionEpoch) return;
     await busy(async (live) => {
       await api('/v1/groups/' + encodeURIComponent(group.id), { method: 'DELETE' });
       await load();
@@ -987,57 +1167,56 @@ export const ADMIN_APP_JS = `
     event.preventDefault();
     const itemId = byId('access-item-id').value;
     const groupIds = checkedValues('grant-group');
-    await busy(async (live) => {
+    await previewThenApply(async (live) => {
       const preview = await api('/v1/grants/' + encodeURIComponent(itemId) + '/groups?dryRun=true', { method: 'PUT', body: JSON.stringify({ groupIds }) });
       live();
       byId('access-dialog').close();
-      showPlan('Shared access plan', preview.result.plan);
-      if (confirm('Apply this shared-access change now?')) {
-        await api('/v1/grants/' + encodeURIComponent(itemId) + '/groups', { method: 'PUT', body: JSON.stringify({ groupIds }) });
-        live();
-        byId('plan-dialog').close();
-        await load();
-        live();
-        toast('Shared access updated');
-      }
+      return { title: 'Shared access plan', plans: preview.result.plan, confirmation: { question: 'Apply this shared-access change now?', confirm: 'Apply changes' } };
+    }, async (live) => {
+      await api('/v1/grants/' + encodeURIComponent(itemId) + '/groups', { method: 'PUT', body: JSON.stringify({ groupIds }) });
+      live();
+      await load();
+      live();
+      toast('Shared access updated');
     });
   }
 
   function checkedValues(name) { return Array.from(document.querySelectorAll('input[name="' + name + '"]:checked')).map((input) => input.value); }
 
   async function reconcilePolicies() {
-    await busy(async (live) => {
+    await previewThenApply(async (live) => {
       const preview = await api('/v1/reconcile?dryRun=true', { method: 'POST' });
       live();
-      showPlan('Reconciliation plan', preview.plans);
       const changes = preview.plans.reduce((total, plan) => total + (plan.item.action !== 'none' ? 1 : 0) + (plan.relatedItems || []).filter((item) => item.action !== 'none').length + plan.users.filter((user) => user.action !== 'none').length, 0);
-      if (!changes) return;
-      if (confirm('Apply ' + changes + ' previewed reconciliation change' + (changes === 1 ? '' : 's') + '?')) {
-        await api('/v1/reconcile', { method: 'POST' });
-        live();
-        byId('plan-dialog').close();
-        await load();
-        live();
-        toast('Policies reconciled');
-      }
+      const count = changes + ' change' + (changes === 1 ? '' : 's');
+      // Nothing to apply: the plan is only shown.
+      return { title: 'Reconciliation plan', plans: preview.plans, confirmation: changes ? { question: 'Apply ' + changes + ' previewed reconciliation change' + (changes === 1 ? '' : 's') + '?', confirm: 'Apply ' + count } : undefined };
+    }, async (live) => {
+      await api('/v1/reconcile', { method: 'POST' });
+      live();
+      await load();
+      live();
+      toast('Policies reconciled');
     });
   }
 
-  // Runs an action with the buttons disabled. operation receives live(), which throws a stale answer once the session
-  // that started the action has ended: the action calls it after each await, before it changes the view.
+  // Runs an action with the buttons disabled, answering what it answers (nothing when it failed). operation receives
+  // live(), which throws a stale answer once the session that started the action has ended: the action calls it after
+  // each await, before it changes the view.
   async function busy(operation) {
     const enabledButtons = Array.from(document.querySelectorAll('button:not(:disabled)'));
     enabledButtons.forEach((button) => { button.disabled = true; });
     const epoch = sessionEpoch;
     const live = () => assertSession(epoch);
-    try { await operation(live); } catch (error) { if (!error.stale) toast(error.message || String(error), true); }
+    try { return await operation(live); } catch (error) { if (!error.stale) toast(error.message || String(error), true, error.detail); return undefined; }
     finally { enabledButtons.forEach((button) => { button.disabled = false; }); }
   }
 
   let toastTimer;
-  function toast(message, isError) {
+  // detail: the raw error code or upstream message, shown smaller under the sentence.
+  function toast(message, isError, detail) {
     clearTimeout(toastTimer);
-    toastNode.textContent = message;
+    toastNode.replaceChildren(node('span', { class: 'toast-text', text: message }), ...(detail ? [node('small', { class: 'toast-detail', text: detail })] : []));
     toastNode.className = 'toast show' + (isError ? ' error' : '');
     toastTimer = setTimeout(() => { toastNode.className = 'toast'; }, 4200);
   }
@@ -1127,7 +1306,7 @@ export const ADMIN_APP_JS = `
 
   function setHealth(level, label) {
     const connection = byId('connection');
-    connection.classList.remove('healthy', 'warning', 'disconnected', 'online');
+    connection.classList.remove('healthy', 'warning', 'disconnected');
     connection.classList.add(level);
     connection.querySelector('b').textContent = label;
   }
@@ -1142,7 +1321,7 @@ export const ADMIN_APP_JS = `
     const warnings = [];
     if (version && version.householdHosts !== 'serving') warnings.push('Household hosts paused');
     else if (version && version.confirmation === 'unconfirmed') warnings.push('Jellyfin version not confirmed');
-    if (state.lastRemovedFormAt && Date.now() - state.lastRemovedFormAt < 24 * 60 * 60 * 1000) warnings.push('Seerr webhook refused: update header and template');
+    if (state.lastRemovedFormAt && Date.now() - state.lastRemovedFormAt < 24 * 60 * 60 * 1000) warnings.push('Upgrade needed: Seerr webhook refused, update its header and template');
     if (attention) warnings.push(attention + ' polic' + (attention === 1 ? 'y' : 'ies') + ' need attention');
     if (syncOverdue) warnings.push(syncedAt ? 'Library sync overdue' : 'Library sync required');
     if (warnings.length) setHealth('warning', warnings.join(' · '));
@@ -1154,7 +1333,17 @@ export const ADMIN_APP_JS = `
     const status = state.jellyfinVersion;
     if (!status) return;
     const withdraw = button.dataset.action === 'withdraw';
-    if (!withdraw && !confirm('Allow Jellyfin ' + status.version + ' for household hosts? JellyPass has not been tested with it.')) return;
+    const epoch = sessionEpoch;
+    if (!withdraw) {
+      const allowed = await confirmAction({
+        eyebrow: 'Jellyfin version',
+        title: 'Allow Jellyfin ' + status.version + '?',
+        text: 'Household hosts start serving on Jellyfin ' + status.version + '. JellyPass has not been tested with it, so neither have its household privacy checks.',
+        detail: 'You can withdraw this later; household hosts are then paused again.',
+        confirm: 'Allow Jellyfin ' + status.version,
+      });
+      if (!allowed || epoch !== sessionEpoch) return;
+    }
     button.disabled = true;
     try {
       state.jellyfinVersion = withdraw
@@ -1167,7 +1356,7 @@ export const ADMIN_APP_JS = `
         : 'Jellyfin ' + status.version + ' is allowed');
     } catch (error) {
       if (error.stale) return;
-      toast(error.message, true);
+      toast(error.message, true, error.detail);
     } finally {
       button.disabled = false;
     }
@@ -1219,11 +1408,26 @@ export const ADMIN_APP_JS = `
   byId('address-remove').addEventListener('click', removeAddresses);
   byId('user-form').addEventListener('submit', createUser);
   byId('access-form').addEventListener('submit', previewAccess);
+  byId('move-form').addEventListener('submit', submitMove);
+  byId('move-search').addEventListener('input', scheduleMoveSearch);
+  ['plan', 'confirm'].forEach((name) => {
+    byId(name + '-form').addEventListener('submit', (event) => {
+      event.preventDefault();
+      answer(name + '-dialog', true);
+      byId(name + '-dialog').close();
+    });
+    // Cancel, ×, Escape: any other close is a no.
+    byId(name + '-dialog').addEventListener('close', () => answer(name + '-dialog', false));
+  });
   byId('request-action-form').addEventListener('submit', confirmRequestAction);
   byId('release-form').addEventListener('submit', confirmRelease);
   byId('refresh-requests').addEventListener('click', loadRequests);
   ['requests-search', 'requests-household', 'requests-status', 'requests-type'].forEach((id) => byId(id).addEventListener(id === 'requests-search' ? 'input' : 'change', renderRequests));
-  document.querySelectorAll('.dialog-close').forEach((button) => button.addEventListener('click', () => button.closest('dialog').close()));
+  document.querySelectorAll('.dialog-close').forEach((button) => button.addEventListener('click', () => {
+    const dialog = button.closest('dialog');
+    dialog.close();
+    answer(dialog.id, false);
+  }));
   const ROW_STATUS = { requested: 'Requested', ready: 'Ready', failed: 'Failed', declined: 'Declined', deleted: 'Deleted', cancelled: 'Cancelled' };
   const SEERR_STATUS = { pending: 'Pending', approved: 'Approved', declined: 'Declined', failed: 'Failed', completed: 'Completed', gone: 'Gone from Seerr', unknown: 'Seerr unreadable' };
 
@@ -1237,10 +1441,13 @@ export const ADMIN_APP_JS = `
       state.appRequests = body.requests || [];
       state.heldTitles = body.held || [];
       state.requestsUnavailable = '';
+      state.requestsOff = false;
     } catch (error) {
       if (error.stale) return;
       state.appRequests = [];
       state.heldTitles = [];
+      // 404 requests_not_configured: the household app (HOUSEHOLD_APP_ENABLED) is off, so there is nothing to list.
+      state.requestsOff = error.code === 'requests_not_configured';
       state.requestsUnavailable = error.message;
       if (error.status === 401) return;
     }
@@ -1279,7 +1486,17 @@ export const ADMIN_APP_JS = `
   }
 
   function renderRequests() {
-    byId('requests-count').textContent = state.requestsLoaded ? String(state.appRequests.length) : '';
+    const off = state.requestsOff;
+    byId('requests-count').textContent = state.requestsLoaded ? (off ? 'off' : String(state.appRequests.length)) : '';
+    ['requests-toolbar', 'refresh-requests', 'held-head', 'held-list'].forEach((id) => { byId(id).hidden = off; });
+    if (off) {
+      byId('requests-summary').textContent = '';
+      byId('household-requests-list').replaceChildren(node('div', { class: 'empty requests-off' }, [
+        node('strong', { text: 'Household app is turned off' }),
+        node('span', { text: 'This tab lists what households ask for in the JellyPass app. Turn the household app on in Setup (HOUSEHOLD_APP_ENABLED) to see and act on their requests here. Seerr requests that give access to a title are under Grants → Request grants.' }),
+      ]));
+      return;
+    }
     const select = byId('requests-household');
     const chosen = select.value;
     const households = new Map(state.groups.map((group) => [group.id, group.name]));
@@ -1446,8 +1663,10 @@ export const ADMIN_APP_JS = `
     try {
       const answer = await api('/v1/self-check', { method: 'POST' });
       output.replaceChildren(...answer.results.map((entry) => node('p', { text: entry.status.toUpperCase() + ' — ' + entry.check + ': ' + entry.explanation })));
-    } catch (error) { output.textContent = error.message; }
-    finally { button.disabled = false; }
+    } catch (error) {
+      if (error.stale) return;
+      output.replaceChildren(node('p', { class: 'self-check-error', text: error.message }), ...(error.detail ? [node('small', { class: 'self-check-detail', text: error.detail })] : []));
+    } finally { button.disabled = false; }
   });
   document.querySelectorAll('.tabs button').forEach((button) => button.addEventListener('click', () => activateTab(button.dataset.tab)));
 
