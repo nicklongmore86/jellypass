@@ -330,7 +330,9 @@ and `expectedTargetUrl` (the reviewed full target, including `/webhooks/seerr`).
 The server re-reads Seerr and returns 409 `seerr_webhook_in_use` if the live
 URL, authorization, notification settings, or requested target changed.
 Old callers sending only `replace: true` must review and supply these fields;
-they can no longer overwrite unconditionally. The keyed state fingerprint
+they receive 400 `review_required` when review fields are missing and can no
+longer overwrite unconditionally. Empty current webhook addresses are reported
+as `currentUrl: null` in conflict details. The keyed state fingerprint
 exposes no authorization secret and becomes invalid after a JellyPass restart.
 Error details include `currentState`, `currentUrl`, `newUrl`,
 `currentHost`, and `currentEnabled`.

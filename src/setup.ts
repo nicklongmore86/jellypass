@@ -295,13 +295,17 @@ export class SetupWizard {
       const base = serviceUrl(body.jellypassUrl, 'JellyPass', 'jellypassUrl');
       const webhookUrl = `${base}/webhooks/seerr`;
       if (body.replace !== undefined && typeof body.replace !== 'boolean') throw new SetupError(400, 'invalid_request', 'replace must be a boolean');
+      if (body.replace === true && ['expectedState', 'expectedCurrentUrl', 'expectedTargetUrl']
+        .some((field) => typeof body[field] !== 'string' || !body[field])) {
+        throw new SetupError(400, 'review_required', 'Review the current webhook and target first; replacement requires expectedState, expectedCurrentUrl and expectedTargetUrl.');
+      }
       await this.#ensureWebhookToken();
       const token = this.webhookToken() as string;
       const current = await seerrWebhookSettings(seerrUrl, seerrKey);
       const currentUrl = typeof current.options?.webhookUrl === 'string' ? current.options.webhookUrl : '';
       const matches = webhookMatches(current, webhookUrl, token);
       const currentState = this.#webhookState(current);
-      const details = { currentHost: hostOf(currentUrl), currentUrl: publicWebhookUrl(currentUrl),
+      const details = { currentHost: hostOf(currentUrl), currentUrl: currentUrl.trim() ? publicWebhookUrl(currentUrl) : null,
         newUrl: webhookUrl, currentEnabled: current.enabled === true, currentState };
       if (body.replace === true && (body.expectedState !== currentState
         || body.expectedCurrentUrl !== publicWebhookUrl(currentUrl) || body.expectedTargetUrl !== webhookUrl)) {

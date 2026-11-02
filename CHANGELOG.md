@@ -23,7 +23,9 @@ changes are always listed at the top of the release notes.
 - **Setup protects existing webhooks and service restarts.** Discover Seerr's live
   webhook, require confirmation bound to its reviewed state and target before
   replacement, mask foreign webhook paths, label environment settings, and
-  review saved changes before restarting.
+  review saved changes before restarting. `POST /v1/setup/webhook` with
+  `replace: true` now requires `expectedState`, `expectedCurrentUrl`, and
+  `expectedTargetUrl` review fields.
 
 ### Added
 

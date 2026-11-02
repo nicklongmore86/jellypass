@@ -467,7 +467,7 @@ describe('setup wizard: steps', () => {
     assert.equal((await call('/v1/setup/webhook', { body: authReview })).status, 409);
     const targetReview = await reviewedReplacement(call, base);
     assert.equal((await call('/v1/setup/webhook', { body: { ...targetReview, jellypassUrl: 'http://changed:8788' } })).status, 409);
-    assert.equal((await call('/v1/setup/webhook', { body: { jellypassUrl: base, replace: true } })).status, 409);
+    assert.equal((await call('/v1/setup/webhook', { body: { jellypassUrl: base, replace: true } })).status, 400);
     assert.equal(seerr.requests.filter((r) => r.method === 'POST').length, 0);
     assertNoSecret(answers.join('\n'), ['private-id', 'private-token', 'private-auth', 'private-path', 'changed-auth']);
   });
@@ -490,6 +490,39 @@ describe('setup wizard: steps', () => {
       assert.equal(refused.status, 409);
       assert.equal((await call('/v1/setup/webhook', { body: await reviewedReplacement(call, base) })).body.status, 'configured');
     }
+  });
+
+  it('requires review fields with a clear 400, including when no webhook exists', async (t) => {
+    const seerr = await createSetupSeerr();
+    t.after(() => seerr.close());
+    const { call, base } = await setupMode(t, { environment: { SEERR_URL: seerr.url, SEERR_API_KEY: SECRETS.seerrKey } });
+    for (const webhookUrl of ['', 'https://hooks.example.net/existing']) {
+      seerr.state.webhook.options.webhookUrl = webhookUrl;
+      const answer = await call('/v1/setup/webhook', { body: { jellypassUrl: base, replace: true } });
+      assert.equal(answer.status, 400);
+      assert.equal(answer.body.error, 'review_required');
+      assert.equal(answer.body.currentUrl, undefined);
+      assert.doesNotMatch(JSON.stringify(answer.body), /invalid webhook URL/);
+    }
+    seerr.state.webhook.options.webhookUrl = '';
+    const stale = await call('/v1/setup/webhook', { body: { jellypassUrl: base, replace: true,
+      expectedState: 'stale', expectedCurrentUrl: 'https://old.example/webhooks/seerr', expectedTargetUrl: base + '/webhooks/seerr' } });
+    assert.equal(stale.status, 409);
+    assert.equal(stale.body.currentUrl, null);
+    assert.equal(seerr.requests.filter((r) => r.method === 'POST').length, 0);
+  });
+
+  it('accepts a reviewed target with mixed-case host and a default port', async (t) => {
+    const seerr = await createSetupSeerr({ webhook: { enabled: true, options: { webhookUrl: 'https://old.example/webhooks/seerr' } } });
+    t.after(() => seerr.close());
+    const { call } = await setupMode(t, { environment: { SEERR_URL: seerr.url, SEERR_API_KEY: SECRETS.seerrKey } });
+    const input = 'http://JellyPass:80/';
+    const review = await call('/v1/setup/webhook', { body: { jellypassUrl: input } });
+    assert.equal(review.body.newUrl, 'http://jellypass/webhooks/seerr');
+    const answer = await call('/v1/setup/webhook', { body: { jellypassUrl: input, replace: true,
+      expectedState: review.body.currentState, expectedCurrentUrl: review.body.currentUrl, expectedTargetUrl: review.body.newUrl } });
+    assert.equal(answer.status, 200);
+    assert.equal(seerr.state.webhook.options.webhookUrl, review.body.newUrl);
   });
 
   it('reports failed live webhook reads without trusting wizard history', async (t) => {
@@ -683,6 +716,7 @@ describe('setup wizard page', () => {
       setTimeout,
       clearTimeout,
       Date,
+      URL,
       localStorage: { setItem: (...args) => storage.push(args) },
       sessionStorage: { setItem: (...args) => storage.push(args) },
     };
@@ -757,10 +791,28 @@ describe('setup wizard page', () => {
     const page = setupPage((path) => ({ status: 200, body: path === '/v1/setup' ? current : { status: 'kept', setup: current } }));
     page.document.getElementById('setup-token').value = SECRETS.adminToken;
     await page.submit('setup-token-form');
+    page.document.getElementById('webhook-base').value = '  http://ACCESS-BRIDGE:80/  ';
+    current.steps.seerr.webhook.url = 'http://access-bridge/webhooks/seerr';
     await page.submit('webhook-form');
     assert.equal(page.requests[1].pathname, '/v1/setup/webhook');
     assert.equal(JSON.parse(page.requests[1].init.body).replace, undefined);
     assert.equal(page.document.getElementById('webhook-review').hidden, true);
+  });
+
+  it('binds a page review to a normalized mixed-case/default-port target', async () => {
+    const current = structuredClone(STATUS);
+    current.steps.seerr = { ...current.steps.seerr, apiKey: 'set', webhookChecked: true,
+      webhook: { url: 'https://old.example/webhooks/seerr', currentState: 'review-state' } };
+    const page = setupPage((path) => ({ status: 200, body: path === '/v1/setup' ? current : { status: 'configured', setup: current } }));
+    const byId = (id) => page.document.getElementById(id);
+    byId('setup-token').value = SECRETS.adminToken;
+    await page.submit('setup-token-form');
+    byId('webhook-base').value = '  http://JellyPass:80/  ';
+    await page.submit('webhook-form');
+    assert.match(byId('webhook-change').textContent, /→ http:\/\/jellypass\/webhooks\/seerr/);
+    byId('webhook-confirm').checked = true;
+    await page.submit('webhook-form');
+    assert.equal(JSON.parse(page.requests[1].init.body).expectedTargetUrl, 'http://jellypass/webhooks/seerr');
   });
 
   it('keeps the token in memory only, sends it as a bearer token, clears the password once sent, and greys out locked steps', async () => {

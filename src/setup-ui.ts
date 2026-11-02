@@ -306,14 +306,15 @@ export const SETUP_APP_JS = `
   });
   step('webhook-form', async () => {
     const body = { jellypassUrl: byId('webhook-base').value };
-    const target = body.jellypassUrl.replace(/\\/+$/, '') + '/webhooks/seerr';
+    const address = new URL(body.jellypassUrl.trim());
+    const target = address.origin + address.pathname.replace(/\\/+$/, '') + '/webhooks/seerr';
     const existing = status.steps.seerr.webhook;
     const needsReview = existing && !(existing.matches && existing.url === target);
     if (needsReview && (!webhookReview || webhookReview.target !== target || !byId('webhook-confirm').checked)) {
       byId('webhook-confirm').checked = false;
       webhookReview = { target, url: existing.url, state: existing.currentState };
       byId('webhook-review').hidden = false;
-      byId('webhook-change').textContent = existing.url + ' → ' + target + '. This replaces Seerr’s webhook URL and authorization.';
+      byId('webhook-change').textContent = existing.url + ' → ' + target + '. This updates Seerr’s webhook URL, authorization and notification types/payload.';
       return '';
     }
     if (needsReview) Object.assign(body, { replace: true, expectedCurrentUrl: webhookReview.url,
