@@ -323,14 +323,17 @@ scheme). Foreign and invalid webhook URLs are never used as defaults.
 Verify that Seerr can reach the suggestion; proxy and container addresses differ.
 
 Replacing a webhook requires an in-page review of the old and new URLs.
-`POST /v1/setup/webhook` still uses `replace: true`, but replacement now
+`POST /v1/setup/webhook` works in setup mode (setup token) and on a running
+install (`ADMIN_TOKEN`). It still uses `replace: true`, but since 4.2.0 replacement
 also requires `expectedCurrentUrl` (the displayed, masked URL),
 `expectedState` (the opaque `currentState` from live status or a 409),
 and `expectedTargetUrl` (the reviewed full target, including `/webhooks/seerr`).
 The server re-reads Seerr and returns 409 `seerr_webhook_in_use` if the live
 URL, authorization, notification settings, or requested target changed.
-Old callers sending only `replace: true` must review and supply these fields;
-they receive 400 `review_required` when review fields are missing and can no
+Scripts calling it must first read `GET /v1/setup` (or take the details of a
+409) and supply these fields, as the Setup page does. Old callers sending only
+`replace: true` receive
+400 `review_required` when review fields are missing and can no
 longer overwrite unconditionally. Empty current webhook addresses are reported
 as `currentUrl: null` in conflict details. The keyed state fingerprint
 exposes no authorization secret and becomes invalid after a JellyPass restart.

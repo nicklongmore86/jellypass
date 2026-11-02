@@ -65,11 +65,15 @@ describe('changelogSection with the real CHANGELOG.md', () => {
     const flat = notes.replace(/\s+/g, ' ');
     assert.match(flat, /\*\*An existing install upgrades without any change to its configuration:\*\*/);
     assert.match(flat, /`expectedState`, `expectedCurrentUrl` and `expectedTargetUrl`/);
+    assert.match(flat, /works in setup mode with the setup token and on a running install with `ADMIN_TOKEN`/);
+    assert.match(flat, /`400 review_required`.*`409 seerr_webhook_in_use`/);
+    assert.doesNotMatch(flat, /Only the setup wizard/);
+    assert.match(CHANGELOG.replace(/\s+/g, ' '), /A minor release may also make an administrator API request require more fields when that is needed to stop it overwriting existing external configuration or data without an explicit review or confirmation\./);
     for (const heading of ['Added', 'Changed', 'Fixed']) {
       assert.equal(notes.split('\n').filter((line) => line === `### ${heading}`).length, 1, `one ### ${heading}`);
     }
     const added = notes.indexOf('### Added');
-    for (const note of ['**The setup wizard\'s Seerr webhook step asks before replacing a webhook.**', '**`TV_ADDON_HOUSEHOLDS` is still honoured but deprecated,**']) {
+    for (const note of ['**Replacing Seerr\'s webhook needs a review first.**', '**`TV_ADDON_HOUSEHOLDS` is still honoured but deprecated,**']) {
       assert.ok(notes.indexOf(note) >= 0 && notes.indexOf(note) < added, `${note} is summarised first`);
     }
     assert.doesNotMatch(notes, /\b(?!127\.0\.0\.1\b|0\.0\.0\.0\b)(?:\d{1,3}\.){3}\d{1,3}\b|LXC|\.local\b|\bjelly(?:-[a-z0-9-]+)?\.(?!example\.)[a-z0-9-]+\.[a-z]|design-ref|TU7000|sdb\b/i, 'no server-specific details');
